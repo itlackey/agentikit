@@ -9,9 +9,9 @@
  * was absent from the schema, read nowhere in the runtime, and `akm config set
  * experimental.workflowEngine true` failed with `Unknown config key`. Because
  * the top-level config schema is `.passthrough()`, setting it anyway was
- * silently accepted and inert — the workflow-engine dispatch ran unconditionally
- * regardless of the key. These pin the key's existence, its default (absent
- * means off, mirroring `experimental.improveAutonomy`), and that a dotted
+ * silently accepted and inert. These pin the key's existence for the external
+ * workflow driver, its default (absent means off, mirroring
+ * `experimental.improveAutonomy`), and that a dotted
  * `config set` now actually resolves against the Zod schema instead of falling
  * through to the passthrough. The gating behaviour itself (refusal + doctor
  * reporting) is pinned by `tests/tasks-doctor-workflow-engine.test.ts` and
@@ -55,7 +55,7 @@ describe("experimental.workflowEngine schema", () => {
 });
 
 describe("isWorkflowEngineEnabled", () => {
-  test("is OFF when the section is absent — the engine is opt-in, never inferred", () => {
+  test("is OFF when the section is absent — the external driver is opt-in, never inferred", () => {
     expect(isWorkflowEngineEnabled({})).toBe(false);
   });
 

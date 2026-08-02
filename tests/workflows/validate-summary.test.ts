@@ -17,10 +17,10 @@ describe("validateStepSummary (#506 — completion-criteria gate)", () => {
     expect(result).toEqual({ complete: true, missing: [], skipped: true });
   });
 
-  test("skips (fail-open) when no judge is available", async () => {
+  test("rejects when no judge is available", async () => {
     const result = await validateStepSummary(input, undefined);
-    expect(result.complete).toBe(true);
-    expect(result.skipped).toBe(true);
+    expect(result.complete).toBe(false);
+    expect(result.missing).toEqual(input.completionCriteria);
   });
 
   test("passes when the judge returns complete:true", async () => {
@@ -48,19 +48,22 @@ describe("validateStepSummary (#506 — completion-criteria gate)", () => {
     expect(result.missing).toEqual(["Release notes reviewed"]);
   });
 
-  test("fails open when the judge throws (LLM unreachable)", async () => {
+  test("fails closed when the judge throws", async () => {
     const judge: SummaryJudge = async () => {
       throw new Error("network down");
     };
     const result = await validateStepSummary(input, judge);
-    expect(result).toEqual({ complete: true, missing: [], skipped: true });
+    expect(result.complete).toBe(false);
+    expect(result.missing).toEqual(input.completionCriteria);
+    expect(result.feedback).toContain("judge failed");
   });
 
-  test("fails open when the model returns unparseable output", async () => {
+  test("fails closed when the model returns unparseable output", async () => {
     const judge: SummaryJudge = async () => "totally not json";
     const result = await validateStepSummary(input, judge);
-    expect(result.complete).toBe(true);
-    expect(result.skipped).toBe(true);
+    expect(result.complete).toBe(false);
+    expect(result.missing).toEqual(input.completionCriteria);
+    expect(result.feedback).toContain("malformed verdict");
   });
 
   test("synthesizes feedback when the model omits it", async () => {

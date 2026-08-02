@@ -17,6 +17,7 @@ export const WORKFLOW_TEST_CONFIG = {
     },
   },
   defaults: { engine: "test-agent", llmEngine: "test-llm" },
+  workflow: { judgeEngine: "test-llm" },
 } as const satisfies AkmConfig;
 
 /**

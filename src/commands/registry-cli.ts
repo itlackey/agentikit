@@ -5,7 +5,7 @@
 import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
 import type { RegistryConfigEntry } from "../core/config/config";
 import { getEffectiveRegistries, loadUserConfig, mutateConfig } from "../core/config/config";
-import { UsageError } from "../core/errors";
+import { NotFoundError, UsageError } from "../core/errors";
 import { warn } from "../core/warn";
 
 export const registryCommand = defineGroupCommand({
@@ -85,8 +85,14 @@ export const registryCommand = defineGroupCommand({
         const registries = [...(config.registries ?? [])];
         const idx = registries.findIndex((r) => r.url === args.target || r.name === args.target);
         if (idx === -1) {
-          output("registry-remove", { registries, removed: false, message: "No matching registry found" });
-          return;
+          // Was a success envelope with `removed: false` and exit 0, so
+          // `akm registry remove typo && ...` proceeded as if it had removed
+          // something. A missing target is exit 1, like every other not-found.
+          throw new NotFoundError(
+            `No registry matching "${args.target}" is configured.`,
+            "SOURCE_NOT_FOUND",
+            "Run `akm registry list` to see configured registries.",
+          );
         }
         const { confirmDestructive } = await import("../cli/confirm.js");
         const confirmed = await confirmDestructive(`Remove registry "${args.target}"? This cannot be undone.`, {

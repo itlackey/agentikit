@@ -391,7 +391,7 @@ function persistProposalUpdate(db: Database, proposal: Proposal, stashDir: strin
   const row = db
     .prepare("SELECT metadata_json FROM proposals WHERE id = ? AND stash_dir = ?")
     .get(proposal.id, stashDir) as { metadata_json: string } | undefined;
-  if (!row) throw new NotFoundError(`Proposal "${proposal.id}" not found.`, "FILE_NOT_FOUND");
+  if (!row) throw new NotFoundError(`Proposal "${proposal.id}" not found.`, "PROPOSAL_NOT_FOUND");
   const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
   for (const field of [
     "sourceRun",
@@ -918,7 +918,7 @@ export function getProposal(stashDir: string, id: string, ctx?: ProposalsContext
 function requireProposal(db: Database, stashDir: string, id: string): Proposal {
   const proposal = getStateProposal(db, id, stashDir);
   if (!proposal) {
-    throw new NotFoundError(`Proposal "${id}" not found.`, "FILE_NOT_FOUND");
+    throw new NotFoundError(`Proposal "${id}" not found.`, "PROPOSAL_NOT_FOUND");
   }
   return proposal;
 }
@@ -935,7 +935,7 @@ function requireProposal(db: Database, stashDir: string, id: string): Proposal {
 function requireProposalLenient(db: Database, stashDir: string, id: string): Proposal {
   const proposal = getStateProposalLenient(db, id, stashDir);
   if (!proposal) {
-    throw new NotFoundError(`Proposal "${id}" not found.`, "FILE_NOT_FOUND");
+    throw new NotFoundError(`Proposal "${id}" not found.`, "PROPOSAL_NOT_FOUND");
   }
   return proposal;
 }
@@ -974,7 +974,7 @@ export function resolveProposalId(stashDir: string, idOrRef: string, ctx?: Propo
       if (pending) return pending;
       const archived = byRecency(forConcept());
       if (archived) return archived;
-      throw new NotFoundError(`No proposal found for ref "${idOrRef}".`, "FILE_NOT_FOUND");
+      throw new NotFoundError(`No proposal found for ref "${idOrRef}".`, "PROPOSAL_NOT_FOUND");
     }
 
     // 3. UUID prefix (pending queue only).
@@ -987,7 +987,7 @@ export function resolveProposalId(stashDir: string, idOrRef: string, ctx?: Propo
       );
     }
 
-    throw new NotFoundError(`Proposal "${idOrRef}" not found.`, "FILE_NOT_FOUND");
+    throw new NotFoundError(`Proposal "${idOrRef}" not found.`, "PROPOSAL_NOT_FOUND");
   });
 }
 

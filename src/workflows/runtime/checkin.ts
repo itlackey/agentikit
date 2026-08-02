@@ -10,7 +10,7 @@
  * reconciles #506 (file/command-loop signal) with #501 (background thread) in
  * favour of the former. There is intentionally NO timer or resident process
  * here. Arming a check-in writes a timestamp (`checkin_armed_at`) on the run
- * row; the next time the agent polls the engine via `workflow next`/`status`,
+ * row; the next time the agent polls the engine via `workflow run`/`status`,
  * {@link evaluateCheckin} is called to decide — purely from timestamps — whether
  * the run looks stalled and a strong `continue` directive should be surfaced
  * through the normal command output.
@@ -80,8 +80,8 @@ export function evaluateCheckin(
     signal: "continue",
     directive:
       "CONTINUE: this workflow run has stalled with no progress. Resume immediately — " +
-      "re-read the current step's instructions, finish the outstanding work, then call " +
-      "`akm workflow complete` with a summary. Do not stop until the step is complete.",
+      "inspect its status, then call `akm workflow run` with the run id to finish the outstanding work. " +
+      "Do not stop until the run reaches a terminal state or reports a verification rejection.",
     idleMs,
     agentHarness: run.agentHarness ?? null,
     agentSessionId: run.agentSessionId ?? null,

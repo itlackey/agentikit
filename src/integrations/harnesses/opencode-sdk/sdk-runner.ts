@@ -5,9 +5,13 @@
 /**
  * OpenCode SDK agent runner (migrated from `agent/sdk-runner.ts`, #564).
  *
- * Uses the embedded `@opencode-ai/sdk` instead of `Bun.spawn`. Requires no
- * agent CLI binary to be installed. The user provides an OpenAI-compatible
- * endpoint (or inherits from the selected fallback LLM engine) for the SDK.
+ * Uses the embedded `@opencode-ai/sdk` instead of `Bun.spawn` for dispatch, so
+ * no agent CLI argv is ever constructed — but the SDK is not self-contained:
+ * {@link createManagedOpencode} spawns `opencode serve` and talks HTTP to it,
+ * so the `opencode` binary must be on PATH (which is why setup's
+ * `detectHarness` gates this harness on that probe). The user provides an
+ * OpenAI-compatible endpoint (or inherits from the selected fallback LLM
+ * engine) for the SDK.
  *
  * This is the runtime surface of the {@link OpencodeSdkHarness} (`id =
  * 'opencode-sdk'`). It is the dispatch path for SDK runner specs; it exposes

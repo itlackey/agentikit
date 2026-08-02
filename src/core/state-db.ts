@@ -46,12 +46,10 @@
  * merge-target tables at their final shape. The one-time, filesystem-derived,
  * fail-closed DATA movement (the workflow.db merge, the usage_events rescue, the
  * full old-ref→item_ref re-key, and the workflow.db unlink / index.db quarantine
- * rename) is deliberately NOT a sealed SQL migration body: it is a journaled step
- * of the migrate-apply coordinator (`scripts/akm-migrate/config-migrate.ts`
- * `cutover-applied` phase →
- * `scripts/akm-migrate/migrate/legacy/three-db-cutover.ts`). So the no-DROP
- * contract here is intact — the physical workflow.db deletion happens outside
- * the ledger DDL, under the backup-verified-restorable fail-closed gate.
+ * rename) runs as idempotent code in the migrate-apply coordinator
+ * (`scripts/akm-migrate/migrate/legacy/three-db-cutover.ts`). So the no-DROP
+ * contract here is intact: physical workflow.db deletion happens outside the
+ * ledger DDL, after a verified backup and committed data transaction.
  *
  * ## Schema design: indexed columns vs. metadata_json
  *

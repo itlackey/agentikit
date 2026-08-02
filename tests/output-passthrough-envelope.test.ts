@@ -30,13 +30,6 @@ describe("passthrough envelope stamping (#484)", () => {
     expect(shaped.schemaVersion).toBe(1);
   });
 
-  it("adds schemaVersion + shape to workflow-next", () => {
-    const result = { run: { id: "abc", status: "active" }, currentStep: { id: "1" } };
-    const shaped = shapeForCommand("workflow-next", result, "normal") as Record<string, unknown>;
-    expect(shaped.shape).toBe("workflow-next");
-    expect(shaped.schemaVersion).toBe(1);
-  });
-
   it("adds schemaVersion + shape to env-list", () => {
     const result = { envs: [{ name: "v1", path: "/should/be/stripped" }] };
     const shaped = shapeForCommand("env-list", result, "normal") as Record<string, unknown>;

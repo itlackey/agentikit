@@ -680,6 +680,21 @@ export function todayIso(): string {
 }
 
 /**
+ * `YYYY-MM-DD` in LOCAL time — deliberately not {@link todayIso}, which is
+ * UTC and can differ near midnight. This is the spelling the `updated:`
+ * frontmatter stampers share (`core/asset/akm-markdown.ts` on write,
+ * `commands/lint/base-linter.ts` on `--fix`), so the field's format has one
+ * definition even though the two stampers pick different instants (now vs
+ * file mtime).
+ */
+export function localDateStamp(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
  * Return a filesystem-safe timestamp string derived from the current instant.
  * Colons and dots are replaced with hyphens so the result is safe as a
  * filename component on all platforms (e.g. `2024-01-15T10-30-00-000Z`).

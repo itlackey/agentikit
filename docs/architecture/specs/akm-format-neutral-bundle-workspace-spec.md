@@ -1823,7 +1823,7 @@ No improve or mutation support is required in this slice.
 Migration MUST:
 
 1. inventory current files and durable state — **the FROM-state is the shipped rc-train layout** (state ledger already at its final pre-cutover migration, `workflow.db` present, vault already removed), not a pristine 0.8 tree; fixtures MUST cover that FROM-state;
-2. create checksummed config/state and writable-content backups — the backup set MUST include every durable table's home, including usage/feedback events wherever they physically live pre-cutover;
+2. create semantically verified config and durable-database backups — the backup set MUST include every durable table's home, including usage/feedback events wherever they physically live pre-cutover; writable content is not duplicated, so its transforms MUST be atomic, idempotent, and replayable;
 3. propose destination bundles, components, and adapters;
 4. compute and persist the old-ref → new-id map **before any filesystem re-layout** (walk the old layout with the frozen legacy resolver; the cutover consumes only the persisted map);
 5. dry-run every file, ref, binding, and state mapping;
@@ -1831,10 +1831,10 @@ Migration MUST:
 7. move or convert files through adapter transactions;
 8. rekey durable refs under the §11.4 orphan taxonomy (expected orphans quarantined, integrity failures fail-closed);
 9. validate all destination components;
-10. rebuild the index — **outside the fail-closed gate**: the old index file is quarantine-renamed (never early-unlinked), durable feedback tables are migrated out of it first, and a rebuild failure does not roll back a committed state cutover (the indexer self-heals on the next run);
+10. rebuild the index after the committed state transaction: the old index file is quarantine-renamed (never early-unlinked), durable feedback tables are migrated out of it first, and a quarantine failure retains the incomplete sentinel for retry without rolling back the committed state transaction; the indexer self-heals on its next run;
 11. run search and runtime smoke tests;
 12. produce a migration report;
-13. leave the old source recoverable until verification succeeds.
+13. retain the config/database backup plus persisted ref and reserved-rename plans until verification succeeds; other content transforms MUST be inherently idempotent or re-planned, and restore rolls back config and databases while content remains in its forward-compatible migrated form.
 
 ### Phase 11 — Delete compatibility code
 
@@ -1966,7 +1966,7 @@ The target architecture is complete when:
 25. Registry discovery is separate from installed-content search.
 26. Wiki-specific core commands and `wikiName` are removed; the LLM Wiki adapter is a first-class built-in.
 27. `AssetSpec`, `AkmAssetType`, `TYPE_DIRS`, global matchers, type-competition renderer/action registries, and `StashEntry` are removed.
-28. The one-time old-layout migration is dry-runnable, checksummed, idempotent, recoverable, and fully tested — including an orphan-bearing fixture that completes with quarantine (§11.4).
+28. The one-time old-layout migration is dry-runnable, backed up, idempotent, recoverable, and fully tested — including an orphan-bearing fixture that completes with quarantine (§11.4).
 29. All temporary compatibility seams have named deletion milestones and are deleted.
 30. Production code is materially smaller and the net-complexity reduction is reported, with the restored bindings/memory-lifecycle additions accounted as a signed adds line.
 *(A v0.2 criterion 31 on untrusted-content labeling/clamping was withdrawn in v0.3 — deviation §4.3c.)*

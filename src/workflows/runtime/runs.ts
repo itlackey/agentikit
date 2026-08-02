@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { parseBundleRef } from "../../core/asset/asset-ref";
 import { loadConfig } from "../../core/config/config";
-import { NotFoundError, UsageError } from "../../core/errors";
+import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { warn } from "../../core/warn";
 import type {
@@ -28,7 +28,7 @@ import { frozenSummaryJudge } from "../exec/frozen-judge";
 import { detectSecretShapedParams } from "../exec/param-secrets";
 import { collectWorkflowWarnings } from "../ir/compile";
 import { compileResolveFreezeWorkflow } from "../ir/freeze";
-import { validateWorkflowParams } from "../ir/params";
+import { materializeWorkflowParameterFlags, validateWorkflowParams, type WorkflowParameterFlag } from "../ir/params";
 import { canonicalPlanJson, computePlanHash } from "../ir/plan-hash";
 import { decodeWorkflowPlanV3, type FrozenEngineSnapshot, WORKFLOW_IR_VERSION } from "../ir/schema";
 import { type SummaryJudge, validateStepSummary } from "../validate-summary";
@@ -195,16 +195,18 @@ export interface CompleteWorkflowStepInput {
   summary?: string;
   /**
    * Optional override for the summary-validation judge. When omitted the engine
-   * builds one from the configured LLM (and skips validation when none is set).
+   * builds one from the judge frozen into the run plan.
    * Injected primarily for tests.
    */
   summaryJudge?: SummaryJudge | null;
+  /** Internal cooperative cancellation checked before gate and state commits. */
+  signal?: AbortSignal;
   /**
    * Internal (engine only): the run-lease holder id of the `akm workflow run`
    * invocation making this call. While a LIVE lease is held, only its holder
    * may advance the spine — the engine owns the run while driving it. The
-   * manual CLI path never sets this, so `akm workflow complete` is refused
-   * until the lease is released or expires (R2 single-driver enforcement).
+   * Calls without this holder are refused until the lease is released or
+   * expires (R2 single-driver enforcement).
    */
   leaseHolder?: string;
 }
@@ -224,7 +226,12 @@ export interface SummaryValidationFailure {
 export async function startWorkflowRun(
   ref: string,
   params: Record<string, unknown> = {},
-  options?: { force?: boolean; agentHarness?: string | null; agentSessionId?: string | null },
+  options?: {
+    force?: boolean;
+    agentHarness?: string | null;
+    agentSessionId?: string | null;
+    parameterFlags?: readonly WorkflowParameterFlag[];
+  },
 ): Promise<WorkflowRunDetail> {
   const asset = await loadWorkflowAsset(ref);
   // Frozen plan (redesign addendum, R1): compile the plan ONCE at start and
@@ -232,21 +239,27 @@ export async function startWorkflowRun(
   // later invocation executes this snapshot — the asset file is never re-read
   // for an in-flight run; re-planning is an explicit new run.
   const plan = decodeWorkflowPlanV3(compileResolveFreezeWorkflow(asset, loadConfig()).plan);
+  if (options?.parameterFlags?.length && Object.keys(params).length > 0) {
+    throw new UsageError("Workflow parameters must use either an object or per-parameter flags, not both.");
+  }
+  const effectiveParams = options?.parameterFlags?.length
+    ? materializeWorkflowParameterFlags(plan, options.parameterFlags)
+    : params;
   // Non-fatal WARNINGS: untyped-step and undeclared-param advisories surface
   // as `warn()` lines at start (stderr, consistent with the repo's other
   // author-facing warnings) without blocking the run.
   for (const w of collectWorkflowWarnings(asset.document)) {
-    warn(`workflow start: ${asset.path}:${w.line} — ${w.message}`);
+    warn(`workflow run: ${asset.path}:${w.line} — ${w.message}`);
   }
-  // Reviewer #12: validate supplied `--params` against the frozen param
+  // Reviewer #12: validate supplied parameters against the frozen param
   // schemas BEFORE creating the run, so a type-mismatched param (e.g. a string
   // for a `{ type: array }` param) is rejected with actionable errors instead
   // of flowing silently into a unit prompt. Programs without declared param
   // schemas (and every Markdown workflow) validate trivially.
-  const paramErrors = validateWorkflowParams(plan, params);
+  const paramErrors = validateWorkflowParams(plan, effectiveParams);
   if (paramErrors.length > 0) {
     throw new UsageError(
-      `Cannot start ${asset.ref}: the supplied --params do not satisfy the workflow's declared parameter schemas:\n` +
+      `Cannot start ${asset.ref}: the supplied parameters do not satisfy the workflow's declared schemas:\n` +
         paramErrors.map((e) => `  - ${e}`).join("\n"),
       "INVALID_JSON_ARGUMENT",
     );
@@ -271,8 +284,8 @@ export async function startWorkflowRun(
     // Concurrency guard (#485): if an active run already exists in this
     // (workflow_ref, scope_key) pair, refuse to create a parallel run unless
     // `force: true` is set. Previously every call inserted unconditionally,
-    // so two terminals running `akm workflow start <ref>` left two runs
-    // racing; `akm workflow next` then non-deterministically picked one. The
+    // so two terminals starting the same workflow could leave two runs racing.
+    // The
     // active-alias query and all inserts now share this immediate transaction.
     // #506: arm a file-signal check-in (a timestamp, NOT a background thread —
     // per the workflow-agent check-in ADR) so a stalled run can be
@@ -285,7 +298,7 @@ export async function startWorkflowRun(
         if (existing) {
           throw new UsageError(
             `Workflow ${asset.ref} already has an active run in this scope (id=${existing.id}, step=${existing.current_step_id ?? "—"}). ` +
-              `Use 'akm workflow next ${asset.ref}' to resume it, 'akm workflow abandon ${existing.id}' to give up on it, or pass --force to start a parallel run.`,
+              `Use 'akm workflow run ${asset.ref}' to resume it or 'akm workflow abandon ${existing.id}' to give up on it.`,
             "RESOURCE_ALREADY_EXISTS",
           );
         }
@@ -296,7 +309,7 @@ export async function startWorkflowRun(
         scopeKey,
         workflowEntryId,
         workflowTitle: asset.title,
-        paramsJson: JSON.stringify(params),
+        paramsJson: JSON.stringify(effectiveParams),
         currentStepId,
         createdAt: now,
         updatedAt: now,
@@ -326,7 +339,7 @@ export async function startWorkflowRun(
     // without breaking the driver protocol). Surface a loud, best-effort warning
     // when a param LOOKS like a credential so the author moves it to an env
     // binding. Advisory only — never blocks the start.
-    const secretWarnings = detectSecretShapedParams(params);
+    const secretWarnings = detectSecretShapedParams(effectiveParams);
     if (secretWarnings.length > 0) result.warnings = [...(result.warnings ?? []), ...secretWarnings];
     // 07 P1-B: emit only the run id + status — NOT the raw workflowTitle (which
     // comes verbatim from the workflow asset's frontmatter and is therefore
@@ -416,9 +429,10 @@ export async function listWorkflowRuns(input?: { workflowRef?: string; activeOnl
 export async function getNextWorkflowStep(
   specifier: string,
   params?: Record<string, unknown>,
+  options?: { parameterFlags?: readonly WorkflowParameterFlag[] },
 ): Promise<WorkflowNextResult> {
   return withWorkflowRunsRepo(async (repo) => {
-    const { run, autoStarted } = await resolveRunSpecifier(repo, specifier, params);
+    const { run, autoStarted } = await resolveRunSpecifier(repo, specifier, params, options?.parameterFlags);
     const steps = readWorkflowRunSteps(repo, run.id);
     const plan = requireExecutableWorkflowPlan(run);
     assertWorkflowSpineMatchesPlan(plan, run, steps);
@@ -594,18 +608,26 @@ export async function completeWorkflowStep(
     );
   }
 
-  // #506: validation gate — judge the summary against the step's
-  // completionCriteria via the configured LLM. Fail-open when no criteria or no
-  // judge. Only a well-formed `complete: false` blocks completion.
+  // #506: validation gate — a criteria-bearing step must have a frozen judge
+  // and receive an affirmative verdict before it can advance.
   if (input.status === "completed" && summary) {
     const criteria = preflight.stepPlan.gate.criteria;
+    if (input.signal?.aborted) throw interruptionReason(input.signal);
     const judge =
       input.summaryJudge === undefined
-        ? frozenSummaryJudge(preflight.plan, preflight.stepPlan.gate.judge)
+        ? frozenSummaryJudge(preflight.plan, preflight.stepPlan.gate.judge, input.signal)
         : input.summaryJudge;
+    if (criteria.length > 0 && !judge) {
+      throw new ConfigError(
+        `Workflow run ${input.runId} has completion criteria for step "${input.stepId}" but its frozen plan has no judge. ` +
+          "Set workflow.judgeEngine, abandon this run, and create a new one with `akm workflow run <ref>`.",
+        "INVALID_CONFIG_FILE",
+      );
+    }
     const verdict = await validateStepSummary(
       { stepTitle: preflight.stepPlan.title, completionCriteria: criteria, summary },
       judge ?? undefined,
+      input.signal,
     );
     if (!verdict.complete) {
       // Re-arm the check-in so a subsequent stall is still nudged, but leave the
@@ -623,6 +645,7 @@ export async function completeWorkflowStep(
     }
   }
 
+  if (input.signal?.aborted) throw interruptionReason(input.signal);
   return withWorkflowRunsRepo((repo) => {
     let updatedRun: WorkflowRunRow | undefined;
     let refreshedSteps: WorkflowRunStepRow[] = [];
@@ -651,6 +674,7 @@ export async function completeWorkflowStep(
           `Step "${input.stepId}" is not the current step for workflow run ${run.id}. Complete "${run.current_step_id}" first.`,
         );
       }
+      if (input.signal?.aborted) throw interruptionReason(input.signal);
 
       const completedAt = new Date().toISOString();
       repo.updateStepCompletion({
@@ -709,12 +733,14 @@ async function resolveRunSpecifier(
   repo: WorkflowRunsRepository,
   specifier: string,
   params?: Record<string, unknown>,
+  parameterFlags?: readonly WorkflowParameterFlag[],
 ): Promise<{ run: WorkflowRunRow; autoStarted: boolean }> {
+  const hasParameters = (params && Object.keys(params).length > 0) || (parameterFlags?.length ?? 0) > 0;
   const explicitRun = repo.getRunById(specifier);
   if (explicitRun) {
-    if (params && Object.keys(params).length > 0) {
+    if (hasParameters) {
       throw new UsageError(
-        `--params can only be used when starting a new run from a workflow ref, not with an existing run id ("${specifier}")`,
+        `Workflow parameter flags can only be used when starting a new run, not with existing run id "${specifier}".`,
       );
     }
     return { run: explicitRun, autoStarted: false };
@@ -731,8 +757,8 @@ async function resolveRunSpecifier(
     ref = await canonicalizeWorkflowSpecifier(specifier);
   } catch (error) {
     if (detached) {
-      if (params && Object.keys(params).length > 0) {
-        throw new UsageError(`--params can only be set on a new run; ${specifier} already has an active run`);
+      if (hasParameters) {
+        throw new UsageError(`Workflow parameter flags can only be set on a new run; ${specifier} is already active.`);
       }
       return { run: detached, autoStarted: false };
     }
@@ -743,14 +769,20 @@ async function resolveRunSpecifier(
   }
   const active = repo.getActiveRunRowForScope(await workflowRunRefSet(ref, exactRef), scopeKey);
   if (active) {
-    if (params && Object.keys(params).length > 0) {
-      throw new UsageError(`--params can only be set on a new run; ${ref} already has an active run`);
+    if (hasParameters) {
+      throw new UsageError(`Workflow parameter flags can only be set on a new run; ${ref} is already active.`);
     }
     return { run: active, autoStarted: false };
   }
 
-  const started = await startWorkflowRun(ref, params ?? {});
+  const started = await startWorkflowRun(ref, params ?? {}, {
+    ...(parameterFlags !== undefined ? { parameterFlags } : {}),
+  });
   return { run: readWorkflowRun(repo, started.run.id), autoStarted: true };
+}
+
+function interruptionReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("Workflow run interrupted.");
 }
 
 async function canonicalizeWorkflowSpecifier(specifier: string): Promise<string> {
@@ -821,7 +853,7 @@ function readWorkflowRunSteps(repo: WorkflowRunsRepository, runId: string): Work
 
 function buildWorkflowRunDetail(run: WorkflowRunRow, steps: WorkflowRunStepRow[]): WorkflowRunDetail {
   // Review M1: `workflow status` (and every other detail-shaped response) now
-  // evaluates the check-in, not just `workflow next`. Pure timestamp check —
+  // evaluates the check-in, not just `workflow run`. Pure timestamp check —
   // no background thread (see checkin.ts).
   const checkin = evaluateCheckin({
     status: run.status,
@@ -860,7 +892,7 @@ function toWorkflowRunSummary(run: WorkflowRunRow): WorkflowRunSummary {
     planIrVersion: plan.irVersion,
     executionSupport: plan.support,
     // Surface the engine lease (holder id + expiry — never workflow-authored
-    // content) so `workflow next`/`status` show who is driving the run.
+    // content) so `workflow run`/`status` show who is driving the run.
     ...(run.engine_lease_holder && run.engine_lease_until
       ? { engineLease: { holder: run.engine_lease_holder, until: run.engine_lease_until } }
       : {}),
@@ -870,7 +902,7 @@ function toWorkflowRunSummary(run: WorkflowRunRow): WorkflowRunSummary {
 /**
  * Single-driver enforcement (R2 run lease): while a LIVE (unexpired) engine
  * lease is held, only the holding engine may advance the gate spine. Manual
- * `akm workflow complete` (no `leaseHolder`) — or a stale engine invocation
+ * A call with no `leaseHolder` — or a stale engine invocation
  * whose lease was claimed by another — is refused with the holder + expiry.
  * An EXPIRED lease never blocks: the engine that held it is presumed dead.
  */

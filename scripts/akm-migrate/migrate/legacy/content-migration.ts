@@ -6,10 +6,10 @@
  * @removeIn 0.10.0
  *
  * The one-time content migration (akm 0.9.0 Chunk 8, WI-8.5d; ref-grammar
- * decision D-R6; plan §3.4). Three filesystem folds that retire the last
- * pre-0.9 on-disk shapes, run as an ADDITIVE journaled step of the
- * `cutover-applied` phase AFTER the state txn commits. Malformed legacy data is
- * reported and retained; operational failures abort the step for a safe retry.
+ * decision D-R6; plan §3.4). Three idempotent filesystem folds retire the last
+ * pre-0.9 on-disk shapes after the state transaction commits. Malformed legacy
+ * data is reported and retained; operational failures leave the apply sentinel
+ * in place so the whole transform sequence can be retried.
  *
  *  1. **`.stash.json` death.** For each per-directory `.stash.json` sidecar under
  *     the configured stash roots, fold its curated overrides into the matching
@@ -40,8 +40,8 @@
  * yet. Fold #3 was ADDED to this step (not a second migration) after folds #1/#2
  * shipped in-branch — the module's READ behavior (the frozen sidecar reader) is
  * unchanged; only the rewrite/fold set grew. Post-release this file is frozen.
- * The pre-0.9 filesystem-proposal import (`proposal-fs-import.ts`) is a SIBLING
- * additive step of the same phase, wired in `config-migrate.ts`; its count rides
+ * The pre-0.9 filesystem-proposal import (`proposal-fs-import.ts`) is a sibling
+ * transform wired in `config-migrate.ts`; its count rides
  * the {@link ContentMigrationReport} (`legacyProposalsImported`) — this module
  * defaults it to 0 since the fold itself only rewrites on-disk shapes.
  *
@@ -50,7 +50,7 @@
  * indexer path.
  */
 
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -72,7 +72,7 @@ export interface ReservedRename {
 export interface ReservedRenameBatch {
   readonly formatVersion: 1;
   readonly operationId: string;
-  readonly entries: Array<ReservedRename & { readonly byteSize: number; readonly sha256: string }>;
+  readonly entries: ReservedRename[];
 }
 
 /** Per-run counts + the D-R6 rename list, for logging + test assertions. */
@@ -97,7 +97,7 @@ export interface ContentMigrationReport {
    * (`config-migrate.ts` folds in the {@link importLegacyProposalsIntoState}
    * count), NOT by {@link runContentMigration}, which only rewrites the on-disk
    * shapes above — the proposal import needs the migrated state.db handle, so it
-   * runs as a sibling additive step in the same phase and reports its count here.
+   * runs as a sibling additive step in the same apply and reports its count here.
    * Idempotent: a second apply re-inserts nothing (INSERT OR IGNORE on UUID), so
    * it reports 0.
    */
@@ -200,7 +200,7 @@ function collectDirs(root: string): string[] {
 /**
  * Run the content migration over the configured stash roots. Malformed content
  * is retained and reported; filesystem failures other than direct absence
- * propagate so the journal can retry.
+ * propagate so migrate-apply can retry.
  */
 export function runContentMigration(
   stashRoots: readonly string[],
@@ -258,7 +258,7 @@ function rewriteSourceBackrefsInDir(dir: string, report: ContentMigrationReport)
       const source = asNonEmptyString(parseFrontmatter(fs.readFileSync(filePath, "utf8")).data.source);
       const rewritten = legacyMemoryBackrefToConceptId(source);
       if (rewritten === undefined) continue; // already conceptId / not a memory backref → no-op
-      mutateFrontmatter(filePath, (parsed) => ({ ...parsed.data, source: rewritten }));
+      mutateFrontmatterAtomic(filePath, (parsed) => ({ ...parsed.data, source: rewritten }));
       report.sourceBackrefsRewritten++;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -338,18 +338,7 @@ function foldEntry(dir: string, entry: IndexDocument, report: ContentMigrationRe
       report.entriesSkipped++;
       return false;
     }
-    const temporary = path.join(dir, `.${path.basename(target)}.akm-fold-${process.pid}-${Math.random().toString(16).slice(2)}`);
-    try {
-      fs.copyFileSync(target, temporary, fs.constants.COPYFILE_EXCL);
-      mutateFrontmatter(temporary, (parsed) => foldCuratedFields(parsed.data, entry));
-      writeFileAtomic(target, fs.readFileSync(temporary), fs.statSync(target).mode & 0o777);
-    } finally {
-      try {
-        fs.rmSync(temporary);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    }
+    mutateFrontmatterAtomic(target, (parsed) => foldCuratedFields(parsed.data, entry));
     report.entriesFolded++;
     return true;
   } catch (error) {
@@ -369,6 +358,22 @@ function foldCuratedFields(existing: Record<string, unknown>, entry: IndexDocume
     if (value !== undefined) next[fmKey] = value;
   }
   return next;
+}
+
+function mutateFrontmatterAtomic(filePath: string, mutate: Parameters<typeof mutateFrontmatter>[1]): void {
+  const directory = path.dirname(filePath);
+  const temporary = path.join(
+    directory,
+    `.${path.basename(filePath)}.akm-migrate-${process.pid}-${randomBytes(8).toString("hex")}`,
+  );
+  try {
+    const mode = fs.statSync(filePath).mode & 0o777;
+    fs.copyFileSync(filePath, temporary, fs.constants.COPYFILE_EXCL);
+    mutateFrontmatter(temporary, mutate);
+    writeFileAtomic(filePath, fs.readFileSync(temporary), mode);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
 }
 
 function reservedConceptsInDir(root: string, dir: string): ReservedRename[] {
@@ -396,17 +401,10 @@ export function planReservedRenameBatch(
   batchPath: string,
   operationId: string,
 ): ReservedRenameBatch {
-  const entries: ReservedRenameBatch["entries"] = [];
+  const entries: ReservedRename[] = [];
   for (const root of stashRoots.map((value) => path.resolve(value))) {
     for (const dir of collectDirs(root)) {
-      for (const rename of reservedConceptsInDir(root, dir)) {
-        const bytes = fs.readFileSync(rename.from);
-        entries.push({
-          ...rename,
-          byteSize: bytes.byteLength,
-          sha256: createHash("sha256").update(bytes).digest("hex"),
-        });
-      }
+      entries.push(...reservedConceptsInDir(root, dir));
     }
   }
   const batch: ReservedRenameBatch = { formatVersion: 1, operationId, entries };
@@ -421,29 +419,11 @@ export function loadReservedRenameBatch(batchPath: string, operationId: string):
     parsed.formatVersion !== 1 ||
     parsed.operationId !== operationId ||
     !Array.isArray(parsed.entries) ||
-    parsed.entries.some(
-      (entry) =>
-        typeof entry?.from !== "string" ||
-        typeof entry.to !== "string" ||
-        !Number.isSafeInteger(entry.byteSize) ||
-        entry.byteSize < 0 ||
-        !/^[a-f0-9]{64}$/.test(entry.sha256),
-    )
+    parsed.entries.some((entry) => typeof entry?.from !== "string" || typeof entry.to !== "string")
   ) {
     throw new Error(`Invalid or foreign reserved rename batch: ${batchPath}`);
   }
   return parsed as ReservedRenameBatch;
-}
-
-function matchesRenameEntry(filePath: string, entry: ReservedRenameBatch["entries"][number]): boolean {
-  const bytes = fs.readFileSync(filePath);
-  return bytes.byteLength === entry.byteSize && createHash("sha256").update(bytes).digest("hex") === entry.sha256;
-}
-
-function isSameHardLinkedFile(source: string, target: string): boolean {
-  const sourceStat = fs.lstatSync(source, { bigint: true });
-  const targetStat = fs.lstatSync(target, { bigint: true });
-  return sourceStat.isFile() && targetStat.isFile() && sourceStat.dev === targetStat.dev && sourceStat.ino === targetStat.ino;
 }
 
 function syncRenameDirectory(directory: string): void {
@@ -464,32 +444,13 @@ export function applyReservedRenameBatch(batch: ReservedRenameBatch, operationId
     throw new Error("Reserved rename batch does not belong to this migration operation.");
   }
   for (const entry of batch.entries) {
-    let sourceExists = true;
-    try {
-      fs.statSync(entry.from);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      sourceExists = false;
-    }
-    if (!sourceExists) {
-      if (!matchesRenameEntry(entry.to, entry)) throw new Error(`Reserved rename target is not authentic: ${entry.to}`);
-      continue;
-    }
-    if (!matchesRenameEntry(entry.from, entry)) throw new Error(`Reserved rename source changed after planning: ${entry.from}`);
-    const directory = path.dirname(entry.to);
-    if (fs.existsSync(entry.to)) {
-      if (!matchesRenameEntry(entry.to, entry)) throw new Error(`Reserved rename target is not authentic: ${entry.to}`);
-      if (!isSameHardLinkedFile(entry.from, entry.to)) {
-        throw new Error(`Reserved rename target is not the published hard link: ${entry.to}`);
-      }
-      fs.unlinkSync(entry.from);
-      syncRenameDirectory(directory);
-      continue;
-    }
-    fs.linkSync(entry.from, entry.to);
-    syncRenameDirectory(directory);
-    fs.unlinkSync(entry.from);
-    syncRenameDirectory(directory);
+    const sourceExists = fs.existsSync(entry.from);
+    const targetExists = fs.existsSync(entry.to);
+    if (!sourceExists && targetExists) continue;
+    if (!sourceExists) throw new Error(`Reserved rename source and target are missing: ${entry.from}`);
+    if (targetExists) throw new Error(`Reserved rename target already exists: ${entry.to}`);
+    fs.renameSync(entry.from, entry.to);
+    syncRenameDirectory(path.dirname(entry.to));
   }
 }
 

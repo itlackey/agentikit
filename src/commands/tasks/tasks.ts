@@ -151,7 +151,12 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   if (!isWithin(assetPath, typeRoot)) {
     throw new UsageError(`Resolved task path escapes the stash: "${id}".`, "PATH_ESCAPE_VIOLATION");
   }
-  if (fs.existsSync(assetPath) && !input.force) {
+  // Pre-0.8.0 tasks were markdown; the 0.8.0 cutover moved them to pure YAML
+  // (see the tasks dir rule in src/indexer/walk/matchers.ts). A leftover
+  // `<id>.md` still names the same task, so creating `<id>.yml` beside it
+  // must collide loudly rather than silently minting a duplicate.
+  const legacyAssetPath = path.join(typeRoot, `${id}.md`);
+  if ((fs.existsSync(assetPath) || fs.existsSync(legacyAssetPath)) && !input.force) {
     throw new UsageError(
       `Task "${id}" already exists. Pass --force to overwrite, or delete its file and run \`akm task sync\` first.`,
       "RESOURCE_ALREADY_EXISTS",
@@ -549,11 +554,7 @@ export interface TasksDoctorResult {
     applyMode: string;
     policy: string;
   };
-  /**
-   * Q-05 — the workflow engine gate's state. `akm workflow run`/`brief`/
-   * `report` refuse until `experimental.workflowEngine` is set; this is where
-   * an operator confirms why (or whether) those surfaces are available.
-   */
+  /** Q-05 — the experimental workflow driver protocol's gate state. */
   workflowEngine: {
     enabled: boolean;
     configKey: string;
@@ -613,8 +614,8 @@ export async function akmTasksDoctor(
     configKey: IMPROVE_AUTONOMY_CONFIG_KEY,
     gatedLanes: allGated.map((entry) => ({ lane: entry.lane as string, reason: entry.reason })),
   };
-  // Q-05 — report the workflow engine gate's state alongside the autonomy
-  // gate: both are `experimental.*` opt-ins doctor exists to surface.
+  // Q-05 — report the external-driver gate alongside the autonomy gate: both
+  // are `experimental.*` opt-ins doctor exists to surface.
   const workflowEngine = {
     enabled: isWorkflowEngineEnabled(config),
     configKey: WORKFLOW_ENGINE_CONFIG_KEY,

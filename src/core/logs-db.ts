@@ -41,7 +41,11 @@
 
 import path from "node:path";
 import type { Database, SqlValue } from "../storage/database";
-import { type Migration, runMigrations as runSqliteMigrations } from "../storage/engines/sqlite-migrations";
+import {
+  assertMigrationRegistry,
+  type Migration,
+  runMigrations as runSqliteMigrations,
+} from "../storage/engines/sqlite-migrations";
 import { openManagedDatabase } from "../storage/managed-db";
 import { getDataDir } from "./paths";
 
@@ -143,6 +147,8 @@ const MIGRATIONS: Migration[] = [
     `,
   },
 ];
+
+assertMigrationRegistry(MIGRATIONS);
 
 /**
  * Apply every pending migration. Called automatically by

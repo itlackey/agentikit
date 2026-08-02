@@ -25,11 +25,15 @@ beforeEach(() => {
 
 afterEach(() => storage.cleanup());
 
-function seedMigration(workflowRef: string, createWorkflow = true): { prepared: string; taskPath: string } {
+function seedMigration(
+  workflowRef: string,
+  createWorkflow = true,
+  configuredStashDir = storage.stashDir,
+): { prepared: string; taskPath: string } {
   fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
   fs.writeFileSync(
     getConfigPath(),
-    `${JSON.stringify({ configVersion: "0.8.0", stashDir: storage.stashDir, sources: [] })}\n`,
+    `${JSON.stringify({ configVersion: "0.8.0", stashDir: configuredStashDir, sources: [] })}\n`,
     { mode: 0o600 },
   );
   const prepared = path.join(storage.root, "prepared-0.9.json");
@@ -37,7 +41,7 @@ function seedMigration(workflowRef: string, createWorkflow = true): { prepared: 
     prepared,
     `${JSON.stringify({
       configVersion: "0.9.0",
-      stashDir: storage.stashDir,
+      stashDir: configuredStashDir,
       sources: [],
       semanticSearchMode: "off",
     })}\n`,
@@ -79,8 +83,8 @@ test("a stale persisted workflow target is rewritten without blocking core migra
   expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
 });
 
-test("task planning uses the migration journal's managed-bundle root", () => {
-  const managedRoot = path.join(storage.root, "journal-managed-root");
+test("task planning uses the migration sentinel's managed-bundle root", () => {
+  const managedRoot = path.join(storage.root, "sentinel-managed-root");
   fs.mkdirSync(path.join(managedRoot, "tasks"), { recursive: true });
   fs.mkdirSync(path.join(managedRoot, "workflows"), { recursive: true });
   fs.writeFileSync(path.join(managedRoot, "workflows", "managed.md"), "# Managed\n");
@@ -100,26 +104,6 @@ test("task planning uses the migration journal's managed-bundle root", () => {
   expect(plan.rewrites).toHaveLength(1);
   expect(plan.rewrites[0]?.filePath).toBe(taskPath);
   expect(plan.rewrites[0]?.to).toBe("workflows/managed");
-});
-
-test("a crash after task mutation resumes the journaled forward phase idempotently", async () => {
-  const { prepared, taskPath } = seedMigration("workflow:upgrade-noop");
-  const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "apply", "--config", prepared], {
-    cwd: path.resolve(import.meta.dir, "../.."),
-    env: { ...process.env, AKM_TEST_MIGRATION_CRASH_GAP: "tasks" },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-
-  expect(JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8")).phase).toBe("tasks-prepared");
-  const migratedTask = fs.readFileSync(taskPath, "utf8");
-  expect(migratedTask).toContain("workflow: workflows/upgrade-noop");
-
-  const resumed = await runCliCapture(["migrate", "apply"]);
-  expect(resumed.code, resumed.stderr).toBe(0);
-  expect(fs.readFileSync(taskPath, "utf8")).toBe(migratedTask);
-  expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
 });
 
 test("migrate status and apply repair a legacy task after core artifacts are already current", async () => {

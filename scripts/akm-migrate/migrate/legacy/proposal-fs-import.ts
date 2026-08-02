@@ -13,8 +13,8 @@
  * This fold USED to run on EVERY proposal operation (through
  * `withProposalsDb`, guarded by a `proposal_fs_imports` ledger). That disk
  * probe is gone from the live path: the import now runs ONCE, as an ADDITIVE
- * filesystem step of `akm-migrate apply`'s `cutover-applied` phase — a sibling
- * of the `.stash.json`/D-R6 content migration — AFTER the committed state txn,
+ * filesystem step of `akm-migrate apply` after the committed state transaction,
+ * alongside the `.stash.json`/D-R6 content migration,
  * strict for operational failures and idempotent.
  *
  * Idempotency without the old ledger: each row lands through
@@ -30,9 +30,8 @@
  * translated through the frozen legacy grammar module so normal proposal
  * runtime boundaries remain new-grammar-only.
  *
- * Migrator-only: opens state.db through the raw storage engine (leaving its
- * journal mode untouched — the apply has already collapsed it to single-file
- * DELETE mode) and never sits on a live indexer or command path.
+ * Migrator-only: opens state.db through the raw storage engine and never sits on
+ * a live indexer or command path.
  */
 
 import fs from "node:fs";
@@ -73,6 +72,7 @@ export interface LegacyProposalImportRoot {
 export function importLegacyProposalsIntoState(
   stateDbPath: string,
   stashRoots: readonly LegacyProposalImportRoot[],
+  finalRefMap: ReadonlyMap<string, string> = new Map(),
 ): number {
   try {
     fs.statSync(stateDbPath);
@@ -138,7 +138,13 @@ export function importLegacyProposalsIntoState(
         continue;
       }
       const bundleId = [...pathBundles][0] as string;
-      imported += importLegacyProposalsForStash(db, { ...root, path: resolved, bundleId }, bundleAliases, bundleRoots);
+      imported += importLegacyProposalsForStash(
+        db,
+        { ...root, path: resolved, bundleId },
+        bundleAliases,
+        bundleRoots,
+        finalRefMap,
+      );
     }
     return imported;
   } finally {
@@ -155,6 +161,7 @@ function importLegacyProposalsForStash(
   stash: LegacyProposalImportRoot,
   bundleAliases: ReadonlyMap<string, string>,
   bundleRoots: ReadonlyMap<string, string>,
+  finalRefMap: ReadonlyMap<string, string>,
 ): number {
   const stashDir = stash.path;
   const liveRoot = legacyProposalsRoot(stashDir, false);
@@ -174,7 +181,8 @@ function importLegacyProposalsForStash(
       const proposalDir = path.join(root, entry.name);
       const proposal = readLegacyProposalFile(proposalDir, stash, bundleAliases, bundleRoots);
       if (!proposal) continue;
-      if (insertProposalIfAbsent(db, proposal, stashDir)) imported += 1;
+      const finalRef = finalRefMap.get(proposal.ref);
+      if (insertProposalIfAbsent(db, finalRef ? { ...proposal, ref: finalRef } : proposal, stashDir)) imported += 1;
     }
   }
 

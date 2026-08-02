@@ -7,16 +7,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
-import { formatWorkflowNextPlain, formatWorkflowStatusPlain } from "../../../src/output/text/helpers";
+import { formatWorkflowStatusPlain } from "../../../src/output/text/helpers";
 import { CHECKIN_STALL_MS } from "../../../src/workflows/runtime/checkin";
 import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 
 /**
  * Check-in surfacing gaps from the check-in v2 design review:
- *  - C2: `formatWorkflowNextPlain` dropped the `checkin` directive, so plain
- *    (non-JSON) consumers never saw the CONTINUE nudge.
- *  - M1: `workflow status` never evaluated the check-in at all —
- *    `evaluateCheckin` was only called from `getNextWorkflowStep`.
+ * `workflow status` must both evaluate and render the check-in directive so
+ * plain (non-JSON) consumers see the CONTINUE nudge.
  */
 
 let tmpDir = "";
@@ -84,11 +82,6 @@ describe("plain-text check-in surfacing (review C2)", () => {
     checkin,
   };
 
-  test("formatWorkflowNextPlain includes the directive", () => {
-    const text = formatWorkflowNextPlain(result as Record<string, unknown>);
-    expect(text).toContain("CONTINUE:");
-  });
-
   test("formatWorkflowStatusPlain includes the directive", () => {
     const text = formatWorkflowStatusPlain(result as Record<string, unknown>);
     expect(text).toContain("CONTINUE:");
@@ -96,7 +89,7 @@ describe("plain-text check-in surfacing (review C2)", () => {
 
   test("formatters stay unchanged when no checkin is present", () => {
     const { checkin: _omit, ...healthy } = result;
-    const text = formatWorkflowNextPlain(healthy as Record<string, unknown>);
+    const text = formatWorkflowStatusPlain(healthy as Record<string, unknown>);
     expect(text).not.toContain("CONTINUE:");
   });
 });

@@ -11,6 +11,7 @@
  * scheduler can be reached.
  */
 
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -19,6 +20,7 @@ import { pathToFileURL } from "node:url";
 import { makeSandboxDir } from "../_helpers/sandbox";
 
 const ENABLED = process.env.AKM_PUBLISHED_UPGRADE_TESTS === "1" && process.platform === "linux";
+const UPGRADE_RUNTIME = process.env.AKM_PUBLISHED_UPGRADE_RUNTIME === "bun" ? "bun" : "node";
 const REPO_ROOT = path.resolve(import.meta.dir, "../..");
 const CUSTOM_TASK_IDS = [
   "upgrade-prompt",
@@ -129,7 +131,7 @@ function executableDir(name: string): string {
 }
 
 test.skipIf(!ENABLED)(
-  "published 0.8.14 tasks survive canonical migration and execute packed 0.9 scheduler output",
+  `published 0.8.14 tasks survive canonical ${UPGRADE_RUNTIME} migration and execute packed 0.9 scheduler output`,
   () => {
     const tarball = path.resolve(process.env.AKM_PUBLISHED_UPGRADE_TARBALL ?? "");
     const expectedVersion = process.env.AKM_CANDIDATE_VERSION;
@@ -376,10 +378,13 @@ test.skipIf(!ENABLED)(
 
       const currentCli = path.join(currentPackageRoot, "dist", "akm");
       const currentMigrate = path.join(currentPackageRoot, "dist", "akm-migrate");
-      fs.writeFileSync(path.join(fakeBin, "bun"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+      if (UPGRADE_RUNTIME === "node") {
+        fs.writeFileSync(path.join(fakeBin, "bun"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+      }
       const currentInstallPath = [
         fakeBin,
         path.join(currentPrefix, "node_modules", ".bin"),
+        ...(UPGRADE_RUNTIME === "bun" ? [executableDir("bun")] : []),
         executableDir("node"),
         "/usr/bin",
         "/bin",
@@ -387,7 +392,7 @@ test.skipIf(!ENABLED)(
       const currentEnv = { ...storageEnv, PATH: currentInstallPath };
 
       const status = run([currentMigrate, "status", "--config", preparedPath], currentEnv);
-      expectSuccess(status, "packed Node-only 0.9 migrate status");
+      expectSuccess(status, `packed ${UPGRADE_RUNTIME} 0.9 migrate status`);
       const statusJson = JSON.parse(status.stdout) as {
         status: string;
         artifacts: { config: { status: string }; state: { status: string } };
@@ -401,7 +406,7 @@ test.skipIf(!ENABLED)(
       expectTasksUnchanged(stashDir, originalTasks);
 
       const apply = run([currentMigrate, "apply", "--config", preparedPath], currentEnv);
-      expectSuccess(apply, "packed Node-only 0.9 migrate apply");
+      expectSuccess(apply, `packed ${UPGRADE_RUNTIME} 0.9 migrate apply`);
       const applyJson = JSON.parse(apply.stdout) as { status: string; backupPath: string; backupRunId: string };
       expect(applyJson.status).toBe("current");
       expect(path.basename(applyJson.backupPath)).toBe(applyJson.backupRunId);
@@ -451,8 +456,10 @@ test.skipIf(!ENABLED)(
       const repairApply = run([currentMigrate, "apply"], currentEnv);
       expectSuccess(repairApply, "packed 0.9 current-RC task repair apply");
       expectTasksUnchanged(stashDir, migratedTasks);
-      fs.unlinkSync(path.join(fakeBin, "bun"));
-      fs.symlinkSync(process.execPath, path.join(fakeBin, "bun"));
+      if (UPGRADE_RUNTIME === "node") {
+        fs.unlinkSync(path.join(fakeBin, "bun"));
+        fs.symlinkSync(process.execPath, path.join(fakeBin, "bun"));
+      }
 
       expect(fs.readFileSync(path.join(legacyBackupPath, "backup.meta.json"), "utf8")).toBe(legacyBackupMetadata);
       expect(fs.readFileSync(path.join(legacyBackupPath, "state.db"))).toEqual(legacyBackupState);
@@ -527,6 +534,26 @@ test.skipIf(!ENABLED)(
         detail: { exitCode: 0 },
       });
       expect(fs.readFileSync(commandHistory.log, "utf8")).toContain(candidatePackage.version);
+      const logs = new Database(path.join(dataHome, "akm", "logs.db"), { readonly: true });
+      try {
+        expect(logs.query("SELECT id FROM schema_migrations WHERE id='001-task-logs'").get()).toEqual({
+          id: "001-task-logs",
+        });
+        expect(
+          (logs.query("PRAGMA table_info(schema_migrations)").all() as Array<{ name: string }>).map(
+            (column) => column.name,
+          ),
+        ).toEqual(["id", "applied_at"]);
+        expect(
+          (
+            logs.query("SELECT COUNT(*) AS count FROM task_logs WHERE task_id='upgrade-command'").get() as {
+              count: number;
+            }
+          ).count,
+        ).toBeGreaterThan(0);
+      } finally {
+        logs.close();
+      }
 
       const scheduledPrompt = run(["/bin/sh", "-c", generatedCronCommand(crontab, "upgrade-prompt")], {
         ...storageEnv,
@@ -553,12 +580,12 @@ test.skipIf(!ENABLED)(
         `execute generated deterministic no-network workflow cron command\nhistory:\n${JSON.stringify(workflowHistory, null, 2)}\nlog:\n${fs.readFileSync(workflowHistory.log, "utf8")}`,
       );
       expect(workflowHistory).toMatchObject({
-        status: "active",
+        status: "completed",
         target: { kind: "workflow", ref: "workflows/upgrade-noop" },
       });
       expect(workflowHistory.detail?.runId).toBeTruthy();
       expect(fs.readFileSync(workflowHistory.log, "utf8")).toContain(
-        `run_id=${workflowHistory.detail?.runId} status=active`,
+        `run_id=${workflowHistory.detail?.runId} status=completed`,
       );
 
       const manualDisabled = run([currentCli, "task", "run", "upgrade-disabled"], currentEnv);

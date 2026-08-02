@@ -7,7 +7,7 @@
  * `config-schema.ts` monolith — no behavior change.
  */
 import { z } from "zod";
-import { positiveInt } from "./primitives";
+import { engineName, positiveInt } from "./primitives";
 
 // ── Workflow engine ─────────────────────────────────────────────────────────
 
@@ -28,5 +28,7 @@ import { positiveInt } from "./primitives";
 export const WorkflowConfigSchema = z
   .object({
     maxConcurrency: positiveInt.optional(),
+    /** Named LLM or agent engine frozen into every criteria-bearing gate. */
+    judgeEngine: engineName.optional(),
   })
   .passthrough();

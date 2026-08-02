@@ -36,6 +36,7 @@ import path from "node:path";
 
 import { createProposal, isProposalSkipped } from "../../src/commands/proposal/repository";
 import { getConfigPath } from "../../src/core/paths";
+import { startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { runCliCapture } from "../_helpers/cli";
 import { expectGolden } from "../_helpers/golden";
 import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
@@ -156,10 +157,14 @@ describe("family A — search/show/list/info/curate/proposal/env/secret/events/c
     // show the skill from that SAME cwd so getActiveWorkflowRun() resolves it
     // (src/workflows/runtime/runs.ts:908 — scope-based, any active/blocked run
     // in the scope counts, regardless of which asset is shown).
-    // `workflow start` requires a configured default engine.
+    // Starting the internal run requires configured execution and judge engines.
     writeSandboxConfig({
-      engines: { "test-agent": { kind: "agent", platform: "opencode-sdk" } },
-      defaults: { engine: "test-agent" },
+      engines: {
+        "test-agent": { kind: "agent", platform: "opencode-sdk" },
+        "test-llm": { kind: "llm", endpoint: "http://localhost:1/v1/chat/completions", model: "test" },
+      },
+      defaults: { engine: "test-agent", llmEngine: "test-llm" },
+      workflow: { judgeEngine: "test-llm" },
     });
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-cli-goldens-workflow-"));
     const prevCwd = process.cwd();
@@ -168,8 +173,7 @@ describe("family A — search/show/list/info/curate/proposal/env/secret/events/c
       process.chdir(workDir);
       const created = await runCli(["workflow", "create", A_WORKFLOW_NAME]);
       expect(created.code).toBe(0);
-      const started = await runCli(["workflow", "start", `workflows/${A_WORKFLOW_NAME}`]);
-      expect(started.code).toBe(0);
+      await startWorkflowRun(`workflows/${A_WORKFLOW_NAME}`);
       withRun = await runCli(["show", skillRef(), "--format=text"]);
     } finally {
       process.chdir(prevCwd);

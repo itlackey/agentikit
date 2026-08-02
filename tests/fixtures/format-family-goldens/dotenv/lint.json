@@ -49,7 +49,7 @@
       "relPath": "secrets/ci.env",
       "type": "secret",
       "issues": [],
-      "note": "ends .env → scanned (ref prefix secret:), but CI_DEPLOY_TOKEN / REGISTRY_USER are not dangerous → []. NOTE: only the dangerous-key SCAN reads key names here; the RENDERER still redacts this to name-only (type=secret), see renderer.json."
+      "note": "ends .env → scanned (ref `secrets/<filename>`), but CI_DEPLOY_TOKEN / REGISTRY_USER are not dangerous → []. NOTE: only the dangerous-key SCAN reads key names here; the RENDERER still redacts this to name-only (type=secret), see renderer.json."
     }
   }
 }

@@ -1027,9 +1027,8 @@ describe("chaos: replay divergence via a tampered params row (plan_hash does not
 // row (running → terminal). A judge that THROWS, returns MALFORMED JSON, or
 // rejects WITHOUT feedback must each converge on a DEFINED, documented outcome
 // on BOTH surfaces (engine `workflow run` and `workflow report`) — never a stuck
-// `running` gate row and never an unhandled crash. `validate-summary` fails OPEN
-// on a judge throw / unparseable verdict (offline-safe), and only a well-formed
-// `complete: false` blocks completion.
+// `running` gate row and never an unhandled crash. A judge throw or unparseable
+// verdict fails CLOSED; only a well-formed `complete: true` advances.
 
 const JUDGE_GATE_WF = [
   "---",
@@ -1054,7 +1053,7 @@ describe("chaos: gate judge failures journal a terminal gate row on both surface
     throw new Error("judge backend exploded");
   };
 
-  test("engine: a THROWING judge finishes the gate row FAILED (never stuck running) and advances fail-open", async () => {
+  test("engine: a THROWING judge finishes the gate row FAILED and rejects completion", async () => {
     writeProgram("judge-gate", JUDGE_GATE_WF);
     const started = await startWorkflowRun("workflows/judge-gate", {});
     const runId = started.run.id;
@@ -1065,17 +1064,26 @@ describe("chaos: gate judge failures journal a terminal gate row on both surface
       summaryJudge: throwingJudge,
     });
 
-    // validate-summary fails open on a judge throw → the step completes.
-    expect(result.done).toBe(true);
+    expect(result.done).toBeUndefined();
+    expect(result.gateRejection).toMatchObject({
+      stepId: "work",
+      missing: ["- the work is thorough"],
+    });
+    const status = await getWorkflowStatus(runId);
+    expect(status.run.status).toBe("active");
+    expect(status.workflow.steps[0]?.status).toBe("pending");
     const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(runId, "work"));
     const gate = rows.find((u) => u.node_id === "work.gate");
     expect(gate?.unit_id).toBe("work.gate:l1");
     expect(gate?.status).toBe("failed"); // finished — NOT left running
-    expect(gate?.result_json).toBeNull(); // the judge threw → no verdict
+    expect(JSON.parse(gate?.result_json ?? "null")).toMatchObject({
+      complete: false,
+      missing: ["- the work is thorough"],
+    });
     expect(gate?.failure_reason).toBe("dispatch_error");
   });
 
-  test("report: a THROWING judge finishes the gate row FAILED and advances the step identically", async () => {
+  test("report: a THROWING judge finishes the gate row FAILED and rejects completion identically", async () => {
     writeProgram("judge-gate", JUDGE_GATE_WF);
     const started = await startWorkflowRun("workflows/judge-gate", {});
     const runId = started.run.id;
@@ -1090,16 +1098,23 @@ describe("chaos: gate judge failures journal a terminal gate row on both surface
       summaryJudge: throwingJudge,
     });
 
-    expect(result.stepOutcome?.kind).toBe("advanced");
-    expect(result.runStatus).toBe("completed");
+    expect(result.stepOutcome).toMatchObject({
+      kind: "gate-rejected",
+      loopsRemaining: false,
+      missing: ["- the work is thorough"],
+    });
+    expect(result.runStatus).toBe("active");
     const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(runId, "work"));
     const gate = rows.find((u) => u.node_id === "work.gate");
     expect(gate?.status).toBe("failed");
-    expect(gate?.result_json).toBeNull();
+    expect(JSON.parse(gate?.result_json ?? "null")).toMatchObject({
+      complete: false,
+      missing: ["- the work is thorough"],
+    });
     expect(gate?.failure_reason).toBe("dispatch_error");
   });
 
-  test("engine: a MALFORMED-JSON judge fails open (defined, no crash) — gate row completed as a pass verdict", async () => {
+  test("engine: a MALFORMED-JSON judge fails closed without crashing", async () => {
     writeProgram("judge-gate", JUDGE_GATE_WF);
     const started = await startWorkflowRun("workflows/judge-gate", {});
     const runId = started.run.id;
@@ -1110,13 +1125,20 @@ describe("chaos: gate judge failures journal a terminal gate row on both surface
       summaryJudge: async () => "this is not json at all {{{",
     });
 
-    expect(result.done).toBe(true);
+    expect(result.done).toBeUndefined();
+    expect(result.gateRejection).toMatchObject({
+      stepId: "work",
+      missing: ["- the work is thorough"],
+    });
     const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(runId, "work"));
     const gate = rows.find((u) => u.node_id === "work.gate");
-    // The judge RETURNED (did not throw), so the row completes with the
-    // fail-open pass verdict — not a failed row.
+    // The judge returned (did not throw), so the row is terminal and records
+    // the fail-closed rejection rather than a dispatch failure.
     expect(gate?.status).toBe("completed");
-    expect(JSON.parse(gate?.result_json ?? "null")).toEqual({ complete: true, missing: [] });
+    expect(JSON.parse(gate?.result_json ?? "null")).toMatchObject({
+      complete: false,
+      missing: ["- the work is thorough"],
+    });
   });
 
   test("engine: complete:false with NO feedback → a defined rejection carrying default feedback, no crash", async () => {

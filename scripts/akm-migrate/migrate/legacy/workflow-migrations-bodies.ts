@@ -15,33 +15,25 @@
  *
  * WI-8.3 DELETES `src/workflows/db.ts` outright, taking the live
  * `WORKFLOW_MIGRATIONS` array (and its `ensureBaseSchema`) with it. But the
- * three-DB cutover (`scripts/akm-migrate/config-migrate.ts` `runFrozenWorkflowRoll`) must
- * still be able to ROLL an existing pre-cutover workflow.db forward to its
+ * three-DB cutover (`scripts/akm-migrate/config-migrate.ts` `applyWorkflowSchema`)
+ * must still be able to roll an existing pre-cutover workflow.db forward to its
  * final ledger (010) before merging it into state.db, so every column the
  * migrations add (defaults, back-fills) is materialised faithfully. It rolls
- * these frozen bodies through the shared engine (`runSqliteMigrations`).
+ * these retained bodies through the shared engine (`runSqliteMigrations`).
  *
- * ## The sibling ids+checksums copy
- *
- * `./workflow-migrations-frozen.ts` (WI-8.1) holds the pre-computed
- * `{ id, checksum }` snapshot used for BACKUP verification. These bodies and
- * that snapshot are cross-pinned:
- * `tests/migrate/legacy/workflow-migrations-bodies.test.ts` asserts each frozen
- * body's computed `migrationChecksum` equals the corresponding
- * `WORKFLOW_MIGRATIONS_CHECKSUMS` entry — which transitively proves these
- * bodies are byte-faithful to the pre-deletion live array (the checksum
- * snapshot was itself pinned to that array in WI-8.1).
- *
- * The only `src/` import here is the shared-engine `Migration` TYPE (not
+ * The only `src/` import here is the shared migration engine (not
  * `src/workflows/`), part of the migration engine preserved through the
  * cutover (plan §8.3) — so this module survives that directory's deletion.
  *
  * NOTE: the `up` strings are stored JSON-escaped (explicit `\n`) rather than as
- * template literals so they are unambiguously byte-identical to the deleted
- * live bodies — the pin test fails on any drift.
+ * template literals so the one-time migration DDL remains easy to inspect. The
+ * contract test pins the unique ordered IDs and baseline schema shape.
  */
 
-import type { Migration } from "../../../../src/storage/engines/sqlite-migrations";
+import {
+  assertMigrationRegistry,
+  type Migration,
+} from "../../../../src/storage/engines/sqlite-migrations";
 
 /**
  * Frozen `ensureBaseSchema` baseline DDL — the `workflow_runs` /
@@ -75,12 +67,18 @@ export const FROZEN_WORKFLOW_MIGRATIONS: readonly Migration[] = [
     id: "004-workflow-run-units",
     up: "\n      CREATE TABLE IF NOT EXISTS workflow_run_units (\n        run_id         TEXT NOT NULL,\n        unit_id        TEXT NOT NULL,\n        step_id        TEXT,\n        node_id        TEXT NOT NULL,\n        parent_unit_id TEXT,\n        phase          TEXT,\n        runner         TEXT,\n        model          TEXT,\n        status         TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'skipped')),\n        input_hash     TEXT,\n        result_json    TEXT,\n        tokens         INTEGER,\n        failure_reason TEXT,\n        worktree_path  TEXT,\n        started_at     TEXT,\n        finished_at    TEXT,\n        PRIMARY KEY (run_id, unit_id),\n        FOREIGN KEY (run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE\n      );\n\n      CREATE INDEX IF NOT EXISTS idx_workflow_run_units_run_step\n        ON workflow_run_units(run_id, step_id);\n    ",
   },
-  { id: "005-unit-session-id", up: "\n      ALTER TABLE workflow_run_units ADD COLUMN session_id TEXT;\n    " },
+  {
+    id: "005-unit-session-id",
+    up: "\n      ALTER TABLE workflow_run_units ADD COLUMN session_id TEXT;\n    ",
+  },
   {
     id: "006-frozen-plan-and-lease",
     up: "\n      ALTER TABLE workflow_runs ADD COLUMN plan_json TEXT;\n      ALTER TABLE workflow_runs ADD COLUMN plan_hash TEXT;\n      ALTER TABLE workflow_runs ADD COLUMN engine_lease_until TEXT;\n      ALTER TABLE workflow_runs ADD COLUMN engine_lease_holder TEXT;\n    ",
   },
-  { id: "007-unit-last-checkin", up: "\n      ALTER TABLE workflow_run_units ADD COLUMN last_checkin_at TEXT;\n    " },
+  {
+    id: "007-unit-last-checkin",
+    up: "\n      ALTER TABLE workflow_run_units ADD COLUMN last_checkin_at TEXT;\n    ",
+  },
   {
     id: "008-unit-attempts",
     up: "\n      ALTER TABLE workflow_run_units ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1;\n    ",
@@ -94,3 +92,5 @@ export const FROZEN_WORKFLOW_MIGRATIONS: readonly Migration[] = [
     up: "\n      ALTER TABLE workflow_runs ADD COLUMN plan_ir_version INTEGER;\n      ALTER TABLE workflow_run_units ADD COLUMN engine TEXT;\n    ",
   },
 ];
+
+assertMigrationRegistry(FROZEN_WORKFLOW_MIGRATIONS);

@@ -15,7 +15,9 @@ import {
   workflowStructureDiagnostics,
 } from "../../core/adapter/adapters/akm-lint";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
+import { stashDirFor } from "../../core/asset/asset-placement";
 import { parseFrontmatter, parseFrontmatterBlock } from "../../core/asset/frontmatter";
+import { conceptIdForStashFile, displayRefForConceptId } from "../../core/asset/resolve-ref";
 import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import { loadConfig, primaryBundlePath } from "../../core/config/config";
@@ -355,22 +357,20 @@ export function akmLint(options: AkmLintOptions = {}): AkmLintResult {
   // keys that are known to enable process-execution hijacking. Warn-only —
   // findings go into `flagged`, never `fixed`.
   const envRoots = [stashRoot, ...extraStashRoots];
+  const bundleIdByRoot = new Map(sources.map((source) => [path.resolve(source.path), source.registryId]));
   for (const root of envRoots) {
-    // The `env` assets live under `env/` (ref prefix `env:`); whole-file
-    // `secret` assets live under `secrets/` (canonical ref prefix `secret:`,
-    // singular). Map the scan directory to its canonical ref prefix so the
-    // finding's `Ref:` field matches what `akm show`/`akm secret` accept.
-    for (const { scanSubdir, refPrefix } of [
-      { scanSubdir: "env", refPrefix: "env" },
-      { scanSubdir: "secrets", refPrefix: "secret" },
-    ]) {
-      const dir = path.join(root, scanSubdir);
+    const bundleId = bundleIdByRoot.get(path.resolve(root));
+    // `env` assets live under `env/`, whole-file `secret` assets under
+    // `secrets/`. `displayRefForConceptId` owns the short-default /
+    // qualified-secondary `Ref:` spelling `akm show` emits — the old
+    // hand-built `env:<base>` colon grammar is rejected by the 0.9.0 ref
+    // parser, which dead-ended a user copying the ref off a security finding.
+    for (const assetType of ["env", "secret"] as const) {
+      const dir = path.join(root, stashDirFor(assetType) as string);
       if (!fs.existsSync(dir)) continue;
       for (const envPath of collectEnvFiles(dir)) {
-        const baseName = path.basename(envPath, ".env");
-        // A dotfile literally named `.env` has an empty baseName — use the full
-        // basename so it doesn't collide with `default.env` → refPrefix:default.
-        const ref = baseName === "" ? `${refPrefix}:.env` : `${refPrefix}:${baseName}`;
+        const conceptId = conceptIdForStashFile(assetType, root, envPath);
+        const ref = displayRefForConceptId(conceptId, bundleId, cfg.defaultBundle);
         const relPath = path.relative(root, envPath);
         for (const issue of checkEnvForDangerousKeys(envPath, relPath, ref)) {
           flagged.push(issue);

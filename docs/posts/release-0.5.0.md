@@ -87,16 +87,16 @@ Workflows are multi-step procedures stored in the stash. An agent running a comp
 akm workflow create release-checklist
 
 # Start an instance
-akm workflow start workflow:release-checklist
+akm workflow start workflow:release-checklist # doclint:ignore (historical 0.5.0 workflow lifecycle removed in 0.9)
 
 # Advance to the next step
-akm workflow next workflow:release-checklist
+akm workflow next workflow:release-checklist # doclint:ignore (historical 0.5.0 workflow lifecycle removed in 0.9)
 
 # Check where you are
 akm workflow status workflow:release-checklist
 
 # Mark a specific step done (defaults to --state completed)
-akm workflow complete <run-id> --step validate --notes "Inputs verified"
+akm workflow complete <run-id> --step validate --notes "Inputs verified" # doclint:ignore (historical 0.5.0 workflow lifecycle removed in 0.9)
 
 # List all workflow runs
 akm workflow list

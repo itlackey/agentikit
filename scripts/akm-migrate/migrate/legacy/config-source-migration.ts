@@ -8,7 +8,7 @@
  * Translates the pre-cutover source configuration
  * (`stashDir` / `sources[]` / `installed[]`) into the 0.9.0 `bundles` +
  * `defaultBundle` shape (spec §10.1). Runs as a pure pre-validation transform in
- * the migrator's config-applied phase (`cli/config-migrate.ts`): the old keys
+ * `config-migrate.ts`, then the migrated config is published last. The old keys
  * are removed and the emitted `bundles` map is keyed by exactly what
  * `deriveInstallations` derives for each source at runtime. Explicit configured
  * ids are reserved before path-derived ids; the cutover ref map re-keys any

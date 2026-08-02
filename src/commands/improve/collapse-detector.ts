@@ -16,9 +16,8 @@
  * hardcoded 0 from the 0.9.0 confidence-gate deletion onward), so the alert
  * could never fire. See the design doc's status note for the removal
  * rationale. `improve_cycle_metrics.accepted_actions` stays in the schema and
- * is written as 0: its migration body is released, and 0.8 ships `state.db`,
- * so a deployed ledger may already have sealed that body's checksum. Editing
- * it would fail those installs closed.
+ * is written as 0 because deployed `state.db` files already contain it and
+ * removing it would be a destructive schema change.
  *
  * Hard invariants: deterministic only (FTS BM25 + hashing — never an LLM,
  * never an embedding model); bounded storage (< 2 KB per qualifying cycle,

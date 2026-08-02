@@ -542,7 +542,7 @@ describe("akmProposalReject — non-pending status (#284 HIGH 4)", () => {
 });
 
 describe("akmProposalShow / akmProposalDiff — missing id (#284 HIGH 5)", () => {
-  test("akmProposalShow on missing id → NotFoundError with .code FILE_NOT_FOUND", () => {
+  test("akmProposalShow on missing id → NotFoundError with .code PROPOSAL_NOT_FOUND", () => {
     const stash = makeStashDir();
     let thrown: unknown;
     try {
@@ -553,10 +553,10 @@ describe("akmProposalShow / akmProposalDiff — missing id (#284 HIGH 5)", () =>
     expect(thrown).toBeInstanceOf(Error);
     const e = thrown as Error & { code?: string; name: string };
     expect(e.name).toBe("NotFoundError");
-    expect(e.code).toBe("FILE_NOT_FOUND");
+    expect(e.code).toBe("PROPOSAL_NOT_FOUND");
   });
 
-  test("akmProposalDiff on missing id → NotFoundError with .code FILE_NOT_FOUND", () => {
+  test("akmProposalDiff on missing id → NotFoundError with .code PROPOSAL_NOT_FOUND", () => {
     const stash = makeStashDir();
     const config = makeConfig(stash);
     let thrown: unknown;
@@ -568,7 +568,7 @@ describe("akmProposalShow / akmProposalDiff — missing id (#284 HIGH 5)", () =>
     expect(thrown).toBeInstanceOf(Error);
     const e = thrown as Error & { code?: string; name: string };
     expect(e.name).toBe("NotFoundError");
-    expect(e.code).toBe("FILE_NOT_FOUND");
+    expect(e.code).toBe("PROPOSAL_NOT_FOUND");
   });
 });
 
@@ -1440,7 +1440,7 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     expect(e.message).toMatch(/no backup available/);
   });
 
-  test("revert on a missing proposal id surfaces NotFoundError(FILE_NOT_FOUND)", async () => {
+  test("revert on a missing proposal id surfaces NotFoundError(PROPOSAL_NOT_FOUND)", async () => {
     const stash = makeStashDir();
     const config = makeConfig(stash);
     let thrown: unknown;
@@ -1456,7 +1456,7 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     expect(thrown).toBeInstanceOf(Error);
     const e = thrown as Error & { code?: string; name: string };
     expect(e.name).toBe("NotFoundError");
-    expect(e.code).toBe("FILE_NOT_FOUND");
+    expect(e.code).toBe("PROPOSAL_NOT_FOUND");
   });
 });
 

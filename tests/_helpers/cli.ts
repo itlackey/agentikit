@@ -59,8 +59,9 @@
  */
 
 import { renderUsage, runCommand } from "citty";
-import { main, shouldBypassConfigStartup } from "../../src/cli";
+import { main, normalizeCittyCliError, shouldBypassConfigStartup } from "../../src/cli";
 import { emitJsonError } from "../../src/cli/shared";
+import { assertKnownFlags, type FlagScanCommand } from "../../src/cli/unknown-flags";
 import { DEFAULT_CONFIG, loadConfig, resetConfigCache } from "../../src/core/config/config";
 import { AkmError } from "../../src/core/errors";
 import { clearLogFile, resetQuiet, resetVerbose } from "../../src/core/warn";
@@ -252,6 +253,11 @@ export async function runCliCapture(args: string[]): Promise<CliResult> {
         initFailed = true;
       }
       if (!initFailed) {
+        // Mirrors the real entry point (src/cli.ts), which rejects flags the
+        // resolved command does not declare before dispatching — citty/mri
+        // would otherwise ignore them silently. Part of the startup contract
+        // this harness replicates, like the --help / --version handling above.
+        assertKnownFlags(cmd as unknown as FlagScanCommand, rawArgs);
         await runCommand(cmd, { rawArgs });
       }
     }
@@ -259,10 +265,16 @@ export async function runCliCapture(args: string[]): Promise<CliResult> {
     if (error instanceof ExitSignal) {
       code = error.exitCode;
     } else {
-      // An error escaped the command without going through emitJsonError; map it
-      // to an exit code the same way main()/emitJsonError would.
-      code = classifyExitCode(error);
-      stderr += `${error instanceof Error ? error.message : String(error)}\n`;
+      const normalized = normalizeCittyCliError(error, rawArgs);
+      if (normalized !== error) {
+        emitJsonError(normalized);
+        code = typeof process.exitCode === "number" ? process.exitCode : 2;
+      } else {
+        // An error escaped the command without going through emitJsonError; map it
+        // to an exit code the same way main()/emitJsonError would.
+        code = classifyExitCode(error);
+        stderr += `${error instanceof Error ? error.message : String(error)}\n`;
+      }
     }
   } finally {
     await disposeDispatchResources();

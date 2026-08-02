@@ -7,10 +7,8 @@
  *
  * One-time rewrite of persisted 0.8 task `workflow:` targets. This module is
  * migrator-only: live task parsing remains strict 0.9 grammar. Planning parses
- * and resolves every legacy v1 target before `migrate apply` mutates core
- * artifacts; application then replaces only the YAML scalar bytes and uses an
- * atomic write. The apply coordinator journals the batch as a forward-recovery
- * phase, so an interrupted partial batch is safely re-planned and resumed.
+ * and resolves every legacy v1 target before changing that file; application
+ * uses an atomic write. An interrupted batch is safely re-planned and resumed.
  */
 
 import crypto from "node:crypto";

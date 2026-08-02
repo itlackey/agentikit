@@ -5,7 +5,7 @@
 /**
  * Plan hashing for the frozen-plan contract (redesign addendum, R1).
  *
- * `workflow start` persists `plan_json` + `plan_hash` on the run row
+ * `workflow run` persists `plan_json` + `plan_hash` on the run row
  * (migration 006); every later invocation executes that snapshot. The hash is
  * the sha256 (hex) of the plan's CANONICAL JSON — object keys recursively
  * sorted — so two structurally-equal plans hash identically regardless of key

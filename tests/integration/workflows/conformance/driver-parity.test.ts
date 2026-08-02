@@ -120,7 +120,7 @@ interface Golden {
   steps: SeedStep[];
   /** The terminal outcome for a content-derived BASE unit id (`<node>:<hash>` / `<node>:solo`). */
   outcome: (baseUnitId: string, nodeId: string) => UnitFixture;
-  /** Fresh judge per run (call counting is safe: each run gets its own). Omit ⇒ fail-open (null). */
+  /** Fresh judge per run (call counting is safe: each run gets its own). Omit for ungated workflows. */
   judge?: () => SummaryJudge;
   /**
    * Optional custom engine dispatcher factory (the retry golden needs per-attempt
@@ -439,18 +439,19 @@ async function runDriverSurface(golden: Golden): Promise<void> {
       // has no `report --unit`. brief emits the `--settle` verb; a pure driver
       // uses it to advance the deterministic spine, exactly as the engine does.
       if (brief.settleCommand) {
-        await settleWorkflowSpine({
+        const settled = await settleWorkflowSpine({
           target: RUN_ID,
           ...(brief.step ? { expectStep: brief.step.stepId } : {}),
           summaryJudge: judge,
         });
+        if (settled.stepOutcome?.kind === "gate-rejected" && !settled.stepOutcome.loopsRemaining) return;
         continue;
       }
       return; // nothing left the driver can advance
     }
     for (const u of pending) {
       const fx = golden.outcome(contentBaseId(u.unitId), u.nodeId);
-      await reportWorkflowUnit({
+      const reported = await reportWorkflowUnit({
         target: RUN_ID,
         unitId: u.unitId,
         status: fx.ok ? "completed" : "failed",
@@ -459,6 +460,7 @@ async function runDriverSurface(golden: Golden): Promise<void> {
         ...(fx.failureReason ? { failureReason: fx.failureReason } : {}),
         summaryJudge: judge,
       });
+      if (reported.stepOutcome?.kind === "gate-rejected" && !reported.stepOutcome.loopsRemaining) return;
     }
   }
   throw new Error(`[${golden.name}] driver loop did not terminate within the guard bound`);
@@ -800,10 +802,10 @@ Build it.
   },
 };
 
-// A rubric with no judge skips validation on both surfaces. The unit completes,
-// no gate row is journaled, and both surfaces advance identically.
-const OPTIONAL_GATE_NO_JUDGE: Golden = {
-  name: "optional gate, no judge → skipped (offline parity)",
+// A malformed judge verdict rejects completion on both surfaces. The attempted
+// evaluation is journaled as a terminal rejection and the run remains active.
+const MALFORMED_GATE_JUDGE: Golden = {
+  name: "malformed gate verdict → rejected (fail-closed parity)",
   markdown: `---
 type: workflow
 steps:
@@ -821,20 +823,21 @@ The work is thorough.
   params: {},
   steps: [{ id: "work", criteria: ["the work is thorough"] }],
   outcome: () => ({ ok: true, text: "did the work" }),
-  // judge omitted ⇒ null on both surfaces ⇒ validation is skipped.
+  judge: () => async () => "not json",
   verify: (g) => {
     expect(lineFor(g, "unit work:solo")).toContain("status=completed");
-    // The judge is never invoked, so no `<step>.gate:l<n>` row exists on either surface.
-    expect(countLines(g, "gate ")).toBe(0);
-    expect(lineFor(g, "step work")).toContain("status=completed");
-    expect(g).toContain("run status=completed");
+    expect(countLines(g, "gate ")).toBe(1);
+    expect(lineFor(g, "gate work.gate:l1")).toContain("status=completed");
+    expect(lineFor(g, "gate work.gate:l1")).toContain('"complete":false');
+    expect(lineFor(g, "step work")).toContain("status=pending");
+    expect(g).toContain("run status=active");
   },
 };
 
-// A judge error also skips validation on both surfaces. The attempted judge call
-// is journaled as failed, while the workflow itself advances.
-const OPTIONAL_GATE_JUDGE_ERRORS: Golden = {
-  name: "optional gate, judge errors → skipped (offline parity)",
+// A judge error also rejects validation on both surfaces. The attempted judge
+// call is journaled as failed while the workflow remains active.
+const THROWING_GATE_JUDGE: Golden = {
+  name: "throwing gate judge → rejected (fail-closed parity)",
   markdown: `---
 type: workflow
 steps:
@@ -861,9 +864,9 @@ The work is thorough.
     // The judge WAS invoked, so an errored gate row exists on both surfaces.
     expect(countLines(g, "gate ")).toBe(1);
     expect(lineFor(g, "gate work.gate:l1")).toContain("status=failed");
-    expect(lineFor(g, "gate work.gate:l1")).toContain("verdict=-");
-    expect(lineFor(g, "step work")).toContain("status=completed");
-    expect(g).toContain("run status=completed");
+    expect(lineFor(g, "gate work.gate:l1")).toContain('"complete":false');
+    expect(lineFor(g, "step work")).toContain("status=pending");
+    expect(g).toContain("run status=active");
   },
 };
 
@@ -921,8 +924,8 @@ const GOLDENS: Golden[] = [
   RETRY,
   EMPTY_OUTPUT,
   ENGINE_TIMEOUT,
-  OPTIONAL_GATE_NO_JUDGE,
-  OPTIONAL_GATE_JUDGE_ERRORS,
+  MALFORMED_GATE_JUDGE,
+  THROWING_GATE_JUDGE,
   PARAMS_ROUTE_FIRST,
 ];
 
@@ -1045,10 +1048,10 @@ The work is thorough.
   // unit already COMPLETED but whose gate never got judged (for example, a crash
   // before finalization) is a
   // FULLY-TERMINAL work-list on a still-active step. The engine re-reduces the
-  // completed unit and skips unavailable validation; the brief/report driver has
+  // completed unit and runs its frozen validation; the brief/report driver has
   // no `report --unit` to run (the unit is `done`) and must use the `--settle`
   // verb brief now emits, running the SAME shared completion path. Both surfaces
-  // must advance identically (no judge available), with byte-identical graphs.
+  // must advance identically under the same passing judge, with byte-identical graphs.
   test("fully-terminal gated step: engine re-reduce and brief/report --settle both advance identically", async () => {
     const markdown = `---
 type: workflow
@@ -1066,13 +1069,13 @@ The work is thorough.
 `;
     const plan = compile(markdown);
     const steps: SeedStep[] = [{ id: "work", criteria: ["the work is thorough"] }];
-    // No judge means validation is skipped on both surfaces.
     const golden: Golden = {
       name: "settle-skip-validation",
       markdown,
       params: {},
       steps,
       outcome: (base) => ({ ok: true, text: `did ${base}` }),
+      judge: () => async () => '{"complete": true, "missing": []}',
     };
 
     // Seed the fully-terminal recovery pre-state: run active, step pending again,

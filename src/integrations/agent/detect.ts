@@ -17,7 +17,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AkmConfig } from "../../core/config/config";
-import { type AgentProfile, getBuiltinAgentProfile, listBuiltinAgentProfiles } from "./profiles";
+import {
+  type AgentProfile,
+  getBuiltinAgentProfile,
+  listBuiltinAgentProfiles,
+  OPENCODE_SDK_SERVER_BIN,
+} from "./profiles";
 
 /** Function signature for a binary lookup probe. */
 export type WhichFn = (bin: string) => string | undefined;
@@ -27,34 +32,64 @@ export type WhichFn = (bin: string) => string | undefined;
  * existing executable file. Returns `undefined` when the bin is not on
  * PATH or the env is empty.
  *
- * `process.env.PATH` is split on the platform-correct delimiter; on
- * Windows the binary may have an executable extension, but for v1 we
- * keep this Unix-flavoured (Bun's primary target) and look for an exact
- * match.
+ * `process.env.PATH` is split on the platform-correct delimiter. On Windows
+ * agent CLIs install as extension-bearing shims (`claude.cmd`, `q.exe`), so
+ * each PATH entry is probed for the bare name AND for `<bin><ext>` over
+ * PATHEXT — an exact-match-only probe reports every agent CLI as missing
+ * there, which silently hides the "installed CLI agent" option during setup.
  */
 export function defaultWhich(bin: string, envSource: NodeJS.ProcessEnv = process.env): string | undefined {
+  // Computed once per call — not per PATH entry — since it never varies.
+  const suffixes = executableSuffixes(envSource);
   if (!bin || bin.includes("/") || bin.includes("\\")) {
     // Absolute / relative paths: caller already specified location.
-    try {
-      return fs.statSync(bin).isFile() ? bin : undefined;
-    } catch {
-      return undefined;
+    for (const suffix of suffixes) {
+      const candidate = bin + suffix;
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch {
+        /* try the next extension */
+      }
     }
+    return undefined;
   }
   const pathVar = envSource.PATH ?? envSource.Path ?? envSource.path ?? "";
   if (!pathVar) return undefined;
   const sep = pathVar.includes(";") && !pathVar.includes(":") ? ";" : path.delimiter;
   for (const dir of pathVar.split(sep)) {
     if (!dir) continue;
-    const candidate = path.join(dir, bin);
-    try {
-      const st = fs.statSync(candidate);
-      if (st.isFile()) return candidate;
-    } catch {
-      /* keep walking */
+    const base = path.join(dir, bin);
+    for (const suffix of suffixes) {
+      const candidate = base + suffix;
+      try {
+        const st = fs.statSync(candidate);
+        if (st.isFile()) return candidate;
+      } catch {
+        /* keep walking */
+      }
     }
   }
   return undefined;
+}
+
+/** Windows PATHEXT default, used when the env carries no explicit list. */
+const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
+
+/**
+ * Executable suffixes to try for each candidate path, bare name (`""`) first
+ * so POSIX resolution is byte-for-byte unchanged. Extensions are appended only
+ * on win32 or when the env supplies PATHEXT (which is also the seam tests use
+ * to cover Windows resolution from a POSIX runner).
+ */
+function executableSuffixes(envSource: NodeJS.ProcessEnv): string[] {
+  const pathext = envSource.PATHEXT ?? envSource.Pathext ?? envSource.pathext;
+  if (process.platform !== "win32" && !pathext) return [""];
+  const exts = (pathext ?? DEFAULT_PATHEXT)
+    .split(";")
+    .map((ext) => ext.trim())
+    .filter(Boolean)
+    .map((ext) => (ext.startsWith(".") ? ext : `.${ext}`));
+  return ["", ...exts];
 }
 
 /** Result of probing one profile during setup. */
@@ -99,7 +134,8 @@ export function detectAgentCliProfiles(agent?: AkmConfig, whichFn: WhichFn = def
     profilesByName.set(name, {
       name,
       platform: engine.platform,
-      bin: engine.bin ?? builtin?.bin ?? (engine.platform === "opencode-sdk" ? "opencode" : engine.platform),
+      bin:
+        engine.bin ?? builtin?.bin ?? (engine.platform === "opencode-sdk" ? OPENCODE_SDK_SERVER_BIN : engine.platform),
       args: engine.args ?? builtin?.args ?? [],
       stdio: "captured",
       envPassthrough: builtin?.envPassthrough ?? [],

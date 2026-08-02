@@ -489,6 +489,20 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     expect(countRows(stash)).toBe(1);
   });
 
+  test("imports a reserved-file proposal directly under its final renamed ref", () => {
+    const stash = makeStashDir();
+    const id = "68686868-6868-4686-8686-686868686868";
+    const oldRef = "stash//knowledge/index";
+    const finalRef = "stash//knowledge/index-content";
+    writeLegacyProposal(stash, legacyRecord(id, oldRef, "pending"));
+    openStateDatabase(getStateDbPath()).close();
+    const renameMap = new Map([[oldRef, finalRef]]);
+
+    expect(importLegacyProposalsIntoState(getStateDbPath(), [{ path: stash, bundleId: "stash" }], renameMap)).toBe(1);
+    expect(getProposal(stash, id).ref).toBe(finalRef);
+    expect(importLegacyProposalsIntoState(getStateDbPath(), [{ path: stash, bundleId: "stash" }], renameMap)).toBe(0);
+  });
+
   test("an existing UUID must match the exact imported row", () => {
     const stash = makeStashDir();
     const id = "67676767-6767-4676-8676-676767676767";

@@ -62,15 +62,11 @@ const PASSTHROUGH_COMMANDS = [
   "upgrade",
   "workflow-abandon",
   "workflow-brief",
-  "workflow-complete",
-  "workflow-complete-rejected",
   "workflow-create",
   "workflow-list",
-  "workflow-next",
   "workflow-report",
   "workflow-resume",
   "workflow-run",
-  "workflow-start",
   "workflow-status",
 ] as const;
 

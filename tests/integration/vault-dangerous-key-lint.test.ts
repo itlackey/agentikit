@@ -20,6 +20,8 @@ import {
   isDangerousEnvKey as isDangerousVaultKey,
 } from "../../src/commands/lint/env-key-rules";
 import { akmLint } from "../../src/commands/lint/index";
+import { typeNameFromConceptId } from "../../src/core/asset/resolve-ref";
+import type { AkmConfig } from "../../src/core/config/config";
 
 // ── Temp dir helpers ──────────────────────────────────────────────────────────
 
@@ -340,5 +342,81 @@ describe("akmLint dangerous-vault-key integration", () => {
 
     const dangerous = result.flagged.filter((i) => i.issue === "dangerous-env-key");
     expect(dangerous).toHaveLength(0);
+  });
+
+  // The `Ref:` a finding prints must be a ref the CLI actually accepts. These
+  // used to be hand-built in the retired `env:<name>` / `secret:<name>` colon
+  // grammar, which `parseAssetRef` rejects — so copying the ref off a security
+  // finding dead-ended at ASSET_NOT_FOUND.
+  describe("emitted Ref: uses the canonical, resolvable grammar", () => {
+    // Greedy up to the sentence-ending period, so a ref that itself contains a
+    // dot (`secrets/creds.env`) is captured whole rather than truncated.
+    const refOf = (detail: string): string | undefined => detail.match(/Ref: (\S+)\.\s/)?.[1];
+
+    test("env asset refs are `env/<name>`, with `.env` mapping to env/default", () => {
+      const stashDir = makeTempStash();
+      writeVault(stashDir, "prod.env", "LD_PRELOAD=/evil.so\n");
+      writeVault(stashDir, ".env", "LD_PRELOAD=/evil.so\n");
+
+      const refs = akmLint({ dir: stashDir })
+        .flagged.filter((i) => i.issue === "dangerous-env-key")
+        .map((i) => refOf(i.detail));
+
+      expect(refs).toContain("env/prod");
+      expect(refs).toContain("env/default");
+      for (const ref of refs) expect(ref).not.toContain(":");
+    });
+
+    test("secret asset refs are `secrets/<filename>` (extension preserved)", () => {
+      const stashDir = makeTempStash();
+      const secretsDir = path.join(stashDir, "secrets");
+      fs.mkdirSync(secretsDir, { recursive: true });
+      fs.writeFileSync(path.join(secretsDir, "creds.env"), "BASH_ENV=/tmp/x\n", { mode: 0o600 });
+
+      const refs = akmLint({ dir: stashDir })
+        .flagged.filter((i) => i.issue === "dangerous-env-key")
+        .map((i) => refOf(i.detail));
+
+      expect(refs).toContain("secrets/creds.env");
+    });
+
+    test("refs from non-default bundles include their bundle id", () => {
+      const primary = makeTempStash("akm-lint-primary-");
+      const secondary = makeTempStash("akm-lint-secondary-");
+      writeVault(primary, "prod.env", "LD_PRELOAD=/primary.so\n");
+      writeVault(secondary, "prod.env", "LD_PRELOAD=/secondary.so\n");
+      const config: AkmConfig = {
+        semanticSearchMode: "off",
+        defaultBundle: "primary",
+        bundles: { primary: { path: primary }, team: { path: secondary } },
+      };
+
+      const refs = akmLint({ config })
+        .flagged.filter((i) => i.issue === "dangerous-env-key")
+        .map((i) => refOf(i.detail));
+
+      expect(refs).toContain("env/prod");
+      expect(refs).toContain("team//env/prod");
+    });
+
+    test("every emitted ref resolves to a real type through the ref grammar", () => {
+      const stashDir = makeTempStash();
+      writeVault(stashDir, "prod.env", "LD_PRELOAD=/evil.so\n");
+      const secretsDir = path.join(stashDir, "secrets");
+      fs.mkdirSync(secretsDir, { recursive: true });
+      fs.writeFileSync(path.join(secretsDir, "creds.env"), "BASH_ENV=/tmp/x\n", { mode: 0o600 });
+
+      const findings = akmLint({ dir: stashDir }).flagged.filter((i) => i.issue === "dangerous-env-key");
+      expect(findings.length).toBeGreaterThan(0);
+      for (const finding of findings) {
+        const ref = refOf(finding.detail);
+        expect(ref).toBeDefined();
+        // `typeNameFromConceptId` returns undefined for the retired colon
+        // grammar — a defined type is what makes the ref usable in `akm show`.
+        const parts = typeNameFromConceptId(ref as string);
+        expect(parts).toBeDefined();
+        expect(["env", "secret"]).toContain(parts?.type ?? "<unparseable>");
+      }
+    });
   });
 });

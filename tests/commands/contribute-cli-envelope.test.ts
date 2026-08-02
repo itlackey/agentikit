@@ -44,7 +44,7 @@ afterEach(() => {
 
 describe("akm contribution cluster — JSON envelope snapshot (WS6)", () => {
   test("agent (no engine): {ok:false} usage envelope on stderr (exit 2)", async () => {
-    const { stderr, status } = await runCli(["--json", "agent"]);
+    const { stderr, status } = await runCli(["agent"]);
     expect(status).toBe(2);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);
@@ -53,7 +53,7 @@ describe("akm contribution cluster — JSON envelope snapshot (WS6)", () => {
   });
 
   test("lint: success envelope carries fixed/flagged arrays + summary (exit 0)", async () => {
-    const { stdout, status } = await runCli(["--json", "lint"]);
+    const { stdout, status } = await runCli(["lint"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.ok).toBe(true);
@@ -64,7 +64,7 @@ describe("akm contribution cluster — JSON envelope snapshot (WS6)", () => {
   });
 
   test("proposal new (missing args): {ok:false} usage envelope on stderr (exit 2)", async () => {
-    const { stderr, status } = await runCli(["--json", "proposal", "new"]);
+    const { stderr, status } = await runCli(["proposal", "new"]);
     expect(status).toBe(2);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);
@@ -74,7 +74,6 @@ describe("akm contribution cluster — JSON envelope snapshot (WS6)", () => {
 
   test("proposal new (both --task and --file): {ok:false} INVALID_FLAG_VALUE on stderr (exit 2)", async () => {
     const { stderr, status } = await runCli([
-      "--json",
       "proposal",
       "new",
       "skill",

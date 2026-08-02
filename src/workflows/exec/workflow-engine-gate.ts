@@ -3,13 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * The `akm workflow` engine gate (`experimental.workflowEngine`, Q-05).
+ * The workflow external-driver gate (`experimental.workflowEngine`, Q-05).
  *
  * Mirrors the shape of `src/commands/improve/autonomy-gate.ts` (D8) for a
- * different failure mode. `akm improve`'s gated lanes have a safe downgrade —
- * skip the lane, keep the rest of the run going — but a workflow step either
- * executes or it does not: there is no partial-execution fallback to degrade
- * into. So this gate REFUSES outright rather than silently skipping: an
+ * different failure mode. The experimental external-driver protocol either
+ * operates or it does not: there is no partial fallback to degrade into. So
+ * this gate REFUSES outright rather than silently skipping: an
  * ungated call throws a classified `ConfigError` naming the exact config key,
  * which the CLI's JSON error envelope (`emitJsonError`, `src/cli/shared.ts`)
  * always routes to stderr with a non-zero exit — in every `--format`, not
@@ -20,19 +19,18 @@
  * not just a test inconvenience.)
  *
  * Gated surfaces:
- *  - `akm workflow run`    — the native step-execution engine
  *  - `akm workflow brief`  — the harness-neutral driver protocol (read half)
  *  - `akm workflow report` — the harness-neutral driver protocol (write half)
  *
- * Deliberately NOT gated: authoring/linting the unified markdown format and
- * the manual workflow CLI contract (`start`, `next`, `complete`, `status`,
- * `list`, `create`, `resume`, `abandon`) remain stable per STABILITY.md.
+ * Deliberately NOT gated: canonical native execution (`workflow run`),
+ * authoring/linting, and run inspection/recovery (`status`, `list`, `create`,
+ * `resume`, `abandon`) remain stable per STABILITY.md.
  */
 
 import { ConfigError } from "../../core/errors";
 
 /**
- * The config key an operator sets to enable the workflow engine.
+ * The config key an operator sets to enable the external-driver protocol.
  *
  * Named rather than inlined because it is user-facing text: it goes into the
  * thrown error's message and `akm task doctor`, and those must name the same
@@ -50,7 +48,7 @@ export interface WorkflowEngineConfigHolder {
 }
 
 /**
- * True only when the user has explicitly opted into the workflow engine.
+ * True only when the user has explicitly opted into the external driver.
  * Absent, an absent `experimental` section, and an explicit `false` all read
  * as off — the engine is never enabled by inference.
  */
@@ -69,8 +67,8 @@ export function workflowEngineGateMessage(surface: string): string {
 /**
  * Refuse a gated workflow-engine surface unless the opt-in is set.
  *
- * `surface` is the human name of the subcommand/action being refused (e.g.
- * `"run"`, `"brief"`, `"create <name>.yaml"`) — it is folded into the thrown
+ * `surface` is the human name of the subcommand being refused (`"brief"` or
+ * `"report"`) — it is folded into the thrown
  * error's message so the refusal names both the surface and the exact config
  * key that would enable it. The throw alone is the whole mechanism: every
  * command defined with `defineJsonCommand` routes an uncaught throw through

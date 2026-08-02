@@ -133,7 +133,9 @@ async function addWebsiteSource(
 ): Promise<AddResponse> {
   const allowPrivateHosts = shouldAllowPrivateWebsiteUrlForTests(ref);
   const normalizedUrl = validateWebsiteInputUrl(ref, { allowPrivateHosts });
-  const maxPages = typeof options?.maxPages === "number" ? (options.maxPages as number) : undefined;
+  const numberOption = (value: unknown): number | undefined => (typeof value === "number" ? value : undefined);
+  const maxPages = numberOption(options?.maxPages);
+  const maxDepth = numberOption(options?.maxDepth);
   let entry: SourceConfigEntry | undefined;
   mutateConfig((config) => {
     const bundles: Record<string, BundleConfigEntry> = { ...(config.bundles ?? {}) };
@@ -141,13 +143,15 @@ async function addWebsiteSource(
     const key = existingKey ?? nextBundleKey(bundles, name ?? toWebsiteName(normalizedUrl), normalizedUrl);
     // Merge onto the existing descriptor rather than replacing it: re-running
     // `bundle add` for a URL that already has a bundle would otherwise drop
-    // respectRobots / maxDepth / refresh, silently restoring default robots
-    // enforcement and changing what the next update fetches.
+    // respectRobots / refresh, silently restoring default robots enforcement
+    // and changing what the next update fetches. Explicitly-passed maxPages /
+    // maxDepth still win over the stored values.
     const existingWebsite = existingKey ? ((bundles[key]?.website ?? {}) as Record<string, unknown>) : {};
     const website = {
       ...existingWebsite,
       url: normalizedUrl,
       ...(maxPages !== undefined ? { maxPages } : {}),
+      ...(maxDepth !== undefined ? { maxDepth } : {}),
     };
     const nextBundle: BundleConfigEntry = {
       ...(existingKey ? bundles[key] : {}),

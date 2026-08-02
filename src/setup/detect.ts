@@ -15,7 +15,8 @@ import path from "node:path";
 import type { HarnessId } from "../core/config/config";
 import { runManagedSubprocess } from "../core/subprocess";
 import { defaultWhich, type WhichFn } from "../integrations/agent/detect";
-import { SESSION_LOG_HARNESSES } from "../integrations/harnesses";
+import { getBuiltinAgentProfile, OPENCODE_SDK_SERVER_BIN } from "../integrations/agent/profiles";
+import { AGENT_DISPATCH_HARNESSES, SESSION_LOG_HARNESSES } from "../integrations/harnesses";
 import type { HarnessLLMConfig } from "../integrations/harnesses/shared";
 import { detectHarnessConfigs } from "./harness-config-import";
 
@@ -449,23 +450,46 @@ export interface DetectedEnvironment {
 }
 
 /**
- * Detect the best agent harness in priority order:
- *   1. OpenCode SDK resolvable via `import('@opencode-ai/sdk')`.
- *   2. `opencode` binary on PATH.
- *   3. `claude` binary on PATH.
- *   4. none.
+ * Detect the best agent harness, preferring in-process/SDK dispatch over CLI
+ * subprocess dispatch:
+ *   1. `opencode-sdk` — the embedded SDK, when the server binary it spawns is
+ *      on PATH.
+ *   2. the first dispatch-capable CLI harness whose binary is on PATH, in
+ *      registry order (`opencode`, `claude`, `codex`, ...).
+ *   3. none.
+ *
+ * The SDK import resolving is NOT evidence the SDK path can run: `@opencode-ai/sdk`
+ * is a hard dependency of akm-cli itself, so `import()` always succeeds and an
+ * import-only check would report `opencode-sdk` on every machine — including
+ * ones where the first agentic command then dies with spawn ENOENT. The SDK
+ * runner spawns `opencode serve` (see `harnesses/opencode-sdk/sdk-runner.ts`),
+ * so the binary probe is what actually decides.
  *
  * Pure aside from the dynamic import resolution (which performs no network).
  */
 export async function detectHarness(whichFn: WhichFn = defaultWhich): Promise<DetectedHarness> {
-  try {
-    await import("@opencode-ai/sdk");
-    return "opencode-sdk";
-  } catch {
-    // SDK not installed — fall through to bin probes.
+  // Probed once; reused below so the `opencode` CLI fallback doesn't repeat
+  // the identical full-PATH walk this just performed.
+  const opencodePath = whichFn(OPENCODE_SDK_SERVER_BIN);
+  if (opencodePath) {
+    try {
+      await import("@opencode-ai/sdk");
+      return "opencode-sdk";
+    } catch {
+      // SDK genuinely unavailable (e.g. externalized in a standalone build).
+      // Fall through — the `opencode` CLI harness is probed below.
+    }
   }
-  if (whichFn("opencode")) return "opencode";
-  if (whichFn("claude")) return "claude";
+  for (const harness of AGENT_DISPATCH_HARNESSES) {
+    // The SDK harness dispatches without a CLI profile and was decided above;
+    // an explicit skip so a future BUILTINS entry for it can't silently
+    // reintroduce it here after the import guard already rejected it.
+    if (harness.id === "opencode-sdk") continue;
+    const bin = getBuiltinAgentProfile(harness.id)?.bin;
+    if (!bin) continue;
+    const found = bin === OPENCODE_SDK_SERVER_BIN ? opencodePath : whichFn(bin);
+    if (found) return harness.id;
+  }
   return "none";
 }
 

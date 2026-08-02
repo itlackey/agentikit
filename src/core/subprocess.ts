@@ -233,6 +233,7 @@ export interface ManagedSubprocessResult {
 }
 
 const EMPTY_READ: StreamReadResult = { text: "", timedOut: false };
+const UNBOUNDED_STREAM_READ_SAFETY_MS = 60 * 60 * 1000;
 
 function toError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
@@ -330,10 +331,11 @@ export async function runManagedSubprocess(
     else abortSignal.addEventListener("abort", onAbort, { once: true });
   }
 
-  // Stream-drain timeout: the wall budget plus a 2 s grace, or 30 s when there
-  // is no kill timer. Ensures the caller never hangs past the budget even if a
-  // killed child leaves a pipe write-end open in a background thread.
-  const streamDrainTimeoutMs = timeoutMs !== null ? timeoutMs + 2_000 : 30_000;
+  // Stream-drain timeout: the wall budget plus a 2 s grace, or a one-hour
+  // safety bound when execution itself is unbounded. This timer starts with
+  // capture, so the null-timeout path must not impose a short hidden deadline
+  // on an otherwise healthy long-running process.
+  const streamDrainTimeoutMs = timeoutMs !== null ? timeoutMs + 2_000 : UNBOUNDED_STREAM_READ_SAFETY_MS;
   const stdoutPromise = capture
     ? readStream(proc.stdout ?? null, {
         timeoutMs: streamDrainTimeoutMs,

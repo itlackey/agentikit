@@ -105,7 +105,7 @@ const BACKENDS = [
       }
       return runWorkflowSteps({
         target: RUN_ID,
-        summaryJudge: null,
+        summaryJudge: async () => '{"complete": true, "missing": []}',
         dispatcher: async (req) =>
           req.schema ? { ok: true, text: '{"verdict": "pass"}' } : { ok: true, text: `did ${req.unitId}` },
         loadPlan: async () => plan,
@@ -242,6 +242,7 @@ describe("conformance — linear workflow", () => {
       // Content-derived unit identity (R2): solo units are `<node_id>:solo`.
       expect(await unitGraph()).toEqual([
         ["build:solo", "build", null, "completed"],
+        ["build.gate:l1", "build.gate", null, "completed"],
         ["deploy:solo", "deploy", null, "completed"],
       ]);
     });

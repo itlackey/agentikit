@@ -164,7 +164,7 @@ function compileStep(
     stepId: step.id,
     // The body `### gate` rubric is carried through as the ONE criterion string
     // — the judge receives the whole section byte-exact (spec §2.4). A step
-    // with no rubric has no gate at all (fail-open, criteria: []).
+    // with no rubric needs no verification (criteria: []).
     criteria: step.gateRubric?.text.trim() ? [step.gateRubric.text] : [],
     ...(step.gate?.maxLoops !== undefined ? { maxLoops: step.gate.maxLoops } : {}),
   };
@@ -298,7 +298,7 @@ function checkInputReference(text: string, index: number, check: ReferenceCheck)
 /**
  * Collect the document's non-fatal WARNINGS — advisories that never fail
  * compilation, never change the frozen plan or its hash, and are surfaced by
- * `workflow validate` (human + JSON) and as `warn()` lines at `workflow start`.
+ * lint output (human + JSON) and as `warn()` lines at `workflow run`.
  *
  *   A. A unit/map step with NO step-level `output:` schema carries its units'
  *      raw results as an untyped artifact — permitted, but worth flagging.

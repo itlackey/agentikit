@@ -120,14 +120,23 @@ run_step \
 run_step \
 	"Verify migration bundle" \
 	node -e 'const { spawnSync } = require("node:child_process"); const os = require("node:os"); const path = require("node:path"); const root = path.join(os.tmpdir(), `akm-migrate-release-${process.pid}`); const result = spawnSync("./dist/akm-migrate", ["storage", "--list"], { encoding: "utf8", env: { ...process.env, AKM_CONFIG_DIR: path.join(root, "config"), AKM_CACHE_DIR: path.join(root, "cache"), AKM_DATA_DIR: path.join(root, "data"), AKM_STATE_DIR: path.join(root, "state") } }); if (result.error || result.status !== 0) { console.error(result.error?.message ?? result.stderr); process.exit(1); } const occurrences = result.stdout.split("akm storage migrations (in execution order):").length - 1; if (occurrences !== 1) { console.error(`Expected one storage migration listing, got ${occurrences}`); process.exit(1); }'
+run_step \
+	"Verify migration runtime entries" \
+	node -e 'const fs = require("node:fs"); const launcher = fs.readFileSync("dist/akm-migrate", "utf8"); for (const entry of ["scripts/akm-migrate.js", "scripts/akm-migrate-node.js"]) { if (!fs.existsSync(`dist/${entry}`)) { console.error(`Missing migration runtime entry: dist/${entry}`); process.exit(1); } if (!launcher.includes(`new URL("./${entry}", import.meta.url)`)) { console.error(`Migration launcher does not select ${entry}`); process.exit(1); } }'
+run_step \
+	"Verify Node migration bundle" \
+	node -e 'const { spawnSync } = require("node:child_process"); const os = require("node:os"); const path = require("node:path"); const root = path.join(os.tmpdir(), `akm-migrate-node-release-${process.pid}`); const result = spawnSync(process.execPath, ["./dist/scripts/akm-migrate-node.js", "storage", "--list"], { encoding: "utf8", env: { ...process.env, AKM_CONFIG_DIR: path.join(root, "config"), AKM_CACHE_DIR: path.join(root, "cache"), AKM_DATA_DIR: path.join(root, "data"), AKM_STATE_DIR: path.join(root, "state") } }); if (result.error || result.status !== 0) { console.error(result.error?.message ?? result.stderr); process.exit(1); } const occurrences = result.stdout.split("akm storage migrations (in execution order):").length - 1; if (occurrences !== 1) { console.error(`Expected one Node storage migration listing, got ${occurrences}`); process.exit(1); }'
 run_step "Package Acceptance" bun scripts/package-install.ts test-package --skip-build
 run_step "Pack Package Candidate" pack_package_candidate
 run_step \
   "Install and Setup Regression Suite" \
   bun test --timeout=120000 tests/setup/ ./tests/integration/setup-run.test.ts tests/integration/install-script.test.ts tests/setup-wizard.test.ts tests/setup-scheduled-tasks.test.ts
 run_step \
-  "Published 0.8 Task Upgrade" \
-  env AKM_PUBLISHED_UPGRADE_TESTS=1 AKM_PUBLISHED_UPGRADE_TARBALL="$PACKAGE_CANDIDATE" AKM_CANDIDATE_VERSION="$(node -p "require('./package.json').version")" bun test --timeout=120000 tests/integration/published-task-upgrade.test.ts
+  "Published 0.8 Task Upgrade (Node)" \
+  env AKM_PUBLISHED_UPGRADE_TESTS=1 AKM_PUBLISHED_UPGRADE_RUNTIME=node AKM_PUBLISHED_UPGRADE_TARBALL="$PACKAGE_CANDIDATE" AKM_CANDIDATE_VERSION="$(node -p "require('./package.json').version")" bun test --timeout=120000 tests/integration/published-task-upgrade.test.ts
+run_step \
+  "Published 0.8 Task Upgrade (Bun)" \
+  env AKM_PUBLISHED_UPGRADE_TESTS=1 AKM_PUBLISHED_UPGRADE_RUNTIME=bun AKM_PUBLISHED_UPGRADE_TARBALL="$PACKAGE_CANDIDATE" AKM_CANDIDATE_VERSION="$(node -p "require('./package.json').version")" bun test --timeout=120000 tests/integration/published-task-upgrade.test.ts
 if [ "$(uname -s)" = "Linux" ]; then
 	run_step \
 		"Build Linux Standalone Scheduler Artifact" \

@@ -213,11 +213,12 @@ export interface CittyArgDefinitionForScan {
 
 export type CittyArgsDefinitionForScan = Record<string, CittyArgDefinitionForScan>;
 
-function cittyComparableName(name: string): string {
+/** citty compares `foo-bar` and `fooBar` as the same arg name. */
+export function cittyComparableName(name: string): string {
   return name.replace(/[-_]+([a-zA-Z0-9])/g, (_match, char: string) => char.toUpperCase());
 }
 
-function toAliasArray(alias: CittyArgDefinitionForScan["alias"]): readonly string[] {
+export function toAliasArray(alias: CittyArgDefinitionForScan["alias"]): readonly string[] {
   if (Array.isArray(alias)) return alias;
   return typeof alias === "string" ? [alias] : [];
 }

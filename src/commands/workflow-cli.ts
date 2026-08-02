@@ -3,128 +3,30 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `akm workflow` command family. Extracted verbatim from src/cli.ts (WS6) so the
- * God Module shrinks; the `main.subCommands.workflow` key and every subcommand's
- * args/output shape are byte-identical. Handlers whose body is a plain
- * `runWithJsonErrors(...) + output(...)` are migrated to `defineJsonCommand`,
- * which emits the same JSON envelope (stdout/stderr/exit-code) as the inline
- * form.
- *
- * 0.9.0 CLI overhaul (S5): `workflow template` is dropped — `workflow create
- * --print` prints the same content without writing. `workflow validate` is
- * dropped — `akm lint --type workflows` covers structural validation.
- * `workflow watch` is dropped — poll `akm log --since '@offset:<id>' --run
- * <run-id>` instead. Workflows are markdown-only (workflow-format-
- * unification) — `workflow create <name>.yaml` is a usage error.
+ * `akm workflow` command family. `run` is the canonical start/resume/execute
+ * surface; the former public `start`, `next`, and `complete` lifecycle is gone.
+ * `brief`/`report` retain the experimental harness-neutral driver protocol.
+ * Workflows are markdown-only; authoring uses `create --print` and validation
+ * uses `akm lint --type workflows`.
  */
 
-import { getParsedInvocation } from "../cli/invocation";
 import { getStringArg } from "../cli/parse-args";
-import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
+import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
 import { loadConfig } from "../core/config/config";
 import { NotFoundError, UsageError } from "../core/errors";
 import { akmIndex } from "../indexer/indexer";
 import { assertWorkflowMarkdownName, createWorkflowAsset, getWorkflowTemplate } from "../workflows/authoring/authoring";
-import { parseWorkflowJsonObject, parseWorkflowStepState, WORKFLOW_STEP_STATES } from "../workflows/cli";
 import { requireWorkflowEngineEnabled } from "../workflows/exec/workflow-engine-gate";
+import type { WorkflowParameterFlag } from "../workflows/ir/params";
+import { WORKFLOW_MAX_RETRIES, WORKFLOW_MAX_TIMEOUT_MS } from "../workflows/ir/schema";
 import {
   abandonWorkflowRun,
-  completeWorkflowStep,
-  getNextWorkflowStep,
   getWorkflowStatus,
   hasWorkflowRun,
   listWorkflowRuns,
   resumeWorkflowRun,
-  startWorkflowRun,
 } from "../workflows/runtime/runs";
-
-const workflowStartCommand = defineJsonCommand({
-  meta: {
-    name: "start",
-    description: "Start a new workflow run in the current working scope",
-  },
-  args: {
-    ref: { type: "positional", description: "Workflow ref (workflows/<name>)", required: true },
-    params: { type: "string", description: "Workflow parameters as a JSON object" },
-    force: {
-      type: "boolean",
-      description: "Allow a parallel run when an active run already exists in this scope",
-      default: false,
-    },
-  },
-  async run({ args }) {
-    const result = await startWorkflowRun(args.ref, parseWorkflowJsonObject(args.params, "--params"), {
-      force: args.force === true,
-    });
-    output("workflow-start", result);
-  },
-});
-
-const workflowNextCommand = defineJsonCommand({
-  meta: {
-    name: "next",
-    description:
-      "Show the next actionable workflow step in the current scope, auto-starting a run when passed a workflow ref",
-  },
-  args: {
-    target: { type: "positional", description: "Workflow run id or workflow ref", required: true },
-    params: { type: "string", description: "Workflow parameters as a JSON object (only for auto-started runs)" },
-  },
-  async run({ args }) {
-    // `--dry-run` is intentionally NOT a declared arg (so it stays out of
-    // --help). The guard reads it straight from the invocation singleton so
-    // existing callers still get a clear, actionable error instead of a
-    // generic "unknown flag" from citty.
-    if (getParsedInvocation().hasFlag("--dry-run")) {
-      throw new UsageError(
-        "`akm workflow next` does not support --dry-run. Remove the flag to start or resume a run.",
-        "INVALID_FLAG_VALUE",
-      );
-    }
-    const parsedParams = args.params ? parseWorkflowJsonObject(args.params, "--params") : undefined;
-    const result = await getNextWorkflowStep(args.target, parsedParams);
-    output("workflow-next", result);
-  },
-});
-
-const workflowCompleteCommand = defineJsonCommand({
-  meta: {
-    name: "complete",
-    description: "Update a workflow step state and persist notes/evidence",
-  },
-  args: {
-    runId: { type: "positional", description: "Workflow run id", required: true },
-    step: { type: "string", description: "Workflow step id", required: true },
-    state: {
-      type: "string",
-      description: `Step state (default: completed). One of: ${WORKFLOW_STEP_STATES.join(", ")}.`,
-    },
-    notes: { type: "string", description: "Notes for the completed step" },
-    summary: {
-      type: "string",
-      description: "Summary of work done (required when completing a step); validated against completion criteria",
-    },
-    evidence: { type: "string", description: "Evidence JSON object for the step" },
-  },
-  async run({ args }) {
-    const result = await completeWorkflowStep({
-      runId: args.runId,
-      stepId: args.step,
-      status: parseWorkflowStepState(args.state),
-      notes: args.notes,
-      summary: args.summary,
-      evidence: args.evidence ? parseWorkflowJsonObject(args.evidence, "--evidence") : undefined,
-    });
-    if ("ok" in result && result.ok === false) {
-      // Summary failed the completion-criteria validation gate (#506): the
-      // step stays pending and the agent receives corrective feedback.
-      output("workflow-complete-rejected", result);
-      return;
-    }
-    output("workflow-complete", result);
-  },
-});
 
 const workflowStatusCommand = defineJsonCommand({
   meta: {
@@ -245,7 +147,7 @@ const workflowCreateCommand = defineJsonCommand({
       from: args.from,
       force: args.force,
     });
-    // Index the newly-written workflow so `akm workflow start` can resolve
+    // Index the newly-written workflow so `akm workflow run` can resolve
     // a workflowEntryId without requiring an explicit `akm index` call
     // first. Uses the same incremental index path that `akm add` uses.
     await akmIndex({ stashDir: result.stashDir });
@@ -257,34 +159,165 @@ const workflowRunCommand = defineJsonCommand({
   meta: {
     name: "run",
     description:
-      "EXPERIMENTAL, gated behind `experimental.workflowEngine`: execute a workflow's steps with the native " +
-      "engine — akm dispatches each step's units (fan-out, schema output) to the configured runner and advances " +
-      "the run through the normal completion gates",
+      "Start or resume a workflow and execute it through completion, failure, a verification gate, or an explicit limit",
   },
   args: {
     target: { type: "positional", description: "Workflow run id or workflow ref (auto-starts a run)", required: true },
-    params: { type: "string", description: "Workflow parameters as a JSON object (only for auto-started runs)" },
     "max-steps": { type: "string", description: "Stop after executing this many steps" },
+    "max-retries": { type: "string", description: "Retry a failed workflow step this many additional times" },
+    timeout: { type: "string", description: "Whole-run timeout: N, Nms, Ns, or Nm (bare N is milliseconds)" },
   },
-  async run({ args }) {
-    requireWorkflowEngineEnabled(loadConfig(), "run");
+  async run({ args, rawArgs }) {
     const { runWorkflowSteps } = await import("../workflows/exec/run-workflow.js");
-    const rawMaxSteps = getStringArg(args, "max-steps");
-    let maxSteps: number | undefined;
-    if (rawMaxSteps !== undefined) {
-      maxSteps = Number.parseInt(rawMaxSteps, 10);
-      if (!/^\d+$/.test(rawMaxSteps) || maxSteps <= 0) {
-        throw new UsageError(`--max-steps must be a positive integer, got "${rawMaxSteps}".`, "INVALID_FLAG_VALUE");
+    const parameterFlags = parseWorkflowParameterFlags(rawArgs, args.target);
+    const maxSteps = parseIntegerFlag(getStringArg(args, "max-steps"), "--max-steps", 1);
+    const maxRetries = parseIntegerFlag(getStringArg(args, "max-retries"), "--max-retries", 0, WORKFLOW_MAX_RETRIES);
+    const timeoutMs = parseWorkflowTimeout(getStringArg(args, "timeout"));
+    const controller = new AbortController();
+    let timedOut = false;
+    let signalExitCode: number | undefined;
+    const interrupt = (signal: "SIGINT" | "SIGTERM") => {
+      signalExitCode = signal === "SIGINT" ? 130 : 143;
+      controller.abort(new Error(`Workflow run interrupted by ${signal}.`));
+    };
+    const onSigint = () => interrupt("SIGINT");
+    const onSigterm = () => interrupt("SIGTERM");
+    process.once("SIGINT", onSigint);
+    process.once("SIGTERM", onSigterm);
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true;
+            controller.abort(new Error(`Workflow run timed out after ${timeoutMs}ms.`));
+          }, timeoutMs);
+    timer?.unref?.();
+    try {
+      const result = await runWorkflowSteps({
+        target: args.target,
+        parameterFlags,
+        ...(maxSteps !== undefined ? { maxSteps } : {}),
+        ...(maxRetries !== undefined ? { maxRetries } : {}),
+        signal: controller.signal,
+      });
+      const rendered = { ...result, ...(timedOut ? { timedOut: true as const } : {}) };
+      output("workflow-run", rendered);
+      if (result.run.status === "failed" || result.gateRejection || result.aborted) {
+        process.exitCode = signalExitCode ?? EXIT_CODES.GENERAL;
       }
+    } finally {
+      if (timer) clearTimeout(timer);
+      process.off("SIGINT", onSigint);
+      process.off("SIGTERM", onSigterm);
     }
-    const result = await runWorkflowSteps({
-      target: args.target,
-      ...(args.params ? { params: parseWorkflowJsonObject(args.params, "--params") } : {}),
-      ...(maxSteps !== undefined ? { maxSteps } : {}),
-    });
-    output("workflow-run", result);
   },
 });
+
+const WORKFLOW_RUN_VALUE_FLAGS = new Set([
+  "max-steps",
+  "maxSteps",
+  "max-retries",
+  "maxRetries",
+  "timeout",
+  "format",
+  "detail",
+  "shape",
+  "output",
+]);
+const WORKFLOW_RUN_BOOLEAN_FLAGS = new Set(["quiet", "verbose", "help", "no-quiet", "no-verbose"]);
+
+export function parseWorkflowParameterFlags(rawArgs: readonly string[], target: string): WorkflowParameterFlag[] {
+  const flags: WorkflowParameterFlag[] = [];
+  let targetSeen = false;
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const token = rawArgs[index] as string;
+    if (token === "--") {
+      throw new UsageError("`akm workflow run` does not accept positional arguments after `--`.", "INVALID_FLAG_VALUE");
+    }
+    if (!token.startsWith("-") || token === "-" || /^-\d/.test(token)) {
+      if (!targetSeen) {
+        if (token !== target) {
+          throw new UsageError(
+            "Workflow parameter flags must come after the workflow ref or run id.",
+            "INVALID_FLAG_VALUE",
+          );
+        }
+        targetSeen = true;
+        continue;
+      }
+      throw new UsageError(`Unexpected positional workflow argument "${token}".`, "INVALID_FLAG_VALUE");
+    }
+    if (!token.startsWith("--")) continue;
+
+    const body = token.slice(2);
+    const equalsAt = body.indexOf("=");
+    const name = equalsAt === -1 ? body : body.slice(0, equalsAt);
+    const inlineValue = equalsAt === -1 ? undefined : body.slice(equalsAt + 1);
+    if (name === "params") {
+      throw new UsageError(
+        "--params was removed. Pass each declared workflow parameter as its own flag, for example `--version=1.2.3`.",
+        "INVALID_FLAG_VALUE",
+      );
+    }
+    if (WORKFLOW_RUN_VALUE_FLAGS.has(name)) {
+      if (inlineValue === undefined) index += 1;
+      continue;
+    }
+    if (WORKFLOW_RUN_BOOLEAN_FLAGS.has(name)) continue;
+    if (!targetSeen) {
+      throw new UsageError(
+        "Workflow parameter flags must come after the workflow ref or run id.",
+        "INVALID_FLAG_VALUE",
+      );
+    }
+
+    if (inlineValue !== undefined) {
+      flags.push({ name, value: inlineValue });
+      continue;
+    }
+    const next = rawArgs[index + 1];
+    if (next !== undefined && (!next.startsWith("-") || /^-\d/.test(next))) {
+      flags.push({ name, value: next });
+      index += 1;
+    } else {
+      flags.push({ name, value: true });
+    }
+  }
+  return flags;
+}
+
+function parseIntegerFlag(
+  raw: string | undefined,
+  name: string,
+  minimum: number,
+  maximum?: number,
+): number | undefined {
+  if (raw === undefined) return undefined;
+  const value = Number.parseInt(raw, 10);
+  if (!/^\d+$/.test(raw) || value < minimum || (maximum !== undefined && value > maximum)) {
+    const range = maximum === undefined ? `at least ${minimum}` : `from ${minimum} through ${maximum}`;
+    throw new UsageError(`${name} must be an integer ${range}, got "${raw}".`, "INVALID_FLAG_VALUE");
+  }
+  return value;
+}
+
+function parseWorkflowTimeout(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const match = /^(\d+)(ms|s|m)?$/.exec(raw);
+  if (!match) {
+    throw new UsageError(`--timeout must be N, Nms, Ns, or Nm, got "${raw}".`, "INVALID_FLAG_VALUE");
+  }
+  const amount = Number(match[1]);
+  const multiplier = match[2] === "m" ? 60_000 : match[2] === "s" ? 1_000 : 1;
+  const timeoutMs = amount * multiplier;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > WORKFLOW_MAX_TIMEOUT_MS) {
+    throw new UsageError(
+      `--timeout must resolve to 1 through ${WORKFLOW_MAX_TIMEOUT_MS} milliseconds, got "${raw}".`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  return timeoutMs;
+}
 
 const workflowBriefCommand = defineJsonCommand({
   meta: {
@@ -487,9 +520,6 @@ export const workflowCommand = defineGroupCommand({
     description: "Author, inspect, and execute step-by-step workflow assets",
   },
   subCommands: {
-    start: workflowStartCommand,
-    next: workflowNextCommand,
-    complete: workflowCompleteCommand,
     status: workflowStatusCommand,
     list: workflowListCommand,
     create: workflowCreateCommand,

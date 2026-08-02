@@ -47,5 +47,8 @@ describe("embedded exit-code hints", () => {
     }
     expect(retiredCommandHint(["task"], "enable")).toContain("enabled: true");
     expect(retiredCommandHint(["task"], "disable")).toContain("enabled: false");
+    expect(retiredCommandHint(["workflow"], "start")).toContain("workflow run");
+    expect(retiredCommandHint(["workflow"], "next")).toContain("workflow status");
+    expect(retiredCommandHint(["workflow"], "complete")).toContain("workflow report");
   });
 });

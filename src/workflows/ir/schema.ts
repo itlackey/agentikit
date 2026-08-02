@@ -250,7 +250,10 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
     if (step.root) assertUnitEngineCompatibility(step.root, engines);
     if (step.gate.judge) {
       const judge = engines[step.gate.judge.engine];
-      if (!judge || judge.kind !== "llm") fail(`gate ${step.gate.id} must reference an LLM engine`);
+      if (!judge) fail(`gate ${step.gate.id} references an unavailable engine`);
+      if (judge.kind === "llm" && step.gate.judge.model === null) fail(`LLM gate ${step.gate.id} has no exact model`);
+      if (judge.kind === "agent" && step.gate.judge.llm !== undefined)
+        fail(`agent gate ${step.gate.id} cannot carry LLM invocation settings`);
     }
   }
   return plan;

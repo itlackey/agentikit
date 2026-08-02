@@ -638,7 +638,11 @@ describe("tasks parity", () => {
       const launcher = path.join(REPO_ROOT, "dist", "akm");
       const resolvedNode = Bun.which(NODE_BIN);
       if (!resolvedNode) throw new Error(`Could not resolve Node executable: ${NODE_BIN}`);
+      const isolatedNodeDir = path.join(root, "node-bin");
+      const isolatedNode = path.join(isolatedNodeDir, "node");
       fs.mkdirSync(fakeBin, { recursive: true });
+      fs.mkdirSync(isolatedNodeDir, { recursive: true });
+      fs.symlinkSync(fs.realpathSync(resolvedNode), isolatedNode);
       fs.writeFileSync(
         path.join(fakeBin, "crontab"),
         [
@@ -655,9 +659,7 @@ describe("tasks parity", () => {
         { mode: 0o755 },
       );
 
-      const schedulerPath = [fakeBin, path.dirname(launcher), path.dirname(resolvedNode), "/usr/bin", "/bin"].join(
-        path.delimiter,
-      );
+      const schedulerPath = [fakeBin, path.dirname(launcher), isolatedNodeDir, "/usr/bin", "/bin"].join(path.delimiter);
       expect(schedulerPath.split(path.delimiter)).not.toContain(path.dirname(process.execPath));
       const schedulerEnv = {
         ...nodeEnv,
@@ -674,7 +676,7 @@ describe("tasks parity", () => {
       delete schedulerProcessEnv.BUN_TEST;
       delete schedulerProcessEnv.NODE_ENV;
       const launcherRun = (args: string[]): NodeResult => {
-        const result = nodeSpawnSync(resolvedNode, [launcher, ...args], {
+        const result = nodeSpawnSync(isolatedNode, [launcher, ...args], {
           env: schedulerProcessEnv,
           encoding: "utf8",
           timeout: 120_000,
@@ -765,7 +767,7 @@ describe("setup parity", () => {
 describe("scope flag parity", () => {
   afterEach(() => cleanup());
 
-  test.skipIf(!ENABLED)("--scope type:memory search returns same exit on Bun and Node", async () => {
+  test.skipIf(!ENABLED)("--scope on search is rejected identically on Bun and Node", async () => {
     setupStorage();
     await boundedWithEnv({ AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
       await runCliCapture(["remember", "scope flag parity test"]);
@@ -774,7 +776,12 @@ describe("scope flag parity", () => {
 
     const nodeResult = nodeRun(["search", "scope flag parity", "--scope", "type:memory"], nodeEnv);
     assertNoBoundaryLeak(nodeResult, "scope-search");
-    expect([0, 1]).toContain(nodeResult.status);
+    // `--scope` is not a search flag. mri used to drop it silently (exit 0,
+    // unscoped results); unknown-flag validation now rejects it as a usage
+    // error. The parity contract this suite guards is that Node takes the
+    // same path — same exit, same envelope, no Bun-boundary leak.
+    expect(nodeResult.status).toBe(2);
+    expect(nodeResult.stderr).toContain("UNKNOWN_FLAG");
 
     const bunResult = await boundedWithEnv(
       { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
@@ -846,17 +853,17 @@ describe("workflow smoke parity", () => {
     expect(json?.summary?.flagged).toBe(0);
   });
 
-  test.skipIf(!ENABLED)("workflow create + start + status round-trips through workflow.db on Node", () => {
+  test.skipIf(!ENABLED)("workflow create + run + status round-trips through state.db on Node", () => {
     setupStorage();
-    configureEngine("workflow-smoke", { kind: "agent", platform: "opencode" }, { engine: "workflow-smoke" });
+    configureDeadLlm();
     const created = nodeRun(["workflow", "create", "smoke-flow"], nodeEnv);
     assertNoBoundaryLeak(created, "workflow create");
     expect(created.status).toBe(0);
 
-    const start = nodeRun(["workflow", "start", "workflows/smoke-flow"], nodeEnv);
-    assertNoBoundaryLeak(start, "workflow start");
-    expect(start.status).toBe(0);
-    const runId = (parseJson(start.stdout) as { run?: { id?: string } } | undefined)?.run?.id;
+    const run = nodeRun(["workflow", "run", "workflows/smoke-flow", "--timeout=1ms"], nodeEnv);
+    assertNoBoundaryLeak(run, "workflow run");
+    expect(run.status).toBe(1);
+    const runId = (parseJson(run.stdout) as { run?: { id?: string } } | undefined)?.run?.id;
     expect(typeof runId).toBe("string");
 
     const status = nodeRun(["workflow", "status", runId as string], nodeEnv);
@@ -893,6 +900,9 @@ function configureDeadLlm(): void {
     },
     { engine: "smoke-llm", llmEngine: "smoke-llm" },
   );
+  const setJudge = nodeRun(["config", "set", "workflow.judgeEngine", "smoke-llm"], nodeEnv);
+  assertNoBoundaryLeak(setJudge, "config set workflow.judgeEngine");
+  expect(setJudge.status).toBe(0);
 }
 
 /**
@@ -909,9 +919,16 @@ function writeJudgeWorkflow(name: string): void {
       "---",
       "type: workflow",
       "description: Node-compat smoke workflow.",
+      "params:",
+      "  mode: { type: string }",
       "steps:",
       "  - id: only-step",
+      "    route:",
+      "      input: params.mode",
+      "      when: [{ match: go, step: after }]",
+      "      default: after",
       "    gate: {}",
+      "  - id: after",
       "---",
       "",
       "## only-step",
@@ -922,6 +939,32 @@ function writeJudgeWorkflow(name: string): void {
       "",
       "- the work is done",
       "",
+      "## after",
+      "",
+      "Finish.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
+function writeDispatchWorkflow(name: string): void {
+  const file = path.join(stashDir, "workflows", `${name}.md`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(
+    file,
+    [
+      "---",
+      "type: workflow",
+      "description: Node-compat dispatch smoke workflow.",
+      "steps:",
+      "  - id: only-step",
+      "---",
+      "",
+      "## only-step",
+      "",
+      "Do the smoke work.",
+      "",
     ].join("\n"),
     "utf8",
   );
@@ -931,30 +974,18 @@ describe("workflow LLM import-site parity (reviewer #9)", () => {
   afterEach(() => cleanup());
 
   test.skipIf(!ENABLED)(
-    "the summary-judge LLM import path loads under Node (fails open, no require ReferenceError)",
+    "the summary-judge LLM import path loads under Node and fails closed without a require ReferenceError",
     () => {
       setupStorage();
       configureDeadLlm();
       writeJudgeWorkflow("judge-smoke");
 
-      const start = nodeRun(["workflow", "start", "workflows/judge-smoke"], nodeEnv);
-      assertNoBoundaryLeak(start, "judge start");
-      expect(start.status).toBe(0);
-      const runId = (parseJson(start.stdout) as { run?: { id?: string } } | undefined)?.run?.id;
-      expect(typeof runId).toBe("string");
-
-      // `workflow complete` builds the DEFAULT summary judge (getDefaultLlmConfig)
-      // and — because the step has completion criteria — invokes it, hitting the
-      // `await import("../../llm/client")` site that was a bare `require`. The
-      // dead endpoint makes chatCompletion fail; the gate is fail-open, so the
-      // step completes and the command exits 0. The point is the import LOADED.
-      const done = nodeRun(
-        ["workflow", "complete", runId as string, "--step", "only-step", "--summary", "Did the smoke work fully."],
-        nodeEnv,
-      );
-      assertNoBoundaryLeak(done, "judge complete");
-      expect(done.stdout + done.stderr).not.toContain(REQUIRE_NOT_DEFINED);
-      expect(done.status).toBe(0);
+      // The route-only first step reaches its frozen judge without dispatching
+      // a unit. The dead endpoint rejects the gate, but the dynamic import must load.
+      const run = nodeRun(["workflow", "run", "workflows/judge-smoke", "--mode=go", "--max-steps=1"], nodeEnv);
+      assertNoBoundaryLeak(run, "judge run");
+      expect(run.stdout + run.stderr).not.toContain(REQUIRE_NOT_DEFINED);
+      expect(run.status).toBe(1);
     },
     60_000,
   );
@@ -964,19 +995,7 @@ describe("workflow LLM import-site parity (reviewer #9)", () => {
     () => {
       setupStorage();
       configureDeadLlm();
-      writeJudgeWorkflow("dispatch-smoke");
-      // Q-05: `workflow run` is gated behind `experimental.workflowEngine`
-      // (off by default) — opt in so this test still exercises the native
-      // engine's import sites instead of stopping at the gate's refusal.
-      const gate = nodeRun(["config", "set", "experimental.workflowEngine", "true"], nodeEnv);
-      assertNoBoundaryLeak(gate, "config set experimental.workflowEngine");
-      expect(gate.status).toBe(0);
-
-      const start = nodeRun(["workflow", "start", "workflows/dispatch-smoke"], nodeEnv);
-      assertNoBoundaryLeak(start, "dispatch start");
-      expect(start.status).toBe(0);
-      const runId = (parseJson(start.stdout) as { run?: { id?: string } } | undefined)?.run?.id;
-      expect(typeof runId).toBe("string");
+      writeDispatchWorkflow("dispatch-smoke");
 
       // `workflow run` drives the native engine: `defaultUnitDispatcher` →
       // `resolveUnitRunner`/`requireDefaultLlm` reach the `await import` sites for
@@ -984,7 +1003,7 @@ describe("workflow LLM import-site parity (reviewer #9)", () => {
       // that were bare `require`s. With the dead endpoint the unit dispatch fails
       // (the run does not complete), but the import sites must LOAD without a
       // `require is not defined` — that is the whole regression.
-      const run = nodeRun(["workflow", "run", runId as string], nodeEnv);
+      const run = nodeRun(["workflow", "run", "workflows/dispatch-smoke"], nodeEnv);
       assertNoBoundaryLeak(run, "workflow run");
       expect(run.stdout + run.stderr).not.toContain(REQUIRE_NOT_DEFINED);
       // A failed unit dispatch is a normal outcome here (exit 0 with a failed run

@@ -9,10 +9,10 @@
  * plan §3.2/§3.3/§8, normative §11.4, chunk-8 cutover design). Migration
  * `020-three-db-cutover` is the pure additive
  * DDL (`CREATE TABLE IF NOT EXISTS` the merge-target tables); THIS module is the
- * code that MOVES the durable rows into place, exactly once, under the
- * migrate-apply fail-closed gate (`scripts/akm-migrate/config-migrate.ts` `cutover-applied`
- * phase). It never runs as a sealed SQL migration body — the ATTACH path is
- * runtime-resolved and the old-ref → item_ref map is filesystem/index-derived.
+ * code that MOVES the durable rows into place, exactly once, while the
+ * migrate-apply incomplete sentinel blocks normal runtime access. The ATTACH
+ * path is runtime-resolved and the old-ref → item_ref map is
+ * filesystem/index-derived.
  *
  * ## Frozen-resolver rule (plan §3.3 item 2)
  *
@@ -38,8 +38,8 @@
  *    copies verbatim what it holds without tripping "no such column".
  *  - **Durable idempotency marker.** The merge writes a singleton row into
  *    `akm_cutover_ledger` INSIDE the same transaction as the data move, so a
- *    crash after COMMIT (but before the journal advances, or the workflow.db
- *    unlink) never re-runs the INSERT…SELECT (which would duplicate rows). The
+ *    crash after COMMIT (but before the workflow.db unlink) never re-runs the
+ *    INSERT…SELECT (which would duplicate rows). The
  *    boundary ops (index quarantine, workflow.db unlink) key on that committed
  *    marker and are idempotent.
  *  - **Ref-map source (b) — the frozen legacy-layout walk — is best-effort.**
@@ -66,8 +66,8 @@ import { deriveCanonicalAssetName, TYPE_DIRS } from "./legacy-layout";
 /**
  * A re-key INTEGRITY failure (unparseable stored ref, or a post-pass row-count
  * mismatch). Distinct from an EXPECTED orphan (old ref → no live item), which is
- * quarantined and never aborts the cutover. The apply flow converts this typed
- * error into a fail-closed restore.
+ * quarantined and never aborts the cutover. The apply flow retains its sentinel
+ * so the operator can repair the input and retry.
  */
 export class CutoverIntegrityError extends Error {
   constructor(message: string) {
@@ -120,22 +120,15 @@ export interface BuildCutoverRefMapOptions {
   oldIndexDbPath: string;
   /** Configured stash roots (from config sources); the first primary owns the bare/stash/local origins. */
   stashRoots?: readonly CutoverStashRoot[];
-  /** Where the computed map is persisted as JSON (next to the ApplyJournal), fsynced. */
+  /** Where the computed map is persisted as JSON, fsynced. */
   mapOutputPath: string;
-  identity?: CutoverRefMapIdentity;
 }
 
 const CUTOVER_REFMAP_FORMAT = 1 as const;
 
-export interface CutoverRefMapIdentity {
-  operationId: string;
-  backupRunId: string;
-  backupPath: string;
-}
-
 /**
  * Compute the old-ref → new item_ref map BEFORE any re-layout, and persist it as
- * JSON (fsynced) next to the ApplyJournal. Sources, in precedence order:
+ * JSON (fsynced) next to the apply sentinel. Sources, in precedence order:
  *
  *   (a) last-good index join — `entries.entry_key` / `item_ref`, generalizing
  *       the F4c `classifyLegacyRefForRekey` origin rules to a full-table pass.
@@ -167,7 +160,7 @@ export function buildCutoverRefMap(opts: BuildCutoverRefMapOptions): Map<string,
   // ── Source (b): the frozen legacy-layout walk (completeness for stale-index refs). ──
   for (const root of opts.stashRoots ?? []) walkLegacyLayoutInto(map, root);
 
-  persistRefMapJson(opts.mapOutputPath, map, opts.identity);
+  persistRefMapJson(opts.mapOutputPath, map);
   return map;
 }
 
@@ -282,20 +275,15 @@ function samePath(a: string, b: string | null | undefined): boolean {
   return path.resolve(a) === path.resolve(b);
 }
 
-function persistRefMapJson(outputPath: string, map: Map<string, string>, identity?: CutoverRefMapIdentity): void {
+function persistRefMapJson(outputPath: string, map: Map<string, string>): void {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
   const entries = Object.fromEntries([...map.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  const payload = {
-    formatVersion: CUTOVER_REFMAP_FORMAT,
-    ...(identity ? { active: true, ...identity } : {}),
-    entries,
-    ...(identity ? { entriesSha256: crypto.createHash("sha256").update(JSON.stringify(entries)).digest("hex") } : {}),
-  };
+  const payload = { formatVersion: CUTOVER_REFMAP_FORMAT, entries };
   writeFileAtomic(outputPath, `${JSON.stringify(payload, null, 2)}\n`, 0o600);
 }
 
 /** Load the persisted cutover map when a committed migration resumes at a boundary step. */
-export function loadCutoverRefMap(inputPath: string, identity?: CutoverRefMapIdentity): Map<string, string> {
+export function loadCutoverRefMap(inputPath: string): Map<string, string> {
   if (!fs.existsSync(inputPath)) {
     throw new CutoverIntegrityError(`persisted cutover ref map is missing: ${inputPath}`);
   }
@@ -311,25 +299,6 @@ export function loadCutoverRefMap(inputPath: string, identity?: CutoverRefMapIde
   ) {
     throw new CutoverIntegrityError(`invalid persisted cutover ref map: ${inputPath}`);
   }
-  if (identity) {
-    const authenticated = parsed as typeof parsed & {
-      active?: unknown;
-      operationId?: unknown;
-      backupRunId?: unknown;
-      backupPath?: unknown;
-      entriesSha256?: unknown;
-    };
-    const digest = crypto.createHash("sha256").update(JSON.stringify(parsed.entries)).digest("hex");
-    if (
-      authenticated.active !== true ||
-      authenticated.operationId !== identity.operationId ||
-      authenticated.backupRunId !== identity.backupRunId ||
-      authenticated.backupPath !== identity.backupPath ||
-      authenticated.entriesSha256 !== digest
-    ) {
-      throw new CutoverIntegrityError(`persisted cutover ref map identity does not match: ${inputPath}`);
-    }
-  }
   const map = new Map<string, string>();
   for (const [oldRef, itemRef] of Object.entries(parsed.entries)) {
     if (!oldRef || typeof itemRef !== "string" || !itemRef) {
@@ -343,85 +312,22 @@ export function loadCutoverRefMap(inputPath: string, identity?: CutoverRefMapIde
 export function completeCutoverRefMap(
   inputPath: string,
   outputPath: string,
-  identity?: CutoverRefMapIdentity,
 ): void {
   try {
     fs.statSync(inputPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    if (!identity) {
-      loadCutoverRefMap(outputPath);
-      return;
-    }
-    const completed = JSON.parse(fs.readFileSync(outputPath, "utf8")) as Record<string, unknown>;
-    const entries = completed.entries;
-    const digest = crypto.createHash("sha256").update(JSON.stringify(entries)).digest("hex");
-    if (
-      completed.active !== false ||
-      completed.operationId !== identity.operationId ||
-      completed.backupRunId !== identity.backupRunId ||
-      completed.backupPath !== identity.backupPath ||
-      completed.entriesSha256 !== digest
-    ) {
-      throw new CutoverIntegrityError(`completed cutover ref map identity does not match: ${outputPath}`);
-    }
+    loadCutoverRefMap(outputPath);
     return;
   }
-  if (!identity) {
-    persistRefMapJson(outputPath, loadCutoverRefMap(inputPath));
-    fs.unlinkSync(inputPath);
-    return;
-  }
-  const entries = Object.fromEntries(loadCutoverRefMap(inputPath, identity));
-  const payload = {
-    formatVersion: CUTOVER_REFMAP_FORMAT,
-    active: false,
-    ...identity,
-    entries,
-    entriesSha256: crypto.createHash("sha256").update(JSON.stringify(entries)).digest("hex"),
-  };
-  writeFileAtomic(outputPath, `${JSON.stringify(payload, null, 2)}\n`, 0o600);
+  persistRefMapJson(outputPath, loadCutoverRefMap(inputPath));
   fs.unlinkSync(inputPath);
 }
 
 export function loadCompletedCutoverRefMap(inputPath: string): {
   map: Map<string, string>;
-  identity?: CutoverRefMapIdentity;
 } {
-  const completed = JSON.parse(fs.readFileSync(inputPath, "utf8")) as Record<string, unknown>;
-  const entries = completed.entries;
-  if (completed.formatVersion === CUTOVER_REFMAP_FORMAT && completed.active === undefined) {
-    return { map: loadCutoverRefMap(inputPath) };
-  }
-  const digest = crypto.createHash("sha256").update(JSON.stringify(entries)).digest("hex");
-  if (
-    completed.formatVersion !== CUTOVER_REFMAP_FORMAT ||
-    completed.active !== false ||
-    typeof completed.operationId !== "string" ||
-    typeof completed.backupRunId !== "string" ||
-    typeof completed.backupPath !== "string" ||
-    !entries ||
-    typeof entries !== "object" ||
-    Array.isArray(entries) ||
-    completed.entriesSha256 !== digest
-  ) {
-    throw new CutoverIntegrityError(`invalid completed cutover ref map: ${inputPath}`);
-  }
-  const map = new Map<string, string>();
-  for (const [oldRef, itemRef] of Object.entries(entries)) {
-    if (!oldRef || typeof itemRef !== "string" || !itemRef) {
-      throw new CutoverIntegrityError(`invalid completed cutover ref map entry for ${oldRef}`);
-    }
-    map.set(oldRef, itemRef);
-  }
-  return {
-    map,
-    identity: {
-      operationId: completed.operationId,
-      backupRunId: completed.backupRunId,
-      backupPath: completed.backupPath,
-    },
-  };
+  return { map: loadCutoverRefMap(inputPath) };
 }
 
 const PILOT_TREATMENT_FILE = path.join(".akm", "measurement", "treatment-pilot-2026-06-14.txt");
@@ -906,10 +812,8 @@ function ensureCutoverLedger(db: Database): void {
 
 /**
  * READ-ONLY check for the committed merge marker. Must NOT create the table:
- * this runs BEFORE the cutover transaction, and a `CREATE TABLE` here would be a
- * durable pre-transaction write that a later fail-closed rollback could not undo
- * (tripping the "state changed outside the journaled transition" guard). The
- * table is created inside the transaction alongside the marker INSERT.
+ * this runs BEFORE the cutover transaction. The table is created inside the
+ * transaction alongside the marker INSERT.
  */
 function cutoverAlreadyMerged(db: Database, operationId: string): boolean {
   if (!tableExists(db, "main", "akm_cutover_ledger")) return false;
@@ -953,9 +857,9 @@ export function cutoverMergeCommitted(statePath: string, operationId?: string): 
  * ({@link rekeyStateDbCore}), then writes the idempotency marker, COMMITs, and
  * DETACHes. Idempotent: a committed marker short-circuits the whole run.
  *
- * Throws {@link CutoverIntegrityError} on an integrity failure (the apply flow
- * converts it into a fail-closed restore). A missing workflow.db skips the merge
- * arm (never ATTACHes it — ATTACH would CREATE the file).
+ * Throws {@link CutoverIntegrityError} on an integrity failure. A missing
+ * workflow.db skips the merge arm (never ATTACHes it — ATTACH would CREATE the
+ * file).
  */
 export function runThreeDbCutover(opts: RunThreeDbCutoverOptions): RunThreeDbCutoverResult {
   const copied: Record<string, number> = {};
@@ -974,11 +878,6 @@ export function runThreeDbCutover(opts: RunThreeDbCutoverOptions): RunThreeDbCut
 
     if (workflowExists) db.exec(`ATTACH DATABASE '${sqliteQuote(opts.workflowPath)}' AS wf`);
     if (oldIndexExists) db.exec(`ATTACH DATABASE '${sqliteQuote(opts.oldIndexPath)}' AS oldidx`);
-    if (process.env.AKM_TEST_MIGRATION_CRASH_GAP === "cutover-attach") {
-      if (workflowExists) db.prepare("SELECT COUNT(*) FROM wf.sqlite_master").get();
-      process.kill(process.pid, "SIGKILL");
-    }
-
     let rekey: CutoverRekeyReport = emptyReport();
     try {
       db.exec("BEGIN IMMEDIATE");
@@ -1035,13 +934,8 @@ export function runThreeDbCutover(opts: RunThreeDbCutoverOptions): RunThreeDbCut
       if (workflowExists) safeDetach(db, "wf");
     }
 
-    // Flush the WAL into the main file and truncate the sidecar to 0 bytes: the
-    // migration generation fingerprint tracks state.db + its `-wal`/`-shm`
-    // sidecars, and an uncheckpointed WAL is moved into the main file by the next
-    // read-only inspect/resume open, desyncing the fingerprint and tripping the
-    // "does not match the exact live artifact generation" guard. No-op when the
-    // DB is not in WAL mode. The journal mode is left UNCHANGED (converting it
-    // can lock a contended WAL db).
+    // Flush committed pages into the main file before boundary cleanup. No-op
+    // when the DB is not in WAL mode; the journal mode itself is unchanged.
     try {
       db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     } catch {
@@ -1152,14 +1046,16 @@ function carryLegacyState(db: Database, srcSchema: string): void {
 const DB_SIDECARS = ["-wal", "-shm"] as const;
 
 /**
- * Journaled rename of the old index.db (+ `-wal`/`-shm`) to
- * `index.db.pre-cutover-<runId>`. Runs AFTER the state txn commits, OUTSIDE the
- * fail-closed gate — the next index run rebuilds from scratch (a rebuild failure
- * never rolls back the committed cutover). Idempotent + best-effort: a failure
- * is logged, never thrown.
+ * Replayable rename of the old index.db (+ `-wal`/`-shm`) to
+ * `index.db.pre-cutover-<runId>`. Runs AFTER the state transaction commits; the
+ * next index run rebuilds from scratch. A failure never rolls back that committed
+ * transaction, but it does retain the incomplete apply sentinel for retry.
  */
 export function quarantineIndexDb(runId: string, indexPath: string): { quarantined: boolean; target?: string } {
   try {
+    if (process.env.AKM_TEST_MIGRATION_FAIL_INDEX_QUARANTINE === "1") {
+      throw new Error("injected index.db quarantine failure");
+    }
     const target = `${indexPath}.pre-cutover-${runId}`;
     const sourceMainExists = fs.existsSync(indexPath);
     const targetMainExists = fs.existsSync(target);
@@ -1168,7 +1064,9 @@ export function quarantineIndexDb(runId: string, indexPath: string): { quarantin
 
     const remainingSidecars = DB_SIDECARS.filter((suffix) => fs.existsSync(`${indexPath}${suffix}`));
     if (remainingSidecars.some((suffix) => fs.existsSync(`${target}${suffix}`))) {
-      warn("[akm] three-DB cutover: index.db quarantine sidecar collision; canonical sidecars were preserved.");
+      const detail = "index.db quarantine sidecar collision; canonical sidecars were preserved";
+      if (!targetMainExists) throw new Error(detail);
+      warn(`[akm] three-DB cutover: ${detail}.`);
       return { quarantined: targetMainExists, ...(targetMainExists ? { target } : {}) };
     }
 
@@ -1176,18 +1074,16 @@ export function quarantineIndexDb(runId: string, indexPath: string): { quarantin
     for (const suffix of remainingSidecars) fs.renameSync(`${indexPath}${suffix}`, `${target}${suffix}`);
     return { quarantined: true, target };
   } catch (error) {
-    warn(
-      `[akm] three-DB cutover: index.db quarantine rename failed (${error instanceof Error ? error.message : String(error)}); the next \`akm index\` rebuilds it — the committed state cutover is unaffected.`,
+    throw new Error(
+      `index.db quarantine rename failed: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
-    return { quarantined: false };
   }
 }
 
 /**
- * Journaled, idempotent unlink of workflow.db + its `-wal`/`-shm` sidecars, keyed
- * on the committed cutover marker (the caller passes it only once the merge has
- * committed). A failure throws so the operation-bound journal remains available
- * and the same cutover operation retries this boundary step.
+ * Idempotent unlink of workflow.db + its `-wal`/`-shm` sidecars. A failure throws
+ * so the incomplete apply sentinel remains and the same cutover retries.
  */
 export function deleteWorkflowDb(workflowPath: string): { deleted: boolean } {
   if (process.env.AKM_TEST_MIGRATION_FAIL_WORKFLOW_DELETE === "1") {

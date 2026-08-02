@@ -435,9 +435,9 @@ describe("akmShow content-based classification", () => {
   });
 
   test("tools frontmatter in commands/ overrides to agent (strong signal)", async () => {
-    // tools/toolPolicy are agent-exclusive signals at specificity 20,
-    // which beats the commands/ directory matcher at 10. The indexer
-    // classifies this as an agent, so the ref uses agent: type.
+    // tools is an agent-exclusive signal at specificity 20, which beats the
+    // commands/ directory matcher at 10. The indexer classifies this as an
+    // agent, so the ref uses agent: type.
     writeFile(
       path.join(stashDir, "commands", "hybrid.md"),
       ["---", "tools:", "  read: allow", "model: gpt-4", "---", "You are a hybrid agent."].join("\n"),
@@ -450,6 +450,20 @@ describe("akmShow content-based classification", () => {
     expect(result.type).toBe("agent");
     expect(result.action).toContain("verbatim");
     expect(result.prompt).toContain("You are a hybrid agent.");
+  });
+
+  test("toolPolicy frontmatter is not an authoring alias for tools", async () => {
+    writeFile(
+      path.join(stashDir, "agents", "legacy-policy.md"),
+      ["---", "toolPolicy:", "  - Read", "  - Write", "---", "You are a legacy agent."].join("\n"),
+    );
+
+    saveConfig({ semanticSearchMode: "off" });
+
+    const result = await akmShow({ ref: "agents/legacy-policy" });
+
+    expect(result.type).toBe("agent");
+    expect(result.toolPolicy).toBeUndefined();
   });
 
   test("command in commands/ directory extracts OpenCode-style frontmatter", async () => {

@@ -3,14 +3,37 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { parse as parseYaml } from "yaml";
+import { localDateStamp } from "../common";
 import { UsageError } from "../errors";
 import { serializeFrontmatter } from "./asset-serialize";
-import { parseFrontmatterBlock } from "./frontmatter";
+import { parseFrontmatterBlock, spliceFrontmatterLine } from "./frontmatter";
 
-/** Ensure an AKM-authored Markdown concept is also a conformant OKF concept. */
-export function ensureAkmMarkdownType(content: string, type: string): string {
+/**
+ * Ensure an AKM-authored Markdown concept is also a conformant OKF concept.
+ *
+ * Stamps BOTH `type` and `updated`, because both are required of a conformant
+ * document and this is the one chokepoint every `.md` write passes through
+ * (`core/write-source.ts`). Without the `updated` stamp, every asset akm
+ * created for you — `akm remember`, `akm import`, accepted proposals,
+ * authored workflows — was immediately flagged `missing-updated` by akm's own
+ * `akm lint`, so the tool disagreed with itself about its own output.
+ *
+ * An existing `updated` is left alone: this fills a gap, it does not
+ * re-stamp on every write (which would churn timestamps and manufacture
+ * needless diffs in git-backed bundles).
+ *
+ * Source preservation: when the type already matches and the ONLY change is
+ * adding `updated`, the line is spliced into the original block textually —
+ * round-tripping through the YAML serializer would drop user-authored
+ * comments and normalize formatting just to contribute one field. Only a
+ * document whose `type` must actually be corrected takes the re-serialize
+ * path (as it always has).
+ */
+export function ensureAkmMarkdownType(content: string, type: string, now: Date = new Date()): string {
   const block = parseFrontmatterBlock(content);
-  if (!block) return `---\ntype: ${type}\n---\n${content}`;
+  if (!block) {
+    return `---\n${serializeFrontmatter({ type, updated: localDateStamp(now) })}\n---\n${content}`;
+  }
 
   let parsed: unknown;
   try {
@@ -23,7 +46,16 @@ export function ensureAkmMarkdownType(content: string, type: string): string {
     throw new UsageError("AKM Markdown frontmatter must be a YAML mapping.", "INVALID_FLAG_VALUE");
   }
   const data = parsed as Record<string, unknown>;
-  if (data.type === type) return content;
+  const needsUpdated = !("updated" in data);
+  if (data.type === type) {
+    if (!needsUpdated) return content;
+    const spliced = spliceFrontmatterLine(content, `updated: ${localDateStamp(now)}`);
+    if (spliced !== null) return spliced;
+    // Unreachable in practice (parseFrontmatterBlock succeeded above), but a
+    // re-serialized document beats a non-conformant one.
+  }
   const { type: _priorType, ...rest } = data;
-  return `---\n${serializeFrontmatter({ type, ...rest })}\n---\n${block.content}`;
+  const next: Record<string, unknown> = { type, ...rest };
+  if (needsUpdated) next.updated = localDateStamp(now);
+  return `---\n${serializeFrontmatter(next)}\n---\n${block.content}`;
 }

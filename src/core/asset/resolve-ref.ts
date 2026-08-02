@@ -36,7 +36,12 @@
  */
 
 import { NotFoundError, UsageError } from "../errors";
-import { placementSpecFor, stashDirFor, typeForStashDir } from "./asset-placement";
+import {
+  deriveCanonicalAssetNameFromStashRoot,
+  placementSpecFor,
+  stashDirFor,
+  typeForStashDir,
+} from "./asset-placement";
 import { type BundleRef, isBundleSlug, parseBundleRef } from "./asset-ref";
 
 // ── Parsed-ref value object (the `type`/`name`/`origin` decomposition) ────────
@@ -185,6 +190,20 @@ export function conceptIdFromTypeName(type: string, name: string): string {
 }
 
 /**
+ * User-facing conceptId for a file on disk, derived through the placement
+ * spec's canonical-name rule — the ONE way a diagnostic should spell a ref it
+ * expects the user to paste into `akm show`. (The dangerous-env-key lint used
+ * to hand-build `env:<base>` colon refs the parser rejects; both its emission
+ * sites now route through here.) For a type with no placement spec — which no
+ * built-in caller passes — falls back to the raw name so the output is still
+ * informative rather than empty.
+ */
+export function conceptIdForStashFile(type: string, stashRoot: string, filePath: string): string {
+  const name = deriveCanonicalAssetNameFromStashRoot(type, stashRoot, filePath);
+  return name === undefined ? filePath : conceptIdFromTypeName(type, name);
+}
+
+/**
  * Build the USER-FACING / envelope ref string for an indexed item, applying the
  * Chunk-5 flip F4b output-spelling rule (orchestrator decision; ref-grammar
  * decision D-R2 / D-R3). This is the ONE place the rule lives — every emission
@@ -203,8 +222,24 @@ export function conceptIdFromTypeName(type: string, name: string): string {
  *     derived slug bundle id, never the retired `origin//type:name` spelling.
  */
 export function displayRef(item: DisplayRefItem, defaultBundleId?: string): string {
-  const conceptId = item.conceptId ?? conceptIdFromTypeName(item.type, item.name);
-  const { bundleId } = item;
+  return displayRefForConceptId(
+    item.conceptId ?? conceptIdFromTypeName(item.type, item.name),
+    item.bundleId,
+    defaultBundleId,
+  );
+}
+
+/**
+ * The F4b output-spelling flip itself, for a caller that already holds the
+ * conceptId (no `type`/`name` derivation needed — e.g. lint findings built
+ * from {@link conceptIdForStashFile}). {@link displayRef} delegates here, so
+ * the short-default / qualified-secondary rule still has exactly one home.
+ */
+export function displayRefForConceptId(
+  conceptId: string,
+  bundleId: string | undefined,
+  defaultBundleId?: string,
+): string {
   // Default/primary bundle → SHORT conceptId (the flip).
   if (bundleId === undefined || bundleId === defaultBundleId) return conceptId;
   // Non-default bundle → the new fully-qualified `bundle//conceptId` grammar.

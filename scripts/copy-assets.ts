@@ -10,9 +10,10 @@ import { chmodSync } from "node:fs";
 //   2. Mirror module-local YAML templates next to compiler outputs in `dist/`.
 //      The files are imported `with { type: "text" }` from nearby TypeScript
 //      modules, so this keeps runtime-compatible paths intact.
-//   3. Bundle the standalone migration tool into dist/scripts/ so
-//      globally-installed npm users can run it without
-//      `../src/...` import paths breaking (#469).
+//   3. Bundle runtime-specific migration tools into dist/scripts/ so
+//      globally-installed npm users can run them without
+//      `../src/...` import paths breaking (#469). Bun and Node must never run
+//      each other's target because their runtime dependencies differ.
 import { mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 
@@ -51,21 +52,23 @@ for (const src of runtimeFiles) {
   chmodSync(dest, 0o755);
 }
 
-const migrationEntrypoints = ["scripts/akm-migrate.ts"];
+const migrationBuilds = [
+  { entry: "scripts/akm-migrate.ts", outfile: "dist/scripts/akm-migrate.js", target: "bun" as const },
+  { entry: "scripts/akm-migrate.ts", outfile: "dist/scripts/akm-migrate-node.js", target: "node" as const },
+];
 
-for (const entry of migrationEntrypoints) {
-  const outfile = entry.replace(/\.ts$/, ".js").replace(/^scripts\//, "dist/scripts/");
+for (const { entry, outfile, target } of migrationBuilds) {
   await mkdir(dirname(outfile), { recursive: true });
   const result = await Bun.build({
     entrypoints: [entry],
-    target: "node",
+    target,
     outdir: dirname(outfile),
     naming: basename(outfile),
     minify: false,
     // Bun.build preserves the source file's shebang; no banner needed.
   });
   if (!result.success) {
-    console.error(`copy-assets: failed to bundle ${entry}:`);
+    console.error(`copy-assets: failed to bundle ${entry} for ${target}:`);
     for (const log of result.logs) console.error(log);
     process.exit(1);
   }

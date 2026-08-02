@@ -64,17 +64,15 @@ engineering work:
 ### Nested workflow example
 
 - `workflows/release-train.md` is an **orchestrator** that delegates to
-  other workflows in this stash as nested runs:
+  independent workflow runs in this stash:
   - `workflows/weekly-dependency-audit` for pre-flight maintenance
   - `workflows/code-review-pr` once per release-blocker PR
-  - `workflows/release-retrospective` (sibling, to be created) for the
-    post-release learning loop
 
-  Each nested run has its own `runId`, can be inspected with
-  `akm workflow status`, and can be resumed independently if interrupted.
-  The orchestrator only owns the cross-cutting artefacts (release book,
-  changelog, tag, deploy, announcement) — the heavy lifting lives in
-  small, individually testable workflows.
+  Each delegated run has its own `runId`, can be inspected with `akm workflow
+  status`, and can be resumed independently if interrupted. The orchestrator
+  records those IDs explicitly; AKM does not provide implicit nesting or a
+  child-run status tree. It owns the cross-cutting release book, changelog, tag,
+  deploy, announcement, and retrospective.
 
 ## Suggested Flow
 
@@ -86,8 +84,8 @@ engineering work:
 4. For routine engineering work, pick the common-task workflow that matches
    the job — bug, dep audit, review, feature — instead of running the
    full research stack.
-5. For a release, run `workflows/release-train` and let it spawn the nested
-   runs it needs.
+5. For a release, run `workflows/release-train`; it launches the independent
+   child runs it needs and records their IDs in the release book.
 
 As this example stash grows, it can hold more asset types without overloading
 the generic `docs/examples/` namespace.

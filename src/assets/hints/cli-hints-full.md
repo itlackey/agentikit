@@ -93,7 +93,7 @@ akm import https://example.com/docs/auth       # Fetch one URL and import it as 
 akm import ./doc.md --target my-other-bundle    # Route import to a named writable bundle source
 akm workflow create ship-release               # Create a workflow asset in the bundle
 akm lint --type workflows                      # Parse and compile every unified markdown workflow; list every error
-akm workflow next workflows/ship-release       # Start or resume the next workflow step
+akm workflow run workflows/ship-release        # Start or resume and execute the workflow
 akm feedback skills/code-review --positive     # Record that an asset helped
 akm feedback agents/reviewer --negative --reason "wrong framework" # Record why an asset missed the mark
 akm feedback memories/deployment-notes --positive # Works for memories too
@@ -169,9 +169,8 @@ workflow. Direct run-id commands still target the exact run.
 ```sh
 akm workflow create ship-release --print     # Print a starter workflow template, without writing
 akm workflow create ship-release             # Scaffold a new workflow asset
-akm workflow start workflows/ship-release    # Start a new run in the current scope
-akm workflow next workflows/ship-release     # Advance to the next step (or auto-start) in the current scope
-akm workflow complete <run-id> --step <id> --summary "..."  # Mark a step complete and advance
+akm workflow run workflows/ship-release --version=1.2.3  # Start and execute with exact-name parameter flags
+akm workflow run <run-id> --max-retries 2 --timeout 10m  # Resume with invocation-wide controls
 akm workflow status <run-id>                 # Show the exact run by id
 akm workflow resume <run-id>                 # Resume a blocked or failed run
 akm workflow list                            # List workflow runs in the current scope

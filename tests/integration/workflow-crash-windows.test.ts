@@ -60,6 +60,7 @@ beforeEach(() => {
       },
     },
     defaults: { engine: "test-agent", llmEngine: "test-llm" },
+    workflow: { judgeEngine: "test-llm" },
   });
   markerDir = path.join(storage.root, "markers");
   fs.mkdirSync(markerDir, { recursive: true });

@@ -58,7 +58,7 @@ function shellQuote(value: string): string {
 
 /** Reproduced from `output/renderers.ts#buildWorkflowAction` — the one function-valued `ACTION_BUILDERS.workflow` entry. */
 function buildWorkflowAction(ref: string): string {
-  return `Resume the active run or start a new run with \`akm workflow next ${shellQuote(ref)}\`.`;
+  return `Start or resume execution with \`akm workflow run ${shellQuote(ref)}\`.`;
 }
 
 /**

@@ -268,6 +268,14 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
       message: "llmEngine must name an LLM engine",
     });
   }
+  const workflowJudge = config.workflow?.judgeEngine;
+  if (workflowJudge && !config.engines?.[workflowJudge]) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["workflow", "judgeEngine"],
+      message: "judgeEngine does not name a configured engine",
+    });
+  }
   const defaultStrategy = config.defaults?.improveStrategy;
   if (
     defaultStrategy &&

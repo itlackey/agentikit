@@ -78,6 +78,25 @@ afterEach(() => {
 });
 
 describe("task lifecycle failure handling", () => {
+  test("add refuses to shadow a legacy markdown task without --force", async () => {
+    const legacyPath = path.join(storage.stashDir, "tasks", "nightly.md");
+    fs.writeFileSync(legacyPath, "---\nschedule: '@daily'\n---\nLegacy task\n", "utf8");
+
+    await expect(
+      akmTasksAdd(
+        {
+          id: "nightly",
+          schedule: "@daily",
+          command: "echo replacement",
+        },
+        { backend },
+      ),
+    ).rejects.toMatchObject({ code: "RESOURCE_ALREADY_EXISTS" });
+
+    expect(fs.existsSync(path.join(storage.stashDir, "tasks", "nightly.yml"))).toBe(false);
+    expect(installCalls).toEqual([]);
+  });
+
   test("sync disables an installed task whose filesystem-derived id is invalid", async () => {
     writeTask("manual task", 'version: 2\nschedule: "@daily"\ncommand: echo unsafe\n');
     installed.set("manual task", undefined);
