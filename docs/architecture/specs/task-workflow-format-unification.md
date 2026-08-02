@@ -1,6 +1,6 @@
 # Task / Workflow Unification: One Target Vocabulary, One Prose Rule
 
-Status: PROPOSAL v4 — owner decisions from review rounds 1–3 applied
+Status: PROPOSAL v5 — owner decisions from review rounds 1–4 applied
 (see §9 decision log). Baselined on `claude/release-0-9-0-polish-d6sycl`
 (post-"`run` is the canonical orchestrator"). Breaking changes are approved
 for the 0.9.0 release.
@@ -56,17 +56,18 @@ Four facts from the `release-0-9-0-polish` branch this design builds on:
 
 ## 3. The format
 
-### 3.1 Targets — a target names an executable asset
-
-akm already has an asset type for each kind of executable work. A target key
-names one; with **no** target key, the work is the prose.
+### 3.1 Two target keys: `uses:` and `run:`
 
 | Declaration | Work performed | Inputs |
 |---|---|---|
 | *(none)* | Dispatch an agent with **the nearest prose** as the prompt | — |
-| `command: commands/<name>` | Fill the command asset's template (its type contract — "a prompt template with placeholders"), dispatch an agent with the result | `params:` fill the placeholders |
-| `script: scripts/<name>` **or** inline text | Execute — no AI. An asset honors its `run`/`setup`/`cwd` metadata; inline text runs under a shell (§3.4) | `env:` (§3.5) |
-| `workflow: workflows/<ref>` *(tasks only)* | Run the workflow via `runWorkflowSteps()` | `params:` → the declared param flags |
+| `uses: <asset-ref>` | Execute the referenced asset **per its type**, which the ref's subdir already declares (§3.2) | `params:`, `env:` |
+| `run: <shell text>` | Execute inline shell — no AI. GitHub-Actions `run:` semantics (§3.5) | `env:` |
+
+`uses:` and `run:` are mutually exclusive — one schema rule, and the whole
+class of "provided a script *and* a command on one task/step" errors is
+structurally impossible. A ref key and an inline key also cannot be confused,
+so no ref-vs-inline sniffing exists anywhere in the format.
 
 > **The prose rule.** The machine surface names the target; the nearest prose
 > is the instructions. In a task that is the document body; in a workflow step
@@ -76,8 +77,21 @@ names one; with **no** target key, the work is the prose.
 That sentence is the entire shared learning curve. It also retires `prompt:`
 for good — its three overloaded meanings (inline text / asset ref / file
 path) and the `resolvePromptSource()` sniff that disambiguated them all go:
-inline text is the body, an asset ref is `command:` or `agent:`, and file
-paths are dropped with the `.yml` format (§8).
+inline text is the body, an asset ref is `uses:` or `agent:`, and file paths
+are dropped with the `.yml` format (§8).
+
+### 3.2 What `uses:` accepts — the ref carries the type
+
+akm refs are subdir-qualified concept ids, so the asset type is visible in
+the value; no key-per-type is needed to keep the vocabulary aligned to asset
+types:
+
+| Ref | Execution | Inputs |
+|---|---|---|
+| `uses: commands/<name>` | Fill the command asset's template (its type contract — "a prompt template with placeholders"), dispatch an agent with the result | `params:` fill the placeholders |
+| `uses: scripts/<name>` | Execute the script asset per its own `run`/`setup`/`cwd` metadata — no AI | `env:` |
+| `uses: workflows/<ref>` *(tasks only)* | Run the workflow via `runWorkflowSteps()`; on a step this is an error (no nesting) | `params:` → the declared param flags |
+| `uses: agents/<name>` | **Error**, with the hint: an agent is a persona, not work — set `agent:` (§3.3) |
 
 Template filling stays scoped to the command asset type, whose definition
 already is "a template with placeholders" — bodies remain verbatim, per
@@ -86,29 +100,31 @@ Filling happens before dispatch, producing the `prompt` string
 `UnitDispatchRequest` expects; a placeholder with no matching param is an
 error at fill time.
 
-### 3.2 Dispatch options — one bag, three tiers
+### 3.3 Dispatch options — one bag, three tiers
 
 One set of option keys, spelled identically on a task and on a step. Tier 1
 is the shared core; tiers 2 and 3 are what each container legitimately adds.
 
-**Tier 1 — shared core** (task frontmatter and step entry alike):
+**Tier 1 — shared core.** For agent-dispatched work, three keys with three
+disjoint nouns — *who*, *the runner*, *the request*:
 
 | Key | Meaning | Applies to |
 |---|---|---|
-| `agent:` | `agents/<name>` asset to embody — its system prompt, model hint, and tool policy | agent-dispatched targets (prose, `command:`); no-op on `script:`/`workflow:`, flagged by `akm lint` |
-| `engine:` | Named engine from config that executes the dispatch | agent-dispatched targets |
-| `model:` | Model alias or exact id | agent-dispatched targets |
-| `llm:` | Request overrides (`temperature`, `max_tokens`, …) | agent-dispatched targets |
-| `timeout:` | `10m` / `30s` / `none` | all targets (whole-run timeout for `workflow:`) |
-| `env:` | Environment for the dispatched work (§3.5) | all targets |
-| `cwd:` | Working directory | `script:` (an asset's own `cwd` metadata wins) |
-| `shell:` | Shell for inline scripts (§3.4) | inline `script:` |
-| `params:` | Inputs to the referenced asset | `command:` (placeholders), `workflow:` (declared flags) |
+| `agent:` | **Who** — an `agents/<name>` asset to embody: its system prompt, model hint, and tool policy | agent-dispatched targets (prose, `uses: commands/*`); no-op elsewhere, flagged by `akm lint` |
+| `engine:` | **The runner** — a named engine from config; defaults to `defaults.engine` | agent-dispatched targets |
+| `llm:` | **The request** — `model`, `temperature`, `max_tokens`, … (the fields an LLM request body carries; `model` moves in here from its former top-level spot) | agent-dispatched targets |
+| `timeout:` | `10m` / `30s` / `none` | all targets (whole-run timeout for `uses: workflows/*`) |
+| `env:` | Environment for the dispatched work (§3.6) | all targets |
+| `cwd:` | Working directory | `run:` (a script asset's own `cwd` metadata wins) |
+| `shell:` | Shell override for `run:`; defaults: `sh` on POSIX, `powershell` on Windows | `run:` |
+| `params:` | Inputs to the referenced asset | `uses:` commands (placeholders) and workflows (declared flags) |
+
+Model precedence, the one overlap, in one line: **`llm.model` > the agent
+asset's model hint > the engine's default.**
 
 One rule for inapplicable combinations: **ignored at runtime, flagged by
-`akm lint`** — e.g. `agent:` on a script target is a no-op with a lint notice,
-not an error. (`agent:` and `engine:` compose: the engine is *how* the
-dispatch executes, the agent asset is *who* it executes as.)
+`akm lint`** — e.g. `agent:` next to `run:` is a no-op with a lint notice,
+not an error.
 
 **Tier 2 — graph keys, steps only:** `map`, `route`, `inputs`, `output`,
 `gate`, `retry`, `on_error`, `isolation`. These are orchestration — fan-out,
@@ -119,10 +135,10 @@ worktree isolation — and stay where the orchestrator is.
 asset envelope, §4).
 
 A scheduled *gated* process is therefore not a gap: it is a task whose target
-is a one-step workflow — gates live in tier 2, schedules in tier 3, and the
-`workflow:` target is the bridge.
+is a one-step workflow — gates live in tier 2, schedules in tier 3, and
+`uses: workflows/<ref>` is the bridge.
 
-### 3.3 Steps flatten to the same shape (schema change)
+### 3.4 Steps flatten to the same shape (schema change)
 
 Today a step's dispatch configuration hides inside a `unit:` bag (and a map
 step's inside `map.unit`), while `output:` is declared **both** on the step
@@ -139,10 +155,10 @@ steps are to read identically, the bag is the obstacle. So:
 ```yaml
 steps:
   - id: run-tests
-    script: bun test
+    run: bun test
     timeout: 5m
   - id: review
-    command: commands/code-review
+    uses: commands/code-review
     agent: agents/reviewer
     retry: { max: 2, on: [timeout] }
   - id: fix
@@ -156,26 +172,26 @@ A step entry is now a task's frontmatter minus the envelope and trigger, plus
 graph position. That is point 3, made literal. Cost: schema and golden churn
 on a pre-release format — approved.
 
-### 3.4 `script:` semantics
+### 3.5 `run:` semantics
 
-- **Ref or inline, decided by the canonical ref parser** — the same D-R3 rule
-  the task parser uses today: a value whose leading segment is a real stash
-  subdir (`scripts/lint-all`) is an asset ref; anything else
-  (`bun test`, `./scripts/foo.sh`, a multi-line block) is inline.
-- **Inline scripts always run under a shell**, single-line or block scalar —
-  the GitHub Actions `run:` behavior, one rule, no line-count semantics.
-  Default `sh` on POSIX; Windows default is open (§9, recommend
-  `powershell` for GHA parity). `shell:` overrides.
-- A script asset executes per its own `run`/`setup`/`cwd` metadata — this
-  proposal adds the *caller*, not a new execution contract.
-- A script unit inside a workflow journals like any unit
+- **Always a shell**, single line or block scalar — the GitHub Actions
+  behavior, one rule, no line-count semantics. `sh` on POSIX, `powershell` on
+  Windows; `shell:` overrides. (`run:` is also the script asset's own
+  metadata key for its shell line — the same word means the same thing in
+  both places.)
+- A shell unit inside a workflow journals like any unit
   (`workflow_run_units`): no tokens, but status, timing, attempts, and
   `failure_reason` behave normally.
+- A `map:` step with a `run:` or `uses: scripts/*` target receives its item
+  and index as `AKM_ITEM` (JSON-encoded) and `AKM_ITEM_INDEX` in the
+  environment — the env-not-argv stance applied to fan-out; no argv
+  substitution exists.
 
-### 3.5 `env:` — literals and refs in one property
+### 3.6 `env:` — literals and refs in one property
 
 `env:` is a **list**; each entry is either an env-asset ref (inject the whole
-group) or a mapping of literal pairs. Later entries win, which gives layering
+group) or a mapping of literal pairs. A value that is a `secrets/<name>` ref
+resolves to the secret at runtime. Later entries win, which gives layering
 its precedence rule for free. A bare mapping is shorthand for a single-entry
 list, so the GitHub-Actions spelling works as muscle memory:
 
@@ -195,17 +211,8 @@ This **extends the existing schema additively** — the workflow `unit.env` is
 already a list of ref strings, so every currently-valid value stays valid.
 Values sourced from `env/` and `secrets/` assets join the dispatch's
 `sensitiveValues`, riding the redaction seam `unit-dispatch.ts` already has.
-For a `workflow:` target, `env:` merges into the run's process environment.
-
-### 3.6 The `command:` key changes meaning
-
-Today `command:` is raw shell argv; under this vocabulary it is a
-command-asset ref, and raw shell is `script:`. Breaking changes are approved
-for 0.9.0 and the conversion is mechanical (§8): the migrator rewrites
-`command: <shell>` → `script: <shell>`; all ten embedded templates convert in
-this change. The one residual hazard is hand-authoring: a `.md` task whose
-`command:` value is not a resolvable `commands/<name>` ref is a **parse error
-naming `script:`**, with a targeted hint when the value is shell-shaped.
+For a `uses: workflows/*` target, `env:` merges into the run's process
+environment.
 
 ## 4. The task asset
 
@@ -231,7 +238,7 @@ Review the week's completed tasks and summarize action items.
 Group the summary by bundle. Call out anything that failed more than twice.
 ````
 
-A script task — what today's `command:` tasks become; the body is optional
+A shell task — what today's `command:` tasks become; the body is optional
 runbook prose (indexed, shown by `akm show`, never executed):
 
 ````markdown
@@ -239,7 +246,7 @@ runbook prose (indexed, shown by `akm show`, never executed):
 type: task
 description: Full nightly quality sweep.
 schedule: "15 2 * * *"
-script: akm improve --strategy thorough --skip-if-locked
+run: akm improve --strategy thorough --skip-if-locked
 ---
 
 # Nightly improve sweep
@@ -254,7 +261,7 @@ A command-asset task and a workflow task:
 ---
 type: task
 schedule: "@daily"
-command: commands/weekly-review
+uses: commands/weekly-review
 params: { scope: team }
 env:
   - env/prod
@@ -265,7 +272,7 @@ env:
 ---
 type: task
 schedule: "0 9 * * 1"
-workflow: workflows/ship-release
+uses: workflows/ship-release
 params: { version: nightly }
 ---
 ````
@@ -281,17 +288,18 @@ arm-later (draft tasks are never installed by `sync`).
 ## 5. GitHub Actions alignment — familiar, not copied
 
 The owner's rule: follow GHA style wherever it doesn't compromise akm's
-strengths. Applied as *adopt the shapes, keep akm's names* — the names carry
-akm's asset-type system, which is the strength not worth trading.
+strengths. `uses:`/`run:` now match GHA outright — and cost akm nothing,
+because akm refs are subdir-typed, so `uses: scripts/lint-all` still says
+*what* executes right in the value.
 
 **Adopted from GHA:**
 
 | GHA | Here |
 |---|---|
-| step-level keys, no nesting bag | targets and options directly on the step (§3.3) |
-| `run:` inline text executes under a shell | inline `script:` does, single-line included (§3.4) |
-| `env:` mapping at any level | the bare-mapping shorthand (§3.5) |
-| `shell:` override, per-OS defaults | same |
+| `uses:` names the reusable thing, `run:` is inline shell, at most one of them | same — and the ref's subdir supplies the type GHA leaves opaque |
+| step-level keys, no nesting bag | targets and options directly on the step (§3.4) |
+| `run:` text executes under a shell, per-OS defaults, `shell:` override | same; `sh` / `powershell` defaults |
+| `env:` mapping at any level | the bare-mapping shorthand (§3.6) |
 | `working-directory:` | `cwd:` (the script asset's existing metadata word) |
 | `continue-on-error` / `timeout-minutes` as step keys | `on_error:` / `timeout:` as step keys |
 
@@ -299,7 +307,7 @@ akm's asset-type system, which is the strength not worth trading.
 
 | GHA | Here | Why |
 |---|---|---|
-| `uses:` generic action ref | `command:` / `script:` / `workflow:` | keys named for asset types — owner decision; the type says what executes |
+| opaque `uses:` refs | typed asset refs (`commands/*`, `scripts/*`, `workflows/*`) | the ref grammar already encodes the type; recognition needs no registry lookup |
 | `inputs:` declared / `with:` passed | `params:` both places | one word beats two; `inputs:` already means upstream artifacts in workflows |
 | `name:` on steps | none | step titles were removed by owner ruling in the workflow unification |
 | marketplace actions | bundle assets | the sharing unit is the bundle |
@@ -309,13 +317,13 @@ akm's asset-type system, which is the strength not worth trading.
 | Layer | Today | After |
 |---|---|---|
 | Target + options schema | `akm-task.json` standalone (87 lines, loaded by nothing at runtime); separate `unit` defs with a duplicated `output` | one shared definitions file `$ref`'d by both published schemas; one spelling; bag deleted |
-| Parsing | `parseTaskDocument()` + `TASK_KEYS` + `rejectTargetFields()` + `resolvePromptSource()` (368 lines) | the unified frontmatter+body parser; at-most-one-target as a semantic pass |
+| Parsing | `parseTaskDocument()` + `TASK_KEYS` + `rejectTargetFields()` + `resolvePromptSource()` (368 lines) | the unified frontmatter+body parser; `uses:`-xor-`run:` as one schema rule |
 | Envelope | hand-listed keys, no OKF | `$ref akm-asset-envelope.json`; future stamped keys inherited free |
-| Target resolution | prompt/ref/path sniffing in `src/tasks/` | one resolver: ref → asset, inline → literal, producing the assembled prompt or shell text |
+| Target resolution | prompt/ref/path sniffing in `src/tasks/` | none to do — `uses:` is always a ref, `run:` is always inline; the resolver dispatches on the ref's subdir |
 | Command-template filling | n/a | one implementation, both surfaces |
-| Script execution | n/a (`runCommandTask` runs raw argv only) | one executor honoring `run`/`setup`/`cwd` + the inline-shell path, both surfaces |
+| Script/shell execution | n/a (`runCommandTask` runs raw argv only) | one executor: inline shell + script assets per `run`/`setup`/`cwd`, both surfaces |
 | Env assembly + redaction | `akm env run` and workflow `unit.env`, separately | one `env:` resolver feeding `sensitiveValues` |
-| Lint | `invalid-task-yaml` in the task adapter | shared envelope + schema + prose-rule passes; task-only passes (cron parse, at-most-one-target) on top |
+| Lint | `invalid-task-yaml` in the task adapter | shared envelope + schema + prose-rule passes; task-only passes (cron parse) on top |
 | Adapter | `.yml`-only recognize/place | markdown task recognized by `type: task` / `tasks/` residence; `place()` → `.md` |
 
 Honest boundary: agent dispatch stays two paths — the task runner's
@@ -327,10 +335,10 @@ assembly, options.
 
 ## 7. Authoring UX
 
-- **One sentence to learn:** *frontmatter names the target and options; the
-  nearest prose is the instructions; no target means the prose is the work.*
-  True of a task, true of a step.
-- `akm task create <id> [--schedule … --script … | --command <ref>]` emits the
+- **One sentence to learn:** *`uses:` an asset, `run:` a shell line, or write
+  prose and an agent does it — plus `schedule:` if it should recur.* True of
+  a task, true of a step.
+- `akm task create <id> [--schedule … --run … | --uses <ref>]` emits the
   markdown template and opens it. The ~12-flag `task add` surface retires with
   the `.yml` format — flags were compensating for a format with nowhere to
   put prose.
@@ -343,15 +351,21 @@ assembly, options.
 Breaking changes are approved for 0.9.0, and 0.9.0 already has an explicit,
 journaled, crash-resumable migration (`akm migrate apply`) that re-keys refs,
 folds databases, and converts `vaults/` → `env/`. Task conversion joins it as
-one more content step — replacing the earlier draft's three-phase dual-read
-design, which existed only to avoid a break this release is allowed to make:
+one more content step. No key survives with a changed meaning — the `.yml`
+vocabulary maps onto different spellings, so nothing is silently
+reinterpreted:
 
-- `.yml` → `.md` per task: `command: <shell>` → `script:`;
-  `prompt: |` scalar → the body; `prompt: commands/x` → `command: commands/x`;
-  `prompt: agents/x` → `agent: agents/x` (prompt = body, seeded from the agent
-  asset's own prompt when the task had no other text); `prompt: ./file.md` →
-  inlined into the body; `timeoutMs`/`llm.maxTokens` → `timeout`/`max_tokens`;
-  `version:` dropped. Mechanical, lossless, reviewable in the migration diff.
+| `.yml` (v2) | `.md` |
+|---|---|
+| `command: <shell>` | `run: <shell>` |
+| `prompt: \|` (inline scalar) | the document body |
+| `prompt: commands/<x>` | `uses: commands/<x>` |
+| `prompt: agents/<x>` | `agent: agents/<x>` (body seeded from the agent asset's prompt when the task had no other text) |
+| `prompt: ./file.md` | inlined into the body |
+| `workflow: <ref>` + `params` | `uses: workflows/<ref>` + `params` |
+| `timeoutMs` / `llm.maxTokens` / `model` | `timeout` / `llm.max_tokens` / `llm.model` |
+| `version: 2` | dropped |
+
 - Scheduler entries are untouched — task ids and the `akm task run <id>` ABI
   do not change, so nothing is reinstalled.
 - The 0.7→0.8 lesson — leftover files must never be **silently invisible** —
@@ -369,33 +383,35 @@ Resolved by owner:
 1. **Model** (round 1): task = schedulable bundle asset over OS scheduling;
    step = the same job inside a procedure; unify execution code; fewer
    concepts. Tasks don't grow steps; workflows don't grow schedules.
-2. **Targets name asset types** (round 2): `command:` / `script:` /
-   `workflow:`; the body is the prompt; `prompt:` deleted.
-3. **Reuse `command:`** (round 3): aligned to the asset type; breaking
-   changes approved for 0.9.0.
+2. **Targets name assets; the body is the prompt** (round 2): `prompt:`
+   deleted.
+3. **Breaking changes approved for 0.9.0** (round 3).
 4. **`env:` property** (round 3): key-value pairs and/or env refs, used at
-   runtime — shaped as §3.5.
+   runtime — shaped as §3.6. Ref-valued single entries confirmed (round 4).
 5. **`agent:` property** (round 3): a ref to an agent asset, applied when
-   applicable; no-op (plus lint notice) where it isn't, e.g. script targets.
-6. **GHA alignment** (round 3): follow GitHub Actions style wherever it
-   doesn't compromise akm — familiar, not copied. Applied as §5; resolves
-   inline-script semantics to always-shell.
-7. **No `version:`** (round 3): dropped from the markdown task format.
+   applicable; no-op (plus lint notice) where it isn't.
+6. **GHA alignment** (round 3): familiar, not copied — applied as §5.
+7. **No `version:`** (round 3).
+8. **Windows default shell: `powershell`** (round 4).
+9. **`uses:`/`run:` replace `command:`/`script:`/`workflow:` as the target
+   keys** (round 4 — supersedes round 3's "reuse `command:`," reopened by the
+   owner). The double-target error class becomes structurally impossible, the
+   `command:`-changes-meaning hazard and its parse-error guard are deleted,
+   ref-vs-inline sniffing never exists, and asset-type alignment survives in
+   the ref's subdir.
 
 Remaining:
 
-1. **Windows default shell for inline scripts.** Recommend `powershell` (GHA
-   parity); `cmd` is the conservative alternative. One-line decision.
-2. **Ref-valued `env:` entries** (`DATABASE_URL: secrets/db-url`, §3.5).
-   Proposed here because it completes "kv pairs and/or refs" for single
-   values and rides the existing redaction seam — confirm or trim to
-   group-refs + literals only.
+1. **`model` folds into `llm.model`** (§3.3, proposed this round). Shrinks
+   the muddy four (`agent`/`engine`/`model`/`llm`) to three disjoint nouns —
+   who / the runner / the request — with one precedence line. Confirm, or
+   keep `model:` top-level as a fourth key.
 
 ## 10. Non-goals
 
 - No `steps:` in tasks; no `schedule:` on workflows; no step reference/reuse
   system; no changes to `map`/`route`/`gate` semantics, IR, freeze, journal,
-  leases, or replay (the §3.3 flatten is authoring-schema-only — it compiles
+  leases, or replay (the §3.4 flatten is authoring-schema-only — it compiles
   to the same plan).
 - No change to the scheduler backends, `sync` reconciliation, runtime
   binding, task ids, or the `akm task run <id>` ABI.
