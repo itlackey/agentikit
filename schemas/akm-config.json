@@ -1639,9 +1639,6 @@
       "properties": {
         "improveAutonomy": {
           "type": "boolean"
-        },
-        "workflowEngine": {
-          "type": "boolean"
         }
       },
       "additionalProperties": true
@@ -3288,9 +3285,6 @@
           "type": "object",
           "properties": {
             "improveAutonomy": {
-              "type": "boolean"
-            },
-            "workflowEngine": {
               "type": "boolean"
             }
           },

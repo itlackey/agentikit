@@ -8,6 +8,12 @@ import { deepMergeConfig } from "../../core/config/deep-merge";
 import { ConfigError, UsageError } from "../../core/errors";
 import { DEFAULT_AGENT_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS } from "../../integrations/agent/config";
 import {
+  FALLBACK_ANNOUNCEMENT,
+  NO_ENGINE_MESSAGE_SUFFIX,
+  NO_ENGINE_REMEDY,
+  withEngineFallback,
+} from "../../integrations/agent/engine-fallback";
+import {
   type EngineConfig,
   type EngineUseConfig,
   resolveLlmEngineUse,
@@ -34,13 +40,28 @@ import { decodeWorkflowPlanV3, WORKFLOW_IR_VERSION } from "./schema";
 export interface FrozenWorkflow {
   plan: WorkflowPlanGraph;
   warnings: import("../schema").WorkflowError[];
+  /**
+   * Set when the implicit `opencode-sdk` engine fallback supplied the engine
+   * (`integrations/agent/engine-fallback.ts`). Surfaced once per run by the
+   * caller — a silently-chosen model is exactly the thing that confuses a
+   * reader of the resulting bill or artifact.
+   */
+  engineAnnouncement?: string;
 }
 
 /**
  * The only source-to-runtime boundary. Source compilation remains pure; engine
  * selection and every dispatch-significant setting are resolved here once.
  */
-export function compileResolveFreezeWorkflow(asset: WorkflowAsset, config: AkmConfig): FrozenWorkflow {
+export function compileResolveFreezeWorkflow(asset: WorkflowAsset, inputConfig: AkmConfig): FrozenWorkflow {
+  // Applied ONCE, before any resolution: every engine lookup below (selection,
+  // snapshots, the gate judge) then sees one config and needs no fallback
+  // awareness of its own.
+  const { config, fallbackEngineName } = withEngineFallback(inputConfig);
+  // Announce only if the fallback candidate is what a unit actually froze to:
+  // `defaults.engine` is the lowest-precedence selector, so a document- or
+  // unit-level `engine:` still wins and must not be reported as opencode's.
+  let usedFallbackEngine = false;
   const preliminary = compilePlan(asset);
   const engines: Record<string, FrozenEngineSnapshot> = {};
   const maxConcurrency = frozenConcurrency(config);
@@ -51,15 +72,13 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, config: AkmCo
     const name = selectedEngine(config, layers);
     if (!name)
       throw new ConfigError(
-        "No workflow engine is selected. Set defaults.engine or workflow defaults.engine.",
+        // Reached only when the implicit opencode-sdk fallback did not apply
+        // either, so the remedy names both routes.
+        `This workflow ${NO_ENGINE_MESSAGE_SUFFIX} Set defaults.engine or workflow defaults.engine.`,
         "INVALID_CONFIG_FILE",
-        // Reachable from a clean install whenever setup detected no agent CLI —
-        // the message above names the KEY but not how to fill it, which is the
-        // whole question at that point.
-        "Run `akm setup` to detect an installed agent, or set one explicitly: " +
-          '`akm config set engines.claude \'{"kind":"agent","platform":"claude"}\'` ' +
-          "then `akm config set defaults.engine claude`.",
+        NO_ENGINE_REMEDY,
       );
+    if (name === fallbackEngineName) usedFallbackEngine = true;
     const engine = engineDefinition(config, name);
     addSnapshot(config, name, engines);
     const model = exactModel(config, name, engine, layers);
@@ -135,8 +154,12 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, config: AkmCo
     execution: { maxConcurrency, engines },
     steps,
   });
+  // `usedFallbackEngine` IS the candidate-won predicate, so use the constant
+  // directly rather than re-asking a helper to compare a name with itself.
+  const engineAnnouncement = usedFallbackEngine ? FALLBACK_ANNOUNCEMENT : undefined;
   return {
     warnings: preliminary.warnings,
+    ...(engineAnnouncement ? { engineAnnouncement } : {}),
     plan,
   };
 }

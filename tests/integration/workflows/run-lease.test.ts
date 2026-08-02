@@ -11,8 +11,6 @@ import {
   WorkflowRunsRepository,
   withWorkflowRunsRepo,
 } from "../../../src/storage/repositories/workflow-runs-repository";
-import { buildWorkflowBrief } from "../../../src/workflows/exec/brief";
-import { reportWorkflowUnit } from "../../../src/workflows/exec/report";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
 import {
@@ -432,32 +430,6 @@ describe("engine run lease (single driver)", () => {
 });
 
 describe("manual loop under the lease", () => {
-  test("a stale report driver cannot claim a unit after the run is abandoned between snapshot and claim", async () => {
-    writeWorkflow("report-abandon-race");
-    const started = await startWorkflowRun("workflows/report-abandon-race", {});
-    const brief = await buildWorkflowBrief(started.run.id);
-    const unitId = brief.workList.units[0]?.unitId;
-    if (!unitId) throw new Error("fixture requires one reportable unit");
-
-    const realTransaction = WorkflowRunsRepository.prototype.transaction;
-    let transactions = 0;
-    spyOn(WorkflowRunsRepository.prototype, "transaction").mockImplementation(function <T>(
-      this: WorkflowRunsRepository,
-      fn: () => T,
-    ): T {
-      transactions++;
-      if (transactions === 2) {
-        execOnWorkflowDb("UPDATE workflow_runs SET status = 'failed' WHERE id = ?", started.run.id);
-      }
-      return realTransaction.call(this, fn) as T;
-    });
-
-    await expect(reportWorkflowUnit({ target: started.run.id, unitId, status: "running" })).rejects.toThrow(
-      /stale driver continuation/i,
-    );
-    expect(await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(started.run.id))).toEqual([]);
-  });
-
   test("manual complete is refused during a live engine lease, allowed after release", async () => {
     writeWorkflow("lease-manual");
     const started = await startWorkflowRun("workflows/lease-manual", {});
@@ -801,13 +773,17 @@ describe("engine lease heartbeat (long-running steps)", () => {
     expect(unhandled).toEqual([]);
   });
 
-  test("(d) `workflow report` keeps refusing while the heartbeat holds the lease live through a long step", async () => {
-    writeWorkflow("lease-hb-report");
-    const started = await startWorkflowRun("workflows/lease-hb-report", {});
+  test("(d) a racing manual spine advance keeps being refused while the heartbeat holds the lease live", async () => {
+    // Ported off the deleted `workflow report` driver: the invariant is that a
+    // heartbeat-renewed lease still reads LIVE to every other spine-advancing
+    // surface, so nobody can race the engine mid-step. The surviving surface is
+    // the manual `workflow complete` path (`assertLeaseAllowsSpineAdvance`).
+    writeWorkflow("lease-hb-manual");
+    const started = await startWorkflowRun("workflows/lease-hb-manual", {});
     const runId = started.run.id;
 
     let fireTick: (() => Promise<void>) | undefined;
-    let reportRefused = false;
+    let manualRefusal: string | undefined;
     const result = await runWorkflowSteps({
       target: runId,
       heartbeatScheduler: (tick) => {
@@ -819,23 +795,23 @@ describe("engine lease heartbeat (long-running steps)", () => {
         const held = await readLease(runId);
         await withWorkflowRunsRepo((repo) => repo.renewEngineLease(runId, held.holder as string, isoIn(-1_000)));
         await fireTick?.();
-        // A racing `report` must STILL be refused — the lease reads live, so the
-        // report cannot race the engine's spine (the R3 refusal stays correct).
         try {
-          await reportWorkflowUnit({
-            target: runId,
-            unitId: "only-step:solo",
+          await completeWorkflowStep({
+            runId,
+            stepId: "only-step",
             status: "completed",
-            resultRaw: "x",
+            summary: "Raced the engine by hand.",
             summaryJudge: null,
           });
         } catch (err) {
-          reportRefused = /is refused while the engine lease is live/.test((err as Error).message);
+          manualRefusal = (err as Error).message;
         }
         return { ok: true, text: "done" };
       },
     });
     expect(result.done).toBe(true);
-    expect(reportRefused).toBe(true);
+    // Refused, and the refusal names the engine holder the heartbeat kept alive.
+    expect(manualRefusal).toMatch(/is being driven by engine/);
+    expect(manualRefusal).toMatch(/run lease expires/);
   });
 });

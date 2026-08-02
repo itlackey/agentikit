@@ -3,16 +3,16 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Unit-level check-in: a no-background-thread staleness evaluator for units a
- * driver claimed via `akm workflow report --status running` (redesign addendum
- * R3, harness-neutral driver protocol).
+ * Unit-level check-in: a no-background-thread staleness evaluator for units
+ * left in the `running` state.
  *
  * Mirrors the run-level {@link ../runtime/checkin} design exactly: there is NO
- * timer or resident process. A driver executing a unit stamps `last_checkin_at`
- * (heartbeat) on the unit row; `workflow brief`/`status` then call the pure
- * {@link evaluateStaleUnits} to decide — from timestamps alone — which claimed
- * units have gone silent past a window, so a stalled driver surfaces without any
- * monitoring daemon. Deterministic in `now`, so it is trivially unit-testable.
+ * timer or resident process. A unit row carries its claim time (`started_at`)
+ * and, when the executing process refreshes it, a `last_checkin_at` heartbeat;
+ * `workflow status --units` then calls the pure {@link evaluateStaleUnits} to
+ * decide — from timestamps alone — which claimed units have gone silent past a
+ * window, so a run whose executor died surfaces without any monitoring daemon.
+ * Deterministic in `now`, so it is trivially unit-testable.
  *
  * @module workflows/unit-checkin
  */
@@ -47,7 +47,7 @@ function parseIso(value: string | null | undefined): number | null {
  * Pure stale-unit evaluator. Returns every `running` DISPATCH unit whose last
  * heartbeat (`last_checkin_at`, else the first-claim `started_at`) is older than
  * `staleMs`. Gate-evaluation rows (`phase = "gate"`) are excluded — they are
- * synchronous engine judge calls, never driver-claimed work. A running row with
+ * synchronous engine judge calls, never separately claimed work. A running row with
  * no usable timestamp at all is treated as stale (a claim we can no longer age).
  * Deterministic in `now` — free of timer flakiness.
  */

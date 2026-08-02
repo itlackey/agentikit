@@ -463,7 +463,9 @@ export interface DetectedEnvironment {
  * import-only check would report `opencode-sdk` on every machine — including
  * ones where the first agentic command then dies with spawn ENOENT. The SDK
  * runner spawns `opencode serve` (see `harnesses/opencode-sdk/sdk-runner.ts`),
- * so the binary probe is what actually decides.
+ * so the binary probe is what actually decides. The package cannot substitute
+ * for the binary under any driver: it declares `"dependencies": {}` and its
+ * own `createOpencodeServer` spawns the same `opencode serve`.
  *
  * Pure aside from the dynamic import resolution (which performs no network).
  */

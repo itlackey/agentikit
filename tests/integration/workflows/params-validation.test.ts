@@ -9,17 +9,17 @@ import { UsageError } from "../../../src/core/errors";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { resolveStorageLocations } from "../../../src/storage/locations";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
-import { buildWorkflowBrief } from "../../../src/workflows/exec/brief";
-import { reportWorkflowUnit } from "../../../src/workflows/exec/report";
-import { listWorkflowRuns, startWorkflowRun } from "../../../src/workflows/runtime/runs";
+import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
+import { getWorkflowStatus, listWorkflowRuns, startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
 
 /**
  * Reviewer #12: a program can declare `params.files: { type: array }`, but a
  * `--params '{"files":"not-an-array"}'` supplied at start used to flow silently
  * into unit prompts. The param schemas are now frozen into the plan and
- * validated at start (reject) and re-asserted at brief/report plan-load (loud
- * corruption when the journaled params row was edited after the run started).
+ * validated at start (reject) and re-asserted when the engine loads the frozen
+ * plan (loud corruption when the journaled params row was edited after the run
+ * started).
  */
 
 let storage: IsolatedAkmStorage;
@@ -114,29 +114,45 @@ describe("#12 — param schema validation at start", () => {
   });
 });
 
-describe("#12 — journaled params must still satisfy the frozen schemas (brief/report integrity)", () => {
-  test("brief refuses a run whose params row was edited to violate the schema", async () => {
+describe("#12 — journaled params must still satisfy the frozen schemas (execution integrity)", () => {
+  test("`workflow run` refuses a run whose params row was edited to violate a declared type", async () => {
     writeProgram("param-guard", PARAM_GUARD_WF);
     const started = await startWorkflowRun("workflows/param-guard", { files: ["a.ts"], mode: "fast" });
     tamperParams(started.run.id, JSON.stringify({ files: "no-longer-an-array", mode: "fast" }));
 
-    await expect(buildWorkflowBrief(started.run.id)).rejects.toThrow(new RegExp(`${started.run.id}.*integrity check`));
+    let dispatches = 0;
+    await expect(
+      runWorkflowSteps({
+        target: started.run.id,
+        summaryJudge: null,
+        dispatcher: async () => {
+          dispatches++;
+          return { ok: true, text: "must not run" };
+        },
+      }),
+    ).rejects.toThrow(new RegExp(`${started.run.id}.*integrity check`));
+    // The assert fires on plan load — before any unit prompt is resolved from
+    // the schema-violating params, so nothing is dispatched (or paid for).
+    expect(dispatches).toBe(0);
   });
 
-  test("report refuses a run whose params row was edited to violate the schema", async () => {
+  test("`workflow run` refuses a run whose params row was edited outside a declared enum", async () => {
     writeProgram("param-guard", PARAM_GUARD_WF);
     const started = await startWorkflowRun("workflows/param-guard", { files: ["a.ts"], mode: "fast" });
     tamperParams(started.run.id, JSON.stringify({ files: ["a.ts"], mode: "unknown-mode" }));
 
+    let dispatches = 0;
     await expect(
-      reportWorkflowUnit({
+      runWorkflowSteps({
         target: started.run.id,
-        unitId: "review:solo",
-        status: "completed",
-        resultRaw: "done",
         summaryJudge: null,
+        dispatcher: async () => {
+          dispatches++;
+          return { ok: true, text: "must not run" };
+        },
       }),
     ).rejects.toThrow(new RegExp(`${started.run.id}.*integrity check`));
+    expect(dispatches).toBe(0);
   });
 
   test("a benign params edit that still satisfies the schema is NOT flagged as corruption", async () => {
@@ -148,12 +164,24 @@ describe("#12 — journaled params must still satisfy the frozen schemas (brief/
     const tampered = { files: ["a.ts", "b.ts"], mode: "slow" };
     tamperParams(started.run.id, JSON.stringify(tampered));
 
-    // brief no longer trips the param-integrity assert: it must not throw the
-    // integrity-check corruption error, AND must surface the tampered (but
-    // schema-valid) params verbatim rather than silently reverting to the
-    // originally-started values.
-    const brief = await buildWorkflowBrief(started.run.id);
-    expect(brief.run.id).toBe(started.run.id);
-    expect(brief.run.params).toEqual(tampered);
+    // The engine no longer trips the param-integrity assert: the run executes
+    // to completion instead of throwing the integrity-check corruption error …
+    let dispatches = 0;
+    const result = await runWorkflowSteps({
+      target: started.run.id,
+      summaryJudge: null,
+      dispatcher: async () => {
+        dispatches++;
+        return { ok: true, text: "done" };
+      },
+    });
+    expect(result.done).toBe(true);
+    expect(dispatches).toBe(1);
+
+    // … and the read surface reports the tampered (but schema-valid) params
+    // verbatim rather than silently reverting to the originally-started values.
+    const status = await getWorkflowStatus(started.run.id);
+    expect(status.run.id).toBe(started.run.id);
+    expect(status.run.params).toEqual(tampered);
   });
 });

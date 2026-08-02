@@ -15,13 +15,10 @@ import { ConfigError } from "../../../src/core/errors";
 import { openStateDatabase } from "../../../src/core/state-db";
 import type { WorkflowRunUnitRow } from "../../../src/storage/repositories/workflow-runs-repository";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
-import { buildWorkflowBrief } from "../../../src/workflows/exec/brief";
 import type { UnitDispatchRequest, UnitDispatchResult } from "../../../src/workflows/exec/native-executor";
-import { reportWorkflowUnit } from "../../../src/workflows/exec/report";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import {
   activeGateLoop,
-  assertJournaledRouteSelectionsValid,
   buildEvidence,
   canonicalJson,
   computeStepWorkList,
@@ -905,14 +902,6 @@ describe("reviewer #7 — a tampered route selection fails loudly on every surfa
     );
   });
 
-  test("assertJournaledRouteSelectionsValid throws on a bogus selection, passes on a valid one", () => {
-    const routePlan = plan(ROUTE_WF);
-    expect(() => assertJournaledRouteSelectionsValid(routePlan, routeState("ghost"))).toThrow(
-      /not a declared branch or default target/,
-    );
-    expect(() => assertJournaledRouteSelectionsValid(routePlan, routeState("ship"))).not.toThrow();
-  });
-
   test("a VALID journaled selection is applied to the skip bookkeeping without throwing", () => {
     const routePlan = plan(ROUTE_WF);
     const routeSelected = new Set<string>();
@@ -921,11 +910,6 @@ describe("reviewer #7 — a tampered route selection fails loudly on every surfa
     expect(routeSelected.has("ship")).toBe(true);
     // The unselected branch is marked skip-on-reach.
     expect(routeUnselected.get("rework")?.selected).toBe("ship");
-  });
-
-  test("brief fails loudly (read-only surface) on tampered route evidence", async () => {
-    seedRouteRunDb(plan(ROUTE_WF), "ghost");
-    await expect(buildWorkflowBrief(RUN_ID)).rejects.toThrow(/not a declared branch or default target/);
   });
 
   test("engine run (resume) fails loudly on tampered route evidence", async () => {
@@ -940,28 +924,11 @@ describe("reviewer #7 — a tampered route selection fails loudly on every surfa
     ).rejects.toThrow(/not a declared branch or default target/);
   });
 
-  test("report fails loudly on tampered route evidence when it finalizes the active step", async () => {
-    const routePlan = plan(ROUTE_WF);
-    seedRouteRunDb(routePlan, "ghost");
-    const shipStep = routePlan.steps.find((s) => s.stepId === "ship");
-    if (!shipStep) throw new Error("fixture: ship step missing");
-    const wl = computeStepWorkList(shipStep, {
-      runId: RUN_ID,
-      params: {},
-      stepOutputs: {},
-      engines: routePlan.execution.engines,
-    });
-    if (!wl.ok) throw new Error(wl.error);
-    await expect(
-      reportWorkflowUnit({
-        target: RUN_ID,
-        unitId: wl.list.units[0]!.unitId,
-        status: "completed",
-        resultRaw: "done",
-        summaryJudge: null,
-      }),
-    ).rejects.toThrow(/not a declared branch or default target/);
-  });
+  // DELETED (external-driver removal): the two remaining cases here asserted
+  // that the read-only `brief` surface and the `report` finalize path each
+  // rejected a tampered route selection. Both surfaces are gone; the engine
+  // validates journaled selections at RESUME via `seedJournaledRouteDecisions`,
+  // covered by the test above.
 });
 
 // ── Reviewer #6 — the gate row is finalized when completeWorkflowStep throws ───

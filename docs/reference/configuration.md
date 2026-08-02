@@ -84,13 +84,24 @@ An agent engine may set `bin`, `args`, `workspace`, `model`, `timeoutMs`, and
 `modelAliases`. Only `platform: "opencode-sdk"` may set `llmEngine`; it names
 the LLM engine used as that SDK engine's fallback connection.
 
+`platform: "opencode-sdk"` needs the **`opencode` binary** on PATH (or a `bin`
+pointing at it). akm bundles `@opencode-ai/sdk`, but that package is an HTTP
+client with no dependencies — it spawns `opencode serve` and talks to it — so
+the npm dependency alone does not make the platform usable. Install the binary
+with `npm i -g opencode-ai` or opencode's own installer.
+
 Config-root `modelAliases` resolve by exact engine/platform column first, then
 the shared `llm` column for direct and fallback LLM engines, then `"*"`. The
 resolved exact model is used consistently by direct dispatch, SDK fallback,
 health evidence, and frozen workflow plans.
 
 `defaults.engine` names an LLM or agent engine. `defaults.llmEngine` must name
-an LLM engine. There is no first-engine fallback.
+an LLM engine. There is no first-engine fallback: an unset `defaults.engine`
+never resolves to some arbitrary entry in `engines`. It resolves instead to a
+synthesized, config-free `opencode-sdk` engine when the `opencode` binary is on
+PATH — announced once per run, and preempted by any `opencode-sdk` engine you
+configure yourself. Naming an engine that is not configured is always an error
+and is never rescued by that fallback.
 
 Index passes select engines through `index.defaults.engine` or
 `index.<pass>.engine`. Per-pass `model`, `timeoutMs`, and `llm` fields are
@@ -284,8 +295,7 @@ section, an absent key, and an explicit `false` all read identically as off.
 ```jsonc
 {
   "experimental": {
-    "improveAutonomy": false,
-    "workflowEngine": false
+    "improveAutonomy": false
   }
 }
 ```
@@ -295,12 +305,6 @@ section, an absent key, and an explicit `false` all read identically as off.
   itself always runs; this only gates mutations without a human in the loop.
   Consolidation is not gated: it remains advisory and emits reviewable
   proposals. `sync.push` is deliberately **not** gated by this key.
-- **`experimental.workflowEngine`** — enables only the experimental
-  harness-neutral `akm workflow brief`/`report` driver protocol. Stable native
-  orchestration through `akm workflow run`, authoring, linting, inspection, and
-  recovery are unaffected. See
-  [Workflows](workflows.md#external-driver-protocol-opt-in-in-090) for the full
-  gate behavior and error shape.
 
 ## Managing Config
 

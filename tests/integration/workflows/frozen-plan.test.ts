@@ -9,8 +9,6 @@ import { UsageError } from "../../../src/core/errors";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { resolveStorageLocations } from "../../../src/storage/locations";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
-import { buildWorkflowBrief } from "../../../src/workflows/exec/brief";
-import { reportWorkflowUnit, settleWorkflowSpine } from "../../../src/workflows/exec/report";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { computePlanHash } from "../../../src/workflows/ir/plan-hash";
 import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
@@ -271,9 +269,6 @@ describe("plan freezing at workflow start (migration 006)", () => {
       }
     };
     await expectCorrupt(getNextWorkflowStep(started.run.id));
-    await expectCorrupt(buildWorkflowBrief(started.run.id));
-    await expectCorrupt(reportWorkflowUnit({ target: started.run.id, unitId: "only-step:solo", status: "running" }));
-    await expectCorrupt(settleWorkflowSpine({ target: started.run.id, summaryJudge: null }));
     await expectCorrupt(completeWorkflowStep({ runId: started.run.id, stepId: "only-step", status: "blocked" }));
     await expectCorrupt(resumeWorkflowRun(started.run.id));
     await expectCorrupt(runWorkflowSteps({ target: started.run.id, summaryJudge: null }));

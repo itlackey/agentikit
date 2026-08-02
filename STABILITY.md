@@ -63,8 +63,6 @@ enumeration of the whole `proposal` noun group.
 | `akm workflow resume` | Stable | |
 | `akm workflow abandon` | Stable | |
 | `akm workflow run` | Stable | Canonical start/resume/execute command. |
-| `akm workflow brief` | Experimental | Harness-neutral driver protocol; requires `experimental.workflowEngine`. |
-| `akm workflow report` | Experimental | Harness-neutral driver protocol; requires `experimental.workflowEngine`. |
 | `akm remember` | Stable | |
 | `akm import` | Stable | |
 | `akm sync` | Stable | |
@@ -324,39 +322,6 @@ for scripted use.
   the design of the improve processes, so **keys in these two families may be
   added, renamed, or dropped in any 0.9.x or 0.10.x release**. The `akm
   improve` *command* surface is Evolving (above); its tuning config is not.
-- **The `akm workflow brief` / `akm workflow report` driver protocol** — an
-  external agent can execute units from an existing frozen run and report the
-  results through the native completion path. It requires the
-  `experimental.workflowEngine` opt-in; see
-  [below](#akm-workflow-driver-protocol--opt-in-in-090). Its flags and JSON
-  shapes may change. The unified workflow format and canonical `workflow run`
-  orchestration command are Stable and ungated.
-
-### `akm workflow` driver protocol — opt-in in 0.9.0
-
-**The harness-neutral external-driver protocol requires an explicit opt-in in
-0.9.0.** Native execution through `akm workflow run`, authoring, linting,
-inspection, and recovery ship unconditionally. Enable external driving with:
-
-```sh
-akm config set experimental.workflowEngine true
-```
-
-Without it, these experimental surfaces refuse outright rather than degrading:
-
-| Surface | What it does when enabled |
-| --- | --- |
-| `akm workflow brief` | Read-only half of the harness-neutral driver protocol |
-| `akm workflow report` | Mutating half of the harness-neutral driver protocol |
-
-Each refusal is a classified `ConfigError` (`WORKFLOW_ENGINE_NOT_ENABLED`, exit
-78) naming the exact surface and config key — never a silent no-op — and `akm
-task doctor` reports the gate's state under `workflowEngine.enabled` /
-`workflowEngine.configKey`. `akm workflow run` is unaffected because it is the
-Stable native execution path.
-
-The engine is never enabled by inference: an absent `experimental` section, an
-absent key, and an explicit `false` all read as off.
 
 ### `akm improve` autonomy — opt-in in 0.9.0
 

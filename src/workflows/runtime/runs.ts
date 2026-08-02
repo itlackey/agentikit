@@ -56,7 +56,7 @@ export interface WorkflowRunDetail {
    * Best-effort advisories about the run (PR #714 review round 2, #13). At
    * `start` this carries secret-shaped-param warnings: params are declared
    * non-secret (they are hashed into every unit prompt and cannot be redacted),
-   * so a credential-looking param value is flagged loudly here and in `brief`.
+   * so a credential-looking param value is flagged loudly here.
    */
   warnings?: string[];
   /**
@@ -103,14 +103,15 @@ export interface WorkflowUnitDiagnostic {
   finishedAt: string | null;
   /**
    * True when this is a `running` claim that has gone silent past the check-in
-   * window — a driver that claimed the unit with `report --status running` and
-   * then died (Codex round-3 finding B). `status --units` runs the SAME pure
-   * {@link evaluateStaleUnits} pass `brief` uses so the two surfaces agree.
+   * window — the process that claimed the unit died without journaling a
+   * terminal row (Codex round-3 finding B). `status --units` runs the pure
+   * {@link evaluateStaleUnits} pass, so an abandoned claim is reported as stale
+   * rather than as an indefinitely `running` unit.
    */
   stale: boolean;
   /** Idle ms since the last heartbeat / first claim when the row is stale; null otherwise. */
   staleIdleMs: number | null;
-  /** The driver holding a `running` claim (migration 009); null when unclaimed. */
+  /** The holder of a `running` claim (migration 009); null when unclaimed. */
   claimHolder: string | null;
   /** When the `running` claim expires; null when unclaimed. */
   claimExpiresAt: string | null;
@@ -177,6 +178,12 @@ export interface WorkflowNextResult {
   step: WorkflowRunStepState | null;
   done?: true;
   autoStarted?: true;
+  /**
+   * Non-fatal notices produced when THIS invocation created the run (e.g. the
+   * implicit engine fallback). Only present on the auto-start path — a resume
+   * never re-surfaces a decision it did not make.
+   */
+  startWarnings?: string[];
   /** Present when the run looks stalled — a strong `continue` directive (#506). */
   checkin?: CheckinDirective;
 }
@@ -238,7 +245,8 @@ export async function startWorkflowRun(
   // persist it on the run row in the same transaction as the insert. Every
   // later invocation executes this snapshot — the asset file is never re-read
   // for an in-flight run; re-planning is an explicit new run.
-  const plan = decodeWorkflowPlanV3(compileResolveFreezeWorkflow(asset, loadConfig()).plan);
+  const frozen = compileResolveFreezeWorkflow(asset, loadConfig());
+  const plan = decodeWorkflowPlanV3(frozen.plan);
   if (options?.parameterFlags?.length && Object.keys(params).length > 0) {
     throw new UsageError("Workflow parameters must use either an object or per-parameter flags, not both.");
   }
@@ -336,11 +344,15 @@ export async function startWorkflowRun(
     const result = await getWorkflowStatus(runId);
     // #13: params are declared non-secret (they are copied verbatim into every
     // unit prompt and hashed into the unit identity, so they cannot be redacted
-    // without breaking the driver protocol). Surface a loud, best-effort warning
+    // without breaking replay determinism). Surface a loud, best-effort warning
     // when a param LOOKS like a credential so the author moves it to an env
     // binding. Advisory only — never blocks the start.
     const secretWarnings = detectSecretShapedParams(effectiveParams);
     if (secretWarnings.length > 0) result.warnings = [...(result.warnings ?? []), ...secretWarnings];
+    // The implicit engine fallback is announced ONCE, here at run creation —
+    // the frozen plan records the engine actually used, so a resume never
+    // re-announces a decision it did not make.
+    if (frozen.engineAnnouncement) result.warnings = [...(result.warnings ?? []), frozen.engineAnnouncement];
     // 07 P1-B: emit only the run id + status — NOT the raw workflowTitle (which
     // comes verbatim from the workflow asset's frontmatter and is therefore
     // attacker-influenceable). Keeping raw titles out of the events stream
@@ -368,9 +380,9 @@ export async function getWorkflowStatus(
       // project each row, INCLUDING failures whose diagnostic text the
       // deterministic evidence graph drops. Read-only; never mutates the run.
       const rows = repo.getUnitsForRun(run.id);
-      // Codex round-3 finding B: run the SAME pure stale-claim evaluator `brief`
-      // uses (`now` injected for deterministic tests) so a dead driver's claimed
-      // `running` unit surfaces as stale here too, not just as raw `running`.
+      // Codex round-3 finding B: run the pure stale-claim evaluator (`now`
+      // injected for deterministic tests) so a unit left `running` by a process
+      // that died surfaces as stale here, not just as raw `running`.
       const staleById = new Map(evaluateStaleUnits(rows, opts.now ?? Date.now()).map((u) => [u.unitId, u]));
       const classified = classifyWorkflowRunPlan(run);
       const engines = classified.support === "supported" ? classified.plan.execution?.engines : undefined;
@@ -432,17 +444,26 @@ export async function getNextWorkflowStep(
   options?: { parameterFlags?: readonly WorkflowParameterFlag[] },
 ): Promise<WorkflowNextResult> {
   return withWorkflowRunsRepo(async (repo) => {
-    const { run, autoStarted } = await resolveRunSpecifier(repo, specifier, params, options?.parameterFlags);
+    const { run, autoStarted, startWarnings } = await resolveRunSpecifier(
+      repo,
+      specifier,
+      params,
+      options?.parameterFlags,
+    );
     const steps = readWorkflowRunSteps(repo, run.id);
     const plan = requireExecutableWorkflowPlan(run);
     assertWorkflowSpineMatchesPlan(plan, run, steps);
-    return { ...projectNextResult(run, steps), ...(autoStarted ? { autoStarted: true as const } : {}) };
+    return {
+      ...projectNextResult(run, steps),
+      ...(autoStarted ? { autoStarted: true as const } : {}),
+      ...(startWarnings?.length ? { startWarnings } : {}),
+    };
   });
 }
 
 /**
  * Project a run row + its step rows into a {@link WorkflowNextResult}. The pure
- * read-shaping half of {@link getNextWorkflowStep}, extracted so the driver
+ * read-shaping half of {@link getNextWorkflowStep}, extracted so the run
  * snapshot below reproduces the exact same projection without re-running the
  * auto-start-capable {@link resolveRunSpecifier}.
  */
@@ -470,34 +491,6 @@ function projectNextResult(run: WorkflowRunRow, steps: WorkflowRunStepRow[]): Wo
     ...(done ? { done } : {}),
     ...(checkin ? { checkin } : {}),
   };
-}
-
-/**
- * A consistent point-in-time snapshot of a run for the harness-neutral driver
- * protocol (PR #714 review round 2, #14). `brief`/`report` previously read the
- * spine (`getNextWorkflowStep`) and then, in a SEPARATE connection, the run row
- * + unit journal — so a concurrent `report`/`run`/manual completion could change
- * the active step BETWEEN the two reads, leaving the described work-list
- * inconsistent with the run row it was stamped against. This reads the run row,
- * its steps, AND its unit rows inside ONE transaction (one connection, one
- * snapshot) so all three agree. It never auto-starts — `runId` must already
- * resolve to a concrete run — because the driver protocol never mutates on read.
- */
-export async function snapshotRunForDriver(runId: string): Promise<{
-  next: WorkflowNextResult;
-  run: WorkflowRunRow;
-  units: WorkflowRunUnitRow[];
-}> {
-  return withWorkflowRunsRepo((repo) =>
-    repo.transaction(() => {
-      const run = readWorkflowRun(repo, runId);
-      const steps = readWorkflowRunSteps(repo, run.id);
-      const plan = requireExecutableWorkflowPlan(run);
-      assertWorkflowSpineMatchesPlan(plan, run, steps);
-      const units = repo.getUnitsForRun(run.id);
-      return { next: projectNextResult(run, steps), run, units };
-    }),
-  );
 }
 
 export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetail> {
@@ -734,7 +727,7 @@ async function resolveRunSpecifier(
   specifier: string,
   params?: Record<string, unknown>,
   parameterFlags?: readonly WorkflowParameterFlag[],
-): Promise<{ run: WorkflowRunRow; autoStarted: boolean }> {
+): Promise<{ run: WorkflowRunRow; autoStarted: boolean; startWarnings?: string[] }> {
   const hasParameters = (params && Object.keys(params).length > 0) || (parameterFlags?.length ?? 0) > 0;
   const explicitRun = repo.getRunById(specifier);
   if (explicitRun) {
@@ -778,7 +771,11 @@ async function resolveRunSpecifier(
   const started = await startWorkflowRun(ref, params ?? {}, {
     ...(parameterFlags !== undefined ? { parameterFlags } : {}),
   });
-  return { run: readWorkflowRun(repo, started.run.id), autoStarted: true };
+  return {
+    run: readWorkflowRun(repo, started.run.id),
+    autoStarted: true,
+    ...(started.warnings?.length ? { startWarnings: started.warnings } : {}),
+  };
 }
 
 function interruptionReason(signal: AbortSignal): Error {
@@ -803,40 +800,6 @@ async function workflowRunRefSet(canonicalRef: string, exactRef: string): Promis
     }
   }
   return [...refs];
-}
-
-/** Resolve an existing active run without auto-starting or rebinding a detached short ref. */
-export async function resolveExistingWorkflowRunId(target: string): Promise<string> {
-  return withWorkflowRunsRepo(async (repo) => {
-    const byId = repo.getRunById(target);
-    if (byId) return byId.id;
-
-    const scopeKey = getCurrentWorkflowScopeKey();
-    const exactRef = target.trim();
-    if (!exactRef.includes(":") && !exactRef.includes("/")) {
-      throw new NotFoundError(`Workflow run or workflow "${target}" not found.`, "WORKFLOW_NOT_FOUND");
-    }
-    const parsedExact = parseBundleRef(exactRef);
-    const detached =
-      parsedExact.bundle && parsedExact.fragment === undefined
-        ? repo.getActiveRunRowForScope(exactRef, scopeKey)
-        : undefined;
-    let canonicalRef: string;
-    try {
-      canonicalRef = await canonicalizeWorkflowSpecifier(exactRef);
-    } catch (error) {
-      if (detached) return detached.id;
-      if (error instanceof NotFoundError) {
-        throw new NotFoundError(`Workflow run or workflow "${target}" not found.`, "WORKFLOW_NOT_FOUND");
-      }
-      throw error;
-    }
-    const active = repo.getActiveRunRowForScope(await workflowRunRefSet(canonicalRef, exactRef), scopeKey);
-    if (!active) {
-      throw new NotFoundError(`No active workflow run for ${canonicalRef} in this scope.`, "WORKFLOW_NOT_FOUND");
-    }
-    return active.id;
-  });
 }
 
 function readWorkflowRun(repo: WorkflowRunsRepository, runId: string): WorkflowRunRow {

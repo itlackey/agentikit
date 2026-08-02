@@ -81,12 +81,11 @@ export type WorkflowRunUnitRow = {
   started_at: string | null;
   finished_at: string | null;
   /**
-   * Most recent unit-level check-in heartbeat (migration 007, R3 driver
-   * protocol): a driver claiming/heartbeating a `running` unit via
-   * `akm workflow report --status running` stamps this. Distinct from
+   * Most recent unit-level check-in heartbeat (migration 007): refreshed
+   * whenever a `running` unit's claim is (re)stamped. Distinct from
    * `started_at` (the first claim); the stale-unit evaluator
-   * (`runtime/unit-checkin.ts`) reads it. NULL on engine-dispatched rows and
-   * on never-heartbeated units.
+   * (`runtime/unit-checkin.ts`) reads it. NULL on never-heartbeated units,
+   * including plain engine-dispatched rows.
    */
   last_checkin_at: string | null;
   /**
@@ -102,11 +101,10 @@ export type WorkflowRunUnitRow = {
   attempts: number;
   /**
    * Claim owner of a `running` unit (migration 009, PR #714 review round 2): the
-   * `--session-id` a driver passed to `akm workflow report --status running`, or
-   * a token `report` minted and returned. Heartbeating or finishing a
+   * session/holder token that took the unit. Heartbeating or finishing a
    * live-claimed running row requires this holder; an expired claim
    * ({@link claim_expires_at} in the past) is reclaimable by a new holder. NULL
-   * on engine-dispatched rows and on claimless (simple-driver) reports.
+   * on plain engine-dispatched rows, which are never separately claimed.
    */
   claim_holder: string | null;
   /** Claim expiry (ISO-8601 UTC; migration 009). NULL when unclaimed. A claim is
@@ -524,27 +522,12 @@ export class WorkflowRunsRepository {
       .all(runId, stepId) as WorkflowRunUnitRow[];
   }
 
-  /** One unit row by primary key, or undefined. Used by the R3 report path's
-   * guarded read-then-write (idempotency / replay-divergence / claim checks). */
+  /** One unit row by primary key, or undefined. Used for guarded read-then-write
+   * (idempotency / replay-divergence / claim checks). */
   getUnit(runId: string, unitId: string): WorkflowRunUnitRow | undefined {
     return this.db.prepare("SELECT * FROM workflow_run_units WHERE run_id = ? AND unit_id = ?").get(runId, unitId) as
       | WorkflowRunUnitRow
       | undefined;
-  }
-
-  /**
-   * Stamp a unit-level check-in heartbeat (migration 007, R3 driver protocol):
-   * a driver executing a unit calls `report --status running` to claim (first
-   * call) or heartbeat (subsequent) it. Sets `status = 'running'` and
-   * `last_checkin_at`; NEVER touches `started_at` (the first-claim marker set by
-   * {@link insertUnit}) so the heartbeat window advances without resetting the
-   * claim time. The caller guards against re-claiming a terminal unit inside its
-   * transaction.
-   */
-  updateUnitCheckin(runId: string, unitId: string, lastCheckinAt: string): void {
-    this.db
-      .prepare("UPDATE workflow_run_units SET status = 'running', last_checkin_at = ? WHERE run_id = ? AND unit_id = ?")
-      .run(lastCheckinAt, runId, unitId);
   }
 
   /**
@@ -611,13 +594,13 @@ export class WorkflowRunsRepository {
   }
 
   /**
-   * Stamp a `--status running` claim + heartbeat on a unit row (migration 009,
-   * PR #714 review round 2). Sets `status = 'running'`, refreshes the heartbeat
-   * (`last_checkin_at`), and (re)writes the claim owner + expiry. Called inside
-   * the report path's running-claim transaction AFTER it has validated that the
-   * claim is free / expired / already held by this holder, so the write is the
-   * final step of a checked reclaim. Never touches `started_at` (the first-claim
-   * marker set by {@link insertUnit}).
+   * Stamp a `running` claim + heartbeat on a unit row (migration 009, PR #714
+   * review round 2). Sets `status = 'running'`, refreshes the heartbeat
+   * (`last_checkin_at`), and (re)writes the claim owner + expiry. Must be called
+   * inside a transaction that has ALREADY validated the claim is free / expired
+   * / already held by this holder, so the write is the final step of a checked
+   * reclaim. Never touches `started_at` (the first-claim marker set by
+   * {@link insertUnit}).
    */
   updateUnitClaim(runId: string, unitId: string, holder: string, expiresAt: string, lastCheckinAt: string): boolean {
     const result = this.db

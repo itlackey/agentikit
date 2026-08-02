@@ -20,6 +20,11 @@ import { parseRefInput } from "../../core/asset/resolve-ref";
 import type { AkmConfig } from "../../core/config/config";
 import { NotFoundError, UsageError } from "../../core/errors";
 import type { AgentDispatchRequest } from "../../integrations/agent/builder-shared";
+import {
+  NO_ENGINE_MESSAGE_SUFFIX,
+  NO_ENGINE_REMEDY,
+  withEngineFallback,
+} from "../../integrations/agent/engine-fallback";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
 import { executeRunner } from "../../integrations/agent/runner-dispatch";
 import type { AgentRunResult } from "../../integrations/agent/spawn";
@@ -108,9 +113,13 @@ async function resolveAssetBody(ref: string): Promise<string> {
 export async function akmAgentDispatch(options: AkmAgentDispatchOptions): Promise<AkmAgentDispatchResult> {
   if (!options.agentConfig)
     throw new UsageError("agent requires a valid config with an agent engine.", "MISSING_REQUIRED_ARGUMENT");
-  const engineName = options.engine ?? options.agentConfig.defaults?.engine;
-  if (!engineName) throw new UsageError("agent requires --engine or defaults.engine.", "MISSING_REQUIRED_ARGUMENT");
-  const runner = resolveEngine(engineName, options.agentConfig);
+  // Same implicit opencode-sdk fallback the workflow and task surfaces apply,
+  // so an engine-less install is usable everywhere or nowhere — not a mix.
+  const { config: agentConfig } = withEngineFallback(options.agentConfig);
+  const engineName = options.engine ?? agentConfig.defaults?.engine;
+  if (!engineName)
+    throw new UsageError(`agent ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "MISSING_REQUIRED_ARGUMENT");
+  const runner = resolveEngine(engineName, agentConfig);
   if (runner.kind === "llm") {
     throw new UsageError(
       `Engine "${engineName}" is an LLM engine; akm agent requires an agent engine.`,

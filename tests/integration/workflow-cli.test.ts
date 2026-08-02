@@ -202,12 +202,14 @@ describe("workflow CLI", () => {
   });
 
   test("removed manual lifecycle commands fail with explicit migration hints", async () => {
-    for (const command of ["start", "next", "complete"]) {
+    // brief/report joined the retired set when the external-driver protocol
+    // was removed, so every hint here must name a command that still exists.
+    for (const command of ["start", "next", "complete", "brief", "report"]) {
       const result = await runCliCapture(["workflow", command, "workflows/demo"]);
       expect(result.code).toBe(2);
       const envelope = errorEnvelope(result.stderr);
       expect(envelope.code).toBe("UNKNOWN_COMMAND");
-      expect(envelope.hint).toContain(command === "complete" ? "workflow report" : "workflow run");
+      expect(envelope.hint).toContain(command === "next" ? "workflow status" : "workflow run");
     }
   });
 
@@ -222,6 +224,8 @@ describe("workflow CLI", () => {
     expect(names).not.toContain("start");
     expect(names).not.toContain("next");
     expect(names).not.toContain("complete");
+    expect(names).not.toContain("brief");
+    expect(names).not.toContain("report");
     const args = Object.keys(workflow?.subCommands?.run?.args ?? {});
     expect(args).toContain("max-steps");
     expect(args).toContain("max-retries");

@@ -565,15 +565,12 @@ Subcommands:
 | `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`) |
 | `resume <run-id>` | Flip a `blocked` or `failed` run back to `active`. Completed runs cannot be resumed |
 | `abandon <run-id>` | Mark a run failed so it stops counting as active (`resume` can reopen it) |
-| `brief <run-id\|ref>` | **EXPERIMENTAL, gated.** Describe the active step as an executable work-list for any agent session (read-only, mutates nothing) |
-| `report <run-id\|ref>` | **EXPERIMENTAL, gated.** Report a unit's result back into a run — the mutating half of the harness-neutral driver protocol; `--settle` advances a route-only/empty step with no unit to report |
 
 The public `workflow start`, `next`, and `complete` lifecycle was removed in
-0.9. Use `workflow run` for native orchestration, `workflow status` for
-inspection, and the experimental `brief`/`report` protocol only when an
-external agent must drive an existing run. The removed commands fail with an
-`UNKNOWN_COMMAND` envelope and a migration hint; there are no compatibility
-aliases.
+0.9, along with the experimental `brief`/`report` external-driver protocol.
+Use `workflow run` for execution and `workflow status` for inspection. The
+removed commands fail with an `UNKNOWN_COMMAND` envelope and a migration hint;
+there are no compatibility aliases.
 
 There is also no `akm workflow template`, `validate`, or `watch`.
 `workflow create --print` prints a starter, `akm lint --type workflows`
@@ -620,30 +617,6 @@ and `SIGTERM` map to 130 and 143; a timeout maps to exit 1. Reaching
 `run` is Stable and does not consult `experimental.workflowEngine`. Every
 non-empty `### gate` requires `workflow.judgeEngine` to name a configured LLM
 or agent engine before a new run can be frozen. Gate evaluation is fail-closed.
-
-#### Experimental external driver (`brief`/`report`)
-
-`brief` and `report` remain gated behind `experimental.workflowEngine`. Until
-enabled, they refuse with `WORKFLOW_ENGINE_NOT_ENABLED` and exit 78. `run`,
-authoring, linting, status, and recovery remain available with the key off.
-
-```sh
-akm config set experimental.workflowEngine true
-akm workflow brief <run-id>                     # per-unit instructions, output schema, env bindings
-akm workflow report <run-id> --unit <unit-id> --status completed --result '{"ok":true}'
-akm workflow report <run-id> --unit <unit-id> --status running --note "still working"
-akm workflow report <run-id> --settle           # advance a route-only/empty step
-```
-
-| Flag | Applies to | Description |
-| --- | --- | --- |
-| `--unit <id>` | `report` | Content-derived unit id from `workflow brief` (copy verbatim). Omit with `--settle`. |
-| `--settle` | `report` | Advance/finalize a run whose active step has no unit left to report. Mutually exclusive with `--unit`. |
-| `--expect-step <id>` | `report` | Guard: refuse if the run's active step has moved since you briefed against it |
-| `--status <state>` | `report` | Unit status: `completed`, `failed`, `running` |
-| `--result` / `--result-file` | `report` | Result payload (JSON for a schema unit, else text); `completed` only |
-| `--tokens <n>` | `report` | Tokens spent on this unit, counted against a declared budget |
-| `--rerun` | `report` | Re-run an already-failed unit as a new attempt instead of refusing a differing re-report |
 
 Workflow runs are scoped to the current working context, not globally across all
 repos or directories. akm resolves that context from the nearest `.akm/config.json`

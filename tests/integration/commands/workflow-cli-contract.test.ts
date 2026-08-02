@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * CLI-level contract tests for the workflow driver family, pinning the exit
+ * CLI-level contract tests for the `akm workflow` family, pinning the exit
  * code + JSON envelope the module-level suites (run-lease) prove only at the
  * function boundary:
  *
@@ -22,12 +22,7 @@ import path from "node:path";
 import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { runCliCapture } from "../../_helpers/cli";
-import {
-  type IsolatedAkmStorage,
-  withIsolatedAkmStorage,
-  writeSandboxConfig,
-  writeWorkflowTestConfig,
-} from "../../_helpers/sandbox";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
 import { withSeam } from "../../_helpers/seams";
 
 let storage: IsolatedAkmStorage;
@@ -35,51 +30,16 @@ let storage: IsolatedAkmStorage;
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
   writeWorkflowTestConfig();
-  // Q-05: `brief`/`report` are gated behind `experimental.workflowEngine`
-  // (off by default). This file's tests exist to pin the driver-protocol CLI
-  // envelope contracts, not the gate itself (that is
-  // `tests/integration/commands/workflow-engine-gate.test.ts`), so opt in here
-  // to keep exercising the same behavior these tests always have.
-  writeSandboxConfig({ experimental: { workflowEngine: true } });
 });
 
 afterEach(() => storage.cleanup());
 
-/**
- * Write a single-step unified-format workflow (frontmatter graph + `## <id>`
- * body — spec §2.2) into a stash's `workflows/` dir.
- */
-function writeSingleStepWorkflow(stashDir: string, name: string): void {
-  const file = path.join(stashDir, "workflows", `${name}.md`);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(
-    file,
-    [
-      "---",
-      "type: workflow",
-      "description: Driver CLI test workflow",
-      "steps:",
-      "  - id: only-step",
-      "---",
-      "",
-      `# ${name}`,
-      "",
-      "## only-step",
-      "",
-      "Do the watched thing.",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-}
-
 describe("akm workflow refs — unknown bundles fail consistently", () => {
-  test("run, list, status, and brief return the usage envelope", async () => {
+  test("run, list, and status return the usage envelope", async () => {
     const commands = [
       ["workflow", "run", "ghost//missing"],
       ["workflow", "list", "--ref", "ghost//missing"],
       ["workflow", "status", "ghost//missing"],
-      ["workflow", "brief", "ghost//missing"],
     ];
     for (const command of commands) {
       const result = await runCliCapture([...command]);

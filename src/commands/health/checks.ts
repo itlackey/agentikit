@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { type AkmConfig, loadConfig } from "../../core/config/config";
 import type { SemanticSearchStatus } from "../../indexer/search/semantic-status";
+import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
 import { resolveModel } from "../../integrations/agent/model-aliases";
 import type { RunnerSpec } from "../../integrations/agent/runner";
@@ -260,7 +261,10 @@ function runConfiguredEngineProbe(
 }
 
 export function runDefaultEngineProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
-  const config = deps.loadConfig?.() ?? loadConfig();
+  // Probe the effective view: an install with no `defaults.engine` but a usable
+  // opencode binary DOES have a working default, and reporting otherwise would
+  // contradict what `workflow run` / `task run` actually do.
+  const { config } = withEngineFallback(deps.loadConfig?.() ?? loadConfig());
   return runConfiguredEngineProbe("default-engine", config.defaults?.engine, config, deps);
 }
 

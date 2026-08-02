@@ -22,6 +22,7 @@ import { placementSpecFor } from "../core/asset/asset-placement";
 import { parseRefInput } from "../core/asset/resolve-ref";
 import { loadConfig } from "../core/config/config";
 import { NotFoundError } from "../core/errors";
+import { NO_ENGINE_MESSAGE_SUFFIX, withEngineFallback } from "../integrations/agent/engine-fallback";
 import { resolveEngine } from "../integrations/agent/engine-resolution";
 import { resolveAssetPath } from "../sources/resolve";
 import { parseSchedule, type ScheduleBackend } from "./schedule";
@@ -63,9 +64,12 @@ export async function validateTaskDocument(task: TaskDocument, options: Validate
   // set on the task, defaults.engine is required. Catching this at
   // `task add` / `task sync` time is much more useful than failing only
   // when the OS scheduler fires.
-  const config = loadConfig();
+  // Resolve against the SAME effective config the runner will use
+  // (`tasks/runner.ts`), or validation rejects at `task add` / `task sync` a
+  // task the runner would have happily executed via the implicit fallback.
+  const { config } = withEngineFallback(loadConfig());
   const engine = task.target.engine ?? config.defaults?.engine;
-  if (!engine) throw new NotFoundError(`Task "${task.id}" has no selected engine.`, "ASSET_NOT_FOUND");
+  if (!engine) throw new NotFoundError(`Task "${task.id}" ${NO_ENGINE_MESSAGE_SUFFIX}`, "ASSET_NOT_FOUND");
   const resolved = resolveEngine(engine, config);
   if (task.target.llm !== undefined && resolved.kind !== "llm") {
     throw new NotFoundError(`Task "${task.id}" uses llm overrides with non-LLM engine "${engine}".`, "ASSET_NOT_FOUND");

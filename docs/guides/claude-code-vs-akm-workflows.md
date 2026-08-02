@@ -8,12 +8,9 @@ subsystem in this repo).
 The short version: they are not competitors. An akm workflow is one durable
 markdown asset compiled and executed by the Stable `akm workflow run` command.
 The native engine fans work out to concurrent runner units, retries, gates on
-typed artifacts, and enforces budget ceilings. The most interesting seam is
-not either engine in isolation: akm also ships an experimental, opt-in
-**harness-neutral driver protocol** (`akm workflow brief` / `akm workflow
-report`) that lets Claude Code itself execute an akm-orchestrated run's units
-and report results back through the exact code path the native engine uses —
-the clearest point where the two systems compose.
+typed artifacts, and enforces budget ceilings. Execution is native: akm
+dispatches each unit to a configured agent harness (ten are supported) rather
+than asking the calling session to run it.
 
 > **Scope.** This report analyzes akm's own workflow subsystem
 > (`src/workflows/**`, `src/commands/workflow-cli.ts`) against the Claude Code
@@ -163,11 +160,11 @@ the session's normal permission model.
 
 This part deliberately stays high-level: `docs/reference/workflows.md` is the
 maintained, exhaustive reference for the unified markdown format, reference
-grammar, gates, budgets, the run lease, and the brief/report protocol. What
+grammar, gates, budgets, and the run lease. What
 follows is the comparison-relevant subset — read the reference doc for
 anything this section doesn't answer.
 
-### B.0 One format, stable native execution, experimental external driving
+### B.0 One format, one stable execution surface
 
 An akm workflow is one markdown asset addressed as `workflows/<name>`. Its
 frontmatter declares the orchestration graph (`unit`/`map`/`route`, inputs,
@@ -178,27 +175,9 @@ carry unit/map instructions and optional `### gate` rubrics.
 public `start`/`next`/`complete` lifecycle is removed. `status`, `list`,
 `create`, `resume`, and `abandon` remain stable support commands.
 
-Only `akm workflow brief|report`, the external-driver protocol that mirrors the
-native completion path, requires `experimental.workflowEngine`. With the key
-off either command refuses with `WORKFLOW_ENGINE_NOT_ENABLED` and exit 78:
-
-```console
-$ akm workflow brief some-run-id
-{
-  "ok": false,
-  "error": "`akm workflow brief` is EXPERIMENTAL and refuses to run until `experimental.workflowEngine` is set. Run `akm config set experimental.workflowEngine true` to enable it.",
-  "code": "WORKFLOW_ENGINE_NOT_ENABLED",
-  "hint": "Run `akm config set experimental.workflowEngine true` to enable it."
-}
-$ echo $?
-78
-$ akm config set experimental.workflowEngine true
-$ akm workflow brief some-run-id
-{"ok":false,"error":"Workflow run or workflow \"some-run-id\" not found.", ...}
-```
-
-`akm workflow run`, `akm lint --type workflows`, and `akm workflow create`
-are unaffected by this driver-protocol opt-in.
+There is no external-driver protocol: the former experimental
+`akm workflow brief|report` surface was removed, so `run` is the single
+execution path.
 
 ### B.1 Representation
 
@@ -216,7 +195,7 @@ binds body prose into a `WorkflowDocument` (`src/workflows/schema.ts`). It
 accumulates `WorkflowError`s instead of throwing, and every element carries a
 `SourceRef` line span. The IR compiler (`src/workflows/ir/compile.ts`) lowers
 that document into the plan graph (`src/workflows/ir/schema.ts`) executed by
-the engine and brief/report driver. Parsed documents cached in `index.db` are
+the engine. Parsed documents cached in `index.db` are
 regenerable; only run state (B.3, below) is not.
 
 ### B.3 Persistence: durable SQLite run state
@@ -236,12 +215,12 @@ whose rows are explicitly **non-regenerable**. **Three** tables, not two:
   `completion_json`, `sequence_index`, `status`
   (`pending|completed|blocked|failed|skipped`), `notes`, `evidence_json`,
   `completed_at`, `summary`.
-- `workflow_run_units` — one row per dispatched (or driver-reported) unit of
-  work under the native engine or the brief/report protocol: `run_id`,
+- `workflow_run_units` — one row per dispatched unit of
+  work under the native engine: `run_id`,
   `unit_id`, `step_id`, `status` (`pending|running|completed|failed|skipped`),
   `input_hash`, `result_json`, `tokens`, `failure_reason`, `worktree_path`,
   `session_id`, `last_checkin_at`, `attempts`, `claim_holder`/
-  `claim_expires_at`. Native and external-driver execution both journal here;
+  `claim_expires_at`. Every dispatched unit journals here;
   only historical runs from the removed manual lifecycle can lack unit rows.
 
 Schema evolves through an additive, idempotent migration engine, recorded in
@@ -284,16 +263,13 @@ or `sdk`), with:
 - **Budget ceilings** (`budget.max_units`/`max_tokens`), enforced across
   resumes because both counters are seeded from the unit journal.
 
-Crucially, the engine is not the only thing that can execute an orchestrated
-run: the **harness-neutral driver protocol** (`akm workflow brief` / `akm
-workflow report`) lets any agent session — Claude Code included — read the
-same frozen plan's active-step work-list and report results back through the
-identical shared step semantics (`src/workflows/exec/step-work.ts`) the
-engine uses. An engine-driven run and a driver-driven run of the same plan
-produce **byte-identical unit graphs**; a run lease (B.5) ensures only one of
-the two drives at a time. See *Driving a run from any agent* in
-`docs/reference/workflows.md` for the full protocol — it is the sharpest point
-of contact between the two systems in this whole comparison.
+Execution is always the engine's: `akm workflow run` dispatches each unit to
+a configured harness (`src/workflows/exec/step-work.ts` holds the shared step
+semantics) and a run lease (B.5) keeps a single invocation on the spine. akm
+formerly shipped an experimental `brief`/`report` protocol that let a calling
+agent session execute units itself; it was removed in favour of the single
+native path, since native dispatch already covers ten harnesses — Claude Code
+among them — for less code than the protocol cost.
 
 ### B.5 Scoping & concurrency guards (two different guards)
 
@@ -310,7 +286,7 @@ steps) before dispatching anything; a second `run` invocation against a
 live-leased run refuses, and driver `report` calls are likewise refused while
 the lease is live — the engine owns the step spine
 while it drives. An expired lease is claimable, so a crashed engine never
-wedges a run. `status` and `brief` stay read-only and always work.
+wedges a run. `status` stays read-only and always works.
 
 ### B.6 Progress tracking
 
@@ -352,10 +328,9 @@ status` poll, `evaluateCheckin()`
 `continue` directive through the normal command output. The design ADR
 explicitly rejects a background-thread alternative: "No daemon in a CLI… the
 command loop is already the heartbeat." A parallel, independent check-in
-exists at the *unit* level for the brief/report driver protocol
-(`--status running` claims and heartbeats a long-running unit so a second
-driver can reclaim it if the first goes silent) — same no-daemon,
-pure-timestamp design, different granularity.
+exists at the *unit* level (`last_checkin_at` marks a long-running unit live
+so a stalled one can be reclaimed) — same no-daemon, pure-timestamp design,
+different granularity.
 
 ### B.9 CLI surface
 
@@ -364,12 +339,10 @@ subcommands — derived here from `workflowCommand.subCommands`, not
 hand-listed:
 
 ```
-akm workflow run|status|list|create|resume|abandon|brief|report
+akm workflow run|status|list|create|resume|abandon
 ```
 
-`run`, `status`, `list`, `create`, `resume`, and `abandon` are stable and
-ungated. `brief` and `report` are the experimental, gated external-driver
-surface (B.0). `create --print` prints a starter without writing, and `akm lint
+All six are stable and ungated. `create --print` prints a starter without writing, and `akm lint
 --type workflows` structurally validates it. The removed `start`/`next`/
 `complete` lifecycle and older `template`/`validate`/`watch` subcommands have
 no aliases. Bare `akm workflow` is a usage error (exit 2).
@@ -385,9 +358,9 @@ external-driver surface.
 |---|---|---|
 | **Artifact** | Imperative JS program (`script`) | Unified declarative Markdown asset (`.md`), compiled to a plan graph |
 | **Authored by** | The agent, inline, per-task, ephemeral | Human or agent, saved as a reusable bundle asset |
-| **Who executes work** | The harness runs the script; subagents do the work | The native engine, or an external driver via `brief`/`report` |
-| **Unit of work** | `agent()` — a fresh LLM subagent context | One dispatch or one `map` item under the engine/driver |
-| **Concurrency** | Massively parallel (≤16 concurrent, ≤1000 total, `pipeline`/`parallel`) | Bounded map concurrency under the native engine; an external driver owns its parallelism |
+| **Who executes work** | The harness runs the script; subagents do the work | The native engine, dispatching to a configured harness |
+| **Unit of work** | `agent()` — a fresh LLM subagent context | One dispatch or one `map` item under the engine |
+| **Concurrency** | Massively parallel (≤16 concurrent, ≤1000 total, `pipeline`/`parallel`) | Bounded map concurrency, frozen into the plan |
 | **Control flow** | Full JS: loops, conditionals, fan-out, budget-scaled | `unit`/`map`/`route`, bare reference strings, and bounded gate retries; no backward routes |
 | **State store** | Transcript dir (`journal.jsonl`, `agent-*.jsonl`) | SQLite `state.db`; engine/driver runs add unit rows and a frozen `plan_json`/`plan_hash` |
 | **Scope / lifetime** | One session, one turn-shaped fan-out | Cross-session, per-project `scope_key`, resumable indefinitely |
@@ -396,7 +369,7 @@ external-driver surface.
 | **Quality gates** | Agent-authored (adversarial verify, judge panels, schemas) | Fail-closed LLM or agent verification of typed artifacts; `gate.max_loops` bounds retries |
 | **Sandbox / trust** | Restricted JS interpreter, no FS; subagents use tools | No sandbox; engine units can opt into `isolation: worktree`, which is not a security boundary |
 | **Nesting** | `workflow()`, one level deep, sharing the parent's concurrency cap/budget | None built in |
-| **Stability** | Stable harness feature | Format and native `run` stable; `brief`/`report` experimental and opt-in |
+| **Stability** | Stable harness feature | Format and `run` both Stable and ungated |
 
 ---
 
@@ -413,11 +386,11 @@ used to be:
    keyed on content-derived unit identity, close in spirit to Claude Code's
    cache-and-replay.
 3. **Per-unit status + evidence** — journal return values vs. step
-   `status`/`notes`/`evidence`/`summary`, or (for engine/driver runs) per-unit
+   `status`/`notes`/`evidence`/`summary`, plus per-unit
    `workflow_run_units` rows with the same shape.
 4. **A "keep going" nudge** — Claude Code's `task-notification`/resume vs.
-   akm's run-level `continue` check-in directive and its unit-level `--status
-   running` heartbeat via the driver protocol.
+   akm's run-level `continue` check-in directive and its unit-level
+   `last_checkin_at` heartbeat.
 5. **Structured validation of results** — Claude Code's `schema` option
    (forced `StructuredOutput`, retried) vs. akm's per-unit `output` JSON
    Schema and fail-closed artifact verifier under the engine/driver.
@@ -432,11 +405,10 @@ used to be:
    *records* it (`CLAUDE_SESSION_ID` → `claude-code`). Under the engine this
    awareness becomes load-bearing, not just descriptive: the run lease (B.5)
    uses it to arbitrate who is allowed to drive a given run right now.
-9. **A shared execution surface, by design.** The harness-neutral driver
-   protocol (`brief`/`report`) means a Claude Code session can literally *be*
-   the thing executing an akm-orchestrated run's units — the two systems don't
-   just resemble each other, one can drive the other through a shared
-   contract with byte-identical results to the native engine (B.4).
+9. **Native dispatch spans harnesses.** akm executes each unit by invoking a
+   configured agent CLI — ten harnesses are supported, Claude Code among them —
+   so an akm run composes with the same tools without either system embedding
+   the other.
 
 ---
 
@@ -460,39 +432,37 @@ execution surface is in play.**
   genuine, Stable executor. It keeps a durable spine through a frozen plan and
   journaled resume rather than trading those properties away for parallelism.
 
-- **Under `brief`/`report`, an external harness owns unit execution while akm
-  owns the plan and durable completion semantics.** This experimental seam is
-  where Claude Code can execute the work without reimplementing routing,
-  artifact promotion, verification, or replay.
+- **akm owns the plan and the durable completion semantics** — routing,
+  artifact promotion, verification, and replay — while the harness it
+  dispatches to owns only the work inside a single unit.
 
 Concretely, per surface:
 
-| | Claude Code workflow | akm native engine (`run`) | akm external driver (`brief`/`report`) |
-|---|---|---|---|
-| Lifetime | Ephemeral (session-scoped) | Durable (SQLite, cross-session) | Durable (SQLite, cross-session) |
-| Parallel? | Yes, by construction | Yes, bounded (B.4) | Driver-owned |
-| Self-contained? | Yes — carries its own workers | Yes, when configured engines are available | No — requires an external agent to execute each briefed unit |
-| Sandbox | Restricted JS interpreter, no FS for the script itself | None for the shell/agent substrate; optional `isolation: worktree` is not a security boundary | The external harness's policy applies |
-| Artifact | Executable script | Managed markdown asset, compiled and frozen | The same frozen plan and journal |
+| | Claude Code workflow | akm native engine (`run`) |
+|---|---|---|
+| Lifetime | Ephemeral (session-scoped) | Durable (SQLite, cross-session) |
+| Parallel? | Yes, by construction | Yes, bounded (B.4) |
+| Self-contained? | Yes — carries its own workers | Yes, when a configured engine is available (or `opencode` is on PATH) |
+| Sandbox | Restricted JS interpreter, no FS for the script itself | None for the shell/agent substrate; optional `isolation: worktree` is not a security boundary |
+| Artifact | Executable script | Managed markdown asset, compiled and frozen |
 
 The genuinely durable conclusion, restated for 0.9.0: Claude Code is strong
 at in-session parallel LLM execution, while akm is strong at durable,
 cross-session procedures. The native engine keeps the second half of that
-trade while buying back some of the first — and the driver protocol lets
-Claude Code drive the same durable spine directly.
+trade while buying back some of the first — dispatching units to whichever
+harness the operator configured, Claude Code included.
 
 ---
 
 ## Part F — What's left to integrate
 
 Most of what this section used to propose as *future* integration work has
-**shipped** as the native engine and the harness-neutral driver protocol
-described in Part B — not as Claude-Code-specific features, but as
-harness-agnostic ones any driver (including Claude Code) can use today:
+**shipped** as the native engine described in Part B — not as
+Claude-Code-specific features, but as harness-agnostic ones:
 
 | Formerly-proposed idea | Status |
 |---|---|
-| A blessed "akm-driver" loop pattern any agent runs to drive an akm run, with structured per-step results | **Shipped**, generalized: the `brief`/`report` driver protocol (Part B.4) — not Claude-Code-specific, any agent session works |
+| A blessed loop pattern for driving an akm run with structured per-step results | **Shipped**, generalized: `akm workflow run` dispatches to any of ten configured harnesses (Part B.4) — not Claude-Code-specific |
 | Machine-readable, near-live progress instead of polling `status` | **Shipped**: `akm log --run <id> --since '@offset:<id>'` (Part B.6) |
 | Structural (schema) validation of step output, not just an LLM prose judge | **Shipped**: per-unit `output` JSON Schema + typed step artifacts, validated before a gate ever runs (Part B.4/B.7) |
 | An explicit fan-out step type | **Shipped**: `map` steps with `over`/`concurrency`/`reducer` (Part B.4) |
@@ -502,8 +472,8 @@ What's genuinely still not built, as of this writing:
 ### F.1 Correlate an akm run with the driving harness's own run/session id
 
 `agent-identity.ts` captures `agent_harness`/`agent_session_id` from
-environment hints, and the driver protocol's `--session-id` flag records a
-harness-native session id per unit (Part B.3). Neither captures a *workflow-
+environment hints, and each unit records its harness-native session id
+(Part B.3). Neither captures a *workflow-
 level* id from an external orchestrator (e.g. a Claude Code `Workflow` tool's
 own `runId`) when one is driving an akm run — there is no env-hint or CLI flag
 for it today, so correlating "this akm run was driven by that Claude Code
@@ -548,6 +518,6 @@ feedback/improve) apply to *that* artifact too. This is the largest and most
 speculative item on this list.
 
 The guiding principle is to preserve each layer's strength. The native engine
-gives akm concurrency without discarding its durable, verified spine, while the
-driver protocol lets Claude Code drive that spine directly instead of either
-side reimplementing the other.
+gives akm concurrency without discarding its durable, verified spine, and it
+dispatches the work itself to whichever harness the operator configured —
+Claude Code included — instead of either side reimplementing the other.

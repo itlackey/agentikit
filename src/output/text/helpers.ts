@@ -58,7 +58,6 @@ export {
 } from "./proposal-format";
 export { formatShowPlain } from "./show-format";
 export {
-  formatWorkflowBriefPlain,
   formatWorkflowCreatePlain,
   formatWorkflowListPlain,
   formatWorkflowResumePlain,

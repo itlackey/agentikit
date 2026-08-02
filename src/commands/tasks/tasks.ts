@@ -28,6 +28,7 @@ import {
   resolveWriteTarget,
   writeAssetToSource,
 } from "../../core/write-source";
+import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { backendNameForPlatform, selectBackend } from "../../tasks/backends";
 import type { InstalledTaskRef, RebindTaskRef, TaskBackend } from "../../tasks/backends/types";
 import { parseTaskDocument } from "../../tasks/parser";
@@ -49,7 +50,6 @@ import {
 import type { TaskDocument } from "../../tasks/schema";
 import { normaliseTaskId } from "../../tasks/task-id";
 import { validateTaskDocument } from "../../tasks/validator";
-import { isWorkflowEngineEnabled, WORKFLOW_ENGINE_CONFIG_KEY } from "../../workflows/exec/workflow-engine-gate";
 import { applyAutonomyGate, configuredDirectAutonomyLanes, describeGatedLanes } from "../improve/autonomy-gate";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
 
@@ -554,11 +554,6 @@ export interface TasksDoctorResult {
     applyMode: string;
     policy: string;
   };
-  /** Q-05 — the experimental workflow driver protocol's gate state. */
-  workflowEngine: {
-    enabled: boolean;
-    configKey: string;
-  };
 }
 
 export async function akmTasksDoctor(
@@ -591,7 +586,9 @@ export async function akmTasksDoctor(
     }
   }
   const bindings = groupInstalledBindings(installed, invocation);
-  const config = loadConfig();
+  // Report the EFFECTIVE engine view — the same one the runner resolves —
+  // so doctor never says "no engine" on an install where tasks actually run.
+  const { config } = withEngineFallback(loadConfig());
   const defaultEngine = config.defaults?.engine;
   const engines = Object.keys(config.engines ?? {});
 
@@ -613,12 +610,6 @@ export async function akmTasksDoctor(
     enabled: autonomyEnabled,
     configKey: IMPROVE_AUTONOMY_CONFIG_KEY,
     gatedLanes: allGated.map((entry) => ({ lane: entry.lane as string, reason: entry.reason })),
-  };
-  // Q-05 — report the external-driver gate alongside the autonomy gate: both
-  // are `experimental.*` opt-ins doctor exists to surface.
-  const workflowEngine = {
-    enabled: isWorkflowEngineEnabled(config),
-    configKey: WORKFLOW_ENGINE_CONFIG_KEY,
   };
   const triage = effectiveStrategy.processes?.triage;
   const improveTriage = triage
@@ -644,7 +635,6 @@ export async function akmTasksDoctor(
     scheduleSubset: SCHEDULE_SUPPORTED_SUBSET_HINT,
     warnings,
     improveAutonomy,
-    workflowEngine,
     ...(improveTriage ? { improveTriage } : {}),
   };
 }

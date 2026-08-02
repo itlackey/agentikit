@@ -28,15 +28,5 @@ export const ExperimentalConfigSchema = z
      * purpose, and it has its own `sync.push: false` / `--no-push` controls.
      */
     improveAutonomy: z.boolean().optional(),
-
-    /**
-     * Allow the harness-neutral workflow external-driver protocol (Q-05).
-     *
-     * OFF by default. Gates only `akm workflow brief`/`report`. Stable native
-     * orchestration through `workflow run`, authoring/linting, inspection, and
-     * recovery remain available regardless of this key. A gated driver call
-     * refuses outright rather than degrading.
-     */
-    workflowEngine: z.boolean().optional(),
   })
   .passthrough();

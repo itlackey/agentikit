@@ -6,7 +6,7 @@
  * Plain-text renderers for `akm workflow *` commands.
  *
  * Split out of `helpers.ts` (formerly 1418 lines / 59 fns) as its own
- * sibling module: the workflow run/step/status/brief renderers form a
+ * sibling module: the workflow list/status/run/create/resume renderers form a
  * cohesive, self-contained cluster (they call only each other, never
  * formatters from other domains).
  */
@@ -77,8 +77,8 @@ export function formatWorkflowStatusPlain(result: Record<string, unknown>): stri
       const suffix = attempts !== undefined && attempts > 1 ? `, attempt ${attempts}` : "";
       lines.push(`  - ${id} [${node}] (${status}${suffix})`);
       // Codex round-3 finding B: a `running` claim gone silent past the check-in
-      // window — the driver likely died. Surface it (with the claim holder) so a
-      // human can reclaim/re-run the unit, matching what `brief` reports.
+      // window — the process holding it likely died. Surface it (with the claim
+      // holder) so a human can reclaim/re-run the unit.
       if (unit.stale === true) {
         const holder =
           typeof unit.claimHolder === "string" && unit.claimHolder.trim() ? ` claimed by ${unit.claimHolder}` : "";
@@ -124,6 +124,10 @@ export function formatWorkflowRunPlain(result: Record<string, unknown>): string 
   if (!run) return null;
 
   const lines = [`run: ${String(run.id ?? "unknown")}`, `status: ${String(run.status ?? "unknown")}`];
+  // Creation-time notices (e.g. the implicit engine fallback) must survive the
+  // text renderer: JSON/YAML pass them through, and dropping them here would
+  // hide the announcement from the DEFAULT output mode — where it matters most.
+  for (const warning of Array.isArray(result.warnings) ? result.warnings : []) lines.push(`! ${String(warning)}`);
   const executed = Array.isArray(result.executed) ? (result.executed as Array<Record<string, unknown>>) : [];
   if (executed.length === 0) {
     lines.push("executed: (no steps — run was already done or blocked)");
@@ -157,132 +161,6 @@ export function formatWorkflowRunPlain(result: Record<string, unknown>): string 
     );
   }
   if (result.done === true) lines.push("workflow completed.");
-  return lines.join("\n");
-}
-
-export function formatWorkflowBriefPlain(result: Record<string, unknown>): string | null {
-  const run =
-    typeof result.run === "object" && result.run !== null ? (result.run as Record<string, unknown>) : undefined;
-  if (!run) return null;
-
-  const lines: string[] = [];
-  lines.push(`# Workflow brief: ${String(run.id ?? "unknown")}`);
-  lines.push(`workflow: ${String(run.workflowRef ?? "?")}  (${String(run.workflowTitle ?? "")})`);
-  lines.push(`status: ${String(run.status ?? "?")}`);
-  if (typeof result.message === "string") lines.push(result.message);
-
-  const lease =
-    typeof result.engineLease === "object" && result.engineLease !== null
-      ? (result.engineLease as Record<string, unknown>)
-      : undefined;
-  if (lease) {
-    const live = lease.live === true ? "LIVE" : "expired";
-    lines.push(`engine lease: ${String(lease.holder ?? "?")} (until ${String(lease.until ?? "?")}) [${live}]`);
-  }
-
-  const warnings = Array.isArray(result.warnings) ? (result.warnings as unknown[]) : [];
-  for (const w of warnings) lines.push(`! ${String(w)}`);
-
-  if (result.done === true) {
-    lines.push("");
-    lines.push("This run is completed — no work remains.");
-    return lines.join("\n");
-  }
-
-  const step =
-    typeof result.step === "object" && result.step !== null ? (result.step as Record<string, unknown>) : undefined;
-  if (!step) {
-    return lines.join("\n");
-  }
-
-  const gate = typeof step.gate === "object" && step.gate !== null ? (step.gate as Record<string, unknown>) : undefined;
-  lines.push("");
-  lines.push(
-    `## Active step: ${String(step.stepId ?? "?")} — ${String(step.title ?? "")}  [${String(step.kind ?? "execute")}]`,
-  );
-  if (gate) {
-    const criteria = Array.isArray(gate.criteria) ? (gate.criteria as unknown[]) : [];
-    lines.push(
-      `gate: loop ${String(gate.currentLoop ?? 1)} of max ${String(gate.maxLoops ?? 1)}` +
-        (criteria.length > 0 ? `; criteria: ${criteria.map(String).join("; ")}` : "; no completion criteria") +
-        (gate.judgesArtifact === true ? " (artifact-judged)" : ""),
-    );
-  }
-  if (step.outputSchema !== undefined) lines.push("outputSchema: declared (see JSON output)");
-
-  const feedback =
-    typeof result.gateFeedback === "object" && result.gateFeedback !== null
-      ? (result.gateFeedback as Record<string, unknown>)
-      : undefined;
-  if (feedback) {
-    lines.push(`gate feedback (previous loop rejected): ${String(feedback.feedback ?? "")}`);
-    const missing = Array.isArray(feedback.missing) ? (feedback.missing as unknown[]) : [];
-    for (const m of missing) lines.push(`  - missing: ${String(m)}`);
-  }
-
-  const route =
-    typeof result.route === "object" && result.route !== null ? (result.route as Record<string, unknown>) : undefined;
-  if (route) {
-    lines.push("");
-    lines.push(`## Route contract on ${String(route.input ?? "?")}`);
-    const when = typeof route.when === "object" && route.when !== null ? (route.when as Record<string, unknown>) : {};
-    for (const [value, target] of Object.entries(when)) lines.push(`  when "${value}" → ${String(target)}`);
-    if (route.defaultStepId !== undefined) lines.push(`  default → ${String(route.defaultStepId)}`);
-    const decision =
-      typeof route.decision === "object" && route.decision !== null
-        ? (route.decision as Record<string, unknown>)
-        : undefined;
-    if (decision) lines.push(`  decision NOW: value "${String(decision.value)}" → ${String(decision.selected)}`);
-    else if (typeof route.decisionError === "string") lines.push(`  decision error: ${route.decisionError}`);
-    else lines.push("  decision: pending this step's output (evaluated after units complete)");
-  }
-
-  const workList =
-    typeof result.workList === "object" && result.workList !== null
-      ? (result.workList as Record<string, unknown>)
-      : undefined;
-  const units = workList && Array.isArray(workList.units) ? (workList.units as Array<Record<string, unknown>>) : [];
-  if (workList?.error) {
-    lines.push("");
-    lines.push(`work-list error: ${String(workList.error)}`);
-  } else if (units.length > 0) {
-    lines.push("");
-    lines.push(`## Units (${units.length})`);
-    for (const u of units) {
-      const model = u.model ? ` model=${String(u.model)}` : "";
-      const journaled =
-        typeof u.journaled === "object" && u.journaled !== null ? (u.journaled as Record<string, unknown>) : undefined;
-      const jstatus = journaled ? ` [journaled: ${String(journaled.status)}]` : "";
-      lines.push(`- ${String(u.unitId)}  (runner=${String(u.runner)}${model})${jstatus}`);
-      const env = Array.isArray(u.env) ? (u.env as unknown[]) : [];
-      if (env.length > 0) lines.push(`    env (names): ${env.map(String).join(", ")}`);
-      if (u.outputSchema !== undefined) lines.push("    outputSchema: declared (see JSON output)");
-      const resolved =
-        typeof u.resolved === "object" && u.resolved !== null ? (u.resolved as Record<string, unknown>) : undefined;
-      if (resolved && resolved.ok === false) lines.push(`    RESOLUTION ERROR: ${String(resolved.error)}`);
-      if (typeof u.report === "string") lines.push(`    report: ${u.report}`);
-    }
-  }
-
-  // Finding D: a non-dispatching step (route-only / empty / all-unresolvable)
-  // advances via the `--settle` verb, surfaced so a driver can advance the spine.
-  if (typeof result.settleCommand === "string") {
-    lines.push("");
-    lines.push("## Advance (no reportable units)");
-    lines.push(`settle: ${result.settleCommand}`);
-  }
-
-  const guidance =
-    typeof result.reportGuidance === "object" && result.reportGuidance !== null
-      ? (result.reportGuidance as Record<string, unknown>)
-      : undefined;
-  if (guidance) {
-    lines.push("");
-    lines.push("## Reporting");
-    if (typeof guidance.checkin === "string") lines.push(`heartbeat: ${guidance.checkin}`);
-    if (typeof guidance.failure === "string") lines.push(`on failure: ${guidance.failure}`);
-  }
-
   return lines.join("\n");
 }
 
