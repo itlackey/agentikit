@@ -50,14 +50,15 @@ Pull the bug into the workspace before doing any analysis.
 
 3. Record the top 5 hits in `prior-art.md` with one line of why each is
    relevant or why it was discarded. If a known-issue wiki page already
-   documents the same root cause, link it and stop the workflow with
-   `--state skipped --notes "duplicate of <wiki ref>"`.
+   documents the same root cause, record `duplicate of <wiki ref>` in the
+   step output so downstream steps can perform no-op confirmation rather than
+   repeating the investigation.
 
 ### gate
 
 - `report.md` captures the original report verbatim.
 - `prior-art.md` lists the top stash and wiki hits with a relevance verdict.
-- Duplicates are marked `skipped` with a pointer to the existing record.
+- Duplicates carry a pointer to the existing record and do not repeat work.
 
 ## reproduce
 
@@ -76,15 +77,15 @@ input.
 4. If the bug does not reproduce, branch:
    - Add the missing details you needed (data fixtures, env vars, timing) to
      `report.md`.
-   - Block the workflow with `--state blocked --notes "needs <missing detail>"`
-     and request them from the reporter.
+   - Fail the step with `needs <missing detail>` and request it from the
+     reporter; the run can be resumed after the detail arrives.
 
 ### gate
 
 - `repro.sh` (or equivalent) reproduces the bug deterministically on a clean
   environment.
 - `repro.log` shows the failing signal with timestamps.
-- A non-reproducible report is blocked with a concrete information request,
+- A non-reproducible report fails with a concrete information request,
   not silently closed.
 
 ## localize

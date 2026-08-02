@@ -69,11 +69,9 @@ import type { SummaryJudge } from "../validate-summary";
 import { enqueueUnitWrite } from "./unit-writer";
 
 /**
- * Default per-unit timeout. Deliberately NOT the 60 s agent default
- * (`DEFAULT_AGENT_TIMEOUT_MS`) — workflow units routinely run real coding
- * tasks on slow local models; 10 minutes matches the LLM-path default
- * (`tryLlmFeature`). A unit's `timeout` declaration overrides this; `none`
- * disables.
+ * Default per-unit timeout for workflow units. A unit's `timeout` declaration
+ * overrides this; `none` disables it. Direct agent dispatch has no timeout by
+ * default, while workflow units retain an independent safety ceiling.
  */
 export const DEFAULT_UNIT_TIMEOUT_MS = 600_000;
 
@@ -975,15 +973,16 @@ function gateLoopOf(unitId: string, stepId: string): number | undefined {
 type GateVerdict =
   | { kind: "rejected"; missing: string[]; feedback: string }
   | { kind: "passed" }
-  /** NULL result_json: an errored judge (fail-open) or an in-flight/running row. */
+  /** NULL result_json: an in-flight row or a completion error before a verdict was recorded. */
   | { kind: "empty" };
 
 /**
  * Classify a gate-evaluation row's journaled verdict, failing LOUDLY on a
  * corrupt one (reviewer #17). A NULL `result_json` is the LEGITIMATE
- * errored-judge / in-flight shape (`journalGateEvaluationFinish` writes null for
- * an errored judge, and a `running` row has no verdict yet) and classifies as
- * `empty`. But a PRESENT `result_json` that does not parse as JSON, or parses to
+ * completion-error / in-flight shape (`journalGateEvaluationFinish` writes null
+ * if completion itself throws after judge invocation, and a `running` row has no
+ * verdict yet) and classifies as `empty`. But a PRESENT `result_json` that does
+ * not parse as JSON, or parses to
  * anything other than an object with a boolean `complete` field, is corruption —
  * a truncated or hand-edited row — and MUST NOT be silently treated as absent
  * (which would reset an active step's gate loop to 1 and re-dispatch work whose
@@ -1023,9 +1022,9 @@ function gateCorruptionMessage(row: WorkflowRunUnitRow, why: string): string {
 
 // ── Gate-evaluation journaling (IO) ──────────────────────────────────────────
 //
-// An engine-driven completion-criteria judge call is an LLM call and is
+// An engine-driven completion-criteria judge call is journaled like a unit.
 // journaled like a unit: node_id `<stepId>.gate`, unit_id `<stepId>.gate:l<loop>`,
-// runner "llm", result_json = the verdict. Rows are observability + audit; they
+// runner = its frozen runtime kind, result_json = the verdict. Rows are observability + audit; they
 // are never REUSED. Events carry ids/status only.
 
 export interface GateUnitRef {
@@ -1035,6 +1034,7 @@ export interface GateUnitRef {
   /** Gate-loop attempt, 1-based. */
   loop: number;
   invocation: IrInvocation;
+  runner: IrRuntimeKind;
   inputHash: string;
 }
 
@@ -1052,7 +1052,7 @@ export async function journalGateEvaluationStart(gate: GateUnitRef): Promise<voi
         // Marks the row as a judge call, NOT a dispatch: the budget/lifetime
         // seed in `driveRun` skips these so resume accounting matches live.
         phase: GATE_EVALUATION_PHASE,
-        runner: "llm",
+        runner: gate.runner,
         engine: gate.invocation.engine,
         model: gate.invocation.model,
         inputHash: gate.inputHash,
@@ -1071,7 +1071,7 @@ export async function journalGateEvaluationStart(gate: GateUnitRef): Promise<voi
  * Finish the gate-evaluation unit row with the verdict as observed from the
  * completion outcome: a rejection journals `{ complete: false, missing,
  * feedback }`; a pass journals `{ complete: true, missing: [] }`; a judge that
- * threw journals a failed row with a NULL verdict and validation is skipped.
+ * threw journals a failed row with the synthesized fail-closed rejection.
  */
 export async function journalGateEvaluationFinish(
   gate: GateUnitRef,
@@ -1079,10 +1079,10 @@ export async function journalGateEvaluationFinish(
   rejection: SummaryValidationFailure | undefined,
 ): Promise<void> {
   const unitId = gateUnitId(gate.stepId, gate.loop);
-  const verdict = errored
-    ? null
-    : rejection
-      ? { complete: false, missing: rejection.missing, feedback: rejection.feedback }
+  const verdict = rejection
+    ? { complete: false, missing: rejection.missing, feedback: rejection.feedback }
+    : errored
+      ? null
       : { complete: true, missing: [] };
   const status = errored ? ("failed" as const) : ("completed" as const);
   await enqueueUnitWrite(() =>
@@ -1300,7 +1300,7 @@ export function seedJournaledRouteDecisions(
       throw new UsageError(
         `Workflow run ${state.run.id} has a completed route step "${stepPlan.stepId}" with no journaled route ` +
           `decision, and the decision cannot be re-derived from the journaled evidence. Refusing to guess which ` +
-          `branch was selected — advance the remaining steps manually with \`akm workflow complete\`.`,
+          `branch was selected. The run journal is inconsistent; abandon this run and start a new one.`,
       );
     }
     applyRouteDecision(stepPlan.route, stepPlan.stepId, selected, routeSelected, routeUnselected);
@@ -1341,6 +1341,8 @@ export interface FinalizeStepInput {
    * both mean no judge; live configuration is never consulted here.
    */
   summaryJudge: SummaryJudge | null | undefined;
+  /** Cooperative run cancellation checked before completion is committed. */
+  signal?: AbortSignal;
   /** Engine run-lease holder (engine path only); absent on the manual/report path. */
   leaseHolder?: string;
 }
@@ -1428,9 +1430,9 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
       ? buildArtifactSummary(stepId, result.units, result.evidence)
       : (summaryOverride ?? result.summary);
 
-  // Journal engine-driven judge calls as unit rows (they are LLM calls). The
-  // wrapper's `invoked` stays false when the gate is fail-open (no criteria / no
-  // judge) — nothing is journaled, and human approvals are never cached.
+  // Journal engine-driven judge calls as unit rows. With no criteria there is
+  // no judge invocation or row; a criteria-bearing plan without a judge is a
+  // configuration error rather than a silent bypass.
   const frozenGate = innerJudge
     ? await withWorkflowRunsRepo((repo) => {
         const row = repo.getRunById(runId);
@@ -1453,6 +1455,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
             stepId,
             loop: gateLoop,
             invocation: gateInvocation,
+            runner: frozenGate?.engine?.kind === "agent" ? frozenGate.engine.runnerKind : ("llm" as const),
             inputHash: createHash("sha256")
               .update(
                 canonicalJsonString({
@@ -1492,6 +1495,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
       summary,
       evidence: result.evidence,
       summaryJudge,
+      ...(input.signal ? { signal: input.signal } : {}),
       ...lease,
     });
   } catch (err) {

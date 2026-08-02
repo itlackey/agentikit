@@ -354,10 +354,10 @@ describe("tasks run attempt observability", () => {
       stashDir: storage.stashDir,
       logDir: blockedLogDir,
       now: () => new Date("2026-07-13T12:00:01.000Z"),
-      startWorkflowRunImpl: async (ref, params = {}) => ({
+      runWorkflowStepsImpl: async ({ target, params = {} }) => ({
         run: {
           id: "workflow-run",
-          workflowRef: ref,
+          workflowRef: target,
           workflowTitle: "Noop",
           status: "completed",
           params,
@@ -366,7 +366,8 @@ describe("tasks run attempt observability", () => {
           completedAt: "2026-07-13T12:00:01.000Z",
           currentStepId: null,
         },
-        workflow: { ref, title: "Noop", steps: [] },
+        executed: [],
+        done: true,
       }),
     });
 
@@ -392,7 +393,7 @@ describe("tasks run attempt observability", () => {
     const blockedDataDir = path.join(storage.root, "blocked-data-dir");
     fs.writeFileSync(blockedDataDir, "not a directory");
     const result = await withEnv({ AKM_DATA_DIR: blockedDataDir }, () =>
-      runCliCapture(["--json", "task", "run", "missing-json-error"]),
+      runCliCapture(["task", "run", "missing-json-error"]),
     );
 
     expect(result.code).toBe(1);
@@ -400,7 +401,7 @@ describe("tasks run attempt observability", () => {
   });
 
   test("records a missing task file and preserves the not-found error", async () => {
-    const result = await runCliCapture(["--json", "task", "run", "missing-task"]);
+    const result = await runCliCapture(["task", "run", "missing-task"]);
 
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "ASSET_NOT_FOUND" });
@@ -415,7 +416,7 @@ describe("tasks run attempt observability", () => {
     const secret = "INVALID-YAML-SECRET-SENTINEL";
     writeTask("invalid-yaml", `version: 2\ncommand: [${secret}\n`);
 
-    const result = await runCliCapture(["--json", "task", "run", "invalid-yaml"]);
+    const result = await runCliCapture(["task", "run", "invalid-yaml"]);
 
     expect(result.code).toBe(2);
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
@@ -430,7 +431,7 @@ describe("tasks run attempt observability", () => {
   test("records an unsupported future schema without normalizing it", async () => {
     writeTask("future-task", 'version: 99\nschedule: "@daily"\ncommand: echo future\n');
 
-    const result = await runCliCapture(["--json", "task", "run", "future-task"]);
+    const result = await runCliCapture(["task", "run", "future-task"]);
 
     expect(result.code).toBe(2);
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "TASK_SCHEMA_VERSION_UNSUPPORTED" });
@@ -478,7 +479,7 @@ describe("tasks run attempt observability", () => {
     const targetSecret = "agents/PRE-DISPATCH-TARGET-SECRET";
     writeTask("wrong-workflow-ref", `version: 2\nschedule: "@daily"\nworkflow: ${targetSecret}\n`);
 
-    const result = await runCliCapture(["--json", "task", "run", "wrong-workflow-ref"]);
+    const result = await runCliCapture(["task", "run", "wrong-workflow-ref"]);
 
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "WORKFLOW_NOT_FOUND" });
@@ -493,7 +494,7 @@ describe("tasks run attempt observability", () => {
   test("records an invalid CLI id under a safe sentinel and preserves the usage exit", async () => {
     const hostileId = "../../HOSTILE-ID-SECRET-SENTINEL";
 
-    const result = await runCliCapture(["--json", "task", "run", hostileId]);
+    const result = await runCliCapture(["task", "run", hostileId]);
 
     expect(result.code).toBe(2);
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });

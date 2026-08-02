@@ -1004,7 +1004,7 @@ export async function runSetupFromConfig(opts: {
   try {
     parsed = JSON.parse(opts.configJson);
   } catch (e) {
-    throw new Error(`Invalid JSON in --config: ${(e as Error).message}`);
+    throw new UsageError(`Invalid JSON in --config: ${(e as Error).message}`, "INVALID_FLAG_VALUE");
   }
   if (!isPlainRecord(parsed)) {
     throw new ConfigError("Setup config must contain a top-level object.", "INVALID_CONFIG_FILE");

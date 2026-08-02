@@ -15,12 +15,7 @@ import {
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import type { SummaryJudge } from "../../../src/workflows/validate-summary";
-import {
-  type IsolatedAkmStorage,
-  withIsolatedAkmStorage,
-  writeSandboxConfig,
-  writeWorkflowTestConfig,
-} from "../../_helpers/sandbox";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
 
 /**
  * Process-lifecycle disposal (owner finding 4 — a successful engine-driven run
@@ -345,10 +340,6 @@ describe("engine run via the SDK runner closes its server on completion (end-to-
   });
 
   test("a successful sdk-dispatched run leaves no server open when it resolves", async () => {
-    writeSandboxConfig({
-      engines: { "test-agent": { kind: "agent", platform: "opencode-sdk" } },
-      defaults: { engine: "test-agent" },
-    });
     writeProgram("sdk-e2e", oneStep("sdk-e2e"));
 
     let closed = 0;

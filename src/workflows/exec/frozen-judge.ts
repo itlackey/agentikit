@@ -7,16 +7,47 @@ import { deepMergeConfig } from "../../core/config/deep-merge";
 import { ConfigError } from "../../core/errors";
 import type { FrozenLlmEngine, IrInvocation, WorkflowPlanGraph } from "../ir/schema";
 import type { SummaryJudge } from "../validate-summary";
+import type { UnitDispatcher } from "./unit-dispatch";
 
 /** Build a gate judge from a v3 catalog entry without consulting live config. */
 export function frozenSummaryJudge(
   plan: WorkflowPlanGraph,
   invocation: IrInvocation | null | undefined,
+  signal?: AbortSignal,
+  dispatcher?: UnitDispatcher,
 ): SummaryJudge | null {
   if (!invocation) return null;
   const engine = plan.execution?.engines[invocation.engine];
-  if (!engine || engine.kind !== "llm")
+  if (!engine)
     throw new ConfigError(`Frozen gate engine "${invocation.engine}" is unavailable.`, "INVALID_CONFIG_FILE");
+  if (engine.kind === "agent") {
+    if (!dispatcher) {
+      throw new ConfigError(
+        `Frozen agent gate engine "${invocation.engine}" has no unit dispatcher.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    return async ({ system, user }) => {
+      const fallbackEngine = engine.fallbackLlmEngine ? plan.execution.engines[engine.fallbackLlmEngine] : undefined;
+      const result = await dispatcher({
+        runId: "gate",
+        stepId: "gate",
+        unitId: "gate",
+        nodeId: "gate",
+        prompt: user,
+        systemPrompt: system,
+        engine,
+        ...(fallbackEngine?.kind === "llm" ? { fallbackEngine } : {}),
+        invocation,
+        timeoutMs: invocation.timeoutMs,
+        ...(signal ? { signal } : {}),
+      });
+      if (!result.ok) {
+        throw new Error(result.error || `Verification engine "${invocation.engine}" failed.`);
+      }
+      return result.text;
+    };
+  }
   return async ({ system, user }) => {
     const { chatCompletion } = await import("../../llm/client");
     return chatCompletion(
@@ -27,6 +58,7 @@ export function frozenSummaryJudge(
       ],
       {
         timeoutMs: invocation.timeoutMs,
+        ...(signal ? { signal } : {}),
       },
     );
   };

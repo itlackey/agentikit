@@ -53,12 +53,8 @@ export function appendShowDirectives(lines: string[], r: Record<string, unknown>
   if (assetType === "skill" || assetType === "knowledge") {
     const activeRun = r.activeRun as { runId: string; stepId: string | null; workflowRef: string } | null | undefined;
     if (activeRun) {
-      // Active workflow: redirect agent to workflow commands instead of direct apply
       lines.unshift(
-        `  akm workflow complete '${activeRun.runId}'${activeRun.stepId ? ` --step '${activeRun.stepId}'` : ""}`,
-      );
-      lines.unshift(
-        "Read this schema, then follow your workflow step's instructions to edit the workspace file. When done, mark the step complete:",
+        "Read this reference, follow the active unit's instructions, and return the result to the workflow runner. Step completion is automatic.",
       );
       lines.unshift(`WORKFLOW ACTIVE — schema shown as reference (run: ${activeRun.runId})`);
       lines.unshift("---");
@@ -111,14 +107,14 @@ export function appendShowDirectives(lines: string[], r: Record<string, unknown>
     const insertIdx = separatorIdx >= 0 ? separatorIdx + 1 : r.type || r.name ? 1 : 0;
     const actionDirective = [
       `ACTION REQUIRED: Do not execute steps manually from this output.`,
-      `Run \`akm workflow next '${workflowRef}'\` to get your current step with exact instructions.`,
+      `Run \`akm workflow run '${workflowRef}'\` to execute the workflow through its declared gates.`,
       "---",
     ];
     lines.splice(insertIdx, 0, "", ...actionDirective);
     lines.push("");
     lines.push("---");
-    lines.push(`NEXT STEP: Run \`akm workflow next '${workflowRef}'\` to see the current workflow step.`);
-    lines.push("Do not edit workspace files before completing each step with `akm workflow complete`.");
+    lines.push(`NEXT STEP: Run \`akm workflow run '${workflowRef}'\` to execute the workflow.`);
+    lines.push("Inspect the workflow first; the runner dispatches and completes each step automatically.");
   }
 }
 

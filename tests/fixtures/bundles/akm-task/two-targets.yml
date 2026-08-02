@@ -1,5 +1,8 @@
 # INVALID (fixture, intentional): declares BOTH a prompt and a command target.
 # A task must declare exactly one target — this exercises `invalid-task-yaml`.
+# Everything else (version, schedule) is valid so the ONLY violation is the
+# two-target rule.
+version: 2
 schedule: "@daily"
 enabled: true
 prompt: "Summarize yesterday's activity."

@@ -41,9 +41,8 @@ Set up an isolated workspace before touching the lockfile.
    git switch -c chore/dep-audit <base_branch>
    ```
 
-   Name the local branch with a run-scoped suffix (this run's id, the one
-   you are calling `akm workflow next`/`report` with) so repeated audits
-   never collide, e.g. `chore/dep-audit-<run-id>`.
+   Name the local branch with this workflow run's id as a suffix so repeated
+   audits never collide, e.g. `chore/dep-audit-<run-id>`.
 2. If the `env` parameter is provided, verify the keys it declares without
    surfacing values:
 

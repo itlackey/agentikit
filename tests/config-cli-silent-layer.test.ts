@@ -82,8 +82,8 @@ describe("akm config set --silent", () => {
         "engines.llm",
         '{"kind":"llm","endpoint":"https://example.test/v1/chat/completions","model":"test"}',
       ]);
-      const agentResult = await runCliCapture(["--json", "config", "set", "engines.agent.kind", "agent"]);
-      const llmResult = await runCliCapture(["--json", "config", "set", "engines.llm.kind", "llm"]);
+      const agentResult = await runCliCapture(["config", "set", "engines.agent.kind", "agent"]);
+      const llmResult = await runCliCapture(["config", "set", "engines.llm.kind", "llm"]);
       return { agentResult, llmResult };
     });
 
@@ -95,8 +95,8 @@ describe("akm config set --silent", () => {
 
   test("incomplete dotted discriminators fail without persisting a rewritten kind", async () => {
     const { setResult, getResult } = await withEnv(freshEnv(), async () => {
-      const setResult = await runCliCapture(["--json", "config", "set", "engines.new-agent.kind", "agent"]);
-      const getResult = await runCliCapture(["--json", "config", "get", "engines.new-agent.kind"]);
+      const setResult = await runCliCapture(["config", "set", "engines.new-agent.kind", "agent"]);
+      const getResult = await runCliCapture(["config", "get", "engines.new-agent.kind"]);
       return { setResult, getResult };
     });
 
@@ -115,8 +115,8 @@ describe("akm config set --silent", () => {
         "engines.engine",
         '{"kind":"llm","endpoint":"https://example.test/v1/chat/completions","model":"test"}',
       ]);
-      const transitionResult = await runCliCapture(["--json", "config", "set", "engines.engine.kind", "agent"]);
-      const getResult = await runCliCapture(["--json", "config", "get", "engines.engine.kind"]);
+      const transitionResult = await runCliCapture(["config", "set", "engines.engine.kind", "agent"]);
+      const getResult = await runCliCapture(["config", "get", "engines.engine.kind"]);
       return { transitionResult, getResult };
     });
 

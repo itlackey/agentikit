@@ -174,12 +174,12 @@ the set of types the code actually emits at HEAD (verified against every
 
 | Event type | When emitted | Key metadata fields |
 |---|---|---|
-| `workflow_started` | `akm workflow start <ref>` | `ref`, `runId` |
-| `workflow_step_completed` | `akm workflow complete` (genuine `completed` transition only; `completeWorkflowStep`, `src/workflows/runtime/runs.ts`) | `ref`, `runId`, `stepId`, `status` |
-| `workflow_step_updated` | `akm workflow complete` (non-`completed` transitions: `failed`/`skipped`/`blocked`) | `ref`, `runId`, `stepId`, `status` |
-| `workflow_finished` | `akm workflow complete`, when that step completion brings the run to a terminal status | `ref`, `runId` |
+| `workflow_started` | `akm workflow run <ref>` creates a run (including native workflow task execution) | `ref`, `runId` |
+| `workflow_step_completed` | The shared native/driver completion path records a genuine `completed` transition | `ref`, `runId`, `stepId`, `status` |
+| `workflow_step_updated` | The shared native/driver completion path records a non-`completed` transition (`failed`/`skipped`/`blocked`) | `ref`, `runId`, `stepId`, `status` |
+| `workflow_finished` | A native `run` or external-driver `report` transition makes the run terminal | `ref`, `runId` |
 | `workflow_abandoned` | `akm workflow abandon` | `runId` only — never the workflow title |
-| `workflow_unit_started` | A workflow-engine unit dispatch begins (native `akm workflow run` or the `brief`/`report` driver protocol — both require `experimental.workflowEngine`, see [Workflows](workflows.md#enabling-the-workflow-engine-opt-in-in-090)) | ids/status only — never unit instructions or results |
+| `workflow_unit_started` | A unit begins through stable native `akm workflow run` or the experimental `brief`/`report` external-driver protocol | ids/status only — never unit instructions or results |
 | `workflow_unit_finished` | A workflow-engine unit terminates | ids/status/tokens only — never unit instructions or results |
 
 *LLM usage and health*

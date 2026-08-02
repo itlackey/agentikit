@@ -72,21 +72,21 @@ Run `./scripts/deploy.sh production` after staging health check is green.
 The workflow defines the procedure. To run it, the agent creates a *run* — an instance of that procedure with a specific set of params:
 
 ```sh
-akm workflow start workflow:ship-release --params '{"version":"1.2.3"}'
+akm workflow start workflow:ship-release --params '{"version":"1.2.3"}' # doclint:ignore (historical workflow lifecycle removed in 0.9)
 # Returns a run ID: run-abc123
 ```
 
 Now the procedure has state. The agent calls `akm workflow next` to get the current actionable step:
 
 ```sh
-akm workflow next workflow:ship-release
+akm workflow next workflow:ship-release # doclint:ignore (historical workflow lifecycle removed in 0.9)
 # Returns: Step "validate" — Check that version follows semver...
 ```
 
 When the agent completes a step, it marks it done with notes:
 
 ```sh
-akm workflow complete run-abc123 --step validate --state completed --notes "Version 1.2.3, branch release/1.2.3 confirmed"
+akm workflow complete run-abc123 --step validate --state completed --notes "Version 1.2.3, branch release/1.2.3 confirmed" # doclint:ignore (historical workflow lifecycle removed in 0.9)
 ```
 
 `--state` defaults to `completed` when omitted, so the `--state completed` above is redundant but explicit.
@@ -94,7 +94,7 @@ akm workflow complete run-abc123 --step validate --state completed --notes "Vers
 And the next call to `akm workflow next` returns the following step. The run persists independently of the conversation. If the session ends, a new agent picks up exactly where the previous one left off:
 
 ```sh
-akm workflow next workflow:ship-release
+akm workflow next workflow:ship-release # doclint:ignore (historical workflow lifecycle removed in 0.9)
 # Returns: Step "build" — still in progress from the interrupted session
 ```
 
@@ -213,10 +213,10 @@ Every developer on the team pulls the update with `akm update --all`. Now everyo
 
 ```sh
 # Agent starts a run
-akm workflow start workflow:ship-release --params '{"version":"2.0.0"}'
+akm workflow start workflow:ship-release --params '{"version":"2.0.0"}' # doclint:ignore (historical workflow lifecycle removed in 0.9)
 
 # Gets the first step
-akm workflow next workflow:ship-release
+akm workflow next workflow:ship-release # doclint:ignore (historical workflow lifecycle removed in 0.9)
 # → "Validate inputs: confirm version and vault keys"
 
 # Checks the vault without reading secrets
@@ -224,17 +224,17 @@ akm show vault:production
 # → keys/comments only, never values
 
 # Marks the step complete
-akm workflow complete run-xyz --step validate --notes "All keys present"
+akm workflow complete run-xyz --step validate --notes "All keys present" # doclint:ignore (historical workflow lifecycle removed in 0.9)
 
 # Gets the next step
-akm workflow next workflow:ship-release
+akm workflow next workflow:ship-release # doclint:ignore (historical workflow lifecycle removed in 0.9)
 # → "Build: run bun run build..."
 ```
 
 If the session ends at the staging step, a fresh agent picks up with:
 
 ```sh
-akm workflow next workflow:ship-release
+akm workflow next workflow:ship-release # doclint:ignore (historical workflow lifecycle removed in 0.9)
 # → "Deploy to staging" — still pending from the previous session
 ```
 
@@ -305,7 +305,7 @@ To try workflows:
 akm workflow template  # doclint:ignore (historical — akm 0.5.0 release announcement; `template` folded into `workflow create --print` in the 0.9.0 CLI overhaul)
 # Copy the output to workflows/your-first-workflow.md and edit it
 akm workflow create your-first-workflow
-akm workflow start workflow:your-first-workflow
+akm workflow start workflow:your-first-workflow # doclint:ignore (historical workflow lifecycle removed in 0.9)
 ```
 
 To add a vault, drop a `.env` file in `vaults/` in your stash. The format is standard `.env` — one `KEY=value` per line, comments with `#`.

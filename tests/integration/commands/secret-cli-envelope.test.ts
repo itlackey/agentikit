@@ -58,7 +58,7 @@ afterEach(() => {
 describe("akm secret — JSON envelope snapshot (WS6)", () => {
   test("secret list: envelope wraps refs under `secrets`; the value never appears", async () => {
     seedSecret("deploy-key");
-    const { stdout, status } = await runCli(["--json", "secret", "list"]);
+    const { stdout, status } = await runCli(["secret", "list"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(Array.isArray(env.secrets)).toBe(true);

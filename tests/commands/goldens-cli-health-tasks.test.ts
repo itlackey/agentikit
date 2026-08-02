@@ -27,7 +27,7 @@ import { recordImproveRun } from "../../src/storage/repositories/improve-runs-re
 import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
 import { runCliCapture } from "../_helpers/cli";
 import { expectGolden } from "../_helpers/golden";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
+import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 import { HEALTH_WINDOW_A_NAME, HEALTH_WINDOW_B_NAME, TASK_TRUE_ID } from "../fixtures/goldens/cli/fixture-refs";
 
 let storage: IsolatedAkmStorage;
@@ -287,7 +287,7 @@ describe("family C — akm task", () => {
     const history = await runCli(["task", "history", "--format=json"]);
     expect(history.code).toBe(0);
 
-    const doctor = await runCli(["task", "doctor", "--format=json"]);
+    const doctor = await withEnv({ BUN_TEST: "1" }, () => runCli(["task", "doctor", "--format=json"]));
     expect(doctor.code).toBe(0);
     const doctorJson = JSON.parse(doctor.stdout) as Record<string, unknown>;
     if (doctorJson.remediation !== undefined) expect(doctorJson.remediation).toBe("akm task sync --rebind");

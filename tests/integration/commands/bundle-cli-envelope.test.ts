@@ -68,7 +68,7 @@ describe("akm bundle group — JSON envelope snapshot (S7)", () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), "akm-bundle-create-"));
     createdTmpDirs.push(parent);
     const stashDir = path.join(parent, "newstash");
-    const { stdout, status } = await runCli(["--json", "bundle", "create", "--dir", stashDir]);
+    const { stdout, status } = await runCli(["bundle", "create", "--dir", stashDir]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.bundleDir).toBe(stashDir);
@@ -78,7 +78,7 @@ describe("akm bundle group — JSON envelope snapshot (S7)", () => {
   });
 
   test("list: success envelope carries sources array + totalSources + list shape", async () => {
-    const { stdout, status } = await runCli(["--json", "bundle", "list"]);
+    const { stdout, status } = await runCli(["bundle", "list"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(Array.isArray(env.sources)).toBe(true);
@@ -87,7 +87,7 @@ describe("akm bundle group — JSON envelope snapshot (S7)", () => {
   });
 
   test("list --kind <valid>: filter is accepted (exit 0, list shape)", async () => {
-    const { stdout, status } = await runCli(["--json", "bundle", "list", "--kind", "filesystem"]);
+    const { stdout, status } = await runCli(["bundle", "list", "--kind", "filesystem"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.shape).toBe("list");
@@ -95,7 +95,7 @@ describe("akm bundle group — JSON envelope snapshot (S7)", () => {
   });
 
   test("list --kind <bogus>: parseKindFilter → {ok:false} usage envelope on stderr (exit 2)", async () => {
-    const { stderr, status } = await runCli(["--json", "bundle", "list", "--kind", "bogus"]);
+    const { stderr, status } = await runCli(["bundle", "list", "--kind", "bogus"]);
     expect(status).toBe(2);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);
@@ -104,7 +104,7 @@ describe("akm bundle group — JSON envelope snapshot (S7)", () => {
   });
 
   test("show <name>: not found → {ok:false} not-found envelope on stderr (exit 1)", async () => {
-    const { stderr, status } = await runCli(["--json", "bundle", "show", "does-not-exist"]);
+    const { stderr, status } = await runCli(["bundle", "show", "does-not-exist"]);
     expect(status).toBe(1);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);

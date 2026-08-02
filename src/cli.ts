@@ -90,6 +90,7 @@ import {
   output,
   runWithJsonErrors,
 } from "./cli/shared";
+import { assertKnownFlags, closestMatch, type FlagScanCommand } from "./cli/unknown-flags";
 import { agentCommand, lintCommand } from "./commands/agent/contribute-cli";
 import { generateBashCompletions, installBashCompletions } from "./commands/completions";
 import { configCommand } from "./commands/config-cli";
@@ -271,7 +272,16 @@ const setupCommand = defineCommand({
         output("setup", result);
         printSetupTtyHint(result);
       } else {
-        // Interactive wizard
+        // Interactive wizard. Guard the TTY first: the wizard's prompts read
+        // from stdin, so a piped/redirected/CI invocation would render the
+        // first prompt and then block forever instead of failing — and `akm
+        // setup` is the first command users automate.
+        if (process.stdin.isTTY !== true) {
+          throw new UsageError(
+            "Interactive setup requires a TTY. Pass --yes to accept defaults, or --config <json> / --from <file> to configure non-interactively.",
+            "NON_INTERACTIVE_REQUIRES_YES",
+          );
+        }
         const { runSetupWizard } = await import("./setup/setup");
         await runSetupWizard({ dir: args.dir, noInit });
       }
@@ -894,41 +904,9 @@ function findUnknownCommandAttempt(
   }
 }
 
-/**
- * Standard edit-distance DP, single-row-at-a-time (sizes here are always
- * short command-name strings). Builds each row left-to-right, appending as
- * it goes, so every index read below is already-populated — the `?? 0`
- * fallbacks only satisfy `noUncheckedIndexedAccess`, they never fire.
- */
-function levenshteinDistance(a: string, b: string): number {
-  let previousRow: number[] = Array.from({ length: b.length + 1 }, (_, j) => j);
-  for (let i = 1; i <= a.length; i++) {
-    const currentRow: number[] = [i];
-    for (let j = 1; j <= b.length; j++) {
-      const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
-      const deletion = (previousRow[j] ?? 0) + 1;
-      const insertion = (currentRow[j - 1] ?? 0) + 1;
-      const substitution = (previousRow[j - 1] ?? 0) + substitutionCost;
-      currentRow.push(Math.min(deletion, insertion, substitution));
-    }
-    previousRow = currentRow;
-  }
-  return previousRow[b.length] ?? 0;
-}
-
-/** Closest candidate within a length-scaled distance threshold, or undefined when nothing is close enough to be worth suggesting. */
+/** Closest command within a length-scaled distance threshold (shared DP in cli/unknown-flags.ts). */
 function closestCommandMatch(attempted: string, candidates: readonly string[]): string | undefined {
-  let best: string | undefined;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const candidate of candidates) {
-    const distance = levenshteinDistance(attempted, candidate);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = candidate;
-    }
-  }
-  const threshold = Math.max(2, Math.ceil(attempted.length / 2));
-  return best !== undefined && bestDistance <= threshold ? best : undefined;
+  return closestMatch(attempted, candidates, Math.max(2, Math.ceil(attempted.length / 2)));
 }
 
 const CLI_HELP_POINTER = "Run `akm --help` for usage.";
@@ -978,6 +956,11 @@ function toUsageErrorFromCliError(error: Error, rawArgs: readonly string[]): Usa
   // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — strip ANSI escape codes
   const message = error.message.replace(/\x1b\[[0-9;]*m/g, "");
   return new UsageError(message, code, hint);
+}
+
+/** Normalize citty's private CLIError for the real entrypoint and in-process test harness. */
+export function normalizeCittyCliError(error: unknown, rawArgs: readonly string[]): unknown {
+  return isCittyCliError(error) ? toUsageErrorFromCliError(error, rawArgs) : error;
 }
 
 /**
@@ -1100,6 +1083,10 @@ async function runCli(): Promise<void> {
       console.log(pkgVersion);
       return;
     }
+    // citty's parseArgs (strict: false) silently ignores undeclared flags, so
+    // a typo used to run the command with defaults and exit 0. Checked here, after --help and
+    // --version, so those keep working on any command.
+    assertKnownFlags(main as FlagScanCommand, rawArgs);
     await runCommand(main, { rawArgs });
   } catch (error) {
     if (isCittyCliError(error)) {
@@ -1110,7 +1097,7 @@ async function runCli(): Promise<void> {
       // + raw `console.error(message)` — a one-line diagnosis plus a short
       // hint (with a did-you-mean suggestion when applicable), not a ~46KB
       // usage dump.
-      emitJsonError(toUsageErrorFromCliError(error, rawArgs));
+      emitJsonError(normalizeCittyCliError(error, rawArgs));
       return;
     }
     // Anything else escaping here is a genuinely unexpected failure outside

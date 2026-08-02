@@ -12,6 +12,7 @@ const nodeOnlyPathDir = path.join(testRoot, "node path");
 const oldBunPathDir = path.join(testRoot, "old bun path");
 const unusableBunPathDir = path.join(testRoot, "unusable bun path");
 const windowsShimDir = path.join(testRoot, "generated windows shims");
+const isolatedNode = path.join(nodeOnlyPathDir, process.platform === "win32" ? "node.exe" : "node");
 const launcher = path.join(packageDir, "akm");
 const migrateLauncher = path.join(packageDir, "akm-migrate");
 
@@ -109,7 +110,11 @@ beforeAll(async () => {
   );
   fs.writeFileSync(
     path.join(packageDir, "scripts", "akm-migrate.js"),
-    'console.log(JSON.stringify({ artifact: process.versions.bun ? "bun-migrate" : "node-migrate", args: process.argv.slice(2) }));\n',
+    'console.log(JSON.stringify({ artifact: "bun-migrate", args: process.argv.slice(2) }));\n',
+  );
+  fs.writeFileSync(
+    path.join(packageDir, "scripts", "akm-migrate-node.js"),
+    'console.log(JSON.stringify({ artifact: "node-migrate", args: process.argv.slice(2) }));\n',
   );
   fs.writeFileSync(path.join(consumerDir, "package.json"), JSON.stringify({ name: "consumer", private: true }));
 
@@ -125,7 +130,6 @@ beforeAll(async () => {
 
   const node = Bun.which("node");
   if (!node) throw new Error("Node.js is required for the package launcher contract test");
-  const isolatedNode = path.join(nodeOnlyPathDir, process.platform === "win32" ? "node.exe" : "node");
   fs.symlinkSync(fs.realpathSync(node), isolatedNode);
 
   fakeBun(oldBunPathDir, "0.9.9");
@@ -168,11 +172,8 @@ describe("package launcher", () => {
   });
 
   test("handles Bun below the supported floor or unusable according to each launcher contract", () => {
-    const node = Bun.which("node");
-    if (!node) throw new Error("Node.js is required for the package launcher contract test");
-
     for (const bunDir of [oldBunPathDir, unusableBunPathDir]) {
-      const pathValue = runtimePath(node, path.join(bunDir, "bun"));
+      const pathValue = runtimePath(isolatedNode, path.join(bunDir, "bun"));
       const core = launchThroughNpmShim(akmCase.bin, pathValue);
       expect(new TextDecoder().decode(core.stderr)).toBe("");
       expect(core.exitCode).toBe(0);

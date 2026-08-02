@@ -139,6 +139,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Workflow execution is consolidated on stable `akm workflow run`.** The
+  public `workflow start`, `next`, and `complete` commands are removed with
+  explicit `UNKNOWN_COMMAND` migration hints; `run <ref|run-id>` now owns
+  creation, active-run continuation, native dispatch, completion, and durable
+  replay. It is no longer gated by `experimental.workflowEngine`; only the
+  experimental `brief`/`report` external-driver protocol retains that opt-in.
+  Workflow parameters move from the opaque `--params '<json>'` bag to exact
+  declared flags (`--version 1.2.3`, repeated array flags, JSON object/array
+  values) coerced through the frozen parameter schemas. New invocation controls
+  add bounded failed-step retries (`--max-retries`) and a whole-run timeout
+  (`--timeout N|Nms|Ns|Nm`); failures, gate rejection, timeout, and signals now
+  produce non-zero process statuses while leaving interrupted work resumable.
+
+  Criteria-bearing gates now require `workflow.judgeEngine`, which may name a
+  configured LLM or agent engine and is frozen into the run. Verification is
+  fail-closed: a missing/failing verifier or malformed verdict rejects instead
+  of silently advancing. Scheduled workflow tasks now execute through the same
+  native orchestrator rather than stopping after run creation. Migration:
+  replace `workflow start/next/complete` loops with `workflow run`, replace
+  `--params` with exact declared flags, and configure `workflow.judgeEngine`
+  before running a workflow with a non-empty `### gate` rubric.
+
 - **The two workflow authoring formats — markdown documents and YAML
   orchestration programs — are unified into one format**, per
   `docs/architecture/specs/workflow-format-unification.md`. A workflow is
@@ -169,15 +191,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bullet section — they live under a step's `### gate` sub-heading, the
   format's one reserved marker, as full prose a judge receives byte-exact.
   Frontmatter `gate:` now carries only optional `max_loops` configuration.
-  Omitted or empty rubric text skips validation; a non-empty rubric enables
-  fail-open validation, and unavailable or malformed judges are skipped.
+  Omitted or empty rubric text skips validation; a non-empty rubric requires
+  the frozen `workflow.judgeEngine`, and unavailable or malformed judges reject
+  the gate.
 
-  This is a **pre-1.0 change to an unshipped, opt-in feature** —
-  `experimental.workflowEngine` has never been enabled by default, and no
-  workflow asset has shipped outside the ten example workflows under
-  `scripts/akm-eval/example-stash/workflows/`, all rewritten to the
-  unified format in this change. There is nothing on disk to migrate and
-  no users to break.
+  This is a **pre-1.0 format change**. The ten example workflows under
+  `scripts/akm-eval/example-stash/workflows/` are rewritten to the unified
+  format in this change; existing user-authored workflow assets must be updated
+  manually before execution.
 
 - **akm is described as a knowledge toolkit, not a package manager** (R-048).
   The npm one-liner, the README lede, and the `concepts.md` opener all led with
@@ -766,9 +787,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The CHURN alert class is removed from the collapse detector.** Its input was
   a hard-coded `0` from the 0.9.0 confidence-gate deletion onward, so the alert
   could never fire. The other three alert classes are unaffected. The
-  `improve_cycle_metrics.accepted_actions` column stays and is written as `0`:
-  it lives in a released migration body, and 0.8 ships `state.db`, so a deployed
-  ledger can already have sealed that body's checksum.
+  `improve_cycle_metrics.accepted_actions` column stays and is written as `0`
+  because deployed 0.8 `state.db` files already contain it.
 
 - **`IndexResponse.graphQuality` is removed** from the `akm index` envelope — it
   was declared but never assigned in any code path, so it was always absent.
@@ -839,15 +859,16 @@ earlier `0.9.0-rc.1` / `0.9.0-beta.*` development entries below.
   order). The pre-0.9.0 `[origin//]type:name` grammar is removed — there is no
   compatibility parser; the frozen migrator in `scripts/akm-migrate/migrate/`
   is the only place it survives.
-- **Explicit, journaled, crash-resumable cutover (`akm migrate apply`).** The
+- **Explicit, crash-resumable cutover (`akm migrate apply`).** The
   migrator re-keys all durable state to the new spelling, folds the former
   `workflow.db` into `state.db` (four databases down to three: `state.db` /
   `index.db` / a separate `logs.db`), and migrates config from the flat
   `stashDir` / `sources` / `installed` / `wikiName` keys to `bundles` /
-  `defaultBundle`. A verified, installation-scoped **backup manifest v3**
-  (covering the pre-rescue `index.db`) is taken before any ledger is sealed;
-  expected orphans are quarantined, integrity failures fail closed, and the
-  whole cutover resumes idempotently after a crash. Normal commands refuse an
+  `defaultBundle`. A semantically verified, installation-scoped **backup manifest v4**
+  (covering the pre-rescue `index.db`) is taken before mutation. One phase-free
+  incomplete sentinel retains that backup and target; expected orphans are
+  quarantined, integrity failures fail closed, and the whole cutover reruns
+  idempotently after a crash. Normal commands refuse an
   un-migrated or divergent durable schema rather than migrating as a side effect.
   The retired `stashDir` / `sources` / `installed` keys are **hard-rejected** by
   the 0.9.0 config schema whenever present (the error names `akm migrate apply`);
@@ -888,13 +909,13 @@ See `docs/migration/v0.8-to-v0.9.md` and
   migration, dashboard, or health schema was added.
 - **Explicit, crash-resumable 0.9 migration coordination.** `akm migrate
   status` classifies config, `state.db`, and `workflow.db` independently;
-  `akm migrate apply [--config <prepared>]` creates a verified,
-  installation-scoped backup before sealing ledgers or applying pending
-  migrations. Apply and restore use authenticated phase journals, exact
-  artifact fingerprints, bounded streaming I/O, SQLite integrity checks,
-  active-writer barriers, WAL/SHM-safe publication, and idempotent recovery.
-  Routine reads and current database opens no longer depend on a historical
-  cutover bundle. See `docs/migration/release-notes/0.9.0.md`.
+  `akm migrate apply [--config <prepared>]` creates a semantically verified,
+  installation-scoped config/database backup before applying pending migrations.
+  Apply and restore use one phase-free incomplete sentinel, bounded control-file
+  reads, SQLite integrity and ordered-ledger checks, active-writer barriers,
+  WAL/SHM-safe publication, and idempotent replay. Legacy checksum columns are
+  inert. Routine reads and current database opens no longer depend on a
+  historical cutover bundle. See `docs/migration/release-notes/0.9.0.md`.
 - **Workflow orchestration engine (experimental).** akm can now execute
   multi-step workflows through a native engine or any agent session. Workflow
   assets use the unified markdown format described above; the stable manual

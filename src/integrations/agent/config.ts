@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-/** Default hard timeout for an agent CLI when neither engine nor call overrides it. */
-export const DEFAULT_AGENT_TIMEOUT_MS = 60_000;
+/** Default agent CLI timeout; null means agents run until they finish. */
+export const DEFAULT_AGENT_TIMEOUT_MS: number | null = null;
 
 /** Default hard timeout for direct LLM calls when no engine/use override exists. */
 export const DEFAULT_LLM_TIMEOUT_MS = 600_000;

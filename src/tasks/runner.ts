@@ -16,7 +16,7 @@
  *   3. Skip disabled tasks only when the invocation is scheduler-generated;
  *      explicit manual runs are allowed for catch-up and testing.
  *   4. Dispatch by target kind:
- *        • workflow → `startWorkflowRun(ref, params)`
+ *        • workflow → `runWorkflowSteps({ target: ref, params })`
  *        • prompt   → `executeRunner(engine, prompt, { stdio: "captured" })`
  *   5. Capture stdout / stderr as structured rows in logs.db (task_logs) and,
  *      transitionally, as a flat text tail at `<cacheDir>/tasks/logs/<id>/<ts>.log`
@@ -55,7 +55,7 @@ import type { RunnerSpec } from "../integrations/agent/runner";
 import { executeRunner, type RunnerSeams } from "../integrations/agent/runner-dispatch";
 import { chatCompletion } from "../llm/client";
 import { resolveAssetPath } from "../sources/resolve";
-import type { WorkflowRunStatus } from "../sources/types";
+import type { WorkflowRunStatus, WorkflowRunSummary } from "../sources/types";
 import {
   decodeTaskHistoryMetadata,
   finalizeTaskHistoryAttempt,
@@ -64,8 +64,7 @@ import {
   reserveTaskHistoryAttempt,
   upsertTaskHistory,
 } from "../storage/repositories/task-history-repository";
-import type { WorkflowRunDetail } from "../workflows/runtime/runs";
-import { startWorkflowRun } from "../workflows/runtime/runs";
+import { runWorkflowSteps } from "../workflows/exec/run-workflow";
 import { findBareAkmExecutableIndex } from "./command-executable";
 import { parseTaskDocument } from "./parser";
 import { resolveAkmInvocation } from "./resolve-akm-bin";
@@ -108,10 +107,10 @@ export interface RunTaskOptions {
   /** Override the agent runner (tests). Defaults to {@link runAgent}. */
   runAgentImpl?: RunnerSeams["runAgent"];
   /**
-   * Override the workflow runner (tests). Defaults to
-   * {@link startWorkflowRun}.
+   * Override the workflow orchestrator (tests). Defaults to
+   * {@link runWorkflowSteps}.
    */
-  startWorkflowRunImpl?: typeof startWorkflowRun;
+  runWorkflowStepsImpl?: typeof runWorkflowSteps;
   /** Override clock (tests). */
   now?: () => Date;
   /** Override log dir (tests). */
@@ -131,7 +130,7 @@ export interface RunTaskOptions {
 
 export async function runTask(id: string, options: RunTaskOptions): Promise<TaskRunResult> {
   const runAgentImpl = options.runAgentImpl;
-  const startWorkflowRunImpl = options.startWorkflowRunImpl ?? startWorkflowRun;
+  const runWorkflowStepsImpl = options.runWorkflowStepsImpl ?? runWorkflowSteps;
   const now = options.now ?? (() => new Date());
   const requestedStartedAt = now();
 
@@ -203,7 +202,7 @@ export async function runTask(id: string, options: RunTaskOptions): Promise<Task
         logPath,
         startedAt,
         now,
-        startWorkflowRunImpl,
+        runWorkflowStepsImpl,
         historyReserved: attempt.historyReserved,
       });
     }
@@ -355,10 +354,10 @@ async function runWorkflowTask(input: {
   logPath: string;
   startedAt: Date;
   now: () => Date;
-  startWorkflowRunImpl: typeof startWorkflowRun;
+  runWorkflowStepsImpl: typeof runWorkflowSteps;
   historyReserved: boolean;
 }): Promise<TaskRunResult> {
-  const { task, logPath, startedAt, now, startWorkflowRunImpl, historyReserved } = input;
+  const { task, logPath, startedAt, now, runWorkflowStepsImpl, historyReserved } = input;
   if (task.target.kind !== "workflow") throw new Error("invariant: workflow target");
   const ref = parseRefInput(task.target.ref);
   if (ref.type !== "workflow") {
@@ -368,18 +367,23 @@ async function runWorkflowTask(input: {
     );
   }
 
-  let detail: WorkflowRunDetail | undefined;
+  let detail: WorkflowRunSummary | undefined;
+  let gateError: string | undefined;
   let error: Error | undefined;
   try {
-    detail = await startWorkflowRunImpl(task.target.ref, task.target.params);
+    const execution = await runWorkflowStepsImpl({ target: task.target.ref, params: task.target.params });
+    detail = execution.run;
+    if (execution.gateRejection) {
+      gateError = `Verification rejected step "${execution.gateRejection.stepId}": ${execution.gateRejection.feedback}`;
+    }
   } catch (e) {
     if (e instanceof AkmError && e.kind === "config") throw e;
     error = e instanceof Error ? e : new Error(String(e));
   }
 
   const finishedAt = finishAttempt(startedAt, now());
-  const status: TaskRunStatus = error ? "failed" : mapWorkflowStatus(detail?.run.status);
-  const log = renderWorkflowLog({ task, detail, error });
+  const status: TaskRunStatus = error || gateError ? "failed" : mapWorkflowStatus(detail?.status);
+  const log = renderWorkflowLog({ task, detail, error: error ?? (gateError ? new Error(gateError) : undefined) });
   persistRunLog({
     taskId: task.id,
     startedAtIso: startedAt.toISOString(),
@@ -398,8 +402,8 @@ async function runWorkflowTask(input: {
     log: logPath,
     target: { kind: "workflow", ref: task.target.ref },
     detail: {
-      runId: detail?.run.id,
-      ...(error ? { error: error.message } : {}),
+      runId: detail?.id,
+      ...(error ? { error: error.message } : gateError ? { error: gateError } : {}),
     },
   };
   appendHistory(result, historyReserved);
@@ -413,10 +417,8 @@ async function runWorkflowTask(input: {
 
 /**
  * Map the workflow runtime's status into the task-runner status space.
- * Workflows can legitimately remain `active` after `startWorkflowRun`
- * returns (multi-step workflows pause for user input); recording them as
- * "completed" would be misleading. We preserve "active" as a first-class
- * task status with exit code 0 — the OS scheduler treats it as success.
+ * A workflow normally reaches completed or failed in one orchestration call.
+ * Active remains representable for explicit engine stops such as a gate.
  *
  * The parameter is typed as the runtime's `WorkflowRunStatus` union (plus the
  * `undefined` that `detail?.run.status` can produce when no detail is present).
@@ -440,13 +442,13 @@ function mapWorkflowStatus(status: WorkflowRunStatus | undefined): TaskRunStatus
   }
 }
 
-function renderWorkflowLog(input: { task: TaskDocument; detail?: WorkflowRunDetail; error?: Error }): RunLogContent {
+function renderWorkflowLog(input: { task: TaskDocument; detail?: WorkflowRunSummary; error?: Error }): RunLogContent {
   const dbLines: TaskLogLineInput[] = [
     { line: `[akm task] task=${input.task.id} kind=workflow ref=${(input.task.target as { ref: string }).ref}` },
   ];
   if (input.detail) {
-    dbLines.push({ line: `run_id=${input.detail.run.id} status=${input.detail.run.status}` });
-    dbLines.push({ line: `workflow_title=${input.detail.run.workflowTitle}` });
+    dbLines.push({ line: `run_id=${input.detail.id} status=${input.detail.status}` });
+    dbLines.push({ line: `workflow_title=${input.detail.workflowTitle}` });
   }
   if (input.error) {
     dbLines.push({ level: "error", line: `error=${input.error.message}` });

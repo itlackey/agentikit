@@ -28,8 +28,8 @@ steps:
     # THIS step (review board + quality checklist) with the judge's
     # feedback, bounded by max_loops (mirrors the `max_review_rounds`
     # parameter's default). If it still isn't ship-ready after that, the
-    # step — and the run — fails; a human decides whether the draft needs
-    # a fresh `akm workflow start` from `draft` or just another look.
+    # step — and the run — fails; a human corrects the artifacts and resumes
+    # this run, or launches a fresh full run with the original flags.
     gate: { max_loops: 4 }
   - id: publish-draft
     inputs: [steps.edit.output]
@@ -453,8 +453,8 @@ step to route to:
   angle, or a non-negotiable reveals the draft needs restructuring rather
   than editing. Report this rather than silently looping — if the gate's
   loop budget is then exhausted (or immediately, for a `kill`), the step
-  fails and a human decides whether the article needs a fresh
-  `akm workflow start` from `draft`.
+  fails and a human decides whether to correct the artifacts and resume this
+  run or launch a fresh full run with the original flags.
 
 Re-check the final draft against every one of these non-negotiables on
 every round, even once the review board says `ship` — this is the last

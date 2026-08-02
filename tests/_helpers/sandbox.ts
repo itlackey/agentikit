@@ -429,6 +429,7 @@ export function writeWorkflowTestConfig(): void {
       "test-llm": { kind: "llm", endpoint: "http://localhost:1/v1/chat/completions", model: "test-model" },
     },
     defaults: { engine: "test-agent", llmEngine: "test-llm" },
+    workflow: { judgeEngine: "test-llm" },
   });
 }
 

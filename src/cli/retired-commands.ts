@@ -65,6 +65,11 @@ const RETIRED_COMMAND_HINTS: Record<string, string> = {
   "workflow validate":
     "`akm workflow validate` was folded into `akm lint --type workflows` in 0.9 (add `--fail-on-flagged` for CI gates).",
   "workflow watch": "`akm workflow watch` was removed in 0.9 — use `akm log --run <run-id>`.",
+  "workflow start": "`akm workflow start` was removed in 0.9 — use `akm workflow run <ref>`.",
+  "workflow next":
+    "`akm workflow next` was removed in 0.9 — use `akm workflow status <target>` to inspect or `akm workflow run <target>` to execute.",
+  "workflow complete":
+    "`akm workflow complete` was removed in 0.9 — native runs complete steps automatically; external drivers use `akm workflow brief` and `akm workflow report`.",
   "config show": "`akm config show` was removed in 0.9 — use `akm config list`.",
   "config validate": "`akm config validate` was removed in 0.9 — the config file is validated on every load.",
   "task enable": "`akm task enable` was removed in 0.9 — set `enabled: true` in the task YAML, then `akm task sync`.",

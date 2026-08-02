@@ -43,7 +43,7 @@ afterEach(() => {
 
 describe("akm env — JSON envelope snapshot (WS6)", () => {
   test("env create: success envelope carries the env ref", async () => {
-    const { stdout, status } = await runCli(["--json", "env", "create", "prod"]);
+    const { stdout, status } = await runCli(["env", "create", "prod"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.ref).toBe(durableItemRef(stashDir, "env", "prod"));
@@ -53,7 +53,7 @@ describe("akm env — JSON envelope snapshot (WS6)", () => {
   test("env list: envelope wraps entries under `envs` with key NAMES but no values", async () => {
     fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
     fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "API_URL=https://example\nTOKEN=topsecret-value\n");
-    const { stdout, status } = await runCli(["--json", "env", "list"]);
+    const { stdout, status } = await runCli(["env", "list"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(Array.isArray(env.envs)).toBe(true);
@@ -68,7 +68,7 @@ describe("akm env — JSON envelope snapshot (WS6)", () => {
   test("env remove: envelope carries ref + removed=true (with --yes)", async () => {
     fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
     fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "TOKEN=topsecret-value\n");
-    const { stdout, status } = await runCli(["--json", "env", "remove", "env/prod", "--yes"]);
+    const { stdout, status } = await runCli(["env", "remove", "env/prod", "--yes"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.ref).toBe(durableItemRef(stashDir, "env", "prod"));

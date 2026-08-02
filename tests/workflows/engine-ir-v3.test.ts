@@ -431,6 +431,7 @@ describe("workflow engine v3 contracts", () => {
           },
         },
         defaults: { engine: "sdk", llmEngine: "fallback" },
+        workflow: { judgeEngine: "sdk" },
         modelAliases: {
           premium: { "opencode-sdk": "agent/exact" },
           economy: { fallback: "fallback/exact" },
@@ -444,8 +445,8 @@ describe("workflow engine v3 contracts", () => {
     expect(frozen.plan.execution?.engines.fallback).toMatchObject({ kind: "llm", model: "fallback/exact" });
     expect(frozen.plan.execution?.engines.fallback).not.toHaveProperty("timeoutMs");
     expect(frozen.plan.steps[0]?.gate.judge).toEqual({
-      engine: "fallback",
-      model: "fallback/exact",
+      engine: "sdk",
+      model: "agent/exact",
       timeoutMs: 600_000,
     });
     expect(() => decodeWorkflowPlanV3(frozen.plan)).not.toThrow();

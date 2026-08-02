@@ -305,14 +305,14 @@ export function formatSearchPlain(r: Record<string, unknown>, detail: DetailLeve
       if (hasWorkflowHit) {
         const workflowRef = hits.find((h) => h.type === "workflow");
         const wfRef = workflowRef && typeof workflowRef.ref === "string" ? workflowRef.ref : topRef;
-        lines.push(`Next: akm show '${topRef}'  |  To start a workflow: akm workflow next '${wfRef}'`);
+        lines.push(`Next: akm show '${topRef}'  |  To execute a workflow: akm workflow run '${wfRef}'`);
         lines.push(
-          "After running workflow next: follow each step and run `akm workflow complete <run-id> --step <step-id>` when done.",
+          "Inspect the workflow before running it; `workflow run` executes and verifies its steps automatically.",
         );
       } else {
         lines.push(`Next: akm show '${topRef}'`);
         lines.push(
-          "After reading the asset: check whether a workflow applies before editing — if so, use `akm workflow next` instead.",
+          "After reading the asset: check whether a workflow applies before editing — if so, inspect it and use `akm workflow run`.",
         );
       }
     }

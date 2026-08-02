@@ -10,10 +10,9 @@
  * demonstrates each criterion is met, and returns either a pass or structured
  * corrective feedback steering the agent on what to finish/fix.
  *
- * The LLM call is injected (`judge`) so the gate is unit-testable without a
- * live endpoint, and the whole gate is fail-open: when no criteria exist or no
- * judge is available the step completes as before (per the workflow-agent
- * check-in ADR).
+ * The judge call is injected so the gate is unit-testable without a live
+ * endpoint. A declared gate is fail-closed: only a well-formed affirmative
+ * verdict advances the step.
  *
  * @module workflows/validate-summary
  */
@@ -38,14 +37,13 @@ export interface ValidateSummaryResult {
   missing: string[];
   /** Corrective directive describing what to fix or finish. */
   feedback?: string;
-  /** True when the gate was skipped (no criteria / no judge / judge error). */
+  /** True when the gate was skipped because no criteria were declared. */
   skipped?: boolean;
 }
 
 /**
  * Judge function: given a fully-rendered prompt, return the raw model text.
- * Injected so the gate can be tested deterministically and so the engine can
- * degrade gracefully when no LLM is configured.
+ * Injected so the gate can be tested deterministically.
  */
 export type SummaryJudge = (prompt: { system: string; user: string }) => Promise<string>;
 
@@ -69,35 +67,47 @@ function buildUserPrompt(input: ValidateSummaryInput): string {
 /**
  * Run the summary-validation gate.
  *
- * Fail-open contract:
- *  - no criteria → `{ complete: true, skipped: true }`
- *  - no judge → `{ complete: true, skipped: true }`
- *  - judge throws / returns unparseable → `{ complete: true, skipped: true }`
- *
- * Only a well-formed `complete: false` verdict blocks completion.
+ * No criteria skips verification. A missing, failing, or malformed judge is a
+ * rejection: declared criteria are never silently bypassed.
  */
 export async function validateStepSummary(
   input: ValidateSummaryInput,
   judge: SummaryJudge | undefined,
+  signal?: AbortSignal,
 ): Promise<ValidateSummaryResult> {
   const criteria = input.completionCriteria.filter((c) => c.trim().length > 0);
   if (criteria.length === 0) {
     return { complete: true, missing: [], skipped: true };
   }
   if (!judge) {
-    return { complete: true, missing: [], skipped: true };
+    return {
+      complete: false,
+      missing: criteria,
+      feedback: "This step declares completion criteria but no verification judge is available.",
+    };
   }
 
   let raw: string;
   try {
+    if (signal?.aborted) throw interruptionReason(signal);
     raw = await judge({ system: JUDGE_SYSTEM, user: buildUserPrompt({ ...input, completionCriteria: criteria }) });
+    if (signal?.aborted) throw interruptionReason(signal);
   } catch {
-    return { complete: true, missing: [], skipped: true };
+    if (signal?.aborted) throw interruptionReason(signal);
+    return {
+      complete: false,
+      missing: criteria,
+      feedback: "The verification judge failed. Retry after fixing the verifier configuration or service.",
+    };
   }
 
   const parsed = parseJsonResponse<{ complete?: unknown; missing?: unknown; feedback?: unknown }>(raw);
   if (!parsed || typeof parsed.complete !== "boolean") {
-    return { complete: true, missing: [], skipped: true };
+    return {
+      complete: false,
+      missing: criteria,
+      feedback: "The verification judge returned a malformed verdict instead of the required JSON result.",
+    };
   }
 
   if (parsed.complete) {
@@ -114,4 +124,8 @@ export async function validateStepSummary(
         "Finish the outstanding work and resubmit with a summary that addresses each criterion.";
 
   return { complete: false, missing, feedback };
+}
+
+function interruptionReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("Workflow verification interrupted.");
 }

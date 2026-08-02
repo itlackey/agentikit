@@ -17,9 +17,15 @@
  * actually changed).
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
 import { loadUserConfig, resetConfigCache } from "../../../src/core/config/config";
+import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../../../src/core/paths";
+import { STATE_MIGRATIONS } from "../../../src/core/state/migrations";
 import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { akmIndex } from "../../../src/indexer/indexer";
+import { openDatabaseFinalizing } from "../../../src/storage/database";
+import { runMigrations as runSqliteMigrations } from "../../../src/storage/engines/sqlite-migrations";
 import {
   type IsolatedAkmStorage,
   makeStashDir,
@@ -77,6 +83,34 @@ test("akmIndex discloses an auto-detected, newly-persisted bundle adapter in the
   const teamBundle = config.bundles?.team;
   const component = Object.values(teamBundle?.components ?? {})[0];
   expect(component?.adapter).toBe(result.configUpdated?.detectedAdapters.team);
+});
+
+test("akmIndex rejects obsolete durable state before changing config or index.db", async () => {
+  writeSandboxConfig({
+    semanticSearchMode: "off",
+    bundles: {
+      primary: { path: storage.stashDir, writable: true },
+      team: { path: secondary.dir },
+    },
+    defaultBundle: "primary",
+  });
+  resetConfigCache();
+  const statePath = getStateDbPathInDataDir();
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  const state = openDatabaseFinalizing(statePath);
+  runSqliteMigrations(state, STATE_MIGRATIONS.slice(0, -1));
+  state.close();
+  const configBefore = fs.readFileSync(getConfigPath());
+
+  await expect(akmIndex({ stashDir: storage.stashDir, full: true })).rejects.toThrow(/obsolete.*migrate apply/i);
+
+  expect(fs.readFileSync(getConfigPath())).toEqual(configBefore);
+  expect(fs.existsSync(getDbPath())).toBe(false);
+  const unchanged = openDatabaseFinalizing(statePath, { readonly: true });
+  expect((unchanged.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(
+    STATE_MIGRATIONS.length - 1,
+  );
+  unchanged.close();
 });
 
 test("akmIndex does not re-report a bundle whose adapter is already configured", async () => {

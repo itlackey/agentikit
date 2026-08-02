@@ -137,15 +137,35 @@ describe("runAgent — captured stdio", () => {
   });
 });
 
+/** Manual-drive fake timers: records every scheduled `{cb, ms}`, never fires. */
+function makeFakeTimers() {
+  const timers: Array<{ cb: () => void; ms: number }> = [];
+  const fakeSet = ((cb: () => void, ms?: number) => {
+    timers.push({ cb, ms: ms ?? 0 });
+    return { unref() {} } as unknown as ReturnType<typeof setTimeout>;
+  }) as unknown as typeof setTimeout;
+  const fakeClear = (() => {}) as unknown as typeof clearTimeout;
+  return { timers, fakeSet, fakeClear };
+}
+
 describe("runAgent — timeout", () => {
+  test("does not schedule a default kill timer", async () => {
+    const { timers, fakeSet, fakeClear } = makeFakeTimers();
+
+    const { spawn } = fakeSpawnFn({ exitCode: 0 });
+    const result = await runAgent(makeProfile(), "go", {
+      spawn,
+      setTimeoutFn: fakeSet,
+      clearTimeoutFn: fakeClear,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(timers.some(({ ms }) => ms === 60_000)).toBe(false);
+  });
+
   test("kills the subprocess and reports `timeout`", async () => {
     // Drive the timer manually so the assertion is deterministic.
-    const timers: Array<{ cb: () => void; ms: number }> = [];
-    const fakeSet = ((cb: () => void, ms?: number) => {
-      timers.push({ cb, ms: ms ?? 0 });
-      return { unref() {} } as unknown as ReturnType<typeof setTimeout>;
-    }) as unknown as typeof setTimeout;
-    const fakeClear = (() => {}) as unknown as typeof clearTimeout;
+    const { timers, fakeSet, fakeClear } = makeFakeTimers();
 
     const { spawn } = fakeSpawnFn({ exitCode: 0, hangsUntilKilled: true });
     const promise = runAgent(makeProfile(), "go", {
@@ -246,14 +266,7 @@ describe("runAgent — JSON parse mode", () => {
 
 describe("runAgent — timeoutMs authority", () => {
   test("the invocation timeout controls the spawned process deadline", async () => {
-    const observedDeadlinesMs: number[] = [];
-    let deadlineCallback: (() => void) | undefined;
-    const fakeSet = ((cb: () => void, ms: number) => {
-      observedDeadlinesMs.push(ms);
-      if (ms === 250) deadlineCallback = cb;
-      return { unref() {} } as unknown as ReturnType<typeof setTimeout>;
-    }) as unknown as typeof setTimeout;
-    const fakeClear = (() => {}) as unknown as typeof clearTimeout;
+    const { timers, fakeSet, fakeClear } = makeFakeTimers();
 
     const { spawn } = fakeSpawnFn({ exitCode: 0, hangsUntilKilled: true });
     const promise = runAgent(makeProfile(), "go", {
@@ -262,8 +275,8 @@ describe("runAgent — timeoutMs authority", () => {
       clearTimeoutFn: fakeClear,
       timeoutMs: 250,
     });
-    expect(observedDeadlinesMs).toContain(250); // override won
-    deadlineCallback?.();
+    expect(timers.map((t) => t.ms)).toContain(250); // override won
+    timers.find((t) => t.ms === 250)?.cb();
     const result = await promise;
     expect(result.reason).toBe("timeout");
   });
@@ -356,11 +369,7 @@ describe("runAgent — cooperative abort (RunAgentOptions.signal, P0.5)", () => 
 
   test("aborting mid-run kills the child and maps to reason 'aborted'", async () => {
     // Fake timers so the 5s SIGKILL follow-up never leaves a live timer.
-    const fakeSet = ((cb: () => void) => {
-      void cb;
-      return 1 as unknown as ReturnType<typeof setTimeout>;
-    }) as unknown as typeof setTimeout;
-    const fakeClear = (() => {}) as unknown as typeof clearTimeout;
+    const { fakeSet, fakeClear } = makeFakeTimers();
 
     const { spawn } = fakeSpawnFn({ exitCode: 0, hangsUntilKilled: true });
     const controller = new AbortController();

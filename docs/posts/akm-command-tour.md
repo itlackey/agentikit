@@ -311,9 +311,9 @@ Once you have the right knowledge and context, the next problem is execution acr
 Use workflows for repeatable, resumable procedures.
 
 ```sh
-akm workflow start workflow:ship-release --params '{"version":"2.4.0"}'
-akm workflow next workflow:ship-release
-akm workflow complete run-123 --step validate --notes "Version and branch confirmed"
+akm workflow start workflow:ship-release --params '{"version":"2.4.0"}' # doclint:ignore (historical workflow lifecycle removed in 0.9)
+akm workflow next workflow:ship-release # doclint:ignore (historical workflow lifecycle removed in 0.9)
+akm workflow complete run-123 --step validate --notes "Version and branch confirmed" # doclint:ignore (historical workflow lifecycle removed in 0.9)
 ```
 
 Real-world use: shipping a release, rotating secrets, onboarding a new service, or any other multi-step process that should survive across sessions instead of living only in chat history.

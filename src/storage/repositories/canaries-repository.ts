@@ -51,9 +51,8 @@ export interface CycleMetricsRow {
   over_generation_count: number;
   /**
    * Always 0 — the CHURN alert class it fed was removed for never having been
-   * able to fire. The column stays because it lives in a RELEASED migration
-   * body (`016`) that must not be edited: 0.8 ships `state.db`, so a deployed
-   * ledger can already have sealed that body's checksum.
+   * able to fire. The column stays because deployed `state.db` files already
+   * contain it and removing it would be a destructive schema change.
    */
   accepted_actions: number;
   merge_floor_violations: number;

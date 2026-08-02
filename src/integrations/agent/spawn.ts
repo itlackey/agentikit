@@ -160,8 +160,6 @@ export interface AgentRunResult {
   sessionId?: string;
 }
 
-const DEFAULT_TIMEOUT_MS = DEFAULT_AGENT_TIMEOUT_MS;
-
 /**
  * Supplement `existingPath` with well-known user binary directories when
  * running in a scheduler context (cron/launchd) where PATH is stripped.
@@ -289,7 +287,7 @@ export async function runAgent(
 ): Promise<AgentRunResult> {
   const stdioMode = options.stdio ?? profile.stdio;
   // null = explicitly disabled (no kill timer). undefined = runtime default.
-  const timeoutMs: number | null = options.timeoutMs !== undefined ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
+  const timeoutMs: number | null = options.timeoutMs !== undefined ? options.timeoutMs : DEFAULT_AGENT_TIMEOUT_MS;
   const parseOutput = options.parseOutput ?? profile.parseOutput;
   const setTimeoutImpl = options.setTimeoutFn ?? setTimeout;
   const clearTimeoutImpl = options.clearTimeoutFn ?? clearTimeout;

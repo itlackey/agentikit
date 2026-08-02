@@ -375,9 +375,12 @@ describe("akm sync", () => {
       () => runCliCapture(["sync", "installed-stash"]),
     );
 
-    expect(result.code).toBe(2);
-    const error = JSON.parse(result.stderr.trim()) as { error?: string };
-    expect(error.error).toContain('No git stash found with name "installed-stash"');
+    // Exit 1 (not found), not 2 (usage): the argument is well-formed, the
+    // bundle just isn't a git-backed sync target.
+    expect(result.code).toBe(1);
+    const error = JSON.parse(result.stderr.trim()) as { error?: string; code?: string };
+    expect(error.code).toBe("SOURCE_NOT_FOUND");
+    expect(error.error).toContain('No git bundle found with name "installed-stash"');
     expect(spawnSync("git", ["-C", installedStashDir, "status", "--porcelain"], { encoding: "utf8" }).stdout).toContain(
       "installed.md",
     );

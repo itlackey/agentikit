@@ -365,7 +365,18 @@ describe("recognizeMatch", () => {
     expect(result?.specificity).toBe(18);
   });
 
-  test("smartMdMatcher: tools/toolPolicy (20) beats agent frontmatter command signal (18)", () => {
+  test("smartMdMatcher: a toolPolicy-only file is not an agent", () => {
+    const root = tmpDir();
+    const filePath = path.join(root, "misc", "legacy-policy.md");
+    writeFile(filePath, ["---", "toolPolicy:", "  read: allow", "---", "You are an agent."].join("\n"));
+
+    const ctx = buildFileContext(root, filePath);
+    const result = smartMdMatcher(ctx);
+
+    expect(result?.type).toBe("knowledge");
+  });
+
+  test("smartMdMatcher: tools (20) beats agent frontmatter command signal (18)", () => {
     const root = tmpDir();
     const filePath = path.join(root, "misc", "hybrid.md");
     writeFile(filePath, ["---", "tools:", "  read: allow", "agent: build", "---", "You are a hybrid."].join("\n"));
@@ -667,7 +678,7 @@ describe("Renderer", () => {
     const renderCtx = buildRenderContext(ctx, match, [root], "npm:@scope/pkg");
     const response = renderer.buildShowResponse(renderCtx);
 
-    expect(response.action).toContain("akm workflow next 'npm:@scope/pkg//workflows/release flow'");
+    expect(response.action).toContain("akm workflow run 'npm:@scope/pkg//workflows/release flow'");
   });
 });
 

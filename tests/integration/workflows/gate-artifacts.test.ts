@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { ConfigError } from "../../../src/core/errors";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import type { UnitDispatchRequest, UnitDispatchResult } from "../../../src/workflows/exec/native-executor";
@@ -325,16 +326,17 @@ describe("artifact-judging gates — the judge receives the artifact, not machin
     });
   });
 
-  test("no judge (summaryJudge: null) → fail-open completion, no gate rows — offline behavior unchanged", async () => {
+  test("no judge fails closed without journaling a gate row", async () => {
     seedRun({ steps: [{ id: "extract", criteria: ["a fact was extracted"] }] });
-    const result = await runWorkflowSteps({
-      target: RUN_ID,
-      dispatcher: async () => ({ ok: true, text: '{"fact": "bun is fast"}' }),
-      loadPlan: usePlan(GATED_WF),
-      summaryJudge: null,
-    });
-    expect(result.done).toBe(true);
-    expect(result.gateRejection).toBeUndefined();
+    await expect(
+      runWorkflowSteps({
+        target: RUN_ID,
+        dispatcher: async () => ({ ok: true, text: '{"fact": "bun is fast"}' }),
+        loadPlan: usePlan(GATED_WF),
+        summaryJudge: null,
+      }),
+    ).rejects.toBeInstanceOf(ConfigError);
+    expect((await getWorkflowStatus(RUN_ID)).workflow.steps[0]?.status).toBe("pending");
     await withWorkflowRunsRepo((repo) => {
       const rows = repo.getUnitsForStep(RUN_ID, "extract");
       expect(rows.map((r) => r.unit_id)).toEqual(["extract:solo"]); // no gate rows

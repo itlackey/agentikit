@@ -84,6 +84,24 @@ describe("0.9 config contract", () => {
     });
   });
 
+  test("workflow.judgeEngine accepts named LLM or agent engines and rejects unknown names", () => {
+    const engines = {
+      fast: { kind: "llm" as const, endpoint: "https://example.test/v1/chat/completions", model: "fast-model" },
+      reviewer: { kind: "agent" as const, platform: "codex" as const },
+    };
+    expect(validateConfigShape({ configVersion: "0.9.0", engines, workflow: { judgeEngine: "fast" } }).ok).toBe(true);
+    expect(validateConfigShape({ configVersion: "0.9.0", engines, workflow: { judgeEngine: "reviewer" } }).ok).toBe(
+      true,
+    );
+    const invalid = validateConfigShape({
+      configVersion: "0.9.0",
+      engines,
+      workflow: { judgeEngine: "missing" },
+    });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) expect(invalid.errors).toContainEqual(expect.objectContaining({ path: "workflow.judgeEngine" }));
+  });
+
   test("permits only symbolic engine apiKey values through config set", () => {
     const current = {
       configVersion: "0.9.0",

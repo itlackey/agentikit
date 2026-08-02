@@ -136,7 +136,6 @@ import { validateJsonSchemaSubset } from "../../core/json-schema";
 import { collectSensitiveValues, isEnvPassthroughValueSafeToExpose, redactSensitiveValue } from "../../core/redaction";
 import { runStructured } from "../../core/structured";
 import { warn } from "../../core/warn";
-import type { AgentTokenUsage } from "../../integrations/agent/spawn";
 import { insertEventStrict } from "../../storage/repositories/events-repository";
 import { type WorkflowRunUnitRow, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
 import type { FrozenEngineSnapshot, IrBudget, IrInvocation, IrStepPlan } from "../ir/schema";
@@ -154,63 +153,12 @@ import {
   type UnitOutcome,
   unitOutcomeFromRow,
 } from "./step-work";
+import type { UnitDispatcher, UnitDispatchRequest, UnitDispatchResult } from "./unit-dispatch";
+
+export type { UnitDispatcher, UnitDispatchRequest, UnitDispatchResult } from "./unit-dispatch";
+
 import { enqueueUnitWrite } from "./unit-writer";
 import { assertGitWorkTree, cleanupUnitWorktree, createUnitWorktree } from "./worktree";
-
-/** Everything the dispatcher needs to run one unit, resolved by the executor. */
-export interface UnitDispatchRequest {
-  runId: string;
-  stepId: string;
-  unitId: string;
-  nodeId: string;
-  /** Fully-assembled prompt: preamble + interpolated instructions (+ schema directive). */
-  prompt: string;
-  /** Frozen v3 engine snapshot. Dispatch never consults live config. */
-  engine: FrozenEngineSnapshot;
-  fallbackEngine?: Extract<FrozenEngineSnapshot, { kind: "llm" }>;
-  invocation: IrInvocation;
-  timeoutMs: number | null;
-  schema?: Record<string, unknown>;
-  /** Resolved env bindings to merge into the child environment. */
-  env?: Record<string, string>;
-  /** Exact values that must be removed before output reaches the journal. */
-  sensitiveValues?: readonly string[];
-  /**
-   * Working directory for the unit's child — set exactly when the unit
-   * declares `isolation: worktree` (a fresh detached worktree per attempt,
-   * see `worktree.ts`). Forwarded to the agent (CLI) spawn and, per-call, to
-   * the opencode SDK session; the llm runner has no working directory, so a
-   * cwd reaching a resolved-llm dispatch fails loudly.
-   */
-  cwd?: string;
-  signal?: AbortSignal;
-}
-
-export interface UnitDispatchResult {
-  ok: boolean;
-  /**
-   * Text output. For agent (CLI) units whose harness declares a
-   * `resultExtractor`, this is the NORMALIZED final answer (transport framing
-   * stripped — plan §"The adapter contract" step 3); otherwise the raw
-   * stdout / SDK message / LLM content.
-   */
-  text: string;
-  /**
-   * Harness-native session id, when the harness's result extractor (or the
-   * SDK path) revealed one. Journaled opportunistically on the unit row
-   * (`workflow_run_units.session_id`, migration 005) via {@link UnitOutcome};
-   * akm never depends on it (plan §"Session, MCP, and identity across
-   * harnesses").
-   */
-  sessionId?: string;
-  /** Structured failure vocabulary (spawn.ts AgentFailureReason or config/llm errors). */
-  failureReason?: string;
-  error?: string;
-  usage?: AgentTokenUsage;
-}
-
-/** The one dispatch seam. `feedback` carries runStructured's corrective retry message. */
-export type UnitDispatcher = (request: UnitDispatchRequest, feedback?: string) => Promise<UnitDispatchResult>;
 
 export interface StepExecutionContext {
   runId: string;
@@ -759,6 +707,16 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
 
   let outcome: UnitOutcome | undefined;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (input.signal?.aborted) {
+      return (
+        outcome ?? {
+          unitId,
+          ok: false,
+          failureReason: "aborted",
+          error: "unit was not dispatched because the workflow invocation was interrupted",
+        }
+      );
+    }
     const attemptId = attemptIdFor(attempt);
     // Lifetime cap + declared budget ceilings, consumed per ACTUAL dispatch
     // (reuses above returned before reaching here). Refusal fails this unit
@@ -797,6 +755,7 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
     // (their tokens are already in the journal-seeded total).
     if (outcome.tokens !== undefined) input.budget.addTokens(outcome.tokens);
     if (outcome.ok) return outcome;
+    if (input.signal?.aborted) return outcome;
     const reason = outcome.failureReason;
     if (!retry || reason === undefined || !retry.on.includes(reason)) return outcome;
   }
@@ -1073,6 +1032,7 @@ export function buildAgentDispatchRequest(
 ): import("../../integrations/agent/builder-shared").AgentDispatchRequest {
   return {
     prompt,
+    ...(request.systemPrompt ? { systemPrompt: request.systemPrompt } : {}),
     ...(request.invocation.model ? { model: request.invocation.model } : {}),
     ...(request.invocation.model ? { modelIsExact: true } : {}),
     ...(request.schema ? { schema: request.schema } : {}),
@@ -1118,7 +1078,13 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
     const { chatCompletion, LlmCallError } = await import("../../llm/client.js");
     const connection = resolved.connection;
     try {
-      const text = await chatCompletion(connection, [{ role: "user", content: prompt }], {
+      const messages = request.systemPrompt
+        ? [
+            { role: "system" as const, content: request.systemPrompt },
+            { role: "user" as const, content: prompt },
+          ]
+        : [{ role: "user" as const, content: prompt }];
+      const text = await chatCompletion(connection, messages, {
         timeoutMs: request.timeoutMs,
         ...(request.signal ? { signal: request.signal } : {}),
         // Native structured output where the connection supports it; the

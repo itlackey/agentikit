@@ -75,7 +75,11 @@ describe("remember stdin", () => {
     expect(parsed.data.captureMode).toBe("hot");
     expect(parsed.data.beliefState).toBe("asserted");
     expect(parsed.data.type).toBe("memory");
-    expect(Object.keys(parsed.data).sort()).toEqual(["beliefState", "captureMode", "type"]);
+    // `updated` is stamped by ensureAkmMarkdownType on every akm-authored .md
+    // write — without it, `akm lint` flagged its own `remember` output as
+    // `missing-updated`.
+    expect(parsed.data.updated).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(Object.keys(parsed.data).sort()).toEqual(["beliefState", "captureMode", "type", "updated"]);
   });
 
   test("reads stdin when --format json is present", () => {

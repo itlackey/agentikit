@@ -9,7 +9,11 @@
 // at src/storage/engines/sqlite-migrations.ts applies them in array order.
 
 import type { Database } from "../../storage/database";
-import { type Migration, runMigrations as runSqliteMigrations } from "../../storage/engines/sqlite-migrations";
+import {
+  assertMigrationRegistry,
+  type Migration,
+  runMigrations as runSqliteMigrations,
+} from "../../storage/engines/sqlite-migrations";
 
 export const STATE_MIGRATIONS: readonly Migration[] = [
   // ── Migration 001 — initial schema ──────────────────────────────────────────
@@ -68,7 +72,7 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
       --   id          TEXT PK     — UUID (crypto.randomUUID()); stable directory name.
       --   stash_dir   TEXT        — absolute stash root; multi-stash installs need
       --                             this to partition proposal lists per stash.
-      --   ref         TEXT        — target asset ref (e.g. "lesson:alpha");
+      --   ref         TEXT        — target asset ref (e.g. "lessons/alpha");
       --                             indexed for ref-scoped queue views.
       --   status      TEXT        — "pending" | "accepted" | "rejected"; indexed
       --                             so pending-queue queries are fast.
@@ -85,7 +89,7 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
       --   metadata_json TEXT      — JSON object for future proposal fields.
       --                             Current fields stored here: sourceRun,
       --                             review, confidence, gateDecision (#577),
-      --                             backupContent, eligibilitySource.
+      --                             backupContent.
       --
       -- ADD COLUMN extension points (future migrations):
       --   ALTER TABLE proposals ADD COLUMN source_run TEXT DEFAULT NULL;
@@ -366,9 +370,9 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // (`scripts/akm-migrate/migrate/legacy/proposal-fs-import.ts`, wired through
   // `akm-migrate apply`),
   // whose idempotency is INSERT OR IGNORE on the proposal UUID plus migrate-apply's
-  // own journal — it no longer reads or writes this ledger. The CREATE TABLE
-  // stays because the migration registry is APPEND-ONLY and checksum-sealed:
-  // removing a released fragment would make the schema_migrations ledger of an
+  // incomplete sentinel — it no longer reads or writes this ledger. The CREATE TABLE
+  // stays because migration IDs are append-only: removing a released migration
+  // would make the schema_migrations ledger of an
   // already-migrated rc database stop being an exact ordered prefix, and the
   // runner would refuse to open it. The empty table is harmless.
   //
@@ -853,12 +857,11 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   //
   // The state.db half of the three-DB merge (plan §3.2/§8, normative §11.4,
   // chunk-8 cutover design §1). This migration is PURE,
-  // SEALABLE, IDEMPOTENT DDL ONLY — `CREATE TABLE IF NOT EXISTS` (+ indexes),
+  // IDEMPOTENT DDL ONLY — `CREATE TABLE IF NOT EXISTS` (+ indexes),
   // never a DROP or a data move. The actual data movement (the workflow.db merge,
   // the usage_events rescue from index.db, the full old-ref→item_ref re-key, and
-  // the workflow.db delete / index.db quarantine) is CODE — a journaled step of
-  // the migrate-apply flow (`scripts/akm-migrate/config-migrate.ts`
-  // `cutover-applied` phase), driven by
+  // the workflow.db delete / index.db quarantine) is idempotent migrate-apply
+  // code driven by
   // `scripts/akm-migrate/migrate/legacy/three-db-cutover.ts`. See the no-DROP
   // contract carve-out note in `src/core/state-db.ts`.
   //
@@ -1007,6 +1010,8 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   },
 ];
 
+assertMigrationRegistry(STATE_MIGRATIONS);
+
 /**
  * Apply every pending migration in a single transaction per migration.
  *
@@ -1015,12 +1020,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
  *
  * Called automatically by `openStateDatabase()`.
  */
-export function runMigrations(
-  db: Database,
-  options?: { applyPending?: boolean; generationMarker?: { operationId: string; phase: string } },
-): void {
-  runSqliteMigrations(db, STATE_MIGRATIONS, {
-    applyPending: options?.applyPending,
-    generationMarker: options?.generationMarker,
-  });
+export function runMigrations(db: Database, options?: { applyPending?: boolean }): void {
+  runSqliteMigrations(db, STATE_MIGRATIONS, { applyPending: options?.applyPending });
 }

@@ -13,11 +13,13 @@
  *
  * ── validate (spec §6 task validation column) ──
  *
- * A task must declare a `schedule`, an `enabled` boolean, and EXACTLY ONE
- * target (`prompt` XOR `workflow` XOR `command`). The akm adapter's
- * `TaskLinter` port checks "at least one" target; the native task family here is
- * STRICTER — declaring two targets is `invalid-task-yaml`. So this adapter owns
- * a purpose-built one-target check rather than reusing that port.
+ * A task must declare `version: 2`, a `schedule`, and EXACTLY ONE target
+ * (`prompt` XOR `workflow` XOR `command`). `enabled` is OPTIONAL — the parser
+ * defaults it to `true`, so an omitted field means an ACTIVE task — but must
+ * be a boolean when present. The akm adapter's `TaskLinter` port checks
+ * "at least one" target; the native task family here is STRICTER — declaring
+ * two targets is `invalid-task-yaml`. So this adapter owns a purpose-built
+ * one-target check rather than reusing that port.
  *
  * Conformance oracle (authored, DO NOT modify): fixture
  * `tests/fixtures/bundles/akm-task/` + goldens
@@ -28,6 +30,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { FileContext } from "../../../indexer/walk/file-context";
+import { taskFieldProblems } from "../../../tasks/schema";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
@@ -77,12 +80,14 @@ function parseTaskYaml(raw: string): Record<string, unknown> {
   return {};
 }
 
-/** The native `invalid-task-yaml` check: schedule + enabled(boolean) + EXACTLY ONE target. */
+/**
+ * The native `invalid-task-yaml` check: the shared field rules
+ * ({@link taskFieldProblems} — see its doc for the lint-vs-parser
+ * reconciliation story) plus this adapter's stricter EXACTLY-ONE-target rule.
+ */
 function taskDiagnostics(relPath: string, data: Record<string, unknown>): Diagnostic[] {
   if (Object.keys(data).length === 0) return [];
-  const problems: string[] = [];
-  if (typeof data.schedule !== "string" || data.schedule.trim() === "") problems.push("schedule");
-  if (typeof data.enabled !== "boolean") problems.push("enabled (must be a boolean)");
+  const problems = taskFieldProblems(data);
   const targets = TARGET_KEYS.filter((k) => k in data && data[k] !== undefined && data[k] !== null);
   if (targets.length === 0) problems.push("exactly one target (prompt, workflow, or command)");
   else if (targets.length > 1) problems.push(`exactly one target — declares ${targets.length} (${targets.join(", ")})`);

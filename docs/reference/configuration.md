@@ -17,8 +17,8 @@ migration guide](../migration/v0.8-to-v0.9.md) before editing an existing
 installation.
 
 Canonical config and durable database access fail closed while a restore or
-migration-apply journal is pending. Use `akm migrate status` to inspect the
-phase and `akm migrate apply` to resume; do not delete journal files manually.
+migration-apply operation is incomplete. Use `akm migrate status` to inspect it
+and `akm migrate apply` to retry; do not delete migration control files manually.
 
 AKM 0.8 does not provide these migration commands. To cross from 0.8 to 0.9,
 prepare the target and an independent filesystem backup first, install or stage
@@ -47,6 +47,10 @@ code cannot enforce safeguards introduced by 0.9.
     "engine": "reviewer",
     "llmEngine": "fast",
     "improveStrategy": "default"
+  },
+  "workflow": {
+    "maxConcurrency": 8,
+    "judgeEngine": "reviewer"
   },
   "improve": {
     "strategies": {
@@ -97,6 +101,12 @@ such as `endpoint`, `provider`, and `apiKey` belong only on named engines.
 value is clamped to `1..64`. When absent, AKM derives the cap once from the CPU
 count (`min(16, max(1, cores - 2))`) and freezes it into the run plan, so resume
 does not change policy on a different host or after config edits.
+
+`workflow.judgeEngine` names the LLM or agent engine used to verify every
+non-empty workflow `### gate` rubric. It is required when a workflow declares
+completion criteria and is frozen into each new run, so later config edits do
+not change an in-flight run's verifier. Missing, failed, or malformed verifier
+results reject the gate; criteria are never silently bypassed.
 
 ## Strategies
 
@@ -285,13 +295,12 @@ section, an absent key, and an explicit `false` all read identically as off.
   itself always runs; this only gates mutations without a human in the loop.
   Consolidation is not gated: it remains advisory and emits reviewable
   proposals. `sync.push` is deliberately **not** gated by this key.
-- **`experimental.workflowEngine`** — allows the native `akm workflow`
-  orchestration engine to run through `akm workflow run`/`brief`/`report`.
-  Authoring and linting the unified markdown workflow format, plus the manual
-  `start`/`next`/`complete`/`status`/`list`/`create`/`resume`/`abandon`
-  contract, are unaffected either way. See
-  [Workflows](workflows.md#enabling-the-workflow-engine-opt-in-in-090) for
-  the full gate behavior and error shape.
+- **`experimental.workflowEngine`** — enables only the experimental
+  harness-neutral `akm workflow brief`/`report` driver protocol. Stable native
+  orchestration through `akm workflow run`, authoring, linting, inspection, and
+  recovery are unaffected. See
+  [Workflows](workflows.md#external-driver-protocol-opt-in-in-090) for the full
+  gate behavior and error shape.
 
 ## Managing Config
 

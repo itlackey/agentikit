@@ -676,6 +676,11 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       const { loadConfig, mutateConfig } = await import("../core/config/config.js");
       let config = loadConfig();
 
+      // Durable state must be runtime-compatible before source hydration,
+      // adapter persistence, or index.db creation can mutate the installation.
+      onProgress({ phase: "preflight", message: "Validating durable state." });
+      withStateDb(() => undefined);
+
       // Ensure git stash caches are extracted before resolving stash dirs,
       // so their content directories exist on disk for the walker to discover.
       const sourceCacheStart = Date.now();

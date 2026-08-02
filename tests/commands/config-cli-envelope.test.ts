@@ -44,7 +44,7 @@ afterEach(() => {
 
 describe("akm config — JSON envelope snapshot (WS6)", () => {
   test("config list: success envelope carries config v2 engine/strategy semantics", async () => {
-    const { stdout, status } = await runCli(["--json", "config", "list"]);
+    const { stdout, status } = await runCli(["config", "list"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.semanticSearchMode).toBe("off");
@@ -53,27 +53,27 @@ describe("akm config — JSON envelope snapshot (WS6)", () => {
   });
 
   test("config get: returns the requested key value", async () => {
-    const { stdout, status } = await runCli(["--json", "config", "get", "semanticSearchMode"]);
+    const { stdout, status } = await runCli(["config", "get", "semanticSearchMode"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env).toBe("off");
   });
 
   test("config set: persists and dumps the merged config", async () => {
-    const { stdout, status } = await runCli(["--json", "config", "set", "semanticSearchMode", "auto"]);
+    const { stdout, status } = await runCli(["config", "set", "semanticSearchMode", "auto"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.semanticSearchMode).toBe("auto");
   });
 
   test("config set --silent: suppresses the post-write dump (empty stdout, exit 0)", async () => {
-    const { stdout, status } = await runCli(["--json", "config", "set", "semanticSearchMode", "auto", "--silent"]);
+    const { stdout, status } = await runCli(["config", "set", "semanticSearchMode", "auto", "--silent"]);
     expect(status).toBe(0);
     expect(stdout.trim()).toBe("");
   });
 
   test("config path --all: success envelope carries config/bundle/cache/index paths", async () => {
-    const { stdout, status } = await runCli(["--json", "config", "path", "--all"]);
+    const { stdout, status } = await runCli(["config", "path", "--all"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(typeof env.config).toBe("string");

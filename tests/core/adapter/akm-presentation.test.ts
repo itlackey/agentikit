@@ -49,7 +49,7 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 function buildWorkflowAction(ref: string): string {
-  return `Resume the active run or start a new run with \`akm workflow next ${shellQuote(ref)}\`.`;
+  return `Start or resume execution with \`akm workflow run ${shellQuote(ref)}\`.`;
 }
 
 // Frozen snapshot of the action builders the retired `asset-registry.ts`
@@ -129,9 +129,9 @@ describe("TYPE_PRESENTATION — action builders reproduce ACTION_BUILDERS verbat
     }
   });
 
-  test("the workflow action reproduces buildWorkflowAction (single-quoted ref, resume/next form)", () => {
+  test("the workflow action reproduces buildWorkflowAction (single-quoted ref, canonical run form)", () => {
     const out = presentationFor("workflow").action?.("team//workflows/release");
-    expect(out).toBe("Resume the active run or start a new run with `akm workflow next 'team//workflows/release'`.");
+    expect(out).toBe("Start or resume execution with `akm workflow run 'team//workflows/release'`.");
     expect(out).toBe(ACTION_BUILDERS.workflow!("team//workflows/release"));
   });
 

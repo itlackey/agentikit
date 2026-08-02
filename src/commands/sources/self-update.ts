@@ -6,7 +6,13 @@ import * as childProcess from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fetchWithRetry, IS_WINDOWS, ResponseTooLargeError, readBodyWithByteCap } from "../../core/common";
+import {
+  fetchWithRetry,
+  IS_WINDOWS,
+  ResponseTooLargeError,
+  readBodyWithByteCap,
+  readChunkWithDeadline,
+} from "../../core/common";
 import { ConfigError } from "../../core/errors";
 import { warn } from "../../core/warn";
 import { githubHeaders } from "../../integrations/github";
@@ -49,10 +55,24 @@ export function defaultMigrationCommand(preparedConfigPath?: string): UpgradeMig
   };
 }
 
-async function streamResponseToFile(
+/**
+ * Bounds on the binary body read. `fetchWithTimeout`'s timer only covers
+ * time-to-HEADERS — it is cleared the moment `fetch` resolves — so without
+ * these a compromised or misconfigured endpoint could dribble bytes forever
+ * and hang `akm upgrade` with no output and no way out but Ctrl-C. Two
+ * bounds, because either alone is evadable: a per-chunk STALL deadline (a
+ * connection making no progress dies quickly, while a slow-but-progressing
+ * one is left alone) and an OVERALL deadline (a trickle that sends one byte
+ * per stall-window can't stretch the download indefinitely).
+ */
+const BINARY_STALL_TIMEOUT_MS = 60_000;
+const BINARY_TOTAL_TIMEOUT_MS = 30 * 60_000;
+
+export async function streamResponseToFile(
   response: Response,
   destination: string,
   maxBytes: number,
+  limits?: { stallTimeoutMs?: number; totalTimeoutMs?: number },
 ): Promise<{ byteSize: number; sha256: string }> {
   const declaredText = response.headers.get("content-length");
   if (declaredText) {
@@ -64,20 +84,28 @@ async function streamResponseToFile(
   }
   if (!response.body) throw new Error("Binary download response did not provide a streaming body.");
 
+  const url = response.url || "binary download";
+  const stallTimeoutMs = limits?.stallTimeoutMs ?? BINARY_STALL_TIMEOUT_MS;
+  const totalTimeoutMs = limits?.totalTimeoutMs ?? BINARY_TOTAL_TIMEOUT_MS;
+  const overallDeadlineAt = Date.now() + totalTimeoutMs;
+
   const fd = fs.openSync(destination, "w", 0o600);
   const reader = response.body.getReader();
   const hash = createHash("sha256");
   let byteSize = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      // Whichever bound bites first wins, and the error reports THAT bound —
+      // "no data for 60s" and "download exceeded 30m" are different diagnoses.
+      const stallDeadlineAt = Date.now() + stallTimeoutMs;
+      const deadlineAt = Math.min(stallDeadlineAt, overallDeadlineAt);
+      const reportedTimeoutMs = deadlineAt === overallDeadlineAt ? totalTimeoutMs : stallTimeoutMs;
+      const { done, value } = await readChunkWithDeadline(reader, deadlineAt, undefined, url, reportedTimeoutMs);
       if (done) break;
       if (!value) continue;
       byteSize += value.byteLength;
-      if (byteSize > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        throw new ResponseTooLargeError(response.url || "binary download", maxBytes, byteSize);
-      }
+      // The catch block cancels the reader for every throw path, this included.
+      if (byteSize > maxBytes) throw new ResponseTooLargeError(url, maxBytes, byteSize);
       hash.update(value);
       let written = 0;
       while (written < value.byteLength) written += fs.writeSync(fd, value, written, value.byteLength - written);
@@ -85,6 +113,9 @@ async function streamResponseToFile(
     fs.fdatasyncSync(fd);
     return { byteSize, sha256: hash.digest("hex") };
   } catch (error) {
+    // Cancel so a timed-out (still-open) connection releases its socket rather
+    // than lingering until process exit. Already-cancelled readers no-op.
+    await reader.cancel().catch(() => undefined);
     removeFileBestEffort(destination);
     throw error;
   } finally {

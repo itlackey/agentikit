@@ -225,7 +225,9 @@ function classifyBySmartMd(ctx: FileContext): MatchFact | null {
   }
 
   if (fm) {
-    if ("toolPolicy" in fm || "tools" in fm) {
+    // `tools` is the one authoring key for an agent's tool grant. Recognition
+    // covers only the key the renderer honors.
+    if ("tools" in fm) {
       return { type: "agent", specificity: 20 };
     }
 

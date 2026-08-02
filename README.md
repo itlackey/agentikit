@@ -32,9 +32,9 @@ akm gives agents a curated, searchable library built from local directories, Git
   akm remember "Staging deploys require VPN"
   akm import ./notes/runbook.md
   ```
-- **Run structured workflows** — parse, start, step through, and resume multi-step procedures [(details)](docs/reference/workflows.md)
+- **Run structured workflows** — execute and verify resumable multi-step procedures [(details)](docs/reference/workflows.md)
   ```sh
-  akm workflow start workflows/onboarding
+  akm workflow run workflows/onboarding
   ```
 - **Improve continuously** — feedback drives proposals; proposals drive asset quality [(details)](docs/guides/improvement-loop.md)
   ```sh

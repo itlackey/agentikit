@@ -3,10 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Engine-driven workflow execution — `akm workflow run` (orchestration plan
- * P1, owner decision 5). akm itself walks the plan and dispatches units; the
- * existing `next`/`complete` loop remains for manual/agent-driven advancement
- * of the same runs.
+ * Engine-driven workflow execution — the canonical `akm workflow run`
+ * start/resume/execute path. akm walks the frozen plan and dispatches units;
+ * external drivers can operate an existing run through `brief`/`report`.
  *
  * Invariant (plan §*Never bypass the gate spine*): every step advances
  * through `completeWorkflowStep`, never by writing step rows directly, so the
@@ -47,8 +46,8 @@
  * `finally` unless a failed run retains it as forensic state; a second
  * `workflow run` on a live-leased run refuses up front,
  * and an expired lease is claimable (crash recovery). While the lease is
- * live, manual `workflow complete` is refused too — the engine owns the
- * spine while driving (enforced inside `completeWorkflowStep`).
+ * live, any competing spine advance is refused — the engine owns the run while
+ * driving (enforced inside `completeWorkflowStep`).
  *
  * Process-lifecycle contract (owner finding 4 — no leaked handles): the SDK
  * dispatch path caches `opencode serve` CHILD PROCESSES in a per-env registry
@@ -68,15 +67,20 @@ import { withMaintenanceStartBarrierAsync } from "../../core/maintenance-barrier
 import { disposeDispatchResources } from "../../integrations/agent/runner-dispatch";
 import type { WorkflowRunSummary } from "../../sources/types";
 import { withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
-import { assertRunParamsSatisfyPlan } from "../ir/params";
+import { assertRunParamsSatisfyPlan, type WorkflowParameterFlag } from "../ir/params";
 import { computePlanHash } from "../ir/plan-hash";
-import { decodeWorkflowPlanV3, type WorkflowPlanGraph } from "../ir/schema";
+import { decodeWorkflowPlanV3, type IrStepPlan, type WorkflowPlanGraph } from "../ir/schema";
 import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
-import { completeWorkflowStep, getNextWorkflowStep, type WorkflowNextResult } from "../runtime/runs";
+import { completeWorkflowStep, getNextWorkflowStep, resumeWorkflowRun, type WorkflowNextResult } from "../runtime/runs";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
 import type { SummaryJudge } from "../validate-summary";
 import { frozenSummaryJudge } from "./frozen-judge";
-import { executeStepPlan, type StepExecutionResult, type UnitDispatcher } from "./native-executor";
+import {
+  defaultUnitDispatcher,
+  executeStepPlan,
+  type StepExecutionResult,
+  type UnitDispatcher,
+} from "./native-executor";
 // Shared step semantics — route evaluation + cascaded-skip bookkeeping,
 // gate-evaluation journaling, and the whole step-completion path
 // (`finalizeExecutedStep`) live in step-work.ts so the engine loop and the R3
@@ -92,12 +96,16 @@ import {
 } from "./step-work";
 
 export interface RunWorkflowOptions {
-  /** Workflow run id or workflow ref (auto-starts a run, like `workflow next`). */
+  /** Workflow run id or workflow ref (auto-starts a run). */
   target: string;
   /** Params for an auto-started run. */
   params?: Record<string, unknown>;
+  /** Raw exact-name parameter flags, materialized against the plan at start. */
+  parameterFlags?: readonly WorkflowParameterFlag[];
   /** Stop after this many steps (default: run to completion/gate/failure). */
   maxSteps?: number;
+  /** Retry a failed step this many additional times. */
+  maxRetries?: number;
   signal?: AbortSignal;
   /** Test seam / backend override for unit dispatch. */
   dispatcher?: UnitDispatcher;
@@ -111,8 +119,8 @@ export interface RunWorkflowOptions {
   /**
    * Completion-criteria judge override, threaded into `completeWorkflowStep`
    * for every engine-driven completion. `undefined` (absent) = build the
-   * default judge from the configured LLM; `null` = no judge (the gate is
-   * fail-open, matching offline behavior). Injected primarily for tests.
+   * default judge from the frozen plan; `null` is valid only for an ungated
+   * step. Injected primarily for tests.
    */
   summaryJudge?: SummaryJudge | null;
   /**
@@ -155,10 +163,47 @@ export interface RunWorkflowResult {
   done?: true;
   /** Present when a step summary was rejected by the completion-criteria gate. */
   gateRejection?: { stepId: string; missing: string[]; feedback: string };
+  /** Present when cooperative cancellation stopped before advancing the step. */
+  aborted?: true;
 }
 
 export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<RunWorkflowResult> {
-  const next: WorkflowNextResult = await getNextWorkflowStep(options.target, options.params);
+  let target = options.target;
+  let params = options.params;
+  let parameterFlags = options.parameterFlags;
+  let remainingRetries = options.maxRetries ?? 0;
+  let remainingSteps = options.maxSteps;
+  const executed: ExecutedStepReport[] = [];
+
+  for (;;) {
+    const result = await runWorkflowAttempt({
+      ...options,
+      target,
+      ...(params !== undefined ? { params } : { params: undefined }),
+      ...(parameterFlags !== undefined ? { parameterFlags } : { parameterFlags: undefined }),
+      ...(remainingSteps !== undefined ? { maxSteps: remainingSteps } : { maxSteps: undefined }),
+    });
+    executed.push(...result.executed);
+    const aggregate = { ...result, executed };
+    if (result.run.status !== "failed" || result.aborted || result.gateRejection || remainingRetries <= 0) {
+      return aggregate;
+    }
+    if (remainingSteps !== undefined) {
+      remainingSteps -= result.executed.length;
+      if (remainingSteps <= 0) return aggregate;
+    }
+    await resumeWorkflowRun(result.run.id);
+    target = result.run.id;
+    params = undefined;
+    parameterFlags = undefined;
+    remainingRetries -= 1;
+  }
+}
+
+async function runWorkflowAttempt(options: RunWorkflowOptions): Promise<RunWorkflowResult> {
+  const next: WorkflowNextResult = await getNextWorkflowStep(options.target, options.params, {
+    parameterFlags: options.parameterFlags,
+  });
   // Version/canonical/hash validation precedes every executable mutation,
   // including lease acquisition. Historical rows remain inspectable/abandonable.
   if (!next.done && !options.loadPlan) {
@@ -399,6 +444,29 @@ class LeaseHeartbeat {
   }
 }
 
+/**
+ * A terminal run is a pure no-op: do not load or integrity-check its frozen
+ * plan, because post-completion plan corruption cannot change finished work.
+ */
+async function completedRunResult(runId: string): Promise<RunWorkflowResult> {
+  const doneState = await getNextWorkflowStep(runId);
+  return {
+    run: doneState.run,
+    executed: [],
+    ...(doneState.run.status === "completed" ? { done: true as const } : {}),
+  };
+}
+
+function workflowSummaryJudge(
+  options: RunWorkflowOptions,
+  plan: WorkflowPlanGraph,
+  stepPlan: IrStepPlan,
+  signal: AbortSignal | undefined,
+): SummaryJudge | null {
+  if (options.summaryJudge !== undefined) return options.summaryJudge;
+  return frozenSummaryJudge(plan, stepPlan.gate.judge, signal, options.dispatcher ?? defaultUnitDispatcher);
+}
+
 /** The engine loop proper — runs under the lease held by `runWorkflowSteps`. */
 async function driveRun(
   options: RunWorkflowOptions,
@@ -407,28 +475,14 @@ async function driveRun(
   heartbeat: LeaseHeartbeat | undefined,
 ): Promise<RunWorkflowResult> {
   let next = initial;
-  // A terminal (completed) run is a PURE no-op. `runWorkflowSteps` already
-  // skipped lease acquisition for a done run (`leased = !next.done`), and this
-  // path must ALSO refuse to read the journal or load/integrity-check the
-  // frozen plan: a run that finished cleanly, then had its `plan_json` corrupted
-  // or tampered afterwards, must still report `done` here rather than throwing a
-  // frozen-plan integrity error (loadFrozenPlan would). Nothing will dispatch
-  // and the engine_lease_* columns stay exactly as they were, so return the
-  // fresh run state immediately.
-  if (initial.done) {
-    const doneState = await getNextWorkflowStep(initial.run.id);
-    return {
-      run: doneState.run,
-      executed: [],
-      ...(doneState.run.status === "completed" ? { done: true as const } : {}),
-    };
-  }
+  if (initial.done) return completedRunResult(initial.run.id);
 
   // The effective dispatch signal: the heartbeat's controller (a lost lease or
   // a caller abort aborts it) while leased, else the raw caller signal.
   const dispatchSignal = heartbeat?.signal ?? options.signal;
   const executed: ExecutedStepReport[] = [];
   let gateRejection: RunWorkflowResult["gateRejection"];
+  let aborted = false;
   const maxSteps = options.maxSteps ?? Number.POSITIVE_INFINITY;
 
   // Seed the lifetime unit cap AND the budget ceilings from the journal so
@@ -500,7 +554,10 @@ async function driveRun(
     // another engine owns the spine now. A caller abort (options.signal) is a
     // graceful break, distinct from a lost lease.
     heartbeat?.assertAlive();
-    if (options.signal?.aborted) break;
+    if (options.signal?.aborted) {
+      aborted = true;
+      break;
+    }
     // Renew the run lease between steps (a fresh 90s window per iteration).
     // Losing it (expired mid-step + claimed by another engine) throws — the
     // new owner drives the spine now.
@@ -509,8 +566,8 @@ async function driveRun(
     const stepPlan = plan.steps.find((s) => s.stepId === step.id);
     if (!stepPlan) {
       throw new UsageError(
-        `Step "${step.id}" of run ${next.run.id} is not present in the current workflow asset (${next.run.workflowRef}). ` +
-          `The source file changed since the run started — advance this step manually with \`akm workflow complete\`.`,
+        `Step "${step.id}" of run ${next.run.id} is not present in its frozen workflow plan (${next.run.workflowRef}). ` +
+          "The run journal is inconsistent; abandon this run and start a new one.",
       );
     }
 
@@ -640,6 +697,11 @@ async function driveRun(
       heartbeat?.assertAlive();
       unitsDispatched = result.unitsDispatched;
       if (result.tokensUsed !== undefined) tokensUsed = result.tokensUsed;
+      if (options.signal?.aborted) {
+        aborted = true;
+        stopEngine = true;
+        break;
+      }
 
       executed.push({
         stepId: step.id,
@@ -657,23 +719,35 @@ async function driveRun(
       // the spine identically. The engine owns only the loop control the result
       // maps onto (retry re-executes; advanced moves on; failure/exhaustion
       // stops this invocation).
-      const finalize = await finalizeExecutedStep({
-        runId: next.run.id,
-        workflowRef: next.run.workflowRef,
-        stepId: step.id,
-        stepPlan,
-        completionCriteria: stepPlan.gate.criteria,
-        gateLoop,
-        loopsRemaining: gateLoop < maxLoops,
-        result,
-        priorEvidence: evidence,
-        params: next.run.params ?? {},
-        routeSelected,
-        routeUnselected,
-        summaryJudge:
-          options.summaryJudge === undefined ? frozenSummaryJudge(plan, stepPlan.gate.judge) : options.summaryJudge,
-        leaseHolder,
-      });
+      let finalize: Awaited<ReturnType<typeof finalizeExecutedStep>>;
+      try {
+        finalize = await finalizeExecutedStep({
+          runId: next.run.id,
+          workflowRef: next.run.workflowRef,
+          stepId: step.id,
+          stepPlan,
+          completionCriteria: stepPlan.gate.criteria,
+          gateLoop,
+          loopsRemaining: gateLoop < maxLoops,
+          result,
+          priorEvidence: evidence,
+          params: next.run.params ?? {},
+          routeSelected,
+          routeUnselected,
+          summaryJudge: workflowSummaryJudge(options, plan, stepPlan, dispatchSignal),
+          signal: options.signal,
+          leaseHolder,
+        });
+      } catch (error) {
+        heartbeat?.assertAlive();
+        if (options.signal?.aborted) {
+          aborted = true;
+          stopEngine = true;
+          break;
+        }
+        throw error;
+      }
+      heartbeat?.assertAlive();
 
       if (finalize.kind === "retry") {
         // Re-execute the subgraph with the judge/validation feedback threaded
@@ -716,6 +790,7 @@ async function driveRun(
     executed,
     ...(finalState.run.status === "completed" ? { done: true as const } : {}),
     ...(gateRejection ? { gateRejection } : {}),
+    ...(aborted ? { aborted: true as const } : {}),
   };
 }
 

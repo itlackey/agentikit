@@ -156,12 +156,47 @@ describe("akm adapter — validate fires each type's positive finding (§6)", ()
     expect(issues(diags)).not.toContain("missing-skill-md");
   });
 
-  test("invalid-task-yaml — task missing schedule + enabled (TaskLinter)", async () => {
+  test("invalid-task-yaml — task missing version + schedule (TaskLinter)", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(component({ root: ROOT }), [change("tasks/bad.yml", "prompt: hi\n")], ctx);
     const hit = diags.find((d) => d.issue === "invalid-task-yaml");
     expect(hit).toBeDefined();
-    expect(hit?.detail).toBe("missing required fields: schedule, enabled (must be a boolean)");
+    expect(hit?.detail).toBe("missing required fields: version (must be 2), schedule");
+  });
+
+  // Lint used to disagree with the parser in BOTH directions: it demanded
+  // `enabled` (which the parser defaults to true) and never checked `version`
+  // (which the parser hard-requires). These pin the reconciled contract.
+  test("a task omitting `enabled` is NOT flagged — the parser defaults it to true", async () => {
+    const ctx = overlayCtx(ROOT, {});
+    const diags = await akmAdapter.validate(
+      component({ root: ROOT }),
+      [change("tasks/ok.yml", 'version: 2\nschedule: "@daily"\nprompt: hi\n')],
+      ctx,
+    );
+    expect(diags.find((d) => d.issue === "invalid-task-yaml")).toBeUndefined();
+  });
+
+  test("a task with a non-boolean `enabled` IS flagged — the parser throws on it", async () => {
+    const ctx = overlayCtx(ROOT, {});
+    const diags = await akmAdapter.validate(
+      component({ root: ROOT }),
+      [change("tasks/bad-enabled.yml", 'version: 2\nschedule: "@daily"\nenabled: yesplease\nprompt: hi\n')],
+      ctx,
+    );
+    const hit = diags.find((d) => d.issue === "invalid-task-yaml");
+    expect(hit?.detail).toContain("enabled (must be a boolean when present)");
+  });
+
+  test("a task omitting `version` IS flagged — the parser rejects it at runtime", async () => {
+    const ctx = overlayCtx(ROOT, {});
+    const diags = await akmAdapter.validate(
+      component({ root: ROOT }),
+      [change("tasks/no-version.yml", 'schedule: "@daily"\nprompt: hi\n')],
+      ctx,
+    );
+    const hit = diags.find((d) => d.issue === "invalid-task-yaml");
+    expect(hit?.detail).toContain("version (must be 2)");
   });
 
   test("dangerous-env-key — a dangerous key name in an env file (env dangerous-key scan)", async () => {
@@ -174,7 +209,10 @@ describe("akm adapter — validate fires each type's positive finding (§6)", ()
     const hit = diags.find((d) => d.issue === "dangerous-env-key");
     expect(hit).toBeDefined();
     expect(hit?.detail).toContain("LD_PRELOAD");
-    expect(hit?.detail).toContain("Ref: env:danger");
+    // Canonical 0.9.0 ref grammar — the retired `env:danger` colon spelling is
+    // rejected by the ref parser, so a user copying it off this security
+    // finding hit ASSET_NOT_FOUND.
+    expect(hit?.detail).toContain("Ref: env/danger");
     expect(hit?.fixed).toBe(false);
   });
 
@@ -263,7 +301,7 @@ describe("akm adapter — env/secret dangerous-key `.env`-suffix narrowness pres
     expect(diags.map((d) => d.issue)).not.toContain("dangerous-env-key");
   });
 
-  test("a `.env`-suffixed secret file IS scanned, and reports the `secret:` ref prefix", async () => {
+  test("a `.env`-suffixed secret file IS scanned, and reports a resolvable `secrets/` ref", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(
       component({ root: ROOT }),
@@ -272,6 +310,8 @@ describe("akm adapter — env/secret dangerous-key `.env`-suffix narrowness pres
     );
     const hit = diags.find((d) => d.issue === "dangerous-env-key");
     expect(hit).toBeDefined();
-    expect(hit?.detail).toContain("Ref: secret:creds");
+    // `secret` assets keep their full filename in the canonical name, so the
+    // ref is `secrets/creds.env` — exactly what `akm show` resolves.
+    expect(hit?.detail).toContain("Ref: secrets/creds.env");
   });
 });

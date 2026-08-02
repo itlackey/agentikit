@@ -3,32 +3,17 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Q-05 — the `experimental.workflowEngine` gate at the CLI boundary.
- *
- * Before Q-05 the workflow-engine dispatch (`akm workflow run`/`brief`/
- * `report`, and creating a YAML workflow *program*) ran
- * unconditionally: STABILITY.md documented `experimental.workflowEngine`, but
- * it was absent from the config schema and read nowhere in the runtime.
- * Because the top-level config schema is `.passthrough()`, setting the key
- * was silently accepted and inert — exactly the silent no-op the
- * release-review ruling forbids.
- *
- * These pin, at the actual CLI boundary (`runCliCapture`, in-process citty
- * dispatch — see `tests/_helpers/cli.ts`):
- *   - gate OFF (the default): every gated surface REFUSES outright — a
- *     classified `WORKFLOW_ENGINE_NOT_ENABLED` error naming the exact config
- *     key, which the CLI's JSON error envelope always routes to stderr with a
- *     non-zero exit (never a silent no-op);
- *   - the classic linear-markdown workflow contract is untouched either way;
- *   - gate ON: the same surfaces run normally, and the dotted `config set`
- *     path actually resolves (it is no longer an unregistered key).
+ * Q-05 — the `experimental.workflowEngine` external-driver gate at the CLI
+ * boundary. `workflow run` is canonical and ungated; `brief`/`report` refuse
+ * with `WORKFLOW_ENGINE_NOT_ENABLED` while the key is off and operate normally
+ * when it is on.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { WORKFLOW_ENGINE_CONFIG_KEY } from "../../../src/workflows/exec/workflow-engine-gate";
-import { startWorkflowRun } from "../../../src/workflows/runtime/runs";
+import { completeWorkflowStep, startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { runCliCapture } from "../../_helpers/cli";
 import {
   type IsolatedAkmStorage,
@@ -85,25 +70,27 @@ interface ErrorEnvelope {
 }
 
 describe("akm workflow — experimental.workflowEngine gate OFF (default)", () => {
-  test("`workflow run` refuses outright: exits 78 naming the config key", async () => {
+  test("`workflow run` is canonical and no longer requires the experimental opt-in", async () => {
     writeSingleStepWorkflow("gated-run");
     const started = await startWorkflowRun("workflows/gated-run", {});
+    await completeWorkflowStep({
+      runId: started.run.id,
+      stepId: "only-step",
+      status: "completed",
+      summary: "Completed before the no-op run assertion.",
+    });
 
-    const { code, stderr } = await runCliCapture(["--json", "workflow", "run", started.run.id]);
+    const { code, stdout } = await runCliCapture(["workflow", "run", started.run.id]);
 
-    expect(code).toBe(78);
-    const env = JSON.parse(stderr) as ErrorEnvelope;
-    expect(env.ok).toBe(false);
-    expect(env.code).toBe("WORKFLOW_ENGINE_NOT_ENABLED");
-    expect(env.error).toContain(WORKFLOW_ENGINE_CONFIG_KEY);
-    expect(env.error).toContain("akm workflow run");
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({ done: true, run: { status: "completed" } });
   });
 
   test("`workflow brief` refuses with the same error shape", async () => {
     writeSingleStepWorkflow("gated-brief");
     const started = await startWorkflowRun("workflows/gated-brief", {});
 
-    const { code, stderr } = await runCliCapture(["--json", "workflow", "brief", started.run.id]);
+    const { code, stderr } = await runCliCapture(["workflow", "brief", started.run.id]);
     expect(code).toBe(78);
     const env = JSON.parse(stderr) as ErrorEnvelope;
     expect(env.ok).toBe(false);
@@ -115,7 +102,7 @@ describe("akm workflow — experimental.workflowEngine gate OFF (default)", () =
     writeSingleStepWorkflow("gated-report");
     const started = await startWorkflowRun("workflows/gated-report", {});
 
-    const { code, stderr } = await runCliCapture(["--json", "workflow", "report", started.run.id, "--settle"]);
+    const { code, stderr } = await runCliCapture(["workflow", "report", started.run.id, "--settle"]);
     expect(code).toBe(78);
     const env = JSON.parse(stderr) as ErrorEnvelope;
     expect(env.ok).toBe(false);
@@ -128,7 +115,7 @@ describe("akm workflow — experimental.workflowEngine gate OFF (default)", () =
   // longer a gated surface at all — it is now a plain, always-on usage error
   // regardless of `experimental.workflowEngine`. Pinned below (gate-independent).
   test("`workflow create <name>.yaml` refuses unconditionally: workflows are markdown-only now", async () => {
-    const { code, stderr } = await runCliCapture(["--json", "workflow", "create", "gated-program.yaml"]);
+    const { code, stderr } = await runCliCapture(["workflow", "create", "gated-program.yaml"]);
     expect(code).toBe(2);
     const env = JSON.parse(stderr) as ErrorEnvelope;
     expect(env.ok).toBe(false);
@@ -137,22 +124,20 @@ describe("akm workflow — experimental.workflowEngine gate OFF (default)", () =
   });
 });
 
-describe("akm workflow — surfaces NOT gated by experimental.workflowEngine", () => {
+describe("akm workflow — stable surfaces are not gated by experimental.workflowEngine", () => {
   test("`workflow create <name>.md` (markdown, the default) is unaffected", async () => {
-    const { code, stdout } = await runCliCapture(["--json", "workflow", "create", "ungated-md"]);
+    const { code, stdout } = await runCliCapture(["workflow", "create", "ungated-md"]);
     expect(code).toBe(0);
     const env = JSON.parse(stdout) as { ok: boolean; ref: string };
     expect(env.ok).toBe(true);
     expect(env.ref).toContain("workflows/ungated-md");
   });
 
-  test("`workflow start`/`status` (the classic manual contract) are unaffected", async () => {
+  test("`workflow status` remains ungated", async () => {
     writeSingleStepWorkflow("ungated-manual");
-    const started = await runCliCapture(["--json", "workflow", "start", "workflows/ungated-manual"]);
-    expect(started.code).toBe(0);
-    const startedJson = JSON.parse(started.stdout) as { run: { id: string } };
+    const started = await startWorkflowRun("workflows/ungated-manual");
 
-    const status = await runCliCapture(["--json", "workflow", "status", startedJson.run.id]);
+    const status = await runCliCapture(["workflow", "status", started.run.id]);
     expect(status.code).toBe(0);
   });
 });
@@ -165,7 +150,7 @@ describe("akm workflow — experimental.workflowEngine gate ON", () => {
   // Opting into the gate does NOT resurrect the deleted YAML-program format —
   // `create <name>.yaml` still refuses (workflow-format-unification, spec §3).
   test("`workflow create <name>.yaml` still refuses even with the gate opted in", async () => {
-    const { code, stderr } = await runCliCapture(["--json", "workflow", "create", "opted-in-program.yaml"]);
+    const { code, stderr } = await runCliCapture(["workflow", "create", "opted-in-program.yaml"]);
     expect(code).toBe(2);
     const env = JSON.parse(stderr) as ErrorEnvelope;
     expect(env.ok).toBe(false);
@@ -176,16 +161,16 @@ describe("akm workflow — experimental.workflowEngine gate ON", () => {
     writeSingleStepWorkflow("opted-in-brief");
     const started = await startWorkflowRun("workflows/opted-in-brief", {});
 
-    const { code, stdout } = await runCliCapture(["--json", "workflow", "brief", started.run.id]);
+    const { code, stdout } = await runCliCapture(["workflow", "brief", started.run.id]);
     expect(code).toBe(0);
     expect((JSON.parse(stdout) as { ok: boolean }).ok).toBe(true);
   });
 
   test("`akm config set experimental.workflowEngine true` resolves against the schema (not `Unknown config key`)", async () => {
-    const set = await runCliCapture(["--json", "config", "set", "experimental.workflowEngine", "true"]);
+    const set = await runCliCapture(["config", "set", "experimental.workflowEngine", "true"]);
     expect(set.code).toBe(0);
 
-    const get = await runCliCapture(["--json", "config", "get", "experimental.workflowEngine"]);
+    const get = await runCliCapture(["config", "get", "experimental.workflowEngine"]);
     expect(get.code).toBe(0);
   });
 });

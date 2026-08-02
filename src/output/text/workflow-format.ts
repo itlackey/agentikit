@@ -11,28 +11,10 @@
  * formatters from other domains).
  */
 
-/**
- * Plain-text rendering for a step-completion that was rejected by the
- * summary-validation gate (#506): the step stays pending and the agent gets
- * corrective feedback on what to finish/fix.
- */
-export function formatWorkflowCompleteRejectedPlain(r: Record<string, unknown>): string {
-  const stepId = String(r.stepId ?? "?");
-  const feedback = typeof r.feedback === "string" ? r.feedback : "";
-  const missing = Array.isArray(r.missing) ? (r.missing as unknown[]).map((m) => String(m)) : [];
-  const lines = [`workflow complete: rejected — step "${stepId}" does not meet its completion criteria`];
-  if (feedback) lines.push(`  feedback: ${feedback}`);
-  if (missing.length > 0) {
-    lines.push("  outstanding:");
-    for (const m of missing) lines.push(`    - ${m}`);
-  }
-  return lines.join("\n");
-}
-
 export function formatWorkflowListPlain(result: Record<string, unknown>): string {
   const runs = Array.isArray(result.runs) ? (result.runs as Array<Record<string, unknown>>) : [];
   if (runs.length === 0) {
-    return "No workflow runs in the current working scope. Start one with `akm workflow next workflows/<name>` or author one with `akm workflow create <name>`.";
+    return "No workflow runs in the current working scope. Start one with `akm workflow run workflows/<name>` or author one with `akm workflow create <name>`.";
   }
 
   return runs
@@ -125,7 +107,7 @@ export function formatWorkflowStatusPlain(result: Record<string, unknown>): stri
 
 /**
  * Render the stalled-run check-in directive (#506) when present on a
- * workflow-next/status result. Returns null when the run is healthy.
+ * workflow-status result. Returns null when the run is healthy.
  */
 function formatWorkflowCheckinLine(result: Record<string, unknown>): string | null {
   const checkin =
@@ -134,51 +116,6 @@ function formatWorkflowCheckinLine(result: Record<string, unknown>): string | nu
       : undefined;
   if (!checkin || typeof checkin.directive !== "string" || !checkin.directive.trim()) return null;
   return checkin.directive.trim();
-}
-
-export function formatWorkflowNextPlain(result: Record<string, unknown>): string | null {
-  const base = formatWorkflowStatusPlain(result);
-  const step =
-    typeof result.step === "object" && result.step !== null ? (result.step as Record<string, unknown>) : undefined;
-  if (!step) return base;
-
-  const lines = base ? [base, "", "next:"] : ["next:"];
-  lines.push(`  ${String(step.title ?? "Untitled step")} [${String(step.id ?? "unknown")}]`);
-  if (typeof step.instructions === "string" && step.instructions.trim()) {
-    const instrLines = step.instructions.trim().split("\n");
-    lines.push(`  instructions: ${instrLines[0]}`);
-    for (const instrLine of instrLines.slice(1)) lines.push(`    ${instrLine}`);
-  }
-  const completion = Array.isArray(step.completionCriteria) ? step.completionCriteria : [];
-  if (completion.length > 0) {
-    lines.push("  completion:");
-    for (const criterion of completion) {
-      lines.push(`    - ${String(criterion)}`);
-    }
-  }
-
-  // T2-3: surface run-id as labeled field
-  const run =
-    typeof result.run === "object" && result.run !== null ? (result.run as Record<string, unknown>) : undefined;
-  const runId = typeof run?.id === "string" ? run.id : null;
-  const stepId = typeof step?.id === "string" ? step.id : null;
-  if (runId) {
-    lines.push("");
-    lines.push(`runId: ${runId}`);
-  }
-
-  // T1-6: complete command
-  if (runId && stepId) {
-    lines.push("");
-    lines.push("COMPLETE THIS STEP:");
-    lines.push(`  akm workflow complete '${runId}' --step '${stepId}'`);
-  } else if (runId) {
-    lines.push("");
-    lines.push("COMPLETE THIS STEP:");
-    lines.push(`  akm workflow complete '${runId}' --step '<step-id>'`);
-  }
-
-  return lines.join("\n");
 }
 
 export function formatWorkflowRunPlain(result: Record<string, unknown>): string | null {
@@ -211,6 +148,13 @@ export function formatWorkflowRunPlain(result: Record<string, unknown>): string 
     lines.push(`gate rejected step ${String(gate.stepId ?? "?")}: ${String(gate.feedback ?? "")}`);
     const missing = Array.isArray(gate.missing) ? gate.missing : [];
     for (const item of missing) lines.push(`  missing: ${String(item)}`);
+  }
+  if (result.aborted === true) {
+    lines.push(
+      result.timedOut === true
+        ? "workflow timed out; the run remains resumable."
+        : "workflow interrupted; the run remains resumable.",
+    );
   }
   if (result.done === true) lines.push("workflow completed.");
   return lines.join("\n");
