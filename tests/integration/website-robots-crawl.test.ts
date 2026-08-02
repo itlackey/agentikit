@@ -90,15 +90,29 @@ function websiteEntry(url: string, options?: Record<string, unknown>): SourceCon
  * markdown body (see htmlToMarkdown's anchor handling), so a plain substring
  * search would false-positive on "the disallowed page was never crawled, but
  * another page mentions it."
+ *
+ * Recurses into subdirectories: a multi-segment path like `/docs/guide`
+ * lands on `knowledge/docs/guide.md` (see `urlToRelativePath`), not directly
+ * under `knowledgeDir`.
  */
 function stashContainsSourceUrl(stashDir: string, sourceUrl: string): boolean {
   const knowledgeDir = path.join(stashDir, "knowledge");
   if (!fs.existsSync(knowledgeDir)) return false;
   const frontmatterLine = `sourceUrl: ${JSON.stringify(sourceUrl)}`;
-  return fs
-    .readdirSync(knowledgeDir)
-    .filter((name) => name.endsWith(".md"))
-    .some((name) => fs.readFileSync(path.join(knowledgeDir, name), "utf8").includes(frontmatterLine));
+
+  function walk(dir: string): boolean {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (walk(entryPath)) return true;
+      } else if (entry.name.endsWith(".md") && fs.readFileSync(entryPath, "utf8").includes(frontmatterLine)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  return walk(knowledgeDir);
 }
 
 /** Tracks a website cache root (keyed by URL) so afterEach can remove it. */
@@ -267,8 +281,12 @@ describe("crawlWebsite robots.txt compliance", () => {
     // Regression: normalizeCrawlUrl strips trailing slashes before the
     // initial robots gate, so `Disallow: /secret/` correctly lets `/secret`
     // through that gate. If the server then redirects `/secret` -> `/secret/`
-    // (an extremely common trailing-slash canonicalization), the final URL
-    // must be re-checked against robots.txt before its body is stored.
+    // (an extremely common trailing-slash canonicalization), the redirect
+    // target must be re-checked against robots.txt BEFORE it is fetched — not
+    // merely re-checked after the fact to decide whether to store the body.
+    // (Earlier, this check ran only after the fetch, so the disallowed URL
+    // was still requested over the network; it is now gated before the
+    // recursive fetch in `fetchWebsiteResponse`, so no request reaches it.)
     const { url, requestLog } = startFixtureServer({
       robots: { body: "User-agent: *\nDisallow: /secret/\n" },
       pages: {
@@ -286,10 +304,11 @@ describe("crawlWebsite robots.txt compliance", () => {
 
     expect(stashContainsSourceUrl(cachePaths.stashDir, secretUrl)).toBe(false);
     expect(stashContainsSourceUrl(cachePaths.stashDir, publicUrl)).toBe(true);
-    // The redirect hop itself is allowed to be requested (it's the pre-redirect
-    // URL that passed the initial gate) but the disallowed final page's body
-    // must never be written to the stash, which the assertion above proves.
-    expect(requestLog.some((r) => r.pathname === "/secret/")).toBe(true);
+    // The redirect hop (/secret) is still requested — it passed the initial
+    // gate — but the disallowed redirect TARGET must never be requested at
+    // all, not merely never stored.
+    expect(requestLog.some((r) => r.pathname === "/secret")).toBe(true);
+    expect(requestLog.some((r) => r.pathname === "/secret/")).toBe(false);
   });
 
   test("C-04: an allowed URL that redirects to a disallowed URL is skipped", async () => {
@@ -309,6 +328,156 @@ describe("crawlWebsite robots.txt compliance", () => {
     expect(stashContainsSourceUrl(cachePaths.stashDir, secretUrl)).toBe(false);
     expect(requestLog.some((r) => r.pathname === "/go")).toBe(true);
   });
+
+  test("C-04: an intermediate redirect hop landing on a disallowed URL is never requested", async () => {
+    // Regression: fetchWebsiteResponse only robots-checked the pre-redirect
+    // queue URL (crawlWebsite's gate) and the FINAL post-redirect URL
+    // (fetchWebsitePage's recheck above). Every hop strictly BETWEEN those
+    // two was fetched with no robots gate at all. Chain: /go -> 302
+    // /secret/ -> 302 /public. /secret/ is disallowed but is neither the
+    // queue URL (/go) nor the final URL (/public), so it slipped through
+    // both existing checks and got a live GET issued to it.
+    const { url, requestLog } = startFixtureServer({
+      robots: { body: "User-agent: *\nDisallow: /secret/\n" },
+      pages: {
+        "/": '<html><body><a href="/go">Go</a></body></html>',
+        "/go": { status: 302, headers: { location: "/secret/" } },
+        "/secret/": { status: 302, headers: { location: "/public" } },
+        "/public": "<html><body>Public content</body></html>",
+      },
+    });
+    trackCache(url);
+    const publicUrl = `${url}/public`;
+
+    const cachePaths = await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+
+    // The disallowed intermediate hop must never be requested, and the
+    // chain it would have led to must never land in the stash.
+    expect(requestLog.some((r) => r.pathname === "/secret/")).toBe(false);
+    expect(stashContainsSourceUrl(cachePaths.stashDir, publicUrl)).toBe(false);
+  });
+
+  test("C-04: a start URL disallowed only when normalized crawls under its raw Allow-matching form", async () => {
+    // Regression: normalizeSiteUrl strips a start URL's trailing slash
+    // before the robots check ever sees it, so the canonical
+    // "Disallow: / \n Allow: /docs/" layout — which requires that trailing
+    // slash to match the Allow rule — rejected a start URL the site owner
+    // explicitly opened to crawlers, throwing UsageError and naming a URL
+    // (".../docs") the user never supplied.
+    const { url, requestLog } = startFixtureServer({
+      robots: { body: "User-agent: *\nDisallow: /\nAllow: /docs/\n" },
+      pages: {
+        "/docs": "<html><body>Should not be fetched</body></html>",
+        "/docs/": "<html><body>Docs index</body></html>",
+      },
+    });
+    const startUrl = `${url}/docs/`;
+    trackCache(startUrl);
+
+    const cachePaths = await ensureWebsiteMirror(websiteEntry(startUrl), { allowPrivateHosts: true });
+
+    // Crawled via the raw (slash-intact) form that actually matches the
+    // Allow rule, not the normalized alias that only matches Disallow: /.
+    // The stored sourceUrl is still the normalized (slash-stripped) form —
+    // only the literal URL *requested* over the network changes.
+    expect(stashContainsSourceUrl(cachePaths.stashDir, `${url}/docs`)).toBe(true);
+    expect(requestLog.map((r) => r.pathname)).toEqual(["/robots.txt", "/docs/"]);
+  });
+
+  test("C-04: a discovered link disallowed only when normalized is fetched under its raw Allow-matching form", async () => {
+    // Regression: the crawlWebsite queue gate ANDed isAllowed(normalized)
+    // with isAllowed(raw) and always fetched the normalized (slash-stripped)
+    // form. Under "Disallow: / \n Allow: /docs/", a discovered <a
+    // href="/docs/"> link normalizes to "/docs", which only matches
+    // Disallow: / (Allow: /docs/ requires the trailing slash) — so the
+    // section index was skipped and NEVER requested, even though the site
+    // owner opened exactly that path to crawlers.
+    const { url, requestLog } = startFixtureServer({
+      robots: { body: "User-agent: *\nDisallow: /\nAllow: /docs/\nAllow: /$\n" },
+      pages: {
+        "/": '<html><body><a href="/docs/">Docs</a> <a href="/docs/guide">Guide</a></body></html>',
+        "/docs": "<html><body>Should not be fetched</body></html>",
+        "/docs/": "<html><body>Docs index</body></html>",
+        "/docs/guide": "<html><body>Guide</body></html>",
+      },
+    });
+    trackCache(url);
+
+    const cachePaths = await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+
+    // The stored sourceUrl is the normalized (slash-stripped) form — only
+    // the literal URL *requested* over the network is the raw, Allow-matching
+    // one (asserted below).
+    expect(stashContainsSourceUrl(cachePaths.stashDir, `${url}/docs`)).toBe(true);
+    expect(stashContainsSourceUrl(cachePaths.stashDir, `${url}/docs/guide`)).toBe(true);
+    // /docs (no trailing slash) must never be requested — only its
+    // Allow-matching raw form /docs/.
+    expect(requestLog.some((r) => r.pathname === "/docs")).toBe(false);
+    expect(requestLog.some((r) => r.pathname === "/docs/")).toBe(true);
+  });
+
+  test(
+    "percent-encoding regression: a link written as an unreserved percent-encoded alias of a disallowed " +
+      "path is never requested",
+    async () => {
+      // Regression: the match target was built from URL.pathname, which
+      // preserves %-escapes verbatim, so `Disallow: /secret/` never matched
+      // a link written as `/%73ecret/` (`%73` decodes to the unreserved
+      // byte `s`) and the disallowed page was fetched and stored.
+      const { url, requestLog } = startFixtureServer({
+        robots: { body: "User-agent: *\nDisallow: /secret/\n" },
+        pages: {
+          "/": '<html><body><a href="/%73ecret/">Secret</a> <a href="/public">Public</a></body></html>',
+          "/secret/": "<html><body>Secret content</body></html>",
+          "/public": "<html><body>Public content</body></html>",
+        },
+      });
+      trackCache(url);
+      const publicUrl = `${url}/public`;
+
+      const cachePaths = await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+
+      expect(stashContainsSourceUrl(cachePaths.stashDir, publicUrl)).toBe(true);
+      // The percent-encoded alias must never be requested at all — not
+      // decoded-and-skipped, not stored under any form.
+      expect(requestLog.some((r) => r.pathname === "/%73ecret/")).toBe(false);
+      expect(requestLog.some((r) => r.pathname === "/secret/")).toBe(false);
+    },
+  );
+
+  test(
+    "non-http(s) redirect regression: an intermediate redirect Location with a non-http(s) scheme is refused " +
+      "without aborting the crawl, and the remaining pages are still collected",
+    async () => {
+      // Regression (a67412c): the intermediate-redirect robots gate computed
+      // `normalizeCrawlUrl(nextUrl) ?? nextUrl`, falling back to the raw
+      // redirect target whenever it wasn't an http(s) URL (e.g. a `mailto:`
+      // Location) and handing that opaque-origin URL straight to
+      // `RobotsPolicy.rulesFor()`. `rulesFor` resolves `/robots.txt` against
+      // `new URL(url).origin` — the literal string `"null"` for a
+      // non-http(s) URL — which throws an unhandled TypeError ("Invalid
+      // base URL") that aborted the ENTIRE crawl, not just that one hop.
+      const { url, requestLog } = startFixtureServer({
+        robots: { body: "User-agent: *\n" }, // allow everything
+        pages: {
+          "/": '<html><body><a href="/go">Go</a> <a href="/public">Public</a></body></html>',
+          "/go": { status: 302, headers: { location: "mailto:nobody@example.test" } },
+          "/public": "<html><body>Public content</body></html>",
+        },
+      });
+      trackCache(url);
+      const publicUrl = `${url}/public`;
+
+      // Must resolve, not throw/reject — the whole point of the fix.
+      const cachePaths = await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+
+      // The redirect hop itself is still requested (it passed the initial
+      // gate as an ordinary http(s) URL)...
+      expect(requestLog.some((r) => r.pathname === "/go")).toBe(true);
+      // ...but the crawl completes and collects the unrelated remaining page.
+      expect(stashContainsSourceUrl(cachePaths.stashDir, publicUrl)).toBe(true);
+    },
+  );
 
   test("C-06: robots.txt is fetched exactly once per origin no matter how many pages are crawled", async () => {
     const { url, requestLog } = startFixtureServer({

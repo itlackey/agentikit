@@ -29,6 +29,7 @@ import {
   ROBOTS_BYTE_CAP,
   type RobotsFetchOutcome,
   type RobotsPolicy,
+  type RobotsRuleSet,
 } from "./robots";
 import type { FetcherContext, WikiSnapshotResult } from "./types";
 
@@ -321,8 +322,16 @@ function sleep(ms: number): Promise<void> {
  * slash already stripped by `normalizeCrawlUrl`/`normalizeSiteUrl` — and,
  * when it differs, `rawUrl`: the URL exactly as discovered (a link's literal
  * `href`), as-supplied (the user's typed start URL), or redirected-to (a
- * `Location` header), before any such stripping. A disallow in either form
- * is treated as disallowed overall.
+ * `Location` header), before any such stripping. Delegates the actual
+ * allow/disallow decision to {@link decideRobotsAllowance}'s asymmetric
+ * matrix — see its doc comment — rather than a plain AND of both forms: a
+ * `Disallow: /dir/`-shaped rule needs the un-stripped `rawUrl` to ever match
+ * (closing that gap), while an `Allow: /docs/`-shaped rule needs it too, in
+ * the *other* direction (a normalized-disallowed-but-raw-allowed URL must
+ * still be treated as allowed here, not just at the point where akm chooses
+ * which literal URL to fetch — a URL reaching this function has already been
+ * fetched, under whichever form `crawlWebsite`/`resolveCrawlRobotsDecision`
+ * selected, so only the `allowed` verdict matters here, never `fetchUrl`).
  *
  * `normalizeCrawlUrl`/`normalizeSiteUrl` strip a bare trailing slash before
  * any robots check ever runs, so a `Disallow: /dir/`-shaped rule — which
@@ -340,9 +349,65 @@ async function isCrawlUrlAllowedByRobots(
   normalizedUrl: string,
   rawUrl?: string,
 ): Promise<boolean> {
-  if (!(await robots.isAllowed(normalizedUrl))) return false;
-  if (rawUrl && rawUrl !== normalizedUrl && !(await robots.isAllowed(rawUrl))) return false;
-  return true;
+  return (await resolveCrawlRobotsDecision(robots, normalizedUrl, rawUrl)).allowed;
+}
+
+/**
+ * Decides whether `normalizedUrl` (akm's canonical form — dedup/cache key,
+ * with any bare trailing slash already stripped by `normalizeCrawlUrl`/
+ * `normalizeSiteUrl`) may be crawled, and which literal URL to actually
+ * request.
+ *
+ * A `Disallow: /dir/`-shaped rule requires a literal trailing `/` in the
+ * target (see `matchesCompiledPattern`'s prefix check), so it can never match
+ * the slash-stripped normalized alias — checking the un-stripped `rawUrl` (a
+ * link's literal `href`, the user's as-typed start URL, or a redirect
+ * `Location`) closes that gap. Symmetrically, an `Allow: /docs/`-shaped rule
+ * requires that same trailing `/` to match, so a start URL or link typed as
+ * `.../docs/` under `Disallow: / \n Allow: /docs/` is allowed in its raw form
+ * but disallowed once normalized — over-blocking a site the owner explicitly
+ * opened to crawlers.
+ *
+ * Resolution matrix (raw form only consulted when it differs from normalized):
+ *  - normalized allowed, raw allowed (or no distinct raw)  => allowed, fetch normalized
+ *  - normalized allowed, raw disallowed                    => BLOCKED (raw wins: closes the Disallow: /dir/ gap)
+ *  - normalized disallowed, raw allowed                    => allowed, fetch the RAW url (closes the Allow: /docs/ gap)
+ *  - normalized disallowed, raw disallowed                 => BLOCKED
+ *
+ * Only the third row switches the fetch target; every other row fetches the
+ * normalized form akm already treats as canonical. Do not collapse this to a
+ * plain OR of the two checks — that would also flip the second row to
+ * "allowed" and reopen the `Disallow: /dir/` bypass this matrix exists to
+ * close.
+ */
+function decideRobotsAllowance(
+  rules: RobotsRuleSet,
+  normalizedUrl: string,
+  rawUrl?: string,
+): { allowed: boolean; fetchUrl: string } {
+  const normalizedAllowed = isPathAllowedByRobots(rules, normalizedUrl);
+  if (!rawUrl || rawUrl === normalizedUrl) {
+    return { allowed: normalizedAllowed, fetchUrl: normalizedUrl };
+  }
+  const rawAllowed = isPathAllowedByRobots(rules, rawUrl);
+  if (!normalizedAllowed && rawAllowed) {
+    return { allowed: true, fetchUrl: rawUrl };
+  }
+  return { allowed: normalizedAllowed && rawAllowed, fetchUrl: normalizedUrl };
+}
+
+/**
+ * Async wrapper of {@link decideRobotsAllowance} for call sites holding a
+ * `RobotsPolicy` (which resolves/caches rules per origin) rather than an
+ * already-fetched `RobotsRuleSet`.
+ */
+async function resolveCrawlRobotsDecision(
+  robots: RobotsPolicy,
+  normalizedUrl: string,
+  rawUrl?: string,
+): Promise<{ allowed: boolean; fetchUrl: string }> {
+  const rules = await robots.rulesFor(normalizedUrl);
+  return decideRobotsAllowance(rules, normalizedUrl, rawUrl);
 }
 
 /**
@@ -353,10 +418,16 @@ async function isCrawlUrlAllowedByRobots(
  *
  * Checks both `start`'s (normalized) URL and `rawStartUrl` — the URL exactly
  * as the user supplied it in config, before `validateWebsiteUrl` ->
- * `normalizeSiteUrl` stripped any trailing slash — per
- * `isCrawlUrlAllowedByRobots`. Without this, a start URL typed as
- * `.../secret/` under `Disallow: /secret/` would never match that rule and
- * would be crawled instead of rejected with the spec §4.6 C-02 UsageError.
+ * `normalizeSiteUrl` stripped any trailing slash — via
+ * `decideRobotsAllowance`. Without this, a start URL typed as `.../secret/`
+ * under `Disallow: /secret/` would never match that rule and would be
+ * crawled instead of rejected with the spec §4.6 C-02 UsageError; conversely,
+ * a start URL typed as `.../docs/` under `Disallow: / \n Allow: /docs/`
+ * would be normalized to `.../docs`, fail to match `Allow: /docs/`, and be
+ * rejected even though the site owner explicitly opened `/docs/` to
+ * crawlers. `crawlWebsite`'s queue gate applies the same decision (and, in
+ * the Allow case, actually fetches the raw URL this function only validates
+ * against) — see its call to `resolveCrawlRobotsDecision`.
  */
 async function assertStartUrlAllowedByRobots(robots: RobotsPolicy, start: URL, rawStartUrl?: string): Promise<void> {
   const startUrl = start.toString();
@@ -378,12 +449,8 @@ async function assertStartUrlAllowedByRobots(robots: RobotsPolicy, start: URL, r
       rawStartUrlNormalized = undefined;
     }
   }
-  const disallowed =
-    !isPathAllowedByRobots(rules, startUrl) ||
-    (rawStartUrlNormalized !== undefined &&
-      rawStartUrlNormalized !== startUrl &&
-      !isPathAllowedByRobots(rules, rawStartUrlNormalized));
-  if (disallowed) {
+  const { allowed } = decideRobotsAllowance(rules, startUrl, rawStartUrlNormalized);
+  if (!allowed) {
     throw new UsageError(
       `Refusing to crawl ${startUrl}: disallowed by ${robotsUrl}. Set respectRobots: false on this website ` +
         `source to bypass robots.txt.`,
@@ -403,7 +470,7 @@ async function crawlWebsite(
      * The start URL exactly as the user supplied it in config, before
      * `validateWebsiteUrl` -> `normalizeSiteUrl` stripped any trailing
      * slash. Passed through to `assertStartUrlAllowedByRobots` only — see
-     * `isCrawlUrlAllowedByRobots`'s doc comment for why. `startUrl` itself is
+     * `decideRobotsAllowance`'s doc comment for why. `startUrl` itself is
      * always already normalized by the time it reaches here (every caller
      * routes it through `validateWebsiteUrl` first), so it cannot stand in
      * for the as-typed form on its own.
@@ -445,7 +512,8 @@ async function crawlWebsite(
     if (!normalized || visited.has(normalized)) continue;
     visited.add(normalized);
 
-    if (!(await isCrawlUrlAllowedByRobots(robots, normalized, next.rawUrl))) {
+    const decision = await resolveCrawlRobotsDecision(robots, normalized, next.rawUrl);
+    if (!decision.allowed) {
       warnVerbose("[akm] website crawl: skipping %s (disallowed by robots.txt)", normalized);
       continue;
     }
@@ -462,7 +530,7 @@ async function crawlWebsite(
     }
     fetchAttempts++;
 
-    const fetched = await fetchWebsitePage(normalized, { allowPrivateHosts: options.allowPrivateHosts, robots });
+    const fetched = await fetchWebsitePage(decision.fetchUrl, { allowPrivateHosts: options.allowPrivateHosts, robots });
     if (!fetched) continue;
     pages.push(fetched.page);
 
@@ -490,11 +558,32 @@ async function crawlWebsite(
   return pages;
 }
 
+/**
+ * Sentinel thrown by `fetchWebsiteResponse` when a redirect hop's target is
+ * disallowed by robots.txt (see the doc comment above the check in
+ * `fetchWebsiteResponse`). Never escapes `fetchWebsitePage`, which maps it to
+ * `null` — the same "page skipped, no error" outcome as any other
+ * robots-disallowed URL. Not exported; purely an internal control-flow
+ * signal between the two functions.
+ */
+class RobotsDisallowedRedirectError extends Error {
+  constructor(url: string) {
+    super(`robots.txt disallows redirect target ${url}`);
+    this.name = "RobotsDisallowedRedirectError";
+  }
+}
+
 async function fetchWebsitePage(
   pageUrl: string,
   options?: WebsiteValidationOptions,
 ): Promise<{ page: WebsitePage; links: URL[] } | null> {
-  const response = await fetchWebsiteResponse(pageUrl, 0, options);
+  let response: Response;
+  try {
+    response = await fetchWebsiteResponse(pageUrl, 0, options);
+  } catch (err) {
+    if (err instanceof RobotsDisallowedRedirectError) return null;
+    throw err;
+  }
 
   if (!response.ok) {
     if (response.status === 404) return null;
@@ -586,6 +675,38 @@ async function fetchWebsiteResponse(
     }
     const nextUrl = new URL(location, pageUrl).toString();
     assertWebsiteRequestUrl(nextUrl, Error, options);
+
+    // Robots-check every intermediate redirect hop, not just the pre-redirect
+    // queue URL (`crawlWebsite`'s gate) and the FINAL URL (the post-redirect
+    // recheck below in `fetchWebsitePage`). Without this, a chain like
+    // `/go` -> 302 `/secret/` -> 302 `/public` issues a live GET to
+    // `/secret/` even when robots.txt disallows it, because that hop is
+    // never the queue URL and never the final URL. Only gated when a
+    // `RobotsPolicy` was actually threaded in (`crawlWebsite`); single-URL
+    // `fetchWebsiteMarkdownSnapshot` fetches stay deliberately ungated per
+    // spec §1.
+    if (options?.robots) {
+      const normalizedNext = normalizeCrawlUrl(nextUrl);
+      if (!normalizedNext) {
+        // `normalizeCrawlUrl` returns null for anything that isn't http(s) —
+        // a redirect `Location` can legally point at `mailto:`, `tel:`, a
+        // bare relative path that resolves to an opaque scheme, etc.
+        // `RobotsPolicy.rulesFor` computes `new URL(url).origin` and then
+        // resolves `/robots.txt` against it; for a non-http(s) URL that
+        // origin is the literal string "null", and re-resolving against it
+        // throws an unhandled TypeError that aborts the whole crawl. Refuse
+        // the hop outright instead of ever handing such a URL to the policy —
+        // `fetchWebsitePage` maps this to a graceful skip. Regression
+        // introduced by a67412c, which fell back to the raw `nextUrl` here.
+        warnVerbose("[akm] website crawl: skipping redirect to %s (not an http(s) URL)", nextUrl);
+        throw new RobotsDisallowedRedirectError(nextUrl);
+      }
+      if (!(await isCrawlUrlAllowedByRobots(options.robots, normalizedNext, nextUrl))) {
+        warnVerbose("[akm] website crawl: skipping redirect to %s (disallowed by robots.txt)", nextUrl);
+        throw new RobotsDisallowedRedirectError(nextUrl);
+      }
+    }
+
     return fetchWebsiteResponse(nextUrl, redirectCount + 1, options);
   }
 

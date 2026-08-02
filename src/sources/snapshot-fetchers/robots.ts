@@ -239,11 +239,54 @@ interface CompiledRobotsPattern {
 }
 
 const COLLAPSE_STARS = /\*+/g;
+const PERCENT_ENCODED_OCTET = /%[0-9a-fA-F]{2}/g;
+
+/**
+ * RFC 3986 §2.3 "unreserved" set: ALPHA / DIGIT / "-" / "." / "_" / "~".
+ * A percent-encoded octet in this set is byte-identical to its literal
+ * character (`%73` and `s` are the same byte), so it carries no meaning a
+ * URL consumer can rely on. Every other octet — `%2F` ('/'), `%3F` ('?'),
+ * `%23` ('#'), `%2A` ('*'), non-ASCII bytes like `%C3` — is "reserved" or
+ * otherwise structurally significant and must be left percent-encoded:
+ * decoding e.g. `%2F` would silently turn one path segment into two.
+ */
+function isUnreservedByte(byte: number): boolean {
+  return (
+    (byte >= 0x41 && byte <= 0x5a) || // A-Z
+    (byte >= 0x61 && byte <= 0x7a) || // a-z
+    (byte >= 0x30 && byte <= 0x39) || // 0-9
+    byte === 0x2d || // -
+    byte === 0x2e || // .
+    byte === 0x5f || // _
+    byte === 0x7e // ~
+  );
+}
+
+/**
+ * Normalizes percent-encoding for robots.txt matching, mirroring the RFC
+ * 9309 reference matcher: percent-encoded UNRESERVED octets are decoded to
+ * their literal character; every other `%XX` escape is left exactly as
+ * written (including hex-digit case). Applied identically to rule patterns
+ * (via `compilePatternSegments`, at parse time and in the defensive lazy
+ * fallback) and match targets (`isPathAllowedByRobots`), so a percent-encoded
+ * alias of a disallowed path — e.g. a link written as `/%73ecret/` — cannot
+ * bypass `Disallow: /secret/` simply because `URL.pathname` preserves
+ * %-escapes verbatim. Reserved-octet patterns like spec §4.3 M-31's
+ * `/caf%C3%A9` are untouched on both sides (0xC3/0xA9 are not unreserved),
+ * so they keep matching themselves exactly as before.
+ */
+function normalizePercentEncoding(value: string): string {
+  if (!value.includes("%")) return value;
+  return value.replace(PERCENT_ENCODED_OCTET, (octetEscape) => {
+    const byte = Number.parseInt(octetEscape.slice(1), 16);
+    return isUnreservedByte(byte) ? String.fromCharCode(byte) : octetEscape;
+  });
+}
 
 function compilePatternSegments(pattern: string): CompiledRobotsPattern {
   const anchored = pattern.endsWith("$");
   const body = anchored ? pattern.slice(0, -1) : pattern;
-  const collapsed = body.replace(COLLAPSE_STARS, "*");
+  const collapsed = normalizePercentEncoding(body).replace(COLLAPSE_STARS, "*");
   return { anchored, segments: collapsed.split("*") };
 }
 
@@ -318,7 +361,12 @@ export function isPathAllowedByRobots(rules: RobotsRuleSet, url: string): boolea
     return true; // M-32: fail open, never closed, on an unparseable URL.
   }
 
-  const target = `${parsed.pathname}${parsed.search}`;
+  // Normalized the same way `compilePatternSegments` normalizes the rule
+  // pattern (see `normalizePercentEncoding`'s doc comment) — otherwise a
+  // percent-encoded alias of a disallowed path (e.g. `/%73ecret/` for a
+  // `Disallow: /secret/` rule) would never match because `URL.pathname`
+  // preserves %-escapes verbatim.
+  const target = normalizePercentEncoding(`${parsed.pathname}${parsed.search}`);
   let best: RobotsPathRule | null = null;
   for (const rule of rules.rules) {
     if (!matchesCompiledPattern(compiledPatternFor(rule), target)) continue;

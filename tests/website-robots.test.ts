@@ -376,6 +376,37 @@ describe("isPathAllowedByRobots", () => {
     expect(isPathAllowedByRobots(rules, urlFor("/caf%C3%A9"))).toBe(false);
   });
 
+  // Percent-encoding normalization regression: a percent-encoded alias of a
+  // disallowed path must not bypass robots.txt. `URL.pathname` preserves
+  // %-escapes verbatim (confirmed above by M-31), so without normalizing
+  // UNRESERVED octets on both the rule pattern and the match target,
+  // `Disallow: /secret/` would never match a link written as `/%73ecret/`
+  // (`%73` decodes to the unreserved byte `s`) even though it names the
+  // exact same resource.
+  test("percent-encoding regression: an unreserved percent-encoded alias of a disallowed path still matches", () => {
+    const rules = ruleSet([{ kind: "disallow", pattern: "/secret/" }]);
+    expect(isPathAllowedByRobots(rules, urlFor("/%73ecret/"))).toBe(false);
+    // Symmetric direction: the PATTERN itself written with an unreserved
+    // escape must match a literally-written target too.
+    const escapedPatternRules = ruleSet([{ kind: "disallow", pattern: "/%73ecret/" }]);
+    expect(isPathAllowedByRobots(escapedPatternRules, urlFor("/secret/"))).toBe(false);
+  });
+
+  // M-31 must stay green under the same normalization: %C3/%A9 are NOT
+  // unreserved octets (they decode to non-ASCII UTF-8 continuation bytes),
+  // so they must never be decoded — only left exactly as written on both
+  // sides, which still compares equal to itself.
+  test("percent-encoding regression: reserved/non-ASCII octets (M-31's %C3%A9) are never decoded", () => {
+    const rules = ruleSet([{ kind: "disallow", pattern: "/caf%C3%A9" }]);
+    expect(isPathAllowedByRobots(rules, urlFor("/caf%C3%A9"))).toBe(false);
+    // A path-separator escape (%2F) must never be decoded to a literal '/' —
+    // that would silently turn one path segment into two and change which
+    // resource the pattern refers to.
+    const slashRules = ruleSet([{ kind: "disallow", pattern: "/a%2Fb" }]);
+    expect(isPathAllowedByRobots(slashRules, urlFor("/a/b"))).toBe(true); // no match: %2F != '/'
+    expect(isPathAllowedByRobots(slashRules, urlFor("/a%2Fb"))).toBe(false); // matches itself
+  });
+
   test("M-32: an unparseable URL fails open (allowed), not closed", () => {
     const rules = ruleSet([{ kind: "disallow", pattern: "/" }]);
     expect(isPathAllowedByRobots(rules, "not a url")).toBe(true);
