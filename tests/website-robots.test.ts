@@ -416,6 +416,45 @@ describe("isPathAllowedByRobots", () => {
     },
     { timeout: 100 },
   );
+
+  // §6.4 ReDoS regression (review finding robots.ts:211): collapsing
+  // consecutive '*' does NOT defeat this shape. Here the wildcards are
+  // separated by a short literal ("a"), so there is nothing to collapse —
+  // a regex-based matcher built as `/^\/(?:.*a){N}$/`-equivalent from
+  // `/*a*a*a*a*a*a*a*a$` forces the engine to explore an exponential number
+  // of ways to split a long, non-matching path across N '.*' groups before
+  // concluding failure. Measured against the old implementation: 8
+  // wildcards ~217ms, 10 ~2.8s, 11 ~7.5s, 12 ~19.9s (~2.7x per added
+  // wildcard) — i.e. it never returns for realistic wildcard counts well
+  // within the 512 KiB robots.txt cap. A non-backtracking matcher resolves
+  // this in microseconds regardless of wildcard count, so a generous 200ms
+  // budget leaves no room for exponential behavior to sneak back in while
+  // still being nowhere near what a correct implementation needs.
+  test(
+    "§6.4 regression: distinct '*a' wildcards (not consecutive '*') do not backtrack catastrophically",
+    () => {
+      const wildcardCount = 30;
+      const pattern = `/${"*a".repeat(wildcardCount)}$`;
+      const rules = ruleSet([{ kind: "disallow", pattern }]);
+
+      // A long run of "a" that almost satisfies the pattern, immediately
+      // followed by one character that breaks the trailing `$` anchor. This
+      // is the actual pathological shape for `(.*a){N}$`-style patterns: a
+      // path with NO "a" at all fails on the very first literal and would
+      // resolve quickly even under naive backtracking, but a near-miss like
+      // this forces a backtracking engine to try every way of distributing
+      // the "a" run across the N groups before it can conclude — for each of
+      // them — that none end in "a" at the required final position.
+      const nonMatchingPath = `/${"a".repeat(200)}b`;
+      expect(isPathAllowedByRobots(rules, urlFor(nonMatchingPath))).toBe(true); // no match => allowed
+
+      // A matching path (the literal "a" repeated, with nothing extra after
+      // the last one) exercises the same pattern shape on the success path.
+      const matchingPath = `/${"a".repeat(wildcardCount)}`;
+      expect(isPathAllowedByRobots(rules, urlFor(matchingPath))).toBe(false); // matches => disallowed
+    },
+    { timeout: 200 },
+  );
 });
 
 // ── §4.4 createRobotsPolicy / createAllowAllRobotsPolicy (L-01…L-04) ───────

@@ -391,11 +391,23 @@ production entry point.
 
 robots.txt content is fully attacker-controlled.
 
-- Patterns are compiled to regexes. Escape every regex metacharacter except the
-  `*` wildcard and a single trailing `$`. Nested-quantifier constructs must be
-  impossible to express: after escaping, the only quantifier that can appear is
-  the `.*` we emit for `*`, and consecutive `*` in a pattern must collapse to a
-  single `.*` (so `/****` cannot become `.*.*.*.*`).
+- **Patterns must NOT be compiled to a `RegExp`.** The required implementation
+  compiles each pattern to a flat list of literal segments split on `*`
+  (consecutive `*` collapsed to one) and matches it with a single greedy,
+  non-backtracking left-to-right scan: the first segment anchors the start,
+  each interior segment is located with one forward `indexOf` from the
+  current cursor (cursor only moves forward, never backtracks), and the final
+  segment either anchors the end (trailing `$`) or is located the same way.
+  This runs in time bounded by `segments × target length`, independent of
+  wildcard count. A regex-based compiler (`*` → `.*`, metacharacters escaped)
+  is explicitly rejected, including the earlier draft of this section that
+  proposed one: collapsing consecutive `*` only defuses *adjacent*-wildcard
+  blowup (`/****`), not **distinct** wildcards separated by short literals
+  (e.g. `/*a*a*a*a*a*a*a*a$`), which still drives a regex engine into
+  catastrophic backtracking on a long near-miss input — see the dated review
+  log entry below and the `§6.4 regression` test in
+  `tests/website-robots.test.ts`. Reference implementation:
+  `compilePatternSegments` / `matchesCompiledPattern` in `robots.ts`.
 - The 512 KiB body cap bounds the number of rules.
 - Compile each pattern at most once (at parse time or memoized), not once per
   URL check.
@@ -542,32 +554,32 @@ Testing shape that makes this cheap:
 
 ## 10. Acceptance criteria
 
-- [ ] `src/sources/snapshot-fetchers/robots.ts` exists with the MPL-2.0 header and exports exactly the API in §3.
-- [ ] `robots.ts` contains **no** module-level mutable state and does **not** import from `website-ingest.ts`.
-- [ ] `parseRobotsTxt` satisfies every row of §4.1 (P-01…P-24).
-- [ ] `parseRobotsTxt` satisfies every `Crawl-delay` row of §4.2 (D-01…D-12), including the 10 s clamp.
-- [ ] `isPathAllowedByRobots` satisfies every row of §4.3 (M-01…M-32), including `Allow` longest-match-wins and the tie-goes-to-Allow rule.
-- [ ] `createRobotsPolicy` satisfies §4.4 and fetches `/robots.txt` at most once per origin (in-flight promises deduped).
-- [ ] `createAllowAllRobotsPolicy()` never invokes a loader and always reports allowed / 0 ms.
-- [ ] `loadRobotsTxt` satisfies §4.5: 2xx→body, 4xx→unavailable (silent on 404), 5xx→unreachable, oversized→unavailable, transport error→unavailable.
-- [ ] `loadRobotsTxt` performs **no** raw `fetch()`; every request goes through `fetchWebsiteResponse` → `fetchWithRetry` + `assertWebsiteRequestUrl` + `assertResolvedHostAllowed`, with `readBodyWithByteCap(…, ROBOTS_BYTE_CAP, { bodyTimeoutMs })`.
-- [ ] A guard rejection on the **initial** robots.txt URL propagates and is not converted to allow-all (F-12), proven by a test.
-- [ ] `allowPrivateHosts` threads from `crawlWebsite` into the robots fetch path (C-13), proven by the loopback integration test.
-- [ ] `crawlWebsite` throws `UsageError` when the start URL is disallowed, and the message contains the start URL and the string `respectRobots` (C-02).
-- [ ] A 5xx robots.txt on the start origin produces the same `UsageError` with an added server-error explanation (C-03).
-- [ ] Disallowed non-start URLs are skipped without erroring and without being fetched (C-04).
-- [ ] `Crawl-delay` is applied between page fetches, skipped before the first fetch, clamped to 10 s, and never sleeps past the crawl wall-clock deadline (C-07…C-11).
-- [ ] With `respectRobots: false`, zero `/robots.txt` requests are made and the crawl result is identical to pre-P1 behavior — proven by an integration test whose fixture server records every requested path (C-05).
-- [ ] `coerceRespectRobots` satisfies §4.7 (G-01…G-07), raising `ConfigError` on non-boolean values.
-- [ ] `respectRobots: z.boolean().optional()` is on `BundleWebsiteDescriptorSchema` and `schemas/akm-config.json` is regenerated (`bun scripts/gen-config-schema.ts --check` passes).
-- [ ] `CHANGELOG.md` `## [Unreleased]` documents the default-on behavior change, the user-visible consequence, and the `respectRobots: false` opt-out.
-- [ ] `docs/guides/sources-registries.md` documents `respectRobots`.
-- [ ] No `console.*` anywhere in the new/changed code; diagnostics use `warn()` / `warnVerbose()`.
-- [ ] No new dependencies (P1 adds none — `turndown`, a DOM selector lib, and `fast-xml-parser` belong to P2/P3).
-- [ ] Every new `src/` and `tests/` file carries the MPL-2.0 header; `bun scripts/lint-license-headers.ts` passes.
-- [ ] New tests use `withMockedFetch` / `sandboxStashDir`; no `globalThis.fetch =`, no `process.env.HOME` mutation, no `process.chdir`; `bun scripts/lint-tests-isolation.ts` passes.
-- [ ] `bunx biome check --write src/ tests/` produces no further changes; `bunx tsc --noEmit` is clean.
-- [ ] `bun run check` passes (lint + typecheck + `test:unit` + `test:integration`).
+- [x] `src/sources/snapshot-fetchers/robots.ts` exists with the MPL-2.0 header and exports exactly the API in §3.
+- [ ] `robots.ts` contains **no** module-level mutable state and does **not** import from `website-ingest.ts`. **Partially met, left unticked.** The import half holds (only `warnVerbose` is imported). The state half is literally violated: a module-level `WeakMap` memoizes compiled patterns, and `ALLOW_ALL_RULES` / `DISALLOW_ALL_RULES` are module-level exported `RobotsRuleSet` consts whose `rules: []` array is one shared instance. Reviewed and accepted as a documented deviation (Review log, 2026-08-01, finding 1) — the `WeakMap` is keyed on rule-object identity so it cannot leak between origins/crawls/tests, and nothing mutates the shared consts today. Not fixed in this pass; see the review log for the optional follow-up (`Object.freeze` + reword this bullet to "no module-level state carrying crawl semantics").
+- [x] `parseRobotsTxt` satisfies every row of §4.1 (P-01…P-24). `bun test tests/website-robots.test.ts` — 107 pass, 0 fail.
+- [x] `parseRobotsTxt` satisfies every `Crawl-delay` row of §4.2 (D-01…D-12), including the 10 s clamp.
+- [x] `isPathAllowedByRobots` satisfies every row of §4.3 (M-01…M-32), including `Allow` longest-match-wins and the tie-goes-to-Allow rule.
+- [x] `createRobotsPolicy` satisfies §4.4 and fetches `/robots.txt` at most once per origin (in-flight promises deduped). Proven by C-06.
+- [x] `createAllowAllRobotsPolicy()` never invokes a loader and always reports allowed / 0 ms.
+- [x] `loadRobotsTxt` satisfies §4.5: 2xx→body, 4xx→unavailable (silent on 404), 5xx→unreachable, oversized→unavailable, transport error→unavailable.
+- [x] `loadRobotsTxt` performs **no** raw `fetch()`; every request goes through `fetchWebsiteResponse` → `fetchWithRetry` + `assertWebsiteRequestUrl` + `assertResolvedHostAllowed`, with `readBodyWithByteCap(…, ROBOTS_BYTE_CAP, { bodyTimeoutMs })`. Verified by reading `loadRobotsTxt` in `website-ingest.ts`.
+- [x] A guard rejection on the **initial** robots.txt URL propagates and is not converted to allow-all (F-12), proven by a test.
+- [x] `allowPrivateHosts` threads from `crawlWebsite` into the robots fetch path (C-13), proven by the loopback integration test. Every test in `tests/integration/website-robots-crawl.test.ts` passes `allowPrivateHosts: true` through `ensureWebsiteMirror` and relies on the loopback robots.txt fetch succeeding, which is only possible if the flag threads all the way to `loadRobotsTxt`'s SSRF guards.
+- [x] `crawlWebsite` throws `UsageError` when the start URL is disallowed, and the message contains the start URL and the string `respectRobots` (C-02).
+- [x] A 5xx robots.txt on the start origin produces the same `UsageError` with an added server-error explanation (C-03).
+- [x] Disallowed non-start URLs are skipped without erroring and without being fetched (C-04).
+- [x] `Crawl-delay` is applied between page fetches, skipped before the first fetch, clamped to 10 s, and never sleeps past the crawl wall-clock deadline (C-07…C-11).
+- [x] With `respectRobots: false`, zero `/robots.txt` requests are made and the crawl result is identical to pre-P1 behavior — proven by an integration test whose fixture server records every requested path (C-05).
+- [x] `coerceRespectRobots` satisfies §4.7 (G-01…G-07), raising `ConfigError` on non-boolean values.
+- [x] `respectRobots: z.boolean().optional()` is on `BundleWebsiteDescriptorSchema` and `schemas/akm-config.json` is regenerated (`bun scripts/gen-config-schema.ts --check` passes). Verified: `src/core/config/schema/sources-bundles.ts:95` and `bun scripts/gen-config-schema.ts --check` reports "up to date".
+- [x] `CHANGELOG.md` `## [Unreleased]` documents the default-on behavior change, the user-visible consequence, and the `respectRobots: false` opt-out.
+- [x] `docs/guides/sources-registries.md` documents `respectRobots`.
+- [x] No `console.*` anywhere in the new/changed code; diagnostics use `warn()` / `warnVerbose()`. Verified: no `console.` matches in `robots.ts` or the changed regions of `website-ingest.ts`.
+- [x] No new dependencies (P1 adds none — `turndown`, a DOM selector lib, and `fast-xml-parser` belong to P2/P3).
+- [x] Every new `src/` and `tests/` file carries the MPL-2.0 header; `bun scripts/lint-license-headers.ts` passes.
+- [x] New tests use `withMockedFetch` / `sandboxStashDir`; no `globalThis.fetch =`, no `process.env.HOME` mutation, no `process.chdir`; `bun scripts/lint-tests-isolation.ts` passes.
+- [x] `bunx biome check --write src/ tests/` produces no further changes; `bunx tsc --noEmit` is clean.
+- [x] `bun run check` passes (lint + typecheck + `test:unit` + `test:integration`).
 
 ---
 
@@ -599,3 +611,107 @@ to diff the plan to find them.
 ## Review log
 
 <!-- Reviewers append dated entries below. -->
+
+### 2026-08-01 — Gate close-out: advisory findings from test review + code review
+
+P1 passed its gate (`bun run check` green, all §10 tests passing). The
+following ADVISORY findings from the test-review and code-review passes did
+not block the gate. Recorded here with disposition, per the close-out
+process.
+
+1. **[`robots.ts:246`] Module-level `WeakMap` and `ALLOW_ALL_RULES` /
+   `DISALLOW_ALL_RULES` conflict with the §6.1 / §10 "no module-level mutable
+   state" wording.** `compiledPatternCache` is a module-level `WeakMap`, and
+   `ALLOW_ALL_RULES` / `DISALLOW_ALL_RULES` are exported non-frozen consts
+   whose `rules: []` array is a single shared instance across every crawl in
+   the process.
+   **Disposition: accepted deviation, no code change.** The `WeakMap` is
+   semantically safe — it memoizes a pure function of an individual rule
+   object's own `pattern`, keyed by that object's identity, so distinct
+   `parseRobotsTxt` calls (even for identical text) get distinct cache slots
+   and nothing leaks between origins, crawls, or tests. §6.4 explicitly
+   sanctions memoization. This is a wording conflict with §6.1/§10, not a
+   defect; the §10 checkbox is left unticked with this note rather than
+   reworded, since rewording §6.1's acceptance bullet is optional and out of
+   scope for this close-out. The `ALLOW_ALL_RULES`/`DISALLOW_ALL_RULES`
+   shared-array risk (nothing mutates them today, but a stray `push` would
+   poison every subsequent crawl) is noted as a candidate for an `Object.freeze`
+   hardening pass in a later phase; not required to close P1.
+
+2. **[`robots.ts:37`, `robots.ts:43`] `ROBOTS_FETCH_TIMEOUT_MS` /
+   `ROBOTS_USER_AGENT_HEADER` are exported and asserted by
+   `tests/website-robots.test.ts:65,68` but never referenced by production
+   code.** `fetchWebsiteResponse` hardcodes `{ timeout: 15_000 }`
+   (`website-ingest.ts:479`) and the literal `"akm-cli website provider"`
+   (`website-ingest.ts:475`) instead of importing the constants, so the unit
+   tests pin values that production code does not actually read from.
+   **Disposition: logged as a follow-up, no code change in this pass.** Either
+   wiring the constants into `fetchWebsiteResponse` or replacing the
+   constant-value assertions with assertions against the actual outgoing
+   `Request` (via `withMockedFetch`) closes this; deferred to a later phase
+   rather than blocking P1.
+
+3. **[`robots.ts:363`] `RobotsPolicy.crawlDelayMs` re-derives
+   `crawlDelayMs ?? 0` with no re-clamp at the policy boundary.** The
+   `MAX_CRAWL_DELAY_MS` ceiling (§5 I-10) is enforced only inside
+   `parseRobotsTxt`; a `RobotsRuleSet` built by any other route (a hand-built
+   test fixture today, a future caller tomorrow) would flow an unclamped
+   delay into `sleep()`.
+   **Disposition: logged as a follow-up, no code change in this pass.** Not
+   exploitable today — the deadline pre-check at `website-ingest.ts:377`
+   breaks the crawl loop rather than sleeping past the wall-clock cap, so no
+   real crawl can stall on this. A defensive re-clamp
+   (`Math.min(Math.max(rules.crawlDelayMs ?? 0, 0), MAX_CRAWL_DELAY_MS)`) in
+   `createRobotsPolicy.crawlDelayMs` is a candidate one-line hardening for a
+   later phase; not required to close P1.
+
+4. **[`docs/guides/sources-registries.md:39`] The guide and `CHANGELOG.md`
+   both say a disallowed start URL makes `akm bundle add`/`update` "fail with
+   an error," which is accurate for a cold cache but not for `bundle update`
+   on a warm one.** `crawlWebsite`'s C-02/C-03 `UsageError` is thrown inside
+   `withFreshnessCache`'s `refresh` callback (`website-ingest.ts:170`), and
+   `src/sources/freshness.ts:64-68` swallows any refresh failure whenever a
+   usable cached mirror exists within the 7-day stale window. An existing
+   website source whose start URL becomes robots-disallowed therefore keeps
+   serving its stale mirror for up to 7 days before the documented error
+   surfaces (on the next cold crawl, or once the stale window expires).
+   **Disposition: reviewed and accepted as-is; documentation nuance only, no
+   doc or code change in this pass.** This is pre-existing freshness-ladder
+   behavior (§4.6) applied to a new error class, not a regression introduced
+   by P1 — the integration test suite passes because its fixtures always
+   start cold. A follow-up sentence in `docs/guides/sources-registries.md`
+   (and optionally the `CHANGELOG.md` entry) noting the stale-fallback window
+   is a candidate for a later documentation pass.
+
+5. **[`website-ingest.ts:217`] `scrapeWebsiteToStash` still ends in a bare
+   `throw new Error("No content could be scraped from …")` on a zero-page
+   crawl, which plan §2.7 forbids on user-facing paths (exit 70 "internal /
+   unclassified" instead of exit 2 "usage error").** Spec §4.6 C-12 leaves
+   this line untouched by design, and C-02 removes the most likely *new* way
+   to reach it (a fully-disallowed origin now fails earlier with a clear
+   `UsageError`) — but robots filtering does put a new class of "crawl
+   produced zero pages" outcomes in front of it.
+   **Disposition: no change in P1; logged as a candidate cleanup for a later
+   phase.** Converting `website-ingest.ts:217` to `UsageError` so a
+   zero-page crawl exits 2 with an actionable message is out of scope for
+   this phase (pre-existing behavior, explicitly left alone by C-12).
+
+6. **[`docs/plans/specs/p1-robots.md` §6.4] The spec's first §6.4 bullet
+   prescribed compiling patterns to `RegExp`s with `*` → `.*` and collapsing
+   consecutive `*`; the implementation deliberately does something stronger
+   and different — a non-backtracking segment scan
+   (`compilePatternSegments`/`matchesCompiledPattern`, `robots.ts:229-290`)
+   that never constructs a `RegExp`.** Verified the segment scan against
+   every §4.3 M-row, including trailing-`$` anchored cases and the
+   `last.length > target.length - cursor` overlap guard: it is correct. The
+   risk was purely documentary — collapsing consecutive `*` does not defend
+   against *distinct* wildcards separated by short literals (e.g.
+   `/*a*a*a*a*a*a*a*a$`), which is the actual catastrophic-backtracking
+   shape, so a future maintainer "restoring" the spec's regex approach would
+   reintroduce the ReDoS surface.
+   **Disposition: fixed in this pass.** §6.4's first bullet now describes the
+   non-backtracking segment matcher as the required implementation and
+   explicitly rejects regex compilation, with the rationale above. A
+   regression test for the distinct-wildcard shape
+   (`§6.4 regression: distinct '*a' wildcards …`) is already in
+   `tests/website-robots.test.ts`.

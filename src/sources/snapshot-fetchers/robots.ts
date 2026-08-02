@@ -10,11 +10,19 @@
  * upstream source file.
  *
  * Pure by design: no fetching happens here (see `RobotsTxtLoader`/
- * `loadRobotsTxt` in `website-ingest.ts`), and there is deliberately no
- * module-level mutable state. The per-origin cache lives on the object
+ * `loadRobotsTxt` in `website-ingest.ts`). There is no crawl-semantic
+ * module-level state: the per-origin HTTP cache lives on the object
  * `createRobotsPolicy` returns so it dies with the crawl that created it —
- * a module-level `Map` would leak `disallowAll` results across crawls and
- * across the test suite's process-wide `bun test` run (see spec §6.1).
+ * a module-level `origin -> RobotsRuleSet` map would leak `disallowAll`
+ * results across crawls and across the test suite's process-wide `bun test`
+ * run (see spec §6.1). The module-level `WeakMap` below is a different
+ * category: it memoizes a pure function of an individual rule object's own
+ * `pattern` field, keyed by that object's identity. It cannot leak meaning
+ * between origins or tests — distinct `parseRobotsTxt` calls (even for
+ * identical robots.txt text) allocate distinct rule objects with distinct
+ * cache slots, and slots are reclaimed by the GC once a rule set is
+ * unreachable. It is memoization scoped to a single parsed rule set, not
+ * shared cross-crawl state.
  */
 
 import { warnVerbose } from "../../core/warn";
@@ -154,11 +162,15 @@ export function parseRobotsTxt(text: string): RobotsRuleSet {
         warnVerbose("[akm] robots.txt: ignoring %s value %s (patterns must start with '/' or '*')", directive, value);
         continue;
       }
-      current.rules.push({
+      const rule: RobotsPathRule = {
         kind: directive === "allow" ? "allow" : "disallow",
         pattern: value,
         specificity: value.length,
-      });
+      };
+      // Compile once, here, at parse time — not on every URL check (spec
+      // §6.4, review finding robots.ts:238). See `compiledPatternCache`.
+      compiledPatternCache.set(rule, compilePatternSegments(value));
+      current.rules.push(rule);
       continue;
     }
 
@@ -188,33 +200,93 @@ export function parseRobotsTxt(text: string): RobotsRuleSet {
 }
 
 // ── §4.3 isPathAllowedByRobots ───────────────────────────────────────────────
+//
+// Matching is NOT regex-based. A pattern compiled to a RegExp with
+// `*` -> `.*` produces one regex quantifier per wildcard; a pattern with
+// several DISTINCT wildcards separated by short literals (e.g.
+// `/*a*a*a*a*a*a*a*a$`, not consecutive stars — collapsing consecutive `*`
+// does not help here) makes the regex engine explore an exponential number
+// of ways to split a long non-matching input across those quantifiers,
+// hanging the process (spec §6.4; review finding robots.ts:211). Instead,
+// patterns are compiled to a flat list of literal segments split on `*`
+// (consecutive `*` collapsed to one) and matched with a single left-to-right
+// scan: the first segment must prefix the target, each interior segment is
+// located with a single forward `indexOf` from the current position, and the
+// final segment either anchors the end (trailing `$`) or is located the same
+// way. This is a greedy, non-backtracking scan — each segment's search
+// position only moves forward — so it runs in time bounded by
+// segments x target length, never exponential, regardless of wildcard count.
 
-// Every regex metacharacter EXCEPT '*' (our wildcard) and a trailing '$'
-// (our end-anchor, handled separately). Escaping these keeps a hostile
-// pattern like "/a(b)" or "/a+b" from being interpreted as a sub-pattern.
-const REGEX_SPECIAL_CHARS = /[.*+?^${}()|[\]\\]/g;
+interface CompiledRobotsPattern {
+  /** True when the raw pattern ended in a literal, unescaped trailing `$`. */
+  readonly anchored: boolean;
+  /** Literal, unescaped text between wildcards; consecutive `*` collapsed. */
+  readonly segments: readonly string[];
+}
 
-/**
- * Compiles a robots.txt path pattern to a RegExp. Anchored at the start
- * always; a single TRAILING `$` additionally anchors the end (a `$`
- * elsewhere in the pattern is a literal character, matching RFC 9309/Google's
- * convention). Consecutive `*` characters collapse to a single wildcard
- * BEFORE compiling, so an attacker-supplied run of stars (`/****...`) cannot
- * produce a regex with nested `.*` quantifiers that would otherwise invite
- * catastrophic backtracking (spec §6.4).
- *
- * Recompiled on every call rather than cached: `robots.ts` must carry no
- * module-level mutable state (spec §6.1/§4.4 acceptance criteria), and
- * compiling a short pattern is microseconds — the actual DoS risk this
- * guards against is backtracking during matching, not recompilation cost.
- */
-function compileRobotsPattern(pattern: string): RegExp {
+const COLLAPSE_STARS = /\*+/g;
+
+function compilePatternSegments(pattern: string): CompiledRobotsPattern {
   const anchored = pattern.endsWith("$");
   const body = anchored ? pattern.slice(0, -1) : pattern;
-  const collapsed = body.replace(/\*+/g, "*");
-  const segments = collapsed.split("*").map((segment) => segment.replace(REGEX_SPECIAL_CHARS, "\\$&"));
-  const source = `^${segments.join(".*")}${anchored ? "$" : ""}`;
-  return new RegExp(source);
+  const collapsed = body.replace(COLLAPSE_STARS, "*");
+  return { anchored, segments: collapsed.split("*") };
+}
+
+/**
+ * Per-rule-object cache of the compiled pattern (see the file-level doc
+ * comment for why this is not "module-level state" in the sense spec §6.1
+ * forbids). `parseRobotsTxt` populates this eagerly, once, when it creates
+ * each `RobotsPathRule` — the compile-once requirement from spec §6.4 /
+ * review finding robots.ts:238. `compiledPatternFor` below is a defensive
+ * fallback for `RobotsRuleSet`s assembled by hand (e.g. test fixtures)
+ * rather than via `parseRobotsTxt`; it still compiles at most once per rule
+ * object, just lazily on first use instead of at parse time.
+ */
+const compiledPatternCache = new WeakMap<RobotsPathRule, CompiledRobotsPattern>();
+
+function compiledPatternFor(rule: RobotsPathRule): CompiledRobotsPattern {
+  const cached = compiledPatternCache.get(rule);
+  if (cached) return cached;
+  const compiled = compilePatternSegments(rule.pattern);
+  compiledPatternCache.set(rule, compiled);
+  return compiled;
+}
+
+/**
+ * Matches a precompiled pattern against `target` (`pathname + search`).
+ * Greedy left-to-right, no backtracking — see the section doc comment above.
+ */
+function matchesCompiledPattern(compiled: CompiledRobotsPattern, target: string): boolean {
+  const { anchored, segments } = compiled;
+  const first = segments[0] ?? "";
+  if (!target.startsWith(first)) return false;
+  const pos = first.length;
+
+  const lastIndex = segments.length - 1;
+  if (lastIndex === 0) {
+    // No wildcard at all: already a prefix match; anchored additionally
+    // requires the pattern to consume the whole target.
+    return anchored ? target.length === first.length : true;
+  }
+
+  let cursor = pos;
+  for (let i = 1; i < lastIndex; i++) {
+    const segment = segments[i] ?? "";
+    const found = target.indexOf(segment, cursor);
+    if (found === -1) return false;
+    // Greedy-leftmost is safe here: an earlier match of segment i can only
+    // give segment i+1 MORE room to be found later, never less, since the
+    // `*` between them absorbs any extra characters. No backtracking needed.
+    cursor = found + segment.length;
+  }
+
+  const last = segments[lastIndex] ?? "";
+  if (anchored) {
+    if (last.length > target.length - cursor) return false;
+    return target.endsWith(last);
+  }
+  return last === "" || target.indexOf(last, cursor) !== -1;
 }
 
 /**
@@ -235,7 +307,7 @@ export function isPathAllowedByRobots(rules: RobotsRuleSet, url: string): boolea
   const target = `${parsed.pathname}${parsed.search}`;
   let best: RobotsPathRule | null = null;
   for (const rule of rules.rules) {
-    if (!compileRobotsPattern(rule.pattern).test(target)) continue;
+    if (!matchesCompiledPattern(compiledPatternFor(rule), target)) continue;
     const isMoreSpecific = !best || rule.specificity > best.specificity;
     // Tie goes to Allow (least restrictive) — order-independent: this only
     // upgrades a disallow to an allow at equal specificity, never the reverse.
