@@ -62,8 +62,22 @@ export interface RobotsRuleSet {
   readonly crawlDelayMs: number | null;
 }
 
-export const ALLOW_ALL_RULES: RobotsRuleSet = { disallowAll: false, rules: [], crawlDelayMs: null };
-export const DISALLOW_ALL_RULES: RobotsRuleSet = { disallowAll: true, rules: [], crawlDelayMs: null };
+/**
+ * Frozen so a stray mutation (e.g. an accidental `.rules.push(...)` somewhere
+ * that borrows one of these as a starting point) can never poison every other
+ * crawl sharing this instance (spec §10, Review log 2026-08-01 finding 1).
+ */
+const EMPTY_ROBOTS_RULES: readonly RobotsPathRule[] = Object.freeze([]);
+export const ALLOW_ALL_RULES: RobotsRuleSet = Object.freeze({
+  disallowAll: false,
+  rules: EMPTY_ROBOTS_RULES,
+  crawlDelayMs: null,
+});
+export const DISALLOW_ALL_RULES: RobotsRuleSet = Object.freeze({
+  disallowAll: true,
+  rules: EMPTY_ROBOTS_RULES,
+  crawlDelayMs: null,
+});
 
 export type RobotsFetchOutcome =
   | { readonly kind: "body"; readonly text: string }

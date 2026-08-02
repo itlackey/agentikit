@@ -201,6 +201,53 @@ describe("crawlWebsite robots.txt compliance", () => {
     },
   );
 
+  test("C-04: a redirect that lands on a disallowed URL is skipped, not fetched into the stash", async () => {
+    // Regression: normalizeCrawlUrl strips trailing slashes before the
+    // initial robots gate, so `Disallow: /secret/` correctly lets `/secret`
+    // through that gate. If the server then redirects `/secret` -> `/secret/`
+    // (an extremely common trailing-slash canonicalization), the final URL
+    // must be re-checked against robots.txt before its body is stored.
+    const { url, requestLog } = startFixtureServer({
+      robots: { body: "User-agent: *\nDisallow: /secret/\n" },
+      pages: {
+        "/": '<html><body><a href="/secret">Secret</a> <a href="/public">Public</a></body></html>',
+        "/secret": { status: 301, headers: { location: "/secret/" } },
+        "/secret/": "<html><body>Secret content</body></html>",
+        "/public": "<html><body>Public content</body></html>",
+      },
+    });
+    trackCache(url);
+    const secretUrl = `${url}/secret/`;
+    const publicUrl = `${url}/public`;
+
+    const cachePaths = await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+
+    expect(stashContainsSourceUrl(cachePaths.stashDir, secretUrl)).toBe(false);
+    expect(stashContainsSourceUrl(cachePaths.stashDir, publicUrl)).toBe(true);
+    // The redirect hop itself is allowed to be requested (it's the pre-redirect
+    // URL that passed the initial gate) but the disallowed final page's body
+    // must never be written to the stash, which the assertion above proves.
+    expect(requestLog.some((r) => r.pathname === "/secret/")).toBe(true);
+  });
+
+  test("C-04: an allowed URL that redirects to a disallowed URL is skipped", async () => {
+    const { url, requestLog } = startFixtureServer({
+      robots: { body: "User-agent: *\nDisallow: /secret\n" },
+      pages: {
+        "/": '<html><body><a href="/go">Go</a></body></html>',
+        "/go": { status: 302, headers: { location: "/secret" } },
+        "/secret": "<html><body>Secret content</body></html>",
+      },
+    });
+    trackCache(url);
+    const secretUrl = `${url}/secret`;
+
+    const cachePaths = await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+
+    expect(stashContainsSourceUrl(cachePaths.stashDir, secretUrl)).toBe(false);
+    expect(requestLog.some((r) => r.pathname === "/go")).toBe(true);
+  });
+
   test("C-06: robots.txt is fetched exactly once per origin no matter how many pages are crawled", async () => {
     const { url, requestLog } = startFixtureServer({
       robots: { body: "User-agent: *\n" }, // no Disallow lines => allow everything

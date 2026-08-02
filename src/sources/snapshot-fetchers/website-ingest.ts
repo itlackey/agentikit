@@ -99,6 +99,17 @@ interface WebsiteValidationOptions {
    * ever runs.
    */
   resolveHostname?: HostnameResolver;
+  /**
+   * When set, `fetchWebsitePage` re-checks the *final* (post-redirect) URL
+   * against this policy and drops the page (warnVerbose, no error) when
+   * disallowed. Only `crawlWebsite` passes this — `fetchWebsiteMarkdownSnapshot`
+   * (single-URL, user-typed fetches) intentionally stays ungated per spec §1.
+   * Without this, `normalizeCrawlUrl` stripping trailing slashes plus a
+   * server's own redirect (e.g. `/secret` -> `/secret/`) could land on a page
+   * disallowed by a `Disallow: /secret/`-shaped rule that was never re-checked
+   * post-redirect.
+   */
+  robots?: RobotsPolicy;
 }
 
 export function shouldAllowPrivateWebsiteHostsForTests(): boolean {
@@ -383,7 +394,7 @@ async function crawlWebsite(
     }
     fetchAttempts++;
 
-    const fetched = await fetchWebsitePage(normalized, { allowPrivateHosts: options.allowPrivateHosts });
+    const fetched = await fetchWebsitePage(normalized, { allowPrivateHosts: options.allowPrivateHosts, robots });
     if (!fetched) continue;
     pages.push(fetched.page);
 
@@ -433,6 +444,18 @@ async function fetchWebsitePage(
   }
   const finalUrl = normalizeCrawlUrl(response.url || pageUrl) ?? pageUrl;
   assertWebsiteRequestUrl(finalUrl, Error, options);
+
+  // Re-check robots.txt against the FINAL (post-redirect) URL, not just the
+  // pre-redirect URL crawlWebsite already gated. normalizeCrawlUrl strips
+  // trailing slashes before the initial gate, so a rule shaped like
+  // `Disallow: /secret/` correctly lets `/secret` through that gate; if the
+  // server then redirects to `/secret/` (a common trailing-slash
+  // canonicalization), the disallowed page would otherwise be fetched and
+  // stored without ever being weighed against robots.txt. See spec §4.6 C-04.
+  if (options?.robots && !(await options.robots.isAllowed(finalUrl))) {
+    warnVerbose("[akm] website crawl: skipping %s (disallowed by robots.txt after redirect)", finalUrl);
+    return null;
+  }
 
   if (contentType.includes("text/html") || contentType.includes("application/xhtml+xml") || looksLikeMarkup(body)) {
     const title = extractHtmlTitle(body) || new URL(finalUrl).hostname;

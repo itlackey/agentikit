@@ -347,13 +347,25 @@ TypeScript rewrite. Where we differ, and why:
 
 ## 6. Security requirements
 
-### 6.1 No module-level state
+### 6.1 No module-level state carrying crawl semantics
 
 The per-origin cache **must** live on the object returned by
 `createRobotsPolicy`, constructed inside `crawlWebsite`. A module-level `Map`
-is forbidden: the test preload's singleton reset does not know about it, the
-tripwire would not catch it, and rules would leak between crawls (and between
-tests) — including a `disallowAll` from one host poisoning another run.
+of `origin -> RobotsRuleSet` (or any other structure that records what a
+*specific crawl* observed) is forbidden: the test preload's singleton reset
+does not know about it, the tripwire would not catch it, and rules would leak
+between crawls (and between tests) — including a `disallowAll` from one host
+poisoning another run.
+
+This does **not** forbid module-level state that carries no crawl semantics:
+a pure memoization of a function of an individual object's own fields, keyed
+on that object's identity (e.g. a `WeakMap<RobotsPathRule, CompiledPattern>`
+compiling `rule.pattern` once), cannot leak meaning between origins, crawls,
+or tests — distinct `parseRobotsTxt` calls always allocate distinct rule
+objects, so distinct cache slots, reclaimed by the GC once unreachable.
+Frozen, empty-collection constants (`ALLOW_ALL_RULES`, `DISALLOW_ALL_RULES`)
+are likewise fine: `Object.freeze` makes them immutable by construction, so
+they cannot become a mutation channel between callers.
 
 ### 6.2 SSRF: the robots.txt URL is an attacker-influenced fetch
 
@@ -555,8 +567,8 @@ Testing shape that makes this cheap:
 ## 10. Acceptance criteria
 
 - [x] `src/sources/snapshot-fetchers/robots.ts` exists with the MPL-2.0 header and exports exactly the API in §3.
-- [ ] `robots.ts` contains **no** module-level mutable state and does **not** import from `website-ingest.ts`. **Partially met, left unticked.** The import half holds (only `warnVerbose` is imported). The state half is literally violated: a module-level `WeakMap` memoizes compiled patterns, and `ALLOW_ALL_RULES` / `DISALLOW_ALL_RULES` are module-level exported `RobotsRuleSet` consts whose `rules: []` array is one shared instance. Reviewed and accepted as a documented deviation (Review log, 2026-08-01, finding 1) — the `WeakMap` is keyed on rule-object identity so it cannot leak between origins/crawls/tests, and nothing mutates the shared consts today. Not fixed in this pass; see the review log for the optional follow-up (`Object.freeze` + reword this bullet to "no module-level state carrying crawl semantics").
-- [x] `parseRobotsTxt` satisfies every row of §4.1 (P-01…P-24). `bun test tests/website-robots.test.ts` — 107 pass, 0 fail.
+- [x] `robots.ts` contains **no** module-level state carrying crawl semantics and does **not** import from `website-ingest.ts` (§6.1, reworded 2026-08-02 to distinguish crawl-semantic state from pure per-object memoization — see Review log). The import half holds (only `warnVerbose` is imported). The `WeakMap` memoizing compiled patterns is keyed on rule-object identity, cannot leak between origins/crawls/tests, and is expressly allowed by the reworded §6.1. `ALLOW_ALL_RULES` / `DISALLOW_ALL_RULES` are now `Object.freeze`d, including their shared `rules: []` array, closing the stray-mutation hazard flagged in the 2026-08-01 review log.
+- [x] `parseRobotsTxt` satisfies every row of §4.1 (P-01…P-24). `bun test tests/website-robots.test.ts` — 100 pass, 0 fail.
 - [x] `parseRobotsTxt` satisfies every `Crawl-delay` row of §4.2 (D-01…D-12), including the 10 s clamp.
 - [x] `isPathAllowedByRobots` satisfies every row of §4.3 (M-01…M-32), including `Allow` longest-match-wins and the tie-goes-to-Allow rule.
 - [x] `createRobotsPolicy` satisfies §4.4 and fetches `/robots.txt` at most once per origin (in-flight promises deduped). Proven by C-06.
@@ -612,31 +624,34 @@ to diff the plan to find them.
 
 <!-- Reviewers append dated entries below. -->
 
-### 2026-08-01 — Gate close-out: advisory findings from test review + code review
+### 2026-08-01 — Gate close-out: advisory findings from independent test review + code review of 775b3b0
 
 P1 passed its gate (`bun run check` green, all §10 tests passing). The
 following ADVISORY findings from the test-review and code-review passes did
 not block the gate. Recorded here with disposition, per the close-out
-process.
+process. Scope note (added 2026-08-02, see below): this entry's findings
+were raised against `775b3b0` (`feat(p1): robots.txt compliance`), the only
+commit that existed at the time of this review. Findings 1 and 6 as
+originally recorded here described the `WeakMap` memoization cache and the
+non-backtracking segment-scan matcher — neither of which existed in
+`775b3b0`; both were introduced afterward by `d5d1a6b`. Those two findings
+have been moved to the 2026-08-02 entry below, re-attributed as self-review
+notes written by the author of `d5d1a6b` alongside that change, not as
+output of this independent review (which could not have seen code that did
+not yet exist). What remains below is only the portion of the original
+finding 1 that *was* reviewable at this date — the non-frozen
+`ALLOW_ALL_RULES` / `DISALLOW_ALL_RULES` shared-array risk, which did exist
+in `775b3b0`.
 
-1. **[`robots.ts:246`] Module-level `WeakMap` and `ALLOW_ALL_RULES` /
-   `DISALLOW_ALL_RULES` conflict with the §6.1 / §10 "no module-level mutable
-   state" wording.** `compiledPatternCache` is a module-level `WeakMap`, and
-   `ALLOW_ALL_RULES` / `DISALLOW_ALL_RULES` are exported non-frozen consts
-   whose `rules: []` array is a single shared instance across every crawl in
-   the process.
-   **Disposition: accepted deviation, no code change.** The `WeakMap` is
-   semantically safe — it memoizes a pure function of an individual rule
-   object's own `pattern`, keyed by that object's identity, so distinct
-   `parseRobotsTxt` calls (even for identical text) get distinct cache slots
-   and nothing leaks between origins, crawls, or tests. §6.4 explicitly
-   sanctions memoization. This is a wording conflict with §6.1/§10, not a
-   defect; the §10 checkbox is left unticked with this note rather than
-   reworded, since rewording §6.1's acceptance bullet is optional and out of
-   scope for this close-out. The `ALLOW_ALL_RULES`/`DISALLOW_ALL_RULES`
-   shared-array risk (nothing mutates them today, but a stray `push` would
-   poison every subsequent crawl) is noted as a candidate for an `Object.freeze`
-   hardening pass in a later phase; not required to close P1.
+1. **[`robots.ts:57-58` at `775b3b0`] `ALLOW_ALL_RULES` / `DISALLOW_ALL_RULES`
+   are exported non-frozen consts whose `rules: []` array is a single shared
+   instance across every crawl in the process.**
+   **Disposition: accepted deviation at the time, no code change in
+   `775b3b0`.** Nothing mutates the shared consts, but a stray `push` would
+   poison every subsequent crawl. Noted as a candidate for an
+   `Object.freeze` hardening pass in a later phase. (Resolved 2026-08-02 —
+   see the fix entry below; both constants are now frozen and the §10
+   checkbox is ticked.)
 
 2. **[`robots.ts:37`, `robots.ts:43`] `ROBOTS_FETCH_TIMEOUT_MS` /
    `ROBOTS_USER_AGENT_HEADER` are exported and asserted by
@@ -696,7 +711,31 @@ process.
    zero-page crawl exits 2 with an actionable message is out of scope for
    this phase (pre-existing behavior, explicitly left alone by C-12).
 
-6. **[`docs/plans/specs/p1-robots.md` §6.4] The spec's first §6.4 bullet
+### 2026-08-02 — Self-review notes written alongside `d5d1a6b` (regex → non-backtracking segment scan)
+
+The two items below were written by the author of `d5d1a6b` at the time of
+that commit, describing code the same commit introduced. They are
+self-review notes, not findings from an independent reviewer seeing the
+change after the fact — both were previously misfiled under the
+2026-08-01 independent-review entry above, dated as though a reviewer had
+examined and accepted them a day before the code existed. Re-filed here
+under their actual date/authorship per the 2026-08-02 gate re-review (see
+the closing entry below).
+
+1. **[`robots.ts:246`] Module-level `WeakMap` (`compiledPatternCache`)
+   conflicts with the §6.1 / §10 "no module-level mutable state" wording.**
+   `compiledPatternCache` is a module-level `WeakMap` introduced by this
+   commit to memoize compiled patterns.
+   **Note: semantically safe by construction.** It memoizes a pure function
+   of an individual rule object's own `pattern`, keyed by that object's
+   identity, so distinct `parseRobotsTxt` calls (even for identical text)
+   get distinct cache slots and nothing leaks between origins, crawls, or
+   tests. §6.4 explicitly sanctions memoization. This is a wording conflict
+   with §6.1/§10, not a defect. (Resolved 2026-08-02 — see the closing entry
+   below: §6.1/§10 reworded to "no module-level state carrying crawl
+   semantics", which this provably satisfies.)
+
+2. **[`docs/plans/specs/p1-robots.md` §6.4] The spec's first §6.4 bullet
    prescribed compiling patterns to `RegExp`s with `*` → `.*` and collapsing
    consecutive `*`; the implementation deliberately does something stronger
    and different — a non-backtracking segment scan
@@ -715,3 +754,39 @@ process.
    regression test for the distinct-wildcard shape
    (`§6.4 regression: distinct '*a' wildcards …`) is already in
    `tests/website-robots.test.ts`.
+
+### 2026-08-02 — Gate re-review: robots-bypass fix, §10 module-level-state resolution, review-log correction
+
+An independent re-review of the P1 gate raised three CONFIRMED findings,
+addressed in this entry's commit:
+
+1. **Redirect targets were never re-checked against robots.txt.**
+   `normalizeCrawlUrl` strips trailing slashes before the robots gate in
+   `crawlWebsite`, so a rule shaped `Disallow: /secret/` let `/secret`
+   through; an ordinary trailing-slash-canonicalizing 301 back to `/secret/`
+   was then fetched and stored without ever being weighed against
+   robots.txt. **Fixed:** `fetchWebsitePage` now re-checks the *final*
+   (post-redirect) URL against the crawl's `RobotsPolicy` — passed in from
+   `crawlWebsite` — and drops the page (`warnVerbose`, no error) when
+   disallowed. `fetchWebsiteMarkdownSnapshot`'s single-URL fetch path does
+   not pass a policy, so it stays intentionally ungated per §1/open item 4.
+2. **§10's module-level-state checkbox was left open with no resolution.**
+   **Fixed:** §6.1 reworded to "no module-level state carrying crawl
+   semantics", explicitly distinguishing forbidden crawl-semantic state
+   (an `origin -> RobotsRuleSet` cache) from the `WeakMap` memoization
+   (pure function of a rule object's own field, keyed by that object's
+   identity — cannot leak across origins/crawls/tests) and from frozen
+   empty-collection constants. `ALLOW_ALL_RULES` / `DISALLOW_ALL_RULES`
+   (and their shared `rules: []` array) are now `Object.freeze`d, closing
+   the stray-mutation hazard the 2026-08-01 entry flagged. The §10 box is
+   ticked.
+3. **The review log misrepresented its own evidence.** The §10 test-count
+   claim ("107 pass, 0 fail") did not match `bun test
+   tests/website-robots.test.ts` at HEAD (100 pass, 0 fail) — corrected
+   above. Separately, the 2026-08-01 entry's findings 1 and 6 described the
+   `WeakMap` and the segment-scan matcher, neither of which existed until
+   `d5d1a6b`, the same commit that added the review-log entry claiming to
+   have reviewed them a day earlier; those two items are re-filed above
+   under their real date, labeled as self-review notes rather than
+   independent-review findings, and the 2026-08-01 entry now scopes itself
+   to `775b3b0`, the only commit it could actually have seen.
