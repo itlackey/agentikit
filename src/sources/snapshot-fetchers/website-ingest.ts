@@ -583,13 +583,20 @@ async function crawlWebsite(
     if (!next) break;
     const normalized = normalizeCrawlUrl(next.url);
     if (!normalized || visited.has(normalized)) continue;
-    visited.add(normalized);
 
     const decision = await resolveCrawlRobotsDecision(robots, normalized, next.rawUrl);
     if (!decision.allowed) {
+      // Deliberately NOT marked visited. `/docs/` and `/docs` share a
+      // normalized key but get different robots verdicts (a `Disallow: /docs/`
+      // rule matches only the trailing-slash form). Marking the key visited
+      // here would let whichever alias happened to be discovered first — and
+      // was then rejected — permanently suppress the allowed alias, making
+      // crawl coverage depend on link order. Robots rules are cached per
+      // origin, so re-evaluating a repeated disallowed alias is cheap.
       warnVerbose("[akm] website crawl: skipping %s (disallowed by robots.txt)", normalized);
       continue;
     }
+    visited.add(normalized);
 
     if (fetchAttempts > 0) {
       const delayMs = await robots.crawlDelayMs(normalized);

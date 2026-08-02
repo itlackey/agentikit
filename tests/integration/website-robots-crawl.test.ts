@@ -609,3 +609,30 @@ describe("crawlWebsite robots.txt compliance", () => {
     { timeout: 15_000 },
   );
 });
+
+describe("robots alias coverage (codex review)", () => {
+  test("a disallowed alias does not suppress the allowed one discovered later", async () => {
+    // `/docs/` and `/docs` share a normalized key but get different verdicts
+    // (a `Disallow: /docs/` rule matches only the trailing-slash form).
+    // Marking that key visited BEFORE the robots decision let whichever alias
+    // was discovered first — and rejected — permanently hide the allowed one,
+    // making coverage depend on link order.
+    const { url, requestLog } = startFixtureServer({
+      robots: { body: "User-agent: *\nDisallow: /docs/\n" },
+      pages: {
+        "/": '<html><body><a href="/docs/">slash first</a><a href="/docs">bare second</a></body></html>',
+        "/docs": "<html><body><main>allowed bare form</main></body></html>",
+        "/docs/": "<html><body><main>disallowed slash form</main></body></html>",
+      },
+    });
+    trackCache(url);
+
+    await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+
+    // The disallowed trailing-slash form is never requested...
+    expect(requestLog.some((r) => r.pathname === "/docs/")).toBe(false);
+    // ...but the allowed bare form is still crawled despite being discovered
+    // second and sharing a normalized key with the rejected alias.
+    expect(requestLog.some((r) => r.pathname === "/docs")).toBe(true);
+  });
+});
