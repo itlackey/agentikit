@@ -4,14 +4,13 @@
 
 /**
  * Shared step semantics — the ONE implementation of a step's orchestration
- * decisions, consumed by BOTH the engine loop (`run-workflow.ts` +
- * `native-executor.ts`) and, from R3 on, the harness-neutral driver protocol
- * (`workflow brief` / `workflow report`). The cardinal rule of the driver
- * protocol (redesign addendum R3) is *no duplicated semantics*: work-list
- * computation, prompt assembly, reducer/artifact promotion, output-schema
- * validation, artifact-judged gate summaries, gate-feedback recovery, and
- * route evaluation live here so an engine-driven run and a brief/report-driven
- * run of the same frozen plan produce byte-identical unit graphs.
+ * decisions, consumed by the engine loop (`run-workflow.ts` +
+ * `native-executor.ts`) on both the fresh-execution and the resume/replay path.
+ * The cardinal rule here is *no duplicated semantics*: work-list computation,
+ * prompt assembly, reducer/artifact promotion, output-schema validation,
+ * artifact-judged gate summaries, gate-feedback recovery, and route evaluation
+ * live here so a first run and a resumed run of the same frozen plan produce
+ * byte-identical unit graphs.
  *
  * ## What is PURE here
  *
@@ -20,8 +19,9 @@
  * recovered feedback) — is a pure function: same inputs ⇒ same unit ids, input
  * hashes, and fully-resolved prompts. It takes NO clock, NO IO, and NO journal
  * (journal-derived state, i.e. the recovered gate feedback, is passed in). This
- * is the load-bearing guarantee that `brief` can predict exactly the units the
- * engine would dispatch. So are the reducer/artifact helpers
+ * is the load-bearing guarantee that a resumed run recomputes exactly the units
+ * the original run dispatched, so journaled rows can be reused instead of
+ * re-executed. So are the reducer/artifact helpers
  * ({@link buildEvidence}, {@link projectStepOutput}, {@link validateStepArtifact},
  * {@link buildArtifactSummary}), the gate-feedback recovery
  * ({@link recoverGateFeedback} / {@link activeGateLoop}), and route evaluation
@@ -32,8 +32,8 @@
  * The gate-evaluation journaling ({@link journalGateEvaluationStart} /
  * {@link journalGateEvaluationFinish}) writes `workflow_run_units` rows through
  * the serialized writer queue — an engine-driven judge call is an LLM call and
- * is journaled like a unit. It lives here (not in the engine loop) so the
- * report path journals gate evaluations through the identical writer.
+ * is journaled like a unit. It lives here (not in the engine loop) so every
+ * caller journals gate evaluations through the identical writer.
  *
  * This module NEVER dispatches a unit and NEVER writes step rows: dispatch is
  * the executor's job (`native-executor.ts`), advancing the gated spine is the
@@ -181,17 +181,18 @@ export type ComputeWorkListResult = { ok: true; list: StepWorkList } | { ok: fal
  * inputs: resolve the fan-out list, derive content-derived unit ids, assemble
  * each unit's prompt (preamble + interpolated instructions + gate feedback +
  * schema directive), and hash the resolved input. Same inputs ⇒ byte-identical
- * ids/hashes/prompts — the invariant `brief` relies on to predict the engine.
+ * ids/hashes/prompts — the invariant resume/replay relies on to recognize the
+ * units an earlier run already journaled.
  *
  * Whole-list failures (missing subgraph, unresolvable / non-array `over`,
  * null or duplicate fan-out items) return `{ ok: false }`. The per-unit
  * `resolved: { ok: false }` branch is STRUCTURALLY UNREACHABLE in the unified
  * format — prose is never scanned for references, and everything that CAN
  * fail (map.over / route.input / inputs:) resolves once per step, failing the
- * whole list above. The branch is retained because brief/report/executor all
- * share the shape and defensively handle it; if a future unit kind
+ * whole list above. The branch is retained because every consumer of the work
+ * list shares the shape and defensively handles it; if a future unit kind
  * reintroduces per-unit resolution (e.g. an exec/shell unit with real
- * substitution), the cross-surface failure plumbing is already in place.
+ * substitution), the failure plumbing is already in place.
  */
 /**
  * Validate a fan-out item list BEFORE any identity/dispatch work: expansion
@@ -334,10 +335,10 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
     // here is a PLAN-FROZEN input that changes what the backend is actually
     // asked to do, so a completed unit is reused ONLY when all of them match;
     // a change to any of them re-dispatches. Key order is FIXED — it is the
-    // hash preimage (JSON.stringify preserves insertion order) — and shared
-    // by ALL surfaces, since this is the ONE place a unit's inputHash is
-    // computed (engine, brief, and report all call computeStepWorkList), so
-    // the byte-identical hash across surfaces is structural, not coincidental.
+    // hash preimage (JSON.stringify preserves insertion order) — and this is
+    // the ONE place a unit's inputHash is computed (every caller goes through
+    // computeStepWorkList), so a hash that is byte-identical across a fresh
+    // run and a resume is structural, not coincidental.
     //
     // Unit identity (workflow-format-unification, spec §2.3/§4) hashes the
     // FROZEN TEMPLATE BYTES (`template.instructions`, byte-exact, never an
@@ -590,18 +591,17 @@ function unitOutputValue(unit: UnitOutcome): unknown {
 }
 
 export function buildEvidence(units: UnitOutcome[], reducer: IrMapReducer, isFanOut: boolean): Record<string, unknown> {
-  // Per-unit evidence is the DURABLE, surface-independent projection the two
-  // driver surfaces (engine + brief/report) must agree on byte-for-byte (R4
-  // conformance, "identical unit graph"). It therefore carries ONLY fields both
-  // surfaces can reproduce from the journal:
+  // Per-unit evidence is the DURABLE projection of the unit graph — a fresh run
+  // and a resumed run of the same plan must agree on it byte-for-byte. It
+  // therefore carries ONLY fields that can be reproduced from the journal alone:
   //   - a SUCCESS keeps its promoted contribution (structured `result` or clipped
-  //     `text`) — the report path rehydrates exactly these from the unit row;
+  //     `text`) — the reuse path rehydrates exactly these from the unit row;
   //   - a FAILURE keeps only its `failureReason` (the durable, journaled failure
-  //     vocabulary). The engine's in-memory dispatch diagnostic (`error`) and any
-  //     residual `text` on a failed unit are NOT persisted here: a driver-reported
-  //     failure carries neither, so persisting them on the engine surface alone
-  //     would diverge the durable graph. The full raw text/reason still lives on
-  //     the unit row for engine-side diagnostics; this is the shared graph.
+  //     vocabulary). The in-memory dispatch diagnostic (`error`) and any residual
+  //     `text` on a failed unit are NOT persisted here: they do not survive a
+  //     restart, so persisting them on the live-dispatch path alone would make
+  //     the durable graph depend on WHEN it was built. The full raw text/reason
+  //     still lives on the unit row for diagnostics; this is the shared graph.
   const collected = units.map((u) =>
     u.ok
       ? {
@@ -652,11 +652,11 @@ export function buildEvidence(units: UnitOutcome[], reducer: IrMapReducer, isFan
 
 /**
  * The reduced outcome of a step's executed units — the shared post-dispatch
- * decision. `executeStepPlan` (native dispatch) and the R3 report path (units
- * replayed from the journal) both feed their {@link UnitOutcome}[] through
- * {@link reduceStepOutcomes} to produce this, so an engine-driven step and a
- * report-driven step of the same frozen plan promote the SAME artifact, apply
- * the SAME `on_error` policy, and validate against the SAME output schema. The
+ * decision. `executeStepPlan` feeds its {@link UnitOutcome}[] through
+ * {@link reduceStepOutcomes} to produce this, whether the outcomes came from a
+ * live dispatch or were rehydrated from journaled rows on resume, so the same
+ * frozen plan always promotes the SAME artifact, applies the SAME `on_error`
+ * policy, and validates against the SAME output schema. The
  * dispatch-only accounting (`unitsDispatched` / `tokensUsed`) lives on the
  * executor's richer result, not here.
  */
@@ -722,13 +722,11 @@ export function reduceStepOutcomes(
  * resolution rather than silently reading the envelope). Even the degenerate
  * artifact must honor the step's declared `outputSchema` before it can complete.
  *
- * Shared by native dispatch (`executeStepPlan`'s `items.length === 0` branch)
- * and the R3 driver protocol (`report` auto-completes an empty step the spine
- * reaches, since no `report --unit` can ever advance a zero-unit step) so both
- * surfaces promote the SAME artifact and apply the SAME schema verdict — the
- * anti-drift guarantee. Deliberately does NOT run the reducer/vote-tie logic:
- * an empty step has no successful results to count, and a vote-tie "failure"
- * would diverge from the engine's long-standing empty-list semantics.
+ * Used by native dispatch (`executeStepPlan`'s `items.length === 0` branch): a
+ * zero-unit step can never be advanced by a unit completion, so it is promoted
+ * here instead. Deliberately does NOT run the reducer/vote-tie logic: an empty
+ * step has no successful results to count, and a vote-tie "failure" would
+ * diverge from the engine's long-standing empty-list semantics.
  */
 export function reduceEmptyStep(plan: IrStepPlan, reducer: IrMapReducer): ExecutedStepOutcome {
   const evidence: Record<string, unknown> = { units: [], itemCount: 0, output: reducer === "collect" ? [] : null };
@@ -743,12 +741,13 @@ export function reduceEmptyStep(plan: IrStepPlan, reducer: IrMapReducer): Execut
 }
 
 /**
- * Rehydrate a journaled unit row into a {@link UnitOutcome}. Shared by the
- * executor's durable-row reuse (`native-executor.ts`, completed rows only) and
- * the R3 report path (which reduces completed AND failed rows replayed from the
- * journal). A completed row's text unit journals its output as a JSON string; a
- * schema unit journals the validated structure. A failed row carries its
- * `failure_reason`; any journaled text is surfaced too.
+ * Rehydrate a journaled unit row into a {@link UnitOutcome}. The executor's
+ * durable-row reuse (`native-executor.ts`) calls it for completed rows; the
+ * failed-row branch keeps the mapping TOTAL, so any reduction driven off the
+ * journal yields the same outcome the live dispatch produced. A completed row's
+ * text unit journals its output as a JSON string; a schema unit journals the
+ * validated structure. A failed row carries its `failure_reason`; any journaled
+ * text is surfaced too.
  */
 export function unitOutcomeFromRow(unitId: string, row: WorkflowRunUnitRow, hasSchema: boolean): UnitOutcome {
   let parsed: unknown;
@@ -782,11 +781,11 @@ export function unitOutcomeFromRow(unitId: string, row: WorkflowRunUnitRow, hasS
 }
 
 /**
- * Select the journaled attempt row that determines a unit's TERMINAL outcome on
- * a REPLAY surface — the engine's durable-row reuse AND the harness-neutral
- * brief/report driver protocol — given the run's dispatch rows indexed by
- * unit_id. This is the ONE place all surfaces resolve "which journaled row IS
- * this unit's outcome," so they cannot drift from each other or from the engine.
+ * Select the journaled attempt row that determines a unit's TERMINAL outcome
+ * when a run is reduced from the journal rather than from live dispatch, given
+ * the run's dispatch rows indexed by unit_id. This is the ONE place "which
+ * journaled row IS this unit's outcome" is resolved, so a journal-derived view
+ * cannot drift from what the engine itself concluded.
  *
  * It mirrors the executor's {@link classifyUnitReuse} attempt scan
  * (native-executor.ts): among the base attempt and its `~r<n>` retries — all
@@ -794,8 +793,8 @@ export function unitOutcomeFromRow(unitId: string, row: WorkflowRunUnitRow, hasS
  * suffix — the FIRST completed attempt is the effective result. So a unit whose
  * base attempt FAILED but whose later retry COMPLETED reduces as COMPLETED,
  * exactly like an engine resume reusing the `~r1` row (Codex round-3 finding C);
- * reading only the base row would reduce it as failed and diverge the two
- * surfaces. With no completed attempt the HIGHEST journaled attempt stands (a
+ * reading only the base row would reduce it as failed and contradict the resume
+ * path. With no completed attempt the HIGHEST journaled attempt stands (a
  * terminal failure, or a still-running row); no attempt row at all ⇒ `undefined`
  * (the unit is still outstanding).
  */
@@ -816,17 +815,16 @@ export function selectUnitAttemptRow(
 }
 
 /**
- * Is a FAILED unit still RETRY-ELIGIBLE — i.e. NOT terminal, because a driver
- * could still re-run it via the `--rerun` form (the engine's automatic
- * `<baseId>~r<n>` retry)? A unit whose declared `retry.on` matches the recorded
- * failure reason AND whose attempt budget (`1 + retry.max`) is not yet spent can
- * still be re-run. No `retry`, an off-list reason, or an exhausted attempt budget
- * ⇒ the failure IS terminal. Shared by the report fail-fast decision, the
- * `--settle` refusal, and `brief`'s fully-terminal detection so all three agree
- * on when a failed unit is genuinely done vs. still re-runnable. The normalized
- * failure reason is compared against `retry.on` directly (a canonical taxonomy
- * reason is stored verbatim; an `external:*` reason is by construction outside
- * the taxonomy `retry.on` lists).
+ * Is a FAILED unit still RETRY-ELIGIBLE — i.e. NOT terminal, because the engine
+ * could still re-run it as a `<baseId>~r<n>` attempt? A unit whose declared
+ * `retry.on` matches the recorded failure reason AND whose attempt budget
+ * (`1 + retry.max`) is not yet spent can still be re-run. No `retry`, an off-list
+ * reason, or an exhausted attempt budget ⇒ the failure IS terminal. This is the
+ * single definition of "genuinely done vs. still re-runnable", so a run reduced
+ * from the journal reaches the same verdict as the live dispatch loop. The
+ * normalized failure reason is compared against `retry.on` directly (a canonical
+ * taxonomy reason is stored verbatim; an `external:*` reason is by construction
+ * outside the taxonomy `retry.on` lists).
  */
 export function isRetryEligibleFailure(
   workUnit: StepWorkUnit,
@@ -840,13 +838,13 @@ export function isRetryEligibleFailure(
 }
 
 /**
- * Does a resolvable unit still need a driver to execute + report it (or re-run
- * it)? True for a unit with no terminal row (pending), a still-`running` row (a
- * live/stale claim another driver holds), or a FAILED row that is still
- * retry-eligible. False for a COMPLETED row, a terminal non-retry-eligible
- * FAILURE, or an UNRESOLVABLE unit (a currently-unreachable defensive branch —
- * see the computeStepWorkList doc — never reportable). The best terminal attempt (base + `~r<n>` retries) is the
- * one consulted, the SAME reuse the engine and reducer apply.
+ * Does a resolvable unit still need to be executed (or re-run)? True for a unit
+ * with no terminal row (pending), a still-`running` row (a live/stale claim
+ * another runner holds), or a FAILED row that is still retry-eligible. False for
+ * a COMPLETED row, a terminal non-retry-eligible FAILURE, or an UNRESOLVABLE
+ * unit (a currently-unreachable defensive branch — see the computeStepWorkList
+ * doc — never dispatchable). The best terminal attempt (base + `~r<n>` retries)
+ * is the one consulted, the SAME reuse the engine and reducer apply.
  */
 export function unitStillNeedsReport(workUnit: StepWorkUnit, dispatchRows: Map<string, WorkflowRunUnitRow>): boolean {
   if (!workUnit.resolved.ok) return false;
@@ -860,15 +858,14 @@ export function unitStillNeedsReport(workUnit: StepWorkUnit, dispatchRows: Map<s
 /**
  * Is the active step's work-list FULLY TERMINAL — every resolvable unit run to a
  * terminal (done, or non-retry-eligible failed) state with nothing left to
- * execute or per-unit report — yet still needing finalization? This is the
- * driver-recovery state after a required-gate block is resumed, or a crash
- * between the last unit write and the step's completion (owner manual-validation
- * finding 3): the work-list is done but the step never advanced. `brief`
- * surfaces it with a single `report --settle` command and `--settle` runs the
- * shared completion path for it. A list with ANY outstanding unit (pending,
- * in-flight, or retry-eligible failed) is NOT fully terminal — the driver
- * `report --unit`s those. A route-only / empty / all-unresolvable list (no
- * resolvable units) is a DIFFERENT non-dispatching state, handled separately.
+ * execute — yet still needing finalization? This is the recovery state after a
+ * required-gate block is resumed, or a crash between the last unit write and the
+ * step's completion (owner manual-validation finding 3): the work-list is done
+ * but the step never advanced, so a resume must finalize it instead of
+ * dispatching. A list with ANY outstanding unit (pending, in-flight, or
+ * retry-eligible failed) is NOT fully terminal — those still get executed. A
+ * route-only / empty / all-unresolvable list (no resolvable units) is a
+ * DIFFERENT non-dispatching state, handled separately.
  */
 export function isWorkListFullyTerminal(
   workList: StepWorkList,
@@ -901,9 +898,9 @@ function sortKeys(value: unknown): unknown {
 // `{ complete: false, missing, feedback }` (see journalGateEvaluationFinish).
 // The feedback stored there is BYTE-IDENTICAL to what the engine threads into
 // the next loop's prompts — both are the same `rejection.feedback`/`.missing`.
-// `brief` recovers it from the journal so its loop-N work-list matches the
-// engine's (redesign addendum R3, task item 2). `native-executor.test.ts`
-// asserts the round-trip identity.
+// A resume recovers it from the journal so its loop-N work-list (and therefore
+// every unit id and input hash in it) matches the one the original run built.
+// `native-executor.test.ts` asserts the round-trip identity.
 
 // GATE_EVALUATION_PHASE moved to ../runtime/unit-phases.ts (leaf) so
 // unit-checkin can key on it without closing the exec ↔ runtime cycle.
@@ -1237,25 +1234,6 @@ function assertRouteTargetDeclared(route: IrRouteSpec, stepId: string, selected:
 }
 
 /**
- * Validate every COMPLETED route step's journaled selection against its declared
- * targets (reviewer #7). Read-only: it throws on a PRESENT-but-invalid selection
- * and is silent on an absent one, so it never false-positives on a healthy run —
- * making it safe to call from the read-only `brief` surface as well as the
- * resume/report surfaces that already re-apply the decisions.
- */
-export function assertJournaledRouteSelectionsValid(plan: WorkflowPlanGraph, state: WorkflowNextResult): void {
-  for (const stepPlan of plan.steps) {
-    if (!stepPlan.route) continue;
-    const stepState = state.workflow.steps.find((s) => s.id === stepPlan.stepId);
-    if (!stepState || stepState.status !== "completed") continue;
-    const selected = journaledRouteSelection(stepState.evidence);
-    if (selected !== undefined) {
-      assertRouteTargetDeclared(stepPlan.route, stepPlan.stepId, selected, state.run.id);
-    }
-  }
-}
-
-/**
  * Replay journaled route decisions into the skip bookkeeping (resume path).
  * For every COMPLETED route step of the frozen plan, in spine order: the
  * journaled decision wins; else a re-derivation from the frozen plan +
@@ -1311,9 +1289,9 @@ export function seedJournaledRouteDecisions(
 //
 // ONE implementation of "given a step's executed outcome at a gate loop,
 // evaluate the route, judge the completion gate, and advance (or not) the
-// spine." The engine loop (`run-workflow.ts`) and the R3 report path both call
-// it, so route evaluation, artifact-judged gates, gate-row journaling, and the
-// bounded-loop rejection contract cannot drift between the two surfaces. The
+// spine." Every step completion goes through it — first pass or resume — so
+// route evaluation, artifact-judged gates, gate-row journaling, and the
+// bounded-loop rejection contract have exactly one definition. The
 // caller owns the SPINE-WALKING glue (which loop to run next, skip cascades,
 // lease renewal); this function performs exactly ONE completion attempt.
 

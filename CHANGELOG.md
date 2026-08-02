@@ -6,7 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **The experimental `akm workflow brief` / `akm workflow report`
+  external-driver protocol is removed**, along with the
+  `experimental.workflowEngine` config key that gated it, its
+  `WORKFLOW_ENGINE_NOT_ENABLED` error code, and the `workflowEngine` block in
+  `akm task doctor`. `akm workflow run` is now the single execution surface.
+
+  The protocol let a calling agent session execute a run's units itself
+  instead of akm dispatching them. Its stated justification was harness
+  neutrality, which measurement did not support: native dispatch already
+  covers **ten** harnesses (opencode, claude, opencode-sdk, codex, copilot,
+  pi, gemini, aider, amazonq, openhands) in 2,214 LOC total, while the
+  protocol cost 2,690 LOC on its own — more than supporting every harness
+  natively — and an eleventh harness is ~220 lines, not a protocol. Removing
+  it also drops the second consumer of `workflow_run_units` and the
+  cross-surface parity obligation on `step-work.ts`, both of which
+  constrained every future engine change. The analysis is recorded in
+  `docs/architecture/specs/driver-protocol-keep-or-cut.md`.
+
+  Legacy configs setting `experimental.workflowEngine` remain valid — the
+  config schema is `.passthrough()`, so the key is accepted and ignored.
+
 ### Added
+
+- **`akm workflow run` and prompt tasks fall back to `opencode-sdk` instead of
+  refusing when no engine is configured.** A clean install that never ran
+  `akm setup` — a bare container, a CI image, an agent-operated session — used
+  to fail closed with `INVALID_CONFIG_FILE` (exit 78). When the `opencode`
+  binary is on PATH, akm now synthesizes a **config-free** `opencode-sdk`
+  engine: it carries no model, endpoint, or credential, so provider, model,
+  and auth all resolve from opencode's own configuration and akm never mirrors
+  or validates it. With `opencode` absent the failure is unchanged, and its
+  remedy now names both routes. An operator-configured `opencode-sdk` engine
+  always wins over the synthesized one.
+
+  The fallback is **announced, never silent**: a workflow run surfaces it once
+  at run creation in the result's `warnings`, and a prompt task writes it to
+  the task run log. The frozen plan records the engine actually used, so a
+  resume never re-announces a decision it did not make.
 
 - **RSS, Bluesky, and X sources.** `akm bundle add` now recognizes three new
   kinds of URL and snapshots them as knowledge assets instead of crawling

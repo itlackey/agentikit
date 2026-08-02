@@ -806,13 +806,13 @@ explicitly marked as gated.
       `workflow list --active`; `akm workflow resume <run-id>` reopens it.
 - [ ] Invoking `workflow run` by ref while a run is active continues that run;
       supplying parameter flags again fails because params are creation-only.
-- [ ] With `experimental.workflowEngine` unset/false, `akm workflow brief
-      <run-id>` and `akm workflow report <run-id>` fail with the documented
-      config gate before changing the run; `akm workflow run <run-id>` remains
-      available and ungated.
-- [ ] With the experiment enabled, `workflow brief`/`report` operate on a
-      compatible existing active run. Record the exact brief, report command,
-      unit state, and terminal status.
+- [ ] `akm workflow brief` and `akm workflow report` no longer exist: both fail
+      with an `UNKNOWN_COMMAND` envelope naming `workflow run` (the
+      external-driver protocol was removed).
+- [ ] On a config with no `defaults.engine` but `opencode` on PATH,
+      `akm workflow run <ref>` executes and its result carries the engine
+      fallback announcement in `warnings`. With `opencode` absent it fails
+      with `INVALID_CONFIG_FILE` (exit 78) naming both remedies.
 
 ### 17.8 Proposal dry-runs and archive lifecycle
 

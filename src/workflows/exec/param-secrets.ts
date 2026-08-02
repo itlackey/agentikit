@@ -9,20 +9,20 @@
  *
  * A workflow's run params are interpolated into every unit prompt
  * (`buildUnitPrompt` → `{{PARAMS_JSON}}` + `${{ params.* }}` references) and,
- * critically, are part of the unit's **input hash**. The harness-neutral driver
- * protocol (`akm workflow brief`) MUST surface the byte-identical prompt an
- * external driver has to execute — redacting a param would change the prompt the
- * driver runs, break the input-hash contract, and defeat cross-surface parity.
- * So params CANNOT be redacted and are declared **non-secret**: secrets belong
- * in **env bindings** (`env:` refs), which `brief` surfaces by NAME ONLY and
- * never resolves.
+ * critically, are part of the unit's **input hash**. The prompt an executor runs
+ * must be byte-identical to the one the hash was taken over — redacting a param
+ * would change the prompt, break the input-hash contract, and make a resumed or
+ * replayed run diverge from the original. So params CANNOT be redacted and are
+ * declared **non-secret**: secrets belong in **env bindings** (`env:` refs),
+ * which are carried by NAME ONLY through the plan and the hash preimage and are
+ * resolved from the process environment at dispatch.
  *
  * This module is the loud, best-effort guardrail on top of that contract: it
  * scans params for values that LOOK like credentials (secret-suggesting key
  * names, long high-entropy strings, known token prefixes) and returns WARNING
  * strings. It is purely advisory — it NEVER blocks a run and NEVER mutates
- * params — and is surfaced both at `start` and in every `brief`. False positives
- * and false negatives are expected; it is a nudge, not a scanner.
+ * params — and is surfaced when a run starts. False positives and false
+ * negatives are expected; it is a nudge, not a scanner.
  */
 
 /**

@@ -16,7 +16,6 @@ import { resolveSourceEntries } from "../../src/indexer/search/search-source";
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEmbedding } from "../../src/storage/repositories/index-vec-repository";
 import { createWorkflowAsset, getWorkflowTemplate } from "../../src/workflows/authoring/authoring";
-import { resolveRunId } from "../../src/workflows/exec/brief";
 import { getNextWorkflowStep, listWorkflowRuns } from "../../src/workflows/runtime/runs";
 import { loadWorkflowAsset } from "../../src/workflows/runtime/workflow-asset-loader";
 import { runCliCapture } from "../_helpers/cli";
@@ -715,9 +714,11 @@ describe("OKF first-class conformance", () => {
     resetConfigCache();
     expect((await getNextWorkflowStep("native//authored")).run.workflowRef).toBe("native//authored");
     expect((await listWorkflowRuns({ workflowRef: "native//authored" })).runs).toHaveLength(1);
-    expect(await resolveRunId("native//authored")).toBe(started.run.id);
+    // Ref -> run-id resolution, asserted through the surviving surface: the
+    // CLI resolves the ref itself and must land on the run we started.
     const status = await runCliCapture(["workflow", "status", "native//authored"]);
     expect(status.code, status.stderr).toBe(0);
+    expect(status.stdout).toContain(started.run.id);
   });
 
   test.skipIf(process.platform === "win32")(

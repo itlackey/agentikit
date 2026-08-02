@@ -4,8 +4,8 @@
 
 /**
  * Unit-row phase markers — a leaf module (imports nothing) so both the exec
- * drivers (step-work, brief, run-workflow) and the runtime (unit-checkin) can
- * key on the phase discriminator without an exec ↔ runtime import cycle.
+ * modules (step-work, run-workflow) and the runtime (unit-checkin) can key on
+ * the phase discriminator without an exec ↔ runtime import cycle.
  * Extracting {@link GATE_EVALUATION_PHASE} here broke the last workflows-
  * runtime knot (step-work → runs → unit-checkin → step-work; chunk-8 WI-8.6,
  * DoD 11).

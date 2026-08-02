@@ -3,9 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Engine-driven workflow execution — the canonical `akm workflow run`
- * start/resume/execute path. akm walks the frozen plan and dispatches units;
- * external drivers can operate an existing run through `brief`/`report`.
+ * Engine-driven workflow execution — the `akm workflow run`
+ * start/resume/execute path, and the single execution surface for a run: akm
+ * walks the frozen plan and dispatches every unit itself.
  *
  * Invariant (plan §*Never bypass the gate spine*): every step advances
  * through `completeWorkflowStep`, never by writing step rows directly, so the
@@ -83,8 +83,8 @@ import {
 } from "./native-executor";
 // Shared step semantics — route evaluation + cascaded-skip bookkeeping,
 // gate-evaluation journaling, and the whole step-completion path
-// (`finalizeExecutedStep`) live in step-work.ts so the engine loop and the R3
-// brief/report driver protocol share ONE implementation (no drift).
+// (`finalizeExecutedStep`) live in step-work.ts as ONE implementation, so the
+// fresh-execution and resume paths cannot drift from each other.
 import {
   activeGateLoop,
   cascadeSkippedRouter,
@@ -524,10 +524,9 @@ async function driveRun(
   }
 
   // Reviewer #12: the journaled params row must still satisfy the frozen param
-  // schemas before the engine resolves any unit prompt from it. Applied on ALL
-  // THREE driver surfaces (engine here, brief, report) so schema-violating
-  // params — post-start corruption — fail loudly and IDENTICALLY, preserving
-  // cross-surface parity (start already validated the params it stored).
+  // schemas before the engine resolves any unit prompt from it, so
+  // schema-violating params — post-start corruption — fail loudly BEFORE any
+  // unit is dispatched (start already validated the params it stored).
   assertRunParamsSatisfyPlan(next.run.id, plan, next.run.params ?? {});
 
   // Route bookkeeping: targets a completed router did NOT select are skipped
@@ -619,13 +618,13 @@ async function driveRun(
     const maxLoops = Math.max(1, stepPlan.gate.maxLoops ?? 1);
 
     // Crash-resume gate state (Codex P1): SEED the starting gate loop from the
-    // journal exactly as the brief/report surfaces do — the SAME shared helpers,
-    // no fork. A run interrupted after a rejected gate was journaled
+    // journal through the SAME shared helpers the first pass used — no fork.
+    // A run interrupted after a rejected gate was journaled
     // (`<step>.gate:l<n>`, complete:false) must resume at loop n+1 with the
     // stored corrective feedback threaded into the unit prompts; without this
     // the engine restarts at loop 1, reuses the rejected loop-1 rows, overwrites
     // `<step>.gate:l1`, and re-judges the stale artifact — breaking journaled
-    // replay and diverging from what brief computes for the same run. The rows
+    // replay and making the resumed run diverge from the interrupted one. The rows
     // are re-read here (NOT the once-at-start `journaledUnits` budget seed) so a
     // step reached later within THIS same invocation still starts fresh at loop 1.
     const stepJournal = await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(next.run.id));
@@ -713,12 +712,12 @@ async function driveRun(
 
       // Route evaluation + artifact-judged completion gate + gate-row
       // journaling + the bounded-loop rejection contract are the SHARED
-      // completion path (`finalizeExecutedStep`): the R3 report surface drives
-      // the identical sequence, so an engine-driven and a report-driven run of
-      // the same frozen plan promote the same artifact and advance (or reject)
-      // the spine identically. The engine owns only the loop control the result
-      // maps onto (retry re-executes; advanced moves on; failure/exhaustion
-      // stops this invocation).
+      // completion path (`finalizeExecutedStep`): every step advances through
+      // that one sequence, whether its units were just dispatched or rehydrated
+      // from the journal on resume, so the same frozen plan always promotes the
+      // same artifact and advances (or rejects) the spine identically. The
+      // engine owns only the loop control the result maps onto (retry
+      // re-executes; advanced moves on; failure/exhaustion stops this invocation).
       let finalize: Awaited<ReturnType<typeof finalizeExecutedStep>>;
       try {
         finalize = await finalizeExecutedStep({

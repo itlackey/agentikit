@@ -34,12 +34,11 @@
  *
  * Empty free-text outputs (peer review): a SUCCESSFUL schemaless unit that
  * returns the empty string is normalized to "no output" — {@link dispatchUnit}
- * drops the falsy `text`, `finishUnit` journals `result_json = NULL`, and both
- * durable-row reuse and the R3 report surface rehydrate the same absence
- * (`unitOutcomeFromRow`). This is the ONLY empty-output resolution: `''` never
- * survives on any surface, so the live artifact cannot diverge from the
- * resume/report artifact (the cross-surface parity cardinal rule; the
- * `EMPTY_OUTPUT` driver-parity golden pins it). Consequences that follow from
+ * drops the falsy `text`, `finishUnit` journals `result_json = NULL`, and
+ * durable-row reuse rehydrates the same absence (`unitOutcomeFromRow`). This is
+ * the ONLY empty-output resolution: `''` never survives into the journal, so the
+ * live artifact cannot diverge from the artifact a resume rebuilds from the same
+ * rows (the byte-identical-graph cardinal rule). Consequences that follow from
  * "empty == absent", not special-cased anywhere:
  *   - a SOLO empty step promotes `output = null` (the unit's absent text ??
  *     null); a `collect` fan-out promotes `null` in that item's slot.
@@ -140,9 +139,9 @@ import { insertEventStrict } from "../../storage/repositories/events-repository"
 import { type WorkflowRunUnitRow, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
 import type { FrozenEngineSnapshot, IrBudget, IrInvocation, IrStepPlan } from "../ir/schema";
 import { LIFETIME_UNIT_CAP, scheduleUnits, UnitCapExceededError } from "./scheduler";
-// Shared step semantics — the ONE implementation consumed by both the engine
-// (this module + run-workflow.ts) and, from R3, the brief/report driver
-// protocol. This module dispatches; step-work.ts owns the pure decisions.
+// Shared step semantics — the ONE implementation consumed by the engine
+// (this module + run-workflow.ts) on both the fresh-execution and the resume
+// path. This module dispatches; step-work.ts owns the pure decisions.
 import {
   computeStepWorkList,
   type GateFeedback,
@@ -394,10 +393,11 @@ export async function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContex
 
   // Work-list computation is the SHARED, PURE decision (step-work.ts): resolve
   // the fan-out list, derive content-derived unit ids, assemble each unit's
-  // prompt, and hash its resolved input. `brief` (R3) computes the identical
-  // list — that shared implementation is the anti-drift guarantee. This module
-  // owns only the impure remainder: env/worktree preflight, durable-row reuse,
-  // dispatch, journaling, budget.
+  // prompt, and hash its resolved input. A resume recomputes the identical list
+  // from the same frozen plan — that shared pure implementation is what lets
+  // journaled rows be matched instead of re-executed. This module owns only the
+  // impure remainder: env/worktree preflight, durable-row reuse, dispatch,
+  // journaling, budget.
   const workList = computeStepWorkList(plan, {
     runId: ctx.runId,
     params: ctx.params,
@@ -413,10 +413,9 @@ export async function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContex
 
   if (items.length === 0) {
     // Empty fan-out: the promoted artifact is the degenerate empty value, honored
-    // against the step's declared output schema. `reduceEmptyStep` is the SHARED
-    // decision (step-work.ts) the R3 report surface also uses to auto-complete an
-    // empty step the spine reaches, so both surfaces promote the identical
-    // artifact + schema verdict.
+    // against the step's declared output schema. `reduceEmptyStep` (step-work.ts)
+    // owns that decision so a zero-unit step promotes the identical artifact +
+    // schema verdict every time the spine reaches it.
     return { ...reduceEmptyStep(plan, reducer), unitsDispatched: dispatched };
   }
 
@@ -690,8 +689,8 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
   const reuse = classifyUnitReuse(workUnit, input.existingUnits, gateLoop);
   if (reuse.kind === "reuse") {
     // Identity in the durable step evidence is the CONTENT-derived base id, not
-    // the `~r<n>` attempt row it was reused from — the report surface reduces
-    // from the base id too, so both surfaces' evidence.units[].unitId agree.
+    // the `~r<n>` attempt row it was reused from — the work list only ever knows
+    // base ids, so evidence.units[].unitId stays stable across retries+resumes.
     return reuseCompletedUnit(unitId, reuse.row, workUnit.schema !== undefined);
   }
   if (reuse.kind === "diverge") {
@@ -949,12 +948,12 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
 
     const text = await dispatchOnce();
     // Normalize an EMPTY successful output to "no text". `finishUnit` journals
-    // result_json = NULL for a falsy text, so durable-reuse and the R3 report
-    // surface both rehydrate NO text from the row (unitOutcomeFromRow). Preserving
-    // `text: ""` only in this live outcome would make the LIVE step artifact ("")
-    // diverge from the resume/report artifact (null) — the exact byte-identical-
-    // graph violation the cardinal rule forbids. Treating empty as absent keeps
-    // the live engine, engine resume, and report surfaces identical.
+    // result_json = NULL for a falsy text, so durable-reuse rehydrates NO text
+    // from the row (unitOutcomeFromRow). Preserving `text: ""` only in this live
+    // outcome would make the LIVE step artifact ("") diverge from the artifact a
+    // resume rebuilds from the row (null) — the exact byte-identical-graph
+    // violation the cardinal rule forbids. Treating empty as absent keeps live
+    // dispatch and engine resume identical.
     return { unitId: request.unitId, ok: true, ...(text ? { text } : {}), ...captured() };
   } catch (err) {
     if (err instanceof UnitTransportError) {
@@ -1312,8 +1311,8 @@ function materializeFrozenLlm(
  * Rehydrate a journaled completed unit row into a UnitOutcome (durable-row
  * reuse). Delegates to the shared {@link unitOutcomeFromRow} — the reuse path
  * only reaches here for completed rows (the caller guards `status ===
- * "completed"`), so the mapping is identical to what the R3 report path applies
- * when it replays the same journal.
+ * "completed"`), so a reused unit contributes exactly what its original
+ * dispatch did.
  */
 function reuseCompletedUnit(unitId: string, row: WorkflowRunUnitRow, hasSchema: boolean): UnitOutcome {
   return unitOutcomeFromRow(unitId, row, hasSchema);

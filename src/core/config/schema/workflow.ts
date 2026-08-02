@@ -22,8 +22,6 @@ import { engineName, positiveInt } from "./primitives";
  *     `[1, WORKFLOW_MAX_CONCURRENCY_CEILING]` (64). Values above the ceiling
  *     are clamped, not rejected, so a config shared across machines with wildly
  *     different core counts never hard-fails validation.
- * The R3 brief/report driver surface does NOT consult this — drivers own their
- * own parallelism (the engine only caps native dispatch).
  */
 export const WorkflowConfigSchema = z
   .object({

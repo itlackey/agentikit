@@ -5,7 +5,6 @@
 // Output text formatters for all `akm workflow *` commands.
 
 import {
-  formatWorkflowBriefPlain,
   formatWorkflowCreatePlain,
   formatWorkflowListPlain,
   formatWorkflowResumePlain,
@@ -21,5 +20,4 @@ export const workflowFormatters: TextFormatterEntry[] = [
   { command: "workflow-resume", handler: (r) => formatWorkflowResumePlain(r) },
   { command: "workflow-abandon", handler: (r) => formatWorkflowStatusPlain(r) },
   { command: "workflow-run", handler: (r) => formatWorkflowRunPlain(r) },
-  { command: "workflow-brief", handler: (r) => formatWorkflowBriefPlain(r) },
 ];

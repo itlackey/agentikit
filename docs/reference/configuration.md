@@ -284,8 +284,7 @@ section, an absent key, and an explicit `false` all read identically as off.
 ```jsonc
 {
   "experimental": {
-    "improveAutonomy": false,
-    "workflowEngine": false
+    "improveAutonomy": false
   }
 }
 ```
@@ -295,12 +294,6 @@ section, an absent key, and an explicit `false` all read identically as off.
   itself always runs; this only gates mutations without a human in the loop.
   Consolidation is not gated: it remains advisory and emits reviewable
   proposals. `sync.push` is deliberately **not** gated by this key.
-- **`experimental.workflowEngine`** — enables only the experimental
-  harness-neutral `akm workflow brief`/`report` driver protocol. Stable native
-  orchestration through `akm workflow run`, authoring, linting, inspection, and
-  recovery are unaffected. See
-  [Workflows](workflows.md#external-driver-protocol-opt-in-in-090) for the full
-  gate behavior and error shape.
 
 ## Managing Config
 

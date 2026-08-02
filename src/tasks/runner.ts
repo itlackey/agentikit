@@ -49,6 +49,7 @@ import { redactCredentialPatterns } from "../core/redaction";
 import { withStateDb } from "../core/state-db";
 import { runManagedSubprocess, type SpawnFn } from "../core/subprocess";
 import type { AgentRunResult, RunAgentOptions } from "../integrations/agent";
+import { NO_ENGINE_REMEDY, withEngineFallback } from "../integrations/agent/engine-fallback";
 import { resolveEngine, resolveLlmEngineUse } from "../integrations/agent/engine-resolution";
 import { resolveModel } from "../integrations/agent/model-aliases";
 import type { RunnerSpec } from "../integrations/agent/runner";
@@ -473,9 +474,15 @@ async function runPromptTask(input: {
   if (task.target.kind !== "prompt") throw new Error("invariant: prompt target");
   const promptTarget = task.target;
 
-  const config = loadConfig();
+  // Same implicit opencode-sdk fallback the workflow freeze boundary applies,
+  // so a scheduled prompt task on an engine-less install behaves identically.
+  const { config, announcement: engineAnnouncement } = withEngineFallback(loadConfig());
   const engineName = promptTarget.engine ?? config.defaults?.engine;
-  if (!engineName) throw new NotFoundError(`Task "${task.id}" has no selected engine.`, "ASSET_NOT_FOUND");
+  if (!engineName)
+    throw new NotFoundError(
+      `Task "${task.id}" has no selected engine and \`opencode\` is not on PATH. ${NO_ENGINE_REMEDY}`,
+      "ASSET_NOT_FOUND",
+    );
   let runner: RunnerSpec = resolveEngine(engineName, config);
   if (runner.kind === "llm") {
     const resolved = resolveLlmEngineUse(config, [
@@ -539,7 +546,7 @@ async function runPromptTask(input: {
   );
 
   const finishedAt = finishAttempt(startedAt, now());
-  const log = renderPromptLog({ task, engineName, result });
+  const log = renderPromptLog({ task, engineName, result, engineAnnouncement });
   persistRunLog({
     taskId: task.id,
     startedAtIso: startedAt.toISOString(),
@@ -593,13 +600,22 @@ async function resolvePromptText(task: TaskDocument, stashDir: string): Promise<
   return fs.readFileSync(assetPath, "utf8");
 }
 
-function renderPromptLog(input: { task: TaskDocument; engineName: string; result: AgentRunResult }): RunLogContent {
+function renderPromptLog(input: {
+  task: TaskDocument;
+  engineName: string;
+  result: AgentRunResult;
+  engineAnnouncement?: string;
+}): RunLogContent {
   const lines: string[] = [];
   const dbLines: TaskLogLineInput[] = [];
   const header = `[akm task] task=${input.task.id} kind=prompt engine=${input.engineName}`;
   const summary = `ok=${input.result.ok} exit_code=${input.result.exitCode ?? "null"} duration_ms=${input.result.durationMs}`;
   lines.push(header, summary);
   dbLines.push({ line: header }, { level: input.result.ok ? "info" : "error", line: summary });
+  if (input.engineAnnouncement) {
+    lines.push(input.engineAnnouncement);
+    dbLines.push({ level: "warn", line: input.engineAnnouncement });
+  }
   if (!input.result.ok) {
     const failure = `reason=${input.result.reason ?? ""} error=${input.result.error ?? ""}`;
     lines.push(failure);
