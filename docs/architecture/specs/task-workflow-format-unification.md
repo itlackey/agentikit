@@ -1,359 +1,129 @@
 # Task / Workflow Unification: One Target Vocabulary, One Prose Rule
 
-Status: PROPOSAL v7 — owner decisions from review rounds 1–6 applied
-(see §9 decision log). Baselined on `claude/release-0-9-0-polish-d6sycl`
-(post-"`run` is the canonical orchestrator"). Breaking changes are approved
-for the 0.9.0 release.
+Status: PROPOSAL v8 — full redesign after three independent adversarial
+reviews of v7 verified every claim against the code (consolidated findings:
+5 critical, 13 major; all resolved or explicitly costed here, see §11
+cross-reference). Baselined on `claude/release-0-9-0-polish-d6sycl` @
+`71bb686` (hardened 0.9 cutover). Breaking changes are approved for 0.9.0.
 Date: 2026-08-01
 Related: [`workflow-format-unification.md`](./workflow-format-unification.md),
 [`okf-support.md`](./okf-support.md),
-[`docs/reference/workflows.md`](../../reference/workflows.md),
-[`docs/migration/v0.7-to-v0.8.md`](../../migration/v0.7-to-v0.8.md)
+[`docs/reference/workflows.md`](../../reference/workflows.md)
 
 ---
 
 ## 1. Grounding — what tasks and workflows are in akm
 
-Stated by the owner; everything below derives from these three points.
+Owner's model; everything below derives from it.
 
-1. **A task is a bundle asset that abstracts over OS-scheduled work.** It is
-   *discovered* (search/show, like any asset) and *enabled* — enabling creates
-   an entry in the OS scheduler (cron / launchd / schtasks) that executes the
-   work the task defines, or dispatches an agent with the task's prompt. The
-   point is a platform-agnostic way to **share and store repeatable
-   processes**, scheduled through one consistent CLI.
-
-2. **A task and a workflow step are conceptually the same job** — execute a
-   command, a script, or a prompt — positioned behind a schedule in one case
-   and inside a procedure in the other. A workflow step **is a task**: defined
-   inline, or referenced by ref, so the same repeatable process is truly
-   composable without duplicating content or config.
-
-3. **Reduce the number of concepts and formats a user must learn.** akm's
-   primary goal is a **simple, intuitive abstraction layer over the common
-   tools and processes autonomous agents use** — the measure of success is
-   lower cognitive load, not architectural novelty.
+1. **A task is a bundle asset that abstracts over OS-scheduled work** —
+   discovered like any asset, *enabled* into a cron/launchd/schtasks entry
+   that executes the defined work or dispatches an agent with the task's
+   prompt. A platform-agnostic way to share repeatable processes behind one
+   CLI.
+2. **A workflow step is a task** — defined inline or referenced by ref — so
+   the same repeatable process is composable without duplicating content or
+   config.
+3. **Fewer concepts, lower cognitive load.** akm is a simple, intuitive
+   abstraction layer over the tools and processes autonomous agents use.
 
 Not in scope: tasks do not grow `steps:`; workflows do not grow `schedule:`.
-The unit of sharing is the asset, the unit of scheduling is the task, the
-unit of procedure is the workflow — and a workflow *composes* tasks (§3.3),
-it does not replace them.
+The unit of sharing is the asset, of scheduling the task, of procedure the
+workflow.
 
-## 2. Baseline
+## 2. The format (stable since v5–v6, corrections applied)
 
-Facts from the `release-0-9-0-polish` branch this design builds on:
+### 2.1 Targets
 
-- `akm workflow run <ref|run-id>` is the canonical orchestrator — Stable,
-  ungated, owning creation, dispatch, completion, and durable replay
-  (`start`/`next`/`complete` are removed; only the `brief`/`report` driver
-  protocol keeps the `experimental.workflowEngine` opt-in).
-- Scheduled workflow tasks already execute end-to-end
-  (`runWorkflowTask()` → `runWorkflowSteps()`).
-- Workflow params are **declared flags** coerced through frozen parameter
-  schemas — any param passing below rides that mechanism.
-- `src/workflows/exec/unit-dispatch.ts` is the one dispatch seam.
-  `UnitDispatchRequest` already carries an assembled `prompt`, a frozen engine
-  snapshot, `timeoutMs`, `env`, `cwd`, and `sensitiveValues`; results carry a
-  structured `failureReason`.
-- **Freeze already implements a configuration cascade.**
-  `compileResolveFreezeWorkflow()` (`src/workflows/ir/freeze.ts`) assembles
-  `layers: EngineUseConfig[] = [documentDefaults, unit]`, selects the engine
-  by nearest layer, and resolves model, timeout, and request overrides by
-  walking the layers nearest-wins / deep-merged. §3.4 exposes this existing
-  mechanism as the authoring model instead of hiding it behind special-cased
-  sibling keys.
+| Declaration | Work performed |
+|---|---|
+| *(none)* | Agent, prompted with **the nearest prose** — a task's body, or a step's `## <id>` section |
+| `uses: <asset-ref>` | Execute the referenced asset per its subdir-declared type (§2.2) |
+| `run: <shell text>` | Shell, no AI — GitHub-Actions semantics; `sh` on POSIX, `powershell` on Windows, `shell:` override |
 
-## 3. The format
+`uses:` xor `run:` — one schema rule; the double-target error class is
+structurally impossible. No ref-vs-inline sniffing exists.
 
-### 3.1 Two target keys: `uses:` and `run:`
+> **The prose rule.** The machine surface names the target; the nearest
+> prose is the instructions. With no target key, the prose *is* the work.
 
-| Declaration | Work performed | Inputs |
-|---|---|---|
-| *(none)* | Dispatch an agent with **the nearest prose** as the prompt | — |
-| `uses: <asset-ref>` | Execute the referenced asset **per its type**, which the ref's subdir already declares (§3.2) | `params:`, `env:` |
-| `run: <shell text>` | Execute inline shell — no AI. GitHub-Actions `run:` semantics (§3.6) | `env:` |
-
-`uses:` and `run:` are mutually exclusive — one schema rule, and the whole
-class of "provided a script *and* a command on one task/step" errors is
-structurally impossible. A ref key and an inline key also cannot be confused,
-so no ref-vs-inline sniffing exists anywhere in the format.
-
-> **The prose rule.** The machine surface names the target; the nearest prose
-> is the instructions. In a task that is the document body; in a workflow step
-> it is the `## <step-id>` section. With no target key, the prose *is* the
-> work, dispatched to an agent.
-
-That sentence is the entire shared learning curve. It also retires `prompt:`
-for good — its three overloaded meanings (inline text / asset ref / file
-path) and the `resolvePromptSource()` sniff that disambiguated them all go:
-inline text is the body, an asset ref is `uses:` or `agent:`, and file paths
-are dropped with the `.yml` format (§8).
-
-### 3.2 What `uses:` accepts — the ref carries the type
-
-akm refs are subdir-qualified concept ids, so the asset type is visible in
-the value; no key-per-type is needed to keep the vocabulary aligned to asset
-types:
+### 2.2 `uses:` — a closed set of four executable types
 
 | Ref | Execution | Inputs |
 |---|---|---|
-| `uses: commands/<name>` | Fill the command asset's template (its type contract — "a prompt template with placeholders"), dispatch an agent with the result | `params:` fill the placeholders |
-| `uses: scripts/<name>` | Execute the script asset per its own `run`/`setup`/`cwd` metadata — no AI | `env:` |
-| `uses: tasks/<name>` *(steps only)* | Compose the task into the workflow as this step's work (§3.3) | the task's own inputs, overridable |
-| `uses: workflows/<ref>` *(tasks only)* | Run the workflow via `runWorkflowSteps()`; on a step this is an error (no nesting) | `params:` → the declared param flags |
-| `uses: agents/<name>` | **Error**, with the hint: an agent is a persona, not work — set `agent:` (§3.4) |
+| `uses: commands/<n>` | Fill the template (§2.4), dispatch an agent | `with:` |
+| `uses: scripts/<n>` | Execute per the script's `run`/`setup`/`cwd` — gated by the execution-activation policy (§5.6) | `env:` |
+| `uses: tasks/<n>` *(steps only)* | Compose the task as this step's work (§2.3) | the task's own, overridable |
+| `uses: workflows/<r>` *(tasks only)* | `runWorkflowSteps()` | `with:` → declared param flags |
 
-Template filling stays scoped to the command asset type, whose definition
-already is "a template with placeholders" — bodies remain verbatim, per
-[`workflow-format-unification.md`](./workflow-format-unification.md) §2.3.
-Filling happens before dispatch, producing the `prompt` string
-`UnitDispatchRequest` expects; a placeholder with no matching param is an
-error at fill time.
+Any other subdir (including `agents/` — a persona, not work) is an error
+with a targeted hint. **`with:` replaces v5–v7's call-site `params:`** —
+review finding M1 (3/3): `params:` already means *declarations* (name →
+JSON Schema) in workflow frontmatter, and one key carrying declarations,
+run-arguments, placeholder fills, *and* a cascading value was the same
+overload this spec deletes `prompt:` for. GHA's `inputs:`/`with:` split
+exists precisely here, and §2.4/§4 give `with:` exactly one meaning:
+**inputs handed to the referenced asset, never cascaded.**
 
-### 3.3 Steps are tasks — composition by reference
-
-A workflow step is a task: defined inline (the step's own target, options,
-and prose) or referenced with `uses: tasks/<id>`, so one repeatable process
-serves the scheduler and any number of workflows without duplication.
+### 2.3 Steps are tasks — composition by reference
 
 ```yaml
 steps:
   - id: lint
-    uses: tasks/lint-check       # the task's target, options, env, and body
-    timeout: 2m                  # call-site override
-  - id: fix                      # inline task: same keys, defined here
-    run: bun run fix
-```
-
-Rules:
-
-- **Step keys override the referenced task's keys** — the task and the step
-  are just two adjacent layers of the §3.4 cascade. `env:` lists concatenate
-  task-then-step, so the later-entries-win rule (§3.7) is the same rule.
-- **Trigger keys never fire outside the scheduler surface.** `schedule:` and
-  `enabled:` are consumed *only* by `akm task sync` and related commands.
-  Anywhere else — on a referenced task in a workflow, or written directly on
-  a step — they are no-ops with a lint notice. A scheduled task referenced by
-  a workflow therefore cannot double-fire.
-- **A `uses:` step's section is additional prose, passed along when that
-  makes sense.** Investigated (round 6): the assembled prompt is a frozen
-  string produced at one seam, so appending is a deterministic concat —
-  easy — and call-site context ("in this workflow, focus on X") is genuinely
-  useful without duplicating the task. Rule: **when the resolved work is
-  agent-dispatched** (a prose task, or a command template), the step's
-  section text is appended to the assembled prompt after a blank line,
-  byte-exact. **When it is not** (shell work), the section is documentation,
-  ignored at runtime. Sections on `uses:` steps remain optional either way;
-  this is additive context, never a prose override — a call site needing
-  *different* instructions defines the step inline.
-- **Resolution happens at freeze.** The referenced task compiles into the
-  frozen plan, so in-flight runs are immune to later task edits — the
-  existing snapshot rule, unchanged.
-- **No nesting through the back door.** A referenced task whose own target is
-  `uses: workflows/*` is a compile error on a step, the same as writing it
-  directly. A task referencing a task is likewise an error — a task is the
-  unit; composition lives in workflows.
-
-### 3.4 Configuration: two selectors, one value set, one cascade
-
-Round 6 asked for a no-constraints re-look at `agent`/`engine`/`model`/`llm`.
-The four-sibling design (and both prior attempts to fix it) was describing
-the right mechanism with the wrong surface. The mechanism already exists:
-freeze resolves every dispatch-significant setting by walking **layers**,
-nearest-wins (§2). The fix is to make the authoring model *be* that cascade —
-the same familiar shape as opencode's and Claude Code's configuration, where
-one vocabulary appears at every scope and the nearest scope wins.
-
-**Two selectors.** These don't merge — the nearest one *picks a node* whose
-fields join the cascade:
-
-| Selector | Picks | Node lives in |
-|---|---|---|
-| `engine:` | the execution node — *how* work runs (agent CLI or LLM endpoint) | config `engines.<name>` |
-| `agent:` | the persona node — *who* runs it (system prompt, tool policy, model preference) | the bundle, `agents/<name>` |
-
-**One value vocabulary.** Everything else is a flat set of value fields,
-legal at every layer, merged per-field with the nearest layer winning:
-
-`model` · `temperature` · `max_tokens` · `extra_params` · `timeout` · `env` ·
-`cwd` · `shell` · `params`
-
-`llm:` is **dissolved**: it was a grouping whose only job was to scope a
-kind-gated hard error, and that error is incompatible with a cascade (a
-global default `temperature` must not brick every agent-engine dispatch).
-In its place, **engines consume what they understand**: each engine kind
-declares the value fields it reads (`temperature`/`max_tokens`/`extra_params`
-are LLM-endpoint fields; agent CLIs read `model` and `timeout`), and a field
-the selected engine cannot consume is a **lint/freeze notice** — never a
-rejection, never silently load-bearing.
-
-**The cascade**, far to near — later wins per field, `env:` concatenates:
-
-```
-config defaults:  →  engines.<selected>  →  agents/<selected>  →  document defaults:  →  step / task keys
-     (global)           (execution node)       (persona node)      (workflow frontmatter)    (call site)
-```
-
-**Where fields may live.** Value fields are legal at every layer, with one
-principled exception: *a layer that knows the engine kind validates
-strictly; a layer that doesn't gets capability notices.* The engine node is
-the only layer that knows its own kind at authoring time, so its existing
-strict schema stands — `temperature` on an agent-kind engine node remains a
-config validation error (`src/core/config/schema/engines.ts` already
-enforces this), while `model` remains legal on both kinds. Every other
-layer — persona, document defaults, call site, referenced task — cannot know
-which engine will be selected, so any value field is legal there and an
-unconsumed field is a notice. This widens agent assets from today's
-model-hint-only frontmatter to the full value vocabulary. (Command assets
-already read an `agent:` frontmatter field today — a referenced asset
-naming its preferred persona is existing behavior, corroborating the
-asset-as-layer model.)
-
-Worked example:
-
-```jsonc
-// config.json
-{ "defaults": { "engine": "claude", "model": "sonnet" },
-  "engines":  { "claude": { "kind": "agent", "platform": "claude" } } }
-```
-
-```yaml
-# agents/reviewer frontmatter
-model: opus
-```
-
-```yaml
-# workflow
-steps:
-  - id: review
-    agent: agents/reviewer   # model: opus  (persona layer beats global default)
-  - id: digest
-    model: haiku             # model: haiku (call site beats everything)
-    temperature: 0.2         # notice: agent-kind engine does not consume this
-```
-
-One sentence to teach it: **set a field where it should usually apply;
-override it closer when a case differs; the nearest value wins.** The rule
-the user already knows from opencode and Claude Code configuration — and the
-rule `env:` (§3.7) already follows, list-concatenated.
-
-Composition (§3.3) needs no extra semantics: a referenced task is simply one
-more layer between the persona node and the step's own keys.
-
-Tier structure otherwise unchanged: **graph keys** (`map`, `route`, `inputs`,
-`output`, `gate`, `retry`, `on_error`, `isolation`) are steps-only —
-orchestration stays with the orchestrator; **trigger keys** (`schedule`,
-`enabled`) are tasks-only and scheduler-surface-only (§3.3). A scheduled
-*gated* process is a task whose target is a one-step workflow.
-
-### 3.5 Model aliases — findings from the implementation review
-
-`resolveModel()` (`src/integrations/agent/model-aliases.ts`) is one four-tier
-chain: engine-profile `modelAliases` → config-root `modelAliases` (alias →
-platform → model, with a `"*"` fallback column, plus an `llm` column via
-`resolveLlmModel`) → the built-in table (`fable` / `opus` / `sonnet` /
-`haiku`) → verbatim pass-through. One resolution level, no recursion.
-Aliases are **per-platform**, which is what makes a shared asset portable:
-`model: sonnet` resolves to the right string under a claude engine, an
-opencode engine, or an LLM endpoint.
-
-How it composes with §3.4: the cascade settles *which* value `model` holds;
-alias resolution then runs **once, after the cascade**, against the selected
-engine's platform. Aliases are therefore legal at every layer — a persona
-node saying `model: opus` works under any engine. Timing is unchanged: tasks
-resolve at dispatch, workflows at freeze into the frozen plan; composition
-follows the freeze path.
-
-The review also surfaced an inconsistency this design fixes: today the
-`.yml` task path **drops** an agent asset's model preference —
-`prompt: agents/x` resolves the asset to prompt text only — while `akm
-agent` embodiment honors it under an explicit `--model` override. With
-`agent:` as a selector whose node sits in the cascade, tasks get the
-embodiment semantics by construction.
-
-### 3.6 `run:` semantics — and steps flatten to the task shape
-
-**Inline shell.** `run:` is always a shell, single line or block scalar — the
-GitHub Actions behavior, one rule, no line-count semantics. `sh` on POSIX,
-`powershell` on Windows; `shell:` overrides. (`run:` is also the script
-asset's own metadata key for its shell line — the same word means the same
-thing in both places.) A shell unit inside a workflow journals like any unit
-(`workflow_run_units`): no tokens, but status, timing, attempts, and
-`failure_reason` behave normally. A `map:` step with a shell target receives
-its item and index as `AKM_ITEM` (JSON-encoded) and `AKM_ITEM_INDEX` in the
-environment — the env-not-argv stance applied to fan-out; no argv
-substitution exists.
-
-**The flatten (schema change).** Today a step's dispatch configuration hides
-inside a `unit:` bag (and a map step's inside `map.unit`), while `output:` is
-declared **both** on the step and inside the bag — a live wart in
-`schemas/akm-workflow.json`. Steps-are-tasks makes the bag untenable:
-
-- **`unit:` and `map.unit` are deleted.** Targets, value fields, and graph
-  keys sit directly on the step. `map:` keeps only `over` / `concurrency` /
-  `reducer`; the step's own target and fields are the per-item template.
-- A route step still takes no target or dispatch keys; `map`/`route` remain
-  mutually exclusive.
-- The duplicate `output` declaration disappears with the bag.
-
-```yaml
-steps:
-  - id: run-tests
-    run: bun test
-    timeout: 5m
-  - id: review
-    uses: commands/code-review
-    agent: agents/reviewer
-    retry: { max: 2, on: [timeout] }
+    uses: tasks/lint-check   # the task's target, fields, env, and body
+    timeout: 2m              # call-site override (one cascade layer nearer)
   - id: fix
-    map: { over: steps.review.output.findings, concurrency: 3 }
-    isolation: worktree          # per-item template: step-level keys
-  - id: summarize                # no target → agent + its ## summarize section
-    inputs: [steps.review.output]
+    run: bun run fix         # inline task: same keys, defined here
 ```
 
-A step entry is now a task's frontmatter minus the envelope and trigger, plus
-graph position — which is precisely what makes `uses: tasks/<id>` coherent.
-Cost: schema and golden churn on a pre-release format — approved.
+- Step keys override the referenced task's keys — the task and the step are
+  adjacent cascade layers (§4); `env:` concatenates task-then-step.
+- Trigger keys (`schedule`, `enabled`) are consumed **only** by
+  `akm task sync` and, at fire time, the task runner's enabled gate
+  (`src/tasks/runner.ts:169` — v7's "sync-only" wording corrected).
+  Anywhere else they are no-ops with a lint notice; a referenced task
+  cannot double-fire.
+- **Call-site prose is appended at freeze, not at dispatch.** Review
+  finding (3/3): there is no "one assembled prompt seam" — prompts are
+  built per-unit at dispatch, and the unit hash covers the *frozen
+  template*, not the assembled string. So: when the resolved work is
+  agent-dispatched, the step's section text is concatenated onto the
+  frozen instruction template (blank-line separator, byte-exact) **at
+  freeze**, which puts it inside the hash preimage automatically and keeps
+  the append ahead of the item/inputs/gate blocks. For shell work the
+  section is documentation, ignored at runtime.
+- Refs resolve at freeze (§5.4), so in-flight runs are immune to edits.
+- No nesting: a referenced task targeting `workflows/*` is a compile error
+  on a step; a task referencing a task is an error.
 
-### 3.7 `env:` — literals and refs in one property
+### 2.4 Command templates — filled against the real placeholder grammar
 
-`env:` is a **list**; each entry is either an env-asset ref (inject the whole
-group) or a mapping of literal pairs. A value that is a `secrets/<name>` ref
-resolves to the secret at runtime. Later entries win — the cascade rule in
-list form. A bare mapping is shorthand for a single-entry list, so the
-GitHub-Actions spelling works as muscle memory:
+Review finding M2 (3/3): command placeholders are `$ARGUMENTS` / `$1`–`$9`
+(positional) and `{{name}}`; the current filler substitutes only positional
+`{{0}}` forms leniently (`src/output/renderers.ts:164-186` — a live bug
+fixed by this work). The contract, defined against that reality:
 
-```yaml
-env:
-  - env/prod                      # whole group, values redacted from logs
-  - LOG_LEVEL: debug              # literals
-    NODE_ENV: production
-  - DATABASE_URL: secrets/db-url  # ref-valued entry → the secret, redacted
-```
+- `with:` mapping keys fill `{{name}}` placeholders.
+- The reserved key `with.arguments` (string) fills `$ARGUMENTS`, and its
+  whitespace-split words fill `$1`–`$9`.
+- An unmatched placeholder or unused `with:` key is a **lint warning and is
+  left verbatim** — not a runtime hard error, so imported `$ARGUMENTS`
+  commands remain usable as targets.
 
-```yaml
-env: { LOG_LEVEL: debug }         # bare-mapping shorthand
-```
+Filling happens at freeze (workflows) / dispatch (tasks), producing the
+prompt string. Bodies remain verbatim — templating stays scoped to the
+command asset type, whose definition is "a template with placeholders."
 
-This **extends the existing schema additively** — the workflow `unit.env` is
-already a list of ref strings, so every currently-valid value stays valid.
-Values sourced from `env/` and `secrets/` assets join the dispatch's
-`sensitiveValues`, riding the redaction seam `unit-dispatch.ts` already has.
-For a `uses: workflows/*` target, `env:` merges into the run's process
-environment.
+## 3. The task asset
 
-## 4. The task asset
-
-A task is an ordinary akm markdown asset at `<bundle>/tasks/<id>.md`: the
-shared envelope (`description`, `tags`, `when_to_use`, `xrefs`, and the OKF
-v0.2 `generated`/`verified`/`provenance`/`status`/`stale_after` families via
-`$ref akm-asset-envelope.json`), the trigger keys, at most one target, and
-any value fields or selectors. There is no `version:` key — identity is the
-ref and the schema evolves additively, as the workflow format already
-decided.
-
-An agent task — the 0.7.x markdown task restored, minus the sentinel:
+`<bundle>/tasks/<id>.md`: the shared envelope (`$ref
+akm-asset-envelope.json`, OKF v0.2 families included), trigger keys, at
+most one target, and any §4 fields. No `version:` key. **Recognition
+requires frontmatter `type: task`** — v7's "or `tasks/` residence" is
+unimplementable as stated because the workflow adapter is ordered first
+and claims `.md` files without a contrary `type:`
+(`src/core/adapter/adapters/index.ts:73-90`); residence is a lint
+*expectation*, not a recognition signal.
 
 ````markdown
 ---
@@ -365,11 +135,7 @@ timeout: 10m
 ---
 
 Review the week's completed tasks and summarize action items.
-Group the summary by bundle. Call out anything that failed more than twice.
 ````
-
-A shell task — what today's `command:` tasks become; the body is optional
-runbook prose (indexed, shown by `akm show`, never executed):
 
 ````markdown
 ---
@@ -381,207 +147,361 @@ run: akm improve --strategy thorough --skip-if-locked
 
 # Nightly improve sweep
 
-If this starts failing, check `akm task history --id akm-improve-nightly`,
-then `akm health`. A `blocked` status usually means a stale improve lock.
+Runbook prose: indexed, shown, never executed.
 ````
-
-A command-asset task and a workflow task:
 
 ````markdown
 ---
 type: task
 schedule: "@daily"
 uses: commands/weekly-review
-params: { scope: team }
-env:
-  - env/prod
+with: { scope: team }
+env: [env/prod]
 ---
 ````
 
-````markdown
----
-type: task
-schedule: "0 9 * * 1"
-uses: workflows/ship-release
-params: { version: nightly }
----
-````
+Lifecycle unchanged: discover via search/show; enable via `enabled:` +
+`task sync`; the OS entry still invokes `akm task run <id>`. Lifecycle
+interactions pinned (review minors): `status: draft` → `sync` never
+installs, regardless of `enabled:`; `status: deprecated` → installs with a
+warning. The improve pipeline **never rewrites task bodies** — a task body
+is an executable prompt, not curatable knowledge; lint runs, improve is
+excluded by adapter policy.
 
-The lifecycle is untouched: discovery via `akm search --type task` /
-`akm show tasks/<id>`; enablement via `enabled:` + `akm task sync`; the OS
-entry still invokes `akm task run <id>`; setup still reviews templates before
-touching the scheduler. What markdown adds: a home for the prompt and the
-runbook, OKF provenance stamping with no special-casing, `xrefs` to the
-lesson or incident behind the task, and `status: draft` as author-now,
-arm-later (draft tasks are never installed by `sync`).
+## 4. Configuration: two selectors, one value vocabulary, one cascade — built, not "exposed"
 
-## 5. GitHub Actions alignment — familiar, not copied
+v7 claimed freeze "already implements" the cascade. Review finding C4
+(3/3): freeze's layer list is exactly `[documentDefaults, unit]`
+(`freeze.ts:50`); `DefaultsSchema` has **no** `model` field and is
+`.passthrough()`, so v7's own worked example is a silent no-op today
+(`config-schema.ts:102-108`); `defaults.llm` is hard-rejected as retired;
+no persona layer exists. What exists is a two-layer resolver whose *shape*
+proves the pattern fits. This section specifies **building** the rest.
 
-The owner's rule: follow GHA style wherever it doesn't compromise akm's
-strengths. `uses:`/`run:` match GHA outright — and cost akm nothing, because
-akm refs are subdir-typed, so `uses: scripts/lint-all` still says *what*
-executes right in the value.
+**Selectors** (nearest wins; each picks a node whose fields join the
+cascade):
 
-**Adopted from GHA:**
-
-| GHA | Here |
-|---|---|
-| `uses:` names the reusable thing, `run:` is inline shell, at most one of them | same — and the ref's subdir supplies the type GHA leaves opaque |
-| reusable workflows / composite actions | `uses: tasks/<id>` — a bundle task composed as a step (§3.3) |
-| step-level keys, no nesting bag | targets and fields directly on the step (§3.6) |
-| `run:` text executes under a shell, per-OS defaults, `shell:` override | same; `sh` / `powershell` defaults |
-| `env:` mapping at any level | the bare-mapping shorthand (§3.7) |
-| `working-directory:` | `cwd:` (the script asset's existing metadata word) |
-| `continue-on-error` / `timeout-minutes` as step keys | `on_error:` / `timeout:` as step keys |
-
-**Kept akm, deliberately:**
-
-| GHA | Here | Why |
+| Selector | Node | Source |
 |---|---|---|
-| opaque `uses:` refs | typed asset refs (`commands/*`, `scripts/*`, `tasks/*`, `workflows/*`) | the ref grammar already encodes the type; recognition needs no registry lookup |
-| `inputs:` declared / `with:` passed | `params:` both places | one word beats two; `inputs:` already means upstream artifacts in workflows |
-| `name:` on steps | none | step titles were removed by owner ruling in the workflow unification |
-| marketplace actions | bundle assets | the sharing unit is the bundle |
+| `engine:` | execution node | config `engines.<name>` |
+| `agent:` | persona node | bundle `agents/<name>` |
 
-## 6. Shared plumbing — the point-2 code reduction
+**Value fields** — legal at every layer, merged per-field, nearest wins;
+`env:` concatenates: `model` · `temperature` · `max_tokens` ·
+`extra_params` · `timeout` · `env` · `cwd` · `shell` · `on_error` · `retry`.
 
-| Layer | Today | After |
-|---|---|---|
-| Target + options schema | `akm-task.json` standalone (87 lines, loaded by nothing at runtime); separate `unit` defs with a duplicated `output` | one shared definitions file `$ref`'d by both published schemas; one spelling; bag deleted |
-| Dispatch configuration | four sibling keys with per-key applicability rules and a kind-gated hard error; freeze resolves via layers internally | two selectors + one flat value vocabulary, cascade-merged — the authoring surface finally matches the layer mechanism freeze already implements |
-| Parsing | `parseTaskDocument()` + `TASK_KEYS` + `rejectTargetFields()` + `resolvePromptSource()` (368 lines) | the unified frontmatter+body parser; `uses:`-xor-`run:` as one schema rule |
-| Envelope | hand-listed keys, no OKF | `$ref akm-asset-envelope.json`; future stamped keys inherited free |
-| Target resolution | prompt/ref/path sniffing in `src/tasks/` | none to do — `uses:` is always a ref, `run:` is always inline; the resolver dispatches on the ref's subdir |
-| Model aliases | one `resolveModel()` chain, but the task path drops agent model preferences | same chain, run once after the cascade settles `model`; task path gains embodiment semantics via `agent:` (§3.5) |
-| Command-template filling | n/a | one implementation, both surfaces |
-| Script/shell execution | n/a (`runCommandTask` runs raw argv only) | one executor: inline shell + script assets per `run`/`setup`/`cwd`, both surfaces |
-| Env assembly + redaction | `akm env run` and workflow `unit.env`, separately | one `env:` resolver feeding `sensitiveValues` |
-| Step reuse | impossible — steps are anonymous and inline-only | `uses: tasks/<id>` as one more cascade layer (§3.3) |
-| Lint | `invalid-task-yaml` in the task adapter | shared envelope + schema + prose-rule passes; engine-capability notices; task-only passes (cron parse) on top |
-| Adapter | `.yml`-only recognize/place | markdown task recognized by `type: task` / `tasks/` residence; `place()` → `.md` |
+(`with:` is *not* a value field — it binds to one referenced asset. `params`
+no longer exists as a field name outside workflow declarations. `on_error`/
+`retry` join the vocabulary because `defaults.on_error` already exists at
+document level today — review M12 — making "graph keys are steps-only"
+false for them; they remain meaningless on a task and lint says so.)
 
-Honest boundary: agent dispatch stays two paths — the task runner's
-`executeRunner()` and the orchestrator's journaled unit dispatch — because
-run recording, leases, and replay genuinely differ between "cron fired one
-job" and "the orchestrator is executing a plan." Everything upstream of
-`UnitDispatchRequest` unifies: target resolution, template filling, the
+**Layers, far → near:**
+
+```
+config defaults: → engines.<selected> → agents/<selected> → document defaults: → uses: tasks/<ref> → step/task keys
+```
+
+**What must be built (the honest inventory):**
+
+1. `DefaultsSchema` gains the value fields, and stops silently swallowing
+   unknown keys (strict with migration-safe notices).
+2. A **persona snapshot**: the agent asset resolved through the show layer
+   — which is where the writable-vs-third-party provenance ceiling for
+   self-declared `tools:` already lives (review M5) — yielding
+   `{systemPrompt, toolPolicy, model, …valueFields}`, frozen into the plan.
+   Freeze never re-implements the ceiling; it consumes the show layer's
+   verdict. (This also fixes the live bug where `prompt: agents/x` ships
+   raw file bytes *including frontmatter* to the model —
+   `runner.ts:592-593`.)
+3. One cascade module (`src/exec/cascade.ts`), the only implementation of
+   layer merge, consumed at freeze (workflows) and dispatch (tasks).
+4. **Capability notices replace both kind-gates.** The task path's hard
+   error and freeze's guard — which review M6 showed is *dead code*
+   (`freeze.ts:67-73` computes `llm` only for llm engines, then guards
+   `kind !== "llm"`), meaning workflows already silently drop these fields
+   — are both replaced by one behavior: engines declare the fields they
+   consume; an unconsumed field is a lint/freeze **notice**. Strictness
+   stays only where the kind is known at authoring time: the engine node's
+   own schema (which today is `.passthrough()` + blacklist; it becomes
+   genuinely strict as part of this work — review minor).
+5. Aliases: resolution runs once, after the cascade settles `model`,
+   through the existing `resolveModel()` chain. Review M4 (3/3): the
+   builtin table has only `claude`/`opencode` columns, so portability to
+   LLM endpoints is currently *false* — the builtin entries gain a `"*"`
+   column, and an alias that resolves nowhere for the selected platform is
+   a freeze/lint notice, not silent pass-through.
+6. The gate judge (`workflow.judgeEngine`) stays outside the cascade in
+   0.9.0 — frozen separately, as shipped. Noted, not changed.
+
+One sentence to teach: *set a field where it should usually apply;
+override it closer when a case differs; the nearest value wins.*
+
+## 5. Execution architecture
+
+### 5.1 One target model, two executors
+
+A shared target module resolves every declaration to a typed value:
+
+```
+Target = { kind: agent-prose }            # nearest prose is the prompt
+       | { kind: command,  ref, with }    # template fill → agent prompt
+       | { kind: script,   ref }          # script asset, exec
+       | { kind: shell,    text, shell }  # inline run:
+       | { kind: workflow, ref, with }    # tasks only
+       | { kind: task,     ref }          # steps only; resolves recursively once
+```
+
+Execution is a strategy seam with exactly two implementations:
+
+- **AgentUnitExecutor** — today's paths (task runner's `executeRunner()`;
+  the orchestrator's journaled `UnitDispatcher`), consuming an assembled
+  prompt + frozen engine + persona snapshot.
+- **ShellUnitExecutor** — `Bun.spawn()` for `run:` text and script assets,
+  used by both the task runner and the orchestrator.
+
+Run recording stays split (cron job vs journaled plan) — that boundary is
+real. Everything upstream unifies: target resolution, template filling,
 cascade, alias resolution, env assembly.
 
-## 7. Authoring UX
+### 5.2 Shell units in the IR — v3 → v4, not a non-goal
 
-- **One sentence for the format:** *`uses:` an asset, `run:` a shell line, or
-  write prose and an agent does it — plus `schedule:` if it should recur.*
-- **One sentence for configuration:** *set a field where it should usually
-  apply; override it closer when a case differs; the nearest value wins.*
-- `akm task create <id> [--schedule … --run … | --uses <ref>]` emits the
-  markdown template and opens it. The ~12-flag `task add` surface retires with
-  the `.yml` format — flags were compensating for a format with nowhere to
-  put prose.
-- One published schema chain → `yaml-language-server` completion and inline
-  validation for tasks and workflows alike, including the shared target and
-  value vocabulary.
+Review C2 (3/3): `IrInvocation.engine` and `UnitDispatchRequest.engine`
+are required, the engine snapshot union is closed, freeze hard-errors with
+no engine, and the IR rejects empty instructions — v7's "no IR changes"
+was false. Owned properly:
 
-## 8. Migration — inside the 0.9.0 cutover, not beside it
+- `IrInvocation` becomes a discriminated union:
+  `{ kind: "agent", engine, … }` | `{ kind: "shell", script, shell, cwd }`.
+- Engine resolution happens **per unit kind**: shell units need no engine,
+  so a shell-only workflow freezes on an engine-less machine (the current
+  "no engine selected" error narrows to plans containing agent units).
+- Instructions become optional for shell units (parser + IR relaxation —
+  review M10; agent units keep the non-empty invariant).
+- Shell units journal as normal `workflow_run_units` rows (status, timing,
+  attempts, `failure_reason`; no tokens). Under the external driver
+  protocol, shell units are **orchestrator-owned**: `brief` lists them as
+  non-claimable and the engine executes them natively — a harness never
+  claims shell work.
+- Plan IR version bumps to 4; decoders reject v4 plans in older binaries
+  (existing plan-version machinery).
 
-Breaking changes are approved for 0.9.0, and 0.9.0 already has an explicit,
-journaled, crash-resumable migration (`akm migrate apply`) that re-keys refs,
-folds databases, and converts `vaults/` → `env/`. Task conversion joins it as
-one more content step. No key survives with a changed meaning — the `.yml`
-vocabulary maps onto different spellings, so nothing is silently
-reinterpreted:
+### 5.3 Unit identity — hashVersion 5, preimage stated
 
-| `.yml` (v2) | `.md` |
+Review C3 (3/3): hashVersion 4's preimage
+(`step-work.ts:333-392`) covers none of the new inputs; without a bump,
+editing `run:` text or the appended prose would silently reuse completed
+journal rows. hashVersion 5's preimage, explicitly:
+
+| Field | Notes |
 |---|---|
-| `command: <shell>` | `run: <shell>` |
-| `prompt: \|` (inline scalar) | the document body |
-| `prompt: commands/<x>` | `uses: commands/<x>` |
-| `prompt: agents/<x>` | `agent: agents/<x>` (body seeded from the agent asset's prompt when the task had no other text) |
-| `prompt: ./file.md` | inlined into the body |
-| `workflow: <ref>` + `params` | `uses: workflows/<ref>` + `params` |
-| `timeoutMs` | `timeout` |
-| `llm.maxTokens` / `llm.temperature` / `llm.extraParams` / … | `max_tokens` / `temperature` / `extra_params` / … — flat value fields (§3.4) |
-| `model` | `model` |
-| `version: 2` | dropped |
+| template instructions | **post** freeze-time prose append (§2.3) |
+| target kind + `uses:` ref + resolved content hash | a re-pointed or edited referenced asset re-dispatches |
+| shell text, `shell`, `cwd` | shell units |
+| item / inputs / dispatch / invocation / schema | as v4 |
+| env **names** + env **literal values** | see §5.5 — literals are plan content; ref-sourced values stay names-only |
+| isolation, gateFeedback | as v4 |
 
-- Scheduler entries are untouched — task ids and the `akm task run <id>` ABI
-  do not change, so nothing is reinstalled.
-- The 0.7→0.8 lesson — leftover files must never be **silently invisible** —
-  is honored structurally: 0.9.0 commands already refuse an un-migrated
-  installation rather than migrating as a side effect, and post-migration
-  `task sync` / `task doctor` name any stray `.yml` file by path instead of
-  skipping it.
-- The ten embedded templates convert in this change and are the reference
-  examples; each gains a real runbook body.
-- Workflow frontmatter written against the pre-flatten schema (`unit:`,
-  `map.unit`, `defaults.llm`) converts in the same content step: bag fields
-  lift to the step, `llm` sub-fields flatten.
+`retry`/`on_error` stay excluded (policy, not input) — unchanged rationale.
 
-## 9. Decision log and remaining questions
+### 5.4 Freeze becomes two stages; lint gets a dry freeze
 
-Resolved by owner:
+Review M11: `uses:` resolution needs asset IO inside a function documented
+pure, and freeze currently has exactly one caller (run start), so every
+composition error would escape lint. Restructure: **compile** (pure) →
+**resolve** (asset loader injected: personas, referenced tasks, command
+templates) → **freeze** (snapshot + hash). `akm lint --type workflows`
+runs compile+resolve with the real loader and no persistence, so dangling
+`uses:` refs, back-door workflow nesting, placeholder mismatches, and
+capability notices all surface at lint time. Composed instructions carry
+the existing 256 KiB cap with a lint warning at 80%.
 
-1. **Model** (round 1): task = schedulable bundle asset over OS scheduling;
-   step = the same job inside a procedure; unify execution code; fewer
-   concepts. Tasks don't grow steps; workflows don't grow schedules.
-2. **Targets name assets; the body is the prompt** (round 2): `prompt:`
-   deleted.
-3. **Breaking changes approved for 0.9.0** (round 3).
-4. **`env:` property** (round 3): key-value pairs and/or env refs, used at
-   runtime — shaped as §3.7. Ref-valued single entries confirmed (round 4).
-5. **`agent:` property** (round 3): a ref to an agent asset, applied when
-   applicable; no-op (plus lint notice) where it isn't. Reframed in round 6
-   as one of the two cascade selectors (§3.4).
-6. **GHA alignment** (round 3): familiar, not copied — applied as §5.
-7. **No `version:`** (round 3).
-8. **Windows default shell: `powershell`** (round 4).
-9. **`uses:`/`run:` replace `command:`/`script:`/`workflow:` as the target
-   keys** (round 4). The double-target error class becomes structurally
-   impossible; asset-type alignment survives in the ref's subdir.
-10. **Trigger keys are scheduler-surface-only** (round 5): consumed
-    exclusively by `akm task sync` and related commands; no-ops with a lint
-    notice anywhere else.
-11. **Steps are tasks** (round 5): defined inline or referenced with
-    `uses: tasks/<ref>` — truly composable without duplicating content or
-    config. Semantics in §3.3.
-12. ~~`model:` stays top-level as one of four sibling keys~~ (round 5) —
-    **superseded by 14**; the finding that motivated it (model is the one
-    cross-engine-kind knob) survives as engine capability declarations.
-13. **A `uses:` step's section is optional additional prose** (round 6):
-    investigated easy + helpful — appended byte-exact to the assembled
-    prompt for agent-dispatched work; documentation, ignored at runtime, for
-    shell work (§3.3).
-14. **Configuration is two selectors + one flat value vocabulary on a
-    cascade** (round 6): `engine:` and `agent:` pick nodes; `model`,
-    `temperature`, `max_tokens`, `extra_params`, `timeout`, `env`, `cwd`,
-    `shell`, `params` merge per-field, nearest layer wins — config defaults →
-    engine node → persona node → document defaults → call site. `llm:` is
-    dissolved; the kind-gated hard error becomes an engine-capability
-    lint/freeze notice, which cascade semantics require. This is the layer
-    mechanism `freeze.ts` already implements, exposed as the authoring model
-    (§3.4). Refined in round 7: strictness follows knowledge of the engine
-    kind — the engine node itself keeps its strict per-kind schema; all
-    other layers accept any value field with notices.
+### 5.5 `env:` — one shape, two provenance classes
 
-Remaining:
+Format unchanged from v6 (list of env-asset refs and literal mappings,
+later wins, bare-mapping shorthand). Semantics corrected by review M3
+(3/3), which showed "strictly additive" was false at the IR/hash/redaction
+layers. The clean line is **provenance, not shape**:
 
-1. None blocking. Decision 14 reverses two earlier rounds of back-and-forth
-   on this surface (v5's fold, v6's unfold), so it is called out for explicit
-   sign-off rather than buried: confirm the cascade model and the
-   dissolution of `llm:`.
+- **Literal entries** are plan content: author-written bytes already
+  durable in the source file — frozen into the plan, hashed (§5.3), shown
+  by `brief`, **never redacted** (`LOG_LEVEL: debug` must not scrub
+  "debug" from every log — the over-redaction finding).
+- **Ref-sourced entries** (`env/<n>` groups, `secrets/<n>` values) are
+  runtime-resolved: hashed by **name only**, resolved at dispatch, values
+  joined to `sensitiveValues` for redaction, never durable. (Existing
+  contract, now stated as the rule.)
+- IR `env` becomes a typed entry list (ref | literal-pair) — an IR v4
+  change, not "additive."
+- Env assembly moves per-unit where fan-out requires it: a `map:` step
+  with a shell target receives `AKM_ITEM` (JSON) and `AKM_ITEM_INDEX`
+  per unit.
 
-## 10. Non-goals
+### 5.6 Executing scripts is an activation decision, not plumbing
 
-- No `steps:` in tasks; no `schedule:` on workflows; no changes to
-  `map`/`route`/`gate` semantics, IR, freeze, journal, leases, or replay
-  (the §3.6 flatten and §3.4 cascade are authoring-surface changes over the
-  layer resolution freeze already performs; §3.3 composition resolves at the
-  existing freeze step).
-- No change to the scheduler backends, `sync` reconciliation, runtime
-  binding, task ids, or the `akm task run <id>` ABI.
-- No change to how `command`, `script`, `agent`, `env`, or `secret` assets
-  are authored or stored — this proposal executes and embodies them, it does
-  not reformat them.
-- No multi-file config merging: akm still reads one config file; the cascade
-  layers are config nodes, bundle assets, and document/call-site keys.
-- No observability redesign; sharing one failure vocabulary across the two
-  execution paths is a natural follow-up.
+Review C5: script `run`/`setup`/`cwd` metadata is advisory today, and
+"registering a bundle never activates code" is a documented invariant —
+v7 quietly reversed it. v8 extends the invariant instead:
+
+- Executing a script asset (or composing a task that does) from the
+  operator's **own writable bundles**: allowed — same trust as authoring
+  `run:` text.
+- From a **third-party / read-only bundle**: requires an explicit
+  per-bundle grant (`bundles.<name>.allowScriptExecution: true`), settable
+  interactively during `akm setup`'s existing task-review step or by
+  `akm config set`. Absent the grant, dispatch refuses with the config
+  key named; nothing is auto-activated by install, ever.
+- Same ceiling philosophy as the `tools:` provenance gate, applied at
+  resolve time (§5.4), enforced at both executors.
+
+### 5.7 Shell ergonomics
+
+- Bare `akm` in shell/script work resolves to the current installation by
+  **PATH prepend** in the child environment — replacing the argv-rewrite
+  (`resolveNestedAkmCommand`) that shell text would defeat (review M9),
+  and covering scripts for free. The task runner keeps the argv rewrite
+  only for legacy `.yml` `command:` until that format retires.
+- `cwd:` under `isolation: worktree` is resolved relative to the worktree
+  root; `cwd:` on the LLM runner is a capability notice (review minors).
+
+## 6. GitHub Actions alignment — familiar, not copied
+
+Adopted: `uses:`/`run:` pair with mutual exclusion; **`with:` for inputs
+to the referenced thing** (returned to the adopted column by M1);
+step-level keys with no nesting bag; shell semantics with per-OS defaults
+and `shell:`; `env:` bare-mapping shorthand; `cwd:`; `on_error`/`timeout`
+as step keys. Kept akm: typed asset refs (the subdir says what executes —
+GHA's `uses:` is opaque); `params:` reserved for declarations; no step
+`name:`; bundles as the sharing unit.
+
+## 7. Steps flatten to the task shape — with the schema collision fixed
+
+The `unit:` bag and `map.unit` are still deleted; targets and value fields
+sit on the step; `map:` keeps `over`/`concurrency`/`reducer`. But v7's
+"duplicate `output` wart" was **wrong** — review C1 (3/3):
+`unit.output` compiles to the per-dispatch structured-result `schema`
+(driving structured retry / `parse_error`) while `step.output` compiles to
+`outputSchema`, the promoted artifact the gate validates
+(`compile.ts:204,229` — verified). Two concepts, two homes:
+
+- **`output:`** on a step — the step's **artifact** schema, all step kinds.
+  On a unit step it also serves as the dispatch result schema (result *is*
+  the artifact).
+- **`map.output:`** — the **per-item** result schema of a map step's units;
+  the step's `output:` continues to describe the reduced artifact.
+
+```yaml
+- id: review
+  map: { over: steps.intake.output.files, concurrency: 3, output: { type: object } }
+  output: { type: array }        # what `steps.review.output` resolves to
+```
+
+## 8. Migration — inside the hardened 0.9.0 cutover
+
+Rebuilt against the `71bb686` migrator and review M7 (3/3):
+
+- **The converter joins the content-migration step with a vendored,
+  frozen copy of the v2 task parser** — the current
+  `task-target-ref-migration.ts` imports the *live* parser from `src/`,
+  which violates the frozen-migrator principle and breaks the moment the
+  live parser is replaced; that gets fixed as part of this work.
+- Mapping: `command: <shell string>` → `run:` verbatim; `command:
+  [argv…]` → `run:` with each element shell-escaped (arrays have no free
+  shell spelling); `prompt: |` → body; `prompt: commands/x` → `uses:` +
+  `with:`; `prompt: agents/x` → `agent:`; `prompt: ./file.md` → inlined;
+  `workflow:`+`params` → `uses: workflows/…` + `with:`; `timeoutMs` →
+  `timeout`; `llm.maxTokens`/`llm.temperature`/`llm.extraParams` → flat
+  fields; **`name:` → the body's H1** (not dropped);
+  `llm.supportsJsonSchema`/`contextLength`/`enableThinking` are
+  endpoint-capability facts that belong on the **engine node** — the
+  migrator emits a per-task notice naming the value and the config key
+  (lossy-with-notice, never silent).
+- Scheduler entries untouched: ids and the `akm task run <id>` ABI do not
+  change.
+- **The `.yml` tombstone rule** replaces v7's false "structural" claim
+  (refusals key on config/DB shape, not stray files, and placement
+  filters by extension — a stray `.yml` today would be invisible or
+  wrongly installed): task discovery keeps matching `tasks/*.yml`
+  **permanently, as a diagnostic** — `sync`, `doctor`, and `lint` each
+  hard-error naming the file and the fix; a `.yml` is never installed and
+  never silently skipped. `<id>.yml` + `<id>.md` collide on one conceptId
+  → same named error.
+- Embedded templates convert to `.md`; `listEmbeddedTasks` and `akm
+  setup`'s task review move to markdown-aware editing (the current YAML
+  round-trip would destroy bodies — review minor).
+- The pre-flatten workflow schema (`unit:`, `map.unit`, `defaults.llm`)
+  converts in the same step: bag fields lift, `llm` flattens,
+  `unit.output` → `map.output` or step `output:` per §7.
+
+## 9. Cost inventory — what this actually changes
+
+Honest replacement for v7's §10 (review: "non-goals false ×4").
+
+| Surface | Change |
+|---|---|
+| IR | v3 → v4: invocation union, optional instructions (shell), typed env entries, `map.output` |
+| Unit hash | hashVersion 4 → 5 (§5.3 preimage) |
+| Freeze | two-stage (compile/resolve/freeze), per-kind engine resolution, persona snapshot, prose append, capability notices |
+| Dispatch | executor strategy (agent/shell); persona fields reach `UnitDispatchRequest` |
+| Schemas | shared target+value defs; task schema rewritten; workflow schema flattened; `DefaultsSchema` extended and made strict; engine schemas made strict |
+| Parsers | `parseTaskDocument` retired to the migrator (vendored); unified parser gains task recognition; section-required rule relaxed per target kind |
+| Adapters | markdown task recognition (`type: task`); improve-exclusion policy; task goldens re-baselined (they are marked immutable — a DESIGNATIONS re-baseline note is part of the change, as the S6 precedent) |
+| CLI | `task create`; `task add` retires with `.yml`; capability notices in lint/doctor |
+| Storage | `task_history.target_kind` values widened (additive) |
+| Docs/tests | reference docs, ~10 templates, format-family goldens, parser/freeze/executor suites |
+
+Inherited bugs fixed en route: `{{0}}`-only placeholder filling; raw
+frontmatter shipped to models via `prompt: agents/x`; subdir task ids
+indexed but unrunnable (`validateTaskId` rejects `/` — the id grammar
+gains subdir support with the scheduler-id mapping documented); freeze's
+dead llm guard.
+
+## 10. Non-goals (now true)
+
+- No new orchestration semantics: `map`/`route`/`gate` behavior, leases,
+  check-ins, replay *logic*, and the driver protocol are unchanged (shell
+  units are orchestrator-owned under it).
+- No scheduler-backend, `sync`-reconciliation, or `akm task run <id>` ABI
+  changes.
+- No change to how command/script/agent/env/secret assets are authored.
+- No multi-file config merging; the cascade layers are config nodes,
+  bundle assets, and document/call-site keys.
+- Gate judge selection stays outside the cascade in 0.9.0.
+
+## 11. Findings cross-reference and decision log
+
+| Finding (consolidated) | Resolution |
+|---|---|
+| C1 output collision (3/3) | §7 — two schemas, two homes (`output:` / `map.output:`) |
+| C2 shell units unrepresentable (3/3) | §5.2 — IR v4 invocation union, per-kind engine resolution |
+| C3 hash preimage (3/3) | §5.3 — hashVersion 5, preimage table; §2.3 freeze-time append |
+| C4 cascade layers don't exist (3/3) | §4 — "built, not exposed"; build inventory |
+| C5 script execution security (2/3) | §5.6 — activation grants; invariant extended, not reversed |
+| M1 params overload (3/3) | §2.2 — `with:` for inputs; `params:` declarations only; neither cascades |
+| M2 placeholder grammar (3/3) | §2.4 — `with:`/`with.arguments` against the real grammar; lenient + lint |
+| M3 env not additive (3/3) | §5.5 — literal/ref provenance split; IR v4; per-unit env |
+| M4 alias portability (3/3) | §4.5 — `"*"` columns + unresolved-alias notice |
+| M5 agent plumbing + ceiling; false corroboration | §4.2 — persona snapshot via show layer; corroboration claim retracted |
+| M6 dead kind-gate (2/3) | §4.4 — both gates → capability notices |
+| M7 migration overclaims (3/3) | §8 — vendored parser, full mapping, tombstone rule |
+| M8 adapter recognition (2/3) | §3 — `type: task` required |
+| M9 akm-bin rewrite (2/3) | §5.7 — PATH prepend |
+| M10 prose invariants (2/3) | §5.2 — per-kind relaxation, costed |
+| M11 lint never freezes (1/3) | §5.4 — dry freeze in lint |
+| M12 `defaults.on_error` (2/3) | §4 — `on_error`/`retry` join the value vocabulary |
+| M13 improve surface (1/3) | §3 — improve excluded from task bodies |
+| Minors | §3 (draft/deprecated), §5.7 (cwd), §8 (embedded/setup, collisions), §9 (bugs fixed, target_kind, goldens) |
+
+Decisions 1–14 (rounds 1–6) stand as logged in v7 except where this
+revision supersedes them with review evidence: call-site `params:` →
+`with:` (M1); "expose the cascade" → "build the cascade" (C4); "duplicate
+output" → two-schema design (C1); §10 non-goals → §9 cost inventory
+(C2/C3). v7's remaining question (cascade sign-off) is superseded by this
+section's cross-reference — the cascade shape survived review; its cost
+didn't, and is now stated.
+
+Open items: none blocking. Two implementation-time choices are delegated
+to the implementer with defaults: the exact capability-declaration shape
+per engine kind (default: a static field list per kind), and the
+scheduler-id mapping for subdir task ids (default: `/` → `--` with
+collision lint).
