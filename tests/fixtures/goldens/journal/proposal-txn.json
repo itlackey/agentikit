@@ -13,7 +13,7 @@
       "acceptedTargetHashPresent": true,
       "backupContentPresent": false,
       "fileTree": {
-        "lessons/jnl-accept-new-asset.md": "29fca3384f15328b4f1eb847c44101400615a98e5b0db42656b624fdb16f1590"
+        "lessons/jnl-accept-new-asset.md": "6f8b301f883ad77f2d68f311109bda18dad86bd1fd4ced7212f36057ea3911c3"
       },
       "journalDirCleaned": true,
       "promotedEvent": {
@@ -26,7 +26,7 @@
       "acceptedTargetHashPresent": true,
       "backupContentPresent": true,
       "fileTree": {
-        "lessons/jnl-accept-overwrite.md": "5cf81fbc4c7089f8c15f8766ebc24be07a2599ac483b6c82d57ffb817a3dc064"
+        "lessons/jnl-accept-overwrite.md": "1e898cc1a374fab146127fee8b1ae3201cc695e484d6bffed875b0eec284ab74"
       },
       "status": "accepted"
     },

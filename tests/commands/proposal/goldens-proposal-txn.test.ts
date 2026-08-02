@@ -65,6 +65,7 @@
  */
 
 import { describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { akmProposalAccept, akmProposalReject, akmProposalRevert } from "../../../src/commands/proposal/proposal";
@@ -79,6 +80,7 @@ import { ensureAkmMarkdownType } from "../../../src/core/asset/akm-markdown";
 import { parseFrontmatter } from "../../../src/core/asset/frontmatter";
 import { UsageError } from "../../../src/core/errors";
 import { readEvents } from "../../../src/core/events";
+import { pkgVersion } from "../../../src/version";
 import { expectGolden, fileTreeManifest } from "../../_helpers/golden";
 import {
   type IsolatedAkmStorage,
@@ -133,6 +135,13 @@ function writeAsset(stashDir: string, name: string, content: string): string {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, content, "utf8");
   return p;
+}
+
+function stablePromotedAssetManifest(stashDir: string, name: string): Record<string, string> {
+  const rel = `lessons/${name}.md`;
+  const content = fs.readFileSync(path.join(stashDir, rel), "utf8");
+  const stableContent = content.replaceAll(`akm/${pkgVersion}`, "akm/<version>");
+  return { [rel]: createHash("sha256").update(stableContent).digest("hex") };
 }
 
 /**
@@ -647,13 +656,9 @@ describe("goldens: createProposal skip-record shapes (WI-6.4 fingerprints, re-ba
 // Re-runs a representative slice of the scenarios above (fresh sandboxes) to
 // assemble the committed golden fixture, kept independent of the assertion
 // tests so capture never depends on bun:test's within-file execution order.
-// D2 (#730): promotion stamps `generated.at`/`verified[].at` (wall-clock) and
-// `verified[].by` (falls back to the real OS username when unset) into the
-// accepted asset's frontmatter. A `fileTree` SHA256 entry hashes those exact
-// bytes, so — unlike the other capture scenarios below, which never depend on
-// wall-clock time or machine identity — the two `fileTree`-bearing captures
-// MUST pin both `now` and `actorId` or this golden would be irreproducible
-// across runs/environments/machines.
+// D2 (#730): promotion stamps time, actor, and package version into accepted
+// asset frontmatter. Pin time and actor; stablePromotedAssetManifest normalizes
+// the release-varying version while retaining a hash contract over all other bytes.
 const GOLDEN_CAPTURE_CTX = { now: () => Date.parse("2026-01-01T00:00:00.000Z"), actorId: () => "golden-capture" };
 
 describe("golden fixture: serialize proposal transaction outcomes (WI-03, R3)", () => {
@@ -674,7 +679,7 @@ describe("golden fixture: serialize proposal transaction outcomes (WI-03, R3)", 
         await akmProposalAccept({ stashDir: storage.stashDir, id: created.id, ctx: GOLDEN_CAPTURE_CTX });
         const accepted = getProposal(storage.stashDir, created.id);
         return {
-          fileTree: fileTreeManifest(storage.stashDir),
+          fileTree: stablePromotedAssetManifest(storage.stashDir, ACCEPT_NEW_ASSET_NAME),
           status: accepted.status,
           acceptedTargetHashPresent: accepted.acceptedTarget?.contentHash !== undefined,
           backupContentPresent: accepted.backupContent !== undefined,
@@ -704,7 +709,7 @@ describe("golden fixture: serialize proposal transaction outcomes (WI-03, R3)", 
         await akmProposalAccept({ stashDir: storage.stashDir, id: created.id, ctx: GOLDEN_CAPTURE_CTX });
         const accepted = getProposal(storage.stashDir, created.id);
         return {
-          fileTree: fileTreeManifest(storage.stashDir),
+          fileTree: stablePromotedAssetManifest(storage.stashDir, ACCEPT_OVERWRITE_NAME),
           status: accepted.status,
           acceptedTargetHashPresent: accepted.acceptedTarget?.contentHash !== undefined,
           backupContentPresent: accepted.backupContent !== undefined,
