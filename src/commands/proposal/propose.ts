@@ -25,6 +25,11 @@ import { redactSensitiveText } from "../../core/redaction";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
 import { deriveEntryProvenance } from "../../indexer/installations";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "../../integrations/agent";
+import {
+  NO_ENGINE_MESSAGE_SUFFIX,
+  NO_ENGINE_REMEDY,
+  withEngineFallback,
+} from "../../integrations/agent/engine-fallback";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
 import { buildProposePrompt, parseAgentProposalPayload } from "../../integrations/agent/prompts";
 import { collectDispatchSensitiveValues, executeRunner } from "../../integrations/agent/runner-dispatch";
@@ -145,9 +150,11 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
   const config = options.agentConfig ?? (await import("../../core/config/config.js")).loadConfig();
   const target = resolveProposalQueueTarget(stash, config);
   emitProposeInvoked(target.source, options);
-  const engineName = options.engine ?? config.defaults?.engine;
-  if (!engineName) throw new ConfigError("propose requires --engine or defaults.engine.", "INVALID_CONFIG_FILE");
-  const runner = resolveEngine(engineName, config);
+  const { config: engineConfig } = withEngineFallback(config);
+  const engineName = options.engine ?? engineConfig.defaults?.engine;
+  if (!engineName)
+    throw new ConfigError(`propose ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "INVALID_CONFIG_FILE");
+  const runner = resolveEngine(engineName, engineConfig);
   const profile = runner.kind === "llm" ? undefined : runner.profile;
 
   // 3. Build prompt.

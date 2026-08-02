@@ -22,7 +22,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { runCliCapture } from "../_helpers/cli";
-import { type Cleanup, sandboxStashDir, writeSandboxConfig } from "../_helpers/sandbox";
+import { type Cleanup, sandboxStashDir, withEnv, writeSandboxConfig } from "../_helpers/sandbox";
 
 let stashCleanup: Cleanup = () => {};
 
@@ -44,12 +44,16 @@ afterEach(() => {
 
 describe("akm contribution cluster — JSON envelope snapshot (WS6)", () => {
   test("agent (no engine): {ok:false} usage envelope on stderr (exit 2)", async () => {
-    const { stderr, status } = await runCli(["agent"]);
+    // `akm agent` now falls back to an `opencode-sdk` engine when an opencode
+    // binary is resolvable, so the no-engine failure is only deterministic with
+    // PATH emptied — otherwise this asserts a different outcome on a developer
+    // machine that happens to have opencode installed than it does in CI.
+    const { stderr, status } = await withEnv({ PATH: "" }, () => runCli(["agent"]));
     expect(status).toBe(2);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);
     expect(env.code).toBe("MISSING_REQUIRED_ARGUMENT");
-    expect(env.error).toMatch(/agent requires --engine or defaults\.engine/);
+    expect(env.error).toMatch(/agent has no selected engine/);
   });
 
   test("lint: success envelope carries fixed/flagged arrays + summary (exit 0)", async () => {

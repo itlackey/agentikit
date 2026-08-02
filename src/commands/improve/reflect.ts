@@ -42,6 +42,11 @@ import { resolveStandardsContext } from "../../core/standards/resolve-standards-
 import { lookup } from "../../indexer/indexer";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "../../integrations/agent";
 import { DEFAULT_LLM_TIMEOUT_MS } from "../../integrations/agent/config";
+import {
+  NO_ENGINE_MESSAGE_SUFFIX,
+  NO_ENGINE_REMEDY,
+  withEngineFallback,
+} from "../../integrations/agent/engine-fallback";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
 import {
   buildReflectOutputRepairPrompt,
@@ -1538,11 +1543,12 @@ function resolveReflectRunner(options: AkmReflectOptions): {
     }
     runnerSpec = processRunner;
   } else {
-    const defaultEngine = config.defaults?.engine;
+    const { config: engineConfig } = withEngineFallback(config);
+    const defaultEngine = engineConfig.defaults?.engine;
     if (!defaultEngine) {
-      throw new ConfigError("reflect requires --engine or defaults.engine.", "INVALID_CONFIG_FILE");
+      throw new ConfigError(`reflect ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "INVALID_CONFIG_FILE");
     }
-    runnerSpec = resolveEngine(defaultEngine, config);
+    runnerSpec = resolveEngine(defaultEngine, engineConfig);
   }
   if (options.eventSource === "improve" && !runnerIsLlm(runnerSpec)) {
     throw new ConfigError(

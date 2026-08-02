@@ -28,6 +28,7 @@ import {
   resolveWriteTarget,
   writeAssetToSource,
 } from "../../core/write-source";
+import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { backendNameForPlatform, selectBackend } from "../../tasks/backends";
 import type { InstalledTaskRef, RebindTaskRef, TaskBackend } from "../../tasks/backends/types";
 import { parseTaskDocument } from "../../tasks/parser";
@@ -585,7 +586,9 @@ export async function akmTasksDoctor(
     }
   }
   const bindings = groupInstalledBindings(installed, invocation);
-  const config = loadConfig();
+  // Report the EFFECTIVE engine view — the same one the runner resolves —
+  // so doctor never says "no engine" on an install where tasks actually run.
+  const { config } = withEngineFallback(loadConfig());
   const defaultEngine = config.defaults?.engine;
   const engines = Object.keys(config.engines ?? {});
 

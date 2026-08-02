@@ -22,6 +22,27 @@
  *
  * Resolution is by NAME only. A workflow step or task that explicitly names an
  * unconfigured engine is a real error and is never rescued by this path.
+ *
+ * Applied at every surface that resolves `defaults.engine` and would otherwise
+ * fail closed, so an engine-less install is usable everywhere or nowhere —
+ * never a confusing mix:
+ *
+ *   • `workflow run`   — `workflows/ir/freeze.ts` (the freeze boundary)
+ *   • `task run`       — `tasks/runner.ts` (prompt targets)
+ *   • `task add|sync`  — `tasks/validator.ts` (must agree with the runner, or
+ *                        validation rejects what the runner would execute)
+ *   • `akm agent`      — `commands/agent/agent-dispatch.ts`
+ *   • `propose`        — `commands/proposal/propose.ts`
+ *   • `improve` reflect — `commands/improve/reflect.ts` (agent arm)
+ *
+ * Two DIAGNOSTIC surfaces resolve the same effective view so they never report
+ * "no engine" on an install where dispatch actually succeeds:
+ * `task doctor` (`commands/tasks/tasks.ts`) and `akm health`'s default-engine
+ * probe (`commands/health/checks.ts`).
+ *
+ * Deliberately NOT applied in `setup/*`: setup's job is to DETECT engines and
+ * write `defaults.engine`, so a fallback there would mask what it is meant to
+ * discover and persist a synthesized entry the operator never chose.
  */
 
 import type { AkmConfig } from "../../core/config/config";
