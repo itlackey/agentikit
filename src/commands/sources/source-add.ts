@@ -23,6 +23,7 @@ import { parseRegistryRef } from "../../registry/resolve";
 import type { InstalledBundle } from "../../registry/types";
 import { detectStashRoot } from "../../sources/providers/provider-utils";
 import { syncFromRef } from "../../sources/providers/sync-from-ref";
+import { storeSecretResolver } from "../../sources/snapshot-fetchers/secret-seam";
 import {
   ensureWebsiteMirror,
   shouldAllowPrivateWebsiteUrlForTests,
@@ -141,7 +142,14 @@ async function addWebsiteSource(
     const bundles: Record<string, BundleConfigEntry> = { ...(config.bundles ?? {}) };
     const existingKey = bundleKeyForUrl(config, normalizedUrl);
     const key = existingKey ?? nextBundleKey(bundles, name ?? toWebsiteName(normalizedUrl), normalizedUrl);
+    // Merge onto the existing descriptor rather than replacing it: re-running
+    // `bundle add` for a URL that already has a bundle would otherwise drop
+    // respectRobots / refresh, silently restoring default robots enforcement
+    // and changing what the next update fetches. Explicitly-passed maxPages /
+    // maxDepth still win over the stored values.
+    const existingWebsite = existingKey ? ((bundles[key]?.website ?? {}) as Record<string, unknown>) : {};
     const website = {
+      ...existingWebsite,
       url: normalizedUrl,
       ...(maxPages !== undefined ? { maxPages } : {}),
       ...(maxDepth !== undefined ? { maxDepth } : {}),
@@ -162,6 +170,7 @@ async function addWebsiteSource(
 
   const cachePaths = await ensureWebsiteMirror(entry as SourceConfigEntry, {
     requireStashDir: true,
+    resolveSecret: storeSecretResolver.resolveSecret,
     ...(allowPrivateHosts ? { allowPrivateHosts: true } : {}),
   });
   const index = await akmIndex({ stashDir });

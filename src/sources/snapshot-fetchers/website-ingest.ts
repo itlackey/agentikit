@@ -3,9 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { createHash } from "node:crypto";
-import { lookup as dnsLookup } from "node:dns/promises";
 import fs from "node:fs";
-import { isIP } from "node:net";
 import path from "node:path";
 import {
   fetchWithRetry,
@@ -17,11 +15,29 @@ import {
 import type { SourceConfigEntry } from "../../core/config/config";
 import { ConfigError, UsageError } from "../../core/errors";
 import { getRegistryIndexCacheDir } from "../../core/paths";
-import { warn } from "../../core/warn";
+import { warn, warnVerbose } from "../../core/warn";
 import { withFreshnessCache } from "../freshness";
 import { sanitizeString } from "../providers/provider-utils";
+import { htmlToMarkdownAndLinks } from "./content-extract";
+import {
+  assertResolvedHostAllowed,
+  assertWebsiteRequestUrl,
+  type HostnameResolver,
+  isLoopbackWebsiteHostname,
+  type WebsiteUrlErrorCtor,
+} from "./host-guard";
 import { loadWikiSnapshotFetchers } from "./registry";
-import type { FetcherContext, WikiSnapshotResult } from "./types";
+import {
+  createAllowAllRobotsPolicy,
+  createRobotsPolicy,
+  isPathAllowedByRobots,
+  ROBOTS_BODY_TIMEOUT_MS,
+  ROBOTS_BYTE_CAP,
+  type RobotsFetchOutcome,
+  type RobotsPolicy,
+  type RobotsRuleSet,
+} from "./robots";
+import type { FetcherContext, SecretResolveFn, WikiSnapshotResult } from "./types";
 
 /** Refresh website snapshots every 12 hours to balance freshness with scraping load. */
 const CACHE_REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1000;
@@ -51,6 +67,31 @@ const WEBSITE_CRAWL_WALL_CLOCK_MS = 10 * 60 * 1000;
 const WEBSITE_MAX_REDIRECTS = 8;
 
 /**
+ * Coerces the user-facing `crawlTimeoutMs` option.
+ *
+ * Returns `null` for an explicit opt-out (`false`, or `0`), the configured
+ * number of milliseconds when positive, and `undefined` to mean "unset, use
+ * the default". Anything else is ignored rather than failing a crawl over a
+ * malformed knob.
+ */
+function coerceCrawlTimeoutMs(value: unknown): number | null | undefined {
+  if (value === false || value === 0) return null;
+  if (value === true || value === undefined || value === null) return undefined;
+  const parsed =
+    typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
+  if (!Number.isFinite(parsed)) return undefined;
+  if (parsed <= 0) return null;
+  return parsed;
+}
+
+/**
+ * How many times a URL may be pushed back for not fitting its origin's
+ * `Crawl-delay` in the remaining budget before it is reported unfetched.
+ * Bounds the requeue loop when every remaining URL is rate-limited.
+ */
+const MAX_CRAWL_DEFERRALS = 3;
+
+/**
  * Body-read deadline for a single page (30s). The per-request fetch timeout
  * (15s) bounds only the connection/header phase; without this a server that
  * dribbles body bytes below the size cap could stall the crawl until the whole
@@ -77,10 +118,14 @@ export interface FetchSnapshotOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   allowPrivateHosts?: boolean;
+  /**
+   * Secret-store reader for fetchers that need credentials. Injected by
+   * command-layer callers (which can import `core/env-secret-ref`); this
+   * module cannot import it without closing a cycle through the source
+   * providers. Omitted means environment variables only.
+   */
+  resolveSecret?: SecretResolveFn;
 }
-
-/** Resolve a hostname to its A/AAAA address strings. Injectable for tests. */
-export type HostnameResolver = (hostname: string) => Promise<string[]>;
 
 interface WebsiteValidationOptions {
   allowPrivateHosts?: boolean;
@@ -90,6 +135,24 @@ interface WebsiteValidationOptions {
    * ever runs.
    */
   resolveHostname?: HostnameResolver;
+  /**
+   * When set, `fetchWebsitePage` re-checks the *final* (post-redirect) URL
+   * against this policy and drops the page (warnVerbose, no error) when
+   * disallowed. Only `crawlWebsite` passes this — `fetchWebsiteMarkdownSnapshot`
+   * (single-URL, user-typed fetches) intentionally stays ungated per spec §1.
+   * Without this, `normalizeCrawlUrl` stripping trailing slashes plus a
+   * server's own redirect (e.g. `/secret` -> `/secret/`) could land on a page
+   * disallowed by a `Disallow: /secret/`-shaped rule that was never re-checked
+   * post-redirect.
+   */
+  robots?: RobotsPolicy;
+  /**
+   * Hard-cap signal for the whole crawl. Passed into `fetchWithRetry` so both
+   * the request and the retry sleep between attempts abort when the crawl's
+   * deadline fires — a between-iteration check alone cannot interrupt a
+   * `Retry-After` wait already under way.
+   */
+  signal?: AbortSignal;
 }
 
 export function shouldAllowPrivateWebsiteHostsForTests(): boolean {
@@ -130,7 +193,22 @@ export function getWebsiteCachePaths(siteUrl: string): {
 
 export async function ensureWebsiteMirror(
   config: SourceConfigEntry,
-  options?: { requireStashDir?: boolean; force?: boolean; allowPrivateHosts?: boolean },
+  options?: {
+    requireStashDir?: boolean;
+    force?: boolean;
+    allowPrivateHosts?: boolean;
+    /**
+     * TEST-ONLY. Overrides `WEBSITE_CRAWL_WALL_CLOCK_MS` for this crawl.
+     * Mirrors the `allowPrivateHosts` escape hatch: production callers never
+     * set this, but the crawl's wall-clock cap is otherwise a hardcoded
+     * 10-minute constant, which makes deadline-boundary behavior (breaking
+     * a crawl rather than sleeping past the cap) impossible to exercise in a
+     * fast test without it. Not surfaced through config.
+     */
+    wallClockCapMs?: number;
+    /** See {@link FetchSnapshotOptions.resolveSecret}. */
+    resolveSecret?: SecretResolveFn;
+  },
 ): Promise<ReturnType<typeof getWebsiteCachePaths>> {
   const rawUrl = config.url ?? "";
   const normalizedUrl = validateWebsiteUrl(rawUrl, { allowPrivateHosts: options?.allowPrivateHosts });
@@ -148,7 +226,16 @@ export async function ensureWebsiteMirror(
       await scrapeWebsiteToStash(normalizedUrl, cachePaths.stashDir, {
         maxPages: coercePositiveInt(config.options?.maxPages, MAX_PAGES_DEFAULT),
         maxDepth: coercePositiveInt(config.options?.maxDepth, MAX_DEPTH_DEFAULT),
+        respectRobots: coerceRespectRobots(config.options?.respectRobots),
         allowPrivateHosts: options?.allowPrivateHosts,
+        wallClockCapMs: options?.wallClockCapMs,
+        crawlTimeoutMs: coerceCrawlTimeoutMs(config.options?.crawlTimeoutMs),
+        resolveSecret: options?.resolveSecret,
+        // As-supplied, pre-normalization start URL (see crawlWebsite's
+        // `rawStartUrl` doc comment): threaded through purely for the C-02
+        // robots.txt check, which must see the trailing slash the user
+        // actually typed before `normalizeSiteUrl` strips it.
+        rawStartUrl: rawUrl,
       });
       fs.writeFileSync(
         cachePaths.manifestPath,
@@ -177,11 +264,104 @@ function hasExtractedSite(stashDir: string): boolean {
   }
 }
 
+/**
+ * Iterate the snapshot-fetcher registry against a parsed URL, returning the
+ * first fetcher that produces content, or null when none match. A fetcher that
+ * throws is logged and treated as a non-match — one broken fetcher must not
+ * fail the whole source.
+ */
+async function dispatchSnapshotFetchers(
+  parsed: URL,
+  context: FetcherContext,
+  stashDir?: string | null,
+): Promise<WikiSnapshotResult | null> {
+  for (const fetcher of await loadWikiSnapshotFetchers(stashDir)) {
+    try {
+      if (!fetcher.matches(parsed, context)) continue;
+      const snapshot = await fetcher.fetch(parsed, context);
+      if (snapshot) return snapshot;
+    } catch (error) {
+      warn(
+        "[akm] snapshot fetcher %s threw on %s: %s",
+        fetcher.name,
+        parsed.toString(),
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+  return null;
+}
+
+/**
+ * Run the snapshot-fetcher registry against a URL. Returns null when no
+ * fetcher matches or produces content, so the caller falls back to a crawl.
+ */
+async function fetchSnapshotViaRegistry(
+  startUrl: string,
+  stashDir: string,
+  allowPrivateHosts?: boolean,
+  resolveSecret?: SecretResolveFn,
+): Promise<WikiSnapshotResult | null> {
+  let parsed: URL;
+  try {
+    parsed = new URL(startUrl);
+  } catch {
+    return null;
+  }
+  const context: FetcherContext = {
+    stashDir,
+    timeoutMs: 15_000,
+    ...(resolveSecret ? { resolveSecret } : {}),
+    ...(allowPrivateHosts ? { allowPrivateHosts: true } : {}),
+  };
+  return dispatchSnapshotFetchers(parsed, context, stashDir);
+}
+
+/** Materialize a single fetcher snapshot as the source's whole stash. */
+function writeSnapshotToStash(stashDir: string, snapshot: WikiSnapshotResult): void {
+  const preferredName = snapshot.preferredName ?? deriveImportPath(snapshot.url);
+  const relPath = avoidReservedBasename(preferredName);
+  const knowledgeDir = path.join(stashDir, "knowledge");
+  fs.rmSync(stashDir, { recursive: true, force: true });
+  const filePath = path.join(knowledgeDir, `${relPath}.md`);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const slug = relPath.split("/").pop() ?? "index";
+  fs.writeFileSync(
+    filePath,
+    buildMarkdownSnapshot(
+      { url: snapshot.url, title: snapshot.title, markdown: snapshot.markdown },
+      slug,
+      snapshot.tags,
+    ),
+    "utf8",
+  );
+}
+
 async function scrapeWebsiteToStash(
   startUrl: string,
   stashDir: string,
-  options: { maxPages: number; maxDepth: number; allowPrivateHosts?: boolean },
+  options: {
+    maxPages: number;
+    maxDepth: number;
+    respectRobots?: boolean;
+    allowPrivateHosts?: boolean;
+    wallClockCapMs?: number;
+    rawStartUrl?: string;
+    resolveSecret?: SecretResolveFn;
+    /** Hard process cap; `null` disables it. See {@link coerceCrawlTimeoutMs}. */
+    crawlTimeoutMs?: number | null;
+  },
 ): Promise<void> {
+  // Offer the URL to the specialized fetchers before falling back to a crawl.
+  // Without this, `akm bundle add <feed|profile URL>` reaches only the generic
+  // crawler and the RSS/Bluesky/X/YouTube fetchers are unreachable outside the
+  // `akm import` path. A fetcher returning null falls through to the crawl.
+  const fetched = await fetchSnapshotViaRegistry(startUrl, stashDir, options.allowPrivateHosts, options.resolveSecret);
+  if (fetched) {
+    writeSnapshotToStash(stashDir, fetched);
+    return;
+  }
+
   const pages = await crawlWebsite(startUrl, options);
   if (pages.length === 0) {
     throw new Error(`No content could be scraped from ${startUrl}`);
@@ -214,23 +394,12 @@ export async function fetchWebsiteMarkdownSnapshot(
     stashDir: stashDir ?? "",
     timeoutMs: options?.timeoutMs ?? 15_000,
     signal: options?.signal,
+    ...(options?.resolveSecret ? { resolveSecret: options.resolveSecret } : {}),
+    ...(options?.allowPrivateHosts ? { allowPrivateHosts: true } : {}),
   };
 
-  for (const fetcher of await loadWikiSnapshotFetchers(stashDir)) {
-    try {
-      if (!fetcher.matches(parsedUrl, context)) continue;
-      const snapshot = await fetcher.fetch(parsedUrl, context);
-      if (!snapshot) continue;
-      return websiteMarkdownSnapshotFromResult(snapshot);
-    } catch (error) {
-      warn(
-        "[akm] wiki-fetcher %s threw on %s: %s",
-        fetcher.name,
-        normalizedUrl,
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-  }
+  const snapshot = await dispatchSnapshotFetchers(parsedUrl, context, stashDir);
+  if (snapshot) return websiteMarkdownSnapshotFromResult(snapshot);
 
   const fetched = await fetchWebsitePage(normalizedUrl, { allowPrivateHosts: options?.allowPrivateHosts });
   if (!fetched) {
@@ -264,16 +433,222 @@ function websiteMarkdownSnapshotFromResult(snapshot: WikiSnapshotResult): Websit
   };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Evaluates a URL against robots.txt, checking both `normalizedUrl` — the
+ * form akm treats as canonical for dedup/storage, with any bare trailing
+ * slash already stripped by `normalizeCrawlUrl`/`normalizeSiteUrl` — and,
+ * when it differs, `rawUrl`: the URL exactly as discovered (a link's literal
+ * `href`), as-supplied (the user's typed start URL), or redirected-to (a
+ * `Location` header), before any such stripping. Delegates the actual
+ * allow/disallow decision to {@link decideRobotsAllowance}'s asymmetric
+ * matrix — see its doc comment — rather than a plain AND of both forms: a
+ * `Disallow: /dir/`-shaped rule needs the un-stripped `rawUrl` to ever match
+ * (closing that gap), while an `Allow: /docs/`-shaped rule needs it too, in
+ * the *other* direction (a normalized-disallowed-but-raw-allowed URL must
+ * still be treated as allowed here, not just at the point where akm chooses
+ * which literal URL to fetch — a URL reaching this function has already been
+ * fetched, under whichever form `crawlWebsite`/`resolveCrawlRobotsDecision`
+ * selected, so only the `allowed` verdict matters here, never `fetchUrl`).
+ *
+ * `normalizeCrawlUrl`/`normalizeSiteUrl` strip a bare trailing slash before
+ * any robots check ever runs, so a `Disallow: /dir/`-shaped rule — which
+ * requires a literal trailing `/` in the target, see
+ * `matchesCompiledPattern`'s prefix check — can never match the stripped
+ * alias. Checking the un-stripped `rawUrl` closes that gap without changing
+ * what akm treats as the canonical URL for storage/dedup, and (crucially)
+ * without over-blocking a URL that never had a trailing slash to begin with
+ * — e.g. a `/secret` link that happens to redirect to `/secret/`: the
+ * pre-redirect request itself is unaffected by a `Disallow: /secret/` rule,
+ * only the redirect target is.
+ */
+async function isCrawlUrlAllowedByRobots(
+  robots: RobotsPolicy,
+  normalizedUrl: string,
+  rawUrl?: string,
+): Promise<boolean> {
+  return (await resolveCrawlRobotsDecision(robots, normalizedUrl, rawUrl)).allowed;
+}
+
+/**
+ * Decides whether `normalizedUrl` (akm's canonical form — dedup/cache key,
+ * with any bare trailing slash already stripped by `normalizeCrawlUrl`/
+ * `normalizeSiteUrl`) may be crawled, and which literal URL to actually
+ * request.
+ *
+ * A `Disallow: /dir/`-shaped rule requires a literal trailing `/` in the
+ * target (see `matchesCompiledPattern`'s prefix check), so it can never match
+ * the slash-stripped normalized alias — checking the un-stripped `rawUrl` (a
+ * link's literal `href`, the user's as-typed start URL, or a redirect
+ * `Location`) closes that gap. Symmetrically, an `Allow: /docs/`-shaped rule
+ * requires that same trailing `/` to match, so a start URL or link typed as
+ * `.../docs/` under `Disallow: / \n Allow: /docs/` is allowed in its raw form
+ * but disallowed once normalized — over-blocking a site the owner explicitly
+ * opened to crawlers.
+ *
+ * Resolution matrix (raw form only consulted when it differs from normalized):
+ *  - normalized allowed, raw allowed (or no distinct raw)  => allowed, fetch normalized
+ *  - normalized allowed, raw disallowed                    => BLOCKED (raw wins: closes the Disallow: /dir/ gap)
+ *  - normalized disallowed, raw allowed                    => allowed, fetch the RAW url (closes the Allow: /docs/ gap)
+ *  - normalized disallowed, raw disallowed                 => BLOCKED
+ *
+ * Only the third row switches the fetch target; every other row fetches the
+ * normalized form akm already treats as canonical. Do not collapse this to a
+ * plain OR of the two checks — that would also flip the second row to
+ * "allowed" and reopen the `Disallow: /dir/` bypass this matrix exists to
+ * close.
+ */
+function decideRobotsAllowance(
+  rules: RobotsRuleSet,
+  normalizedUrl: string,
+  rawUrl?: string,
+): { allowed: boolean; fetchUrl: string } {
+  const normalizedAllowed = isPathAllowedByRobots(rules, normalizedUrl);
+  if (!rawUrl || rawUrl === normalizedUrl) {
+    return { allowed: normalizedAllowed, fetchUrl: normalizedUrl };
+  }
+  const rawAllowed = isPathAllowedByRobots(rules, rawUrl);
+  if (!normalizedAllowed && rawAllowed) {
+    return { allowed: true, fetchUrl: rawUrl };
+  }
+  return { allowed: normalizedAllowed && rawAllowed, fetchUrl: normalizedUrl };
+}
+
+/**
+ * Async wrapper of {@link decideRobotsAllowance} for call sites holding a
+ * `RobotsPolicy` (which resolves/caches rules per origin) rather than an
+ * already-fetched `RobotsRuleSet`.
+ */
+async function resolveCrawlRobotsDecision(
+  robots: RobotsPolicy,
+  normalizedUrl: string,
+  rawUrl?: string,
+): Promise<{ allowed: boolean; fetchUrl: string }> {
+  const rules = await robots.rulesFor(normalizedUrl);
+  return decideRobotsAllowance(rules, normalizedUrl, rawUrl);
+}
+
+/**
+ * C-02/C-03: fail fast, before any page fetch, when the start URL itself is
+ * off-limits. A 5xx robots.txt (RobotsPolicy caches `DISALLOW_ALL_RULES` for
+ * that case) gets a distinct message calling out the server error, per spec
+ * §4.6.
+ *
+ * Checks both `start`'s (normalized) URL and `rawStartUrl` — the URL exactly
+ * as the user supplied it in config, before `validateWebsiteUrl` ->
+ * `normalizeSiteUrl` stripped any trailing slash — via
+ * `decideRobotsAllowance`. Without this, a start URL typed as `.../secret/`
+ * under `Disallow: /secret/` would never match that rule and would be
+ * crawled instead of rejected with the spec §4.6 C-02 UsageError; conversely,
+ * a start URL typed as `.../docs/` under `Disallow: / \n Allow: /docs/`
+ * would be normalized to `.../docs`, fail to match `Allow: /docs/`, and be
+ * rejected even though the site owner explicitly opened `/docs/` to
+ * crawlers. `crawlWebsite`'s queue gate applies the same decision (and, in
+ * the Allow case, actually fetches the raw URL this function only validates
+ * against) — see its call to `resolveCrawlRobotsDecision`.
+ */
+async function assertStartUrlAllowedByRobots(robots: RobotsPolicy, start: URL, rawStartUrl?: string): Promise<void> {
+  const startUrl = start.toString();
+  const robotsUrl = new URL("/robots.txt", start.origin).toString();
+  const rules = await robots.rulesFor(startUrl);
+
+  if (rules.disallowAll) {
+    throw new UsageError(
+      `Refusing to crawl ${startUrl}: ${robotsUrl} returned a server error, which robots.txt conventions ` +
+        `treat as a full disallow until it recovers. Set respectRobots: false on this website source to bypass ` +
+        `robots.txt.`,
+    );
+  }
+  let rawStartUrlNormalized: string | undefined;
+  if (rawStartUrl) {
+    try {
+      rawStartUrlNormalized = new URL(rawStartUrl).toString();
+    } catch {
+      rawStartUrlNormalized = undefined;
+    }
+  }
+  const { allowed } = decideRobotsAllowance(rules, startUrl, rawStartUrlNormalized);
+  if (!allowed) {
+    throw new UsageError(
+      `Refusing to crawl ${startUrl}: disallowed by ${robotsUrl}. Set respectRobots: false on this website ` +
+        `source to bypass robots.txt.`,
+    );
+  }
+}
+
 async function crawlWebsite(
   startUrl: string,
-  options: { maxPages: number; maxDepth: number; allowPrivateHosts?: boolean },
+  options: {
+    maxPages: number;
+    maxDepth: number;
+    respectRobots?: boolean;
+    allowPrivateHosts?: boolean;
+    wallClockCapMs?: number;
+    /** Hard process cap; `null` disables it. See {@link coerceCrawlTimeoutMs}. */
+    crawlTimeoutMs?: number | null;
+    /**
+     * The start URL exactly as the user supplied it in config, before
+     * `validateWebsiteUrl` -> `normalizeSiteUrl` stripped any trailing
+     * slash. Passed through to `assertStartUrlAllowedByRobots` only — see
+     * `decideRobotsAllowance`'s doc comment for why. `startUrl` itself is
+     * always already normalized by the time it reaches here (every caller
+     * routes it through `validateWebsiteUrl` first), so it cannot stand in
+     * for the as-typed form on its own.
+     */
+    rawStartUrl?: string;
+  },
 ): Promise<WebsitePage[]> {
   const start = new URL(normalizeSiteUrl(startUrl));
   const allowedOrigin = start.origin;
-  const queue: Array<{ url: string; depth: number }> = [{ url: start.toString(), depth: 0 }];
+  const queue: Array<{ url: string; rawUrl: string; depth: number; deferrals: number }> = [
+    { url: start.toString(), rawUrl: options.rawStartUrl ?? start.toString(), depth: 0, deferrals: 0 },
+  ];
   const visited = new Set<string>();
   const pages: WebsitePage[] = [];
-  const deadline = Date.now() + WEBSITE_CRAWL_WALL_CLOCK_MS;
+  // Precedence: the test-only seam, then the user's `crawlTimeoutMs`, then the
+  // default. `crawlTimeoutMs: 0` / `false` disables the cap outright, for a
+  // deliberately long-running crawl the user is willing to babysit.
+  const configuredCapMs =
+    options.crawlTimeoutMs === null ? null : (options.crawlTimeoutMs ?? WEBSITE_CRAWL_WALL_CLOCK_MS);
+  const wallClockCapMs = options.wallClockCapMs ?? configuredCapMs;
+  const capDisabled = wallClockCapMs === null;
+  const deadline = capDisabled ? Number.POSITIVE_INFINITY : Date.now() + (wallClockCapMs as number);
+
+  // Between-iteration deadline checks cannot interrupt work already in
+  // flight: a single request's `Retry-After` sleep, or a slow body read, can
+  // run far past the cap on its own. This signal makes the cap a HARD limit —
+  // it aborts the in-flight fetch and the retry sleep alike.
+  const abortController = new AbortController();
+  const capTimer = capDisabled
+    ? undefined
+    : setTimeout(
+        () =>
+          abortController.abort(new Error(`Website crawl exceeded its ${(wallClockCapMs as number) / 1000}s limit`)),
+        wallClockCapMs as number,
+      );
+  const crawlSignal = abortController.signal;
+
+  const robots =
+    options.respectRobots === false
+      ? createAllowAllRobotsPolicy()
+      : createRobotsPolicy((robotsUrl) =>
+          loadRobotsTxt(robotsUrl, { allowPrivateHosts: options.allowPrivateHosts, signal: crawlSignal }),
+        );
+
+  await assertStartUrlAllowedByRobots(robots, start, options.rawStartUrl);
+
+  // Counts actual `fetchWebsitePage` invocations (regardless of outcome) so
+  // Crawl-delay pacing skips the first fetch and never charges a delay slot
+  // to a URL that robots.txt skipped without ever being fetched (C-11).
+  let fetchAttempts = 0;
+  // URLs pushed back because their Crawl-delay would not fit in the remaining
+  // budget, and URLs that ran out of retries entirely. Reported at the end so
+  // a rate-limited origin is visible rather than silently missing.
+  const deferred = new Set<string>();
+  const unfetched = new Set<string>();
 
   while (queue.length > 0 && pages.length < options.maxPages) {
     if (Date.now() > deadline) break;
@@ -281,9 +656,50 @@ async function crawlWebsite(
     if (!next) break;
     const normalized = normalizeCrawlUrl(next.url);
     if (!normalized || visited.has(normalized)) continue;
-    visited.add(normalized);
 
-    const fetched = await fetchWebsitePage(normalized, { allowPrivateHosts: options.allowPrivateHosts });
+    const decision = await resolveCrawlRobotsDecision(robots, normalized, next.rawUrl);
+    if (!decision.allowed) {
+      // Deliberately NOT marked visited. `/docs/` and `/docs` share a
+      // normalized key but get different robots verdicts (a `Disallow: /docs/`
+      // rule matches only the trailing-slash form). Marking the key visited
+      // here would let whichever alias happened to be discovered first — and
+      // was then rejected — permanently suppress the allowed alias, making
+      // crawl coverage depend on link order. Robots rules are cached per
+      // origin, so re-evaluating a repeated disallowed alias is cheap.
+      warnVerbose("[akm] website crawl: skipping %s (disallowed by robots.txt)", normalized);
+      continue;
+    }
+    if (fetchAttempts > 0) {
+      const delayMs = await robots.crawlDelayMs(normalized);
+      if (delayMs > 0) {
+        if (Date.now() + delayMs >= deadline) {
+          // Sleeping this one out would blow the wall-clock cap. Defer it to
+          // the back of the queue instead of ending the crawl here: other
+          // origins may have no Crawl-delay and can still be fetched with the
+          // time that remains. Anything still deferred when the deadline
+          // arrives is reported as unfetched below rather than silently
+          // dropped. `deferred` is bounded so a queue of delayed URLs cannot
+          // spin forever re-appending to itself.
+          if (next.deferrals < MAX_CRAWL_DEFERRALS) {
+            queue.push({ ...next, deferrals: next.deferrals + 1 });
+            deferred.add(normalized);
+          } else {
+            unfetched.add(normalized);
+          }
+          continue;
+        }
+        await sleep(delayMs);
+      }
+    }
+    visited.add(normalized);
+    deferred.delete(normalized);
+    fetchAttempts++;
+
+    const fetched = await fetchWebsitePage(decision.fetchUrl, {
+      allowPrivateHosts: options.allowPrivateHosts,
+      robots,
+      signal: crawlSignal,
+    });
     if (!fetched) continue;
     pages.push(fetched.page);
 
@@ -291,30 +707,67 @@ async function crawlWebsite(
     for (const link of fetched.links) {
       if (queue.length + pages.length >= options.maxPages * QUEUE_EXPANSION_FACTOR) break;
       if (link.origin !== allowedOrigin) continue;
-      const candidate = normalizeCrawlUrl(link.toString());
+      const rawLinkUrl = link.toString();
+      const candidate = normalizeCrawlUrl(rawLinkUrl);
       if (!candidate || visited.has(candidate) || isAssetLikePath(link.pathname)) continue;
-      queue.push({ url: candidate, depth: next.depth + 1 });
+      queue.push({ url: candidate, rawUrl: rawLinkUrl, depth: next.depth + 1, deferrals: 0 });
     }
   }
 
-  if (Date.now() > deadline) {
+  if (!capDisabled && Date.now() > deadline) {
     warn(
-      "[akm] website crawl stopped at the %ds wall-clock cap with %d/%d pages collected from %s.",
-      WEBSITE_CRAWL_WALL_CLOCK_MS / 1000,
+      "[akm] website crawl stopped at the %ds wall-clock cap with %d/%d pages collected from %s. " +
+        "Raise crawlTimeoutMs on this website source, or set it to 0 to disable the cap.",
+      (wallClockCapMs as number) / 1000,
       pages.length,
       options.maxPages,
       startUrl,
     );
   }
 
+  if (capTimer) clearTimeout(capTimer);
+
+  // A URL still deferred when the loop ends never got fetched — report it
+  // rather than letting a rate-limited origin go missing without a trace.
+  for (const url of deferred) unfetched.add(url);
+  if (unfetched.size > 0) {
+    warn(
+      "[akm] website crawl: %d URL(s) were not fetched — their origin's Crawl-delay did not fit in the " +
+        "remaining time budget. First: %s",
+      unfetched.size,
+      [...unfetched].slice(0, 3).join(", "),
+    );
+  }
+
   return pages;
+}
+
+/**
+ * Sentinel thrown by `fetchWebsiteResponse` when a redirect hop's target is
+ * disallowed by robots.txt (see the doc comment above the check in
+ * `fetchWebsiteResponse`). Never escapes `fetchWebsitePage`, which maps it to
+ * `null` — the same "page skipped, no error" outcome as any other
+ * robots-disallowed URL. Not exported; purely an internal control-flow
+ * signal between the two functions.
+ */
+class RobotsDisallowedRedirectError extends Error {
+  constructor(url: string) {
+    super(`robots.txt disallows redirect target ${url}`);
+    this.name = "RobotsDisallowedRedirectError";
+  }
 }
 
 async function fetchWebsitePage(
   pageUrl: string,
   options?: WebsiteValidationOptions,
 ): Promise<{ page: WebsitePage; links: URL[] } | null> {
-  const response = await fetchWebsiteResponse(pageUrl, 0, options);
+  let response: Response;
+  try {
+    response = await fetchWebsiteResponse(pageUrl, 0, options);
+  } catch (err) {
+    if (err instanceof RobotsDisallowedRedirectError) return null;
+    throw err;
+  }
 
   if (!response.ok) {
     if (response.status === 404) return null;
@@ -331,18 +784,33 @@ async function fetchWebsitePage(
     if (err instanceof ResponseTooLargeError) return null;
     throw err;
   }
-  const finalUrl = normalizeCrawlUrl(response.url || pageUrl) ?? pageUrl;
+  const rawFinalUrl = response.url || pageUrl;
+  const finalUrl = normalizeCrawlUrl(rawFinalUrl) ?? pageUrl;
   assertWebsiteRequestUrl(finalUrl, Error, options);
+
+  // Re-check robots.txt against the FINAL (post-redirect) URL, not just the
+  // pre-redirect URL crawlWebsite already gated. normalizeCrawlUrl strips
+  // trailing slashes before the initial gate, so a rule shaped like
+  // `Disallow: /secret/` correctly lets `/secret` through that gate; if the
+  // server then redirects to `/secret/` (a common trailing-slash
+  // canonicalization), the disallowed page would otherwise be fetched and
+  // stored without ever being weighed against robots.txt. See spec §4.6 C-04.
+  // Checks `rawFinalUrl` (the un-normalized `response.url`, slash intact) as
+  // well as `finalUrl`, per `isCrawlUrlAllowedByRobots` — `normalizeCrawlUrl`
+  // would otherwise strip the very trailing slash a `Disallow: /secret/`
+  // rule needs to match.
+  if (options?.robots && !(await isCrawlUrlAllowedByRobots(options.robots, finalUrl, rawFinalUrl))) {
+    warnVerbose("[akm] website crawl: skipping %s (disallowed by robots.txt after redirect)", finalUrl);
+    return null;
+  }
 
   if (contentType.includes("text/html") || contentType.includes("application/xhtml+xml") || looksLikeMarkup(body)) {
     const title = extractHtmlTitle(body) || new URL(finalUrl).hostname;
+    // One parse yields both the content Markdown and the whole-document links.
+    const { markdown, links } = htmlToMarkdownAndLinks(body, finalUrl);
     return {
-      page: {
-        url: finalUrl,
-        title,
-        markdown: htmlToMarkdown(body, finalUrl),
-      },
-      links: extractSameDocumentLinks(body, finalUrl),
+      page: { url: finalUrl, title, markdown },
+      links,
     };
   }
 
@@ -375,6 +843,7 @@ async function fetchWebsiteResponse(
         "User-Agent": "akm-cli website provider",
       },
       redirect: "manual",
+      ...(options?.signal ? { signal: options.signal } : {}),
     },
     { timeout: 15_000, retries: 1 },
   );
@@ -389,10 +858,130 @@ async function fetchWebsiteResponse(
     }
     const nextUrl = new URL(location, pageUrl).toString();
     assertWebsiteRequestUrl(nextUrl, Error, options);
+
+    // Robots-check every intermediate redirect hop, not just the pre-redirect
+    // queue URL (`crawlWebsite`'s gate) and the FINAL URL (the post-redirect
+    // recheck below in `fetchWebsitePage`). Without this, a chain like
+    // `/go` -> 302 `/secret/` -> 302 `/public` issues a live GET to
+    // `/secret/` even when robots.txt disallows it, because that hop is
+    // never the queue URL and never the final URL. Only gated when a
+    // `RobotsPolicy` was actually threaded in (`crawlWebsite`); single-URL
+    // `fetchWebsiteMarkdownSnapshot` fetches stay deliberately ungated per
+    // spec §1.
+    if (options?.robots) {
+      const normalizedNext = normalizeCrawlUrl(nextUrl);
+      if (!normalizedNext) {
+        // `normalizeCrawlUrl` returns null for anything that isn't http(s) —
+        // a redirect `Location` can legally point at `mailto:`, `tel:`, a
+        // bare relative path that resolves to an opaque scheme, etc.
+        // `RobotsPolicy.rulesFor` computes `new URL(url).origin` and then
+        // resolves `/robots.txt` against it; for a non-http(s) URL that
+        // origin is the literal string "null", and re-resolving against it
+        // throws an unhandled TypeError that aborts the whole crawl. Refuse
+        // the hop outright instead of ever handing such a URL to the policy —
+        // `fetchWebsitePage` maps this to a graceful skip. Regression
+        // introduced by a67412c, which fell back to the raw `nextUrl` here.
+        warnVerbose("[akm] website crawl: skipping redirect to %s (not an http(s) URL)", nextUrl);
+        throw new RobotsDisallowedRedirectError(nextUrl);
+      }
+      if (!(await isCrawlUrlAllowedByRobots(options.robots, normalizedNext, nextUrl))) {
+        warnVerbose("[akm] website crawl: skipping redirect to %s (disallowed by robots.txt)", nextUrl);
+        throw new RobotsDisallowedRedirectError(nextUrl);
+      }
+    }
+
     return fetchWebsiteResponse(nextUrl, redirectCount + 1, options);
   }
 
   return response;
+}
+
+/**
+ * Fetches and classifies `<origin>/robots.txt`. Reuses `fetchWebsiteResponse`
+ * (spec §6.2: no second fetch path) so robots.txt gets the exact same SSRF
+ * guards, retry, and redirect handling as a page fetch.
+ *
+ * Steps 1–2 (the guard on the INITIAL URL) run OUTSIDE the try/catch on
+ * purpose: a guard rejection there must propagate as-is, never be downgraded
+ * to "unavailable" (spec §4.5 F-12, §6.2). Guard rejections on a LATER
+ * redirect hop happen inside `fetchWebsiteResponse`, which the try/catch
+ * below does cover — the guard has already refused to fetch that host, so
+ * only the error *reporting* is downgraded (F-11).
+ */
+export async function loadRobotsTxt(
+  robotsUrl: string,
+  options?: WebsiteValidationOptions,
+): Promise<RobotsFetchOutcome> {
+  assertWebsiteRequestUrl(robotsUrl, UsageError, options);
+  await assertResolvedHostAllowed(new URL(robotsUrl).hostname, options);
+
+  try {
+    const response = await fetchWebsiteResponse(robotsUrl, 0, options);
+
+    if (response.status >= 200 && response.status < 300) {
+      try {
+        const text = await readBodyWithByteCap(response, ROBOTS_BYTE_CAP, {
+          bodyTimeoutMs: ROBOTS_BODY_TIMEOUT_MS,
+        });
+        return { kind: "body", text };
+      } catch (err) {
+        if (err instanceof ResponseTooLargeError) {
+          warn(
+            "[akm] robots.txt at %s exceeded the %d-byte cap; treating it as unavailable.",
+            robotsUrl,
+            ROBOTS_BYTE_CAP,
+          );
+          return { kind: "unavailable" };
+        }
+        throw err;
+      }
+    }
+
+    if (response.status >= 500 && response.status < 600) {
+      // RFC 9309 §2.3.1.4: an unreachable robots.txt is a full disallow, not
+      // an allow-all. `fetchWithRetry` already retried this once, so a
+      // transient blip does not trip it.
+      warn(
+        "[akm] robots.txt at %s returned %d; treating the crawl as fully disallowed until it recovers. " +
+          "Set respectRobots: false on this website source to bypass robots.txt.",
+        robotsUrl,
+        response.status,
+      );
+      return { kind: "unreachable" };
+    }
+
+    // 4xx (404 is the common, silent case), and any other non-2xx/5xx status.
+    return { kind: "unavailable" };
+  } catch (err) {
+    warnVerbose(
+      "[akm] failed to fetch robots.txt at %s: %s",
+      robotsUrl,
+      err instanceof Error ? err.message : String(err),
+    );
+    return { kind: "unavailable" };
+  }
+}
+
+/**
+ * Coerces `SourceConfigEntry.options.respectRobots` to a boolean. The bundle
+ * descriptor is boolean-validated at config load (schema), but the legacy
+ * `sources[].options` bag is `z.record(z.unknown())` and accepts anything, so
+ * the runtime read still validates. A misspelled non-boolean opt-out fails
+ * loudly (`ConfigError`) rather than silently defaulting either way — the
+ * user would otherwise think robots.txt handling is something other than
+ * what akm is actually doing (spec §4.7).
+ */
+export function coerceRespectRobots(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+  throw new ConfigError(
+    `Invalid value for respectRobots: expected a boolean (or "true"/"false"), got ${JSON.stringify(value)}.`,
+  );
 }
 
 function buildMarkdownSnapshot(page: WebsitePage, slug: string, tags?: string[]): string {
@@ -558,86 +1147,9 @@ function looksLikeMarkup(body: string): boolean {
   return /<html[\s>]|<body[\s>]|<\/[a-z][\w:-]*>/i.test(body);
 }
 
-function extractHtmlTitle(html: string): string | undefined {
-  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
-  if (title) return decodeHtmlEntities(stripTags(title)).trim();
-  const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
-  if (h1) return decodeHtmlEntities(stripTags(h1)).trim();
-  return undefined;
-}
-
-function extractTextTitle(text: string): string | undefined {
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (trimmed.startsWith("#")) return trimmed.replace(/^#+\s*/, "");
-    return trimmed.slice(0, 120);
-  }
-  return undefined;
-}
-
-function extractSameDocumentLinks(html: string, pageUrl: string): URL[] {
-  const links: URL[] = [];
-  const hrefPattern = /<a\b[^>]*href\s*=\s*(['"])(.*?)\1[^>]*>/gi;
-  for (const match of html.matchAll(hrefPattern)) {
-    const href = match[2]?.trim();
-    if (!href || href.startsWith("#")) continue;
-    try {
-      const resolved = new URL(href, pageUrl);
-      if (!isSafeLinkUrl(resolved)) continue;
-      links.push(resolved);
-    } catch {
-      /* ignore malformed links */
-    }
-  }
-  return links;
-}
-
-function htmlToMarkdown(html: string, pageUrl: string): string {
-  let text = html;
-  text = stripDangerousBlockTag(text, "script");
-  text = stripDangerousBlockTag(text, "style");
-  text = stripDangerousBlockTag(text, "noscript");
-  text = stripDangerousBlockTag(text, "template");
-
-  text = text.replace(/<pre\b[^>]*><code\b[^>]*>([\s\S]*?)<\/code><\/pre>/gi, (_match, code) => {
-    const decoded = decodeHtmlEntities(stripTags(code)).trim();
-    return decoded ? `\n\n\`\`\`\n${decoded}\n\`\`\`\n\n` : "\n\n";
-  });
-  text = text.replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, (_match, code) => {
-    const decoded = decodeHtmlEntities(stripTags(code)).trim();
-    return decoded ? `\`${decoded}\`` : "";
-  });
-  text = text.replace(/<a\b[^>]*href\s*=\s*(['"])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi, (_match, _q, href, body) => {
-    const label = decodeHtmlEntities(stripTags(body)).trim();
-    if (!label) return "";
-    try {
-      const resolved = new URL(href, pageUrl);
-      if (!isSafeLinkUrl(resolved)) return label;
-      return `[${label}](${resolved})`;
-    } catch {
-      return label;
-    }
-  });
-  text = text.replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_match, level, body) => {
-    const heading = decodeHtmlEntities(stripTags(body)).trim();
-    return heading ? `\n\n${"#".repeat(Number(level))} ${heading}\n\n` : "\n\n";
-  });
-  text = text.replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, (_match, body) => {
-    const item = decodeHtmlEntities(stripTags(body)).trim();
-    return item ? `\n- ${item}` : "";
-  });
-  text = text.replace(/<(p|div|section|article|main|header|footer|blockquote|table|tr)\b[^>]*>/gi, "\n\n");
-  text = text.replace(/<\/(p|div|section|article|main|header|footer|blockquote|table|tr)>/gi, "\n\n");
-  text = text.replace(/<br\s*\/?>/gi, "\n");
-  text = text.replace(/<\/?(ul|ol)\b[^>]*>/gi, "\n");
-  text = decodeHtmlEntities(stripTags(text));
-  text = text
-    .replace(/\r/g, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return text;
+/** True for URL paths that are plainly binary assets, never crawlable pages. */
+function isAssetLikePath(pathname: string): boolean {
+  return /\.(css|js|json|png|jpe?g|gif|svg|ico|webp|pdf|zip|tar|gz|mp4|mp3|woff2?)$/i.test(pathname);
 }
 
 function stripTags(value: string): string {
@@ -666,159 +1178,22 @@ function decodeHtmlEntities(value: string): string {
   });
 }
 
-function isAssetLikePath(pathname: string): boolean {
-  return /\.(css|js|json|png|jpe?g|gif|svg|ico|webp|pdf|zip|tar|gz|mp4|mp3|woff2?)$/i.test(pathname);
+function extractHtmlTitle(html: string): string | undefined {
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  if (title) return decodeHtmlEntities(stripTags(title)).trim();
+  const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
+  if (h1) return decodeHtmlEntities(stripTags(h1)).trim();
+  return undefined;
 }
 
-function isSafeLinkUrl(url: URL): boolean {
-  return url.protocol === "http:" || url.protocol === "https:";
-}
-
-type WebsiteUrlErrorCtor = new (message: string) => Error;
-
-function assertWebsiteRequestUrl(
-  rawUrl: string,
-  ErrorType: WebsiteUrlErrorCtor = Error,
-  options?: WebsiteValidationOptions,
-): void {
-  const parsedUrl = new URL(rawUrl);
-  const hostname = parsedUrl.hostname.toLowerCase();
-  if (hostname.endsWith(".invalid")) {
-    throw new ErrorType(`Refusing to fetch reserved invalid hostname: ${parsedUrl.hostname}`);
+function extractTextTitle(text: string): string | undefined {
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("#")) return trimmed.replace(/^#+\s*/, "");
+    return trimmed.slice(0, 120);
   }
-  if (isForbiddenWebsiteHostname(hostname, options)) {
-    throw new ErrorType(`Refusing to fetch non-public website host: ${parsedUrl.hostname}`);
-  }
-}
-
-async function defaultResolveHostname(hostname: string): Promise<string[]> {
-  const records = await dnsLookup(hostname, { all: true });
-  return records.map((record) => record.address);
-}
-
-/**
- * Resolve-then-validate SSRF guard against DNS rebinding / private-range
- * bypasses. {@link assertWebsiteRequestUrl} only rejects IP-literal and
- * well-known-name hosts; a hostname like `private-host.example.com` that
- * resolves to `10.0.0.1` passes those checks and then fetch connects to the
- * private address. Here we resolve EVERY A/AAAA record and validate each
- * against the same forbidden-range rules, failing CLOSED on an empty answer or
- * resolver error.
- *
- * TOCTOU residual (documented, not fully closable here): Bun's `fetch` exposes
- * no custom `lookup`/agent hook, so we cannot pin the socket to the exact IP we
- * validated — a hostile resolver could return a public IP to this lookup and a
- * private IP microseconds later at connect time (classic rebinding). This still
- * removes the TRIVIAL `hostname A 10.0.0.1` bypass, which is the strongest
- * guarantee available without a pinned-connection fetch API. Re-run on every
- * redirect hop (the crawler recurses through `fetchWebsiteResponse`).
- */
-export async function assertResolvedHostAllowed(hostname: string, options?: WebsiteValidationOptions): Promise<void> {
-  if (options?.allowPrivateHosts === true) return;
-  const bare = stripIpv6Brackets(hostname.toLowerCase());
-  // IP-literal hosts are already fully validated by assertWebsiteRequestUrl's
-  // range checks; resolving them is a no-op (and dnsLookup would just echo it).
-  if (isIP(bare) !== 0) return;
-
-  const resolve = options?.resolveHostname ?? defaultResolveHostname;
-  let addresses: string[];
-  try {
-    addresses = await resolve(bare);
-  } catch {
-    throw new Error(`Refusing to fetch ${hostname}: DNS resolution failed`);
-  }
-  if (addresses.length === 0) {
-    throw new Error(`Refusing to fetch ${hostname}: hostname resolved to no addresses`);
-  }
-  for (const address of addresses) {
-    const version = isIP(address);
-    const forbidden =
-      version === 4 ? isForbiddenIpv4(address) : version === 6 ? isForbiddenIpv6(stripIpv6Brackets(address)) : true;
-    if (forbidden) {
-      throw new Error(`Refusing to fetch ${hostname}: resolves to non-public or unparseable address ${address}`);
-    }
-  }
-}
-
-// WHATWG URL.hostname wraps IPv6 literals in brackets (e.g. "[::1]"), but
-// node:net's isIP() only recognizes the bare address form and returns 0 for
-// anything bracketed — silently skipping all IPv6 forbidden-host checks
-// below for every hostname parsed off a URL. Strip the brackets before any
-// isIP()/isForbiddenIpv6() call so those checks actually run.
-function stripIpv6Brackets(hostname: string): string {
-  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-}
-
-function isForbiddenWebsiteHostname(hostname: string, options?: WebsiteValidationOptions): boolean {
-  if (options?.allowPrivateHosts === true) return false;
-  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "metadata.google.internal") {
-    return true;
-  }
-
-  const bareHostname = stripIpv6Brackets(hostname);
-  const ipVersion = isIP(bareHostname);
-  if (ipVersion === 4) return isForbiddenIpv4(bareHostname);
-  if (ipVersion === 6) return isForbiddenIpv6(bareHostname);
-  return false;
-}
-
-function isLoopbackWebsiteHostname(hostname: string): boolean {
-  if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
-  const bareHostname = stripIpv6Brackets(hostname);
-  const ipVersion = isIP(bareHostname);
-  if (ipVersion === 4) return bareHostname.startsWith("127.");
-  if (ipVersion === 6) return bareHostname === "::1";
-  return false;
-}
-
-function isForbiddenIpv4(hostname: string): boolean {
-  const parts = hostname.split(".").map((part) => Number.parseInt(part, 10));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
-  const a = parts[0]!;
-  const b = parts[1]!;
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168)
-  );
-}
-
-/**
- * Extracts the embedded IPv4 address from an IPv4-mapped IPv6 literal
- * (`::ffff:a.b.c.d` or its canonical hex form `::ffff:xxxx:yyyy`), or
- * returns null if `hostname` isn't one.
- */
-function extractIpv4MappedAddress(normalizedHostname: string): string | null {
-  const match = normalizedHostname.match(/^::ffff:(?:(\d{1,3}(?:\.\d{1,3}){3})|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/);
-  if (!match) return null;
-  if (match[1]) return match[1];
-  const high = Number.parseInt(match[2]!, 16);
-  const low = Number.parseInt(match[3]!, 16);
-  return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
-}
-
-function isForbiddenIpv6(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  const mappedIpv4 = extractIpv4MappedAddress(normalized);
-  if (mappedIpv4) return isForbiddenIpv4(mappedIpv4);
-  return (
-    normalized === "::" ||
-    normalized === "::1" ||
-    normalized.startsWith("fc") ||
-    normalized.startsWith("fd") ||
-    normalized.startsWith("fe8") ||
-    normalized.startsWith("fe9") ||
-    normalized.startsWith("fea") ||
-    normalized.startsWith("feb")
-  );
-}
-
-function stripDangerousBlockTag(value: string, tagName: string): string {
-  const pattern = new RegExp(`<${tagName}\\b[^>]*>[\\s\\S]*?<\\/${tagName}\\s*>`, "gi");
-  return value.replace(pattern, "");
+  return undefined;
 }
 
 function safeCodePointToString(value: number): string | undefined {
@@ -829,3 +1204,6 @@ function safeCodePointToString(value: number): string | undefined {
     return undefined;
   }
 }
+
+// Re-exported for existing importers (the SSRF suite pins these entry points).
+export { assertResolvedHostAllowed, type HostnameResolver } from "./host-guard";

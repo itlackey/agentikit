@@ -6,6 +6,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **RSS, Bluesky, and X sources.** `akm bundle add` now recognizes three new
+  kinds of URL and snapshots them as knowledge assets instead of crawling
+  them as ordinary web pages:
+
+  ```sh
+  akm bundle add https://blog.example/feed          # RSS 2.0 / Atom / RDF
+  akm bundle add https://bsky.app/profile/<handle>  # public, no auth
+  akm bundle add https://x.com/<user>               # see token note below
+  ```
+
+  Any of these falling through — a `/feed` URL that actually serves HTML, an
+  unresolvable Bluesky handle — degrades to the normal website crawl rather
+  than failing the command.
+
+  X needs credentials: set `X_BEARER_TOKEN` for the X API v2, or
+  `X_RSS_TEMPLATE` to an RSS bridge URL containing `{username}`. To keep the
+  token out of your shell history, store it as an akm secret and inject it
+  per-invocation:
+
+  ```sh
+  akm secret set x-bearer-token
+  akm secret run secrets/x-bearer-token X_BEARER_TOKEN -- akm bundle add https://x.com/<user>
+  ```
+
+  With neither set, the X fetcher emits one warning and falls through.
+
+### Changed
+
+- **X source tokens now resolve from the secret store during bundle update.**
+  The `secrets/x-bearer-token` akm secret is honored on the provider
+  `sync()` / bundle-update path, not just when adding or importing a URL —
+  closing a gap where a refresh saw only the `X_BEARER_TOKEN` environment
+  variable. Implemented as a `SecretResolver` capability injected from above
+  the source-provider import cycle; internals are documented in
+  `docs/architecture/reviews/env-secret-access.md`.
+
+- **`website` crawls now have a hard time limit.** `crawlTimeoutMs` (default
+  600000 — 10 minutes) bounds the entire crawl, and unlike the previous
+  between-page check it aborts work already in flight: a `Retry-After` sleep
+  could previously park `akm bundle add` for as long as a rate-limiting server
+  asked, well past the advertised cap. Raise it for a large site, or set
+  `"crawlTimeoutMs": 0` to disable the cap. Relatedly, `fetchWithRetry` now
+  honors its caller's `AbortSignal` during retry backoff, so any operation that
+  passes a signal can actually interrupt a long wait.
+
+- **Website snapshots now extract the page's main content.** Conversion moved
+  from a hand-rolled regex converter to a DOM parse plus Turndown, scoped to
+  the page's content region (`<main>`, `<article>`, `[role=main]`, then common
+  content ids/classes, falling back to `<body>` minus nav/header/footer/aside).
+  Navigation, ads, and boilerplate no longer land in snapshots, and tables,
+  nested lists, and fenced code blocks with language hints now survive
+  conversion. **Existing website snapshots will change on their next refresh**
+  — expect them to get shorter and cleaner. Link discovery still scans the
+  whole page, so crawl coverage is unchanged.
+
+
+- **`website` sources now respect `robots.txt` by default.** Before crawling
+  an origin, akm fetches and parses that origin's `/robots.txt` and skips
+  paths disallowed for the `akm`/`akm-cli` product tokens (or `*`), honoring
+  `Crawl-delay` (clamped to 10s) between page fetches. This is a deliberate
+  behavior change: **existing website sources may return fewer pages, or
+  fail with an error if the start URL itself is disallowed, after
+  upgrading.** Re-running `akm bundle update` on a website source is what
+  surfaces it. Opt out with `"respectRobots": false` on the website
+  descriptor to restore the exact pre-upgrade behavior (no `/robots.txt`
+  request at all):
+
+  ```json
+  { "bundles": { "docs": { "website": { "url": "https://docs.example.com", "respectRobots": false } } } }
+  ```
+
 ## [0.9.0-rc.13] - 2026-07-31
 
 ### Security

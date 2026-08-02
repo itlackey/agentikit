@@ -458,6 +458,13 @@
               "maxDepth": {
                 "type": "integer",
                 "exclusiveMinimum": 0
+              },
+              "respectRobots": {
+                "type": "boolean"
+              },
+              "crawlTimeoutMs": {
+                "type": "integer",
+                "minimum": 0
               }
             },
             "required": [
@@ -2101,6 +2108,13 @@
                   "maxDepth": {
                     "type": "integer",
                     "exclusiveMinimum": 0
+                  },
+                  "respectRobots": {
+                    "type": "boolean"
+                  },
+                  "crawlTimeoutMs": {
+                    "type": "integer",
+                    "minimum": 0
                   }
                 },
                 "required": [

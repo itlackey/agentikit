@@ -70,7 +70,7 @@
     "lint:devto-posts:fix": "bun scripts/lint-devto-posts.ts --fix",
     "publish:devto": "npx -y @sinedied/devto-cli push \"docs/posts/**/*.md\" --token \"$DEVTO_TOKEN\" --repo \"$GITHUB_REPOSITORY\" --branch \"${GITHUB_REF_NAME:-main}\" --reconcile",
     "release:check": "./tests/release-check.sh",
-    "lint": "bunx biome check src/ tests/ scripts/ && bun scripts/lint-tests-isolation.ts && bun scripts/lint-license-headers.ts && bun scripts/lint-runtime-boundary.ts && bun scripts/lint-write-source-chokepoint.ts && bun scripts/lint-process-argv.ts && bun scripts/lint-repository-sql.ts && bun scripts/lint-goldens-presence.ts && bun scripts/lint-golden-captured-at-head.ts && bun scripts/lint-test-ref-literals.ts && bun scripts/lint-shipped-assets.ts && bun scripts/lint-doc-examples.ts && bun scripts/gen-config-schema.ts --check",
+    "lint": "bunx biome check src/ tests/ scripts/ && bun scripts/lint-tests-isolation.ts && bun scripts/lint-license-headers.ts && bun scripts/lint-runtime-boundary.ts && bun scripts/lint-write-source-chokepoint.ts && bun scripts/lint-secret-resolver-boundary.ts && bun scripts/lint-process-argv.ts && bun scripts/lint-repository-sql.ts && bun scripts/lint-goldens-presence.ts && bun scripts/lint-golden-captured-at-head.ts && bun scripts/lint-test-ref-literals.ts && bun scripts/lint-shipped-assets.ts && bun scripts/lint-doc-examples.ts && bun scripts/gen-config-schema.ts --check",
     "lint:runtime-boundary": "bun scripts/lint-runtime-boundary.ts",
     "lint:tests-isolation": "bun scripts/lint-tests-isolation.ts",
     "lint:fix": "bunx biome check --write src/ tests/ scripts/",
@@ -87,6 +87,7 @@
     "@biomejs/biome": "^2.4.14",
     "@types/node": "^22.19.17",
     "@types/semver": "^7.5.8",
+    "@types/turndown": "^5.0.6",
     "bun-types": "^1.3.13",
     "cmd-shim": "9.0.2",
     "typescript": "^5.9.3",
@@ -105,7 +106,10 @@
     "@opencode-ai/sdk": "1.2.20",
     "citty": "^0.2.2",
     "dotenv": "^17.4.2",
+    "fast-xml-parser": "^5.10.1",
+    "node-html-parser": "^9.0.1",
     "semver": "^7.6.0",
+    "turndown": "^7.2.4",
     "yaml": "^2.8.4",
     "zod": "^3.23.0"
   }

@@ -443,11 +443,18 @@ export function writeWorkflowTestConfig(): void {
  * @param mock   A function that receives the request URL string and returns a
  *               `Response` (or throws to simulate a network error).
  */
-export async function withMockedFetch<T>(run: () => Promise<T>, mock: (url: string) => Response): Promise<T> {
+export async function withMockedFetch<T>(
+  run: () => Promise<T>,
+  // `init` is forwarded so a test can assert on request headers (e.g. that an
+  // Authorization header carries the expected bearer token). Existing callers
+  // take only `url` and are unaffected. Returning a promise is also allowed so
+  // mocks can be written as `async` functions.
+  mock: (url: string, init?: RequestInit) => Response | Promise<Response>,
+): Promise<T> {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    return mock(url);
+    return await mock(url, init);
   }) as typeof fetch;
 
   try {

@@ -88,6 +88,17 @@ const BundleWebsiteDescriptorSchema = z
     refresh: z.string().min(1).optional(),
     maxPages: positiveInt.optional(),
     maxDepth: positiveInt.optional(),
+    // Default true: crawl-scoped robots.txt compliance (Disallow/Crawl-delay
+    // for the akm/akm-cli product tokens or "*"). See
+    // src/sources/snapshot-fetchers/robots.ts. Opt out with `false` to
+    // restore pre-P1 behavior exactly (no /robots.txt request at all).
+    respectRobots: z.boolean().optional(),
+    // Hard wall-clock cap on the whole crawl, in milliseconds. Defaults to
+    // 10 minutes. Unlike a between-page check, this aborts work already in
+    // flight — including a `Retry-After` sleep, which a server can otherwise
+    // make arbitrarily long. Set to 0 to disable the cap entirely for a
+    // deliberately long-running crawl.
+    crawlTimeoutMs: z.number().int().min(0).optional(),
   })
   .passthrough();
 

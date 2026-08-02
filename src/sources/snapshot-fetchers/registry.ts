@@ -6,12 +6,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { warn } from "../../core/warn";
+import blueskyFetcher from "./bluesky";
+import rssFetcher from "./rss";
 import type { WikiSnapshotFetcher } from "./types";
+import xFetcher from "./x";
 import youtubeFetcher from "./youtube";
 
 const FETCHER_DIR = path.join("scripts", "wiki-fetchers");
 const FETCHER_FILE_PATTERN = /\.(?:ts|js|mjs)$/i;
-const BUILTIN_FETCHERS: readonly WikiSnapshotFetcher[] = [youtubeFetcher];
+/**
+ * Order matters: the first fetcher whose `matches` returns true and whose
+ * `fetch` returns non-null wins. Host-specific fetchers therefore precede the
+ * generic RSS fetcher, whose `matches` is path-shaped and deliberately loose.
+ * Any fetcher returning null falls through to the generic website crawler.
+ */
+const BUILTIN_FETCHERS: readonly WikiSnapshotFetcher[] = [youtubeFetcher, blueskyFetcher, xFetcher, rssFetcher];
 
 function isWikiSnapshotFetcher(value: unknown): value is WikiSnapshotFetcher {
   if (!value || typeof value !== "object") return false;
