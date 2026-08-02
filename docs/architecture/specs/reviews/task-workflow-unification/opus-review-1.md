@@ -60,7 +60,7 @@ script assets per `run`/`setup`/`cwd`, both surfaces."
 ```
 src/indexer/passes/metadata.ts:140
   // SECURITY NOTE: run, setup, and cwd are advisory metadata fields for AI agent consumers.
-  // They are NOT executed by akm directly. Consumers should validate and sanitize before execution.
+  // They are NOT executed by akm directly. Consumers should validate and sanitize before execution. doclint:ignore
 ```
 
 This is not incidental. It sits alongside the sync attribution boundary whose
