@@ -465,3 +465,116 @@ describe("post text cannot forge markdown structure", () => {
     expect(snapshot?.markdown).not.toContain("javascript:");
   });
 });
+
+describe("codex review regressions", () => {
+  // P1: registering fetchers only affected the `akm import` path;
+  // `akm bundle add` went straight to the crawler, so the documented
+  // feed/profile examples were never dispatched to a fetcher.
+  test("ensureWebsiteMirror dispatches a feed URL to the RSS fetcher", async () => {
+    const { ensureWebsiteMirror, getWebsiteCachePaths } = await import(
+      "../src/sources/snapshot-fetchers/website-ingest"
+    );
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+
+    const url = "http://127.0.0.1:9/feed.xml";
+    let crawledHtml = false;
+    await withMockedFetch(
+      async () => {
+        await ensureWebsiteMirror({ url } as never, { allowPrivateHosts: true, force: true });
+      },
+      async (input) => {
+        if (String(input).endsWith("/feed.xml")) return xmlResponse(RSS2);
+        crawledHtml = true;
+        return new Response("<html><body><main>crawled</main></body></html>", {
+          headers: { "content-type": "text/html" },
+        });
+      },
+    );
+
+    const { stashDir } = getWebsiteCachePaths(url);
+    const knowledge = path.join(stashDir, "knowledge", "feeds");
+    expect(fs.existsSync(knowledge)).toBe(true);
+    const written = fs.readdirSync(knowledge).filter((f) => f.endsWith(".md"));
+    expect(written.length).toBeGreaterThan(0);
+    const body = fs.readFileSync(path.join(knowledge, written[0] as string), "utf8");
+    expect(body).toContain("First post");
+    // It used the fetcher, not the crawler.
+    expect(crawledHtml).toBe(false);
+  });
+
+  // P1: a 3xx from a pinned API host would otherwise be followed to an
+  // unvalidated host — and for X, would re-send the bearer token to it.
+  test("a redirect from the Bluesky API is refused rather than followed", async () => {
+    const seen: string[] = [];
+    const snapshot = await withMockedFetch(
+      () => blueskyFetcher.fetch(new URL("https://bsky.app/profile/alice.bsky.social"), CTX),
+      async (input) => {
+        seen.push(String(input));
+        return new Response("", { status: 302, headers: { location: "http://127.0.0.1:9/evil" } });
+      },
+    );
+    expect(snapshot).toBeNull();
+    expect(seen.some((u) => u.includes("127.0.0.1"))).toBe(false);
+  });
+
+  test("a redirect from the X API is refused and the token is not re-sent", async () => {
+    const secret = "TOKEN_MUST_NOT_FOLLOW";
+    const original = process.env.X_BEARER_TOKEN;
+    process.env.X_BEARER_TOKEN = secret;
+    delete process.env.X_RSS_TEMPLATE;
+    try {
+      const seen: string[] = [];
+      const snapshot = await withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/jack"), CTX),
+        async (input) => {
+          seen.push(String(input));
+          return new Response("", { status: 301, headers: { location: "http://169.254.169.254/meta" } });
+        },
+      );
+      expect(snapshot).toBeNull();
+      expect(seen.some((u) => u.includes("169.254.169.254"))).toBe(false);
+    } finally {
+      if (original === undefined) delete process.env.X_BEARER_TOKEN;
+      else process.env.X_BEARER_TOKEN = original;
+    }
+  });
+
+  // P2: relative alternate links are valid and common in Atom; they were
+  // silently dropped because the scheme check ran without a base URL.
+  test("relative Atom links resolve against the feed URL", () => {
+    const xml = `<feed xmlns="http://www.w3.org/2005/Atom"><title>A</title><entry><title>E</title>
+      <link rel="alternate" href="/posts/1"/><summary>s</summary></entry></feed>`;
+    expect(parseFeed(xml, 50, "https://blog.example/feed.xml")?.items[0]?.link).toBe("https://blog.example/posts/1");
+  });
+
+  // P2: without the placeholder every profile imports one fixed feed and is
+  // then relabelled as the requested user — silent provenance corruption.
+  test("an X_RSS_TEMPLATE without {username} is rejected", () => {
+    expect(buildXRssUrl("https://nitter.example/fixed/rss", "jack")).toBeNull();
+  });
+
+  // P2: `x/index` and `x/log` are reserved structural basenames that no
+  // adapter indexes, so the asset would import but never be findable.
+  test.each([
+    ["index", "x/index-content"],
+    ["log", "x/log-content"],
+  ])("the reserved username %s is remapped to %s", async (username, expected) => {
+    const original = process.env.X_BEARER_TOKEN;
+    process.env.X_BEARER_TOKEN = "t";
+    try {
+      const snapshot = await withMockedFetch(
+        () => xFetcher.fetch(new URL(`https://x.com/${username}`), CTX),
+        async (input) => {
+          const url = String(input);
+          if (url.includes("/users/by/username/")) return jsonResponse({ data: { id: "1" } });
+          return jsonResponse({ data: [{ id: "9", text: "hi", created_at: "2025-04-01T10:00:00Z" }] });
+        },
+      );
+      expect(snapshot?.preferredName).toBe(expected);
+    } finally {
+      if (original === undefined) delete process.env.X_BEARER_TOKEN;
+      else process.env.X_BEARER_TOKEN = original;
+    }
+  });
+});

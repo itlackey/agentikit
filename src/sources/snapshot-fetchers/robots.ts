@@ -279,7 +279,12 @@ function normalizePercentEncoding(value: string): string {
   if (!value.includes("%")) return value;
   return value.replace(PERCENT_ENCODED_OCTET, (octetEscape) => {
     const byte = Number.parseInt(octetEscape.slice(1), 16);
-    return isUnreservedByte(byte) ? String.fromCharCode(byte) : octetEscape;
+    if (isUnreservedByte(byte)) return String.fromCharCode(byte);
+    // A reserved octet stays encoded, but `%2F` and `%2f` denote the same
+    // byte — RFC 3986 §6.2.2.1 makes the hex digits case-insensitive. Without
+    // canonicalizing the case, `Disallow: /a%2Fb` would fail to match a link
+    // spelled `/a%2fb` and the page would be crawled anyway.
+    return octetEscape.toUpperCase();
   });
 }
 

@@ -113,9 +113,15 @@ async function xApiJson(url: string, token: string, context: FetcherContext): Pr
         "User-Agent": "akm-cli x fetcher",
       },
       signal: context.signal,
+      redirect: "manual",
     },
     { timeout: context.timeoutMs, retries: 1 },
   );
+  // `redirect: "manual"`: these are pinned API endpoints that have no
+  // legitimate reason to redirect. Following a 3xx would send the next
+  // request to an unvalidated host with none of the SSRF guards the
+  // crawl path applies, and would re-send the bearer token to it.
+  if (response.status >= 300 && response.status < 400) return null;
   if (!response.ok) return null;
   try {
     const body = await readBodyWithByteCap(response, X_BYTE_CAP, {
@@ -161,12 +167,30 @@ function renderMarkdown(username: string, tweets: XTweet[]): string {
 }
 
 /**
+ * `index` and `log` are OKF reserved structural basenames at every depth — an
+ * adapter never indexes them, so an asset written there imports but can never
+ * be found by search or show. Same remap the website crawler applies.
+ */
+function avoidReservedBasename(name: string): string {
+  const segments = name.split("/");
+  const last = segments[segments.length - 1] ?? "";
+  if (last === "index" || last === "log") segments[segments.length - 1] = `${last}-content`;
+  return segments.join("/");
+}
+
+/**
  * Build the RSS fallback URL from a template containing `{username}`.
  * Returns null when the template is absent or does not produce a valid URL.
  */
 export function buildXRssUrl(template: string | undefined, username: string): URL | null {
   const raw = template?.trim();
   if (!raw) return null;
+  // Without the placeholder every profile would import the same fixed feed and
+  // then be relabelled as the requested user — silent provenance corruption.
+  if (!raw.includes("{username}")) {
+    warn('[akm] x-profile: X_RSS_TEMPLATE must contain the "{username}" placeholder; ignoring it.');
+    return null;
+  }
   try {
     const url = new URL(raw.replaceAll("{username}", encodeURIComponent(username)));
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
@@ -194,7 +218,7 @@ const xFetcher: WikiSnapshotFetcher = {
           url: `https://x.com/${username}`,
           title: `X — @${username}`,
           markdown,
-          preferredName: `x/${username}`,
+          preferredName: avoidReservedBasename(`x/${username}`),
           tags: ["x", "twitter", "social"],
         };
       }
@@ -208,7 +232,7 @@ const xFetcher: WikiSnapshotFetcher = {
           ...snapshot,
           url: `https://x.com/${username}`,
           title: `X — @${username}`,
-          preferredName: `x/${username}`,
+          preferredName: avoidReservedBasename(`x/${username}`),
           tags: ["x", "twitter", "social"],
         };
       }

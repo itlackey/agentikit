@@ -320,3 +320,21 @@ describe("security regressions (found in review)", () => {
     expect(md).toContain("https://ok.example/x");
   });
 });
+
+describe("codex review regressions", () => {
+  // Alt text participates in markdown syntax, so a validated src alone does
+  // not uphold the scheme invariant: `x](javascript:...)` in alt emits a
+  // second, unvalidated destination ahead of the real one.
+  test("image alt text cannot inject a second destination", () => {
+    const html = `<html><body><main><img src="https://ok.example/a.png" alt="x](javascript:alert(1))"></main></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).not.toMatch(/(?<!\\)\]\(javascript:/);
+    expect(md).toContain("https://ok.example/a.png");
+  });
+
+  test("link label text cannot inject a second destination", () => {
+    const html = `<html><body><main><a href="https://ok.example/x">a](javascript:alert(1))b</a></main></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).not.toMatch(/(?<!\\)\]\(javascript:/);
+  });
+});

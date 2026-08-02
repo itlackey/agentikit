@@ -81,9 +81,15 @@ async function xrpcJson(url: string, timeoutMs: number, signal?: AbortSignal): P
     {
       headers: { Accept: "application/json", "User-Agent": "akm-cli bluesky fetcher" },
       signal,
+      redirect: "manual",
     },
     { timeout: timeoutMs, retries: 1 },
   );
+  // `redirect: "manual"`: these are pinned API endpoints that have no
+  // legitimate reason to redirect. Following a 3xx would send the next
+  // request to an unvalidated host — potentially loopback or a private
+  // range — with none of the SSRF guards the crawl path applies.
+  if (response.status >= 300 && response.status < 400) return null;
   if (!response.ok) return null;
   try {
     const body = await readBodyWithByteCap(response, BSKY_BYTE_CAP, {

@@ -121,11 +121,16 @@ function singleLine(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-/** Emit a link only when it is a safe absolute http(s) URL. */
-function safeLinkOrEmpty(value: string): string {
+/**
+ * Emit a link only when it resolves to a safe http(s) URL. Relative IRIs are
+ * valid and common in Atom, so resolve against the feed URL before the scheme
+ * check rather than dropping them.
+ */
+function safeLinkOrEmpty(value: string, baseUrl: string): string {
   if (!value) return "";
   try {
-    return isSafeLinkUrl(new URL(value)) ? value : "";
+    const resolved = new URL(value, baseUrl);
+    return isSafeLinkUrl(resolved) ? resolved.toString() : "";
   } catch {
     return "";
   }
@@ -143,7 +148,7 @@ function readRssItems(channel: Record<string, unknown>, limit: number, baseUrl: 
     const item = (raw ?? {}) as Record<string, unknown>;
     return {
       title: singleLine(text(item.title)),
-      link: safeLinkOrEmpty(text(item.link) || text(item.guid)),
+      link: safeLinkOrEmpty(text(item.link) || text(item.guid), baseUrl),
       date: toIsoDate(text(item.pubDate) || text(item["dc:date"])),
       summary: htmlToPlainText(text(item.description) || text(item["content:encoded"]), baseUrl),
     };
@@ -156,7 +161,7 @@ function readAtomEntries(feed: Record<string, unknown>, limit: number, baseUrl: 
     const entry = (raw ?? {}) as Record<string, unknown>;
     return {
       title: singleLine(text(entry.title)),
-      link: safeLinkOrEmpty(atomLink(entry.link)),
+      link: safeLinkOrEmpty(atomLink(entry.link), baseUrl),
       date: toIsoDate(text(entry.updated) || text(entry.published)),
       summary: htmlToPlainText(text(entry.summary) || atomContent(entry.content), baseUrl),
     };

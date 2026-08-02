@@ -139,7 +139,16 @@ async function addWebsiteSource(
     const bundles: Record<string, BundleConfigEntry> = { ...(config.bundles ?? {}) };
     const existingKey = bundleKeyForUrl(config, normalizedUrl);
     const key = existingKey ?? nextBundleKey(bundles, name ?? toWebsiteName(normalizedUrl), normalizedUrl);
-    const website = { url: normalizedUrl, ...(maxPages !== undefined ? { maxPages } : {}) };
+    // Merge onto the existing descriptor rather than replacing it: re-running
+    // `bundle add` for a URL that already has a bundle would otherwise drop
+    // respectRobots / maxDepth / refresh, silently restoring default robots
+    // enforcement and changing what the next update fetches.
+    const existingWebsite = existingKey ? ((bundles[key]?.website ?? {}) as Record<string, unknown>) : {};
+    const website = {
+      ...existingWebsite,
+      url: normalizedUrl,
+      ...(maxPages !== undefined ? { maxPages } : {}),
+    };
     const nextBundle: BundleConfigEntry = {
       ...(existingKey ? bundles[key] : {}),
       website,

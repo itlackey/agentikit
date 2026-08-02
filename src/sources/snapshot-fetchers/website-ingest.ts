@@ -221,6 +221,65 @@ function hasExtractedSite(stashDir: string): boolean {
   }
 }
 
+/**
+ * Run the snapshot-fetcher registry against a URL. Returns null when no
+ * fetcher matches or produces content, so the caller falls back to a crawl.
+ * A fetcher that throws is logged and treated as a non-match — one broken
+ * fetcher must not fail the whole source.
+ */
+async function fetchSnapshotViaRegistry(
+  startUrl: string,
+  stashDir: string,
+  allowPrivateHosts?: boolean,
+): Promise<WikiSnapshotResult | null> {
+  let parsed: URL;
+  try {
+    parsed = new URL(startUrl);
+  } catch {
+    return null;
+  }
+  const context: FetcherContext = {
+    stashDir,
+    timeoutMs: 15_000,
+    ...(allowPrivateHosts ? { allowPrivateHosts: true } : {}),
+  };
+  for (const fetcher of await loadWikiSnapshotFetchers(stashDir)) {
+    try {
+      if (!fetcher.matches(parsed, context)) continue;
+      const snapshot = await fetcher.fetch(parsed, context);
+      if (snapshot) return snapshot;
+    } catch (error) {
+      warn(
+        "[akm] snapshot fetcher %s threw on %s: %s",
+        fetcher.name,
+        startUrl,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+  return null;
+}
+
+/** Materialize a single fetcher snapshot as the source's whole stash. */
+function writeSnapshotToStash(stashDir: string, snapshot: WikiSnapshotResult): void {
+  const preferredName = snapshot.preferredName ?? deriveImportPath(snapshot.url);
+  const relPath = avoidReservedBasename(preferredName);
+  const knowledgeDir = path.join(stashDir, "knowledge");
+  fs.rmSync(stashDir, { recursive: true, force: true });
+  const filePath = path.join(knowledgeDir, `${relPath}.md`);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const slug = relPath.split("/").pop() ?? "index";
+  fs.writeFileSync(
+    filePath,
+    buildMarkdownSnapshot(
+      { url: snapshot.url, title: snapshot.title, markdown: snapshot.markdown },
+      slug,
+      snapshot.tags,
+    ),
+    "utf8",
+  );
+}
+
 async function scrapeWebsiteToStash(
   startUrl: string,
   stashDir: string,
@@ -233,6 +292,16 @@ async function scrapeWebsiteToStash(
     rawStartUrl?: string;
   },
 ): Promise<void> {
+  // Offer the URL to the specialized fetchers before falling back to a crawl.
+  // Without this, `akm bundle add <feed|profile URL>` reaches only the generic
+  // crawler and the RSS/Bluesky/X/YouTube fetchers are unreachable outside the
+  // `akm import` path. A fetcher returning null falls through to the crawl.
+  const fetched = await fetchSnapshotViaRegistry(startUrl, stashDir, options.allowPrivateHosts);
+  if (fetched) {
+    writeSnapshotToStash(stashDir, fetched);
+    return;
+  }
+
   const pages = await crawlWebsite(startUrl, options);
   if (pages.length === 0) {
     throw new Error(`No content could be scraped from ${startUrl}`);

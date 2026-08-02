@@ -98,6 +98,19 @@ function resolveEmittableUrl(raw: string, pageUrl: string): string | null {
 }
 
 /**
+ * Escape characters that would let attacker-controlled text break out of a
+ * markdown link/image and start a new one. `alt` and link labels are raw page
+ * strings; an alt of `x](javascript:alert(1))` otherwise emits a second,
+ * unvalidated destination ahead of the validated `src`.
+ */
+function escapeMarkdownLabel(value: string): string {
+  return value
+    .replace(/([\\[\]])/g, "\\$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * Percent-encode parens in a link destination. Unescaped parens truncate the
  * link and spill the remainder into the document as live markup. Encoding
  * (rather than the `<...>` destination form) keeps the result free of `<`, so
@@ -217,7 +230,8 @@ function createTurndown(pageUrl: string): TurndownService {
       const href = (node as Element).getAttribute("href");
       if (!href) return label;
       const resolved = resolveEmittableUrl(href, pageUrl);
-      return resolved ? `[${label}](${markdownDestination(resolved)})` : label;
+      if (!resolved) return label;
+      return `[${escapeMarkdownLabel(label)}](${markdownDestination(resolved)})`;
     },
   });
 
@@ -228,7 +242,7 @@ function createTurndown(pageUrl: string): TurndownService {
     filter: (node: Node): boolean => node.nodeName === "IMG",
     replacement: (_content: string, node: Node): string => {
       const element = node as Element;
-      const alt = element.getAttribute("alt")?.trim() ?? "";
+      const alt = escapeMarkdownLabel(element.getAttribute("alt") ?? "");
       const src = element.getAttribute("src");
       if (!src) return alt;
       const resolved = resolveEmittableUrl(src, pageUrl);
