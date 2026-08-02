@@ -1,10 +1,11 @@
 # Task / Workflow Unification: One Target Vocabulary, One Prose Rule
 
-Status: PROPOSAL v8 — full redesign after three independent adversarial
-reviews of v7 verified every claim against the code (consolidated findings:
-5 critical, 13 major; all resolved or explicitly costed here, see §11
-cross-reference). Baselined on `claude/release-0-9-0-polish-d6sycl` @
-`71bb686` (hardened 0.9 cutover). Breaking changes are approved for 0.9.0.
+Status: PROPOSAL v9 — v8 (the post-Opus-review redesign) revised against a
+four-lens Sonnet panel (coverage audit, architecture, fresh adversarial,
+security+migration; reports in the session scratchpad, `sonnet-r1-*.md`).
+All panel criticals and majors are applied here; §11 records both rounds.
+Baselined on `claude/release-0-9-0-polish-d6sycl` @ `71bb686` (hardened 0.9
+cutover). Breaking changes are approved for 0.9.0.
 Date: 2026-08-01
 Related: [`workflow-format-unification.md`](./workflow-format-unification.md),
 [`okf-support.md`](./okf-support.md),
@@ -65,6 +66,15 @@ overload this spec deletes `prompt:` for. GHA's `inputs:`/`with:` split
 exists precisely here, and §2.4/§4 give `with:` exactly one meaning:
 **inputs handed to the referenced asset, never cascaded.**
 
+Two `uses:` modes differ in kind, named for authors: `tasks/<n>`
+**composes** — the referenced definition becomes this step's own work —
+while `workflows/<r>` **invokes** — a child run executes and returns.
+`with:` merge on a composition chain (a step referencing a task that
+itself targets a command or workflow) is per-key shallow merge, referencing
+step wins; `with.arguments` is one key, replaced whole. The merged mapping
+feeds the final target: placeholder fill for a command, declared param
+flags for a workflow.
+
 ### 2.3 Steps are tasks — composition by reference
 
 ```yaml
@@ -109,6 +119,9 @@ fixed by this work). The contract, defined against that reality:
 - An unmatched placeholder or unused `with:` key is a **lint warning and is
   left verbatim** — not a runtime hard error, so imported `$ARGUMENTS`
   commands remain usable as targets.
+- `with.arguments` is reserved: a literal `{{arguments}}` placeholder is
+  filled by it too, with a lint warning about the shadowing. Words past
+  `$9` remain reachable only through `$ARGUMENTS`.
 
 Filling happens at freeze (workflows) / dispatch (tasks), producing the
 prompt string. Bodies remain verbatim — templating stays scoped to the
@@ -164,9 +177,19 @@ Lifecycle unchanged: discover via search/show; enable via `enabled:` +
 `task sync`; the OS entry still invokes `akm task run <id>`. Lifecycle
 interactions pinned (review minors): `status: draft` → `sync` never
 installs, regardless of `enabled:`; `status: deprecated` → installs with a
-warning. The improve pipeline **never rewrites task bodies** — a task body
-is an executable prompt, not curatable knowledge; lint runs, improve is
-excluded by adapter policy.
+warning; a previously-installed task that becomes `draft` (or
+`enabled: false`) is uninstalled by the next `sync` — reconciliation is to
+desired state, both directions.
+
+Two adapter-policy changes with named mechanisms (panel M13 follow-up):
+the akm adapter's current `type: "task"` special-case — parse as pure
+YAML, `frontmatter: null`, so markdown base checks never fire
+(`akm-adapter.ts:404-412`) — is **removed with the format**, and markdown
+tasks get the full markdown base-check suite; and tasks are declared
+**improve-ineligible** where the adapter already declares per-type
+capabilities, consumed by improve's candidate selection — a task body is
+an executable prompt, not curatable knowledge. Lint runs; improve never
+rewrites it.
 
 ## 4. Configuration: two selectors, one value vocabulary, one cascade — built, not "exposed"
 
@@ -194,7 +217,20 @@ cascade):
 no longer exists as a field name outside workflow declarations. `on_error`/
 `retry` join the vocabulary because `defaults.on_error` already exists at
 document level today — review M12 — making "graph keys are steps-only"
-false for them; they remain meaningless on a task and lint says so.)
+false for them; they remain meaningless on a task and lint says so. Value
+fields other than `timeout`/`env` on a `uses: workflows/*` task draw the
+same inapplicable-field notice — they configure a unit, and a workflow
+invocation has none.)
+
+**Merge classes, stated once** (panel finding: a generic "nearest wins"
+would silently downgrade the existing deep-merge): **scalars** (`model`,
+`temperature`, `max_tokens`, `timeout`, `cwd`, `shell`, `on_error`) —
+nearest wins whole; **mappings** (`extra_params`) — deep-merged along the
+chain, preserving today's `deepMergeConfig` behavior
+(`freeze.ts:211-216`); **lists** (`env`) — concatenated, later wins;
+**`retry`** — replaced whole (half-merging `max`/`on` would be
+incoherent). `with:` merges per-key at its target (§2.2), outside the
+cascade.
 
 **Layers, far → near:**
 
@@ -206,16 +242,25 @@ config defaults: → engines.<selected> → agents/<selected> → document defau
 
 1. `DefaultsSchema` gains the value fields, and stops silently swallowing
    unknown keys (strict with migration-safe notices).
-2. A **persona snapshot**: the agent asset resolved through the show layer
-   — which is where the writable-vs-third-party provenance ceiling for
-   self-declared `tools:` already lives (review M5) — yielding
-   `{systemPrompt, toolPolicy, model, …valueFields}`, frozen into the plan.
-   Freeze never re-implements the ceiling; it consumes the show layer's
-   verdict. (This also fixes the live bug where `prompt: agents/x` ships
-   raw file bytes *including frontmatter* to the model —
+2. A **persona snapshot**: the agent asset resolved through the
+   provenance ceiling — 07 P1-D, today inline in the show command
+   (`src/commands/read/show.ts:433-445`): self-declared `tools:` honored
+   ONLY for the operator's **primary stash**, keyed off primary-stash
+   identity, explicitly *not* the writable bit, failing closed. That
+   check is **extracted into a shared persona resolver** consumed by both
+   `show` and freeze — a named refactor in §9, since its current home is
+   a CLI formatter. The snapshot `{systemPrompt, toolPolicy, model,
+   …valueFields}` freezes into the plan; `toolPolicy` is consumed by
+   agent-kind engines and draws the standard unconsumed-field notice on
+   LLM engines. (This also fixes the live bug where `prompt: agents/x`
+   ships raw file bytes *including frontmatter* to the model —
    `runner.ts:592-593`.)
 3. One cascade module (`src/exec/cascade.ts`), the only implementation of
-   layer merge, consumed at freeze (workflows) and dispatch (tasks).
+   layer merge, consumed at freeze (workflows) and dispatch (tasks). It
+   consolidates the three engine/model resolution sites that exist today
+   (`freeze.ts:163-209`, `tasks/runner.ts:479-514`, engine-resolution)
+   including their subtly divergent opencode-sdk `llmEngine` fallback
+   rules — one implementation, one fallback rule.
 4. **Capability notices replace both kind-gates.** The task path's hard
    error and freeze's guard — which review M6 showed is *dead code*
    (`freeze.ts:67-73` computes `llm` only for llm engines, then guards
@@ -260,6 +305,22 @@ Execution is a strategy seam with exactly two implementations:
 - **ShellUnitExecutor** — `Bun.spawn()` for `run:` text and script assets,
   used by both the task runner and the orchestrator.
 
+Staging is symmetric and named (panel: the task path's staging was
+unstated): **tasks** run *resolve → execute* — the same resolve stage
+(cascade, persona, targets, templates) with no plan persistence;
+**workflows** run *compile → resolve → freeze → execute* (§5.4). Both
+executors sit behind one interface; each surface wraps results into its
+own recording sink (`task_history`/`logs.db` vs the run journal) — the
+adapter lives at the sink, not inside the executor, which is how the
+`RunnerSpec`-vs-`UnitDispatchRequest` split stays out of the executors'
+type signatures: the resolve stage produces one dispatch plan both
+consume. **ShellUnitExecutor is extracted from the task runner's existing
+hardened command path** (kill-ladder, `exec-utils` argv/env handling,
+event-source stamping) and adopted by the orchestrator — not a new spawn
+wrapper. Composition is monotemporal by rule: a referenced task's fields
+join the cascade from the copy resolved at freeze, under the workflow's
+config snapshot — a composed task never re-reads config at dispatch.
+
 Run recording stays split (cron job vs journaled plan) — that boundary is
 real. Everything upstream unifies: target resolution, template filling,
 cascade, alias resolution, env assembly.
@@ -272,7 +333,10 @@ no engine, and the IR rejects empty instructions — v7's "no IR changes"
 was false. Owned properly:
 
 - `IrInvocation` becomes a discriminated union:
-  `{ kind: "agent", engine, … }` | `{ kind: "shell", script, shell, cwd }`.
+  `{ kind: "agent", engine, … }` | `{ kind: "shell", script, shell, cwd,
+  timeoutMs }` (`timeout` is a value field for `run:`, so the shell member
+  carries it). Shell members exclude engine/llm fields **structurally** —
+  by union-member shape, not by decoder-validated absence.
 - Engine resolution happens **per unit kind**: shell units need no engine,
   so a shell-only workflow freezes on an engine-less machine (the current
   "no engine selected" error narrows to plans containing agent units).
@@ -283,6 +347,11 @@ was false. Owned properly:
   protocol, shell units are **orchestrator-owned**: `brief` lists them as
   non-claimable and the engine executes them natively — a harness never
   claims shell work.
+- Crash/restart: shell units use the same claim/lease rows as agent
+  units; a running shell unit whose lease expires re-dispatches on resume
+  under its retry policy. Re-execution idempotency is the author's
+  contract — the same contract every cron job already carries — stated in
+  the docs, not solvable by the engine.
 - Plan IR version bumps to 4; decoders reject v4 plans in older binaries
   (existing plan-version machinery).
 
@@ -295,8 +364,9 @@ journal rows. hashVersion 5's preimage, explicitly:
 
 | Field | Notes |
 |---|---|
-| template instructions | **post** freeze-time prose append (§2.3) |
-| target kind + `uses:` ref + resolved content hash | a re-pointed or edited referenced asset re-dispatches |
+| template instructions | **post** freeze-time prose append (§2.3) and **post** template fill, so `with:` values are covered via the filled bytes |
+| target kind + `uses:` ref + resolved content hash | a re-pointed or edited referenced asset re-dispatches; also the retained provenance for composed steps (the "single-file provenance" minor) |
+| persona snapshot hash | system prompt, tool policy, and value fields of the frozen persona — editing `agents/<n>` re-dispatches (panel critical: omitted in v8) |
 | shell text, `shell`, `cwd` | shell units |
 | item / inputs / dispatch / invocation / schema | as v4 |
 | env **names** + env **literal values** | see §5.5 — literals are plan content; ref-sourced values stay names-only |
@@ -335,32 +405,59 @@ layers. The clean line is **provenance, not shape**:
   change, not "additive."
 - Env assembly moves per-unit where fan-out requires it: a `map:` step
   with a shell target receives `AKM_ITEM` (JSON) and `AKM_ITEM_INDEX`
-  per unit.
+  per unit — set as env-object entries on the spawned process (the
+  `exec-utils` pattern), never spliced into shell text.
+- Literal entries run the existing secret-shape heuristic
+  (`param-secrets.ts`'s `detectSecretShapedParams`, built for exactly this
+  risk on params): a secret-shaped literal is a lint error pointing at
+  `secrets/<n>`.
+- The split is enforced at one place: a single env-assembly resolver (§8
+  plumbing) is the only producer of env entries and of their
+  `sensitiveValues` contributions, so the literal/ref line cannot
+  silently diverge per call site.
 
-### 5.6 Executing scripts is an activation decision, not plumbing
+### 5.6 Executing scripts inherits the tools: ceiling — no new trust machinery
 
-Review C5: script `run`/`setup`/`cwd` metadata is advisory today, and
-"registering a bundle never activates code" is a documented invariant —
-v7 quietly reversed it. v8 extends the invariant instead:
+v8 proposed a per-bundle grant key. The panel killed it twice over:
+`activation-policy.ts` documents a standing decision **against new
+persisted trust machinery**, and the claimed precedent — the `tools:`
+provenance ceiling — has **no override at all**. v9 inherits the ceiling
+exactly instead of imitating it loosely:
 
-- Executing a script asset (or composing a task that does) from the
-  operator's **own writable bundles**: allowed — same trust as authoring
-  `run:` text.
-- From a **third-party / read-only bundle**: requires an explicit
-  per-bundle grant (`bundles.<name>.allowScriptExecution: true`), settable
-  interactively during `akm setup`'s existing task-review step or by
-  `akm config set`. Absent the grant, dispatch refuses with the config
-  key named; nothing is auto-activated by install, ever.
-- Same ceiling philosophy as the `tools:` provenance gate, applied at
-  resolve time (§5.4), enforced at both executors.
+- Shell-class work (a script asset, or the `run:` text of a task) executes
+  **only when its defining asset lives in the operator's primary stash** —
+  the same line 07 P1-D draws for self-declared tool grants
+  (`show.ts:433-445`): keyed off primary-stash identity, explicitly *not*
+  the writable bit, failing closed.
+- Evaluated where the asset is resolved — freeze for workflows, dispatch
+  for tasks — so there is no sync-time/fire-time gap and no standing
+  grant for a bundle update to swap content under.
+- Composition chains inherit the rule from the **defining asset's own
+  source**: a primary-stash task that `uses:` a third-party script — or
+  composes a third-party task whose target is shell — refuses with an
+  error naming the ref and its source. No chain launders provenance.
+- The remedy is an existing verb, not a config bit: `akm clone <ref>`
+  copies the asset into the primary stash, where the operator owns and
+  reviews the bytes; the refusal message says exactly that.
+- Scope: this ceiling governs the **new non-AI exec surface only**.
+  Agent-dispatched third-party tasks remain governed by the existing
+  scheduling gates (setup/sync review, `enabled:`), unchanged.
+
+Zero new config, zero persisted trust state. Loosening later (per-bundle
+grants) is an additive future decision that must revisit the
+activation-policy document — deliberately out of 0.9.0 scope.
 
 ### 5.7 Shell ergonomics
 
 - Bare `akm` in shell/script work resolves to the current installation by
-  **PATH prepend** in the child environment — replacing the argv-rewrite
-  (`resolveNestedAkmCommand`) that shell text would defeat (review M9),
-  and covering scripts for free. The task runner keeps the argv rewrite
-  only for legacy `.yml` `command:` until that format retires.
+  a **synthesized shim**, not a bare PATH prepend: `resolveAkmInvocation()`
+  can return a multi-element launcher invocation (`bun <script>` — the
+  case the argv-splice was built for, panel M9 follow-up), so the runner
+  writes a platform-appropriate shim (sh script / `.cmd`) invoking the
+  exact resolved invocation into the run's temp dir and prepends that dir
+  to the child `PATH` (case-insensitive `Path` merge on Windows). Replaces
+  the argv rewrite for shell work and covers scripts for free; the task
+  runner keeps the argv rewrite only for legacy `.yml` until retirement.
 - `cwd:` under `isolation: worktree` is resolved relative to the worktree
   root; `cwd:` on the LLM runner is a capability notice (review minors).
 
@@ -406,12 +503,15 @@ Rebuilt against the `71bb686` migrator and review M7 (3/3):
   which violates the frozen-migrator principle and breaks the moment the
   live parser is replaced; that gets fixed as part of this work.
 - Mapping: `command: <shell string>` → `run:` verbatim; `command:
-  [argv…]` → `run:` with each element shell-escaped (arrays have no free
-  shell spelling); `prompt: |` → body; `prompt: commands/x` → `uses:` +
-  `with:`; `prompt: agents/x` → `agent:`; `prompt: ./file.md` → inlined;
-  `workflow:`+`params` → `uses: workflows/…` + `with:`; `timeoutMs` →
-  `timeout`; `llm.maxTokens`/`llm.temperature`/`llm.extraParams` → flat
-  fields; **`name:` → the body's H1** (not dropped);
+  [argv…]` → `run:` with each element shell-escaped **for POSIX `sh`, the
+  migrated task recording `shell: sh` explicitly** so the Windows
+  `powershell` default never reinterprets the quoting; `prompt: |` →
+  body; `prompt: commands/x` → `uses:` + `with:`; `prompt: agents/x` →
+  `agent:`; `prompt: ./file.md` → inlined; `workflow:`+`params` →
+  `uses: workflows/…` + `with:`; `timeoutMs` → `timeout`;
+  `llm.maxTokens`/`llm.temperature`/`llm.extraParams` → flat fields;
+  **`name:` → the body's H1** when the converted body has none, else a
+  per-task migration notice (never silently dropped);
   `llm.supportsJsonSchema`/`contextLength`/`enableThinking` are
   endpoint-capability facts that belong on the **engine node** — the
   migrator emits a per-task notice naming the value and the config key
@@ -422,13 +522,27 @@ Rebuilt against the `71bb686` migrator and review M7 (3/3):
   (refusals key on config/DB shape, not stray files, and placement
   filters by extension — a stray `.yml` today would be invisible or
   wrongly installed): task discovery keeps matching `tasks/*.yml`
-  **permanently, as a diagnostic** — `sync`, `doctor`, and `lint` each
-  hard-error naming the file and the fix; a `.yml` is never installed and
-  never silently skipped. `<id>.yml` + `<id>.md` collide on one conceptId
-  → same named error.
+  **permanently, as a diagnostic**. In **writable** bundles, `sync`,
+  `doctor`, and `lint` hard-error naming the file and the fix; in
+  **read-only/third-party** bundles the same diagnostic is a warning —
+  the operator cannot edit those files, matching the migrator's existing
+  read-only carve-out (`task-target-ref-migration.ts:253-271`). Either
+  way a `.yml` is never installed and never silently skipped.
+  `<id>.yml` + `<id>.md` colliding on one conceptId is the same named
+  error. **Conversion is interruption-safe by ordering**: the migrator
+  journals the `.md` write and verifies it before removing the `.yml`,
+  and the collision diagnostic special-cases the byte-equivalent
+  mid-migration pair (resume completes the removal instead of erroring on
+  the migrator's own half-applied state — the panel's crash-window
+  finding; the current backup model journals whole-DB/config artifacts
+  only, so this per-file create-then-delete ordering is a stated
+  extension of the content-migration step, costed in §9).
 - Embedded templates convert to `.md`; `listEmbeddedTasks` and `akm
   setup`'s task review move to markdown-aware editing (the current YAML
   round-trip would destroy bodies — review minor).
+- The id-grammar work (subdir ids, scheduler-id `/` → `--` mapping with
+  collision lint) lands **in the same migration step, before scheduler
+  reconciliation** — sequencing the panel flagged as unstated.
 - The pre-flatten workflow schema (`unit:`, `map.unit`, `defaults.llm`)
   converts in the same step: bag fields lift, `llm` flattens,
   `unit.output` → `map.output` or step `output:` per §7.
@@ -445,7 +559,8 @@ Honest replacement for v7's §10 (review: "non-goals false ×4").
 | Dispatch | executor strategy (agent/shell); persona fields reach `UnitDispatchRequest` |
 | Schemas | shared target+value defs; task schema rewritten; workflow schema flattened; `DefaultsSchema` extended and made strict; engine schemas made strict |
 | Parsers | `parseTaskDocument` retired to the migrator (vendored); unified parser gains task recognition; section-required rule relaxed per target kind |
-| Adapters | markdown task recognition (`type: task`); improve-exclusion policy; task goldens re-baselined (they are marked immutable — a DESIGNATIONS re-baseline note is part of the change, as the S6 precedent) |
+| Adapters | markdown task recognition (`type: task`); the `type: "task"` pure-YAML special-case removed (markdown base checks apply); improve-ineligibility declared as a per-type capability; task goldens re-baselined (they are marked immutable — a DESIGNATIONS re-baseline note is part of the change, as the S6 precedent) |
+| Named refactors | 07 P1-D ceiling extracted from `show.ts` into a shared persona resolver; ShellUnitExecutor extracted from the task runner's hardened command path; the three engine/model resolution sites consolidated into the cascade module; the `akm` shim mechanism; per-file create-verify-delete ordering added to the content-migration step |
 | CLI | `task create`; `task add` retires with `.yml`; capability notices in lint/doctor |
 | Storage | `task_history.target_kind` values widened (additive) |
 | Docs/tests | reference docs, ~10 templates, format-family goldens, parser/freeze/executor suites |
@@ -476,7 +591,7 @@ dead llm guard.
 | C2 shell units unrepresentable (3/3) | §5.2 — IR v4 invocation union, per-kind engine resolution |
 | C3 hash preimage (3/3) | §5.3 — hashVersion 5, preimage table; §2.3 freeze-time append |
 | C4 cascade layers don't exist (3/3) | §4 — "built, not exposed"; build inventory |
-| C5 script execution security (2/3) | §5.6 — activation grants; invariant extended, not reversed |
+| C5 script execution security (2/3) | §5.6 — the tools: ceiling inherited exactly (primary-stash only, no override); v8's grant key withdrawn after the panel showed it contradicted activation-policy's no-new-trust-machinery decision |
 | M1 params overload (3/3) | §2.2 — `with:` for inputs; `params:` declarations only; neither cascades |
 | M2 placeholder grammar (3/3) | §2.4 — `with:`/`with.arguments` against the real grammar; lenient + lint |
 | M3 env not additive (3/3) | §5.5 — literal/ref provenance split; IR v4; per-unit env |
@@ -485,7 +600,7 @@ dead llm guard.
 | M6 dead kind-gate (2/3) | §4.4 — both gates → capability notices |
 | M7 migration overclaims (3/3) | §8 — vendored parser, full mapping, tombstone rule |
 | M8 adapter recognition (2/3) | §3 — `type: task` required |
-| M9 akm-bin rewrite (2/3) | §5.7 — PATH prepend |
+| M9 akm-bin rewrite (2/3) | §5.7 — synthesized shim (a bare PATH prepend cannot cover multi-element launcher invocations) |
 | M10 prose invariants (2/3) | §5.2 — per-kind relaxation, costed |
 | M11 lint never freezes (1/3) | §5.4 — dry freeze in lint |
 | M12 `defaults.on_error` (2/3) | §4 — `on_error`/`retry` join the value vocabulary |
@@ -499,6 +614,26 @@ output" → two-schema design (C1); §10 non-goals → §9 cost inventory
 (C2/C3). v7's remaining question (cascade sign-off) is superseded by this
 section's cross-reference — the cascade shape survived review; its cost
 didn't, and is now stated.
+
+**Round 1 Sonnet panel (v8 → v9).** Four independent reviewers (coverage
+audit, architecture, fresh adversarial, security+migration; full reports
+`sonnet-r1-*.md` in the session scratchpad). Panel criticals, all applied:
+the §5.6 grant key contradicted activation-policy's documented
+no-new-trust-machinery decision → replaced by exact ceiling inheritance;
+the v8 hash preimage omitted the persona snapshot → added; `with:` merge
+on composition chains was undefined → §2.2; the tombstone hard-error was
+unactionable on read-only bundles → warning carve-out. Panel majors, all
+applied: task-path staging named (resolve → execute); executor sinks as
+the adapter boundary; ShellUnitExecutor extracted from the task runner's
+hardened path, not rebuilt; monotemporal composition rule; persona
+resolver extraction scoped; merge classes stated (deep-merge preserved
+for `extra_params`); shell invocation carries `timeoutMs`; shell-unit
+crash/lease semantics; toolPolicy under capability notices; improve
+exclusion given a named mechanism; migration crash-window ordering;
+POSIX-pinned migrated quoting; launcher-aware shim. One panel claim was
+verified false and rejected: "the tools: ceiling doesn't exist" — it does
+(`show.ts:433-445`), inline in the show command, which is exactly why §4
+scopes its extraction.
 
 Open items: none blocking. Two implementation-time choices are delegated
 to the implementer with defaults: the exact capability-declaration shape
