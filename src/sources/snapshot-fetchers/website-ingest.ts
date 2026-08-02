@@ -184,6 +184,11 @@ export async function ensureWebsiteMirror(
         respectRobots: coerceRespectRobots(config.options?.respectRobots),
         allowPrivateHosts: options?.allowPrivateHosts,
         wallClockCapMs: options?.wallClockCapMs,
+        // As-supplied, pre-normalization start URL (see crawlWebsite's
+        // `rawStartUrl` doc comment): threaded through purely for the C-02
+        // robots.txt check, which must see the trailing slash the user
+        // actually typed before `normalizeSiteUrl` strips it.
+        rawStartUrl: rawUrl,
       });
       fs.writeFileSync(
         cachePaths.manifestPath,
@@ -221,6 +226,7 @@ async function scrapeWebsiteToStash(
     respectRobots?: boolean;
     allowPrivateHosts?: boolean;
     wallClockCapMs?: number;
+    rawStartUrl?: string;
   },
 ): Promise<void> {
   const pages = await crawlWebsite(startUrl, options);
@@ -310,12 +316,49 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Evaluates a URL against robots.txt, checking both `normalizedUrl` — the
+ * form akm treats as canonical for dedup/storage, with any bare trailing
+ * slash already stripped by `normalizeCrawlUrl`/`normalizeSiteUrl` — and,
+ * when it differs, `rawUrl`: the URL exactly as discovered (a link's literal
+ * `href`), as-supplied (the user's typed start URL), or redirected-to (a
+ * `Location` header), before any such stripping. A disallow in either form
+ * is treated as disallowed overall.
+ *
+ * `normalizeCrawlUrl`/`normalizeSiteUrl` strip a bare trailing slash before
+ * any robots check ever runs, so a `Disallow: /dir/`-shaped rule — which
+ * requires a literal trailing `/` in the target, see
+ * `matchesCompiledPattern`'s prefix check — can never match the stripped
+ * alias. Checking the un-stripped `rawUrl` closes that gap without changing
+ * what akm treats as the canonical URL for storage/dedup, and (crucially)
+ * without over-blocking a URL that never had a trailing slash to begin with
+ * — e.g. a `/secret` link that happens to redirect to `/secret/`: the
+ * pre-redirect request itself is unaffected by a `Disallow: /secret/` rule,
+ * only the redirect target is.
+ */
+async function isCrawlUrlAllowedByRobots(
+  robots: RobotsPolicy,
+  normalizedUrl: string,
+  rawUrl?: string,
+): Promise<boolean> {
+  if (!(await robots.isAllowed(normalizedUrl))) return false;
+  if (rawUrl && rawUrl !== normalizedUrl && !(await robots.isAllowed(rawUrl))) return false;
+  return true;
+}
+
+/**
  * C-02/C-03: fail fast, before any page fetch, when the start URL itself is
  * off-limits. A 5xx robots.txt (RobotsPolicy caches `DISALLOW_ALL_RULES` for
  * that case) gets a distinct message calling out the server error, per spec
  * §4.6.
+ *
+ * Checks both `start`'s (normalized) URL and `rawStartUrl` — the URL exactly
+ * as the user supplied it in config, before `validateWebsiteUrl` ->
+ * `normalizeSiteUrl` stripped any trailing slash — per
+ * `isCrawlUrlAllowedByRobots`. Without this, a start URL typed as
+ * `.../secret/` under `Disallow: /secret/` would never match that rule and
+ * would be crawled instead of rejected with the spec §4.6 C-02 UsageError.
  */
-async function assertStartUrlAllowedByRobots(robots: RobotsPolicy, start: URL): Promise<void> {
+async function assertStartUrlAllowedByRobots(robots: RobotsPolicy, start: URL, rawStartUrl?: string): Promise<void> {
   const startUrl = start.toString();
   const robotsUrl = new URL("/robots.txt", start.origin).toString();
   const rules = await robots.rulesFor(startUrl);
@@ -327,7 +370,20 @@ async function assertStartUrlAllowedByRobots(robots: RobotsPolicy, start: URL): 
         `robots.txt.`,
     );
   }
-  if (!isPathAllowedByRobots(rules, startUrl)) {
+  let rawStartUrlNormalized: string | undefined;
+  if (rawStartUrl) {
+    try {
+      rawStartUrlNormalized = new URL(rawStartUrl).toString();
+    } catch {
+      rawStartUrlNormalized = undefined;
+    }
+  }
+  const disallowed =
+    !isPathAllowedByRobots(rules, startUrl) ||
+    (rawStartUrlNormalized !== undefined &&
+      rawStartUrlNormalized !== startUrl &&
+      !isPathAllowedByRobots(rules, rawStartUrlNormalized));
+  if (disallowed) {
     throw new UsageError(
       `Refusing to crawl ${startUrl}: disallowed by ${robotsUrl}. Set respectRobots: false on this website ` +
         `source to bypass robots.txt.`,
@@ -343,11 +399,23 @@ async function crawlWebsite(
     respectRobots?: boolean;
     allowPrivateHosts?: boolean;
     wallClockCapMs?: number;
+    /**
+     * The start URL exactly as the user supplied it in config, before
+     * `validateWebsiteUrl` -> `normalizeSiteUrl` stripped any trailing
+     * slash. Passed through to `assertStartUrlAllowedByRobots` only — see
+     * `isCrawlUrlAllowedByRobots`'s doc comment for why. `startUrl` itself is
+     * always already normalized by the time it reaches here (every caller
+     * routes it through `validateWebsiteUrl` first), so it cannot stand in
+     * for the as-typed form on its own.
+     */
+    rawStartUrl?: string;
   },
 ): Promise<WebsitePage[]> {
   const start = new URL(normalizeSiteUrl(startUrl));
   const allowedOrigin = start.origin;
-  const queue: Array<{ url: string; depth: number }> = [{ url: start.toString(), depth: 0 }];
+  const queue: Array<{ url: string; rawUrl: string; depth: number }> = [
+    { url: start.toString(), rawUrl: options.rawStartUrl ?? start.toString(), depth: 0 },
+  ];
   const visited = new Set<string>();
   const pages: WebsitePage[] = [];
   const wallClockCapMs = options.wallClockCapMs ?? WEBSITE_CRAWL_WALL_CLOCK_MS;
@@ -358,7 +426,7 @@ async function crawlWebsite(
       ? createAllowAllRobotsPolicy()
       : createRobotsPolicy((robotsUrl) => loadRobotsTxt(robotsUrl, { allowPrivateHosts: options.allowPrivateHosts }));
 
-  await assertStartUrlAllowedByRobots(robots, start);
+  await assertStartUrlAllowedByRobots(robots, start, options.rawStartUrl);
 
   // Counts actual `fetchWebsitePage` invocations (regardless of outcome) so
   // Crawl-delay pacing skips the first fetch and never charges a delay slot
@@ -377,7 +445,7 @@ async function crawlWebsite(
     if (!normalized || visited.has(normalized)) continue;
     visited.add(normalized);
 
-    if (!(await robots.isAllowed(normalized))) {
+    if (!(await isCrawlUrlAllowedByRobots(robots, normalized, next.rawUrl))) {
       warnVerbose("[akm] website crawl: skipping %s (disallowed by robots.txt)", normalized);
       continue;
     }
@@ -402,9 +470,10 @@ async function crawlWebsite(
     for (const link of fetched.links) {
       if (queue.length + pages.length >= options.maxPages * QUEUE_EXPANSION_FACTOR) break;
       if (link.origin !== allowedOrigin) continue;
-      const candidate = normalizeCrawlUrl(link.toString());
+      const rawLinkUrl = link.toString();
+      const candidate = normalizeCrawlUrl(rawLinkUrl);
       if (!candidate || visited.has(candidate) || isAssetLikePath(link.pathname)) continue;
-      queue.push({ url: candidate, depth: next.depth + 1 });
+      queue.push({ url: candidate, rawUrl: rawLinkUrl, depth: next.depth + 1 });
     }
   }
 
@@ -442,7 +511,8 @@ async function fetchWebsitePage(
     if (err instanceof ResponseTooLargeError) return null;
     throw err;
   }
-  const finalUrl = normalizeCrawlUrl(response.url || pageUrl) ?? pageUrl;
+  const rawFinalUrl = response.url || pageUrl;
+  const finalUrl = normalizeCrawlUrl(rawFinalUrl) ?? pageUrl;
   assertWebsiteRequestUrl(finalUrl, Error, options);
 
   // Re-check robots.txt against the FINAL (post-redirect) URL, not just the
@@ -452,7 +522,11 @@ async function fetchWebsitePage(
   // server then redirects to `/secret/` (a common trailing-slash
   // canonicalization), the disallowed page would otherwise be fetched and
   // stored without ever being weighed against robots.txt. See spec §4.6 C-04.
-  if (options?.robots && !(await options.robots.isAllowed(finalUrl))) {
+  // Checks `rawFinalUrl` (the un-normalized `response.url`, slash intact) as
+  // well as `finalUrl`, per `isCrawlUrlAllowedByRobots` — `normalizeCrawlUrl`
+  // would otherwise strip the very trailing slash a `Disallow: /secret/`
+  // rule needs to match.
+  if (options?.robots && !(await isCrawlUrlAllowedByRobots(options.robots, finalUrl, rawFinalUrl))) {
     warnVerbose("[akm] website crawl: skipping %s (disallowed by robots.txt after redirect)", finalUrl);
     return null;
   }

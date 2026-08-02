@@ -140,6 +140,38 @@ describe("crawlWebsite robots.txt compliance", () => {
     expect(requestLog.some((r) => r.pathname === "/")).toBe(false);
   });
 
+  test(
+    "C-02: a trailing-slash start URL is rejected even though normalizeSiteUrl strips the slash before the " +
+      "robots check sees it",
+    async () => {
+      // Regression: validateWebsiteUrl -> normalizeSiteUrl strips the start
+      // URL's trailing slash before assertStartUrlAllowedByRobots ever sees
+      // it, so a start URL typed as `/secret/` under `Disallow: /secret/`
+      // never matched that rule (the rule requires a literal trailing `/` in
+      // the target) and the disallowed start page was fetched instead of
+      // being rejected.
+      const { url, requestLog } = startFixtureServer({
+        robots: { body: "User-agent: *\nDisallow: /secret/\n" },
+        pages: { "/secret": "<html><body>Secret content</body></html>" },
+      });
+      const startUrl = `${url}/secret/`;
+      trackCache(startUrl);
+
+      let caught: unknown;
+      try {
+        await ensureWebsiteMirror(websiteEntry(startUrl), { allowPrivateHosts: true });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(UsageError);
+      expect((caught as Error).message).toMatch(/respectRobots/);
+      // The disallowed start page must never have been fetched — only
+      // /robots.txt.
+      expect(requestLog.map((r) => r.pathname)).toEqual(["/robots.txt"]);
+    },
+  );
+
   test("C-03: a 5xx robots.txt on the start origin also throws UsageError, naming the server error", async () => {
     const { url } = startFixtureServer({
       robots: { status: 500, body: "boom" },
@@ -200,6 +232,36 @@ describe("crawlWebsite robots.txt compliance", () => {
       expect(robotsRequestsAfterBypass).toBe(robotsRequestsBeforeBypass);
     },
   );
+
+  test("C-04: a Disallow: /dir/ rule is honored for a discovered /dir/ link even with no redirect involved", async () => {
+    // Regression: normalizeCrawlUrl strips a link's trailing slash before
+    // the robots gate runs, so `Disallow: /secret/` never matched the
+    // slash-less alias `/secret` the gate actually checked — even when the
+    // server serves `/secret` directly with 200 and no redirect is ever
+    // involved. The 9d7581f post-redirect re-check only closed the 301
+    // variant of this gap.
+    const { url, requestLog } = startFixtureServer({
+      robots: { body: "User-agent: *\nDisallow: /secret/\n" },
+      pages: {
+        "/": '<html><body><a href="/secret/">Secret</a> <a href="/public">Public</a></body></html>',
+        "/secret": "<html><body>Secret content</body></html>",
+        "/secret/": "<html><body>Secret content</body></html>",
+        "/public": "<html><body>Public content</body></html>",
+      },
+    });
+    trackCache(url);
+    const secretUrl = `${url}/secret`;
+    const publicUrl = `${url}/public`;
+
+    const cachePaths = await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+
+    expect(stashContainsSourceUrl(cachePaths.stashDir, secretUrl)).toBe(false);
+    expect(stashContainsSourceUrl(cachePaths.stashDir, `${secretUrl}/`)).toBe(false);
+    expect(stashContainsSourceUrl(cachePaths.stashDir, publicUrl)).toBe(true);
+    // /secret must never be requested at all.
+    expect(requestLog.some((r) => r.pathname === "/secret")).toBe(false);
+    expect(requestLog.map((r) => r.pathname)).toEqual(["/robots.txt", "/", "/public"]);
+  });
 
   test("C-04: a redirect that lands on a disallowed URL is skipped, not fetched into the stash", async () => {
     // Regression: normalizeCrawlUrl strips trailing slashes before the
