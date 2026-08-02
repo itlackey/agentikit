@@ -109,9 +109,14 @@ steps:
 ### 2.4 Command templates — filled against the real placeholder grammar
 
 Review finding M2 (3/3): command placeholders are `$ARGUMENTS` / `$1`–`$9`
-(positional) and `{{name}}`; the current filler substitutes only positional
-`{{0}}` forms leniently (`src/output/renderers.ts:164-186` — a live bug
-fixed by this work). The contract, defined against that reality:
+(positional) and `{{name}}` per the advertised grammar
+(`extractParameters`, `src/output/renderers.ts:164-186`); the actual
+filler is `fillPlaceholders()` in
+`src/commands/agent/agent-dispatch.ts:67-72`, which substitutes only
+positional `{{0}}` forms, leniently — a live bug fixed by this work, and
+a second call site the new `with:` contract replaces (both the display
+grammar and the dispatch filler converge on §2.4's one rule). The
+contract, defined against that reality:
 
 - `with:` mapping keys fill `{{name}}` placeholders.
 - The reserved key `with.arguments` (string) fills `$ARGUMENTS`, and its
@@ -132,11 +137,16 @@ command asset type, whose definition is "a template with placeholders."
 `<bundle>/tasks/<id>.md`: the shared envelope (`$ref
 akm-asset-envelope.json`, OKF v0.2 families included), trigger keys, at
 most one target, and any §4 fields. No `version:` key. **Recognition
-requires frontmatter `type: task`** — v7's "or `tasks/` residence" is
-unimplementable as stated because the workflow adapter is ordered first
-and claims `.md` files without a contrary `type:`
-(`src/core/adapter/adapters/index.ts:73-90`); residence is a lint
-*expectation*, not a recognition signal.
+requires frontmatter `type: task`, honored in two subsystems** (R2
+finding: v8 cited only one). At the bundle-adapter layer, the workflow
+adapter is ordered first and claims `.md` files without a contrary
+`type:` (`src/core/adapter/adapters/index.ts:73-90`). At the per-file
+indexer classifier — the path that actually types `tasks/*.md` during
+normal indexing — `src/indexer/walk/matchers.ts` gains a `type: task`
+branch **ordered before** its existing `"agent" in fm → command` rule
+(`matchers.ts:234-236`), which would otherwise misclassify any task
+carrying an `agent:` selector — including this section's own example.
+Residence is a lint *expectation*, not a recognition signal.
 
 ````markdown
 ---
@@ -237,6 +247,10 @@ cascade.
 ```
 config defaults: → engines.<selected> → agents/<selected> → document defaults: → uses: tasks/<ref> → step/task keys
 ```
+
+(`document defaults:` is the workflow frontmatter's `defaults:` block and
+exists only there — a standalone task IS its own call site, so for tasks
+that layer is simply absent, not an implied new task key.)
 
 **What must be built (the honest inventory):**
 
@@ -365,7 +379,7 @@ journal rows. hashVersion 5's preimage, explicitly:
 | Field | Notes |
 |---|---|
 | template instructions | **post** freeze-time prose append (§2.3) and **post** template fill, so `with:` values are covered via the filled bytes |
-| target kind + `uses:` ref + resolved content hash | a re-pointed or edited referenced asset re-dispatches; also the retained provenance for composed steps (the "single-file provenance" minor) |
+| target kind + `uses:` ref + resolved content hash | a re-pointed or edited referenced asset re-dispatches; also the retained provenance for composed steps (the "single-file provenance" minor). Script bytes are **embedded at resolve**, like a command's filled text — execution never re-reads live files, keeping composition monotemporal (§5.1) |
 | persona snapshot hash | system prompt, tool policy, and value fields of the frozen persona — editing `agents/<n>` re-dispatches (panel critical: omitted in v8) |
 | shell text, `shell`, `cwd` | shell units |
 | item / inputs / dispatch / invocation / schema | as v4 |
@@ -558,7 +572,7 @@ Honest replacement for v7's §10 (review: "non-goals false ×4").
 | Freeze | two-stage (compile/resolve/freeze), per-kind engine resolution, persona snapshot, prose append, capability notices |
 | Dispatch | executor strategy (agent/shell); persona fields reach `UnitDispatchRequest` |
 | Schemas | shared target+value defs; task schema rewritten; workflow schema flattened; `DefaultsSchema` extended and made strict; engine schemas made strict |
-| Parsers | `parseTaskDocument` retired to the migrator (vendored); unified parser gains task recognition; section-required rule relaxed per target kind |
+| Parsers | `parseTaskDocument` retired to the migrator (vendored); unified parser gains task recognition; section-required rule relaxed per target kind; the indexer classifier (`matchers.ts`) gains a `type: task` branch ordered ahead of the `"agent" in fm` rule |
 | Adapters | markdown task recognition (`type: task`); the `type: "task"` pure-YAML special-case removed (markdown base checks apply); improve-ineligibility declared as a per-type capability; task goldens re-baselined (they are marked immutable — a DESIGNATIONS re-baseline note is part of the change, as the S6 precedent) |
 | Named refactors | 07 P1-D ceiling extracted from `show.ts` into a shared persona resolver; ShellUnitExecutor extracted from the task runner's hardened command path; the three engine/model resolution sites consolidated into the cascade module; the `akm` shim mechanism; per-file create-verify-delete ordering added to the content-migration step |
 | CLI | `task create`; `task add` retires with `.yml`; capability notices in lint/doctor |
