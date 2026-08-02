@@ -58,7 +58,7 @@ files, store it as an akm secret and inject it for the one command that needs it
 
 ```sh
 akm secret set x-bearer-token
-akm secret run x-bearer-token --as X_BEARER_TOKEN -- akm bundle add https://x.com/<user>
+akm secret run secrets/x-bearer-token X_BEARER_TOKEN -- akm bundle add https://x.com/<user>
 ```
 
 **Website crawl options.** `website` sources accept `maxPages` (default 50),

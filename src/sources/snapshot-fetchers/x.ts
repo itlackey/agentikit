@@ -64,7 +64,7 @@ export function extractXUsername(url: URL): string | null {
  * injects a stored secret into the child process environment:
  *
  *   akm secret set x-bearer-token
- *   akm secret run x-bearer-token --as X_BEARER_TOKEN -- akm bundle add https://x.com/<user>
+ *   akm secret run secrets/x-bearer-token X_BEARER_TOKEN -- akm bundle add https://x.com/<user>
  *
  * Reading the secret file directly from here was the obvious alternative, but
  * `core/env-secret-ref` transitively imports the source providers, which import

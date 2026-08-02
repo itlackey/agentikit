@@ -29,7 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   ```sh
   akm secret set x-bearer-token
-  akm secret run x-bearer-token --as X_BEARER_TOKEN -- akm bundle add https://x.com/<user>
+  akm secret run secrets/x-bearer-token X_BEARER_TOKEN -- akm bundle add https://x.com/<user>
   ```
 
   With neither set, the X fetcher emits one warning and falls through.
