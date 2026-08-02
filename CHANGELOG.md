@@ -6,7 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **RSS, Bluesky, and X sources.** `akm bundle add` now recognizes three new
+  kinds of URL and snapshots them as knowledge assets instead of crawling
+  them as ordinary web pages:
+
+  ```sh
+  akm bundle add https://blog.example/feed          # RSS 2.0 / Atom / RDF
+  akm bundle add https://bsky.app/profile/<handle>  # public, no auth
+  akm bundle add https://x.com/<user>               # see token note below
+  ```
+
+  Any of these falling through — a `/feed` URL that actually serves HTML, an
+  unresolvable Bluesky handle — degrades to the normal website crawl rather
+  than failing the command.
+
+  X needs credentials: set `X_BEARER_TOKEN` for the X API v2, or
+  `X_RSS_TEMPLATE` to an RSS bridge URL containing `{username}`. To keep the
+  token out of your shell history, store it as an akm secret and inject it
+  per-invocation:
+
+  ```sh
+  akm secret set x-bearer-token
+  akm secret run x-bearer-token --as X_BEARER_TOKEN -- akm bundle add https://x.com/<user>
+  ```
+
+  With neither set, the X fetcher emits one warning and falls through.
+
 ### Changed
+
+- **Website snapshots now extract the page's main content.** Conversion moved
+  from a hand-rolled regex converter to a DOM parse plus Turndown, scoped to
+  the page's content region (`<main>`, `<article>`, `[role=main]`, then common
+  content ids/classes, falling back to `<body>` minus nav/header/footer/aside).
+  Navigation, ads, and boilerplate no longer land in snapshots, and tables,
+  nested lists, and fenced code blocks with language hints now survive
+  conversion. **Existing website snapshots will change on their next refresh**
+  — expect them to get shorter and cleaner. Link discovery still scans the
+  whole page, so crawl coverage is unchanged.
+
 
 - **`website` sources now respect `robots.txt` by default.** Before crawling
   an origin, akm fetches and parses that origin's `/robots.txt` and skips

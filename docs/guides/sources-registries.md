@@ -36,6 +36,31 @@ akm bundle add git@github.com:org/skills.git --provider git --name my-skills --w
 
 After `akm bundle add`, run `akm index` to bring the search index up to date.
 
+**Recognized URL shapes.** Before falling back to a general crawl, a `website`
+URL is offered to a set of specialized fetchers. Each produces a single
+markdown snapshot instead of a crawl:
+
+| URL shape | Produces | Notes |
+| --- | --- | --- |
+| YouTube video | Description + transcript | No credentials |
+| `bsky.app/profile/<handle>` | Recent posts | Public API, no credentials |
+| `x.com/<user>`, `twitter.com/<user>` | Recent posts | Needs a token — see below |
+| Feed URLs (`/feed`, `/rss`, `*.rss`, `*.atom`, `*.xml`) | Feed items | RSS 2.0, Atom 1.0, RDF |
+
+A fetcher that cannot produce content hands the URL back to the normal crawler,
+so a `/feed` path that actually serves HTML is still crawled as a web page.
+
+**X credentials.** The X fetcher needs either `X_BEARER_TOKEN` (X API v2) or
+`X_RSS_TEMPLATE` — an RSS bridge URL containing `{username}`, such as a
+self-hosted Nitter instance. With neither set it emits one warning and falls
+through to the crawler. To keep the token out of your shell history and config
+files, store it as an akm secret and inject it for the one command that needs it:
+
+```sh
+akm secret set x-bearer-token
+akm secret run x-bearer-token --as X_BEARER_TOKEN -- akm bundle add https://x.com/<user>
+```
+
 **Website crawl options.** `website` sources accept `maxPages` (default 50),
 `maxDepth` (default 3), and `respectRobots` (default `true`) under the bundle's
 `website` descriptor. `respectRobots` makes akm honor the origin's
