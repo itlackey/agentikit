@@ -97,14 +97,9 @@ function workListFor(
   params: Record<string, unknown>,
   stepOutputs: Record<string, unknown> = {},
 ): Array<{ unitId: string; inputHash: string }> {
-  const computed = computeStepWorkList(plan.steps[stepIndex]!, {
-    runId,
-    params,
-    stepOutputs,
-    engines: plan.execution?.engines,
-  });
-  if (!computed.ok) throw new Error(computed.error);
-  return computed.list.units.map((u) => {
+  // Projection over `fullWorkList` — one place computes the work list, so the
+  // two helpers cannot drift when `WorkListInput` grows a field.
+  return fullWorkList(plan, stepIndex, runId, params, stepOutputs).units.map((u) => {
     if (!u.resolved.ok) throw new Error(`unit ${u.unitId} did not resolve: ${u.resolved.error}`);
     return { unitId: u.journalBaseId, inputHash: u.resolved.inputHash };
   });

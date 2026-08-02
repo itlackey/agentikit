@@ -49,7 +49,12 @@ import { redactCredentialPatterns } from "../core/redaction";
 import { withStateDb } from "../core/state-db";
 import { runManagedSubprocess, type SpawnFn } from "../core/subprocess";
 import type { AgentRunResult, RunAgentOptions } from "../integrations/agent";
-import { fallbackAnnouncement, NO_ENGINE_REMEDY, withEngineFallback } from "../integrations/agent/engine-fallback";
+import {
+  fallbackAnnouncement,
+  NO_ENGINE_MESSAGE_SUFFIX,
+  NO_ENGINE_REMEDY,
+  withEngineFallback,
+} from "../integrations/agent/engine-fallback";
 import { resolveEngine, resolveLlmEngineUse } from "../integrations/agent/engine-resolution";
 import { resolveModel } from "../integrations/agent/model-aliases";
 import type { RunnerSpec } from "../integrations/agent/runner";
@@ -371,9 +376,13 @@ async function runWorkflowTask(input: {
   let detail: WorkflowRunSummary | undefined;
   let gateError: string | undefined;
   let error: Error | undefined;
+  // The prompt path logs the engine-fallback announcement; a workflow-backed
+  // task must leave the same trace rather than silently using a chosen engine.
+  let runWarnings: string[] = [];
   try {
     const execution = await runWorkflowStepsImpl({ target: task.target.ref, params: task.target.params });
     detail = execution.run;
+    runWarnings = execution.warnings ?? [];
     if (execution.gateRejection) {
       gateError = `Verification rejected step "${execution.gateRejection.stepId}": ${execution.gateRejection.feedback}`;
     }
@@ -384,7 +393,12 @@ async function runWorkflowTask(input: {
 
   const finishedAt = finishAttempt(startedAt, now());
   const status: TaskRunStatus = error || gateError ? "failed" : mapWorkflowStatus(detail?.status);
-  const log = renderWorkflowLog({ task, detail, error: error ?? (gateError ? new Error(gateError) : undefined) });
+  const log = renderWorkflowLog({
+    task,
+    detail,
+    error: error ?? (gateError ? new Error(gateError) : undefined),
+    warnings: runWarnings,
+  });
   persistRunLog({
     taskId: task.id,
     startedAtIso: startedAt.toISOString(),
@@ -443,10 +457,16 @@ function mapWorkflowStatus(status: WorkflowRunStatus | undefined): TaskRunStatus
   }
 }
 
-function renderWorkflowLog(input: { task: TaskDocument; detail?: WorkflowRunSummary; error?: Error }): RunLogContent {
+function renderWorkflowLog(input: {
+  task: TaskDocument;
+  detail?: WorkflowRunSummary;
+  error?: Error;
+  warnings?: readonly string[];
+}): RunLogContent {
   const dbLines: TaskLogLineInput[] = [
     { line: `[akm task] task=${input.task.id} kind=workflow ref=${(input.task.target as { ref: string }).ref}` },
   ];
+  for (const warning of input.warnings ?? []) dbLines.push({ level: "warn", line: warning });
   if (input.detail) {
     dbLines.push({ line: `run_id=${input.detail.id} status=${input.detail.status}` });
     dbLines.push({ line: `workflow_title=${input.detail.workflowTitle}` });
@@ -482,10 +502,7 @@ async function runPromptTask(input: {
   // reportable when it is the engine actually selected.
   const engineAnnouncement = fallbackAnnouncement(fallbackEngineName, engineName);
   if (!engineName)
-    throw new NotFoundError(
-      `Task "${task.id}" has no selected engine and \`opencode\` is not on PATH. ${NO_ENGINE_REMEDY}`,
-      "ASSET_NOT_FOUND",
-    );
+    throw new NotFoundError(`Task "${task.id}" ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "ASSET_NOT_FOUND");
   let runner: RunnerSpec = resolveEngine(engineName, config);
   if (runner.kind === "llm") {
     const resolved = resolveLlmEngineUse(config, [

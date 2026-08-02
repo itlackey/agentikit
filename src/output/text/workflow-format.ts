@@ -124,6 +124,10 @@ export function formatWorkflowRunPlain(result: Record<string, unknown>): string 
   if (!run) return null;
 
   const lines = [`run: ${String(run.id ?? "unknown")}`, `status: ${String(run.status ?? "unknown")}`];
+  // Creation-time notices (e.g. the implicit engine fallback) must survive the
+  // text renderer: JSON/YAML pass them through, and dropping them here would
+  // hide the announcement from the DEFAULT output mode — where it matters most.
+  for (const warning of Array.isArray(result.warnings) ? result.warnings : []) lines.push(`! ${String(warning)}`);
   const executed = Array.isArray(result.executed) ? (result.executed as Array<Record<string, unknown>>) : [];
   if (executed.length === 0) {
     lines.push("executed: (no steps — run was already done or blocked)");

@@ -41,6 +41,14 @@ export const FALLBACK_ANNOUNCEMENT =
   "provider, model, and auth come from opencode's own configuration. " +
   "Run `akm setup`, or set `defaults.engine`, to choose explicitly.";
 
+/**
+ * Failure suffix for every surface that needs an engine and found none.
+ * Owned HERE, beside the probe whose outcome it describes: the probe follows a
+ * configured `bin` when one is pinned, so a consumer restating "not on PATH"
+ * would misdescribe a missing absolute path.
+ */
+export const NO_ENGINE_MESSAGE_SUFFIX = `has no selected engine, and no usable \`${OPENCODE_SDK_SERVER_BIN}\` binary was found to fall back to.`;
+
 /** Guidance used when the fallback itself is unavailable. */
 export const NO_ENGINE_REMEDY =
   "Run `akm setup` to detect an installed agent, or set one explicitly: " +

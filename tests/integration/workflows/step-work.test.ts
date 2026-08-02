@@ -926,11 +926,9 @@ describe("reviewer #7 — a tampered route selection fails loudly on every surfa
 
   // DELETED (external-driver removal): the two remaining cases here asserted
   // that the read-only `brief` surface and the `report` finalize path each
-  // rejected a tampered route selection. Both surfaces no longer exist, and the
-  // engine — the only execution surface left — validates journaled selections at
-  // RESUME (`seedJournaledRouteDecisions`, covered by the test above), before it
-  // can ever reach a finalize. `assertJournaledRouteSelectionsValid` therefore
-  // has no production caller any more; it stays covered purely, above.
+  // rejected a tampered route selection. Both surfaces are gone; the engine
+  // validates journaled selections at RESUME via `seedJournaledRouteDecisions`,
+  // covered by the test above.
 });
 
 // ── Reviewer #6 — the gate row is finalized when completeWorkflowStep throws ───

@@ -210,10 +210,6 @@ async function runWorkflowAttempt(options: RunWorkflowOptions): Promise<RunWorkf
   const next: WorkflowNextResult = await getNextWorkflowStep(options.target, options.params, {
     parameterFlags: options.parameterFlags,
   });
-  // Creation-time notices reach the caller only through this result: the run
-  // row itself carries no warnings column, and every later invocation of the
-  // same run must stay silent about a decision it did not make.
-  const startWarnings = next.startWarnings;
   // Version/canonical/hash validation precedes every executable mutation,
   // including lease acquisition. Historical rows remain inspectable/abandonable.
   if (!next.done && !options.loadPlan) {
@@ -263,7 +259,10 @@ async function runWorkflowAttempt(options: RunWorkflowOptions): Promise<RunWorkf
   heartbeat?.start();
   try {
     const result = await driveRun(options, next, leaseHolder, heartbeat);
-    return startWarnings?.length ? { ...result, warnings: [...(result.warnings ?? []), ...startWarnings] } : result;
+    // Creation-time notices reach the caller only here: the run row has no
+    // warnings column, and a later invocation of the same run must stay silent
+    // about a decision it did not make. `driveRun` never sets `warnings`.
+    return next.startWarnings?.length ? { ...result, warnings: next.startWarnings } : result;
   } finally {
     heartbeat?.stop();
     try {

@@ -7,7 +7,12 @@ import type { AkmConfig } from "../../core/config/config";
 import { deepMergeConfig } from "../../core/config/deep-merge";
 import { ConfigError, UsageError } from "../../core/errors";
 import { DEFAULT_AGENT_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS } from "../../integrations/agent/config";
-import { fallbackAnnouncement, NO_ENGINE_REMEDY, withEngineFallback } from "../../integrations/agent/engine-fallback";
+import {
+  FALLBACK_ANNOUNCEMENT,
+  NO_ENGINE_MESSAGE_SUFFIX,
+  NO_ENGINE_REMEDY,
+  withEngineFallback,
+} from "../../integrations/agent/engine-fallback";
 import {
   type EngineConfig,
   type EngineUseConfig,
@@ -68,9 +73,8 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, inputConfig: 
     if (!name)
       throw new ConfigError(
         // Reached only when the implicit opencode-sdk fallback did not apply
-        // either — i.e. `opencode` is not on PATH — so the remedy names both
-        // routes.
-        "No workflow engine is selected and `opencode` is not on PATH. Set defaults.engine or workflow defaults.engine.",
+        // either, so the remedy names both routes.
+        `This workflow ${NO_ENGINE_MESSAGE_SUFFIX} Set defaults.engine or workflow defaults.engine.`,
         "INVALID_CONFIG_FILE",
         NO_ENGINE_REMEDY,
       );
@@ -150,9 +154,9 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, inputConfig: 
     execution: { maxConcurrency, engines },
     steps,
   });
-  const engineAnnouncement = usedFallbackEngine
-    ? fallbackAnnouncement(fallbackEngineName, fallbackEngineName)
-    : undefined;
+  // `usedFallbackEngine` IS the candidate-won predicate, so use the constant
+  // directly rather than re-asking a helper to compare a name with itself.
+  const engineAnnouncement = usedFallbackEngine ? FALLBACK_ANNOUNCEMENT : undefined;
   return {
     warnings: preliminary.warnings,
     ...(engineAnnouncement ? { engineAnnouncement } : {}),

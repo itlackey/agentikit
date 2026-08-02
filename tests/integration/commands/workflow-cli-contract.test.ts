@@ -22,12 +22,7 @@ import path from "node:path";
 import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { runCliCapture } from "../../_helpers/cli";
-import {
-  type IsolatedAkmStorage,
-  withIsolatedAkmStorage,
-  writeSandboxConfig,
-  writeWorkflowTestConfig,
-} from "../../_helpers/sandbox";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
 import { withSeam } from "../../_helpers/seams";
 
 let storage: IsolatedAkmStorage;
@@ -35,12 +30,6 @@ let storage: IsolatedAkmStorage;
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
   writeWorkflowTestConfig();
-  // Q-05: `brief`/`report` are gated behind `experimental.workflowEngine`
-  // (off by default). This file's tests exist to pin the driver-protocol CLI
-  // envelope contracts, not the gate itself (that is
-  // `tests/integration/commands/workflow-engine-gate.test.ts`), so opt in here
-  // to keep exercising the same behavior these tests always have.
-  writeSandboxConfig({ experimental: { workflowEngine: true } });
 });
 
 afterEach(() => storage.cleanup());

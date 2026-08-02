@@ -493,33 +493,6 @@ function projectNextResult(run: WorkflowRunRow, steps: WorkflowRunStepRow[]): Wo
   };
 }
 
-/**
- * A consistent point-in-time snapshot of a run (PR #714 review round 2, #14).
- * Reading the spine (`getNextWorkflowStep`) and then, in a SEPARATE connection,
- * the run row + unit journal is racy: a concurrent `run` or manual completion
- * can change the active step BETWEEN the two reads, leaving the derived
- * work-list inconsistent with the run row it was stamped against. This reads the
- * run row, its steps, AND its unit rows inside ONE transaction (one connection,
- * one snapshot) so all three agree. It never auto-starts — `runId` must already
- * resolve to a concrete run — because this is a pure read.
- */
-export async function snapshotRunForDriver(runId: string): Promise<{
-  next: WorkflowNextResult;
-  run: WorkflowRunRow;
-  units: WorkflowRunUnitRow[];
-}> {
-  return withWorkflowRunsRepo((repo) =>
-    repo.transaction(() => {
-      const run = readWorkflowRun(repo, runId);
-      const steps = readWorkflowRunSteps(repo, run.id);
-      const plan = requireExecutableWorkflowPlan(run);
-      assertWorkflowSpineMatchesPlan(plan, run, steps);
-      const units = repo.getUnitsForRun(run.id);
-      return { next: projectNextResult(run, steps), run, units };
-    }),
-  );
-}
-
 export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetail> {
   return withWorkflowRunsRepo((repo) => {
     const run = readWorkflowRun(repo, runId);
@@ -827,40 +800,6 @@ async function workflowRunRefSet(canonicalRef: string, exactRef: string): Promis
     }
   }
   return [...refs];
-}
-
-/** Resolve an existing active run without auto-starting or rebinding a detached short ref. */
-export async function resolveExistingWorkflowRunId(target: string): Promise<string> {
-  return withWorkflowRunsRepo(async (repo) => {
-    const byId = repo.getRunById(target);
-    if (byId) return byId.id;
-
-    const scopeKey = getCurrentWorkflowScopeKey();
-    const exactRef = target.trim();
-    if (!exactRef.includes(":") && !exactRef.includes("/")) {
-      throw new NotFoundError(`Workflow run or workflow "${target}" not found.`, "WORKFLOW_NOT_FOUND");
-    }
-    const parsedExact = parseBundleRef(exactRef);
-    const detached =
-      parsedExact.bundle && parsedExact.fragment === undefined
-        ? repo.getActiveRunRowForScope(exactRef, scopeKey)
-        : undefined;
-    let canonicalRef: string;
-    try {
-      canonicalRef = await canonicalizeWorkflowSpecifier(exactRef);
-    } catch (error) {
-      if (detached) return detached.id;
-      if (error instanceof NotFoundError) {
-        throw new NotFoundError(`Workflow run or workflow "${target}" not found.`, "WORKFLOW_NOT_FOUND");
-      }
-      throw error;
-    }
-    const active = repo.getActiveRunRowForScope(await workflowRunRefSet(canonicalRef, exactRef), scopeKey);
-    if (!active) {
-      throw new NotFoundError(`No active workflow run for ${canonicalRef} in this scope.`, "WORKFLOW_NOT_FOUND");
-    }
-    return active.id;
-  });
 }
 
 function readWorkflowRun(repo: WorkflowRunsRepository, runId: string): WorkflowRunRow {

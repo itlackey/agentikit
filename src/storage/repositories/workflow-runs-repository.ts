@@ -531,20 +531,6 @@ export class WorkflowRunsRepository {
   }
 
   /**
-   * Stamp a unit-level check-in heartbeat (migration 007): claims (first call)
-   * or heartbeats (subsequent calls) a unit that is being executed. Sets
-   * `status = 'running'` and `last_checkin_at`; NEVER touches `started_at` (the
-   * first-claim marker set by {@link insertUnit}) so the heartbeat window
-   * advances without resetting the claim time. The caller guards against
-   * re-claiming a terminal unit inside its transaction.
-   */
-  updateUnitCheckin(runId: string, unitId: string, lastCheckinAt: string): void {
-    this.db
-      .prepare("UPDATE workflow_run_units SET status = 'running', last_checkin_at = ? WHERE run_id = ? AND unit_id = ?")
-      .run(lastCheckinAt, runId, unitId);
-  }
-
-  /**
    * Insert a unit row in `running` state (a dispatch is starting now).
    *
    * Upsert on the (run_id, unit_id) primary key: durable-row resume
