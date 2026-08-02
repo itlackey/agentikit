@@ -17,8 +17,8 @@ Companion: [`task-workflow-format-unification.md`](./task-workflow-format-unific
 **Build — keep the engine.** Not for lack of a good library: OpenWorkflow is
 genuinely well-built and empirically durable. The blocker is that the thing
 being "offloaded" is mostly not there. Measured against the actual tree,
-**~6% of `src/workflows/exec` + `ir` is the generic durable-execution
-concern these libraries sell**; the other ~94% is akm's product and would
+**~7% of `src/workflows/exec` + `ir` is the generic durable-execution
+concern these libraries sell**; the other ~93% is akm's product and would
 survive adoption unchanged — while adoption *subtracts* capabilities the
 engine has today.
 
@@ -50,14 +50,22 @@ loops; and the `brief`/`report` driver protocol.
 | Component | LOC | Would a library replace it? |
 |---|---|---|
 | `brief.ts` + `report.ts` — external-driver protocol | **2,690 (31%)** | No — no library has an analogue |
-| `ir/` — compile, freeze, plan hash, params | 1,635 | No — determinism/replay identity is akm's contract |
-| Dispatch, gates, worktrees, unit-writer, step-work | ~3,750 | No — agent/LLM dispatch, judged gates, redaction |
-| Journal/resume/lease/concurrency plumbing | **~570 (6%)** | **Yes — this is the addressable surface** |
+| `ir/` — schema, compile, freeze, plan hash, params | 1,635 | No — determinism/replay identity is akm's contract |
+| Dispatch, gates, worktrees, step-work | ~3,750 | No — agent/LLM dispatch, judged gates, redaction |
+| Journal/resume/lease/concurrency plumbing | **~630 (7%)** | **Yes — this is the addressable surface** |
+
+Rows sum to 8,705. The plumbing row is a *region* count, not a file-level
+partition — no whole-file split yields it (the only fully generic files are
+`scheduler.ts` 118 + `unit-writer.ts` 29). The defensible band is ~490–720,
+depending on whether the journal-row rehydration helpers and the gate
+resume seed count as plumbing or as product; the conclusion is unchanged
+anywhere in that band.
 
 For calibration, the generic concurrency concern is `src/core/concurrent.ts`
-+ `concurrency-policy.ts` = **60 lines**.
+(40) + `src/workflows/concurrency-policy.ts` (20) = **60 lines** — both of
+which sit *outside* the 8,705.
 
-A dependency that replaces 6% while adding an integration seam, a schema
+A dependency that replaces 7% while adding an integration seam, a schema
 bridge, and a pre-1.0 upstream is not a burden transfer. It is a burden
 trade at unfavourable odds.
 
@@ -102,10 +110,12 @@ Three verifications that overturned plausible assumptions:
 Every candidate expresses a workflow as **code** — a function whose steps
 are memoized by *call position* as execution proceeds. akm expresses a
 workflow as **data**: markdown compiles to a frozen plan, and units are
-memoized by *content hash* (`hashVersion 5`: template bytes after prose
-append and template fill, target kind and referenced-asset content hash,
-persona snapshot, item, declared inputs, dispatch snapshot, env names,
-isolation, gate feedback).
+memoized by *content hash* (today `hashVersion 4`: frozen template bytes,
+item, declared inputs, params snapshot, dispatch snapshot, invocation,
+schema, env names, isolation, gate feedback — the companion spec proposes
+`hashVersion 5`, adding post-append/post-fill template bytes, the `uses:`
+target kind plus resolved-asset content hash, the persona snapshot, shell text/`shell`/`cwd`, and env *literal*
+values).
 
 Two consequences that no amount of library maturity fixes:
 
@@ -134,7 +144,7 @@ composition, the five-layer cascade, IR v4 with a shell invocation kind,
 `hashVersion 5`, env provenance split, ceiling-inherited shell execution,
 migration inside the journaled 0.9.0 cutover.
 
-Maintenance burden, honestly: akm owns ~570 LOC of journal/lease/resume
+Maintenance burden, honestly: akm owns ~630 LOC of journal/lease/resume
 plumbing plus the IR pipeline. The plumbing is the *stable* part — the
 tables, leases, and claim rows have not been the source of churn; format
 and dispatch semantics have.
@@ -154,8 +164,11 @@ the discriminator. `akm workflow run` compiles markdown → frozen plan
 OpenWorkflow owns run/step journaling, resume, memoization, heartbeats.
 akm keeps the parser, IR/freeze, cascade, gates, dispatch, redaction.
 
-**What is deleted:** ~670 LOC (8–12%) — the run/step journal writer,
-resume bookkeeping, lease renewal.
+**What is deleted:** ~670 LOC (~8%, the low end of §3's 8–12% estimate) —
+the run/step journal writer, resume bookkeeping, lease renewal. That is
+~40 LOC above §2's ~630 central estimate and sits inside its ~490–720
+band: OpenWorkflow absorbs a little more than the narrowest reading of
+"plumbing," which is the most favourable assumption available to it.
 
 **What must be built to stand still** (each verified absent upstream):
 
@@ -166,7 +179,7 @@ resume bookkeeping, lease renewal.
 | No error classification | Re-implement the 12-value failure taxonomy driving retry |
 | Schema collision — **reproduced**: `no such column: parent_step_attempt_id`, no table-prefix option | A **second DB file**, which breaks single-transaction atomicity across the gate spine |
 | 1,000 step-attempt cap | 10× below akm's 10,000-unit expansion limit |
-| `brief`/`report` (2,690 LOC) read `workflow_run_units` | The protocol must be re-pointed at a foreign schema it does not control |
+| `brief`/`report` (2,690 LOC) are built on the `workflow_run_units` row shape (`WorkflowRunUnitRow`, consumed field-by-field — `input_hash`, `phase`, `claim_holder`, `attempts`, `result_json`, `failure_reason` — through the `withWorkflowRunsRepo` seam, not raw SQL) | The protocol must be re-pointed at a foreign schema it does not control |
 
 **Net:** ~670 LOC deleted, ~400+ LOC of adapters and re-implementations
 added, atomicity and cancellation lost, a 10× capacity regression, and a
@@ -181,7 +194,9 @@ neither of which is a workflow engine:
 
 1. **Dependency below the engine, not instead of it.** Replace
    `core/concurrent.ts` with `p-limit`/`p-queue` if desired. Small, real,
-   zero architectural risk. (Optional; 60 lines.)
+   zero architectural risk. (Optional; 40 lines — the other 20 of §2's
+   calibration figure are `workflows/concurrency-policy.ts`, whose
+   cap-precedence policy survives the swap unchanged.)
 2. **Cut scope above the engine — the real lever.** `brief`/`report` is
    **2,690 LOC, 31% of the engine**, and is Experimental/opt-in behind
    `experimental.workflowEngine` while `run` is Stable and ungated. That

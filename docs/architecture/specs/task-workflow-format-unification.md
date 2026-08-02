@@ -1,11 +1,12 @@
 # Task / Workflow Unification: One Target Vocabulary, One Prose Rule
 
 Status: PROPOSAL v9 — v8 (the post-Opus-review redesign) revised against a
-four-lens Sonnet panel (coverage audit, architecture, fresh adversarial,
-security+migration; reports in the session scratchpad, `sonnet-r1-*.md`).
-All panel criticals and majors are applied here; §11 records both rounds.
-Baselined on `claude/release-0-9-0-polish-d6sycl` @ `71bb686` (hardened 0.9
-cutover). Breaking changes are approved for 0.9.0.
+four-lens Sonnet panel, then re-verified claim-by-claim against the current
+baseline (98 claims checked, 22 corrected; a further 7 corrections from an
+audit of that pass). Review corpus:
+[`reviews/task-workflow-unification/`](./reviews/task-workflow-unification/).
+Baselined on `origin/main` @ `17a0dca`, which merged the 0.9 polish branch
+(`71bb686`). Breaking changes are approved for 0.9.0.
 Date: 2026-08-01
 Related: [`workflow-format-unification.md`](./workflow-format-unification.md),
 [`okf-support.md`](./okf-support.md),
@@ -114,9 +115,29 @@ Review finding M2 (3/3): command placeholders are `$ARGUMENTS` / `$1`–`$9`
 filler is `fillPlaceholders()` in
 `src/commands/agent/agent-dispatch.ts:67-72`, which substitutes only
 positional `{{0}}` forms, leniently — a live bug fixed by this work, and
-a second call site the new `with:` contract replaces (both the display
-grammar and the dispatch filler converge on §2.4's one rule). The
-contract, defined against that reality:
+a second call site the new `with:` contract replaces. Three further
+grammars for the same placeholders exist today and diverge from each
+other: the indexer's recognition sniff `COMMAND_PLACEHOLDER_RE`
+(`src/indexer/walk/matchers.ts:126`, consumed at `:239`) matching only
+`$ARGUMENTS`/`$1`–`$3`; `extractCommandParameters`
+(`src/indexer/passes/metadata.ts:440-461`), a near-clone of the display
+grammar that differs from it in case-sensitivity and digit bounding; and
+a lenient sniff at
+`src/core/adapter/adapters/tool-dir-shared.ts:201-204`.
+
+**Convergence is scoped to the fill and display grammars — the two
+recognition sniffs keep their `$`-only forms.** Adding `{{name}}` to
+`COMMAND_PLACEHOLDER_RE` would be a live mis-classification hazard, not a
+cleanup: it returns specificity 18, outranking the directory rules
+(10/15), so any `knowledge/`, `facts/`, or `instructions/` `.md`
+containing a mustache token would be re-typed `command`. The recognition
+gap is narrower than it looks anyway — `classifyByDirectory` /
+`classifyByParentDirHint` (`matchers.ts:43-47`, `:147-156`, `:178-197`)
+already type any `.md` under `commands/` as a command at specificity
+10/15, beating `classifyBySmartMd`'s `knowledge` (5). The sniff is only
+the fallback for command-shaped `.md` living *outside* `commands/`
+without `tools:`/`agent:` frontmatter. The contract, defined against that
+reality:
 
 - `with:` mapping keys fill `{{name}}` placeholders.
 - The reserved key `with.arguments` (string) fills `$ARGUMENTS`, and its
@@ -139,8 +160,13 @@ akm-asset-envelope.json`, OKF v0.2 families included), trigger keys, at
 most one target, and any §4 fields. No `version:` key. **Recognition
 requires frontmatter `type: task`, honored in two subsystems** (R2
 finding: v8 cited only one). At the bundle-adapter layer, the workflow
-adapter is ordered first and claims `.md` files without a contrary
-`type:` (`src/core/adapter/adapters/index.ts:73-90`). At the per-file
+adapter is ordered ahead of the task and generic akm adapters in the
+source-root probe list (6th of 11 —
+`src/core/adapter/adapters/index.ts:73-90`; that array is `looksLikeRoot`
+probe order, and only the adapter that claims a root ever calls
+`recognize()` on its files), and inside an akm-workflow bundle it claims
+every `.md` file whose frontmatter does not declare a contrary `type:`
+(`akm-workflow-adapter.ts:67-70`, `:160`). At the per-file
 indexer classifier — the path that actually types `tasks/*.md` during
 normal indexing — `src/indexer/walk/matchers.ts` gains a `type: task`
 branch **ordered before** its existing `"agent" in fm → command` rule
@@ -196,10 +222,18 @@ the akm adapter's current `type: "task"` special-case — parse as pure
 YAML, `frontmatter: null`, so markdown base checks never fire
 (`akm-adapter.ts:404-412`) — is **removed with the format**, and markdown
 tasks get the full markdown base-check suite; and tasks are declared
-**improve-ineligible** where the adapter already declares per-type
-capabilities, consumed by improve's candidate selection — a task body is
-an executable prompt, not curatable knowledge. Lint runs; improve never
-rewrites it.
+**improve-ineligible**. No such site exists on `BundleAdapter`
+(`src/core/adapter/bundle-adapter.ts:69-121` declares only adapter-level
+optional methods), so v8's "where the adapter already declares per-type
+capabilities" was wrong. Three candidate homes, cheapest first: the
+existing per-type refusal set `DISTILL_REFUSED_INPUT_TYPES`
+(`src/commands/improve/distill.ts:134-142`, already gated at
+`eligibility.ts:380` and documented as driving the planner "for free")
+gains `task`; or the per-type table `TYPE_PRESENTATION`
+(`src/core/type-presentation.ts:74`) gains an eligibility flag; or
+`eligibility.ts` gains an explicit type filter. A task body is an
+executable prompt,
+not curatable knowledge. Lint runs; improve never rewrites it.
 
 ## 4. Configuration: two selectors, one value vocabulary, one cascade — built, not "exposed"
 
@@ -269,8 +303,10 @@ that layer is simply absent, not an implied new task key.)
    LLM engines. (This also fixes the live bug where `prompt: agents/x`
    ships raw file bytes *including frontmatter* to the model —
    `runner.ts:592-593`.)
-3. One cascade module (`src/exec/cascade.ts`), the only implementation of
-   layer merge, consumed at freeze (workflows) and dispatch (tasks). It
+3. One cascade module — a new shared module (e.g. `src/core/cascade.ts`;
+   there is no `src/exec/` tree today, only `src/workflows/exec/` and
+   `src/tasks/`) — the only implementation of layer merge, consumed at
+   freeze (workflows) and dispatch (tasks). It
    consolidates the three engine/model resolution sites that exist today
    (`freeze.ts:163-209`, `tasks/runner.ts:479-514`, engine-resolution)
    including their subtly divergent opencode-sdk `llmEngine` fallback
@@ -329,11 +365,15 @@ adapter lives at the sink, not inside the executor, which is how the
 `RunnerSpec`-vs-`UnitDispatchRequest` split stays out of the executors'
 type signatures: the resolve stage produces one dispatch plan both
 consume. **ShellUnitExecutor is extracted from the task runner's existing
-hardened command path** (kill-ladder, `exec-utils` argv/env handling,
-event-source stamping) and adopted by the orchestrator — not a new spawn
-wrapper. Composition is monotemporal by rule: a referenced task's fields
-join the cascade from the copy resolved at freeze, under the workflow's
-config snapshot — a composed task never re-reads config at dispatch.
+hardened command path** (`runManagedSubprocess`, `src/core/subprocess.ts`,
+called at `tasks/runner.ts:277-289`: process-group spawn, SIGTERM→SIGKILL
+kill ladder, injectable spawn/timer seams, `AKM_EVENT_SOURCE` stamping)
+and adopted by the orchestrator — not a new spawn wrapper.
+(`src/tasks/backends/exec-utils.ts` is the scheduler-backend exec seam,
+not part of this path.) Composition is monotemporal by rule: a referenced
+task's fields join the cascade from the copy resolved at freeze, under the
+workflow's config snapshot — a composed task never re-reads config at
+dispatch.
 
 Run recording stays split (cron job vs journaled plan) — that boundary is
 real. Everything upstream unifies: target resolution, template filling,
@@ -371,10 +411,13 @@ was false. Owned properly:
 
 ### 5.3 Unit identity — hashVersion 5, preimage stated
 
-Review C3 (3/3): hashVersion 4's preimage
-(`step-work.ts:333-392`) covers none of the new inputs; without a bump,
-editing `run:` text or the appended prose would silently reuse completed
-journal rows. hashVersion 5's preimage, explicitly:
+Review C3 (3/3): hashVersion 4's preimage (`step-work.ts:333-392`) covers
+the frozen template bytes but none of the *other* new inputs — shell text,
+the `uses:` target kind/ref/content hash, and the persona snapshot.
+Without a bump, editing `run:` text, re-pointing a `uses:` ref, or editing
+`agents/<n>` would silently reuse completed journal rows. (Freeze-time
+prose appending, §2.3, already rides in via `template`.) hashVersion 5's
+preimage, explicitly:
 
 | Field | Notes |
 |---|---|
@@ -382,7 +425,7 @@ journal rows. hashVersion 5's preimage, explicitly:
 | target kind + `uses:` ref + resolved content hash | a re-pointed or edited referenced asset re-dispatches; also the retained provenance for composed steps (the "single-file provenance" minor). Script bytes are **embedded at resolve**, like a command's filled text — execution never re-reads live files, keeping composition monotemporal (§5.1) |
 | persona snapshot hash | system prompt, tool policy, and value fields of the frozen persona — editing `agents/<n>` re-dispatches (panel critical: omitted in v8) |
 | shell text, `shell`, `cwd` | shell units |
-| item / inputs / dispatch / invocation / schema | as v4 |
+| item / inputs / params / dispatch / invocation / schema | as v4 |
 | env **names** + env **literal values** | see §5.5 — literals are plan content; ref-sourced values stay names-only |
 | isolation, gateFeedback | as v4 |
 
@@ -420,7 +463,8 @@ layers. The clean line is **provenance, not shape**:
 - Env assembly moves per-unit where fan-out requires it: a `map:` step
   with a shell target receives `AKM_ITEM` (JSON) and `AKM_ITEM_INDEX`
   per unit — set as env-object entries on the spawned process (the
-  `exec-utils` pattern), never spliced into shell text.
+  `runManagedSubprocess` `env:` pattern — `src/core/subprocess.ts`, as
+  used at `tasks/runner.ts:284`), never spliced into shell text.
 - Literal entries run the existing secret-shape heuristic
   (`param-secrets.ts`'s `detectSecretShapedParams`, built for exactly this
   risk on params): a secret-shaped literal is a lint error pointing at
@@ -548,9 +592,13 @@ Rebuilt against the `71bb686` migrator and review M7 (3/3):
   and the collision diagnostic special-cases the byte-equivalent
   mid-migration pair (resume completes the removal instead of erroring on
   the migrator's own half-applied state — the panel's crash-window
-  finding; the current backup model journals whole-DB/config artifacts
-  only, so this per-file create-then-delete ordering is a stated
-  extension of the content-migration step, costed in §9).
+  finding; the current *backup* model journals whole-DB/config artifacts
+  only (`migration-backup.ts:54`), so per-file crash safety lives in the
+  content-migration step's own resume ledger —
+  `content-migration-report.json`'s `reservedRenames`
+  (`config-migrate.ts:518-575`); the `.md`-write-then-`.yml`-delete
+  ordering extends that existing ledger rather than introducing per-file
+  journaling, costed in §9).
 - Embedded templates convert to `.md`; `listEmbeddedTasks` and `akm
   setup`'s task review move to markdown-aware editing (the current YAML
   round-trip would destroy bodies — review minor).
@@ -573,8 +621,8 @@ Honest replacement for v7's §10 (review: "non-goals false ×4").
 | Dispatch | executor strategy (agent/shell); persona fields reach `UnitDispatchRequest` |
 | Schemas | shared target+value defs; task schema rewritten; workflow schema flattened; `DefaultsSchema` extended and made strict; engine schemas made strict |
 | Parsers | `parseTaskDocument` retired to the migrator (vendored); unified parser gains task recognition; section-required rule relaxed per target kind; the indexer classifier (`matchers.ts`) gains a `type: task` branch ordered ahead of the `"agent" in fm` rule |
-| Adapters | markdown task recognition (`type: task`); the `type: "task"` pure-YAML special-case removed (markdown base checks apply); improve-ineligibility declared as a per-type capability; task goldens re-baselined (they are marked immutable — a DESIGNATIONS re-baseline note is part of the change, as the S6 precedent) |
-| Named refactors | 07 P1-D ceiling extracted from `show.ts` into a shared persona resolver; ShellUnitExecutor extracted from the task runner's hardened command path; the three engine/model resolution sites consolidated into the cascade module; the `akm` shim mechanism; per-file create-verify-delete ordering added to the content-migration step |
+| Adapters | markdown task recognition (`type: task`); the `type: "task"` pure-YAML special-case removed (markdown base checks apply); improve-ineligibility declared per-type (§3 — `DISTILL_REFUSED_INPUT_TYPES` is the cheapest of three homes); akm-task format-family goldens rewritten directly (they carry `specificationGolden: true` / `adapterStatus: NOT IMPLEMENTED`, and `DESIGNATIONS.json` does not cover that tree at all). **DESIGNATIONS re-pointing is mandatory pre-work**: six entries are touched — `cli/c-tasks-family.json` (already `re-baseline`, chunk 9) plus five goldens pinning `tasks/*.yml` paths — `recognition/all-types.json`, `placement/all-types.json`, `minting/oracle.json` (chunk 4), `lint/all-types.json` (chunk 3), `renderer/all-types.json` (chunk 8) — whose `reBaselineChunk` must be re-pointed at this change *before* it lands, per the DESIGNATIONS `$policy` surface-owner rule |
+| Named refactors | 07 P1-D ceiling extracted from `show.ts` into a shared persona resolver; ShellUnitExecutor extracted from the task runner's hardened command path; the three engine/model resolution sites consolidated into the cascade module; the `akm` shim mechanism; per-file create-verify-delete ordering added to the content-migration step's existing `reservedRenames` resume ledger |
 | CLI | `task create`; `task add` retires with `.yml`; capability notices in lint/doctor |
 | Storage | `task_history.target_kind` values widened (additive) |
 | Docs/tests | reference docs, ~10 templates, format-family goldens, parser/freeze/executor suites |
