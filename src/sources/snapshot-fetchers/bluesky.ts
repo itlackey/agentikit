@@ -2,8 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fetchWithRetry, readBodyWithByteCap } from "../../core/common";
 import { isSafeLinkUrl } from "./content-extract";
+import { coerceString, escapeMarkdownStructure } from "./fetcher-util";
+import { fetchPinnedJson } from "./host-guard";
 import type { WikiSnapshotFetcher, WikiSnapshotResult } from "./types";
 
 /**
@@ -45,18 +46,6 @@ export function extractBlueskyHandle(url: URL): string | null {
   return handle.replace(/^@/, "");
 }
 
-/**
- * Neutralize markdown structure in attacker-controlled prose. Without this a
- * post body containing a line starting with `##` forges a section boundary in
- * the snapshot, letting it impersonate content the fetcher vouched for.
- */
-function escapeStructure(value: string): string {
-  return value
-    .split("\n")
-    .map((line) => line.replace(/^(\s*)([#>\-*+=]|\d+\.)/, "$1\\$2"))
-    .join("\n");
-}
-
 /** Emit a link only when it is a safe absolute http(s) URL. */
 function safeLink(value: string): string {
   if (!value) return "";
@@ -67,46 +56,25 @@ function safeLink(value: string): string {
   }
 }
 
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-async function xrpcJson(url: string, timeoutMs: number, signal?: AbortSignal): Promise<unknown | null> {
-  const response = await fetchWithRetry(
-    url,
-    {
-      headers: { Accept: "application/json", "User-Agent": "akm-cli bluesky fetcher" },
-      signal,
-      redirect: "manual",
-    },
-    { timeout: timeoutMs, retries: 1 },
-  );
-  // `redirect: "manual"`: these are pinned API endpoints that have no
-  // legitimate reason to redirect. Following a 3xx would send the next
-  // request to an unvalidated host — potentially loopback or a private
-  // range — with none of the SSRF guards the crawl path applies.
-  if (response.status >= 300 && response.status < 400) return null;
-  if (!response.ok) return null;
-  try {
-    const body = await readBodyWithByteCap(response, BSKY_BYTE_CAP, {
-      bodyTimeoutMs: BSKY_BODY_TIMEOUT_MS,
-      signal,
-    });
-    return JSON.parse(body);
-  } catch {
-    return null;
-  }
+function xrpcJson(url: string, timeoutMs: number, signal?: AbortSignal): Promise<unknown | null> {
+  return fetchPinnedJson(url, {
+    headers: { Accept: "application/json", "User-Agent": "akm-cli bluesky fetcher" },
+    byteCap: BSKY_BYTE_CAP,
+    bodyTimeoutMs: BSKY_BODY_TIMEOUT_MS,
+    timeoutMs,
+    signal,
+  });
 }
 
 /** Resolve a handle to its DID. Returns null when the handle does not exist. */
 async function resolveHandle(handle: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
   const url = `${PUBLIC_API_BASE}/xrpc/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(handle)}`;
   const json = (await xrpcJson(url, timeoutMs, signal)) as { did?: unknown } | null;
-  const did = str(json?.did);
+  const did = coerceString(json?.did);
   return did || null;
 }
 
@@ -120,12 +88,12 @@ function readPosts(feed: unknown, limit: number): BlueskyPost[] {
     const embed = (post.embed ?? {}) as Record<string, unknown>;
     const external = (embed.external ?? {}) as Record<string, unknown>;
     posts.push({
-      text: str(record.text),
-      createdAt: str(record.createdAt),
-      uri: str(post.uri),
+      text: coerceString(record.text),
+      createdAt: coerceString(record.createdAt),
+      uri: coerceString(post.uri),
       likeCount: num(post.likeCount),
       repostCount: num(post.repostCount),
-      externalUri: safeLink(str(external.uri)),
+      externalUri: safeLink(coerceString(external.uri)),
     });
   }
   return posts;
@@ -144,7 +112,7 @@ function renderMarkdown(handle: string, posts: BlueskyPost[]): string {
     const when = post.createdAt ? new Date(post.createdAt) : null;
     const iso = when && !Number.isNaN(when.getTime()) ? when.toISOString() : "";
     sections.push(`## ${iso || "(undated)"}`, "");
-    if (post.text) sections.push(escapeStructure(post.text), "");
+    if (post.text) sections.push(escapeMarkdownStructure(post.text), "");
     const meta: string[] = [];
     const link = permalink(handle, post.uri);
     if (link) meta.push(link);

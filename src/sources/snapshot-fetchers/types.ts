@@ -19,6 +19,15 @@ export interface WikiSnapshotResult {
   tags?: string[];
 }
 
+/**
+ * Resolve a secret by ref (e.g. `secrets/x-bearer-token`) from akm's secret
+ * store, or null when absent. Named once here so the crawl plumbing threads a
+ * single type rather than re-spelling the signature at each layer.
+ *
+ * Implementations must never log or otherwise surface the returned value.
+ */
+export type SecretResolveFn = (ref: string) => string | null;
+
 export interface FetcherContext {
   stashDir: string;
   timeoutMs: number;
@@ -40,7 +49,7 @@ export interface FetcherContext {
    *
    * Implementations must never log or otherwise surface the returned value.
    */
-  resolveSecret?: (ref: string) => string | null;
+  resolveSecret?: SecretResolveFn;
 }
 
 export interface WikiSnapshotFetcher {

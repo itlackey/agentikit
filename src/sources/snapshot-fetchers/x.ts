@@ -2,8 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fetchWithRetry, readBodyWithByteCap } from "../../core/common";
 import { warn } from "../../core/warn";
+import { avoidReservedBasename, coerceString, escapeMarkdownStructure } from "./fetcher-util";
+import { fetchPinnedJson } from "./host-guard";
 import rssFetcher from "./rss";
 import type { FetcherContext, WikiSnapshotFetcher, WikiSnapshotResult } from "./types";
 
@@ -92,56 +93,23 @@ interface XTweet {
   createdAt: string;
 }
 
-/**
- * Neutralize markdown structure in attacker-controlled prose. Without this a
- * post body containing a line starting with `##` forges a section boundary in
- * the snapshot, letting it impersonate content the fetcher vouched for.
- */
-function escapeStructure(value: string): string {
-  return value
-    .split("\n")
-    .map((line) => line.replace(/^(\s*)([#>\-*+=]|\d+\.)/, "$1\\$2"))
-    .join("\n");
-}
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
 async function xApiJson(url: string, token: string, context: FetcherContext): Promise<Record<string, unknown> | null> {
-  const response = await fetchWithRetry(
-    url,
-    {
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`,
-        "User-Agent": "akm-cli x fetcher",
-      },
-      signal: context.signal,
-      redirect: "manual",
+  return (await fetchPinnedJson(url, {
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+      "User-Agent": "akm-cli x fetcher",
     },
-    { timeout: context.timeoutMs, retries: 1 },
-  );
-  // `redirect: "manual"`: these are pinned API endpoints that have no
-  // legitimate reason to redirect. Following a 3xx would send the next
-  // request to an unvalidated host with none of the SSRF guards the
-  // crawl path applies, and would re-send the bearer token to it.
-  if (response.status >= 300 && response.status < 400) return null;
-  if (!response.ok) return null;
-  try {
-    const body = await readBodyWithByteCap(response, X_BYTE_CAP, {
-      bodyTimeoutMs: X_BODY_TIMEOUT_MS,
-      signal: context.signal,
-    });
-    return JSON.parse(body) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+    byteCap: X_BYTE_CAP,
+    bodyTimeoutMs: X_BODY_TIMEOUT_MS,
+    timeoutMs: context.timeoutMs,
+    signal: context.signal,
+  })) as Record<string, unknown> | null;
 }
 
 async function fetchViaApi(username: string, token: string, context: FetcherContext): Promise<XTweet[] | null> {
   const lookup = await xApiJson(`${X_API_BASE}/users/by/username/${encodeURIComponent(username)}`, token, context);
-  const userId = str((lookup?.data as { id?: unknown } | undefined)?.id);
+  const userId = coerceString((lookup?.data as { id?: unknown } | undefined)?.id);
   if (!userId) return null;
 
   const timeline = await xApiJson(
@@ -155,7 +123,7 @@ async function fetchViaApi(username: string, token: string, context: FetcherCont
 
   return data.map((raw) => {
     const tweet = (raw ?? {}) as Record<string, unknown>;
-    return { id: str(tweet.id), text: str(tweet.text), createdAt: str(tweet.created_at) };
+    return { id: coerceString(tweet.id), text: coerceString(tweet.text), createdAt: coerceString(tweet.created_at) };
   });
 }
 
@@ -165,22 +133,10 @@ function renderMarkdown(username: string, tweets: XTweet[]): string {
     if (!tweet.text) continue;
     const when = tweet.createdAt ? new Date(tweet.createdAt) : null;
     const iso = when && !Number.isNaN(when.getTime()) ? when.toISOString() : "";
-    sections.push(`## ${iso || "(undated)"}`, "", escapeStructure(tweet.text), "");
+    sections.push(`## ${iso || "(undated)"}`, "", escapeMarkdownStructure(tweet.text), "");
     if (tweet.id) sections.push(`https://x.com/${username}/status/${tweet.id}`, "");
   }
   return sections.join("\n").trimEnd();
-}
-
-/**
- * `index` and `log` are OKF reserved structural basenames at every depth — an
- * adapter never indexes them, so an asset written there imports but can never
- * be found by search or show. Same remap the website crawler applies.
- */
-function avoidReservedBasename(name: string): string {
-  const segments = name.split("/");
-  const last = segments[segments.length - 1] ?? "";
-  if (last === "index" || last === "log") segments[segments.length - 1] = `${last}-content`;
-  return segments.join("/");
 }
 
 /**

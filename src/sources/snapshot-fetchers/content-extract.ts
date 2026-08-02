@@ -23,6 +23,19 @@ import TurndownService from "turndown";
 const DANGEROUS_TAGS = ["script", "style", "noscript", "template"] as const;
 
 /**
+ * Scrub patterns for {@link scrubDangerousMarkup}, compiled once at module
+ * load rather than per call — this runs on every crawled page.
+ */
+const DANGEROUS_TAG_PATTERNS = DANGEROUS_TAGS.map((tag) => ({
+  // A full block with any end-tag spelling a browser would accept.
+  full: new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/\\s*${tag}\\b[^>]*>`, "gi"),
+  // Unterminated open tag: everything to EOF is inside the raw-text element.
+  unterminated: new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*$`, "i"),
+  // Any stray leftover tag of this kind.
+  stray: new RegExp(`<\\/?\\s*${tag}\\b[^>]*>`, "gi"),
+}));
+
+/**
  * Chrome stripped only when falling back to `<body>`. Not applied when a
  * semantic content region matched: a `<nav>` nested inside `<article>` is
  * usually in-article navigation worth keeping.
@@ -57,13 +70,8 @@ const CONTENT_SELECTORS = [
  */
 function scrubDangerousMarkup(html: string): string {
   let out = html;
-  for (const tag of DANGEROUS_TAGS) {
-    // Tolerate any end-tag spelling a browser would accept.
-    out = out.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/\\s*${tag}\\b[^>]*>`, "gi"), " ");
-    // Unterminated open tag: everything to EOF is inside the raw-text element.
-    out = out.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*$`, "i"), " ");
-    // Any stray leftover tag of this kind.
-    out = out.replace(new RegExp(`<\\/?\\s*${tag}\\b[^>]*>`, "gi"), " ");
+  for (const pattern of DANGEROUS_TAG_PATTERNS) {
+    out = out.replace(pattern.full, " ").replace(pattern.unterminated, " ").replace(pattern.stray, " ");
   }
   return out;
 }
@@ -159,10 +167,11 @@ function plainTextFallback(html: string): string {
  * Falls back to `<body>` minus page chrome, then to the whole document, so a
  * page with no semantic markup still yields content rather than nothing.
  */
-export function extractMainContentHtml(html: string): string {
-  const root = parse(scrubDangerousMarkup(html), { comment: false });
-  stripDangerousNodes(root);
-
+/**
+ * Select the content region from an already-parsed, already-scrubbed root
+ * (dangerous nodes removed). Mutates the root when it falls back to `<body>`.
+ */
+function selectMainContentFromRoot(root: HTMLElement): string {
   for (const selector of CONTENT_SELECTORS) {
     const match = root.querySelector(selector);
     // Ignore a region that matched structurally but carries no prose — a
@@ -179,6 +188,12 @@ export function extractMainContentHtml(html: string): string {
   }
 
   return root.toString();
+}
+
+export function extractMainContentHtml(html: string): string {
+  const root = parse(scrubDangerousMarkup(html), { comment: false });
+  stripDangerousNodes(root);
+  return selectMainContentFromRoot(root);
 }
 
 /** Read a fence language off `class="language-ts"` / `class="lang-ts"`. */
@@ -266,6 +281,47 @@ function escapeResidualMarkup(markdown: string): string {
   return markdown.replace(/<(?=[a-zA-Z/!?])/g, "&lt;");
 }
 
+/** Escape residual markup, then normalize whitespace, into the final snapshot. */
+function finalizeMarkdown(markdown: string): string {
+  return escapeResidualMarkup(markdown)
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** Turn an already-scrubbed root into snapshot Markdown (mutates the root). */
+function markdownFromRoot(root: HTMLElement, html: string, pageUrl: string): string {
+  if (exceedsNestingBudget(html)) return plainTextFallback(html);
+  try {
+    stripDangerousNodes(root);
+    return createTurndown(pageUrl).turndown(selectMainContentFromRoot(root));
+  } catch {
+    // Depth budget is a heuristic; a parser or converter blow-up must
+    // degrade this page, never abort the surrounding crawl.
+    return plainTextFallback(html);
+  }
+}
+
+/**
+ * Collect http(s) links from an already-parsed, already-scrubbed root. Read
+ * BEFORE any content-region mutation so nav/header/footer links survive.
+ */
+function collectLinksFromRoot(root: HTMLElement, pageUrl: string): URL[] {
+  const links: URL[] = [];
+  for (const anchor of root.querySelectorAll("a")) {
+    const href = anchor.getAttribute("href")?.trim();
+    if (!href || href.startsWith("#")) continue;
+    try {
+      const resolved = new URL(href, pageUrl);
+      if (isSafeLinkUrl(resolved)) links.push(resolved);
+    } catch {
+      /* ignore malformed hrefs */
+    }
+  }
+  return links;
+}
+
 /**
  * Convert a page to Markdown, scoped to its main-content region.
  *
@@ -279,16 +335,31 @@ export function htmlToMarkdown(html: string, pageUrl: string): string {
     try {
       markdown = createTurndown(pageUrl).turndown(extractMainContentHtml(html));
     } catch {
-      // Depth budget is a heuristic; a parser or converter blow-up must
-      // degrade this page, never abort the surrounding crawl.
       markdown = plainTextFallback(html);
     }
   }
-  return escapeResidualMarkup(markdown)
-    .replace(/\r/g, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return finalizeMarkdown(markdown);
+}
+
+/**
+ * Crawl-path entry point: convert a page AND collect its links from a SINGLE
+ * parse. The content region and the whole-document link set both derive from
+ * the same DOM, so a crawled page is scrubbed and parsed once, not twice.
+ *
+ * Links are collected from the whole document (nav/header/footer included —
+ * that is how a crawl discovers pages) and read before the content-region
+ * selection mutates the tree.
+ */
+export function htmlToMarkdownAndLinks(html: string, pageUrl: string): { markdown: string; links: URL[] } {
+  let root: HTMLElement | null = null;
+  try {
+    root = parse(scrubDangerousMarkup(html), { comment: false });
+  } catch {
+    root = null;
+  }
+  const links = root ? collectLinksFromRoot(root, pageUrl) : [];
+  const markdown = root ? markdownFromRoot(root, html, pageUrl) : plainTextFallback(html);
+  return { markdown: finalizeMarkdown(markdown), links };
 }
 
 /**
@@ -299,22 +370,11 @@ export function htmlToMarkdown(html: string, pageUrl: string): string {
  * every crawl to whatever the first page happens to link inline.
  */
 export function extractDocumentLinks(html: string, pageUrl: string): URL[] {
-  const links: URL[] = [];
-  let anchors: { getAttribute(name: string): string | undefined }[];
+  let root: HTMLElement;
   try {
-    anchors = parse(scrubDangerousMarkup(html), { comment: false }).querySelectorAll("a");
+    root = parse(scrubDangerousMarkup(html), { comment: false });
   } catch {
-    return links;
+    return [];
   }
-  for (const anchor of anchors) {
-    const href = anchor.getAttribute("href")?.trim();
-    if (!href || href.startsWith("#")) continue;
-    try {
-      const resolved = new URL(href, pageUrl);
-      if (isSafeLinkUrl(resolved)) links.push(resolved);
-    } catch {
-      /* ignore malformed hrefs */
-    }
-  }
-  return links;
+  return collectLinksFromRoot(root, pageUrl);
 }

@@ -4,7 +4,7 @@
 
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { fetchWithRetry } from "../../core/common";
+import { fetchWithRetry, readBodyWithByteCap } from "../../core/common";
 
 /**
  * SSRF host guards and the guarded fetch used by every outbound request the
@@ -210,4 +210,46 @@ export async function fetchGuardedResponse(
   }
 
   return response;
+}
+
+/** Options for {@link fetchPinnedJson}. */
+export interface PinnedJsonOptions {
+  headers: Record<string, string>;
+  byteCap: number;
+  bodyTimeoutMs: number;
+  timeoutMs: number;
+  signal?: AbortSignal;
+  retries?: number;
+}
+
+/**
+ * GET a JSON document from a PINNED, constant API host (X, Bluesky XRPC), with
+ * a byte-capped read. Returns the parsed value, or null on any 3xx/non-2xx/
+ * parse failure.
+ *
+ * `redirect: "manual"` + rejecting 3xx is load-bearing: these endpoints have no
+ * legitimate reason to redirect, and following one would send the next request
+ * (bearer token included) to an unvalidated host with none of the SSRF guards
+ * the crawl path applies. The full resolve-then-validate DNS guard is
+ * intentionally NOT applied here because the host is a compile-time constant,
+ * not caller-supplied — the guarded chokepoint is {@link fetchGuardedResponse},
+ * which the caller-supplied crawl/feed paths use instead.
+ */
+export async function fetchPinnedJson(url: string, options: PinnedJsonOptions): Promise<unknown | null> {
+  const response = await fetchWithRetry(
+    url,
+    { headers: options.headers, signal: options.signal, redirect: "manual" },
+    { timeout: options.timeoutMs, retries: options.retries ?? 1 },
+  );
+  if (response.status >= 300 && response.status < 400) return null;
+  if (!response.ok) return null;
+  try {
+    const body = await readBodyWithByteCap(response, options.byteCap, {
+      bodyTimeoutMs: options.bodyTimeoutMs,
+      signal: options.signal,
+    });
+    return JSON.parse(body);
+  } catch {
+    return null;
+  }
 }

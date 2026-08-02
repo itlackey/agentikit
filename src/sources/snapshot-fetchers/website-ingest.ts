@@ -18,7 +18,7 @@ import { getRegistryIndexCacheDir } from "../../core/paths";
 import { warn, warnVerbose } from "../../core/warn";
 import { withFreshnessCache } from "../freshness";
 import { sanitizeString } from "../providers/provider-utils";
-import { extractDocumentLinks, htmlToMarkdown } from "./content-extract";
+import { htmlToMarkdownAndLinks } from "./content-extract";
 import {
   assertResolvedHostAllowed,
   assertWebsiteRequestUrl,
@@ -37,7 +37,7 @@ import {
   type RobotsPolicy,
   type RobotsRuleSet,
 } from "./robots";
-import type { FetcherContext, WikiSnapshotResult } from "./types";
+import type { FetcherContext, SecretResolveFn, WikiSnapshotResult } from "./types";
 
 /** Refresh website snapshots every 12 hours to balance freshness with scraping load. */
 const CACHE_REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1000;
@@ -124,7 +124,7 @@ export interface FetchSnapshotOptions {
    * module cannot import it without closing a cycle through the source
    * providers. Omitted means environment variables only.
    */
-  resolveSecret?: (ref: string) => string | null;
+  resolveSecret?: SecretResolveFn;
 }
 
 interface WebsiteValidationOptions {
@@ -207,7 +207,7 @@ export async function ensureWebsiteMirror(
      */
     wallClockCapMs?: number;
     /** See {@link FetchSnapshotOptions.resolveSecret}. */
-    resolveSecret?: (ref: string) => string | null;
+    resolveSecret?: SecretResolveFn;
   },
 ): Promise<ReturnType<typeof getWebsiteCachePaths>> {
   const rawUrl = config.url ?? "";
@@ -265,16 +265,42 @@ function hasExtractedSite(stashDir: string): boolean {
 }
 
 /**
+ * Iterate the snapshot-fetcher registry against a parsed URL, returning the
+ * first fetcher that produces content, or null when none match. A fetcher that
+ * throws is logged and treated as a non-match — one broken fetcher must not
+ * fail the whole source.
+ */
+async function dispatchSnapshotFetchers(
+  parsed: URL,
+  context: FetcherContext,
+  stashDir?: string | null,
+): Promise<WikiSnapshotResult | null> {
+  for (const fetcher of await loadWikiSnapshotFetchers(stashDir)) {
+    try {
+      if (!fetcher.matches(parsed, context)) continue;
+      const snapshot = await fetcher.fetch(parsed, context);
+      if (snapshot) return snapshot;
+    } catch (error) {
+      warn(
+        "[akm] snapshot fetcher %s threw on %s: %s",
+        fetcher.name,
+        parsed.toString(),
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+  return null;
+}
+
+/**
  * Run the snapshot-fetcher registry against a URL. Returns null when no
  * fetcher matches or produces content, so the caller falls back to a crawl.
- * A fetcher that throws is logged and treated as a non-match — one broken
- * fetcher must not fail the whole source.
  */
 async function fetchSnapshotViaRegistry(
   startUrl: string,
   stashDir: string,
   allowPrivateHosts?: boolean,
-  resolveSecret?: (ref: string) => string | null,
+  resolveSecret?: SecretResolveFn,
 ): Promise<WikiSnapshotResult | null> {
   let parsed: URL;
   try {
@@ -288,21 +314,7 @@ async function fetchSnapshotViaRegistry(
     ...(resolveSecret ? { resolveSecret } : {}),
     ...(allowPrivateHosts ? { allowPrivateHosts: true } : {}),
   };
-  for (const fetcher of await loadWikiSnapshotFetchers(stashDir)) {
-    try {
-      if (!fetcher.matches(parsed, context)) continue;
-      const snapshot = await fetcher.fetch(parsed, context);
-      if (snapshot) return snapshot;
-    } catch (error) {
-      warn(
-        "[akm] snapshot fetcher %s threw on %s: %s",
-        fetcher.name,
-        startUrl,
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-  }
-  return null;
+  return dispatchSnapshotFetchers(parsed, context, stashDir);
 }
 
 /** Materialize a single fetcher snapshot as the source's whole stash. */
@@ -335,7 +347,7 @@ async function scrapeWebsiteToStash(
     allowPrivateHosts?: boolean;
     wallClockCapMs?: number;
     rawStartUrl?: string;
-    resolveSecret?: (ref: string) => string | null;
+    resolveSecret?: SecretResolveFn;
     /** Hard process cap; `null` disables it. See {@link coerceCrawlTimeoutMs}. */
     crawlTimeoutMs?: number | null;
   },
@@ -386,21 +398,8 @@ export async function fetchWebsiteMarkdownSnapshot(
     ...(options?.allowPrivateHosts ? { allowPrivateHosts: true } : {}),
   };
 
-  for (const fetcher of await loadWikiSnapshotFetchers(stashDir)) {
-    try {
-      if (!fetcher.matches(parsedUrl, context)) continue;
-      const snapshot = await fetcher.fetch(parsedUrl, context);
-      if (!snapshot) continue;
-      return websiteMarkdownSnapshotFromResult(snapshot);
-    } catch (error) {
-      warn(
-        "[akm] wiki-fetcher %s threw on %s: %s",
-        fetcher.name,
-        normalizedUrl,
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-  }
+  const snapshot = await dispatchSnapshotFetchers(parsedUrl, context, stashDir);
+  if (snapshot) return websiteMarkdownSnapshotFromResult(snapshot);
 
   const fetched = await fetchWebsitePage(normalizedUrl, { allowPrivateHosts: options?.allowPrivateHosts });
   if (!fetched) {
@@ -645,7 +644,6 @@ async function crawlWebsite(
   // Crawl-delay pacing skips the first fetch and never charges a delay slot
   // to a URL that robots.txt skipped without ever being fetched (C-11).
   let fetchAttempts = 0;
-  let deadlineHit = false;
   // URLs pushed back because their Crawl-delay would not fit in the remaining
   // budget, and URLs that ran out of retries entirely. Reported at the end so
   // a rate-limited origin is visible rather than silently missing.
@@ -653,10 +651,7 @@ async function crawlWebsite(
   const unfetched = new Set<string>();
 
   while (queue.length > 0 && pages.length < options.maxPages) {
-    if (Date.now() > deadline) {
-      deadlineHit = true;
-      break;
-    }
+    if (Date.now() > deadline) break;
     const next = queue.shift();
     if (!next) break;
     const normalized = normalizeCrawlUrl(next.url);
@@ -719,7 +714,7 @@ async function crawlWebsite(
     }
   }
 
-  if (!capDisabled && (deadlineHit || Date.now() > deadline)) {
+  if (!capDisabled && Date.now() > deadline) {
     warn(
       "[akm] website crawl stopped at the %ds wall-clock cap with %d/%d pages collected from %s. " +
         "Raise crawlTimeoutMs on this website source, or set it to 0 to disable the cap.",
@@ -811,13 +806,11 @@ async function fetchWebsitePage(
 
   if (contentType.includes("text/html") || contentType.includes("application/xhtml+xml") || looksLikeMarkup(body)) {
     const title = extractHtmlTitle(body) || new URL(finalUrl).hostname;
+    // One parse yields both the content Markdown and the whole-document links.
+    const { markdown, links } = htmlToMarkdownAndLinks(body, finalUrl);
     return {
-      page: {
-        url: finalUrl,
-        title,
-        markdown: htmlToMarkdown(body, finalUrl),
-      },
-      links: extractDocumentLinks(body, finalUrl),
+      page: { url: finalUrl, title, markdown },
+      links,
     };
   }
 
