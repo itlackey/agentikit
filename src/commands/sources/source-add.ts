@@ -23,6 +23,7 @@ import { parseRegistryRef } from "../../registry/resolve";
 import type { InstalledBundle } from "../../registry/types";
 import { detectStashRoot } from "../../sources/providers/provider-utils";
 import { syncFromRef } from "../../sources/providers/sync-from-ref";
+import { resolveSecretFromStore } from "../../sources/snapshot-fetchers/secret-seam";
 import {
   ensureWebsiteMirror,
   shouldAllowPrivateWebsiteUrlForTests,
@@ -169,6 +170,7 @@ async function addWebsiteSource(
 
   const cachePaths = await ensureWebsiteMirror(entry as SourceConfigEntry, {
     requireStashDir: true,
+    resolveSecret: resolveSecretFromStore,
     ...(allowPrivateHosts ? { allowPrivateHosts: true } : {}),
   });
   const index = await akmIndex({ stashDir });

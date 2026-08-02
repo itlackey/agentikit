@@ -29,6 +29,18 @@ export interface FetcherContext {
    * callers never set it.
    */
   allowPrivateHosts?: boolean;
+  /**
+   * Resolve a secret by ref (e.g. `secrets/x-bearer-token`) from akm's secret
+   * store, or null when absent.
+   *
+   * Injected rather than imported: `core/env-secret-ref` transitively imports
+   * the source providers, which import the fetcher registry, so a fetcher
+   * reading the store directly would form an import cycle. Callers that can
+   * already import it populate this; fetchers stay leaves in the import graph.
+   *
+   * Implementations must never log or otherwise surface the returned value.
+   */
+  resolveSecret?: (ref: string) => string | null;
 }
 
 export interface WikiSnapshotFetcher {

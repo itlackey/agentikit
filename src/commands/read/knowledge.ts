@@ -36,6 +36,7 @@ import {
 import { indexWrittenAssets } from "../../indexer/index-written-assets";
 import { deriveInstallations, slugForPath } from "../../indexer/installations";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
+import { resolveSecretFromStore } from "../../sources/snapshot-fetchers/secret-seam";
 import {
   fetchWebsiteMarkdownSnapshot,
   shouldAllowPrivateWebsiteUrlForTests,
@@ -141,6 +142,7 @@ export async function readKnowledgeInput(
   if (!isHttpUrl(source)) return readKnowledgeContent(source);
   const snapshot = await fetchWebsiteMarkdownSnapshot(source, {
     stashDir: options?.stashDir,
+    resolveSecret: resolveSecretFromStore,
     allowPrivateHosts: options?.allowPrivateHosts ?? shouldAllowPrivateWebsiteUrlForTests(source),
   });
   return { content: snapshot.content, preferredName: snapshot.preferredName };

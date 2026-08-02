@@ -67,6 +67,13 @@ const WEBSITE_CRAWL_WALL_CLOCK_MS = 10 * 60 * 1000;
 const WEBSITE_MAX_REDIRECTS = 8;
 
 /**
+ * How many times a URL may be pushed back for not fitting its origin's
+ * `Crawl-delay` in the remaining budget before it is reported unfetched.
+ * Bounds the requeue loop when every remaining URL is rate-limited.
+ */
+const MAX_CRAWL_DEFERRALS = 3;
+
+/**
  * Body-read deadline for a single page (30s). The per-request fetch timeout
  * (15s) bounds only the connection/header phase; without this a server that
  * dribbles body bytes below the size cap could stall the crawl until the whole
@@ -93,6 +100,13 @@ export interface FetchSnapshotOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   allowPrivateHosts?: boolean;
+  /**
+   * Secret-store reader for fetchers that need credentials. Injected by
+   * command-layer callers (which can import `core/env-secret-ref`); this
+   * module cannot import it without closing a cycle through the source
+   * providers. Omitted means environment variables only.
+   */
+  resolveSecret?: (ref: string) => string | null;
 }
 
 interface WebsiteValidationOptions {
@@ -167,6 +181,8 @@ export async function ensureWebsiteMirror(
      * fast test without it. Not surfaced through config.
      */
     wallClockCapMs?: number;
+    /** See {@link FetchSnapshotOptions.resolveSecret}. */
+    resolveSecret?: (ref: string) => string | null;
   },
 ): Promise<ReturnType<typeof getWebsiteCachePaths>> {
   const rawUrl = config.url ?? "";
@@ -188,6 +204,7 @@ export async function ensureWebsiteMirror(
         respectRobots: coerceRespectRobots(config.options?.respectRobots),
         allowPrivateHosts: options?.allowPrivateHosts,
         wallClockCapMs: options?.wallClockCapMs,
+        resolveSecret: options?.resolveSecret,
         // As-supplied, pre-normalization start URL (see crawlWebsite's
         // `rawStartUrl` doc comment): threaded through purely for the C-02
         // robots.txt check, which must see the trailing slash the user
@@ -231,6 +248,7 @@ async function fetchSnapshotViaRegistry(
   startUrl: string,
   stashDir: string,
   allowPrivateHosts?: boolean,
+  resolveSecret?: (ref: string) => string | null,
 ): Promise<WikiSnapshotResult | null> {
   let parsed: URL;
   try {
@@ -241,6 +259,7 @@ async function fetchSnapshotViaRegistry(
   const context: FetcherContext = {
     stashDir,
     timeoutMs: 15_000,
+    ...(resolveSecret ? { resolveSecret } : {}),
     ...(allowPrivateHosts ? { allowPrivateHosts: true } : {}),
   };
   for (const fetcher of await loadWikiSnapshotFetchers(stashDir)) {
@@ -290,13 +309,14 @@ async function scrapeWebsiteToStash(
     allowPrivateHosts?: boolean;
     wallClockCapMs?: number;
     rawStartUrl?: string;
+    resolveSecret?: (ref: string) => string | null;
   },
 ): Promise<void> {
   // Offer the URL to the specialized fetchers before falling back to a crawl.
   // Without this, `akm bundle add <feed|profile URL>` reaches only the generic
   // crawler and the RSS/Bluesky/X/YouTube fetchers are unreachable outside the
   // `akm import` path. A fetcher returning null falls through to the crawl.
-  const fetched = await fetchSnapshotViaRegistry(startUrl, stashDir, options.allowPrivateHosts);
+  const fetched = await fetchSnapshotViaRegistry(startUrl, stashDir, options.allowPrivateHosts, options.resolveSecret);
   if (fetched) {
     writeSnapshotToStash(stashDir, fetched);
     return;
@@ -334,6 +354,7 @@ export async function fetchWebsiteMarkdownSnapshot(
     stashDir: stashDir ?? "",
     timeoutMs: options?.timeoutMs ?? 15_000,
     signal: options?.signal,
+    ...(options?.resolveSecret ? { resolveSecret: options.resolveSecret } : {}),
     ...(options?.allowPrivateHosts ? { allowPrivateHosts: true } : {}),
   };
 
@@ -553,8 +574,8 @@ async function crawlWebsite(
 ): Promise<WebsitePage[]> {
   const start = new URL(normalizeSiteUrl(startUrl));
   const allowedOrigin = start.origin;
-  const queue: Array<{ url: string; rawUrl: string; depth: number }> = [
-    { url: start.toString(), rawUrl: options.rawStartUrl ?? start.toString(), depth: 0 },
+  const queue: Array<{ url: string; rawUrl: string; depth: number; deferrals: number }> = [
+    { url: start.toString(), rawUrl: options.rawStartUrl ?? start.toString(), depth: 0, deferrals: 0 },
   ];
   const visited = new Set<string>();
   const pages: WebsitePage[] = [];
@@ -573,6 +594,11 @@ async function crawlWebsite(
   // to a URL that robots.txt skipped without ever being fetched (C-11).
   let fetchAttempts = 0;
   let deadlineHit = false;
+  // URLs pushed back because their Crawl-delay would not fit in the remaining
+  // budget, and URLs that ran out of retries entirely. Reported at the end so
+  // a rate-limited origin is visible rather than silently missing.
+  const deferred = new Set<string>();
+  const unfetched = new Set<string>();
 
   while (queue.length > 0 && pages.length < options.maxPages) {
     if (Date.now() > deadline) {
@@ -596,18 +622,30 @@ async function crawlWebsite(
       warnVerbose("[akm] website crawl: skipping %s (disallowed by robots.txt)", normalized);
       continue;
     }
-    visited.add(normalized);
-
     if (fetchAttempts > 0) {
       const delayMs = await robots.crawlDelayMs(normalized);
       if (delayMs > 0) {
         if (Date.now() + delayMs >= deadline) {
-          deadlineHit = true;
-          break;
+          // Sleeping this one out would blow the wall-clock cap. Defer it to
+          // the back of the queue instead of ending the crawl here: other
+          // origins may have no Crawl-delay and can still be fetched with the
+          // time that remains. Anything still deferred when the deadline
+          // arrives is reported as unfetched below rather than silently
+          // dropped. `deferred` is bounded so a queue of delayed URLs cannot
+          // spin forever re-appending to itself.
+          if (next.deferrals < MAX_CRAWL_DEFERRALS) {
+            queue.push({ ...next, deferrals: next.deferrals + 1 });
+            deferred.add(normalized);
+          } else {
+            unfetched.add(normalized);
+          }
+          continue;
         }
         await sleep(delayMs);
       }
     }
+    visited.add(normalized);
+    deferred.delete(normalized);
     fetchAttempts++;
 
     const fetched = await fetchWebsitePage(decision.fetchUrl, { allowPrivateHosts: options.allowPrivateHosts, robots });
@@ -621,7 +659,7 @@ async function crawlWebsite(
       const rawLinkUrl = link.toString();
       const candidate = normalizeCrawlUrl(rawLinkUrl);
       if (!candidate || visited.has(candidate) || isAssetLikePath(link.pathname)) continue;
-      queue.push({ url: candidate, rawUrl: rawLinkUrl, depth: next.depth + 1 });
+      queue.push({ url: candidate, rawUrl: rawLinkUrl, depth: next.depth + 1, deferrals: 0 });
     }
   }
 
@@ -632,6 +670,18 @@ async function crawlWebsite(
       pages.length,
       options.maxPages,
       startUrl,
+    );
+  }
+
+  // A URL still deferred when the loop ends never got fetched — report it
+  // rather than letting a rate-limited origin go missing without a trace.
+  for (const url of deferred) unfetched.add(url);
+  if (unfetched.size > 0) {
+    warn(
+      "[akm] website crawl: %d URL(s) were not fetched — their origin's Crawl-delay did not fit in the " +
+        "remaining time budget. First: %s",
+      unfetched.size,
+      [...unfetched].slice(0, 3).join(", "),
     );
   }
 

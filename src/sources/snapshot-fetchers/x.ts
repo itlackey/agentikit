@@ -60,25 +60,30 @@ export function extractXUsername(url: URL): string | null {
   return username;
 }
 
+/** Secret ref consulted when `X_BEARER_TOKEN` is not in the environment. */
+export const X_BEARER_TOKEN_SECRET_REF = "secrets/x-bearer-token";
+
 /**
- * Resolve the bearer token from the environment.
+ * Resolve the bearer token: `X_BEARER_TOKEN` first, then akm's secret store
+ * via the injected {@link FetcherContext.resolveSecret} seam.
  *
- * akm's secret store reaches this fetcher through `akm secret run`, which
- * injects a stored secret into the child process environment:
+ * The seam is injected rather than imported because `core/env-secret-ref`
+ * transitively imports the source providers, which import this fetcher's own
+ * registry — reading the store directly here would form an import cycle (and
+ * laundering it through a dynamic `import()` is rejected by the repo's
+ * import-cycle ratchet, correctly).
  *
- *   akm secret set x-bearer-token
- *   akm secret run secrets/x-bearer-token X_BEARER_TOKEN -- akm bundle add https://x.com/<user>
- *
- * Reading the secret file directly from here was the obvious alternative, but
- * `core/env-secret-ref` transitively imports the source providers, which import
- * this fetcher's own registry — a genuine import cycle. Going through
- * `secret run` keeps the fetcher's import graph a leaf and reuses the
- * mechanism akm already uses everywhere else to hand secrets to a process.
- *
- * Returns the token or null; never logs the value.
+ * Returns the token or null; never logs the value. A throwing resolver is
+ * swallowed — a broken secret store means "no token", not a crash.
  */
-export function resolveXBearerToken(): string | null {
-  return process.env.X_BEARER_TOKEN?.trim() || null;
+export function resolveXBearerToken(context?: Pick<FetcherContext, "resolveSecret">): string | null {
+  const fromEnv = process.env.X_BEARER_TOKEN?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    return context?.resolveSecret?.(X_BEARER_TOKEN_SECRET_REF)?.trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 interface XTweet {
@@ -209,7 +214,7 @@ const xFetcher: WikiSnapshotFetcher = {
     const username = extractXUsername(url);
     if (!username) return null;
 
-    const token = resolveXBearerToken();
+    const token = resolveXBearerToken(context);
     if (token) {
       const tweets = await fetchViaApi(username, token, context);
       const markdown = tweets ? renderMarkdown(username, tweets) : "";
@@ -239,8 +244,8 @@ const xFetcher: WikiSnapshotFetcher = {
     }
 
     warn(
-      "[akm] x-profile: no content for @%s. Set X_BEARER_TOKEN for the X API (akm secret run can inject a " +
-        "stored secret), or X_RSS_TEMPLATE to an RSS bridge URL containing {username}.",
+      "[akm] x-profile: no content for @%s. Set X_BEARER_TOKEN, or store the token as the " +
+        "secrets/x-bearer-token akm secret, or set X_RSS_TEMPLATE to an RSS bridge URL containing {username}.",
       username,
     );
     return null;

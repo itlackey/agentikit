@@ -526,7 +526,7 @@ describe("crawlWebsite robots.txt compliance", () => {
   );
 
   test(
-    "C-10: a Crawl-delay that would cross the wall-clock deadline breaks the crawl instead of sleeping past it",
+    "C-10: a Crawl-delay that would cross the wall-clock deadline defers the URL and reports it unfetched, never sleeping past the cap",
     async () => {
       const warnCalls: string[] = [];
       overrideSeam(_setWarnSinkForTests, (level, args) => {
@@ -565,9 +565,12 @@ describe("crawlWebsite robots.txt compliance", () => {
       expect(stashContainsSourceUrl(cachePaths.stashDir, `${url}/`)).toBe(true);
       // ...but the delay-gated second page was never even fetched.
       expect(requestLog.some((r) => r.pathname === "/page-2")).toBe(false);
-      // The existing wall-clock warn() fires for this break, same as a
-      // deadline hit mid-loop.
-      expect(warnCalls.some((m) => /wall-clock/i.test(m))).toBe(true);
+      // A URL whose Crawl-delay does not fit the remaining budget is now
+      // deferred to the back of the queue rather than ending the crawl, and
+      // is reported as unfetched once its deferral budget is spent — so a
+      // rate-limited origin is visible instead of silently missing.
+      expect(warnCalls.some((m) => /were not fetched/i.test(m))).toBe(true);
+      expect(warnCalls.some((m) => m.includes("/page-2"))).toBe(true);
     },
     { timeout: 2_000 },
   );

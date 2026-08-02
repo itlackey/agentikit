@@ -578,3 +578,73 @@ describe("codex review regressions", () => {
     }
   });
 });
+
+describe("X token resolution via the secret-store seam", () => {
+  const ORIGINAL = process.env.X_BEARER_TOKEN;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.X_BEARER_TOKEN;
+    else process.env.X_BEARER_TOKEN = ORIGINAL;
+  });
+
+  test("falls back to the injected secret resolver when the env var is absent", async () => {
+    delete process.env.X_BEARER_TOKEN;
+    const secret = "SECRET_STORE_TOKEN_VALUE";
+    const asked: string[] = [];
+    const ctx = {
+      ...CTX,
+      resolveSecret: (ref: string) => {
+        asked.push(ref);
+        return ref === "secrets/x-bearer-token" ? secret : null;
+      },
+    };
+
+    let sawAuth = false;
+    const snapshot = await withMockedFetch(
+      () => xFetcher.fetch(new URL("https://x.com/jack"), ctx),
+      async (input, init) => {
+        if (new Headers(init?.headers).get("authorization") === `Bearer ${secret}`) sawAuth = true;
+        const url = String(input);
+        if (url.includes("/users/by/username/")) return jsonResponse({ data: { id: "7" } });
+        return jsonResponse({ data: [{ id: "1", text: "from store", created_at: "2025-04-01T10:00:00Z" }] });
+      },
+    );
+
+    expect(asked).toContain("secrets/x-bearer-token");
+    expect(sawAuth).toBe(true);
+    expect(snapshot?.markdown).toContain("from store");
+    // The stored value must not reach the snapshot.
+    expect(JSON.stringify(snapshot)).not.toContain(secret);
+  });
+
+  test("the environment variable wins over the secret store", async () => {
+    process.env.X_BEARER_TOKEN = "ENV_WINS";
+    let asked = false;
+    const ctx = {
+      ...CTX,
+      resolveSecret: () => {
+        asked = true;
+        return "STORE_LOSES";
+      },
+    };
+    await withMockedFetch(
+      () => xFetcher.fetch(new URL("https://x.com/jack"), ctx),
+      async (_input, init) => {
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer ENV_WINS");
+        return jsonResponse({}, 404);
+      },
+    );
+    expect(asked).toBe(false);
+  });
+
+  test("a throwing secret resolver degrades to no token instead of crashing", async () => {
+    delete process.env.X_BEARER_TOKEN;
+    delete process.env.X_RSS_TEMPLATE;
+    const ctx = {
+      ...CTX,
+      resolveSecret: () => {
+        throw new Error("secret store unavailable");
+      },
+    };
+    expect(await xFetcher.fetch(new URL("https://x.com/jack"), ctx)).toBeNull();
+  });
+});
