@@ -44,6 +44,23 @@ carve-out and interruption-safe conversion ordering.
 | [`panel-r2-verification.md`](./panel-r2-verification.md) | Every round-1 critical/major re-checked against v9 and code — verdict: **all fixes hold** |
 | [`panel-r2-adversarial.md`](./panel-r2-adversarial.md) | Cold pass, no prior context — verdict: no design flaws; two evidence corrections (the real placeholder filler; indexer-classifier recognition), both applied |
 
+## Library evaluations — buy-vs-build investigation
+
+Three independent investigations into replacing the hand-rolled engine
+with a third-party library, all verified against live artifacts rather
+than training knowledge. Decision record:
+[`../../workflow-engine-buy-vs-build.md`](../../workflow-engine-buy-vs-build.md).
+
+| File | Scope |
+|---|---|
+| [`library-eval-bunqueue.md`](./library-eval-bunqueue.md) | bunqueue — full rubric + source read |
+| [`library-eval-openworkflow.md`](./library-eval-openworkflow.md) | OpenWorkflow — full rubric, **executed** (SIGKILL durability probe, reproduced schema collision) |
+| [`library-eval-alternatives.md`](./library-eval-alternatives.md) | Landscape survey — 25+ candidates against the no-server / SQLite / Bun+Windows / license constraints |
+
+Outcome: **build**. ~6% of `exec`+`ir` is the generic durable-execution
+concern libraries sell; the best candidate deletes 8–12% while removing
+cancellation, concurrency caps, and transactional atomicity.
+
 ## Reading notes
 
 - Reports cite `file:line` against the branch state they reviewed
