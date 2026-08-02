@@ -283,15 +283,12 @@ const ALLOWED_FILES = new Set<string>([
   "tests/integration/storage/index-db-loan.characterization.test.ts",
   "tests/integration/storage/workflow-runs-repository.characterization.test.ts",
   "tests/integration/tasks-runner.test.ts",
-  "tests/integration/workflows/brief.test.ts",
   "tests/integration/workflows/checkin-surfacing.test.ts",
   "tests/integration/workflows/complete-summary.test.ts",
   "tests/integration/workflows/conformance/conformance.test.ts",
-  "tests/integration/workflows/conformance/driver-parity.test.ts",
   "tests/integration/workflows/gate-artifacts.test.ts",
   "tests/integration/workflows/indexer-rejection.test.ts",
   "tests/integration/workflows/native-executor.test.ts",
-  "tests/integration/workflows/report.test.ts",
   "tests/integration/workflows/run-units.test.ts",
   "tests/integration/workflows/status-units.test.ts",
   "tests/integration/workflows/step-work.test.ts",
@@ -340,8 +337,13 @@ const SPAWN_ALLOWED = new Set<string>([]);
  * secret/registry vars) that were invisible to Rule 1 under the old 5-name
  * list; grandfathered into `ALLOWED_FILES` pending migration → 73. Draining
  * those 22 (and the pre-existing balance) toward the ~5 KPI is follow-up work.
+ *
+ * 68 → 65: the external-driver protocol's three suites
+ * (`workflows/brief`, `workflows/report`, `workflows/conformance/driver-parity`)
+ * were deleted with the protocol itself, so their grandfathered entries went
+ * with them. Ratchet lowered in the same change, per the shrink-only rule.
  */
-export const ALLOWLIST_RATCHET_BASELINE = 68;
+export const ALLOWLIST_RATCHET_BASELINE = 65;
 
 /** Live size of the combined grandfather allowlist (all rule sets). */
 export function combinedAllowlistSize(): number {

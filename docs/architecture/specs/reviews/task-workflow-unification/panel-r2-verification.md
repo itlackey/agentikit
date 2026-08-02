@@ -42,6 +42,12 @@ the five areas called out (§5.6 ceiling, persona-snapshot hash, `with:` merge, 
   `scripts/akm-migrate/migrate/legacy/task-target-ref-migration.ts:246-266` —
   `planTaskTargetRefMigration` really does skip non-writable bundles and warn-and-continue
   for legacy files it can't rewrite, word-for-word the precedent v9 claims. Fixed.
+> **Editor's note (archival).** The cosmetic stage-name mismatch this
+> report flags in §5.6 was fixed in the same revision that followed this
+> panel: v9 now says the ceiling is evaluated in the **resolve stage** for
+> both surfaces. The finding is retained as the historical record of what
+> the panel saw, not as an open issue.
+
 
 ## Majors — verified fixed unless noted
 

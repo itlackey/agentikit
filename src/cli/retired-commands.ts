@@ -69,7 +69,11 @@ const RETIRED_COMMAND_HINTS: Record<string, string> = {
   "workflow next":
     "`akm workflow next` was removed in 0.9 — use `akm workflow status <target>` to inspect or `akm workflow run <target>` to execute.",
   "workflow complete":
-    "`akm workflow complete` was removed in 0.9 — native runs complete steps automatically; external drivers use `akm workflow brief` and `akm workflow report`.",
+    "`akm workflow complete` was removed in 0.9 — `akm workflow run <target>` completes steps automatically; use `akm workflow status <target>` to inspect.",
+  "workflow brief":
+    "`akm workflow brief` was removed — the external-driver protocol is gone; `akm workflow run <target>` executes the run and `akm workflow status <target>` inspects it.",
+  "workflow report":
+    "`akm workflow report` was removed — the external-driver protocol is gone; `akm workflow run <target>` dispatches and records units itself.",
   "config show": "`akm config show` was removed in 0.9 — use `akm config list`.",
   "config validate": "`akm config validate` was removed in 0.9 — the config file is validated on every load.",
   "task enable": "`akm task enable` was removed in 0.9 — set `enabled: true` in the task YAML, then `akm task sync`.",

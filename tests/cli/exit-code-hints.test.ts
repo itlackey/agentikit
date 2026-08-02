@@ -49,6 +49,11 @@ describe("embedded exit-code hints", () => {
     expect(retiredCommandHint(["task"], "disable")).toContain("enabled: false");
     expect(retiredCommandHint(["workflow"], "start")).toContain("workflow run");
     expect(retiredCommandHint(["workflow"], "next")).toContain("workflow status");
-    expect(retiredCommandHint(["workflow"], "complete")).toContain("workflow report");
+    // `complete` must point at a command that EXISTS: the external-driver
+    // protocol it used to redirect to was removed, so brief/report are
+    // themselves retired verbs now.
+    expect(retiredCommandHint(["workflow"], "complete")).toContain("workflow run");
+    expect(retiredCommandHint(["workflow"], "brief")).toContain("workflow run");
+    expect(retiredCommandHint(["workflow"], "report")).toContain("workflow run");
   });
 });

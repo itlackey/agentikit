@@ -165,6 +165,12 @@ export interface RunWorkflowResult {
   gateRejection?: { stepId: string; missing: string[]; feedback: string };
   /** Present when cooperative cancellation stopped before advancing the step. */
   aborted?: true;
+  /**
+   * Non-fatal notices from creating the run in THIS invocation — currently the
+   * implicit engine fallback announcement. Absent when the run already existed,
+   * so a resume never re-announces it.
+   */
+  warnings?: string[];
 }
 
 export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<RunWorkflowResult> {
@@ -204,6 +210,10 @@ async function runWorkflowAttempt(options: RunWorkflowOptions): Promise<RunWorkf
   const next: WorkflowNextResult = await getNextWorkflowStep(options.target, options.params, {
     parameterFlags: options.parameterFlags,
   });
+  // Creation-time notices reach the caller only through this result: the run
+  // row itself carries no warnings column, and every later invocation of the
+  // same run must stay silent about a decision it did not make.
+  const startWarnings = next.startWarnings;
   // Version/canonical/hash validation precedes every executable mutation,
   // including lease acquisition. Historical rows remain inspectable/abandonable.
   if (!next.done && !options.loadPlan) {
@@ -252,7 +262,8 @@ async function runWorkflowAttempt(options: RunWorkflowOptions): Promise<RunWorkf
     : undefined;
   heartbeat?.start();
   try {
-    return await driveRun(options, next, leaseHolder, heartbeat);
+    const result = await driveRun(options, next, leaseHolder, heartbeat);
+    return startWarnings?.length ? { ...result, warnings: [...(result.warnings ?? []), ...startWarnings] } : result;
   } finally {
     heartbeat?.stop();
     try {

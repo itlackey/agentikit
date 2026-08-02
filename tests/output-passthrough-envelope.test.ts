@@ -64,78 +64,9 @@ describe("passthrough envelope stamping (#484)", () => {
     expect(nullish).toBeNull();
   });
 
-  // Stable-keys regression net for the three workflow driver-protocol
-  // envelopes that scripts pin (`workflow brief`/`report`/`run`): the stamp is
-  // purely additive (adds shape + schemaVersion, preserves the `ok` flag), and
-  // the full top-level key set is frozen so a rename/drop is caught here.
-  it("workflow-brief: preserves ok + all top-level keys; adds shape + schemaVersion", () => {
-    const brief = {
-      ok: true,
-      run: { id: "r1", status: "active" },
-      spineToken: "r1#build#l1#2026-01-01T00:00:00Z:u0",
-      active: true,
-      workList: { isFanOut: false, reducer: null, itemCount: 0, units: [] },
-      reportGuidance: { checkin: "c", failure: "f", note: "n" },
-      staleUnits: [],
-      warnings: [],
-      message: "1 unit ready",
-    };
-    const shaped = shapeForCommand("workflow-brief", brief, "normal") as Record<string, unknown>;
-    expect(shaped.ok).toBe(true);
-    expect(shaped.shape).toBe("workflow-brief");
-    expect(shaped.schemaVersion).toBe(1);
-    expect(Object.keys(shaped).sort()).toEqual(
-      [
-        "active",
-        "message",
-        "ok",
-        "reportGuidance",
-        "run",
-        "schemaVersion",
-        "shape",
-        "spineToken",
-        "staleUnits",
-        "warnings",
-        "workList",
-      ].sort(),
-    );
-  });
-
-  it("workflow-report: preserves ok + all top-level keys; adds shape + schemaVersion", () => {
-    const report = {
-      ok: true,
-      runId: "r1",
-      stepId: "s1",
-      unitId: "s1:solo",
-      status: "completed",
-      gateLoop: 1,
-      recorded: "written",
-      remainingUnits: 0,
-      runStatus: "completed",
-      message: "unit recorded",
-    };
-    const shaped = shapeForCommand("workflow-report", report, "normal") as Record<string, unknown>;
-    expect(shaped.ok).toBe(true);
-    expect(shaped.shape).toBe("workflow-report");
-    expect(shaped.schemaVersion).toBe(1);
-    expect(Object.keys(shaped).sort()).toEqual(
-      [
-        "gateLoop",
-        "message",
-        "ok",
-        "recorded",
-        "remainingUnits",
-        "runId",
-        "runStatus",
-        "schemaVersion",
-        "shape",
-        "status",
-        "stepId",
-        "unitId",
-      ].sort(),
-    );
-  });
-
+  // Stable-keys regression net for the `workflow run` envelope that scripts
+  // pin: the stamp is purely additive (adds shape + schemaVersion), and the
+  // full top-level key set is frozen so a rename/drop is caught here.
   it("workflow-run: preserves run + executed top-level keys; adds shape + schemaVersion", () => {
     // The run envelope carries no `ok` flag — its shape is `{ run, executed }`
     // (plus optional `done`/`gateRejection`). Pin the required keys.

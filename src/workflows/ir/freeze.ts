@@ -7,7 +7,7 @@ import type { AkmConfig } from "../../core/config/config";
 import { deepMergeConfig } from "../../core/config/deep-merge";
 import { ConfigError, UsageError } from "../../core/errors";
 import { DEFAULT_AGENT_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS } from "../../integrations/agent/config";
-import { NO_ENGINE_REMEDY, withEngineFallback } from "../../integrations/agent/engine-fallback";
+import { fallbackAnnouncement, NO_ENGINE_REMEDY, withEngineFallback } from "../../integrations/agent/engine-fallback";
 import {
   type EngineConfig,
   type EngineUseConfig,
@@ -52,7 +52,11 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, inputConfig: 
   // Applied ONCE, before any resolution: every engine lookup below (selection,
   // snapshots, the gate judge) then sees one config and needs no fallback
   // awareness of its own.
-  const { config, announcement: engineAnnouncement } = withEngineFallback(inputConfig);
+  const { config, fallbackEngineName } = withEngineFallback(inputConfig);
+  // Announce only if the fallback candidate is what a unit actually froze to:
+  // `defaults.engine` is the lowest-precedence selector, so a document- or
+  // unit-level `engine:` still wins and must not be reported as opencode's.
+  let usedFallbackEngine = false;
   const preliminary = compilePlan(asset);
   const engines: Record<string, FrozenEngineSnapshot> = {};
   const maxConcurrency = frozenConcurrency(config);
@@ -70,6 +74,7 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, inputConfig: 
         "INVALID_CONFIG_FILE",
         NO_ENGINE_REMEDY,
       );
+    if (name === fallbackEngineName) usedFallbackEngine = true;
     const engine = engineDefinition(config, name);
     addSnapshot(config, name, engines);
     const model = exactModel(config, name, engine, layers);
@@ -145,6 +150,9 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, inputConfig: 
     execution: { maxConcurrency, engines },
     steps,
   });
+  const engineAnnouncement = usedFallbackEngine
+    ? fallbackAnnouncement(fallbackEngineName, fallbackEngineName)
+    : undefined;
   return {
     warnings: preliminary.warnings,
     ...(engineAnnouncement ? { engineAnnouncement } : {}),

@@ -51,13 +51,20 @@ export const NO_ENGINE_REMEDY =
 export interface EngineFallbackResult {
   /** Config to resolve against — the input verbatim unless the fallback applied. */
   config: AkmConfig;
-  /** Set only when the fallback applied; the caller surfaces it once. */
-  announcement?: string;
+  /**
+   * Name of the engine the fallback installed as `defaults.engine`, when it
+   * applied. This is a CANDIDATE, not a decision: `defaults.engine` is the
+   * LOWEST-precedence selector, so a prompt task's `engine:` or a workflow's
+   * document/unit `engine:` still wins. Callers announce only after observing
+   * that the engine they actually selected is this one — see
+   * {@link fallbackAnnouncement}.
+   */
+  fallbackEngineName?: string;
 }
 
 /**
  * Return a config whose `defaults.engine` resolves, applying the implicit
- * `opencode-sdk` fallback when it does not and `opencode` is on PATH.
+ * `opencode-sdk` fallback when it does not and an opencode binary is present.
  *
  * Pure with respect to the input: never mutates `config`. Returns the input
  * object identity unchanged when no fallback is needed, so callers can cheaply
@@ -65,11 +72,15 @@ export interface EngineFallbackResult {
  */
 export function withEngineFallback(config: AkmConfig, whichFn: WhichFn = defaultWhich): EngineFallbackResult {
   if (config.defaults?.engine) return { config };
-  if (!whichFn(OPENCODE_SDK_SERVER_BIN)) return { config };
 
   // An operator-configured engine of this name wins over a synthesized one —
-  // theirs may carry a model, an llmEngine fallback, or a pinned bin.
-  const existing = config.engines?.[FALLBACK_ENGINE_NAME];
+  // theirs may carry a model, an llmEngine fallback, or a pinned bin. Probe
+  // THAT bin rather than the bare command: a configured absolute path outside
+  // PATH is still a usable engine, and reporting it as missing would contradict
+  // the operator-configured-wins rule.
+  const existing = config.engines?.[FALLBACK_ENGINE_NAME] as { bin?: string } | undefined;
+  if (!whichFn(existing?.bin ?? OPENCODE_SDK_SERVER_BIN)) return { config };
+
   const engines = existing
     ? config.engines
     : { ...(config.engines ?? {}), [FALLBACK_ENGINE_NAME]: { kind: "agent", platform: "opencode-sdk" } };
@@ -80,6 +91,19 @@ export function withEngineFallback(config: AkmConfig, whichFn: WhichFn = default
       engines,
       defaults: { ...(config.defaults ?? {}), engine: FALLBACK_ENGINE_NAME },
     } as AkmConfig,
-    announcement: FALLBACK_ANNOUNCEMENT,
+    fallbackEngineName: FALLBACK_ENGINE_NAME,
   };
+}
+
+/**
+ * The announcement, but only when the fallback candidate is the engine that
+ * actually won selection. Returns `undefined` otherwise, so an explicitly
+ * selected engine never triggers a claim that opencode supplied the model.
+ */
+export function fallbackAnnouncement(
+  fallbackEngineName: string | undefined,
+  selectedEngineName: string | undefined,
+): string | undefined {
+  if (!fallbackEngineName || selectedEngineName !== fallbackEngineName) return undefined;
+  return FALLBACK_ANNOUNCEMENT;
 }

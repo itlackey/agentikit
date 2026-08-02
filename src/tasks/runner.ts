@@ -49,7 +49,7 @@ import { redactCredentialPatterns } from "../core/redaction";
 import { withStateDb } from "../core/state-db";
 import { runManagedSubprocess, type SpawnFn } from "../core/subprocess";
 import type { AgentRunResult, RunAgentOptions } from "../integrations/agent";
-import { NO_ENGINE_REMEDY, withEngineFallback } from "../integrations/agent/engine-fallback";
+import { fallbackAnnouncement, NO_ENGINE_REMEDY, withEngineFallback } from "../integrations/agent/engine-fallback";
 import { resolveEngine, resolveLlmEngineUse } from "../integrations/agent/engine-resolution";
 import { resolveModel } from "../integrations/agent/model-aliases";
 import type { RunnerSpec } from "../integrations/agent/runner";
@@ -476,8 +476,11 @@ async function runPromptTask(input: {
 
   // Same implicit opencode-sdk fallback the workflow freeze boundary applies,
   // so a scheduled prompt task on an engine-less install behaves identically.
-  const { config, announcement: engineAnnouncement } = withEngineFallback(loadConfig());
+  const { config, fallbackEngineName } = withEngineFallback(loadConfig());
   const engineName = promptTarget.engine ?? config.defaults?.engine;
+  // `promptTarget.engine` outranks `defaults.engine`, so the fallback is only
+  // reportable when it is the engine actually selected.
+  const engineAnnouncement = fallbackAnnouncement(fallbackEngineName, engineName);
   if (!engineName)
     throw new NotFoundError(
       `Task "${task.id}" has no selected engine and \`opencode\` is not on PATH. ${NO_ENGINE_REMEDY}`,

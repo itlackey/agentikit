@@ -178,6 +178,12 @@ export interface WorkflowNextResult {
   step: WorkflowRunStepState | null;
   done?: true;
   autoStarted?: true;
+  /**
+   * Non-fatal notices produced when THIS invocation created the run (e.g. the
+   * implicit engine fallback). Only present on the auto-start path — a resume
+   * never re-surfaces a decision it did not make.
+   */
+  startWarnings?: string[];
   /** Present when the run looks stalled — a strong `continue` directive (#506). */
   checkin?: CheckinDirective;
 }
@@ -438,11 +444,20 @@ export async function getNextWorkflowStep(
   options?: { parameterFlags?: readonly WorkflowParameterFlag[] },
 ): Promise<WorkflowNextResult> {
   return withWorkflowRunsRepo(async (repo) => {
-    const { run, autoStarted } = await resolveRunSpecifier(repo, specifier, params, options?.parameterFlags);
+    const { run, autoStarted, startWarnings } = await resolveRunSpecifier(
+      repo,
+      specifier,
+      params,
+      options?.parameterFlags,
+    );
     const steps = readWorkflowRunSteps(repo, run.id);
     const plan = requireExecutableWorkflowPlan(run);
     assertWorkflowSpineMatchesPlan(plan, run, steps);
-    return { ...projectNextResult(run, steps), ...(autoStarted ? { autoStarted: true as const } : {}) };
+    return {
+      ...projectNextResult(run, steps),
+      ...(autoStarted ? { autoStarted: true as const } : {}),
+      ...(startWarnings?.length ? { startWarnings } : {}),
+    };
   });
 }
 
@@ -739,7 +754,7 @@ async function resolveRunSpecifier(
   specifier: string,
   params?: Record<string, unknown>,
   parameterFlags?: readonly WorkflowParameterFlag[],
-): Promise<{ run: WorkflowRunRow; autoStarted: boolean }> {
+): Promise<{ run: WorkflowRunRow; autoStarted: boolean; startWarnings?: string[] }> {
   const hasParameters = (params && Object.keys(params).length > 0) || (parameterFlags?.length ?? 0) > 0;
   const explicitRun = repo.getRunById(specifier);
   if (explicitRun) {
@@ -783,7 +798,11 @@ async function resolveRunSpecifier(
   const started = await startWorkflowRun(ref, params ?? {}, {
     ...(parameterFlags !== undefined ? { parameterFlags } : {}),
   });
-  return { run: readWorkflowRun(repo, started.run.id), autoStarted: true };
+  return {
+    run: readWorkflowRun(repo, started.run.id),
+    autoStarted: true,
+    ...(started.warnings?.length ? { startWarnings: started.warnings } : {}),
+  };
 }
 
 function interruptionReason(signal: AbortSignal): Error {

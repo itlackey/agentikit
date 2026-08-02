@@ -6,7 +6,8 @@ Question: can a third-party library offload the maintenance burden of akm's
 hand-rolled workflow/task engine?
 Constraints (owner): no server; markdown authoring preserved (simple
 JSON/YAML acceptable only if markdown becomes cumbersome).
-Evidence: [`reviews/task-workflow-unification/library-eval-*.md`](./reviews/task-workflow-unification/)
+Evidence: [the review corpus](./reviews/task-workflow-unification/README.md) — see its
+library-evaluation section
 Companion: [`task-workflow-format-unification.md`](./task-workflow-format-unification.md)
 (Design A's authoring/config layer, independently reviewed across five rounds)
 
