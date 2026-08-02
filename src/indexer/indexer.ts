@@ -686,7 +686,18 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       const sourceCacheStart = Date.now();
       onProgress({ phase: "preflight", message: "Hydrating source caches." });
       const { ensureSourceCaches, resolveSourceEntries } = await import("./search/search-source.js");
-      await ensureSourceCaches(config, { force: full, materialize: options.hydrateSources !== false });
+      // Inject the store-backed secret resolver from here — a composition root
+      // ABOVE the provider/fetcher import cycle (this module reaches
+      // search-source only via dynamic import). This is what lets a website
+      // source's X fetcher resolve `secrets/x-bearer-token` during
+      // bundle-update / hydrate, not just from the command-layer URL-ingest
+      // path. `secret-seam` is imported here, never from inside the cycle.
+      const { storeSecretResolver } = await import("../sources/snapshot-fetchers/secret-seam.js");
+      await ensureSourceCaches(config, {
+        force: full,
+        materialize: options.hydrateSources !== false,
+        secrets: storeSecretResolver,
+      });
       const sourceCacheEnd = Date.now();
       const allSourceEntries = resolveSourceEntries(stashDir, config);
       const detected = detectAndPersistBundleAdapters(allSourceEntries, config, mutateConfig, {

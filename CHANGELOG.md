@@ -36,6 +36,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **X source tokens now resolve from the secret store during bundle update.**
+  The `secrets/x-bearer-token` akm secret is honored on the provider
+  `sync()` / bundle-update path, not just when adding or importing a URL —
+  closing a gap where a refresh saw only the `X_BEARER_TOKEN` environment
+  variable. Implemented as a `SecretResolver` capability injected from above
+  the source-provider import cycle; internals are documented in
+  `docs/architecture/reviews/env-secret-access.md`.
+
 - **`website` crawls now have a hard time limit.** `crawlTimeoutMs` (default
   600000 — 10 minutes) bounds the entire crawl, and unlike the previous
   between-page check it aborts work already in flight: a `Retry-After` sleep

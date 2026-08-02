@@ -23,6 +23,39 @@
 import type { SourceConfigEntry } from "../core/config/config";
 import type { SourceKind } from "./types";
 
+/**
+ * Resolves a secret-store ref (e.g. `secrets/x-bearer-token`) to its value, or
+ * null when absent.
+ *
+ * This is a leaf abstraction on purpose. The concrete store reader
+ * (`core/env-secret-ref.ts`) transitively imports the source providers, which
+ * import the fetcher registry — so any module inside that subgraph that
+ * imported the reader directly would close the import cycle the ratchet
+ * forbids. Consumers (fetchers, provider `sync()`) depend on this interface;
+ * the concrete binding is INJECTED from a composition root above the cycle
+ * (see `snapshot-fetchers/secret-seam.ts` and `indexer/indexer.ts`). Keeping
+ * the type here — in a module that is a sink of the import graph (it imports
+ * only type-only `config` and `./types`) — means `search-source`/`website`
+ * can name the type without creating a runtime back-edge.
+ *
+ * Implementations must never log or otherwise surface the resolved value.
+ */
+export interface SecretResolver {
+  resolveSecret(ref: string): string | null;
+}
+
+/** Options accepted by {@link SourceProvider.sync}. */
+export interface SyncOptions {
+  /** Bypass the cache-freshness TTL and re-fetch unconditionally. */
+  force?: boolean;
+  /**
+   * Secret resolver for provider kinds whose refresh needs credentials
+   * (today: the website provider's X fetcher). Absent means environment
+   * variables only — the documented, backward-compatible default.
+   */
+  secrets?: SecretResolver;
+}
+
 export interface SourceProvider {
   readonly name: string;
   readonly kind: SourceKind;
@@ -35,10 +68,8 @@ export interface SourceProvider {
 
   /**
    * Refresh the directory from upstream. No-op for filesystem.
-   *
-   * `force` bypasses the cache-freshness TTL and re-fetches unconditionally.
    */
-  sync?(options?: { force?: boolean }): Promise<void>;
+  sync?(options?: SyncOptions): Promise<void>;
 }
 
 /** Factory that builds a provider for a configured source. */

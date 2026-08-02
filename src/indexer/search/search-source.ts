@@ -324,7 +324,7 @@ function isSuspiciousStashRoot(dir: string): boolean {
  */
 export async function ensureSourceCaches(
   config?: AkmConfig,
-  options?: { force?: boolean; materialize?: boolean },
+  options?: { force?: boolean; materialize?: boolean; secrets?: import("../../sources/provider").SecretResolver },
 ): Promise<void> {
   const cfg = config ?? loadConfig();
   const force = options?.force === true;
@@ -380,7 +380,7 @@ export async function ensureSourceCaches(
     }
 
     try {
-      await provider.sync({ force });
+      await provider.sync({ force, secrets: options?.secrets });
     } catch (err) {
       warn(
         `Warning: failed to refresh ${provider.kind} source "${provider.name}": ${err instanceof Error ? err.message : String(err)}`,
