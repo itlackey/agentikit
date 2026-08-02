@@ -194,6 +194,21 @@ config defaults:  →  engines.<selected>  →  agents/<selected>  →  document
      (global)           (execution node)       (persona node)      (workflow frontmatter)    (call site)
 ```
 
+**Where fields may live.** Value fields are legal at every layer, with one
+principled exception: *a layer that knows the engine kind validates
+strictly; a layer that doesn't gets capability notices.* The engine node is
+the only layer that knows its own kind at authoring time, so its existing
+strict schema stands — `temperature` on an agent-kind engine node remains a
+config validation error (`src/core/config/schema/engines.ts` already
+enforces this), while `model` remains legal on both kinds. Every other
+layer — persona, document defaults, call site, referenced task — cannot know
+which engine will be selected, so any value field is legal there and an
+unconsumed field is a notice. This widens agent assets from today's
+model-hint-only frontmatter to the full value vocabulary. (Command assets
+already read an `agent:` frontmatter field today — a referenced asset
+naming its preferred persona is existing behavior, corroborating the
+asset-as-layer model.)
+
 Worked example:
 
 ```jsonc
@@ -543,7 +558,9 @@ Resolved by owner:
     dissolved; the kind-gated hard error becomes an engine-capability
     lint/freeze notice, which cascade semantics require. This is the layer
     mechanism `freeze.ts` already implements, exposed as the authoring model
-    (§3.4).
+    (§3.4). Refined in round 7: strictness follows knowledge of the engine
+    kind — the engine node itself keeps its strict per-kind schema; all
+    other layers accept any value field with notices.
 
 Remaining:
 
