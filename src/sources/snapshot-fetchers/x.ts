@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fetchWithRetry } from "../../core/common";
+import { fetchWithRetry, readBodyWithByteCap } from "../../core/common";
 import { warn } from "../../core/warn";
 import rssFetcher from "./rss";
 import type { FetcherContext, WikiSnapshotFetcher, WikiSnapshotResult } from "./types";
@@ -27,6 +27,9 @@ import type { FetcherContext, WikiSnapshotFetcher, WikiSnapshotResult } from "./
 const X_HOSTS = new Set(["x.com", "www.x.com", "twitter.com", "www.twitter.com"]);
 const X_API_BASE = "https://api.x.com/2";
 const DEFAULT_TWEET_LIMIT = 50;
+/** Bound the JSON read: fetch timeouts cover only the header phase. */
+const X_BYTE_CAP = 4 * 1024 * 1024;
+const X_BODY_TIMEOUT_MS = 30_000;
 
 /** Reserved x.com paths that are not user profiles. */
 const RESERVED_X_PATHS = new Set([
@@ -84,6 +87,18 @@ interface XTweet {
   createdAt: string;
 }
 
+/**
+ * Neutralize markdown structure in attacker-controlled prose. Without this a
+ * post body containing a line starting with `##` forges a section boundary in
+ * the snapshot, letting it impersonate content the fetcher vouched for.
+ */
+function escapeStructure(value: string): string {
+  return value
+    .split("\n")
+    .map((line) => line.replace(/^(\s*)([#>\-*+=]|\d+\.)/, "$1\\$2"))
+    .join("\n");
+}
+
 function str(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -103,7 +118,11 @@ async function xApiJson(url: string, token: string, context: FetcherContext): Pr
   );
   if (!response.ok) return null;
   try {
-    return (await response.json()) as Record<string, unknown>;
+    const body = await readBodyWithByteCap(response, X_BYTE_CAP, {
+      bodyTimeoutMs: X_BODY_TIMEOUT_MS,
+      signal: context.signal,
+    });
+    return JSON.parse(body) as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -135,7 +154,7 @@ function renderMarkdown(username: string, tweets: XTweet[]): string {
     if (!tweet.text) continue;
     const when = tweet.createdAt ? new Date(tweet.createdAt) : null;
     const iso = when && !Number.isNaN(when.getTime()) ? when.toISOString() : "";
-    sections.push(`## ${iso || "(undated)"}`, "", tweet.text, "");
+    sections.push(`## ${iso || "(undated)"}`, "", escapeStructure(tweet.text), "");
     if (tweet.id) sections.push(`https://x.com/${username}/status/${tweet.id}`, "");
   }
   return sections.join("\n").trimEnd();

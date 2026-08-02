@@ -3,7 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { XMLParser } from "fast-xml-parser";
-import { fetchWithRetry, ResponseTooLargeError, readBodyWithByteCap } from "../../core/common";
+import { ResponseTooLargeError, readBodyWithByteCap } from "../../core/common";
+import { htmlToMarkdown, isSafeLinkUrl } from "./content-extract";
+import { fetchGuardedResponse } from "./host-guard";
 import type { WikiSnapshotFetcher, WikiSnapshotResult } from "./types";
 
 /**
@@ -59,6 +61,30 @@ function text(value: unknown): string {
   return "";
 }
 
+/**
+ * Atom `<content>` may be type="text"/"html" (a #text body) or type="xhtml"
+ * (child elements). fast-xml-parser gives the latter as an object with no
+ * `#text`, which would otherwise read as an empty summary and silently drop
+ * the whole article body.
+ */
+function atomContent(value: unknown): string {
+  const direct = text(value);
+  if (direct) return direct;
+  if (!value || typeof value !== "object") return "";
+  const collect = (node: unknown): string => {
+    if (typeof node === "string") return node;
+    if (Array.isArray(node)) return node.map(collect).join(" ");
+    if (node && typeof node === "object") {
+      return Object.entries(node as Record<string, unknown>)
+        .filter(([key]) => !key.startsWith("@_"))
+        .map(([, child]) => collect(child))
+        .join(" ");
+    }
+    return "";
+  };
+  return collect(value);
+}
+
 /** Atom links are attribute-shaped and may repeat with different rels. */
 function atomLink(value: unknown): string {
   const candidates = Array.isArray(value) ? value : [value];
@@ -79,11 +105,30 @@ function atomLink(value: unknown): string {
   return fallback;
 }
 
-function stripHtml(value: string): string {
-  return value
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+/**
+ * Feed item bodies are attacker-controlled HTML (often inside CDATA or
+ * entity-encoded). Route them through the same converter the website path
+ * uses so dangerous-block removal and link-scheme policy apply here too — a
+ * plain tag-strip keeps `<script>` BODIES and leaks attribute text.
+ */
+function htmlToPlainText(value: string, baseUrl: string): string {
+  if (!value) return "";
+  return htmlToMarkdown(value, baseUrl).replace(/\s+/g, " ").trim();
+}
+
+/** Collapse whitespace so a value cannot forge markdown structure. */
+function singleLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+/** Emit a link only when it is a safe absolute http(s) URL. */
+function safeLinkOrEmpty(value: string): string {
+  if (!value) return "";
+  try {
+    return isSafeLinkUrl(new URL(value)) ? value : "";
+  } catch {
+    return "";
+  }
 }
 
 function toIsoDate(value: string): string {
@@ -92,28 +137,28 @@ function toIsoDate(value: string): string {
   return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
 }
 
-function readRssItems(channel: Record<string, unknown>, limit: number): FeedItem[] {
+function readRssItems(channel: Record<string, unknown>, limit: number, baseUrl: string): FeedItem[] {
   const items = Array.isArray(channel.item) ? channel.item : [];
   return items.slice(0, limit).map((raw) => {
     const item = (raw ?? {}) as Record<string, unknown>;
     return {
-      title: text(item.title),
-      link: text(item.link) || text(item.guid),
+      title: singleLine(text(item.title)),
+      link: safeLinkOrEmpty(text(item.link) || text(item.guid)),
       date: toIsoDate(text(item.pubDate) || text(item["dc:date"])),
-      summary: stripHtml(text(item.description) || text(item["content:encoded"])),
+      summary: htmlToPlainText(text(item.description) || text(item["content:encoded"]), baseUrl),
     };
   });
 }
 
-function readAtomEntries(feed: Record<string, unknown>, limit: number): FeedItem[] {
+function readAtomEntries(feed: Record<string, unknown>, limit: number, baseUrl: string): FeedItem[] {
   const entries = Array.isArray(feed.entry) ? feed.entry : [];
   return entries.slice(0, limit).map((raw) => {
     const entry = (raw ?? {}) as Record<string, unknown>;
     return {
-      title: text(entry.title),
-      link: atomLink(entry.link),
+      title: singleLine(text(entry.title)),
+      link: safeLinkOrEmpty(atomLink(entry.link)),
       date: toIsoDate(text(entry.updated) || text(entry.published)),
-      summary: stripHtml(text(entry.summary) || text(entry.content)),
+      summary: htmlToPlainText(text(entry.summary) || atomContent(entry.content), baseUrl),
     };
   });
 }
@@ -124,7 +169,11 @@ interface ParsedFeed {
 }
 
 /** Returns null when the document is not a recognizable feed. */
-export function parseFeed(xml: string, limit = DEFAULT_ITEM_LIMIT): ParsedFeed | null {
+export function parseFeed(
+  xml: string,
+  limit = DEFAULT_ITEM_LIMIT,
+  baseUrl = "https://feed.invalid/",
+): ParsedFeed | null {
   let doc: Record<string, unknown>;
   try {
     doc = xmlParser.parse(xml) as Record<string, unknown>;
@@ -136,12 +185,12 @@ export function parseFeed(xml: string, limit = DEFAULT_ITEM_LIMIT): ParsedFeed |
   const rss = doc.rss as Record<string, unknown> | undefined;
   if (rss?.channel) {
     const channel = rss.channel as Record<string, unknown>;
-    return { title: text(channel.title), items: readRssItems(channel, limit) };
+    return { title: singleLine(text(channel.title)), items: readRssItems(channel, limit, baseUrl) };
   }
 
   const feed = doc.feed as Record<string, unknown> | undefined;
   if (feed) {
-    return { title: text(feed.title), items: readAtomEntries(feed, limit) };
+    return { title: singleLine(text(feed.title)), items: readAtomEntries(feed, limit, baseUrl) };
   }
 
   // RDF / RSS 1.0 hoists <item> to the document root alongside <channel>.
@@ -149,7 +198,10 @@ export function parseFeed(xml: string, limit = DEFAULT_ITEM_LIMIT): ParsedFeed |
   if (rdf) {
     const channel = (rdf.channel ?? {}) as Record<string, unknown>;
     const scope = Array.isArray(rdf.item) ? rdf : channel;
-    return { title: text(channel.title), items: readRssItems(scope as Record<string, unknown>, limit) };
+    return {
+      title: singleLine(text(channel.title)),
+      items: readRssItems(scope as Record<string, unknown>, limit, baseUrl),
+    };
   }
 
   return null;
@@ -157,7 +209,7 @@ export function parseFeed(xml: string, limit = DEFAULT_ITEM_LIMIT): ParsedFeed |
 
 /** Cheap pre-parse check so HTML served at a feed-shaped URL is not parsed. */
 function looksLikeFeed(body: string): boolean {
-  const head = body.slice(0, 2048);
+  const head = body.slice(0, 16_384);
   return /<(?:rss\b|feed\b|rdf:RDF\b)/i.test(head);
 }
 
@@ -197,7 +249,10 @@ const rssFetcher: WikiSnapshotFetcher = {
     return FEED_PATH_PATTERN.test(url.pathname) || url.searchParams.has("feed");
   },
   async fetch(url, context): Promise<WikiSnapshotResult | null> {
-    const response = await fetchWithRetry(
+    // Full SSRF guard chain: a feed URL is caller-supplied, and without
+    // manual redirect handling a public host can bounce the request into the
+    // private network with no revalidation.
+    const response = await fetchGuardedResponse(
       url.toString(),
       {
         headers: {
@@ -206,13 +261,16 @@ const rssFetcher: WikiSnapshotFetcher = {
         },
         signal: context.signal,
       },
-      { timeout: context.timeoutMs, retries: 1 },
+      { timeoutMs: context.timeoutMs, retries: 1, allowPrivateHosts: context.allowPrivateHosts },
     );
     if (!response.ok) return null;
 
     let body: string;
     try {
-      body = await readBodyWithByteCap(response, FEED_BYTE_CAP, { bodyTimeoutMs: FEED_BODY_TIMEOUT_MS });
+      body = await readBodyWithByteCap(response, FEED_BYTE_CAP, {
+        bodyTimeoutMs: FEED_BODY_TIMEOUT_MS,
+        signal: context.signal,
+      });
     } catch (error) {
       // An oversized feed is not a hard failure — fall through to the generic
       // crawler rather than aborting the whole `akm bundle add`.
@@ -221,7 +279,7 @@ const rssFetcher: WikiSnapshotFetcher = {
     }
 
     if (!looksLikeFeed(body)) return null;
-    const feed = parseFeed(body);
+    const feed = parseFeed(body, DEFAULT_ITEM_LIMIT, url.toString());
     if (!feed || feed.items.length === 0) return null;
 
     return {

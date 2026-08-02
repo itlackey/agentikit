@@ -223,3 +223,100 @@ describe("markdown fidelity", () => {
     expect(md).toContain("a & b < c");
   });
 });
+
+describe("security regressions (found in review)", () => {
+  // HIGH: node-html-parser only closes a raw-text element on an exactly
+  // matching lowercase `</script>`. Every other spelling a browser accepts
+  // desynced the parse, so no script element existed to remove and the body
+  // was serialized as prose — invisible to anyone viewing the page.
+  test.each([
+    ["uppercase close", "</SCRIPT>"],
+    ["trailing space", "</script >"],
+    ["trailing tab", "</script\t>"],
+    ["trailing newline", "</script\n>"],
+    ["self-closing slash", "</script/>"],
+    ["attribute junk", "</script foo>"],
+    ["space after slash", "</ script>"],
+  ])("script body does not leak with a %s end tag", (_label, closeTag) => {
+    const html = `<html><body><main><p>Visible.</p><script>LEAKED_PAYLOAD_TOKEN${closeTag}<p>After.</p></main></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).not.toContain("LEAKED_PAYLOAD_TOKEN");
+  });
+
+  test("unterminated script at EOF does not leak its body", () => {
+    const html = `<html><body><main><p>Visible.</p><script>LEAKED_PAYLOAD_TOKEN`;
+    expect(htmlToMarkdown(html, PAGE_URL)).not.toContain("LEAKED_PAYLOAD_TOKEN");
+  });
+
+  test.each(["</STYLE>", "</style >", "</style/>"])("style body does not leak with %s", (closeTag) => {
+    const html = `<html><body><main><p>Visible.</p><style>LEAKED_CSS_TOKEN${closeTag}</main></body></html>`;
+    expect(htmlToMarkdown(html, PAGE_URL)).not.toContain("LEAKED_CSS_TOKEN");
+  });
+
+  // MEDIUM: Turndown's built-in image rule emitted src verbatim, bypassing
+  // the anchor scheme policy entirely.
+  test.each([
+    ["javascript:alert(1)"],
+    ["data:image/svg+xml,x"],
+    ["file:///etc/passwd"],
+  ])("image src %s is not emitted as a link", (src) => {
+    const md = htmlToMarkdown(`<html><body><main><img src="${src}" alt="ALTTEXT"></main></body></html>`, PAGE_URL);
+    expect(md).toContain("ALTTEXT");
+    expect(md).not.toContain("](");
+  });
+
+  test("relative image src resolves against the page URL", () => {
+    const md = htmlToMarkdown(`<html><body><main><img src="/img/a.png" alt="A"></main></body></html>`, PAGE_URL);
+    expect(md).toContain("![A](https://docs.example.com/img/a.png)");
+  });
+
+  // MEDIUM: a hardcoded 3-backtick fence let code content close the fence
+  // early and inject forged headings as real markdown.
+  test("code containing a triple backtick cannot break out of its fence", () => {
+    const payload = "const a = 1;\n```\n\n# FORGED HEADING\n\n```js\nconst b = 2;";
+    const md = htmlToMarkdown(
+      `<html><body><main><pre><code class="language-js">${payload}</code></pre></main></body></html>`,
+      PAGE_URL,
+    );
+    // The heading text is still present, but sealed inside a widened fence
+    // rather than acting as a real heading.
+    const fence = /^(`{4,})js\n([\s\S]*)\n\1$/.exec(md.trim());
+    expect(fence).not.toBeNull();
+    expect(fence?.[2]).toContain("# FORGED HEADING");
+  });
+
+  // MEDIUM: deep nesting overflowed the stack and aborted the whole crawl.
+  test("pathologically nested markup degrades instead of throwing", () => {
+    const deep = `<html><body><main>${"<div>".repeat(20_000)}DEEP_CONTENT${"</div>".repeat(20_000)}</main></body></html>`;
+    let md = "";
+    expect(() => {
+      md = htmlToMarkdown(deep, PAGE_URL);
+    }).not.toThrow();
+    expect(md).toContain("DEEP_CONTENT");
+  });
+
+  // LOW: Turndown does not escape `<`, so visible page text written as
+  // &lt;script&gt; became a live tag in the markdown.
+  test("entity-encoded markup stays inert in the output", () => {
+    const html = `<html><body><main><p>&lt;script&gt;alert(1)&lt;/script&gt;</p></main></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).not.toContain("<script>");
+    expect(md).not.toContain("<img");
+  });
+
+  // LOW: parens in a destination truncated the link and spilled markup.
+  test("a URL containing parens is wrapped so it cannot truncate", () => {
+    const html = `<html><body><main><a href="https://ok.example/a(b)c">L</a></main></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("[L](https://ok.example/a%28b%29c)");
+  });
+
+  // LOW: credentials are rejected on input URLs; they must not re-enter
+  // through a link inside page content.
+  test("embedded credentials are stripped from emitted links", () => {
+    const html = `<html><body><main><a href="https://user:pw@ok.example/x">L</a></main></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).not.toContain("user:pw");
+    expect(md).toContain("https://ok.example/x");
+  });
+});

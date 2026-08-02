@@ -23,6 +23,12 @@ export interface FetcherContext {
   stashDir: string;
   timeoutMs: number;
   signal?: AbortSignal;
+  /**
+   * Test-only: permit loopback/private hosts on this fetcher's outbound
+   * requests. Mirrors the same hatch in the website crawler; production
+   * callers never set it.
+   */
+  allowPrivateHosts?: boolean;
 }
 
 export interface WikiSnapshotFetcher {

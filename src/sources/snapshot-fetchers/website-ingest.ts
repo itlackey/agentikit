@@ -3,9 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { createHash } from "node:crypto";
-import { lookup as dnsLookup } from "node:dns/promises";
 import fs from "node:fs";
-import { isIP } from "node:net";
 import path from "node:path";
 import {
   fetchWithRetry,
@@ -21,6 +19,13 @@ import { warn, warnVerbose } from "../../core/warn";
 import { withFreshnessCache } from "../freshness";
 import { sanitizeString } from "../providers/provider-utils";
 import { extractDocumentLinks, htmlToMarkdown } from "./content-extract";
+import {
+  assertResolvedHostAllowed,
+  assertWebsiteRequestUrl,
+  type HostnameResolver,
+  isLoopbackWebsiteHostname,
+  type WebsiteUrlErrorCtor,
+} from "./host-guard";
 import { loadWikiSnapshotFetchers } from "./registry";
 import {
   createAllowAllRobotsPolicy,
@@ -89,9 +94,6 @@ export interface FetchSnapshotOptions {
   signal?: AbortSignal;
   allowPrivateHosts?: boolean;
 }
-
-/** Resolve a hostname to its A/AAAA address strings. Injectable for tests. */
-export type HostnameResolver = (hostname: string) => Promise<string[]>;
 
 interface WebsiteValidationOptions {
   allowPrivateHosts?: boolean;
@@ -263,6 +265,7 @@ export async function fetchWebsiteMarkdownSnapshot(
     stashDir: stashDir ?? "",
     timeoutMs: options?.timeoutMs ?? 15_000,
     signal: options?.signal,
+    ...(options?.allowPrivateHosts ? { allowPrivateHosts: true } : {}),
   };
 
   for (const fetcher of await loadWikiSnapshotFetchers(stashDir)) {
@@ -1014,148 +1017,6 @@ function extractTextTitle(text: string): string | undefined {
   return undefined;
 }
 
-type WebsiteUrlErrorCtor = new (message: string) => Error;
-
-function assertWebsiteRequestUrl(
-  rawUrl: string,
-  ErrorType: WebsiteUrlErrorCtor = Error,
-  options?: WebsiteValidationOptions,
-): void {
-  const parsedUrl = new URL(rawUrl);
-  const hostname = parsedUrl.hostname.toLowerCase();
-  if (hostname.endsWith(".invalid")) {
-    throw new ErrorType(`Refusing to fetch reserved invalid hostname: ${parsedUrl.hostname}`);
-  }
-  if (isForbiddenWebsiteHostname(hostname, options)) {
-    throw new ErrorType(`Refusing to fetch non-public website host: ${parsedUrl.hostname}`);
-  }
-}
-
-async function defaultResolveHostname(hostname: string): Promise<string[]> {
-  const records = await dnsLookup(hostname, { all: true });
-  return records.map((record) => record.address);
-}
-
-/**
- * Resolve-then-validate SSRF guard against DNS rebinding / private-range
- * bypasses. {@link assertWebsiteRequestUrl} only rejects IP-literal and
- * well-known-name hosts; a hostname like `private-host.example.com` that
- * resolves to `10.0.0.1` passes those checks and then fetch connects to the
- * private address. Here we resolve EVERY A/AAAA record and validate each
- * against the same forbidden-range rules, failing CLOSED on an empty answer or
- * resolver error.
- *
- * TOCTOU residual (documented, not fully closable here): Bun's `fetch` exposes
- * no custom `lookup`/agent hook, so we cannot pin the socket to the exact IP we
- * validated — a hostile resolver could return a public IP to this lookup and a
- * private IP microseconds later at connect time (classic rebinding). This still
- * removes the TRIVIAL `hostname A 10.0.0.1` bypass, which is the strongest
- * guarantee available without a pinned-connection fetch API. Re-run on every
- * redirect hop (the crawler recurses through `fetchWebsiteResponse`).
- */
-export async function assertResolvedHostAllowed(hostname: string, options?: WebsiteValidationOptions): Promise<void> {
-  if (options?.allowPrivateHosts === true) return;
-  const bare = stripIpv6Brackets(hostname.toLowerCase());
-  // IP-literal hosts are already fully validated by assertWebsiteRequestUrl's
-  // range checks; resolving them is a no-op (and dnsLookup would just echo it).
-  if (isIP(bare) !== 0) return;
-
-  const resolve = options?.resolveHostname ?? defaultResolveHostname;
-  let addresses: string[];
-  try {
-    addresses = await resolve(bare);
-  } catch {
-    throw new Error(`Refusing to fetch ${hostname}: DNS resolution failed`);
-  }
-  if (addresses.length === 0) {
-    throw new Error(`Refusing to fetch ${hostname}: hostname resolved to no addresses`);
-  }
-  for (const address of addresses) {
-    const version = isIP(address);
-    const forbidden =
-      version === 4 ? isForbiddenIpv4(address) : version === 6 ? isForbiddenIpv6(stripIpv6Brackets(address)) : true;
-    if (forbidden) {
-      throw new Error(`Refusing to fetch ${hostname}: resolves to non-public or unparseable address ${address}`);
-    }
-  }
-}
-
-// WHATWG URL.hostname wraps IPv6 literals in brackets (e.g. "[::1]"), but
-// node:net's isIP() only recognizes the bare address form and returns 0 for
-// anything bracketed — silently skipping all IPv6 forbidden-host checks
-// below for every hostname parsed off a URL. Strip the brackets before any
-// isIP()/isForbiddenIpv6() call so those checks actually run.
-function stripIpv6Brackets(hostname: string): string {
-  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-}
-
-function isForbiddenWebsiteHostname(hostname: string, options?: WebsiteValidationOptions): boolean {
-  if (options?.allowPrivateHosts === true) return false;
-  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "metadata.google.internal") {
-    return true;
-  }
-
-  const bareHostname = stripIpv6Brackets(hostname);
-  const ipVersion = isIP(bareHostname);
-  if (ipVersion === 4) return isForbiddenIpv4(bareHostname);
-  if (ipVersion === 6) return isForbiddenIpv6(bareHostname);
-  return false;
-}
-
-function isLoopbackWebsiteHostname(hostname: string): boolean {
-  if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
-  const bareHostname = stripIpv6Brackets(hostname);
-  const ipVersion = isIP(bareHostname);
-  if (ipVersion === 4) return bareHostname.startsWith("127.");
-  if (ipVersion === 6) return bareHostname === "::1";
-  return false;
-}
-
-function isForbiddenIpv4(hostname: string): boolean {
-  const parts = hostname.split(".").map((part) => Number.parseInt(part, 10));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
-  const a = parts[0]!;
-  const b = parts[1]!;
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168)
-  );
-}
-
-/**
- * Extracts the embedded IPv4 address from an IPv4-mapped IPv6 literal
- * (`::ffff:a.b.c.d` or its canonical hex form `::ffff:xxxx:yyyy`), or
- * returns null if `hostname` isn't one.
- */
-function extractIpv4MappedAddress(normalizedHostname: string): string | null {
-  const match = normalizedHostname.match(/^::ffff:(?:(\d{1,3}(?:\.\d{1,3}){3})|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/);
-  if (!match) return null;
-  if (match[1]) return match[1];
-  const high = Number.parseInt(match[2]!, 16);
-  const low = Number.parseInt(match[3]!, 16);
-  return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
-}
-
-function isForbiddenIpv6(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  const mappedIpv4 = extractIpv4MappedAddress(normalized);
-  if (mappedIpv4) return isForbiddenIpv4(mappedIpv4);
-  return (
-    normalized === "::" ||
-    normalized === "::1" ||
-    normalized.startsWith("fc") ||
-    normalized.startsWith("fd") ||
-    normalized.startsWith("fe8") ||
-    normalized.startsWith("fe9") ||
-    normalized.startsWith("fea") ||
-    normalized.startsWith("feb")
-  );
-}
-
 function safeCodePointToString(value: number): string | undefined {
   if (!Number.isFinite(value) || value < 0 || value > 0x10ffff) return undefined;
   try {
@@ -1164,3 +1025,6 @@ function safeCodePointToString(value: number): string | undefined {
     return undefined;
   }
 }
+
+// Re-exported for existing importers (the SSRF suite pins these entry points).
+export { assertResolvedHostAllowed, type HostnameResolver } from "./host-guard";

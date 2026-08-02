@@ -8,21 +8,18 @@ import TurndownService from "turndown";
 /**
  * Main-content extraction and HTML -> Markdown conversion for website snapshots.
  *
- * Replaces the hand-rolled regex converter that previously lived in
- * `website-ingest.ts`. Two behaviors from that converter are load-bearing and
- * are preserved here deliberately:
+ * Snapshots are read back by agents as trusted knowledge, so anything a hostile
+ * page can smuggle into the markdown is a prompt-injection vector. Three
+ * invariants are load-bearing and each is enforced defensively:
  *
- *   1. `<script>` / `<style>` / `<noscript>` / `<template>` content must never
- *      reach the markdown. Enforced twice — stripped from the parsed DOM AND
- *      registered with Turndown's `remove()` — because a snapshot is fed to
- *      agents as trusted knowledge and inline JS masquerading as prose is a
- *      prompt-injection vector.
- *   2. Only `http:` / `https:` links are emitted as markdown links. Anything
- *      else (`javascript:`, `data:`, `file:`, …) degrades to its plain text
- *      label rather than becoming a clickable link in agent-facing content.
+ *   1. `<script>` / `<style>` / `<noscript>` / `<template>` bodies never reach
+ *      the markdown.
+ *   2. Only `http:` / `https:` URLs are emitted as links or images; anything
+ *      else degrades to plain text.
+ *   3. A page cannot forge document structure — code fences are sized so their
+ *      content cannot close them early.
  */
 
-/** Blocks removed wholesale before conversion — never contribute prose. */
 const DANGEROUS_TAGS = ["script", "style", "noscript", "template"] as const;
 
 /**
@@ -32,10 +29,7 @@ const DANGEROUS_TAGS = ["script", "style", "noscript", "template"] as const;
  */
 const CHROME_TAGS = ["nav", "header", "footer", "aside"] as const;
 
-/**
- * Content-region selectors in priority order. First match wins, so semantic
- * HTML beats class-name heuristics.
- */
+/** Content-region selectors in priority order; semantic HTML beats classes. */
 const CONTENT_SELECTORS = [
   "main",
   "article",
@@ -49,6 +43,31 @@ const CONTENT_SELECTORS = [
   ".content",
 ] as const;
 
+/**
+ * Remove raw-text blocks textually, BEFORE the DOM parse.
+ *
+ * This is the security boundary, not `querySelectorAll("script").remove()`.
+ * `node-html-parser` only closes a raw-text element on an exactly-matching
+ * lowercase `</script>`; browsers additionally accept `</SCRIPT>`,
+ * `</script >`, `</script/>`, `</script foo>` and `</ script>`. On any of
+ * those the parser never creates a `script` element at all and serializes the
+ * script *body* as ordinary text — so DOM-level removal silently does nothing
+ * and the payload lands in the snapshot while the page renders normally in a
+ * browser. An unterminated `<script>` at EOF has the same effect.
+ */
+function scrubDangerousMarkup(html: string): string {
+  let out = html;
+  for (const tag of DANGEROUS_TAGS) {
+    // Tolerate any end-tag spelling a browser would accept.
+    out = out.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/\\s*${tag}\\b[^>]*>`, "gi"), " ");
+    // Unterminated open tag: everything to EOF is inside the raw-text element.
+    out = out.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*$`, "i"), " ");
+    // Any stray leftover tag of this kind.
+    out = out.replace(new RegExp(`<\\/?\\s*${tag}\\b[^>]*>`, "gi"), " ");
+  }
+  return out;
+}
+
 function stripDangerousNodes(root: HTMLElement): void {
   for (const tag of DANGEROUS_TAGS) {
     for (const node of root.querySelectorAll(tag)) node.remove();
@@ -61,19 +80,80 @@ export function isSafeLinkUrl(url: URL): boolean {
 }
 
 /**
+ * Resolve an href/src for emission: absolute, http(s) only, credentials
+ * stripped. Returns null when the URL must not be emitted.
+ */
+function resolveEmittableUrl(raw: string, pageUrl: string): string | null {
+  try {
+    const resolved = new URL(raw, pageUrl);
+    if (!isSafeLinkUrl(resolved)) return null;
+    // `validateWebsiteUrl` rejects credentials on input URLs; do not let them
+    // re-enter through a link inside page content.
+    resolved.username = "";
+    resolved.password = "";
+    return resolved.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Percent-encode parens in a link destination. Unescaped parens truncate the
+ * link and spill the remainder into the document as live markup. Encoding
+ * (rather than the `<...>` destination form) keeps the result free of `<`, so
+ * {@link escapeResidualMarkup} cannot corrupt it afterwards.
+ */
+function markdownDestination(url: string): string {
+  return url.replaceAll("(", "%28").replaceAll(")", "%29");
+}
+
+/**
+ * Guard against pathological nesting. `node-html-parser` and Turndown both
+ * recurse, and ~20k nested elements (well under the page byte cap) overflows
+ * the stack — which would otherwise abort an entire crawl.
+ */
+const MAX_NESTING_DEPTH = 2_000;
+
+function exceedsNestingBudget(html: string): boolean {
+  let depth = 0;
+  let max = 0;
+  const tagPattern = /<(\/?)([a-zA-Z][\w:-]*)[^>]*?(\/?)>/g;
+  for (const match of html.matchAll(tagPattern)) {
+    const closing = match[1] === "/";
+    const selfClosing = match[3] === "/";
+    if (selfClosing) continue;
+    if (closing) depth = Math.max(0, depth - 1);
+    else {
+      depth += 1;
+      if (depth > max) max = depth;
+      if (max > MAX_NESTING_DEPTH) return true;
+    }
+  }
+  return false;
+}
+
+/** Last-resort conversion when the document is too deep to parse safely. */
+function plainTextFallback(html: string): string {
+  return scrubDangerousMarkup(html)
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * Select the main-content region of a document and return its HTML.
  *
  * Falls back to `<body>` minus page chrome, then to the whole document, so a
  * page with no semantic markup still yields content rather than nothing.
  */
 export function extractMainContentHtml(html: string): string {
-  const root = parse(html, { comment: false });
+  const root = parse(scrubDangerousMarkup(html), { comment: false });
   stripDangerousNodes(root);
 
   for (const selector of CONTENT_SELECTORS) {
     const match = root.querySelector(selector);
     // Ignore a region that matched structurally but carries no prose — a
-    // decorative `<main>` wrapper should not shadow the real content below it.
+    // decorative wrapper should not shadow the real content below it.
     if (match && match.textContent.trim()) return match.toString();
   }
 
@@ -93,6 +173,17 @@ function fenceLanguage(className: string): string {
   return /(?:language|lang)-([\w+#-]+)/.exec(className)?.[1] ?? "";
 }
 
+/**
+ * Size a fence so its own content cannot close it. Turndown's default rule
+ * does this; the custom rule below must not regress it, or a page can end the
+ * fence early and inject forged headings and prose into the snapshot.
+ */
+function fenceFor(code: string): string {
+  let longest = 0;
+  for (const run of code.matchAll(/`+/g)) longest = Math.max(longest, run[0].length);
+  return "`".repeat(Math.max(3, longest + 1));
+}
+
 function createTurndown(pageUrl: string): TurndownService {
   const service = new TurndownService({
     headingStyle: "atx",
@@ -101,8 +192,8 @@ function createTurndown(pageUrl: string): TurndownService {
     bulletListMarker: "-",
   });
 
-  // Defense in depth: these are already gone from the DOM, but a caller
-  // converting raw HTML directly must not be able to leak them either.
+  // Defense in depth: these are already scrubbed textually and removed from
+  // the DOM. A caller converting raw HTML must not be able to leak them either.
   service.remove([...DANGEROUS_TAGS]);
 
   service.addRule("fencedCodeBlock", {
@@ -113,7 +204,8 @@ function createTurndown(pageUrl: string): TurndownService {
       const language = fenceLanguage(code?.getAttribute?.("class") ?? "");
       const text = (code?.textContent ?? "").replace(/\n+$/, "");
       if (!text.trim()) return "\n\n";
-      return `\n\n\`\`\`${language}\n${text}\n\`\`\`\n\n`;
+      const fence = fenceFor(text);
+      return `\n\n${fence}${language}\n${text}\n${fence}\n\n`;
     },
   });
 
@@ -124,18 +216,40 @@ function createTurndown(pageUrl: string): TurndownService {
       if (!label) return "";
       const href = (node as Element).getAttribute("href");
       if (!href) return label;
-      try {
-        const resolved = new URL(href, pageUrl);
-        // Non-http(s) schemes degrade to plain text rather than becoming a
-        // clickable link — see the module header.
-        return isSafeLinkUrl(resolved) ? `[${label}](${resolved.toString()})` : label;
-      } catch {
-        return label;
-      }
+      const resolved = resolveEmittableUrl(href, pageUrl);
+      return resolved ? `[${label}](${markdownDestination(resolved)})` : label;
+    },
+  });
+
+  // Turndown's built-in image rule emits `src` verbatim — no scheme check and
+  // no base resolution — so `javascript:` / `data:` srcs would slip past the
+  // anchor policy entirely.
+  service.addRule("safeImage", {
+    filter: (node: Node): boolean => node.nodeName === "IMG",
+    replacement: (_content: string, node: Node): string => {
+      const element = node as Element;
+      const alt = element.getAttribute("alt")?.trim() ?? "";
+      const src = element.getAttribute("src");
+      if (!src) return alt;
+      const resolved = resolveEmittableUrl(src, pageUrl);
+      return resolved ? `![${alt}](${markdownDestination(resolved)})` : alt;
     },
   });
 
   return service;
+}
+
+/**
+ * Escape markup that survives conversion as literal text.
+ *
+ * Turndown does not escape `<`, so page text written as `&lt;script&gt;`
+ * (harmless, visible text on the page) would otherwise become a live
+ * `<script>` tag in the markdown and execute in any renderer that passes raw
+ * HTML through.
+ */
+function escapeResidualMarkup(markdown: string): string {
+  // Only `<` that begins a tag-like construct; a bare `a < b` stays readable.
+  return markdown.replace(/<(?=[a-zA-Z/!?])/g, "&lt;");
 }
 
 /**
@@ -144,9 +258,19 @@ function createTurndown(pageUrl: string): TurndownService {
  * `pageUrl` resolves relative hrefs; it is not fetched.
  */
 export function htmlToMarkdown(html: string, pageUrl: string): string {
-  const contentHtml = extractMainContentHtml(html);
-  const markdown = createTurndown(pageUrl).turndown(contentHtml);
-  return markdown
+  let markdown: string;
+  if (exceedsNestingBudget(html)) {
+    markdown = plainTextFallback(html);
+  } else {
+    try {
+      markdown = createTurndown(pageUrl).turndown(extractMainContentHtml(html));
+    } catch {
+      // Depth budget is a heuristic; a parser or converter blow-up must
+      // degrade this page, never abort the surrounding crawl.
+      markdown = plainTextFallback(html);
+    }
+  }
+  return escapeResidualMarkup(markdown)
     .replace(/\r/g, "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
@@ -161,9 +285,14 @@ export function htmlToMarkdown(html: string, pageUrl: string): string {
  * every crawl to whatever the first page happens to link inline.
  */
 export function extractDocumentLinks(html: string, pageUrl: string): URL[] {
-  const root = parse(html, { comment: false });
   const links: URL[] = [];
-  for (const anchor of root.querySelectorAll("a")) {
+  let anchors: { getAttribute(name: string): string | undefined }[];
+  try {
+    anchors = parse(scrubDangerousMarkup(html), { comment: false }).querySelectorAll("a");
+  } catch {
+    return links;
+  }
+  for (const anchor of anchors) {
     const href = anchor.getAttribute("href")?.trim();
     if (!href || href.startsWith("#")) continue;
     try {

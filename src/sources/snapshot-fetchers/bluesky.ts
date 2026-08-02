@@ -2,7 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fetchWithRetry } from "../../core/common";
+import { fetchWithRetry, readBodyWithByteCap } from "../../core/common";
+import { isSafeLinkUrl } from "./content-extract";
 import type { WikiSnapshotFetcher, WikiSnapshotResult } from "./types";
 
 /**
@@ -18,6 +19,9 @@ const PUBLIC_API_BASE = "https://public.api.bsky.app";
 /** The XRPC endpoint caps `limit` at 100; asking for more is an error. */
 const MAX_FEED_LIMIT = 100;
 const DEFAULT_FEED_LIMIT = 50;
+/** Bound the JSON read: fetch timeouts cover only the header phase. */
+const BSKY_BYTE_CAP = 4 * 1024 * 1024;
+const BSKY_BODY_TIMEOUT_MS = 30_000;
 
 interface BlueskyPost {
   text: string;
@@ -41,6 +45,28 @@ export function extractBlueskyHandle(url: URL): string | null {
   return handle.replace(/^@/, "");
 }
 
+/**
+ * Neutralize markdown structure in attacker-controlled prose. Without this a
+ * post body containing a line starting with `##` forges a section boundary in
+ * the snapshot, letting it impersonate content the fetcher vouched for.
+ */
+function escapeStructure(value: string): string {
+  return value
+    .split("\n")
+    .map((line) => line.replace(/^(\s*)([#>\-*+=]|\d+\.)/, "$1\\$2"))
+    .join("\n");
+}
+
+/** Emit a link only when it is a safe absolute http(s) URL. */
+function safeLink(value: string): string {
+  if (!value) return "";
+  try {
+    return isSafeLinkUrl(new URL(value)) ? value : "";
+  } catch {
+    return "";
+  }
+}
+
 function str(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -60,7 +86,11 @@ async function xrpcJson(url: string, timeoutMs: number, signal?: AbortSignal): P
   );
   if (!response.ok) return null;
   try {
-    return await response.json();
+    const body = await readBodyWithByteCap(response, BSKY_BYTE_CAP, {
+      bodyTimeoutMs: BSKY_BODY_TIMEOUT_MS,
+      signal,
+    });
+    return JSON.parse(body);
   } catch {
     return null;
   }
@@ -89,7 +119,7 @@ function readPosts(feed: unknown, limit: number): BlueskyPost[] {
       uri: str(post.uri),
       likeCount: num(post.likeCount),
       repostCount: num(post.repostCount),
-      externalUri: str(external.uri),
+      externalUri: safeLink(str(external.uri)),
     });
   }
   return posts;
@@ -108,7 +138,7 @@ function renderMarkdown(handle: string, posts: BlueskyPost[]): string {
     const when = post.createdAt ? new Date(post.createdAt) : null;
     const iso = when && !Number.isNaN(when.getTime()) ? when.toISOString() : "";
     sections.push(`## ${iso || "(undated)"}`, "");
-    if (post.text) sections.push(post.text, "");
+    if (post.text) sections.push(escapeStructure(post.text), "");
     const meta: string[] = [];
     const link = permalink(handle, post.uri);
     if (link) meta.push(link);
