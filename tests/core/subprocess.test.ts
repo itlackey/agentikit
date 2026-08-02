@@ -196,6 +196,30 @@ describe("runManagedSubprocess — abort", () => {
 });
 
 describe("runManagedSubprocess — capture and failure surfacing", () => {
+  test("does not impose a short stream deadline when the process timeout is disabled", async () => {
+    const { timers, setTimeoutFn, clearTimeoutFn } = fakeTimers();
+    const spawn: SpawnFn = () => ({
+      exitCode: 0,
+      exited: Promise.resolve(0),
+      stdout: asReadableStream("out\n"),
+      stderr: asReadableStream(""),
+      stdin: null,
+      kill() {},
+    });
+
+    const result = await runManagedSubprocess(["echo"], {
+      capture: true,
+      timeoutMs: null,
+      spawnFn: spawn,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(timers.filter((timer) => timer.ms === 60 * 60 * 1000)).toHaveLength(2);
+    expect(timers.some((timer) => timer.ms === 30_000)).toBe(false);
+  });
+
   test("captures stdout/stderr on a clean exit", async () => {
     const spawn: SpawnFn = () => ({
       exitCode: 0,

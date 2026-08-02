@@ -1,6 +1,6 @@
 import { describe, expect, jest, setSystemTime, test } from "bun:test";
 import type { LlmConnectionConfig } from "../../src/core/config/config";
-import { parseEmbeddedJsonResponse } from "../../src/core/parse";
+import { parseEmbeddedJsonResponse, parseJsonResponse } from "../../src/core/parse";
 import { chatCompletion, LlmCallError, probeLlmCapabilities, redactErrorBody } from "../../src/llm/client";
 
 function createRequestServer(respond: (body: Record<string, unknown>) => Response): {
@@ -1029,6 +1029,17 @@ describe("parseEmbeddedJsonResponse", () => {
 
   test("returns undefined when no JSON object or array exists", () => {
     expect(parseEmbeddedJsonResponse("not json at all")).toBeUndefined();
+  });
+});
+
+describe("parseJsonResponse", () => {
+  test("parses JSON after qwen omits the opening think tag", () => {
+    const raw = 'Reasoning with {"example":true}</think>\n{"complete":true,"missing":[],"feedback":""}';
+    expect(parseJsonResponse<{ complete: boolean; missing: string[]; feedback: string }>(raw)).toEqual({
+      complete: true,
+      missing: [],
+      feedback: "",
+    });
   });
 });
 

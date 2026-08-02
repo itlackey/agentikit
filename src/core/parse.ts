@@ -25,7 +25,10 @@
  * models). Also strips leading/trailing whitespace.
  */
 export function stripThinkBlocks(raw: string): string {
-  return raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  return raw
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/^[\s\S]*?<\/think>/i, "")
+    .trim();
 }
 
 /**
