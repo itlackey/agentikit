@@ -20,6 +20,7 @@ import { getRegistryIndexCacheDir } from "../../core/paths";
 import { warn, warnVerbose } from "../../core/warn";
 import { withFreshnessCache } from "../freshness";
 import { sanitizeString } from "../providers/provider-utils";
+import { extractDocumentLinks, htmlToMarkdown } from "./content-extract";
 import { loadWikiSnapshotFetchers } from "./registry";
 import {
   createAllowAllRobotsPolicy,
@@ -628,7 +629,7 @@ async function fetchWebsitePage(
         title,
         markdown: htmlToMarkdown(body, finalUrl),
       },
-      links: extractSameDocumentLinks(body, finalUrl),
+      links: extractDocumentLinks(body, finalUrl),
     };
   }
 
@@ -964,86 +965,9 @@ function looksLikeMarkup(body: string): boolean {
   return /<html[\s>]|<body[\s>]|<\/[a-z][\w:-]*>/i.test(body);
 }
 
-function extractHtmlTitle(html: string): string | undefined {
-  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
-  if (title) return decodeHtmlEntities(stripTags(title)).trim();
-  const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
-  if (h1) return decodeHtmlEntities(stripTags(h1)).trim();
-  return undefined;
-}
-
-function extractTextTitle(text: string): string | undefined {
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (trimmed.startsWith("#")) return trimmed.replace(/^#+\s*/, "");
-    return trimmed.slice(0, 120);
-  }
-  return undefined;
-}
-
-function extractSameDocumentLinks(html: string, pageUrl: string): URL[] {
-  const links: URL[] = [];
-  const hrefPattern = /<a\b[^>]*href\s*=\s*(['"])(.*?)\1[^>]*>/gi;
-  for (const match of html.matchAll(hrefPattern)) {
-    const href = match[2]?.trim();
-    if (!href || href.startsWith("#")) continue;
-    try {
-      const resolved = new URL(href, pageUrl);
-      if (!isSafeLinkUrl(resolved)) continue;
-      links.push(resolved);
-    } catch {
-      /* ignore malformed links */
-    }
-  }
-  return links;
-}
-
-function htmlToMarkdown(html: string, pageUrl: string): string {
-  let text = html;
-  text = stripDangerousBlockTag(text, "script");
-  text = stripDangerousBlockTag(text, "style");
-  text = stripDangerousBlockTag(text, "noscript");
-  text = stripDangerousBlockTag(text, "template");
-
-  text = text.replace(/<pre\b[^>]*><code\b[^>]*>([\s\S]*?)<\/code><\/pre>/gi, (_match, code) => {
-    const decoded = decodeHtmlEntities(stripTags(code)).trim();
-    return decoded ? `\n\n\`\`\`\n${decoded}\n\`\`\`\n\n` : "\n\n";
-  });
-  text = text.replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, (_match, code) => {
-    const decoded = decodeHtmlEntities(stripTags(code)).trim();
-    return decoded ? `\`${decoded}\`` : "";
-  });
-  text = text.replace(/<a\b[^>]*href\s*=\s*(['"])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi, (_match, _q, href, body) => {
-    const label = decodeHtmlEntities(stripTags(body)).trim();
-    if (!label) return "";
-    try {
-      const resolved = new URL(href, pageUrl);
-      if (!isSafeLinkUrl(resolved)) return label;
-      return `[${label}](${resolved})`;
-    } catch {
-      return label;
-    }
-  });
-  text = text.replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_match, level, body) => {
-    const heading = decodeHtmlEntities(stripTags(body)).trim();
-    return heading ? `\n\n${"#".repeat(Number(level))} ${heading}\n\n` : "\n\n";
-  });
-  text = text.replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, (_match, body) => {
-    const item = decodeHtmlEntities(stripTags(body)).trim();
-    return item ? `\n- ${item}` : "";
-  });
-  text = text.replace(/<(p|div|section|article|main|header|footer|blockquote|table|tr)\b[^>]*>/gi, "\n\n");
-  text = text.replace(/<\/(p|div|section|article|main|header|footer|blockquote|table|tr)>/gi, "\n\n");
-  text = text.replace(/<br\s*\/?>/gi, "\n");
-  text = text.replace(/<\/?(ul|ol)\b[^>]*>/gi, "\n");
-  text = decodeHtmlEntities(stripTags(text));
-  text = text
-    .replace(/\r/g, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return text;
+/** True for URL paths that are plainly binary assets, never crawlable pages. */
+function isAssetLikePath(pathname: string): boolean {
+  return /\.(css|js|json|png|jpe?g|gif|svg|ico|webp|pdf|zip|tar|gz|mp4|mp3|woff2?)$/i.test(pathname);
 }
 
 function stripTags(value: string): string {
@@ -1072,12 +996,22 @@ function decodeHtmlEntities(value: string): string {
   });
 }
 
-function isAssetLikePath(pathname: string): boolean {
-  return /\.(css|js|json|png|jpe?g|gif|svg|ico|webp|pdf|zip|tar|gz|mp4|mp3|woff2?)$/i.test(pathname);
+function extractHtmlTitle(html: string): string | undefined {
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  if (title) return decodeHtmlEntities(stripTags(title)).trim();
+  const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
+  if (h1) return decodeHtmlEntities(stripTags(h1)).trim();
+  return undefined;
 }
 
-function isSafeLinkUrl(url: URL): boolean {
-  return url.protocol === "http:" || url.protocol === "https:";
+function extractTextTitle(text: string): string | undefined {
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("#")) return trimmed.replace(/^#+\s*/, "");
+    return trimmed.slice(0, 120);
+  }
+  return undefined;
 }
 
 type WebsiteUrlErrorCtor = new (message: string) => Error;
@@ -1220,11 +1154,6 @@ function isForbiddenIpv6(hostname: string): boolean {
     normalized.startsWith("fea") ||
     normalized.startsWith("feb")
   );
-}
-
-function stripDangerousBlockTag(value: string, tagName: string): string {
-  const pattern = new RegExp(`<${tagName}\\b[^>]*>[\\s\\S]*?<\\/${tagName}\\s*>`, "gi");
-  return value.replace(pattern, "");
 }
 
 function safeCodePointToString(value: number): string | undefined {
