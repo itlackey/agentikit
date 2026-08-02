@@ -639,3 +639,66 @@ describe("robots alias coverage (codex review)", () => {
     expect(requestLog.some((r) => r.pathname === "/docs")).toBe(true);
   });
 });
+
+describe("crawlTimeoutMs: hard process cap", () => {
+  test(
+    "a huge Retry-After on /robots.txt cannot outlast the cap",
+    async () => {
+      // Before this, fetchWithRetry honoured Retry-After with a bare
+      // setTimeout that ignored any signal, and the crawl deadline was only
+      // consulted between queue iterations — so a single 429 could park
+      // `bundle add` for as long as the server asked (hours), regardless of
+      // the advertised wall-clock cap.
+      const { url } = startFixtureServer({
+        robots: { body: "", status: 429, headers: { "retry-after": "3600" } },
+        pages: { "/": "<html><body><main>Home</main></body></html>" },
+      });
+      trackCache(url);
+
+      // The 3s per-test timeout IS the assertion: if the cap were still soft,
+      // this would sit in the Retry-After sleep for an hour.
+      let caught: unknown;
+      try {
+        await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true, wallClockCapMs: 300 });
+      } catch (err) {
+        caught = err;
+      }
+      // Either outcome is acceptable — what matters is that it RETURNED.
+      expect(caught === undefined || caught instanceof Error).toBe(true);
+    },
+    { timeout: 3_000 },
+  );
+
+  test("crawlTimeoutMs: 0 disables the cap and the crawl still completes normally", async () => {
+    const { url } = startFixtureServer({
+      robots: null,
+      pages: {
+        "/": '<html><body><main>Home</main><a href="/b">b</a></body></html>',
+        "/b": "<html><body><main>Page B</main></body></html>",
+      },
+    });
+    trackCache(url);
+
+    const cachePaths = await ensureWebsiteMirror(websiteEntry(url, { crawlTimeoutMs: 0 }), {
+      allowPrivateHosts: true,
+    });
+    expect(stashContainsSourceUrl(cachePaths.stashDir, `${url}/`)).toBe(true);
+    expect(stashContainsSourceUrl(cachePaths.stashDir, `${url}/b`)).toBe(true);
+  });
+
+  test("an explicit crawlTimeoutMs is honored over the default", async () => {
+    const { url } = startFixtureServer({
+      robots: { body: "", status: 429, headers: { "retry-after": "3600" } },
+      pages: { "/": "<html><body><main>Home</main></body></html>" },
+    });
+    trackCache(url);
+
+    let caught: unknown;
+    try {
+      await ensureWebsiteMirror(websiteEntry(url, { crawlTimeoutMs: 300 }), { allowPrivateHosts: true });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught === undefined || caught instanceof Error).toBe(true);
+  }, 3_000);
+});

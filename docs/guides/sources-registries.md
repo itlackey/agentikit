@@ -62,8 +62,20 @@ akm secret run secrets/x-bearer-token X_BEARER_TOKEN -- akm bundle add https://x
 ```
 
 **Website crawl options.** `website` sources accept `maxPages` (default 50),
-`maxDepth` (default 3), and `respectRobots` (default `true`) under the bundle's
-`website` descriptor. `respectRobots` makes akm honor the origin's
+`maxDepth` (default 3), `crawlTimeoutMs` (default 600000 — 10 minutes), and
+`respectRobots` (default `true`) under the bundle's `website` descriptor.
+
+`crawlTimeoutMs` is a hard cap on the whole crawl. It aborts work already in
+flight, not just work not yet started — including a `Retry-After` wait, which a
+rate-limiting server can otherwise make arbitrarily long. Raise it for a large
+site, or set it to `0` to disable the cap entirely for a crawl you intend to
+let run:
+
+```json
+{ "bundles": { "docs": { "website": { "url": "https://docs.example.com", "crawlTimeoutMs": 0 } } } }
+```
+
+`respectRobots` makes akm honor the origin's
 `/robots.txt` — skipping disallowed paths and pacing requests by
 `Crawl-delay` (clamped to 10s) — for the `akm`/`akm-cli` product tokens (or
 `*`). If the crawl's start URL is itself disallowed, `akm bundle add` /

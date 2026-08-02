@@ -67,6 +67,24 @@ const WEBSITE_CRAWL_WALL_CLOCK_MS = 10 * 60 * 1000;
 const WEBSITE_MAX_REDIRECTS = 8;
 
 /**
+ * Coerces the user-facing `crawlTimeoutMs` option.
+ *
+ * Returns `null` for an explicit opt-out (`false`, or `0`), the configured
+ * number of milliseconds when positive, and `undefined` to mean "unset, use
+ * the default". Anything else is ignored rather than failing a crawl over a
+ * malformed knob.
+ */
+function coerceCrawlTimeoutMs(value: unknown): number | null | undefined {
+  if (value === false || value === 0) return null;
+  if (value === true || value === undefined || value === null) return undefined;
+  const parsed =
+    typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
+  if (!Number.isFinite(parsed)) return undefined;
+  if (parsed <= 0) return null;
+  return parsed;
+}
+
+/**
  * How many times a URL may be pushed back for not fitting its origin's
  * `Crawl-delay` in the remaining budget before it is reported unfetched.
  * Bounds the requeue loop when every remaining URL is rate-limited.
@@ -128,6 +146,13 @@ interface WebsiteValidationOptions {
    * post-redirect.
    */
   robots?: RobotsPolicy;
+  /**
+   * Hard-cap signal for the whole crawl. Passed into `fetchWithRetry` so both
+   * the request and the retry sleep between attempts abort when the crawl's
+   * deadline fires — a between-iteration check alone cannot interrupt a
+   * `Retry-After` wait already under way.
+   */
+  signal?: AbortSignal;
 }
 
 export function shouldAllowPrivateWebsiteHostsForTests(): boolean {
@@ -204,6 +229,7 @@ export async function ensureWebsiteMirror(
         respectRobots: coerceRespectRobots(config.options?.respectRobots),
         allowPrivateHosts: options?.allowPrivateHosts,
         wallClockCapMs: options?.wallClockCapMs,
+        crawlTimeoutMs: coerceCrawlTimeoutMs(config.options?.crawlTimeoutMs),
         resolveSecret: options?.resolveSecret,
         // As-supplied, pre-normalization start URL (see crawlWebsite's
         // `rawStartUrl` doc comment): threaded through purely for the C-02
@@ -310,6 +336,8 @@ async function scrapeWebsiteToStash(
     wallClockCapMs?: number;
     rawStartUrl?: string;
     resolveSecret?: (ref: string) => string | null;
+    /** Hard process cap; `null` disables it. See {@link coerceCrawlTimeoutMs}. */
+    crawlTimeoutMs?: number | null;
   },
 ): Promise<void> {
   // Offer the URL to the specialized fetchers before falling back to a crawl.
@@ -560,6 +588,8 @@ async function crawlWebsite(
     respectRobots?: boolean;
     allowPrivateHosts?: boolean;
     wallClockCapMs?: number;
+    /** Hard process cap; `null` disables it. See {@link coerceCrawlTimeoutMs}. */
+    crawlTimeoutMs?: number | null;
     /**
      * The start URL exactly as the user supplied it in config, before
      * `validateWebsiteUrl` -> `normalizeSiteUrl` stripped any trailing
@@ -579,13 +609,35 @@ async function crawlWebsite(
   ];
   const visited = new Set<string>();
   const pages: WebsitePage[] = [];
-  const wallClockCapMs = options.wallClockCapMs ?? WEBSITE_CRAWL_WALL_CLOCK_MS;
-  const deadline = Date.now() + wallClockCapMs;
+  // Precedence: the test-only seam, then the user's `crawlTimeoutMs`, then the
+  // default. `crawlTimeoutMs: 0` / `false` disables the cap outright, for a
+  // deliberately long-running crawl the user is willing to babysit.
+  const configuredCapMs =
+    options.crawlTimeoutMs === null ? null : (options.crawlTimeoutMs ?? WEBSITE_CRAWL_WALL_CLOCK_MS);
+  const wallClockCapMs = options.wallClockCapMs ?? configuredCapMs;
+  const capDisabled = wallClockCapMs === null;
+  const deadline = capDisabled ? Number.POSITIVE_INFINITY : Date.now() + (wallClockCapMs as number);
+
+  // Between-iteration deadline checks cannot interrupt work already in
+  // flight: a single request's `Retry-After` sleep, or a slow body read, can
+  // run far past the cap on its own. This signal makes the cap a HARD limit —
+  // it aborts the in-flight fetch and the retry sleep alike.
+  const abortController = new AbortController();
+  const capTimer = capDisabled
+    ? undefined
+    : setTimeout(
+        () =>
+          abortController.abort(new Error(`Website crawl exceeded its ${(wallClockCapMs as number) / 1000}s limit`)),
+        wallClockCapMs as number,
+      );
+  const crawlSignal = abortController.signal;
 
   const robots =
     options.respectRobots === false
       ? createAllowAllRobotsPolicy()
-      : createRobotsPolicy((robotsUrl) => loadRobotsTxt(robotsUrl, { allowPrivateHosts: options.allowPrivateHosts }));
+      : createRobotsPolicy((robotsUrl) =>
+          loadRobotsTxt(robotsUrl, { allowPrivateHosts: options.allowPrivateHosts, signal: crawlSignal }),
+        );
 
   await assertStartUrlAllowedByRobots(robots, start, options.rawStartUrl);
 
@@ -648,7 +700,11 @@ async function crawlWebsite(
     deferred.delete(normalized);
     fetchAttempts++;
 
-    const fetched = await fetchWebsitePage(decision.fetchUrl, { allowPrivateHosts: options.allowPrivateHosts, robots });
+    const fetched = await fetchWebsitePage(decision.fetchUrl, {
+      allowPrivateHosts: options.allowPrivateHosts,
+      robots,
+      signal: crawlSignal,
+    });
     if (!fetched) continue;
     pages.push(fetched.page);
 
@@ -663,15 +719,18 @@ async function crawlWebsite(
     }
   }
 
-  if (deadlineHit || Date.now() > deadline) {
+  if (!capDisabled && (deadlineHit || Date.now() > deadline)) {
     warn(
-      "[akm] website crawl stopped at the %ds wall-clock cap with %d/%d pages collected from %s.",
-      wallClockCapMs / 1000,
+      "[akm] website crawl stopped at the %ds wall-clock cap with %d/%d pages collected from %s. " +
+        "Raise crawlTimeoutMs on this website source, or set it to 0 to disable the cap.",
+      (wallClockCapMs as number) / 1000,
       pages.length,
       options.maxPages,
       startUrl,
     );
   }
+
+  if (capTimer) clearTimeout(capTimer);
 
   // A URL still deferred when the loop ends never got fetched — report it
   // rather than letting a rate-limited origin go missing without a trace.
@@ -791,6 +850,7 @@ async function fetchWebsiteResponse(
         "User-Agent": "akm-cli website provider",
       },
       redirect: "manual",
+      ...(options?.signal ? { signal: options.signal } : {}),
     },
     { timeout: 15_000, retries: 1 },
   );

@@ -429,17 +429,44 @@ export async function fetchWithRetry(
       if (attempt < maxRetries && shouldRetry(response.status)) {
         const retryAfter = parseRetryAfter(response);
         const delay = retryAfter ?? baseDelay * 2 ** attempt * (0.5 + Math.random() * 0.5);
-        await new Promise((r) => setTimeout(r, delay));
+        await abortableDelay(delay, init?.signal);
         continue;
       }
       return response;
     } catch (err) {
       if (attempt >= maxRetries) throw err;
+      // A caller-supplied abort is terminal: never keep retrying past it.
+      if (init?.signal?.aborted) throw err;
       const delay = baseDelay * 2 ** attempt * (0.5 + Math.random() * 0.5);
-      await new Promise((r) => setTimeout(r, delay));
+      await abortableDelay(delay, init?.signal);
     }
   }
   throw new Error("fetchWithRetry: unreachable");
+}
+
+/**
+ * Sleep, but wake immediately if `signal` aborts.
+ *
+ * A server-supplied `Retry-After` is honored verbatim and can be arbitrarily
+ * large. Sleeping it out with a bare `setTimeout` ignored the caller's abort
+ * signal entirely, so a single `429` could park an operation far past any
+ * deadline its caller believed it had imposed — the request timeout bounds
+ * only the request, never the wait between attempts.
+ */
+function abortableDelay(ms: number, signal?: AbortSignal | null): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Aborted"));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new Error("Aborted"));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function shouldRetry(status: number): boolean {

@@ -461,6 +461,10 @@
               },
               "respectRobots": {
                 "type": "boolean"
+              },
+              "crawlTimeoutMs": {
+                "type": "integer",
+                "minimum": 0
               }
             },
             "required": [
@@ -2107,6 +2111,10 @@
                   },
                   "respectRobots": {
                     "type": "boolean"
+                  },
+                  "crawlTimeoutMs": {
+                    "type": "integer",
+                    "minimum": 0
                   }
                 },
                 "required": [

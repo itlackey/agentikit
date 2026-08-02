@@ -36,6 +36,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`website` crawls now have a hard time limit.** `crawlTimeoutMs` (default
+  600000 — 10 minutes) bounds the entire crawl, and unlike the previous
+  between-page check it aborts work already in flight: a `Retry-After` sleep
+  could previously park `akm bundle add` for as long as a rate-limiting server
+  asked, well past the advertised cap. Raise it for a large site, or set
+  `"crawlTimeoutMs": 0` to disable the cap. Relatedly, `fetchWithRetry` now
+  honors its caller's `AbortSignal` during retry backoff, so any operation that
+  passes a signal can actually interrupt a long wait.
+
 - **Website snapshots now extract the page's main content.** Conversion moved
   from a hand-rolled regex converter to a DOM parse plus Turndown, scoped to
   the page's content region (`<main>`, `<article>`, `[role=main]`, then common
