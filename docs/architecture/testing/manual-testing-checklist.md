@@ -809,10 +809,12 @@ explicitly marked as gated.
 - [ ] `akm workflow brief` and `akm workflow report` no longer exist: both fail
       with an `UNKNOWN_COMMAND` envelope naming `workflow run` (the
       external-driver protocol was removed).
-- [ ] On a config with no `defaults.engine` but `opencode` on PATH,
-      `akm workflow run <ref>` executes and its result carries the engine
-      fallback announcement in `warnings`. With `opencode` absent it fails
-      with `INVALID_CONFIG_FILE` (exit 78) naming both remedies.
+- [ ] On a config with no `defaults.engine` but the `opencode` **binary** on
+      PATH, `akm workflow run <ref>` executes and its result carries the engine
+      fallback announcement in `warnings`. With the binary absent it fails with
+      `INVALID_CONFIG_FILE` (exit 78) naming both remedies — verify this with
+      the binary removed from PATH but `@opencode-ai/sdk` still installed, since
+      the package alone cannot serve and must not satisfy the probe.
 
 ### 17.8 Proposal dry-runs and archive lifecycle
 

@@ -75,7 +75,12 @@
  * until the child ACTUALLY exits — and a real `opencode serve` (a live HTTP
  * server with provider children) can outlive SIGTERM long enough to hang the
  * caller indefinitely. {@link createManagedOpencode} therefore owns the spawn
- * (the SDK package is used only for `createOpencodeClient`):
+ * (the SDK package is used only for `createOpencodeClient`).
+ *
+ * Owning the spawn changes the LIFECYCLE, not the REQUIREMENT: the SDK's
+ * `createOpencodeServer` is itself a `spawn("opencode", ["serve", ...])`, and
+ * the package declares `"dependencies": {}`, so `opencode` must be on PATH
+ * either way. akm's version differs only in how it supervises the child:
  *
  *   - after the URL handshake, the child and its stdio are `unref()`ed /
  *     destroyed, so the handle can never hold akm open;

@@ -42,6 +42,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   remedy now names both routes. An operator-configured `opencode-sdk` engine
   always wins over the synthesized one.
 
+  The requirement is the **binary**, not the npm package: `@opencode-ai/sdk`
+  is an HTTP client that declares no dependencies and whose own
+  `createOpencodeServer` spawns `opencode serve`, so a host with the package
+  and no binary has no server to reach. Install it with `npm i -g opencode-ai`
+  or opencode's own installer.
+
   The fallback is **announced, never silent**: a workflow run surfaces it once
   at run creation in the result's `warnings`, and a prompt task writes it to
   the task run log. The frozen plan records the engine actually used, so a

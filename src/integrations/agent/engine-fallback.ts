@@ -20,6 +20,19 @@
  * exactly where the owner specified it: no `opencode` binary, or opencode
  * itself has nothing usable configured.
  *
+ * ## Why the probe is for a BINARY, not the npm package
+ *
+ * `@opencode-ai/sdk` is an HTTP client, not a server. Its published bundle
+ * declares `"dependencies": {}` and its own `createOpencodeServer` is a
+ * `spawn("opencode", ["serve", ...])` that waits for the child's
+ * `opencode server listening on <url>` banner. Depending on the package
+ * therefore buys akm a typed client and nothing runnable — a host with the
+ * package but no binary has no server to reach. That is why every SDK-path
+ * gate in akm probes {@link OPENCODE_SDK_SERVER_BIN} rather than attempting
+ * the import, and why the remedy names an install that puts the binary on
+ * PATH (`npm i -g opencode-ai`, or opencode's own installer) instead of a
+ * plain `npm i @opencode-ai/sdk`.
+ *
  * Resolution is by NAME only. A workflow step or task that explicitly names an
  * unconfigured engine is a real error and is never rescued by this path.
  *
@@ -58,8 +71,9 @@ export const FALLBACK_ENGINE_NAME = "opencode-sdk";
 
 /** Announcement text, surfaced once per run/dispatch. */
 export const FALLBACK_ANNOUNCEMENT =
-  `No engine is configured; falling back to \`${FALLBACK_ENGINE_NAME}\` — ` +
-  "provider, model, and auth come from opencode's own configuration. " +
+  `No engine is configured; falling back to \`${FALLBACK_ENGINE_NAME}\` via the ` +
+  `\`${OPENCODE_SDK_SERVER_BIN}\` binary on PATH — provider, model, and auth come ` +
+  "from opencode's own configuration. " +
   "Run `akm setup`, or set `defaults.engine`, to choose explicitly.";
 
 /**
@@ -70,12 +84,19 @@ export const FALLBACK_ANNOUNCEMENT =
  */
 export const NO_ENGINE_MESSAGE_SUFFIX = `has no selected engine, and no usable \`${OPENCODE_SDK_SERVER_BIN}\` binary was found to fall back to.`;
 
-/** Guidance used when the fallback itself is unavailable. */
+/**
+ * Guidance used when the fallback itself is unavailable.
+ *
+ * The opencode route names a BINARY install, not `npm i @opencode-ai/sdk`:
+ * that package is an HTTP client with no dependencies and cannot serve
+ * anything on its own (see the module doc).
+ */
 export const NO_ENGINE_REMEDY =
   "Run `akm setup` to detect an installed agent, or set one explicitly: " +
   '`akm config set engines.claude \'{"kind":"agent","platform":"claude"}\'` ' +
   "then `akm config set defaults.engine claude`. " +
-  `Installing \`${OPENCODE_SDK_SERVER_BIN}\` also works — akm falls back to it automatically.`;
+  `Installing the \`${OPENCODE_SDK_SERVER_BIN}\` binary also works ` +
+  "(`npm i -g opencode-ai`) — akm falls back to it automatically.";
 
 export interface EngineFallbackResult {
   /** Config to resolve against — the input verbatim unless the fallback applied. */

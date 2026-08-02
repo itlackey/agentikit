@@ -33,7 +33,7 @@
   },
   "license": "MPL-2.0",
   "pinNotes": {
-    "@opencode-ai/sdk@1.2.20": "Exact pin. The SDK surface we use (createOpencode + session.create/prompt/delete in src/integrations/agent/sdk-runner.ts) is stable across 1.x, but the SDK has shipped 5+ minor versions of unrelated provider/registry churn. akm-cli is a global CLI install so the pin is isolated from user-project deps. Re-test sdk-runner before bumping."
+    "@opencode-ai/sdk@1.2.20": "Exact pin. The SDK surface we use (createOpencodeClient + session.create/prompt/delete in src/integrations/harnesses/opencode-sdk/sdk-runner.ts) is stable across 1.x, but the SDK has shipped 5+ minor versions of unrelated provider/registry churn. akm-cli is a global CLI install so the pin is isolated from user-project deps. Re-test sdk-runner before bumping. Note this package is an HTTP client only — it declares no dependencies and its own createOpencodeServer spawns `opencode serve` — so it does NOT make the opencode binary available; that install is separate and is what every SDK-path probe checks for."
   },
   "files": [
     "dist",

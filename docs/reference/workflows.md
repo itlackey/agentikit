@@ -10,13 +10,25 @@ an interruption without replaying completed units.
 > external-driver protocol.
 
 > **Every workflow run needs a selected engine.** Freezing resolves an engine
-> for each unit, so a config with no `defaults.engine` fails with
-> `INVALID_CONFIG_FILE` and exit 78. A workflow with a non-empty `### gate`
-> additionally requires `workflow.judgeEngine` to name a configured LLM or
-> agent engine. `akm setup` normally selects a default execution engine; on a
-> bare container or CI image, set one explicitly:
+> for each unit. With no `defaults.engine`, akm falls back to a config-free
+> `opencode-sdk` engine — provider, model, and auth come from opencode's own
+> configuration — and announces it once in the run's `warnings`. The fallback
+> needs the **`opencode` binary on PATH**: the bundled `@opencode-ai/sdk`
+> package is an HTTP client only and spawns `opencode serve` to have something
+> to talk to, so installing the npm package alone is not enough. With no
+> binary, freezing fails with `INVALID_CONFIG_FILE` and exit 78.
+>
+> A workflow with a non-empty `### gate` additionally requires
+> `workflow.judgeEngine` to name a configured LLM or agent engine — the gate
+> judge is not covered by the fallback.
+>
+> `akm setup` normally selects a default execution engine. On a bare container
+> or CI image, either install opencode and let the fallback apply, or choose an
+> engine explicitly:
 >
 > ```sh
+> npm i -g opencode-ai           # fallback route: puts `opencode` on PATH
+> # ...or pick an engine yourself:
 > akm config set engines.claude '{"kind":"agent","platform":"claude"}'
 > akm config set defaults.engine claude
 > ```
