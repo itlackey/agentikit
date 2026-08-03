@@ -22,7 +22,7 @@ import { akmPropose } from "../../../src/commands/proposal/propose";
 import type { SpawnedSubprocess, SpawnFn } from "../../../src/core/subprocess";
 import { durableItemRef } from "../../_helpers/durable-ref";
 import { quietQualityGateConfig } from "../../_helpers/factories";
-import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../../_helpers/sandbox";
+import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome, withEnv } from "../../_helpers/sandbox";
 
 const fixtureDirs: string[] = [];
 
@@ -264,16 +264,17 @@ describe("akmReflect — argv-coerced calls (happy + failure)", () => {
 
   test("missing engine config → ConfigError surfaces with .code", async () => {
     const stash = makeStashDir();
-    let thrown: unknown;
-    try {
-      await akmReflect({
-        ref: "lessons/rg-over-grep",
-        stashDir: stash,
-        // No config file exists under the sandboxed XDG_CONFIG_HOME.
-      });
-    } catch (err) {
-      thrown = err;
-    }
+    const thrown = await withEnv({ PATH: "" }, async () => {
+      try {
+        await akmReflect({
+          ref: "lessons/rg-over-grep",
+          stashDir: stash,
+          // No config file exists under the sandboxed XDG_CONFIG_HOME.
+        });
+      } catch (err) {
+        return err;
+      }
+    });
     expect(thrown).toBeInstanceOf(Error);
     const e = thrown as Error & { code?: string };
     expect(e.name).toBe("ConfigError");
@@ -315,18 +316,19 @@ describe("akmPropose — argv-coerced calls (happy + failure)", () => {
 
   test("missing config: no agent block → ConfigError when resolveProfile runs", async () => {
     const stash = makeStashDir();
-    let thrown: unknown;
-    try {
-      await akmPropose({
-        type: "skill",
-        name: "hello",
-        task: "Say hi",
-        stashDir: stash,
-        // Do not pass agentConfig: the sandbox has no defaults.engine.
-      });
-    } catch (err) {
-      thrown = err;
-    }
+    const thrown = await withEnv({ PATH: "" }, async () => {
+      try {
+        await akmPropose({
+          type: "skill",
+          name: "hello",
+          task: "Say hi",
+          stashDir: stash,
+          // Do not pass agentConfig: the sandbox has no defaults.engine.
+        });
+      } catch (err) {
+        return err;
+      }
+    });
     expect(thrown).toBeInstanceOf(Error);
     const e = thrown as Error & { code?: string };
     expect(e.name).toBe("ConfigError");

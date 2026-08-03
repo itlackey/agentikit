@@ -8,7 +8,7 @@ import { appendEvent } from "../../src/core/events";
 import { openStateDatabase } from "../../src/core/state-db";
 import type { SessionLogEntry } from "../../src/integrations/session-logs";
 import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { type IsolatedAkmStorage, withEnvSync, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 // Characterization net for WS9 (#490): pins the FULL ordered hardChecks +
 // advisories structure of `akmHealth` — names, order, kind, status,
@@ -61,7 +61,7 @@ describe("health checks characterization (WS9)", () => {
   test("empty stash: full ordered check structure is stable", () => {
     // Inject an empty session-log source so the empty-stash baseline is not
     // polluted by host session logs.
-    const result = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] });
+    const result = withEnvSync({ PATH: "" }, () => akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] }));
 
     expect(result.hardChecks.map(project)).toEqual([
       {

@@ -21,7 +21,7 @@ describe("health engine probes", () => {
       engines: { fast: llm },
       defaults: { llmEngine: "fast" },
     };
-    const general = runDefaultEngineProbe({ loadConfig: () => config });
+    const general = runDefaultEngineProbe({ loadConfig: () => config, which: () => undefined });
     const result = runDefaultLlmEngineProbe({ loadConfig: () => config });
     expect(general.status).toBe("unknown");
     expect(result.status).toBe("pass");
@@ -105,7 +105,6 @@ describe("health engine probes", () => {
     };
     const result = runDefaultEngineProbe({
       loadConfig: () => config,
-      resolvePackage: () => "/sdk/package.json",
       spawnSync: (() => ({ status: 0 })) as never,
     });
     expect(result.status).toBe("pass");

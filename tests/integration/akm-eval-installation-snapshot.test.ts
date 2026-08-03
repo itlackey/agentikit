@@ -778,7 +778,9 @@ describePosix("akm-eval installation snapshots", () => {
         await Bun.sleep(5);
       }
       expect(mutatorLive).toBe(true);
-      expect(() => capture(fixture, destination)).toThrow(/source file changed|bundle source file changed/);
+      expect(() => capture(fixture, destination)).toThrow(
+        /source file changed|bundle source file changed|snapshot file changed/,
+      );
       expect(fs.existsSync(destination)).toBe(false);
     } finally {
       mutator.kill();

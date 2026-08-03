@@ -3,9 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { type AkmConfig, loadConfig } from "../../core/config/config";
 import type { SemanticSearchStatus } from "../../indexer/search/semantic-status";
+import type { WhichFn } from "../../integrations/agent/detect";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
 import { resolveModel } from "../../integrations/agent/model-aliases";
@@ -91,6 +91,7 @@ export interface DefaultEngineProbeDependencies {
   resolveEngine?: (name: string, config: AkmConfig) => RunnerSpec;
   spawnSync?: typeof spawnSync;
   resolvePackage?: (name: string) => string;
+  which?: WhichFn;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -124,7 +125,7 @@ function runConfiguredEngineProbe(
   if (configuredEngine?.kind === "agent" && configuredEngine.platform === "opencode-sdk") {
     let packageAvailable = false;
     try {
-      const resolvePackage = deps.resolvePackage ?? ((name: string) => createRequire(import.meta.url).resolve(name));
+      const resolvePackage = deps.resolvePackage ?? ((name: string) => import.meta.resolve(name));
       resolvePackage("@opencode-ai/sdk");
       packageAvailable = true;
     } catch {
@@ -264,7 +265,7 @@ export function runDefaultEngineProbe(deps: DefaultEngineProbeDependencies = {})
   // Probe the effective view: an install with no `defaults.engine` but a usable
   // opencode binary DOES have a working default, and reporting otherwise would
   // contradict what `workflow run` / `task run` actually do.
-  const { config } = withEngineFallback(deps.loadConfig?.() ?? loadConfig());
+  const { config } = withEngineFallback(deps.loadConfig?.() ?? loadConfig(), deps.which);
   return runConfiguredEngineProbe("default-engine", config.defaults?.engine, config, deps);
 }
 

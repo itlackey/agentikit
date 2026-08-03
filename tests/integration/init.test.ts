@@ -68,6 +68,17 @@ describe("akmInit (akm bundle create)", () => {
     expect(gitignore).toMatch(/^secrets\/$/m);
   });
 
+  test("creates env/ and secrets/ with private permissions", async () => {
+    if (process.platform === "win32") return;
+    const stashDir = makeTempDir("akm-init-private-dirs-");
+    fs.rmSync(stashDir, { recursive: true, force: true });
+
+    await akmInit({ dir: stashDir });
+
+    expect(fs.statSync(path.join(stashDir, "env")).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(path.join(stashDir, "secrets")).mode & 0o777).toBe(0o700);
+  });
+
   test("gitignore scaffold is idempotent and preserves the user's own rules", async () => {
     const stashDir = makeTempDir("akm-init-gitignore-idem-");
     fs.rmSync(stashDir, { recursive: true, force: true });
