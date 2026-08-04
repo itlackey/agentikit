@@ -145,7 +145,32 @@ export interface SetupSummary {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Raw preflight used before setup performs prompts, initialization, or writes. */
+/**
+ * Raw preflight used before setup performs prompts, initialization, or writes.
+ *
+ * `setup` is allowlisted in `shouldBypassConfigStartup` (src/cli.ts) so it
+ * never dies on the CLI's own startup config load — but every entry point
+ * below (`runSetupWizard`, `runSetupWithDefaults`, `runSetupFromConfig`,
+ * `runResetRecommended`) still needs the CURRENT config as its merge base, so
+ * this is the first thing each one calls. When the on-disk config predates
+ * 0.9 (or is otherwise unparseable/invalid), `parseAndValidateConfigText`
+ * throws `ConfigError`; deliberately let that propagate rather than falling
+ * back to a fresh default config here.
+ *
+ * That fallback was considered and rejected: `mutateConfigWithPrecommit`
+ * (src/core/config/config.ts) re-reads and re-validates this SAME file
+ * inside its write lock before saving, so a wizard that "survived" this
+ * preflight by substituting `DEFAULT_CONFIG` would still crash with the
+ * identical error at the final save — after prompting the user through the
+ * entire wizard. Worse, making the save path itself tolerate an old config
+ * would mean writing a freshly-generated 0.9 config over the live 0.8 file
+ * `akm migrate apply` needs to read as ITS OWN input — replacing the user's
+ * real engine/source settings with the wizard's placeholder ones, silently,
+ * on the one path (`akm migrate ...`) the upgrade docs tell users to run
+ * first. Refusing here — before any prompt, detection, or write — is strictly
+ * safer: the file is left byte-for-byte untouched and the error message
+ * below points straight at the real recovery command.
+ */
 export function assertSetupConfigPreflight(): void {
   const configPath = getConfigPath();
   let text: string | undefined;
@@ -157,7 +182,21 @@ export function assertSetupConfigPreflight(): void {
       "INVALID_CONFIG_FILE",
     );
   }
-  if (text !== undefined) parseAndValidateConfigText(text, configPath);
+  if (text === undefined) return;
+  try {
+    parseAndValidateConfigText(text, configPath);
+  } catch (error) {
+    if (!(error instanceof ConfigError)) throw error;
+    if (error.code !== "UNSUPPORTED_CONFIG_VERSION" && error.code !== "INVALID_CONFIG_FILE") throw error;
+    throw new ConfigError(
+      `\`akm setup\` cannot run: the config at ${configPath} did not load (${error.message}). ` +
+        "It was left untouched — setup never writes over a config it cannot first read cleanly.",
+      error.code,
+      "Run `akm migrate status` to check what this config needs before continuing, or `akm help migrate 0.9.0` " +
+        "for the full upgrade checklist. To abandon it and start fresh instead, move it aside " +
+        `(e.g. \`mv ${configPath} ${configPath}.bak\`) and re-run \`akm setup\`.`,
+    );
+  }
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

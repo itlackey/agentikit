@@ -226,8 +226,16 @@ export function renderGenericHtml(command: string, value: unknown): string {
  * inventing a second convention: the arrays that reach this generic
  * fallback are typically short id/tag lists, where one JSON-array line reads
  * better than N extra `path.0=`, `path.1=`, … lines.
+ *
+ * Exported so command-specific text formatters (e.g. `formatHealthPlain` in
+ * `src/output/text/health-format.ts`) can reuse the SAME scalar-tree
+ * convention for the parts of their envelope that are plain nested
+ * scalars/objects, while overriding just the parts that need bespoke
+ * handling (arrays of status-bearing records, where this function's
+ * one-JSON-line-per-array behavior is the exact defect those formatters
+ * exist to fix). Reuse beats a second flattener.
  */
-function flattenForText(value: unknown, path: string, lines: string[]): void {
+export function flattenForText(value: unknown, path: string, lines: string[]): void {
   if (value === null || value === undefined) {
     lines.push(`${path}=`);
   } else if (Array.isArray(value)) {

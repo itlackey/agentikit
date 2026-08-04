@@ -604,18 +604,42 @@ checklist did not exercise.
       report the initially absent database as corruption.
 - [ ] `akm health --since 24h` filters telemetry to the last 24 hours.
 
-#### `akm migrate` recovery
+#### `akm migrate` recovery and legacy-config migration
 
-- [ ] With no config file, `akm migrate status` reports `status: "blocked"`,
-      includes the missing source and target config states, exits nonzero, and
-      does not create one.
+<!-- This section verifies migration OF retired 0.8 configuration, so it names
+     retired keys (`profiles.*`, `defaults.agent`, ...) on purpose. The
+     "legacy"/"migration" heading marks it exempt from the active-docs retired-
+     selector scan in tests/contracts/configuration.test.ts, matching how
+     docs/reference/configuration.md and docs/migration/v0.8-to-v0.9.md scope
+     the same references. -->
+
+
+- [ ] With no config file at all, `akm migrate status` reports `status:
+      "blocked"`, includes the missing source and target config states, exits
+      nonzero, and does not create one (no `generatedConfig` field — there is
+      nothing to derive a target from).
 - [ ] With a valid 0.9 config, `akm migrate status` reports `status: "current"`
       and leaves the file byte-for-byte unchanged.
-- [ ] With a pre-0.9 profile config and no target, `akm migrate status` reports
-      `status: "blocked"`, explains that profile-to-engine conversion is manual,
-      exits nonzero, and does not rewrite or back up the file.
+- [ ] With a pre-0.9 config (`stashDir`/`sources[]`/`installed[]`) and no
+      `--config`, `akm migrate status` reports `status: "blocked"` with a
+      `generatedConfig` field (`status: "pending"`, the predictable path,
+      `droppedKeys`), exits nonzero, and does not write anything.
+- [ ] `akm migrate apply` with no `--config` against that same pre-0.9 config
+      WRITES the generated config at `generatedConfig.path`, reports `status:
+      "ready"` with a `message` pointing at the file, and leaves the live 0.8
+      config.json/state.db/workflow.db byte-for-byte unchanged (no backup run
+      created yet). A second, identical `akm migrate apply` (still no
+      `--config`) then picks the generated file up and completes the cutover.
+- [ ] With a pre-0.9 config carrying `profiles.llm`/`profiles.agent`/
+      `defaults.llm`/`defaults.agent`/`defaults.improve` and no `--config`,
+      the generated config's `droppedKeys` names each one exactly (not a
+      generic "manual" message), the written file omits `profiles`/those
+      `defaults` sub-keys entirely, and the second `apply` still completes
+      the cutover without them.
 - [ ] `akm migrate apply --config <prepared> --dry-run` performs the same checks
-      as status and leaves config and databases unchanged.
+      as status and leaves config and databases unchanged; passing `--config`
+      never triggers generation, even if a generated file already exists at
+      the predictable path.
 - [ ] `akm migrate apply --config <prepared>` creates a unique verified backup
       run, applies each pending database migration transactionally, and installs
       the prepared config last.
@@ -746,6 +770,9 @@ explicitly marked as gated.
       exit 2 because `summary` is valid only for `show`.
 - [ ] `akm env path env/test-env --format yaml` still prints one raw path and
       warns on stderr that this command is format-exempt.
+- [ ] `akm migrate status --format text` (and `md`/`html`/`yaml`) renders the
+      plan as that format — no `'--format' has no effect` warning on stderr,
+      and `--format text`'s output is not JSON.
 - [ ] `akm search docker --format jsonl --output "$AKM_SANDBOX/ignored"`
       continues to stream JSONL to stdout and does not create the output file.
 

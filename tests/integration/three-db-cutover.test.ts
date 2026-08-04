@@ -184,9 +184,27 @@ function ledgerIds(db: Database): string[] {
   return (db.query("SELECT id FROM schema_migrations ORDER BY rowid").all() as Array<{ id: string }>).map((r) => r.id);
 }
 
+/**
+ * `akm migrate apply`'s final result line is now rendered through the normal
+ * `--format` pipeline (pretty-printed JSON by default, D7), so it can span
+ * multiple lines — unlike the raw child's single compact line before that
+ * change. Any earlier progress-event lines (content migration, proposal-ref
+ * repair) stay single-line JSON and print ahead of it, so the result is
+ * always the trailing block starting at the last line beginning with `{`.
+ */
 function backupRunIdFromApply(stdout: string): string {
-  const line = stdout.trim().split("\n").at(-1);
-  const runId = line ? (JSON.parse(line) as { backupRunId?: unknown }).backupRunId : undefined;
+  const lines = stdout.trim().split("\n");
+  let resultStart = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i]?.startsWith("{")) {
+      resultStart = i;
+      break;
+    }
+  }
+  const runId =
+    resultStart >= 0
+      ? (JSON.parse(lines.slice(resultStart).join("\n")) as { backupRunId?: unknown }).backupRunId
+      : undefined;
   if (typeof runId !== "string") throw new Error("Migration apply did not report its backup run ID.");
   return runId;
 }
@@ -1438,7 +1456,7 @@ describe("already-current proposal ref repair", () => {
 
     const status = await runCliCapture(["migrate", "status"]);
     expect(status.code).not.toBe(0);
-    expect(status.stdout).toContain('"status":"blocked"');
+    expect(JSON.parse(status.stdout)).toMatchObject({ status: "blocked" });
     expect(status.stdout).toMatch(/pending proposal.*unmappable legacy ref/i);
   });
 
@@ -1454,7 +1472,7 @@ describe("already-current proposal ref repair", () => {
 
     const status = await runCliCapture(["migrate", "status"]);
     expect(status.code, status.stderr).toBe(0);
-    expect(status.stdout).toContain('"status":"ready"');
+    expect(JSON.parse(status.stdout)).toMatchObject({ status: "ready" });
     const applied = await runCliCapture(["migrate", "apply"]);
     expect(applied.code, applied.stderr).toBe(0);
     expect(applied.stdout).toContain('"event":"proposal-ref-repair"');

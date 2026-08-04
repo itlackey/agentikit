@@ -60,6 +60,36 @@ function seedPreCutover(): string {
   return prepared;
 }
 
+/**
+ * R-089: a config.json written by 0.8.x's own `akm setup`/`akm init` can carry
+ * the pre-cutover source shape (`stashDir`/`sources`) with NO `configVersion`
+ * key at all — 0.8 only stamps `configVersion` when a 0.7-era migration did
+ * substantive work (`if (changed)`), so a config with nothing to carry forward
+ * (a fresh 0.8 install) is never stamped. Model this exactly like
+ * {@link seedPreCutover} but drop `configVersion` from the ACTIVE config only —
+ * the prepared 0.9 config an operator hands to `--config` still declares
+ * `configVersion: "0.9.0"` (required by `parseAndValidateConfigText`).
+ */
+function seedPreCutoverUnversioned(): string {
+  fs.writeFileSync(getConfigPath(), `${JSON.stringify({ stashDir: storage.stashDir, sources: [] })}\n`, {
+    mode: 0o600,
+  });
+  openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+  openLegacyWorkflowDb(getLegacyWorkflowDbPath()).close();
+  const prepared = path.join(storage.root, "prepared-unversioned.json");
+  fs.writeFileSync(
+    prepared,
+    `${JSON.stringify({
+      configVersion: "0.9.0",
+      stashDir: storage.stashDir,
+      sources: [],
+      semanticSearchMode: "off",
+    })}\n`,
+    { mode: 0o600 },
+  );
+  return prepared;
+}
+
 function backupRuns(): string[] {
   if (!fs.existsSync(getMigrationBackupRoot())) return [];
   return fs
@@ -164,4 +194,146 @@ test("canonical writable state opens reject an old ledger without applying it", 
   openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
   expect(() => openStateDatabase()).toThrow(/obsolete writable schema|migrate apply/i);
   expect(inspectMigrationState().state.status).toBe("old");
+});
+
+test("a fresh-0.8 config with no configVersion key is classified old (not inconsistent) and migrates cleanly", async () => {
+  const prepared = seedPreCutoverUnversioned();
+
+  // Before the fix this artifact was `inconsistent`, an unconditional
+  // blocker, so `status` was permanently "blocked" no matter what the
+  // operator passed via `--config`.
+  const status = await runCliCapture(["migrate", "status", "--config", prepared]);
+  expect(status.code, status.stderr).toBe(0);
+  expect(JSON.parse(status.stdout)).toMatchObject({
+    status: "ready",
+    artifacts: { config: { status: "old" }, state: { status: "old" }, workflow: { status: "current" } },
+  });
+
+  const applied = await runCliCapture(["migrate", "apply", "--config", prepared]);
+  expect(applied.code, applied.stderr).toBe(0);
+  const result = JSON.parse(applied.stdout) as { status: string };
+  expect(result.status).toBe("current");
+  expect(JSON.parse(fs.readFileSync(getConfigPath(), "utf8"))).toMatchObject(currentConfig());
+  expect(inspectMigrationState()).toMatchObject({
+    config: { status: "current" },
+    state: { status: "current" },
+    workflow: { status: "missing" },
+  });
+
+  // Idempotent re-run: the (now current) active config.json is a valid
+  // target on its own, no `--config` needed.
+  const rerun = await runCliCapture(["migrate", "apply"]);
+  expect(rerun.code, rerun.stderr).toBe(0);
+  expect(JSON.parse(rerun.stdout)).toMatchObject({ status: "current" });
+});
+
+test("a machine with no akm state at all reports not-applicable, not blocked", async () => {
+  expect(fs.existsSync(getConfigPath())).toBe(false);
+  expect(fs.existsSync(getStateDbPathInDataDir())).toBe(false);
+  expect(fs.existsSync(getLegacyWorkflowDbPath())).toBe(false);
+
+  const plan = inspectMigrationPlan();
+  expect(plan).toMatchObject({
+    status: "not-applicable",
+    blockers: [],
+    message: "No akm installation found; nothing to migrate.",
+    artifacts: {
+      config: { status: "missing" },
+      state: { status: "missing" },
+      workflow: { status: "missing" },
+      index: { status: "missing" },
+    },
+  });
+
+  const status = await runCliCapture(["migrate", "status"]);
+  expect(status.code, status.stderr).toBe(0);
+  expect(JSON.parse(status.stdout)).toMatchObject({ status: "not-applicable" });
+
+  const applied = await runCliCapture(["migrate", "apply"]);
+  expect(applied.code, applied.stderr).toBe(0);
+  expect(JSON.parse(applied.stdout)).toMatchObject({ status: "not-applicable" });
+  expect(fs.existsSync(getConfigPath())).toBe(false);
+  expect(backupRuns()).toEqual([]);
+});
+
+test("a config.json with a present-but-garbage configVersion stays inconsistent/blocked", async () => {
+  fs.writeFileSync(
+    getConfigPath(),
+    `${JSON.stringify({ configVersion: "garbage", stashDir: storage.stashDir, sources: [] })}\n`,
+    { mode: 0o600 },
+  );
+  const before = fs.readFileSync(getConfigPath());
+
+  expect(inspectMigrationState().config).toMatchObject({
+    status: "inconsistent",
+    detail: "configVersion is missing or invalid",
+  });
+
+  const status = await runCliCapture(["migrate", "status"]);
+  expect(status.code).not.toBe(0);
+  const plan = JSON.parse(status.stdout) as { status: string; blockers: string[] };
+  expect(plan.status).toBe("blocked");
+  expect(plan.blockers.some((blocker) => blocker.includes("config.json is inconsistent"))).toBe(true);
+
+  const applied = await runCliCapture(["migrate", "apply"]);
+  expect(applied.code).not.toBe(0);
+  expect(fs.readFileSync(getConfigPath())).toEqual(before);
+  expect(backupRuns()).toEqual([]);
+});
+
+/**
+ * R-091: 0.8's own `akm workflow create` produced heading-based workflow
+ * definitions with no frontmatter `steps:` list. 0.9 requires `steps:` and
+ * does NOT auto-translate the old format (documented, intentionally not
+ * built here) — so after a migration this asset fails 0.9 structural
+ * validation and is invisible to `akm search --type workflow`, yet its
+ * `active` run row survives the cutover (only the run-key spelling is
+ * rewritten, `workflow:<n>` → `workflows/<n>`). Migrate apply must still
+ * SUCCEED, and must name the run and the fix in a non-fatal warning.
+ */
+test("migrate apply warns (non-fatally) about an active run whose workflow asset fails 0.9 structural validation", async () => {
+  const prepared = seedPreCutover();
+  fs.mkdirSync(path.join(storage.stashDir, "workflows"), { recursive: true });
+  fs.writeFileSync(
+    path.join(storage.stashDir, "workflows", "ship.md"),
+    `---
+name: ship
+type: workflow
+description: Ship it
+---
+
+## Step 1
+
+Do the thing.
+`,
+  );
+  const legacyWorkflowDb = openLegacyWorkflowDb(getLegacyWorkflowDbPath());
+  legacyWorkflowDb
+    .prepare(
+      `INSERT INTO workflow_runs (id, workflow_ref, workflow_title, status, params_json, created_at, updated_at)
+       VALUES ('run-orphan', 'workflow:ship', 'Ship it', 'active', '{}', '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z')`,
+    )
+    .run();
+  legacyWorkflowDb.close();
+
+  const applied = await runCliCapture(["migrate", "apply", "--config", prepared]);
+  expect(applied.code, applied.stderr).toBe(0);
+  expect(JSON.parse(applied.stdout)).toMatchObject({ status: "current" });
+
+  // The migrator must not silently delete or abandon the run — that decision
+  // belongs to the operator.
+  const migratedState = new Database(getStateDbPathInDataDir(), { readonly: true });
+  try {
+    expect(migratedState.query("SELECT status, workflow_ref FROM workflow_runs WHERE id = 'run-orphan'").get()).toEqual(
+      { status: "active", workflow_ref: "workflows/ship" },
+    );
+  } finally {
+    migratedState.close();
+  }
+
+  // The non-fatal warning names the run, the asset, and both remedies —
+  // forwarded from the akm-migrate subprocess's stderr through to the CLI's.
+  expect(applied.stderr).toContain("run-orphan");
+  expect(applied.stderr).toContain("workflows/ship");
+  expect(applied.stderr).toContain("akm workflow abandon run-orphan");
 });

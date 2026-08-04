@@ -17,7 +17,21 @@ function migrationEntryPoint(): string | undefined {
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
-export async function runMigrationTool(args: readonly string[]): Promise<void> {
+/** The standalone `akm-migrate` child process's captured exit status and output streams. */
+export interface MigrationToolResult {
+  status: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Spawns the standalone `akm-migrate` tool and returns its captured exit
+ * status plus stdout/stderr — never writes them itself. `migrate-cli.ts`'s
+ * `status`/`apply` commands use this to reshape the child's final JSON result
+ * line through the normal `--format` pipeline (D7) while any earlier
+ * progress-event lines the child printed still go through verbatim.
+ */
+export async function runMigrationTool(args: readonly string[]): Promise<MigrationToolResult> {
   const entry = migrationEntryPoint();
   if (!entry && process.env.AKM_MIGRATE_ENTRY === "1") {
     // Re-exec loop guard: we ARE the marked child, yet no migrator entry
@@ -48,18 +62,5 @@ export async function runMigrationTool(args: readonly string[]): Promise<void> {
       "Reinstall akm-cli, or use a runtime-free standalone release binary.",
     );
   }
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
-  // R-067: was `process.exit(result.status ?? 1)` on the failure branch,
-  // which terminates the process synchronously and skips the `finally {
-  // await disposeDispatchResources(); }` cleanup in src/cli.ts's
-  // `runCommand`. The success path (status === 0) was already fine — it
-  // just returns and the process exits 0 naturally. Setting
-  // `process.exitCode` and returning still propagates the child's exact
-  // non-zero status once the event loop drains, but lets cleanup run first —
-  // same pattern `emitJsonError` (src/cli/shared.ts) already established.
-  if (result.status !== 0) {
-    process.exitCode = result.status ?? 1;
-    return;
-  }
+  return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }

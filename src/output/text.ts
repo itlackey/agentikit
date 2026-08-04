@@ -36,10 +36,13 @@ import { curateFormatters } from "./text/curate";
 import { envFormatters } from "./text/env";
 import { eventsFormatters } from "./text/events";
 import { feedbackFormatters } from "./text/feedback";
+import { healthFormatters } from "./text/health";
 import { importFormatters } from "./text/import";
 import { indexFormatters } from "./text/index";
 import { infoFormatters } from "./text/info";
+import { lintFormatters } from "./text/lint";
 import { listFormatters } from "./text/list";
+import { migrateFormatters } from "./text/migrate";
 import { proposalProducerFormatters } from "./text/proposal/producer";
 import { proposalFormatters } from "./text/proposal/proposal";
 import { getTextFormatterHandler, registerTextFormatters, type TextFormatterEntry } from "./text/registry";
@@ -77,6 +80,8 @@ const BUILT_IN_TEXT_FORMATTERS: TextFormatterEntry[] = [
   ...proposalFormatters,
   ...proposalProducerFormatters,
   ...infoFormatters,
+  ...healthFormatters,
+  ...lintFormatters,
   ...configFormatters,
   ...feedbackFormatters,
   ...rememberFormatters,
@@ -84,6 +89,7 @@ const BUILT_IN_TEXT_FORMATTERS: TextFormatterEntry[] = [
   ...syncFormatters,
   ...registryCommandFormatters,
   ...envFormatters,
+  ...migrateFormatters,
 ];
 
 registerTextFormatters(BUILT_IN_TEXT_FORMATTERS);

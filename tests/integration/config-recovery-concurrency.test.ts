@@ -66,7 +66,7 @@ describe("raw recovery startup", () => {
       new Response(blockedChild.stdout).text(),
     ]);
     expect(blockedExit).toBe(1);
-    expect(blockedStdout).toContain('"status":"blocked"');
+    expect(JSON.parse(blockedStdout)).toMatchObject({ status: "blocked" });
 
     const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "status", "--config", prepared], {
       cwd: path.resolve(import.meta.dir, "../.."),
@@ -80,7 +80,7 @@ describe("raw recovery startup", () => {
       new Response(child.stderr).text(),
     ]);
     expect(exitCode, stderr).toBe(0);
-    expect(stdout).toContain('"status":"ready"');
+    expect(JSON.parse(stdout)).toMatchObject({ status: "ready" });
   });
 
   test("setup rejects legacy config before creating the stash or backup", async () => {

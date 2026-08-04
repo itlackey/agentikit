@@ -19,25 +19,78 @@
 import type { IndexResponse } from "../../indexer/indexer";
 import type { DetailLevel } from "../context";
 
+/**
+ * `akm info`'s real result (`InfoResponse`, `src/sources/types.ts`) carries
+ * `defaultBundle`/`assetTypes`/`searchModes`/`semanticSearch`/`registries`/
+ * `sourceProviders`/`indexStats` — this formatter used to check for
+ * `configPath`/`cacheDir`/`dbPath`/`capabilities`/`index` instead, none of
+ * which `InfoResponse` has ever had, so every one of those `if` guards was
+ * always false and those five real fields silently never appeared in
+ * `--format text` output (the plain fallthrough JSON check three lines below
+ * papered over it: `lines` was never empty because `version`/`bundleDir`
+ * always matched, so the "render everything" escape hatch never fired
+ * either — same class of bug as `akm health`/`akm lint`'s raw-JSON-array
+ * dump: `--format text` claiming to render a shape it wasn't actually
+ * rendering). The legacy field checks stay (harmless no-ops on the current
+ * shape) in case another producer still emits them; the real fields are
+ * added alongside.
+ */
 export function formatInfoPlain(r: Record<string, unknown>): string {
   const lines: string[] = [];
   if (r.version) lines.push(`version: ${String(r.version)}`);
   if (r.bundleDir) lines.push(`bundleDir: ${String(r.bundleDir)}`);
+  if (r.defaultBundle !== undefined) {
+    lines.push(`defaultBundle: ${r.defaultBundle === null ? "(none)" : String(r.defaultBundle)}`);
+  }
   if (r.configPath) lines.push(`configPath: ${String(r.configPath)}`);
   if (r.cacheDir) lines.push(`cacheDir: ${String(r.cacheDir)}`);
   if (r.dbPath) lines.push(`dbPath: ${String(r.dbPath)}`);
+  if (Array.isArray(r.assetTypes) && r.assetTypes.length > 0) {
+    lines.push(`assetTypes: ${(r.assetTypes as unknown[]).join(", ")}`);
+  }
+  if (Array.isArray(r.searchModes) && r.searchModes.length > 0) {
+    lines.push(`searchModes: ${(r.searchModes as unknown[]).join(", ")}`);
+  }
+  const semanticSearch = r.semanticSearch as Record<string, unknown> | undefined;
+  if (semanticSearch) {
+    lines.push("semanticSearch:");
+    for (const [k, v] of Object.entries(semanticSearch)) {
+      lines.push(`  ${k}: ${String(v)}`);
+    }
+  }
+  const registries = Array.isArray(r.registries) ? (r.registries as Array<Record<string, unknown>>) : undefined;
+  if (registries) {
+    lines.push(`registries (${registries.length}):`);
+    for (const reg of registries) {
+      const name = typeof reg.name === "string" ? `${reg.name}: ` : "";
+      const provider = typeof reg.provider === "string" ? ` (${reg.provider})` : "";
+      const disabled = reg.enabled === false ? " [disabled]" : "";
+      lines.push(`  ${name}${String(reg.url ?? "?")}${provider}${disabled}`);
+    }
+  }
+  const sourceProviders = Array.isArray(r.sourceProviders)
+    ? (r.sourceProviders as Array<Record<string, unknown>>)
+    : undefined;
+  if (sourceProviders) {
+    lines.push(`sourceProviders (${sourceProviders.length}):`);
+    for (const source of sourceProviders) {
+      const label = source.name ?? source.path ?? source.url ?? source.type ?? "?";
+      const disabled = source.enabled === false ? " [disabled]" : "";
+      lines.push(`  [${String(source.type ?? "?")}] ${String(label)}${disabled}`);
+    }
+  }
   const capabilities = r.capabilities as Record<string, unknown> | undefined;
   if (capabilities) {
     lines.push("capabilities:");
     for (const [k, v] of Object.entries(capabilities)) {
-      lines.push(`  ${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`);
+      lines.push(`  ${k}: ${typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)}`);
     }
   }
-  const indexStats = r.index as Record<string, unknown> | undefined;
+  const indexStats = (r.indexStats ?? r.index) as Record<string, unknown> | undefined;
   if (indexStats) {
-    lines.push("index:");
+    lines.push("indexStats:");
     for (const [k, v] of Object.entries(indexStats)) {
-      lines.push(`  ${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`);
+      lines.push(`  ${k}: ${typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)}`);
     }
   }
   if (lines.length === 0) return JSON.stringify(r, null, 2);

@@ -49,15 +49,18 @@ self-contained document with no external references, so it can be redirected to
 a file and opened directly.
 
 A small set of commands is **format-exempt** because their output is not a
-result envelope at all — `completions`, child-process passthrough (`env run`,
-`secret run`, and `migrate`
-`status`/`apply`, which spawn the standalone migration tool and print its
-fixed JSON verbatim), document payloads (`help`,
+result envelope at all — `completions`, child-process passthrough (`env run`
+and `secret run`), document payloads (`help`,
 `help migrate`), and `env path` (a bare filesystem path is the payload, the
 documented shell-substitution primitive — wrapping it in an envelope would
 break `$(akm env path <ref>)` substitutions). Passing `--format` to one of
 those **warns on stderr** and is otherwise ignored; the exempt set is declared
-in `src/output/format-exempt.ts`.
+in `src/output/format-exempt.ts`. `migrate status`/`apply` also spawn a
+standalone tool (the migration tool) but are NOT exempt: the CLI parses that
+child's final JSON result line and renders it through the normal `--format`
+pipeline, so `text`/`md`/`html`/`yaml` genuinely reformat it; any progress
+lines the child printed along the way still print verbatim, ahead of the
+formatted result.
 
 Scripted `setup` modes emit a normal format-aware result. Interactive `setup`
 is a terminal UI and emits no result document. `agent` leaves inherited child

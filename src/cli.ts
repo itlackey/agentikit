@@ -516,6 +516,12 @@ function commandHelpTopic(name: string, command: AnyCittyCommand): AnyCittyComma
   });
 }
 
+// `migrate` is excluded here even though it's a normal, now-visible SYSTEM
+// command (see HELP_SECTIONS below): `help`'s own `migrate` subcommand
+// (registered below) intentionally shadows this generic command-usage
+// renderer with release-notes lookup instead — `akm help migrate 0.9.0`
+// prints migration guidance, not `migrate`'s own `--help` usage block. That
+// usage block is still reachable directly via `akm migrate --help`.
 const commandHelpTopics = Object.fromEntries(
   Object.entries(commands)
     .filter(([name]) => name !== "migrate")
@@ -635,9 +641,20 @@ export function shouldBypassConfigStartup(argv: readonly string[]): boolean {
   const separator = userArgs.indexOf("--");
   const args = separator === -1 ? userArgs : userArgs.slice(0, separator);
   if (args.includes("--help") || args.includes("-h") || args.includes("--version") || args.includes("-v")) return true;
+  // Bare `akm` (no subcommand at all) renders the same sectioned root-help
+  // text as `akm help` — never touches config either.
+  if (args.length === 0) return true;
   const commandIndex = findCittyTopLevelCommandIndex(args, MAIN_TOP_LEVEL_ARGS);
   const command = commandIndex >= 0 ? args[commandIndex] : undefined;
   if (command === "setup" || command === "migrate") return true;
+  // `help` and `hints` are pure-text surfaces (bundled release notes, static
+  // agent-guide text, command usage rendered from `meta` alone) — none of
+  // their run bodies read config. The documented recovery path
+  // (`akm help migrate 0.9.0`) is only ever run against a config that
+  // startup's own load would reject, so both must bypass it the same way
+  // `setup`/`migrate` do, or the recovery instructions are themselves
+  // unreachable.
+  if (command === "help" || command === "hints") return true;
   if (isTaskRunWithId(argv)) return true;
   if (command !== "config") return false;
   const configIndex = args.indexOf("config");
@@ -797,6 +814,7 @@ const HELP_SECTIONS: ReadonlyArray<{
       "registry",
       "info",
       "log",
+      "migrate",
       "help",
       "hints",
       "upgrade",

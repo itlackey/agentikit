@@ -176,8 +176,8 @@ describe("lint parity: all 14 all-types fixture assets lint clean via the consol
     expect(issues).toEqual([]);
   });
 
-  test("akmLint({dir: STASH_ROOT}) full sweep is clean and does not error", () => {
-    const result = akmLint({ dir: STASH_ROOT });
+  test("akmLint({dir: STASH_ROOT}) full sweep is clean and does not error", async () => {
+    const result = await akmLint({ dir: STASH_ROOT });
     expect(result.ok).toBe(true);
     expect(result.flagged).toEqual([]);
     expect(result.fixed).toEqual([]);
@@ -190,7 +190,7 @@ describe("lint parity: all 14 all-types fixture assets lint clean via the consol
 // capture never depends on bun:test's within-file execution order.
 
 describe("golden fixture: lint output parity (WI-0b.4b)", () => {
-  test("golden fixture: lint/all-types.json", () => {
+  test("golden fixture: lint/all-types.json", async () => {
     const perType: Record<string, unknown> = {};
 
     for (const [type, subdir, relPath] of ALL_TYPE_CASES) {
@@ -201,7 +201,7 @@ describe("golden fixture: lint output parity (WI-0b.4b)", () => {
     const skillDirIssues = lintSkillDirectory(path.join(STASH_ROOT, "skills/all-types-skill"), STASH_ROOT);
     (perType.skill as { lintDirectoryIssues?: LintIssue[] }).lintDirectoryIssues = skillDirIssues;
 
-    const akmLintFullSweep: AkmLintResult = akmLint({ dir: STASH_ROOT });
+    const akmLintFullSweep: AkmLintResult = await akmLint({ dir: STASH_ROOT });
 
     expectGolden(LINT_GOLDEN_PATH, {
       scenario:

@@ -15,7 +15,30 @@ export type LintIssueType =
   | "missing-ref"
   | "dangerous-env-key"
   | "invalid-workflow-structure"
-  | "missing-category";
+  | "missing-category"
+  // ── non-akm adapter `validate()` codes (akm 0.9.0 lint/adapter-dispatch wiring) ──
+  //
+  // These four are `llm-wiki`'s native structural checks
+  // (`core/adapter/adapters/llm-wiki-adapter.ts`), reachable now that `akm lint`
+  // dispatches every non-akm bundle through its OWN adapter's `validate()`
+  // instead of the akm-shaped per-file sweep. `missing-type` / `missing-ref`
+  // above are shared with `okf` (already closed members of this union).
+  | "uncited-raw"
+  | "missing-description"
+  | "broken-xref"
+  | "broken-source"
+  /**
+   * Fallback for a `Diagnostic.issue` code this union does not (yet) name.
+   * `Diagnostic.issue` (`core/adapter/types.ts`) is deliberately an OPEN
+   * `string` — any current or future `BundleAdapter.validate()` may emit a
+   * code this closed lint-command union has never heard of. Rather than
+   * silently dropping that finding (or throwing at the CLI boundary), the
+   * lint→adapter mapping (`commands/lint/index.ts#diagnosticToLintIssue`)
+   * folds an unrecognized code onto this member and preserves the ORIGINAL
+   * code in `detail` (prefixed `[<issue>] `) so nothing an adapter reports is
+   * ever lost, even though the closed union can't type it precisely.
+   */
+  | "adapter-diagnostic";
 
 export interface LintIssue {
   file: string;

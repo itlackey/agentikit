@@ -65,25 +65,25 @@ const CLEAN_WORKFLOW = [
 ].join("\n");
 
 describe("akm lint --type workflows", () => {
-  test("a well-formed unified workflow produces no findings", () => {
+  test("a well-formed unified workflow produces no findings", async () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(stashDir, "clean.md", CLEAN_WORKFLOW);
 
-    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+    const result = await akmLint({ dir: stashDir, typeFilter: "workflows" });
 
     expect(result.flagged).toHaveLength(0);
   });
 
-  test("README documentation in the workflows directory is not treated as a workflow asset", () => {
+  test("README documentation in the workflows directory is not treated as a workflow asset", async () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(stashDir, "README.md", "# Workflow documentation\n");
 
-    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+    const result = await akmLint({ dir: stashDir, typeFilter: "workflows" });
 
     expect(result.flagged).toHaveLength(0);
   });
 
-  test("a workflow missing the required `steps` list is a parse-stage finding", () => {
+  test("a workflow missing the required `steps` list is a parse-stage finding", async () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(
       stashDir,
@@ -91,7 +91,7 @@ describe("akm lint --type workflows", () => {
       ["---", "type: workflow", "description: No steps", "---", ""].join("\n"),
     );
 
-    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+    const result = await akmLint({ dir: stashDir, typeFilter: "workflows" });
 
     const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
     expect(structural).toHaveLength(1);
@@ -99,7 +99,7 @@ describe("akm lint --type workflows", () => {
     expect(structural[0]!.detail).toContain('"steps" is required');
   });
 
-  test("a reference to a missing step is a compile-stage finding", () => {
+  test("a reference to a missing step is a compile-stage finding", async () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(
       stashDir,
@@ -120,14 +120,14 @@ describe("akm lint --type workflows", () => {
       ].join("\n"),
     );
 
-    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+    const result = await akmLint({ dir: stashDir, typeFilter: "workflows" });
 
     const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
     expect(structural).toHaveLength(1);
     expect(structural[0]?.detail).toContain('"ghost" is not a step in this workflow');
   });
 
-  test("a reference to a later step is a compile-stage finding", () => {
+  test("a reference to a later step is a compile-stage finding", async () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(
       stashDir,
@@ -153,14 +153,14 @@ describe("akm lint --type workflows", () => {
       ].join("\n"),
     );
 
-    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+    const result = await akmLint({ dir: stashDir, typeFilter: "workflows" });
 
     const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
     expect(structural).toHaveLength(1);
     expect(structural[0]?.detail).toContain("does not come before this step");
   });
 
-  test("a param declared as a step input is a compile-stage finding", () => {
+  test("a param declared as a step input is a compile-stage finding", async () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(
       stashDir,
@@ -181,19 +181,19 @@ describe("akm lint --type workflows", () => {
       ].join("\n"),
     );
 
-    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+    const result = await akmLint({ dir: stashDir, typeFilter: "workflows" });
 
     const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
     expect(structural).toHaveLength(1);
     expect(structural[0]?.detail).toContain("names a param, not a step output");
   });
 
-  test("a clean workflow alongside a structurally-broken one: each is checked independently", () => {
+  test("a clean workflow alongside a structurally-broken one: each is checked independently", async () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(stashDir, "release.md", CLEAN_WORKFLOW);
     writeWorkflowFile(stashDir, "broken.md", ["---", "type: workflow", "description: Broken", "---", ""].join("\n"));
 
-    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+    const result = await akmLint({ dir: stashDir, typeFilter: "workflows" });
 
     const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
     expect(structural).toHaveLength(1);

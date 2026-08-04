@@ -7,6 +7,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EXIT_CODES } from "../../src/cli/shared";
+import { workflowStructureDiagnostics } from "../../src/core/adapter/adapters/akm-lint";
+import { assetPathForName, stashDirFor } from "../../src/core/asset/asset-placement";
+import { parseBundleRef } from "../../src/core/asset/asset-ref";
+import { typeNameFromConceptId } from "../../src/core/asset/resolve-ref";
 import { MAX_CONFIG_FILE_BYTES, MAX_LOCAL_METADATA_BYTES, readTextFileWithLimit, writeFileAtomic } from "../../src/core/common";
 import {
   type AkmConfig,
@@ -15,10 +19,12 @@ import {
   sanitizeConfigForWrite,
 } from "../../src/core/config/config";
 import { parseConfigText, withConfigLock } from "../../src/core/config/config-io";
+import { CURRENT_CONFIG_VERSION } from "../../src/core/config/config-schema";
 import { ConfigError } from "../../src/core/errors";
 import { withMaintenanceStartBarrier } from "../../src/core/maintenance-barrier";
 import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { runMigrations as runStateMigrations } from "../../src/core/state/migrations";
+import { warn } from "../../src/core/warn";
 import {
   assertMigrationLockfileReadable,
   isValidLockfileEntry,
@@ -28,7 +34,9 @@ import {
 import { type Database, openDatabaseFinalizing } from "../../src/storage/database";
 import { runMigrations as runSqliteMigrations } from "../../src/storage/engines/sqlite-migrations";
 import { deriveLegacyBundleIds, inferLegacyBundleIds } from "./migrate/legacy/bundle-id";
+import { detectLegacyEngineKeys, generateTargetConfig } from "./migrate/legacy/config-generate";
 import {
+  hasOldSourceShape,
   migrateConfigSourcesToBundles,
   migratedLockEntries,
   oldConfigToSearchSources,
@@ -63,6 +71,7 @@ import {
   getMigrationApplyJournalPath,
   getMigrationBackupDir,
   getMigrationBackupRoot,
+  getMigrationGeneratedConfigPath,
   getMigrationRestoreJournalPath,
   inspectMigrationState,
   MIGRATION_BACKUP_VERSION,
@@ -75,6 +84,17 @@ import {
 
 const MANUAL_GUIDANCE =
   "Provide a complete operator-prepared 0.9 config with --config. AKM does not guess profile-to-engine mappings.";
+// Used instead of MANUAL_GUIDANCE whenever the active config still carries
+// old-shape source keys (stashDir/sources[]/installed[]) — the mechanical part
+// (bundles/defaultBundle) IS derivable in that case, so the message points at
+// `migrate apply` generating a starter config instead of asking the operator
+// to hand-write one from a blank page. See `generatedConfig` on
+// {@link MigrationPlan} for the structured version of this same information.
+const GENERATED_CONFIG_GUIDANCE =
+  "No 0.9 config found, but the active 0.8 stashDir/sources/installed keys are enough to derive one. " +
+  "Run `akm migrate apply` (no --config) to write a starter config, review it (see `generatedConfig.droppedKeys` " +
+  "for anything it could not translate), then re-run `akm migrate apply` to apply it. " +
+  "Or provide a complete operator-prepared 0.9 config with --config instead.";
 const APPLY_SENTINEL_FORMAT = 1 as const;
 
 export interface MigrationCommandOptions {
@@ -84,17 +104,56 @@ export interface MigrationCommandOptions {
 
 export interface MigrationTargetState {
   status: "current" | "missing" | "corrupt";
-  source: "active" | "prepared" | "none";
+  source: "active" | "prepared" | "generated" | "none";
   path?: string;
   detail?: string;
 }
 
+/**
+ * Describes the config `akm migrate apply` will (or already did) auto-generate
+ * when no `--config` is given and the active 0.8 config has old-shape source
+ * keys to derive `bundles`/`defaultBundle` from. Present on {@link MigrationPlan}
+ * whenever that applies — independent of whether the file has actually been
+ * written yet, so `migrate status` shows the SAME information before `apply`
+ * acts on it (never guessed at run-to-run: `droppedKeys` is recomputed from the
+ * live active config every time, not cached).
+ */
+export interface GeneratedConfigInfo {
+  /** The predictable path (see `getMigrationGeneratedConfigPath`). */
+  path: string;
+  /** `"pending"` — not written yet; the next no-`--config` `migrate apply` writes it. `"written"` — already on disk. */
+  status: "pending" | "written";
+  /**
+   * Exact dotted 0.8 key paths (e.g. `"profiles.llm.fast"`, `"defaults.agent"`)
+   * the generator could not translate and left out — `engines`/`defaults` for
+   * these need hand-authoring. Empty when there was nothing ambiguous.
+   */
+  droppedKeys: string[];
+}
+
 export interface MigrationPlan {
-  status: "current" | "ready" | "blocked";
+  // R-090: `not-applicable` is a DISTINCT, non-error outcome from `blocked` —
+  // it means "there is nothing on this machine to migrate", not "migration
+  // cannot proceed". Consumers that gate on `status !== "blocked"` (e.g. the
+  // self-update preflight, which only inspects the CLI's exit code) keep
+  // working unchanged; only a consumer that narrowly matched `=== "ready"` to
+  // mean "proceed" would need to widen to also treat `not-applicable` as
+  // proceed-safe — grepped for that pattern across the tree and found none.
+  status: "current" | "ready" | "blocked" | "not-applicable";
   artifacts: MigrationState;
   targetConfig: MigrationTargetState;
   blockers: string[];
+  /**
+   * Human-readable context for a status that isn't self-explanatory on its
+   * own: `not-applicable` (nothing to migrate), and a `ready`/`current` result
+   * from `migrate apply` that just finished WRITING a generated config rather
+   * than applying it (see `generatedConfig` — that invocation deliberately
+   * stops there so the operator can review the file before a second, explicit
+   * `migrate apply` actually mutates anything).
+   */
+  message?: string;
   activeOperation?: { kind: "apply" | "restore"; sentinelPath: string };
+  generatedConfig?: GeneratedConfigInfo;
 }
 
 interface ApplySentinel {
@@ -207,6 +266,55 @@ function parseMigrationTargetConfig(text: string, sourcePath?: string): AkmConfi
   return parseAndValidateConfigText(JSON.stringify(migrated), sourcePath);
 }
 
+function loadTargetConfigFrom(
+  targetPath: string,
+  source: "active" | "prepared" | "generated",
+): {
+  state: MigrationTargetState;
+  config?: AkmConfig;
+  migrationLockEntries?: LockfileEntry[];
+} {
+  let text: string;
+  try {
+    text = readTextFileWithLimit(targetPath, MAX_CONFIG_FILE_BYTES, "Prepared migration config");
+  } catch (error) {
+    return {
+      state: { status: "corrupt", source, path: targetPath, detail: error instanceof Error ? error.message : String(error) },
+    };
+  }
+
+  try {
+    return {
+      state: { status: "current", source, path: targetPath },
+      config: parseMigrationTargetConfig(text, targetPath),
+      migrationLockEntries: migratedLockEntries(parseConfigText(text, targetPath)),
+    };
+  } catch (error) {
+    return {
+      state: { status: "corrupt", source, path: targetPath, detail: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
+/**
+ * The active config's raw parsed JSON, but ONLY when it still carries the
+ * pre-cutover `stashDir`/`sources[]`/`installed[]` shape — i.e. only when
+ * there is something a generated target config could actually derive.
+ * Returns `undefined` for a missing/unreadable/unparseable file (those cases
+ * are already covered by `artifacts.config`'s own blocker) or a config that
+ * has no old-shape source keys to translate at all.
+ */
+function readActiveLegacyConfigRaw(): Record<string, unknown> | undefined {
+  const configPath = getConfigPath();
+  if (!fs.existsSync(configPath)) return undefined;
+  try {
+    const raw = parseConfigText(readTextFileWithLimit(configPath, MAX_CONFIG_FILE_BYTES, "Config file"), configPath);
+    return hasOldSourceShape(raw) ? raw : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function loadTargetConfig(
   preparedConfigPath: string | undefined,
   artifacts: MigrationState,
@@ -215,43 +323,47 @@ function loadTargetConfig(
   config?: AkmConfig;
   migrationLockEntries?: LockfileEntry[];
 } {
-  const targetPath = preparedConfigPath ?? (artifacts.config.status === "current" ? getConfigPath() : undefined);
-  if (!targetPath) return { state: { status: "missing", source: "none", detail: MANUAL_GUIDANCE } };
+  // An explicit --config always wins and is never second-guessed against a
+  // generated file, even if one already exists at the predictable path.
+  if (preparedConfigPath) return loadTargetConfigFrom(preparedConfigPath, "prepared");
+  if (artifacts.config.status === "current") return loadTargetConfigFrom(getConfigPath(), "active");
 
-  let text: string;
-  try {
-    text = readTextFileWithLimit(targetPath, MAX_CONFIG_FILE_BYTES, "Prepared migration config");
-  } catch (error) {
-    return {
-      state: {
-        status: "corrupt",
-        source: preparedConfigPath ? "prepared" : "active",
-        path: targetPath,
-        detail: error instanceof Error ? error.message : String(error),
-      },
-    };
-  }
+  // No explicit --config, and the active config isn't 0.9-current: an earlier
+  // no-`--config` `migrate apply` may have already generated a starter config
+  // at the predictable path (see writeGeneratedTargetConfig below) — treat it
+  // exactly like an operator-prepared file so a second no-`--config` run
+  // converges instead of asking the operator to pass --config to their own
+  // auto-generated file.
+  const generatedPath = getMigrationGeneratedConfigPath();
+  if (fs.existsSync(generatedPath)) return loadTargetConfigFrom(generatedPath, "generated");
 
-  try {
-    return {
-      state: {
-        status: "current",
-        source: preparedConfigPath ? "prepared" : "active",
-        path: targetPath,
-      },
-      config: parseMigrationTargetConfig(text, targetPath),
-      migrationLockEntries: migratedLockEntries(parseConfigText(text, targetPath)),
-    };
-  } catch (error) {
-    return {
-      state: {
-        status: "corrupt",
-        source: preparedConfigPath ? "prepared" : "active",
-        path: targetPath,
-        detail: error instanceof Error ? error.message : String(error),
-      },
-    };
-  }
+  const detail = readActiveLegacyConfigRaw() ? GENERATED_CONFIG_GUIDANCE : MANUAL_GUIDANCE;
+  return { state: { status: "missing", source: "none", detail } };
+}
+
+/**
+ * The `generatedConfig` plan field: present whenever no explicit --config was
+ * given, there is no in-flight apply sentinel, and the active config still
+ * has old-shape source keys to derive a target from — regardless of whether
+ * the generated file has been written yet, so the SAME information is visible
+ * both before generation (`status: "pending"`) and after (`"written"`, still
+ * naming anything left out). `droppedKeys` is recomputed from the live active
+ * config every call, never cached, so it can never go stale relative to a
+ * config the operator edited between `migrate status` calls.
+ */
+function describeGeneratedConfig(
+  preparedConfigPath: string | undefined,
+  hasSentinel: boolean,
+): GeneratedConfigInfo | undefined {
+  if (preparedConfigPath || hasSentinel) return undefined;
+  const raw = readActiveLegacyConfigRaw();
+  if (!raw) return undefined;
+  const generatedPath = getMigrationGeneratedConfigPath();
+  return {
+    path: generatedPath,
+    status: fs.existsSync(generatedPath) ? "written" : "pending",
+    droppedKeys: detectLegacyEngineKeys(raw),
+  };
 }
 
 function unsafeArtifact(name: string, state: MigrationArtifactState): string | undefined {
@@ -293,6 +405,30 @@ function buildMigrationPlan(
 ): MigrationPlan {
   const artifacts = inspectMigrationState();
   const restorePending = fs.existsSync(getMigrationRestoreJournalPath());
+
+  // R-090: a genuinely fresh machine — no config.json, no state/workflow/index
+  // databases, and no in-flight apply/restore operation — has nothing to
+  // migrate. Report that as a distinct, non-error outcome instead of routing
+  // it through the "provide an operator-prepared config" blocker below: that
+  // message is correct advice for an existing pre-cutover install but reads
+  // as a failure ("blocked", exit 1) for a user who has nothing to upgrade.
+  const nothingToMigrate =
+    !active.sentinel &&
+    !restorePending &&
+    artifacts.config.status === "missing" &&
+    artifacts.state.status === "missing" &&
+    artifacts.workflow.status === "missing" &&
+    artifacts.index.status === "missing";
+  if (nothingToMigrate) {
+    return {
+      status: "not-applicable",
+      artifacts,
+      targetConfig: { status: "missing", source: "none" },
+      blockers: [],
+      message: "No akm installation found; nothing to migrate.",
+    };
+  }
+
   const target = active.sentinel
     ? {
         state: {
@@ -340,6 +476,8 @@ function buildMigrationPlan(
     taskRewrites > 0 ||
     proposalRepair.count > 0;
 
+  const generatedConfig = describeGeneratedConfig(preparedConfigPath, !!active.sentinel);
+
   return {
     status: blockers.length > 0 ? "blocked" : needsApply ? "ready" : "current",
     artifacts,
@@ -360,6 +498,7 @@ function buildMigrationPlan(
             },
           }
         : {}),
+    ...(generatedConfig ? { generatedConfig } : {}),
   };
 }
 
@@ -794,6 +933,99 @@ function requireSemanticCompletion(config: AkmConfig, sentinel: ApplySentinel, f
   };
 }
 
+/**
+ * R-091: an active/resumable (`status IN ('active','blocked')`) workflow run
+ * can target a workflow asset that fails 0.9's structural validation — most
+ * commonly a heading-based 0.8 workflow definition, since 0.9 requires
+ * frontmatter `steps:` and does NOT auto-translate the old format (the docs
+ * say so explicitly; building a converter here would be dishonest scope
+ * creep). Such an asset silently drops out of the 0.9 index (`akm search
+ * --type workflow` finds nothing for it) while its run row stays `active`, so
+ * `akm show` on UNRELATED assets keeps prefixing a "WORKFLOW ACTIVE" banner
+ * that names a run the operator can no longer advance. The minimal honest fix
+ * is detection + a clear pointer, not a fix: tell the operator to update the
+ * asset or abandon the stale run. Reuses `workflowStructureDiagnostics` — the
+ * exact same check `akm lint`'s `invalid-workflow-structure` uses — so this
+ * can never disagree with what `akm lint`/`akm search` report.
+ *
+ * Purely diagnostic: reads state.db read-only and writes to stderr via
+ * `warn()`, never to the migration's stdout JSON result. Every failure mode
+ * (missing table, unreadable file, resolution miss) is swallowed — this must
+ * never turn a completed migration into a failure.
+ */
+function warnOrphanedActiveWorkflowRuns(
+  statePath: string,
+  roots: readonly CutoverStashRoot[],
+  defaultBundle: string | undefined,
+): void {
+  try {
+    if (!fs.existsSync(statePath)) return;
+    let rows: Array<{ id: string; workflow_ref: string }>;
+    const db = openDatabaseFinalizing(statePath, { readonly: true, create: false });
+    try {
+      const hasRuns = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_runs'").get();
+      if (!hasRuns) return;
+      rows = db
+        .prepare("SELECT id, workflow_ref FROM workflow_runs WHERE status IN ('active', 'blocked')")
+        .all() as Array<{ id: string; workflow_ref: string }>;
+    } finally {
+      db.close();
+    }
+    if (rows.length === 0) return;
+
+    const rootById = new Map(roots.map((root) => [root.bundleId, root]));
+    for (const row of rows) {
+      const parsed = parseBundleRef(row.workflow_ref);
+      const parts = typeNameFromConceptId(parsed.conceptId);
+      if (!parts || parts.type !== "workflow") continue;
+      const root = rootById.get(parsed.bundle ?? defaultBundle ?? "");
+      if (!root) continue;
+      // `assetPathForName`'s `typeRoot` is the TYPE's stash subdir, not the
+      // bundle root — mirrors how every real caller (indexer install
+      // resolution) builds it: `<bundleRoot>/<stashDirFor(type)>`.
+      const typeRoot = path.join(root.path, stashDirFor("workflow") ?? "workflows");
+      const filePath = assetPathForName("workflow", typeRoot, parts.name);
+      if (!fs.existsSync(filePath)) continue;
+      let raw: string;
+      try {
+        raw = readTextFileWithLimit(filePath, MAX_CONFIG_FILE_BYTES, "Workflow asset");
+      } catch {
+        continue;
+      }
+      const diagnostics = workflowStructureDiagnostics(path.relative(root.path, filePath) || filePath, raw, filePath);
+      if (diagnostics.length === 0) continue;
+      warn(
+        `WORKFLOW ACTIVE run ${row.id} targets "${row.workflow_ref}" (${filePath}), which fails 0.9 workflow ` +
+          `structural validation and can no longer be run: ${diagnostics.map((d) => d.detail).join("; ")}. ` +
+          "AKM does not auto-translate workflow definitions between formats — update the asset to declare " +
+          `frontmatter \`steps:\`, or run \`akm workflow abandon ${row.id}\` to clear the stale run.`,
+      );
+    }
+  } catch {
+    // Purely diagnostic — never let this block or fail a completed migration.
+  }
+}
+
+/**
+ * The write-side counterpart to `describeGeneratedConfig`: derives a starter
+ * 0.9 config from the ACTIVE 0.8 config (`raw`, read-only — this function
+ * never mutates or touches the live `config.json`) and writes it to the
+ * predictable generated-config path, validating it FIRST so a broken
+ * derivation can never land a corrupt file there for a later run to trust.
+ * Called only from `runMigrationApply`'s real (non-dry-run) path, while the
+ * config lock and maintenance barrier are already held.
+ */
+function writeGeneratedTargetConfig(raw: Record<string, unknown>): GeneratedConfigInfo {
+  const { config, droppedKeys } = generateTargetConfig(raw, CURRENT_CONFIG_VERSION);
+  const generatedPath = getMigrationGeneratedConfigPath();
+  // Validate before writing so a broken derivation never lands a corrupt file
+  // at the predictable path a later run would otherwise trust as "written".
+  parseAndValidateConfigText(JSON.stringify(config), generatedPath);
+  fs.mkdirSync(path.dirname(generatedPath), { recursive: true, mode: 0o700 });
+  writeFileAtomic(generatedPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
+  return { path: generatedPath, status: "written", droppedKeys };
+}
+
 function requireEligiblePlan(
   preparedConfigPath: string | undefined,
   active: ApplySentinelRead,
@@ -819,14 +1051,51 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
       recoverInterruptedRestoreWithLocksHeld();
       const existing = readApplySentinel();
       if (existing.error) throw new ConfigError(existing.error, "INVALID_CONFIG_FILE");
+      // R-090: `not-applicable` (nothing on this machine to migrate) has no
+      // target config to load by design — short-circuit before
+      // `requireEligiblePlan`, which would otherwise read that absent target
+      // as `blocked` and throw.
+      const preflightPlan = buildMigrationPlan(options.preparedConfigPath, existing);
+      if (preflightPlan.status === "not-applicable") return { plan: preflightPlan };
+      // Nothing to apply against yet (no --config, no in-flight sentinel, and
+      // the ONLY reason apply is blocked is a missing target config) but the
+      // active config's old-shape source keys are enough to derive one:
+      // write it now and STOP — this invocation deliberately does not
+      // proceed to backup/apply, so the operator gets a real chance to
+      // review (and hand-add engines/defaults for anything `generatedConfig`
+      // names as dropped) before anything mutates. A second, explicit
+      // `migrate apply` (still no --config) picks the generated file up
+      // automatically via `loadTargetConfig`, exactly like an operator-
+      // prepared --config would.
+      if (
+        !options.preparedConfigPath &&
+        !existing.sentinel &&
+        preflightPlan.status === "blocked" &&
+        preflightPlan.blockers.length === 1 &&
+        preflightPlan.targetConfig.status !== "current" &&
+        preflightPlan.generatedConfig?.status === "pending"
+      ) {
+        const legacyRaw = readActiveLegacyConfigRaw();
+        if (legacyRaw) {
+          const generated = writeGeneratedTargetConfig(legacyRaw);
+          return {
+            plan: {
+              ...buildMigrationPlan(options.preparedConfigPath, existing),
+              message:
+                `Generated a starter 0.9 config at ${generated.path} from the active 0.8 stashDir/sources/installed keys.` +
+                (generated.droppedKeys.length > 0
+                  ? ` It does not include ${generated.droppedKeys.join(", ")} — add engines/defaults for those if you need them.`
+                  : "") +
+                " Nothing has been applied yet — review the file, then re-run `akm migrate apply` to apply it.",
+            },
+          };
+        }
+      }
       const { plan, target, migrationLockEntries } = requireEligiblePlan(options.preparedConfigPath, existing);
       if (plan.status === "current" && !existing.sentinel) return { plan };
       const pathResolutionBase = existing.sentinel?.pathResolutionBase ?? path.resolve(process.cwd());
-      assertNoArtifactReplacementBlockers(undefined, {
-        stashRoots: cutoverStashRootsFromConfig(target, migrationLockEntries, [], pathResolutionBase).map(
-          (root) => root.path,
-        ),
-      });
+      const stashRoots = cutoverStashRootsFromConfig(target, migrationLockEntries, [], pathResolutionBase);
+      assertNoArtifactReplacementBlockers(undefined, { stashRoots: stashRoots.map((root) => root.path) });
       assertMigrationLockfileReadable();
 
       const backup = existing.sentinel
@@ -858,6 +1127,7 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
         }
         publishConfigLast(target, sentinel, backup.manifest);
         const completed = requireSemanticCompletion(target, sentinel, !taskOnly && !postCutoverState);
+        warnOrphanedActiveWorkflowRuns(getStateDbPathInDataDir(), stashRoots, target.defaultBundle);
         clearApplySentinel();
         return { plan: completed, backup };
       } catch (error) {

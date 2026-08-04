@@ -70,8 +70,8 @@ enumeration of the whole `proposal` noun group.
 | `akm registry list` | Evolving | |
 | `akm registry add` | Evolving | |
 | `akm registry remove` | Evolving | |
-| `akm migrate status` | Internal | Thin forwarder to the standalone `akm-migrate` tool; `hidden: true` in `--help`. |
-| `akm migrate apply` | Internal | Thin forwarder to the standalone `akm-migrate` tool; `hidden: true` in `--help`. |
+| `akm migrate status` | Internal | Forwards to the standalone `akm-migrate` tool; renders its result through the normal `--format` pipeline (not exempt — see below). Listed (not hidden) in `--help`/completions. |
+| `akm migrate apply` | Internal | Forwards to the standalone `akm-migrate` tool; renders its result through the normal `--format` pipeline (not exempt — see below). Listed (not hidden) in `--help`/completions. |
 | `akm config path` | Stable | |
 | `akm config list` | Stable | |
 | `akm config get` | Stable | |
@@ -190,16 +190,23 @@ enumeration of the whole `proposal` noun group.
   `--shape` (`human|agent|summary`) is the output-projection axis (see
   Experimental). A small set of commands is **format-exempt** because their
   output is not a result envelope at all: `completions` (shell script source),
-  child-process passthrough in `env run` / `secret run` / `migrate` (`status`
-  and `apply` both spawn the
-  standalone `akm-migrate` tool), a bare-path payload from `env path`, and
-  document payloads from `help` (bare, `help agents`, and `help migrate`). The
-  set is declared in
+  child-process passthrough in `env run` / `secret run`, a bare-path payload
+  from `env path`, and document payloads from `help` (bare, `help agents`, and
+  `help migrate`). The set is declared in
   `src/output/format-exempt.ts`, and
   passing `--format` to one of them warns rather than silently doing something
   else. Scripted `setup` modes emit a normal format-aware result; interactive
   `setup` is a terminal UI and emits no result document. `agent` leaves
   inherited child streams raw and formats its final result envelope.
+  `migrate status`/`apply` both spawn the standalone `akm-migrate` tool but are
+  NOT in the exempt set: `src/commands/migrate-cli.ts` parses the child's
+  final JSON result line and renders it through the same `output()` pipeline
+  (registered shape `src/output/shapes/migrate.ts`, text renderer
+  `src/output/text/migrate.ts`), so all six `--format` values work on them
+  like any other command. Any progress-event lines the child prints during a
+  real `apply` (content migration, proposal-ref repair) still print verbatim,
+  ahead of the formatted result — those are operational logging, not part of
+  the result envelope.
 
   | Exit code | Meaning |
   | --- | --- |
@@ -452,6 +459,15 @@ Internal replacement for the one capability nothing else covered.
   a separately published `akm-migrate` package (see Internal above).
 - **0.10 — `--auto-accept` hard error.** It is currently accepted-and-warned;
   see the Improvement loop entry.
+- **0.10 — `BundleAdapter.placeNew()` wiring.** The interface declares
+  `placeNew()` as an optional capability method, and 8 of the built-in
+  adapters already implement it, but nothing in the write path calls it —
+  writes still resolve through AKM's native flat type→directory table.
+  Placement for every existing bundle is already correct today; this is a
+  deliberately sequenced routing change, not unfinished behavior. See
+  [D12](./docs/architecture/specs/0.9.0-decisions.md#d12--bundleadapterplacenew-stays-unwired-until-010)
+  for why it is scoped out of 0.9.0. Nothing user-visible changes in 0.10 for
+  this alone.
 - **1.0 contract freeze** — the `[bundle//]conceptId[#fragment]` ref grammar,
   the supported source model, search behavior, and write-target rules are
   frozen at 1.0. The SDK and in-process plugin story ship on top of that

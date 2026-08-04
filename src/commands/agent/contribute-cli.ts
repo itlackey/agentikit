@@ -207,7 +207,7 @@ export const lintCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      const result = akmLint({
+      const result = await akmLint({
         fix: args.fix === true || getHyphenatedBoolean(args, "auto-fix"),
         dir: getStringArg(args, "dir"),
         typeFilter: getStringArg(args, "type"),
