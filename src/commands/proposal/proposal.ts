@@ -28,6 +28,7 @@ import {
   type Proposal,
   type ProposalGateDecision,
   type ProposalsContext,
+  preflightProposalPromotion,
   promoteProposal,
   proposalContent,
   recoverProposalTransactionsForStash,
@@ -125,12 +126,30 @@ export interface ProposalShowResult {
 }
 
 export function akmProposalShow(options: ProposalShowOptions): ProposalShowResult {
-  const { stashDir: stash } = resolveProposalQueue(options.stashDir, options.queue, options.config);
+  const queue = resolveProposalQueue(options.stashDir, options.queue, options.config);
+  const stash = queue.stashDir;
   const proposal = resolveProposalId(stash, options.id);
+  let validation = validateProposal(proposal);
+  // An explicit stashDir without config is an in-process storage test seam; it
+  // has no authenticated write-target context to preflight against.
+  if (
+    validation.ok &&
+    proposal.status === "pending" &&
+    (options.config !== undefined || options.stashDir === undefined)
+  ) {
+    try {
+      preflightProposalPromotion(options.config ?? loadConfig(), proposal, { queueTarget: queue.target });
+    } catch (error) {
+      validation = {
+        ok: false,
+        findings: [{ kind: "promotion", message: error instanceof Error ? error.message : String(error) }],
+      };
+    }
+  }
   return {
     schemaVersion: 1,
     proposal,
-    validation: validateProposal(proposal),
+    validation,
   };
 }
 

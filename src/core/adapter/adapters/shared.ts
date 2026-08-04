@@ -51,6 +51,7 @@
 
 import { createHash } from "node:crypto";
 import { parseFrontmatter } from "../../asset/frontmatter";
+import { checkUnquotedDescriptionColon } from "../../asset/frontmatter-lint";
 import type { FileChange } from "../../file-change";
 import type { BundleComponent, Diagnostic, ValidateContext } from "../types";
 
@@ -76,22 +77,6 @@ export function readTags(value: unknown): string[] | undefined {
 }
 
 // ── Base validate checks (port of `BaseLinter.runBaseChecks`) ────────────────
-
-function checkUnquotedColon(frontmatterText: string | null): string | null {
-  if (!frontmatterText) return null;
-  for (const line of frontmatterText.split(/\r?\n/)) {
-    const match = line.match(/^description:\s*(.*)/);
-    if (!match) continue;
-    const value = match[1]!.trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      return null;
-    }
-    if (value.includes(":")) {
-      return `description value contains unquoted colon: ${value}`;
-    }
-  }
-  return null;
-}
 
 function checkMissingUpdated(data: Record<string, unknown>, frontmatterText: string | null): boolean {
   return frontmatterText !== null && !("updated" in data);
@@ -228,7 +213,7 @@ export async function runBaseValidateChecks(
   const diagnostics: Diagnostic[] = [];
   const { data, content: body, frontmatter } = parsed;
 
-  const unquotedColonDetail = checkUnquotedColon(frontmatter);
+  const unquotedColonDetail = checkUnquotedDescriptionColon(frontmatter);
   if (unquotedColonDetail) {
     diagnostics.push({ file: relPath, issue: "unquoted-colon", detail: unquotedColonDetail, fixed: false });
   }

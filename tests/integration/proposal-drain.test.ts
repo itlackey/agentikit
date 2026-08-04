@@ -22,6 +22,7 @@ import type { AkmConfig } from "../../src/core/config/config";
 import type { EventsContext } from "../../src/core/events";
 import type { AgentRunResult } from "../../src/integrations/agent";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
+import { makeConfig } from "../_helpers/factories";
 
 // ── Test setup ────────────────────────────────────────────────────────────
 //
@@ -377,6 +378,25 @@ describe("drainProposals — dry-run", () => {
     // and the queue is untouched on disk
     const stillPending = listProposals(stash, { status: "pending" });
     expect(stillPending.map((p) => p.id).sort()).toEqual([accepted.id, empty.id].sort());
+  });
+
+  test("reports only candidates that pass the real stamped promotion preflight", async () => {
+    const stash = makeStashDir();
+    const blocked = seed(
+      stash,
+      "lessons/preflight-blocked",
+      "extract",
+      "---\ndescription: Proposal lint:blocks invalid output.\nwhen_to_use: Testing drain preflight\n---\n\nUseful body.\n",
+    );
+
+    const result = await drainProposals(
+      baseOpts(stash, { dryRun: true, config: makeConfig(stash) }),
+      fakeAccept(),
+      fakeReject(),
+    );
+
+    expect(result.promoted).toEqual([]);
+    expect(getProposal(stash, blocked.id).status).toBe("pending");
   });
 });
 

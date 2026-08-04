@@ -56,6 +56,7 @@ import {
   listProposals,
   type Proposal,
   type ProposalGateDecision,
+  preflightProposalPromotion,
   proposalContent,
   recordGateDecision,
 } from "./repository";
@@ -545,6 +546,18 @@ async function runJudgmentTier(input: JudgmentTierInput): Promise<{
       continue;
     }
     if (input.dryRun) {
+      try {
+        if (input.config) {
+          preflightProposalPromotion(input.config, proposal, {
+            ...(input.target ? { target: input.target } : {}),
+            gateDecision: { outcome: "auto-accepted", reason: "judgment-accept", gate: input.gateLabel },
+          });
+        }
+      } catch (err) {
+        warn(`[triage] judgment preflight failed for ${item.id}: ${err instanceof Error ? err.message : String(err)}`);
+        stillDeferred.push(item);
+        continue;
+      }
       promoted.push(item.id);
       acceptBudget -= 1;
       continue;
@@ -705,10 +718,29 @@ export async function drainProposals(
       }
     }
   } else if (opts.applyMode === "promote" && opts.dryRun) {
-    // Dry-run promote: report (and count, for the shared budget) what would be
-    // promoted without writing.
-    result.promoted.push(...withinCap);
-    deterministicPromoted = withinCap.length;
+    // Exercise the same stamped candidate and lint boundary as real promotion.
+    // Tests that omit config retain the classification-only seam.
+    const byId = new Map(pending.map((proposal) => [proposal.id, proposal]));
+    for (const id of withinCap) {
+      try {
+        if (opts.config) {
+          const proposal = byId.get(id);
+          if (!proposal) throw new Error(`Proposal ${id} disappeared during drain preflight.`);
+          preflightProposalPromotion(opts.config, proposal, {
+            ...(opts.target ? { target: opts.target } : {}),
+            gateDecision: {
+              outcome: "auto-accepted",
+              reason: acceptGateReasons.get(id) ?? "policy-accept",
+              gate: gateLabel,
+            },
+          });
+        }
+        result.promoted.push(id);
+        deterministicPromoted += 1;
+      } catch (err) {
+        warn(`[triage] preflight failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
   // applyMode "queue": leave accept candidates pending (staged). No promotion.
 

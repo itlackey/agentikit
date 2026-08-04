@@ -2132,6 +2132,64 @@ function promotionLintBlockers(
   }).filter((finding) => PROMOTION_LINT_BLOCKERS.has(finding.issue));
 }
 
+export interface ProposalPromotionPreflight {
+  proposal: Proposal;
+  repairedContent: string;
+  ref: AssetRef;
+  target: ResolvedWriteTarget;
+  assetPath: string;
+  stampedContent: string;
+}
+
+/** Build and validate the exact stamped bytes promotion would publish, without writing. */
+export function preflightProposalPromotion(
+  config: AkmConfig,
+  proposal: Proposal,
+  options: {
+    target?: string;
+    queueTarget?: ResolvedWriteTarget;
+    gateDecision?: Omit<ProposalGateDecision, "decidedAt"> & { decidedAt?: string };
+  } = {},
+  ctx?: ProposalsContext,
+): ProposalPromotionPreflight {
+  const repairedContent = repairProposalContent(proposalContent(proposal));
+  const preparedProposal =
+    repairedContent === proposalContent(proposal) ? proposal : withProposalContent(proposal, repairedContent);
+  const report = validateProposal(preparedProposal);
+  if (!report.ok) {
+    const message = report.findings.map((finding) => `[${finding.kind}] ${finding.message}`).join("\n");
+    throw new UsageError(
+      `Proposal ${proposal.id} failed validation:\n${message}`,
+      "MISSING_REQUIRED_ARGUMENT",
+      "Fix the proposal payload (frontmatter / content) and try again, or reject the proposal with a reason.",
+    );
+  }
+
+  const ref = parseRefInput(preparedProposal.ref);
+  if (!stashDirFor(ref.type)) {
+    throw new UsageError(`Proposal ${proposal.id} targets unknown asset type "${ref.type}".`, "INVALID_FLAG_VALUE");
+  }
+  const target = resolveProposalWriteTarget(config, preparedProposal, options.target, options.queueTarget);
+  const assetPath = resolveAssetFilePathSafe(target.source, ref);
+  if (!assetPath) throw new UsageError(`Cannot resolve proposal target ${preparedProposal.ref}.`, "INVALID_PROPOSAL");
+  assertAkmAssetWrite(target.source);
+
+  const stampedContent = assetPath.toLowerCase().endsWith(".md")
+    ? stampProposalProvenance(repairedContent, preparedProposal, options.gateDecision, ctx, nowIso(ctx))
+    : repairedContent;
+  const lintBlockers = promotionLintBlockers(stampedContent, assetPath, target.source.path, ref.type, config);
+  if (lintBlockers.length > 0) {
+    const message = lintBlockers.map((finding) => `[${finding.issue}] ${finding.detail}`).join("\n");
+    throw new UsageError(
+      `Proposal ${proposal.id} failed lint:\n${message}`,
+      "INVALID_PROPOSAL",
+      "Fix or explicitly suppress the reported lint findings, then retry.",
+    );
+  }
+
+  return { proposal: preparedProposal, repairedContent, ref, target, assetPath, stampedContent };
+}
+
 async function promoteProposalWithLease(
   stashDir: string,
   config: AkmConfig,
@@ -2146,25 +2204,21 @@ async function promoteProposalWithLease(
 ): Promise<PromoteResult> {
   recoverRejectTransaction(stashDir, id, ctx);
   let proposal = getProposal(stashDir, id, ctx);
-
-  // Attempt bounded auto-repair of mechanically-fixable structural defects
-  // (pseudo-frontmatter-in-body, stray `---` fences, truncated description)
-  // BEFORE running validation. If the repair produces valid content, we
-  // promote the repaired version; if validation still fails, the original
-  // error path throws as before. The repair is content-preserving and
-  // deterministic — it never invents text.
   const repairedContent = repairProposalContent(proposalContent(proposal));
-  const proposalToValidate: Proposal =
-    repairedContent !== proposalContent(proposal) ? withProposalContent(proposal, repairedContent) : proposal;
-
+  const proposalToValidate =
+    repairedContent === proposalContent(proposal) ? proposal : withProposalContent(proposal, repairedContent);
   const report = validateProposal(proposalToValidate);
   if (!report.ok) {
-    const message = report.findings.map((f) => `[${f.kind}] ${f.message}`).join("\n");
+    const message = report.findings.map((finding) => `[${finding.kind}] ${finding.message}`).join("\n");
     throw new UsageError(
       `Proposal ${id} failed validation:\n${message}`,
       "MISSING_REQUIRED_ARGUMENT",
       "Fix the proposal payload (frontmatter / content) and try again, or reject the proposal with a reason.",
     );
+  }
+  const ref = parseRefInput(proposalToValidate.ref);
+  if (!stashDirFor(ref.type)) {
+    throw new UsageError(`Proposal ${id} targets unknown asset type "${ref.type}".`, "INVALID_FLAG_VALUE");
   }
 
   // Use the (possibly repaired) payload for the promotion write. Persist the
@@ -2172,13 +2226,8 @@ async function promoteProposalWithLease(
   // final promoted payload (not the defective original).
   if (repairedContent !== proposalContent(proposal)) {
     withProposalsDb(stashDir, ctx, (db) => {
-      persistProposalUpdate(db, withProposalContent(proposal, repairedContent), stashDir);
+      persistProposalUpdate(db, proposalToValidate, stashDir);
     });
-  }
-
-  const ref = parseRefInput(proposalToValidate.ref);
-  if (!stashDirFor(ref.type)) {
-    throw new UsageError(`Proposal ${id} targets unknown asset type "${ref.type}".`, "INVALID_FLAG_VALUE");
   }
 
   await recoverProposalTransactionsForStash(stashDir, config, ctx, id);
@@ -2212,6 +2261,7 @@ async function promoteProposalWithLease(
       "INVALID_FLAG_VALUE",
     );
   }
+  const preflight = preflightProposalPromotion(config, proposal, { ...options, queueTarget: target }, ctx);
 
   const mutationTarget = prepareWriteTargetForMutation(target);
   const assetPath = resolveAssetFilePathSafe(mutationTarget.source, ref);
@@ -2260,23 +2310,13 @@ async function promoteProposalWithLease(
   // machine-stamped keys it is contractually required to admit is structurally
   // impossible now, so falling back to unstamped content on rejection would
   // only silently hide a real regression instead of promoting stamped content.
-  const stampedContent = assetPath.toLowerCase().endsWith(".md")
-    ? stampProposalProvenance(repairedContent, proposalToValidate, options.gateDecision, ctx, nowIso(ctx))
-    : repairedContent;
-  const lintBlockers = promotionLintBlockers(stampedContent, assetPath, mutationTarget.source.path, ref.type, config);
-  if (lintBlockers.length > 0) {
-    const message = lintBlockers.map((finding) => `[${finding.issue}] ${finding.detail}`).join("\n");
-    throw new UsageError(
-      `Proposal ${id} failed lint:\n${message}`,
-      "INVALID_PROPOSAL",
-      "Fix or explicitly suppress the reported lint findings, then retry.",
-    );
-  }
-  const refIdentity = proposalRefIdentity(proposalToValidate.ref);
+  const stampedContent = preflight.stampedContent;
+  const proposalForPreflight = preflight.proposal;
+  const refIdentity = proposalRefIdentity(proposalForPreflight.ref);
   const proposalForMutation: Proposal =
     refIdentity?.bundle === undefined
-      ? { ...proposalToValidate, ref: `${target.source.name}//${refIdentity?.conceptId ?? ""}` }
-      : proposalToValidate;
+      ? { ...proposalForPreflight, ref: `${target.source.name}//${refIdentity?.conceptId ?? ""}` }
+      : proposalForPreflight;
   const transaction = prepareProposalTransaction(
     stashDir,
     mutationTarget,

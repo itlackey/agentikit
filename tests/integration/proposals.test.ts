@@ -27,6 +27,7 @@ import {
 } from "../../src/commands/proposal/repository";
 import { validateProposal } from "../../src/commands/proposal/validators/proposals";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
+import { checkUnquotedDescriptionColon } from "../../src/core/asset/frontmatter-lint";
 import type { AkmConfig } from "../../src/core/config/config";
 import { UsageError } from "../../src/core/errors";
 import { readEvents } from "../../src/core/events";
@@ -188,6 +189,29 @@ describe("createProposal / listProposals / getProposal", () => {
     expect(fs.existsSync(path.join(stash, "lessons", `${slug}.md`))).toBe(false);
     expect(getProposal(stash, createdResult.id).status).toBe("pending");
     expect(readEvents({ type: "promoted" }).events).toHaveLength(0);
+  });
+
+  test("promotes a long quoted colon description after provenance serialization wraps it", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const description =
+      "A long proposal description: this remains a valid quoted YAML scalar even when provenance stamping wraps it across physical lines.";
+    const content = `---\ntype: lesson\ndescription: ${JSON.stringify(description)}\nwhen_to_use: Testing wrapped quoted descriptions\n---\n\nUseful body.\n`;
+    const createdResult = createProposal(stash, {
+      ref: "lessons/wrapped-quoted-description",
+      source: "reflect",
+      force: true,
+      payload: { content },
+    });
+    if (isProposalSkipped(createdResult)) throw new Error("unexpected skip");
+
+    expect(akmProposalShow({ stashDir: stash, id: createdResult.id, config }).validation.ok).toBe(true);
+    const accepted = await akmProposalAccept({ stashDir: stash, id: createdResult.id, config });
+    const written = fs.readFileSync(accepted.assetPath, "utf8");
+    const parsed = parseFrontmatter(written);
+
+    expect(parsed.data.description).toBe(description);
+    expect(checkUnquotedDescriptionColon(parsed.frontmatter)).toBeNull();
   });
 
   test("reject path: archive contains entry, status rejected, rejected event emitted", async () => {

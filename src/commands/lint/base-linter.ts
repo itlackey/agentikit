@@ -38,28 +38,13 @@ import path from "node:path";
 import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
 import { BUNDLE_REF_RE } from "../../core/asset/asset-ref";
 import { spliceFrontmatterLine } from "../../core/asset/frontmatter";
+import { checkUnquotedDescriptionColon } from "../../core/asset/frontmatter-lint";
 import { typeNameFromConceptId } from "../../core/asset/resolve-ref";
 import { localDateStamp } from "../../core/common";
 import { findFenceRegions } from "./markdown-insertion";
 import type { LintContext, LintIssue } from "./types";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function checkUnquotedColon(frontmatterText: string | null): string | null {
-  if (!frontmatterText) return null;
-  for (const line of frontmatterText.split(/\r?\n/)) {
-    const match = line.match(/^description:\s*(.*)/);
-    if (!match) continue;
-    const value = match[1]!.trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      return null;
-    }
-    if (value.includes(":")) {
-      return `description value contains unquoted colon: ${value}`;
-    }
-  }
-  return null;
-}
 
 function fixUnquotedColon(raw: string): string {
   const lines = raw.split(/\r?\n/);
@@ -495,7 +480,7 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
 
   // ── 1. unquoted-colon ──────────────────────────────────────────────────
   if (shouldRun("unquoted-colon")) {
-    const unquotedColonDetail = checkUnquotedColon(ctx.frontmatter);
+    const unquotedColonDetail = checkUnquotedDescriptionColon(ctx.frontmatter);
     if (unquotedColonDetail) {
       if (ctx.fix) {
         currentRaw = fixUnquotedColon(currentRaw);
