@@ -43,6 +43,12 @@ describe("space-separated global output flags on raw command leaves", () => {
     expect(args.prompt).toBe("review the change");
   });
 
+  test("agent parses the opt-in stdin prompt flag", () => {
+    const args = parseLeaf(agentCommand, ["--prompt-stdin"]);
+
+    expect(args["prompt-stdin"]).toBe(true);
+  });
+
   test("tasks run consumes the format value instead of treating it as the task id", () => {
     const args = parseLeaf(tasksRunCommand, ["--format", "md", "nightly"]);
 

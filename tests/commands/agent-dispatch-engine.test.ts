@@ -52,4 +52,23 @@ describe("akmAgentDispatch engine capability", () => {
       }),
     ).rejects.toBeInstanceOf(UsageError);
   });
+
+  test("returns one structured envelope for a normal runner failure", async () => {
+    const result = await akmAgentDispatch({
+      engine: "test-agent",
+      prompt: "hello",
+      agentConfig: {
+        configVersion: "0.9.0",
+        semanticSearchMode: "auto",
+        engines: {
+          "test-agent": { kind: "agent", platform: "aider", bin: "/bin/false" },
+        },
+        defaults: { engine: "test-agent" },
+      },
+    });
+
+    const parsed = JSON.parse(JSON.stringify(result)) as typeof result;
+    expect(parsed).toMatchObject({ schemaVersion: 2, ok: false, shape: "agent-result" });
+    expect(result).toMatchObject({ schemaVersion: 2, ok: false, shape: "agent-result", exitCode: 1 });
+  });
 });

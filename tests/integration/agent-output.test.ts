@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { readPromptStdin } from "../../src/commands/agent/contribute-cli";
 import { runCliCapture } from "../_helpers/cli";
 import { withEnv } from "../_helpers/sandbox";
 
@@ -82,7 +83,8 @@ describe("--shape agent field projection", () => {
 
     expect(json.hits.length).toBeGreaterThan(0);
     const hit = json.hits[0];
-    const keys = Object.keys(hit!);
+    if (!hit) throw new Error("expected a matching search hit");
+    const keys = Object.keys(hit);
 
     // Must have these agent-essential fields (when present)
     expect(keys).toContain("name");
@@ -303,5 +305,46 @@ describe("--format jsonl", () => {
       expect(parsed).not.toHaveProperty("origin");
       expect(parsed).not.toHaveProperty("whyMatched");
     }
+  });
+
+  test("agent dispatch uses the rendered agent prompt and keeps one JSON result envelope", async () => {
+    const stashDir = makeTempDir("akm-agent-dispatch-stash-");
+    writeFile(
+      path.join(stashDir, "agents", "reviewer.md"),
+      "---\ndescription: Reviewer\n---\nRendered system prompt.\n",
+    );
+    const output = await runCli(
+      stashDir,
+      ["agent", "agents/reviewer", "--prompt", "Review this task.", "--format=json", "-q"],
+      {
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        engines: { test: { kind: "agent", platform: "opencode", bin: "/bin/echo" } },
+        defaults: { engine: "test" },
+      },
+    );
+    const result = JSON.parse(output) as { ok: boolean; stdout: string };
+
+    expect(result.ok).toBe(true);
+    expect(result.stdout).toContain("Rendered system prompt.");
+    expect(result.stdout).toContain("Review this task.");
+  });
+
+  test("agent rejects refs that render as a non-agent asset", async () => {
+    const stashDir = makeTempDir("akm-agent-dispatch-type-stash-");
+    writeFile(path.join(stashDir, "knowledge", "guide.md"), "---\ndescription: Guide\n---\nA guide.\n");
+
+    await expect(
+      runCli(stashDir, ["agent", "knowledge/guide", "--format=json", "-q"], {
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        engines: { test: { kind: "agent", platform: "opencode", bin: "/bin/echo" } },
+        defaults: { engine: "test" },
+      }),
+    ).rejects.toThrow(/expected/);
+  });
+
+  test("prompt-stdin reads the task from stdin when requested", () => {
+    expect(readPromptStdin(() => "task from stdin\n")).toBe("task from stdin\n");
   });
 });
