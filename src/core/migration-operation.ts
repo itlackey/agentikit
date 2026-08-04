@@ -37,6 +37,23 @@ export function getMigrationApplyJournalPath(): string {
   return path.join(getMigrationOperationRoot(), "apply-active.json");
 }
 
+/**
+ * Predictable path for the config `akm migrate apply` auto-generates when no
+ * `--config` is given and the active config still carries the pre-cutover
+ * `stashDir`/`sources[]`/`installed[]` shape (see `config-migrate.ts`'s
+ * `buildMigrationPlan`/`writeGeneratedTargetConfig`). Deliberately NOT the
+ * live `config.json` — the live 0.8 file must stay byte-for-byte untouched
+ * until `publishConfigLast` performs its normal atomic install, so the
+ * generated draft lives here instead, next to the apply/restore sentinels.
+ * Stable across invocations (keyed only by installation id, not a run id) so
+ * a second `migrate apply`/`migrate status` with still no `--config` finds
+ * the same file an operator may have hand-edited (e.g. to add `engines`)
+ * after the first run generated it.
+ */
+export function getMigrationGeneratedConfigPath(): string {
+  return path.join(getMigrationOperationRoot(), "generated-config.json");
+}
+
 export function assertNoPendingMigrationOperation(): void {
   for (const [kind, journalPath] of [
     ["restore", getMigrationRestoreJournalPath()],

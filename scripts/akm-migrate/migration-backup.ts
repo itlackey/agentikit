@@ -28,6 +28,7 @@ import {
 import { acquireMaintenanceActivitySync, withMaintenanceStartBarrier } from "../../src/core/maintenance-barrier";
 import {
   getMigrationApplyJournalPath,
+  getMigrationGeneratedConfigPath,
   getMigrationOperationRoot,
   getMigrationRestoreJournalPath,
 } from "../../src/core/migration-operation";
@@ -110,7 +111,7 @@ export function getMigrationBackupRoot(): string {
   return getMigrationOperationRoot();
 }
 
-export { getMigrationApplyJournalPath, getMigrationRestoreJournalPath };
+export { getMigrationApplyJournalPath, getMigrationGeneratedConfigPath, getMigrationRestoreJournalPath };
 
 export function getMigrationBackupDir(runId?: string): string {
   if (!runId) return getMigrationBackupRoot();

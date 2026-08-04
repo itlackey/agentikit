@@ -70,8 +70,8 @@ enumeration of the whole `proposal` noun group.
 | `akm registry list` | Evolving | |
 | `akm registry add` | Evolving | |
 | `akm registry remove` | Evolving | |
-| `akm migrate status` | Internal | Thin forwarder to the standalone `akm-migrate` tool; `hidden: true` in `--help`. |
-| `akm migrate apply` | Internal | Thin forwarder to the standalone `akm-migrate` tool; `hidden: true` in `--help`. |
+| `akm migrate status` | Internal | Forwards to the standalone `akm-migrate` tool; renders its result through the normal `--format` pipeline (not exempt — see below). Listed (not hidden) in `--help`/completions. |
+| `akm migrate apply` | Internal | Forwards to the standalone `akm-migrate` tool; renders its result through the normal `--format` pipeline (not exempt — see below). Listed (not hidden) in `--help`/completions. |
 | `akm config path` | Stable | |
 | `akm config list` | Stable | |
 | `akm config get` | Stable | |
@@ -190,16 +190,23 @@ enumeration of the whole `proposal` noun group.
   `--shape` (`human|agent|summary`) is the output-projection axis (see
   Experimental). A small set of commands is **format-exempt** because their
   output is not a result envelope at all: `completions` (shell script source),
-  child-process passthrough in `env run` / `secret run` / `migrate` (`status`
-  and `apply` both spawn the
-  standalone `akm-migrate` tool), a bare-path payload from `env path`, and
-  document payloads from `help` (bare, `help agents`, and `help migrate`). The
-  set is declared in
+  child-process passthrough in `env run` / `secret run`, a bare-path payload
+  from `env path`, and document payloads from `help` (bare, `help agents`, and
+  `help migrate`). The set is declared in
   `src/output/format-exempt.ts`, and
   passing `--format` to one of them warns rather than silently doing something
   else. Scripted `setup` modes emit a normal format-aware result; interactive
   `setup` is a terminal UI and emits no result document. `agent` leaves
   inherited child streams raw and formats its final result envelope.
+  `migrate status`/`apply` both spawn the standalone `akm-migrate` tool but are
+  NOT in the exempt set: `src/commands/migrate-cli.ts` parses the child's
+  final JSON result line and renders it through the same `output()` pipeline
+  (registered shape `src/output/shapes/migrate.ts`, text renderer
+  `src/output/text/migrate.ts`), so all six `--format` values work on them
+  like any other command. Any progress-event lines the child prints during a
+  real `apply` (content migration, proposal-ref repair) still print verbatim,
+  ahead of the formatted result — those are operational logging, not part of
+  the result envelope.
 
   | Exit code | Meaning |
   | --- | --- |

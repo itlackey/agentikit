@@ -26,17 +26,17 @@
 const EXEMPT_COMMANDS: ReadonlySet<string> = new Set([
   // Emits shell completion script source for eval.
   "completions",
-  // Both subcommands (`status`, `apply`) are also a child-process passthrough:
-  // `runMigrationTool` (src/commands/migration-tool.ts) spawns the standalone
-  // `scripts/akm-migrate.ts` tool and writes its stdout/stderr verbatim — the
-  // spawned script always emits its own fixed JSON shape and never consults
-  // `--format`. Found while verifying F1 (D7 B1): the finding's repro list
-  // named `akm migrate status --format text` alongside `secret list` as the
-  // SAME defect (missing text renderer inside `output()`), but `migrate
-  // status`/`apply` never reach `output()` at all, so that fix cannot and
-  // does not change their behavior — this is the `env run`/`secret run`
-  // passthrough pattern, not the generic-text-fallback one.
-  "migrate",
+  // `migrate status`/`apply` used to be exempt here too: `runMigrationTool`
+  // (src/commands/migration-tool.ts) spawns the standalone
+  // `scripts/akm-migrate.ts` tool, which always emitted its own fixed JSON
+  // shape and never consulted `--format`. `src/commands/migrate-cli.ts` now
+  // parses that child's final result line and renders it through the normal
+  // `output()` pipeline (registered shape: `src/output/shapes/migrate.ts`;
+  // text renderer: `src/output/text/migrate.ts`), so both subcommands honour
+  // `--format` like any other command and are no longer listed here. Any
+  // progress-event lines the child prints during a real `apply` still print
+  // verbatim ahead of the formatted result — those are operational logging,
+  // not part of the result envelope, the same way a progress spinner would be.
   // Document payload group: bare `help` prints the sectioned overview,
   // `help migrate <version>` prints release notes, and `help agents` prints
   // the embedded CLI-reference guide (`src/output/cli-hints.ts`) — none of
