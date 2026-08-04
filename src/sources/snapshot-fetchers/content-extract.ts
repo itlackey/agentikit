@@ -4,6 +4,7 @@
 
 import { type HTMLElement, parse } from "node-html-parser";
 import TurndownService from "turndown";
+import { escapeMarkdownStructure } from "./fetcher-util";
 
 /**
  * Main-content extraction and HTML -> Markdown conversion for website snapshots.
@@ -35,26 +36,46 @@ const DANGEROUS_TAG_PATTERNS = DANGEROUS_TAGS.map((tag) => ({
   stray: new RegExp(`<\\/?\\s*${tag}\\b[^>]*>`, "gi"),
 }));
 
-/**
- * Chrome stripped only when falling back to `<body>`. Not applied when a
- * semantic content region matched: a `<nav>` nested inside `<article>` is
- * usually in-article navigation worth keeping.
- */
-const CHROME_TAGS = ["nav", "header", "footer", "aside"] as const;
+const PAGE_CHROME_SELECTORS = ["nav", "header", "footer", "aside"] as const;
 
-/** Content-region selectors in priority order; semantic HTML beats classes. */
+/** Inform-parity classed chrome removed from whichever content region wins. */
+const UNWANTED_CLASS_SELECTORS = [
+  ".nav",
+  ".navigation",
+  ".menu",
+  ".sidebar",
+  ".advertisement",
+  ".ad",
+  ".social",
+  ".share",
+  ".comments",
+  ".related",
+  ".breadcrumb",
+  ".breadcrumbs",
+  ".cookie-notice",
+  ".popup",
+  ".modal",
+  ".overlay",
+] as const;
+
+/** Content-region selectors in priority order; narrow regions beat app shells. */
 const CONTENT_SELECTORS = [
+  ".markdown-body",
+  ".article-content",
+  ".entry-content",
+  ".post-content",
+  ".docs-content",
+  ".main-content",
+  "#docs-content",
+  "#main-content",
+  '[role="main"]',
   "main",
   "article",
-  '[role="main"]',
   "#content",
-  "#main-content",
-  "#docs-content",
-  ".markdown-body",
-  ".main-content",
-  ".docs-content",
   ".content",
 ] as const;
+
+const ARTICLE_METADATA_SELECTORS = new Set([".article-content", ".entry-content", ".post-content"]);
 
 /**
  * Remove raw-text blocks textually, BEFORE the DOM parse.
@@ -80,6 +101,77 @@ function stripDangerousNodes(root: HTMLElement): void {
   for (const tag of DANGEROUS_TAGS) {
     for (const node of root.querySelectorAll(tag)) node.remove();
   }
+}
+
+function isExplicitlyHidden(node: HTMLElement): boolean {
+  if (node.hasAttribute("hidden") || node.hasAttribute("inert")) return true;
+  if (node.getAttribute("aria-hidden")?.toLowerCase() === "true") return true;
+  const style = node.getAttribute("style")?.toLowerCase();
+  if (!style) return false;
+  return style.split(";").some((declaration) => {
+    const [property, value] = declaration.split(":", 2).map((part) => part?.trim());
+    return (
+      (property === "display" && value?.startsWith("none")) ||
+      (property === "visibility" && value?.startsWith("hidden"))
+    );
+  });
+}
+
+function isHiddenRegion(node: HTMLElement): boolean {
+  let current: HTMLElement | null = node;
+  while (current) {
+    if (isExplicitlyHidden(current)) return true;
+    const parentNode = current.parentNode as HTMLElement | null;
+    current = parentNode && typeof parentNode.tagName === "string" ? parentNode : null;
+  }
+  return false;
+}
+
+function isInUnwantedRegion(node: HTMLElement): boolean {
+  let current: HTMLElement | null = node;
+  while (current) {
+    const tagName = current.tagName.toLowerCase();
+    if (PAGE_CHROME_SELECTORS.some((selector) => selector === tagName)) return true;
+    const classes = new Set((current.getAttribute("class") ?? "").split(/\s+/).filter(Boolean));
+    if (UNWANTED_CLASS_SELECTORS.some((selector) => classes.has(selector.slice(1)))) return true;
+    const parentNode = current.parentNode as HTMLElement | null;
+    current = parentNode && typeof parentNode.tagName === "string" ? parentNode : null;
+  }
+  return false;
+}
+
+function stripUnwantedNodes(root: HTMLElement, preserveSemanticChrome = false): void {
+  for (const node of root.querySelectorAll("*")) {
+    if (isExplicitlyHidden(node)) node.remove();
+  }
+  for (const selector of PAGE_CHROME_SELECTORS) {
+    if (preserveSemanticChrome && selector !== "nav") continue;
+    for (const node of root.querySelectorAll(selector)) {
+      node.remove();
+    }
+  }
+  for (const selector of UNWANTED_CLASS_SELECTORS) {
+    for (const node of root.querySelectorAll(selector)) node.remove();
+  }
+}
+
+function enclosingArticle(node: HTMLElement): HTMLElement | null {
+  let current: HTMLElement | null = node;
+  while (current) {
+    if (typeof current.tagName === "string" && current.tagName.toLowerCase() === "article") return current;
+    const parentNode: HTMLElement | null = current.parentNode as HTMLElement | null;
+    current = parentNode && typeof parentNode.tagName === "string" ? parentNode : null;
+  }
+  return null;
+}
+
+function hasMatchingAncestor(candidate: HTMLElement, matches: Set<HTMLElement>): boolean {
+  let current = candidate.parentNode as HTMLElement | null;
+  while (current && typeof current.tagName === "string") {
+    if (matches.has(current)) return true;
+    current = current.parentNode as HTMLElement | null;
+  }
+  return false;
 }
 
 /** True for the only link schemes we will emit into agent-facing markdown. */
@@ -155,10 +247,11 @@ function exceedsNestingBudget(html: string): boolean {
 
 /** Last-resort conversion when the document is too deep to parse safely. */
 function plainTextFallback(html: string): string {
-  return scrubDangerousMarkup(html)
+  const text = scrubDangerousMarkup(html)
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  return escapeMarkdownStructure(text.replace(/([\\[\]`])/g, "\\$1"));
 }
 
 /**
@@ -173,20 +266,32 @@ function plainTextFallback(html: string): string {
  */
 function selectMainContentFromRoot(root: HTMLElement): string {
   for (const selector of CONTENT_SELECTORS) {
-    const match = root.querySelector(selector);
+    const candidates = root
+      .querySelectorAll(selector)
+      .filter((match) => match.textContent.trim() && !isHiddenRegion(match) && !isInUnwantedRegion(match));
+    const candidateSet = new Set(candidates);
+    const matches = candidates.filter((match) => !hasMatchingAncestor(match, candidateSet));
+    // Repeated cards/articles usually form a listing. Let a broader primary
+    // container (or the body fallback) retain all of them instead of silently
+    // truncating the page to the first match.
+    if (matches.length > 1) continue;
+    const match = matches[0];
     // Ignore a region that matched structurally but carries no prose — a
     // decorative wrapper should not shadow the real content below it.
-    if (match && match.textContent.trim()) return match.toString();
+    if (match) {
+      const region = ARTICLE_METADATA_SELECTORS.has(selector) ? (enclosingArticle(match) ?? match) : match;
+      stripUnwantedNodes(region, true);
+      if (region.textContent.trim()) return region.toString();
+    }
   }
 
   const body = root.querySelector("body");
   if (body) {
-    for (const tag of CHROME_TAGS) {
-      for (const node of body.querySelectorAll(tag)) node.remove();
-    }
+    stripUnwantedNodes(body);
     if (body.textContent.trim()) return body.toString();
   }
 
+  stripUnwantedNodes(root);
   return root.toString();
 }
 
@@ -263,6 +368,101 @@ function createTurndown(pageUrl: string): TurndownService {
       const resolved = resolveEmittableUrl(src, pageUrl);
       return resolved ? `![${alt}](${markdownDestination(resolved)})` : alt;
     },
+  });
+
+  const tableSupport = new WeakMap<Node, boolean>();
+  const tableFor = (node: Node): Element | null => {
+    let current: Node | null = node;
+    while (current) {
+      if (current.nodeName === "TABLE") return current as Element;
+      current = current.parentNode;
+    }
+    return null;
+  };
+  const cellsFor = (row: Element): Element[] =>
+    Array.from(row.childNodes).filter(
+      (child): child is ChildNode & Element => child.nodeName === "TH" || child.nodeName === "TD",
+    );
+  const hasUnsupportedSpan = (cell: Element): boolean => {
+    const colspan = cell.getAttribute("colspan");
+    const rowspan = cell.getAttribute("rowspan");
+    return (colspan !== null && colspan !== "1") || (rowspan !== null && rowspan !== "1");
+  };
+  const isSupportedTable = (table: Element): boolean => {
+    const cached = tableSupport.get(table);
+    if (cached !== undefined) return cached;
+    const hasAncestorTable = table.parentNode !== null && tableFor(table.parentNode) !== null;
+    let ancestor = table.parentNode;
+    while (ancestor) {
+      if (ancestor.nodeName === "TABLE") {
+        tableSupport.set(table, false);
+        return false;
+      }
+      ancestor = ancestor.parentNode;
+    }
+    const rows: Element[] = [];
+    let hasCaption = false;
+    let hasNestedTable = false;
+    const visit = (node: Node): void => {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeName === "TABLE") {
+          hasNestedTable = true;
+          continue;
+        }
+        if (child.nodeName === "CAPTION") hasCaption = true;
+        if (child.nodeName === "TR") rows.push(child as ChildNode & Element);
+        visit(child);
+      }
+    };
+    visit(table);
+    const firstCells = rows[0] ? cellsFor(rows[0]) : [];
+    const supported =
+      rows.length > 0 &&
+      !hasAncestorTable &&
+      !hasCaption &&
+      !hasNestedTable &&
+      firstCells.length > 0 &&
+      firstCells.every((cell) => cell.nodeName === "TH" && !hasUnsupportedSpan(cell)) &&
+      rows.slice(1).every((row) => {
+        const cells = cellsFor(row);
+        return (
+          cells.length === firstCells.length &&
+          cells.every((cell) => cell.nodeName === "TD" && !hasUnsupportedSpan(cell))
+        );
+      });
+    tableSupport.set(table, supported);
+    return supported;
+  };
+  const isInSupportedTable = (node: Node): boolean => {
+    const table = tableFor(node);
+    return table !== null && isSupportedTable(table);
+  };
+
+  service.addRule("tableCell", {
+    filter: (node: Node): boolean => (node.nodeName === "TH" || node.nodeName === "TD") && isInSupportedTable(node),
+    replacement: (content: string): string => {
+      const cell = content
+        .replace(/\|/g, "\\|")
+        .replace(/\r?\n+/g, " ")
+        .trim();
+      return ` ${cell} |`;
+    },
+  });
+
+  service.addRule("tableRow", {
+    filter: (node: Node): boolean => node.nodeName === "TR" && isInSupportedTable(node),
+    replacement: (content: string, node: Node): string => {
+      const cells = Array.from(node.childNodes).filter((child) => child.nodeName === "TH" || child.nodeName === "TD");
+      if (cells.length === 0) return "";
+      const row = `|${content.trimEnd()}\n`;
+      const isHeader = cells.every((cell) => cell.nodeName === "TH");
+      return isHeader ? `${row}|${cells.map(() => " --- |").join("")}\n` : row;
+    },
+  });
+
+  service.addRule("table", {
+    filter: (node: Node): boolean => node.nodeName === "TABLE" && isInSupportedTable(node),
+    replacement: (content: string): string => `\n\n${content.trim().replace(/\n\s*\n/g, "\n")}\n\n`,
   });
 
   return service;

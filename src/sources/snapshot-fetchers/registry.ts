@@ -7,6 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { warn } from "../../core/warn";
 import blueskyFetcher from "./bluesky";
+import githubFetcher from "./github";
 import rssFetcher from "./rss";
 import type { WikiSnapshotFetcher } from "./types";
 import xFetcher from "./x";
@@ -20,7 +21,13 @@ const FETCHER_FILE_PATTERN = /\.(?:ts|js|mjs)$/i;
  * generic RSS fetcher, whose `matches` is path-shaped and deliberately loose.
  * Any fetcher returning null falls through to the generic website crawler.
  */
-const BUILTIN_FETCHERS: readonly WikiSnapshotFetcher[] = [youtubeFetcher, blueskyFetcher, xFetcher, rssFetcher];
+const BUILTIN_FETCHERS: readonly WikiSnapshotFetcher[] = [
+  githubFetcher,
+  youtubeFetcher,
+  blueskyFetcher,
+  xFetcher,
+  rssFetcher,
+];
 
 function isWikiSnapshotFetcher(value: unknown): value is WikiSnapshotFetcher {
   if (!value || typeof value !== "object") return false;

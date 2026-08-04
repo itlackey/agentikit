@@ -257,7 +257,7 @@ const rssFetcher: WikiSnapshotFetcher = {
     // Full SSRF guard chain: a feed URL is caller-supplied, and without
     // manual redirect handling a public host can bounce the request into the
     // private network with no revalidation.
-    const response = await fetchGuardedResponse(
+    const { response, finalUrl } = await fetchGuardedResponse(
       url.toString(),
       {
         headers: {
@@ -268,7 +268,10 @@ const rssFetcher: WikiSnapshotFetcher = {
       },
       { timeoutMs: context.timeoutMs, retries: 1, allowPrivateHosts: context.allowPrivateHosts },
     );
-    if (!response.ok) return null;
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return null;
+    }
 
     let body: string;
     try {
@@ -284,15 +287,16 @@ const rssFetcher: WikiSnapshotFetcher = {
     }
 
     if (!looksLikeFeed(body)) return null;
-    const feed = parseFeed(body, DEFAULT_ITEM_LIMIT, url.toString());
+    const resolvedUrl = new URL(finalUrl);
+    const feed = parseFeed(body, DEFAULT_ITEM_LIMIT, resolvedUrl.toString());
     if (!feed || feed.items.length === 0) return null;
 
     return {
-      url: url.toString(),
-      title: feed.title || url.hostname,
-      markdown: renderMarkdown(feed, url),
-      preferredName: preferredNameFor(url),
-      tags: ["rss", "feed", url.hostname],
+      url: resolvedUrl.toString(),
+      title: feed.title || resolvedUrl.hostname,
+      markdown: renderMarkdown(feed, resolvedUrl),
+      preferredName: preferredNameFor(resolvedUrl),
+      tags: ["rss", "feed", resolvedUrl.hostname],
     };
   },
 };

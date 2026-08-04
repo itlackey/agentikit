@@ -394,6 +394,7 @@ export async function fetchWithTimeout(
     }
   }
   try {
+    if (controller.signal.aborted) throw controller.signal.reason ?? new Error(`Request aborted: ${url}`);
     return await fetch(url, { ...opts, signal: controller.signal });
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
@@ -425,10 +426,11 @@ export async function fetchWithRetry(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const response = await fetchWithTimeout(url, init, timeout);
+      const response = await fetchWithTimeout(url, init, timeout, init?.signal ?? undefined);
       if (attempt < maxRetries && shouldRetry(response.status)) {
         const retryAfter = parseRetryAfter(response);
         const delay = retryAfter ?? baseDelay * 2 ** attempt * (0.5 + Math.random() * 0.5);
+        await response.body?.cancel().catch(() => undefined);
         await abortableDelay(delay, init?.signal);
         continue;
       }

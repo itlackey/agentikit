@@ -19,7 +19,7 @@ function readGithubTokenFromEnv(): string | undefined {
 }
 
 function readGithubTokenFromGhCli(): string | undefined {
-  const result = childProcess.spawnSync("gh", ["auth", "token"], {
+  const result = childProcess.spawnSync("gh", ["auth", "token", "--hostname", "github.com"], {
     encoding: "utf8",
     timeout: 5_000,
     stdio: ["ignore", "pipe", "ignore"],

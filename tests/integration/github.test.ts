@@ -38,7 +38,7 @@ describe("githubHeaders", () => {
     delete process.env.GITHUB_TOKEN;
     delete process.env.GH_TOKEN;
     // Without this mock, githubHeaders() falls through to a REAL
-    // `spawnSync("gh", ["auth", "token"])`. A synchronous spawn blocks the
+    // `spawnSync("gh", ["auth", "token", "--hostname", "github.com"])`. A synchronous spawn blocks the
     // whole runtime, so a stalled `gh` freezes the shard past every JS-level
     // timeout (2026-07-02 release run: 2×300s hard-kills started at this test).
     spyOn(childProcess, "spawnSync").mockReturnValue({ status: 1, stdout: "" } as never);
@@ -105,7 +105,7 @@ describe("githubHeaders", () => {
     } as never);
     const headers = githubHeaders() as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer gho_cli_token");
-    expect(spawnSyncSpy).toHaveBeenCalledWith("gh", ["auth", "token"], {
+    expect(spawnSyncSpy).toHaveBeenCalledWith("gh", ["auth", "token", "--hostname", "github.com"], {
       encoding: "utf8",
       timeout: 5000,
       stdio: ["ignore", "pipe", "ignore"],

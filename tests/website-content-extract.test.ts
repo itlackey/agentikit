@@ -99,6 +99,174 @@ describe("content region selection", () => {
     expect(html).toContain("Real content lives here.");
     expect(html).not.toContain("Sponsored placement");
   });
+
+  test("a narrow markdown body wins over a repository application main", () => {
+    const html = `<html><body><main>
+      <nav>Code Issues Pull requests Actions</nav>
+      <div class="repository-toolbar">Branch picker and file controls</div>
+      <article class="markdown-body"><h1>AirLLM</h1><p>The actual README.</p></article>
+      <div>Footer-like repository controls</div>
+    </main></body></html>`;
+    const md = htmlToMarkdown(html, "https://github.com/example/airllm");
+    expect(md).toContain("# AirLLM");
+    expect(md).toContain("The actual README.");
+    expect(md).not.toContain("Pull requests");
+    expect(md).not.toContain("repository controls");
+  });
+
+  test("a narrow markdown body wins over broad id-based content", () => {
+    const html = `<html><body><div id="main-content">
+      <div>Application toolbar</div>
+      <article class="markdown-body"><h1>README</h1><p>Narrow content.</p></article>
+      <div>Application footer controls</div>
+    </div></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("# README");
+    expect(md).toContain("Narrow content.");
+    expect(md).not.toContain("Application toolbar");
+    expect(md).not.toContain("footer controls");
+  });
+
+  test("a markdown body stays narrower than its article wrapper", () => {
+    const html = `<html><body><article>
+      <div>Article toolbar</div>
+      <div class="markdown-body"><h1>README</h1><p>Narrow body.</p></div>
+      <footer>Article wrapper footer</footer>
+    </article></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("Narrow body.");
+    expect(md).not.toContain("Article toolbar");
+    expect(md).not.toContain("wrapper footer");
+  });
+
+  test("an article keeps its own semantic header, footer, and aside", () => {
+    const html = `<html><body><header>Site header</header><article>
+      <header><h1>Post title</h1><p>By Ada</p></header>
+      <div class="article-content"><p>Post body.</p></div>
+      <aside>Key takeaway.</aside>
+      <footer>Updated yesterday.</footer>
+    </article><footer>Site footer</footer></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("# Post title");
+    expect(md).toContain("By Ada");
+    expect(md).toContain("Key takeaway.");
+    expect(md).toContain("Updated yesterday.");
+    expect(md).not.toContain("Site header");
+    expect(md).not.toContain("Site footer");
+  });
+
+  test("article metadata survives when a surrounding main region wins", () => {
+    const html = `<html><body><header>Site header</header><main><article>
+      <header><h1>Post title</h1><p>By Ada</p></header>
+      <p>Post body.</p>
+      <aside>Key takeaway.</aside>
+      <footer>Updated yesterday.</footer>
+    </article></main><footer>Site footer</footer></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("# Post title");
+    expect(md).toContain("By Ada");
+    expect(md).toContain("Key takeaway.");
+    expect(md).toContain("Updated yesterday.");
+    expect(md).not.toContain("Site header");
+    expect(md).not.toContain("Site footer");
+  });
+
+  test("semantic metadata survives directly inside a selected main region", () => {
+    const html = `<html><body><header>Site header</header><main>
+      <header><h1>Document title</h1><p>Maintained by Ada.</p></header>
+      <p>Document body.</p><aside>Important callout.</aside><footer>Updated yesterday.</footer>
+    </main><footer>Site footer</footer></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("# Document title");
+    expect(md).toContain("Maintained by Ada.");
+    expect(md).toContain("Important callout.");
+    expect(md).toContain("Updated yesterday.");
+    expect(md).not.toContain("Site header");
+    expect(md).not.toContain("Site footer");
+  });
+
+  test("unwanted chrome is removed from inside a selected main region", () => {
+    const html = `<html><body><main>
+      <div class="menu">On this page</div>
+      <p>Useful prose.</p>
+      <div class="related">Related stories</div>
+      <div class="cookie-notice">Accept cookies</div>
+    </main></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("Useful prose.");
+    expect(md).not.toContain("On this page");
+    expect(md).not.toContain("Related stories");
+    expect(md).not.toContain("Accept cookies");
+  });
+
+  test("an explicit main region wins over an unrelated article teaser", () => {
+    const html = `<html><body>
+      <article><h2>Unrelated teaser</h2><p>Card copy.</p></article>
+      <main class="main-content"><h1>Actual documentation</h1><p>Primary content.</p></main>
+    </body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("Actual documentation");
+    expect(md).toContain("Primary content.");
+    expect(md).not.toContain("Unrelated teaser");
+  });
+
+  test("repeated article regions retain the complete listing", () => {
+    const html = `<html><body><main>
+      <article><h2>First post</h2></article>
+      <article><h2>Second post</h2></article>
+    </main></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("First post");
+    expect(md).toContain("Second post");
+  });
+
+  test("an empty first narrow region does not hide a later populated match", () => {
+    const html = `<html><body><div class="markdown-body"></div>
+      <div class="markdown-body"><h1>Actual content</h1></div></body></html>`;
+    expect(htmlToMarkdown(html, PAGE_URL)).toContain("# Actual content");
+  });
+
+  test("a hidden narrow region does not override visible main content", () => {
+    const html = `<html><body>
+      <div class="markdown-body" hidden><h1>Forged hidden content</h1></div>
+      <main><h1>Visible content</h1><p>Keep this.</p></main>
+    </body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("# Visible content");
+    expect(md).toContain("Keep this.");
+    expect(md).not.toContain("Forged hidden content");
+  });
+
+  test("an unwanted narrow root does not override visible main content", () => {
+    const html = `<html><body>
+      <div class="markdown-body overlay"><h1>Overlay copy</h1></div>
+      <main><h1>Actual content</h1></main>
+    </body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("# Actual content");
+    expect(md).not.toContain("Overlay copy");
+  });
+
+  test.each([
+    ["unwanted class", '<div class="overlay"><div class="markdown-body">Overlay copy</div></div>'],
+    ["page chrome", '<aside><div class="markdown-body">Sidebar copy</div></aside>'],
+  ])("a narrow region inside %s does not override visible main content", (_label, wrapped) => {
+    const html = `<html><body>${wrapped}<main><h1>Actual content</h1></main></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("# Actual content");
+    expect(md).not.toContain("Overlay copy");
+    expect(md).not.toContain("Sidebar copy");
+  });
+
+  test("nested matches select the outer content region without falling back to body", () => {
+    const html = `<html><body><div>Outside shell</div><main>
+      <p>Outer content.</p><main><p>Inner content.</p></main>
+    </main></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("Outer content.");
+    expect(md).toContain("Inner content.");
+    expect(md).not.toContain("Outside shell");
+  });
 });
 
 describe("dangerous content never reaches markdown", () => {
@@ -211,6 +379,44 @@ describe("markdown fidelity", () => {
     expect(md).toContain("Cell");
   });
 
+  test("a headered table becomes a GFM table", () => {
+    const html = `<html><body><main><table>
+      <thead><tr><th>Name</th><th>Value</th></tr></thead>
+      <tbody><tr><td>alpha</td><td>one</td></tr></tbody>
+    </table></main></body></html>`;
+    const md = htmlToMarkdown(html, PAGE_URL);
+    expect(md).toContain("| Name | Value |");
+    expect(md).toContain("| --- | --- |");
+    expect(md).toContain("| alpha | one |");
+  });
+
+  const unsupportedTables: Array<[string, string, string[]]> = [
+    ["headerless", `<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>`, ["A", "B", "C", "D"]],
+    ["row header", `<table><tr><th>A</th><th>B</th></tr><tr><th>C</th><td>D</td></tr></table>`, ["A", "B", "C", "D"]],
+    [
+      "multiple header rows",
+      `<table><tr><th>A</th><th>B</th></tr><tr><th>C</th><th>D</th></tr><tr><td>E</td><td>F</td></tr></table>`,
+      ["A", "B", "C", "D", "E", "F"],
+    ],
+    ["spanning cell", `<table><tr><th colspan="2">A</th></tr><tr><td>B</td><td>C</td></tr></table>`, ["A", "B", "C"]],
+    [
+      "caption",
+      `<table><caption>Metrics</caption><tr><th>A</th><th>B</th></tr><tr><td>C</td><td>D</td></tr></table>`,
+      ["Metrics", "A", "B", "C", "D"],
+    ],
+    [
+      "nested",
+      `<table><tr><th>A</th><th>B</th></tr><tr><td>C</td><td><table><tr><th>X</th></tr><tr><td>Y</td></tr></table></td></tr></table>`,
+      ["A", "B", "C", "X", "Y"],
+    ],
+  ];
+
+  test.each(unsupportedTables)("an unsupported %s table falls back without malformed GFM", (_label, table, text) => {
+    const md = htmlToMarkdown(`<html><body><main>${table}</main></body></html>`, PAGE_URL);
+    expect(md).not.toContain("| ---");
+    for (const value of text) expect(md).toContain(value);
+  });
+
   test("headings become atx and output has no runs of blank lines", () => {
     const md = htmlToMarkdown(DOCS_LAYOUT, PAGE_URL);
     expect(md).toContain("# Getting started");
@@ -293,6 +499,13 @@ describe("security regressions (found in review)", () => {
       md = htmlToMarkdown(deep, PAGE_URL);
     }).not.toThrow();
     expect(md).toContain("DEEP_CONTENT");
+  });
+
+  test("the deep-markup fallback cannot emit forged Markdown", () => {
+    const deep = `<html><body><main>${"<div>".repeat(20_000)}# FORGED [click](javascript:alert(1))${"</div>".repeat(20_000)}</main></body></html>`;
+    const md = htmlToMarkdown(deep, PAGE_URL);
+    expect(md).not.toMatch(/^# FORGED/);
+    expect(md).not.toMatch(/(?<!\\)\]\(javascript:/);
   });
 
   // LOW: Turndown does not escape `<`, so visible page text written as

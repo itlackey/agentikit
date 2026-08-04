@@ -18,8 +18,9 @@
  */
 export function escapeMarkdownStructure(value: string): string {
   return value
+    .replace(/\r\n?/g, "\n")
     .split("\n")
-    .map((line) => line.replace(/^(\s*)([#>\-*+=]|\d+\.)/, "$1\\$2"))
+    .map((line) => line.replace(/^(\s*)([#>\-*+=~_`]|\d+[.)])/, "$1\\$2"))
     .join("\n");
 }
 

@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   BodyReadTimeoutError,
+  fetchWithRetry,
+  fetchWithTimeout,
   hasErrnoCode,
   isWithin,
   jsonWithByteCap,
@@ -13,7 +15,38 @@ import {
   toPosix,
 } from "../../src/core/common";
 import { writeResponseToFileCapped } from "../../src/runtime";
-import { type Cleanup, sandboxHome, sandboxXdgConfigHome } from "../_helpers/sandbox";
+import { type Cleanup, sandboxHome, sandboxXdgConfigHome, withMockedFetch } from "../_helpers/sandbox";
+
+describe("fetchWithTimeout", () => {
+  test("preserves the reason from an already-aborted caller signal", async () => {
+    const controller = new AbortController();
+    const reason = new Error("caller cancelled");
+    controller.abort(reason);
+    await expect(fetchWithTimeout("https://example.invalid", undefined, 1_000, controller.signal)).rejects.toBe(reason);
+  });
+
+  test("cancels a retryable response body before retrying", async () => {
+    let calls = 0;
+    let cancelled = false;
+    const response = await withMockedFetch(
+      () => fetchWithRetry("https://example.invalid", undefined, { retries: 1, baseDelay: 0 }),
+      async () => {
+        calls += 1;
+        if (calls > 1) return new Response("ok");
+        return new Response(
+          new ReadableStream({
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 503 },
+        );
+      },
+    );
+    expect(await response.text()).toBe("ok");
+    expect(cancelled).toBe(true);
+  });
+});
 
 // ── resolveStashDir ──────────────────────────────────────────────────────────
 

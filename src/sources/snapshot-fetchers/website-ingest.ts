@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   fetchWithRetry,
+  isWithin,
   ResponseTooLargeError,
   readBodyWithByteCap,
   resolveStashDir,
@@ -19,12 +20,12 @@ import { warn, warnVerbose } from "../../core/warn";
 import { withFreshnessCache } from "../freshness";
 import { sanitizeString } from "../providers/provider-utils";
 import { htmlToMarkdownAndLinks } from "./content-extract";
+import { escapeMarkdownStructure } from "./fetcher-util";
 import {
   assertResolvedHostAllowed,
   assertWebsiteRequestUrl,
   type HostnameResolver,
   isLoopbackWebsiteHostname,
-  type WebsiteUrlErrorCtor,
 } from "./host-guard";
 import { loadWikiSnapshotFetchers } from "./registry";
 import {
@@ -224,6 +225,7 @@ export async function ensureWebsiteMirror(
     refresh: async () => {
       fs.mkdirSync(cachePaths.rootDir, { recursive: true });
       await scrapeWebsiteToStash(normalizedUrl, cachePaths.stashDir, {
+        fetcherStashDir: resolveFetcherStashDir(),
         maxPages: coercePositiveInt(config.options?.maxPages, MAX_PAGES_DEFAULT),
         maxDepth: coercePositiveInt(config.options?.maxDepth, MAX_DEPTH_DEFAULT),
         respectRobots: coerceRespectRobots(config.options?.respectRobots),
@@ -251,11 +253,13 @@ function hasExtractedSite(stashDir: string): boolean {
   try {
     const knowledgeDir = path.join(stashDir, "knowledge");
     if (!fs.statSync(stashDir).isDirectory() || !fs.statSync(knowledgeDir).isDirectory()) return false;
-    for (const entry of fs.readdirSync(knowledgeDir, { withFileTypes: true })) {
-      if (entry.isFile() && entry.name.endsWith(".md")) return true;
-      if (entry.isDirectory()) {
-        const subEntries = fs.readdirSync(path.join(knowledgeDir, entry.name));
-        if (subEntries.some((e) => e.endsWith(".md"))) return true;
+    const pending = [knowledgeDir];
+    while (pending.length > 0) {
+      const dir = pending.pop();
+      if (!dir) break;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith(".md")) return true;
+        if (entry.isDirectory()) pending.push(path.join(dir, entry.name));
       }
     }
     return false;
@@ -281,6 +285,7 @@ async function dispatchSnapshotFetchers(
       const snapshot = await fetcher.fetch(parsed, context);
       if (snapshot) return snapshot;
     } catch (error) {
+      if (context.signal?.aborted) throw error;
       warn(
         "[akm] snapshot fetcher %s threw on %s: %s",
         fetcher.name,
@@ -298,7 +303,7 @@ async function dispatchSnapshotFetchers(
  */
 async function fetchSnapshotViaRegistry(
   startUrl: string,
-  stashDir: string,
+  stashDir: string | null,
   allowPrivateHosts?: boolean,
   resolveSecret?: SecretResolveFn,
 ): Promise<WikiSnapshotResult | null> {
@@ -309,7 +314,7 @@ async function fetchSnapshotViaRegistry(
     return null;
   }
   const context: FetcherContext = {
-    stashDir,
+    stashDir: stashDir ?? "",
     timeoutMs: 15_000,
     ...(resolveSecret ? { resolveSecret } : {}),
     ...(allowPrivateHosts ? { allowPrivateHosts: true } : {}),
@@ -322,8 +327,11 @@ function writeSnapshotToStash(stashDir: string, snapshot: WikiSnapshotResult): v
   const preferredName = snapshot.preferredName ?? deriveImportPath(snapshot.url);
   const relPath = avoidReservedBasename(preferredName);
   const knowledgeDir = path.join(stashDir, "knowledge");
+  const filePath = path.resolve(knowledgeDir, `${relPath}.md`);
+  if (!isWithin(filePath, knowledgeDir)) {
+    throw new UsageError(`Snapshot fetcher returned an unsafe preferred name: ${JSON.stringify(preferredName)}`);
+  }
   fs.rmSync(stashDir, { recursive: true, force: true });
-  const filePath = path.join(knowledgeDir, `${relPath}.md`);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const slug = relPath.split("/").pop() ?? "index";
   fs.writeFileSync(
@@ -348,6 +356,7 @@ async function scrapeWebsiteToStash(
     wallClockCapMs?: number;
     rawStartUrl?: string;
     resolveSecret?: SecretResolveFn;
+    fetcherStashDir?: string | null;
     /** Hard process cap; `null` disables it. See {@link coerceCrawlTimeoutMs}. */
     crawlTimeoutMs?: number | null;
   },
@@ -356,7 +365,12 @@ async function scrapeWebsiteToStash(
   // Without this, `akm bundle add <feed|profile URL>` reaches only the generic
   // crawler and the RSS/Bluesky/X/YouTube fetchers are unreachable outside the
   // `akm import` path. A fetcher returning null falls through to the crawl.
-  const fetched = await fetchSnapshotViaRegistry(startUrl, stashDir, options.allowPrivateHosts, options.resolveSecret);
+  const fetched = await fetchSnapshotViaRegistry(
+    startUrl,
+    options.fetcherStashDir ?? null,
+    options.allowPrivateHosts,
+    options.resolveSecret,
+  );
   if (fetched) {
     writeSnapshotToStash(stashDir, fetched);
     return;
@@ -401,10 +415,30 @@ export async function fetchWebsiteMarkdownSnapshot(
   const snapshot = await dispatchSnapshotFetchers(parsedUrl, context, stashDir);
   if (snapshot) return websiteMarkdownSnapshotFromResult(snapshot);
 
-  const fetched = await fetchWebsitePage(normalizedUrl, { allowPrivateHosts: options?.allowPrivateHosts });
-  if (!fetched) {
-    throw new UsageError(`No content could be fetched from ${normalizedUrl}`);
+  const fetchedResponse = await fetchWebsiteResponse(normalizedUrl, 0, {
+    allowPrivateHosts: options?.allowPrivateHosts,
+    signal: options?.signal,
+  });
+  const finalUrl = normalizeCrawlUrl(fetchedResponse.finalUrl) ?? normalizedUrl;
+  if (finalUrl !== normalizedUrl) {
+    let redirectedSnapshot: WikiSnapshotResult | null;
+    try {
+      redirectedSnapshot = await dispatchSnapshotFetchers(new URL(finalUrl), context, stashDir);
+    } catch (error) {
+      await fetchedResponse.response.body?.cancel().catch(() => undefined);
+      throw error;
+    }
+    if (redirectedSnapshot) {
+      await fetchedResponse.response.body?.cancel().catch(() => undefined);
+      return websiteMarkdownSnapshotFromResult(redirectedSnapshot);
+    }
   }
+
+  const fetched = await websitePageFromResponse(fetchedResponse, normalizedUrl, {
+    allowPrivateHosts: options?.allowPrivateHosts,
+    signal: options?.signal,
+  });
+  if (!fetched) throw new UsageError(`No content could be fetched from ${normalizedUrl}`);
 
   return websiteMarkdownSnapshotFromResult({
     url: fetched.page.url,
@@ -761,15 +795,31 @@ async function fetchWebsitePage(
   pageUrl: string,
   options?: WebsiteValidationOptions,
 ): Promise<{ page: WebsitePage; links: URL[] } | null> {
-  let response: Response;
+  let fetchedResponse: WebsiteResponse;
   try {
-    response = await fetchWebsiteResponse(pageUrl, 0, options);
+    fetchedResponse = await fetchWebsiteResponse(pageUrl, 0, options);
   } catch (err) {
     if (err instanceof RobotsDisallowedRedirectError) return null;
     throw err;
   }
 
+  return websitePageFromResponse(fetchedResponse, pageUrl, options);
+}
+
+interface WebsiteResponse {
+  response: Response;
+  finalUrl: string;
+}
+
+async function websitePageFromResponse(
+  fetched: WebsiteResponse,
+  pageUrl: string,
+  options?: WebsiteValidationOptions,
+): Promise<{ page: WebsitePage; links: URL[] } | null> {
+  const { response } = fetched;
+
   if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
     if (response.status === 404) return null;
     throw new Error(`Failed to fetch website content (${response.status}) from ${pageUrl}`);
   }
@@ -779,12 +829,13 @@ async function fetchWebsitePage(
   try {
     body = await readBodyWithByteCap(response, WEBSITE_PAGE_BYTE_CAP, {
       bodyTimeoutMs: WEBSITE_PAGE_BODY_TIMEOUT_MS,
+      signal: options?.signal,
     });
   } catch (err) {
     if (err instanceof ResponseTooLargeError) return null;
     throw err;
   }
-  const rawFinalUrl = response.url || pageUrl;
+  const rawFinalUrl = fetched.finalUrl;
   const finalUrl = normalizeCrawlUrl(rawFinalUrl) ?? pageUrl;
   assertWebsiteRequestUrl(finalUrl, Error, options);
 
@@ -804,7 +855,11 @@ async function fetchWebsitePage(
     return null;
   }
 
-  if (contentType.includes("text/html") || contentType.includes("application/xhtml+xml") || looksLikeMarkup(body)) {
+  if (
+    contentType.includes("text/html") ||
+    contentType.includes("application/xhtml+xml") ||
+    (!contentType && looksLikeMarkup(body))
+  ) {
     const title = extractHtmlTitle(body) || new URL(finalUrl).hostname;
     // One parse yields both the content Markdown and the whole-document links.
     const { markdown, links } = htmlToMarkdownAndLinks(body, finalUrl);
@@ -818,7 +873,7 @@ async function fetchWebsitePage(
     page: {
       url: finalUrl,
       title: extractTextTitle(body) || new URL(finalUrl).hostname,
-      markdown: body.trim(),
+      markdown: plainTextToMarkdown(body),
     },
     links: [],
   };
@@ -828,7 +883,7 @@ async function fetchWebsiteResponse(
   pageUrl: string,
   redirectCount = 0,
   options?: WebsiteValidationOptions,
-): Promise<Response> {
+): Promise<WebsiteResponse> {
   assertWebsiteRequestUrl(pageUrl, Error, options);
   // Resolve-then-validate BEFORE connecting: the hostname checks above only
   // catch IP-literal / well-known-name hosts, so a public-looking DNS name that
@@ -850,14 +905,25 @@ async function fetchWebsiteResponse(
 
   if (response.status >= 300 && response.status < 400) {
     if (redirectCount >= WEBSITE_MAX_REDIRECTS) {
+      await response.body?.cancel().catch(() => undefined);
       throw new Error(`Too many redirects while fetching ${pageUrl}`);
     }
     const location = response.headers.get("location");
     if (!location) {
+      await response.body?.cancel().catch(() => undefined);
       throw new Error(`Redirect response from ${pageUrl} did not include a Location header`);
     }
+    await response.body?.cancel().catch(() => undefined);
     const nextUrl = new URL(location, pageUrl).toString();
-    assertWebsiteRequestUrl(nextUrl, Error, options);
+    try {
+      assertWebsiteRequestUrl(nextUrl, Error, options);
+    } catch (error) {
+      if (options?.robots) {
+        warnVerbose("[akm] website crawl: skipping unsafe redirect to %s", nextUrl);
+        throw new RobotsDisallowedRedirectError(nextUrl);
+      }
+      throw error;
+    }
 
     // Robots-check every intermediate redirect hop, not just the pre-redirect
     // queue URL (`crawlWebsite`'s gate) and the FINAL URL (the post-redirect
@@ -893,7 +959,7 @@ async function fetchWebsiteResponse(
     return fetchWebsiteResponse(nextUrl, redirectCount + 1, options);
   }
 
-  return response;
+  return { response, finalUrl: pageUrl };
 }
 
 /**
@@ -916,12 +982,13 @@ export async function loadRobotsTxt(
   await assertResolvedHostAllowed(new URL(robotsUrl).hostname, options);
 
   try {
-    const response = await fetchWebsiteResponse(robotsUrl, 0, options);
+    const { response } = await fetchWebsiteResponse(robotsUrl, 0, options);
 
     if (response.status >= 200 && response.status < 300) {
       try {
         const text = await readBodyWithByteCap(response, ROBOTS_BYTE_CAP, {
           bodyTimeoutMs: ROBOTS_BODY_TIMEOUT_MS,
+          signal: options?.signal,
         });
         return { kind: "body", text };
       } catch (err) {
@@ -938,6 +1005,7 @@ export async function loadRobotsTxt(
     }
 
     if (response.status >= 500 && response.status < 600) {
+      await response.body?.cancel().catch(() => undefined);
       // RFC 9309 §2.3.1.4: an unreachable robots.txt is a full disallow, not
       // an allow-all. `fetchWithRetry` already retried this once, so a
       // transient blip does not trip it.
@@ -951,8 +1019,10 @@ export async function loadRobotsTxt(
     }
 
     // 4xx (404 is the common, silent case), and any other non-2xx/5xx status.
+    await response.body?.cancel().catch(() => undefined);
     return { kind: "unavailable" };
   } catch (err) {
+    if (options?.signal?.aborted) throw err;
     warnVerbose(
       "[akm] failed to fetch robots.txt at %s: %s",
       robotsUrl,
@@ -986,6 +1056,7 @@ export function coerceRespectRobots(value: unknown): boolean {
 
 function buildMarkdownSnapshot(page: WebsitePage, slug: string, tags?: string[]): string {
   const title = sanitizeString(page.title, 200) || slug;
+  const heading = title.replace(/([\\[\]`*_])/g, "\\$1").replace(/<(?=[a-zA-Z/!?])/g, "&lt;");
   const host = sanitizeString(new URL(page.url).hostname, 120);
   const description = sanitizeString(`Website snapshot from ${host}`, 500);
   const content = page.markdown.trim() || `Source: ${page.url}`;
@@ -1004,7 +1075,7 @@ function buildMarkdownSnapshot(page: WebsitePage, slug: string, tags?: string[])
     ...normalizedTags.map((tag) => `  - ${JSON.stringify(tag)}`),
     "---",
     "",
-    `# ${title}`,
+    `# ${heading}`,
     "",
     `Source: ${page.url}`,
     "",
@@ -1145,6 +1216,14 @@ function coercePositiveInt(value: unknown, fallback: number): number {
 
 function looksLikeMarkup(body: string): boolean {
   return /<html[\s>]|<body[\s>]|<\/[a-z][\w:-]*>/i.test(body);
+}
+
+function plainTextToMarkdown(body: string): string {
+  const inlineSafe = body
+    .replace(/\r\n?/g, "\n")
+    .replace(/([\\[\]`])/g, "\\$1")
+    .replace(/<(?=[a-zA-Z/!?])/g, "&lt;");
+  return escapeMarkdownStructure(inlineSafe).trim();
 }
 
 /** True for URL paths that are plainly binary assets, never crawlable pages. */

@@ -15,8 +15,15 @@ import { afterEach, describe, expect, test } from "bun:test";
 import blueskyFetcher, { extractBlueskyHandle } from "../src/sources/snapshot-fetchers/bluesky";
 import rssFetcher, { parseFeed } from "../src/sources/snapshot-fetchers/rss";
 import type { FetcherContext } from "../src/sources/snapshot-fetchers/types";
-import xFetcher, { buildXRssUrl, extractXUsername } from "../src/sources/snapshot-fetchers/x";
-import { withMockedFetch } from "./_helpers/sandbox";
+import { fetchWebsiteMarkdownSnapshot } from "../src/sources/snapshot-fetchers/website-ingest";
+import xFetcher, {
+  buildXRssUrl,
+  extractPublicXArticle,
+  extractXResource,
+  extractXUsername,
+  type XResource,
+} from "../src/sources/snapshot-fetchers/x";
+import { withEnv, withMockedFetch } from "./_helpers/sandbox";
 
 // Hermetic by construction: allowPrivateHosts short-circuits the resolve-then-
 // validate guard, so no test ever performs a real DNS lookup for a .example name.
@@ -164,6 +171,27 @@ describe("RSS fetcher — fetch contract", () => {
     );
     expect(snapshot).toBeNull();
   });
+
+  test("uses a redirected feed URL for relative links and snapshot identity", async () => {
+    const seen: string[] = [];
+    const body = `<feed xmlns="http://www.w3.org/2005/Atom"><title>Moved feed</title><entry>
+      <title>Moved entry</title><link href="items/1"/><summary>Body.</summary></entry></feed>`;
+    const snapshot = await withMockedFetch(
+      () => rssFetcher.fetch(new URL("https://old.example/feed"), CTX),
+      async (input) => {
+        seen.push(input);
+        if (input === "https://old.example/feed") {
+          return new Response("", { status: 302, headers: { location: "https://feeds.example/archive/feed.xml" } });
+        }
+        return xmlResponse(body);
+      },
+    );
+    expect(seen).toEqual(["https://old.example/feed", "https://feeds.example/archive/feed.xml"]);
+    expect(snapshot?.url).toBe("https://feeds.example/archive/feed.xml");
+    expect(snapshot?.markdown).toContain("https://feeds.example/archive/items/1");
+    expect(snapshot?.preferredName).toBe("feeds/feeds.example-archive-feed");
+    expect(snapshot?.tags).toContain("feeds.example");
+  });
 });
 
 describe("Bluesky fetcher — handle extraction", () => {
@@ -269,6 +297,504 @@ describe("X fetcher — username extraction", () => {
   });
 });
 
+describe("X fetcher — resource extraction", () => {
+  const cases: Array<[string, XResource]> = [
+    ["https://x.com/jack/status/20", { kind: "status", postId: "20", usernameHint: "jack" }],
+    ["https://twitter.com/jack/statuses/20", { kind: "status", postId: "20", usernameHint: "jack" }],
+    ["https://x.com/i/status/20", { kind: "status", postId: "20" }],
+    ["https://x.com/i/web/status/20", { kind: "status", postId: "20" }],
+    ["https://x.com/i/article/2083533144993488896", { kind: "article", articleId: "2083533144993488896" }],
+  ];
+
+  test.each(cases)("%s is classified", (href, expected) => {
+    expect(extractXResource(new URL(href))).toEqual(expected);
+  });
+
+  test.each([
+    "https://x.com/jack/status/not-a-number",
+    "https://x.com/i/article/not-a-number",
+    "https://x.com/jack/status/20/photo/1",
+  ])("%s is not a supported X resource", (href) => {
+    expect(extractXResource(new URL(href))).toBeNull();
+  });
+});
+
+describe("X fetcher — posts and Articles", () => {
+  const ARTICLE_POST_ID = "2083540339147567268";
+  const ARTICLE_ID = "2083533144993488896";
+  const serializedXArticle = (options: {
+    postId: string;
+    articleId: string;
+    title: string;
+    body: string;
+    refPrefix?: string;
+  }): string => {
+    const prefix = options.refPrefix ?? "target";
+    const tweetId = Buffer.from(`Tweet:${options.postId}`).toString("base64");
+    const articleResultsId = `${prefix}-article-results`;
+    const articleEntityId = `${prefix}-article-entity`;
+    return [
+      `$R[0]={__id:"client:${tweetId}:article",article_results:$R[1]={__ref:"${articleResultsId}"}};`,
+      `$R[2]={__id:"${articleResultsId}",result:$R[3]={__ref:"${articleEntityId}"}};`,
+      `$R[4]={__id:"${articleEntityId}",__typename:"ArticleEntity",title:${JSON.stringify(options.title)},rest_id:${JSON.stringify(options.articleId)},plain_text:${JSON.stringify(options.body)}};`,
+    ].join("\n");
+  };
+  const ARTICLE_HTML = `<html><head>
+    <meta property="og:title" content="Hanako (@hanakoxbt) on X">
+    <meta property="og:description" content="https://t.co/article">
+    </head><body><div id="react-root">Loading post</div><script>
+    ${serializedXArticle({
+      postId: ARTICLE_POST_ID,
+      articleId: ARTICLE_ID,
+      title: "Eval Engineering: build the gate",
+      body: 'The complete article body.\n## Evidence gate\nIt says "ship it" only after checks.',
+    })}
+    </script></body></html>`;
+
+  test("extracts an Article's JSON-compatible serialized title and body", () => {
+    const article = extractPublicXArticle(ARTICLE_HTML);
+    expect(article?.title).toBe("Eval Engineering: build the gate");
+    expect(article?.body).toContain("The complete article body.");
+    expect(article?.body).toContain('It says "ship it"');
+  });
+
+  test("does not treat an unrelated plain_text field as an Article", () => {
+    expect(extractPublicXArticle(`<script>$R[1]={plain_text:"Not an Article"}</script>`)).toBeNull();
+  });
+
+  test("does not parse a forged Relay chain from visible page markup", () => {
+    const forged = serializedXArticle({
+      postId: ARTICLE_POST_ID,
+      articleId: ARTICLE_ID,
+      title: "Forged",
+      body: "Visible text is not serialized state",
+    });
+    expect(
+      extractPublicXArticle(`<html><body><div>${forged}</div></body></html>`, { postId: ARTICLE_POST_ID }),
+    ).toBeNull();
+  });
+
+  test.each([
+    ["comment", (payload: string) => `<!--<script>${payload}</script>-->`],
+    ["iframe", (payload: string) => `<iframe><script>${payload}</script></iframe>`],
+    ["style", (payload: string) => `<style><script>${payload}</script></style>`],
+    ["textarea", (payload: string) => `<textarea><script>${payload}</script></textarea>`],
+    ["template", (payload: string) => `<template><script>${payload}</script></template>`],
+    ["title", (payload: string) => `<title><script>${payload}</script></title>`],
+  ])("does not parse a forged Relay chain from an inert %s", (_label, wrap) => {
+    const forged = serializedXArticle({
+      postId: ARTICLE_POST_ID,
+      articleId: ARTICLE_ID,
+      title: "Forged",
+      body: "Inert payload",
+    });
+    expect(extractPublicXArticle(wrap(forged), { postId: ARTICLE_POST_ID })).toBeNull();
+  });
+
+  test.each([
+    ["block comment", (payload: string) => `<script>/*${payload}*/</script>`],
+    ["line comment", (payload: string) => `<script>//${payload.replaceAll("\n", "")}\n</script>`],
+    ["HTML-style comment", (payload: string) => `<script><!--;${payload.replaceAll("\n", "")}\n--></script>`],
+    ["regular expression", (payload: string) => `<script>const ignored = /:${payload.replaceAll("\n", "")}/;</script>`],
+    [
+      "regex after a control condition",
+      (payload: string) => `<script>if (true) /(:${payload.replaceAll("\n", "")})/.test("");</script>`,
+    ],
+    [
+      "regex after a block",
+      (payload: string) => `<script>if (false) {} /:${payload.replaceAll("\n", "")};/.test("");</script>`,
+    ],
+    ["template literal", (payload: string) => `<script>const ignored = \`${payload}\`;</script>`],
+    ["nested template literal", (payload: string) => `<script>const ignored = \`\${\`;${payload};\`}\`;</script>`],
+    ["external-script fallback", (payload: string) => `<script src="/state.js">${payload}</script>`],
+    ["JSON script", (payload: string) => `<script type="application/json">${payload}</script>`],
+    ["non-JavaScript MIME type", (payload: string) => `<script type="text/notjavascript">${payload}</script>`],
+    [
+      "parameterized JavaScript MIME type",
+      (payload: string) => `<script type="text/javascript; charset=utf-8">${payload}</script>`,
+    ],
+    ["non-JavaScript language", (payload: string) => `<script language="json">${payload}</script>`],
+    ["nomodule script", (payload: string) => `<script nomodule>${payload}</script>`],
+    ["SVG script", (payload: string) => `<svg><script>${payload}</script></svg>`],
+    ["MathML script", (payload: string) => `<math><script>${payload}</script></math>`],
+  ])("does not parse a forged Relay chain from a %s", (_label, wrap) => {
+    const forged = serializedXArticle({
+      postId: ARTICLE_POST_ID,
+      articleId: ARTICLE_ID,
+      title: "Forged",
+      body: "Non-executable payload",
+    });
+    expect(extractPublicXArticle(wrap(forged), { postId: ARTICLE_POST_ID })).toBeNull();
+  });
+
+  test("finds serialized state after more than 64 unrelated scripts", () => {
+    const preamble = Array.from({ length: 65 }, (_, index) => `<script>window.x${index} = ${index};</script>`).join("");
+    expect(extractPublicXArticle(`${preamble}${ARTICLE_HTML}`, { postId: ARTICLE_POST_ID })?.body).toContain(
+      "The complete article body.",
+    );
+  });
+
+  test("resets JavaScript lexical state between script elements", () => {
+    const malformed = `<script>/* misleading $R[999]</script>`;
+    expect(extractPublicXArticle(`${malformed}${ARTICLE_HTML}`, { postId: ARTICLE_POST_ID })?.body).toContain(
+      "The complete article body.",
+    );
+  });
+
+  test("does not combine an object across script element boundaries", () => {
+    const html = `<script>$R[0]={</script><script>
+      __id:"article",__typename:"ArticleEntity",title:"Forged",rest_id:"${ARTICLE_ID}",plain_text:"Body"};
+    </script>`;
+    expect(extractPublicXArticle(html, { articleId: ARTICLE_ID })).toBeNull();
+  });
+
+  test("rejects string prefixes whose executable property values differ", () => {
+    const html = `<script>$R[0]={__typename:"ArticleEntity",rest_id:"9"+"0",
+      title:"Forged",plain_text:"Prefix"&&"Actual"};</script>`;
+    expect(extractPublicXArticle(html, { articleId: "9" })).toBeNull();
+  });
+
+  test("uses the last duplicate property, matching JavaScript object semantics", () => {
+    const html = `<script>$R[0]={__typename:"ArticleEntity",rest_id:"9",
+      title:"First",title:"Last",plain_text:"Forged",plain_text:"Actual"};</script>`;
+    expect(extractPublicXArticle(html, { articleId: "9" })).toEqual({ title: "Last", body: "Actual" });
+  });
+
+  test("masked markers do not consume the duplicate-candidate budget", () => {
+    const first = `$R[0]={__typename:"ArticleEntity",rest_id:"9",title:"First",plain_text:"First body"};`;
+    const second = `$R[1]={__typename:"ArticleEntity",rest_id:"9",title:"Second",plain_text:"Second body"};`;
+    const decoys = '/*rest_id:"9"*/'.repeat(20);
+    expect(extractPublicXArticle(`<script>${first}${decoys}${second}</script>`, { articleId: "9" })).toBeNull();
+  });
+
+  test("selects the Article attached to the requested post, not a longer unrelated Article", () => {
+    const html = `<script>
+      $R[9]={__id:"unrelated-article-entity",__typename:"ArticleEntity",title:"Unrelated",rest_id:"11",plain_text:"A much longer unrelated body that must not win"};
+      ${serializedXArticle({ postId: ARTICLE_POST_ID, articleId: "10", title: "Target", body: "Target body" })}
+    </script>`;
+    expect(extractPublicXArticle(html, { postId: ARTICLE_POST_ID })).toEqual({
+      title: "Target",
+      body: "Target body",
+    });
+  });
+
+  test("extracts an Article body longer than 64 KiB", () => {
+    const body = "long article ".repeat(6_000);
+    const html = `<script>$R[1]={__id:"long-article-entity",__typename:"ArticleEntity",title:"Long",rest_id:"99",plain_text:${JSON.stringify(body)}};</script>`;
+    expect(extractPublicXArticle(html, { articleId: "99" })?.body).toBe(body.trim());
+  });
+
+  test("a public Article status emits the full Article rather than the loading shell or t.co seed", async () => {
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/hanakoxbt/status/2083540339147567268"), CTX),
+        async () => new Response(ARTICLE_HTML, { headers: { "content-type": "text/html" } }),
+      ),
+    );
+    expect(snapshot?.title).toBe("Eval Engineering: build the gate");
+    expect(snapshot?.markdown).toContain("The complete article body.");
+    expect(snapshot?.markdown).toContain("\\## Evidence gate");
+    expect(snapshot?.markdown).not.toContain("Loading post");
+    expect(snapshot?.markdown).not.toContain("t.co/article");
+    expect(snapshot?.preferredName).toBe("x/hanakoxbt/status/2083540339147567268");
+    expect(snapshot?.tags).toContain("article");
+  });
+
+  test("uses X's canonical redirected username for Article provenance and naming", async () => {
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL(`https://x.com/stale_alias/status/${ARTICLE_POST_ID}`), CTX),
+        async (input) => {
+          if (input.includes("/stale_alias/")) {
+            return new Response("", {
+              status: 302,
+              headers: { location: `https://x.com/hanakoxbt/status/${ARTICLE_POST_ID}` },
+            });
+          }
+          return new Response(ARTICLE_HTML, { headers: { "content-type": "text/html" } });
+        },
+      ),
+    );
+    expect(snapshot?.url).toBe(`https://x.com/hanakoxbt/status/${ARTICLE_POST_ID}`);
+    expect(snapshot?.preferredName).toBe(`x/hanakoxbt/status/${ARTICLE_POST_ID}`);
+  });
+
+  test("rejects public HTML redirected to a different post", async () => {
+    const seen: string[] = [];
+    const otherHtml = `<meta property="og:title" content="Bob (@bob) on X">
+      <meta property="og:description" content="A different post">`;
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/alice/status/123"), CTX),
+        async (input) => {
+          seen.push(input);
+          if (input === "https://x.com/alice/status/123") {
+            return new Response("", { status: 302, headers: { location: "https://x.com/bob/status/456" } });
+          }
+          return new Response(otherHtml, { headers: { "content-type": "text/html" } });
+        },
+      ),
+    );
+    expect(seen).toEqual(["https://x.com/alice/status/123", "https://x.com/bob/status/456"]);
+    expect(snapshot).toBeNull();
+  });
+
+  test("a nested X status snapshot remains a usable fresh website cache", async () => {
+    const { ensureWebsiteMirror } = await import("../src/sources/snapshot-fetchers/website-ingest");
+    let requests = 0;
+    await withMockedFetch(
+      async () => {
+        const config = { url: `https://x.com/hanakoxbt/status/${ARTICLE_POST_ID}` } as never;
+        await ensureWebsiteMirror(config, { allowPrivateHosts: true, force: true, requireStashDir: true });
+        await ensureWebsiteMirror(config, { allowPrivateHosts: true, requireStashDir: true });
+      },
+      async () => {
+        requests += 1;
+        return new Response(ARTICLE_HTML, { headers: { "content-type": "text/html" } });
+      },
+    );
+    expect(requests).toBe(1);
+  });
+
+  test("a direct Article uses public serialized data only when the requested Article id matches", async () => {
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/i/article/2083533144993488896"), CTX),
+        async () => new Response(ARTICLE_HTML, { headers: { "content-type": "text/html" } }),
+      ),
+    );
+    expect(snapshot?.markdown).toContain("The complete article body.");
+    expect(snapshot?.preferredName).toBe("x/article/2083533144993488896");
+  });
+
+  test("a direct Article rejects serialized data for a different Article id", async () => {
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/i/article/999"), CTX),
+        async () => new Response(ARTICLE_HTML, { headers: { "content-type": "text/html" } }),
+      ),
+    );
+    expect(snapshot).toBeNull();
+  });
+
+  test("an ordinary public post works without credentials", async () => {
+    const html = `<html><head><meta property="og:title" content="Jack (@jack) on X">
+      <meta property="og:description" content="I'm shipping &amp; learning"></head><body>Loading</body></html>`;
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/jack/status/20"), CTX),
+        async () => new Response(html, { headers: { "content-type": "text/html" } }),
+      ),
+    );
+    expect(snapshot?.title).toBe("X post by @jack");
+    expect(snapshot?.markdown).toContain("I'm shipping & learning");
+    expect(snapshot?.preferredName).toBe("x/jack/status/20");
+  });
+
+  test("canonicalizes a plural Twitter status path before fetching public HTML", async () => {
+    const seen: string[] = [];
+    const html = `<meta property="og:title" content="Jack (@jack) on X">
+      <meta property="og:description" content="Canonical post">`;
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://twitter.com/jack/statuses/20"), CTX),
+        async (input) => {
+          seen.push(input);
+          return new Response(html, { headers: { "content-type": "text/html" } });
+        },
+      ),
+    );
+    expect(seen).toEqual(["https://x.com/jack/status/20"]);
+    expect(snapshot?.markdown).toContain("Canonical post");
+  });
+
+  test("reads Open Graph metadata with flexible attributes and numeric entities", async () => {
+    const html = `<html><head>
+      <meta content = "Jack (@jack) on X" name = "og:title">
+      <meta content = "Shipping &#35;1 &amp; learning" property = "og:description">
+    </head></html>`;
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/jack/status/20"), CTX),
+        async () => new Response(html, { headers: { "content-type": "text/html" } }),
+      ),
+    );
+    expect(snapshot?.markdown).toContain("Shipping #1 & learning");
+  });
+
+  test("public post text cannot emit raw HTML or an unsafe Markdown destination", async () => {
+    const html = `<html><head><meta property="og:title" content="Mallory (@mallory) on X">
+      <meta property="og:description" content="&lt;img src=x onerror=alert(1)&gt; [click](javascript:alert(1))">
+      </head><body></body></html>`;
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/mallory/status/21"), CTX),
+        async () => new Response(html, { headers: { "content-type": "text/html" } }),
+      ),
+    );
+    expect(snapshot?.markdown).not.toContain("<img");
+    expect(snapshot?.markdown).not.toMatch(/(?<!\\)\]\(javascript:/);
+    expect(snapshot?.markdown).toContain("\\[click\\]");
+  });
+
+  test("serialized Article plain text receives the same Markdown safety encoding", async () => {
+    const html = `<script>${serializedXArticle({
+      postId: ARTICLE_POST_ID,
+      articleId: "22",
+      title: "Unsafe",
+      body: "<img src=x onerror=alert(1)> [click](javascript:alert(1))\r# FORGED\r~~~\r1) item",
+    })}</script>`;
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/hanakoxbt/status/2083540339147567268"), CTX),
+        async () => new Response(html, { headers: { "content-type": "text/html" } }),
+      ),
+    );
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.markdown).not.toContain("<img");
+    expect(snapshot?.markdown).not.toMatch(/(?<!\\)\]\(javascript:/);
+    expect(snapshot?.markdown).not.toMatch(/^# FORGED/m);
+    expect(snapshot?.markdown).not.toMatch(/^~~~/m);
+    expect(snapshot?.markdown).not.toMatch(/^1\) item/m);
+  });
+
+  test("keeps Article metadata readable while escaping its rendered heading", async () => {
+    const html = `<script>${serializedXArticle({
+      postId: ARTICLE_POST_ID,
+      articleId: "23",
+      title: "[Part 1] <T>",
+      body: "Body",
+    })}</script>`;
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () =>
+          fetchWebsiteMarkdownSnapshot(`https://x.com/hanakoxbt/status/${ARTICLE_POST_ID}`, {
+            stashDir: "/nonexistent-akm-test-stash",
+            allowPrivateHosts: true,
+          }),
+        async () => new Response(html, { headers: { "content-type": "text/html" } }),
+      ),
+    );
+    expect(snapshot.title).toBe("[Part 1] <T>");
+    expect(snapshot.content).toContain('title: "[Part 1] <T>"');
+    expect(snapshot.content).toContain("# \\[Part 1\\] &lt;T>");
+  });
+
+  test("exact API lookup uses note_tweet text and never sends the token to the public page", async () => {
+    const token = "EXACT_POST_TOKEN";
+    let publicPageAuthorization = "not-seen";
+    let apiAuthorization = "";
+    let apiUrl = "";
+    const snapshot = await withEnv({ X_BEARER_TOKEN: token, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/alice/status/123"), CTX),
+        async (input, init) => {
+          const authorization = new Headers(init?.headers).get("authorization") ?? "";
+          if (input.startsWith("https://x.com/")) {
+            publicPageAuthorization = authorization;
+            return new Response("", { status: 404 });
+          }
+          apiUrl = input;
+          apiAuthorization = authorization;
+          return jsonResponse({
+            data: {
+              id: "123",
+              author_id: "42",
+              text: "truncated",
+              note_tweet: { text: "The complete long-form post" },
+              created_at: "2025-04-01T10:00:00Z",
+            },
+            includes: { users: [{ id: "42", username: "alice" }] },
+          });
+        },
+      ),
+    );
+    expect(publicPageAuthorization).toBe("");
+    expect(apiAuthorization).toBe(`Bearer ${token}`);
+    expect(apiUrl).toContain("/2/tweets/123?");
+    expect(apiUrl).toContain("note_tweet");
+    expect(snapshot?.markdown).toContain("The complete long-form post");
+    expect(snapshot?.markdown).not.toContain("truncated");
+    expect(JSON.stringify(snapshot)).not.toContain(token);
+  });
+
+  test("an API transport failure falls back to the already-fetched public post", async () => {
+    const html = `<html><head><meta property="og:title" content="Alice (@alice) on X">
+      <meta property="og:description" content="Public fallback text"></head><body></body></html>`;
+    const snapshot = await withEnv({ X_BEARER_TOKEN: "TOKEN", X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/alice/status/123"), CTX),
+        async (input) => {
+          if (input.startsWith("https://x.com/")) {
+            return new Response(html, { headers: { "content-type": "text/html" } });
+          }
+          throw new Error("X API unavailable");
+        },
+      ),
+    );
+    expect(snapshot?.markdown).toContain("Public fallback text");
+    expect(snapshot?.preferredName).toBe("x/alice/status/123");
+  });
+
+  test("rejects a mismatched API post id instead of using it as an output path", async () => {
+    const snapshot = await withEnv({ X_BEARER_TOKEN: "TOKEN", X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/alice/status/123"), CTX),
+        async (input) => {
+          if (input.startsWith("https://x.com/")) return new Response("", { status: 404 });
+          return jsonResponse({ data: { id: "../../outside", text: "unsafe" } });
+        },
+      ),
+    );
+    expect(snapshot).toBeNull();
+  });
+
+  test("drops an invalid API timestamp instead of emitting raw Markdown", async () => {
+    const snapshot = await withEnv({ X_BEARER_TOKEN: "TOKEN", X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL("https://x.com/alice/status/123"), CTX),
+        async (input) => {
+          if (input.startsWith("https://x.com/")) return new Response("", { status: 404 });
+          return jsonResponse({ data: { id: "123", text: "Safe post", created_at: "\n# FORGED <img>" } });
+        },
+      ),
+    );
+    expect(snapshot?.markdown).toBe("Safe post");
+    expect(snapshot?.markdown).not.toContain("FORGED");
+    expect(snapshot?.markdown).not.toContain("<img>");
+  });
+
+  test("reads long ordinary post text only from the requested details object", async () => {
+    const postId = "124";
+    const encodedId = Buffer.from(`Tweet:${postId}`).toString("base64");
+    const text = "long post text ".repeat(700);
+    const html = `<script>$R[1]={__id:"client:${encodedId}:details",full_text:${JSON.stringify(text)}};</script>`;
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL(`https://x.com/alice/status/${postId}`), CTX),
+        async () => new Response(html, { headers: { "content-type": "text/html" } }),
+      ),
+    );
+    expect(snapshot?.markdown).toContain(text.trim());
+  });
+
+  test("does not attribute another Relay object's full_text to the requested post", async () => {
+    const postId = "125";
+    const encodedId = Buffer.from(`Tweet:${postId}`).toString("base64");
+    const html = `<script>
+      $R[1]={__id:"client:${encodedId}:details",display_text_range:[0,0]};
+      $R[2]={__id:"unrelated-details",full_text:"Unrelated post"};
+    </script>`;
+    const snapshot = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => xFetcher.fetch(new URL(`https://x.com/alice/status/${postId}`), CTX),
+        async () => new Response(html, { headers: { "content-type": "text/html" } }),
+      ),
+    );
+    expect(snapshot).toBeNull();
+  });
+});
+
 describe("X fetcher — RSS template fallback", () => {
   test("substitutes {username} and requires http(s)", () => {
     expect(buildXRssUrl("https://nitter.example/{username}/rss", "jack")?.toString()).toBe(
@@ -317,14 +843,22 @@ describe("X fetcher — token handling", () => {
         const url = String(input);
         if (url.includes("/users/by/username/")) return jsonResponse({ data: { id: "42" } });
         if (url.includes("/tweets")) {
-          return jsonResponse({ data: [{ id: "9", text: "hello world", created_at: "2025-04-01T10:00:00Z" }] });
+          return jsonResponse({
+            data: [
+              { id: "9", text: "hello world", created_at: "2025-04-01T10:00:00Z" },
+              { id: "10\n# FORGED", text: "second post", created_at: "invalid" },
+            ],
+          });
         }
         return jsonResponse({}, 404);
       },
     );
 
     expect(sawAuthHeader).toBe(true);
+    expect(snapshot?.title).toBe("X — @jack");
     expect(snapshot?.markdown).toContain("hello world");
+    expect(snapshot?.markdown).toContain("second post");
+    expect(snapshot?.markdown).not.toContain("FORGED");
     expect(snapshot?.preferredName).toBe("x/jack");
     // The token must not leak into any field of the snapshot.
     expect(JSON.stringify(snapshot)).not.toContain(secret);
@@ -338,8 +872,26 @@ describe("X fetcher — token handling", () => {
       () => xFetcher.fetch(new URL("https://x.com/jack"), CTX),
       async () => xmlResponse(RSS2),
     );
+    expect(snapshot?.title).toBe("X — @jack");
     expect(snapshot?.preferredName).toBe("x/jack");
     expect(snapshot?.tags).toContain("twitter");
+    expect(snapshot?.markdown).toContain("First post");
+  });
+
+  test("falls back to the RSS template when the profile API throws", async () => {
+    process.env.X_BEARER_TOKEN = "TOKEN";
+    process.env.X_RSS_TEMPLATE = "https://nitter.example/{username}/rss";
+    let rssRequested = false;
+
+    const snapshot = await withMockedFetch(
+      () => xFetcher.fetch(new URL("https://x.com/jack"), CTX),
+      async (input) => {
+        if (input.startsWith("https://api.x.com/")) throw new Error("X API unavailable");
+        rssRequested = true;
+        return xmlResponse(RSS2);
+      },
+    );
+    expect(rssRequested).toBe(true);
     expect(snapshot?.markdown).toContain("First post");
   });
 });
@@ -365,6 +917,25 @@ describe("security regressions (found in review)", () => {
       ),
     ).rejects.toThrow(/Refusing to fetch/);
     expect(fetched).toBe(false);
+  });
+
+  test("a malformed feed redirect cancels its response body before failing", async () => {
+    let cancelled = false;
+    const response = new Response(
+      new ReadableStream({
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      { status: 302, headers: { location: "http://[" } },
+    );
+    await expect(
+      withMockedFetch(
+        () => rssFetcher.fetch(new URL("https://blog.example/feed"), CTX),
+        async () => response,
+      ),
+    ).rejects.toThrow();
+    expect(cancelled).toBe(true);
   });
 
   // MEDIUM: stripHtml removed tags but kept script/style BODIES, so feed
