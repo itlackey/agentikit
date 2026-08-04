@@ -196,7 +196,7 @@ describe("akmInit (akm bundle create)", () => {
     fs.rmSync(stashDir, { recursive: true, force: true });
     await akmInit({ dir: stashDir });
 
-    const result = akmLint({ dir: stashDir });
+    const result = await akmLint({ dir: stashDir });
     expect(result.flagged).toEqual([]);
     expect(result.summary.flagged).toBe(0);
   });

@@ -280,11 +280,11 @@ describe("checkVaultForDangerousKeys", () => {
 // ── akmLint integration ───────────────────────────────────────────────────────
 
 describe("akmLint dangerous-vault-key integration", () => {
-  test("flags a vault file containing LD_PRELOAD", () => {
+  test("flags a vault file containing LD_PRELOAD", async () => {
     const stashDir = makeTempStash();
     writeVault(stashDir, ".env", "LD_PRELOAD=/evil/lib.so\nSAFE_KEY=ok\n");
 
-    const result = akmLint({ dir: stashDir });
+    const result = await akmLint({ dir: stashDir });
 
     const dangerous = result.flagged.filter((i) => i.issue === "dangerous-env-key");
     expect(dangerous).toHaveLength(1);
@@ -297,7 +297,7 @@ describe("akmLint dangerous-vault-key integration", () => {
     expect(result.summary.flagged).toBeGreaterThan(0);
   });
 
-  test("flags each dangerous key in a vault file separately", () => {
+  test("flags each dangerous key in a vault file separately", async () => {
     const stashDir = makeTempStash();
     writeVault(
       stashDir,
@@ -305,40 +305,40 @@ describe("akmLint dangerous-vault-key integration", () => {
       ["DYLD_INSERT_LIBRARIES=/evil.dylib", "NODE_OPTIONS=--require evil", "SAFE_KEY=fine"].join("\n"),
     );
 
-    const result = akmLint({ dir: stashDir });
+    const result = await akmLint({ dir: stashDir });
 
     const dangerous = result.flagged.filter((i) => i.issue === "dangerous-env-key");
     expect(dangerous).toHaveLength(2);
   });
 
-  test("does not flag a vault file with only safe keys", () => {
+  test("does not flag a vault file with only safe keys", async () => {
     const stashDir = makeTempStash();
     writeVault(stashDir, "clean.env", "API_TOKEN=abc\nDB_URL=postgres://localhost/db\n");
 
-    const result = akmLint({ dir: stashDir });
+    const result = await akmLint({ dir: stashDir });
 
     const dangerous = result.flagged.filter((i) => i.issue === "dangerous-env-key");
     expect(dangerous).toHaveLength(0);
   });
 
-  test("scans multiple vault files in the same stash", () => {
+  test("scans multiple vault files in the same stash", async () => {
     const stashDir = makeTempStash();
     writeVault(stashDir, "prod.env", "LD_PRELOAD=/evil.so\n");
     writeVault(stashDir, "dev.env", "SAFE=ok\n");
     writeVault(stashDir, "staging.env", "PATH=/evil:/usr/bin\n");
 
-    const result = akmLint({ dir: stashDir });
+    const result = await akmLint({ dir: stashDir });
 
     const dangerous = result.flagged.filter((i) => i.issue === "dangerous-env-key");
     // One finding from prod.env (LD_PRELOAD) + one from staging.env (PATH)
     expect(dangerous).toHaveLength(2);
   });
 
-  test("does not produce dangerous-vault-key findings when vaults/ dir is absent", () => {
+  test("does not produce dangerous-vault-key findings when vaults/ dir is absent", async () => {
     const stashDir = makeTempStash();
     // No vaults/ dir at all
 
-    const result = akmLint({ dir: stashDir });
+    const result = await akmLint({ dir: stashDir });
 
     const dangerous = result.flagged.filter((i) => i.issue === "dangerous-env-key");
     expect(dangerous).toHaveLength(0);
@@ -353,13 +353,13 @@ describe("akmLint dangerous-vault-key integration", () => {
     // dot (`secrets/creds.env`) is captured whole rather than truncated.
     const refOf = (detail: string): string | undefined => detail.match(/Ref: (\S+)\.\s/)?.[1];
 
-    test("env asset refs are `env/<name>`, with `.env` mapping to env/default", () => {
+    test("env asset refs are `env/<name>`, with `.env` mapping to env/default", async () => {
       const stashDir = makeTempStash();
       writeVault(stashDir, "prod.env", "LD_PRELOAD=/evil.so\n");
       writeVault(stashDir, ".env", "LD_PRELOAD=/evil.so\n");
 
-      const refs = akmLint({ dir: stashDir })
-        .flagged.filter((i) => i.issue === "dangerous-env-key")
+      const refs = (await akmLint({ dir: stashDir })).flagged
+        .filter((i) => i.issue === "dangerous-env-key")
         .map((i) => refOf(i.detail));
 
       expect(refs).toContain("env/prod");
@@ -367,20 +367,20 @@ describe("akmLint dangerous-vault-key integration", () => {
       for (const ref of refs) expect(ref).not.toContain(":");
     });
 
-    test("secret asset refs are `secrets/<filename>` (extension preserved)", () => {
+    test("secret asset refs are `secrets/<filename>` (extension preserved)", async () => {
       const stashDir = makeTempStash();
       const secretsDir = path.join(stashDir, "secrets");
       fs.mkdirSync(secretsDir, { recursive: true });
       fs.writeFileSync(path.join(secretsDir, "creds.env"), "BASH_ENV=/tmp/x\n", { mode: 0o600 });
 
-      const refs = akmLint({ dir: stashDir })
-        .flagged.filter((i) => i.issue === "dangerous-env-key")
+      const refs = (await akmLint({ dir: stashDir })).flagged
+        .filter((i) => i.issue === "dangerous-env-key")
         .map((i) => refOf(i.detail));
 
       expect(refs).toContain("secrets/creds.env");
     });
 
-    test("refs from non-default bundles include their bundle id", () => {
+    test("refs from non-default bundles include their bundle id", async () => {
       const primary = makeTempStash("akm-lint-primary-");
       const secondary = makeTempStash("akm-lint-secondary-");
       writeVault(primary, "prod.env", "LD_PRELOAD=/primary.so\n");
@@ -391,22 +391,22 @@ describe("akmLint dangerous-vault-key integration", () => {
         bundles: { primary: { path: primary }, team: { path: secondary } },
       };
 
-      const refs = akmLint({ config })
-        .flagged.filter((i) => i.issue === "dangerous-env-key")
+      const refs = (await akmLint({ config })).flagged
+        .filter((i) => i.issue === "dangerous-env-key")
         .map((i) => refOf(i.detail));
 
       expect(refs).toContain("env/prod");
       expect(refs).toContain("team//env/prod");
     });
 
-    test("every emitted ref resolves to a real type through the ref grammar", () => {
+    test("every emitted ref resolves to a real type through the ref grammar", async () => {
       const stashDir = makeTempStash();
       writeVault(stashDir, "prod.env", "LD_PRELOAD=/evil.so\n");
       const secretsDir = path.join(stashDir, "secrets");
       fs.mkdirSync(secretsDir, { recursive: true });
       fs.writeFileSync(path.join(secretsDir, "creds.env"), "BASH_ENV=/tmp/x\n", { mode: 0o600 });
 
-      const findings = akmLint({ dir: stashDir }).flagged.filter((i) => i.issue === "dangerous-env-key");
+      const findings = (await akmLint({ dir: stashDir })).flagged.filter((i) => i.issue === "dangerous-env-key");
       expect(findings.length).toBeGreaterThan(0);
       for (const finding of findings) {
         const ref = refOf(finding.detail);

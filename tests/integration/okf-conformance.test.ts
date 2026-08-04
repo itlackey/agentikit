@@ -177,9 +177,24 @@ describe("OKF first-class conformance", () => {
     expect(fragment.content).not.toContain("Overview body.");
     expect(fragment.ref).toBe("adversarial//unknown");
 
-    const lint = akmLint({ dir: okfRoot });
+    const lint = await akmLint({ dir: okfRoot });
     expect(lint.ok).toBe(true);
-    expect(lint.flagged).toEqual([]);
+    // akm 0.9.0 lint/adapter-dispatch wiring — GAP CLOSURE: `unknown.md`'s
+    // `[Dangling](/missing.md)` link (seeded above) was ALWAYS a broken OKF
+    // link, but the pre-dispatch `akm lint` ran a CLI-only `missing-type`-only
+    // re-implementation for OKF bundles that never checked links at all —
+    // `okfAdapter.validate()`'s own `missing-ref` check (`okf-adapter.ts`) was
+    // unreachable dead code. `akm lint` now runs the real adapter, so this
+    // finding — genuinely present in the fixture the whole time — is reported
+    // (non-blocking, per §5's OKF leniency: consumers tolerate broken links).
+    expect(lint.flagged).toEqual([
+      {
+        file: "unknown.md",
+        issue: "missing-ref",
+        detail: "warning: OKF link target not found: missing (non-blocking, consumers tolerate broken links)",
+        fixed: false,
+      },
+    ]);
 
     await expect(
       writeMarkdownAsset({
@@ -539,58 +554,67 @@ describe("OKF first-class conformance", () => {
     }
   });
 
-  test("OKF lint uses its own diagnostic and keeps findings non-fatal by default", () => {
+  test("OKF lint dispatches to the real okf adapter validate() and keeps findings non-fatal by default", async () => {
     write(okfRoot, "missing-type.md", "---\ntitle: Missing Type\n---\n\nBody.\n");
     write(okfRoot, "uppercase-missing-type.MD", "---\ntitle: Uppercase Missing Type\n---\n\nBody.\n");
     write(okfRoot, "INDEX.MD", "# Reserved structural file\n");
 
-    const result = akmLint({ dir: okfRoot });
+    const result = await akmLint({ dir: okfRoot });
 
     expect(result.ok).toBe(true);
+    // akm 0.9.0 lint/adapter-dispatch wiring: `akm lint` now runs the OKF
+    // bundle through the real `okfAdapter.validate()` (spec §5) instead of a
+    // CLI-only re-implementation — the detail text below is the adapter's own
+    // (`okf-adapter.ts`'s `missing-type` message), not a re-recorded
+    // duplicate of it. This is the same fix that makes `missing-ref` reachable
+    // at all for OKF bundles (see the dedicated gap-closure test below).
     expect(result.flagged).toContainEqual({
       file: "missing-type.md",
       issue: "missing-type",
-      detail: "OKF concepts require parseable mapping frontmatter with a non-empty type.",
+      detail: "info: no frontmatter `type`; defaults to `knowledge` (OKF leniency, non-blocking)",
       fixed: false,
     });
     expect(result.flagged).toContainEqual({
       file: "uppercase-missing-type.MD",
       issue: "missing-type",
-      detail: "OKF concepts require parseable mapping frontmatter with a non-empty type.",
+      detail: "info: no frontmatter `type`; defaults to `knowledge` (OKF leniency, non-blocking)",
       fixed: false,
     });
     expect(result.flagged.some((issue) => issue.file === "INDEX.MD")).toBe(false);
     expect(result.flagged.some((issue) => issue.issue === "missing-name-or-type")).toBe(false);
 
-    const filtered = akmLint({ dir: okfRoot, typeFilter: "memories", fix: true });
+    // `typeFilter`/`fix` are akm-sweep-only options; a non-akm adapter dispatch
+    // (like the old `lintOkfBundle` it replaces) always validates the whole
+    // bundle and never writes.
+    const filtered = await akmLint({ dir: okfRoot, typeFilter: "memories", fix: true });
     expect(filtered.flagged).toContainEqual({
       file: "missing-type.md",
       issue: "missing-type",
-      detail: "OKF concepts require parseable mapping frontmatter with a non-empty type.",
+      detail: "info: no frontmatter `type`; defaults to `knowledge` (OKF leniency, non-blocking)",
       fixed: false,
     });
     expect(fs.existsSync(path.join(okfRoot, "missing-type.md"))).toBe(true);
   });
 
-  test("configured adapter ownership wins over filesystem probing during lint", () => {
+  test("configured adapter ownership wins over filesystem probing during lint", async () => {
     write(okfRoot, "knowledge/native.md", concept("knowledge", "Native", "Native body."));
     configure("akm");
     resetConfigCache();
 
-    const result = akmLint({ dir: okfRoot });
+    const result = await akmLint({ dir: okfRoot });
 
     expect(result.flagged.some((issue) => issue.issue === "missing-updated")).toBe(true);
     expect(result.flagged.some((issue) => issue.issue === "missing-type")).toBe(false);
   });
 
-  test("native lint --fix does not delete an uppercase Markdown memory", () => {
+  test("native lint --fix does not delete an uppercase Markdown memory", async () => {
     const basePath = path.join(okfRoot, "memories", "case-sensitive.MD");
     write(okfRoot, "memories/case-sensitive.MD", "---\ninferenceProcessed: true\nupdated: 2026-07-25\n---\nshort\n");
     write(okfRoot, "memories/case-sensitive.derived.md", concept("memory", "Derived", "Derived body."));
     configure("akm");
     resetConfigCache();
 
-    akmLint({ dir: okfRoot, fix: true });
+    await akmLint({ dir: okfRoot, fix: true });
 
     expect(fs.existsSync(basePath)).toBe(true);
   });
@@ -1005,7 +1029,7 @@ describe("OKF first-class conformance", () => {
       await akmIndex({ stashDir: componentRoot, full: true });
       const shown = await showLocal({ ref: "nested//memories/nested-root" });
       expect(shown.content).toContain("Nested component body.");
-      expect(akmLint().flagged).toEqual([]);
+      expect((await akmLint()).flagged).toEqual([]);
     });
   });
 });

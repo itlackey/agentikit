@@ -15,16 +15,21 @@ import {
   workflowStructureDiagnostics,
 } from "../../core/adapter/adapters/akm-lint";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
+import { adapterForId } from "../../core/adapter/registry";
+import type { Diagnostic } from "../../core/adapter/types";
+import { createValidateContext } from "../../core/adapter/validate-context";
 import { stashDirFor } from "../../core/asset/asset-placement";
-import { parseFrontmatter, parseFrontmatterBlock } from "../../core/asset/frontmatter";
+import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { conceptIdForStashFile, displayRefForConceptId } from "../../core/asset/resolve-ref";
+import { deriveBundleIds } from "../../core/bundle-id";
 import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import { loadConfig, primaryBundlePath } from "../../core/config/config";
-import { resolveSourceEntries } from "../../indexer/search/search-source";
+import type { FileChange } from "../../core/file-change";
+import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import { runBaseChecks } from "./base-linter";
 import { checkEnvForDangerousKeys } from "./env-key-rules";
-import type { LintContext, LintIssue } from "./types";
+import type { LintContext, LintIssue, LintIssueType } from "./types";
 
 // ── Public API types (re-exported for consumers) ──────────────────────────────
 
@@ -89,37 +94,155 @@ function collectMarkdownFiles(dir: string, caseInsensitive = false): string[] {
   return results;
 }
 
-function lintOkfBundle(stashRoot: string): AkmLintResult {
-  const flagged: LintIssue[] = [];
-  for (const filePath of collectMarkdownFiles(stashRoot, true)) {
-    const basename = path.basename(filePath).toLowerCase();
-    if (basename === "index.md" || basename === "log.md") continue;
-    const relPath = path.relative(stashRoot, filePath);
-    let validMappingWithType = false;
+// ── Non-akm adapter dispatch (real `adapter.validate()`, not a re-implementation) ──
+//
+// akm 0.9.0 lint/adapter-dispatch wiring: `akm lint` used to special-case
+// exactly one non-akm adapter (`okf`, via a hand-rolled `missing-type`-only
+// `lintOkfBundle` re-implementation this change deletes) and silently route
+// every OTHER non-akm bundle (llm-wiki, dotenv, claude, opencode,
+// agent-skills, website-snapshot, generic-files, akm-task, akm-workflow)
+// through the AKM-shaped STASH_SUBDIRS sweep — the wrong linter for the wrong
+// format, and the reason those adapters' own `validate()` checks (OKF's
+// `missing-ref`; llm-wiki's `uncited-raw`/`missing-description`/`broken-xref`/
+// `broken-source`) were unreachable dead code. Every bundle is now linted by
+// its OWN configured/detected adapter's `validate()` — the single definition
+// of that format's rules, shared with the (now also wired, advisory-only)
+// change-transaction pre-commit gate in `commands/proposal/repository.ts`.
+// This is intentionally the ONLY branch this module adds: the `akm` sweep
+// below is completely untouched (pinned by the goldens/test suite —
+// CRITICAL: akm findings/`--fix` must not move).
+
+/**
+ * Case-insensitive SUFFIX match against an adapter's declared `extensions`
+ * hint. Deliberately NOT `path.extname()`: Node's `extname(".env")` is `""`
+ * (a leading-dot-only basename has no "extension" by that definition), which
+ * would silently skip every bare `env/.env` file — exactly the shape
+ * `dotenvAdapter`'s own `classify()` (and the akm adapter's env recognition)
+ * match by plain `endsWith`, not `path.extname`. A suffix match is also a
+ * strict superset of the `path.extname` behavior for a normal `name.ext`
+ * file, so nothing that matched before stops matching.
+ */
+function matchesAdapterExtension(fileName: string, extensions: readonly string[]): boolean {
+  const lower = fileName.toLowerCase();
+  return extensions.some((candidate) => lower.endsWith(candidate.toLowerCase()));
+}
+
+/** Walk the whole bundle tree, collecting every file whose extension the adapter recognizes (skip `.git`, symlinks, cache/registry copies). */
+function collectAdapterFiles(root: string, extensions: readonly string[]): string[] {
+  if (!fs.existsSync(root)) return [];
+  const results: string[] = [];
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[];
     try {
-      const block = parseFrontmatterBlock(fs.readFileSync(filePath, "utf8"));
-      if (block) {
-        const data = parseYaml(block.frontmatter) as unknown;
-        validMappingWithType =
-          typeof data === "object" &&
-          data !== null &&
-          !Array.isArray(data) &&
-          typeof (data as Record<string, unknown>).type === "string" &&
-          ((data as Record<string, unknown>).type as string).trim().length > 0;
-      }
+      entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
-      validMappingWithType = false;
+      return;
     }
-    if (!validMappingWithType) {
-      flagged.push({
-        file: relPath,
-        issue: "missing-type",
-        detail: "OKF concepts require parseable mapping frontmatter with a non-empty type.",
-        fixed: false,
-      });
+    for (const entry of entries) {
+      if (entry.name === ".git" || entry.isSymbolicLink()) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isFile() && matchesAdapterExtension(entry.name, extensions)) {
+        if (full.includes("/.cache/") || full.includes("/registry/")) continue;
+        results.push(full);
+      }
+    }
+  };
+  walk(root);
+  return results;
+}
+
+/**
+ * Every closed {@link LintIssueType} member a current adapter `validate()` can
+ * legitimately emit. Anything outside this set folds onto `"adapter-diagnostic"`
+ * (see `types.ts`'s doc comment on that member) rather than being dropped.
+ */
+const KNOWN_ADAPTER_ISSUE_TYPES: ReadonlySet<string> = new Set<LintIssueType>([
+  "unquoted-colon",
+  "missing-updated",
+  "stale-path",
+  "missing-ref",
+  "missing-type",
+  "missing-name-or-type",
+  "missing-skill-md",
+  "dangerous-env-key",
+  "uncited-raw",
+  "missing-description",
+  "broken-xref",
+  "broken-source",
+]);
+
+/** Map one adapter {@link Diagnostic} onto a {@link LintIssue} — see `types.ts`'s `"adapter-diagnostic"` doc comment for the open→closed reconciliation. */
+export function diagnosticToLintIssue(diag: Diagnostic): LintIssue {
+  if (KNOWN_ADAPTER_ISSUE_TYPES.has(diag.issue)) {
+    return { file: diag.file, issue: diag.issue as LintIssueType, detail: diag.detail, fixed: diag.fixed };
+  }
+  return { file: diag.file, issue: "adapter-diagnostic", detail: `[${diag.issue}] ${diag.detail}`, fixed: diag.fixed };
+}
+
+/**
+ * Lint a bundle through its OWN adapter's `validate()` (spec §12.1): the
+ * adapter never writes, so every finding lands in `flagged` — `fixed` is
+ * always `false`/`"failed"` for a non-akm bundle regardless of `--fix`
+ * (the CLI option is silently a no-op here, exactly as it already was for
+ * `okf` before this change).
+ */
+async function lintViaAdapter(
+  adapterId: string,
+  stashRoot: string,
+  extraStashRoots: string[],
+  sources: SearchSource[],
+  cfg: AkmConfig,
+  options: AkmLintOptions,
+): Promise<AkmLintResult> {
+  const adapter = adapterForId(adapterId);
+  // Defensive fallback (shouldn't happen via `detectAdapterId`/a valid config
+  // — both only ever name a registered built-in): an unregistered adapter id
+  // falls back to the akm-shaped sweep, the same default `akm lint` has
+  // always applied to a bundle it can't otherwise place.
+  if (!adapter) return lintAkmSweep(stashRoot, extraStashRoots, cfg, sources, options);
+
+  const files = collectAdapterFiles(stashRoot, adapter.extensions);
+  const changes: FileChange[] = files.map((filePath) => ({
+    path: path.relative(stashRoot, filePath).replace(/\\/g, "/"),
+    op: "update",
+  }));
+  const ids = deriveBundleIds(sources);
+  const sourceIndex = sources.findIndex((s) => path.resolve(s.path) === path.resolve(stashRoot));
+  const componentId = sourceIndex >= 0 ? (ids[sourceIndex] as string) : stashRoot;
+
+  const ctx = createValidateContext({ root: stashRoot, extraRoots: extraStashRoots });
+  const diagnostics = await adapter.validate(
+    { id: componentId, adapter: adapterId, root: stashRoot, writable: true },
+    changes,
+    ctx,
+  );
+
+  const flagged = diagnostics.map(diagnosticToLintIssue);
+  // The cross-bundle env dangerous-key sweep (see `runEnvDangerousKeyPass`'s
+  // doc comment) ran for every non-akm adapter via the STASH_SUBDIRS
+  // fallthrough this dispatch replaces — EXCEPT `okf`, which the old code
+  // special-cased out before ever reaching that pass. Preserve both halves of
+  // that history exactly: skip only for `okf`. Some adapters (`dotenv`) ALSO
+  // find the same `dangerous-env-key` findings natively through their own
+  // `validate()` (reusing the same `dangerousEnvKeyDiagnostics` rule) — dedupe
+  // by `(file, issue, detail)` so a bundle covered both ways reports each
+  // finding once, not twice.
+  if (adapterId !== "okf") {
+    const seen = new Set(flagged.map(lintIssueDedupeKey));
+    for (const issue of runEnvDangerousKeyPass(stashRoot, extraStashRoots, sources, cfg)) {
+      const key = lintIssueDedupeKey(issue);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      flagged.push(issue);
     }
   }
   return { ok: true, fixed: [], flagged, summary: { fixed: 0, flagged: flagged.length } };
+}
+
+function lintIssueDedupeKey(issue: LintIssue): string {
+  return `${issue.file} ${issue.issue} ${issue.detail}`;
 }
 
 function collectEnvFiles(dir: string): string[] {
@@ -134,6 +257,50 @@ function collectEnvFiles(dir: string): string[] {
     /* dir may not exist */
   }
   return results;
+}
+
+/**
+ * Scan every `env/`/`secrets/` `.env` file across `[stashRoot, ...extraStashRoots]`
+ * for keys that are known to enable process-execution hijacking. This is a
+ * cross-bundle SECURITY sweep, not per-adapter validation — it has always run
+ * regardless of which format family a given root's OWN files are (verbatim
+ * extraction of the pass `lintAkmSweep` still runs inline; kept byte-identical
+ * there per the CRITICAL akm-path constraint, and reused here for the
+ * non-akm dispatch path so a non-akm PRIMARY bundle keeps the exact
+ * cross-bundle coverage it already had — the pass previously reached every
+ * non-akm adapter's bundle via the accidental STASH_SUBDIRS fallthrough this
+ * change replaces with real dispatch).
+ */
+function runEnvDangerousKeyPass(
+  stashRoot: string,
+  extraStashRoots: string[],
+  sources: SearchSource[],
+  cfg: AkmConfig,
+): LintIssue[] {
+  const flagged: LintIssue[] = [];
+  const envRoots = [stashRoot, ...extraStashRoots];
+  const bundleIdByRoot = new Map(sources.map((source) => [path.resolve(source.path), source.registryId]));
+  for (const root of envRoots) {
+    const bundleId = bundleIdByRoot.get(path.resolve(root));
+    // `env` assets live under `env/`, whole-file `secret` assets under
+    // `secrets/`. `displayRefForConceptId` owns the short-default /
+    // qualified-secondary `Ref:` spelling `akm show` emits — the old
+    // hand-built `env:<base>` colon grammar is rejected by the 0.9.0 ref
+    // parser, which dead-ended a user copying the ref off a security finding.
+    for (const assetType of ["env", "secret"] as const) {
+      const dir = path.join(root, stashDirFor(assetType) as string);
+      if (!fs.existsSync(dir)) continue;
+      for (const envPath of collectEnvFiles(dir)) {
+        const conceptId = conceptIdForStashFile(assetType, root, envPath);
+        const ref = displayRefForConceptId(conceptId, bundleId, cfg.defaultBundle);
+        const relPath = path.relative(root, envPath);
+        for (const issue of checkEnvForDangerousKeys(envPath, relPath, ref)) {
+          flagged.push(issue);
+        }
+      }
+    }
+  }
+  return flagged;
 }
 
 /** True when the issue represents a file deletion that was successfully applied. */
@@ -255,20 +422,23 @@ export function lintAssetFile(ctx: LintContext, subdir: string): LintIssue[] {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-export function akmLint(options: AkmLintOptions = {}): AkmLintResult {
-  // Collect secondary stash roots from configured filesystem sources so that
-  // cross-stash refs (e.g. referencing assets in dimm-city/agent-stash) are
-  // not falsely flagged as missing-ref.
-  const cfg = options.config ?? loadConfig();
-  // 0.9.0 (spec §10.1): the primary stash is the defaultBundle's path.
-  const stashRoot = options.dir ?? primaryBundlePath(cfg) ?? resolveStashDir();
-  const sources = resolveSourceEntries(stashRoot, cfg);
-  const configuredAdapter = sources.find((source) => path.resolve(source.path) === path.resolve(stashRoot))?.adapterId;
-  const adapterId = configuredAdapter ?? detectAdapterId(stashRoot);
-  if (adapterId === "okf") return lintOkfBundle(stashRoot);
-  const extraStashRoots = sources.map((s) => s.path).filter((p) => p !== stashRoot && fs.existsSync(p));
-
-  const fix = adapterId === "akm" && options.fix === true;
+/**
+ * The `akm`-adapter sweep: STASH_SUBDIRS walk + per-file `lintAssetFile` +
+ * the env dangerous-key pass. UNTOUCHED by the adapter-dispatch wiring above
+ * (CRITICAL CONSTRAINT — the overwhelming majority of real bundles use `akm`,
+ * and its findings / `--fix` behavior / exact `LintIssueType` codes are
+ * pinned by goldens + a large test suite). Only reached when the resolved
+ * adapter id is `"akm"` (or, defensively, an unregistered adapter id —
+ * see {@link lintViaAdapter}'s fallback).
+ */
+function lintAkmSweep(
+  stashRoot: string,
+  extraStashRoots: string[],
+  cfg: AkmConfig,
+  sources: SearchSource[],
+  options: AkmLintOptions,
+): AkmLintResult {
+  const fix = options.fix === true;
   const fixed: LintIssue[] = [];
   const flagged: LintIssue[] = [];
 
@@ -356,28 +526,7 @@ export function akmLint(options: AkmLintOptions = {}): AkmLintResult {
   // Scan every `.env` file under <stashRoot>/env/ across all stash roots for
   // keys that are known to enable process-execution hijacking. Warn-only —
   // findings go into `flagged`, never `fixed`.
-  const envRoots = [stashRoot, ...extraStashRoots];
-  const bundleIdByRoot = new Map(sources.map((source) => [path.resolve(source.path), source.registryId]));
-  for (const root of envRoots) {
-    const bundleId = bundleIdByRoot.get(path.resolve(root));
-    // `env` assets live under `env/`, whole-file `secret` assets under
-    // `secrets/`. `displayRefForConceptId` owns the short-default /
-    // qualified-secondary `Ref:` spelling `akm show` emits — the old
-    // hand-built `env:<base>` colon grammar is rejected by the 0.9.0 ref
-    // parser, which dead-ended a user copying the ref off a security finding.
-    for (const assetType of ["env", "secret"] as const) {
-      const dir = path.join(root, stashDirFor(assetType) as string);
-      if (!fs.existsSync(dir)) continue;
-      for (const envPath of collectEnvFiles(dir)) {
-        const conceptId = conceptIdForStashFile(assetType, root, envPath);
-        const ref = displayRefForConceptId(conceptId, bundleId, cfg.defaultBundle);
-        const relPath = path.relative(root, envPath);
-        for (const issue of checkEnvForDangerousKeys(envPath, relPath, ref)) {
-          flagged.push(issue);
-        }
-      }
-    }
-  }
+  flagged.push(...runEnvDangerousKeyPass(stashRoot, extraStashRoots, sources, cfg));
 
   // `ok` reflects whether the lint run completed successfully — NOT whether
   // it found anything. Findings are surfaced via `summary.flagged`; the CLI
@@ -394,4 +543,31 @@ export function akmLint(options: AkmLintOptions = {}): AkmLintResult {
     flagged,
     summary: { fixed: fixed.length, flagged: flagged.length },
   };
+}
+
+/**
+ * Lint the resolved bundle at `options.dir` (default: the primary bundle).
+ * Dispatches to the bundle's OWN adapter: the `akm` sweep for `"akm"`
+ * (unchanged), or {@link lintViaAdapter} — a real `adapter.validate()` call —
+ * for every other configured/detected adapter id (OKF, llm-wiki, dotenv,
+ * claude, opencode, agent-skills, website-snapshot, generic-files, akm-task,
+ * akm-workflow). `async` because `BundleAdapter.validate()` is async by
+ * interface contract (`core/adapter/bundle-adapter.ts`); every existing
+ * caller already runs inside an async context (`commands/agent/contribute-cli.ts`,
+ * `commands/improve/preparation.ts`) or is a test that can `await` it.
+ */
+export async function akmLint(options: AkmLintOptions = {}): Promise<AkmLintResult> {
+  // Collect secondary stash roots from configured filesystem sources so that
+  // cross-stash refs (e.g. referencing assets in dimm-city/agent-stash) are
+  // not falsely flagged as missing-ref.
+  const cfg = options.config ?? loadConfig();
+  // 0.9.0 (spec §10.1): the primary stash is the defaultBundle's path.
+  const stashRoot = options.dir ?? primaryBundlePath(cfg) ?? resolveStashDir();
+  const sources = resolveSourceEntries(stashRoot, cfg);
+  const configuredAdapter = sources.find((source) => path.resolve(source.path) === path.resolve(stashRoot))?.adapterId;
+  const adapterId = configuredAdapter ?? detectAdapterId(stashRoot);
+  const extraStashRoots = sources.map((s) => s.path).filter((p) => p !== stashRoot && fs.existsSync(p));
+
+  if (adapterId !== "akm") return lintViaAdapter(adapterId, stashRoot, extraStashRoots, sources, cfg, options);
+  return lintAkmSweep(stashRoot, extraStashRoots, cfg, sources, options);
 }

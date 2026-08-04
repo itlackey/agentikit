@@ -39,6 +39,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { adapterForId } from "../../core/adapter/registry";
+import { createValidateContext } from "../../core/adapter/validate-context";
 import { ensureAkmMarkdownType } from "../../core/asset/akm-markdown";
 import { assetPathForName, placementTypes, stashDirFor } from "../../core/asset/asset-placement";
 import { isBundleSlug, parseBundleRef } from "../../core/asset/asset-ref";
@@ -2190,6 +2192,77 @@ export function preflightProposalPromotion(
   return { proposal: preparedProposal, repairedContent, ref, target, assetPath, stampedContent };
 }
 
+/**
+ * The change-transaction pre-commit gate — the `BundleAdapter.validate()`
+ * interface contract's OTHER stated consumer (`core/adapter/bundle-adapter.ts`
+ * doc comment, alongside `lint --fix`). Runs the target's OWN adapter's
+ * `validate()` over the ONE pending write `preflight` describes, with a
+ * {@link createValidateContext} overlay carrying the proposal's about-to-be-
+ * written bytes — so the adapter sees the bundle AS IT WOULD LOOK the instant
+ * after this transaction commits, without ever touching disk.
+ *
+ * DELIBERATELY ADVISORY, not blocking (see the report for the full
+ * rationale): the akm adapter's `missing-ref` check resolves prose refs
+ * through the SAME core overlay `resolveRef` that closes the OKF/llm-wiki
+ * lint gaps — and that resolver is proven to disagree with the legacy
+ * `commands/lint/base-linter.ts#checkMissingRefs` resolver in one specific,
+ * real case: a fully-qualified `bundle//conceptId` prose ref (or a bare
+ * frontmatter xref) whose leading segment does NOT name a registered AKM
+ * placement type. The legacy resolver treats an unrecognized type prefix as
+ * "not a locally-checkable ref, skip it, never flag missing" (whole-hearted
+ * leniency for cross-bundle / foreign-format refs); this module's core
+ * resolver additionally tries the ref as a literal on-disk path — the
+ * resolution non-akm adapters (OKF, llm-wiki) actually NEED for their own
+ * same-component conceptIds — which means it CAN report `missing-ref` for a
+ * foreign-typed prose ref the legacy checker always let through. Promoting a
+ * proposal is a live, user-facing write path; blocking it on a diagnostic
+ * that can disagree with the existing (already-tested, already-run)
+ * `promotionLintBlockers` gate a few lines above is not a change to make
+ * without a dedicated equivalence pass first. So: this computes and surfaces
+ * the finding (visible via `warn`, and never thrown) without changing whether
+ * ANY promotion succeeds or fails — proving the wiring end-to-end on real
+ * proposal data while leaving today's blocking behavior completely
+ * untouched. Never throws: a validate() failure here must not corrupt or
+ * half-apply the transaction that follows.
+ */
+async function runAdapterPreCommitCheck(config: AkmConfig, preflight: ProposalPromotionPreflight): Promise<void> {
+  try {
+    const adapterId = preflight.target.source.adapterId ?? "akm";
+    const adapter = adapterForId(adapterId);
+    if (!adapter) return;
+
+    const root = preflight.target.source.path;
+    const relPath = path.relative(root, preflight.assetPath).replace(/\\/g, "/");
+    if (!relPath || relPath.startsWith("..")) return; // resolved outside its own bundle root — nothing to check
+    const change: FileChange = {
+      path: relPath,
+      after: preflight.stampedContent,
+      op: fs.existsSync(preflight.assetPath) ? "update" : "create",
+    };
+    const extraRoots = resolveSourceEntries(root, config)
+      .map((source) => source.path)
+      .filter((sourcePath) => path.resolve(sourcePath) !== path.resolve(root));
+    const componentCtx = createValidateContext({ root, extraRoots, changes: [change] });
+    const diagnostics = await adapter.validate(
+      { id: preflight.target.selector ?? adapterId, adapter: adapterId, root, writable: true },
+      [change],
+      componentCtx,
+    );
+    if (diagnostics.length > 0) {
+      const summary = diagnostics.map((d) => `[${d.issue}] ${d.detail}`).join("; ");
+      warn(`[proposal] pre-commit adapter check for ${preflight.proposal.id} found (non-blocking): ${summary}`);
+    }
+  } catch (error) {
+    // Advisory only — never let a validate() failure interrupt or corrupt the
+    // promotion transaction that follows.
+    warn(
+      `[proposal] pre-commit adapter check for ${preflight.proposal.id} threw (ignored, non-blocking): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 async function promoteProposalWithLease(
   stashDir: string,
   config: AkmConfig,
@@ -2262,6 +2335,7 @@ async function promoteProposalWithLease(
     );
   }
   const preflight = preflightProposalPromotion(config, proposal, { ...options, queueTarget: target }, ctx);
+  await runAdapterPreCommitCheck(config, preflight);
 
   const mutationTarget = prepareWriteTargetForMutation(target);
   const assetPath = resolveAssetFilePathSafe(mutationTarget.source, ref);

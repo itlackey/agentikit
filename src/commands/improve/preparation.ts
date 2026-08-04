@@ -845,7 +845,7 @@ export async function runImprovePreparationStage(args: {
   let lintSummary: { fixed: number; flagged: number } | undefined;
   if (primaryStashDir) {
     try {
-      const lintResult = akmLint({ fix: false, dir: primaryStashDir });
+      const lintResult = await akmLint({ fix: false, dir: primaryStashDir });
       lintSummary = { fixed: lintResult.summary.fixed, flagged: lintResult.summary.flagged };
     } catch {
       // lint is best-effort; never block improve
