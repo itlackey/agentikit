@@ -146,3 +146,29 @@ describe("stands down when the command itself is the problem", () => {
     expect(errorFor(["show", "knowledge/a", "--enrich"]).code).toBe("UNKNOWN_FLAG");
   });
 });
+
+describe("retired flags get their replacement, not a generic unknown-flag hint", () => {
+  // Unlike SELF_DIAGNOSED_FLAGS above (a rename the OWNING command answers
+  // itself), these flags were removed outright with no successor flag on the
+  // same command — `retiredFlagHint` (src/cli/retired-commands.ts) supplies
+  // the migration hint the generic edit-distance suggestion can't.
+  test.each([
+    [["index", "--background"], "--quiet"],
+    [["setup", "--detect-only"], "akm setup"],
+    [["setup", "--reset-recommended"], "recommended defaults"],
+    [["proposal", "extract", "--watch"], "proposal extract --auto"],
+    [["proposal", "extract", "--debounce-ms"], "proposal extract --auto"],
+  ] as const)("%s hints its replacement", (args, expected) => {
+    const err = errorFor([...args]);
+    expect(err.code).toBe("UNKNOWN_FLAG");
+    expect(err.hint()).toContain(expected);
+    expect(err.hint()).toContain("akm help migrate 0.9.0");
+    expect(err.hint()).not.toContain("Did you mean");
+  });
+
+  test("the same spelling on an unrelated command path is a plain unknown flag", () => {
+    // `--watch` is only retired on `proposal extract` — `search` never had it
+    // and shouldn't get a misleading migration hint for it.
+    expect(errorFor(["search", "foo", "--watch"]).hint()).not.toContain("proposal extract --auto");
+  });
+});

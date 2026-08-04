@@ -7,6 +7,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EXIT_CODES } from "../../src/cli/shared";
+import { workflowStructureDiagnostics } from "../../src/core/adapter/adapters/akm-lint";
+import { assetPathForName, stashDirFor } from "../../src/core/asset/asset-placement";
+import { parseBundleRef } from "../../src/core/asset/asset-ref";
+import { typeNameFromConceptId } from "../../src/core/asset/resolve-ref";
 import { MAX_CONFIG_FILE_BYTES, MAX_LOCAL_METADATA_BYTES, readTextFileWithLimit, writeFileAtomic } from "../../src/core/common";
 import {
   type AkmConfig,
@@ -19,6 +23,7 @@ import { ConfigError } from "../../src/core/errors";
 import { withMaintenanceStartBarrier } from "../../src/core/maintenance-barrier";
 import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { runMigrations as runStateMigrations } from "../../src/core/state/migrations";
+import { warn } from "../../src/core/warn";
 import {
   assertMigrationLockfileReadable,
   isValidLockfileEntry,
@@ -90,10 +95,19 @@ export interface MigrationTargetState {
 }
 
 export interface MigrationPlan {
-  status: "current" | "ready" | "blocked";
+  // R-090: `not-applicable` is a DISTINCT, non-error outcome from `blocked` —
+  // it means "there is nothing on this machine to migrate", not "migration
+  // cannot proceed". Consumers that gate on `status !== "blocked"` (e.g. the
+  // self-update preflight, which only inspects the CLI's exit code) keep
+  // working unchanged; only a consumer that narrowly matched `=== "ready"` to
+  // mean "proceed" would need to widen to also treat `not-applicable` as
+  // proceed-safe — grepped for that pattern across the tree and found none.
+  status: "current" | "ready" | "blocked" | "not-applicable";
   artifacts: MigrationState;
   targetConfig: MigrationTargetState;
   blockers: string[];
+  /** Human-readable context for a non-error `status` that isn't self-explanatory (currently only `not-applicable`). */
+  message?: string;
   activeOperation?: { kind: "apply" | "restore"; sentinelPath: string };
 }
 
@@ -293,6 +307,30 @@ function buildMigrationPlan(
 ): MigrationPlan {
   const artifacts = inspectMigrationState();
   const restorePending = fs.existsSync(getMigrationRestoreJournalPath());
+
+  // R-090: a genuinely fresh machine — no config.json, no state/workflow/index
+  // databases, and no in-flight apply/restore operation — has nothing to
+  // migrate. Report that as a distinct, non-error outcome instead of routing
+  // it through the "provide an operator-prepared config" blocker below: that
+  // message is correct advice for an existing pre-cutover install but reads
+  // as a failure ("blocked", exit 1) for a user who has nothing to upgrade.
+  const nothingToMigrate =
+    !active.sentinel &&
+    !restorePending &&
+    artifacts.config.status === "missing" &&
+    artifacts.state.status === "missing" &&
+    artifacts.workflow.status === "missing" &&
+    artifacts.index.status === "missing";
+  if (nothingToMigrate) {
+    return {
+      status: "not-applicable",
+      artifacts,
+      targetConfig: { status: "missing", source: "none" },
+      blockers: [],
+      message: "No akm installation found; nothing to migrate.",
+    };
+  }
+
   const target = active.sentinel
     ? {
         state: {
@@ -794,6 +832,79 @@ function requireSemanticCompletion(config: AkmConfig, sentinel: ApplySentinel, f
   };
 }
 
+/**
+ * R-091: an active/resumable (`status IN ('active','blocked')`) workflow run
+ * can target a workflow asset that fails 0.9's structural validation — most
+ * commonly a heading-based 0.8 workflow definition, since 0.9 requires
+ * frontmatter `steps:` and does NOT auto-translate the old format (the docs
+ * say so explicitly; building a converter here would be dishonest scope
+ * creep). Such an asset silently drops out of the 0.9 index (`akm search
+ * --type workflow` finds nothing for it) while its run row stays `active`, so
+ * `akm show` on UNRELATED assets keeps prefixing a "WORKFLOW ACTIVE" banner
+ * that names a run the operator can no longer advance. The minimal honest fix
+ * is detection + a clear pointer, not a fix: tell the operator to update the
+ * asset or abandon the stale run. Reuses `workflowStructureDiagnostics` — the
+ * exact same check `akm lint`'s `invalid-workflow-structure` uses — so this
+ * can never disagree with what `akm lint`/`akm search` report.
+ *
+ * Purely diagnostic: reads state.db read-only and writes to stderr via
+ * `warn()`, never to the migration's stdout JSON result. Every failure mode
+ * (missing table, unreadable file, resolution miss) is swallowed — this must
+ * never turn a completed migration into a failure.
+ */
+function warnOrphanedActiveWorkflowRuns(
+  statePath: string,
+  roots: readonly CutoverStashRoot[],
+  defaultBundle: string | undefined,
+): void {
+  try {
+    if (!fs.existsSync(statePath)) return;
+    let rows: Array<{ id: string; workflow_ref: string }>;
+    const db = openDatabaseFinalizing(statePath, { readonly: true, create: false });
+    try {
+      const hasRuns = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_runs'").get();
+      if (!hasRuns) return;
+      rows = db
+        .prepare("SELECT id, workflow_ref FROM workflow_runs WHERE status IN ('active', 'blocked')")
+        .all() as Array<{ id: string; workflow_ref: string }>;
+    } finally {
+      db.close();
+    }
+    if (rows.length === 0) return;
+
+    const rootById = new Map(roots.map((root) => [root.bundleId, root]));
+    for (const row of rows) {
+      const parsed = parseBundleRef(row.workflow_ref);
+      const parts = typeNameFromConceptId(parsed.conceptId);
+      if (!parts || parts.type !== "workflow") continue;
+      const root = rootById.get(parsed.bundle ?? defaultBundle ?? "");
+      if (!root) continue;
+      // `assetPathForName`'s `typeRoot` is the TYPE's stash subdir, not the
+      // bundle root — mirrors how every real caller (indexer install
+      // resolution) builds it: `<bundleRoot>/<stashDirFor(type)>`.
+      const typeRoot = path.join(root.path, stashDirFor("workflow") ?? "workflows");
+      const filePath = assetPathForName("workflow", typeRoot, parts.name);
+      if (!fs.existsSync(filePath)) continue;
+      let raw: string;
+      try {
+        raw = readTextFileWithLimit(filePath, MAX_CONFIG_FILE_BYTES, "Workflow asset");
+      } catch {
+        continue;
+      }
+      const diagnostics = workflowStructureDiagnostics(path.relative(root.path, filePath) || filePath, raw, filePath);
+      if (diagnostics.length === 0) continue;
+      warn(
+        `WORKFLOW ACTIVE run ${row.id} targets "${row.workflow_ref}" (${filePath}), which fails 0.9 workflow ` +
+          `structural validation and can no longer be run: ${diagnostics.map((d) => d.detail).join("; ")}. ` +
+          "AKM does not auto-translate workflow definitions between formats — update the asset to declare " +
+          `frontmatter \`steps:\`, or run \`akm workflow abandon ${row.id}\` to clear the stale run.`,
+      );
+    }
+  } catch {
+    // Purely diagnostic — never let this block or fail a completed migration.
+  }
+}
+
 function requireEligiblePlan(
   preparedConfigPath: string | undefined,
   active: ApplySentinelRead,
@@ -819,14 +930,17 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
       recoverInterruptedRestoreWithLocksHeld();
       const existing = readApplySentinel();
       if (existing.error) throw new ConfigError(existing.error, "INVALID_CONFIG_FILE");
+      // R-090: `not-applicable` (nothing on this machine to migrate) has no
+      // target config to load by design — short-circuit before
+      // `requireEligiblePlan`, which would otherwise read that absent target
+      // as `blocked` and throw.
+      const preflightPlan = buildMigrationPlan(options.preparedConfigPath, existing);
+      if (preflightPlan.status === "not-applicable") return { plan: preflightPlan };
       const { plan, target, migrationLockEntries } = requireEligiblePlan(options.preparedConfigPath, existing);
       if (plan.status === "current" && !existing.sentinel) return { plan };
       const pathResolutionBase = existing.sentinel?.pathResolutionBase ?? path.resolve(process.cwd());
-      assertNoArtifactReplacementBlockers(undefined, {
-        stashRoots: cutoverStashRootsFromConfig(target, migrationLockEntries, [], pathResolutionBase).map(
-          (root) => root.path,
-        ),
-      });
+      const stashRoots = cutoverStashRootsFromConfig(target, migrationLockEntries, [], pathResolutionBase);
+      assertNoArtifactReplacementBlockers(undefined, { stashRoots: stashRoots.map((root) => root.path) });
       assertMigrationLockfileReadable();
 
       const backup = existing.sentinel
@@ -858,6 +972,7 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
         }
         publishConfigLast(target, sentinel, backup.manifest);
         const completed = requireSemanticCompletion(target, sentinel, !taskOnly && !postCutoverState);
+        warnOrphanedActiveWorkflowRuns(getStateDbPathInDataDir(), stashRoots, target.defaultBundle);
         clearApplySentinel();
         return { plan: completed, backup };
       } catch (error) {

@@ -187,7 +187,23 @@ function inspectConfig(configPath: string): MigrationArtifactState {
   try {
     const raw = parseConfigText(readTextFileWithLimit(configPath, MAX_CONFIG_FILE_BYTES, "Config file"), configPath);
     const comparison = compareConfigVersion(raw.configVersion as string | number | undefined, CURRENT_CONFIG_VERSION);
-    if (comparison === undefined) return { status: "inconsistent", detail: "configVersion is missing or invalid" };
+    if (comparison === undefined) {
+      // 0.8.x only stamps `configVersion` when a 0.7-era migration actually did
+      // something (`if (changed)`); a config freshly written by 0.8 itself
+      // (`akm setup`/`akm init`, no legacy keys to carry forward) has no
+      // legacy-migration work to trigger that stamp and so ships with NO
+      // `configVersion` key at all — not an invalid one, an absent one. Read
+      // that specific case as pre-cutover `old`, the same status a config
+      // explicitly versioned "0.8.0" would get below, rather than the
+      // unconditional-blocker `inconsistent` status: every fresh-0.8 install
+      // would otherwise be permanently unable to run `migrate apply`.
+      // Gate tightly on the shape actually being pre-cutover 0.8 (no
+      // `bundles`, plus a legacy source key) so this cannot silently swallow
+      // a config whose `configVersion` is merely garbage/unparseable — that
+      // must stay `inconsistent`.
+      if (raw.configVersion === undefined && isPreCutoverSourceShape(raw)) return { status: "old" };
+      return { status: "inconsistent", detail: "configVersion is missing or invalid" };
+    }
     if (comparison < 0) return { status: "old" };
     if (comparison > 0) return { status: "newer" };
     if (isPreCutoverSourceShape(raw)) {

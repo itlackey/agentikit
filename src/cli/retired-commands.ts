@@ -54,6 +54,8 @@ const RETIRED_COMMAND_HINTS: Record<string, string> = {
   // Pre-0.9 removals agents still trip over.
   wiki: "the `akm wiki` family was removed in 0.9 — wikis are ordinary knowledge assets; ingest with `akm import <url> --path <subdir>`.",
   backup: "`akm backup` was removed in 0.9 — backups belong to the standalone `akm-migrate backup` tool.",
+  vault:
+    "the `akm vault ...` family was removed in 0.9 — use `akm env list`/`akm env create` for a whole `.env` group, or `akm secret set <name>` for a single sensitive value.",
 
   // Group-scoped retirements.
   "env set": "`akm env set` was removed in 0.9 — edit the `.env` file directly; akm loads it as-is.",
@@ -81,7 +83,13 @@ const RETIRED_COMMAND_HINTS: Record<string, string> = {
     "`akm task disable` was removed in 0.9 — set `enabled: false` in the task YAML, then `akm task sync`.",
   "task init": "`akm task init` was removed in 0.9 — `akm setup` seeds the default schedules.",
   "task list": "there is no `task list` — task files are indexed assets; use `akm search --type task`.",
+  "task show": "there is no `task show` — task files are indexed assets; use `akm show <ref>`.",
   "task remove": "there is no `task remove` — delete the task YAML, then run `akm task sync` to unbind it.",
+  // `improve canary` is NOT here: `akm improve` is a leaf command (a
+  // positional `ref`, not a subcommand group), so "canary" never reaches the
+  // unknown-command path this table serves — `improve-cli.ts` already
+  // self-diagnoses it with a more specific, correct message before this
+  // table would ever be consulted.
   "log tail": "`akm log tail` was removed in 0.9 — poll `akm log --since @offset:<id>` (the durable cursor).",
   "log list": "`akm log list` was flattened in 0.9 — bare `akm log` is the same surface.",
 };
@@ -97,5 +105,42 @@ const MIGRATION_POINTER = "Full rename table: `akm help migrate 0.9.0`.";
 export function retiredCommandHint(parentPath: readonly string[], attempted: string): string | undefined {
   const key = parentPath.length === 0 ? attempted : `${parentPath[parentPath.length - 1]} ${attempted}`;
   const entry = RETIRED_COMMAND_HINTS[key];
+  return entry === undefined ? undefined : `${entry} ${MIGRATION_POINTER}`;
+}
+
+/**
+ * Same idea as {@link RETIRED_COMMAND_HINTS}, but for FLAGS the 0.9 overhaul
+ * removed outright rather than commands. Consulted by
+ * `src/cli/unknown-flags.ts` BEFORE its own edit-distance did-you-mean, for
+ * the same reason: a distance-based suggestion on a retired flag can point at
+ * an unrelated survivor rather than the real replacement procedure.
+ *
+ * Keys are the FULL resolved command path joined with spaces, plus the flag
+ * exactly as the unknown-flag scanner reports it (leading dashes, long form
+ * only — `--background`, not `-b`): `"<cmd> [sub...] --flag"`. The command
+ * path is whatever `unknown-flags.ts`'s `KnownArgs.path` resolved (e.g.
+ * `["proposal", "extract"]` for the flag's CURRENT location, not any retired
+ * top-level spelling — that command-level retirement is already handled by
+ * {@link retiredCommandHint} before flag scanning ever runs).
+ */
+const RETIRED_FLAG_HINTS: Record<string, string> = {
+  "index --background": "`--background` was removed in 0.9 — the flag never actually backgrounded; use `--quiet`.",
+  "setup --detect-only":
+    "`--detect-only` was removed in 0.9 — environment detection runs inside `akm setup`; `akm info` reports the configured capabilities.",
+  "setup --reset-recommended":
+    "`--reset-recommended` was removed in 0.9 — `akm setup` now offers to apply recommended defaults interactively.",
+  "proposal extract --watch":
+    "`--watch` was removed in 0.9 — schedule `akm proposal extract --auto` as a task instead.",
+  "proposal extract --debounce-ms":
+    "`--debounce-ms` was removed in 0.9 — schedule `akm proposal extract --auto` as a task instead.",
+};
+
+/**
+ * Replacement hint for a retired flag on its current command path, or
+ * undefined when the attempted spelling isn't a known retirement.
+ */
+export function retiredFlagHint(path: readonly string[], attempted: string): string | undefined {
+  const key = `${path.join(" ")} ${attempted}`;
+  const entry = RETIRED_FLAG_HINTS[key];
   return entry === undefined ? undefined : `${entry} ${MIGRATION_POINTER}`;
 }

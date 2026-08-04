@@ -11,11 +11,14 @@ const configArg = {
 };
 
 export const migrateCommand = defineGroupCommand({
-  // Hidden from `--help` and the completions walker (S11): this is the
-  // self-update contract's internal command, not a surface end users
-  // discover by browsing help. `akm migrate status`/`apply` still execute
-  // normally — `hidden` only affects listing.
-  meta: { name: "migrate", hidden: true, description: "Inspect or apply config and durable database migrations" },
+  // S11 originally hid this from `--help`/completions as an internal,
+  // self-update-only surface. That made it undiscoverable even though the
+  // 0.9.0 upgrade instructions tell users to run it first (`akm migrate
+  // status`, `akm migrate apply`) — the one command those instructions
+  // depend on was invisible. Listed in the SYSTEM section of HELP_SECTIONS
+  // (src/cli.ts) and in shell completions now; `akm migrate status`/`apply`
+  // always executed regardless of `hidden`.
+  meta: { name: "migrate", description: "Inspect or apply config and durable database migrations" },
   subCommands: {
     status: defineJsonCommand({
       meta: { name: "status", description: "Read-only cross-artifact migration eligibility check" },

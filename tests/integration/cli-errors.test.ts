@@ -496,6 +496,10 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
       [["history"], "akm log --ref"],
       [["mv", "a", "b"], "rekey-asset-ref.ts"],
       [["extract"], "akm proposal extract"],
+      // The removed `akm vault ...` family (0.9.0 release-notes headline)
+      // falls through to a generic did-you-mean without this hint.
+      [["vault", "list"], "akm env list"],
+      [["vault", "get", "x"], "akm secret set"],
     ];
     for (const [argv, expected] of cases) {
       const { status, stderr } = spawnCli(argv, { cwd: repoRoot });
@@ -516,6 +520,7 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
       [["workflow", "watch", "run-1"], "akm log --run"],
       [["config", "show"], "akm config list"],
       [["task", "enable", "t1"], "akm task sync"],
+      [["task", "show", "t1"], "akm show"],
       [["log", "tail"], "@offset:"],
     ];
     for (const [argv, expected] of cases) {
@@ -523,6 +528,34 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
       expect(status, argv.join(" ")).toBe(2);
       const parsed = JSON.parse(stderr.trim());
       expect(parsed.hint, argv.join(" ")).toContain(expected);
+    }
+  });
+
+  // Removed 0.9 flags (as opposed to removed commands) get no hint at all
+  // today — just a generic "unknown flag" from src/cli/unknown-flags.ts.
+  // `retiredFlagHint` (src/cli/retired-commands.ts) closes that gap. Uses a
+  // real subprocess (like the retired-spellings tests above), not the
+  // `runCli` in-process harness: a `UsageError` thrown by `assertKnownFlags`
+  // — BEFORE citty's own `runCommand` ever starts — escapes the harness's
+  // replicated startup contract without going through `emitJsonError`, so it
+  // lands in `stderr` as a raw message instead of the JSON envelope the real
+  // CLI always produces here (verified directly: `bun src/cli.ts index
+  // --background` prints the proper `{"ok":false,...}` envelope).
+  test("retired flags on their current command hint the replacement procedure", () => {
+    const cases: Array<[string[], string]> = [
+      [["index", "--background"], "--quiet"],
+      [["setup", "--detect-only"], "akm setup"],
+      [["setup", "--reset-recommended"], "recommended defaults"],
+      [["proposal", "extract", "--watch"], "proposal extract --auto"],
+      [["proposal", "extract", "--debounce-ms"], "proposal extract --auto"],
+    ];
+    for (const [argv, expected] of cases) {
+      const { status, stderr } = spawnCli(argv, { cwd: repoRoot });
+      expect(status, argv.join(" ")).toBe(2);
+      const parsed = JSON.parse(stderr.trim());
+      expect(parsed.code, argv.join(" ")).toBe("UNKNOWN_FLAG");
+      expect(parsed.hint, argv.join(" ")).toContain(expected);
+      expect(parsed.hint, argv.join(" ")).toContain("akm help migrate 0.9.0");
     }
   });
 });
@@ -568,6 +601,7 @@ describe("S11: sectioned root help", () => {
         "registry",
         "info",
         "log",
+        "migrate",
         "help",
         "hints",
         "upgrade",
@@ -578,18 +612,28 @@ describe("S11: sectioned root help", () => {
     expect(stdout).toContain("Agents: run `akm hints`");
   });
 
-  test("akm --help does not list the hidden migrate group", () => {
+  test("akm --help lists migrate in the SYSTEM section", () => {
+    // Previously hidden (S11): the upgrade instructions tell users to run
+    // `akm migrate status`/`apply` first, so the command needs to be
+    // discoverable from `akm --help` rather than a self-update-only secret.
     const { stdout } = spawnCli(["--help"], { cwd: repoRoot });
-    expect(stdout).not.toContain("  migrate ");
+    expect(stdout).toContain("  migrate ");
   });
 
-  test("akm migrate status still executes despite being hidden from help", () => {
+  test("akm migrate status still executes", () => {
     // Not asserting exit 0 — status depends on ambient config/DB state this
-    // suite doesn't sandbox for this one subprocess. What `hidden` must NOT
-    // do is make citty treat it as an unknown command.
+    // suite doesn't sandbox for this one subprocess.
     const { stdout, stderr } = spawnCli(["migrate", "status"], { cwd: repoRoot });
     expect(stderr).not.toContain("Unknown command");
     expect(stdout).toContain('"status"');
+  });
+
+  test("akm migrate --help renders its own usage", () => {
+    const { status, stdout, stderr } = spawnCli(["migrate", "--help"], { cwd: repoRoot });
+    expect(status).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("akm migrate");
+    expect(stdout).toContain("USAGE");
   });
 
   test("bare akm help prints the same sectioned overview and exits 0", () => {

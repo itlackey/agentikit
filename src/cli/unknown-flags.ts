@@ -34,6 +34,7 @@ import {
   findCittyTopLevelCommandIndex,
   toAliasArray,
 } from "./invocation";
+import { retiredFlagHint } from "./retired-commands";
 
 /** The structural subset of a citty command this module reads. */
 export interface FlagScanCommand {
@@ -192,6 +193,15 @@ export function closestMatch(attempted: string, candidates: readonly string[], t
  * @param attempted  The spelling to edit-distance against `--long` candidates.
  */
 function throwUnknownFlag(shown: string, attempted: string, known: KnownArgs): never {
+  // Flags the 0.9 overhaul removed outright get their retirement note, not a
+  // did-you-mean — same reasoning as `retiredCommandHint` in src/cli.ts:
+  // edit distance can point at an unrelated survivor rather than the real
+  // replacement procedure (e.g. `index --background` is closer to no other
+  // `index` flag than it is to any useful suggestion).
+  const retired = retiredFlagHint(known.path, attempted);
+  if (retired) {
+    throw new UsageError(`Unknown flag "${shown}".`, "UNKNOWN_FLAG", retired);
+  }
   const threshold = Math.max(2, Math.ceil(attempted.length / 3));
   const suggestion = closestMatch(attempted, known.displayNames, threshold);
   throw new UsageError(

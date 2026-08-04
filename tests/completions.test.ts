@@ -85,6 +85,7 @@ describe("completions command", () => {
       "feedback",
       "registry",
       "config",
+      "migrate",
       "help",
       "hints",
       "completions",
@@ -94,11 +95,12 @@ describe("completions command", () => {
     }
   });
 
-  // `migrate` is `meta.hidden` (S11) — the self-update contract's internal
-  // command, not a surface end users discover by tab-completion. Still
-  // executes normally; only excluded from the completions walk.
-  test("does not suggest the hidden migrate command", () => {
-    expect(script).not.toContain('"akm migrate"');
+  // `migrate` was `meta.hidden` (S11) so tab-completion wouldn't surface the
+  // self-update contract's internal command. Unhidden: the 0.9.0 upgrade
+  // instructions tell users to run `akm migrate status`/`apply` first, so it
+  // needs to be as discoverable as any other command, completions included.
+  test("suggests the migrate command", () => {
+    expect(script).toContain('"akm migrate"');
   });
 
   test("contains nested bundle subcommands", () => {
@@ -118,6 +120,13 @@ describe("completions command", () => {
   test("contains nested registry subcommands", () => {
     expect(script).toContain('"akm registry"');
     for (const sub of ["list", "add", "remove", "search"]) {
+      expect(script).toContain(sub);
+    }
+  });
+
+  test("contains nested migrate subcommands", () => {
+    expect(script).toContain('"akm migrate"');
+    for (const sub of ["status", "apply"]) {
       expect(script).toContain(sub);
     }
   });

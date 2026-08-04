@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { retiredCommandHint } from "../../src/cli/retired-commands";
+import { retiredCommandHint, retiredFlagHint } from "../../src/cli/retired-commands";
 import { EMBEDDED_HINTS, EMBEDDED_HINTS_FULL } from "../../src/output/cli-hints";
 
 describe("embedded exit-code hints", () => {
@@ -55,5 +55,27 @@ describe("embedded exit-code hints", () => {
     expect(retiredCommandHint(["workflow"], "complete")).toContain("workflow run");
     expect(retiredCommandHint(["workflow"], "brief")).toContain("workflow run");
     expect(retiredCommandHint(["workflow"], "report")).toContain("workflow run");
+  });
+
+  // 0.9.0 release notes headline the removal of the whole `akm vault ...`
+  // family; `task show` is also named as a removed subcommand but previously
+  // had no hint entry. (`improve canary` is deliberately NOT here — `improve`
+  // is a leaf command, not a group, so it never reaches this table; it has
+  // its own more specific self-diagnosis in improve-cli.ts.)
+  test("the retired vault family and task show have explicit replacements", () => {
+    expect(retiredCommandHint([], "vault")).toContain("akm env list");
+    expect(retiredCommandHint([], "vault")).toContain("akm secret set");
+    expect(retiredCommandHint(["task"], "show")).toContain("akm show");
+  });
+
+  test("retired flags (as opposed to commands) hint their replacement procedure", () => {
+    expect(retiredFlagHint(["index"], "--background")).toContain("--quiet");
+    expect(retiredFlagHint(["setup"], "--detect-only")).toContain("akm setup");
+    expect(retiredFlagHint(["setup"], "--reset-recommended")).toContain("recommended defaults");
+    expect(retiredFlagHint(["proposal", "extract"], "--watch")).toContain("proposal extract --auto");
+    expect(retiredFlagHint(["proposal", "extract"], "--debounce-ms")).toContain("proposal extract --auto");
+    // Unretired flag / unrelated path: no hint.
+    expect(retiredFlagHint(["search"], "--background")).toBeUndefined();
+    expect(retiredFlagHint(["index"], "--full")).toBeUndefined();
   });
 });

@@ -1,0 +1,54 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+/**
+ * `akm lint` plain-text renderer.
+ *
+ * Same defect as `akm health` (see `./health-format.ts`'s header comment for
+ * the full writeup): `lint` had no registered text formatter, so
+ * `--format text` fell through to `renderGenericText`, which JSON-dumps the
+ * `fixed`/`flagged` arrays as one line each — e.g.
+ * `flagged=[{"file":"agents/x.md","issue":"missing-ref",...}, ...]`. Those
+ * are exactly the array-of-status-bearing-records shape `./status-list`
+ * exists to render, reused here rather than duplicated.
+ */
+
+import type { LintIssue } from "../../commands/lint/types";
+import { renderStatusEntries, type StatusEntry } from "./status-list";
+
+/** `fixed === true` succeeded; `"failed"` is an attempted-and-failed fix (worse than an unfixed, merely-flagged issue). */
+function glyphFor(fixed: LintIssue["fixed"]): { glyph: string; severityRank: number } {
+  if (fixed === true) return { glyph: "✓", severityRank: 0 };
+  if (fixed === "failed") return { glyph: "✗", severityRank: 0 };
+  return { glyph: "⚠", severityRank: 1 };
+}
+
+function issueEntry(issue: LintIssue): StatusEntry {
+  const { glyph, severityRank } = glyphFor(issue.fixed);
+  return { severityRank, glyph, headline: `${issue.file}  [${issue.issue}]  ${issue.detail}` };
+}
+
+function renderIssueSection(title: string, issues: readonly LintIssue[]): string[] {
+  if (issues.length === 0) return [`${title}: (none)`];
+  return [`${title} (${issues.length})`, ...renderStatusEntries(issues.map(issueEntry))];
+}
+
+export function formatLintPlain(r: Record<string, unknown>): string | null {
+  if (r === null || typeof r !== "object") return null;
+
+  const fixed = Array.isArray(r.fixed) ? (r.fixed as LintIssue[]) : [];
+  const flagged = Array.isArray(r.flagged) ? (r.flagged as LintIssue[]) : [];
+  const summary = r.summary as { fixed?: number; flagged?: number } | undefined;
+
+  const lines: string[] = [];
+  if (typeof r.ok === "boolean") lines.push(`ok: ${r.ok}`);
+  lines.push(`summary: fixed=${summary?.fixed ?? fixed.length} flagged=${summary?.flagged ?? flagged.length}`);
+
+  // Flagged (still needs attention) surfaces before fixed (already handled)
+  // so a scan of the output hits the actionable items first.
+  lines.push("", ...renderIssueSection("flagged", flagged));
+  lines.push("", ...renderIssueSection("fixed", fixed));
+
+  return lines.join("\n").trim();
+}
