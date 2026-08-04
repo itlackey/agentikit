@@ -170,4 +170,32 @@ describe("createValidateContext — resolveRef", () => {
     expect((await ctx.resolveRef("tables/only-in-primary")).exists).toBe(true); // resolves via the primary root's overlay
     expect(fs.existsSync(path.join(extra, "tables/only-in-primary.md"))).toBe(false); // never written to the extra root
   });
+  // ── PR #745 review (Copilot) — resolveRef hardening ───────────────────────
+
+  test("a ref naming a DIRECTORY does not count as a resolved target", async () => {
+    const root = makeRoot();
+    // A directory named exactly like the ref, with no matching file. `existsSync`
+    // would call this resolved and silently suppress a real missing-ref.
+    fs.mkdirSync(path.join(root, "pages", "ghost-page"), { recursive: true });
+    const ctx = createValidateContext({ root });
+    expect((await ctx.resolveRef("pages/ghost-page")).exists).toBe(false);
+  });
+
+  test("rejects refs that escape the bundle root via `..`", async () => {
+    const root = makeRoot();
+    const outside = makeRoot();
+    write(outside, "secret.md", "---\ntype: knowledge\n---\n");
+    const rel = `${path.relative(root, outside).split(path.sep).join("/")}/secret`;
+    expect(rel.includes("..")).toBe(true); // precondition: this really does traverse out
+    const ctx = createValidateContext({ root });
+    expect((await ctx.resolveRef(rel)).exists).toBe(false);
+  });
+
+  test("rejects absolute-path refs", async () => {
+    const root = makeRoot();
+    write(root, "tables/real.md", "---\ntype: table\n---\n");
+    const ctx = createValidateContext({ root });
+    expect((await ctx.resolveRef("/etc/passwd")).exists).toBe(false);
+    expect((await ctx.resolveRef(`${root}/tables/real.md`)).exists).toBe(false);
+  });
 });

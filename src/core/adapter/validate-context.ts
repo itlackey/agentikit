@@ -85,12 +85,33 @@ function readDisk(absPath: string): string | null {
 
 function existsOnDiskOrOverlay(relPath: string, root: string, overlay: Map<string, OverlayValue> | null): boolean {
   const key = toPosix(relPath);
+  // Overlay entries are pending file contents by construction, so a present
+  // non-null entry is always a file.
   if (overlay?.has(key)) return overlay.get(key) !== null;
   try {
-    return fs.existsSync(path.join(root, relPath));
+    // `isFile()`, not `existsSync()`: a ref naming a DIRECTORY (e.g. a
+    // `pages/foo/` dir alongside no `pages/foo.md`) must not count as a
+    // resolved target — that would silently suppress a real
+    // `missing-ref`/`broken-xref` diagnostic.
+    return fs.statSync(path.join(root, relPath)).isFile();
   } catch {
     return false;
   }
+}
+
+/**
+ * Refs come from bundle CONTENT (link targets, xrefs, `sources:` entries), so
+ * they are untrusted input. A ref must stay inside the bundle root: reject
+ * absolute paths and any `..` segment before joining, so content can never
+ * probe for existence outside its own bundle (nor report a resolved `path`
+ * pointing there). Mirrors the `isWithin` containment rule the write path
+ * already enforces in `core/write-source.ts`.
+ */
+function refEscapesBundle(conceptId: string): boolean {
+  if (path.isAbsolute(conceptId) || conceptId.startsWith("/")) return true;
+  return toPosix(conceptId)
+    .split("/")
+    .some((segment) => segment === "..");
 }
 
 /**
@@ -185,6 +206,7 @@ export function createValidateContext(options: ValidateContextOptions): Validate
   async function resolveRef(ref: string): Promise<{ exists: boolean; path?: string }> {
     const conceptId = stripBundlePrefix(stripFragment(ref)).trim();
     if (!conceptId) return { exists: false };
+    if (refEscapesBundle(conceptId)) return { exists: false };
     const candidates = candidateRelPaths(conceptId);
     const roots: Array<{ root: string; usesOverlay: boolean }> = [
       { root, usesOverlay: true },

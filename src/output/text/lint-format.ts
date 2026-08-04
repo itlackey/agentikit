@@ -17,10 +17,16 @@
 import type { LintIssue } from "../../commands/lint/types";
 import { renderStatusEntries, type StatusEntry } from "./status-list";
 
-/** `fixed === true` succeeded; `"failed"` is an attempted-and-failed fix (worse than an unfixed, merely-flagged issue). */
+/**
+ * `fixed === true` succeeded; `"failed"` is an attempted-and-failed fix (worse
+ * than an unfixed, merely-flagged issue, which in turn is worse than a clean
+ * success). `severityRank` ascends from most urgent — see
+ * {@link renderStatusEntries} — so the three states must get three DISTINCT
+ * ranks or a failed fix can sort behind a successful one in the same section.
+ */
 function glyphFor(fixed: LintIssue["fixed"]): { glyph: string; severityRank: number } {
-  if (fixed === true) return { glyph: "✓", severityRank: 0 };
   if (fixed === "failed") return { glyph: "✗", severityRank: 0 };
+  if (fixed === true) return { glyph: "✓", severityRank: 2 };
   return { glyph: "⚠", severityRank: 1 };
 }
 

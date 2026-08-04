@@ -144,7 +144,11 @@ function collectAdapterFiles(root: string, extensions: readonly string[]): strin
       if (entry.isDirectory()) {
         walk(full);
       } else if (entry.isFile() && matchesAdapterExtension(entry.name, extensions)) {
-        if (full.includes("/.cache/") || full.includes("/registry/")) continue;
+        // Compare PATH SEGMENTS, not raw substrings: `path.join` yields `\` on
+        // Windows so a `"/.cache/"` substring test never matches there, and a
+        // substring test would also skip a legitimately-named `registry` file.
+        const segments = path.relative(root, full).split(/[\\/]/);
+        if (segments.includes(".cache") || segments.includes("registry")) continue;
         results.push(full);
       }
     }
