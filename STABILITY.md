@@ -459,6 +459,15 @@ Internal replacement for the one capability nothing else covered.
   a separately published `akm-migrate` package (see Internal above).
 - **0.10 — `--auto-accept` hard error.** It is currently accepted-and-warned;
   see the Improvement loop entry.
+- **0.10 — `BundleAdapter.placeNew()` wiring.** The interface declares
+  `placeNew()` as an optional capability method, and 8 of the built-in
+  adapters already implement it, but nothing in the write path calls it —
+  writes still resolve through AKM's native flat type→directory table.
+  Placement for every existing bundle is already correct today; this is a
+  deliberately sequenced routing change, not unfinished behavior. See
+  [D12](./docs/architecture/specs/0.9.0-decisions.md#d12--bundleadapterplacenew-stays-unwired-until-010)
+  for why it is scoped out of 0.9.0. Nothing user-visible changes in 0.10 for
+  this alone.
 - **1.0 contract freeze** — the `[bundle//]conceptId[#fragment]` ref grammar,
   the supported source model, search behavior, and write-target rules are
   frozen at 1.0. The SDK and in-process plugin story ship on top of that
