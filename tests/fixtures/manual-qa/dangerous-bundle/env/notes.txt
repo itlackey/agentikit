@@ -1,0 +1,1 @@
+NODE_OPTIONS in this non-.env file is inert and must not trigger the env audit.

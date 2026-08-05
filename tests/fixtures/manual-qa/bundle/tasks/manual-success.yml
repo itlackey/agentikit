@@ -1,0 +1,11 @@
+version: 2
+name: Manual QA success task
+description: Deterministic command-only task that succeeds without an agent
+schedule: "@daily"
+enabled: false
+command:
+  - node
+  - -e
+  - process.stdout.write("qa-task-success")
+tags:
+  - manual-qa

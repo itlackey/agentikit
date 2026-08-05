@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "updatedAt": "2026-08-05T00:00:00.000Z",
+  "stashes": [
+    {
+      "id": "github:manual-qa/example-bundle",
+      "name": "Manual QA Example Bundle",
+      "description": "Deterministic registry bundle for Kubernetes release checks",
+      "ref": "manual-qa/example-bundle",
+      "source": "github",
+      "tags": ["manual-qa", "kubernetes", "release"],
+      "assetTypes": ["skill", "knowledge"],
+      "assets": [
+        {
+          "type": "skill",
+          "name": "qa-kubernetes-release",
+          "description": "Release a Kubernetes fixture safely",
+          "path": "skills/qa-kubernetes-release/SKILL.md",
+          "tags": ["manual-qa", "kubernetes"]
+        }
+      ],
+      "author": "akm-manual-qa",
+      "license": "MPL-2.0",
+      "latestVersion": "v1.0.0"
+    },
+    {
+      "id": "npm:@manual-qa/example-bundle",
+      "name": "@manual-qa/example-bundle",
+      "description": "Deterministic npm-shaped registry result",
+      "ref": "@manual-qa/example-bundle",
+      "source": "npm",
+      "tags": ["manual-qa", "npm"],
+      "assetTypes": ["command"],
+      "latestVersion": "1.0.0"
+    }
+  ]
+}

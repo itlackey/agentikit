@@ -7,11 +7,14 @@ This project is a CLI with three risk-heavy areas:
 - binary deployment and self-upgrade behavior
 
 The safest way to test it is in layers: fast local checks first, then end-to-end
-CLI coverage, then Docker-based deployment and upgrade validation.
+CLI coverage, then Docker-based deployment and upgrade validation. This document
+owns automated test workflow and test-authoring guidance only. The authoritative
+manual setup, command matrix, expected behavior, release gates, evidence, and
+cleanup live in [AKM Manual Testing Runbook](./manual-testing-checklist.md).
 
 ## What To Validate
 
-- core CLI flows: `setup`, `index`, `search`, `show`, `info`, `list`, `config`
+- core CLI flows: `setup`, `index`, `search`, `show`, `info`, `bundle list`, `config`
 - asset lifecycle: add assets, re-index, search, show, and incremental refresh
 - managed-source lifecycle: `akm bundle add`, `akm bundle list`, `akm bundle update`, `akm bundle remove`
 - binary lifecycle: install, run, `akm upgrade --check`, `akm upgrade`
@@ -159,7 +162,7 @@ Run the Docker matrix when changing install, packaging, startup, runtime
 dependencies, or platform behavior:
 
 ```sh
-bun test tests/integration/docker-install.test.ts
+AKM_DOCKER_TESTS=1 bun test tests/integration/docker-install.test.ts
 ```
 
 Or run the shell orchestrator directly:
@@ -193,7 +196,7 @@ The Docker smoke test in `tests/docker/smoke-test.sh` verifies:
 
 The LLM-provider-driven, multi-seed agent-utility benchmark (`akm-bench`) now
 lives in the standalone repo **[itlackey/akm-bench](https://github.com/itlackey/akm-bench)**.
-Run it from there after any change to `src/output/`, `src/commands/show.ts`,
+Run it from there after any change to `src/output/`, `src/commands/read/show.ts`,
 APPLY directives, or other content that affects what agents see.
 
 For curate/search ranking quality — which stays in this repo — use the
@@ -225,7 +228,7 @@ bunx tsc --noEmit
 
 ### Install, packaging, or release-related change
 
-Use this when touching `src/cli.ts`, `src/self-update.ts`, install flows,
+Use this when touching `src/cli.ts`, `src/commands/sources/self-update.ts`, install flows,
 source management, or Docker assets:
 
 ```sh
@@ -256,43 +259,12 @@ For a local release gate without Docker, use:
 That script now runs a dedicated install/setup regression suite before the full
 test run so first-run, installer, and wizard failures surface early.
 
-## End-To-End Manual Validation
+## Manual QA Authority
 
-Use an isolated environment so host config and cache do not affect results:
-
-```sh
-export XDG_CONFIG_HOME="$(mktemp -d)"
-export XDG_CACHE_HOME="$(mktemp -d)"
-export AKM_BUNDLE_DIR="$(mktemp -d)/akm"
-
-bun run build
-bun run src/cli.ts setup --yes
-```
-
-Then run a complete user flow:
-
-```sh
-mkdir -p "$AKM_BUNDLE_DIR/scripts/deploy"
-cat > "$AKM_BUNDLE_DIR/scripts/deploy/deploy-app.sh" <<'EOF'
-#!/usr/bin/env bash
-# Deploy application
-echo deploying
-EOF
-chmod +x "$AKM_BUNDLE_DIR/scripts/deploy/deploy-app.sh"
-
-bun run src/cli.ts index
-bun run src/cli.ts search deploy --detail full
-bun run src/cli.ts show scripts/deploy-app.sh --detail full
-bun run src/cli.ts info --format json
-```
-
-Expected outcomes:
-
-- `setup --yes` creates the stash and saves config
-- `index` reports at least one entry
-- `search` returns the script with an action and score
-- `show` returns `type: script` and a `run` command
-- `info` reports the configured stash and cache paths
+Use [AKM Manual Testing Runbook](./manual-testing-checklist.md) for every manual
+flow. Its full sandbox is mandatory; the smaller historical XDG-only setup is
+unsafe because `AKM_CONFIG_DIR` can bypass it. The runbook also owns expected
+exits/channels, fixtures, release evidence, platform gates, and cleanup.
 
 ## Docker Deployment Validation
 
@@ -323,7 +295,7 @@ Run one variant if you need a focused repro:
 ### What the Docker matrix proves
 
 - the CLI starts in minimal Linux images
-- runtime dependencies are sufficient for `init`, `index`, `search`, and `show`
+- runtime dependencies are sufficient for `bundle create`, `index`, `search`, and `show`
 - bun-linked installs work after building from source
 - compiled Linux binaries run correctly when copied into the image
 - the CLI can create a fresh stash, build an index, and discover new assets
@@ -340,139 +312,21 @@ which can catch failures that unit and subprocess tests miss.
 
 Those should be validated in disposable containers as described next.
 
-## Validating Published Binary Deployment
+## Published Artifact Acceptance
 
-Use this when validating a real release artifact, not just a local build.
+Published binary, installer, checksum, native-platform, and self-upgrade
+procedures are release-facing manual gates. Run sections 21-22 of the
+[manual runbook](./manual-testing-checklist.md); do not validate release bytes
+with an installer fetched from raw `main`.
 
-Inside an ephemeral container:
+## Upgrade Regression Coverage
 
-```sh
-docker run --rm -it ubuntu:22.04 bash
-apt-get update && apt-get install -y curl ca-certificates git
-curl -fsSL https://raw.githubusercontent.com/itlackey/akm/main/install.sh | bash
-akm --help
-akm setup --yes
-akm index
-```
-
-Validate:
-
-- `install.sh` downloads the correct binary for the OS and architecture
-- checksum verification passes
-- the binary lands on `PATH`
-- the installed binary can execute normal CLI flows
-
-Run the same release-artifact check in at least one glibc-based image and one
-musl-based image if you publish binaries intended for both environments.
-
-## Validating Upgrade Logic
-
-There are two different upgrade paths and both matter.
-
-### 1. Managed-source upgrades: `akm bundle update`
-
-`akm bundle update` refreshes managed stashes, not the `akm` binary itself.
-
-Automated coverage already exists in the `tests/integration/registry-*.test.ts`
-and `tests/provider-registry.test.ts` suites.
-
-Before release, validate this manually against a disposable managed source.
-Use a staging npm package, GitHub repo, or git ref that you can change between
-two versions.
-
-Recommended manual flow:
-
-```sh
-akm bundle add <managed-source-ref>
-akm bundle list
-akm search "<known asset>"
-
-# publish or expose an updated source version here
-
-akm bundle update <managed-source-ref>
-akm bundle update <managed-source-ref> --force
-akm bundle list --format json
-akm search "<updated asset>" --detail full
-```
-
-Validate:
-
-- the source appears as `managed` in `akm bundle list`
-- `akm bundle update` reports `changed.version`, `changed.revision`, and `changed.any` correctly
-- `--force` clears stale cache and re-downloads cleanly
-- reindexing happens automatically and new asset contents are searchable
-- `akm bundle remove <managed-source-ref>` removes the managed source and cleans cache
-
-### 2. CLI self-upgrade: `akm upgrade`
-
-`akm upgrade` only performs an in-place upgrade for standalone binary installs.
-For npm installs it intentionally prints guidance.
-
-Automated coverage:
-
-- install-method detection
-- `--check` behavior
-- checksum fetch failures
-- missing checksum entries
-- checksum mismatches
-- npm and unknown-install guidance
-
-See `tests/integration/self-update.test.ts`.
-
-### Why Docker is required for final self-upgrade validation
-
-The real binary-upgrade path replaces the running executable. That is risky to
-test on a host machine and is intentionally not fully exercised by unit tests.
-Use a disposable container or VM for the happy-path upgrade test.
-
-### Disposable-container self-upgrade test
-
-Start from an older released binary in a container, then run the upgrade:
-
-```sh
-docker run --rm -it ubuntu:22.04 bash
-apt-get update && apt-get install -y curl ca-certificates git
-curl -fsSL https://raw.githubusercontent.com/itlackey/akm/main/install.sh | bash -s -- <older-tag>
-akm --version
-akm upgrade --check
-akm upgrade
-akm --version
-```
-
-Validate:
-
-- `akm upgrade --check` reports the newer version
-- `akm upgrade` downloads the correct binary and verifies checksums
-- the executable still runs after replacement
-- `akm --version` changes to the expected version
-- a basic command still works after upgrade, for example `akm info`
-
-Also run one negative-path check in automation or staging:
-
-- checksum file missing
-- target binary missing from `checksums.txt`
-- checksum mismatch
-- permission failure when install directory is not writable
-
-Most of those negative cases are already covered by `tests/integration/self-update.test.ts`.
-
-## Evidence To Capture For A Release
-
-For any release candidate, keep these artifacts:
-
-- `bun run test:unit` output
-- `bun run test:integration` output
-- Docker matrix summary from `./tests/docker/run-docker-tests.sh`
-- one successful `install.sh` transcript in a fresh container
-- one successful `akm upgrade` transcript from an older binary to the candidate
-- one successful `akm bundle update` transcript against a disposable managed source
-
-## Practical Notes
-
-- always isolate `AKM_BUNDLE_DIR`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` during manual testing
-- use Docker for any test that mutates the installed binary or depends on OS packaging
-- treat `akm bundle update` and `akm upgrade` as separate release gates; they test different code paths
-- if a change touches packaging, runtime detection, or checksums, do not rely on unit tests alone
+Managed-source updates and CLI self-upgrade are separate implementations.
+Provider/registry suites cover source add/update/remove/cache behavior;
+`tests/integration/self-update.test.ts` covers install-method detection,
+orchestration, checksum, and failure paths. Real managed-source and self-upgrade
+acceptance is manual and lives in section 21 of the
+[manual runbook](./manual-testing-checklist.md).
 
 ## Coverage Gap Guide
 

@@ -1,0 +1,11 @@
+version: 2
+name: Manual QA failure task
+description: Deterministic command-only task that exits seven
+schedule: "@daily"
+enabled: false
+command:
+  - node
+  - -e
+  - process.stderr.write("qa-task-failure"); process.exit(7)
+tags:
+  - manual-qa
