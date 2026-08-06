@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { rethrowIfTestIsolationError } from "../../core/errors";
+import { warn } from "../../core/warn";
 import type { Database } from "../database";
 import { closeDatabase, openIndexDatabase } from "./index-connection";
 import { getRegistryIndexCache, upsertRegistryIndexCache } from "./registry-index-cache-repository";
@@ -139,6 +140,25 @@ export async function fetchCachedJson<T>(opts: FetchCachedJsonOptions<T>): Promi
       if (dbCacheResult) {
         const stale = parseCache(dbCacheResult.indexJson, { stale: true });
         if (stale !== undefined) return stale;
+      }
+      // No in-TTL row — consult the cache PAST its TTL before giving up
+      // (§24.2 "Durability" gate): a briefly unreachable registry should
+      // degrade to the last-known index, loudly, not hard-fail the command.
+      try {
+        const expiredRow = db ? getRegistryIndexCache(db, cacheKey, Number.POSITIVE_INFINITY) : undefined;
+        if (expiredRow) {
+          const stale = parseCache(expiredRow.indexJson, { stale: true });
+          if (stale !== undefined) {
+            warn(
+              `Registry fetch failed (${err instanceof Error ? err.message : String(err)}); ` +
+                "serving the last cached index, which is past its refresh interval.",
+            );
+            return stale;
+          }
+        }
+      } catch (cacheErr) {
+        rethrowIfTestIsolationError(cacheErr);
+        // cache read failed — fall through to the original fetch error
       }
       throw err;
     }
