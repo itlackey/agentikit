@@ -457,6 +457,13 @@ describe("remember --enrich graceful degradation", () => {
     const { result } = await runCli(["remember", "Some note about ops", "--enrich"]);
     expect(result.status).toBe(0);
 
+    // The warning is load-bearing: it proves standalone `--enrich` actually
+    // entered the enrichment branch. Before the 0.9.0 gate fix,
+    // `hasStructuredArgs` omitted `args.enrich`, so this invocation silently
+    // took the zero-flag raw-write hot path and never attempted enrichment
+    // (§24.2 "Agent/LLM" release gate).
+    expect(result.stderr).toContain("--enrich requires an LLM to be configured");
+
     const json = JSON.parse(result.stdout) as { path: string };
     const content = fs.readFileSync(json.path, "utf8");
     expect(content).toContain("Some note about ops");

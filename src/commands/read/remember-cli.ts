@@ -208,7 +208,10 @@ export const rememberCommand = defineJsonCommand({
     // --xref counts as structured metadata (it must land in frontmatter) but,
     // like scope, does NOT trigger the tags-required check — provenance
     // without tags is a valid write.
-    const hasStructuredArgs = hasTagRequiringArgs || hasScope || args.auto || xrefs.length > 0;
+    // --enrich is structured (it must reach the Mode-3 dispatch below, not the
+    // zero-flag hot path) but, like --auto, never tag-requiring: enrichment is
+    // fail-soft and a zero-tag outcome still writes.
+    const hasStructuredArgs = hasTagRequiringArgs || hasScope || args.auto || args.enrich || xrefs.length > 0;
 
     if (!hasStructuredArgs) {
       // Phase 1B / Rec 7: even the zero-flag hot-path emits
