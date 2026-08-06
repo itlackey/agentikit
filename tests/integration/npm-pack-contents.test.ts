@@ -12,8 +12,9 @@
  * doc that force-includes itself) ships silently. This suite runs a real
  * `npm pack --dry-run --json` and pins:
  *
- *   1. every `files[]` entry actually contributes at least one packed file
- *      (no dead declarations),
+ *   1. every `files[]` entry names a real path and contributes packed files
+ *      (no dead declarations; build outputs are exempt from the pack half,
+ *      since CI runs `check` before `build`),
  *   2. every packed file is accounted for — matched by a `files[]` entry or
  *      on the known force-include list (surprise additions fail loudly),
  *   3. every relative link inside a shipped markdown file resolves within
@@ -29,6 +30,14 @@ import fs from "node:fs";
 import path from "node:path";
 
 const PROJECT_ROOT = path.resolve(import.meta.dir, "..", "..");
+
+/**
+ * `files` entries produced by `bun run build`, not source control. CI runs
+ * `bun run check` BEFORE `bun run build`, so these legitimately contribute
+ * zero packed files on a clean checkout — absence is a build state, not a
+ * misdeclared path.
+ */
+const BUILD_OUTPUT_ENTRIES = new Set(["dist"]);
 
 /** Files npm includes regardless of the `files` allowlist. */
 function isForceIncluded(p: string): boolean {
@@ -67,9 +76,21 @@ describe("npm pack contents", () => {
   const shipped = packedPaths();
   const allowlist = filesAllowlist();
 
-  test("every files[] entry contributes at least one packed file", () => {
-    const dead = allowlist.filter((entry) => ![...shipped].some((p) => matchesEntry(p, entry)));
+  test("every files[] entry is a real path, and contributes packed files once built", () => {
+    // A source-controlled entry that packs nothing is a typo or a stale path.
+    // A build-output entry may pack nothing on a pre-build checkout, but its
+    // spelling is still checked below.
+    const dead = allowlist.filter(
+      (entry) => !BUILD_OUTPUT_ENTRIES.has(entry) && ![...shipped].some((p) => matchesEntry(p, entry)),
+    );
     expect(dead).toEqual([]);
+
+    // Every entry must name something that exists, or be a not-yet-built
+    // output — this is what actually catches a misspelled path.
+    const missing = allowlist.filter(
+      (entry) => !BUILD_OUTPUT_ENTRIES.has(entry) && !fs.existsSync(path.join(PROJECT_ROOT, entry)),
+    );
+    expect(missing).toEqual([]);
   });
 
   test("every packed file is accounted for by files[] or npm's force-includes", () => {
