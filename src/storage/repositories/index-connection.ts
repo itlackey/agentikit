@@ -69,7 +69,19 @@ export function openExistingDatabase(dbPath?: string): Database {
   // Existing-DB callers must not mutate schema or embedding metadata on open,
   // but some paths still need write access to usage_events and other tables —
   // so init only loads the vec extension, it does not run ensureSchema.
-  return openManagedDatabase({ path: dbPath ?? getDbPath(), init: loadVecExtension });
+  //
+  // "Existing" is load-bearing: a missing file throws instead of being
+  // created. Create-on-open used to leave a schema-less index.db behind (a
+  // fire-and-forget telemetry read was enough), which every later opener then
+  // saw as an existing-but-broken index ("no such table: entries") — the
+  // curate→proposal file-order failure pinned by
+  // tests/storage/open-existing-database-no-create.test.ts. `create: false`
+  // below is the race-free backstop for this pre-check.
+  const resolvedPath = dbPath ?? getDbPath();
+  if (!fs.existsSync(resolvedPath)) {
+    throw new Error(`Index database not found at ${resolvedPath}. Run 'akm index' to build it.`);
+  }
+  return openManagedDatabase({ path: resolvedPath, init: loadVecExtension, create: false });
 }
 
 /**

@@ -11,6 +11,7 @@ import { loadConfig } from "../../core/config/config";
 import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
 import { readEvents } from "../../core/events";
 import type { ImproveEligibleRef } from "../../core/improve-types";
+import { getDbPath } from "../../core/paths";
 import { deriveInstallations } from "../../indexer/installations";
 import { getWritableStashDirs, resolveSourceEntries } from "../../indexer/search/search-source";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
@@ -30,6 +31,17 @@ import { improveStateReadRefs } from "./source-identity";
 // Eligibility / candidate-selection predicates for improve. Free functions
 // (no akmImprove closure state) extracted from improve.ts to shrink the
 // orchestrator and make candidate selection independently testable.
+
+/**
+ * Open the index for eligibility queries, or `undefined` when no index exists
+ * yet. `openExistingDatabase` refuses to create a missing `index.db` (see
+ * index-connection.ts) — for eligibility, "no index" simply means nothing is
+ * eligible, exactly like the readOnly arm's `undefined`.
+ */
+function openEligibilityDb(readOnly: boolean): Database | undefined {
+  if (readOnly) return openReadonlyExistingDatabase();
+  return fs.existsSync(getDbPath()) ? openExistingDatabase() : undefined;
+}
 
 export function resolveImproveScope(scope: string | undefined): { mode: "all" | "type" | "ref"; value?: string } {
   const trimmed = scope?.trim();
@@ -129,7 +141,7 @@ async function collectEligibleRefsFromIndex(
     const writableDirs = new Set(getWritableStashDirs(stashDir, config).map((dir) => path.resolve(dir)));
     let db: Database | undefined;
     try {
-      db = readOnly ? openReadonlyExistingDatabase() : openExistingDatabase();
+      db = openEligibilityDb(readOnly);
       if (!db) {
         return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
       }
@@ -201,7 +213,7 @@ async function collectEligibleRefsFromIndex(
 
   let db: Database | undefined;
   try {
-    db = readOnly ? openReadonlyExistingDatabase() : openExistingDatabase();
+    db = openEligibilityDb(readOnly);
     if (!db) {
       return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
     }

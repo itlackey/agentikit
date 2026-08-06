@@ -32,6 +32,12 @@ export interface ManagedDbSpec {
   pragmas?: Parameters<typeof applyStandardPragmas>[1];
   /** One-time schema setup (migrations / base DDL), run after pragmas on every open. */
   init?: (db: Database) => void;
+  /**
+   * When `false`, the database file must already exist: the parent dir is not
+   * created and the driver opens with create-off (`fileMustExist`), throwing
+   * instead of leaving a schema-less file behind. Default: create-on-open.
+   */
+  create?: boolean;
 }
 
 /**
@@ -41,10 +47,10 @@ export interface ManagedDbSpec {
  */
 export function openManagedDatabase(spec: ManagedDbSpec): Database {
   const dir = path.dirname(spec.path);
-  if (!fs.existsSync(dir)) {
+  if (spec.create !== false && !fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const db = openDatabase(spec.path);
+  const db = spec.create === false ? openDatabase(spec.path, { create: false }) : openDatabase(spec.path);
   applyStandardPragmas(db, spec.pragmas ?? { dataDir: dir });
   spec.init?.(db);
   return db;

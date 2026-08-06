@@ -227,10 +227,16 @@ function openBunDatabase(path: string, opts?: OpenDatabaseOptions): Database {
   return db as unknown as Database;
 }
 
-function bunOptions(opts: OpenDatabaseOptions): { readonly?: boolean; create?: boolean } {
-  const out: { readonly?: boolean; create?: boolean } = {};
+function bunOptions(opts: OpenDatabaseOptions): { readonly?: boolean; create?: boolean; readwrite?: boolean } {
+  const out: { readonly?: boolean; create?: boolean; readwrite?: boolean } = {};
   if (opts.readonly !== undefined) out.readonly = opts.readonly;
   if (opts.create !== undefined) out.create = opts.create;
+  // bun:sqlite reads a partial options object as the full set of open flags:
+  // with neither `readonly` nor `readwrite` set the handle carries no access
+  // mode and every statement fails with SQLITE_MISUSE ("bad parameter or
+  // other API misuse"). Default to writable, matching the driver's no-options
+  // open and better-sqlite3's semantics.
+  if (!out.readonly) out.readwrite = true;
   return out;
 }
 
