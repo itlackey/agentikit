@@ -2965,7 +2965,8 @@ remaining gaps carry approved waivers with the expiries recorded below.
   - Remaining, accepted by design: targeted-write indexing skips embeddings
     on purpose (`src/indexer/index-written-assets.ts` module doc — the next
     full run heals them); whether to surface that gap at write time is a 0.10
-    placement-era product decision, not a regression.
+    placement-era product decision, not a regression — tracked in
+    [#772](https://github.com/itlackey/akm/issues/772).
 - [ ] **Durability:** atomic reader-visible index generations, live-lock age,
       full source lifecycle rollback, safe website/npm refresh, strict lockfile,
       registry stale fallback, and sync/write serialization.
@@ -2984,6 +2985,9 @@ remaining gaps carry approved waivers with the expiries recorded below.
   - Open: live-lock age (an alive-but-slow writer past `staleAfterMs` can be
     reclaimed; no test pins reclaim behavior), full source lifecycle rollback
     (no test walks add→blocked-install→rollback against a dangerous fixture).
+  - Tracking: [#757](https://github.com/itlackey/akm/issues/757) (live-lock reclaim),
+    [#758](https://github.com/itlackey/akm/issues/758) (blocked-install rollback),
+    [#759](https://github.com/itlackey/akm/issues/759) (concurrency/atomicity coverage).
   - issue: recovery-path coverage gaps. impact: worst plausible outcome is a
     mixed website snapshot after a crash; recovery via re-run. owner:
     itlackey. verification test: per-item notes. temporary mitigation: all
@@ -3003,6 +3007,11 @@ remaining gaps carry approved waivers with the expiries recorded below.
     per-process credential), archive expansion budgets (download size capped;
     expansion ratio/member budgets untested), unsuppressible update audit
     (dangerous-key scan runs on add, not re-verified on bundle update).
+  - Tracking: [#763](https://github.com/itlackey/akm/issues/763) (listener credential),
+    [#764](https://github.com/itlackey/akm/issues/764) (archive expansion budgets),
+    [#765](https://github.com/itlackey/akm/issues/765) (update audit),
+    [#766](https://github.com/itlackey/akm/issues/766) (git symlink containment),
+    [#767](https://github.com/itlackey/akm/issues/767) (registry SSRF + credential echo).
   - issue: local-attack-surface and hostile-upstream hardening gaps, all
     pre-existing (none regressed in 0.9.0). impact: requires a local
     co-resident attacker, a malicious registry/source, or a compromised
@@ -3021,6 +3030,8 @@ remaining gaps carry approved waivers with the expiries recorded below.
     persisted verbatim when not pattern-shaped), 0600 enforcement for
     state.db / index.db / logs.db and per-run log files (created with umask
     default, typically 0644), multi-bundle secret coverage (untested).
+  - Tracking: [#755](https://github.com/itlackey/akm/issues/755) (command-target log redaction),
+    [#756](https://github.com/itlackey/akm/issues/756) (0600 DB/log permissions, incl. multi-bundle coverage).
   - issue: permission hardening + one redaction lane. impact: multi-user
     hosts can read task history/telemetry; single-user machines unaffected.
     owner: itlackey. verification test: per-item notes (stat-mode asserts
@@ -3045,6 +3056,10 @@ remaining gaps carry approved waivers with the expiries recorded below.
   - Open: Actions SHA-pinning (third-party actions pinned by tag, not
     commit), post-publish artifact parity (nothing compares npm tarball to
     release assets).
+  - Tracking: [#768](https://github.com/itlackey/akm/issues/768) (SHA-pin actions),
+    [#769](https://github.com/itlackey/akm/issues/769) (post-publish artifact parity),
+    [#770](https://github.com/itlackey/akm/issues/770) (install.ps1 + macOS/Windows scheduler coverage),
+    [#771](https://github.com/itlackey/akm/issues/771) (gate publish on release-check.sh).
   - issue: release-infrastructure hardening. impact: a clobbered release
     asset ships silently; tag-hijack of a third-party action could
     compromise the release job. owner: itlackey. verification test: per-item
@@ -3066,6 +3081,9 @@ remaining gaps carry approved waivers with the expiries recorded below.
   - Open: malformed task YAML (and the `.yaml` misspelling) produces zero
     findings; `--fix` against a read-only bundle or mid-sweep write failure
     is neither transactional nor explicitly reported.
+  - Tracking: [#760](https://github.com/itlackey/akm/issues/760) (malformed task YAML),
+    [#761](https://github.com/itlackey/akm/issues/761) (--fix writable/transactional),
+    [#762](https://github.com/itlackey/akm/issues/762) (--type ignored on non-akm bundles).
   - issue: lint trustworthiness at the edges. impact: a hand-edited task file
     with broken YAML can pass lint silently. owner: itlackey. verification
     test: per-item notes (§20 checklist lines). temporary mitigation:
