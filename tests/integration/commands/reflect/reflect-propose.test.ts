@@ -19,9 +19,12 @@ import path from "node:path";
 import { akmReflect } from "../../../../src/commands/improve/reflect";
 import { akmPropose } from "../../../../src/commands/proposal/propose";
 import { listProposals } from "../../../../src/commands/proposal/repository";
+import type { AkmConfig } from "../../../../src/core/config/config";
 import { appendEvent, readEvents } from "../../../../src/core/events";
 import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
+import { _setWarnSinkForTests } from "../../../../src/core/warn";
 import { akmIndex } from "../../../../src/indexer/indexer";
+import { FALLBACK_ANNOUNCEMENT } from "../../../../src/integrations/agent/engine-fallback";
 import { durableItemRef } from "../../../_helpers/durable-ref";
 import { quietQualityGateConfig } from "../../../_helpers/factories";
 import {
@@ -31,6 +34,7 @@ import {
   sandboxXdgDataHome,
   withEnv,
 } from "../../../_helpers/sandbox";
+import { overrideSeam } from "../../../_helpers/seams";
 
 // ── Setup ──────────────────────────────────────────────────────────────────
 
@@ -693,5 +697,79 @@ describe("akm propose", () => {
     const queued = listProposals(stash, { status: "pending" });
     expect(queued.length).toBe(1);
     expect(queued[0]?.ref).toBe(durableItemRef(stash, "skill", "hello"));
+  });
+});
+
+// ── implicit engine fallback announcement (announced, never silent) ────────
+
+/**
+ * A config with NO `defaults.engine` so `withEngineFallback` must select the
+ * `opencode-sdk` entry. Operator-configured wins over synthesis, and its
+ * pinned absolute bin keeps the probe off the real opencode binary and PATH;
+ * the injected fake spawn keeps the dispatch off the bin entirely.
+ */
+function fallbackEligibleConfig(): AkmConfig {
+  return {
+    configVersion: "0.9.0",
+    semanticSearchMode: "auto",
+    engines: {
+      "opencode-sdk": { kind: "agent", platform: "aider", bin: "/bin/true" },
+    },
+    improve: {
+      strategies: { default: { processes: { distill: { qualityGate: { enabled: false } } } } },
+    },
+  } as AkmConfig;
+}
+
+function captureWarnings(): string[] {
+  const warned: string[] = [];
+  overrideSeam(_setWarnSinkForTests, (level, args) => {
+    if (level === "warn") warned.push(args.map(String).join(" "));
+  });
+  return warned;
+}
+
+describe("engine fallback announcement on propose/reflect", () => {
+  test("propose announces the fallback engine via warn()", async () => {
+    const stash = makeStashDir();
+    const warned = captureWarnings();
+    const result = await akmPropose({
+      type: "skill",
+      name: "hello",
+      task: "Say hi politely",
+      stashDir: stash,
+      agentConfig: fallbackEligibleConfig(),
+      runAgentOptions: { spawn: fakeSpawn(VALID_SKILL_PAYLOAD, "", 0) },
+    });
+    expect(result.engine).toBe("opencode-sdk");
+    expect(warned).toContain(FALLBACK_ANNOUNCEMENT);
+  });
+
+  test("propose with a configured default engine stays silent", async () => {
+    const stash = makeStashDir();
+    const warned = captureWarnings();
+    await akmPropose({
+      type: "skill",
+      name: "hello",
+      task: "Say hi politely",
+      stashDir: stash,
+      agentConfig: quietQualityGateConfig(),
+      runAgentOptions: { spawn: fakeSpawn(VALID_SKILL_PAYLOAD, "", 0) },
+    });
+    expect(warned).not.toContain(FALLBACK_ANNOUNCEMENT);
+  });
+
+  test("reflect announces the fallback engine via warn()", async () => {
+    const stash = makeStashDir();
+    const warned = captureWarnings();
+    const result = await akmReflect({
+      ref: "lessons/rg-over-grep",
+      assetContent: "---\ndescription: Search guidance\nwhen_to_use: Searching repositories\n---\n\nUse grep.\n",
+      stashDir: stash,
+      config: fallbackEligibleConfig(),
+      runAgentOptions: { spawn: fakeSpawn(VALID_LESSON_PAYLOAD, "", 0) },
+    });
+    expect(result.ok).toBe(true);
+    expect(warned).toContain(FALLBACK_ANNOUNCEMENT);
   });
 });

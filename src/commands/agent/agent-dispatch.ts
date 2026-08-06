@@ -19,8 +19,10 @@ import fs from "node:fs";
 import { parseRefInput } from "../../core/asset/resolve-ref";
 import type { AkmConfig } from "../../core/config/config";
 import { NotFoundError, UsageError } from "../../core/errors";
+import { warn } from "../../core/warn";
 import type { AgentDispatchRequest } from "../../integrations/agent/builder-shared";
 import {
+  fallbackAnnouncement,
   NO_ENGINE_MESSAGE_SUFFIX,
   NO_ENGINE_REMEDY,
   withEngineFallback,
@@ -62,6 +64,12 @@ export interface AkmAgentDispatchResult {
   durationMs: number;
   error?: string;
   reason?: string;
+  /**
+   * Non-fatal announcements — today only the implicit `opencode-sdk` engine
+   * fallback (`integrations/agent/engine-fallback.ts`), surfaced here so JSON
+   * consumers see it alongside the stderr `warn()`.
+   */
+  warnings?: string[];
 }
 
 /**
@@ -115,8 +123,12 @@ export async function akmAgentDispatch(options: AkmAgentDispatchOptions): Promis
     throw new UsageError("agent requires a valid config with an agent engine.", "MISSING_REQUIRED_ARGUMENT");
   // Same implicit opencode-sdk fallback the workflow and task surfaces apply,
   // so an engine-less install is usable everywhere or nowhere — not a mix.
-  const { config: agentConfig } = withEngineFallback(options.agentConfig);
+  const { config: agentConfig, fallbackEngineName } = withEngineFallback(options.agentConfig);
   const engineName = options.engine ?? agentConfig.defaults?.engine;
+  // Announced, never silent: `options.engine` outranks the default, so the
+  // fallback is only reportable when it is the engine actually selected.
+  const engineAnnouncement = fallbackAnnouncement(fallbackEngineName, engineName);
+  if (engineAnnouncement) warn(engineAnnouncement);
   if (!engineName)
     throw new UsageError(`agent ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "MISSING_REQUIRED_ARGUMENT");
   const runner = resolveEngine(engineName, agentConfig);
@@ -170,5 +182,6 @@ export async function akmAgentDispatch(options: AkmAgentDispatchOptions): Promis
     durationMs: result.durationMs,
     ...(result.error !== undefined ? { error: result.error } : {}),
     ...(result.reason !== undefined ? { reason: result.reason } : {}),
+    ...(engineAnnouncement ? { warnings: [engineAnnouncement] } : {}),
   };
 }

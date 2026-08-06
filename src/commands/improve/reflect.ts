@@ -39,10 +39,12 @@ import { lintLessonContent } from "../../core/lesson-lint";
 import { parseEmbeddedJsonResponse } from "../../core/parse";
 import { redactSensitiveText } from "../../core/redaction";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
+import { warn } from "../../core/warn";
 import { lookup } from "../../indexer/indexer";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "../../integrations/agent";
 import { DEFAULT_LLM_TIMEOUT_MS } from "../../integrations/agent/config";
 import {
+  fallbackAnnouncement,
   NO_ENGINE_MESSAGE_SUFFIX,
   NO_ENGINE_REMEDY,
   withEngineFallback,
@@ -1543,8 +1545,12 @@ function resolveReflectRunner(options: AkmReflectOptions): {
     }
     runnerSpec = processRunner;
   } else {
-    const { config: engineConfig } = withEngineFallback(config);
+    const { config: engineConfig, fallbackEngineName } = withEngineFallback(config);
     const defaultEngine = engineConfig.defaults?.engine;
+    // Announced, never silent — same contract as the workflow freeze boundary
+    // and the task runner. Only this arm can select the synthesized engine.
+    const engineAnnouncement = fallbackAnnouncement(fallbackEngineName, defaultEngine);
+    if (engineAnnouncement) warn(engineAnnouncement);
     if (!defaultEngine) {
       throw new ConfigError(`reflect ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "INVALID_CONFIG_FILE");
     }

@@ -23,9 +23,11 @@ import { ConfigError, UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { redactSensitiveText } from "../../core/redaction";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
+import { warn } from "../../core/warn";
 import { deriveEntryProvenance } from "../../indexer/installations";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "../../integrations/agent";
 import {
+  fallbackAnnouncement,
   NO_ENGINE_MESSAGE_SUFFIX,
   NO_ENGINE_REMEDY,
   withEngineFallback,
@@ -150,8 +152,12 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
   const config = options.agentConfig ?? (await import("../../core/config/config.js")).loadConfig();
   const target = resolveProposalQueueTarget(stash, config);
   emitProposeInvoked(target.source, options);
-  const { config: engineConfig } = withEngineFallback(config);
+  const { config: engineConfig, fallbackEngineName } = withEngineFallback(config);
   const engineName = options.engine ?? engineConfig.defaults?.engine;
+  // Announced, never silent: `options.engine` outranks the default, so the
+  // fallback is only reportable when it is the engine actually selected.
+  const engineAnnouncement = fallbackAnnouncement(fallbackEngineName, engineName);
+  if (engineAnnouncement) warn(engineAnnouncement);
   if (!engineName)
     throw new ConfigError(`propose ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "INVALID_CONFIG_FILE");
   const runner = resolveEngine(engineName, engineConfig);
