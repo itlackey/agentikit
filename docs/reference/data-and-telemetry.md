@@ -16,6 +16,7 @@ AKM adds no network destinations of its own. The requests it *does* make all go 
 2. **Registry metadata and stash packages** from sources you explicitly configure (GitHub, npm, git remotes, websites) — those hosts receive the fetch/clone/crawl requests, and website sources receive requests for the pages you crawl.
 3. **`akm upgrade`** — fetches the latest release from GitHub releases (GitHub sees the request).
 4. **`akm setup`** — a single DNS lookup for `github.com` to decide whether to skip network-dependent steps (Ollama detection, remote embedding probes) when offline. No HTTP request is made by this probe; if it succeeds, akm proceeds with the network-dependent steps you already configured.
+5. **`akm improve` dead-link checks** — a full-scope improve run (the default for a bare `akm improve`) sends best-effort `HEAD` requests (following redirects, with a short timeout and a hard cap on URL count) to URLs found in the bodies of the knowledge assets it is improving, to flag dead links. The hosts of those URLs see a `HEAD` request; no asset content is sent. Keep URLs you don't want probed out of knowledge-asset bodies, or run improve with an explicit narrower scope.
 
 In every case the receiving endpoint is one you configured or invoked; the data leaving your machine is the data you directed AKM to send there.
 
@@ -175,12 +176,12 @@ the set of types the code actually emits at HEAD (verified against every
 | Event type | When emitted | Key metadata fields |
 |---|---|---|
 | `workflow_started` | `akm workflow run <ref>` creates a run (including native workflow task execution) | `ref`, `runId` |
-| `workflow_step_completed` | The shared native/driver completion path records a genuine `completed` transition | `ref`, `runId`, `stepId`, `status` |
-| `workflow_step_updated` | The shared native/driver completion path records a non-`completed` transition (`failed`/`skipped`/`blocked`) | `ref`, `runId`, `stepId`, `status` |
-| `workflow_finished` | A native `run` or external-driver `report` transition makes the run terminal | `ref`, `runId` |
+| `workflow_step_completed` | The run completion path records a genuine `completed` transition | `ref`, `runId`, `stepId`, `status` |
+| `workflow_step_updated` | The run completion path records a non-`completed` transition (`failed`/`skipped`/`blocked`) | `ref`, `runId`, `stepId`, `status` |
+| `workflow_finished` | A `run` transition makes the run terminal | `ref`, `runId` |
 | `workflow_abandoned` | `akm workflow abandon` | `runId` only — never the workflow title |
-| `workflow_unit_started` | A unit begins through stable native `akm workflow run` or the experimental `brief`/`report` external-driver protocol | ids/status only — never unit instructions or results |
-| `workflow_unit_finished` | A workflow-engine unit terminates | ids/status/tokens only — never unit instructions or results |
+| `workflow_unit_started` | A unit begins through `akm workflow run` | ids/status only — never unit instructions or results |
+| `workflow_unit_finished` | A workflow unit terminates | ids/status/tokens only — never unit instructions or results |
 
 *LLM usage and health*
 

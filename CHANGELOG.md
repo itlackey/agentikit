@@ -6,6 +6,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-06
+
+0.9.0 is the format-neutral **bundle / adapter** refactor: it replaces the flat
+asset-type registry with per-format adapters, adopts one canonical ref grammar,
+and consolidates the durable databases and config. This section consolidates and
+supersedes the `0.9.0-rc.*` / `0.9.0-beta.*` development entries below.
+
+### Breaking changes & migration
+
+- **Installed non-akm bundles reclassify on your next `akm index`.** The
+  indexer now dispatches each installed bundle's *detected* adapter (Claude
+  tool dirs, LLM wikis, website snapshots, agent-skills packs, …) instead of
+  recognizing everything with the akm-stash adapter. Entries in such bundles
+  change type and ref spelling to the owning adapter's own scheme the first
+  time you reindex. No action needed — the index is a regenerable cache and
+  rebuilds itself — but searches/saved refs into those bundles may resolve to
+  the new spellings afterwards.
+- **Ref grammar cutover — `type:name` → `[bundle//]conceptId`.** Every ref is
+  now a subdir-qualified concept id inside its bundle (`skills/code-review`,
+  `memories/vpn-note`, `env/prod`), optionally prefixed with a `bundle//`
+  installation slug and suffixed with `#fragment`. Durable state stores the
+  fully-qualified `bundle//conceptId`; the short bundle-omitted form is accepted
+  input only (resolved against `defaultBundle`, then installation-priority
+  order). The pre-0.9.0 `[origin//]type:name` grammar is removed — there is no
+  compatibility parser; the frozen migrator in `scripts/akm-migrate/migrate/`
+  is the only place it survives.
+- **Explicit, crash-resumable cutover (`akm migrate apply`).** The
+  migrator re-keys all durable state to the new spelling, folds the former
+  `workflow.db` into `state.db` (four databases down to three: `state.db` /
+  `index.db` / a separate `logs.db`), and migrates config from the flat
+  `stashDir` / `sources` / `installed` / `wikiName` keys to `bundles` /
+  `defaultBundle`. A semantically verified, installation-scoped **backup manifest v4**
+  (covering the pre-rescue `index.db`) is taken before mutation. One phase-free
+  incomplete sentinel retains that backup and target; expected orphans are
+  quarantined, integrity failures fail closed, and the whole cutover reruns
+  idempotently after a crash. Normal commands refuse an
+  un-migrated or divergent durable schema rather than migrating as a side effect.
+  The retired `stashDir` / `sources` / `installed` keys are **hard-rejected** by
+  the 0.9.0 config schema whenever present (the error names `akm migrate apply`);
+  registry-installed bundles keep only their desired locator (`git`/`npm` +
+  `registryId`) in config, with resolved cache state living exclusively in the
+  lockfile.
+- **`index.md` / `log.md` are reserved structural files.** Per the Open
+  Knowledge Format, `index.md` (directory listing) and `log.md` (update history)
+  are never indexed as concepts and are never valid write / `mv` targets at any
+  bundle depth. Existing stash files with those names are excluded from the
+  index (and renamed by the content migration when they hold a real concept).
+- **`vault` asset type removed.** Use `env` (a whole `.env` group; key names
+  surfaced, values never) and `secret` (a single sensitive value), addressed as
+  `env/<name>` and `secrets/<name>`. `akm-migrate storage` performs the
+  non-destructive `vaults/` → `env/` copy for older stashes.
+- **0.8-era CLI aliases removed.** The flat proposal verbs (`akm proposals`,
+  `akm accept`, `akm reject`, `akm diff`, `akm revert`, `akm show proposal`),
+  `akm save`, top-level `akm enable` / `akm disable`, `akm events`,
+  `--detail summary|agent`, `--for-agent`, `--note`, and `--source` (on
+  accept/reject/history) are gone — use the canonical spellings documented in
+  `STABILITY.md`.
+
+See `docs/migration/v0.8-to-v0.9.md` and
+`docs/migration/release-notes/0.9.0.md` for the full upgrade procedure.
+
 ### Removed
 
 - **The experimental `akm workflow brief` / `akm workflow report`
@@ -48,10 +109,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and no binary has no server to reach. Install it with `npm i -g opencode-ai`
   or opencode's own installer.
 
-  The fallback is **announced, never silent**: a workflow run surfaces it once
-  at run creation in the result's `warnings`, and a prompt task writes it to
-  the task run log. The frozen plan records the engine actually used, so a
-  resume never re-announces a decision it did not make.
+  The fallback is **announced, never silent** on every surface that applies
+  it: a workflow run surfaces it once at run creation in the result's
+  `warnings`, a prompt task writes it to the task run log, `akm agent`
+  carries it in its result `warnings` and on stderr, and `propose` and
+  `improve` reflect warn on stderr. The frozen plan records the engine
+  actually used, so a resume never re-announces a decision it did not make.
 
 - **RSS, Bluesky, and X sources.** `akm bundle add` now recognizes three new
   kinds of URL and snapshots them as knowledge assets instead of crawling
@@ -78,6 +141,313 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ```
 
   With neither set, the X fetcher emits one warning and falls through.
+
+- **`akm-migrate` derives the 0.9 config from your 0.8 keys instead of
+  demanding one.** Upgrading used to require hand-authoring a complete 0.9
+  config before `migrate apply` would act. The first `apply` with no
+  `--config` now writes a validated starter config — `bundles`/`defaultBundle`
+  derived from the 0.8 `stashDir` / `sources` / `installed` keys — to a
+  predictable path under the backup root and stops, with config and durable
+  state byte-for-byte untouched; a second `apply` picks it up and performs the
+  cutover. Engine settings are never guessed: `profiles.*` and
+  `defaults.llm|agent|improve` are stripped and reported individually in
+  `droppedKeys` by their exact 0.8 dotted path. `status` and `apply --dry-run`
+  preview the same plan, and an explicit `--config` always wins and is never
+  overwritten. `akm migrate --format` now renders text/md/html/yaml through
+  the normal output pipeline instead of warning and printing JSON anyway.
+
+- **Local downstream value attribution for memory inference and graph
+  extraction.** Private search-hit sidecars now write versioned, source-qualified
+  per-entry `usage_events.metadata` for emitted MI direct/surface value and the
+  active graph contributor's positive applied/capped contribution. Current plain
+  traffic is marked as control, brief/replaced MI surfaces and graph ablations do
+  not claim attribution, and nested curate reads avoid duplicate show rows. The
+  read-only `akm-eval-attribution-rollup` separates user-only exposure,
+  selection/show consumption, current controls, and historical unattributed rows
+  without emitting bodies, query text, or provenance content. Graph contribution
+  is an input attribution signal, not a causal claim that rank changed. No table,
+  migration, dashboard, or health schema was added.
+- **Explicit, crash-resumable 0.9 migration coordination.** `akm migrate
+  status` classifies config, `state.db`, and `workflow.db` independently;
+  `akm migrate apply [--config <prepared>]` creates a semantically verified,
+  installation-scoped config/database backup before applying pending migrations.
+  Apply and restore use one phase-free incomplete sentinel, bounded control-file
+  reads, SQLite integrity and ordered-ledger checks, active-writer barriers,
+  WAL/SHM-safe publication, and idempotent replay. Legacy checksum columns are
+  inert. Routine reads and current database opens no longer depend on a
+  historical cutover bundle. See `docs/migration/release-notes/0.9.0.md`.
+- **Workflow orchestration engine (experimental).** akm can now execute
+  multi-step workflows through a native engine or any agent session. Workflow
+  assets use the unified markdown format described above; the stable manual
+  CLI contract (`start`/`next`/`complete`/`status`/`list`) and the experimental
+  engine consume the same asset. What ships:
+  - **Authoring.** A workflow is a markdown asset whose frontmatter graph is
+    validated against `schemas/akm-workflow.json` and whose `## <step-id>` body
+    sections carry instructions and gate rubrics. `akm workflow create`
+    scaffolds that format; `akm lint --type workflows` parses and compiles it.
+    Bare references (`params.<name>` and `steps.<id>.output.<path>`) wire
+    `map.over`, `route.input`, and `inputs`; prose is never interpolated.
+  - **Compilation + frozen plans.** `akm workflow start` compiles the workflow
+    into a backend-agnostic Workflow Plan Graph IR (`src/workflows/ir/`) and
+    freezes it on the run row (`plan_json` + `plan_hash`); a run executes the
+    plan compiled at start, and edits to the source file require a new run.
+  - **Per-step orchestration.** A step can declare an engine, model, timeout,
+    fan-out (`map`/`over` with a `concurrency` cap and a `collect` | `vote`
+    reducer), a typed `output` JSON Schema (validated via a `runStructured`
+    retry-with-feedback loop), `env` bindings (resolved through the existing
+    `akm env run` machinery — secret tokens, dangerous-key policy, keys-only
+    audit events), and classify-and-dispatch `route` steps.
+  - **Determinism + replay.** Journaled unit identity is content-derived
+    (`<step>:<sha256(item)[:12]>`, `:solo` for a single unit), so cached
+    results survive item-list reordering; a completed unit whose recorded
+    inputs differ on replan is a hard **replay-divergence** failure naming the
+    unit, never a silent re-dispatch. Every unit is recorded in the new
+    `workflow_run_units` table behind a serialized writer queue.
+  - **Execution (`akm workflow run`).** A semaphore-bounded scheduler fans a
+    step's units out (concurrency defaults to 1 per the local-model
+    LLM-defaults rule and is the minimum of the map request, frozen workflow
+    limit, selected frozen LLM engine limit, and current host safety limit),
+    enforces per-unit
+    timeouts (default 10 m) and run **budget ceilings** (`budget.max_tokens` /
+    `budget.max_units`, seeded from the journal so they span resumes), and
+    advances the run **strictly through `completeWorkflowStep`** so completion
+    gates are never bypassed. Every dispatched unit gets a standard akm
+    preamble (run/unit ids, knowledge + env/secret + reporting contract).
+  - **Typed artifacts + honest gates.** A step's promoted artifact is
+    validated against its declared `output` schema before completion; a
+    criteria-bearing gate judges that **artifact** (canonical JSON, clipped)
+    rather than machine prose, and each engine-driven evaluation is journaled
+    as a gate unit row. `gate.max_loops` bounds an evaluator-optimizer retry
+    loop (feedback threaded into re-dispatched unit prompts). Gates are
+    optional validation: omitted/empty rubrics and unavailable or malformed
+    judges skip validation.
+  - **Failure policy.** Per-unit `on_error: fail | continue` (fail-fast
+    default) plus bounded `retry: { max, on: [<failure_reason>…] }` keyed on
+    the persisted failure taxonomy.
+  - **Isolation + leases.** `isolation: worktree` runs each file-mutating unit
+    in a fresh detached git worktree (journaled path; clean trees
+    auto-removed, dirty ones retained). A run **lease** (`engine_lease_*`)
+    ensures a run is driven by exactly one engine or one external driver at a
+    time; manual `complete` is refused while a live engine lease is held.
+  - **Harness-neutral driver protocol.** An orchestrated run can be driven by
+    ANY agent session (Claude Code, opencode, Codex, a human at a shell), not
+    only the native engine. **`akm workflow brief <run>`** is read-only (takes
+    no lease, mutates nothing) and emits the active step's expected work-list —
+    per-unit content-derived id, resolved instructions + input hash
+    (byte-identical to the engine's dispatch), output schema, env binding
+    NAMES only, and the exact `report` command lines. **`akm workflow report
+    <run> --unit <id> --status completed|failed|running`** is the one mutating
+    verb, ingesting a unit's result through the SAME shared step semantics the
+    engine uses (idempotent same-hash re-report, replay-divergence on a
+    differing hash, budget enforcement, schema validation, and the
+    artifact-judged gate/`max_loops` completion path). `--status running`
+    claims/heartbeats a unit for stale-driver detection without advancing the
+    spine; `--rerun` records a fresh attempt for a failed unit (carrying its
+    prior token total forward). Every report command carries `--expect-step`
+    (refused if the spine has moved since the brief), and `report --settle`
+    (no `--unit`) advances a step that dispatches no reportable units — a
+    params-only route, an empty fan-out, or an all-unresolvable work-list — so
+    a driver is never wedged. The engine and the brief/report surfaces are
+    proven to produce **identical unit graphs**
+    (`tests/workflows/conformance/driver-parity.test.ts`).
+  - **Observability.** `akm workflow watch <run>` tails the run's `workflow_*`
+    / `workflow_unit_*` events as NDJSON (`--stream` foreground-polls to a
+    terminal status, no daemon); `akm workflow status --units` lists per-unit
+    diagnostics (failure reason + result/error text) without feeding them into
+    the deterministic artifact graph; unit lifecycle emits
+    `workflow_unit_started` / `workflow_unit_finished` events carrying
+    ids/status/enums only. `akm show workflow:<name>` summarizes each step's
+    orchestration.
+  - **Harness adapters.** Seven local coding-agent CLIs are first-class
+    dispatch targets — Codex, Copilot CLI, Pi, Gemini, Aider, Amazon Q, and
+    OpenHands — each registered in `HARNESS_REGISTRY` with a command builder +
+    result extractor; agent-identity detection and the session-log provider
+    list are derived from the registry, and harness-native session ids are
+    journaled opportunistically for future session reuse.
+  - **Storage.** Additive `workflow.db` migrations 004–010 (unit journal,
+    harness session ids, frozen plans + run leases, check-in heartbeats,
+    attempt counter, unit claims); migrations 001–003 are untouched and linear
+    workflows behave exactly as before.
+
+  See "Orchestrated steps" and "Driving a run from any agent" in
+  `docs/features/workflows.md`, the redesign addendum in
+  `docs/archive/akm-workflows-orchestration-plan.md`, and `STABILITY.md`
+  (Experimental).
+- **`fable` built-in model alias** — resolves to `claude-fable-5`
+  (`opencode/claude-fable-5` on opencode); recommended resolution target for
+  the `deep` workflow model tier.
+- **`akm lint` now checks the frontmatter xref channels for broken refs.**
+  The existing `missing-ref` check additionally scans the `xrefs:`,
+  `supersededBy:`, and `contradictedBy:` frontmatter keys of non-wiki markdown
+  assets (memories, knowledge, lessons, facts, agents, commands, skills,
+  workflows) — the channels the stash back-linking conventions route
+  provenance and correction links through, and previously the only ref channel
+  with zero checking. Dangling refs are flagged with a detail naming the key
+  (`missing ref: <ref> (frontmatter <key>; resolved to <relPath>)`). The
+  `refs: []` body-scan carve-out does not suppress the new pass; `lint_skip:
+  [missing-ref]` suppresses both; non-ref values (URLs, `raw/<slug>`,
+  `<placeholder>` templates, shell vars) are ignored; refs resolving in a
+  configured extra stash root stay clean. **Note for `--fail-on-flagged` CI
+  users:** stashes with already-dangling xrefs (e.g. from past renames) will
+  gain new `missing-ref` findings on upgrade — fix the refs or add
+  `lint_skip: [missing-ref]` per file. `sources:`, `source_refs:`, and
+  `evidenceSources:` are deliberately not checked (wiki `sources:` is covered
+  by `akm wiki lint`; the latter two legitimately point at merged-away
+  assets).
+- **`--xref <ref>` on `akm remember` and `akm import` — write-time
+  cross-references with validation.** The stash back-linking conventions route
+  provenance and associative links through `xrefs:` frontmatter, but neither
+  CLI write flow could express them (remember always generated its own
+  frontmatter block; import wrote content verbatim). The new repeatable flag
+  records refs in the written asset's `xrefs:` frontmatter list, which the
+  indexer folds into search hints — the new asset becomes findable from
+  searches for its source. `remember` merges the refs into its generated
+  frontmatter (composes with `--tag`/scope flags; does not trigger the
+  tags-required check); `import` dedupe-appends into the document's existing
+  frontmatter, or adds a block when the document has none — never a nested
+  second block. A document whose existing frontmatter is not a parseable YAML
+  mapping aborts the import (exit 2, nothing written) rather than being
+  rewritten lossily; importing it without `--xref` still preserves it
+  verbatim. Every ref is validated before anything is written, against the
+  write target plus all configured sources (read-only cross-stash sources
+  count): an unresolvable ref fails with the standard usage envelope (exit 2)
+  and leaves the stash untouched. The conventions' ~5-xref cap stays soft —
+  exceeding it warns on stderr but still writes. Additionally, a type-root
+  write (no `--path`, flat name) into a stash carrying convention facts now
+  returns an additive `hint` output key pointing at the stash's placement
+  conventions (`facts/conventions/organization` when that fact exists), so CLI
+  writers see the conventions that LLM flows already receive by injection.
+- **`--supersedes <ref>` on `akm remember` and `akm import` — atomic
+  correction + demotion of the superseded asset.** The stash conventions'
+  corrections pattern needs TWO writes (the new correction asset with an xref
+  to what it corrects, plus a metadata edit demoting the old asset), which
+  previously meant hand-editing the old file's frontmatter and remembering to
+  reindex it. The new repeatable flag does both: the correction is written
+  with the old ref folded into its `xrefs:` (correction provenance), and the
+  old asset gains `beliefState: superseded` +
+  `supersededBy: [<new ref>]` via the shared `writeSupersededEdge` primitive
+  (sibling of `writeContradictEdge`) — a metadata-only frontmatter edit that
+  preserves every other key and the body byte-for-byte, sorted-set-appended
+  and idempotent across re-runs. The mutated old file is reindexed by the
+  write path, so `--belief current` hides it and ranking demotes it
+  immediately. An unresolvable ref is input validation: exit 2 with the
+  standard `{ok:false,error,code}` envelope and NOTHING written or demoted
+  (no partial correction); a ref resolving to the asset being written itself
+  (self-supersede via `--force` overwrite) is rejected the same way instead
+  of letting a correction demote itself. An old asset that resolves only
+  outside the write target and the working stash (in a read-only source, or
+  in a writable source that is not this write's target) is not mutated: the
+  correction still writes, stderr warns, and the JSON output reports the
+  additive `superseded: [{ref, applied: false, reason}]` key (`applied: true`
+  on success) — the reason names the `--target` remedy when one exists. An
+  old asset whose existing frontmatter is not parseable YAML is likewise
+  skipped (`applied: false`) rather than rewritten through the lossy lenient
+  parser. On a git write target the demotion is ordered before the
+  batch-at-boundary commit, so the correction and the demoted old asset land
+  in one commit.
+- **Ref-prefix search queries — `akm search "<subdir>/<prefix>/"` now enumerates
+  that subtree.** A query shaped like a ref prefix (trailing slash required:
+  `memories/projectA/`; a bare `memories/` lists the whole type) translates to a
+  typed index enumeration narrowed to entry names under the prefix, instead of
+  degenerating into the AND-token FTS query its sanitized form used to produce
+  (`"memory projectA"` — noise, since `entry_type` is not an FTS column). The
+  listing is recursive and `/`-boundary exact (`projectA/` cannot leak a
+  sibling `projectAlpha/…` scope), matches names case-insensitively (the CLI
+  lowercases queries; on-disk scope directories may carry mixed case), and
+  composes with `--limit`, `--belief`, `--filter`, and named `--source`
+  narrowing exactly like the existing empty-query enumeration — hits carry the
+  fixed browse score `1` in deterministic listing order, not a relevance
+  ranking. The parsed type is explicit intent: a bare `sessions/` enumerates
+  sessions just like `--type session` (the default session exclusion is an
+  untyped-path policy), while an explicit `--type` flag always wins over the
+  type parsed from the query (the branch fires only on untyped searches). A
+  full ref without the trailing slash (`memories/projectA/auth-tip`) stays an
+  ordinary keyword search — resolving a single ref is `akm show`'s job.
+  **Stable-surface note:** `akm search` is Stable; this changes results for a
+  query shape that previously returned noise or nothing. A user literally
+  keyword-searching for the string `memories/x/` loses the old fuzzy token
+  behavior — accepted as negligible.
+- **The `category:` frontmatter key is now captured into the index** as
+  `entry.category` (entry_json only — no schema migration). The key already
+  drives convention-fact prompt injection (`resolveStashStandards`) and the
+  fact linter, but the indexer never captured it, so no category-keyed search
+  or ranking policy was implementable. Captured for all markdown asset types
+  alongside `beliefState` (trimmed; blank/non-string values ignored; no
+  default invented), captured directly onto the index entry. Search results
+  and ranking are unchanged — this is capture
+  only (a unit test pins that `category` never enters the FTS search
+  fields). **Requires a reindex to take effect** for existing entries. The
+  companion rank-time demotion of `category: convention` facts on untyped
+  queries was NOT shipped: the prescribed measurement (full skeleton
+  convention facts plus a real `knowledge/auth` asset, untyped `auth` query,
+  semantic off) shows no crowding — FTS is exact-first, so prefix expansion
+  onto the facts' tokens only happens when nothing matches the query exactly,
+  and a real domain asset always outranks the facts. That invariant is pinned
+  by `tests/search-convention-fact-demotion.test.ts`, which becomes the
+  regression guard if a demotion contributor is ever revisited.
+- **Config-gated indexing of the self-situating body opening —
+  `index.indexBodyOpening` (default `false`).** Body prose is not indexed
+  (the FTS `content` column carries only TOC headings and parameters), which
+  is why the stash conventions route orientation into
+  `description:`/`when_to_use:`. With the new flag enabled, the metadata pass
+  captures the first prose paragraph of each markdown asset body — skipping
+  headings (ATX and setext), fenced code blocks, thematic breaks, and a
+  leading nested frontmatter block (only when its content is actually
+  frontmatter-shaped: prose wrapped in decorative `---` lines is captured,
+  not discarded); capped at 280 chars with word-boundary truncation and a
+  trailing ellipsis — into `entry.bodyOpening`, which folds into the
+  lowest-weight `content` FTS column (bm25 weight 1.0, so a name match always
+  outranks a body-opening-only match) and into the search/embedding text.
+  Secret and env files are never read for it, and session-kind memories
+  (`akm_memory_kind` in outer or nested inner frontmatter) are excluded —
+  their bodies are raw transcripts. Both indexing walks and write-path
+  indexing honor the flag (the metadata pass reads the user config directly).
+  With the flag absent or `false`, entries and search fields stay
+  byte-identical to before. **Costs of toggling (either direction):** indexed
+  text changes, so collapse-detector canary recall baselines shift — re-mint
+  via `akm improve canary --refresh` — and embeddings are NOT regenerated for
+  entries that already have one, while incremental runs re-extract only
+  changed files. Run `akm index --full` after toggling: it re-extracts every
+  entry and wipes embeddings so they rebuild from the new text; until then
+  `akm index` warns that the flag differs from the state the index was built
+  with. The conventions' `description:`/`when_to_use:` orientation routing
+  remains primary — this flag makes body openings additionally pay retrieval
+  rent, it does not replace structured metadata. See `docs/configuration.md`.
+- **`akm mv <ref> <new-name>` — rename with inbound-xref rewrite and
+  utility-history preservation (Experimental).** The stash conventions'
+  forced-rename procedure ("grep and fix inbound xrefs in the same pass") was
+  agent-executable except for the part only the CLI can do: a rename used to
+  mint a new index row, orphaning the `utility_scores` /
+  `utility_scores_scoped` / embeddings / salience rows keyed by entry id —
+  the "rename resets learned ranking" cost the conventions warn about. The
+  new verb does the whole pass: it moves the file (a memory's `.derived.md`
+  twin moves together, keeping the `entry_key + ".derived"` belief-inheritance
+  coupling), rewrites inbound refs across the writable stash's markdown files
+  — body prose, frontmatter ref-list keys (`xrefs:`/`refs:`/`supersededBy:`/
+  …), and fenced code blocks — with complete-ref boundary matching (a longer
+  ref sharing the old ref as a prefix is untouched), and re-keys the index
+  row **in place** so the row id and every id-keyed ranking table survive;
+  the moved row and rewritten citers are FTS-refreshed so search reflects the
+  new name immediately. Scope v1: flat-markdown asset types (`memory`,
+  `knowledge`, `command`, `agent`, `workflow`, `lesson`, `session`, `fact`)
+  in the primary writable stash only, and the source ref must be the
+  canonical spelling — a ref that resolves only through one of lint's
+  fallback resolutions (knowledge-subdir alias, direct-path) is rejected
+  naming the canonical ref, since a fallback-keyed move would strand the
+  index row and dangle canonical citers. Wiki refs, cross-type targets,
+  existing targets, unresolvable refs, type-root escapes, `.derived` twin
+  refs as the source (rename the base — the twin follows), and target names
+  ending in `.derived` (reserved twin suffix) are rejected with the
+  standard envelope (exit 2, nothing moved). Read-only sources are scanned
+  but never written — their citing files are reported in `readOnlyCiters` as
+  manual follow-ups. Output:
+  `{ok, from, to, rewrote: [{file, count}], readOnlyCiters, utilityPreserved}`;
+  a successful move appends an exactly-once `mv` event. A durable mutation
+  journal stages citer rewrites and the asset publication, preserves
+  source-qualified utility/salience history, and resumes index/state
+  finalization after interruption. Divergent citers and late-created targets
+  fail closed instead of being overwritten. Added to the v1 §9.4 command
+  surface as an Experimental-tier additive entry (see `STABILITY.md`).
 
 ### Changed
 
@@ -123,6 +493,142 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ```json
   { "bundles": { "docs": { "website": { "url": "https://docs.example.com", "respectRobots": false } } } }
   ```
+
+- **`akm lint` now routes through each bundle adapter's own `validate()`.**
+  `validate()` was a required member of the adapter interface that nothing
+  called: `akm lint` branched on adapter id and re-implemented OKF's checks
+  inline (with drifted semantics for `missing-type`), OKF's `missing-ref`
+  never ran at all (a bundle with a dangling link reported nothing), and
+  llm-wiki's `uncited-raw` / `broken-xref` / `broken-source` /
+  `missing-description` checks were unreachable dead code. **Existing OKF and
+  llm-wiki bundles may surface new lint findings after upgrading.** akm-bundle
+  lint output is byte-identical. Proposal promotion also runs the adapter
+  check immediately before the write — advisory-only: it warns and never
+  rejects, because the adapter resolver and the legacy promotion gate still
+  disagree on foreign-typed cross-bundle refs.
+
+- **Improve-stage extraction and proactive maintenance now ship opt-in.** The
+  built-in `default` and `frequent` strategies resolve extract off, while
+  `default` and `reflect-distill` resolve `proactiveMaintenance` off. The
+  dedicated `proactive-maintenance` strategy remains enabled. Built-ins such as
+  `thorough` that omit these fields inherit the new `default` off values; user
+  overrides are merged last, so explicit `enabled: true` values still win.
+  Standalone extraction remains independent of the improve-stage toggle but
+  still requires `--type <harness>` or `--auto`. The bundled, unselected
+  `core/extract` task now uses `akm extract --auto`; existing scheduled tasks
+  with invalid bare `akm extract` commands must be updated explicitly.
+- **Indexing dispatches each bundle's detected adapter.** The indexer's per-
+  directory scan now resolves the component's adapter (`adapterForId`) and runs
+  THAT adapter's `recognize`, instead of always using the `akm` adapter. A
+  component whose adapter id is unknown is skipped with a warning. Adapter-owned
+  filtering moves the AKM-stash sensitive/infra exclusions (env/secret
+  `.sensitive`-marker skips, the legacy `vaults/` skip, wiki infra files) out of
+  the core scan and into the `akm` adapter's own recognition, so each adapter
+  owns its bundle's filtering. **Reindex note:** any non-`akm` bundle that was
+  previously probed as one adapter id but still recognized by `akm` will
+  re-index under its own adapter on the next `akm index` — the index is a
+  regenerable cache, so no migration is required.
+- **Improve target identity is now end-to-end and source-qualified.** Explicit
+  targets govern reads, generated proposals, triage promotion, consolidation,
+  retrieval signals, cooldowns, and replay state. Duplicate bare refs in other
+  sources no longer affect the selected corpus. Generated lessons and
+  provenance follow stash placement conventions and canonical `xrefs`.
+- **Writable Git boundaries commit only operation-owned paths.** Improve,
+  proposal, supersedes, and direct write flows preserve unrelated staged or
+  dirty work, including files beside generated assets in `content/` layouts.
+
+- **Directory (scope/domain) tokens now always merge into `tags` at index
+  time**, even when an asset sets explicit `tags:` frontmatter. Previously
+  explicit tags suppressed all path-derived tags, so a nested asset like
+  `memories/projectA/auth-tip` with `tags: [auth]` silently lost the exact
+  tag-match ranking boost for its scope token unless the author restated it.
+  The merged tokens come from the canonical ref subpath
+  (`extractDirTagsFromName`), which also fixes the flat-walk indexing path
+  losing directory segments in the empty-tags fallback. Filename tokens are
+  still auto-derived only when `tags` is empty (they already live in the FTS
+  name column and aliases), and the empty-tags fallback itself is unchanged.
+  **Operator notes:** the change takes effect on the next reindex and alters
+  indexed tag text for nested assets with explicit tags, so collapse-detector
+  canary recall baselines may shift — re-mint them with `akm improve canary
+  --refresh`. Embeddings are not regenerated when indexed text changes; the
+  drift here is small (the merged tokens already appear in the name field),
+  but a purge/re-embed picks up the new text exactly.
+- **Demoting belief states now cap an entry's final search score**
+  (superseded ≤ 0.25, contradicted ≤ 0.2, archived ≤ 0.15, deprecated ≤
+  0.28). The existing additive belief penalties are applied inside the
+  multiplicative boost sum on a min-max-normalized FTS base (rank-1 vs rank-2
+  base can differ by up to 0.7), so a superseded incumbent that was the best
+  keyword match stayed clamp-pinned at 1.0 above its own correction — the
+  demotion was invisible exactly when the corrections pattern needs it. The
+  ceiling is applied once at the end of the single scoring pipeline (sort
+  order and displayed scores stay consistent); demoted entries remain listed
+  under the default `--belief all`, keep their relative ordering, and the
+  `--belief` filter axis is unchanged. Semantic-only hits are judged against
+  the `search.minScore` floor by their pre-ceiling score, so a ceiling below
+  the floor (archived 0.15 < default 0.2) ranks the hit last instead of
+  silently dropping it. Ordering changes only for stashes containing
+  belief-flagged assets.
+- **`mutateFrontmatter` (belief-edge writers: supersede/contradict edges,
+  belief refresh) now preserves the body bytes verbatim** when the file
+  already has a frontmatter block, instead of re-normalizing the
+  fence-to-body separator through `assembleAsset`. A metadata edit is no
+  longer a (whitespace-level) content edit; files gaining their first
+  frontmatter block still use the canonical shape.
+
+### Fixed
+
+- **Fresh 0.8 installs can actually upgrade.** A config that 0.8.x wrote
+  itself carries no `configVersion` key at all (0.8 stamped it only when a
+  0.7-era migration did substantive work), and the migrator read the absent
+  key as `inconsistent` — an unconditional blocker. `migrate status` reported
+  `blocked` and `migrate apply` refused with exit 78 for every fresh 0.8
+  install; reproduced end to end against the published `akm-cli@0.8.14`. An
+  absent `configVersion` on a positively pre-cutover-shaped config now
+  classifies as `old`; a present-but-unparseable version still fails closed.
+  Relatedly, `migrate` reports `not-applicable` (exit 0) instead of `blocked`
+  when there is no akm installation to migrate at all, and `apply` warns when
+  an active workflow run targets an asset that fails 0.9 structural
+  validation, naming the asset and `akm workflow abandon <run-id>`.
+
+- **Standalone `akm remember --enrich` actually enriches.** With no other
+  metadata flag, `--enrich` fell through to the zero-flag raw-write hot path
+  and never attempted the LLM call — an unenriched memory with no warning.
+  `--enrich` now routes to the enrichment dispatch exactly like `--auto`;
+  the fail-soft contract is unchanged (no configured LLM still warns and
+  writes without enrichment).
+- **Read paths no longer plant a broken `index.db` on a fresh install.**
+  The fire-and-forget usage telemetry behind `search` / `show` / `curate`
+  opened `index.db` with create-on-open: with no index built yet, the open
+  itself left an empty, schema-less `index.db` behind, and every later
+  command then saw an existing-but-broken index ("no such table: entries") —
+  hard-failing proposal acceptance among others. `openExistingDatabase` now
+  refuses to create the file (a missing index throws, naming `akm index` as
+  the remedy) and the telemetry paths skip cleanly instead.
+
+- **Improve RC stabilization.** Restored one ownership-safe whole-run lock from
+  triage through final sync; `--skip-if-locked` is a true no-op; the run deadline
+  now starts before indexing and reaches index waits, generation, reindexing, and
+  quality judges; reflect judges the sanitized final candidate with bounded
+  changed-region context; write-target selectors no longer replace durable source
+  identity; and vLLM thinking controls cannot be overridden through `extraParams`.
+- **Proposal promotion, reversion, and rejection are durable and recoverable.**
+  Acceptance and reversion persist target ownership and content fingerprints,
+  publish atomically across filesystem layouts, index immediately, commit exact
+  Git paths, and emit idempotent lifecycle events. Crash recovery and legacy
+  accepted proposals fail closed on ambiguous targets instead of clobbering
+  another source.
+- **Engine/setup/health behavior now matches the effective improve plan.**
+  Built-in strategies compose over one baseline, setup preserves independent
+  general and LLM defaults, native OpenCode SDK execution does not require an
+  unused fallback, and health checks each enabled process and credential.
+- **Check-in directives now survive plain-text output and `workflow
+  status`** (check-in review C2/M1): `formatWorkflowNextPlain` and
+  `formatWorkflowStatusPlain` render the `CONTINUE` directive, and every
+  run-detail response (status/start/complete) evaluates the check-in instead
+  of only `workflow next`.
+- Workflow frontmatter validator error message now lists the actually-allowed
+  keys (`name`, `updated` were missing); removed the documented-but-nonexistent
+  `akm workflow step` alias from `docs/features/workflows.md`.
 
 ## [0.9.0-rc.13] - 2026-07-31
 
@@ -950,459 +1456,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   The undocumented `--akmView` / `--akmHeading` / `--akmStart` / `--akmEnd`
   flags the grammar injected into argv are gone with it.
-
-## [0.9.0] (planned)
-
-0.9.0 is the format-neutral **bundle / adapter** refactor: it replaces the flat
-asset-type registry with per-format adapters, adopts one canonical ref grammar,
-and consolidates the durable databases and config. This section supersedes the
-earlier `0.9.0-rc.1` / `0.9.0-beta.*` development entries below.
-
-### Breaking changes & migration
-
-- **Installed non-akm bundles reclassify on your next `akm index`.** The
-  indexer now dispatches each installed bundle's *detected* adapter (Claude
-  tool dirs, LLM wikis, website snapshots, agent-skills packs, …) instead of
-  recognizing everything with the akm-stash adapter. Entries in such bundles
-  change type and ref spelling to the owning adapter's own scheme the first
-  time you reindex. No action needed — the index is a regenerable cache and
-  rebuilds itself — but searches/saved refs into those bundles may resolve to
-  the new spellings afterwards.
-- **Ref grammar cutover — `type:name` → `[bundle//]conceptId`.** Every ref is
-  now a subdir-qualified concept id inside its bundle (`skills/code-review`,
-  `memories/vpn-note`, `env/prod`), optionally prefixed with a `bundle//`
-  installation slug and suffixed with `#fragment`. Durable state stores the
-  fully-qualified `bundle//conceptId`; the short bundle-omitted form is accepted
-  input only (resolved against `defaultBundle`, then installation-priority
-  order). The pre-0.9.0 `[origin//]type:name` grammar is removed — there is no
-  compatibility parser; the frozen migrator in `scripts/akm-migrate/migrate/`
-  is the only place it survives.
-- **Explicit, crash-resumable cutover (`akm migrate apply`).** The
-  migrator re-keys all durable state to the new spelling, folds the former
-  `workflow.db` into `state.db` (four databases down to three: `state.db` /
-  `index.db` / a separate `logs.db`), and migrates config from the flat
-  `stashDir` / `sources` / `installed` / `wikiName` keys to `bundles` /
-  `defaultBundle`. A semantically verified, installation-scoped **backup manifest v4**
-  (covering the pre-rescue `index.db`) is taken before mutation. One phase-free
-  incomplete sentinel retains that backup and target; expected orphans are
-  quarantined, integrity failures fail closed, and the whole cutover reruns
-  idempotently after a crash. Normal commands refuse an
-  un-migrated or divergent durable schema rather than migrating as a side effect.
-  The retired `stashDir` / `sources` / `installed` keys are **hard-rejected** by
-  the 0.9.0 config schema whenever present (the error names `akm migrate apply`);
-  registry-installed bundles keep only their desired locator (`git`/`npm` +
-  `registryId`) in config, with resolved cache state living exclusively in the
-  lockfile.
-- **`index.md` / `log.md` are reserved structural files.** Per the Open
-  Knowledge Format, `index.md` (directory listing) and `log.md` (update history)
-  are never indexed as concepts and are never valid write / `mv` targets at any
-  bundle depth. Existing stash files with those names are excluded from the
-  index (and renamed by the content migration when they hold a real concept).
-- **`vault` asset type removed.** Use `env` (a whole `.env` group; key names
-  surfaced, values never) and `secret` (a single sensitive value), addressed as
-  `env/<name>` and `secrets/<name>`. `akm-migrate storage` performs the
-  non-destructive `vaults/` → `env/` copy for older stashes.
-- **0.8-era CLI aliases removed.** The flat proposal verbs (`akm proposals`,
-  `akm accept`, `akm reject`, `akm diff`, `akm revert`, `akm show proposal`),
-  `akm save`, top-level `akm enable` / `akm disable`, `akm events`,
-  `--detail summary|agent`, `--for-agent`, `--note`, and `--source` (on
-  accept/reject/history) are gone — use the canonical spellings documented in
-  `STABILITY.md`.
-
-See `docs/migration/v0.8-to-v0.9.md` and
-`docs/migration/release-notes/0.9.0.md` for the full upgrade procedure.
-
-### Added
-
-- **Local downstream value attribution for memory inference and graph
-  extraction.** Private search-hit sidecars now write versioned, source-qualified
-  per-entry `usage_events.metadata` for emitted MI direct/surface value and the
-  active graph contributor's positive applied/capped contribution. Current plain
-  traffic is marked as control, brief/replaced MI surfaces and graph ablations do
-  not claim attribution, and nested curate reads avoid duplicate show rows. The
-  read-only `akm-eval-attribution-rollup` separates user-only exposure,
-  selection/show consumption, current controls, and historical unattributed rows
-  without emitting bodies, query text, or provenance content. Graph contribution
-  is an input attribution signal, not a causal claim that rank changed. No table,
-  migration, dashboard, or health schema was added.
-- **Explicit, crash-resumable 0.9 migration coordination.** `akm migrate
-  status` classifies config, `state.db`, and `workflow.db` independently;
-  `akm migrate apply [--config <prepared>]` creates a semantically verified,
-  installation-scoped config/database backup before applying pending migrations.
-  Apply and restore use one phase-free incomplete sentinel, bounded control-file
-  reads, SQLite integrity and ordered-ledger checks, active-writer barriers,
-  WAL/SHM-safe publication, and idempotent replay. Legacy checksum columns are
-  inert. Routine reads and current database opens no longer depend on a
-  historical cutover bundle. See `docs/migration/release-notes/0.9.0.md`.
-- **Workflow orchestration engine (experimental).** akm can now execute
-  multi-step workflows through a native engine or any agent session. Workflow
-  assets use the unified markdown format described above; the stable manual
-  CLI contract (`start`/`next`/`complete`/`status`/`list`) and the experimental
-  engine consume the same asset. What ships:
-  - **Authoring.** A workflow is a markdown asset whose frontmatter graph is
-    validated against `schemas/akm-workflow.json` and whose `## <step-id>` body
-    sections carry instructions and gate rubrics. `akm workflow create`
-    scaffolds that format; `akm lint --type workflows` parses and compiles it.
-    Bare references (`params.<name>` and `steps.<id>.output.<path>`) wire
-    `map.over`, `route.input`, and `inputs`; prose is never interpolated.
-  - **Compilation + frozen plans.** `akm workflow start` compiles the workflow
-    into a backend-agnostic Workflow Plan Graph IR (`src/workflows/ir/`) and
-    freezes it on the run row (`plan_json` + `plan_hash`); a run executes the
-    plan compiled at start, and edits to the source file require a new run.
-  - **Per-step orchestration.** A step can declare an engine, model, timeout,
-    fan-out (`map`/`over` with a `concurrency` cap and a `collect` | `vote`
-    reducer), a typed `output` JSON Schema (validated via a `runStructured`
-    retry-with-feedback loop), `env` bindings (resolved through the existing
-    `akm env run` machinery — secret tokens, dangerous-key policy, keys-only
-    audit events), and classify-and-dispatch `route` steps.
-  - **Determinism + replay.** Journaled unit identity is content-derived
-    (`<step>:<sha256(item)[:12]>`, `:solo` for a single unit), so cached
-    results survive item-list reordering; a completed unit whose recorded
-    inputs differ on replan is a hard **replay-divergence** failure naming the
-    unit, never a silent re-dispatch. Every unit is recorded in the new
-    `workflow_run_units` table behind a serialized writer queue.
-  - **Execution (`akm workflow run`).** A semaphore-bounded scheduler fans a
-    step's units out (concurrency defaults to 1 per the local-model
-    LLM-defaults rule and is the minimum of the map request, frozen workflow
-    limit, selected frozen LLM engine limit, and current host safety limit),
-    enforces per-unit
-    timeouts (default 10 m) and run **budget ceilings** (`budget.max_tokens` /
-    `budget.max_units`, seeded from the journal so they span resumes), and
-    advances the run **strictly through `completeWorkflowStep`** so completion
-    gates are never bypassed. Every dispatched unit gets a standard akm
-    preamble (run/unit ids, knowledge + env/secret + reporting contract).
-  - **Typed artifacts + honest gates.** A step's promoted artifact is
-    validated against its declared `output` schema before completion; a
-    criteria-bearing gate judges that **artifact** (canonical JSON, clipped)
-    rather than machine prose, and each engine-driven evaluation is journaled
-    as a gate unit row. `gate.max_loops` bounds an evaluator-optimizer retry
-    loop (feedback threaded into re-dispatched unit prompts). Gates are
-    optional validation: omitted/empty rubrics and unavailable or malformed
-    judges skip validation.
-  - **Failure policy.** Per-unit `on_error: fail | continue` (fail-fast
-    default) plus bounded `retry: { max, on: [<failure_reason>…] }` keyed on
-    the persisted failure taxonomy.
-  - **Isolation + leases.** `isolation: worktree` runs each file-mutating unit
-    in a fresh detached git worktree (journaled path; clean trees
-    auto-removed, dirty ones retained). A run **lease** (`engine_lease_*`)
-    ensures a run is driven by exactly one engine or one external driver at a
-    time; manual `complete` is refused while a live engine lease is held.
-  - **Harness-neutral driver protocol.** An orchestrated run can be driven by
-    ANY agent session (Claude Code, opencode, Codex, a human at a shell), not
-    only the native engine. **`akm workflow brief <run>`** is read-only (takes
-    no lease, mutates nothing) and emits the active step's expected work-list —
-    per-unit content-derived id, resolved instructions + input hash
-    (byte-identical to the engine's dispatch), output schema, env binding
-    NAMES only, and the exact `report` command lines. **`akm workflow report
-    <run> --unit <id> --status completed|failed|running`** is the one mutating
-    verb, ingesting a unit's result through the SAME shared step semantics the
-    engine uses (idempotent same-hash re-report, replay-divergence on a
-    differing hash, budget enforcement, schema validation, and the
-    artifact-judged gate/`max_loops` completion path). `--status running`
-    claims/heartbeats a unit for stale-driver detection without advancing the
-    spine; `--rerun` records a fresh attempt for a failed unit (carrying its
-    prior token total forward). Every report command carries `--expect-step`
-    (refused if the spine has moved since the brief), and `report --settle`
-    (no `--unit`) advances a step that dispatches no reportable units — a
-    params-only route, an empty fan-out, or an all-unresolvable work-list — so
-    a driver is never wedged. The engine and the brief/report surfaces are
-    proven to produce **identical unit graphs**
-    (`tests/workflows/conformance/driver-parity.test.ts`).
-  - **Observability.** `akm workflow watch <run>` tails the run's `workflow_*`
-    / `workflow_unit_*` events as NDJSON (`--stream` foreground-polls to a
-    terminal status, no daemon); `akm workflow status --units` lists per-unit
-    diagnostics (failure reason + result/error text) without feeding them into
-    the deterministic artifact graph; unit lifecycle emits
-    `workflow_unit_started` / `workflow_unit_finished` events carrying
-    ids/status/enums only. `akm show workflow:<name>` summarizes each step's
-    orchestration.
-  - **Harness adapters.** Seven local coding-agent CLIs are first-class
-    dispatch targets — Codex, Copilot CLI, Pi, Gemini, Aider, Amazon Q, and
-    OpenHands — each registered in `HARNESS_REGISTRY` with a command builder +
-    result extractor; agent-identity detection and the session-log provider
-    list are derived from the registry, and harness-native session ids are
-    journaled opportunistically for future session reuse.
-  - **Storage.** Additive `workflow.db` migrations 004–010 (unit journal,
-    harness session ids, frozen plans + run leases, check-in heartbeats,
-    attempt counter, unit claims); migrations 001–003 are untouched and linear
-    workflows behave exactly as before.
-
-  See "Orchestrated steps" and "Driving a run from any agent" in
-  `docs/features/workflows.md`, the redesign addendum in
-  `docs/archive/akm-workflows-orchestration-plan.md`, and `STABILITY.md`
-  (Experimental).
-- **`fable` built-in model alias** — resolves to `claude-fable-5`
-  (`opencode/claude-fable-5` on opencode); recommended resolution target for
-  the `deep` workflow model tier.
-- **`akm lint` now checks the frontmatter xref channels for broken refs.**
-  The existing `missing-ref` check additionally scans the `xrefs:`,
-  `supersededBy:`, and `contradictedBy:` frontmatter keys of non-wiki markdown
-  assets (memories, knowledge, lessons, facts, agents, commands, skills,
-  workflows) — the channels the stash back-linking conventions route
-  provenance and correction links through, and previously the only ref channel
-  with zero checking. Dangling refs are flagged with a detail naming the key
-  (`missing ref: <ref> (frontmatter <key>; resolved to <relPath>)`). The
-  `refs: []` body-scan carve-out does not suppress the new pass; `lint_skip:
-  [missing-ref]` suppresses both; non-ref values (URLs, `raw/<slug>`,
-  `<placeholder>` templates, shell vars) are ignored; refs resolving in a
-  configured extra stash root stay clean. **Note for `--fail-on-flagged` CI
-  users:** stashes with already-dangling xrefs (e.g. from past renames) will
-  gain new `missing-ref` findings on upgrade — fix the refs or add
-  `lint_skip: [missing-ref]` per file. `sources:`, `source_refs:`, and
-  `evidenceSources:` are deliberately not checked (wiki `sources:` is covered
-  by `akm wiki lint`; the latter two legitimately point at merged-away
-  assets).
-- **`--xref <ref>` on `akm remember` and `akm import` — write-time
-  cross-references with validation.** The stash back-linking conventions route
-  provenance and associative links through `xrefs:` frontmatter, but neither
-  CLI write flow could express them (remember always generated its own
-  frontmatter block; import wrote content verbatim). The new repeatable flag
-  records refs in the written asset's `xrefs:` frontmatter list, which the
-  indexer folds into search hints — the new asset becomes findable from
-  searches for its source. `remember` merges the refs into its generated
-  frontmatter (composes with `--tag`/scope flags; does not trigger the
-  tags-required check); `import` dedupe-appends into the document's existing
-  frontmatter, or adds a block when the document has none — never a nested
-  second block. A document whose existing frontmatter is not a parseable YAML
-  mapping aborts the import (exit 2, nothing written) rather than being
-  rewritten lossily; importing it without `--xref` still preserves it
-  verbatim. Every ref is validated before anything is written, against the
-  write target plus all configured sources (read-only cross-stash sources
-  count): an unresolvable ref fails with the standard usage envelope (exit 2)
-  and leaves the stash untouched. The conventions' ~5-xref cap stays soft —
-  exceeding it warns on stderr but still writes. Additionally, a type-root
-  write (no `--path`, flat name) into a stash carrying convention facts now
-  returns an additive `hint` output key pointing at the stash's placement
-  conventions (`facts/conventions/organization` when that fact exists), so CLI
-  writers see the conventions that LLM flows already receive by injection.
-- **`--supersedes <ref>` on `akm remember` and `akm import` — atomic
-  correction + demotion of the superseded asset.** The stash conventions'
-  corrections pattern needs TWO writes (the new correction asset with an xref
-  to what it corrects, plus a metadata edit demoting the old asset), which
-  previously meant hand-editing the old file's frontmatter and remembering to
-  reindex it. The new repeatable flag does both: the correction is written
-  with the old ref folded into its `xrefs:` (correction provenance), and the
-  old asset gains `beliefState: superseded` +
-  `supersededBy: [<new ref>]` via the shared `writeSupersededEdge` primitive
-  (sibling of `writeContradictEdge`) — a metadata-only frontmatter edit that
-  preserves every other key and the body byte-for-byte, sorted-set-appended
-  and idempotent across re-runs. The mutated old file is reindexed by the
-  write path, so `--belief current` hides it and ranking demotes it
-  immediately. An unresolvable ref is input validation: exit 2 with the
-  standard `{ok:false,error,code}` envelope and NOTHING written or demoted
-  (no partial correction); a ref resolving to the asset being written itself
-  (self-supersede via `--force` overwrite) is rejected the same way instead
-  of letting a correction demote itself. An old asset that resolves only
-  outside the write target and the working stash (in a read-only source, or
-  in a writable source that is not this write's target) is not mutated: the
-  correction still writes, stderr warns, and the JSON output reports the
-  additive `superseded: [{ref, applied: false, reason}]` key (`applied: true`
-  on success) — the reason names the `--target` remedy when one exists. An
-  old asset whose existing frontmatter is not parseable YAML is likewise
-  skipped (`applied: false`) rather than rewritten through the lossy lenient
-  parser. On a git write target the demotion is ordered before the
-  batch-at-boundary commit, so the correction and the demoted old asset land
-  in one commit.
-- **Ref-prefix search queries — `akm search "<subdir>/<prefix>/"` now enumerates
-  that subtree.** A query shaped like a ref prefix (trailing slash required:
-  `memories/projectA/`; a bare `memories/` lists the whole type) translates to a
-  typed index enumeration narrowed to entry names under the prefix, instead of
-  degenerating into the AND-token FTS query its sanitized form used to produce
-  (`"memory projectA"` — noise, since `entry_type` is not an FTS column). The
-  listing is recursive and `/`-boundary exact (`projectA/` cannot leak a
-  sibling `projectAlpha/…` scope), matches names case-insensitively (the CLI
-  lowercases queries; on-disk scope directories may carry mixed case), and
-  composes with `--limit`, `--belief`, `--filter`, and named `--source`
-  narrowing exactly like the existing empty-query enumeration — hits carry the
-  fixed browse score `1` in deterministic listing order, not a relevance
-  ranking. The parsed type is explicit intent: a bare `sessions/` enumerates
-  sessions just like `--type session` (the default session exclusion is an
-  untyped-path policy), while an explicit `--type` flag always wins over the
-  type parsed from the query (the branch fires only on untyped searches). A
-  full ref without the trailing slash (`memories/projectA/auth-tip`) stays an
-  ordinary keyword search — resolving a single ref is `akm show`'s job.
-  **Stable-surface note:** `akm search` is Stable; this changes results for a
-  query shape that previously returned noise or nothing. A user literally
-  keyword-searching for the string `memories/x/` loses the old fuzzy token
-  behavior — accepted as negligible.
-- **The `category:` frontmatter key is now captured into the index** as
-  `entry.category` (entry_json only — no schema migration). The key already
-  drives convention-fact prompt injection (`resolveStashStandards`) and the
-  fact linter, but the indexer never captured it, so no category-keyed search
-  or ranking policy was implementable. Captured for all markdown asset types
-  alongside `beliefState` (trimmed; blank/non-string values ignored; no
-  default invented), captured directly onto the index entry. Search results
-  and ranking are unchanged — this is capture
-  only (a unit test pins that `category` never enters the FTS search
-  fields). **Requires a reindex to take effect** for existing entries. The
-  companion rank-time demotion of `category: convention` facts on untyped
-  queries was NOT shipped: the prescribed measurement (full skeleton
-  convention facts plus a real `knowledge/auth` asset, untyped `auth` query,
-  semantic off) shows no crowding — FTS is exact-first, so prefix expansion
-  onto the facts' tokens only happens when nothing matches the query exactly,
-  and a real domain asset always outranks the facts. That invariant is pinned
-  by `tests/search-convention-fact-demotion.test.ts`, which becomes the
-  regression guard if a demotion contributor is ever revisited.
-- **Config-gated indexing of the self-situating body opening —
-  `index.indexBodyOpening` (default `false`).** Body prose is not indexed
-  (the FTS `content` column carries only TOC headings and parameters), which
-  is why the stash conventions route orientation into
-  `description:`/`when_to_use:`. With the new flag enabled, the metadata pass
-  captures the first prose paragraph of each markdown asset body — skipping
-  headings (ATX and setext), fenced code blocks, thematic breaks, and a
-  leading nested frontmatter block (only when its content is actually
-  frontmatter-shaped: prose wrapped in decorative `---` lines is captured,
-  not discarded); capped at 280 chars with word-boundary truncation and a
-  trailing ellipsis — into `entry.bodyOpening`, which folds into the
-  lowest-weight `content` FTS column (bm25 weight 1.0, so a name match always
-  outranks a body-opening-only match) and into the search/embedding text.
-  Secret and env files are never read for it, and session-kind memories
-  (`akm_memory_kind` in outer or nested inner frontmatter) are excluded —
-  their bodies are raw transcripts. Both indexing walks and write-path
-  indexing honor the flag (the metadata pass reads the user config directly).
-  With the flag absent or `false`, entries and search fields stay
-  byte-identical to before. **Costs of toggling (either direction):** indexed
-  text changes, so collapse-detector canary recall baselines shift — re-mint
-  via `akm improve canary --refresh` — and embeddings are NOT regenerated for
-  entries that already have one, while incremental runs re-extract only
-  changed files. Run `akm index --full` after toggling: it re-extracts every
-  entry and wipes embeddings so they rebuild from the new text; until then
-  `akm index` warns that the flag differs from the state the index was built
-  with. The conventions' `description:`/`when_to_use:` orientation routing
-  remains primary — this flag makes body openings additionally pay retrieval
-  rent, it does not replace structured metadata. See `docs/configuration.md`.
-- **`akm mv <ref> <new-name>` — rename with inbound-xref rewrite and
-  utility-history preservation (Experimental).** The stash conventions'
-  forced-rename procedure ("grep and fix inbound xrefs in the same pass") was
-  agent-executable except for the part only the CLI can do: a rename used to
-  mint a new index row, orphaning the `utility_scores` /
-  `utility_scores_scoped` / embeddings / salience rows keyed by entry id —
-  the "rename resets learned ranking" cost the conventions warn about. The
-  new verb does the whole pass: it moves the file (a memory's `.derived.md`
-  twin moves together, keeping the `entry_key + ".derived"` belief-inheritance
-  coupling), rewrites inbound refs across the writable stash's markdown files
-  — body prose, frontmatter ref-list keys (`xrefs:`/`refs:`/`supersededBy:`/
-  …), and fenced code blocks — with complete-ref boundary matching (a longer
-  ref sharing the old ref as a prefix is untouched), and re-keys the index
-  row **in place** so the row id and every id-keyed ranking table survive;
-  the moved row and rewritten citers are FTS-refreshed so search reflects the
-  new name immediately. Scope v1: flat-markdown asset types (`memory`,
-  `knowledge`, `command`, `agent`, `workflow`, `lesson`, `session`, `fact`)
-  in the primary writable stash only, and the source ref must be the
-  canonical spelling — a ref that resolves only through one of lint's
-  fallback resolutions (knowledge-subdir alias, direct-path) is rejected
-  naming the canonical ref, since a fallback-keyed move would strand the
-  index row and dangle canonical citers. Wiki refs, cross-type targets,
-  existing targets, unresolvable refs, type-root escapes, `.derived` twin
-  refs as the source (rename the base — the twin follows), and target names
-  ending in `.derived` (reserved twin suffix) are rejected with the
-  standard envelope (exit 2, nothing moved). Read-only sources are scanned
-  but never written — their citing files are reported in `readOnlyCiters` as
-  manual follow-ups. Output:
-  `{ok, from, to, rewrote: [{file, count}], readOnlyCiters, utilityPreserved}`;
-  a successful move appends an exactly-once `mv` event. A durable mutation
-  journal stages citer rewrites and the asset publication, preserves
-  source-qualified utility/salience history, and resumes index/state
-  finalization after interruption. Divergent citers and late-created targets
-  fail closed instead of being overwritten. Added to the v1 §9.4 command
-  surface as an Experimental-tier additive entry (see `STABILITY.md`).
-
-### Changed
-
-- **Improve-stage extraction and proactive maintenance now ship opt-in.** The
-  built-in `default` and `frequent` strategies resolve extract off, while
-  `default` and `reflect-distill` resolve `proactiveMaintenance` off. The
-  dedicated `proactive-maintenance` strategy remains enabled. Built-ins such as
-  `thorough` that omit these fields inherit the new `default` off values; user
-  overrides are merged last, so explicit `enabled: true` values still win.
-  Standalone extraction remains independent of the improve-stage toggle but
-  still requires `--type <harness>` or `--auto`. The bundled, unselected
-  `core/extract` task now uses `akm extract --auto`; existing scheduled tasks
-  with invalid bare `akm extract` commands must be updated explicitly.
-- **Indexing dispatches each bundle's detected adapter.** The indexer's per-
-  directory scan now resolves the component's adapter (`adapterForId`) and runs
-  THAT adapter's `recognize`, instead of always using the `akm` adapter. A
-  component whose adapter id is unknown is skipped with a warning. Adapter-owned
-  filtering moves the AKM-stash sensitive/infra exclusions (env/secret
-  `.sensitive`-marker skips, the legacy `vaults/` skip, wiki infra files) out of
-  the core scan and into the `akm` adapter's own recognition, so each adapter
-  owns its bundle's filtering. **Reindex note:** any non-`akm` bundle that was
-  previously probed as one adapter id but still recognized by `akm` will
-  re-index under its own adapter on the next `akm index` — the index is a
-  regenerable cache, so no migration is required.
-- **Improve target identity is now end-to-end and source-qualified.** Explicit
-  targets govern reads, generated proposals, triage promotion, consolidation,
-  retrieval signals, cooldowns, and replay state. Duplicate bare refs in other
-  sources no longer affect the selected corpus. Generated lessons and
-  provenance follow stash placement conventions and canonical `xrefs`.
-- **Writable Git boundaries commit only operation-owned paths.** Improve,
-  proposal, supersedes, and direct write flows preserve unrelated staged or
-  dirty work, including files beside generated assets in `content/` layouts.
-
-- **Directory (scope/domain) tokens now always merge into `tags` at index
-  time**, even when an asset sets explicit `tags:` frontmatter. Previously
-  explicit tags suppressed all path-derived tags, so a nested asset like
-  `memories/projectA/auth-tip` with `tags: [auth]` silently lost the exact
-  tag-match ranking boost for its scope token unless the author restated it.
-  The merged tokens come from the canonical ref subpath
-  (`extractDirTagsFromName`), which also fixes the flat-walk indexing path
-  losing directory segments in the empty-tags fallback. Filename tokens are
-  still auto-derived only when `tags` is empty (they already live in the FTS
-  name column and aliases), and the empty-tags fallback itself is unchanged.
-  **Operator notes:** the change takes effect on the next reindex and alters
-  indexed tag text for nested assets with explicit tags, so collapse-detector
-  canary recall baselines may shift — re-mint them with `akm improve canary
-  --refresh`. Embeddings are not regenerated when indexed text changes; the
-  drift here is small (the merged tokens already appear in the name field),
-  but a purge/re-embed picks up the new text exactly.
-- **Demoting belief states now cap an entry's final search score**
-  (superseded ≤ 0.25, contradicted ≤ 0.2, archived ≤ 0.15, deprecated ≤
-  0.28). The existing additive belief penalties are applied inside the
-  multiplicative boost sum on a min-max-normalized FTS base (rank-1 vs rank-2
-  base can differ by up to 0.7), so a superseded incumbent that was the best
-  keyword match stayed clamp-pinned at 1.0 above its own correction — the
-  demotion was invisible exactly when the corrections pattern needs it. The
-  ceiling is applied once at the end of the single scoring pipeline (sort
-  order and displayed scores stay consistent); demoted entries remain listed
-  under the default `--belief all`, keep their relative ordering, and the
-  `--belief` filter axis is unchanged. Semantic-only hits are judged against
-  the `search.minScore` floor by their pre-ceiling score, so a ceiling below
-  the floor (archived 0.15 < default 0.2) ranks the hit last instead of
-  silently dropping it. Ordering changes only for stashes containing
-  belief-flagged assets.
-- **`mutateFrontmatter` (belief-edge writers: supersede/contradict edges,
-  belief refresh) now preserves the body bytes verbatim** when the file
-  already has a frontmatter block, instead of re-normalizing the
-  fence-to-body separator through `assembleAsset`. A metadata edit is no
-  longer a (whitespace-level) content edit; files gaining their first
-  frontmatter block still use the canonical shape.
-
-### Fixed
-
-- **Improve RC stabilization.** Restored one ownership-safe whole-run lock from
-  triage through final sync; `--skip-if-locked` is a true no-op; the run deadline
-  now starts before indexing and reaches index waits, generation, reindexing, and
-  quality judges; reflect judges the sanitized final candidate with bounded
-  changed-region context; write-target selectors no longer replace durable source
-  identity; and vLLM thinking controls cannot be overridden through `extraParams`.
-- **Proposal promotion, reversion, and rejection are durable and recoverable.**
-  Acceptance and reversion persist target ownership and content fingerprints,
-  publish atomically across filesystem layouts, index immediately, commit exact
-  Git paths, and emit idempotent lifecycle events. Crash recovery and legacy
-  accepted proposals fail closed on ambiguous targets instead of clobbering
-  another source.
-- **Engine/setup/health behavior now matches the effective improve plan.**
-  Built-in strategies compose over one baseline, setup preserves independent
-  general and LLM defaults, native OpenCode SDK execution does not require an
-  unused fallback, and health checks each enabled process and credential.
-- **Check-in directives now survive plain-text output and `workflow
-  status`** (check-in review C2/M1): `formatWorkflowNextPlain` and
-  `formatWorkflowStatusPlain` render the `CONTINUE` directive, and every
-  run-detail response (status/start/complete) evaluates the check-in instead
-  of only `workflow next`.
-- Workflow frontmatter validator error message now lists the actually-allowed
-  keys (`name`, `updated` were missing); removed the documented-but-nonexistent
-  `akm workflow step` alias from `docs/features/workflows.md`.
 
 ## [0.9.0-rc.1] - 2026-06-30
 
@@ -3075,7 +3128,7 @@ See `docs/migration/v0.7-to-v0.8.md` for the user-facing migration guide.
 
 ### Migration
 
-- See [`docs/migration/release-notes/0.7.0.md`](docs/migration/release-notes/0.7.0.md) for the operator summary and the [archived pre-1.0 plan](docs/archive/pre-1.0-migration.md) for the historical per-surface delta from any 0.6.x baseline.
+- See [`docs/migration/release-notes/0.7.0.md`](docs/migration/release-notes/0.7.0.md) for the operator summary and the [archived pre-1.0 plan](https://github.com/itlackey/akm/blob/be3a6a632b0cbe7a63ce71b7d093d8ac266e857c/docs/archive/pre-1.0-migration.md) for the historical per-surface delta from any 0.6.x baseline.
 
 ## [0.6.0] - 2026-04-23
 

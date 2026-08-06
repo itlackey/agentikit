@@ -23,7 +23,7 @@ please file it.
 | --- | --- |
 | **Stable** | Scripted use is supported. Changes are additive within a minor release; breaking changes are called out in the CHANGELOG with a migration note. |
 | **Evolving** | Available across minor releases, but flag names, prompts, and payload shapes may shift. Breaking changes are flagged in the CHANGELOG. |
-| **Experimental** | Subject to change without notice. Not recommended for scripted use. Some experimental surfaces additionally require an explicit opt-in — see [`akm improve` autonomy](#akm-improve-autonomy--opt-in-in-090) and the [`akm workflow` driver protocol](#akm-workflow-driver-protocol--opt-in-in-090). |
+| **Experimental** | Subject to change without notice. Not recommended for scripted use. Some experimental surfaces additionally require an explicit opt-in — see [`akm improve` autonomy](#akm-improve-autonomy--opt-in-in-090). |
 | **Internal** | Not a public interface. May change or disappear in any release, without a CHANGELOG note. Listed here only so you can recognize it. |
 
 ## Command tier index
@@ -130,7 +130,7 @@ enumeration of the whole `proposal` noun group.
     returns that one section, no fragment returns the whole item, and an
     unmatched fragment lists the available slugs. Elsewhere it is an
     adapter-owned selector opaque to the core. See
-    [`docs/architecture/specs/ref.md`](./docs/architecture/specs/ref.md).
+    [`docs/architecture/specs/ref.md`](https://github.com/itlackey/akm/blob/main/docs/architecture/specs/ref.md).
   - **Refs in prose** must be fully qualified (`bundle//conceptId`) or a native
     adapter link form. A bare conceptId in prose is ordinary text, not a ref,
     and no akm tool rewrites it.
@@ -440,7 +440,7 @@ are not part of the current stability contract; you should plan migrations
 around them.
 
 **The 0.9.0 decision record is fully shipped.** The
-[decision record](./docs/architecture/specs/0.9.0-decisions.md) settles a set of
+[decision record](https://github.com/itlackey/akm/blob/main/docs/architecture/specs/0.9.0-decisions.md) settles a set of
 breaking changes; every one of them is now in the code, and each decision
 carries its own shipped status.
 
@@ -465,7 +465,7 @@ Internal replacement for the one capability nothing else covered.
   writes still resolve through AKM's native flat type→directory table.
   Placement for every existing bundle is already correct today; this is a
   deliberately sequenced routing change, not unfinished behavior. See
-  [D12](./docs/architecture/specs/0.9.0-decisions.md#d12--bundleadapterplacenew-stays-unwired-until-010)
+  [D12](https://github.com/itlackey/akm/blob/main/docs/architecture/specs/0.9.0-decisions.md#d12--bundleadapterplacenew-stays-unwired-until-010)
   for why it is scoped out of 0.9.0. Nothing user-visible changes in 0.10 for
   this alone.
 - **1.0 contract freeze** — the `[bundle//]conceptId[#fragment]` ref grammar,
@@ -489,9 +489,9 @@ worth fixing.
 - [`CHANGELOG.md`](./CHANGELOG.md) — every release's behavior changes.
 - [`SECURITY.md`](./SECURITY.md) — security supported-version policy
   (independent of the feature-stability policy above).
-- [`docs/architecture/specs/ref.md`](./docs/architecture/specs/ref.md) — the
+- [`docs/architecture/specs/ref.md`](https://github.com/itlackey/akm/blob/main/docs/architecture/specs/ref.md) — the
   normative ref grammar.
-- [`docs/architecture/specs/0.9.0-decisions.md`](./docs/architecture/specs/0.9.0-decisions.md)
+- [`docs/architecture/specs/0.9.0-decisions.md`](https://github.com/itlackey/akm/blob/main/docs/architecture/specs/0.9.0-decisions.md)
   — the decision record behind the 0.9.0 surface changes.
 - [`docs/reference/data-and-telemetry.md`](./docs/reference/data-and-telemetry.md) — what
   state akm reads and writes locally.

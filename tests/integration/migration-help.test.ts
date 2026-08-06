@@ -63,7 +63,11 @@ describe("migration help", () => {
 
   test("latest alias resolves to the newest release changelog section", () => {
     const result = renderMigrationHelp("latest");
-    expect(result).toContain("## [0.9.0-rc.13]");
+    // The final [0.9.0] section must sit ABOVE the rc/beta history:
+    // resolveLatestVersion() returns the first non-Unreleased heading, so a
+    // misplaced section would make `akm help migrate latest` report an rc.
+    expect(result).toContain("## [0.9.0]");
+    expect(result).not.toContain("## [0.9.0-rc");
   });
 
   test("renders dedicated message when no bundled note or changelog entry exists", () => {
