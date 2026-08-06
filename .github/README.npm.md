@@ -107,6 +107,17 @@ akm bundle add ./path/to/local/dir                 # Local directory
 
 Manage bundles with `akm bundle list`, `akm bundle update --all`, and `akm bundle remove`.
 
+## Bundle Types
+
+akm doesn't only manage its own asset library — it recognizes and indexes
+several existing directory layouts in place: akm's own workspace (writable),
+Open Knowledge Format markdown, Karpathy-style LLM wikis, Claude Code and
+OpenCode tool directories, standalone Agent Skills collections, env/secret-only
+bundles, standalone workflow and task bundles, and crawled website snapshots.
+Most are recognized automatically the moment you `akm bundle add` their
+directory. See the [Bundle Types reference](https://github.com/itlackey/akm/blob/main/docs/reference/bundle-types.md)
+for detection rules, ref shapes, and what's read-only vs. writable.
+
 ## Publish Your Own Bundle
 
 1. Organize your assets into a directory
@@ -119,6 +130,7 @@ Manage bundles with `akm bundle list`, `akm bundle update --all`, and `akm bundl
 Full docs, CLI reference, and guides are available on [GitHub](https://github.com/itlackey/akm):
 
 - [Getting Started](https://github.com/itlackey/akm/blob/main/docs/guides/getting-started.md)
+- [Bundle Types](https://github.com/itlackey/akm/blob/main/docs/reference/bundle-types.md)
 - [CLI Reference](https://github.com/itlackey/akm/blob/main/docs/reference/cli.md)
 - [Configuration](https://github.com/itlackey/akm/blob/main/docs/reference/configuration.md)
 - [Bundle Maker's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/stash-makers.md)

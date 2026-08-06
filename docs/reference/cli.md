@@ -7,7 +7,9 @@ different presentation. Errors include `error` and `hint` fields.
 
 This page is authoritative for the current CLI. For per-release behavior
 changes, see [`CHANGELOG.md`](../../CHANGELOG.md) and
-[`docs/migration/`](../migration/).
+[`docs/migration/`](../migration/). For the bundle formats akm recognizes
+(detection, ref shapes, indexing, validation, read/write), see
+[Bundle Types](bundle-types.md).
 
 ## Global Flags
 
@@ -356,7 +358,7 @@ tip names the conceptId spelling that replaces it.
 
 | Flag | Values | Default | Description |
 | --- | --- | --- | --- |
-| `--type` | `skill`, `command`, `agent`, `knowledge`, `instruction`, `workflow`, `script`, `memory`, `env`, `secret`, `lesson`, `task`, `session`, `fact`, `any` | `any` | Filter by asset type. Free-form and unvalidated — an unknown type returns no hits. Also accepts any adapter-defined type (e.g. `website`). |
+| `--type` | `skill`, `command`, `agent`, `knowledge`, `instruction`, `workflow`, `script`, `memory`, `env`, `secret`, `lesson`, `task`, `session`, `fact`, `any` | `any` | Filter by asset type. Free-form and unvalidated — an unknown type returns no hits. Also accepts any adapter-defined type (e.g. `website`) — see [Bundle Types](bundle-types.md) for the open types each adapter emits. |
 | `--limit` | number | `20` | Maximum results |
 | `--from` | `local`, `registry`, `all` | `local` | Where to search |
 | `--assets` | flag | `false` | Include asset-level registry results (only meaningful with `--from registry\|all`; folds in the retired `akm registry search --assets`) |
@@ -716,6 +718,10 @@ sources. Other HTTP(S) URLs are crawled as website sources.
 ### bundle add
 
 Add a source — a local directory, npm package, GitHub repo, git URL, or website.
+akm detects the bundle's **format** automatically (its own native workspace,
+a Claude Code or OpenCode tool directory, an OKF or LLM-wiki knowledge base,
+…) — see [Bundle Types](bundle-types.md) for how detection works and what
+each format gives you.
 
 ```sh
 akm bundle add ~/.claude/skills              # Local directory

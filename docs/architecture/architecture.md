@@ -11,33 +11,20 @@ current-truth reference.
 
 ## Asset Types
 
-The fourteen built-in asset types are:
-
-- `skill`
-- `command`
-- `agent`
-- `knowledge`
-- `instruction`
-- `workflow`
-- `script`
-- `memory`
-- `lesson`
-- `fact`
-- `env`
-- `secret`
-- `task`
-- `session`
+The `akm` adapter's fourteen built-in asset types (`skill`, `command`,
+`agent`, `knowledge`, `instruction`, `workflow`, `script`, `memory`,
+`lesson`, `fact`, `env`, `secret`, `task`, `session`) each map to a
+canonical source directory through `src/core/asset/asset-placement.ts`'s
+`PLACEMENT_SPECS` map. See
+[Bundle Types → akm](../reference/bundle-types.md#akm) for the full table.
 
 The deprecated `vault` type was removed in 0.9.0 and replaced by `env` (whole
 `.env` files) and `secret` (single-value secret files). `wiki` is not an item
 type: multi-page wikis are a bundle *format* owned by the `llm-wiki` adapter,
 not a per-file type stamped by the classifier (see
-[Classification](internals/classification.md)).
-
-Each type maps to a canonical source directory through
-`src/core/asset/asset-placement.ts`'s `PLACEMENT_SPECS` map (`skills/`,
-`commands/`, `agents/`, `knowledge/`, `instructions/`, `workflows/`, `scripts/`,
-`memories/`, `lessons/`, `facts/`, `env/`, `secrets/`, `tasks/`, `sessions/`).
+[Classification](internals/classification.md) and
+[Bundle Types](../reference/bundle-types.md) for the other ten formats akm
+recognizes besides its own native one).
 
 ---
 

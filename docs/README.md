@@ -16,6 +16,7 @@ Task-oriented guides for using akm.
 
 ## [Reference](reference/README.md)
 
+- [Bundle Types](reference/bundle-types.md) -- Every bundle format akm recognizes: detection, refs, indexing, validation, read/write
 - [CLI](reference/cli.md) -- All `akm` commands and flags
 - [Configuration](reference/configuration.md) -- Engines, strategies, bundles, and settings
 - [Workflows](reference/workflows.md) -- Unified Markdown workflow schema, run state, and native orchestration engine

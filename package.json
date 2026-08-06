@@ -46,6 +46,7 @@
     "docs/migration/v0.7-to-v0.8.md",
     "docs/migration/v0.8-to-v0.9.md",
     "docs/migration/v0.9.0-troubleshooting.md",
+    "docs/reference/bundle-types.md",
     "docs/reference/cli.md",
     "docs/reference/configuration.md",
     "docs/reference/data-and-telemetry.md",

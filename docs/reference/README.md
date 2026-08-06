@@ -2,6 +2,7 @@
 
 Authoritative reference documentation for the akm CLI and its data.
 
+- [Bundle Types](bundle-types.md) -- Every bundle format akm recognizes: detection, refs, indexing, validation, read/write
 - [CLI](cli.md) -- All `akm` commands and flags
 - [Configuration](configuration.md) -- Engines, strategies, bundles, and settings
 - [Workflows](workflows.md) -- Unified Markdown workflow schema, run state, and native orchestration engine

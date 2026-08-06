@@ -39,26 +39,19 @@ adapter so later indexing does not reinterpret a bundle. The broad OKF probe
 also recognizes index-less typed Markdown, but strong AKM layout evidence runs
 first because AKM Markdown is an OKF-compatible superset.
 
+See [Bundle Types](../../reference/bundle-types.md) for the user-facing detail
+per adapter — conceptId/ref shape, what's indexed, `validate()` checks, and
+read/write status in 0.9.0.
+
 ## Item types
 
 `type` is an open descriptive string. The core accepts every non-empty value;
 the owning adapter decides whether a value receives specialized behavior. The
-`akm` adapter emits its fourteen defined native types:
-
-- `script`
-- `skill`
-- `command`
-- `agent`
-- `knowledge`
-- `instruction`
-- `workflow`
-- `memory`
-- `lesson`
-- `env`
-- `secret`
-- `fact`
-- `task`
-- `session`
+`akm` adapter emits its fourteen defined native types (`script`, `skill`,
+`command`, `agent`, `knowledge`, `instruction`, `workflow`, `memory`,
+`lesson`, `env`, `secret`, `fact`, `task`, `session`) — see
+[Bundle Types → akm](../../reference/bundle-types.md#akm) for the full
+purpose / agent-output table per type.
 
 `wiki` is **no longer an item type**. Multi-page wikis are a bundle *format* owned
 by the `llm-wiki` adapter, not a per-file type stamped by the classifier.

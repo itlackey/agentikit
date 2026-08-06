@@ -228,7 +228,10 @@ reference, same rules as engine `apiKey`), `dimension`, `localModel`,
 and `defaultBundle` are the 0.9 source configuration shape — see
 [Concepts](https://github.com/itlackey/akm/blob/main/docs/guides/concepts.md) and the [CLI reference](cli.md) for the
 full bundle model (`path`, `git`, `website`, `npm`, `writable`, `registryId`,
-`components`). `defaultBundle` must name a key in `bundles` when set.
+`components`). `defaultBundle` must name a key in `bundles` when set. A
+bundle's `components.<id>.adapter` key pins it to a specific format adapter
+instead of relying on auto-detection — see [Bundle Types](bundle-types.md)
+for the full adapter list and what each one reads/writes.
 
 ### defaultWriteTarget
 

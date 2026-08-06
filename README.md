@@ -87,26 +87,35 @@ Non-interactive setup never activates schedules.
 
 See [docs/guides/getting-started.md](docs/guides/getting-started.md) for a full walkthrough.
 
-## Asset types
+## Bundle types
 
-| Type | What it is | Example ref |
+akm doesn't only manage its own asset library — it recognizes and indexes
+several existing directory layouts in place, each through its own **adapter**:
+
+| Format | What it is | Read/write (0.9.0) |
 | --- | --- | --- |
-| **script** | Executable shell or code automation | `scripts/deploy.sh` |
-| **skill** | A set of agent instructions | `skills/code-review` |
-| **command** | A prompt template with placeholders | `commands/summarize` |
-| **agent** | System prompt + model + tool policy | `agents/reviewer` |
-| **knowledge** | A reference document | `knowledge/api-guide` |
-| **instruction** | Project guidance for agents | `instructions/repository` |
-| **env** | Whole `.env` group (key names surfaced, values never) | `env/prod` |
-| **secret** | A single sensitive value | `secrets/deploy-token` |
-| **workflow** | Structured multi-step procedure with resumable run state | `workflows/ship-release` |
-| **lesson** | Distilled feedback insight | `lessons/prefer-dry-run` |
-| **memory** | Recalled context from a previous session | `memories/vpn-note` |
-| **task** | Scheduled prompt/command/workflow job | `tasks/nightly-review` |
-| **session** | Indexed session summary | `sessions/claude/session-id` |
-| **fact** | Durable bundle-level fact (identity, conventions, bundle-meta) | `facts/team/tool-stack` |
+| `akm` | akm's own typed workspace — scripts, skills, commands, agents, knowledge, instructions, env, secrets, workflows, lessons, memories, tasks, sessions, facts | Writable |
+| `okf` | Open Knowledge Format — plain markdown, type read from frontmatter | Read-only |
+| `llm-wiki` | Karpathy-style LLM wiki (`schema.md` + `raw/` + `pages/`) | Read-only |
+| `claude` | A Claude Code `.claude` tool directory (`CLAUDE.md`, `commands/`, `agents/`, `skills/`) | Read-only |
+| `opencode` | An OpenCode `.opencode` tool directory (`AGENTS.md`, `commands/`, `agents/`, `skills/`) | Read-only |
+| `agent-skills` | A standalone collection of Agent Skills packages (`<name>/SKILL.md`) | Read-only |
+| `dotenv` | An env/secrets-only bundle | Writable (env/secret commands only) |
+| `akm-workflow` | A standalone workflow bundle | Writable (`akm workflow create` only) |
+| `akm-task` | A standalone scheduled-task bundle | Read-only |
+| `website-snapshot` | A crawled website snapshot | Read-only |
+| `generic-files` | Catch-all fallback, classified by extension (explicit opt-in only) | Read-only |
 
-See [docs/guides/concepts.md](docs/guides/concepts.md) for classification rules and the ref format.
+Most formats are recognized automatically the moment you `akm bundle add`
+their directory. "Read-only" means AKM's write commands (`akm remember`,
+`akm import`, proposal-accept, …) can't create or edit items there in
+0.9.0 — search, show, and `akm lint` all work normally regardless.
+
+See [Bundle Types](docs/reference/bundle-types.md) for detection rules, ref
+shapes, what's indexed, validation, and the full read/write picture for
+every format — including the fourteen asset types akm's own native format
+recognizes. See [Concepts](docs/guides/concepts.md) for the ref format,
+sources vs. bundles, and classification rules.
 
 ## Key workflows
 
@@ -216,6 +225,7 @@ No plugins or SDKs required. Platform-specific integrations are available in [ak
 | --- | --- |
 | [Getting Started](docs/guides/getting-started.md) | Install, first-time setup, add sources, search, show |
 | [Concepts](docs/guides/concepts.md) | Sources, registries, asset types, refs, and the bundle |
+| [Bundle Types](docs/reference/bundle-types.md) | Every bundle format akm recognizes: detection, refs, indexing, validation, read/write |
 | [CLI Reference](docs/reference/cli.md) | All commands and flags |
 | [Configuration](docs/reference/configuration.md) | Settings, providers, embedding, and Ollama setup |
 | [Bundle Maker's Guide](docs/guides/stash-makers.md) | Build, publish, and share your own bundles |
