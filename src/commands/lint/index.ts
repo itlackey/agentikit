@@ -25,6 +25,7 @@ import { deriveBundleIds } from "../../core/bundle-id";
 import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import { loadConfig, primaryBundlePath } from "../../core/config/config";
+import { UsageError } from "../../core/errors";
 import type { FileChange } from "../../core/file-change";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import { runBaseChecks } from "./base-linter";
@@ -561,6 +562,12 @@ function lintAkmSweep(
  * `commands/improve/preparation.ts`) or is a test that can `await` it.
  */
 export async function akmLint(options: AkmLintOptions = {}): Promise<AkmLintResult> {
+  // Fail closed on a mistyped invocation (§24.2 "Lint" release gate): a
+  // nonexistent --dir used to walk nothing and report a clean
+  // `ok:true, flagged:0`, silently passing scripted --fail-on-flagged gates.
+  if (options.dir !== undefined && !fs.statSync(options.dir, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new UsageError(`lint: --dir "${options.dir}" is not a directory.`, "INVALID_FLAG_VALUE");
+  }
   // Collect secondary stash roots from configured filesystem sources so that
   // cross-stash refs (e.g. referencing assets in dimm-city/agent-stash) are
   // not falsely flagged as missing-ref.
@@ -573,5 +580,15 @@ export async function akmLint(options: AkmLintOptions = {}): Promise<AkmLintResu
   const extraStashRoots = sources.map((s) => s.path).filter((p) => p !== stashRoot && fs.existsSync(p));
 
   if (adapterId !== "akm") return lintViaAdapter(adapterId, stashRoot, extraStashRoots, sources, cfg, options);
+  // Same fail-closed rule for --type on the akm sweep: an unknown value used
+  // to filter the walk to ZERO directories — a false-clean result on the
+  // classic singular/plural typo ("workflow" for "workflows"). Non-akm
+  // adapters keep their own type vocabularies (see lintViaAdapter).
+  if (options.typeFilter && !(STASH_SUBDIRS as readonly string[]).includes(options.typeFilter)) {
+    throw new UsageError(
+      `lint: unknown --type "${options.typeFilter}". Valid types: ${STASH_SUBDIRS.join(", ")}.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
   return lintAkmSweep(stashRoot, extraStashRoots, cfg, sources, options);
 }
