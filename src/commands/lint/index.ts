@@ -14,6 +14,7 @@ import {
   taskDiagnostics,
   workflowStructureDiagnostics,
 } from "../../core/adapter/adapters/akm-lint";
+import { wikiCatalogDiagnostics } from "../../core/adapter/adapters/wiki-structure";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { adapterForId } from "../../core/adapter/registry";
 import type { Diagnostic } from "../../core/adapter/types";
@@ -176,6 +177,8 @@ const KNOWN_ADAPTER_ISSUE_TYPES: ReadonlySet<string> = new Set<LintIssueType>([
   "missing-description",
   "broken-xref",
   "broken-source",
+  "stale-index",
+  "missing-index",
 ]);
 
 /** Map one adapter {@link Diagnostic} onto a {@link LintIssue} — see `types.ts`'s `"adapter-diagnostic"` doc comment for the open→closed reconciliation. */
@@ -436,13 +439,13 @@ export function lintAssetFile(ctx: LintContext, subdir: string): LintIssue[] {
  * adapter id is `"akm"` (or, defensively, an unregistered adapter id —
  * see {@link lintViaAdapter}'s fallback).
  */
-function lintAkmSweep(
+async function lintAkmSweep(
   stashRoot: string,
   extraStashRoots: string[],
   cfg: AkmConfig,
   sources: SearchSource[],
   options: AkmLintOptions,
-): AkmLintResult {
+): Promise<AkmLintResult> {
   const fix = options.fix === true;
   const fixed: LintIssue[] = [];
   const flagged: LintIssue[] = [];
@@ -527,6 +530,16 @@ function lintAkmSweep(
     }
   }
 
+  // ── Stash-wiki catalog pass ────────────────────────────────────────────────
+  // Catalog honesty for `wikis/<name>/` directories (D-R6 usability revision,
+  // 2026-08-06): the wiki's root catalog must match its `pages/` set. Shares
+  // `wikiCatalogDiagnostics` with `llmWikiAdapter.validate()`. Warn-only,
+  // ADDITIVE to the pinned sweep above (which never walked `wikis/`), and
+  // skipped under `--type` (wikis are not a stash asset type).
+  if (!options.typeFilter) {
+    flagged.push(...(await runStashWikiCatalogPass(stashRoot)));
+  }
+
   // ── Env dangerous-key pass ─────────────────────────────────────────────────
   // Scan every `.env` file under <stashRoot>/env/ across all stash roots for
   // keys that are known to enable process-execution hijacking. Warn-only —
@@ -548,6 +561,46 @@ function lintAkmSweep(
     flagged,
     summary: { fixed: fixed.length, flagged: flagged.length },
   };
+}
+
+/**
+ * Catalog honesty for stash wikis (`wikis/<name>/` under an akm stash root):
+ * run the shared {@link wikiCatalogDiagnostics} checker over each directory
+ * that looks like a wiki (a `pages/` subdir or a `schema.md` rulebook),
+ * mapping its findings onto {@link LintIssue}s. Read-only and warn-only — akm
+ * detects catalog drift; the agent maintaining the wiki fixes it.
+ */
+async function runStashWikiCatalogPass(stashRoot: string): Promise<LintIssue[]> {
+  const wikisDir = path.join(stashRoot, "wikis");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(wikisDir, { withFileTypes: true });
+  } catch {
+    return []; // no wikis/ directory — nothing to check
+  }
+
+  const readFile = async (rel: string): Promise<string | null> => {
+    try {
+      return fs.readFileSync(path.join(stashRoot, rel), "utf8");
+    } catch {
+      return null;
+    }
+  };
+
+  const issues: LintIssue[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const wikiDir = path.join(wikisDir, entry.name);
+    const isWiki = fs.existsSync(path.join(wikiDir, "pages")) || fs.existsSync(path.join(wikiDir, "schema.md"));
+    if (!isWiki) continue; // a stray dir under wikis/ is not a wiki — leave it alone
+    const changes: FileChange[] = collectMarkdownFiles(wikiDir, true).map((filePath) => ({
+      path: path.relative(stashRoot, filePath).replace(/\\/g, "/"),
+      op: "update",
+    }));
+    const diagnostics = await wikiCatalogDiagnostics({ prefix: `wikis/${entry.name}/`, changes, readFile });
+    issues.push(...diagnostics.map(diagnosticToLintIssue));
+  }
+  return issues;
 }
 
 /**

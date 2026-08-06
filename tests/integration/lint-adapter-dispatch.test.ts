@@ -92,6 +92,10 @@ describe("akm lint dispatches an llm-wiki bundle through llmWikiAdapter.validate
     const wikiRoot = path.join(storage.root, "clean-wiki");
 
     write(wikiRoot, "schema.md", "# Wiki schema\n");
+    // Clean includes an honest catalog (D-R6 usability revision): the root
+    // listing names every page, so the stale-index/missing-index checks stay
+    // silent.
+    write(wikiRoot, "index.md", "# clean-wiki — catalog\n\n- [topic](pages/topic.md)\n");
     write(wikiRoot, "pages/topic.md", "---\ndescription: A well-formed page\n---\n\nNo dangling links here.\n");
 
     const result = await akmLint({ dir: wikiRoot });

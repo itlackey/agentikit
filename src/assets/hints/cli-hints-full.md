@@ -124,7 +124,13 @@ akm bundle list                                       # Confirm the bundle is in
 
 Files under the bundle's `raw/` directory and the wiki infrastructure files
 `schema.md`, `index.md`, and `log.md` are not indexed and do not appear in
-search results. No `--llm` anywhere — akm never reasons about page content.
+search results — but they are the wiki's orientation layer, readable by
+extensionless ref: `akm show <wiki>//schema` (the rulebook — read it before
+editing), `akm show <wiki>//index` (the catalog — check it before adding
+pages; bare `akm show <wiki>//` works too), `akm show <wiki>//log` (the
+append-only history — append a summary after your session). `akm lint`
+flags a catalog that has drifted from `pages/`. No `--llm` anywhere — akm
+never reasons about page content.
 
 ## Env files
 

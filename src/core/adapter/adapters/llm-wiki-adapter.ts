@@ -80,6 +80,7 @@ import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
 import { hashContent, nonEmptyString } from "./shared";
+import { wikiCatalogDiagnostics } from "./wiki-structure";
 
 /** A wiki is a single-component bundle; its one component is conventionally `main` (recognition golden). */
 const WIKI_COMPONENT_ID = "main";
@@ -409,6 +410,12 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
       }
     }
   }
+
+  // Catalog honesty (D-R6 usability revision, 2026-08-06): the root catalog is
+  // the wiki's orientation surface, so lint detects drift between it and the
+  // page set — the agent fixes it (akm never rewrites the catalog). Shared
+  // with the akm lint sweep's stash-wiki pass; partial-set-safe by design.
+  diagnostics.push(...(await wikiCatalogDiagnostics({ prefix: "", changes, readFile: (p) => ctx.readFile(p) })));
 
   return diagnostics;
 }

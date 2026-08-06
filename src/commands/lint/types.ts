@@ -27,6 +27,16 @@ export type LintIssueType =
   | "missing-description"
   | "broken-xref"
   | "broken-source"
+  // ── wiki catalog honesty (D-R6 usability revision, 2026-08-06) ──
+  //
+  // Emitted by the shared `wikiCatalogDiagnostics` checker
+  // (`core/adapter/adapters/wiki-structure.ts`) for standalone llm-wiki
+  // bundles (via `llmWikiAdapter.validate()`) AND stash `wikis/<name>/` dirs
+  // (via the akm sweep's wiki pass). Both attach to the CATALOG file:
+  // `stale-index` = catalog/page-set drift (either direction);
+  // `missing-index` = a wiki with pages but no root catalog at all.
+  | "stale-index"
+  | "missing-index"
   /**
    * Fallback for a `Diagnostic.issue` code this union does not (yet) name.
    * `Diagnostic.issue` (`core/adapter/types.ts`) is deliberately an OPEN

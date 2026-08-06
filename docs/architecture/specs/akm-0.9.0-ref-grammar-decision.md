@@ -262,6 +262,26 @@ rule derived from OKF.
    names. The ref grammar does not prohibit a concept ID solely because its
    final segment is `index` or `log`.
 
+**Usability revision (2026-08-06) — reserved is not invisible.** The
+reservation itself is unchanged in every adapter (the files are structure,
+never concepts, never search hits). What changes is that akm now actively
+supports the pattern the reserved names belong to, instead of only filtering
+it out:
+
+1. `akm show` serves a reserved structural file by extensionless ref
+   (`wiki//index`, `wiki//schema`, `local//wikis/articles/index`; a pasted
+   `.md` is tolerated), with `<bundle>//` — or a bare installed-bundle name —
+   as the root-listing shorthand. Direct disk read, fallback-only (an indexed
+   concept always wins), modeled on the `.meta/` convention
+   (`src/core/asset/structural-ref.ts`).
+2. `akm lint` detects wiki-catalog drift (`stale-index`/`missing-index`,
+   attributed to the catalog file) for standalone llm-wiki bundles and stash
+   `wikis/<name>/` dirs (`src/core/adapter/adapters/wiki-structure.ts`).
+   Read-only: akm detects; the agent maintaining the wiki fixes.
+
+With the orientation layer first-class, no content ever needs to be renamed
+around the reservation — the `*-content.md` workaround convention is dead.
+
 ## 5. Spec amendments (exhaustive)
 
 1. Normative §11.1: CLI/API short-ref resolution — replace "resolved … against the workspace

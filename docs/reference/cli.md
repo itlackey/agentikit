@@ -483,6 +483,16 @@ akm show meta:about                 # working bundle's .meta/about.md
 akm show akm//meta                  # the primary bundle explicitly
 akm show github:owner/repo//meta    # an installed bundle's .meta/index.md
 
+# Reserved structural files — direct-read, not indexed (refs are
+# extensionless, like every ref; a pasted .md suffix is tolerated):
+akm show docs-bundle//index              # the bundle's root directory listing
+akm show docs-bundle//                   # same — bare-bundle root shorthand
+akm show docs-bundle                     # same — a bare installed-bundle name
+akm show docs-bundle//guides/index       # a nested directory listing
+akm show team-wiki//schema               # an LLM wiki's rulebook
+akm show team-wiki//log                  # its append-only activity log
+akm show local//wikis/articles/index     # a stash wiki's catalog
+
 # Multi-tenant scope filtering:
 akm show memories/retro --filter user=alice
 akm show memories/retro --filter user=alice --filter agent=claude
@@ -494,6 +504,14 @@ human-authored orientation doc from a bundle's optional `.meta/` directory
 extensionless `.meta/<name>`). These files are never indexed, so they do not
 appear in `akm search`. See [concepts.md](https://github.com/itlackey/akm/blob/main/docs/guides/concepts.md#bundle-orientation-the-meta-convention)
 for the full convention.
+
+The reserved structural files work the same way (reserved ≠ invisible): a
+show ref whose final segment is `index`, `log`, or `schema` falls back to a
+direct disk read when nothing indexed resolves, so a bundle's directory
+listings, update histories, and wiki rulebooks/catalogs are first-class
+readable while staying out of `akm search`. An indexed concept always wins
+over the fallback, and `akm lint` flags a wiki catalog that has drifted from
+its `pages/` set (`stale-index` / `missing-index`).
 
 `--filter` accepts the same `<key>=<value>` shape as `akm search --filter` — one
 spelling for the scope-narrowing axis on both commands (`--scope` was removed

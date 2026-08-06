@@ -42,6 +42,7 @@ const ALLOWED = new Set([
   "commands/sources/stash-skeleton.ts", // structural `.meta/index.md` orientation doc
   "commands/sources/init.ts", // doc comment referencing the `.meta/index.md` orientation doc
   "commands/sources/schema-repair.ts", // llm-wiki structural directory-index names
+  "core/asset/structural-ref.ts", // structural-show READER (D-R6 usability revision) — resolves reserved files for `akm show`, never writes them
   "commands/lint/index.ts", // OKF structural-file exclusion set
   "indexer/passes/metadata.ts", // WIKI_INFRA_FILES exclusion set
   "migrate/legacy/content-migration.ts", // D-R6 rename step (reserved-name detection)

@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Reserved structural files are readable through `akm show`** (D-R6
+  usability revision: reserved ≠ invisible). The OKF directory listings and
+  update histories (`index.md`/`log.md` at any depth) and an LLM wiki's root
+  rulebook/catalog/log are the bundle's orientation layer — never indexed,
+  never search hits, but now served by extensionless ref exactly like every
+  other ref: `akm show wiki//index`, `wiki//schema`, `local//wikis/articles/index`,
+  `local//knowledge/log` (a pasted `.md` suffix is tolerated). `akm show
+  <bundle>//` — or a bare installed-bundle name — serves the bundle's root
+  listing. Fallback-only: an indexed concept always resolves first, search is
+  untouched, and nothing is ever renamed to work around the reservation.
+- **`akm lint` keeps wiki catalogs honest.** New non-blocking findings
+  attributed to the catalog file, for standalone llm-wiki bundles and stash
+  `wikis/<name>/` dirs alike: `stale-index` (a page missing from the catalog,
+  or a catalog entry pointing at a page that does not exist) and
+  `missing-index` (a wiki with pages but no root catalog). Read-only by
+  design — akm detects the drift; the agent maintaining the wiki fixes it.
+
 ## [0.9.0] - 2026-08-06
 
 0.9.0 is the format-neutral **bundle / adapter** refactor: it replaces the flat

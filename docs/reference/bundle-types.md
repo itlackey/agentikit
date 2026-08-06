@@ -325,7 +325,11 @@ present.
 **conceptId / ref.** `raw/<slug>.md` → `raw/<slug>` (type `wiki-source`);
 `pages/<path>.md` → `pages/<path>` (type = frontmatter `pageKind`, default
 `note`). `schema.md`/`index.md`/`log.md` at the wiki root are reserved and
-never indexed; anything outside `raw/`/`pages/` is not recognized.
+never indexed; anything outside `raw/`/`pages/` is not recognized. The three
+root files stay readable by extensionless ref (`akm show team-wiki//schema`,
+`team-wiki//index` — or bare `team-wiki//` for the catalog), and `akm lint`
+flags a catalog that has drifted from `pages/` (`stale-index` /
+`missing-index`).
 
 **Indexed.** `name`, `description`, the body (bounded). A page's `links` =
 its resolved `xrefs:` frontmatter plus body markdown links (deduped); its
@@ -417,7 +421,11 @@ write command's default allowlist admits (`akm remember`, `akm import`,
 create`, `akm secret set`, …).
 
 **Caveats.** `index.md`/`log.md` are reserved structural files at any
-depth — never indexed as concepts, never valid write targets.
+depth — never indexed as concepts, never valid write targets. Reserved is
+not invisible: they are readable by extensionless ref (`akm show
+local//knowledge/index`, `local//wikis/articles/index`), and `akm lint`
+flags a stash wiki whose catalog has drifted from its `pages/` set
+(`stale-index` / `missing-index`).
 
 ## `okf`
 

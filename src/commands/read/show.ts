@@ -20,11 +20,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { recognizeMatch } from "../../core/adapter/recognize-match";
-import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
+import { isBundleSlug, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { extractSection, markdownFragmentSlugs } from "../../core/asset/markdown";
 import { displayRef, typeNameFromConceptId } from "../../core/asset/resolve-ref";
 import { META_DIR, type MetaRef, parseMetaRef, resolveMetaFilePath } from "../../core/asset/stash-meta";
+import { parseBundleRootRef, parseStructuralRef, resolveStructuralFilePath } from "../../core/asset/structural-ref";
 import { asNonEmptyString } from "../../core/common";
 import { getIndexPassConfig, loadConfig } from "../../core/config/config";
 import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
@@ -106,12 +107,35 @@ export async function akmShowUnified(input: {
     if (metaRef) return showStashMeta(metaRef);
   }
 
+  // 0b. Bare-bundle root shorthand `<bundle>//` — the bundle's own root
+  //     listing (D-R6 usability revision: reserved is not invisible). This
+  //     shape is not a valid concept ref (empty concept body), so it is
+  //     intercepted before parse; a bundle without a root listing falls
+  //     through to the normal invalid-ref error.
+  {
+    const rootOrigin = parseBundleRootRef(ref);
+    if (rootOrigin) {
+      const structural = showStructuralFile({ origin: rootOrigin, relPath: "index" });
+      if (structural) return structural;
+    }
+  }
+
   // Auto-index when stale so the index is current before lookup.
   const { primarySource } = resolveReadSources();
   await ensurePrimaryIndexForRead(primarySource);
 
-  // Try local filesystem (FTS5 index lookup)
-  const result = await showLocal(input);
+  // Try local filesystem (FTS5 index lookup); when nothing resolves, fall
+  // back to the bundle-structure read (D-R6 reserved files — the orientation
+  // layer normal resolution can never reach because it is never indexed).
+  let result: ShowResponse;
+  try {
+    result = await showLocal(input);
+  } catch (error) {
+    if (!(error instanceof NotFoundError)) throw error;
+    const structural = tryShowStructural(ref);
+    if (!structural) throw error;
+    result = structural;
+  }
   // Scope filter narrows resolution: if a scope filter was supplied, the
   // asset's frontmatter scope must satisfy every supplied key. We re-read the
   // file (cheap — already on the show hot path) so we don't have to thread
@@ -174,6 +198,53 @@ async function showStashMeta(metaRef: MetaRef): Promise<ShowResponse> {
       `Stash maintainers can create ${META_DIR}/${metaRef.name}.md to describe this stash ` +
       `(purpose, key assets, conventions, maintainer).`,
   );
+}
+
+/**
+ * Structural fallback for a show ref that resolved to nothing: a D-R6
+ * reserved structural file (a directory listing / update history / wiki
+ * rulebook) is never indexed, so it is direct-read from disk — the same
+ * "convention enabled by a thin resolver" shape as `.meta/`. Refs are
+ * extensionless like every conceptId (`wiki//index`, `local//knowledge/log`);
+ * a bare installed-bundle name serves that bundle's root listing. Returns
+ * `null` when the ref is not structural or no file exists, so the caller
+ * rethrows the original not-found error.
+ */
+function tryShowStructural(ref: string): ShowResponse | null {
+  const structRef = parseStructuralRef(ref);
+  if (structRef) return showStructuralFile(structRef);
+
+  // Bare installed-bundle name (`akm show team-wiki`) → its root listing.
+  const trimmed = ref.trim();
+  if (trimmed.includes("//") || trimmed.includes("#") || !isBundleSlug(trimmed)) return null;
+  if (resolveSourcesForOrigin(trimmed, resolveSourceEntries()).length === 0) return null;
+  return showStructuralFile({ origin: trimmed, relPath: "index" });
+}
+
+/** Read one structural file from the first source that has it (origin-scoped when given), as a lightweight ShowResponse. */
+function showStructuralFile(structRef: { origin?: string; relPath: string }): ShowResponse | null {
+  const allSources = resolveSourceEntries();
+  const sources = resolveSourcesForOrigin(structRef.origin, allSources);
+  const config = loadConfig();
+
+  for (const source of sources) {
+    const filePath = resolveStructuralFilePath(source.path, structRef.relPath);
+    if (!filePath) continue;
+    const content = fs.readFileSync(filePath, "utf8");
+    const description = asNonEmptyString(parseFrontmatter(content).data.description);
+    const response: ShowResponse = {
+      type: "structural",
+      name: structRef.relPath.split("/").pop() ?? structRef.relPath,
+      path: filePath,
+      ref: makeBundleRef(structRef.origin, structRef.relPath),
+      content,
+      origin: source.registryId ?? null,
+      editable: isEditable(filePath, config, allSources),
+    } as ShowResponse;
+    if (description !== undefined) response.description = description;
+    return response;
+  }
+  return null;
 }
 
 function hasAnyScopeKey(scope: StashEntryScope): boolean {
