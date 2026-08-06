@@ -2915,9 +2915,11 @@ fixed.
 
 Triaged 2026-08-06 for the 0.9.0 release: every sub-item was assessed against
 the actual test/lint/code evidence (an item counts as covered only when a test
-*asserts* the property, not merely exercises the path). Two rows were resolved
-outright; the six remaining rows carry filled waiver records below, pending
-approver sign-off.
+*asserts* the property, not merely exercises the path). itlackey reviewed the
+triage the same day and directed per-row outcomes: three rows resolved
+outright, four targeted fixes landed (registry stale fallback, upgrade
+version verification, lint fail-closed, plus the full Semantic row), and the
+remaining gaps carry approved waivers with the expiries recorded below.
 
 - [x] **Test harness:** curation cannot leave a schema-less shared `index.db`
       that makes later proposal acceptance tests fail by file order.
@@ -2938,30 +2940,32 @@ approver sign-off.
       Fixed (routes like `--auto`; fail-soft unchanged) and the standalone test
       in `tests/integration/remember-frontmatter.test.ts` now asserts the
       enrichment branch ran (warning surfaced), which it previously did not.
-- [ ] **Semantic:** vector dimension validation, truthful ready-vec, JS fallback
+- [x] **Semantic:** vector dimension validation, truthful ready-vec, JS fallback
       after fast-path failure, runtime failure status, targeted-write readiness,
       and cancellation propagation.
-  - Covered: JS fallback after fast-path failure
-    (`tests/integration/db.test.ts` "degraded vec fast path routes searchVec
-    to the JS-cosine BLOB fallback"; ranking pinned in
-    `tests/integration/vector-search.test.ts`).
-  - Partial: dimension validation (config layer tested; the DB-layer 1–4096
-    guard in `src/storage/repositories/index-schema.ts` has no test and an
-    out-of-range dim crashes `akm index` uncaught), runtime failure status
-    (classification and consumption tested; no test drives a real provider
-    failure through `akmIndex()` to a persisted `blocked` status).
-  - Open: truthful ready-vec (`verifyIndexState` reports `ready-vec` from
-    `isVecAvailable` alone, ignoring `isVecFastPathReady` — after partial vec
-    failures `akm info` overstates health; search itself stays correct),
-    targeted-write semantic visibility (write-path indexing skips embeddings
-    by design; nothing surfaces the gap), cancellation propagation (no test
-    aborts a running `akmIndex`).
-  - issue: observability/coverage gaps, no known result-correctness bug.
-    impact: misleading semantic health reporting; unguarded crash on
-    out-of-range dimension. owner: itlackey. verification test: see per-item
-    notes above. temporary mitigation: search results remain correct in every
-    listed scenario; `akm index --full` heals state. waiver approver:
-    PENDING — itlackey. waiver expiry: 0.9.1.
+      **Resolved 2026-08-06** (fix-now directed by itlackey at 0.9.0 triage):
+  - Truthful ready-vec: `verifyIndexState` now reports `ready-vec` only when
+    the vec fast path is actually serving (`isVecAvailable` AND
+    `isVecFastPathReady`); a degraded run reports `ready-js` with an
+    `akm index --full` hint. Pinned by
+    `tests/integration/index-verification-truth.test.ts` (forces real vec
+    insert failures via a width-mismatched mock endpoint; verified to fail
+    against the old logic).
+  - Dimension validation: `embedding.dimension` is bounded to the vec-table
+    guard's 1–4096 in the config schema (fails at `config set` with a clear
+    message instead of crashing `akm index`); the DB-layer guard itself is
+    pinned in `tests/integration/db.test.ts`.
+  - Runtime failure status: a real provider failure (HTTP 500) driven through
+    `akmIndex()` to `semanticStatus: "blocked"` is now pinned in
+    `index-verification-truth.test.ts`.
+  - Cancellation propagation: pre-aborted and mid-run-aborted signals
+    rejecting `akmIndex()` are pinned in the same file.
+  - JS fallback after fast-path failure: already covered
+    (`tests/integration/db.test.ts`, `tests/integration/vector-search.test.ts`).
+  - Remaining, accepted by design: targeted-write indexing skips embeddings
+    on purpose (`src/indexer/index-written-assets.ts` module doc — the next
+    full run heals them); whether to surface that gap at write time is a 0.10
+    placement-era product decision, not a regression.
 - [ ] **Durability:** atomic reader-visible index generations, live-lock age,
       full source lifecycle rollback, safe website/npm refresh, strict lockfile,
       registry stale fallback, and sync/write serialization.
@@ -2972,18 +2976,21 @@ approver sign-off.
     covered; website snapshot interrupted mid-write can strand a mixed dir),
     sync serialization (git-source CAS race tested; `akm sync`'s own
     `createExactPathCommit` race not directly).
+  - **Fixed 2026-08-06** (fix-now directed at 0.9.0 triage): registry stale
+    fallback — a failed registry fetch now serves the cached index even past
+    its TTL, with a warning, instead of hard-failing
+    (`src/storage/repositories/registry-cache.ts`; pinned by
+    `tests/integration/registry-stale-fallback.test.ts`).
   - Open: live-lock age (an alive-but-slow writer past `staleAfterMs` can be
     reclaimed; no test pins reclaim behavior), full source lifecycle rollback
-    (no test walks add→blocked-install→rollback against a dangerous fixture),
-    registry stale fallback (expired cache + unreachable registry hard-fails
-    instead of serving stale).
-  - issue: recovery-path coverage gaps. impact: worst plausible outcomes are
-    a mixed website snapshot after a crash and a hard error instead of stale
-    registry data. owner: itlackey. verification test: per-item notes.
-    temporary mitigation: all paths recover via re-run (`akm bundle update`,
-    `akm index --full`); locks are per-purpose and 12h-stale thresholds make
-    live reclaim unlikely. waiver approver: PENDING — itlackey. waiver
-    expiry: 0.9.1.
+    (no test walks add→blocked-install→rollback against a dangerous fixture).
+  - issue: recovery-path coverage gaps. impact: worst plausible outcome is a
+    mixed website snapshot after a crash; recovery via re-run. owner:
+    itlackey. verification test: per-item notes. temporary mitigation: all
+    paths recover via re-run (`akm bundle update`, `akm index --full`); locks
+    are per-purpose and 12h-stale thresholds make live reclaim unlikely.
+    waiver approver: itlackey — approved 2026-08-06 (0.9.0 release triage).
+    waiver expiry: 0.9.1.
 - [ ] **Security:** Git/direct-write symlink containment, authenticated OpenCode
       listener, registry credential/control-data redaction, archive expansion
       budgets, universal redirect/SSRF policy, and unsuppressible update audit.
@@ -3003,7 +3010,8 @@ approver sign-off.
     own §23 items (lines cited in the per-item notes). temporary mitigation:
     sources/registries are operator-chosen; dangerous-env audit runs at
     install; opencode listener binds loopback only. waiver approver:
-    PENDING — itlackey. waiver expiry: 0.10.0 (hardening series).
+    itlackey — approved 2026-08-06 (0.9.0 release triage). waiver expiry:
+    0.10.0 (hardening series).
 - [ ] **Secrets/permissions:** exact-value task-log redaction and managed DB/log/
       backup permission coverage across every configured bundle.
   - Covered: exact-value redaction for prompt-target and workflow-target task
@@ -3018,40 +3026,52 @@ approver sign-off.
     owner: itlackey. verification test: per-item notes (stat-mode asserts
     mirroring the existing secret-file-perms pattern). temporary mitigation:
     data dir lives under the user's `$XDG_DATA_HOME`; env/secret files
-    themselves already carry 0600 enforcement. waiver approver: PENDING —
-    itlackey. waiver expiry: 0.9.1.
+    themselves already carry 0600 enforcement. waiver approver: itlackey —
+    approved 2026-08-06 (0.9.0 release triage). waiver expiry: 0.9.1.
 - [ ] **Package/release:** exact package-manager upgrade version verification,
       native installer/scheduler coverage, action/dependency provenance hardening,
       and post-publication artifact parity.
+  - **Fixed 2026-08-06** (fix-now directed at 0.9.0 triage): upgrade version
+    verification — after a package-manager install "succeeds", `akm upgrade`
+    now re-reads `akm --version` from PATH; a confirmed mismatch (lagging
+    `@latest` dist-tag) reports `upgraded: false` with the exact-version pin
+    remedy and skips `migrate apply` (which would have run against the old
+    binary). Fail-open only when verification itself is unavailable.
+    (`src/commands/sources/self-update.ts`; pinned in
+    `tests/integration/self-update.test.ts`.)
   - Partial: installer coverage (install.sh harness-tested;
     install.ps1 manual-only), native scheduler (Linux standalone covered via
     release-check; macOS/Windows suites unreachable — no such CI runner).
-  - Open: upgrade version verification (`akm upgrade` trusts the package
-    manager's exit code; never re-reads the installed version), Actions
-    SHA-pinning (third-party actions pinned by tag, not commit), post-publish
-    artifact parity (nothing compares npm tarball to release assets).
-  - issue: release-infrastructure hardening. impact: a lagging dist-tag or
-    clobbered release asset ships silently; tag-hijack of a third-party
-    action could compromise the release job. owner: itlackey. verification
-    test: per-item notes (workflow-lint for SHA pins; post-publish parity
-    job). temporary mitigation: releases are operator-triggered
-    (`workflow_dispatch`) with a human watching; `release:check` covers the
-    Linux artifact end-to-end when run. waiver approver: PENDING — itlackey.
-    waiver expiry: 0.9.1 for upgrade verification; 0.10.0 for the rest.
+  - Open: Actions SHA-pinning (third-party actions pinned by tag, not
+    commit), post-publish artifact parity (nothing compares npm tarball to
+    release assets).
+  - issue: release-infrastructure hardening. impact: a clobbered release
+    asset ships silently; tag-hijack of a third-party action could
+    compromise the release job. owner: itlackey. verification test: per-item
+    notes (workflow-lint for SHA pins; post-publish parity job). temporary
+    mitigation: releases are operator-triggered (`workflow_dispatch`) with a
+    human watching; `release:check` covers the Linux artifact end-to-end
+    when run. waiver approver: itlackey — approved 2026-08-06 (0.9.0 release
+    triage). waiver expiry: 0.10.0.
 - [ ] **Lint:** invalid type/dir fail-closed behavior, adapter type scoping,
       malformed task coverage, and transactional/publication-aware fixing.
+  - **Fixed 2026-08-06** (fix-now directed at 0.9.0 triage): invalid
+    `--type`/`--dir` fail closed — a nonexistent `--dir` and an unknown
+    `--type` on an akm bundle (the singular/plural typo) are now usage
+    errors instead of a false-clean `ok:true, flagged:0`
+    (`src/commands/lint/index.ts`; pinned by
+    `tests/integration/lint-fail-closed.test.ts`).
   - Partial: adapter type scoping (adapter dispatch tested; `--type` is
     silently ignored by non-akm adapter validation with no diagnostic).
-  - Open: invalid `--type`/`--dir` returns a false-clean `ok:true, flagged:0`
-    instead of failing closed; malformed task YAML (and the `.yaml`
-    misspelling) produces zero findings; `--fix` against a read-only bundle
-    or mid-sweep write failure is neither transactional nor explicitly
-    reported.
-  - issue: lint trustworthiness at the edges. impact: scripted lint gates can
-    read clean on a typo'd invocation. owner: itlackey. verification test:
-    per-item notes (§20 checklist lines). temporary mitigation: interactive
-    use surfaces empty summaries visibly; `--fix` remains opt-in. waiver
-    approver: PENDING — itlackey. waiver expiry: 0.9.1.
+  - Open: malformed task YAML (and the `.yaml` misspelling) produces zero
+    findings; `--fix` against a read-only bundle or mid-sweep write failure
+    is neither transactional nor explicitly reported.
+  - issue: lint trustworthiness at the edges. impact: a hand-edited task file
+    with broken YAML can pass lint silently. owner: itlackey. verification
+    test: per-item notes (§20 checklist lines). temporary mitigation:
+    interactive use surfaces empty summaries visibly; `--fix` remains
+    opt-in. waiver approver: itlackey — approved 2026-08-06 (0.9.0 release
+    triage). waiver expiry: 0.9.1.
 
 For each unchecked row record:
 

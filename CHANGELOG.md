@@ -590,6 +590,33 @@ See `docs/migration/v0.8-to-v0.9.md` and
   an active workflow run targets an asset that fails 0.9 structural
   validation, naming the asset and `akm workflow abandon <run-id>`.
 
+- **`akm lint` fails closed on mistyped invocations.** A nonexistent `--dir`,
+  or an unknown `--type` on an akm bundle (the classic singular/plural typo,
+  `--type workflow`), used to scan nothing and report a clean
+  `ok:true, flagged:0` — silently passing scripted `--fail-on-flagged`
+  gates. Both are now usage errors (exit 2), the `--type` error listing the
+  valid values.
+- **Registry search survives a briefly unreachable registry.** Once the
+  cached registry index aged past its refresh TTL, a failed fetch
+  hard-failed the command even though a serviceable index sat in the cache.
+  A failed fetch now serves the last cached index — past its TTL — with a
+  warning naming the fetch error.
+- **`akm upgrade` verifies the package manager actually delivered the new
+  version.** A lagging `@latest` dist-tag (partial publish, registry mirror
+  lag) exits 0 while leaving the old version on PATH; upgrade used to report
+  success anyway — and then run `migrate apply` against the old binary. It
+  now re-reads `akm --version` after the install: a confirmed mismatch
+  reports `upgraded: false` with an exact-version pin command, and a
+  verified match is named in the success message.
+- **`akm info` no longer overstates semantic-search health.** After a run
+  with partial sqlite-vec fast-path insert failures, the verification
+  reported `ready-vec` ("sqlite-vec active") even though search had already
+  routed to the slower JS-cosine fallback. The status now reflects the path
+  search actually takes, with an `akm index --full` hint when the fast path
+  is degraded. Relatedly, `embedding.dimension` is now bounded to the
+  vec table's own 1–4096 limit at config validation, so an out-of-range
+  value fails at `akm config set` with a clear message instead of crashing
+  `akm index` mid-run.
 - **Standalone `akm remember --enrich` actually enriches.** With no other
   metadata flag, `--enrich` fell through to the zero-flag raw-write hot path
   and never attempted the LLM call — an unenriched memory with no warning.
