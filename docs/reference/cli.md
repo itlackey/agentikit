@@ -139,7 +139,7 @@ Creates one subdirectory per asset type under the bundle path — currently
 `scripts/`, `skills/`, `commands/`, `agents/`, `knowledge/`, `workflows/`,
 `instructions/`, `memories/`, `env/`, `secrets/`, `lessons/`, `tasks/`,
 `sessions/`, and `facts/`. See
-[technical/filesystem.md](../architecture/internals/storage-locations.md) for config file locations.
+[technical/filesystem.md](https://github.com/itlackey/akm/blob/main/docs/architecture/internals/storage-locations.md) for config file locations.
 
 ```sh
 akm bundle create                              # Initialize the default bundle (~/akm) and set it as default
@@ -490,7 +490,7 @@ akm show memories/retro --filter user=alice --filter agent=claude
 human-authored orientation doc from a bundle's optional `.meta/` directory
 (`<name>` defaults to `index`; `.meta/<name>.md` is tried before an
 extensionless `.meta/<name>`). These files are never indexed, so they do not
-appear in `akm search`. See [concepts.md](../guides/concepts.md#bundle-orientation-the-meta-convention)
+appear in `akm search`. See [concepts.md](https://github.com/itlackey/akm/blob/main/docs/guides/concepts.md#bundle-orientation-the-meta-convention)
 for the full convention.
 
 `--filter` accepts the same `<key>=<value>` shape as `akm search --filter` — one
@@ -775,7 +775,7 @@ akm bundle add github:owner/repo-with-sensitive-env
 akm bundle add github:owner/repo-with-sensitive-env --allow-insecure
 ```
 
-Bundle publishers: see the [Stash Maker's Guide](../guides/stash-makers.md#env-security)
+Bundle publishers: see the [Stash Maker's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/stash-makers.md#env-security)
 for guidance on env files that legitimately need these keys.
 
 #### Website sources
@@ -796,7 +796,7 @@ Use `--max-pages` and `--max-depth` to control how many pages are fetched and
 how many link levels deep the crawler goes. These values are persisted in your
 config so subsequent re-indexes use the same limits.
 
-See [registry.md](registry.md) for the full install flow for managed sources.
+See [registry.md](https://github.com/itlackey/akm/blob/main/docs/reference/registry.md) for the full install flow for managed sources.
 
 > **Note:** there is no `akm bundle add context-hub` convenience alias or `akm
 > enable`/`disable context-hub` command — add it explicitly as a git bundle:
@@ -1390,7 +1390,7 @@ Migration notes live as one markdown file per release in
 [`docs/migration/release-notes/`](../migration/release-notes/). Adding notes for a
 future version is a one-file drop — no code edit required. Requesting an
 unknown version prints the list of bundled notes so you can pick one that
-exists. See [`CONTRIBUTING.md`](../../.github/CONTRIBUTING.md#shipping-a-release--migration-notes)
+exists. See [`CONTRIBUTING.md`](https://github.com/itlackey/akm/blob/main/.github/CONTRIBUTING.md#shipping-a-release--migration-notes)
 for the per-release workflow.
 
 ### help agents
@@ -1703,7 +1703,7 @@ akm show research-wiki//pages/attention  # read a page by bundle//conceptId ref
 Writing pages, ingesting raw sources, and maintaining `index.md`/`log.md` are
 the agent's job, using its native `Read`/`Write`/`Edit` tools guided by
 `schema.md` — akm's job is recognition, indexing, and search. See
-[wikis.md](../guides/wikis.md) for the full format.
+[wikis.md](https://github.com/itlackey/akm/blob/main/docs/guides/wikis.md) for the full format.
 
 ### completions
 

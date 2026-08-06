@@ -226,7 +226,7 @@ reference, same rules as engine `apiKey`), `dimension`, `localModel`,
 
 `bundles` (replacing the retired `stashDir`/`sources[]`/`installed[]` trio)
 and `defaultBundle` are the 0.9 source configuration shape — see
-[Concepts](../guides/concepts.md) and the [CLI reference](cli.md) for the
+[Concepts](https://github.com/itlackey/akm/blob/main/docs/guides/concepts.md) and the [CLI reference](cli.md) for the
 full bundle model (`path`, `git`, `website`, `npm`, `writable`, `registryId`,
 `components`). `defaultBundle` must name a key in `bundles` when set.
 
@@ -268,7 +268,7 @@ disables expiry entirely.
 `registries` (top-level array, distinct from `bundles`) lists remote package
 registries `akm registry`/`akm bundle add` can search and install from.
 Each entry is `{ url, name?, enabled?, provider?, options? }`; `provider`
-defaults to `"static-index"`. See [Registries](registry.md) for the full
+defaults to `"static-index"`. See [Registries](https://github.com/itlackey/akm/blob/main/docs/reference/registry.md) for the full
 field reference and provider list.
 
 ## Output defaults

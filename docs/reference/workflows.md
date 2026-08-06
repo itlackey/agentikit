@@ -640,8 +640,8 @@ enforced outside akm.
 
 ## See also
 
-- [Search & Discovery](../guides/search-discovery.md) — find available workflows with `akm curate`
-- [Knowledge Management](../guides/knowledge-management.md) — capture workflow outputs as memories
-- [Improvement Loop](../guides/improvement-loop.md) — improve workflow assets over time
+- [Search & Discovery](https://github.com/itlackey/akm/blob/main/docs/guides/search-discovery.md) — find available workflows with `akm curate`
+- [Knowledge Management](https://github.com/itlackey/akm/blob/main/docs/guides/knowledge-management.md) — capture workflow outputs as memories
+- [Improvement Loop](https://github.com/itlackey/akm/blob/main/docs/guides/improvement-loop.md) — improve workflow assets over time
 - [CLI Reference](../reference/cli.md) — full flag documentation for all `workflow` subcommands
-- [Concepts](../guides/concepts.md) — workflow asset type and run-state storage
+- [Concepts](https://github.com/itlackey/akm/blob/main/docs/guides/concepts.md) — workflow asset type and run-state storage
