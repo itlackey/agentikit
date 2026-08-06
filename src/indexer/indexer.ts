@@ -79,6 +79,7 @@ import {
   getAllEntriesForEmbedding,
   getEmbeddingCount,
   isVecAvailable,
+  isVecFastPathReady,
   purgeEmbeddings,
   setVecFastPathReady,
   upsertEmbedding,
@@ -2091,12 +2092,25 @@ function verifyIndexState(
   }
 
   if (embeddingCount >= embeddableEntries) {
+    // "ready-vec" must reflect the path search will ACTUALLY take: the vec
+    // extension being loaded is not enough when the embedding phase recorded
+    // fast-path insert failures (searchVec then routes to the JS-cosine
+    // fallback via isVecFastPathReady). Reporting vec health from
+    // isVecAvailable alone overstated `akm info` after partial vec failures
+    // (§24.2 "Semantic" gate — truthful ready-vec).
+    const vecActive = vecAvailable && isVecFastPathReady(db);
     return {
       ok: true,
-      message: `Semantic search ready (${embeddingCount}/${embeddableEntries} embeddings, ${vecAvailable ? "sqlite-vec active" : "JS fallback active"}).`,
+      message: `Semantic search ready (${embeddingCount}/${embeddableEntries} embeddings, ${
+        vecActive
+          ? "sqlite-vec active"
+          : vecAvailable
+            ? "JS fallback active — vec fast path degraded, run 'akm index --full' to restore"
+            : "JS fallback active"
+      }).`,
       semanticSearchEnabled: true,
       semanticSearchMode: config.semanticSearchMode,
-      semanticStatus: vecAvailable ? "ready-vec" : "ready-js",
+      semanticStatus: vecActive ? "ready-vec" : "ready-js",
       embeddingProvider,
       entryCount: embeddableEntries,
       embeddingCount,

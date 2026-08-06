@@ -862,6 +862,15 @@ describe("Vector / Embedding integration", () => {
     }
   });
 
+  test("an out-of-range embeddingDim is rejected at open with a clear guard error", () => {
+    // The vec-table guard (index-schema.ts): dims must be integers in 1–4096.
+    // The config schema enforces the same bound at set-time; this pins the
+    // DB-layer backstop for values arriving through the options seam.
+    for (const dim of [0, -1, 4097, 384.5]) {
+      expect(() => openIndexDatabase(tmpDbPath(), { embeddingDim: dim })).toThrow(/Invalid embedding dimension/);
+    }
+  });
+
   test("embeddingDim change recreates vec table and clears old embeddings", () => {
     const dbPath = tmpDbPath();
 

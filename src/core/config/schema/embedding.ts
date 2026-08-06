@@ -30,7 +30,11 @@ export const EmbeddingConnectionConfigSchema = z
     endpoint: z.string().optional(),
     model: z.string().optional(),
     apiKey: z.string().regex(ENV_REFERENCE_PATTERN, `apiKey must be $VAR or \${VAR}`).optional(),
-    dimension: positiveInt.optional(),
+    // Bounded to the index schema's own vec-table guard (1–4096,
+    // storage/repositories/index-schema.ts) so an out-of-range dimension
+    // fails at config validation with a clear message instead of crashing
+    // `akm index` when ensureSchema rejects it (§24.2 "Semantic" gate).
+    dimension: positiveInt.max(4096).optional(),
     localModel: z.string().min(1).optional(),
     maxTokens: positiveInt.optional(),
     batchSize: positiveInt.optional(),
