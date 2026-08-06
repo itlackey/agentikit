@@ -256,41 +256,14 @@ export async function performUpgrade(
 
   const packageManagerCommand = getPackageManagerUpgradeCommand(installMethod);
   if (packageManagerCommand) {
-    if (!latestVersion) {
-      throw new Error(
-        "Unable to determine latest version from GitHub releases. Check https://github.com/itlackey/akm/releases",
-      );
-    }
-
-    migration.preflight("akm");
-
-    const result = childProcess.spawnSync(packageManagerCommand.command, packageManagerCommand.args, {
-      encoding: "utf8",
-      env: process.env,
-      stdio: "pipe",
-    });
-
-    if (result.error) {
-      throw new Error(`Failed to run '${packageManagerCommand.displayCommand}': ${result.error.message}`);
-    }
-
-    if (result.status !== 0) {
-      const details = (result.stderr ?? "").trim() || (result.stdout ?? "").trim() || `exit code ${result.status}`;
-      throw new Error(
-        `Failed to upgrade akm via ${installMethod}: ${details}\nRun manually: ${packageManagerCommand.displayCommand}`,
-      );
-    }
-
-    migration.apply("akm");
-
-    return {
+    return runPackageManagerUpgrade({
+      packageManagerCommand,
       currentVersion,
-      newVersion: latestVersion,
-      upgraded: true,
+      latestVersion,
       installMethod,
-      message: `akm upgraded via ${installMethod}`,
-      postUpgrade: runPostUpgradeTasks("akm", { skip: skipPostUpgrade }),
-    };
+      migration,
+      skipPostUpgrade,
+    });
   }
 
   if (installMethod === "unknown") {
@@ -503,6 +476,99 @@ function runPostUpgradeTasks(akmBin: string, opts: { skip: boolean }): NonNullab
       message: `Migration completed, but the index rebuild failed: ${detail}. Run \`akm index\` manually.`,
     };
   }
+}
+
+/**
+ * The package-manager arm of {@link performUpgrade}: preflight → install →
+ * post-install version verification → migrate apply → post-upgrade tasks.
+ * Extracted whole so performUpgrade stays under its fn-size baseline.
+ */
+function runPackageManagerUpgrade(input: {
+  packageManagerCommand: NonNullable<ReturnType<typeof getPackageManagerUpgradeCommand>>;
+  currentVersion: string;
+  latestVersion: string | undefined;
+  installMethod: InstallMethod;
+  migration: UpgradeMigrationCommand;
+  skipPostUpgrade: boolean;
+}): UpgradeResponse {
+  const { packageManagerCommand, currentVersion, latestVersion, installMethod, migration, skipPostUpgrade } = input;
+  if (!latestVersion) {
+    throw new Error(
+      "Unable to determine latest version from GitHub releases. Check https://github.com/itlackey/akm/releases",
+    );
+  }
+
+  migration.preflight("akm");
+
+  const result = childProcess.spawnSync(packageManagerCommand.command, packageManagerCommand.args, {
+    encoding: "utf8",
+    env: process.env,
+    stdio: "pipe",
+  });
+
+  if (result.error) {
+    throw new Error(`Failed to run '${packageManagerCommand.displayCommand}': ${result.error.message}`);
+  }
+
+  if (result.status !== 0) {
+    const details = (result.stderr ?? "").trim() || (result.stdout ?? "").trim() || `exit code ${result.status}`;
+    throw new Error(
+      `Failed to upgrade akm via ${installMethod}: ${details}\nRun manually: ${packageManagerCommand.displayCommand}`,
+    );
+  }
+
+  // The package manager exiting 0 does not prove it delivered
+  // `latestVersion`: a lagging `@latest` dist-tag (partial publish,
+  // registry mirror lag) "succeeds" while leaving the old version on PATH.
+  // Re-read the version the shim actually reports before claiming an
+  // upgrade — a confirmed mismatch also means `migrate apply` would run
+  // against the OLD binary, so stop before it.
+  const installedVersion = readInstalledCliVersion("akm");
+  if (installedVersion !== undefined && installedVersion !== latestVersion) {
+    return {
+      currentVersion,
+      newVersion: latestVersion,
+      upgraded: false,
+      installMethod,
+      message:
+        `\`${packageManagerCommand.displayCommand}\` succeeded, but \`akm --version\` still reports ` +
+        `v${installedVersion} (expected v${latestVersion}). The ${installMethod} registry's @latest tag ` +
+        `may be lagging the GitHub release — try again shortly, or install the exact version: ` +
+        `${packageManagerCommand.displayCommand.replace(/@latest\b/, `@${latestVersion}`)}`,
+    };
+  }
+
+  migration.apply("akm");
+
+  return {
+    currentVersion,
+    newVersion: latestVersion,
+    upgraded: true,
+    installMethod,
+    message:
+      installedVersion === latestVersion
+        ? `akm upgraded via ${installMethod} (verified: akm --version reports v${installedVersion})`
+        : `akm upgraded via ${installMethod} (installed version could not be verified)`,
+    postUpgrade: runPostUpgradeTasks("akm", { skip: skipPostUpgrade }),
+  };
+}
+
+/**
+ * Read the version the on-PATH `akm` actually reports, or `undefined` when
+ * that cannot be determined (no shim on PATH in a sandbox, unparseable
+ * output). Verification is fail-open on its own infrastructure — only a
+ * CONFIRMED mismatch downgrades an upgrade result (§24.2 Package/release
+ * gate).
+ */
+function readInstalledCliVersion(akmBin: string): string | undefined {
+  const result = childProcess.spawnSync(akmBin, ["--version"], {
+    encoding: "utf8",
+    env: process.env,
+    stdio: "pipe",
+  });
+  if (result.error || result.status !== 0) return undefined;
+  const match = (result.stdout ?? "").match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/);
+  return match?.[0];
 }
 
 function runRequiredCommand(akmBin: string, args: string[], label: string): void {

@@ -272,7 +272,56 @@ describe("performUpgrade", () => {
       },
     );
 
-    expect(events).toEqual(["preflight:akm", "install", "apply:akm", "index"]);
+    expect(events).toEqual(["preflight:akm", "install", "--version", "apply:akm", "index"]);
+  });
+
+  test("a lagging @latest dist-tag downgrades the result to upgraded:false with the pin remedy (§24.2)", async () => {
+    // The install command "succeeds" but the on-PATH akm still reports the
+    // OLD version — the registry's @latest tag lags the GitHub release.
+    spyOn(childProcess, "spawnSync").mockImplementation(((_command: string, args: string[]) => {
+      if (args[0] === "--version") return { status: 0, stdout: "0.0.13\n", stderr: "" } as never;
+      return { status: 0, stdout: "", stderr: "" } as never;
+    }) as never);
+    const migration = { preflight: mock(() => {}), stagedPreflight: mock(() => {}), apply: mock(() => {}) };
+
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.14",
+        updateAvailable: true,
+        installMethod: "npm",
+      },
+      undefined,
+      { migration },
+    );
+
+    expect(result.upgraded).toBe(false);
+    expect(result.message).toContain("still reports v0.0.13");
+    expect(result.message).toContain("@0.0.14");
+    // migrate apply must NOT run against the unchanged old binary.
+    expect(migration.apply).not.toHaveBeenCalled();
+  });
+
+  test("a verified matching version is reported in the success message", async () => {
+    spyOn(childProcess, "spawnSync").mockImplementation(((_command: string, args: string[]) => {
+      if (args[0] === "--version") return { status: 0, stdout: "0.0.14\n", stderr: "" } as never;
+      return { status: 0, stdout: "", stderr: "" } as never;
+    }) as never);
+
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.14",
+        updateAvailable: true,
+        installMethod: "npm",
+      },
+      { skipPostUpgrade: true },
+      { migration: { preflight: () => {}, stagedPreflight: () => {}, apply: () => {} } },
+    );
+
+    expect(result.upgraded).toBe(true);
+    expect(result.message).toContain("verified");
+    expect(result.message).toContain("v0.0.14");
   });
 
   test("refuses a pre-contract 0.8 to 0.9 self-update before preflight or installation", async () => {
@@ -334,7 +383,12 @@ describe("performUpgrade", () => {
       { migrationConfig: "/operator/prepared-future.json", skipPostUpgrade: true },
     );
 
-    expect(events).toEqual(["migrate status", "install", "migrate apply --config /operator/prepared-future.json"]);
+    expect(events).toEqual([
+      "migrate status",
+      "install",
+      "--version",
+      "migrate apply --config /operator/prepared-future.json",
+    ]);
   });
 
   test("real migration command keeps future prepared config away from the old parser", () => {
@@ -660,8 +714,8 @@ describe("performUpgrade", () => {
     expect(result.postUpgrade?.ok).toBe(true);
     expect(result.postUpgrade?.skipped).toBe(false);
     expect(result.postUpgrade?.exitCode).toBe(0);
-    // Preflight, install, apply, then the post-upgrade `akm index`.
-    expect(spawnSyncSpy).toHaveBeenCalledTimes(4);
+    // Preflight, install, version verification, apply, then the post-upgrade `akm index`.
+    expect(spawnSyncSpy).toHaveBeenCalledTimes(5);
     expect(spawnSyncSpy).toHaveBeenLastCalledWith(
       "akm",
       ["index"],
@@ -690,16 +744,16 @@ describe("performUpgrade", () => {
     expect(result.postUpgrade).toBeDefined();
     expect(result.postUpgrade?.skipped).toBe(true);
     expect(result.postUpgrade?.ok).toBe(true);
-    // Preflight, install, and apply ran; only the index rebuild was skipped.
-    expect(spawnSyncSpy).toHaveBeenCalledTimes(3);
+    // Preflight, install, version verification, and apply ran; only the index rebuild was skipped.
+    expect(spawnSyncSpy).toHaveBeenCalledTimes(4);
   });
 
   test("captures post-upgrade failure without failing the upgrade", async () => {
     let call = 0;
     const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockImplementation((() => {
       call++;
-      if (call < 4) {
-        // Migration preflight, package install, and migration apply succeed.
+      if (call < 5) {
+        // Migration preflight, package install, version verification, and migration apply succeed.
         return { status: 0, stdout: "", stderr: "" } as never;
       }
       // The post-upgrade `akm index` fails with a non-zero exit.
@@ -717,7 +771,7 @@ describe("performUpgrade", () => {
     expect(result.postUpgrade?.ok).toBe(false);
     expect(result.postUpgrade?.exitCode).toBe(1);
     expect(result.postUpgrade?.message).toContain("no embedding model configured");
-    expect(spawnSyncSpy).toHaveBeenCalledTimes(4);
+    expect(spawnSyncSpy).toHaveBeenCalledTimes(5);
   });
 
   test("throws when latestVersion is empty and force is used", async () => {
@@ -766,8 +820,9 @@ describe("performUpgrade", () => {
         { skipPostUpgrade: true },
       ),
     ).resolves.toMatchObject({ upgraded: true, installMethod: "npm" });
-    // Migration preflight and apply still bracket the package install.
-    expect(spawnSyncSpy).toHaveBeenCalledTimes(3);
+    // Migration preflight and apply still bracket the package install, with
+    // the post-install version verification in between.
+    expect(spawnSyncSpy).toHaveBeenCalledTimes(4);
   });
 
   test("checksum URL 404 throws Checksum verification failed for binary install", async () => {
