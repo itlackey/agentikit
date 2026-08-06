@@ -2903,8 +2903,9 @@ fixed.
    standalone scheduler, real-agent/model, and slow property gates are opt-in.
 6. Current normal CI is Ubuntu-centric and does not itself run Docker, real
    embeddings, native macOS/Windows schedulers, or release binaries.
-7. The release workflow runs check/build/publication but not the complete local
-   release-check, Docker, slow gate, Node matrix, or native artifact execution.
+7. The release workflow runs `tests/release-check.sh --skip-docker`
+   (build/publication follow it) but not Docker, the slow gate, or the Node
+   matrix — those stay separate, opt-in local/CI gates.
 8. Docker source variants use `bun link`; binary variants use a locally compiled
    linux-x64 artifact. They do not prove npm/published bytes.
 9. Self-upgrade discovery follows latest stable/npm `@latest`, so an unpublished

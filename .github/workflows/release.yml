@@ -15,7 +15,14 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # tests/release-check.sh replaced the old `bun run check` step with the
+    # full release-acceptance suite (build, package/install regression, the
+    # published-upgrade tests under Node and Bun, and a Linux standalone
+    # build/run) on top of everything `check` already covered, plus this
+    # job's own artifact build/publish steps after it. 20 minutes was already
+    # this job's whole budget for `check` + build + publish; give the larger
+    # gate room without being unbounded.
+    timeout-minutes: 45
     environment: release
     env:
       CANDIDATE_VERSION: ${{ inputs.version }}
@@ -34,12 +41,6 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      # Publish gate: the full check battery (lint + tsc + unit + integration)
-      # must be green on the exact tagged commit — a release must never publish
-      # code that CI has not validated at this ref.
-      - name: Check
-        run: bun run check
-
       - name: Verify version
         run: |
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
@@ -47,6 +48,19 @@ jobs:
             echo "package.json is $PACKAGE_VERSION, not $CANDIDATE_VERSION"
             exit 1
           fi
+
+      # Publish gate: tests/release-check.sh — the same script the runbook
+      # directs operators to run locally before triggering this workflow — is
+      # the actual release-acceptance suite. It supersedes the old `bun run
+      # check` step (it runs verify-only lint, typecheck, and both the unit
+      # and integration suites itself) and additionally proves the *packaged*
+      # artifact: npm bin targets/launcher selection, the akm-migrate bundle
+      # under both Bun and Node, package/install/setup regression, and the
+      # published 0.8 -> candidate task upgrade under both runtimes. Docker is
+      # skipped here (no docker daemon on ubuntu-latest runners; the Docker
+      # matrix stays a local/manual gate per the runbook).
+      - name: Release check
+        run: ./tests/release-check.sh --skip-docker
 
       - name: Build package and binaries
         run: |
