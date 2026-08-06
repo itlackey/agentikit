@@ -460,8 +460,10 @@ Internal replacement for the one capability nothing else covered.
 - **0.10 — `--auto-accept` hard error.** It is currently accepted-and-warned;
   see the Improvement loop entry.
 - **0.10 — `BundleAdapter.placeNew()` wiring.** The interface declares
-  `placeNew()` as an optional capability method, and 8 of the built-in
-  adapters already implement it, but nothing in the write path calls it —
+  `placeNew()` as an optional capability method, and 9 of the 11 built-in
+  adapters already implement it (all but `okf` and `website-snapshot`;
+  `claude` and `opencode` inherit theirs from the shared tool-dir factory),
+  but nothing in the write path calls it —
   writes still resolve through AKM's native flat type→directory table.
   Placement for every existing bundle is already correct today; this is a
   deliberately sequenced routing change, not unfinished behavior. See

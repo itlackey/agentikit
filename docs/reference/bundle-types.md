@@ -99,8 +99,9 @@ segment), `description`, the full body (bounded to 100k chars), and the
 original crawl URL (`documentJson.sourceRef`).
 
 **Validation.** Shared base checks only (unquoted-colon, stale-path,
-missing-ref) — `missing-updated` is filtered out, since a crawled page
-never carries an `updated` field.
+missing-ref) — `missing-updated` is filtered out defensively. (Note: the
+snapshot writer does stamp `updated:` on every crawled page, so the filter
+is belt-and-braces rather than a response to a missing field.)
 
 **Read/write (0.9.0).** Read-only. No `placeNew` — refreshing a snapshot
 re-crawls and rewrites the markdown outside the adapter layer entirely.
@@ -116,7 +117,9 @@ layout) — one `<name>/SKILL.md` per package directly under the bundle root,
 optionally with bundled resource files alongside it.
 
 **Detected by.** At least one direct child directory of the root containing
-a `SKILL.md`.
+a `SKILL.md`. Only the install-time probe is depth-limited — once the
+bundle is claimed, any path ending in `/SKILL.md` is recognized as a
+package, at any depth.
 
 **conceptId / ref.** The package directory path, e.g. `pdf-processing` →
 ref `bundle//pdf-processing`. Files other than `SKILL.md` inside the
@@ -129,9 +132,12 @@ and the body (bounded).
 
 **Validation.** The full Agent Skills contract: `skill-name-invalid` (NFKC,
 1-64 chars, `^[a-z0-9]+(-[a-z0-9]+)*$`, no `anthropic`/`claude` substring,
-must equal the parent directory name), `skill-description-too-long`
-(description must be 1-1024 chars), `missing-skill-md` (a package directory
-with no manifest). Recognition and validation are decoupled — an invalid
+must equal the parent directory name) and `skill-description-too-long`
+(description must be 1-1024 chars). **`missing-skill-md` is not reachable
+here**: `validate()` only inspects changes that resolve to an actual
+`SKILL.md`, so a package directory with no manifest at all is never
+flagged (the adapter's own comment defers this to a directory-scanning
+helper that does not exist). Recognition and validation are decoupled — an invalid
 skill is still indexed as `skill` (with its raw, invalid name projected);
 the violation only surfaces in `akm lint`.
 
@@ -164,9 +170,12 @@ carries them, plus the body (bounded).
 **Validation.** Lenient — tolerates the tool's native frontmatter
 (`argument-hint`, `allowed-tools`, `model`, …). A `command`/`agent` file
 only gets `missing-name-or-type` when it has *neither* a name/description
-*nor* a type-shaped signal (a command body using `$ARGUMENTS`/`$1`, or an
-`agent` frontmatter key, counts as a signal). `skill` gets the same
-`missing-skill-md` directory check as `agent-skills`. The root instruction
+*nor* a type-shaped signal — but the signal escape applies to `command`
+files only (a body using `$ARGUMENTS`/`$1`, or an `agent` frontmatter key).
+An `agent` file gets no signal-based escape: it is flagged unless its
+frontmatter carries a `name` or `description`. `skill` gets a
+`missing-skill-md` directory check, which fires only for the canonical
+plural `skills/` directory. The root instruction
 file runs the shared base checks (a no-op on a frontmatter-free
 `CLAUDE.md`). No `missing-updated` check runs on command/agent/skill files
 — their native frontmatter never carries `updated`.
@@ -196,8 +205,11 @@ instruction conceptId. A file found under a singular alias directory keeps
 the on-disk spelling in its conceptId (e.g. `command/legacy`); new writes
 always normalize to the canonical plural.
 
-**Indexed / Validation.** Identical rules to `claude` — see that section;
-both share `tool-dir-shared.ts`.
+**Indexed / Validation.** Same rules as `claude` — see that section; both
+share `tool-dir-shared.ts`. One divergence: the `missing-skill-md` check
+matches the literal `skills/` segment, so a skill package under opencode's
+singular `skill/` alias is never checked for a missing manifest, while the
+same package under `skills/` is.
 
 **Read/write (0.9.0).** Same as `claude`: `placeNew` implemented, not
 reachable by write commands.
@@ -216,7 +228,8 @@ workspace also has `env/`/`secrets/`, but alongside many other
 directories, so a *dedicated* env/secrets bundle is claimed here first.
 
 **conceptId / ref.** `env/<name>.env` → `env/<name>` (`.env` extension
-stripped, e.g. `env/app.env` → `env/app`); any file under `secrets/` →
+stripped, e.g. `env/app.env` → `env/app`); any file under `secrets/` other
+than `.lock`/`.sensitive` control files, which are skipped entirely →
 `secrets/<natural-path>` (extension kept, e.g. `secrets/ci.env` stays a
 *secret* — the directory gate wins over the `.env` suffix).
 
@@ -275,12 +288,14 @@ command. `placeNew` is also implemented. The general write commands
 
 ## `akm-task`
 
-**Format.** A native akm task bundle: top-level `.yml` files, each pairing
-a `schedule` with exactly one target (`prompt` XOR `workflow` XOR
-`command`).
+**Format.** A native akm task bundle: `.yml` files, each pairing a
+`schedule` with exactly one target (`prompt` XOR `workflow` XOR
+`command`). Once the bundle is claimed, tasks are recognized at any depth,
+not only at the root.
 
-**Detected by.** A top-level `.yml` file that parses with a non-empty
-`schedule` key.
+**Detected by.** A *top-level* `.yml` file that parses with a non-empty
+`schedule` key — the install-time probe does not recurse, even though
+recognition afterwards does.
 
 **conceptId / ref.** File path minus `.yml`, e.g. `nightly-index.yml` →
 conceptId `nightly-index`.
@@ -346,8 +361,9 @@ subdirectories: `skills/`, `commands/`, `agents/`, `knowledge/`,
 **fallback** adapter when no other probe claims a root.
 
 **Detected by.** A `.stash` marker directory, OR two or more native stash
-subdirectories present, OR exactly one native subdirectory whose markdown
-files carry no `type:` frontmatter (or declare the matching type). Runs
+subdirectories present, OR exactly one native subdirectory whose *first*
+markdown file (by directory-listing order — only one file is sampled)
+carries no `type:` frontmatter, or declares the matching type. Runs
 after `llm-wiki` but before `okf` among the native/portable probes — AKM
 markdown is a superset of OKF, so native evidence wins before falling back
 to the looser OKF baseline.
@@ -390,8 +406,10 @@ frontmatter ref channels) plus per-type extra checks: `command`/`agent` →
 missing-name-or-type; `fact` → missing-category; `task` →
 invalid-task-yaml (at least one target); `workflow` → placeholder-stub +
 invalid-workflow-structure; `memory` → orphaned-stub; `skill` →
-missing-skill-md; `env`/`secret` → dangerous-env-key. `knowledge` /
-`lesson` / `script` / `session` get base checks only.
+missing-skill-md; `env`/`secret` → dangerous-env-key, which only scans
+files whose name ends in `.env` (a bare `secrets/<name>` file with no
+`.env` suffix is not scanned). `knowledge` / `lesson` / `script` /
+`session` get base checks only.
 
 **Read/write (0.9.0).** Fully writable — the only adapter every AKM-native
 write command's default allowlist admits (`akm remember`, `akm import`,
@@ -420,13 +438,18 @@ absent); `name` from frontmatter `title` (fallback: the path's last
 segment); `description`; `tags`; both OKF link forms (`/`-rooted
 bundle-relative and standard relative) resolved into `links`; the v0.2
 trust/provenance family (`generated`/`verified`/`sources`/`status`/
-`stale_after`/`okf_version`) when present; any other frontmatter rides
+`stale_after`/`okf_version`) when present; the document body (bounded to
+100,000 chars) as full-text content; any other frontmatter rides
 `documentJson`.
 
-**Validation.** Lenient by design: base checks (minus the AKM-specific
-`updated` expectation), `missing-type` is an INFO-level note (never
-blocks — defaults to `knowledge`), and a broken OKF link is a non-blocking
-WARNING (consumers are expected to tolerate broken links).
+**Validation.** Lenient *in wording*, not in gating: base checks (minus the
+AKM-specific `updated` expectation), plus `missing-type` (labelled `info:`
+in the diagnostic text — the type defaults to `knowledge`) and broken OKF
+links (labelled `warning:`). Those labels are free text inside the
+diagnostic's detail, **not** a severity tier: diagnostics carry no severity
+field, `akm lint` funnels every adapter finding into one `flagged` list,
+and `--fail-on-flagged` fails on any non-empty list. A bundle whose only
+finding is a missing `type:` will fail a CI gate exactly like any other.
 
 **Read/write (0.9.0).** Consumer/read-only. No `placeNew`. AKM-native
 write commands reject an `okf` target via the shared write allowlist
@@ -452,9 +475,11 @@ mechanism that lets you pin any bundle to any adapter id).
 `build.sh` (script, kept), `notes.md` → `notes` (document, stripped),
 `data.csv` (file, kept).
 
-**Indexed.** `name`, `description`, `tags` where the file has frontmatter,
-and the body (bounded; frontmatter-stripped for document/file, raw for
-script).
+**Indexed.** `name` — always the conceptId's last path segment, never read
+from frontmatter; `description` and `tags` where the file's frontmatter
+carries them; and the body (bounded; a leading `---` frontmatter block is
+stripped when present, for every classified type — script files simply
+don't usually have one).
 
 **Validation.** Base checks only — no type-specific validators.
 
