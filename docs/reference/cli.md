@@ -781,7 +781,7 @@ akm bundle add github:owner/repo-with-sensitive-env
 akm bundle add github:owner/repo-with-sensitive-env --allow-insecure
 ```
 
-Bundle publishers: see the [Stash Maker's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/stash-makers.md#env-security)
+Bundle publishers: see the [Bundle Authoring Guide](https://github.com/itlackey/akm/blob/main/docs/guides/stash-makers.md#env-security)
 for guidance on env files that legitimately need these keys.
 
 #### Website sources

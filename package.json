@@ -2,7 +2,7 @@
   "name": "akm-cli",
   "version": "0.9.0",
   "type": "module",
-  "description": "akm (Agent Knowledge Manager) — A knowledge toolkit for AI agents: capture, curate, search, and share skills, commands, tools, and knowledge. Works with Claude Code, OpenCode, Cursor, and any AI coding assistant.",
+  "description": "akm (Agent Knowledge Manager) — a portable, local-first capability library for AI agents. Discover, load, share, and improve reusable skills, scripts, workflows, and knowledge across any shell-capable coding agent, including Claude Code, OpenCode, and Cursor.",
   "keywords": [
     "akm",
     "agent-knowledge-management",
@@ -21,7 +21,9 @@
     "mcp",
     "ai-coding-assistant",
     "agent-skills",
-    "skill-management"
+    "skill-management",
+    "capability-library",
+    "agent-capabilities"
   ],
   "homepage": "https://github.com/itlackey/akm#readme",
   "repository": {

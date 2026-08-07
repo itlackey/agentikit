@@ -262,7 +262,7 @@ pattern is safe to script into CI or agent test harnesses.
 - [Concepts](concepts.md) -- Asset types, classification, and the bundle
 - [CLI Reference](../reference/cli.md) -- All commands and flags
 - [Ref Format](../architecture/specs/ref.md) -- How asset references work
-- [Bundle Maker's Guide](stash-makers.md) -- Build and share your own bundles
+- [Bundle Authoring Guide](stash-makers.md) -- Build and share your own bundles
 
 ## Official akm Repos
 

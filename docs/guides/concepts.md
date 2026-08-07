@@ -452,7 +452,7 @@ These terms have precise meanings in akm. Use this table to avoid confusion:
 
 - [CLI Reference](../reference/cli.md)
 - [Wikis](wikis.md) -- Multi-wiki knowledge bases (Karpathy-style)
-- [Bundle Maker's Guide](stash-makers.md) -- How to build and share a bundle
+- [Bundle Authoring Guide](stash-makers.md) -- How to build and share a bundle
 - [Registry](../reference/registry.md) -- Finding and installing bundles
 - [Search Architecture](../architecture/internals/search.md) -- Hybrid search details
 - [Indexing](../architecture/internals/indexing.md) -- How the search index is built

@@ -225,4 +225,4 @@ akm index
 - [Agent Integration](agent-integration.md) — using refs across sources in prompts
 - [CLI Reference](../reference/cli.md) — full flag documentation for `add`, `list`, `update`, `remove`, `clone`, `sync`, `registry`
 - [Registry](../reference/registry.md) — registry index format and private registry setup
-- [Bundle Maker's Guide](../guides/stash-makers.md) — build and publish your own bundle
+- [Bundle Authoring Guide](../guides/stash-makers.md) — build and publish your own bundle
