@@ -19,9 +19,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
-import { runManagedSubprocess } from "../../../src/core/subprocess";
+import { readStream, runManagedSubprocess } from "../../../src/core/subprocess";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
-import { EXEC_DEFAULT_ENV_PASSTHROUGH } from "../../../src/workflows/exec/exec-unit";
+import { EXEC_DEFAULT_ENV_PASSTHROUGH, runExecUnit } from "../../../src/workflows/exec/exec-unit";
 import {
   defaultUnitDispatcher,
   executeStepPlan as executeFrozenStepPlan,
@@ -31,7 +31,9 @@ import {
 import { cpuDerivedUnitConcurrency } from "../../../src/workflows/exec/scheduler";
 import type { IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
 import {
-  WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES,
+  execContextLimits,
+  WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER,
+  WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_WIN32,
   WORKFLOW_MAX_EXEC_OUTPUT_BYTES,
 } from "../../../src/workflows/resource-limits";
 import { requireExecutableWorkflowPlan } from "../../../src/workflows/runtime/plan-classifier";
@@ -917,25 +919,95 @@ describe("exec unit — budget accounting", () => {
 
 // ── Reviewer round-4 findings — resource bounds and honest failure surfaces ───
 
-describe("exec unit — captured output is BOUNDED (finding 1)", () => {
-  test("a command that writes past the cap is killed and fails `exec_output_limit` — no truncated artifact", async () => {
+describe("exec unit — retained output is BOUNDED, but a passing command is never failed for it", () => {
+  /**
+   * A child that writes `mib` MiB to stdout with BLOCKING `fs.writeSync(1, …)`
+   * and only then touches `marker`.
+   *
+   * `writeSync` is the load-bearing detail: a synchronous write to a full pipe
+   * BLOCKS. If akm stopped draining at the cap (the pre-change behavior was to
+   * cancel the reader and kill the process group), the loop would wedge and the
+   * marker would never appear. Its existence is therefore proof that the reader
+   * kept draining past the cap and the child ran to completion.
+   */
+  function giantWriterArgv(mib: number, marker: string): string[] {
+    return bunArgv(
+      `const fs=require('node:fs'); const chunk=Buffer.alloc(1024*1024,120); ` +
+        `for (let i=0;i<${mib};i++) fs.writeSync(1, chunk); ` +
+        `fs.writeFileSync(${JSON.stringify(marker)}, 'ran-to-completion');`,
+    );
+  }
+
+  /** Split a truncated artifact into its retained prefix and its marker block. */
+  function splitTruncated(artifact: unknown): { retained: string; note: string } {
+    const text = String(artifact);
+    const at = text.indexOf(`[${WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER}]`);
+    if (at < 0) throw new Error("artifact carries no truncation marker");
+    return { retained: text.slice(0, at).replace(/\n+$/, ""), note: text.slice(at) };
+  }
+
+  test("a 12 MiB writer with NO output schema SUCCEEDS; the artifact is marked truncated and the child completed", async () => {
     seedRun(["work"]);
-    const marker = path.join(tmpDir, "still-alive.txt");
-    // Writes HALF AGAIN the cap, then would sit around for 10s and prove it
-    // survived. Both halves matter: the over-cap write is what must be refused,
-    // and the marker is what proves the process GROUP was really terminated
-    // rather than left to keep running against a reader nobody is draining.
-    // Without the byte cap this command succeeds and promotes a 12 MiB artifact.
-    const overCap = Math.ceil((WORKFLOW_MAX_EXEC_OUTPUT_BYTES * 1.5) / (1024 * 1024));
-    const code =
-      `const chunk='x'.repeat(1024*1024); ` +
-      `for (let i=0;i<${overCap};i++) process.stdout.write(chunk); ` +
-      `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 10000)`;
+    const marker = path.join(tmpDir, "ran-to-completion.txt");
+    // 12 MiB — half again the 8 MiB cap. Under the old behavior this command was
+    // killed and the unit failed `exec_output_limit`, which is exactly the
+    // tripwire being removed: nothing about a chatty-but-passing command
+    // deserves a failed run.
     const plan = execPlan([
       "    unit:",
       "      exec:",
-      `        command: ${JSON.stringify(bunArgv(code))}`,
+      `        command: ${JSON.stringify(giantWriterArgv(12, marker))}`,
       '      timeout: "60s"',
+    ]);
+    storePlan(plan);
+
+    const result = await run(plan);
+
+    // 1. The unit SUCCEEDS: the command exited 0 and that verdict stands.
+    expect(result.ok).toBe(true);
+    expect(result.units[0]!.failureReason).toBeUndefined();
+
+    // 2. The child really ran to completion — it could only have reached the
+    //    marker write if akm kept draining the pipe past the cap.
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(fs.readFileSync(marker, "utf8")).toBe("ran-to-completion");
+
+    // 3. The artifact is UNMISTAKABLY marked. Truncated data can never be
+    //    mistaken for complete data.
+    const { retained, note } = splitTruncated(result.evidence.output);
+    expect(note).toContain(WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER);
+    expect(note).toContain("TRUNCATED");
+    expect(note).toContain("THIS TEXT IS INCOMPLETE");
+    // Both byte counts, so a reader can see exactly how much is missing.
+    expect(note).toContain(String(12 * 1024 * 1024));
+    expect(note).toContain(String(WORKFLOW_MAX_EXEC_OUTPUT_BYTES));
+    // The marker is the LAST thing in the artifact — `stripTrailingNewlines`
+    // cannot shave it off, and a naive tail read cannot miss it.
+    expect(String(result.evidence.output).endsWith(note)).toBe(true);
+
+    // 4. MEMORY IS STILL BOUNDED — the justified part of the cap, unchanged.
+    expect(Buffer.byteLength(retained, "utf8")).toBe(WORKFLOW_MAX_EXEC_OUTPUT_BYTES);
+    expect(Buffer.byteLength(retained, "utf8")).toBeLessThanOrEqual(WORKFLOW_MAX_EXEC_OUTPUT_BYTES);
+
+    // 5. The unit row records a success, not a failure.
+    const rows = await unitRows();
+    expect(rows[0]!.status).toBe("completed");
+    expect(rows[0]!.failure_reason).toBeNull();
+  }, 120_000);
+
+  test("the SAME writer WITH an output schema still fails `exec_output_limit` — a truncated prefix is not a typed artifact", async () => {
+    seedRun(["work"]);
+    const marker = path.join(tmpDir, "schema-writer-done.txt");
+    const plan = execPlan([
+      "    unit:",
+      "      exec:",
+      `        command: ${JSON.stringify(giantWriterArgv(12, marker))}`,
+      '      timeout: "60s"',
+      "      output:",
+      "        type: object",
+      "        required: [ok]",
+      "        properties:",
+      "          ok: { type: boolean }",
     ]);
     storePlan(plan);
 
@@ -943,23 +1015,96 @@ describe("exec unit — captured output is BOUNDED (finding 1)", () => {
 
     expect(result.ok).toBe(false);
     expect(result.units[0]!.failureReason).toBe("exec_output_limit");
-    // Unmistakable: the diagnostic names the cap and says NO artifact was promoted.
-    expect(result.units[0]!.error).toContain(String(WORKFLOW_MAX_EXEC_OUTPUT_BYTES));
-    expect(result.units[0]!.error).toContain("NO artifact was promoted");
-    // The partial capture is NOT promoted — nothing downstream can mistake a
-    // prefix of the output for the output.
+    const error = result.units[0]!.error ?? "";
+    // Actionable: both byte counts, the cap, WHY the schema makes it fatal.
+    expect(error).toContain(String(12 * 1024 * 1024));
+    expect(error).toContain(String(WORKFLOW_MAX_EXEC_OUTPUT_BYTES));
+    expect(error).toContain("output: schema");
+    expect(error).toContain("exactly one JSON value");
+    expect(error).toContain("NO artifact was promoted");
+    // Nothing is promoted: a truncated prefix must never become a typed artifact.
     expect(result.evidence.output).toBeNull();
-    // The step settled long before the command's own 10s sleep, and the marker
-    // never appears: the process group really died.
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
-    expect(fs.existsSync(marker)).toBe(false);
 
-    // `exec_output_limit` is out of the retry taxonomy on purpose: a runaway
-    // command is deterministic, so re-dispatching it can only burn the budget.
+    // The child was still allowed to finish — the cap never kills it. What
+    // failed is the PROMISE the unit made about its output, not the command.
+    expect(fs.existsSync(marker)).toBe(true);
+
+    // `exec_output_limit` keeps its out-of-taxonomy, no-retry meaning.
     const rows = await unitRows();
     expect(rows[0]!.status).toBe("failed");
     expect(rows[0]!.failure_reason).toBe("exec_output_limit");
-  }, 90_000);
+  }, 120_000);
+
+  test("memory stays bounded no matter how much the command writes", async () => {
+    seedRun(["work"]);
+    const marker = path.join(tmpDir, "giant-done.txt");
+    // 20 MiB — 2.5× the cap. Retention must not grow with the command's output.
+    const plan = execPlan([
+      "    unit:",
+      "      exec:",
+      `        command: ${JSON.stringify(giantWriterArgv(20, marker))}`,
+      '      timeout: "90s"',
+    ]);
+    storePlan(plan);
+
+    const result = await run(plan);
+
+    expect(result.ok).toBe(true);
+    const { retained, note } = splitTruncated(result.evidence.output);
+    expect(Buffer.byteLength(retained, "utf8")).toBeLessThanOrEqual(WORKFLOW_MAX_EXEC_OUTPUT_BYTES);
+    // …and the whole artifact is the bounded prefix plus a fixed-size note, not
+    // a function of the 20 MiB the command produced.
+    expect(String(result.evidence.output).length).toBeLessThan(WORKFLOW_MAX_EXEC_OUTPUT_BYTES + 2_000);
+    expect(note).toContain(String(20 * 1024 * 1024));
+    expect(fs.existsSync(marker)).toBe(true);
+  }, 120_000);
+
+  test("the cap DRAINS past the bound rather than cancelling — every chunk is read, only some are kept", async () => {
+    // The mechanism under all of the above, isolated: `readStream` must consume
+    // the stream to its end so the writer never blocks on backpressure. A reader
+    // that cancelled at the cap (the pre-change behavior) would leave chunks
+    // unread and wedge a real child on its next write.
+    let chunksRead = 0;
+    const chunk = new Uint8Array(1024).fill(0x61); // "a" × 1024
+    const total = 100;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (chunksRead >= total) {
+          controller.close();
+          return;
+        }
+        chunksRead++;
+        controller.enqueue(chunk);
+      },
+    });
+
+    const cap = 10 * 1024;
+    const read = await readStream(stream, { maxBytes: cap });
+
+    // Every chunk was pulled: the producer was never left blocked.
+    expect(chunksRead).toBe(total);
+    expect(read.bytesRead).toBe(total * 1024);
+    // …and retention is bounded, exactly.
+    expect(read.overflowed).toBe(true);
+    expect(read.retainedBytes).toBe(cap);
+    expect(Buffer.byteLength(read.text, "utf8")).toBe(cap);
+    expect(read.timedOut).toBe(false);
+    expect(read.error).toBeUndefined();
+  });
+
+  test("an UNCAPPED drain is byte-for-byte what it always was", async () => {
+    // The cap is opt-in; a caller that asks for none must see the pre-existing
+    // shape, with no `overflowed`/`bytesRead`/`retainedBytes` fields at all.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("hello "));
+        controller.enqueue(new TextEncoder().encode("world"));
+        controller.close();
+      },
+    });
+    const read = await readStream(stream);
+    expect(read).toEqual({ text: "hello world", timedOut: false });
+  });
 
   test("output comfortably under the cap is unaffected", async () => {
     seedRun(["work"]);
@@ -1084,9 +1229,21 @@ describe("exec unit — a stderr-only diagnosis survives to the journal (finding
   }, 30_000);
 });
 
-describe("exec unit — the AKM_* context environment is BOUNDED (finding 4)", () => {
-  /** A declared-input artifact far past what one environment entry may hold. */
-  const HUGE = "z".repeat(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES + 1_000);
+describe("exec unit — the AKM_* context environment is bounded by THIS PLATFORM's spawn ceiling", () => {
+  /** The per-variable ceiling that actually applies on the host running this suite. */
+  const LIMITS = execContextLimits();
+
+  /** A declared-input artifact far past what one environment entry may hold HERE. */
+  const HUGE = "z".repeat(LIMITS.perVarBytes + 1_000);
+
+  /**
+   * Past the OLD, Windows-derived bound (32 000 bytes) but comfortably inside
+   * this platform's real ceiling — the exact size the removed tripwire used to
+   * refuse. On win32 the two bounds are within 767 bytes of each other, so this
+   * is only a meaningful regression on a non-Windows host; there it is the whole
+   * point of the change.
+   */
+  const OVER_OLD_BOUND_UNDER_PLATFORM = "q".repeat(40_000);
 
   /**
    * A two-step plan whose SECOND step declares the first step's artifact as a
@@ -1130,7 +1287,30 @@ describe("exec unit — the AKM_* context environment is BOUNDED (finding 4)", (
     });
   }
 
-  test("an oversized AKM_INPUTS fails with an actionable error instead of a raw E2BIG", async () => {
+  test("a context var over the OLD 32 000-byte bound but under this platform's ceiling now SUCCEEDS", async () => {
+    // The tripwire-removal regression. 40 000 bytes was rejected before the
+    // change (the guard applied Windows' ceiling everywhere) even though this
+    // platform spawns it without complaint. A guard whose only job is to explain
+    // an INEVITABLE E2BIG must not invent one.
+    if (process.platform === "win32") return; // 40 000 > 32 767: genuinely over the ceiling here.
+    seedRun(["produce", "work"]);
+    const plan = consumerPlan(bunArgv("process.stdout.write(String(process.env.AKM_INPUTS.length))"));
+    storePlan(plan);
+
+    const result = await runConsumer(plan, OVER_OLD_BOUND_UNDER_PLATFORM);
+
+    expect(result.units[0]!.failureReason).toBeUndefined();
+    expect(result.ok).toBe(true);
+    // The command really received the whole thing — the spawn the old guard
+    // refused is a spawn the OS was always willing to make.
+    expect(Number(result.evidence.output)).toBeGreaterThan(OVER_OLD_BOUND_UNDER_PLATFORM.length);
+    // …and the size that used to be refused really is past the old bound and
+    // inside this platform's ceiling.
+    expect(OVER_OLD_BOUND_UNDER_PLATFORM.length).toBeGreaterThan(32_000);
+    expect(OVER_OLD_BOUND_UNDER_PLATFORM.length).toBeLessThan(LIMITS.perVarBytes);
+  }, 30_000);
+
+  test("a genuinely over-ceiling AKM_INPUTS fails with an actionable error instead of a raw E2BIG", async () => {
     seedRun(["produce", "work"]);
     const marker = path.join(tmpDir, "spawned.txt");
     const code = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
@@ -1142,15 +1322,50 @@ describe("exec unit — the AKM_* context environment is BOUNDED (finding 4)", (
     expect(result.ok).toBe(false);
     expect(result.units[0]!.failureReason).toBe("exec_context_too_large");
     const error = result.units[0]!.error ?? "";
-    // Actionable: names the VARIABLE, its SIZE, the LIMIT, and what to do.
+    // Actionable: names the VARIABLE, its SIZE, THIS platform's LIMIT and where
+    // that number comes from, and what to do.
     expect(error).toContain("AKM_INPUTS");
-    expect(error).toContain(String(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES));
+    expect(error).toContain(String(LIMITS.perVarBytes));
     expect(error).toMatch(/\d+ bytes/);
+    expect(error).toContain(LIMITS.source);
     expect(error).toContain("emit a REFERENCE");
     // And it says so BEFORE process creation is attempted, so the confusing
     // E2BIG never happens.
     expect(error).toContain("E2BIG");
     expect(fs.existsSync(marker)).toBe(false);
+  }, 30_000);
+
+  test("the ceiling is the CURRENT platform's — a win32 run is checked against Windows' 32 767 characters", async () => {
+    // Same value, two platforms, two verdicts: 40 000 bytes is fine here and
+    // over the line on Windows. Driving the platform explicitly is how a
+    // single-platform CI still proves the win32 branch, and it is the mechanism
+    // behind the docs' "stay under 32 767 if you also target Windows" guidance.
+    const context = { AKM_INPUTS: OVER_OLD_BOUND_UNDER_PLATFORM };
+    const argv = bunArgv("process.stdout.write('ok')") as [string, ...string[]];
+
+    const onWindows = await runExecUnit({
+      unitId: "work:solo",
+      exec: { command: argv, timeoutMs: 30_000 },
+      baseDir: workDir,
+      context,
+      timeoutMs: 30_000,
+      platform: "win32",
+    });
+    expect(onWindows.ok).toBe(false);
+    expect(onWindows.failureReason).toBe("exec_context_too_large");
+    expect(onWindows.error).toContain(String(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_WIN32));
+    expect(onWindows.error).toContain("32 767 characters");
+
+    const onLinux = await runExecUnit({
+      unitId: "work:solo",
+      exec: { command: argv, timeoutMs: 30_000 },
+      baseDir: workDir,
+      context,
+      timeoutMs: 30_000,
+      platform: "linux",
+    });
+    expect(onLinux.ok).toBe(true);
+    expect(onLinux.text).toBe("ok");
   }, 30_000);
 
   test("the same bound covers AKM_PARAMS", async () => {

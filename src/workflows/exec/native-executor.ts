@@ -1306,6 +1306,11 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
       baseDir: request.cwd ?? process.cwd(),
       ...(request.env ? { env: request.env } : {}),
       ...(request.execContext ? { context: request.execContext } : {}),
+      // A declared `output:` schema is what makes an output-cap overflow fatal:
+      // stdout must then parse as exactly one JSON value, which a truncated
+      // prefix cannot. Without one, overflow is marked in the artifact and the
+      // command's own exit code decides the unit. See `exec-unit.ts`.
+      ...(request.schema ? { hasOutputSchema: true } : {}),
       timeoutMs: request.timeoutMs,
       ...(request.signal ? { signal: request.signal } : {}),
     });

@@ -471,7 +471,8 @@ function buildStepWorkUnit(ctx: StepWorkUnitContext, unitId: string, item: unkno
  * fail with a bare `E2BIG`. The check belongs at the spawn boundary, where the
  * failure can be journaled as a unit outcome with an actionable message naming
  * the variable: `checkExecContextSize` in `exec/exec-unit.ts`, against
- * `WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES` / `WORKFLOW_MAX_EXEC_CONTEXT_BYTES`.
+ * `execContextLimits()` for the platform the run is actually on (a Linux run is
+ * checked against Linux's ceiling, not against the smallest supported one).
  * This function stays PURE and total.
  */
 function buildExecContextEnv(args: {

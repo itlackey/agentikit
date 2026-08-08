@@ -46,15 +46,16 @@
  *
  *   - WALL CLOCK — {@link DEFAULT_EXEC_TIMEOUT_MS} (or the authored `timeout:`),
  *     enforced by the TERM→KILL ladder.
- *   - CAPTURED OUTPUT — {@link WORKFLOW_MAX_EXEC_OUTPUT_BYTES} per pipe. Without
+ *   - RETAINED OUTPUT — {@link WORKFLOW_MAX_EXEC_OUTPUT_BYTES} per pipe. Without
  *     it, capture is bounded only by the command's exit, so `yes` exhausts the
- *     akm process's memory long before the timeout fires. A breach kills the
- *     process group and fails the unit `exec_output_limit`; it NEVER truncates
- *     silently, because stdout is the artifact.
- *   - CONTEXT ENVIRONMENT — {@link WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES} per
- *     `AKM_*` variable and {@link WORKFLOW_MAX_EXEC_CONTEXT_BYTES} in total,
- *     checked BEFORE the spawn so an oversized artifact yields an actionable
- *     akm error rather than the OS's bare `E2BIG`.
+ *     akm process's memory long before the timeout fires. The cap bounds MEMORY
+ *     ONLY: past it the reader drains-and-discards, the command runs to
+ *     completion and its real exit code stands. What overflow costs is the
+ *     ARTIFACT's completeness, and that is never hidden — see
+ *     {@link runExecUnit}.
+ *   - CONTEXT ENVIRONMENT — {@link execContextLimits} for THIS platform, checked
+ *     BEFORE the spawn so an oversized artifact yields an actionable akm error
+ *     rather than the OS's bare `E2BIG`.
  *
  * ## The child's environment is an ALLOWLIST
  *
@@ -94,9 +95,10 @@ import {
 } from "../../core/subprocess";
 import type { IrExecSpec } from "../ir/schema";
 import {
+  type ExecContextLimits,
+  execContextLimits,
   utf8Bytes,
-  WORKFLOW_MAX_EXEC_CONTEXT_BYTES,
-  WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES,
+  WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER,
   WORKFLOW_MAX_EXEC_OUTPUT_BYTES,
   WORKFLOW_UNIT_DIAGNOSTIC_CLIP,
 } from "../resource-limits";
@@ -212,15 +214,24 @@ export interface RunExecUnitInput {
   /**
    * Engine-authored `AKM_*` context (ids, params, fan-out item + index,
    * declared inputs). Applied LAST so a binding can never shadow it, and size-
-   * checked against {@link WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES} /
-   * {@link WORKFLOW_MAX_EXEC_CONTEXT_BYTES} before any spawn is attempted.
+   * checked against {@link execContextLimits} for the CURRENT platform before
+   * any spawn is attempted.
    */
   context?: Record<string, string>;
+  /**
+   * The unit declares an `output:` schema, so its stdout will be strictly JSON-
+   * parsed and validated. Decides what an output-cap overflow means: a
+   * truncated JSON prefix cannot be validated or promoted, so overflow is fatal
+   * here and merely marked when absent. See {@link runExecUnit}.
+   */
+  hasOutputSchema?: boolean;
   /** Resolved wall-clock budget; `null` = the author's explicit `timeout: none`. */
   timeoutMs: number | null;
   signal?: AbortSignal;
   /** Test seam: injected spawn (defaults to the runtime spawn inside `runManagedSubprocess`). */
   spawnFn?: SpawnFn;
+  /** Test seam: the platform whose spawn ceilings the context check uses. Defaults to the host's. */
+  platform?: string;
 }
 
 /**
@@ -254,6 +265,35 @@ export interface RunExecUnitInput {
  * instead — and it fails with the same reason and the same shared classifier
  * (`streamCaptureFailure`) the agent spawn path uses, so the two dispatch paths
  * agree on what "the capture did not complete" means.
+ *
+ * ## Output OVERFLOW does not fail a command that passed
+ *
+ * Crossing {@link WORKFLOW_MAX_EXEC_OUTPUT_BYTES} is NOT the same condition. The
+ * capture succeeded — the reader drained the pipe to its end — it just stopped
+ * RETAINING past the cap, so the child never blocked and its exit code is real.
+ * Failing a passing-but-chatty test suite over its log volume would be a
+ * tripwire: machinery that makes a run fail where it would otherwise have
+ * succeeded, for no benefit the cap needs. So overflow splits by what the unit
+ * PROMISED about its output:
+ *
+ *   - NO declared `output:` schema → the unit succeeds on exit 0 and its
+ *     artifact is the retained prefix with a
+ *     {@link WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER} block appended naming the
+ *     total and retained byte counts. Nothing is hidden and nothing is silently
+ *     shortened — a reader (human, gate judge, or downstream step) sees the
+ *     marker or sees a complete artifact, never a truncated one wearing a
+ *     complete one's clothes.
+ *   - a declared `output:` schema → `exec_output_limit`, still. stdout must
+ *     parse as EXACTLY one JSON value; a truncated prefix cannot, validating it
+ *     is meaningless, and promoting it would corrupt every downstream reference
+ *     to a typed artifact. That is the residual failure the cap genuinely
+ *     justifies, and it keeps its out-of-taxonomy no-retry rationale: the
+ *     command is deterministic, so re-dispatching it can only spend the budget
+ *     to produce the same oversized output again.
+ *
+ * stderr overflow never fails anything: stderr is a diagnostic channel, and
+ * {@link EXEC_STDERR_DIAGNOSTIC_CLIP} already bounds and marks what reaches the
+ * journal.
  */
 export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatchResult> {
   const cwd = resolveExecCwd(input);
@@ -266,9 +306,11 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
     cwd: cwd.path,
     env: childEnv(input.exec, input.env, input.context),
     timeoutMs: input.timeoutMs,
-    // stdout IS this unit's artifact, so capture is BOUNDED: an unbounded
+    // stdout IS this unit's artifact, so RETENTION is BOUNDED: an unbounded
     // capture is memory the akm process spends on a command's behalf with no
     // ceiling at all until it exits or the (default 10-minute) budget expires.
+    // The cap discards past the bound rather than killing — the command's own
+    // outcome is not akm's memory problem to solve.
     maxOutputBytes: WORKFLOW_MAX_EXEC_OUTPUT_BYTES,
     ...(input.signal ? { signal: input.signal } : {}),
     ...(input.spawnFn ? { spawnFn: input.spawnFn } : {}),
@@ -283,9 +325,10 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
       error: `exec unit "${input.unitId}" could not start ${display}: ${result.spawnError.message}`,
     };
   }
-  // Checked BEFORE abort/timeout: the cap breach is what KILLED the child, so
-  // the kill's own symptoms must not be reported as the cause.
-  if (result.outputLimitExceeded) return outputLimitFailure(input, display, result);
+  // Whatever this unit hands back as `text` is marked when stdout was truncated
+  // — on the failure paths too, where `text` is a diagnostic that would
+  // otherwise read like the command's whole output.
+  const stdout = markTruncatedStdout(result);
   // Abort is checked BEFORE timeout: a budget/user cancellation that raced a
   // wall-clock expiry is still a cancellation, and reporting it as `timeout`
   // would let a `retry.on: [timeout]` policy re-dispatch work the caller just
@@ -293,7 +336,7 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
   if (result.aborted) {
     return {
       ok: false,
-      text: result.stdout,
+      text: stdout,
       failureReason: "aborted",
       error: `exec unit "${input.unitId}" was cancelled while running ${display}${stderrTail(result.stderr)}`,
     };
@@ -301,7 +344,7 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
   if (result.timedOut) {
     return {
       ok: false,
-      text: result.stdout,
+      text: stdout,
       failureReason: "timeout",
       error:
         `exec unit "${input.unitId}" exceeded its ${input.timeoutMs}ms timeout running ${display} ` +
@@ -311,7 +354,7 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
   if (result.exitCode !== 0) {
     return {
       ok: false,
-      text: result.stdout,
+      text: stdout,
       failureReason: "non_zero_exit",
       error: `exec unit "${input.unitId}" ran ${display} and it exited ${result.exitCode}${stderrTail(result.stderr)}`,
     };
@@ -332,15 +375,48 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
         `${stderrTail(result.stderr)}`,
     };
   }
+  // The command exited 0 and the pipes drained to their end. The ONE thing an
+  // overflow can still ruin is a TYPED artifact: a truncated prefix is not one
+  // JSON value, so there is nothing to validate and nothing safe to promote.
+  if (result.stdoutRead.overflowed && input.hasOutputSchema) {
+    return outputLimitFailure(input, display, result);
+  }
   // The promoted artifact is STDOUT. Trailing newlines are stripped, exactly
   // like shell command substitution `$(…)`, so a one-line command's artifact is
   // the value an author expects rather than the value plus a `\n`. stderr is a
-  // diagnostic channel only and never contributes to the artifact.
-  return { ok: true, text: stripTrailingNewlines(result.stdout) };
+  // diagnostic channel only and never contributes to the artifact. When stdout
+  // overflowed, `stdout` already carries the truncation marker (which is
+  // deliberately the LAST thing in the artifact, so it survives the strip).
+  return { ok: true, text: stripTrailingNewlines(stdout) };
 }
 
 /**
- * The output-cap breach failure — deliberately UNMISTAKABLE.
+ * The captured stdout, with an unmistakable truncation block appended when the
+ * retention cap discarded part of it.
+ *
+ * Same idiom, same reason as `WORKFLOW_EVIDENCE_TRUNCATED_MARKER`
+ * (`runtime/runs.ts`): truncated data must never be mistakable for complete
+ * data. The block names both byte counts, so a reader can see exactly how much
+ * is missing rather than inferring it from a suspiciously round length.
+ */
+function markTruncatedStdout(result: ManagedSubprocessResult): string {
+  const read = result.stdoutRead;
+  if (!read.overflowed) return result.stdout;
+  const total = read.bytesRead ?? 0;
+  const retained = read.retainedBytes ?? 0;
+  return (
+    `${result.stdout}\n\n[${WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER}] ` +
+    `stdout was TRUNCATED: the command wrote ${total} bytes and only the first ${retained} were retained ` +
+    `(the ${WORKFLOW_MAX_EXEC_OUTPUT_BYTES}-byte per-pipe capture limit). ` +
+    `The remaining ${total - retained} bytes were read and discarded — the command itself ran to completion, ` +
+    `so its exit code is real, but THIS TEXT IS INCOMPLETE and must not be treated as the command's whole output. ` +
+    `Have the command write bulk output to a file and print the path, or quiet it down.`
+  );
+}
+
+/**
+ * The output-cap failure for a unit that declared an `output:` schema —
+ * deliberately UNMISTAKABLE.
  *
  * `text` is emptied rather than carrying the partial capture: for a failed unit
  * `text` is only a diagnostic (the durable evidence graph keeps a failure's
@@ -354,26 +430,25 @@ function outputLimitFailure(
   display: string,
   result: ManagedSubprocessResult,
 ): UnitDispatchResult {
-  const which = [
-    ...(result.stdoutRead.overflowed ? ["stdout"] : []),
-    ...(result.stderrRead.overflowed ? ["stderr"] : []),
-  ].join(" and ");
+  const total = result.stdoutRead.bytesRead ?? 0;
+  const retained = result.stdoutRead.retainedBytes ?? 0;
   return {
     ok: false,
     text: "",
     failureReason: "exec_output_limit",
     error:
-      `exec unit "${input.unitId}" ran ${display} and its ${which} exceeded the ` +
-      `${WORKFLOW_MAX_EXEC_OUTPUT_BYTES}-byte capture limit, so its process group was terminated. ` +
-      `NO artifact was promoted: the captured output is a truncated prefix and stdout is this unit's artifact, ` +
-      `so promoting it would silently corrupt every downstream reference to it. ` +
-      `Have the command write bulk output to a file and print a path, or quiet it down.`,
+      `exec unit "${input.unitId}" ran ${display}, it exited 0, but it wrote ${total} bytes to stdout and only ` +
+      `the first ${retained} were retained (the ${WORKFLOW_MAX_EXEC_OUTPUT_BYTES}-byte per-pipe capture limit). ` +
+      `This unit declares an output: schema, so its stdout must parse as exactly one JSON value — a truncated ` +
+      `prefix cannot, and promoting it would silently corrupt every downstream reference to the typed artifact. ` +
+      `NO artifact was promoted. Have the command write bulk output to a file and print the path, quiet it down, ` +
+      `or drop the output: schema if the step does not actually need a typed artifact.`,
   };
 }
 
 /**
  * Refuse to spawn when the engine-authored `AKM_*` context would not fit in the
- * child's environment.
+ * child's environment ON THIS PLATFORM.
  *
  * A workflow artifact has no bound comparable to an OS environment entry, so a
  * perfectly legitimate declared input can serialize into an `AKM_INPUTS` far
@@ -383,44 +458,62 @@ function outputLimitFailure(
  * that produced it. Checking here converts it into a located, actionable
  * failure BEFORE process creation is attempted.
  *
+ * ## The ceiling is the CURRENT platform's, never the smallest one
+ *
+ * That translation is this check's ONLY job, which fixes its bound exactly: the
+ * limits come from {@link execContextLimits} for the platform the run is on. A
+ * guard that applied Windows' 32 767-character ceiling on Linux would fail
+ * spawns the kernel would happily have accepted — inventing a failure instead of
+ * explaining an inevitable one, which is a tripwire and not a guard. Workflows
+ * that must also run on Windows should stay under the smaller bound; that is
+ * documented guidance (`docs/reference/workflow-schema.md`), not something a
+ * Linux host enforces.
+ *
  * Only the engine-authored context is measured. The unit's `env:` bindings are
  * authored values a human wrote and sized; this is the surface where the SIZE
  * is data-dependent and therefore surprising.
  */
 function checkExecContextSize(input: RunExecUnitInput): UnitDispatchResult | undefined {
+  const limits = execContextLimits(input.platform ?? process.platform);
   const entries = Object.entries(input.context ?? {});
   let total = 0;
   for (const [name, value] of entries) {
     const bytes = utf8Bytes(value);
     total += bytes + utf8Bytes(name) + 1;
-    if (bytes > WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES) {
+    if (bytes > limits.perVarBytes) {
       return contextTooLarge(
         input,
-        `its ${name} context variable is ${bytes} bytes, over the ${WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES}-byte ` +
-          `per-variable limit`,
+        `its ${name} context variable is ${bytes} bytes, over the ${limits.perVarBytes}-byte per-variable limit`,
         name,
+        limits,
       );
     }
   }
-  if (total > WORKFLOW_MAX_EXEC_CONTEXT_BYTES) {
+  if (total > limits.totalBytes) {
     return contextTooLarge(
       input,
-      `its AKM_* context variables total ${total} bytes, over the ${WORKFLOW_MAX_EXEC_CONTEXT_BYTES}-byte limit`,
+      `its AKM_* context variables total ${total} bytes, over the ${limits.totalBytes}-byte limit`,
       entries.map(([name]) => name).join(", "),
+      limits,
     );
   }
   return undefined;
 }
 
-function contextTooLarge(input: RunExecUnitInput, what: string, names: string): UnitDispatchResult {
+function contextTooLarge(
+  input: RunExecUnitInput,
+  what: string,
+  names: string,
+  limits: ExecContextLimits,
+): UnitDispatchResult {
   return {
     ok: false,
     text: "",
     failureReason: "exec_context_too_large",
     error:
       `exec unit "${input.unitId}" cannot be spawned: ${what}. ` +
-      `Environment variables (${names}) are how a frozen argv receives data, and the operating system caps them ` +
-      `(Linux ~128 KiB per entry, Windows 32 767 characters per variable) — spawning would fail with a bare E2BIG. ` +
+      `Environment variables (${names}) are how a frozen argv receives data, and this platform caps them ` +
+      `(${limits.source}) — spawning would fail with a bare E2BIG. ` +
       `Have the producing step emit a REFERENCE (a file path, an id) instead of inline bulk data, narrow the step's ` +
       `declared inputs:, or reduce the fan-out item size.`,
   };

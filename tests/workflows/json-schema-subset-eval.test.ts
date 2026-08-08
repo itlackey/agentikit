@@ -3,8 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * The JSON-Schema subset's NEWLY ENFORCED keywords — `pattern` and the
- * combinators `allOf`/`anyOf`/`oneOf`/`not` (`src/core/json-schema.ts`).
+ * The JSON-Schema subset's NEWLY ENFORCED keywords — the combinators
+ * `allOf`/`anyOf`/`oneOf`/`not` (`src/core/json-schema.ts`).
  *
  * Each was previously a loud author-time error precisely because the runtime
  * ignored it, so the load-bearing assertion in every case below is the
@@ -12,202 +12,39 @@
  * that a valid value passes would pass just as happily against the old
  * ignore-the-keyword behavior.
  *
- * Also pins the ReDoS screen and the evaluation bounds documented in that
- * module's header: an unsafe pattern and an over-long subject are ERRORS, not
- * silent acceptances — the subset never fails open.
+ * `pattern` is deliberately NOT in that set: it stays a recognized-but-
+ * unsupported keyword, reported loudly at authoring time
+ * (see `tests/workflows/schema-definition.test.ts`) and ignored at evaluation.
+ *
+ * Also pins the evaluation bounds documented in that module's header —
+ * exhausting the depth or node budget is an ERROR, not a silent acceptance:
+ * the subset never fails open.
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-  JSON_SCHEMA_MAX_PATTERN_CHOICE_POINTS,
-  JSON_SCHEMA_MAX_PATTERN_INPUT_LENGTH,
-  JSON_SCHEMA_MAX_PATTERN_LENGTH,
-  JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS,
-  screenPattern,
-  validateJsonSchemaSubset,
-} from "../../src/core/json-schema";
+import { JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS, validateJsonSchemaSubset } from "../../src/core/json-schema";
 
-describe("validateJsonSchemaSubset — pattern", () => {
-  const semver = { type: "string", pattern: "^\\d+\\.\\d+\\.\\d+$" };
-
-  test("a matching string passes and a non-matching one is REJECTED (proving it is evaluated)", () => {
+describe("validateJsonSchemaSubset — pattern is NOT evaluated", () => {
+  test("a string is not matched against `pattern` — the keyword constrains nothing at run time", () => {
+    // `pattern` is a recognized-but-unsupported keyword: authors are told so
+    // loudly at parse time, so evaluation can ignore it without surprising
+    // anyone. Evaluating it would need a regex safety analysis whose only
+    // effect on real workflows was rejecting patterns authors legitimately
+    // wrote.
+    const semver = { type: "string", pattern: "^\\d+\\.\\d+\\.\\d+$" };
     expect(validateJsonSchemaSubset("1.2.3", semver)).toEqual([]);
-    const errors = validateJsonSchemaSubset("v1.2", semver);
+    expect(validateJsonSchemaSubset("v1.2", semver)).toEqual([]);
+    // …including the shapes the removed screen used to reject outright.
+    expect(validateJsonSchemaSubset("aaaaaaaaaaaaaaaaaaaa!", { type: "string", pattern: "^(a+)+$" })).toEqual([]);
+    expect(validateJsonSchemaSubset("x".repeat(100_000), { type: "string", pattern: "^x+$" })).toEqual([]);
+  });
+
+  test("the keywords the subset DOES enforce still apply alongside an ignored `pattern`", () => {
+    const schema = { type: "string", pattern: "^ok$", minLength: 4 };
+    expect(validateJsonSchemaSubset("okay", schema)).toEqual([]);
+    const errors = validateJsonSchemaSubset("ok", schema);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("does not match pattern");
-  });
-
-  test("pattern composes with the surrounding object/array constraints", () => {
-    const schema = {
-      type: "object",
-      required: ["verdict"],
-      properties: {
-        verdict: { type: "string", pattern: "^(?:pass|fail)$" },
-        tags: { type: "array", items: { type: "string", pattern: "^[a-z][a-z0-9-]*$" } },
-      },
-    };
-    expect(validateJsonSchemaSubset({ verdict: "pass", tags: ["needs-work"] }, schema)).toEqual([]);
-    const errors = validateJsonSchemaSubset({ verdict: "maybe", tags: ["Needs Work"] }, schema);
-    expect(errors).toHaveLength(2);
-    expect(errors[0]).toContain("$.verdict");
-    expect(errors[1]).toContain("$.tags[0]");
-  });
-
-  test("pattern only constrains strings (a non-string is left to `type`)", () => {
-    expect(validateJsonSchemaSubset(42, { pattern: "^a$" })).toEqual([]);
-    expect(validateJsonSchemaSubset(null, { pattern: "^a$" })).toEqual([]);
-  });
-
-  test("an unsafe pattern is an ERROR at evaluation time, never a silent pass", () => {
-    const errors = validateJsonSchemaSubset("aaaaaaaaaaaaaaaaaaaa!", { type: "string", pattern: "^(a+)+$" });
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("cannot be evaluated safely");
-  });
-
-  test("a subject longer than the matching bound is an ERROR, not a match attempt", () => {
-    const long = "x".repeat(JSON_SCHEMA_MAX_PATTERN_INPUT_LENGTH + 1);
-    const errors = validateJsonSchemaSubset(long, { type: "string", pattern: "^x+$" });
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain(`${JSON_SCHEMA_MAX_PATTERN_INPUT_LENGTH}-character limit`);
-    // Exactly at the bound it is matched normally.
-    expect(
-      validateJsonSchemaSubset("x".repeat(JSON_SCHEMA_MAX_PATTERN_INPUT_LENGTH), {
-        type: "string",
-        pattern: "^x+$",
-      }),
-    ).toEqual([]);
-  });
-});
-
-describe("screenPattern — the ReDoS guard", () => {
-  test("ordinary authoring patterns are accepted", () => {
-    for (const pattern of [
-      "^\\d+\\.\\d+\\.\\d+$",
-      "^[a-z][a-z0-9-]*$",
-      "^(?:pass|fail|skip)$",
-      "^v?\\d+(\\.\\d+)*$",
-      "^[a-f0-9]{40}$",
-      "^https?://[^\\s]+$",
-      "^\\w+(-\\w+)*$",
-      "(foo|bar)+",
-    ]) {
-      expect(screenPattern(pattern).ok).toBe(true);
-    }
-  });
-
-  test("the constructs that backtrack exponentially or polynomially are rejected", () => {
-    const unsafe = ["^(a+)+$", "^(a|a)*$", "^(a*)*$", "^.*.*$", "\\d+\\w+"];
-    for (const pattern of unsafe) {
-      const screened = screenPattern(pattern);
-      expect(screened.ok).toBe(false);
-      if (!screened.ok) expect(screened.reason.length).toBeGreaterThan(0);
-    }
-  });
-
-  test("size bounds: pattern length, counted repetition, and invalid syntax", () => {
-    const tooLong = `^${"a".repeat(JSON_SCHEMA_MAX_PATTERN_LENGTH)}$`;
-    expect(screenPattern(tooLong).ok).toBe(false);
-    expect(screenPattern("a{1,5000}").ok).toBe(false);
-    expect(screenPattern("(").ok).toBe(false);
-    expect(screenPattern("[a-z").ok).toBe(false);
-  });
-
-  test("screening is total — it never throws, on any of these shapes", () => {
-    for (const pattern of ["", "*", ")", "\\", "(?<name>a)", "(?=a)b", "[]", "[^]", "a{", "{2}", "\\p{L}+"]) {
-      expect(() => screenPattern(pattern)).not.toThrow();
-    }
-  });
-});
-
-/**
- * A group only has to be ambiguous ONCE for a pattern to encode an exponential
- * search — repeating it TEXTUALLY costs the same as quantifying it. Screening
- * a group's body only when the group carries a quantifier therefore misses
- * `^(a|aa)(a|aa)…b$` entirely: every group is unquantified and the source fits
- * inside the 256-character limit, yet a ~46-character subject drives the match
- * into seconds of synchronous backtracking.
- *
- * These assert the screen's real invariant — every choice a backtracking
- * engine could make is FORCED by the input — rather than a wall-clock budget,
- * which would be both flaky in CI and unenforceable: a synchronous
- * `RegExp.exec` cannot be interrupted by a timer, so the bound has to be
- * established before the match starts.
- */
-describe("screenPattern — ambiguity that is repeated textually, not quantified", () => {
-  const sequential = (groups: number, body = "a|aa") => `^${`(${body})`.repeat(groups)}b$`;
-
-  test("the reported pattern and its 40-group variant are REJECTED", () => {
-    for (const groups of [30, 40]) {
-      const pattern = sequential(groups);
-      // Both are within every bound the old screen checked, which is why they
-      // slipped through: unquantified groups, under the source-length limit.
-      expect(pattern.length).toBeLessThanOrEqual(JSON_SCHEMA_MAX_PATTERN_LENGTH);
-      const screened = screenPattern(pattern);
-      expect(screened.ok).toBe(false);
-      if (!screened.ok) expect(screened.reason).toContain("not forced by the input");
-    }
-  });
-
-  test("the shape is rejected at every length — two adjacent groups are already enough", () => {
-    for (const groups of [2, 3, 8, 16]) expect(screenPattern(sequential(groups)).ok).toBe(false);
-  });
-
-  test("equal-length branches that overlap are caught too (the length heuristic alone would miss them)", () => {
-    // `(?:aa|aa)` consumes exactly 2 characters either way, so no
-    // length-based rule fires — but both branches match the SAME text, so each
-    // group doubles the search space.
-    expect(screenPattern(`^${"(?:aa|aa)".repeat(10)}b$`).ok).toBe(false);
-    expect(screenPattern("(a|a)").ok).toBe(false);
-    // …while alternatives the input can tell apart stay accepted.
-    expect(screenPattern("^(cat|car)$").ok).toBe(true);
-    expect(screenPattern("^(\\d+|none)$").ok).toBe(true);
-  });
-
-  test("constructs the analysis cannot model fail CLOSED", () => {
-    // A backreference's language depends on what an earlier group captured.
-    expect(screenPattern("^(a+)\\1$").ok).toBe(false);
-    expect(screenPattern("^(?<x>a)\\k<x>$").ok).toBe(false);
-    // A lookaround is zero-width, and modelling it as if it consumed its body
-    // would let the screen believe the boundary after it is forced.
-    expect(screenPattern("^(?!akm-)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$").ok).toBe(true);
-    expect(screenPattern("^(?=\\d)(a|aa)(a|aa)b$").ok).toBe(false);
-  });
-});
-
-describe("screenPattern — the work bound", () => {
-  test("an accepted pattern reports a choice-point count within the budget", () => {
-    for (const pattern of ["^\\d+\\.\\d+\\.\\d+$", "^(?:pass|fail)$", "(foo|bar)+", "^v?\\d+(\\.\\d+)*$"]) {
-      const screened = screenPattern(pattern);
-      expect(screened.ok).toBe(true);
-      if (screened.ok) {
-        expect(screened.choicePoints).toBeLessThanOrEqual(JSON_SCHEMA_MAX_PATTERN_CHOICE_POINTS);
-      }
-    }
-    // Everyday patterns sit far below the cap — it is not load-bearing for them.
-    const semver = screenPattern("^v?\\d+(\\.\\d+)*$");
-    if (semver.ok) expect(semver.choicePoints).toBeLessThanOrEqual(8);
-  });
-
-  test("a pattern over the budget is REJECTED even where each part is individually forced", () => {
-    // 30 disjoint optional atoms: every boundary IS forced, so no structural
-    // rule fires — only the work budget stops it. This is the failsafe that
-    // makes the "repeat something ambiguous N times" family impossible by
-    // construction rather than by rule.
-    const many = `^${"abcdefghijklmnopqrstuvwxyz".slice(0, 26).split("").join("?")}?0?1?2?3?$`;
-    const screened = screenPattern(many);
-    expect(screened.ok).toBe(false);
-    if (!screened.ok) expect(screened.reason).toContain("choice-point budget");
-  });
-
-  test("one unforced boundary is allowed (linear); a second is not (it would compound)", () => {
-    // `.*` runs into `\]`, but everything after it is fixed-length, so each of
-    // the at-most-|subject| split points costs constant work.
-    expect(screenPattern("^\\[.*\\]$").ok).toBe(true);
-    expect(screenPattern('^".*"$').ok).toBe(true);
-    // Two of them multiply into O(n²), and a chain into O(nᵏ) — budgeted at one.
-    expect(screenPattern("^\\[.*\\]x\\[.*\\]y$").ok).toBe(false);
-    // Inside a repetition it is re-explored per iteration, so it is not tolerated.
-    expect(screenPattern("^(\\[.*\\])+$").ok).toBe(false);
+    expect(errors[0]).toContain("minLength");
   });
 });
 
@@ -270,7 +107,7 @@ describe("validateJsonSchemaSubset — combinators", () => {
       properties: {
         results: {
           type: "array",
-          items: { anyOf: [{ type: "string", pattern: "^ok$" }, { type: "null" }] },
+          items: { anyOf: [{ type: "string", enum: ["ok"] }, { type: "null" }] },
         },
       },
     };
@@ -308,9 +145,10 @@ describe("validateJsonSchemaSubset — totality", () => {
     expect(errors.some((e) => e.includes("exceeded the limit"))).toBe(true);
   });
 
-  test("the advertised supported-keyword list names the newly enforced keywords", () => {
-    for (const keyword of ["pattern", "allOf", "anyOf", "oneOf", "not"]) {
+  test("the advertised supported-keyword list names the enforced keywords and omits `pattern`", () => {
+    for (const keyword of ["allOf", "anyOf", "oneOf", "not"]) {
       expect(JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS).toContain(keyword);
     }
+    expect(JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS).not.toContain("pattern");
   });
 });

@@ -316,74 +316,32 @@ enforces only a subset of JSON Schema:
 
 `type`, `enum`, `properties`, `required`, `items`, `additionalProperties:
 false`, `minItems`, `maxItems`, `minLength`, `maxLength`, `minimum`,
-`maximum`, `pattern`, `allOf`, `anyOf`, `oneOf`, `not`.
+`maximum`, `allOf`, `anyOf`, `oneOf`, `not`.
 
 Anything outside it is an authoring **error**, not a silent no-op. A typo'd
 type name (`type: strig`) and a recognized-but-unenforced keyword (`$ref`,
-`$defs`, `const`, `format`, `patternProperties`, `if`/`then`/`else`,
+`$defs`, `const`, `pattern`, `format`, `patternProperties`, `if`/`then`/`else`,
 `uniqueItems`, `multipleOf`, `exclusiveMinimum`/`exclusiveMaximum`,
 tuple-form `items`, schema-form `additionalProperties`, …) both fail with the
 offending keyword named, a suggested replacement where one exists (`const` →
-a single-value `enum`; `format` → `pattern`; `$ref` → inline the schema), and
-the location anchored to the line. A gate that depends on a schema
-constraining nothing is worse than a loud failure. Annotation keywords
-(`description`, `title`, `default`, `examples`) constrain nothing in full
-JSON Schema either, so they pass through untouched.
+a single-value `enum`; `$ref` → inline the schema), and the location anchored
+to the line. A gate that depends on a schema constraining nothing is worse
+than a loud failure. Annotation keywords (`description`, `title`, `default`,
+`examples`) constrain nothing in full JSON Schema either, so they pass through
+untouched.
 
-`pattern` is enforced against a **screened** regex dialect. The screen runs at
-parse time, before the pattern is ever executed.
+`pattern` is among the unsupported keywords. Matching an author-supplied regex
+inside a synchronous gate decision would have to be bounded before the match
+starts — a static safety analysis — and any such analysis also refuses regexes
+authors legitimately write. Rather than carry machinery that fails authoring
+for no benefit, the subset does not evaluate `pattern` at all and says so at
+the point of authoring. Where a string's shape matters, list the allowed values
+with `enum`, bound its size with `minLength`/`maxLength`, or check the shape in
+the step's gate rubric, which can explain a mismatch in a way a regex cannot.
 
-**The guarantee: a pattern the screen accepts cannot match any subject in
-super-linear time.** It is enforced by admitting only patterns in which every
-choice a backtracking engine could make is *forced by the input*, so each
-position in the subject is decided once and never re-explored. Concretely:
-
-- **Every group's alternatives must be distinguishable.** No two branches may
-  match the same text, so the input decides which one applies. `(a|a)` and
-  `(?:aa|aa)` are rejected; `(foo|bar)`, `(cat|car)` and `(\d+|none)` are
-  fine. This holds whether or not the group carries a quantifier — repeating
-  an ambiguous group *textually* (`(a|aa)(a|aa)(a|aa)…`) encodes exactly the
-  same exponential search as quantifying it (`(a|aa)+`), so both are rejected.
-- **Every variable-length subexpression must end on characters that cannot
-  start what follows it**, so the split point is forced too. This is what
-  rejects `(a+)+`, `.*.*` and `\d+\w+`. A single exception is allowed per
-  pattern — one unforced boundary whose remainder is fixed-length, outside any
-  repetition, which costs one linear pass (`^\[.*\]$`, `^".*"$`). A second
-  one is rejected, because two of them multiply into `O(n²)` and a chain into
-  `O(nᵏ)`.
-- **A quantified group** additionally may not have a body that matches empty
-  (`(a*)*`) or that can start and end on the same character while repeating.
-- **Anything the analysis cannot model is rejected, not assumed safe** —
-  backreferences (`(a+)\1`) and unsupported group prefixes. Lookarounds are
-  understood as the zero-width assertions they are, and their bodies are
-  screened like any other.
-
-Size limits back the structural rules up: pattern sources are limited to 256
-characters, counted repetitions to 1000, group nesting to 16, and the total
-number of *choice points* (variable-length atoms plus multi-branch groups) to
-24 — a work budget that caps the search a pattern can express at all, even if
-one of the structural rules had a gap. A string longer than 4096 characters is
-reported as a validation error rather than matched. Together these bound
-matching at roughly `256 × 4096` character steps for any pattern and any
-subject.
-
-The bound has to be established *before* matching starts: validation runs
-inside the CLI process, and a synchronous `RegExp` match cannot be interrupted
-by a timer, while moving it off-thread would make validation asynchronous and
-wall-clock-dependent — which gate decisions cannot tolerate. A rejected
-pattern is always a loud error, never a silently skipped constraint.
-
-Everyday patterns are unaffected: `^\d+\.\d+\.\d+$`, `^(?:pass|fail)$`,
-`^v?\d+(\.\d+)*$`, `^[a-f0-9]{40}$`, `^\w+(-\w+)*$`, `(foo|bar)+`. The shape
-most likely to be rejected in practice is a character class that *contains*
-its own delimiter — `[A-Za-z0-9.-]+\.` in the usual hand-rolled email regex,
-where nothing forces which dot ends the repeat. Take the delimiter out of the
-class and repeat the group instead: `[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*`.
-
-Evaluation is bounded in the same spirit: schema nesting is capped at 64
-levels and one validation may make at most 100 000 checks. Exhausting either
-is reported as an error — a truncated evaluation never reports a value as
-valid.
+Evaluation is bounded: schema nesting is capped at 64 levels and one validation
+may make at most 100 000 checks. Exhausting either is reported as an error — a
+truncated evaluation never reports a value as valid.
 
 ### Bounds
 
@@ -490,9 +448,12 @@ cannot step outside the tree its isolation promised.
   it survives to `akm workflow status --units` and to the step's summary in the
   run output, not just to the in-memory result. It is clipped to 2000 characters
   and goes through the same redaction contract as everything else journaled.
-- **Captured output is bounded at 8 MiB per stream.** stdout and stderr are each
-  capped. See [Output limits](#output-limits) — a breach is a hard failure, never
-  a silent truncation.
+- **Retained output is bounded at 8 MiB per stream.** akm keeps at most that much
+  of stdout and of stderr; past the cap it keeps *reading* and discards, so the
+  command still runs to completion and its exit code still decides the unit. See
+  [Output limits](#output-limits) — the artifact is then explicitly marked
+  truncated, never silently shortened, and only a unit with a declared `output:`
+  schema fails for it.
 - **An incomplete capture is a failure, not a partial artifact.** Exiting 0 is
   not on its own proof that stdout was fully read: a pipe can error, and a
   background descendant that keeps the stdout handle open after the command
@@ -518,8 +479,9 @@ failure reason.
 | run cancelled (`Ctrl-C`, `--timeout`, budget) | `aborted` | yes |
 | binary missing / working directory unusable | `spawn_failed` | yes |
 | output capture never completed | `spawn_failed` | yes |
-| stdout/stderr past the capture limit | `exec_output_limit` | **no** (a runaway is deterministic) |
-| `AKM_*` context too large to spawn | `exec_context_too_large` | **no** (an authoring/data problem) |
+| stdout past the retention limit, **and** the unit declares `output:` | `exec_output_limit` | **no** (deterministic) |
+| stdout past the retention limit, no `output:` schema | — (unit succeeds; artifact marked truncated) | — |
+| `AKM_*` context too large for **this platform** to spawn | `exec_context_too_large` | **no** (an authoring/data problem) |
 | `cwd` resolved outside its base | `exec_cwd_escape` | **no** (tampering, never transient) |
 
 A non-zero exit is an ordinary unit failure, so it flows through the ordinary
@@ -534,27 +496,44 @@ leave them orphaned.
 ### Output limits
 
 akm captures the command's stdout and stderr into memory — stdout *is* the
-artifact — so each stream is capped at **8 MiB**. A command that crosses the cap
-has its **process group terminated** and the unit fails `exec_output_limit`.
+artifact — so it **retains** at most **8 MiB** of each stream.
 
-Nothing is truncated silently. Truncating would be the dangerous option: stdout
-flows into `steps.<id>.output`, into the completion gate's judge, and into the
-next step's declared inputs, and a quietly shortened artifact would corrupt all
-three while every status surface still said the step succeeded. Terminating is
-also the only honest option mechanically — once akm stops draining the pipe, the
-command blocks on its next write anyway, so "truncate and keep running" would
-just mean waiting out the full timeout for output that is already lost.
+This is a cap on akm's memory, not on your command. Past the cap akm keeps
+reading the pipe and throws the extra bytes away, so the command never blocks on
+a full pipe: it runs to completion and **its exit code is what decides the
+unit**. A chatty-but-passing test suite is not failed for its log volume.
 
-The cap is generous (8× the 1 MiB evidence-persistence cap), so an ordinary
-build or test log is nowhere near it. If a command legitimately produces more,
-have it write to a file and print the **path**:
+What overflow does cost is honesty about the artifact, and that depends on what
+the unit promised:
+
+| The unit declares… | On overflow |
+| --- | --- |
+| no `output:` schema | the unit **succeeds** (given exit 0). Its artifact is the retained first 8 MiB with a `__akm_exec_output_truncated__` block appended, naming the bytes written and the bytes retained. |
+| an `output:` schema | the unit **fails** `exec_output_limit` and **nothing is promoted**. |
+
+Nothing is ever truncated *silently*. The marker block is the last thing in the
+artifact, so a downstream `steps.<id>.output` reference, a completion gate's
+judge, and a human reading `akm workflow status` all see plainly that the text is
+incomplete. Truncated data can never be mistaken for complete data — that is the
+rule, and the marker is how it is kept.
+
+The schema case stays a failure because a truncated prefix is not a JSON value:
+with `output:` declared, stdout must parse as exactly one JSON value, so there is
+nothing to validate and nothing safe to promote. `exec_output_limit` is therefore
+still outside the `retry.on` vocabulary — the command is deterministic, so
+re-dispatching it can only spend the budget to produce the same oversized output
+again.
+
+stderr overflow never fails anything. stderr is a diagnostic channel; the journal
+already clips and marks what it keeps.
+
+The cap is generous (8× the 1 MiB evidence-persistence cap), so an ordinary build
+or test log is nowhere near it. If a command legitimately produces more and you
+want the whole thing, have it write to a file and print the **path**:
 
 ```yaml
         command: ["bash", "-lc", "bun run build > build.log 2>&1; echo build.log"]
 ```
-
-`exec_output_limit` is deliberately outside the `retry.on` vocabulary: a runaway
-command is deterministic, so re-dispatching it can only spend the budget again.
 
 ### Context reaching the command
 
@@ -577,24 +556,43 @@ them.
 An environment variable is an operating-system object with a hard ceiling, and a
 workflow artifact has no comparable bound — so a perfectly legitimate declared
 input can grow past what **process creation itself** accepts. akm therefore
-bounds what it puts in the child's environment:
+bounds what it puts in the child's environment, **against the ceiling of the
+platform the run is actually on**:
 
-| Bound | Limit |
-| --- | --- |
-| One `AKM_*` context variable | 32 000 bytes |
-| All `AKM_*` context variables combined | 64 000 bytes |
+| Bound | Linux / macOS / BSD | Windows |
+| --- | --- | --- |
+| One `AKM_*` context variable | 98 304 bytes (96 KiB) | 32 767 bytes |
+| All `AKM_*` context variables combined | 131 072 bytes (128 KiB) | 64 000 bytes |
 
-Crossing either fails the unit `exec_context_too_large` **before anything is
-spawned**, with an error naming the variable, its actual size, the limit, and
-what to do. Without the check the same workflow dies inside the spawn syscall
-with a bare `E2BIG` ("argument list too long") that names neither the variable
-nor the step that produced the data.
+Where those numbers come from:
 
-The limits are pinned to the *smallest* supported platform ceiling on purpose
-(Windows caps a single environment variable at 32 767 characters; Linux caps one
-entry at ~128 KiB). A portable workflow format should not let a workflow that
-works on your Linux laptop fail on a Windows CI runner, so both fail the same
-way at the same size.
+- **Linux** caps a single `argv`/`environ` string at `MAX_ARG_STRLEN`, defined as
+  `32 * PAGE_SIZE` — 131 072 bytes. The 96 KiB bound leaves 32 KiB of margin for
+  the variable's name, the `=`, the `NUL`, and the kernel's own accounting.
+- **macOS** has no per-string cap; its binding constraint is `ARG_MAX`
+  (262 144 bytes) over `argv` + `environ` *combined*. The 128 KiB total keeps
+  akm's own contribution to half of that, leaving the rest for the argv, the
+  environment allowlist and your `env:` bindings.
+- **Windows** caps a single user-defined environment variable at 32 767
+  characters (`SetEnvironmentVariable`), and the environment block has limits of
+  the same order.
+
+Crossing either bound fails the unit `exec_context_too_large` **before anything
+is spawned**, with an error naming the variable, its actual size, this platform's
+limit and where that number comes from. That translation is the check's *only*
+job: without it the same workflow dies inside the spawn syscall with a bare
+`E2BIG` ("argument list too long") that names neither the variable nor the step
+that produced the data.
+
+Because that is its only job, the check uses **this** platform's ceiling rather
+than the smallest supported one. A guard that applied Windows' 32 767-byte limit
+on Linux would refuse spawns the kernel would happily have accepted — inventing a
+failure instead of explaining an inevitable one.
+
+> **Portability guidance (not enforcement).** If a workflow is meant to run on
+> Windows as well, keep `AKM_*` context under **32 767 bytes per variable**. akm
+> will not fail your Linux or macOS run for exceeding that — but a Windows runner
+> will. The fix in both cases is the same: emit a reference instead of bulk data.
 
 If you hit this, have the producing step emit a **reference** — a file path, an
 id, a key — instead of inline bulk data:

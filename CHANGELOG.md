@@ -53,25 +53,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     real output, so the unit fails `spawn_failed` — the same treatment, via the
     same shared classifier, that the agent-dispatch path already gave the
     identical condition.
-  - **Everything the command can spend is bounded.** Alongside the wall-clock
-    timeout: captured stdout and stderr are capped at **8 MiB each**, and the
-    engine-authored `AKM_*` context is capped at **32 000 bytes per variable /
-    64 000 bytes total**.
+  - **Everything the command can spend is bounded — without inventing failures.**
+    Alongside the wall-clock timeout, akm bounds the memory it spends on the
+    command's behalf and the environment it can hand the command. Both bounds are
+    built so that they only ever *explain* a failure that was going to happen
+    anyway; neither fails a run that would otherwise have succeeded.
 
-    An over-cap command has its process group terminated and fails
-    `exec_output_limit`; the output is *not* silently truncated, because stdout
-    is the artifact and a quietly shortened artifact would flow into
-    `steps.<id>.output`, the completion gate, and the next step while every
-    status surface still reported success. An over-cap context fails
-    `exec_context_too_large` *before* the spawn, with an error naming the
-    variable, its size, the limit and what to do — replacing a bare `E2BIG` from
-    the spawn syscall that named neither the variable nor the data behind it.
-    (The context limits track the smallest supported platform ceiling — Windows'
-    32 767-character per-variable cap — so a workflow cannot pass on Linux and
-    die on a Windows runner.) Both reasons are deliberately outside the
-    `retry.on` vocabulary, alongside `exec_cwd_escape`: each is deterministic, so
-    re-dispatching could only spend the budget again. `PROGRAM_RETRY_REASONS` is
-    unchanged.
+    **Retained output: 8 MiB per stream, drain-and-discard.** akm keeps at most
+    8 MiB of stdout and 8 MiB of stderr. Past the cap it keeps *reading* the pipe
+    and throws the extra bytes away, so the child never blocks on backpressure:
+    the command runs to completion and its real exit code decides the unit. A
+    verbose-but-passing test suite is not failed over its log volume. What
+    overflow costs is completeness of the artifact, and that is never hidden —
+    a step with **no** `output:` schema succeeds and its artifact is the retained
+    head with a `__akm_exec_output_truncated__` block appended (naming bytes
+    written vs bytes retained), so truncated data can never be mistaken for
+    complete data by `steps.<id>.output`, a gate judge, or a human. A step **with**
+    an `output:` schema still fails `exec_output_limit`: stdout must parse as
+    exactly one JSON value, a truncated prefix cannot, and promoting it would
+    corrupt every downstream reference to the typed artifact.
+
+    **Context environment: this platform's ceiling, not the smallest one.** The
+    engine-authored `AKM_*` context is capped at **96 KiB per variable / 128 KiB
+    total** on Linux, macOS and BSD, and at **32 767 bytes per variable / 64 000
+    bytes total** on Windows. The numbers cite their sources: Linux's
+    `MAX_ARG_STRLEN` (`32 * PAGE_SIZE` = 131 072 bytes per `argv`/`environ`
+    string), macOS's 256 KiB `ARG_MAX` over argv + environ combined, and Win32
+    `SetEnvironmentVariable`'s 32 767-character per-variable limit. Crossing the
+    bound fails `exec_context_too_large` *before* the spawn, with an error naming
+    the variable, its size, this platform's limit and where that limit comes from
+    — replacing a bare `E2BIG` from the spawn syscall that named neither the
+    variable nor the data behind it. Converting that inevitable failure into an
+    actionable one is the check's *only* job, so it uses the ceiling of the
+    platform the run is on: previously it applied Windows' limit everywhere and
+    refused spawns Linux and macOS would have accepted. Workflows that must also
+    run on Windows should stay under the smaller bound — that is documented
+    guidance now, not something a Linux host enforces.
+
+    `exec_output_limit` and `exec_context_too_large` keep their meanings and
+    their place outside the `retry.on` vocabulary, alongside `exec_cwd_escape`:
+    each is deterministic, so re-dispatching could only spend the budget again.
+    `PROGRAM_RETRY_REASONS` is unchanged.
   - **A failing command's stderr survives to a durable surface.** The unit
     journal now keeps each failed unit's redacted diagnostic (clipped to 2000
     characters), and the step summary carries the first failure's. For an exec
@@ -123,6 +145,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   [Author's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md#deterministic-steps-run-a-command-gate-on-it).
 
 ### Changed
+
+- **The workflow JSON Schema subset now enforces `allOf`/`anyOf`/`oneOf`/`not`.**
+  A step `output:` or `params:` schema may use the combinators, and the runtime
+  evaluates them instead of rejecting them at parse time. Evaluation stays
+  bounded — nesting is capped at 64 levels and one validation at 100 000 checks,
+  and exhausting either is reported as an error rather than a truncated pass.
+
+  `pattern` is **not** part of the subset. It is a recognized-but-unsupported
+  keyword like `format` or `const`: using one is a loud, line-anchored authoring
+  error naming the keyword, so no schema silently fails to constrain what it
+  looks like it constrains. Enforcing it would mean screening every author
+  regex for catastrophic backtracking before the match — and any such screen
+  also refuses regexes authors legitimately write (the usual hand-rolled email
+  pattern among them), which is authoring friction with no workflow asking for
+  it. Where a string's shape matters, `enum` lists the allowed values,
+  `minLength`/`maxLength` bound the size, and a step's `### gate` rubric can
+  check a shape and explain a mismatch. The `format` hint now points at `enum`
+  rather than at `pattern`.
 
 - **Workflow `map` steps now fan out in parallel by default.** A `map` step
   that declares no `concurrency:` freezes a width of **4** instead of 1, and an

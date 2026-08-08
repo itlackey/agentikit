@@ -207,6 +207,20 @@ Full list of allowlisted names:
   an inheritance. If a command fails with "not found" or reads a missing
   toolchain variable, name it in `pass_env:` (or set `inherit_env: true`) —
   it is not a bug in the command.
+- **A very chatty command still passes; its artifact just says so.** akm retains
+  8 MiB of stdout and 8 MiB of stderr. Past that it keeps draining and discards,
+  so the command runs to completion and its exit code decides the step. The
+  artifact is then the retained head with a `__akm_exec_output_truncated__` block
+  appended, so nothing downstream can mistake it for the whole output. The one
+  case that still *fails* is a unit with a declared `output:` schema — a
+  truncated prefix is not one JSON value, so there is nothing to validate.
+- **Bulk data reaches a command as a path, not as an environment variable.**
+  `AKM_INPUTS` / `AKM_PARAMS` / `AKM_ITEM` are bounded by what *process creation*
+  accepts on the current platform (96 KiB per variable on Linux/macOS, 32 767
+  bytes on Windows). Over that, the unit fails `exec_context_too_large` before
+  anything is spawned. If a workflow must also run on Windows, keep context under
+  the Windows number — akm will not enforce it on your Linux box, but a Windows
+  runner will.
 
 Full reference: [Workflow Schema: Exec (shell) units](../reference/workflow-schema.md#exec-shell-units).
 
@@ -260,8 +274,8 @@ depending on a schema that constrains nothing is worse than a loud failure.
 
 Enforced: `type`, `enum`, `properties`, `required`, `items`,
 `additionalProperties: false`, `minItems`, `maxItems`, `minLength`,
-`maxLength`, `minimum`, `maximum`, `pattern`, and the combinators `allOf`,
-`anyOf`, `oneOf`, `not`.
+`maxLength`, `minimum`, `maximum`, and the combinators `allOf`, `anyOf`,
+`oneOf`, `not`.
 
 ```yaml
   - id: release
@@ -270,7 +284,7 @@ Enforced: `type`, `enum`, `properties`, `required`, `items`,
       required: [version, verdict]
       additionalProperties: false
       properties:
-        version: { type: string, pattern: '^\d+\.\d+\.\d+$' }
+        version: { type: string, minLength: 1 }
         verdict: { type: string, enum: [pass, fail] }
         detail:
           oneOf:
@@ -278,44 +292,18 @@ Enforced: `type`, `enum`, `properties`, `required`, `items`,
             - { type: "null" }
 ```
 
-Two things to know about `pattern`:
-
-- **It is really evaluated.** A unit that returns `version: "v1.2"` fails the
-  step with the mismatch in its summary, which a bounded `### gate` can feed
-  back as corrective input.
-- **Patterns are screened for safety before they ever run.** A regex that can
-  backtrack catastrophically is rejected while you are authoring it, with the
-  reason named. The rule the screen applies is that every choice in the
-  pattern has to be settled by the input. In practice that means three habits:
-
-  - Make alternatives tell each other apart: `(pass|fail)`, `(cat|car)` and
-    `(\d+|none)` are fine, `(a|a)` and `(?:aa|aa)` are not. This applies to
-    every group, not just repeated ones — writing `(a|aa)(a|aa)(a|aa)…` out
-    thirty times is the same exponential blow-up as writing `(a|aa)+`.
-  - Separate a repeat from what follows it with a character the repeat cannot
-    match. `\d+\.\d+` is fine because `.` is not a digit; `\d+\w+` is not,
-    because nothing decides where the digits stop. The usual trap is a
-    character class that contains its own delimiter — `[A-Za-z0-9.-]+\.` in a
-    hand-rolled email regex. Take the delimiter out of the class and repeat
-    the group instead: `[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*`.
-  - Don't repeat a group whose body can match nothing (`(a*)*`) or that can
-    start and end on the same character (`(a+)+`).
-
-  `(foo|bar)+`, `^v?\d+(\.\d+)*$`, `^\w+(-\w+)*$` and `^[a-f0-9]{40}$` are all
-  fine, and so is one "grab everything between delimiters" repeat such as
-  `^\[.*\]$`. Patterns are limited to 256 characters and are matched against
-  strings of at most 4096 characters. Backreferences are rejected outright —
-  the screen cannot reason about them, and it fails closed rather than guess.
-
-Still outside the subset (each fails lint with the keyword named and a
-suggested replacement): `$ref`/`$defs` — inline the schema instead, since
-nothing resolves references; `const` — use a single-value `enum`; `format` —
-annotation-only in JSON Schema 2020-12, so use `pattern` for something the
-runtime actually checks; `patternProperties`, `if`/`then`/`else`,
-`uniqueItems`, `multipleOf`, tuple-form `items`, and schema-form
-`additionalProperties` (only `additionalProperties: false` is enforced).
-Annotation keywords — `description`, `title`, `default`, `examples` — always
-pass through untouched, and documenting each property is worth the keystrokes.
+Outside the subset (each fails lint with the keyword named, its line, and a
+suggested replacement where one exists): `$ref`/`$defs` — inline the schema
+instead, since nothing resolves references; `const` — use a single-value
+`enum`; `pattern` and `format` — no regex or string-format constraint is
+evaluated at run time, so list the allowed values with `enum` when you can,
+bound the size with `minLength`/`maxLength`, and otherwise check the shape in
+the step's `### gate` rubric, which can also say *why* a value is wrong;
+`patternProperties`, `if`/`then`/`else`, `uniqueItems`, `multipleOf`,
+tuple-form `items`, and schema-form `additionalProperties` (only
+`additionalProperties: false` is enforced). Annotation keywords —
+`description`, `title`, `default`, `examples` — always pass through untouched,
+and documenting each property is worth the keystrokes.
 
 If lint reports a very broken workflow, note that it prints at most the first
 50 errors and then says `... N more errors not shown`. They are sorted by

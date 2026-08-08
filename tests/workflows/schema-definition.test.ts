@@ -69,10 +69,12 @@ describe("checkJsonSchemaDefinition (core/json-schema.ts)", () => {
       ["unsupported", "const"],
       ["unsupported", "format"],
     ]);
-    // The unsupported message points at what the subset DOES support instead.
+    // The unsupported message points at what the subset DOES support instead —
+    // never at another keyword the subset also refuses.
     const format = issues.find((issue) => issue.keyword === "format");
     expect(format!.message).toContain("annotation-only");
-    expect(format!.message).toContain(`use "pattern"`);
+    expect(format!.message).toContain(`use "enum"`);
+    expect(format!.message).not.toContain(`use "pattern"`);
   });
 
   test("$ref / schema-form additionalProperties stay unsupported", () => {
@@ -84,11 +86,10 @@ describe("checkJsonSchemaDefinition (core/json-schema.ts)", () => {
     expect(additional[0]!.kind).toBe("unsupported");
   });
 
-  test("pattern and the combinators are SUPPORTED — a well-formed one produces no issues", () => {
-    expect(checkJsonSchemaDefinition({ type: "string", pattern: "^v\\d+$" })).toEqual([]);
+  test("the combinators are SUPPORTED — a well-formed one produces no issues", () => {
     expect(
       checkJsonSchemaDefinition({
-        oneOf: [{ type: "string", pattern: "^ok$" }, { type: "integer" }],
+        oneOf: [{ type: "string", enum: ["ok"] }, { type: "integer" }],
         allOf: [{ type: ["string", "integer"] }],
         anyOf: [{ minLength: 1 }, { minimum: 0 }],
         not: { type: "null" },
@@ -110,16 +111,30 @@ describe("checkJsonSchemaDefinition (core/json-schema.ts)", () => {
     expect(checkJsonSchemaDefinition({ not: "string" })[0]!.message).toContain(`"not" must be a schema object`);
   });
 
-  test("an unsafe or invalid `pattern` is a malformed issue, not a silent acceptance", () => {
-    const nested = checkJsonSchemaDefinition({ type: "string", pattern: "^(a+)+$" });
-    expect(nested).toHaveLength(1);
-    expect(nested[0]!.kind).toBe("malformed");
-    expect(nested[0]!.keyword).toBe("pattern");
-    expect(nested[0]!.message).toContain("backtracks");
+  test("`pattern` is UNSUPPORTED — reported like every other keyword the subset ignores", () => {
+    // The runtime does not evaluate `pattern`, so a schema carrying one would
+    // constrain nothing where its author expects a shape check. That is the
+    // loud author-time error, not a regex analysis: no pattern is "accepted"
+    // or "rejected" on its own merits, and no legitimate regex is refused for
+    // a property of the regex itself.
+    for (const pattern of ["^v\\d+$", "^(a+)+$", "^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$"]) {
+      const issues = checkJsonSchemaDefinition({ type: "string", pattern });
+      expect(issues).toHaveLength(1);
+      expect(issues[0]!.kind).toBe("unsupported");
+      expect(issues[0]!.keyword).toBe("pattern");
+      expect(issues[0]!.pointer).toBe("$.pattern");
+      expect(issues[0]!.message).toContain(`keyword "pattern" is not enforced`);
+      // The hint names a keyword the subset actually has.
+      expect(issues[0]!.message).toContain(`use "enum"`);
+    }
 
-    expect(checkJsonSchemaDefinition({ pattern: "(" })[0]!.message).toContain("not a valid regular expression");
-    expect(checkJsonSchemaDefinition({ pattern: 42 })[0]!.message).toContain("regular-expression string");
-    expect(checkJsonSchemaDefinition({ pattern: `^${"a".repeat(300)}$` })[0]!.message).toContain("longer than");
+    // Nested occurrences are located precisely, same as any other keyword.
+    const nested = checkJsonSchemaDefinition({
+      type: "object",
+      properties: { version: { type: "string", pattern: "^v\\d+$" } },
+    });
+    expect(nested).toHaveLength(1);
+    expect(nested[0]!.pointer).toBe("$.properties.version.pattern");
   });
 
   test("malformed structural keywords are errors (required / properties / enum / items)", () => {
@@ -178,12 +193,13 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
     expect(errors[0]!.line).toBe(7); // the `format:` line
     expect(errors[0]!.message).toContain('keyword "format" is not enforced');
     expect(errors[0]!.message).toContain("Supported JSON Schema keywords:");
-    // The supported list must name the keywords that ARE enforced now.
-    expect(errors[0]!.message).toContain("pattern");
+    // The supported list must name the keywords that ARE enforced now, and
+    // must not advertise one that is not.
     expect(errors[0]!.message).toContain("oneOf");
+    expect(errors[0]!.message).not.toContain("pattern");
   });
 
-  test("`pattern:` / `oneOf:` in an output schema now parse cleanly (they are enforced)", () => {
+  test("`oneOf:` in an output schema parses cleanly (the combinators are enforced)", () => {
     const markdown = [
       "---",
       "type: workflow",
@@ -192,7 +208,6 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
       "    output:",
       "      type: object",
       "      properties:",
-      "        version: { type: string, pattern: '^\\d+\\.\\d+\\.\\d+$' }",
       "        result: { oneOf: [{ type: string }, { type: integer }] }",
       "---",
       "",
@@ -204,7 +219,7 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
     expect(parseErrors(markdown)).toHaveLength(0);
   });
 
-  test("an unsafe `pattern:` is rejected at authoring time with its line", () => {
+  test("`pattern:` in an output schema is a line-anchored authoring error naming the keyword", () => {
     const markdown = [
       "---",
       "type: workflow",
@@ -212,7 +227,7 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
       "  - id: work",
       "    output:",
       "      type: string",
-      "      pattern: '^(a+)+$'",
+      "      pattern: '^\\d+\\.\\d+\\.\\d+$'",
       "---",
       "",
       "## work",
@@ -222,17 +237,16 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
     ].join("\n");
     const errors = parseErrors(markdown);
     expect(errors).toHaveLength(1);
-    expect(errors[0]!.line).toBe(7);
-    expect(errors[0]!.message).toContain("is not a valid JSON Schema");
-    expect(errors[0]!.message).toContain("backtracks");
+    expect(errors[0]!.line).toBe(7); // the `pattern:` line
+    expect(errors[0]!.message).toContain('keyword "pattern" is not enforced');
+    expect(errors[0]!.message).toContain("Supported JSON Schema keywords:");
   });
 
-  test("an ambiguous group repeated TEXTUALLY is rejected at authoring time too", () => {
-    // No quantifier anywhere and only 183 characters of source, so every bound
-    // the screen checked before this was satisfied — yet matching a ~46-char
-    // subject backtracks exponentially. The screen has to reason about the
-    // sequence, not just about what a quantifier is applied to.
-    const pattern = `^${"(a|aa)".repeat(30)}b$`;
+  test("an ordinary author regex is treated exactly like any other unsupported keyword", () => {
+    // The common email regex used to be REJECTED by a safety analysis that had
+    // to reason about the regex itself. There is no such analysis now: this is
+    // the same "not enforced" message `format` or `const` gets, with no claim
+    // about the pattern's own shape.
     const markdown = [
       "---",
       "type: workflow",
@@ -240,7 +254,7 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
       "  - id: work",
       "    output:",
       "      type: string",
-      `      pattern: '${pattern}'`,
+      "      pattern: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$'",
       "---",
       "",
       "## work",
@@ -251,8 +265,10 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
     const errors = parseErrors(markdown);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.line).toBe(7);
-    expect(errors[0]!.message).toContain("is not a valid JSON Schema");
-    expect(errors[0]!.message).toContain("not forced by the input");
+    expect(errors[0]!.message).toContain('keyword "pattern" is not enforced');
+    // No regex-shape vocabulary survives anywhere in the diagnostic.
+    expect(errors[0]!.message).not.toContain("backtrack");
+    expect(errors[0]!.message).not.toContain("forced by the input");
   });
 
   test("a params schema gets the same definition checking", () => {
