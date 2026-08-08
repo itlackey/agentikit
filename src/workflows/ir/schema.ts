@@ -36,7 +36,14 @@ export const WORKFLOW_IR_VERSION = 3;
 export type IrOnError = "fail" | "continue";
 export type IrIsolation = "none" | "worktree";
 export type IrMapReducer = "collect" | "vote";
-export type IrInstructionTemplating = "expressions" | "verbatim";
+/**
+ * Instruction-delivery mode. Single-valued on purpose: the `${{ … }}`
+ * interpolation language is GONE, so instructions always reach a unit
+ * byte-exact. The field itself survives because every frozen plan already
+ * persisted (`plan_json`, migration 006) carries it and the decoder rejects
+ * unknown keys — dropping it would fail decode for in-flight runs.
+ */
+export type IrInstructionTemplating = "verbatim";
 export type IrRuntimeKind = "llm" | "agent" | "sdk";
 
 export interface IrRetry {
@@ -136,7 +143,6 @@ export interface IrStepPlan {
   stepId: string;
   title: string;
   sequenceIndex: number;
-  dependsOn?: string[];
   root?: IrExecNode;
   route?: IrRouteSpec;
   outputSchema?: Record<string, unknown>;
@@ -214,12 +220,7 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
     if (step.sequenceIndex !== index) fail("step sequence indices must be contiguous and unique");
     assertString(step.title, `step ${step.stepId} title`);
     if (!!step.root === !!step.route) fail(`step ${step.stepId} must contain exactly one of root or route`);
-    assertKeys(
-      step,
-      ["stepId", "title", "sequenceIndex", "dependsOn", "root", "route", "outputSchema", "gate"],
-      `step ${step.stepId}`,
-    );
-    validateStringArray(step.dependsOn, `step ${step.stepId} dependsOn`, WORKFLOW_MAX_STEPS, true);
+    assertKeys(step, ["stepId", "title", "sequenceIndex", "root", "route", "outputSchema", "gate"], `step ${step.stepId}`);
     if (step.outputSchema !== undefined) validateSchema(step.outputSchema, `step ${step.stepId} outputSchema`);
     if (step.root) validateNode(step.root, step.stepId, references, nodeIds, hooks);
     if (step.route) validateRoute(step.route, step.stepId);
@@ -233,13 +234,6 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
       const targetIndex = stepIndex.get(target);
       if (targetIndex === undefined) fail(`route target ${target} does not name a step`);
       if (targetIndex <= index) fail(`route target ${target} must come after step ${step.stepId}`);
-    }
-    const dependencies = new Set<string>();
-    for (const dependency of step.dependsOn ?? []) {
-      const dependencyIndex = stepIndex.get(dependency);
-      if (dependencyIndex === undefined || dependencyIndex >= index || dependencies.has(dependency))
-        fail(`step ${step.stepId} has an invalid dependency`);
-      dependencies.add(dependency);
     }
     validateStepExpressions(step, index, stepIndex);
   }
@@ -441,7 +435,7 @@ function validateNode(
   if (
     typeof node.instructions !== "string" ||
     !node.instructions ||
-    (node.templating !== "expressions" && node.templating !== "verbatim") ||
+    node.templating !== "verbatim" ||
     (node.onError !== "fail" && node.onError !== "continue") ||
     (node.isolation !== "none" && node.isolation !== "worktree")
   )

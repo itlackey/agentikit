@@ -1543,9 +1543,12 @@ Do second.
     expect(dispatches).toBe(0);
   });
 
-  test("asserts reserved dependsOn edges before dispatching (peer review #6)", async () => {
-    // No frontend emits dependsOn today, but a frozen plan may carry the
-    // reserved edges — the engine still honors them as an ordering contract.
+  test("rejects a plan carrying the removed dependsOn key before dispatching", async () => {
+    // `dependsOn` was an IR-only surface no frontend ever emitted: ordering
+    // comes from `sequenceIndex` and data dependencies from `inputs:` /
+    // `steps.<id>.output` references. It is gone from `IrStepPlan`, so the
+    // strict decoder now refuses a hand-crafted plan that carries it — and
+    // refuses it BEFORE any unit is dispatched.
     seedRun({
       params: { flavor: "vanilla" },
       steps: [
@@ -1554,7 +1557,9 @@ Do second.
       ],
     });
     const outOfOrder = plan(TWO_STEP_WF);
-    outOfOrder.steps[0] = { ...outOfOrder.steps[0]!, dependsOn: ["second"] };
+    // `dependsOn` is not part of `IrStepPlan` any more — a hand-crafted plan is
+    // the only way one can appear, so build it the way an attacker/drift would.
+    outOfOrder.steps[0] = { ...outOfOrder.steps[0]!, dependsOn: ["second"] } as unknown as IrStepPlan;
     let dispatches = 0;
     await expect(
       runWorkflowSteps({
@@ -1565,7 +1570,7 @@ Do second.
         },
         loadPlan: useFrozenPlan(outOfOrder),
       }),
-    ).rejects.toThrow(/invalid dependency/);
+    ).rejects.toThrow(/unknown key dependsOn/);
     expect(dispatches).toBe(0);
   });
 
