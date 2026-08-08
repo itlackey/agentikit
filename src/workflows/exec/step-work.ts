@@ -65,7 +65,7 @@ import { WORKFLOW_MAX_MAP_EXPANSION } from "../resource-limits";
 import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
 import { completeWorkflowStep, type SummaryValidationFailure, type WorkflowNextResult } from "../runtime/runs";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
-import { parseJudgeVerdict, type SummaryJudge } from "../validate-summary";
+import { type JudgeCallIdentity, parseJudgeVerdict, type SummaryJudge } from "../validate-summary";
 import { enqueueUnitWrite } from "./unit-writer";
 
 /** How much raw unit output is retained in step evidence (full text lives on the unit row). */
@@ -1419,9 +1419,20 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
           };
           await journalGateEvaluationStart(gateUnit);
         }
+        // The judge dispatch must describe the SAME thing the gate row does, so
+        // the row identity is threaded down to the dispatcher from right here —
+        // the one place that computes it — instead of being re-derived (or, as
+        // before, synthesized as a constant "gate"). Both ids come from the same
+        // helpers `journalGateEvaluationStart/Finish` use.
+        const identity: JudgeCallIdentity = {
+          runId,
+          stepId,
+          nodeId: `${stepId}.gate`,
+          unitId: gateUnitId(stepId, gateLoop),
+        };
         let raw: string;
         try {
-          raw = await innerJudge(prompt);
+          raw = await innerJudge(prompt, identity);
         } catch (err) {
           const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
           judgeState.failure = `the verification judge failed${detail}`;

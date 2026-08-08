@@ -313,16 +313,34 @@ enforces only a subset of JSON Schema:
 
 `type`, `enum`, `properties`, `required`, `items`, `additionalProperties:
 false`, `minItems`, `maxItems`, `minLength`, `maxLength`, `minimum`,
-`maximum`.
+`maximum`, `pattern`, `allOf`, `anyOf`, `oneOf`, `not`.
 
 Anything outside it is an authoring **error**, not a silent no-op. A typo'd
-type name (`type: strig`) and a recognized-but-unenforced keyword (`pattern`,
-`format`, `const`, `$ref`, `allOf`/`anyOf`/`oneOf`, `patternProperties`,
-schema-form `additionalProperties`, tuple-form `items`, …) both fail with the
-offending keyword named and its location anchored to the line. A gate that
-depends on a schema constraining nothing is worse than a loud failure.
-Annotation keywords (`description`, `title`, `default`, `examples`) constrain
-nothing in full JSON Schema either, so they pass through untouched.
+type name (`type: strig`) and a recognized-but-unenforced keyword (`$ref`,
+`$defs`, `const`, `format`, `patternProperties`, `if`/`then`/`else`,
+`uniqueItems`, `multipleOf`, `exclusiveMinimum`/`exclusiveMaximum`,
+tuple-form `items`, schema-form `additionalProperties`, …) both fail with the
+offending keyword named, a suggested replacement where one exists (`const` →
+a single-value `enum`; `format` → `pattern`; `$ref` → inline the schema), and
+the location anchored to the line. A gate that depends on a schema
+constraining nothing is worse than a loud failure. Annotation keywords
+(`description`, `title`, `default`, `examples`) constrain nothing in full
+JSON Schema either, so they pass through untouched.
+
+`pattern` is enforced against a **screened** regex dialect. The screen runs at
+parse time, before the pattern is ever executed, and rejects the constructs
+that make backtracking super-linear: a quantifier applied to an ambiguous
+group (`(a+)+`, `(a|a)*`, `(a*)*`) and two adjacent repeats over the same
+characters (`.*.*`, `\d+\w+`). Pattern sources are limited to 256 characters
+and counted repetitions to 1000, and a string longer than 4096 characters is
+reported as a validation error rather than matched. Everyday patterns are
+unaffected: `^\d+\.\d+\.\d+$`, `^(?:pass|fail)$`, `^v?\d+(\.\d+)*$`,
+`^[a-f0-9]{40}$`, `(foo|bar)+`.
+
+Evaluation is bounded in the same spirit: schema nesting is capped at 64
+levels and one validation may make at most 100 000 checks. Exhausting either
+is reported as an error — a truncated evaluation never reports a value as
+valid.
 
 ### Bounds
 
@@ -338,6 +356,7 @@ fail later at `akm workflow run`:
 | `retry.max` | 0 – 100 |
 | `timeout` | ≤ 2147483647 ms (~24.8 days), or `none` |
 | `engine` names | `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, ≤ 63 chars |
+| parse errors reported | first 50, then a `... N more errors not shown` trailer |
 
 `timeout` is resolved **once, at freeze time**, and the frozen value is what
 dispatch applies — there is no separate engine-side ceiling on top of it. The
@@ -346,6 +365,72 @@ first of these that is set wins: the unit's `timeout`, then the document's
 default — **10m for `kind: llm` engines, and none for agent engines**, which
 manage their own process lifetime. Writing `timeout: none` is an explicit opt
 out and leaves the unit genuinely unbounded; nothing later re-imposes a cap.
+
+## Fan-out and concurrency
+
+A `map` step is a fan-out: it expands `over:` into one unit per item, runs
+those units, and folds the results with its `reducer`. The units are
+independent by construction — no unit can read another's result — so they run
+**in parallel by default**.
+
+### The default
+
+**Since 0.9.1, a `map` step that declares no `concurrency:` freezes a width of
+4.** (Before 0.9.1 it froze 1, so every fan-out ran one item at a time unless
+the author opted in.) 4 rather than "as wide as the machine allows" is
+deliberate: it is a predictable 4× on any fan-out longer than four items, it
+stays under the host CPU cap on any machine with 6 or more cores, and it is a
+number an author can reason about without knowing which box the run lands on.
+
+Three ways to change it:
+
+| You want | Write |
+| --- | --- |
+| A specific width for one step | `map.concurrency: <n>` in that step |
+| **Serial execution for one step** | `map.concurrency: 1` |
+| A different default for every workflow on this machine | `akm config set workflow.defaultMapConcurrency <n>` |
+
+`concurrency: 1` is a real, honored opt-out, not the absence of a value: an
+authored `1` is kept distinct from an unset field, and it always beats the
+config default. Set `workflow.defaultMapConcurrency` to `1` to restore the
+pre-0.9.1 serial-by-default behavior everywhere at once.
+
+A step with no `map:` is one unit, not a fan-out. It is unaffected by any of
+this.
+
+### The four limits
+
+The width a step really runs at is the **minimum** of four independent values.
+Raising one never raises the others:
+
+| Limit | Set by | Default when unset |
+| --- | --- | --- |
+| `map.concurrency` | the step | `workflow.defaultMapConcurrency`, else **4** |
+| `execution.maxConcurrency` | `workflow.maxConcurrency` config | CPU-derived `min(16, max(1, cores − 2))` |
+| the selected LLM engine's concurrency | `engines.<name>.concurrency` | **1** for a loopback endpoint, **4** for a remote one |
+| the host CPU safety cap | nothing — reapplied at dispatch | `min(16, max(1, cores − 2))` |
+
+The engine limit is per **endpoint kind** on purpose. A local model server (LM
+Studio, Ollama) has one loaded model, and concurrent inference makes it reload
+and return HTTP 500 — a hard failure, so loopback endpoints stay at 1 and a
+`map` against a local model is still effectively serial unless you raise
+`engines.<name>.concurrency` yourself. Remote providers fail softly (a
+retryable 429), and four concurrent completions is well inside any hosted
+provider's entry tier. Agent engines carry no concurrency limit of their own —
+except an `opencode-sdk` engine with an `llmEngine` fallback, which inherits
+that fallback engine's limit.
+
+The host cap is re-derived from the CURRENT machine at every dispatch, not
+frozen. A plan frozen on a 32-core CI box narrows itself when it resumes on a
+4-core laptop.
+
+### Frozen widths
+
+Every one of these numbers except the host cap is resolved **once, when the run
+starts**, and stored in the run's plan. Editing config, upgrading akm, or
+changing the defaults above never alters a run that is already in flight or
+being resumed — it keeps the widths it froze. The new defaults apply only to
+runs started after the upgrade.
 
 ## Routing
 

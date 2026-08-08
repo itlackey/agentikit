@@ -62,23 +62,64 @@ describe("checkJsonSchemaDefinition (core/json-schema.ts)", () => {
   test("subset-ignored keywords are reported as unsupported, one per keyword", () => {
     const issues = checkJsonSchemaDefinition({
       type: "string",
-      pattern: "^x-",
       format: "email",
+      const: "x",
     });
     expect(issues.map((issue) => [issue.kind, issue.keyword]).sort()).toEqual([
+      ["unsupported", "const"],
       ["unsupported", "format"],
-      ["unsupported", "pattern"],
     ]);
+    // The unsupported message points at what the subset DOES support instead.
+    const format = issues.find((issue) => issue.keyword === "format");
+    expect(format!.message).toContain("annotation-only");
+    expect(format!.message).toContain(`use "pattern"`);
   });
 
-  test("$ref / combinators / schema-form additionalProperties are unsupported", () => {
+  test("$ref / schema-form additionalProperties stay unsupported", () => {
     const refIssues = checkJsonSchemaDefinition({ $ref: "#/defs/x" });
     expect(refIssues.map((issue) => issue.keyword)).toEqual(["$ref"]);
-    const combinator = checkJsonSchemaDefinition({ oneOf: [{ type: "string" }] });
-    expect(combinator.map((issue) => issue.keyword)).toEqual(["oneOf"]);
+    expect(refIssues[0]!.message).toContain("inline the referenced schema");
     const additional = checkJsonSchemaDefinition({ type: "object", additionalProperties: { type: "string" } });
     expect(additional.map((issue) => issue.keyword)).toEqual(["additionalProperties"]);
     expect(additional[0]!.kind).toBe("unsupported");
+  });
+
+  test("pattern and the combinators are SUPPORTED — a well-formed one produces no issues", () => {
+    expect(checkJsonSchemaDefinition({ type: "string", pattern: "^v\\d+$" })).toEqual([]);
+    expect(
+      checkJsonSchemaDefinition({
+        oneOf: [{ type: "string", pattern: "^ok$" }, { type: "integer" }],
+        allOf: [{ type: ["string", "integer"] }],
+        anyOf: [{ minLength: 1 }, { minimum: 0 }],
+        not: { type: "null" },
+      }),
+    ).toEqual([]);
+  });
+
+  test("combinator branches are checked recursively, with a pointer into the branch", () => {
+    const issues = checkJsonSchemaDefinition({ oneOf: [{ type: "string" }, { type: "strig" }] });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.kind).toBe("malformed");
+    expect(issues[0]!.pointer).toBe("$.oneOf.1.type");
+  });
+
+  test("a malformed combinator (empty / non-array / non-object branch) is an error", () => {
+    expect(checkJsonSchemaDefinition({ oneOf: [] })[0]!.message).toContain("non-empty array of schema objects");
+    expect(checkJsonSchemaDefinition({ anyOf: { type: "string" } })[0]!.kind).toBe("malformed");
+    expect(checkJsonSchemaDefinition({ allOf: ["string"] })[0]!.message).toContain(`"allOf[0]" must be a schema`);
+    expect(checkJsonSchemaDefinition({ not: "string" })[0]!.message).toContain(`"not" must be a schema object`);
+  });
+
+  test("an unsafe or invalid `pattern` is a malformed issue, not a silent acceptance", () => {
+    const nested = checkJsonSchemaDefinition({ type: "string", pattern: "^(a+)+$" });
+    expect(nested).toHaveLength(1);
+    expect(nested[0]!.kind).toBe("malformed");
+    expect(nested[0]!.keyword).toBe("pattern");
+    expect(nested[0]!.message).toContain("backtracks");
+
+    expect(checkJsonSchemaDefinition({ pattern: "(" })[0]!.message).toContain("not a valid regular expression");
+    expect(checkJsonSchemaDefinition({ pattern: 42 })[0]!.message).toContain("regular-expression string");
+    expect(checkJsonSchemaDefinition({ pattern: `^${"a".repeat(300)}$` })[0]!.message).toContain("longer than");
   });
 
   test("malformed structural keywords are errors (required / properties / enum / items)", () => {
@@ -116,7 +157,7 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
     expect(errors[0]!.message).toContain('unknown type "strig"');
   });
 
-  test("`pattern:` in an output schema is a parser error naming the unsupported keyword and the supported subset", () => {
+  test("`format:` in an output schema is a parser error naming the unsupported keyword and the supported subset", () => {
     const markdown = [
       "---",
       "type: workflow",
@@ -124,7 +165,7 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
       "  - id: work",
       "    output:",
       "      type: string",
-      "      pattern: '^ok$'",
+      "      format: email",
       "---",
       "",
       "## work",
@@ -134,9 +175,56 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
     ].join("\n");
     const errors = parseErrors(markdown);
     expect(errors).toHaveLength(1);
-    expect(errors[0]!.line).toBe(7); // the `pattern:` line
-    expect(errors[0]!.message).toContain('keyword "pattern" is not enforced');
+    expect(errors[0]!.line).toBe(7); // the `format:` line
+    expect(errors[0]!.message).toContain('keyword "format" is not enforced');
     expect(errors[0]!.message).toContain("Supported JSON Schema keywords:");
+    // The supported list must name the keywords that ARE enforced now.
+    expect(errors[0]!.message).toContain("pattern");
+    expect(errors[0]!.message).toContain("oneOf");
+  });
+
+  test("`pattern:` / `oneOf:` in an output schema now parse cleanly (they are enforced)", () => {
+    const markdown = [
+      "---",
+      "type: workflow",
+      "steps:",
+      "  - id: work",
+      "    output:",
+      "      type: object",
+      "      properties:",
+      "        version: { type: string, pattern: '^\\d+\\.\\d+\\.\\d+$' }",
+      "        result: { oneOf: [{ type: string }, { type: integer }] }",
+      "---",
+      "",
+      "## work",
+      "",
+      "Do it.",
+      "",
+    ].join("\n");
+    expect(parseErrors(markdown)).toHaveLength(0);
+  });
+
+  test("an unsafe `pattern:` is rejected at authoring time with its line", () => {
+    const markdown = [
+      "---",
+      "type: workflow",
+      "steps:",
+      "  - id: work",
+      "    output:",
+      "      type: string",
+      "      pattern: '^(a+)+$'",
+      "---",
+      "",
+      "## work",
+      "",
+      "Do it.",
+      "",
+    ].join("\n");
+    const errors = parseErrors(markdown);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.line).toBe(7);
+    expect(errors[0]!.message).toContain("is not a valid JSON Schema");
+    expect(errors[0]!.message).toContain("backtracks");
   });
 
   test("a params schema gets the same definition checking", () => {

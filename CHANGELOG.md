@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Workflow `map` steps now fan out in parallel by default.** A `map` step
+  that declares no `concurrency:` freezes a width of **4** instead of 1, and an
+  LLM engine that declares no `engines.<name>.concurrency` freezes **4** for a
+  remote endpoint (loopback endpoints stay at **1** — a local model server holds
+  one loaded model and returns HTTP 500 under concurrent inference). Both
+  defaults previously froze 1, which made every fan-out serial unless the author
+  opted in at two independent layers, and left `workflow.maxConcurrency` and the
+  host CPU cap binding on nothing.
+
+  This is a behavior change on a patch release, so every escape hatch is
+  explicit:
+  - `map.concurrency: 1` on a step is honored exactly as before — an authored
+    `1` is kept distinct from an unset field and always wins.
+  - New config key **`workflow.defaultMapConcurrency`** sets the default for
+    every workflow on the machine. `akm config set workflow.defaultMapConcurrency 1`
+    restores the pre-0.9.1 serial default wholesale.
+  - `engines.<name>.concurrency` pins any engine's own limit (and is now clamped
+    to `1..64` at freeze time instead of freezing a plan the decoder would then
+    refuse to load).
+  - **Runs already in flight are unaffected.** Both values are frozen into
+    `plan_json` when a run starts and the frozen-plan decoder requires them, so
+    a resumed run keeps the widths it began with. The new defaults apply only to
+    runs started after the upgrade.
+
+  The effective width remains the minimum of the step's `concurrency`, the run's
+  frozen `workflow.maxConcurrency`, the selected engine's concurrency, and the
+  current host's CPU cap.
+
+### Fixed
+
+- Workflow freeze attributed per-step `engine`/`model`/`timeout`/`llm` overrides
+  by matching the compiled draft step list against the source document
+  **positionally**. That was correct only because compilation happens to be 1:1
+  and order-preserving; a compile pass that filtered or reordered steps would
+  have silently applied one step's overrides to another. Attribution is now
+  keyed by `stepId`.
+
 ## [0.9.0] - 2026-08-06
 
 0.9.0 is the format-neutral **bundle / adapter** refactor: it replaces the flat

@@ -708,7 +708,13 @@ export async function completeWorkflowStep(
     if (input.signal?.aborted) throw interruptionReason(input.signal);
     const judge =
       input.summaryJudge === undefined
-        ? frozenSummaryJudge(preflight.plan, preflight.stepPlan.gate.judge, input.signal)
+        ? // Manual completion journals no gate row, so there is no `<stepId>.gate:l<loop>`
+          // identity to agree with — but the dispatch still names the REAL run and
+          // step (frozen-judge falls back to the gate node id for the unit id).
+          frozenSummaryJudge(preflight.plan, preflight.stepPlan.gate.judge, input.signal, undefined, {
+            runId: input.runId,
+            stepId: input.stepId,
+          })
         : input.summaryJudge;
     if (criteria.length > 0 && !judge) {
       throw new ConfigError(

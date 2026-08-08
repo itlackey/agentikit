@@ -135,7 +135,6 @@ import { deepMergeConfig } from "../../core/config/deep-merge";
 import { ConfigError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
-import { collectSensitiveValues, isEnvPassthroughValueSafeToExpose, redactSensitiveValue } from "../../core/redaction";
 import { runStructured } from "../../core/structured";
 import { warn } from "../../core/warn";
 import { insertEventStrict } from "../../storage/repositories/events-repository";
@@ -145,6 +144,9 @@ import {
   withWorkflowRunsRepo,
 } from "../../storage/repositories/workflow-runs-repository";
 import type { FrozenEngineSnapshot, IrBudget, IrInvocation, IrStepPlan } from "../ir/schema";
+// The ONE dispatch redaction contract, shared with the gate-judge path
+// (exec/frozen-judge.ts). Re-exported for existing importers of this module.
+import { collectWorkflowDispatchSensitiveValues, redactUnitOutcome } from "./dispatch-redaction";
 import { LIFETIME_UNIT_CAP, scheduleUnits, UnitCapExceededError } from "./scheduler";
 // Shared step semantics — the ONE implementation consumed by the engine
 // (this module + run-workflow.ts) on both the fresh-execution and the resume
@@ -161,6 +163,7 @@ import {
 } from "./step-work";
 import type { UnitDispatcher, UnitDispatchRequest, UnitDispatchResult } from "./unit-dispatch";
 
+export { collectWorkflowDispatchSensitiveValues, redactUnitOutcome } from "./dispatch-redaction";
 export type { UnitDispatcher, UnitDispatchRequest, UnitDispatchResult } from "./unit-dispatch";
 
 import { enqueueUnitWrite } from "./unit-writer";
@@ -1316,38 +1319,6 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
     ...(result.usage ? { usage: result.usage } : {}),
   };
 };
-
-function collectWorkflowDispatchSensitiveValues(
-  workUnit: StepWorkUnit,
-  env: Record<string, string> | undefined,
-): string[] {
-  const values = new Set<string>(Object.values(env ?? {}));
-  const addCredential = (engine: FrozenEngineSnapshot | undefined): void => {
-    if (!engine) return;
-    if (engine.kind === "llm") {
-      for (const name of engine.credential?.names ?? []) {
-        const value = process.env[name]?.trim();
-        if (value) values.add(value);
-      }
-      return;
-    }
-    for (const name of engine.envPassthrough) {
-      const value = process.env[name];
-      if (!isEnvPassthroughValueSafeToExpose(name, value) && value) values.add(value);
-    }
-  };
-  addCredential(workUnit.engine);
-  addCredential(workUnit.fallbackEngine);
-  return collectSensitiveValues(values);
-}
-
-function redactUnitOutcome(outcome: UnitOutcome, sensitiveValues: readonly string[]): UnitOutcome {
-  const redacted = redactSensitiveValue(outcome, sensitiveValues);
-  if (outcome.failureReason !== undefined && redacted.failureReason !== outcome.failureReason) {
-    redacted.failureReason = "reported_failure";
-  }
-  return redacted;
-}
 
 /**
  * Map a typed {@link import("../../llm/client").LlmCallErrorCode} into the

@@ -148,7 +148,7 @@
     },
     "jsonSchemaObject": {
       "type": "object",
-      "description": "A JSON Schema declaration. The parser validates it as a schema definition against the runtime's enforced subset (src/core/json-schema.ts checkJsonSchemaDefinition): typo'd type names and keywords outside the subset (e.g. pattern, $ref, oneOf) are authoring-time errors, not silent no-ops."
+      "description": "A JSON Schema declaration. The parser validates it as a schema definition against the runtime's enforced subset (src/core/json-schema.ts checkJsonSchemaDefinition): typo'd type names and keywords outside the subset (e.g. $ref, const, format, patternProperties) are authoring-time errors, not silent no-ops."
     },
     "retry": {
       "type": "object",
@@ -268,7 +268,7 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 64,
-          "description": "Max concurrent units for this step; capped by the engine's global limit."
+          "description": "Max concurrent units for this step. Defaults to workflow.defaultMapConcurrency (4 when unset) — a map step is parallel by default since 0.9.1; write 1 for serial execution. The effective width is the minimum of this, workflow.maxConcurrency, the selected engine's concurrency, and the host CPU cap."
         },
         "reducer": {
           "$ref": "#/definitions/reducer"
