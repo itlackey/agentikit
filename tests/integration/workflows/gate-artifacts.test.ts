@@ -1059,12 +1059,7 @@ describe("judge outage — infrastructure failure blocks for resume instead of b
     expect(workPrompts).toHaveLength(2);
     await withWorkflowRunsRepo((repo) => {
       const rows = repo.getUnitsForStep(RUN_ID, "work");
-      expect(rows.map((r) => r.unit_id).sort()).toEqual([
-        "work.gate:l1",
-        "work.gate:l2",
-        "work:solo",
-        "work:solo~l2",
-      ]);
+      expect(rows.map((r) => r.unit_id).sort()).toEqual(["work.gate:l1", "work.gate:l2", "work:solo", "work:solo~l2"]);
       const gate2 = rows.find((r) => r.unit_id === "work.gate:l2");
       expect(gate2?.status).toBe("completed");
       expect(JSON.parse(gate2?.result_json ?? "null")).toEqual({ complete: true, missing: [] });

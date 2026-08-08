@@ -1432,7 +1432,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // Reviewer #6: once the judge is invoked, its gate row is journaled `running`
   // (journalGateEvaluationStart) and MUST be finished on every exit. The
   // already-fixed window is the judge itself throwing (caught inside
-  // validateStepSummary — `judgeState.errored` records it). The remaining
+  // validateStepSummary — `judgeState.failure` records it). The remaining
   // window is `completeWorkflowStep` throwing AFTER the judge ran — a stolen
   // lease, a concurrent state change, a DB error — which would otherwise skip the
   // finish and strand the gate row in `running`. Finish it as an errored row (the
