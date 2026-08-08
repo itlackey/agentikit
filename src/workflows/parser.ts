@@ -63,11 +63,13 @@ import {
   jsonBytes,
   utf8Bytes,
   WORKFLOW_ENGINE_NAME_PATTERN,
+  WORKFLOW_ENV_VAR_NAME_PATTERN,
   WORKFLOW_MAX_CONCURRENCY,
   WORKFLOW_MAX_ENGINE_NAME_LENGTH,
   WORKFLOW_MAX_EXEC_ARG_BYTES,
   WORKFLOW_MAX_EXEC_ARGV,
   WORKFLOW_MAX_EXEC_CWD_LENGTH,
+  WORKFLOW_MAX_EXEC_PASS_ENV,
   WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
   WORKFLOW_MAX_GATE_LOOPS,
   WORKFLOW_MAX_INPUTS,
@@ -117,7 +119,7 @@ const DEFAULTS_KEYS = ["engine", "model", "timeout", "on_error", "llm"];
 const BUDGET_KEYS = ["max_tokens", "max_units"];
 const STEP_KEYS = ["id", "unit", "map", "route", "inputs", "output", "gate"];
 const UNIT_KEYS = ["exec", "engine", "model", "llm", "timeout", "retry", "on_error", "output", "env", "isolation"];
-const EXEC_KEYS = ["command", "cwd"];
+const EXEC_KEYS = ["command", "cwd", "pass_env", "inherit_env"];
 /** Unit keys that name an ENGINE dispatch and therefore cannot appear beside `exec:`. */
 const UNIT_ENGINE_KEYS = ["engine", "model", "llm"] as const;
 const MAP_KEYS = ["over", "concurrency", "reducer", "unit"];
@@ -884,7 +886,62 @@ function parseExec(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
   const exec: ProgramExec = { command };
   const cwd = parseExecCwd(ctx, raw.cwd, [...path, "cwd"], stepLabel);
   if (cwd !== undefined) exec.cwd = cwd;
+  const passEnv = parseExecPassEnv(ctx, raw.pass_env, [...path, "pass_env"], stepLabel);
+  if (passEnv !== undefined) exec.passEnv = passEnv;
+  if (raw.inherit_env !== undefined) {
+    if (typeof raw.inherit_env !== "boolean") {
+      ctx.err(
+        [...path, "inherit_env"],
+        `${stepLabel} "exec.inherit_env" must be true or false. true gives the command akm's whole environment ` +
+          `instead of the default allowlist; omit it (or write false) to keep the allowlist.`,
+      );
+    } else if (raw.inherit_env) {
+      exec.inheritEnv = true;
+    }
+  }
   return exec;
+}
+
+/**
+ * `pass_env:` — extra parent-process env var NAMES the child may see on top of
+ * the default allowlist. NAMES ONLY: a value would be a plaintext secret in the
+ * frozen plan, which is exactly what `env:` bindings exist to avoid.
+ */
+function parseExecPassEnv(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    ctx.err(
+      path,
+      `${stepLabel} "exec.pass_env" must be a non-empty list of environment variable NAMES to copy through from ` +
+        `akm's own environment, e.g. pass_env: [CARGO_HOME]. Values never appear here — use "env:" bindings for those.`,
+    );
+    return undefined;
+  }
+  if (raw.length > WORKFLOW_MAX_EXEC_PASS_ENV) {
+    ctx.err(
+      path,
+      `${stepLabel} "exec.pass_env" must have at most ${WORKFLOW_MAX_EXEC_PASS_ENV} entries. A command needing ` +
+        `more than that wants "inherit_env: true", which says so explicitly.`,
+    );
+    return undefined;
+  }
+  const names: string[] = [];
+  for (const [index, entry] of raw.entries()) {
+    if (typeof entry !== "string" || !WORKFLOW_ENV_VAR_NAME_PATTERN.test(entry)) {
+      ctx.err(
+        path,
+        `${stepLabel} "exec.pass_env[${index}]" must be an environment variable name matching ` +
+          `${WORKFLOW_ENV_VAR_NAME_PATTERN.source}.`,
+      );
+      return undefined;
+    }
+    if (names.includes(entry)) {
+      ctx.err(path, `${stepLabel} "exec.pass_env" lists "${entry}" more than once.`);
+      return undefined;
+    }
+    names.push(entry);
+  }
+  return names;
 }
 
 /** The argv array itself: 1..WORKFLOW_MAX_EXEC_ARGV bounded non-empty strings. */

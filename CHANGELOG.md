@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     unit:
       exec:
         command: ["bun", "run", "test:unit"]
+        pass_env: [CARGO_HOME]   # optional: widen the default env allowlist
       timeout: "10m"
       retry: { max: 1, on: [timeout] }
   ```
@@ -45,21 +46,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     pre-existing `retry.on` reasons — the failure taxonomy is unchanged. With
     the default `on_error: fail`, a non-zero exit fails the step and the run,
     which is what makes a `test` step a gate.
-  - **Security:** commands run inside the existing workflow trust model (full
-    environment and PATH of the invoking user, as workflow-authored shell
-    commands always have). Secrets come from `env:` bindings by NAME — the
-    frozen plan and the replay hash carry only ref names, and resolved values
-    are scrubbed from stdout, stderr, and failure diagnostics by the same
-    redaction contract every other dispatch uses, before anything is journaled.
-    `cwd:` is relative and `..`-free, re-checked against the resolved base
-    (symlinks included) before spawning.
+  - **The child's environment is an ALLOWLIST, not an inheritance.** The
+    command starts from an empty environment and receives `PATH`, `HOME`, the
+    identity/locale/temp/terminal variables, the Windows process-creation
+    essentials (`SystemRoot`, `SystemDrive`, `WINDIR`, `COMSPEC`, `PATHEXT`)
+    and the Windows home/config roots, plus `AKM_EVENT_SOURCE` — then the
+    unit's `env:` bindings, then the `AKM_*` context. `exec.pass_env: [NAME…]`
+    adds a few more names (for a per-machine toolchain variable like
+    `CARGO_HOME`, which a committed `env:` asset cannot express);
+    `exec.inherit_env: true` opts all the way back into akm's whole
+    environment. Both keys live inside `exec:` because the unit-level `env:`
+    key already means "env asset binding refs", and both are dispatch-
+    significant, so both are in the input hash.
+
+    This is not a claim to stop a determined attacker — a command that runs at
+    all can read the same credentials off disk. It bounds **accidental**
+    exposure (the invoking shell or CI job routinely exports tokens for
+    unrelated services), makes the environment surface **explicit and
+    reviewable**, and **matches the convention akm already applies** to
+    agent-harness children (`profile.envPassthrough`), which now share one
+    mechanism with exec units instead of two.
+  - **Security:** commands run inside the existing workflow trust model.
+    Secrets come from `env:` bindings by NAME — the frozen plan and the replay
+    hash carry only ref names, and resolved values are scrubbed from stdout,
+    stderr, and failure diagnostics by the same redaction contract every other
+    dispatch uses, before anything is journaled. `cwd:` is relative and
+    `..`-free, re-checked against the resolved base (symlinks included) before
+    spawning.
   - **Cancellation is real:** the child is spawned in its own process group and
     gets a SIGTERM→SIGKILL ladder on timeout or abort, so `--timeout` / Ctrl-C
     stop a running command without orphaning its children.
   - **No replay churn:** the exec spec was added to the unit input-hash preimage
     as a key present only on exec units, so `hashVersion` stays 4 and every
     previously-frozen llm/agent/sdk unit hashes byte-identically — runs already
-    in flight neither re-dispatch nor diverge.
+    in flight neither re-dispatch nor diverge. The env-scope keys are inside
+    that same spec and are frozen only in their non-default form (`inherit_env`
+    only when `true`, `pass_env` only when non-empty), so an exec unit that says
+    nothing about its environment hashes byte-identically too.
 
   See [Workflow Schema: Exec (shell) units](docs/reference/workflow-schema.md#exec-shell-units)
   and the worked example in

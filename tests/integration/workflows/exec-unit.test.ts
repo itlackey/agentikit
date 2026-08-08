@@ -21,6 +21,7 @@ import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { runManagedSubprocess } from "../../../src/core/subprocess";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
+import { EXEC_DEFAULT_ENV_PASSTHROUGH } from "../../../src/workflows/exec/exec-unit";
 import {
   defaultUnitDispatcher,
   executeStepPlan as executeFrozenStepPlan,
@@ -29,6 +30,7 @@ import {
 } from "../../../src/workflows/exec/native-executor";
 import { cpuDerivedUnitConcurrency } from "../../../src/workflows/exec/scheduler";
 import type { IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
+import { requireExecutableWorkflowPlan } from "../../../src/workflows/runtime/plan-classifier";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
@@ -446,6 +448,152 @@ describe("exec unit — env bindings arrive by name, values never reach the jour
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("env binding failed");
     expect(fs.existsSync(marker)).toBe(false);
+  });
+});
+
+describe("exec unit — the child environment is an ALLOWLIST", () => {
+  /**
+   * A name that is NOT on {@link EXEC_DEFAULT_ENV_PASSTHROUGH} and is really
+   * present in this test process's environment — the stand-in for the unrelated
+   * credentials an interactive shell or a CI job routinely exports.
+   */
+  const PROBE = "EXEC_UNIT_AMBIENT_PROBE";
+  const PROBE_VALUE = "ambient-value-from-the-akm-process";
+  let priorProbe: string | undefined;
+
+  beforeEach(() => {
+    priorProbe = process.env[PROBE];
+    process.env[PROBE] = PROBE_VALUE;
+  });
+  afterEach(() => {
+    if (priorProbe === undefined) delete process.env[PROBE];
+    else process.env[PROBE] = priorProbe;
+  });
+
+  /** A child that reports the exact env names/values this assertion cares about. */
+  const REPORT = bunArgv(
+    "process.stdout.write(JSON.stringify({" +
+      "PATH: process.env.PATH ?? null, HOME: process.env.HOME ?? null, " +
+      "probe: process.env.EXEC_UNIT_AMBIENT_PROBE ?? null, " +
+      // Length, not the value: a resolved binding value is scrubbed out of the
+      // artifact by the redaction contract, which is exactly as intended.
+      "binding: process.env.DEPLOY_TOKEN ? 'len=' + process.env.DEPLOY_TOKEN.length : null, " +
+      "runId: process.env.AKM_RUN_ID ?? null, " +
+      'windows: ["SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT"]' +
+      ".filter((n) => process.env[n] !== undefined)}))",
+  );
+
+  async function report(unitLines: string[], ctx: Partial<StepExecutionContext> = {}) {
+    seedRun(["work"]);
+    const plan = execPlan(["    unit:", "      exec:", `        command: ${JSON.stringify(REPORT)}`, ...unitLines]);
+    storePlan(plan);
+    const result = await run(plan, ctx);
+    expect(result.ok).toBe(true);
+    return JSON.parse(String(result.evidence.output)) as {
+      PATH: string | null;
+      HOME: string | null;
+      probe: string | null;
+      binding: string | null;
+      runId: string | null;
+      windows: string[];
+    };
+  }
+
+  test("PATH and HOME (and, on Windows, the process-creation essentials) arrive by default", async () => {
+    const env = await report([]);
+    expect(env.PATH).toBeTruthy();
+    expect(env.HOME).toBe(process.env.HOME ?? null);
+    // Windows cannot even CREATE a process without these; the allowlist carries
+    // whichever of them the host actually defines, and on POSIX that is none.
+    const expectedWindows = ["SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT"].filter(
+      (name) => process.env[name] !== undefined,
+    );
+    expect(env.windows.sort()).toEqual(expectedWindows.sort());
+    if (process.platform === "win32") expect(env.windows).toContain("SystemRoot");
+  });
+
+  test("REGRESSION: a parent env var that is NOT on the allowlist is ABSENT from the child", async () => {
+    // The core of the model: `EXEC_UNIT_AMBIENT_PROBE` is genuinely set in this
+    // process, and the command still cannot see it.
+    expect(process.env[PROBE]).toBe(PROBE_VALUE);
+    expect((await report([])).probe).toBeNull();
+  });
+
+  test("`inherit_env: true` restores full inheritance — that same var IS present", async () => {
+    expect((await report(["        inherit_env: true"])).probe).toBe(PROBE_VALUE);
+  });
+
+  test("`pass_env` widens the allowlist by NAME without going all-in on inherit_env", async () => {
+    const env = await report([`        pass_env: [${PROBE}]`]);
+    expect(env.probe).toBe(PROBE_VALUE);
+    expect(env.PATH).toBeTruthy();
+  });
+
+  test.each([
+    ["the allowlist default", [] as string[]],
+    ["inherit_env: true", ["        inherit_env: true"]],
+  ])("`env:` bindings and AKM_* context arrive under %s, precedence unchanged", async (_label, mode) => {
+    const env = await report([...mode, "      env: [env/ci]"], {
+      resolveEnv: async () => ({ DEPLOY_TOKEN: "binding-value", AKM_RUN_ID: "binding-tried-to-shadow-this" }),
+    });
+    expect(env.binding).toBe(`len=${"binding-value".length}`);
+    // Engine-authored context is applied LAST, so the binding above could not
+    // shadow it — the command is told the truth about which run it is in.
+    expect(env.runId).toBe(RUN_ID);
+  });
+
+  test("both env-scope keys survive the durable `plan_json` round-trip", async () => {
+    seedRun(["work"]);
+    const plan = execPlan([
+      "    unit:",
+      "      exec:",
+      `        command: ${JSON.stringify(REPORT)}`,
+      "        inherit_env: true",
+      `        pass_env: [${PROBE}]`,
+    ]);
+    storePlan(plan);
+
+    // Read the plan back the way a resumed run does: off the row, hash-verified
+    // and through the strict decoder — not from the in-memory object.
+    const db = openStateDatabase();
+    let row: { plan_json: string | null; plan_hash: string | null; plan_ir_version: number | null };
+    try {
+      row = db
+        .prepare("SELECT plan_json, plan_hash, plan_ir_version FROM workflow_runs WHERE id = ?")
+        .get(RUN_ID) as never;
+    } finally {
+      db.close();
+    }
+    const reloaded = requireExecutableWorkflowPlan({ ...row, id: RUN_ID });
+    const root = reloaded.steps[0]!.root!;
+    const unit = root.kind === "map" ? root.template : root;
+    expect(unit.exec?.inheritEnv).toBe(true);
+    expect(unit.exec?.passEnv).toEqual([PROBE]);
+  });
+
+  test("the exported default allowlist is the single definition the child is built from", async () => {
+    // Structural pin: no name reaches the child that is not on the allowlist,
+    // a binding, or the AKM_* context. `_`/`PWD`-style shell additions are not
+    // in play because the child env is replaced wholesale, not merged.
+    seedRun(["work"]);
+    const plan = execPlan([
+      "    unit:",
+      "      exec:",
+      `        command: ${JSON.stringify(bunArgv("process.stdout.write(Object.keys(process.env).join(','))"))}`,
+    ]);
+    storePlan(plan);
+    const names = String((await run(plan)).evidence.output)
+      .split(",")
+      .filter(Boolean);
+    const allowed = new Set<string>([
+      ...EXEC_DEFAULT_ENV_PASSTHROUGH,
+      "AKM_RUN_ID",
+      "AKM_STEP_ID",
+      "AKM_UNIT_ID",
+      "AKM_PARAMS",
+    ]);
+    expect(names.filter((name) => !allowed.has(name))).toEqual([]);
+    expect(names).toContain("PATH");
   });
 });
 

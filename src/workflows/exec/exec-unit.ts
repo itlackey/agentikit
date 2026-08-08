@@ -38,6 +38,14 @@
  * be used to step outside the unit's working tree (the run's work dir, or the
  * unit's fresh worktree under `isolation: worktree`).
  *
+ * ## The child's environment is an ALLOWLIST
+ *
+ * The child does NOT inherit akm's environment. It starts EMPTY and receives
+ * exactly {@link EXEC_DEFAULT_ENV_PASSTHROUGH} (plus the unit's own
+ * `exec.passEnv` names), then the resolved `env:` bindings, then the
+ * engine-authored `AKM_*` context. `exec.inheritEnv` opts back into full
+ * inheritance. See {@link childEnv} for why.
+ *
  * ## Secrets
  *
  * `env` values reaching this module are already resolved from `env:` bindings
@@ -58,12 +66,95 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isWithin } from "../../core/common";
+import { collectAllowlistedEnv } from "../../core/spawn-env";
 import { runManagedSubprocess, type SpawnFn } from "../../core/subprocess";
 import type { IrExecSpec } from "../ir/schema";
 import type { UnitDispatchResult } from "./unit-dispatch";
 
 /** Max characters of a failed command's stderr retained in the unit's `error` diagnostic. */
 export const EXEC_STDERR_DIAGNOSTIC_CLIP = 2_000;
+
+/**
+ * The DEFAULT environment allowlist for an exec unit's child — the single
+ * definition, mirrored nowhere else (the docs describe it, the tests assert
+ * against it, and `exec.passEnv` extends it per unit).
+ *
+ * The child starts from an EMPTY environment and receives only these names,
+ * matching how an agent harness child is already built
+ * (`profile.envPassthrough` → `collectAllowlistedEnv`). Every entry earns its
+ * place by being load-bearing for ordinary commands on some supported
+ * platform:
+ *
+ *   - `PATH`        — command resolution. Without it only an absolute `argv[0]`
+ *                     can ever be spawned.
+ *   - `HOME`        — the config/cache root essentially every toolchain reads
+ *                     (git, npm, bun, cargo, ssh). Absent, tools fall back to
+ *                     `/` or fail outright.
+ *   - `USER`, `LOGNAME` — process identity; git and ssh read them to attribute
+ *                     and authenticate.
+ *   - `SHELL`       — read by tools that re-exec a login shell for the user's
+ *                     own environment (an explicit `["bash", "-lc", …]` argv
+ *                     does not need it, but `git`'s pagers/editors do).
+ *   - `LANG`, `LC_ALL`, `LC_CTYPE` — text encoding. Without a locale a command
+ *                     falls back to the C locale and mangles non-ASCII stdout,
+ *                     which IS this unit's artifact.
+ *   - `TERM`        — some CLIs abort or emit raw escape bytes with no TERM.
+ *   - `TZ`          — timestamps a command prints would otherwise silently
+ *                     switch to the host default.
+ *   - `TMPDIR`      — POSIX scratch space; absent, tools write to `/tmp` or
+ *                     fail on read-only hosts.
+ *   - `SystemRoot`, `SystemDrive`, `WINDIR` — Windows PROCESS CREATION itself
+ *                     needs these: with an empty environment the loader cannot
+ *                     find system DLLs and the spawn fails before the command
+ *                     runs. Not optional on win32.
+ *   - `COMSPEC`     — Windows resolves `.bat`/`.cmd` targets through cmd.exe.
+ *   - `PATHEXT`     — Windows only treats these extensions as executable; an
+ *                     absent PATHEXT makes `command: ["bun", …]` unresolvable
+ *                     because `bun.exe`/`bun.cmd` are never tried.
+ *   - `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH` — the Windows `HOME` analogues.
+ *   - `APPDATA`, `LOCALAPPDATA` — Windows config/cache roots (npm, bun, git).
+ *   - `TEMP`, `TMP` — the Windows `TMPDIR` analogues.
+ *   - `ProgramData`, `ProgramFiles` — machine-wide install roots that Windows
+ *                     toolchain shims resolve against.
+ *   - `AKM_EVENT_SOURCE` — provenance, never a secret: an exec unit that calls
+ *                     `akm` must record machine traffic rather than user
+ *                     demand, exactly as the agent passthrough list does
+ *                     (`integrations/agent/profiles.ts`, DRIFT-6).
+ *
+ * Deliberately ABSENT and reachable only through `exec.passEnv` / `env:` /
+ * `exec.inheritEnv`: credentials of every kind, cloud/CI vars, and the proxy
+ * family (`HTTP_PROXY` & friends) — proxy URLs routinely embed credentials,
+ * which is why akm's redaction policy already treats URL-shaped passthrough
+ * values as credential-bearing.
+ */
+export const EXEC_DEFAULT_ENV_PASSTHROUGH: readonly string[] = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TERM",
+  "TZ",
+  "TMPDIR",
+  "SystemRoot",
+  "SystemDrive",
+  "WINDIR",
+  "COMSPEC",
+  "PATHEXT",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "TEMP",
+  "TMP",
+  "ProgramData",
+  "ProgramFiles",
+  "AKM_EVENT_SOURCE",
+];
 
 export interface RunExecUnitInput {
   /** Journal id of the attempt, for diagnostics. */
@@ -75,7 +166,7 @@ export interface RunExecUnitInput {
    * dir (`ctx.workDir`, default `process.cwd()`).
    */
   baseDir: string;
-  /** Resolved `env:` binding values, merged on top of the inherited environment. */
+  /** Resolved `env:` binding values, merged on top of the allowlisted base environment. */
   env?: Record<string, string>;
   /**
    * Engine-authored `AKM_*` context (ids, params, fan-out item + index,
@@ -112,7 +203,7 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
   const result = await runManagedSubprocess([...input.exec.command], {
     capture: true,
     cwd: cwd.path,
-    env: childEnv(input.env, input.context),
+    env: childEnv(input.exec, input.env, input.context),
     timeoutMs: input.timeoutMs,
     ...(input.signal ? { signal: input.signal } : {}),
     ...(input.spawnFn ? { spawnFn: input.spawnFn } : {}),
@@ -203,31 +294,64 @@ function isExistingDirectory(candidate: string): boolean {
 }
 
 /**
- * The child's environment: the akm process's own environment with the unit's
- * resolved `env:` bindings layered on top.
+ * The child's environment, in three layers with fixed precedence:
  *
- * INHERITING is the documented workflow trust model
- * (`docs/guides/run-workflows.md`, "workflow sources are executed code"): a
- * workflow command runs with the full environment and PATH of the user who
- * invoked `akm workflow run`, exactly as if they had typed it. An allowlist
- * here would be security theatre — it cannot constrain what the command then
- * does with the user's own credentials on disk — while breaking every
- * realistic command (`PATH`, `HOME`, toolchain vars). Operators who need a
- * narrower environment scope the akm PROCESS, which is the boundary that
- * actually holds.
+ *   1. the BASE — an allowlist by default ({@link EXEC_DEFAULT_ENV_PASSTHROUGH}
+ *      plus the unit's `exec.passEnv` names), or the akm process's whole
+ *      environment when the unit opted in with `exec.inheritEnv`;
+ *   2. the unit's resolved `env:` bindings;
+ *   3. the engine-authored `AKM_*` context, LAST so a workflow-supplied binding
+ *      can never shadow the ids/item the engine is telling the command the
+ *      truth about.
+ *
+ * ## Why the default is an allowlist
+ *
+ * Not because it stops an attacker: a command that runs at all can read the
+ * same credentials off disk that the environment would have handed it, and a
+ * workflow source is executed code either way (`docs/guides/run-workflows.md`,
+ * "workflow sources are executed code"). The allowlist earns its place for
+ * three narrower, real reasons:
+ *
+ *   - it bounds ACCIDENTAL exposure — the ambient shell of whoever ran
+ *     `akm workflow run` (or the CI job that did) routinely carries tokens for
+ *     unrelated services, and a third-party workflow step that merely prints
+ *     its environment, or a tool that ships one in a crash report, should not
+ *     get them for free;
+ *   - it makes the environment surface EXPLICIT and REVIEWABLE — what a
+ *     command can see is this constant plus lines in the frontmatter diff,
+ *     rather than "whatever the invoking shell happened to export";
+ *   - it matches the convention akm already applies to spawned children —
+ *     `profile.envPassthrough` in `integrations/agent/spawn.ts` has always
+ *     built agent-harness children this way, and the SAME
+ *     {@link collectAllowlistedEnv} does it here, so there is one mechanism to
+ *     review instead of two.
+ *
+ * `inheritEnv` is the honest escape hatch for a command that genuinely needs
+ * the caller's whole environment; it passes it through VERBATIM (no PATH
+ * supplementation), which is precisely the pre-allowlist behavior.
  */
 function childEnv(
+  exec: IrExecSpec,
   bindings: Record<string, string> | undefined,
   context: Record<string, string> | undefined,
 ): Record<string, string> {
+  const env = exec.inheritEnv ? inheritedProcessEnv() : collectAllowlistedEnv(execAllowlist(exec));
+  for (const [name, value] of Object.entries(bindings ?? {})) env[name] = value;
+  for (const [name, value] of Object.entries(context ?? {})) env[name] = value;
+  return env;
+}
+
+/** The unit's effective allowlist: the shared default plus its own `passEnv` names. */
+function execAllowlist(exec: IrExecSpec): string[] {
+  return exec.passEnv ? [...EXEC_DEFAULT_ENV_PASSTHROUGH, ...exec.passEnv] : [...EXEC_DEFAULT_ENV_PASSTHROUGH];
+}
+
+/** The akm process's own environment, verbatim (`exec.inheritEnv`). */
+function inheritedProcessEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {
     if (typeof value === "string") env[name] = value;
   }
-  for (const [name, value] of Object.entries(bindings ?? {})) env[name] = value;
-  // Engine-authored context LAST: a workflow-supplied binding must not be able
-  // to shadow the ids/item the engine is telling the command the truth about.
-  for (const [name, value] of Object.entries(context ?? {})) env[name] = value;
   return env;
 }
 

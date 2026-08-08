@@ -233,7 +233,18 @@ function compileUnit(
     templating: "verbatim",
     ...(inputs && inputs.length > 0 ? { inputs: [...inputs] } : {}),
     ...(unit?.exec
-      ? { exec: { command: [...unit.exec.command], ...(unit.exec.cwd ? { cwd: unit.exec.cwd } : {}) } }
+      ? {
+          exec: {
+            command: [...unit.exec.command],
+            ...(unit.exec.cwd ? { cwd: unit.exec.cwd } : {}),
+            // Both env-scope keys are carried CONDITIONALLY (and `inheritEnv`
+            // only when true), so an exec unit that says nothing about its
+            // environment freezes — and therefore hashes — byte-identically to
+            // one authored before these keys existed.
+            ...(unit.exec.passEnv && unit.exec.passEnv.length > 0 ? { passEnv: [...unit.exec.passEnv] } : {}),
+            ...(unit.exec.inheritEnv ? { inheritEnv: true as const } : {}),
+          },
+        }
       : {}),
     ...(unit?.output !== undefined ? { schema: unit.output } : {}),
     ...(unit?.retry ? { retry: { max: unit.retry.max, on: [...unit.retry.on] } } : {}),

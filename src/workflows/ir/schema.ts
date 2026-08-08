@@ -13,12 +13,14 @@ import { PROGRAM_PARAM_NAME_PATTERN, PROGRAM_RETRY_REASONS, PROGRAM_STEP_ID_PATT
 import {
   jsonBytes,
   WORKFLOW_ENGINE_NAME_PATTERN,
+  WORKFLOW_ENV_VAR_NAME_PATTERN,
   WORKFLOW_MAX_CONCURRENCY,
   WORKFLOW_MAX_ENGINE_NAME_LENGTH,
   WORKFLOW_MAX_ENGINES,
   WORKFLOW_MAX_EXEC_ARG_BYTES,
   WORKFLOW_MAX_EXEC_ARGV,
   WORKFLOW_MAX_EXEC_CWD_LENGTH,
+  WORKFLOW_MAX_EXEC_PASS_ENV,
   WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
   WORKFLOW_MAX_GATE_LOOPS,
   WORKFLOW_MAX_INPUTS,
@@ -68,10 +70,22 @@ export type IrRuntimeKind = "llm" | "agent" | "sdk" | "exec";
  * has no engine to inherit one from — it is resolved once at freeze
  * (`ir/freeze.ts`) from the unit `timeout:` → document `defaults.timeout` →
  * {@link DEFAULT_EXEC_TIMEOUT_MS}. `null` means the author wrote `timeout: none`.
+ *
+ * `passEnv`/`inheritEnv` describe the child's ENVIRONMENT SCOPE, which defaults
+ * to an allowlist (`exec/exec-unit.ts`, `EXEC_DEFAULT_ENV_PASSTHROUGH`). Both
+ * are dispatch-significant — they change what the command can see — so both are
+ * in the unit's input-hash preimage. Each has exactly ONE encoding per state:
+ * `inheritEnv` is present only as `true`, `passEnv` only when non-empty. A
+ * frozen `false`/`[]` would mean the same thing while hashing differently, so
+ * the decoder rejects it rather than letting two spellings of "default" exist.
  */
 export interface IrExecSpec {
   command: [string, ...string[]];
   cwd?: string;
+  /** Extra parent-env NAMES on top of the default allowlist. Never empty when present. */
+  passEnv?: string[];
+  /** Present only as `true`: the child gets akm's whole environment instead of the allowlist. */
+  inheritEnv?: true;
   timeoutMs: number | null;
 }
 
@@ -401,7 +415,7 @@ function validateEngine(
     !(typeof engine.workspace === "string" || engine.workspace === null) ||
     !Array.isArray(engine.envPassthrough) ||
     engine.envPassthrough.length > MAX_LIST_ITEMS ||
-    !engine.envPassthrough.every((name) => typeof name === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) ||
+    !engine.envPassthrough.every((name) => typeof name === "string" && WORKFLOW_ENV_VAR_NAME_PATTERN.test(name)) ||
     new Set(engine.envPassthrough).size !== engine.envPassthrough.length ||
     typeof engine.commandBuilder !== "string" ||
     engine.commandBuilder !== engine.platform ||
@@ -510,7 +524,8 @@ function validateNode(
  */
 function validateExecSpec(value: unknown, label: string): void {
   if (!isRecord(value)) fail(`${label} must be an object`);
-  assertKeys(value, ["command", "cwd", "timeoutMs"], label);
+  assertKeys(value, ["command", "cwd", "passEnv", "inheritEnv", "timeoutMs"], label);
+  validateExecEnvScope(value, label);
   const command = value.command;
   if (
     !Array.isArray(command) ||
@@ -542,6 +557,36 @@ function validateExecSpec(value: unknown, label: string): void {
     )
   ) {
     fail(`${label}.timeoutMs must be null or an integer from 1 through ${WORKFLOW_MAX_TIMEOUT_MS}`);
+  }
+}
+
+/**
+ * The child's ENVIRONMENT SCOPE half of a frozen exec spec. Split out so
+ * {@link validateExecSpec} keeps its shape (and the src-fn-size ratchet stays
+ * shrink-only).
+ *
+ * Both keys are canonical-form-only: `inheritEnv` may only be `true` and
+ * `passEnv` may only be a non-empty deduplicated name list. A persisted `false`
+ * or `[]` means exactly what absence means, and admitting a second spelling of
+ * the default would give the same unit two different input hashes.
+ */
+function validateExecEnvScope(value: Record<string, unknown>, label: string): void {
+  if (value.inheritEnv !== undefined && value.inheritEnv !== true) {
+    fail(`${label}.inheritEnv must be true when present (the allowlist default is the key's ABSENCE)`);
+  }
+  if (value.passEnv === undefined) return;
+  const passEnv = value.passEnv;
+  if (
+    !Array.isArray(passEnv) ||
+    passEnv.length === 0 ||
+    passEnv.length > WORKFLOW_MAX_EXEC_PASS_ENV ||
+    !passEnv.every((name) => typeof name === "string" && WORKFLOW_ENV_VAR_NAME_PATTERN.test(name)) ||
+    new Set(passEnv).size !== passEnv.length
+  ) {
+    fail(
+      `${label}.passEnv must be 1 through ${WORKFLOW_MAX_EXEC_PASS_ENV} distinct environment variable names ` +
+        `matching ${WORKFLOW_ENV_VAR_NAME_PATTERN.source}`,
+    );
   }
 }
 

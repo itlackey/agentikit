@@ -150,6 +150,44 @@ step artifact becomes a validated structure:
 stdout must then be **exactly one JSON value** — no log noise around it — and
 downstream steps can address `steps.test.output.failed`.
 
+### What the command can see
+
+The child does **not** inherit your environment. It starts empty and gets a
+small default allowlist — `PATH`, `HOME`, the locale/temp/identity variables,
+and the Windows essentials (`SystemRoot`, `COMSPEC`, `PATHEXT`, …) that
+process creation itself needs — then your `env:` bindings, then the `AKM_*`
+context variables. Ordinary commands (`bun`, `git`, `make`, `cargo`) work
+unchanged; an unrelated `SOME_OTHER_SERVICE_TOKEN` sitting in the shell that
+ran `akm workflow run` does not reach them.
+
+Two ways to widen it, in order of preference:
+
+```yaml
+  - id: build
+    unit:
+      exec:
+        command: ["cargo", "build", "--release"]
+        pass_env: [CARGO_HOME, SCCACHE_DIR]   # a few extra names
+  - id: deploy
+    unit:
+      exec:
+        command: ["./scripts/deploy.sh"]
+        inherit_env: true                      # the whole environment
+```
+
+`pass_env:` is for a **per-machine** variable an `env:` binding cannot express
+(an env asset stores a committed value; `CARGO_HOME` differs per build agent).
+`inherit_env: true` is the honest all-in escape hatch — use it when
+enumerating names is a losing game, and know that it is visible in the diff.
+Secrets still belong in `env:` bindings: those values are redacted out of
+everything journaled, and `pass_env:` values are not.
+
+Both keys are part of the unit's input hash, so flipping either re-runs the
+command instead of reusing a row recorded under the other scope.
+
+Full list of allowlisted names:
+[Workflow Schema: The child's environment is an allowlist](../reference/workflow-schema.md#the-childs-environment-is-an-allowlist).
+
 ### Things to get right
 
 - **`command:` is an argv array, not a shell string.** `["bun", "run", "test"]`,
@@ -165,6 +203,10 @@ downstream steps can address `steps.test.output.failed`.
 - **Long commands need a `timeout:`.** An exec unit defaults to 10 minutes. Use
   `timeout: "30m"` for a slow suite, or `timeout: "none"` only when you really
   mean unbounded.
+- **Don't assume your shell's environment.** The child gets an allowlist, not
+  an inheritance. If a command fails with "not found" or reads a missing
+  toolchain variable, name it in `pass_env:` (or set `inherit_env: true`) —
+  it is not a bug in the command.
 
 Full reference: [Workflow Schema: Exec (shell) units](../reference/workflow-schema.md#exec-shell-units).
 
@@ -198,6 +240,12 @@ Full reference: [Workflow Schema: Exec (shell) units](../reference/workflow-sche
 - **Writing `exec.command` as a shell string.** `command: "bun run test"` is
   rejected; it must be an argv array (`["bun", "run", "test"]`). Nothing is
   ever shell-parsed, so metacharacters inside an argument stay literal.
+- **Expecting an exec command to inherit your environment.** It gets a default
+  allowlist (`PATH`, `HOME`, locale/temp/identity, the Windows essentials) plus
+  your `env:` bindings and the `AKM_*` context — nothing else. Widen it with
+  `exec.pass_env:` (a few names) or `exec.inherit_env: true` (all of it).
+  Note `pass_env`/`inherit_env` live inside `exec:`; the unit-level `env:` key
+  means something different — a list of env asset binding refs.
 - **Asking a model to do deterministic work.** "Run the test suite and tell me
   if it passed" is an [exec step](#deterministic-steps-run-a-command-gate-on-it),
   not a prompt.

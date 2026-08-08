@@ -145,6 +145,12 @@ export function compileResolveFreezeWorkflow(
     return {
       command: [...exec.command] as [string, ...string[]],
       ...(exec.cwd ? { cwd: exec.cwd } : {}),
+      // Env-scope keys are frozen structurally (the draft already dropped an
+      // empty `passEnv` and a false `inheritEnv`), so the default allowlist
+      // stays the ABSENCE of both keys — one encoding per state, which is what
+      // keeps the canonical hash preimage stable.
+      ...(exec.passEnv && exec.passEnv.length > 0 ? { passEnv: [...exec.passEnv] } : {}),
+      ...(exec.inheritEnv ? { inheritEnv: true as const } : {}),
       timeoutMs,
     };
   };

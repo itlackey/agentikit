@@ -489,19 +489,101 @@ context blocks a model unit gets in its prompt:
 These are applied *after* your `env:` bindings, so a binding can never shadow
 them.
 
+### The child's environment is an allowlist
+
+An exec unit's command does **not** inherit akm's environment. The child starts
+from an **empty** environment and is built in three layers, in this order:
+
+1. the **default allowlist** below, copied through from akm's own environment
+   (plus any names the unit adds with `pass_env:`);
+2. the unit's resolved **`env:` bindings**;
+3. the engine-authored **`AKM_*` context** — last, so a binding can never
+   shadow it.
+
+The default allowlist is exactly these names (a name absent from akm's own
+environment is simply absent from the child):
+
+| Group | Names | Why |
+| --- | --- | --- |
+| Command resolution | `PATH` | without it only an absolute `command[0]` can be spawned |
+| Home | `HOME` | the config/cache root git, npm, bun, cargo and ssh all read |
+| Identity | `USER`, `LOGNAME`, `SHELL` | read by git/ssh and by tools that re-exec a login shell |
+| Locale | `LANG`, `LC_ALL`, `LC_CTYPE` | without a locale, non-ASCII stdout — *which is this unit's artifact* — gets mangled |
+| Terminal / clock | `TERM`, `TZ` | some CLIs abort with no `TERM`; `TZ` keeps printed timestamps stable |
+| Scratch space | `TMPDIR`, `TEMP`, `TMP` | POSIX and Windows temp roots |
+| Windows essentials | `SystemRoot`, `SystemDrive`, `WINDIR`, `COMSPEC`, `PATHEXT` | Windows **process creation itself** fails with an empty environment; `PATHEXT` is what makes `bun.exe`/`bun.cmd` resolvable at all |
+| Windows home/config | `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `ProgramData`, `ProgramFiles` | the Windows analogues of `HOME` and the machine-wide install roots toolchain shims resolve against |
+| akm provenance | `AKM_EVENT_SOURCE` | a command that calls `akm` records machine traffic, not user demand |
+
+`PATH` is additionally supplemented with well-known user binary directories
+when akm is running in a scheduler context (cron/launchd/Task Scheduler) that
+stripped it — the same treatment an agent-harness child gets.
+
+Deliberately **not** on the list: credentials of any kind, cloud/CI variables,
+and the proxy family (`HTTP_PROXY` and friends — proxy URLs routinely embed
+credentials). Reach them with `pass_env:`, an `env:` binding, or `inherit_env:`.
+
+#### `pass_env:` — widen the allowlist by name
+
+```yaml
+    unit:
+      exec:
+        command: ["cargo", "build", "--release"]
+        pass_env: [CARGO_HOME, SCCACHE_DIR]
+```
+
+Names only, 1–32 of them, matching `^[A-Za-z_][A-Za-z0-9_]*$`. Use it for a
+**per-machine** variable an `env:` binding cannot express — an env asset stores
+a committed *value*, so it cannot carry "whatever this build agent's
+`CARGO_HOME` happens to be".
+
+Values passed through this way are **not** redacted from the command's output
+the way `env:` binding values are, so never list a credential here.
+
+#### `inherit_env:` — opt back into full inheritance
+
+```yaml
+    unit:
+      exec:
+        command: ["./scripts/deploy.sh"]
+        inherit_env: true
+```
+
+`inherit_env: true` gives the command akm's **entire** environment, verbatim —
+what it would see if you had typed it yourself in the shell that ran
+`akm workflow run`. Reach for it when a command genuinely needs the
+caller's whole environment (a wrapper script, a toolchain with many ambient
+variables) and enumerating names would be a losing game. Prefer `pass_env:` or
+`env:` bindings when you can, because those keep what the command can see
+visible in the frontmatter diff.
+
+Both keys are **dispatch-significant**: they change what the command can see,
+so both are part of the unit's input hash. Changing either re-dispatches the
+unit rather than reusing a journaled row produced under the other scope.
+
 ### Security
 
 Exec units sit inside the existing workflow trust model — see
 [Security: workflow sources are executed code](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md#security-workflow-sources-are-executed-code).
 They do not widen it, and they do not narrow it:
 
-- The command runs with the **full environment and PATH of the user who invoked
-  `akm workflow run`**, exactly as a workflow-authored shell command always
-  has. An allowlist here would be theatre — it cannot constrain what the command
-  then does with your credentials on disk — while breaking every realistic
-  command. Operators who need a narrower environment scope the *akm process*
-  (dedicated account, ephemeral working directory, external network/filesystem
-  policy), which is the boundary that actually holds.
+- **The child's environment is an allowlist, not an inheritance.** Be clear
+  about what that does and does not buy. It does *not* stop a determined
+  attacker: a command that runs at all can read the same credentials off disk
+  that the environment would have handed it, and a workflow source is executed
+  code either way. What it does buy is real but narrower — it bounds
+  **accidental** exposure (the shell or CI job that invoked `akm` routinely
+  exports tokens for unrelated services, and a third-party step that merely
+  prints its environment, or a tool that ships one in a crash report, should
+  not get them for free), it makes the environment surface **explicit and
+  reviewable** (this list plus lines in the frontmatter diff, rather than
+  "whatever the invoking shell happened to export"), and it **matches the
+  convention akm already applies to spawned children** — agent-harness children
+  have always been built from `envPassthrough` this way, and exec units now use
+  the same mechanism rather than a second one. Operators who need a harder
+  boundary still scope the *akm process* (dedicated account, ephemeral working
+  directory, external network/filesystem policy); that is the boundary that
+  actually holds.
 - **Secrets come from `env:` bindings by name.** The frozen plan carries only
   the ref names, the replay hash carries only the ref names, and the resolved
   values are collected and scrubbed out of stdout, stderr, and the failure

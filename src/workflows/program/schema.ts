@@ -121,12 +121,22 @@ export interface ProgramRetry {
  * Absolute paths and `..` segments are rejected at parse time and containment
  * is re-checked against the resolved base at dispatch, so an exec unit can
  * never step outside the tree its isolation promised.
+ *
+ * The child's environment is an ALLOWLIST by default (see
+ * `EXEC_DEFAULT_ENV_PASSTHROUGH` in `exec/exec-unit.ts`). `pass_env` extends it
+ * with a few named variables; `inherit_env` opts all the way back into the akm
+ * process's whole environment. Both live inside `exec:` because the unit-level
+ * `env:` key already means something else — a list of env asset binding REFS.
  */
 export interface ProgramExec {
   /** argv; `command[0]` is the program, resolved through PATH. Never shell-parsed. */
   command: string[];
   /** Optional relative working directory inside the unit's base directory. */
   cwd?: string;
+  /** Extra parent-process env var NAMES copied through on top of the default allowlist. */
+  passEnv?: string[];
+  /** `true` = give the child akm's whole environment instead of the allowlist. */
+  inheritEnv?: boolean;
 }
 
 /**

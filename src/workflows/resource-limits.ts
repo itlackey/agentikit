@@ -54,6 +54,21 @@ export const WORKFLOW_MAX_EXEC_ARG_BYTES = 4096;
 /** Max characters of an exec unit's relative `cwd:`. */
 export const WORKFLOW_MAX_EXEC_CWD_LENGTH = 1024;
 /**
+ * Max entries in an exec unit's `pass_env:` list.
+ *
+ * `pass_env` is the "one or two more toolchain variables" escape hatch, not a
+ * second way to spell `inherit_env:` — a workflow reaching for more than this
+ * many names wants full inheritance and should say so where a reviewer can see
+ * it.
+ */
+export const WORKFLOW_MAX_EXEC_PASS_ENV = 32;
+/**
+ * Grammar for an env var NAME in `pass_env:`. Matches the frozen-plan
+ * `envPassthrough` grammar in `ir/schema.ts` so both allowlist surfaces accept
+ * exactly the same identifiers.
+ */
+export const WORKFLOW_ENV_VAR_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/**
  * Default wall-clock timeout for an exec unit that declares no `timeout:` and
  * inherits no document `defaults.timeout`.
  *

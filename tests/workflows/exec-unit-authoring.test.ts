@@ -16,7 +16,11 @@ import { computeStepWorkList } from "../../src/workflows/exec/step-work";
 import type { IrUnitNode, WorkflowPlanGraph } from "../../src/workflows/ir/schema";
 import { decodeWorkflowPlanV3 } from "../../src/workflows/ir/schema";
 import { parseWorkflow } from "../../src/workflows/parser";
-import { DEFAULT_EXEC_TIMEOUT_MS, WORKFLOW_MAX_EXEC_ARGV } from "../../src/workflows/resource-limits";
+import {
+  DEFAULT_EXEC_TIMEOUT_MS,
+  WORKFLOW_MAX_EXEC_ARGV,
+  WORKFLOW_MAX_EXEC_PASS_ENV,
+} from "../../src/workflows/resource-limits";
 import { freezeWorkflow } from "../_helpers/workflow";
 
 function doc(stepLines: string[], body = "## work\n\nDo it.\n", extra: string[] = []): string {
@@ -122,6 +126,66 @@ describe("exec unit — authoring surface", () => {
   });
 });
 
+describe("exec unit — environment scope (`inherit_env` / `pass_env`)", () => {
+  test("the DEFAULT freezes neither key — the allowlist is the absence of both", () => {
+    expect(rootUnit(freezeWorkflow(doc(EXEC_STEP))).exec).toEqual({
+      command: ["bun", "run", "test:unit"],
+      timeoutMs: DEFAULT_EXEC_TIMEOUT_MS,
+    });
+  });
+
+  test("`inherit_env: true` freezes into the plan and reaches the work list", () => {
+    const plan = freezeWorkflow(doc([...EXEC_STEP, "        inherit_env: true"]));
+    expect(rootUnit(plan).exec?.inheritEnv).toBe(true);
+    const list = computeStepWorkList(plan.steps[0]!, {
+      runId: "run",
+      params: {},
+      stepOutputs: {},
+      engines: plan.execution.engines,
+    });
+    if (!list.ok) throw new Error(list.error);
+    expect(list.list.units[0]!.exec?.inheritEnv).toBe(true);
+  });
+
+  test("`inherit_env: false` is the default and freezes NOTHING — one encoding per state", () => {
+    // A `false` that froze as a key would give the same unit two hashes for
+    // the same behavior. It is normalized away at parse time instead.
+    expect(
+      rootUnit(freezeWorkflow(doc([...EXEC_STEP, "        inherit_env: false"]))).exec?.inheritEnv,
+    ).toBeUndefined();
+  });
+
+  test("`pass_env` freezes the extra NAMES, deduplicated grammar enforced", () => {
+    const plan = freezeWorkflow(doc([...EXEC_STEP, "        pass_env: [CARGO_HOME, SCCACHE_DIR]"]));
+    expect(rootUnit(plan).exec?.passEnv).toEqual(["CARGO_HOME", "SCCACHE_DIR"]);
+  });
+
+  test.each([
+    ["a non-boolean inherit_env", "        inherit_env: yes-please", '"exec.inherit_env" must be true or false'],
+    ["an empty pass_env", "        pass_env: []", '"exec.pass_env" must be a non-empty list'],
+    ["a non-list pass_env", "        pass_env: CARGO_HOME", '"exec.pass_env" must be a non-empty list'],
+    ["a malformed name", '        pass_env: ["9BAD"]', '"exec.pass_env[0]" must be an environment variable name'],
+    ["a duplicate name", "        pass_env: [CARGO_HOME, CARGO_HOME]", 'lists "CARGO_HOME" more than once'],
+  ])("%s is rejected", (_label, line, message) => {
+    const errors = parseErrors(doc([...EXEC_STEP, line]));
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain(message);
+  });
+
+  test("an over-long pass_env is rejected and points at `inherit_env`", () => {
+    const tooMany = JSON.stringify(Array.from({ length: WORKFLOW_MAX_EXEC_PASS_ENV + 1 }, (_, i) => `VAR_${i}`));
+    const errors = parseErrors(doc([...EXEC_STEP, `        pass_env: ${tooMany}`]));
+    expect(errors[0]!.message).toContain(`at most ${WORKFLOW_MAX_EXEC_PASS_ENV} entries`);
+    expect(errors[0]!.message).toContain("inherit_env: true");
+  });
+
+  test("a bad value is anchored to ITS OWN line, not the document or the step", () => {
+    // 1: ---, 2: type, 3: steps, 4: id, 5: unit, 6: exec, 7: command, 8: inherit_env
+    expect(parseErrors(doc([...EXEC_STEP, "        inherit_env: nope"]))[0]!.line).toBe(8);
+    expect(parseErrors(doc([...EXEC_STEP, "        pass_env: []"]))[0]!.line).toBe(8);
+  });
+});
+
 describe("exec unit — parser rejections (line-anchored)", () => {
   test.each([
     ["engine", "      engine: test-llm"],
@@ -156,7 +220,7 @@ describe("exec unit — parser rejections (line-anchored)", () => {
     );
     expect(
       parseErrors(doc(["    unit:", "      exec:", '        command: ["ls"]', "        shell: true"]))[0]!.message,
-    ).toContain('Unknown Step "work" "exec" key "shell". Allowed keys: command, cwd.');
+    ).toContain('Unknown Step "work" "exec" key "shell". Allowed keys: command, cwd, pass_env, inherit_env.');
   });
 
   test.each([
@@ -233,6 +297,40 @@ describe("exec unit — frozen-plan decoder (corruption gate)", () => {
         }),
       ).toThrow(/timeoutMs must be null or an integer/);
     }
+  });
+
+  test("a tampered env scope is rejected: inheritEnv must be exactly `true`, passEnv a bounded name list", () => {
+    for (const inheritEnv of [false, "true", 1, null]) {
+      expect(
+        mutate((unit) => {
+          (unit.exec as Record<string, unknown>).inheritEnv = inheritEnv;
+        }),
+      ).toThrow(/inheritEnv must be true when present/);
+    }
+    for (const passEnv of [
+      [],
+      "CARGO_HOME",
+      ["9BAD"],
+      ["OK", "OK"],
+      Array.from({ length: WORKFLOW_MAX_EXEC_PASS_ENV + 1 }, (_, i) => `VAR_${i}`),
+    ]) {
+      expect(
+        mutate((unit) => {
+          (unit.exec as Record<string, unknown>).passEnv = passEnv;
+        }),
+      ).toThrow(/passEnv must be 1 through/);
+    }
+  });
+
+  test("a canonical env scope round-trips through the decoder unchanged", () => {
+    const plan = freezeWorkflow(doc([...EXEC_STEP, "        inherit_env: true", "        pass_env: [CARGO_HOME]"]));
+    const decoded = decodeWorkflowPlanV3(JSON.parse(JSON.stringify(plan)));
+    expect(rootUnit(decoded).exec).toEqual({
+      command: ["bun", "run", "test:unit"],
+      passEnv: ["CARGO_HOME"],
+      inheritEnv: true,
+      timeoutMs: DEFAULT_EXEC_TIMEOUT_MS,
+    });
   });
 
   test("an unknown key inside the frozen exec spec is rejected", () => {
@@ -322,6 +420,23 @@ describe("exec unit — replay identity / input hashing", () => {
     expect(hashOf(doc([...EXEC_STEP, "      env: [env/ci]"]))).not.toBe(baseline);
     // isolation
     expect(hashOf(doc([...EXEC_STEP, "      isolation: worktree"]))).not.toBe(baseline);
+    // environment SCOPE — both keys change what the child can see, so both
+    // must re-dispatch rather than reuse a row produced under the other scope.
+    expect(hashOf(doc([...EXEC_STEP, "        inherit_env: true"]))).not.toBe(baseline);
+    expect(hashOf(doc([...EXEC_STEP, "        pass_env: [CARGO_HOME]"]))).not.toBe(baseline);
+    expect(hashOf(doc([...EXEC_STEP, "        pass_env: [SCCACHE_DIR]"]))).not.toBe(
+      hashOf(doc([...EXEC_STEP, "        pass_env: [CARGO_HOME]"])),
+    );
+  });
+
+  test("ADDITIVE: the default env scope hashes exactly as it did before the keys existed", () => {
+    // Pinned against the value the exec unit produced when the child still
+    // inherited akm's whole environment: the allowlist default freezes NEITHER
+    // env-scope key, so every already-frozen exec unit keeps its hash and no
+    // in-flight run re-dispatches a completed command.
+    expect(hashOf(doc(EXEC_STEP))).toBe("7d8cf6b136c3d69ad64a07a02190b03fe145b8ddec96380903907c7dd886e85f");
+    // Writing the default explicitly is the same state, so the same hash.
+    expect(hashOf(doc([...EXEC_STEP, "        inherit_env: false"]))).toBe(hashOf(doc(EXEC_STEP)));
   });
 
   test("`retry` and `on_error` stay OUT of the hash — a completed exec row survives a policy change", () => {
