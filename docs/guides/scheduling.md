@@ -38,10 +38,9 @@ to confirm the scheduler state matches what you expect.
 
 ## Non-interactive setup never activates schedules
 
-`akm setup --yes`, config-file setup, and CI runs do not activate schedules.
-Task definitions are written to `<bundle>/tasks/`, but the OS scheduler is
-left untouched until you explicitly review and confirm activation through
-interactive `akm setup`.
+`akm setup --yes`, config-file setup, and CI runs skip the task step
+entirely: neither task definitions nor OS scheduler entries are created or
+changed. Run interactive `akm setup` to review, prepare, and activate tasks.
 
 ## Task definitions vs. scheduler state
 

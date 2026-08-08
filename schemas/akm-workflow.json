@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://itlackey.github.io/akm/schemas/akm-workflow.json",
   "title": "AKM Workflow",
-  "description": "Unified akm workflow frontmatter (workflow-format-unification). One markdown asset: the standard AKM asset envelope (type/description/tags/when_to_use/xrefs/updated/timestamp + the OKF v0.2 machine-stamped families) plus the orchestration graph. Per-step prose instructions and gate rubrics live in the markdown body, joined to this graph by step id — see docs/reference/workflows.md. Hand-authored alongside src/workflows/program/schema.ts; the enum vocabularies and patterns here are pinned against the TypeScript constants by tests/integration/workflows/schema-drift.test.ts.",
+  "description": "Unified akm workflow frontmatter (workflow-format-unification). One markdown asset: the standard AKM asset envelope (type/description/tags/when_to_use/xrefs/updated/timestamp + the OKF v0.2 machine-stamped families) plus the orchestration graph. Per-step prose instructions and gate rubrics live in the markdown body, joined to this graph by step id — see docs/reference/workflow-schema.md. Hand-authored alongside src/workflows/program/schema.ts; the enum vocabularies and patterns here are pinned against the TypeScript constants by tests/integration/workflows/schema-drift.test.ts.",
   "type": "object",
   "required": ["steps"],
   "additionalProperties": false,

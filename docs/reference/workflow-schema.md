@@ -262,7 +262,7 @@ resume-without-replay possible (see
 Redacting a param would change what gets hashed and make a resumed run
 diverge from the original, so params are **declared non-secret and
 un-redactable** by design: secrets belong in `env:` refs instead, which carry
-by name only through the plan and are resolved from the process environment
+by name only through the plan and are resolved from akm's env/secret store
 at dispatch (see [Reference: Env & Secrets](env-and-secrets.md)).
 
 As a best-effort guardrail, `akm workflow run` scans a new run's params for

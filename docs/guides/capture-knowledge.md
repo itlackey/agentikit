@@ -32,7 +32,7 @@ string for short notes, or pipe markdown via stdin for longer content.
 
 ```sh
 akm remember "Deployment needs VPN access"
-akm remember "Pair with ops before rotating prod secrets" --name ops/prod-secrets
+akm remember "Pair with ops before rotating prod secrets" --path ops --name prod-secrets
 
 # Structured metadata:
 akm remember "VPN required for staging deploys" \
@@ -104,10 +104,10 @@ bundled skill.
 ## Common problems
 
 **`akm remember` rejects the write with a tags-required error.** Passing
-`--tag`, `--expires`, or `--source` triggers a required-field check before
-anything is written. Either supply `--tag`, or drop those flags and use the
-zero-flag form (`akm remember "body"`), which writes bare with no
-frontmatter.
+`--expires`, `--source`, or `--description` without any `--tag` triggers a
+required-field check before anything is written. Either add at least one
+`--tag`, or drop those flags and use the zero-flag form
+(`akm remember "body"`), which writes bare with no frontmatter.
 
 **A URL import didn't pick up the rest of the site.** That's expected — an
 import fetches exactly the page you pass. To keep a whole site or repo in

@@ -167,9 +167,11 @@ cover only what changes when you're the one publishing.
    (`gh repo edit --add-topic akm-stash`, or from repository settings under
    "Topics").
 3. Others can now install it: `akm bundle add github:your-username/my-bundle`.
-4. To pin a version, create a GitHub release — `akm bundle add` uses the
-   latest release tarball when one exists, otherwise the default branch:
-   `akm bundle add github:your-username/my-bundle#v1.0.0`.
+4. To pin a version, tag a release and install with a `#ref`:
+   `akm bundle add github:your-username/my-bundle#v1.0.0`. Installs are
+   git-based — an unpinned add tracks the default branch, a `#ref` pins that
+   tag/branch/commit — and the latest-release tarball is used only as a
+   fallback when git access fails.
 
 ### Sharing on npm
 
@@ -224,9 +226,10 @@ CLI-based submission (`akm` driving the PR) is planned for a future release.
 ## Write-Safety Expectations
 
 Publishing a bundle does not make it writable by default. `akm bundle add`
-installs bundles read-only unless a source is explicitly marked `writable`,
-and only the primary bundle or an explicitly `--writable` git/filesystem
-source accepts changes back (via `akm sync`, `akm clone --dest`, or
+installs git, npm, and website bundles read-only unless the source is
+explicitly marked `writable` (filesystem sources are the exception — local
+directories are writable by default, opt out with `writable: false`), and
+only the primary bundle or a source resolved as writable accepts changes back (via `akm sync`, `akm clone --dest`, or
 `akm remember --bundle`). If you're publishing a bundle you expect other
 teams to write back into — not just install and read — say so in your
 `README.md` and document the `writable: true` configuration your users need.
@@ -273,9 +276,8 @@ the following before publishing:
 
 **Key names are metadata, not secrets.** Env key names appear in `akm env list`
 and search results by design. Only values are protected. The `--sensitive` flag
-on `akm env create` hides a file from `env list` but does not prevent key names
-from appearing in search results or agent context when the file is shown
-directly.
+on `akm env create` excludes a file from both `env list` output and the search
+index; its key names then surface only when the file is shown directly by ref.
 
 ## Bundle Structure Tips
 

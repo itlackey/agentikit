@@ -166,8 +166,9 @@ instead.
 **Example: publish your own bundle**
 
 ```sh
-# One-time setup: make the primary bundle push on sync
-# Set `"writable": true` in ~/.config/akm/config.json
+# One-time setup (git-descriptor primary bundles only): mark it writable by
+# setting bundles.<name>.writable: true in ~/.config/akm/config.json.
+# A filesystem-type primary bundle is already writable by default.
 akm sync -m "Add deployment skills"
 # → stages, commits, and pushes to your configured remote
 ```
