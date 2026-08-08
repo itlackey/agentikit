@@ -35,6 +35,7 @@
 import { LineCounter, parseDocument } from "yaml";
 import { parseFrontmatterBlock } from "../core/asset/frontmatter";
 import { parseMarkdownToc } from "../core/asset/markdown";
+import { isContainedRelativePath } from "../core/common";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
 import { checkJsonSchemaDefinition, JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS } from "../core/json-schema";
 import { parseReference } from "./program/expressions";
@@ -47,6 +48,7 @@ import {
   PROGRAM_STEP_ID_PATTERN,
   type ProgramBudget,
   type ProgramDefaults,
+  type ProgramExec,
   type ProgramGate,
   type ProgramIsolation,
   type ProgramMap,
@@ -63,6 +65,9 @@ import {
   WORKFLOW_ENGINE_NAME_PATTERN,
   WORKFLOW_MAX_CONCURRENCY,
   WORKFLOW_MAX_ENGINE_NAME_LENGTH,
+  WORKFLOW_MAX_EXEC_ARG_BYTES,
+  WORKFLOW_MAX_EXEC_ARGV,
+  WORKFLOW_MAX_EXEC_CWD_LENGTH,
   WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
   WORKFLOW_MAX_GATE_LOOPS,
   WORKFLOW_MAX_INPUTS,
@@ -111,7 +116,10 @@ const TOP_LEVEL_KEYS = [...ENVELOPE_KEYS, ...WORKFLOW_KEYS];
 const DEFAULTS_KEYS = ["engine", "model", "timeout", "on_error", "llm"];
 const BUDGET_KEYS = ["max_tokens", "max_units"];
 const STEP_KEYS = ["id", "unit", "map", "route", "inputs", "output", "gate"];
-const UNIT_KEYS = ["engine", "model", "llm", "timeout", "retry", "on_error", "output", "env", "isolation"];
+const UNIT_KEYS = ["exec", "engine", "model", "llm", "timeout", "retry", "on_error", "output", "env", "isolation"];
+const EXEC_KEYS = ["command", "cwd"];
+/** Unit keys that name an ENGINE dispatch and therefore cannot appear beside `exec:`. */
+const UNIT_ENGINE_KEYS = ["engine", "model", "llm"] as const;
 const MAP_KEYS = ["over", "concurrency", "reducer", "unit"];
 const ROUTE_KEYS = ["input", "when", "default"];
 const RETRY_KEYS = ["max", "on"];
@@ -795,6 +803,22 @@ function parseUnit(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
 
   const unit: ProgramUnit = { source: ctx.refAt(path) };
 
+  if (raw.exec !== undefined) {
+    const exec = parseExec(ctx, raw.exec, [...path, "exec"], stepLabel);
+    if (exec !== undefined) unit.exec = exec;
+    // An exec unit dispatches no engine call, so every engine-selection key is
+    // a contradiction rather than a harmless extra. Reported per key so the
+    // author sees exactly which line to delete.
+    for (const key of UNIT_ENGINE_KEYS) {
+      if (raw[key] === undefined) continue;
+      ctx.err(
+        [...path, key],
+        `${stepLabel} "unit" declares both "exec" and "${key}". An exec unit runs a shell command and never ` +
+          `reaches an engine, so "${key}" would have no effect — remove one of the two.`,
+      );
+    }
+  }
+
   if (raw.engine !== undefined) {
     const engine = parseEngineName(ctx, raw.engine, [...path, "engine"], `${stepLabel} "engine"`);
     if (engine !== undefined) unit.engine = engine;
@@ -836,6 +860,87 @@ function parseUnit(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
   if (isolation !== undefined) unit.isolation = isolation as ProgramIsolation;
 
   return unit;
+}
+
+/**
+ * Parse `unit.exec` — the argv-array shell-command surface.
+ *
+ * Deliberately NO shell-string spelling: the child is spawned directly from
+ * this array, so shell metacharacters are inert literal bytes and the whole
+ * quoting/injection class is structurally absent. An author who wants a
+ * pipeline writes the interpreter explicitly (`["bash", "-lc", "…"]`), which
+ * keeps that decision visible in the frontmatter diff.
+ */
+function parseExec(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramExec | undefined {
+  if (!isPlainRecord(raw)) {
+    ctx.err(path, `${stepLabel} "exec" must be a mapping with a "command" argv list.`);
+    return undefined;
+  }
+  checkUnknownKeys(ctx, raw, path, EXEC_KEYS, `${stepLabel} "exec"`);
+
+  const command = parseExecCommand(ctx, raw.command, [...path, "command"], stepLabel);
+  if (command === undefined) return undefined;
+
+  const exec: ProgramExec = { command };
+  const cwd = parseExecCwd(ctx, raw.cwd, [...path, "cwd"], stepLabel);
+  if (cwd !== undefined) exec.cwd = cwd;
+  return exec;
+}
+
+/** The argv array itself: 1..WORKFLOW_MAX_EXEC_ARGV bounded non-empty strings. */
+function parseExecCommand(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): string[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    ctx.err(
+      path,
+      `${stepLabel} "exec" requires "command": a non-empty argv list, e.g. command: ["bun", "run", "test:unit"]. ` +
+        `A single shell string is not accepted — the command is spawned directly, never through a shell.`,
+    );
+    return undefined;
+  }
+  if (raw.length > WORKFLOW_MAX_EXEC_ARGV) {
+    ctx.err(path, `${stepLabel} "exec.command" must have at most ${WORKFLOW_MAX_EXEC_ARGV} entries.`);
+    return undefined;
+  }
+  const argv: string[] = [];
+  for (const [index, entry] of raw.entries()) {
+    if (typeof entry !== "string" || entry === "") {
+      ctx.err(path, `${stepLabel} "exec.command[${index}]" must be a non-empty string.`);
+      return undefined;
+    }
+    if (utf8Bytes(entry) > WORKFLOW_MAX_EXEC_ARG_BYTES) {
+      ctx.err(path, `${stepLabel} "exec.command[${index}]" exceeds ${WORKFLOW_MAX_EXEC_ARG_BYTES} bytes.`);
+      return undefined;
+    }
+    argv.push(entry);
+  }
+  return argv;
+}
+
+/**
+ * The optional relative `cwd:`. Rejected here (statically) for absolute paths
+ * and `..` segments; containment against the resolved base directory is
+ * re-checked at dispatch, so a symlinked subdirectory cannot escape either.
+ */
+function parseExecCwd(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || raw.trim() === "") {
+    ctx.err(path, `${stepLabel} "exec.cwd" must be a non-empty relative path inside the unit's working directory.`);
+    return undefined;
+  }
+  const value = raw.trim();
+  if (value.length > WORKFLOW_MAX_EXEC_CWD_LENGTH) {
+    ctx.err(path, `${stepLabel} "exec.cwd" exceeds ${WORKFLOW_MAX_EXEC_CWD_LENGTH} characters.`);
+    return undefined;
+  }
+  if (!isContainedRelativePath(value)) {
+    ctx.err(
+      path,
+      `${stepLabel} "exec.cwd" (${JSON.stringify(value)}) must be a RELATIVE path inside the unit's working ` +
+        `directory — absolute paths, Windows drive letters, "~", and ".." segments are rejected.`,
+    );
+    return undefined;
+  }
+  return value;
 }
 
 function parseMap(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramMap | undefined {

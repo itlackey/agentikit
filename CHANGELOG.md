@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`exec` workflow units — run a shell command as a workflow step.** A step
+  whose `unit:` block declares `exec:` runs a command directly instead of
+  dispatching to an LLM or an agent, so deterministic work (test suites,
+  builds, lint, scripts) no longer costs a model dispatch, its latency, its
+  tokens, or its nondeterminism.
+
+  ```yaml
+  - id: test
+    unit:
+      exec:
+        command: ["bun", "run", "test:unit"]
+      timeout: "10m"
+      retry: { max: 1, on: [timeout] }
+  ```
+
+  - **`command:` is an argv array; there is no shell-string spelling.** The
+    child is spawned directly, so `;`, `|`, `&&`, `$(…)` and `*` inside an
+    argument are inert literal bytes — the quoting/injection class is
+    structurally absent, not defended against. Write `["bash", "-lc", "…"]`
+    when a pipeline is genuinely wanted, and own that choice in the diff.
+  - **An exec unit names no engine.** It rejects `engine`/`model`/`llm`, spends
+    no tokens, and a workflow made only of exec steps runs on an install with
+    no engine configured at all.
+  - **Everything else about a unit still applies:** `timeout`, `retry`,
+    `on_error`, `output`, `env`, `isolation: worktree`, `map` fan-out and its
+    concurrency limits, the unit journal, budget accounting, and replay/reuse
+    (a completed exec unit is never re-run on resume).
+  - **Output rule:** stdout is the promoted artifact with trailing newlines
+    stripped (like shell `$(…)`); with an `output:` schema on the unit, stdout
+    must be exactly one JSON value, strictly parsed and validated. stderr is a
+    diagnostic channel only. A schema miss is *not* re-prompted — a fixed argv
+    cannot answer feedback, but re-running it could deploy twice.
+  - **Exit codes:** non-zero → `non_zero_exit`, wall-clock expiry → `timeout`,
+    cancellation → `aborted`, failure to start → `spawn_failed`. All are
+    pre-existing `retry.on` reasons — the failure taxonomy is unchanged. With
+    the default `on_error: fail`, a non-zero exit fails the step and the run,
+    which is what makes a `test` step a gate.
+  - **Security:** commands run inside the existing workflow trust model (full
+    environment and PATH of the invoking user, as workflow-authored shell
+    commands always have). Secrets come from `env:` bindings by NAME — the
+    frozen plan and the replay hash carry only ref names, and resolved values
+    are scrubbed from stdout, stderr, and failure diagnostics by the same
+    redaction contract every other dispatch uses, before anything is journaled.
+    `cwd:` is relative and `..`-free, re-checked against the resolved base
+    (symlinks included) before spawning.
+  - **Cancellation is real:** the child is spawned in its own process group and
+    gets a SIGTERM→SIGKILL ladder on timeout or abort, so `--timeout` / Ctrl-C
+    stop a running command without orphaning its children.
+  - **No replay churn:** the exec spec was added to the unit input-hash preimage
+    as a key present only on exec units, so `hashVersion` stays 4 and every
+    previously-frozen llm/agent/sdk unit hashes byte-identically — runs already
+    in flight neither re-dispatch nor diverge.
+
+  See [Workflow Schema: Exec (shell) units](docs/reference/workflow-schema.md#exec-shell-units)
+  and the worked example in
+  [Author's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md#deterministic-steps-run-a-command-gate-on-it).
+
 ### Changed
 
 - **Workflow `map` steps now fan out in parallel by default.** A `map` step

@@ -122,7 +122,7 @@ export interface WorkflowUnitDiagnostic {
   claimExpiresAt: string | null;
   engine: string | null;
   /** Journaled resolved runtime kind for a frozen-engine unit. */
-  runtimeKind: "llm" | "agent" | "sdk" | null;
+  runtimeKind: "llm" | "agent" | "sdk" | "exec" | null;
   platform: string | null;
 }
 
@@ -167,8 +167,15 @@ function toUnitDiagnostic(
     claimHolder: row.claim_holder,
     claimExpiresAt: row.claim_expires_at,
     engine: row.engine ?? null,
+    // `exec` units carry no engine by construction (they spawn a command), so
+    // the engine-presence guard that validates the three ENGINE runners must
+    // not be applied to them — it would erase the only kind label they have.
     runtimeKind:
-      row.engine && (row.runner === "llm" || row.runner === "agent" || row.runner === "sdk") ? row.runner : null,
+      row.runner === "exec"
+        ? "exec"
+        : row.engine && (row.runner === "llm" || row.runner === "agent" || row.runner === "sdk")
+          ? row.runner
+          : null,
     platform: plannedEngine?.kind === "agent" ? plannedEngine.platform : null,
   };
 }

@@ -41,6 +41,30 @@ export const WORKFLOW_MAX_TIMEOUT_MS = 2 ** 31 - 1;
 export const WORKFLOW_ENGINE_NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 export const WORKFLOW_MAX_ENGINE_NAME_LENGTH = 63;
 
+// ── exec (shell) unit bounds ─────────────────────────────────────────────────
+
+/**
+ * Max entries in an exec unit's `command:` argv array. Generous for a real
+ * command line, small enough that a corrupted plan cannot ask the OS to spawn
+ * a megabyte of arguments.
+ */
+export const WORKFLOW_MAX_EXEC_ARGV = 64;
+/** Max UTF-8 bytes of ONE argv entry (well under every platform's ARG_MAX per-arg limit). */
+export const WORKFLOW_MAX_EXEC_ARG_BYTES = 4096;
+/** Max characters of an exec unit's relative `cwd:`. */
+export const WORKFLOW_MAX_EXEC_CWD_LENGTH = 1024;
+/**
+ * Default wall-clock timeout for an exec unit that declares no `timeout:` and
+ * inherits no document `defaults.timeout`.
+ *
+ * 10 minutes matches `DEFAULT_LLM_TIMEOUT_MS`. Unlike an agent harness (which
+ * owns its own lifetime, hence `DEFAULT_AGENT_TIMEOUT_MS === null`), a shell
+ * command has NO lifetime discipline of its own: an unbounded default would let
+ * a hung `npm install` or an interactive prompt wedge a workflow run forever.
+ * Authors who genuinely need an unbounded command write `timeout: none`.
+ */
+export const DEFAULT_EXEC_TIMEOUT_MS = 600_000;
+
 // ── Persistence bounds ───────────────────────────────────────────────────────
 
 /**

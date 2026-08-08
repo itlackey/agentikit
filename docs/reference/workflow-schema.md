@@ -39,8 +39,9 @@ families) plus the orchestration keys:
   (`[A-Za-z_][A-Za-z0-9_-]*` — no dots) and **at most one** of `unit`, `map`,
   or `route`. A step with neither is **still a unit step** — bare
   `- id: validate` is the complete minimal declaration. `unit:` is the
-  optional dispatch-override bag (`engine`, `model`, `llm`, `timeout`,
+  optional dispatch-override bag (`exec`, `engine`, `model`, `llm`, `timeout`,
   `retry`, `on_error`, `env`, `isolation`; see
+  [Exec (shell) units](#exec-shell-units),
   [Failure policy](#failure-policy) and
   [Worktree isolation](https://github.com/itlackey/akm/blob/main/docs/architecture/workflow-engine.md#worktree-isolation)).
 - `inputs` — on a `unit`/`map` step, the prior-step artifacts this step
@@ -280,7 +281,9 @@ run and never mutates params, and false positives/negatives are expected.
   `output`) or its text;
 - a `map` step → the collected array of per-item results, in item order
   (under `on_error: continue`, a failed item's slot is `null`), unless the
-  step's own `output` schema describes a reduced, single-value shape instead.
+  step's own `output` schema describes a reduced, single-value shape instead;
+- an [exec unit](#exec-shell-units) → its stdout (trailing newlines stripped),
+  or the JSON value stdout parsed to when the unit declares an `output` schema.
 
 **An empty successful free-text output is treated as no output.** When a
 schemaless unit (one that declares no `output` schema) succeeds but returns
@@ -365,6 +368,150 @@ first of these that is set wins: the unit's `timeout`, then the document's
 default — **10m for `kind: llm` engines, and none for agent engines**, which
 manage their own process lifetime. Writing `timeout: none` is an explicit opt
 out and leaves the unit genuinely unbounded; nothing later re-imposes a cap.
+
+## Exec (shell) units
+
+A step whose `unit:` block declares `exec:` runs a **shell command** instead of
+dispatching to an engine. Deterministic work — running the test suite, building,
+linting, copying a file, invoking a script — is a command, not a prompt, and
+paying for an LLM or agent dispatch to get it done buys nondeterminism, latency,
+and tokens in exchange for nothing.
+
+```yaml
+steps:
+  - id: test
+    unit:
+      exec:
+        command: ["bun", "run", "test:unit"]
+        cwd: packages/core        # optional, relative
+      timeout: "10m"
+      retry: { max: 1, on: [timeout] }
+```
+
+An exec unit names **no engine**. It carries no `engine`, `model`, or `llm` (the
+parser rejects those alongside `exec:`), it consumes no tokens, and a workflow
+made only of exec steps freezes and runs on an install with no engine configured
+at all. Everything else about a unit still applies unchanged: `timeout`, `retry`,
+`on_error`, `output`, `env`, `isolation`, `map` fan-out and its concurrency, the
+unit journal, budget accounting, and replay/reuse.
+
+The step's body prose is still required (it is the step's section, like any
+other unit step) and is **not** passed to the command — it documents what the
+command does, for the human reading the workflow.
+
+### `command` is an argv array, never a shell string
+
+There is deliberately **no shell-string spelling**. The child is spawned
+directly, so nothing ever parses the words: `;`, `|`, `&&`, `$(…)`, backticks,
+`>`, and `*` inside an argument are inert literal bytes. The entire
+quoting/injection class a `sh -c "<string>"` surface opens is *structurally
+absent*, not defended against — a value that happens to contain `; rm -rf /`
+is one argument containing those characters, and always was.
+
+If you genuinely want a pipeline or a shell builtin, name the interpreter
+yourself:
+
+```yaml
+        command: ["bash", "-lc", "bun run build | tee build.log"]
+```
+
+That is allowed and sometimes right — but it is now a visible, reviewable line
+in the frontmatter diff rather than something the format did for you silently.
+
+Bounds: 1–64 argv entries, each a non-empty string of at most 4096 bytes.
+
+### `cwd`
+
+Optional and **relative**. It resolves inside the unit's working directory —
+the engine invocation's working directory normally, or the unit's fresh
+detached worktree under `isolation: worktree`. Absolute paths, Windows drive
+letters, `~`, and `..` segments are rejected by the parser *and* by the
+frozen-plan decoder, and containment is re-checked against the *resolved* base
+(symlinks included) immediately before the command is spawned. An exec unit
+cannot step outside the tree its isolation promised.
+
+### The output rule
+
+- **No `output:` schema** → the artifact is the command's **stdout**, with
+  trailing newlines stripped (exactly like shell `$(…)`). Empty stdout follows
+  the ordinary [empty-output rule](#what-a-steps-output-is): it is treated as
+  *no output*.
+- **With an `output:` schema on the unit** → stdout must be **exactly one JSON
+  value** (surrounding whitespace tolerated, nothing else), which is parsed and
+  validated against the schema. This is a *strict* parse, unlike the forgiving
+  embedded-JSON scan used for model output: a command that claims a schema
+  prints JSON, and log noise that happens to contain a JSON object must never
+  be promoted as the artifact. Non-JSON stdout fails as `parse_error`; JSON that
+  misses the schema fails as `validation_error`.
+- **stderr is never part of the artifact.** It is a diagnostic channel: the tail
+  of a failed command's stderr is included (clipped, redacted) in the unit's
+  failure diagnostic and its journal row.
+
+Note that a schema failure is **not** retried by the corrective-feedback loop
+that model units use. Re-prompting is meaningless to a fixed argv — the same
+command cannot produce different output — but re-running it *can* deploy twice.
+A declared `retry:` still applies, because that is a policy you opted into per
+failure reason.
+
+### Exit codes and failure reasons
+
+| Outcome | `failure_reason` | In `retry.on`? |
+| --- | --- | --- |
+| exit 0 | — (unit succeeds) | — |
+| non-zero exit | `non_zero_exit` | yes |
+| exceeded `timeout` | `timeout` | yes |
+| run cancelled (`Ctrl-C`, `--timeout`, budget) | `aborted` | yes |
+| binary missing / working directory unusable | `spawn_failed` | yes |
+| `cwd` resolved outside its base | `exec_cwd_escape` | **no** (tampering, never transient) |
+
+A non-zero exit is an ordinary unit failure, so it flows through the ordinary
+policy: with the default `on_error: fail` it fails the step and the run — which
+is exactly what makes a `test` step a **gate**. With `on_error: continue` the
+failure is recorded in the step's evidence and the completion gate decides.
+
+On timeout or cancellation the child's whole **process group** gets a
+SIGTERM→SIGKILL ladder, so a command that spawned its own children does not
+leave them orphaned.
+
+### Context reaching the command
+
+A frozen argv is never interpolated (this format has no substitution language),
+so data reaches an exec unit as **environment**, the argv analogue of the
+context blocks a model unit gets in its prompt:
+
+| Variable | Value |
+| --- | --- |
+| `AKM_RUN_ID`, `AKM_STEP_ID`, `AKM_UNIT_ID` | ids of this dispatch |
+| `AKM_PARAMS` | the run params, canonical JSON |
+| `AKM_ITEM`, `AKM_ITEM_INDEX` | a `map` unit's item (canonical JSON) and 0-based index |
+| `AKM_INPUTS` | the step's declared `inputs:` artifacts, keyed by reference string |
+
+These are applied *after* your `env:` bindings, so a binding can never shadow
+them.
+
+### Security
+
+Exec units sit inside the existing workflow trust model — see
+[Security: workflow sources are executed code](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md#security-workflow-sources-are-executed-code).
+They do not widen it, and they do not narrow it:
+
+- The command runs with the **full environment and PATH of the user who invoked
+  `akm workflow run`**, exactly as a workflow-authored shell command always
+  has. An allowlist here would be theatre — it cannot constrain what the command
+  then does with your credentials on disk — while breaking every realistic
+  command. Operators who need a narrower environment scope the *akm process*
+  (dedicated account, ephemeral working directory, external network/filesystem
+  policy), which is the boundary that actually holds.
+- **Secrets come from `env:` bindings by name.** The frozen plan carries only
+  the ref names, the replay hash carries only the ref names, and the resolved
+  values are collected and scrubbed out of stdout, stderr, and the failure
+  diagnostic by the same redaction contract every other dispatch uses — before
+  anything is journaled. Never inline a secret into `command:`; argv is stored
+  verbatim in `plan_json`.
+- **Read a workflow before you run it.** `exec:` makes what a workflow will run
+  explicit and auditable in one place, which is a real improvement over
+  instructing a model to "run the tests" — but a bundle you do not trust is
+  still a stranger's script.
 
 ## Fan-out and concurrency
 
@@ -469,11 +616,15 @@ Fail-fast is the default. Per unit (or via `defaults.on_error`):
 - `retry: { max: <n>, on: [<failure_reason>…] }` — re-dispatches a failed
   unit up to `max` extra times when its recorded `failure_reason` is listed
   (e.g. `timeout`, `llm_rate_limit`, `spawn_failed`, `non_zero_exit`); every
-  attempt is journaled separately.
+  attempt is journaled separately. For an
+  [exec unit](#exec-shell-units) a non-zero exit is `non_zero_exit`, a
+  wall-clock expiry is `timeout`, and a failure to start is `spawn_failed`.
 
 A unit's `output` schema is validated on every runner; a validation miss
 re-dispatches once with corrective feedback before the unit is recorded as
-failed.
+failed. Exec units are the one exception: a fixed argv cannot answer feedback,
+so a schema miss fails immediately rather than re-running a side-effecting
+command (see [The output rule](#the-output-rule)).
 
 ## Gates and verification
 

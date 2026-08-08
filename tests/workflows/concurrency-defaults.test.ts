@@ -417,7 +417,7 @@ describe("override attribution is keyed by stepId, not array position", () => {
   const engineOf = (plan: WorkflowPlanGraph, stepId: string): string => {
     const root = plan.steps.find((step) => step.stepId === stepId)?.root;
     if (!root || root.kind !== "unit") throw new Error(`no unit step ${stepId}`);
-    return root.invocation.engine;
+    return root.invocation!.engine;
   };
 
   test("the ordinary 1:1 compile attributes each step its own engine", () => {

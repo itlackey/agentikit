@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import path from "node:path";
+import { isContainedRelativePath } from "../../core/common";
 import { UsageError } from "../../core/errors";
 import { formatExtraParamsIssue, validateExtraParams } from "../../core/extra-params";
 import type { LlmInvocationOverrides } from "../../integrations/agent/engine-resolution";
@@ -15,6 +16,9 @@ import {
   WORKFLOW_MAX_CONCURRENCY,
   WORKFLOW_MAX_ENGINE_NAME_LENGTH,
   WORKFLOW_MAX_ENGINES,
+  WORKFLOW_MAX_EXEC_ARG_BYTES,
+  WORKFLOW_MAX_EXEC_ARGV,
+  WORKFLOW_MAX_EXEC_CWD_LENGTH,
   WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
   WORKFLOW_MAX_GATE_LOOPS,
   WORKFLOW_MAX_INPUTS,
@@ -44,7 +48,32 @@ export type IrMapReducer = "collect" | "vote";
  * unknown keys — dropping it would fail decode for in-flight runs.
  */
 export type IrInstructionTemplating = "verbatim";
-export type IrRuntimeKind = "llm" | "agent" | "sdk";
+export type IrRuntimeKind = "llm" | "agent" | "sdk" | "exec";
+
+/**
+ * A frozen exec (shell) unit: the argv the engine spawns, where it spawns it,
+ * and the wall-clock budget it gets.
+ *
+ * `command` is an ARGV ARRAY and there is deliberately no shell-string form —
+ * the child is spawned directly, so shell metacharacters (`;`, `|`, `&&`,
+ * `$(…)`, `>`) are inert literal argument bytes. An author who wants a
+ * pipeline writes the interpreter explicitly (`["bash", "-lc", "a | b"]`),
+ * which keeps that choice reviewable in the frontmatter diff.
+ *
+ * `cwd` is relative and contained (no absolute form, no `..`); the executor
+ * re-checks containment against the RESOLVED base directory before spawning,
+ * so neither a crafted plan nor a symlink can escape the unit's tree.
+ *
+ * `timeoutMs` lives here rather than on an `IrInvocation` because an exec unit
+ * has no engine to inherit one from — it is resolved once at freeze
+ * (`ir/freeze.ts`) from the unit `timeout:` → document `defaults.timeout` →
+ * {@link DEFAULT_EXEC_TIMEOUT_MS}. `null` means the author wrote `timeout: none`.
+ */
+export interface IrExecSpec {
+  command: [string, ...string[]];
+  cwd?: string;
+  timeoutMs: number | null;
+}
 
 export interface IrRetry {
   max: number;
@@ -103,7 +132,14 @@ export interface IrUnitNode {
   templating?: IrInstructionTemplating;
   /** Prior-step artifacts attached to this unit as structured context (reference strings). */
   inputs?: string[];
-  invocation: IrInvocation;
+  /**
+   * Engine dispatch settings. Present on EXACTLY the units that reach an
+   * engine — an `exec` unit has none (it spawns a process instead), and the
+   * decoder enforces the exclusive-or.
+   */
+  invocation?: IrInvocation;
+  /** Shell-command dispatch. Mutually exclusive with {@link invocation}. */
+  exec?: IrExecSpec;
   schema?: Record<string, unknown>;
   retry?: IrRetry;
   onError: IrOnError;
@@ -427,6 +463,7 @@ function validateNode(
       "templating",
       "inputs",
       "invocation",
+      "exec",
       "schema",
       "retry",
       "onError",
@@ -452,7 +489,60 @@ function validateNode(
   validateStringArray(node.env, `unit ${node.id} env`, MAX_LIST_ITEMS, true);
   validateStringArray(node.inputs, `unit ${node.id} inputs`, WORKFLOW_MAX_INPUTS, true);
   validateSource(node.source, `unit ${node.id} source`);
+  // Exactly one dispatch mechanism per unit. A node carrying both would let a
+  // tampered plan smuggle a shell command past the engine-compatibility checks
+  // (which key off the invocation); one carrying neither has nothing to run.
+  if ((node.invocation === undefined) === (node.exec === undefined)) {
+    fail(`unit ${node.id} must declare exactly one of invocation or exec`);
+  }
+  if (node.exec !== undefined) {
+    validateExecSpec(node.exec, `unit ${node.id} exec`);
+    return;
+  }
   validateInvocation(node.invocation, references, hooks);
+}
+
+/**
+ * Strictly decode a frozen {@link IrExecSpec}. This is the corruption gate for
+ * a persisted plan: the argv bounds, the relative-and-contained `cwd`, and the
+ * timeout range are all re-checked here, because `plan_json` may have been
+ * hand-edited between freeze and dispatch.
+ */
+function validateExecSpec(value: unknown, label: string): void {
+  if (!isRecord(value)) fail(`${label} must be an object`);
+  assertKeys(value, ["command", "cwd", "timeoutMs"], label);
+  const command = value.command;
+  if (
+    !Array.isArray(command) ||
+    command.length === 0 ||
+    command.length > WORKFLOW_MAX_EXEC_ARGV ||
+    !command.every(
+      (arg) =>
+        typeof arg === "string" && arg.length > 0 && Buffer.byteLength(arg, "utf8") <= WORKFLOW_MAX_EXEC_ARG_BYTES,
+    )
+  ) {
+    fail(`${label}.command must be an argv array of 1 through ${WORKFLOW_MAX_EXEC_ARGV} bounded non-empty strings`);
+  }
+  if (value.cwd !== undefined) {
+    if (
+      typeof value.cwd !== "string" ||
+      value.cwd.length === 0 ||
+      value.cwd.length > WORKFLOW_MAX_EXEC_CWD_LENGTH ||
+      !isContainedRelativePath(value.cwd)
+    ) {
+      fail(`${label}.cwd must be a relative path contained in the unit working directory`);
+    }
+  }
+  if (
+    !(
+      value.timeoutMs === null ||
+      (Number.isSafeInteger(value.timeoutMs) &&
+        (value.timeoutMs as number) >= 1 &&
+        (value.timeoutMs as number) <= WORKFLOW_MAX_TIMEOUT_MS)
+    )
+  ) {
+    fail(`${label}.timeoutMs must be null or an integer from 1 through ${WORKFLOW_MAX_TIMEOUT_MS}`);
+  }
 }
 
 function validateGate(
@@ -520,6 +610,13 @@ function validateRoute(route: unknown, stepId: string): void {
 
 function assertUnitEngineCompatibility(node: IrExecNode, engines: Record<string, FrozenEngineSnapshot>): void {
   const unit = node.kind === "map" ? node.template : node;
+  // An exec unit names no engine at all, so there is no engine pairing to
+  // check. It is the ONE kind that may carry `env` + `isolation: worktree`
+  // without an engine behind it: it spawns a real child process, which is
+  // exactly the precondition those two features require. `validateNode` has
+  // already proven it carries no `invocation`, so nothing here can be bypassed
+  // by declaring both.
+  if (unit.exec !== undefined) return;
   const engine = unit.invocation ? engines[unit.invocation.engine] : undefined;
   if (!engine) return;
   if (engine.kind === "llm" && unit.invocation?.model === null) fail(`LLM unit ${unit.id} has no exact model`);

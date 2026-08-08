@@ -70,6 +70,104 @@ For a richer example — fan-out with `map`, `route`-based branching, retries,
 and a run `budget` — see
 [Workflow Schema: Richer example](../reference/workflow-schema.md#richer-example).
 
+## Deterministic steps: run a command, gate on it
+
+Not every step needs a model. Running the test suite, building, linting, or
+invoking a script is *deterministic work*: there is exactly one right answer and
+the command already knows it. A step whose `unit:` declares `exec:` runs that
+command directly — no LLM, no agent, no tokens, no nondeterminism.
+
+The canonical shape is a **test step that gates the rest of the run**:
+
+```markdown
+---
+type: workflow
+description: Fix a failing test, then verify the suite is green
+params:
+  failure: { type: string, description: The failing test name or error }
+steps:
+  - id: fix
+  - id: test
+    inputs: [steps.fix.output]
+    unit:
+      exec:
+        command: ["bun", "run", "test:unit"]
+      timeout: "10m"
+      retry: { max: 1, on: [timeout] }
+  - id: report
+    inputs: [steps.test.output]
+---
+
+# Fix and Verify
+
+## fix
+
+Find the cause of the failure described in the run parameters and fix it.
+Explain what you changed and why.
+
+## test
+
+Run the unit test suite. This step is deterministic: the command's exit code
+decides whether the run continues.
+
+## report
+
+Summarize the fix and the test results attached to this unit.
+```
+
+What this buys you:
+
+- **The suite is the gate.** `test` uses the default `on_error: fail`, so a
+  non-zero exit fails the unit with `non_zero_exit`, fails the step, and stops
+  the run before `report` ever dispatches. No judge, no rubric, no prompt — the
+  exit code is the verdict.
+- **The output is real.** `steps.test.output` is the command's stdout (trailing
+  newlines stripped), so `report` receives the actual test output rather than a
+  model's recollection of it.
+- **It costs nothing.** No tokens, no latency beyond the command itself, and the
+  same input always produces the same dispatch.
+- **It resumes correctly.** A completed exec unit is journaled like any other; a
+  resumed run reuses the row instead of re-running the suite.
+
+### Getting a typed result instead of raw text
+
+If the command can print JSON, declare an `output` schema on the unit and the
+step artifact becomes a validated structure:
+
+```yaml
+  - id: test
+    unit:
+      exec:
+        command: ["bun", "run", "test:unit", "--reporter=json"]
+      output:
+        type: object
+        required: [passed, failed]
+        properties:
+          passed: { type: number }
+          failed: { type: number }
+```
+
+stdout must then be **exactly one JSON value** — no log noise around it — and
+downstream steps can address `steps.test.output.failed`.
+
+### Things to get right
+
+- **`command:` is an argv array, not a shell string.** `["bun", "run", "test"]`,
+  never `"bun run test"`. Nothing is shell-parsed, which is what makes it safe;
+  if you truly need a pipeline, write `["bash", "-lc", "a | b"]` and own that
+  choice explicitly.
+- **No interpolation.** The argv is frozen. A `map` step's item reaches the
+  command as `AKM_ITEM` (canonical JSON) and the run params as `AKM_PARAMS` —
+  read them from the environment, do not try to splice them into `command:`.
+- **Secrets go in `env:`, never in `command:`.** `command:` is stored verbatim in
+  the frozen plan; `env:` bindings are carried by name and their values are
+  redacted out of everything journaled.
+- **Long commands need a `timeout:`.** An exec unit defaults to 10 minutes. Use
+  `timeout: "30m"` for a slow suite, or `timeout: "none"` only when you really
+  mean unbounded.
+
+Full reference: [Workflow Schema: Exec (shell) units](../reference/workflow-schema.md#exec-shell-units).
+
 ## Common authoring mistakes
 
 - **Templating prose.** There is no `${{ … }}`/`{{ … }}` interpolation
@@ -97,6 +195,12 @@ and a run `budget` — see
 - **Referencing an unknown step or param.** `akm lint --type workflows`
   checks every bare reference statically (unknown step, unknown param, bad
   path) — run it before you rely on a workflow working.
+- **Writing `exec.command` as a shell string.** `command: "bun run test"` is
+  rejected; it must be an argv array (`["bun", "run", "test"]`). Nothing is
+  ever shell-parsed, so metacharacters inside an argument stay literal.
+- **Asking a model to do deterministic work.** "Run the test suite and tell me
+  if it passed" is an [exec step](#deterministic-steps-run-a-command-gate-on-it),
+  not a prompt.
 
 ## Typing what a step returns
 

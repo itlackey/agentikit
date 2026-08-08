@@ -23,12 +23,14 @@ import { getBuiltinAgentProfile } from "../../integrations/agent/profiles";
 import { HARNESS_BY_ID } from "../../integrations/harnesses";
 import { defaultLlmEngineConcurrency, defaultMapConcurrency, workflowMaxConcurrency } from "../concurrency-policy";
 import type { ProgramUnit } from "../program/schema";
+import { DEFAULT_EXEC_TIMEOUT_MS } from "../resource-limits";
 import type { WorkflowAsset } from "../runtime/workflow-asset-loader";
 import { compileWorkflowPlan, type WorkflowPlanDraft, type WorkflowUnitDraft } from "./compile";
 import type {
   FrozenAgentEngine,
   FrozenEngineSnapshot,
   FrozenLlmEngine,
+  IrExecSpec,
   IrGateNode,
   IrInvocation,
   IrStepPlan,
@@ -124,13 +126,39 @@ export function compileResolveFreezeWorkflow(
     return { engine: name, model, timeoutMs, ...(llm ? { llm } : {}) };
   };
 
+  /**
+   * Resolve an exec unit's wall-clock budget at the single freeze boundary:
+   * unit `timeout:` → document `defaults.timeout` → {@link DEFAULT_EXEC_TIMEOUT_MS}.
+   * There is no engine layer to consult — an exec unit names no engine — and
+   * `null` (the author's `timeout: none`) is honored as genuinely unbounded,
+   * exactly like `effectiveTimeout`'s null.
+   */
+  const freezeExec = (exec: NonNullable<WorkflowUnitDraft["exec"]>, unit: ProgramUnit | undefined): IrExecSpec => {
+    const layers = [...(documentDefaults ? [documentDefaults] : []), ...(unit ? [unit] : [])];
+    let timeoutMs: number | null = DEFAULT_EXEC_TIMEOUT_MS;
+    for (let index = layers.length - 1; index >= 0; index--) {
+      if (Object.hasOwn(layers[index] ?? {}, "timeoutMs")) {
+        timeoutMs = layers[index]?.timeoutMs ?? null;
+        break;
+      }
+    }
+    return {
+      command: [...exec.command] as [string, ...string[]],
+      ...(exec.cwd ? { cwd: exec.cwd } : {}),
+      timeoutMs,
+    };
+  };
+
   const freezeUnit = (node: WorkflowUnitDraft, stepId: string, unit?: ProgramUnit): IrUnitNode => ({
     kind: "unit",
     id: node.id,
     instructions: node.instructions,
     templating: node.templating ?? "verbatim",
     ...(node.inputs && node.inputs.length > 0 ? { inputs: node.inputs } : {}),
-    invocation: freezeInvocation(unit, stepId),
+    // An exec unit dispatches a child process, so it freezes an exec spec and
+    // NO invocation — engine selection is skipped entirely, which is why an
+    // exec-only workflow runs on an install with no engines configured at all.
+    ...(node.exec ? { exec: freezeExec(node.exec, unit) } : { invocation: freezeInvocation(unit, stepId) }),
     ...(node.schema ? { schema: node.schema } : {}),
     ...(node.retry ? { retry: node.retry } : {}),
     onError: node.onError,
