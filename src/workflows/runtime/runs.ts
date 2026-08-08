@@ -31,6 +31,11 @@ import { compileResolveFreezeWorkflow } from "../ir/freeze";
 import { materializeWorkflowParameterFlags, validateWorkflowParams, type WorkflowParameterFlag } from "../ir/params";
 import { canonicalPlanJson, computePlanHash } from "../ir/plan-hash";
 import { decodeWorkflowPlanV3, type FrozenEngineSnapshot, WORKFLOW_IR_VERSION } from "../ir/schema";
+import {
+  utf8Bytes,
+  WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS,
+  WORKFLOW_MAX_EVIDENCE_JSON_BYTES,
+} from "../resource-limits";
 import { type SummaryJudge, validateStepSummary } from "../validate-summary";
 import { resolveAgentIdentity } from "./agent-identity";
 import { type CheckinDirective, evaluateCheckin } from "./checkin";

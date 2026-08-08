@@ -136,7 +136,11 @@ import { collectSensitiveValues, isEnvPassthroughValueSafeToExpose, redactSensit
 import { runStructured } from "../../core/structured";
 import { warn } from "../../core/warn";
 import { insertEventStrict } from "../../storage/repositories/events-repository";
-import { type WorkflowRunUnitRow, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
+import {
+  type WorkflowRunUnitRow,
+  withWorkflowRunsConnection,
+  withWorkflowRunsRepo,
+} from "../../storage/repositories/workflow-runs-repository";
 import type { FrozenEngineSnapshot, IrBudget, IrInvocation, IrStepPlan } from "../ir/schema";
 import { LIFETIME_UNIT_CAP, scheduleUnits, UnitCapExceededError } from "./scheduler";
 // Shared step semantics — the ONE implementation consumed by the engine
@@ -403,8 +407,27 @@ function stepWillDispatch(
   return workUnits.some((u) => u.resolved.ok && classifyUnitReuse(u, existingUnits, gateLoop).kind === "dispatch");
 }
 
-/** Execute one step plan natively. Never throws for unit-level failures. */
-export async function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContext): Promise<StepExecutionResult> {
+/**
+ * Execute one step plan natively. Never throws for unit-level failures.
+ *
+ * The whole step runs inside ONE state.db connection scope
+ * ({@link withWorkflowRunsConnection}): the journal read, every unit's
+ * insert/finish transaction, and every `workflow_unit_*` event share a single
+ * handle for the step's lifetime instead of opening and closing state.db twice
+ * per unit plus twice per unit's events. The scope closes the handle when the
+ * step settles (success, failure, or throw), so there is no handle to leak and
+ * no lifetime that outlives the step. Everything inside keeps its existing
+ * transaction boundaries — see `core/state-db-scope.ts` for why sharing a
+ * handle across concurrently-scheduled units is safe here.
+ */
+export function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContext): Promise<StepExecutionResult> {
+  return withWorkflowRunsConnection(() => executeStepPlanInConnection(plan, ctx));
+}
+
+async function executeStepPlanInConnection(
+  plan: IrStepPlan,
+  ctx: StepExecutionContext,
+): Promise<StepExecutionResult> {
   const dispatched = ctx.unitsDispatched ?? 0;
 
   // Work-list computation is the SHARED, PURE decision (step-work.ts): resolve

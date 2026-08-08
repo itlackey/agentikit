@@ -41,6 +41,32 @@ export const WORKFLOW_MAX_TIMEOUT_MS = 2 ** 31 - 1;
 export const WORKFLOW_ENGINE_NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 export const WORKFLOW_MAX_ENGINE_NAME_LENGTH = 63;
 
+// ── Persistence bounds ───────────────────────────────────────────────────────
+
+/**
+ * Max serialized size of one `workflow_run_steps.evidence_json` row value.
+ *
+ * The promoted step artifact (`evidence.output`) is deliberately NOT clipped
+ * when it is built — gates judge the full artifact and downstream
+ * `${{ steps.<id>.output }}` references need it intact — but a `collect`
+ * reducer over a fan-out bounded only by {@link WORKFLOW_MAX_MAP_EXPANSION}
+ * (10 000 units, each contributing up to a full unit result) would otherwise
+ * write an unbounded blob into a single SQLite row. Persistence is therefore
+ * bounded here, at the write boundary, by
+ * `clipStepEvidenceForPersistence` (`runtime/runs.ts`), which replaces
+ * oversized values with an explicitly-marked truncation envelope rather than
+ * silently shortening them.
+ *
+ * 1 MiB is deliberately generous: it is 4× the per-instruction cap and half the
+ * whole-plan cap, so no realistic authored workflow reaches it, while a runaway
+ * fan-out is still bounded to something SQLite and `akm workflow status` can
+ * handle.
+ */
+export const WORKFLOW_MAX_EVIDENCE_JSON_BYTES = 1024 * 1024;
+
+/** Chars of the original value retained (as a marked preview) in a truncation envelope. */
+export const WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS = 1000;
+
 export function utf8Bytes(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
