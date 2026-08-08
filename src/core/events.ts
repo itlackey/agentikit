@@ -233,38 +233,22 @@ function resolveNow(ctx?: EventsContext): () => number {
 export function appendEvent(input: AppendEventInput, ctx?: EventsContext): void {
   const now = resolveNow(ctx);
   const ts = new Date(now()).toISOString();
-
-  // Fast path: an explicitly supplied long-lived connection, or the ambient
-  // scoped one — either way the handle is borrowed and never closed here.
   const dbPath = resolveDbPath(ctx);
-  const borrowed = ctx?.db ?? borrowScopedStateDb(dbPath);
-  if (borrowed) {
-    try {
-      insertEvent(borrowed, {
-        eventType: input.eventType,
-        ts,
-        ref: input.ref,
-        metadata: input.metadata,
-      });
-    } catch (err) {
-      error(`akm: appendEvent failed: ${String(err)}`);
-    }
-    return;
-  }
+  const row = { eventType: input.eventType, ts, ref: input.ref, metadata: input.metadata };
 
-  // Default path: open, insert, close.
+  // One try covers BOTH paths — including the ambient scope's lazy open — so
+  // the best-effort contract ("a write failure never propagates") holds no
+  // matter which handle this event lands on.
   try {
-    withStateDb(
-      (db) => {
-        insertEvent(db, {
-          eventType: input.eventType,
-          ts,
-          ref: input.ref,
-          metadata: input.metadata,
-        });
-      },
-      { path: dbPath },
-    );
+    // Fast path: an explicitly supplied long-lived connection, or the ambient
+    // scoped one — either way the handle is borrowed and never closed here.
+    const borrowed = ctx?.db ?? borrowScopedStateDb(dbPath);
+    if (borrowed) {
+      insertEvent(borrowed, row);
+      return;
+    }
+    // Default path: open, insert, close.
+    withStateDb((db) => insertEvent(db, row), { path: dbPath });
   } catch (err) {
     // Never mask the bun-test isolation guard as a silent "events failed".
     rethrowIfTestIsolationError(err);

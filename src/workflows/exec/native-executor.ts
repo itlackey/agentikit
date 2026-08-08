@@ -424,6 +424,55 @@ export function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContext): Pr
   return withWorkflowRunsConnection(() => executeStepPlanInConnection(plan, ctx));
 }
 
+/**
+ * Open the step's dispatch budget and the abort signal it trips.
+ *
+ * Budget ceilings (addendum R2): when the frozen plan declares a budget,
+ * dispatch runs under an AbortController CHAINED onto `ctx.signal` — hitting a
+ * ceiling aborts pending and in-flight dispatches, and the step fails hard.
+ * Without a budget the context signal passes through untouched (the no-budget
+ * path is byte-identical to pre-R2 behavior).
+ *
+ * The returned {@link DispatchBudget} is seeded with the run's journaled
+ * dispatch count and token total and consumed per ACTUAL dispatch inside
+ * `runUnit` — never for durable-row reuses, so resuming a large
+ * partially-completed fan-out works.
+ *
+ * `unchainSignal` MUST be called when dispatch finishes (the caller's
+ * `finally`) so the upstream abort listener is removed.
+ */
+function openDispatchBudget(
+  ctx: StepExecutionContext,
+  dispatched: number,
+): { signal: AbortSignal | undefined; budget: DispatchBudget; unchainSignal: (() => void) | undefined } {
+  const declaredBudget =
+    ctx.budget && (ctx.budget.maxUnits !== undefined || ctx.budget.maxTokens !== undefined) ? ctx.budget : undefined;
+  let signal = ctx.signal;
+  let onExceeded: (() => void) | undefined;
+  let unchainSignal: (() => void) | undefined;
+  if (declaredBudget) {
+    const controller = new AbortController();
+    const upstream = ctx.signal;
+    if (upstream) {
+      if (upstream.aborted) {
+        controller.abort();
+      } else {
+        const onUpstreamAbort = () => controller.abort();
+        upstream.addEventListener("abort", onUpstreamAbort, { once: true });
+        unchainSignal = () => upstream.removeEventListener("abort", onUpstreamAbort);
+      }
+    }
+    signal = controller.signal;
+    onExceeded = () => controller.abort();
+  }
+  const budget = new DispatchBudget(dispatched, {
+    tokensUsed: ctx.tokensUsed ?? 0,
+    ...(declaredBudget ? { budget: declaredBudget } : {}),
+    ...(onExceeded ? { onExceeded } : {}),
+  });
+  return { signal, budget, unchainSignal };
+}
+
 async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionContext): Promise<StepExecutionResult> {
   const dispatched = ctx.unitsDispatched ?? 0;
 
@@ -516,41 +565,10 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
     worktreeBase = base;
   }
 
-  // Budget ceilings (addendum R2): when the frozen plan declares a budget,
-  // dispatch runs under an AbortController CHAINED onto ctx.signal — hitting
-  // a ceiling aborts pending and in-flight dispatches, and the step fails
-  // hard below. Without a budget the context signal passes through untouched
-  // (the no-budget path is byte-identical to pre-R2 behavior).
-  const declaredBudget =
-    ctx.budget && (ctx.budget.maxUnits !== undefined || ctx.budget.maxTokens !== undefined) ? ctx.budget : undefined;
-  let signal = ctx.signal;
-  let onExceeded: (() => void) | undefined;
-  let unchainSignal: (() => void) | undefined;
-  if (declaredBudget) {
-    const controller = new AbortController();
-    const upstream = ctx.signal;
-    if (upstream) {
-      if (upstream.aborted) {
-        controller.abort();
-      } else {
-        const onUpstreamAbort = () => controller.abort();
-        upstream.addEventListener("abort", onUpstreamAbort, { once: true });
-        unchainSignal = () => upstream.removeEventListener("abort", onUpstreamAbort);
-      }
-    }
-    signal = controller.signal;
-    onExceeded = () => controller.abort();
-  }
-
-  // Lifetime-cap + declared-budget accounting: seeded with the run's
-  // journaled dispatch count and token total, consumed per ACTUAL dispatch
-  // inside runUnit — never for durable-row reuses, so resuming a large
-  // partially-completed fan-out works.
-  const budget = new DispatchBudget(dispatched, {
-    tokensUsed: ctx.tokensUsed ?? 0,
-    ...(declaredBudget ? { budget: declaredBudget } : {}),
-    ...(onExceeded ? { onExceeded } : {}),
-  });
+  // Budget ceilings + lifetime-cap accounting, and the budget-chained abort
+  // signal they trip. Extracted verbatim (behavior-identical) — see
+  // {@link openDispatchBudget}.
+  const { signal, budget, unchainSignal } = openDispatchBudget(ctx, dispatched);
 
   let outcomes: Array<UnitOutcome | undefined>;
   const selectedEngine = template.invocation ? ctx.engines?.[template.invocation.engine] : undefined;
