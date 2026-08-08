@@ -19,6 +19,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  JSON_SCHEMA_MAX_PATTERN_CHOICE_POINTS,
   JSON_SCHEMA_MAX_PATTERN_INPUT_LENGTH,
   JSON_SCHEMA_MAX_PATTERN_LENGTH,
   JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS,
@@ -115,6 +116,98 @@ describe("screenPattern — the ReDoS guard", () => {
     for (const pattern of ["", "*", ")", "\\", "(?<name>a)", "(?=a)b", "[]", "[^]", "a{", "{2}", "\\p{L}+"]) {
       expect(() => screenPattern(pattern)).not.toThrow();
     }
+  });
+});
+
+/**
+ * A group only has to be ambiguous ONCE for a pattern to encode an exponential
+ * search — repeating it TEXTUALLY costs the same as quantifying it. Screening
+ * a group's body only when the group carries a quantifier therefore misses
+ * `^(a|aa)(a|aa)…b$` entirely: every group is unquantified and the source fits
+ * inside the 256-character limit, yet a ~46-character subject drives the match
+ * into seconds of synchronous backtracking.
+ *
+ * These assert the screen's real invariant — every choice a backtracking
+ * engine could make is FORCED by the input — rather than a wall-clock budget,
+ * which would be both flaky in CI and unenforceable: a synchronous
+ * `RegExp.exec` cannot be interrupted by a timer, so the bound has to be
+ * established before the match starts.
+ */
+describe("screenPattern — ambiguity that is repeated textually, not quantified", () => {
+  const sequential = (groups: number, body = "a|aa") => `^${`(${body})`.repeat(groups)}b$`;
+
+  test("the reported pattern and its 40-group variant are REJECTED", () => {
+    for (const groups of [30, 40]) {
+      const pattern = sequential(groups);
+      // Both are within every bound the old screen checked, which is why they
+      // slipped through: unquantified groups, under the source-length limit.
+      expect(pattern.length).toBeLessThanOrEqual(JSON_SCHEMA_MAX_PATTERN_LENGTH);
+      const screened = screenPattern(pattern);
+      expect(screened.ok).toBe(false);
+      if (!screened.ok) expect(screened.reason).toContain("not forced by the input");
+    }
+  });
+
+  test("the shape is rejected at every length — two adjacent groups are already enough", () => {
+    for (const groups of [2, 3, 8, 16]) expect(screenPattern(sequential(groups)).ok).toBe(false);
+  });
+
+  test("equal-length branches that overlap are caught too (the length heuristic alone would miss them)", () => {
+    // `(?:aa|aa)` consumes exactly 2 characters either way, so no
+    // length-based rule fires — but both branches match the SAME text, so each
+    // group doubles the search space.
+    expect(screenPattern(`^${"(?:aa|aa)".repeat(10)}b$`).ok).toBe(false);
+    expect(screenPattern("(a|a)").ok).toBe(false);
+    // …while alternatives the input can tell apart stay accepted.
+    expect(screenPattern("^(cat|car)$").ok).toBe(true);
+    expect(screenPattern("^(\\d+|none)$").ok).toBe(true);
+  });
+
+  test("constructs the analysis cannot model fail CLOSED", () => {
+    // A backreference's language depends on what an earlier group captured.
+    expect(screenPattern("^(a+)\\1$").ok).toBe(false);
+    expect(screenPattern("^(?<x>a)\\k<x>$").ok).toBe(false);
+    // A lookaround is zero-width, and modelling it as if it consumed its body
+    // would let the screen believe the boundary after it is forced.
+    expect(screenPattern("^(?!akm-)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$").ok).toBe(true);
+    expect(screenPattern("^(?=\\d)(a|aa)(a|aa)b$").ok).toBe(false);
+  });
+});
+
+describe("screenPattern — the work bound", () => {
+  test("an accepted pattern reports a choice-point count within the budget", () => {
+    for (const pattern of ["^\\d+\\.\\d+\\.\\d+$", "^(?:pass|fail)$", "(foo|bar)+", "^v?\\d+(\\.\\d+)*$"]) {
+      const screened = screenPattern(pattern);
+      expect(screened.ok).toBe(true);
+      if (screened.ok) {
+        expect(screened.choicePoints).toBeLessThanOrEqual(JSON_SCHEMA_MAX_PATTERN_CHOICE_POINTS);
+      }
+    }
+    // Everyday patterns sit far below the cap — it is not load-bearing for them.
+    const semver = screenPattern("^v?\\d+(\\.\\d+)*$");
+    if (semver.ok) expect(semver.choicePoints).toBeLessThanOrEqual(8);
+  });
+
+  test("a pattern over the budget is REJECTED even where each part is individually forced", () => {
+    // 30 disjoint optional atoms: every boundary IS forced, so no structural
+    // rule fires — only the work budget stops it. This is the failsafe that
+    // makes the "repeat something ambiguous N times" family impossible by
+    // construction rather than by rule.
+    const many = `^${"abcdefghijklmnopqrstuvwxyz".slice(0, 26).split("").join("?")}?0?1?2?3?$`;
+    const screened = screenPattern(many);
+    expect(screened.ok).toBe(false);
+    if (!screened.ok) expect(screened.reason).toContain("choice-point budget");
+  });
+
+  test("one unforced boundary is allowed (linear); a second is not (it would compound)", () => {
+    // `.*` runs into `\]`, but everything after it is fixed-length, so each of
+    // the at-most-|subject| split points costs constant work.
+    expect(screenPattern("^\\[.*\\]$").ok).toBe(true);
+    expect(screenPattern('^".*"$').ok).toBe(true);
+    // Two of them multiply into O(n²), and a chain into O(nᵏ) — budgeted at one.
+    expect(screenPattern("^\\[.*\\]x\\[.*\\]y$").ok).toBe(false);
+    // Inside a repetition it is re-explored per iteration, so it is not tolerated.
+    expect(screenPattern("^(\\[.*\\])+$").ok).toBe(false);
   });
 });
 

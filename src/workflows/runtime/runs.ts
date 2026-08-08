@@ -35,6 +35,7 @@ import {
   utf8Bytes,
   WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS,
   WORKFLOW_MAX_EVIDENCE_JSON_BYTES,
+  WORKFLOW_UNIT_DIAGNOSTIC_CLIP,
 } from "../resource-limits";
 import { type SummaryJudge, validateStepSummary } from "../validate-summary";
 import { resolveAgentIdentity } from "./agent-identity";
@@ -99,9 +100,16 @@ export interface WorkflowUnitDiagnostic {
   failureReason: string | null;
   sessionId: string | null;
   /**
-   * The row's `result_json` rendered as text (a completed unit's result, or any
-   * partial/error text a failed unit produced), clipped to
-   * {@link UNIT_DIAGNOSTIC_CLIP} chars. Null when the row journaled no result.
+   * The row's `result_json` rendered as text, clipped to
+   * {@link UNIT_DIAGNOSTIC_CLIP} chars. Null when the row journaled nothing.
+   *
+   * For a COMPLETED unit that is its result. For a FAILED unit it is the
+   * dispatch diagnostic the journal kept — already scrubbed by the dispatch
+   * redaction contract before it was written. For an `exec` unit that is where
+   * a failing command's stderr lands, and it is frequently the ONLY explanation
+   * of the failure: `failure_reason: non_zero_exit` says a command failed, and a
+   * command that explains itself on stderr with empty stdout would otherwise say
+   * nothing at all here.
    */
   diagnostic: string | null;
   startedAt: string | null;
@@ -126,8 +134,16 @@ export interface WorkflowUnitDiagnostic {
   platform: string | null;
 }
 
-/** Clip bound for a unit's `result_json` on the `--units` diagnostic surface. */
-const UNIT_DIAGNOSTIC_CLIP = 2000;
+/**
+ * Clip bound for a unit's `result_json` on the `--units` diagnostic surface.
+ *
+ * The SAME constant the dispatch path clips with before journaling
+ * (`exec/native-executor.ts`), so a diagnostic is never stored larger than the
+ * surface that renders it. Re-clipped here regardless, because rows written by
+ * other producers (a driver-reported completion, an older akm) carry whatever
+ * they carry.
+ */
+const UNIT_DIAGNOSTIC_CLIP = WORKFLOW_UNIT_DIAGNOSTIC_CLIP;
 
 function toUnitDiagnostic(
   row: WorkflowRunUnitRow,

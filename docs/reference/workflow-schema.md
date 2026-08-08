@@ -331,14 +331,54 @@ constraining nothing is worse than a loud failure. Annotation keywords
 JSON Schema either, so they pass through untouched.
 
 `pattern` is enforced against a **screened** regex dialect. The screen runs at
-parse time, before the pattern is ever executed, and rejects the constructs
-that make backtracking super-linear: a quantifier applied to an ambiguous
-group (`(a+)+`, `(a|a)*`, `(a*)*`) and two adjacent repeats over the same
-characters (`.*.*`, `\d+\w+`). Pattern sources are limited to 256 characters
-and counted repetitions to 1000, and a string longer than 4096 characters is
-reported as a validation error rather than matched. Everyday patterns are
-unaffected: `^\d+\.\d+\.\d+$`, `^(?:pass|fail)$`, `^v?\d+(\.\d+)*$`,
-`^[a-f0-9]{40}$`, `(foo|bar)+`.
+parse time, before the pattern is ever executed.
+
+**The guarantee: a pattern the screen accepts cannot match any subject in
+super-linear time.** It is enforced by admitting only patterns in which every
+choice a backtracking engine could make is *forced by the input*, so each
+position in the subject is decided once and never re-explored. Concretely:
+
+- **Every group's alternatives must be distinguishable.** No two branches may
+  match the same text, so the input decides which one applies. `(a|a)` and
+  `(?:aa|aa)` are rejected; `(foo|bar)`, `(cat|car)` and `(\d+|none)` are
+  fine. This holds whether or not the group carries a quantifier — repeating
+  an ambiguous group *textually* (`(a|aa)(a|aa)(a|aa)…`) encodes exactly the
+  same exponential search as quantifying it (`(a|aa)+`), so both are rejected.
+- **Every variable-length subexpression must end on characters that cannot
+  start what follows it**, so the split point is forced too. This is what
+  rejects `(a+)+`, `.*.*` and `\d+\w+`. A single exception is allowed per
+  pattern — one unforced boundary whose remainder is fixed-length, outside any
+  repetition, which costs one linear pass (`^\[.*\]$`, `^".*"$`). A second
+  one is rejected, because two of them multiply into `O(n²)` and a chain into
+  `O(nᵏ)`.
+- **A quantified group** additionally may not have a body that matches empty
+  (`(a*)*`) or that can start and end on the same character while repeating.
+- **Anything the analysis cannot model is rejected, not assumed safe** —
+  backreferences (`(a+)\1`) and unsupported group prefixes. Lookarounds are
+  understood as the zero-width assertions they are, and their bodies are
+  screened like any other.
+
+Size limits back the structural rules up: pattern sources are limited to 256
+characters, counted repetitions to 1000, group nesting to 16, and the total
+number of *choice points* (variable-length atoms plus multi-branch groups) to
+24 — a work budget that caps the search a pattern can express at all, even if
+one of the structural rules had a gap. A string longer than 4096 characters is
+reported as a validation error rather than matched. Together these bound
+matching at roughly `256 × 4096` character steps for any pattern and any
+subject.
+
+The bound has to be established *before* matching starts: validation runs
+inside the CLI process, and a synchronous `RegExp` match cannot be interrupted
+by a timer, while moving it off-thread would make validation asynchronous and
+wall-clock-dependent — which gate decisions cannot tolerate. A rejected
+pattern is always a loud error, never a silently skipped constraint.
+
+Everyday patterns are unaffected: `^\d+\.\d+\.\d+$`, `^(?:pass|fail)$`,
+`^v?\d+(\.\d+)*$`, `^[a-f0-9]{40}$`, `^\w+(-\w+)*$`, `(foo|bar)+`. The shape
+most likely to be rejected in practice is a character class that *contains*
+its own delimiter — `[A-Za-z0-9.-]+\.` in the usual hand-rolled email regex,
+where nothing forces which dot ends the repeat. Take the delimiter out of the
+class and repeat the group instead: `[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*`.
 
 Evaluation is bounded in the same spirit: schema nesting is capped at 64
 levels and one validation may make at most 100 000 checks. Exhausting either
@@ -561,6 +601,47 @@ Both keys are **dispatch-significant**: they change what the command can see,
 so both are part of the unit's input hash. Changing either re-dispatches the
 unit rather than reusing a journaled row produced under the other scope.
 
+### What `akm show` reports for an exec step
+
+`akm show <workflow> --format json` summarizes each step under
+`steps[].orchestration`. For an exec step that summary carries an `exec` object
+and **no `engine`/`model`** — an exec unit names no engine, so reporting the
+workflow's `defaults.engine` there would describe a dispatch that never
+happens. Field presence is the discriminator, the same way `fanOut` marks a
+`map` step and `route` marks a route step:
+
+```json
+{
+  "id": "test",
+  "title": "test",
+  "instructions": "Run the unit tests.",
+  "orchestration": {
+    "timeoutMs": 600000,
+    "exec": {
+      "command": ["bun", "run", "test:unit"],
+      "cwd": "packages/core",
+      "passEnv": ["CARGO_HOME"],
+      "inheritEnv": true
+    }
+  }
+}
+```
+
+- `command` is the argv **in full, never clipped** — the point of the field is
+  that what `show` prints is what runs, and a truncated argv would be the same
+  misdescription in miniature. It is safe to print because it is authored
+  literally in the asset: this format has no substitution language, so no part
+  of it is resolved from your environment, from a secret ref, or from a prior
+  step's output. Every byte is already visible in the workflow file (and stored
+  verbatim in `plan_json`) — which is also why you never inline a secret there.
+- `cwd`, `passEnv` and `inheritEnv` appear only when the unit declares them.
+  `passEnv` is a list of variable **names**; no value is ever projected.
+- `timeoutMs` is still reported, because an exec unit really does inherit
+  `defaults.timeout` — that number is true for it.
+
+Everything else in the summary is unchanged: a `map` of exec units carries both
+`fanOut` and `exec`, and `hasSchema`/`env` mean what they mean for any unit.
+
 ### Security
 
 Exec units sit inside the existing workflow trust model — see
@@ -648,6 +729,32 @@ retryable 429), and four concurrent completions is well inside any hosted
 provider's entry tier. Agent engines carry no concurrency limit of their own —
 except an `opencode-sdk` engine with an `llmEngine` fallback, which inherits
 that fallback engine's limit.
+
+#### What counts as a loopback endpoint
+
+The whole loopback space, not one address:
+
+| Recognized | Examples |
+| --- | --- |
+| all of `127.0.0.0/8` | `http://127.0.0.1:1234`, `http://127.0.0.2:11434` |
+| `localhost` and any `*.localhost` name | `http://localhost:1234`, `http://lmstudio.localhost` |
+| IPv6 `::1`, in any spelling | `http://[::1]:1234`, `http://[0:0:0:0:0:0:0:1]:1234` |
+| the IPv4-mapped forms of `127.0.0.0/8` | `http://[::ffff:127.0.0.1]:1234` |
+| the unspecified addresses (a client connecting there reaches loopback) | `http://0.0.0.0:11434`, `http://[::]:11434` |
+
+`127.0.0.2` matters in practice: running a second LM Studio or Ollama on
+another address inside the `127.0.0.0/8` block is ordinary, and that server is
+exactly as single-model as one on `127.0.0.1`.
+
+The check is **purely syntactic — it never resolves a name.** A frozen plan has
+to come out the same on your laptop, on CI, and on a machine with no network at
+all, and a DNS lookup would make the frozen width depend on what a resolver
+happened to answer. So a *name* that resolves to loopback (a hosts-file alias,
+`host.docker.internal`, an internal DNS record) is treated as **remote**; point
+the engine at the address itself, or set `engines.<name>.concurrency: 1`
+explicitly. In the other direction the classification is deliberately
+conservative: an endpoint akm cannot parse at all is treated as loopback, since
+freezing 4 for a config it does not understand is the failure worth avoiding.
 
 The host cap is re-derived from the CURRENT machine at every dispatch, not
 frozen. A plan frozen on a 32-core CI box narrows itself when it resumes on a

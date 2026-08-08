@@ -29,6 +29,7 @@ import {
   defaultLlmEngineConcurrency,
   defaultMapConcurrency,
   isLoopbackEndpoint,
+  isLoopbackHost,
 } from "../../src/workflows/concurrency-policy";
 import { scheduleUnits } from "../../src/workflows/exec/scheduler";
 import { computeStepWorkList } from "../../src/workflows/exec/step-work";
@@ -52,6 +53,11 @@ const BASE_CONFIG = {
   engines: {
     remote: { kind: "llm", endpoint: "https://api.example.test/v1/chat/completions", model: "test-model" },
     local: { kind: "llm", endpoint: "http://localhost:1234/v1/chat/completions", model: "local-model" },
+    // A local model server on a NON-.1 loopback address. `127.0.0.0/8` is a
+    // /8: binding a second LM Studio / Ollama to 127.0.0.2 is an ordinary way
+    // to run two of them, and such a server is exactly as single-model as one
+    // on 127.0.0.1.
+    "local-alt": { kind: "llm", endpoint: "http://127.0.0.2:11434/v1/chat/completions", model: "local-model" },
     pinned: {
       kind: "llm",
       endpoint: "https://api.example.test/v1/chat/completions",
@@ -257,17 +263,129 @@ describe("LLM engine concurrency default (per endpoint)", () => {
     expect(llmEngine(overCap, "over-cap").concurrency).toBe(WORKFLOW_MAX_CONCURRENCY);
   });
 
+  test("a local model server on a NON-.1 loopback address freezes at 1, not at the remote width", () => {
+    // The regression this pins: classifying loopback by an exact `127.0.0.1`
+    // string comparison froze `http://127.0.0.2:11434` at the REMOTE width of
+    // 4 and drove exactly the parallel-inference failure (single loaded model,
+    // reload thrash, HTTP 500) the policy exists to prevent.
+    const plan = freeze(
+      [
+        "---",
+        "type: workflow",
+        "steps:",
+        "  - id: near",
+        "    unit: { engine: local-alt }",
+        "---",
+        "",
+        "## near",
+        "",
+        "Do it on the second local server.",
+        "",
+      ].join("\n"),
+    );
+    expect(llmEngine(plan, "local-alt").concurrency).toBe(DEFAULT_LOCAL_LLM_ENGINE_CONCURRENCY);
+  });
+
   test("endpoint classification covers loopback spellings and unparseable values", () => {
     expect(isLoopbackEndpoint("http://localhost:1234/v1")).toBe(true);
     expect(isLoopbackEndpoint("http://127.0.0.1:8080/v1")).toBe(true);
+    expect(isLoopbackEndpoint("http://127.0.0.2:11434/v1")).toBe(true);
     expect(isLoopbackEndpoint("http://[::1]:8080/v1")).toBe(true);
+    expect(isLoopbackEndpoint("http://[::ffff:127.0.0.1]:8080/v1")).toBe(true);
     expect(isLoopbackEndpoint("http://lmstudio.localhost/v1")).toBe(true);
     expect(isLoopbackEndpoint("https://api.example.test/v1")).toBe(false);
+    expect(isLoopbackEndpoint("https://127.0.0.1.evil.com/v1")).toBe(false);
     // Unknown shapes fail SAFE (treated as local): guessing "remote" would
     // widen the pool on exactly the configs we understand least.
     expect(isLoopbackEndpoint(undefined)).toBe(true);
     expect(isLoopbackEndpoint("not a url")).toBe(true);
+    // `new URL("localhost:1234")` PARSES — as the scheme `localhost:` with an
+    // empty host — so the empty host has to fail safe too, not fall through to
+    // "remote".
+    expect(isLoopbackEndpoint("localhost:1234")).toBe(true);
     expect(defaultLlmEngineConcurrency("not a url")).toBe(DEFAULT_LOCAL_LLM_ENGINE_CONCURRENCY);
+    expect(defaultLlmEngineConcurrency("http://127.0.0.2:11434/v1")).toBe(DEFAULT_LOCAL_LLM_ENGINE_CONCURRENCY);
+    expect(defaultLlmEngineConcurrency("https://api.example.test/v1")).toBe(DEFAULT_REMOTE_LLM_ENGINE_CONCURRENCY);
+  });
+});
+
+describe("loopback host classification — the whole loopback space, and its boundaries", () => {
+  test.each([
+    // ── the IPv4 loopback block is a /8, not one address ────────────────────
+    ["127.0.0.1", true],
+    ["127.0.0.2", true],
+    ["127.0.0.0", true],
+    ["127.255.255.255", true],
+    ["127.1.2.3", true],
+    // ── names ──────────────────────────────────────────────────────────────
+    ["localhost", true],
+    ["LOCALHOST", true],
+    // RFC 6761 §6.3 reserves the whole `.localhost` TLD to loopback.
+    ["lmstudio.localhost", true],
+    // A trailing dot is the DNS root label, not a different name.
+    ["localhost.", true],
+    // ── IPv6 ───────────────────────────────────────────────────────────────
+    ["::1", true],
+    ["[::1]", true],
+    ["0:0:0:0:0:0:0:1", true],
+    // IPv4-mapped, in both the dotted spelling an author writes and the hex
+    // one WHATWG `URL` re-serializes it to.
+    ["::ffff:127.0.0.1", true],
+    ["::ffff:7f00:1", true],
+    ["::ffff:127.0.0.2", true],
+    // Deprecated IPv4-compatible form.
+    ["::127.0.0.1", true],
+    // ── the unspecified addresses: a CLIENT connecting there reaches local ──
+    ["0.0.0.0", true],
+    ["::", true],
+    // ── empty host: nothing to judge, fail safe ────────────────────────────
+    ["", true],
+
+    // ── NEAR-MISSES: none of these is a loopback address ────────────────────
+    // A name that merely CONTAINS a loopback address. The classic attack on a
+    // prefix/substring check.
+    ["127.0.0.1.evil.com", false],
+    ["127.0.0.1.example.com", false],
+    // A name that merely STARTS with "127." but is not an address at all.
+    ["127.example.com", false],
+    ["127.0.0.1-attacker.test", false],
+    // Not four octets: the first "octet" is 1270.
+    ["1270.0.0.1", false],
+    // Five parts, and the first octet is 12.
+    ["12.7.0.0.1", false],
+    // Leading zeros are not the decimal-octet grammar (they read as octal).
+    ["0127.0.0.1", false],
+    // Out of range, so not an IPv4 address at all.
+    ["127.0.0.256", false],
+    // Neighbouring /8s.
+    ["128.0.0.1", false],
+    ["126.255.255.255", false],
+    ["12.7.0.1", false],
+    // A name that merely ENDS with "localhost" without the label boundary.
+    ["notlocalhost", false],
+    // ...and one where "localhost" is only the first label.
+    ["localhost.evil.com", false],
+    // Ordinary remote hosts and non-loopback IPv6.
+    ["api.example.test", false],
+    ["::2", false],
+    ["2001:db8::1", false],
+    ["::ffff:8.8.8.8", false],
+    // Malformed IPv6 (two `::` runs) is not an address, so it is not loopback.
+    ["1::2::3", false],
+    // A dotted quad may only be the LAST component of an IPv6 address.
+    ["::ffff:127.0.0.1.5", false],
+  ])("isLoopbackHost(%p) === %p", (host, expected) => {
+    expect(isLoopbackHost(host as string)).toBe(expected);
+  });
+
+  test("classification is pure and syntactic — a name that would RESOLVE to loopback still reads remote", () => {
+    // Freeze must produce the same plan on a laptop, in CI, and on a machine
+    // with no network at all, so the predicate never resolves anything. The
+    // cost of that is real and accepted: an author who points an engine at a
+    // hosts-file alias for their local server sets
+    // `engines.<name>.concurrency: 1` explicitly.
+    expect(isLoopbackHost("my-lm-studio.internal")).toBe(false);
+    expect(isLoopbackHost("host.docker.internal")).toBe(false);
   });
 });
 

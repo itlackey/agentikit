@@ -22,6 +22,7 @@ import {
   type SpawnedSubprocess,
   type SpawnFn,
   type StreamReadResult,
+  streamCaptureFailure,
 } from "../../core/subprocess";
 import { getCommandBuilder } from "./builders";
 import { DEFAULT_AGENT_TIMEOUT_MS } from "./config";
@@ -182,20 +183,20 @@ function buildChildEnv(profile: AgentProfile, options: RunAgentOptions): Record<
   return env;
 }
 
+/**
+ * This path's phrasing of the SHARED incomplete-capture verdict
+ * ({@link streamCaptureFailure} in `core/subprocess.ts`). The classification
+ * lives in the primitive so the agent path and the workflow `exec` path cannot
+ * drift apart on what "the capture did not complete" means; only the sentence
+ * naming the profile is local. Message text is unchanged from the inlined copy.
+ */
 function streamFailureMessage(
   profileName: string,
   stdout: StreamReadResult,
   stderr: StreamReadResult,
 ): string | undefined {
-  const failures: string[] = [];
-  if (stdout.error)
-    failures.push(`stdout read failed: ${stdout.error instanceof Error ? stdout.error.message : String(stdout.error)}`);
-  if (stderr.error)
-    failures.push(`stderr read failed: ${stderr.error instanceof Error ? stderr.error.message : String(stderr.error)}`);
-  if (stdout.timedOut) failures.push("stdout drain timed out");
-  if (stderr.timedOut) failures.push("stderr drain timed out");
-  if (failures.length === 0) return undefined;
-  return `agent CLI "${profileName}" output capture failed: ${failures.join("; ")}`;
+  const failures = streamCaptureFailure(stdout, stderr);
+  return failures === undefined ? undefined : `agent CLI "${profileName}" output capture failed: ${failures}`;
 }
 
 /**

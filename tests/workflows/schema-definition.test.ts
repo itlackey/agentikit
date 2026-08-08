@@ -227,6 +227,34 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
     expect(errors[0]!.message).toContain("backtracks");
   });
 
+  test("an ambiguous group repeated TEXTUALLY is rejected at authoring time too", () => {
+    // No quantifier anywhere and only 183 characters of source, so every bound
+    // the screen checked before this was satisfied — yet matching a ~46-char
+    // subject backtracks exponentially. The screen has to reason about the
+    // sequence, not just about what a quantifier is applied to.
+    const pattern = `^${"(a|aa)".repeat(30)}b$`;
+    const markdown = [
+      "---",
+      "type: workflow",
+      "steps:",
+      "  - id: work",
+      "    output:",
+      "      type: string",
+      `      pattern: '${pattern}'`,
+      "---",
+      "",
+      "## work",
+      "",
+      "Do it.",
+      "",
+    ].join("\n");
+    const errors = parseErrors(markdown);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.line).toBe(7);
+    expect(errors[0]!.message).toContain("is not a valid JSON Schema");
+    expect(errors[0]!.message).toContain("not forced by the input");
+  });
+
   test("a params schema gets the same definition checking", () => {
     const markdown = [
       "---",

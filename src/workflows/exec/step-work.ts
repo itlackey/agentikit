@@ -62,7 +62,7 @@ import type {
   WorkflowPlanGraph,
 } from "../ir/schema";
 import { type ExpressionScope, resolveReferenceString } from "../program/expressions";
-import { WORKFLOW_MAX_MAP_EXPANSION } from "../resource-limits";
+import { WORKFLOW_MAX_MAP_EXPANSION, WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
 import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
 import { completeWorkflowStep, type SummaryValidationFailure, type WorkflowNextResult } from "../runtime/runs";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
@@ -464,6 +464,15 @@ function buildStepWorkUnit(ctx: StepWorkUnitContext, unitId: string, item: unkno
  * are DECLARED NON-SECRET (`exec/param-secrets.ts` explains why: they are in
  * every unit prompt and in the input hash, so they cannot be redacted);
  * secrets belong in `env:` bindings, which reach the child by name.
+ *
+ * SIZE is not bounded here, on purpose. A workflow artifact has no bound
+ * comparable to an OS environment entry, so `AKM_INPUTS` (and `AKM_PARAMS` /
+ * `AKM_ITEM`) can serialize past what `execve` accepts and make PROCESS CREATION
+ * fail with a bare `E2BIG`. The check belongs at the spawn boundary, where the
+ * failure can be journaled as a unit outcome with an actionable message naming
+ * the variable: `checkExecContextSize` in `exec/exec-unit.ts`, against
+ * `WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES` / `WORKFLOW_MAX_EXEC_CONTEXT_BYTES`.
+ * This function stays PURE and total.
  */
 function buildExecContextEnv(args: {
   ctx: StepWorkUnitContext;
@@ -804,6 +813,29 @@ export interface ExecutedStepOutcome {
  * Callers own dispatch-specific concerns (replay-divergence, budget) BEFORE
  * calling this; those never occur on the report path (units are journaled).
  */
+/**
+ * The FIRST failed unit's diagnostic, appended to the step summary.
+ *
+ * A failure reason alone is not a diagnosis. `non_zero_exit` says a command
+ * failed; for an exec unit the reason it failed is on stderr, and the summary is
+ * what `akm workflow run` prints and what the failed step row keeps as its
+ * notes. Bounded on both axes: ONE unit (a 10 000-wide fan-out must not turn its
+ * summary into a log) clipped to {@link WORKFLOW_UNIT_DIAGNOSTIC_CLIP} — the same
+ * bound the journal and `status --units` use.
+ *
+ * Reproducible on both surfaces: the diagnostic is journaled on the unit row and
+ * `unitOutcomeFromRow` restores it as `error`, so a resume that rebuilds its
+ * outcomes from the journal composes the SAME summary a live dispatch did.
+ */
+function firstFailureDiagnostic(failed: UnitOutcome[]): string {
+  const first = failed.find((u) => u.error?.trim());
+  if (!first?.error) return "";
+  const text = first.error.trim();
+  const clipped =
+    text.length > WORKFLOW_UNIT_DIAGNOSTIC_CLIP ? `${text.slice(0, WORKFLOW_UNIT_DIAGNOSTIC_CLIP)}…` : text;
+  return ` First failure diagnostic (${first.unitId}): ${clipped}`;
+}
+
 export function reduceStepOutcomes(
   plan: IrStepPlan,
   reducer: IrMapReducer,
@@ -824,6 +856,7 @@ export function reduceStepOutcomes(
           .map((u) => `${u.unitId} (${u.failureReason ?? "error"})`)
           .join(", ")}.`
       : "") +
+    firstFailureDiagnostic(failed) +
     reducerNote;
 
   let artifactSchemaFailure = false;
@@ -871,8 +904,12 @@ export function reduceEmptyStep(plan: IrStepPlan, reducer: IrMapReducer): Execut
  * failed-row branch keeps the mapping TOTAL, so any reduction driven off the
  * journal yields the same outcome the live dispatch produced. A completed row's
  * text unit journals its output as a JSON string; a schema unit journals the
- * validated structure. A failed row carries its `failure_reason`; any journaled
- * text is surfaced too.
+ * validated structure. A failed row carries its `failure_reason`; the journaled
+ * diagnostic is surfaced as BOTH `text` (unchanged) and `error`, because
+ * `journaledUnitResultJson` (native-executor.ts) writes the failure's `error`
+ * into that column. Recovering it as `error` is what keeps the step summary
+ * byte-identical between a live dispatch and a resume that rebuilt its outcomes
+ * from the journal.
  */
 export function unitOutcomeFromRow(unitId: string, row: WorkflowRunUnitRow, hasSchema: boolean): UnitOutcome {
   let parsed: unknown;
@@ -900,7 +937,7 @@ export function unitOutcomeFromRow(unitId: string, row: WorkflowRunUnitRow, hasS
     unitId,
     ok: false,
     failureReason: row.failure_reason ?? "reported_failure",
-    ...(typeof parsed === "string" ? { text: parsed } : {}),
+    ...(typeof parsed === "string" ? { text: parsed, error: parsed } : {}),
     ...(row.tokens !== null ? { tokens: row.tokens } : {}),
   };
 }

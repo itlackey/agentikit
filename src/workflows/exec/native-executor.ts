@@ -144,6 +144,7 @@ import {
   withWorkflowRunsRepo,
 } from "../../storage/repositories/workflow-runs-repository";
 import type { FrozenEngineSnapshot, IrBudget, IrInvocation, IrStepPlan } from "../ir/schema";
+import { WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
 // The ONE dispatch redaction contract, shared with the gate-judge path
 // (exec/frozen-judge.ts). Re-exported for existing importers of this module.
 import { collectWorkflowDispatchSensitiveValues, redactUnitOutcome } from "./dispatch-redaction";
@@ -867,6 +868,53 @@ interface JournaledAttemptInput {
   worktreeBase?: string;
 }
 
+/**
+ * What a finished attempt writes to `workflow_run_steps`' unit row
+ * `result_json` — the ONE durable, human-facing surface for a dispatch outcome
+ * (`akm workflow status --units` reads exactly this, and the step summary is
+ * built from the same text).
+ *
+ * A SUCCESS journals its promoted value, unchanged.
+ *
+ * A FAILURE journals its DIAGNOSTIC. Before this, only `result`/`text` were
+ * written: `outcome.error` — the one field that says WHY — reached nothing
+ * durable, because `buildEvidence` deliberately drops it from the deterministic
+ * evidence graph and nothing else persisted it. For an engine unit that mostly
+ * cost detail; for an `exec` unit it lost the diagnostic entirely, since a
+ * command that fails and explains itself on stderr with empty stdout left
+ * `status --units` showing a bare `non_zero_exit`.
+ *
+ * Three constraints hold:
+ *
+ *   - REDACTION — the caller journals only `redactUnitOutcome(...)` output, so
+ *     `error` has already been through the shared dispatch redaction contract
+ *     (`exec/dispatch-redaction.ts`) with this dispatch's resolved `env:`
+ *     values. It is scrubbed by construction, exactly like `text`.
+ *   - BOUNDS — clipped to {@link WORKFLOW_UNIT_DIAGNOSTIC_CLIP}, the same bound
+ *     `status --units` renders with, so a runaway command cannot use the journal
+ *     as its log file.
+ *   - HASHES — `result_json` is an OUTPUT. The unit input hash
+ *     (`computeUnitInputHash`) is computed from plan-frozen INPUTS only
+ *     (template bytes, item, declared inputs, params, dispatch/invocation/exec
+ *     snapshots, env ref names, isolation), and reuse compares the stored
+ *     `input_hash` against that. Nothing here is a hash preimage input, so no
+ *     completed unit re-dispatches because of it.
+ *
+ * Partial output on a failed unit is kept ALONGSIDE the diagnostic rather than
+ * replacing it: a tool that fails after printing its real complaint on stdout
+ * is common, and the reason lives on whichever stream that tool chose.
+ */
+export function journaledUnitResultJson(outcome: UnitOutcome): string | null {
+  if (outcome.result !== undefined) return JSON.stringify(outcome.result);
+  if (outcome.ok) return outcome.text ? JSON.stringify(outcome.text) : null;
+  const parts = [outcome.error, outcome.text].filter((part): part is string => Boolean(part && part.trim()));
+  if (parts.length === 0) return null;
+  const joined = parts.join("\n--- unit output ---\n");
+  return JSON.stringify(
+    joined.length > WORKFLOW_UNIT_DIAGNOSTIC_CLIP ? `${joined.slice(0, WORKFLOW_UNIT_DIAGNOSTIC_CLIP)}…` : joined,
+  );
+}
+
 /** Journal one dispatch attempt: insert row, events, dispatch, finish row. */
 async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<UnitOutcome> {
   const { plan, workUnit, ctx, dispatcher, attemptId, inputHash } = input;
@@ -961,12 +1009,7 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
             runId: ctx.runId,
             unitId: attemptId,
             status: outcome.ok ? "completed" : "failed",
-            resultJson:
-              outcome.result !== undefined
-                ? JSON.stringify(outcome.result)
-                : outcome.text
-                  ? JSON.stringify(outcome.text)
-                  : null,
+            resultJson: journaledUnitResultJson(outcome),
             tokens: outcome.tokens ?? null,
             failureReason: outcome.failureReason ?? null,
             // Harness-native session id (P2): journaled so resume can replay the

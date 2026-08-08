@@ -30,7 +30,12 @@ import {
 } from "../../../src/workflows/exec/native-executor";
 import { cpuDerivedUnitConcurrency } from "../../../src/workflows/exec/scheduler";
 import type { IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
+import {
+  WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES,
+  WORKFLOW_MAX_EXEC_OUTPUT_BYTES,
+} from "../../../src/workflows/resource-limits";
 import { requireExecutableWorkflowPlan } from "../../../src/workflows/runtime/plan-classifier";
+import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
@@ -907,5 +912,307 @@ describe("exec unit — budget accounting", () => {
     const result = await run(plan, { params: { targets: items }, budget: plan.budget });
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("budget exceeded (max_units ceiling)");
+  }, 30_000);
+});
+
+// ── Reviewer round-4 findings — resource bounds and honest failure surfaces ───
+
+describe("exec unit — captured output is BOUNDED (finding 1)", () => {
+  test("a command that writes past the cap is killed and fails `exec_output_limit` — no truncated artifact", async () => {
+    seedRun(["work"]);
+    const marker = path.join(tmpDir, "still-alive.txt");
+    // Writes HALF AGAIN the cap, then would sit around for 10s and prove it
+    // survived. Both halves matter: the over-cap write is what must be refused,
+    // and the marker is what proves the process GROUP was really terminated
+    // rather than left to keep running against a reader nobody is draining.
+    // Without the byte cap this command succeeds and promotes a 12 MiB artifact.
+    const overCap = Math.ceil((WORKFLOW_MAX_EXEC_OUTPUT_BYTES * 1.5) / (1024 * 1024));
+    const code =
+      `const chunk='x'.repeat(1024*1024); ` +
+      `for (let i=0;i<${overCap};i++) process.stdout.write(chunk); ` +
+      `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 10000)`;
+    const plan = execPlan([
+      "    unit:",
+      "      exec:",
+      `        command: ${JSON.stringify(bunArgv(code))}`,
+      '      timeout: "60s"',
+    ]);
+    storePlan(plan);
+
+    const result = await run(plan);
+
+    expect(result.ok).toBe(false);
+    expect(result.units[0]!.failureReason).toBe("exec_output_limit");
+    // Unmistakable: the diagnostic names the cap and says NO artifact was promoted.
+    expect(result.units[0]!.error).toContain(String(WORKFLOW_MAX_EXEC_OUTPUT_BYTES));
+    expect(result.units[0]!.error).toContain("NO artifact was promoted");
+    // The partial capture is NOT promoted — nothing downstream can mistake a
+    // prefix of the output for the output.
+    expect(result.evidence.output).toBeNull();
+    // The step settled long before the command's own 10s sleep, and the marker
+    // never appears: the process group really died.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(fs.existsSync(marker)).toBe(false);
+
+    // `exec_output_limit` is out of the retry taxonomy on purpose: a runaway
+    // command is deterministic, so re-dispatching it can only burn the budget.
+    const rows = await unitRows();
+    expect(rows[0]!.status).toBe("failed");
+    expect(rows[0]!.failure_reason).toBe("exec_output_limit");
+  }, 90_000);
+
+  test("output comfortably under the cap is unaffected", async () => {
+    seedRun(["work"]);
+    const code = "process.stdout.write('y'.repeat(256*1024))";
+    const plan = execPlan(["    unit:", "      exec:", `        command: ${JSON.stringify(bunArgv(code))}`]);
+    storePlan(plan);
+    const result = await run(plan);
+    expect(result.ok).toBe(true);
+    expect(String(result.evidence.output).length).toBe(256 * 1024);
+  }, 30_000);
+});
+
+describe("exec unit — an INCOMPLETE capture is never a success (finding 2)", () => {
+  test("leader exits 0 while a descendant holds stdout open → `spawn_failed`, not a partial artifact", async () => {
+    seedRun(["work"]);
+    // The command LEADER writes a prefix of its output and exits 0 immediately,
+    // but leaves a detached descendant holding the stdout fd open far past the
+    // stream-drain deadline (the unit's wall budget + 2s). `exitCode` is 0 and
+    // `stdout` holds only the leader's prefix — promoting it would hand every
+    // downstream reference a silently truncated artifact.
+    const holder = "setTimeout(() => {}, 30000)";
+    const code =
+      `const cp=require('node:child_process'); ` +
+      `const child=cp.spawn(${JSON.stringify(BUN)}, ['-e', ${JSON.stringify(holder)}], ` +
+      `{ stdio: ['ignore', 'inherit', 'ignore'] }); child.unref(); ` +
+      `process.stdout.write('partial-artifact');`;
+    const plan = execPlan([
+      "    unit:",
+      "      exec:",
+      `        command: ${JSON.stringify(bunArgv(code))}`,
+      '      timeout: "2s"',
+    ]);
+    storePlan(plan);
+
+    const result = await run(plan);
+
+    expect(result.ok).toBe(false);
+    // The SAME reason the agent spawn path reports for the same condition.
+    expect(result.units[0]!.failureReason).toBe("spawn_failed");
+    expect(result.units[0]!.error).toContain("output capture did not complete");
+    expect(result.units[0]!.error).toContain("drain timed out");
+    // The prefix never became the step artifact.
+    expect(result.evidence.output).toBeNull();
+    expect(JSON.stringify(result.evidence)).not.toContain("partial-artifact");
+  }, 90_000);
+});
+
+describe("exec unit — a stderr-only diagnosis survives to the journal (finding 3)", () => {
+  const CAUSE = "fatal: reactor core temperature exceeded 9000K at line 42";
+
+  test("a command that explains itself ONLY on stderr is visible through `status --units` and the run summary", async () => {
+    seedRun(["work"]);
+    // Empty stdout, the whole diagnosis on stderr — the shape that used to
+    // reach durable state as a bare `non_zero_exit` and nothing else.
+    const code = `process.stderr.write(${JSON.stringify(`${CAUSE}\n`)}); process.exit(7)`;
+    const plan = execPlan(["    unit:", "      exec:", `        command: ${JSON.stringify(bunArgv(code))}`]);
+    storePlan(plan);
+
+    const result = await run(plan);
+    expect(result.ok).toBe(false);
+    expect(result.units[0]!.failureReason).toBe("non_zero_exit");
+
+    // 1. The RUN SUMMARY (what `akm workflow run` prints and the failed step row keeps).
+    expect(result.summary).toContain("non_zero_exit");
+    expect(result.summary).toContain(CAUSE);
+
+    // 2. The durable unit row — stdout was empty, so before the fix this was NULL.
+    const rows = await unitRows();
+    expect(rows[0]!.status).toBe("failed");
+    expect(rows[0]!.result_json).not.toBeNull();
+    expect(rows[0]!.result_json).toContain("exited 7");
+
+    // 3. `akm workflow status --units`, the human diagnostic surface.
+    const detail = await getWorkflowStatus(RUN_ID, { includeUnits: true });
+    const unit = (detail.units ?? []).find((u) => u.unitId === "work:solo");
+    expect(unit?.failureReason).toBe("non_zero_exit");
+    expect(unit?.diagnostic ?? "").toContain(CAUSE);
+  }, 30_000);
+
+  test("the journaled diagnostic is REDACTED and BOUNDED", async () => {
+    const SECRET = "sk-exec-diagnostic-secret-value-7c31";
+    seedRun(["work"]);
+    // A huge stderr carrying a resolved binding value: the row must contain
+    // neither the secret nor an unbounded blob.
+    const code =
+      `process.stderr.write('noise\\n'.repeat(20000)); ` +
+      "process.stderr.write(process.env.DEPLOY_TOKEN); process.exit(4)";
+    const plan = execPlan([
+      "    unit:",
+      "      exec:",
+      `        command: ${JSON.stringify(bunArgv(code))}`,
+      "      env: [env/ci]",
+    ]);
+    storePlan(plan);
+
+    await run(plan, { resolveEnv: async () => ({ DEPLOY_TOKEN: SECRET }) });
+
+    const rows = await unitRows();
+    expect(rows[0]!.result_json).not.toBeNull();
+    expect(rows[0]!.result_json).not.toContain(SECRET);
+    // 2000-char clip + JSON quoting/escaping overhead — bounded, not the 120 KB
+    // of stderr the command actually produced.
+    expect(rows[0]!.result_json!.length).toBeLessThan(3_000);
+
+    const detail = await getWorkflowStatus(RUN_ID, { includeUnits: true });
+    const unit = (detail.units ?? []).find((u) => u.unitId === "work:solo");
+    expect(unit?.diagnostic ?? "").not.toContain(SECRET);
+    expect((unit?.diagnostic ?? "").length).toBeLessThanOrEqual(2_001);
+  }, 30_000);
+
+  test("a SUCCESSFUL unit's journaled result is unchanged (the artifact, not a diagnostic)", async () => {
+    seedRun(["work"]);
+    const plan = execPlan([
+      "    unit:",
+      "      exec:",
+      `        command: ${JSON.stringify(bunArgv("process.stderr.write('warning: noisy\\n'); process.stdout.write('ok')"))}`,
+    ]);
+    storePlan(plan);
+    await run(plan);
+    const rows = await unitRows();
+    expect(JSON.parse(rows[0]!.result_json!)).toBe("ok");
+  }, 30_000);
+});
+
+describe("exec unit — the AKM_* context environment is BOUNDED (finding 4)", () => {
+  /** A declared-input artifact far past what one environment entry may hold. */
+  const HUGE = "z".repeat(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES + 1_000);
+
+  /**
+   * A two-step plan whose SECOND step declares the first step's artifact as a
+   * declared `inputs:` — the surface that becomes `AKM_INPUTS` in the child.
+   */
+  function consumerPlan(argv: string[]): WorkflowPlanGraph {
+    return freezeWorkflow(
+      [
+        "---",
+        "type: workflow",
+        "steps:",
+        "  - id: produce",
+        "  - id: work",
+        "    inputs: [steps.produce.output]",
+        "    unit:",
+        "      exec:",
+        `        command: ${JSON.stringify(argv)}`,
+        "---",
+        "",
+        "## produce",
+        "",
+        "Produce the artifact.",
+        "",
+        "## work",
+        "",
+        "Consume the produced artifact.",
+        "",
+      ].join("\n"),
+    );
+  }
+
+  /** Execute the CONSUMER step (steps[1]) with `produce` already in evidence. */
+  function runConsumer(plan: WorkflowPlanGraph, produced: string): Promise<StepExecutionResult> {
+    return executeFrozenStepPlan(plan.steps[1]!, {
+      runId: RUN_ID,
+      workflowRef: "workflows/exec-demo",
+      params: {},
+      evidence: { produce: { output: produced } },
+      engines: plan.execution.engines,
+      workDir,
+    });
+  }
+
+  test("an oversized AKM_INPUTS fails with an actionable error instead of a raw E2BIG", async () => {
+    seedRun(["produce", "work"]);
+    const marker = path.join(tmpDir, "spawned.txt");
+    const code = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
+    const plan = consumerPlan(bunArgv(code));
+    storePlan(plan);
+
+    const result = await runConsumer(plan, HUGE);
+
+    expect(result.ok).toBe(false);
+    expect(result.units[0]!.failureReason).toBe("exec_context_too_large");
+    const error = result.units[0]!.error ?? "";
+    // Actionable: names the VARIABLE, its SIZE, the LIMIT, and what to do.
+    expect(error).toContain("AKM_INPUTS");
+    expect(error).toContain(String(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES));
+    expect(error).toMatch(/\d+ bytes/);
+    expect(error).toContain("emit a REFERENCE");
+    // And it says so BEFORE process creation is attempted, so the confusing
+    // E2BIG never happens.
+    expect(error).toContain("E2BIG");
+    expect(fs.existsSync(marker)).toBe(false);
+  }, 30_000);
+
+  test("the same bound covers AKM_PARAMS", async () => {
+    seedRun(["work"], { blob: HUGE });
+    const plan = execPlan(["    unit:", "      exec:", '        command: ["true"]'], {
+      extra: ["params:", "  blob: { type: string }"],
+    });
+    storePlan(plan);
+    const result = await run(plan, { params: { blob: HUGE } });
+    expect(result.units[0]!.failureReason).toBe("exec_context_too_large");
+    expect(result.units[0]!.error).toContain("AKM_PARAMS");
+  }, 30_000);
+
+  test("the same bound covers a fan-out AKM_ITEM", async () => {
+    // Fans out over a PRIOR STEP's artifact, not over params, so the oversized
+    // value lands in `AKM_ITEM` alone and `AKM_PARAMS` stays small — otherwise
+    // the params check would fire first and prove nothing about the item.
+    seedRun(["produce", "work"]);
+    const plan = freezeWorkflow(
+      [
+        "---",
+        "type: workflow",
+        "steps:",
+        "  - id: produce",
+        "  - id: work",
+        "    map:",
+        "      over: steps.produce.output",
+        "      unit:",
+        "        exec:",
+        '          command: ["true"]',
+        "---",
+        "",
+        "## produce",
+        "",
+        "Produce the list.",
+        "",
+        "## work",
+        "",
+        "Run over each item.",
+        "",
+      ].join("\n"),
+    );
+    storePlan(plan);
+    const result = await executeFrozenStepPlan(plan.steps[1]!, {
+      runId: RUN_ID,
+      workflowRef: "workflows/exec-demo",
+      params: {},
+      evidence: { produce: { output: [HUGE] } },
+      engines: plan.execution.engines,
+      workDir,
+    });
+    expect(result.units[0]!.failureReason).toBe("exec_context_too_large");
+    expect(result.units[0]!.error).toContain("AKM_ITEM");
+  }, 30_000);
+
+  test("a context comfortably inside the bound still reaches the command", async () => {
+    const payload = "p".repeat(1_000);
+    seedRun(["produce", "work"]);
+    const plan = consumerPlan(bunArgv("process.stdout.write(String(process.env.AKM_INPUTS.length))"));
+    storePlan(plan);
+    const result = await runConsumer(plan, payload);
+    expect(result.ok).toBe(true);
+    expect(Number(result.evidence.output)).toBeGreaterThan(payload.length);
   }, 30_000);
 });

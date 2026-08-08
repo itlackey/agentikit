@@ -41,24 +41,54 @@
  * any match is attempted, and the screen result is memoized per pattern
  * source. The guarantee is:
  *
+ * INVARIANT: a pattern the screen accepts cannot match any subject in
+ * super-linear time. The screen enforces it by admitting only patterns in
+ * which **every choice a backtracking engine could make is forced by the
+ * input**, so each subject position is decided once and never re-explored:
+ *
  *   1. the pattern source is at most {@link JSON_SCHEMA_MAX_PATTERN_LENGTH}
  *      characters and must compile;
- *   2. no quantifier may be applied to a group whose body itself contains a
- *      quantifier or an alternation — this is the construct that makes
- *      backtracking EXPONENTIAL (`(a+)+`, `(a|a)*`);
- *   3. two adjacent variably-repeated atoms whose character sets overlap are
- *      rejected — the construct that makes it POLYNOMIAL (`a*a*`, `.*.*`);
- *   4. counted quantifiers are capped at {@link MAX_PATTERN_REPEAT}, and group
- *      nesting at {@link MAX_PATTERN_GROUP_DEPTH};
- *   5. a subject string longer than
+ *   2. every group's alternatives must be PROVABLY DISJOINT
+ *      ({@link branchesProvablyDisjoint}) — no two branches may match the same
+ *      text, so the branch taken is determined by the subject. This holds
+ *      whether or not the group carries a quantifier, because repeating an
+ *      ambiguous group TEXTUALLY (`(a|aa)(a|aa)…`) encodes exactly the same
+ *      exponential search as quantifying it (`(a|aa)+`);
+ *   3. every atom whose consumed length can vary ({@link atomLengthVaries})
+ *      must end on characters DISJOINT from everything that can follow it, so
+ *      the split point is forced too. This subsumes both the classic
+ *      exponential shape (`(a+)+`) and the polynomial one (`.*.*`, `\d+\w+`).
+ *      Exactly ONE unforced boundary is tolerated per pattern, and only when
+ *      everything after it is fixed-length and it is not inside a repetition —
+ *      that costs a single linear factor (`^\[.*\]$`) and, being budgeted
+ *      globally, cannot compound;
+ *   4. a quantified group additionally may not have an empty-matchable or
+ *      self-overlapping body ({@link ambiguousRepeatedBody});
+ *   5. constructs the analysis cannot model are REJECTED, not assumed safe:
+ *      backreferences (whose language depends on a capture) and unsupported
+ *      group prefixes. Lookarounds are modelled as the zero-width assertions
+ *      they are, and their bodies are screened like any other;
+ *   6. counted quantifiers are capped at {@link MAX_PATTERN_REPEAT}, group
+ *      nesting at {@link MAX_PATTERN_GROUP_DEPTH}, and the total number of
+ *      choice points at {@link JSON_SCHEMA_MAX_PATTERN_CHOICE_POINTS} — a work
+ *      budget that bounds the search a pattern can express at all, even if one
+ *      of the structural rules above had a gap;
+ *   7. a subject string longer than
  *      {@link JSON_SCHEMA_MAX_PATTERN_INPUT_LENGTH} is never matched at all —
  *      it is reported as a validation error instead.
  *
- * With (2) and (3) removed from the language, the remaining worst case is a
- * bounded scan: at most `subject length × pattern size` character steps, with
- * both factors capped by (1) and (5). A pattern the screen rejects is a loud
- * authoring error (`checkJsonSchemaDefinition`) and, if one somehow reaches
- * evaluation, a loud validation error — never a silent pass.
+ * The resulting worst case is a bounded scan: at most `subject length ×
+ * pattern size` character steps, with both factors capped by (1) and (7) — on
+ * the order of 10⁶ steps, whatever the pattern and whatever the subject.
+ *
+ * Note that the bound must be STATIC. Matching happens inside the CLI/engine
+ * process, and a synchronous `RegExp.exec` cannot be preempted by a timer;
+ * moving it off-thread would make validation asynchronous and its result
+ * wall-clock-dependent, which gate decisions cannot tolerate. Screening before
+ * matching is therefore the only mechanism that keeps validation total AND
+ * deterministic. A pattern the screen rejects is a loud authoring error
+ * (`checkJsonSchemaDefinition`) and, if one somehow reaches evaluation, a loud
+ * validation error — never a silent pass.
  *
  * Returns a flat list of human-readable error strings (empty = valid), each
  * prefixed with a JSON-pointer-ish path — the shape `runStructured`'s
@@ -85,6 +115,18 @@ const MAX_PATTERN_REPEAT = 1000;
 
 /** Deepest `(` nesting the pattern screen accepts. */
 const MAX_PATTERN_GROUP_DEPTH = 16;
+
+/**
+ * Most choice points ({@link ScreenedPattern}`.choicePoints`) a pattern may
+ * contain — atoms whose consumed length can vary, plus groups with more than
+ * one alternative. The structural rules below already require every one of
+ * them to be resolved by the input, so this is a BUDGET, not a correctness
+ * rule: it caps how much search a pattern can express at all, even if one of
+ * those rules had a gap, and it is what makes the "repeat an ambiguous group
+ * N times" family impossible by construction rather than merely by rule.
+ * Ordinary authoring patterns use a handful (`^v?\d+(\.\d+)*$` uses 4).
+ */
+export const JSON_SCHEMA_MAX_PATTERN_CHOICE_POINTS = 24;
 
 /** Deepest schema nesting {@link validateJsonSchemaSubset} evaluates. */
 const MAX_VALIDATION_DEPTH = 64;
@@ -436,7 +478,20 @@ function checkDefinitionNode(
 // screen parses the pattern into atoms so it can reason about WHICH
 // subexpression a quantifier applies to; it never executes the pattern.
 
-type ScreenedPattern = { ok: true; regex: RegExp } | { ok: false; reason: string };
+type ScreenedPattern =
+  | {
+      ok: true;
+      regex: RegExp;
+      /**
+       * Choice points the accepted pattern contains — its WORK BOUND. Every
+       * one of them is proven to be resolved by the input (see
+       * {@link findUnsafeConstruct}), so this counts the places a backtracking
+       * engine could branch at all, capped at
+       * {@link JSON_SCHEMA_MAX_PATTERN_CHOICE_POINTS}.
+       */
+      choicePoints: number;
+    }
+  | { ok: false; reason: string };
 
 interface PatternAtom {
   kind: "char" | "class" | "escape" | "dot" | "anchor" | "group";
@@ -445,6 +500,14 @@ interface PatternAtom {
   /** Alternation branches, for a group atom. */
   branches?: PatternAtom[][];
   quantifier?: { min: number; max: number };
+  /**
+   * A lookaround group (`(?=…)`, `(?!…)`, `(?<=…)`, `(?<!…)`): its body is
+   * still screened, but it CONSUMES NOTHING, so every length/character-set
+   * question about it must answer "zero-width" rather than describing the
+   * body. Modelling it as if it consumed its body would let the screen believe
+   * a boundary is forced when it is not.
+   */
+  zeroWidth?: true;
 }
 
 /** Codepoints probed to approximate an atom's character set (ASCII + two non-ASCII representatives). */
@@ -487,7 +550,16 @@ function screenPatternUncached(source: string): ScreenedPattern {
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
   const unsafe = findUnsafeConstruct(parsed.branches);
   if (unsafe) return { ok: false, reason: unsafe };
-  return { ok: true, regex };
+  const choicePoints = countChoicePoints(parsed.branches);
+  if (choicePoints > JSON_SCHEMA_MAX_PATTERN_CHOICE_POINTS) {
+    return {
+      ok: false,
+      reason:
+        `contains ${choicePoints} variable-length or multi-branch subexpressions, above the ` +
+        `${JSON_SCHEMA_MAX_PATTERN_CHOICE_POINTS}-choice-point budget — simplify it`,
+    };
+  }
+  return { ok: true, regex, choicePoints };
 }
 
 function parsePattern(source: string): { ok: true; branches: PatternAtom[][] } | { ok: false; reason: string } {
@@ -532,9 +604,11 @@ function parsePattern(source: string): { ok: true; branches: PatternAtom[][] } |
     if (ch === "(") {
       if (depth >= MAX_PATTERN_GROUP_DEPTH) return fail(`nests groups more than ${MAX_PATTERN_GROUP_DEPTH} deep`);
       i++;
+      let zeroWidth = false;
       if (source[i] === "?") {
         const prefix = /^\?(?::|=|!|<=|<!|<[A-Za-z_$][A-Za-z0-9_$]*>)/.exec(source.slice(i));
         if (!prefix) return fail(`uses an unsupported group prefix`);
+        zeroWidth = /^\?(?:=|!|<=|<!)$/.test(prefix[0]);
         i += prefix[0].length;
       }
       // `parseAlternation` is a hoisted function declaration below — mutual recursion.
@@ -543,6 +617,7 @@ function parsePattern(source: string): { ok: true; branches: PatternAtom[][] } |
       if (source[i] !== ")") return fail(`has an unbalanced "("`);
       i++;
       atom = { kind: "group", source: source.slice(start, i), branches };
+      if (zeroWidth) atom.zeroWidth = true;
     } else if (ch === "[") {
       i++;
       if (source[i] === "^") i++;
@@ -553,6 +628,13 @@ function parsePattern(source: string): { ok: true; branches: PatternAtom[][] } |
       atom = { kind: "class", source: source.slice(start, i) };
     } else if (ch === "\\") {
       if (i + 1 >= source.length) return fail(`ends with a dangling "\\"`);
+      // A backreference makes an atom's language depend on what an earlier
+      // group captured, which no character-set analysis can model — the screen
+      // fails CLOSED rather than reason about `(a+)\1`.
+      const escaped = source[i + 1] as string;
+      if ((escaped >= "1" && escaped <= "9") || (escaped === "k" && source[i + 2] === "<")) {
+        return fail(`uses a backreference (\\${escaped}), which cannot be screened for safe matching`);
+      }
       i += 2;
       atom = { kind: "escape", source: source.slice(start, i) };
     } else if (ch === ".") {
@@ -605,10 +687,59 @@ function isVariablyRepeated(atom: PatternAtom): boolean {
 
 /** True when the atom can consume nothing (an optional quantifier, an anchor, an empty-able group). */
 function canMatchEmpty(atom: PatternAtom): boolean {
-  if (atom.kind === "anchor") return true;
+  if (atom.kind === "anchor" || atom.zeroWidth) return true;
   if (atom.quantifier && atom.quantifier.min === 0) return true;
   if (atom.branches) return atom.branches.some((branch) => branch.every(canMatchEmpty));
   return false;
+}
+
+/**
+ * How many characters the atom can consume, as `[min, max]` (`max` may be
+ * `Infinity`). Used through {@link atomLengthVaries}: an atom whose consumed
+ * length is FIXED ends at a position the input already determines, so the
+ * boundary between it and whatever follows needs no further proof.
+ */
+function atomLengthRange(atom: PatternAtom): { min: number; max: number } {
+  let base: { min: number; max: number };
+  if (atom.kind === "anchor" || atom.zeroWidth) base = { min: 0, max: 0 };
+  else if (atom.branches) {
+    if (atom.branches.length === 0) base = { min: 0, max: 0 };
+    else {
+      let min = Number.POSITIVE_INFINITY;
+      let max = 0;
+      for (const branch of atom.branches) {
+        const range = branchLengthRange(branch);
+        min = Math.min(min, range.min);
+        max = Math.max(max, range.max);
+      }
+      base = { min, max };
+    }
+  } else base = { min: 1, max: 1 };
+  const quantifier = atom.quantifier;
+  if (!quantifier) return base;
+  // Guard `0 * Infinity`, which is NaN: an atom that consumes nothing still
+  // consumes nothing however many times it repeats.
+  return {
+    min: base.min === 0 ? 0 : base.min * quantifier.min,
+    max: base.max === 0 ? 0 : base.max * quantifier.max,
+  };
+}
+
+function branchLengthRange(branch: PatternAtom[]): { min: number; max: number } {
+  let min = 0;
+  let max = 0;
+  for (const atom of branch) {
+    const range = atomLengthRange(atom);
+    min += range.min;
+    max += range.max;
+  }
+  return { min, max };
+}
+
+/** True when the atom can consume two different numbers of characters — a boundary the input must force. */
+function atomLengthVaries(atom: PatternAtom): boolean {
+  const { min, max } = atomLengthRange(atom);
+  return min !== max;
 }
 
 /**
@@ -618,7 +749,7 @@ function canMatchEmpty(atom: PatternAtom): boolean {
  * direction.
  */
 function edgeCharSet(atom: PatternAtom, side: "first" | "last"): Set<number> | null {
-  if (atom.kind === "anchor") return new Set(); // zero-width: consumes nothing
+  if (atom.kind === "anchor" || atom.zeroWidth) return new Set(); // zero-width: consumes nothing
   if (atom.branches) {
     const union = new Set<number>();
     for (const branch of atom.branches) {
@@ -668,6 +799,46 @@ function setsOverlap(a: Set<number> | null, b: Set<number> | null): boolean {
   return false;
 }
 
+/** The exact character set of an atom consuming EXACTLY one character, or `null` for anything else. */
+function singleCharSet(atom: PatternAtom): Set<number> | null {
+  if (atom.quantifier || atom.branches || atom.kind === "anchor") return null;
+  const set = edgeCharSet(atom, "first");
+  // An empty set means "matches no single character" — a zero-width escape
+  // like `\b`, which distinguishes nothing. Treat it as unknown.
+  return set && set.size > 0 ? set : null;
+}
+
+/**
+ * True when NO string can be matched by both branches, PROVEN one of three
+ * ways (any failure to prove is reported as "not disjoint" — the screen never
+ * guesses in the permissive direction):
+ *
+ *   1. the branches cannot even start with the same character (`(\d+|none)`);
+ *   2. walking both branches in lockstep reaches single-character atoms whose
+ *      sets are disjoint (`(cat|car)` — same first two characters, different
+ *      third);
+ *   3. one branch runs out while the other must still consume a character
+ *      (`(a|aa)`), so no single string satisfies both.
+ *
+ * Two branches that are NOT provably disjoint make the group AMBIGUOUS: some
+ * input matches it two ways, and each such group multiplies the search space a
+ * backtracking engine explores. `(a|a)` and `(?:aa|aa)` are the pure cases.
+ */
+function branchesProvablyDisjoint(a: PatternAtom[], b: PatternAtom[]): boolean {
+  if (!setsOverlap(branchEdgeCharSet(a, "first"), branchEdgeCharSet(b, "first"))) return true;
+  for (let k = 0; ; k++) {
+    const left = a[k];
+    const right = b[k];
+    if (!left && !right) return false; // identical shapes all the way down
+    if (!left) return branchLengthRange(b.slice(k)).min >= 1;
+    if (!right) return branchLengthRange(a.slice(k)).min >= 1;
+    const leftSet = singleCharSet(left);
+    const rightSet = singleCharSet(right);
+    if (!leftSet || !rightSet) return false; // a variable-length atom — lockstep breaks down
+    if (!setsOverlap(leftSet, rightSet)) return true;
+  }
+}
+
 /**
  * The reason a repeated group's body is AMBIGUOUS (can match one string two
  * ways, which is what makes the repetition backtrack), or `null` when the
@@ -704,8 +875,46 @@ function ambiguousRepeatedBody(atom: PatternAtom): string | null {
   return null;
 }
 
+/**
+ * Choice points in the tree: atoms whose consumed length can vary, plus each
+ * group offering more than one alternative. See
+ * {@link JSON_SCHEMA_MAX_PATTERN_CHOICE_POINTS}.
+ */
+function countChoicePoints(branches: PatternAtom[][]): number {
+  let total = 0;
+  for (const branch of branches) {
+    for (const atom of branch) {
+      if (atomLengthVaries(atom)) total++;
+      if (atom.branches) {
+        if (atom.branches.length > 1) total++;
+        total += countChoicePoints(atom.branches);
+      }
+    }
+  }
+  return total;
+}
+
+/**
+ * Walk state for {@link findUnsafeConstruct}.
+ *
+ * `budget.tolerated` is the ONE unforced boundary the screen allows across the
+ * whole pattern (see the carve-out below); it is global rather than per-branch
+ * precisely because two such boundaries MULTIPLY — `^\[.*\]$` is linear,
+ * `^\[.*\]x\[.*\]y$` is quadratic, and a chain of them is `O(nᵏ)`.
+ * `insideRepeat` disables the carve-out entirely, since a tolerated boundary
+ * inside a repeated group is re-explored on every iteration.
+ */
+interface ScreenWalk {
+  /** Shared by every nested walk of one screen, so sibling groups cannot each spend it. */
+  budget: { tolerated: number };
+  insideRepeat: boolean;
+}
+
 /** The reason `branches` is unsafe, or `null` when the whole tree passes the screen. */
-function findUnsafeConstruct(branches: PatternAtom[][]): string | null {
+function findUnsafeConstruct(
+  branches: PatternAtom[][],
+  walk: ScreenWalk = { budget: { tolerated: 0 }, insideRepeat: false },
+): string | null {
   for (const branch of branches) {
     for (let index = 0; index < branch.length; index++) {
       const atom = branch[index] as PatternAtom;
@@ -724,20 +933,54 @@ function findUnsafeConstruct(branches: PatternAtom[][]): string | null {
           }
         }
       }
-      const next = branch[index + 1];
-      if (
-        next &&
-        isVariablyRepeated(atom) &&
-        isVariablyRepeated(next) &&
-        setsOverlap(edgeCharSet(atom, "last"), edgeCharSet(next, "first"))
-      ) {
-        return (
-          `puts two repeated subexpressions matching the same characters next to each other ` +
-          `(${atom.source}… ${next.source}…) — that construct backtracks super-linearly; merge them`
-        );
+      // AMBIGUOUS ALTERNATION (any group, quantified or not). A group whose
+      // branches can match the same text is a choice the input never resolves.
+      // Repeating such a group TEXTUALLY is the same exponential search as
+      // quantifying it, so this check may NOT be conditioned on a quantifier.
+      const branchList = atom.branches ?? [];
+      for (let i = 0; i < branchList.length; i++) {
+        for (let j = i + 1; j < branchList.length; j++) {
+          if (!branchesProvablyDisjoint(branchList[i] as PatternAtom[], branchList[j] as PatternAtom[])) {
+            return (
+              `has a group (${atom.source}) whose alternatives can match the same text — the choice is not ` +
+              `forced by the input, so repeating the group backtracks exponentially; make the branches distinguishable`
+            );
+          }
+        }
       }
+
+      // UNFORCED BOUNDARY. If the atom's length can vary, the position where
+      // it ends is chosen by the engine, not by the input — UNLESS the
+      // characters it can end on are disjoint from the characters that may
+      // follow it. `rest` walks past anything that can consume nothing, so an
+      // optional neighbour cannot hide the real successor. Testing the LEFT
+      // atom alone (rather than requiring BOTH neighbours to be repeats) is
+      // what catches sequentially repeated ambiguous groups, `(a|aa)(a|aa)…`.
+      if (atomLengthVaries(atom)) {
+        const rest = branch.slice(index + 1);
+        if (setsOverlap(edgeCharSet(atom, "last"), branchEdgeCharSet(rest, "first"))) {
+          // CARVE-OUT. One unforced boundary is only a LINEAR cost when
+          // everything after it is fixed-length: each of the at-most-|subject|
+          // split points is then verified in constant work, and nothing
+          // downstream can multiply by it. That is the `^\[.*\]$` / `^".*"$`
+          // idiom. Budgeted globally at one, and disabled under repetition —
+          // see {@link ScreenWalk}.
+          const tail = branchLengthRange(rest);
+          const linear = tail.min === tail.max && !walk.insideRepeat && walk.budget.tolerated < 1;
+          if (!linear) {
+            return (
+              `lets a variable-length subexpression (${atom.source}${atom.quantifier ? "…" : ""}) run into the ` +
+              `characters that can follow it — the split point is not forced by the input, so matching ` +
+              `backtracks super-linearly; separate them with a character the repeat cannot match`
+            );
+          }
+          walk.budget.tolerated++;
+        }
+      }
+
       if (atom.branches) {
-        const nested = findUnsafeConstruct(atom.branches);
+        const repeated = walk.insideRepeat || (atom.quantifier !== undefined && atom.quantifier.max > 1);
+        const nested = findUnsafeConstruct(atom.branches, { budget: walk.budget, insideRepeat: repeated });
         if (nested) return nested;
       }
     }

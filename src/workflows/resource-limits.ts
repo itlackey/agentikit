@@ -80,6 +80,68 @@ export const WORKFLOW_ENV_VAR_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
  */
 export const DEFAULT_EXEC_TIMEOUT_MS = 600_000;
 
+/**
+ * Max BYTES an exec unit may write to ONE captured pipe (stdout and stderr are
+ * capped separately).
+ *
+ * Without a byte cap the capture is bounded only by the command's exit or the
+ * wall timeout, so a command that writes continuously (`yes`, a verbose test
+ * loop) grows a string in the akm process until the host runs out of memory —
+ * and the default budget gives it ten minutes to do so. The breach is a HARD
+ * FAILURE (`exec_output_limit`, see `exec/exec-unit.ts`), never a silent
+ * truncation: stdout IS the unit's artifact, and a quietly shortened artifact
+ * would flow into `steps.<id>.output`, a gate judge, and the next step as if it
+ * were the command's real output.
+ *
+ * 8 MiB is deliberately generous — 8× the whole-row evidence cap
+ * ({@link WORKFLOW_MAX_EVIDENCE_JSON_BYTES}), so any output that could survive
+ * persistence intact fits many times over, and an ordinary full test/build log
+ * is nowhere near it. What it buys is a BOUND where there was none: the
+ * worst-case simultaneous capture is now (units in flight × 2 pipes × this cap)
+ * rather than unbounded, and the in-flight width is itself capped by
+ * {@link WORKFLOW_MAX_CONCURRENCY}.
+ */
+export const WORKFLOW_MAX_EXEC_OUTPUT_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Max UTF-8 bytes of ONE engine-authored `AKM_*` context variable handed to an
+ * exec unit's child (`AKM_INPUTS`, `AKM_PARAMS`, `AKM_ITEM`, …).
+ *
+ * Workflow artifacts have no bound comparable to an OS environment entry, so a
+ * legitimate declared input can make PROCESS CREATION ITSELF fail before the
+ * command ever runs: Linux caps a single `environ` entry at `MAX_ARG_STRLEN`
+ * (32 pages = 131 072 bytes) and answers `E2BIG`, and Windows caps a single
+ * environment variable at 32 767 characters. 32 000 sits under the smaller of
+ * the two, so a context that passes this check spawns on every supported
+ * platform — and a context that fails it produces a located, actionable akm
+ * error naming the variable instead of a bare `E2BIG` from the spawn syscall.
+ */
+export const WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES = 32_000;
+
+/**
+ * Max UTF-8 bytes of ALL of an exec unit's `AKM_*` context variables combined.
+ *
+ * Per-variable conformance is not sufficient: the platform limit that actually
+ * bites on Windows is the whole environment BLOCK, and on Linux `execve`'s
+ * total argv+environ budget (`MAX_ARG_STRLEN` per entry, `ARG_MAX` overall).
+ * Bounding akm's own contribution leaves the inherited allowlist and the unit's
+ * `env:` bindings comfortable headroom inside either budget.
+ */
+export const WORKFLOW_MAX_EXEC_CONTEXT_BYTES = 64_000;
+
+/**
+ * Max characters of the per-unit human diagnostic — the `error`/stderr text
+ * journaled on a failed unit row and rendered by `akm workflow status --units`.
+ *
+ * ONE constant for the write side (`exec/native-executor.ts`, which clips before
+ * journaling) and the read side (`runtime/runs.ts`, which clips whatever a row
+ * already holds), so a diagnostic can never be stored larger than the surface
+ * that displays it. Long enough for a real stack trace or a compiler's error
+ * block; short enough that a runaway command cannot turn the journal into its
+ * log file.
+ */
+export const WORKFLOW_UNIT_DIAGNOSTIC_CLIP = 2_000;
+
 // ── Persistence bounds ───────────────────────────────────────────────────────
 
 /**

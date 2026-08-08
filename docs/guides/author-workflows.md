@@ -285,12 +285,27 @@ Two things to know about `pattern`:
   back as corrective input.
 - **Patterns are screened for safety before they ever run.** A regex that can
   backtrack catastrophically is rejected while you are authoring it, with the
-  reason named. In practice: don't repeat a group that itself contains a
-  quantifier or alternation (`(a+)+`, `(a|a)*`), and don't put two repeats
-  that match the same characters next to each other (`.*.*`, `\d+\w+`).
-  `(foo|bar)+`, `^v?\d+(\.\d+)*$` and `^[a-f0-9]{40}$` are all fine. Patterns
-  are limited to 256 characters and are matched against strings of at most
-  4096 characters.
+  reason named. The rule the screen applies is that every choice in the
+  pattern has to be settled by the input. In practice that means three habits:
+
+  - Make alternatives tell each other apart: `(pass|fail)`, `(cat|car)` and
+    `(\d+|none)` are fine, `(a|a)` and `(?:aa|aa)` are not. This applies to
+    every group, not just repeated ones — writing `(a|aa)(a|aa)(a|aa)…` out
+    thirty times is the same exponential blow-up as writing `(a|aa)+`.
+  - Separate a repeat from what follows it with a character the repeat cannot
+    match. `\d+\.\d+` is fine because `.` is not a digit; `\d+\w+` is not,
+    because nothing decides where the digits stop. The usual trap is a
+    character class that contains its own delimiter — `[A-Za-z0-9.-]+\.` in a
+    hand-rolled email regex. Take the delimiter out of the class and repeat
+    the group instead: `[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*`.
+  - Don't repeat a group whose body can match nothing (`(a*)*`) or that can
+    start and end on the same character (`(a+)+`).
+
+  `(foo|bar)+`, `^v?\d+(\.\d+)*$`, `^\w+(-\w+)*$` and `^[a-f0-9]{40}$` are all
+  fine, and so is one "grab everything between delimiters" repeat such as
+  `^\[.*\]$`. Patterns are limited to 256 characters and are matched against
+  strings of at most 4096 characters. Backreferences are rejected outright —
+  the screen cannot reason about them, and it fails closed rather than guess.
 
 Still outside the subset (each fails lint with the keyword named and a
 suggested replacement): `$ref`/`$defs` — inline the schema instead, since

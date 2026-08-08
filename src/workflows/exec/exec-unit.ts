@@ -38,6 +38,24 @@
  * be used to step outside the unit's working tree (the run's work dir, or the
  * unit's fresh worktree under `isolation: worktree`).
  *
+ * ## Everything the command can spend is BOUNDED
+ *
+ * A command is arbitrary code with no lifetime or resource discipline of its
+ * own, so every resource it can consume on akm's behalf has a named ceiling in
+ * `workflows/resource-limits.ts`:
+ *
+ *   - WALL CLOCK — {@link DEFAULT_EXEC_TIMEOUT_MS} (or the authored `timeout:`),
+ *     enforced by the TERM→KILL ladder.
+ *   - CAPTURED OUTPUT — {@link WORKFLOW_MAX_EXEC_OUTPUT_BYTES} per pipe. Without
+ *     it, capture is bounded only by the command's exit, so `yes` exhausts the
+ *     akm process's memory long before the timeout fires. A breach kills the
+ *     process group and fails the unit `exec_output_limit`; it NEVER truncates
+ *     silently, because stdout is the artifact.
+ *   - CONTEXT ENVIRONMENT — {@link WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES} per
+ *     `AKM_*` variable and {@link WORKFLOW_MAX_EXEC_CONTEXT_BYTES} in total,
+ *     checked BEFORE the spawn so an oversized artifact yields an actionable
+ *     akm error rather than the OS's bare `E2BIG`.
+ *
  * ## The child's environment is an ALLOWLIST
  *
  * The child does NOT inherit akm's environment. It starts EMPTY and receives
@@ -56,9 +74,10 @@
  * why this module may return raw stdout/stderr diagnostics without knowing
  * anything about redaction itself.
  *
- * Layering: a LEAF. It imports only node built-ins, `core/common`, and
- * `core/subprocess` (plus erased types), so the executor can consume it
- * without opening an import cycle.
+ * Layering: a LEAF. It imports only node built-ins, `core/common`,
+ * `core/spawn-env`, `core/subprocess` and the import-free
+ * `workflows/resource-limits` (plus erased types), so the executor can consume
+ * it without opening an import cycle.
  *
  * @module workflows/exec/exec-unit
  */
@@ -67,12 +86,34 @@ import fs from "node:fs";
 import path from "node:path";
 import { isWithin } from "../../core/common";
 import { collectAllowlistedEnv } from "../../core/spawn-env";
-import { runManagedSubprocess, type SpawnFn } from "../../core/subprocess";
+import {
+  type ManagedSubprocessResult,
+  runManagedSubprocess,
+  type SpawnFn,
+  streamCaptureFailure,
+} from "../../core/subprocess";
 import type { IrExecSpec } from "../ir/schema";
+import {
+  utf8Bytes,
+  WORKFLOW_MAX_EXEC_CONTEXT_BYTES,
+  WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES,
+  WORKFLOW_MAX_EXEC_OUTPUT_BYTES,
+  WORKFLOW_UNIT_DIAGNOSTIC_CLIP,
+} from "../resource-limits";
 import type { UnitDispatchResult } from "./unit-dispatch";
 
-/** Max characters of a failed command's stderr retained in the unit's `error` diagnostic. */
-export const EXEC_STDERR_DIAGNOSTIC_CLIP = 2_000;
+/**
+ * Max characters of a failed command's stderr retained in the unit's `error`
+ * diagnostic.
+ *
+ * Deliberately BELOW {@link WORKFLOW_UNIT_DIAGNOSTIC_CLIP}: the composed
+ * diagnostic reads `<what happened>. stderr (last N chars): <tail>`, and the
+ * journal clips that COMPOSED string head-first. Reserving 500 characters for
+ * the prefix keeps the whole stderr tail — the part that actually says why the
+ * command failed — inside the journaled and displayed diagnostic, instead of
+ * losing its final few hundred characters to the outer clip.
+ */
+export const EXEC_STDERR_DIAGNOSTIC_CLIP = WORKFLOW_UNIT_DIAGNOSTIC_CLIP - 500;
 
 /**
  * The DEFAULT environment allowlist for an exec unit's child — the single
@@ -170,7 +211,9 @@ export interface RunExecUnitInput {
   env?: Record<string, string>;
   /**
    * Engine-authored `AKM_*` context (ids, params, fan-out item + index,
-   * declared inputs). Applied LAST so a binding can never shadow it.
+   * declared inputs). Applied LAST so a binding can never shadow it, and size-
+   * checked against {@link WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES} /
+   * {@link WORKFLOW_MAX_EXEC_CONTEXT_BYTES} before any spawn is attempted.
    */
   context?: Record<string, string>;
   /** Resolved wall-clock budget; `null` = the author's explicit `timeout: none`. */
@@ -191,20 +234,42 @@ export interface RunExecUnitInput {
  *   - wall-clock expiry      → `timeout`   (after the TERM→KILL ladder)
  *   - cancellation           → `aborted`
  *   - the child never started → `spawn_failed` (missing binary, unusable cwd)
+ *   - the capture never completed → `spawn_failed`, matching the agent spawn
+ *     path's treatment of the same condition (see below)
  *
- * The out-of-taxonomy `exec_cwd_escape` is deliberate: a `cwd` that resolves
- * outside its base is tampering or an authoring bug, never a transient, so no
- * `retry.on` value can ever re-dispatch it.
+ * The out-of-taxonomy `exec_cwd_escape`, `exec_output_limit` and
+ * `exec_context_too_large` are deliberate: each is tampering, a runaway, or an
+ * authoring bug — never a transient — so no `retry.on` value can ever
+ * re-dispatch one, and `PROGRAM_RETRY_REASONS` (and the drift test that pins it)
+ * stays exactly as it is.
+ *
+ * ## An INCOMPLETE capture is a failure, never a partial artifact
+ *
+ * `exitCode === 0` is not on its own proof that stdout was fully read. A pipe
+ * can error, and `runManagedSubprocess`'s stream-drain timeout can fire while
+ * the command LEADER has already exited 0 because a background descendant still
+ * holds the stdout fd open. Both leave `result.stdout` holding a PREFIX of the
+ * real output. Promoting that prefix would hand the next step, the gate judge
+ * and `steps.<id>.output` a silently truncated artifact, so the unit fails
+ * instead — and it fails with the same reason and the same shared classifier
+ * (`streamCaptureFailure`) the agent spawn path uses, so the two dispatch paths
+ * agree on what "the capture did not complete" means.
  */
 export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatchResult> {
   const cwd = resolveExecCwd(input);
   if (!cwd.ok) return { ok: false, text: "", failureReason: cwd.failureReason, error: cwd.error };
+  const context = checkExecContextSize(input);
+  if (context) return context;
 
   const result = await runManagedSubprocess([...input.exec.command], {
     capture: true,
     cwd: cwd.path,
     env: childEnv(input.exec, input.env, input.context),
     timeoutMs: input.timeoutMs,
+    // stdout IS this unit's artifact, so capture is BOUNDED: an unbounded
+    // capture is memory the akm process spends on a command's behalf with no
+    // ceiling at all until it exits or the (default 10-minute) budget expires.
+    maxOutputBytes: WORKFLOW_MAX_EXEC_OUTPUT_BYTES,
     ...(input.signal ? { signal: input.signal } : {}),
     ...(input.spawnFn ? { spawnFn: input.spawnFn } : {}),
   });
@@ -218,6 +283,9 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
       error: `exec unit "${input.unitId}" could not start ${display}: ${result.spawnError.message}`,
     };
   }
+  // Checked BEFORE abort/timeout: the cap breach is what KILLED the child, so
+  // the kill's own symptoms must not be reported as the cause.
+  if (result.outputLimitExceeded) return outputLimitFailure(input, display, result);
   // Abort is checked BEFORE timeout: a budget/user cancellation that raced a
   // wall-clock expiry is still a cancellation, and reporting it as `timeout`
   // would let a `retry.on: [timeout]` policy re-dispatch work the caller just
@@ -248,11 +316,114 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
       error: `exec unit "${input.unitId}" ran ${display} and it exited ${result.exitCode}${stderrTail(result.stderr)}`,
     };
   }
+  // An exit code of 0 does NOT prove the output was fully captured — see the
+  // module note above. Checked before the artifact is promoted, so a partial
+  // stdout can never become `steps.<id>.output`.
+  const captureFailure = streamCaptureFailure(result.stdoutRead, result.stderrRead);
+  if (captureFailure) {
+    return {
+      ok: false,
+      text: "",
+      failureReason: "spawn_failed",
+      error:
+        `exec unit "${input.unitId}" ran ${display} and it exited 0, but its output capture did not complete ` +
+        `(${captureFailure}), so the stdout artifact would be incomplete. A background descendant still holding ` +
+        `stdout open is the usual cause — have the command wait for its children, or redirect their output` +
+        `${stderrTail(result.stderr)}`,
+    };
+  }
   // The promoted artifact is STDOUT. Trailing newlines are stripped, exactly
   // like shell command substitution `$(…)`, so a one-line command's artifact is
   // the value an author expects rather than the value plus a `\n`. stderr is a
   // diagnostic channel only and never contributes to the artifact.
   return { ok: true, text: stripTrailingNewlines(result.stdout) };
+}
+
+/**
+ * The output-cap breach failure — deliberately UNMISTAKABLE.
+ *
+ * `text` is emptied rather than carrying the partial capture: for a failed unit
+ * `text` is only a diagnostic (the durable evidence graph keeps a failure's
+ * `failureReason` alone), and handing back several megabytes of a runaway
+ * command's output as "the text" would just move the memory problem one layer
+ * up. The byte counts go in the message instead, so the operator can see how far
+ * past the cap the command ran.
+ */
+function outputLimitFailure(
+  input: RunExecUnitInput,
+  display: string,
+  result: ManagedSubprocessResult,
+): UnitDispatchResult {
+  const which = [
+    ...(result.stdoutRead.overflowed ? ["stdout"] : []),
+    ...(result.stderrRead.overflowed ? ["stderr"] : []),
+  ].join(" and ");
+  return {
+    ok: false,
+    text: "",
+    failureReason: "exec_output_limit",
+    error:
+      `exec unit "${input.unitId}" ran ${display} and its ${which} exceeded the ` +
+      `${WORKFLOW_MAX_EXEC_OUTPUT_BYTES}-byte capture limit, so its process group was terminated. ` +
+      `NO artifact was promoted: the captured output is a truncated prefix and stdout is this unit's artifact, ` +
+      `so promoting it would silently corrupt every downstream reference to it. ` +
+      `Have the command write bulk output to a file and print a path, or quiet it down.`,
+  };
+}
+
+/**
+ * Refuse to spawn when the engine-authored `AKM_*` context would not fit in the
+ * child's environment.
+ *
+ * A workflow artifact has no bound comparable to an OS environment entry, so a
+ * perfectly legitimate declared input can serialize into an `AKM_INPUTS` far
+ * past what `execve` accepts. Left unchecked that surfaces as a bare `E2BIG`
+ * from the spawn syscall — reported as `spawn_failed` with a message about
+ * "argument list too long" that names neither the variable nor the artifact
+ * that produced it. Checking here converts it into a located, actionable
+ * failure BEFORE process creation is attempted.
+ *
+ * Only the engine-authored context is measured. The unit's `env:` bindings are
+ * authored values a human wrote and sized; this is the surface where the SIZE
+ * is data-dependent and therefore surprising.
+ */
+function checkExecContextSize(input: RunExecUnitInput): UnitDispatchResult | undefined {
+  const entries = Object.entries(input.context ?? {});
+  let total = 0;
+  for (const [name, value] of entries) {
+    const bytes = utf8Bytes(value);
+    total += bytes + utf8Bytes(name) + 1;
+    if (bytes > WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES) {
+      return contextTooLarge(
+        input,
+        `its ${name} context variable is ${bytes} bytes, over the ${WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES}-byte ` +
+          `per-variable limit`,
+        name,
+      );
+    }
+  }
+  if (total > WORKFLOW_MAX_EXEC_CONTEXT_BYTES) {
+    return contextTooLarge(
+      input,
+      `its AKM_* context variables total ${total} bytes, over the ${WORKFLOW_MAX_EXEC_CONTEXT_BYTES}-byte limit`,
+      entries.map(([name]) => name).join(", "),
+    );
+  }
+  return undefined;
+}
+
+function contextTooLarge(input: RunExecUnitInput, what: string, names: string): UnitDispatchResult {
+  return {
+    ok: false,
+    text: "",
+    failureReason: "exec_context_too_large",
+    error:
+      `exec unit "${input.unitId}" cannot be spawned: ${what}. ` +
+      `Environment variables (${names}) are how a frozen argv receives data, and the operating system caps them ` +
+      `(Linux ~128 KiB per entry, Windows 32 767 characters per variable) — spawning would fail with a bare E2BIG. ` +
+      `Have the producing step emit a REFERENCE (a file path, an id) instead of inline bulk data, narrow the step's ` +
+      `declared inputs:, or reduce the fan-out item size.`,
+  };
 }
 
 type ResolvedCwd = { ok: true; path: string } | { ok: false; failureReason: string; error: string };
