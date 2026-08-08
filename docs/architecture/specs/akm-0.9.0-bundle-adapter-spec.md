@@ -352,7 +352,7 @@ implementation detail, and requires amending this section first.
     relocates the *existing* classification behind the `BundleAdapter` interface,
     unchanged in behavior;
   - emits the **qualified conceptId spelling** (ref-grammar decision D-R2,
-    `akm-0.9.0-ref-grammar-decision.md`): conceptId = the placement stash-subdir
+    `akm-0.9.0-ref-grammar-decision.md`): conceptId = the placement bundle-subdir
     followed by the per-type canonical name — `knowledge/http-caching`,
     `skills/code-review`, `scripts/db/migrate/run.sh` — the same spelling
     `placeNew` consumes and this spec's §1.3 examples show. Markdown files strip
@@ -451,7 +451,7 @@ OKF bundle-relative links (`[x](/tables/customers.md)`, `[y](./other.md)` — bo
 
 ## 10. Installation and activation (Tier A in 0.9.0 — DEV-3 revised; record/digests/CLI are Tier B)
 
-**Tier A in 0.9.0 (DEV-3 as revised 2026-07-14; normative §18 staging note).** **Installation is not activation** — already true in code; 0.9.0 consolidates the existing scattered enforcement (the `registryId` block/warn, the add-time dangerous-key scan, task `enabled:` state, `writable`) into one workspace activation-policy point, verified by port-preservation tests. **No new trust/approval machinery ships** (deviation §4.3c). env/secret handling is unchanged (whole-file assets in stashes/bundles, resolved from the stash). Everything else in this section is the **Tier-B target shape, deferred indefinitely**: the durable `Binding` record in `state.db` (export ref + digest, engine/harness, parameters, env/secret *references* — never resolved values, normative §28.4 — tool/fs policy, enabled state, scheduler identity), the `discover → install → index → bind → enable` lifecycle's explicit bind step, digest-pinned updates, and the bind CLI. Export kinds (`workflow`/`task`/`environment`/`agent`/`command`/`skill`/`script`) remain activation contracts, not storage types or identity; runtime handlers never infer authority from a `type` or frontmatter field (normative §8.4). Accepted Tier-A residual: refs into installed sources re-read current disk content per invocation (crontab semantics; plan Chunk 6.5). Target-state rules: normative §18–§22.
+**Tier A in 0.9.0 (DEV-3 as revised 2026-07-14; normative §18 staging note).** **Installation is not activation** — already true in code; 0.9.0 consolidates the existing scattered enforcement (the `registryId` block/warn, the add-time dangerous-key scan, task `enabled:` state, `writable`) into one workspace activation-policy point, verified by port-preservation tests. **No new trust/approval machinery ships** (deviation §4.3c). env/secret handling is unchanged (whole-file assets in bundles, resolved from the bundle). Everything else in this section is the **Tier-B target shape, deferred indefinitely**: the durable `Binding` record in `state.db` (export ref + digest, engine/harness, parameters, env/secret *references* — never resolved values, normative §28.4 — tool/fs policy, enabled state, scheduler identity), the `discover → install → index → bind → enable` lifecycle's explicit bind step, digest-pinned updates, and the bind CLI. Export kinds (`workflow`/`task`/`environment`/`agent`/`command`/`skill`/`script`) remain activation contracts, not storage types or identity; runtime handlers never infer authority from a `type` or frontmatter field (normative §8.4). Accepted Tier-A residual: refs into installed sources re-read current disk content per invocation (crontab semantics; plan Chunk 6.5). Target-state rules: normative §18–§22.
 
 ---
 

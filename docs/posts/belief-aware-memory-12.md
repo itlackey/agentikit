@@ -13,6 +13,9 @@ id: 3814544
 date: '2026-06-04T00:32:02Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 A self-improving memory loop sounds like a clear win until you watch it rewrite something correct with something outdated. The agent remembered a fact. You verified it. A later consolidation pass ran against a stale context window, decided the memory was imprecise, and replaced it with a weaker version. The original was better. You lost ground.
 
 This is the failure mode that belief-aware memory was built to prevent. Not "agents write wrong things" — that's a model quality problem. The specific failure is: the improve loop, running unsupervised, overwrites correct content it should have left alone. A loop that can degrade its own best work is worse than no loop at all.

@@ -131,7 +131,7 @@ this is a purpose summary:
 | `index_dir_state` | incremental-indexing cache (per-directory hash + mtime) |
 | `llm_enrichment_cache` | cached LLM enrichment/graph-extraction/memory-inference results |
 | `registry_index_cache` | cached registry index JSON (replaces flat cache files) |
-| `graph_meta` | per-stash knowledge-graph telemetry (model, prompt version, cache hits) |
+| `graph_meta` | per-bundle knowledge-graph telemetry (model, prompt version, cache hits) |
 | `graph_files` | per-file graph-extraction status |
 | `graph_file_entities` | extracted entities per file |
 | `graph_file_relations` | extracted entity relations per file |

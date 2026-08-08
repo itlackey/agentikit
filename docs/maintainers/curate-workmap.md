@@ -62,9 +62,9 @@ Additional debate outcome:
 - `--type <type>` bypasses diversification and returns top hits of that type.
 - Default multi-type curate currently keeps one best hit per type, then reorders types using regex heuristics.
 - Registry hits only fill leftover slots and are capped at `2`.
-- Stash items are enriched via `akmShowUnified()` best-effort.
-- Stash `followUp` is always `akm show <ref>` today.
-- Curate logs both a summary event and per-item retrieval rows for stash refs.
+- Bundle items are enriched via `akmShowUnified()` best-effort.
+- Bundle `followUp` is always `akm show <ref>` today.
+- Curate logs both a summary event and per-item retrieval rows for bundle refs.
 
 ## Execution Path
 
@@ -168,9 +168,9 @@ Preferred direction:
 
 Current behavior:
 
-- curate enriches stash hits by calling `akmShowUnified({ ref })`
+- curate enriches bundle hits by calling `akmShowUnified({ ref })`
 - if show fails, enrichment silently degrades to raw search-hit data
-- stash follow-up remains `akm show <ref>` even for runnable scripts with a concrete `run`
+- bundle follow-up remains `akm show <ref>` even for runnable scripts with a concrete `run`
 - registry follow-up uses the registry action, usually `akm bundle add ...`
 
 Product implication:
@@ -210,7 +210,7 @@ Read:
 
 Important detail:
 
-- curate writes per-item `usage_events` rows for stash refs so curated items count as retrieval signal
+- curate writes per-item `usage_events` rows for bundle refs so curated items count as retrieval signal
 
 This means ranking changes do not just affect UX. They also affect downstream improvement-loop evidence.
 
@@ -226,7 +226,7 @@ Existing graph signal:
 Limits:
 
 - graph coverage depends on graph extraction having run
-- graph is thin or absent on cold stashes
+- graph is thin or absent on cold bundles
 - graph quality is uneven and generic entities can over-connect assets
 - graph coverage is strongest for `knowledge` / `memory` and should not be assumed for every asset family
 
@@ -274,7 +274,7 @@ Search-ranking baselines that curate should respect:
 
 ## Known Gaps / Mismatches
 
-- `docs/guides/search-discovery.md` currently says curate prefers one strong match per type; that wording is too strong if curate becomes relevance-first.
+- `docs/guides/discover-and-load.md` currently says curate prefers one strong match per type; that wording is too strong if curate becomes relevance-first.
 - `docs/reference/cli.md` documents `--type`, `--limit`, and `--source`, but does not currently explain the effective `--detail` and `--shape` behavior alongside curate.
 - Some historical AKM refs about curate output shaping are stale because curate now has a dedicated shape implementation.
 

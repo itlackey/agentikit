@@ -13,6 +13,9 @@ date: '2026-04-24T05:18:44Z'
 id: 3539588
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 akm 0.5.0 is out. This release adds three new asset types — wikis, workflows, and vaults are now first-class citizens — plus writable git stash support so your stash can sync back to a remote. It also upgrades the self-update path to cover npm, bun, pnpm, and binary installs, and ships a new `akm help migrate` command for release-to-release guidance. There is one breaking change for anyone who was using the single-wiki LLM POC from 0.4.x.
 
 ## TL;DR

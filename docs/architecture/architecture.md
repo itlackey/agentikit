@@ -16,7 +16,7 @@ The `akm` adapter's fourteen built-in asset types (`skill`, `command`,
 `lesson`, `fact`, `env`, `secret`, `task`, `session`) each map to a
 canonical source directory through `src/core/asset/asset-placement.ts`'s
 `PLACEMENT_SPECS` map. See
-[Bundle Types → akm](../reference/bundle-types.md#akm) for the full table.
+[Bundle Types](../reference/bundle-types.md) for the full table.
 
 The deprecated `vault` type was removed in 0.9.0 and replaced by `env` (whole
 `.env` files) and `secret` (single-value secret files). `wiki` is not an item
@@ -232,7 +232,7 @@ refresh.
 Write-target resolution (`resolveWriteTarget`) follows: an explicit
 destination flag (`--bundle` on `remember`/`clone`/`improve`, `--target` on
 `import`/env/secret mutations) -> `config.defaultWriteTarget` -> working
-stash (`defaultBundle`) -> `ConfigError`. The resolved target keeps the
+bundle (`defaultBundle`) -> `ConfigError`. The resolved target keeps the
 optional configured selector separate from the stable `source.name`: APIs
 that must re-resolve a destination use the selector, while durable refs and
 state rows always use `source.name`. The implicit working bundle therefore has
@@ -256,7 +256,7 @@ Improve state written after the source-identity cutover uses
 and convergence rows are read as a fallback only when the selected source root
 equals the configured historical `stashDir`. A qualified row takes precedence.
 Named sources at any other root never read bare rows, preventing a duplicate ref
-from inheriting the local stash's history. New writes are always qualified, so
+from inheriting the local bundle's history. New writes are always qualified, so
 the fallback naturally becomes irrelevant as local assets accumulate new state.
 
 Retrieval demand is scoped separately through usage-event entry IDs and selected

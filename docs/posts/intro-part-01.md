@@ -13,6 +13,9 @@ published: true
 date: '2026-03-08T15:58:28Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 If you've been building with Claude Code or OpenCode for any length of time, you've probably hit the same wall. You start with a handful of skills and commands. They work great. So you add more. Then a few more for that new project. Then a teammate shares theirs and you copy those in too.
 
 Before long you've got dozens of files scattered across directories, no good way to find the one you need, and an agent that's either missing context it should have or drowning in context it doesn't need.

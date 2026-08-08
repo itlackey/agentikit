@@ -13,6 +13,9 @@ id: 3814543
 date: '2026-06-04T00:32:02Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 This is part thirteen in a series about managing the growing pile of skills, scripts, and context that AI coding agents depend on. [Part ten](https://dev.to/itlackey/the-improvement-loop-how-akm-keeps-your-agent-sharp-2d4d) covered the full improve pipeline — all five phases and how they connect. [Part fourteen](https://dev.to/itlackey/your-agent-has-a-memory-that-runs-while-you-sleep-20oh) covers what 48 runs per day looks like in practice, including hardware benchmarks and the reliability bugs that surface at that frequency.
 
 The reflect pass inside `akm improve` has three execution modes. Most installs are still running the slowest one.

@@ -110,7 +110,7 @@ Five more runner types ship (`scripts/akm-eval/src/runners/`):
   then immediately refused as no-ops by the underlying command (the
   motivating bug: a planner with no memory that certain refs were
   unservable re-queuing the same doomed action every run).
-- **`memory-safety`** — copies a fixture stash into a mandatory sandbox,
+- **`memory-safety`** — copies a fixture bundle into a mandatory sandbox,
   runs `akm index` then `akm improve --json-to-stdout`, and scores the
   resulting mutations against per-case expectations (preserved/archived
   refs, allowed/forbidden status transitions, contradiction edges, belief
@@ -132,7 +132,7 @@ scripts/akm-eval/bin/akm-eval-run --suite improve-smoke --mode paired \
 
 Orchestrates four steps:
 
-1. **Baseline pass** — run the suite against the current stash.
+1. **Baseline pass** — run the suite against the current bundle.
 2. **`akm improve`** — shell out with the forwarded `--improve-args`.
 3. **Re-eval** — run the suite again against the post-improve state.
 4. **Merged envelope** — write a single `eval-result.json` with
@@ -142,10 +142,10 @@ Orchestrates four steps:
 
 Sandbox semantics:
 
-- `--sandbox` (default) — copy the stash to a tmpdir and run there;
-  the real stash is never touched. Cleaned up on success unless
+- `--sandbox` (default) — copy the bundle to a tmpdir and run there;
+  the real bundle is never touched. Cleaned up on success unless
   `--keep-sandbox`.
-- `--no-sandbox` / `--allow-mutate` — opt into mutating the real stash.
+- `--no-sandbox` / `--allow-mutate` — opt into mutating the real bundle.
 
 ## Replay mode (Phase 6)
 
@@ -208,7 +208,7 @@ A suite is a directory under `scripts/akm-eval/cases/`. Each case is a
 JSON file matching the `EvalCase` shape in
 `scripts/akm-eval/src/types.ts`. The `improve-smoke` suite ships 12 cases —
 five retrieval, three proposal-quality, two reflect-quality, and two
-planner-waste — designed to run on any stash without per-stash
+planner-waste — designed to run on any bundle without per-bundle
 customization.
 
 To author your own suite, copy `improve-smoke/` to a sibling directory
@@ -279,9 +279,9 @@ plus feedback events plus a human-graded expected outcome:
 
 The runner, per probe:
 
-1. Creates a fresh sandbox (`createSandbox()`) so the real stash and
+1. Creates a fresh sandbox (`createSandbox()`) so the real bundle and
    data dir are never touched.
-2. Writes the probe's asset file under the sandbox stash
+2. Writes the probe's asset file under the sandbox bundle
    (`memories/<name>.md`, `lessons/<name>.md`, or
    `skills/<name>/SKILL.md`).
 3. Runs `akm feedback <ref> --positive|--negative ...` once per
@@ -367,7 +367,7 @@ always write schema v2 and require the fingerprint.
 ## Graph A/B ablation (Phase 5)
 
 `scripts/akm-eval/bin/akm-eval-graph-ablation` (roadmap R5) drives a
-two-sandbox ablation against the same source stash — graph extraction on
+two-sandbox ablation against the same source bundle — graph extraction on
 vs. off — and reports per-metric deltas (retrieval hit@K, precision@K,
 contradiction precision/recall, latency, and a proxy token-cost). The off
 side is gated via a planted `config.json` that sets both
@@ -436,7 +436,7 @@ full schema.
 
 This is the measurement system that proves whether the `akm improve`
 **proactive lane** (`akm-improve-proactive-weekly`) actually improves the
-stash versus burning GPU cycles. Three pieces: a real-query retrieval suite
+bundle versus burning GPU cycles. Three pieces: a real-query retrieval suite
 generator, a stored T0 baseline, and a pass/fail verdict runner.
 
 ### Why this is a built-in controlled trial
@@ -444,7 +444,7 @@ generator, a stored T0 baseline, and a pass/fail verdict runner.
 The proactive selector rotates a top-N slice of "due" assets per run.
 Because it can only touch N assets at a time, at any instant some due assets
 have been proactively touched (TREATMENT) while equally-due assets have not
-(CONTROL). Treatment and control therefore **coexist in the same stash**,
+(CONTROL). Treatment and control therefore **coexist in the same bundle**,
 giving a natural A/B without having to stand up a parallel environment.
 
 - **TREATMENT** = refs with proposal/event `eligibilitySource = proactive`.
@@ -521,7 +521,7 @@ AKM_BUNDLE_DIR=~/akm scripts/akm-eval/bin/akm-eval-run \
 
 The eval-run id it prints is the baseline the verdict runner compares
 against. (First captured baseline: `2026-06-14T17-29-48-772Z-498258e2`,
-overall retrieval score 0.216, against stash tag
+overall retrieval score 0.216, against bundle tag
 `baseline/pre-proactive-2026-06-14`.)
 
 Each run stores a SHA-256 fingerprint of a canonical manifest that preserves

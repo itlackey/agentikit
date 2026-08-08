@@ -390,7 +390,7 @@ reduced to a reference-string parser.
   strings. Journal shape is already compatible; freeze pins the plan either
   way.
 - **Templates**: both authoring templates → one.
-- **Examples**: 9 example-stash workflows rewritten; their fake moustaches
+- **Examples**: 9 example-bundle workflows rewritten; their fake moustaches
   become plain prose references to attached context — which is how they
   already behaved in practice.
 - **Fixtures/goldens**: `format-family-goldens/`, `all-types` fixtures,

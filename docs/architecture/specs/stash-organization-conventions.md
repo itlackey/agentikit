@@ -1,6 +1,6 @@
-# Design: stash organization & back-linking conventions
+# Design: bundle organization & back-linking conventions
 
-Status: accepted (conventions shipped in the stash skeleton)
+Status: accepted (conventions shipped in the bundle skeleton)
 Author: akm
 Date: 2026-07-11
 
@@ -24,7 +24,7 @@ Date: 2026-07-11
 
 ## Problem
 
-The stash skeleton already ships per-type authoring conventions
+The bundle skeleton already ships per-type authoring conventions
 (`facts/conventions/assets/<type>.md`) that tell an agent **how to write** each
 asset type. Nothing told an agent **where to place** an asset (which
 subdirectory) or **how to cross-link** it. Yet placement and linking are exactly
@@ -180,7 +180,7 @@ justified:
   recovered by scoped-utility ranking (fact 5), so spending the path on the
   project axis is redundant; the domain prefix is the only handle that
   co-locates cross-project reuse. For a wiki, the domain names the wiki itself.
-- **Global-by-nature types** (`command`, `agent`, `workflow`, stash-wide `env`) →
+- **Global-by-nature types** (`command`, `agent`, `workflow`, bundle-wide `env`) →
   type root or a tool slug.
 
 Supporting rules, all shipped as convention facts:
@@ -209,7 +209,7 @@ Supporting rules, all shipped as convention facts:
 - Hubs are optional wiki assets for a few high-traffic domains, never a per-write
   obligation. The FTS index is the catalog.
 - A ref is an address chosen once: **default to not renaming**; if unavoidable,
-  move the file, grep the stash for the old ref and fix inbound xrefs in the
+  move the file, grep the bundle for the old ref and fix inbound xrefs in the
   same pass, then `akm index` and `akm lint`. The destination is a new identity
   and starts with fresh learned state.
 
@@ -218,7 +218,7 @@ wikis, the per-asset scope ladder, and any hand-maintained catalog.
 
 ## What shipped
 
-Convention facts in the stash skeleton (`src/assets/stash-skeleton/facts/conventions/`):
+Convention facts in the bundle skeleton (`src/assets/stash-skeleton/facts/conventions/`):
 
 - `organization.md` (`category: convention`) — the partition-by-type placement
   rules. Surfaced to every non-wiki author.
@@ -232,8 +232,8 @@ Convention facts in the stash skeleton (`src/assets/stash-skeleton/facts/convent
 
 Because these are `category: convention` facts, `resolveStashStandards` injects
 them into the authoring context automatically — no code change was required to
-enforce the surfacing. They are soft guidance; a stash owner edits them to match
-how their stash is queried.
+enforce the surfacing. They are soft guidance; a bundle owner edits them to match
+how their bundle is queried.
 
 The code changes the finalized conventions imply are specced separately in
 [stash-conventions-code-spec.md](stash-conventions-code-spec.md) (8 specs,

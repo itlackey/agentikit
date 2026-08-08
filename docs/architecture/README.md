@@ -5,6 +5,9 @@ subsystem internals.
 
 - [Architecture](architecture.md) -- How akm's bundles, cache, index, and registries fit together
 - [Core Principles](akm-core-principles.md) -- Design principles and constraints
+- [Adapters](adapters.md) -- The `BundleAdapter` contract: what a bundle's files *are*, how they're indexed, linted, and written
+- [Architecture: The Workflow Engine](workflow-engine.md) -- How a workflow compiles to a frozen plan, persists run/unit state, dispatches work, and resumes without replaying completed steps
+- [Architecture: The Improvement Loop](improvement.md) -- Purpose and boundary of the improvement loop
 - [Runtime Boundary Design](runtime-boundary-design.md) -- Isolating `bun:sqlite`/`Bun.*` from the core
 - [Architecture Decision History](akm-architecture-decision-history.md) -- ADR-style record of the major architecture rulings
 
@@ -14,13 +17,13 @@ Normative specifications and binding conventions.
 
 - [OKF format support](specs/okf-support.md) -- OKF is a first-class format supported through the built-in `okf` adapter
 - [0.9.0 surface decisions](specs/0.9.0-decisions.md) -- The decision record (D1-D11) behind the 0.9.0 breaking changes
-- [Bundle & Adapter Spec (0.9.0)](specs/akm-0.9.0-bundle-adapter-spec.md) -- Normative spec for bundles, adapters, and stash recognition
+- [Bundle & Adapter Spec (0.9.0)](specs/akm-0.9.0-bundle-adapter-spec.md) -- Normative spec for bundles, adapters, and bundle recognition
 - [Ref Grammar Decision (0.9.0)](specs/akm-0.9.0-ref-grammar-decision.md) -- The `[bundle//]conceptId` ref grammar
 - [Ref Format](specs/ref.md) -- Wire format for asset references
 - [Format-Neutral Bundle Workspace Spec](specs/akm-format-neutral-bundle-workspace-spec.md) -- The format-neutral workspace model
 - [Fact Asset Type](specs/fact-asset-type.md) -- The `fact` asset type
-- [Stash Conventions Code Spec](specs/stash-conventions-code-spec.md) -- Code-level stash conventions
-- [Stash Organization Conventions](specs/stash-organization-conventions.md) -- How a stash is laid out
+- [Bundle Conventions Code Spec](specs/stash-conventions-code-spec.md) -- Code-level bundle conventions
+- [Bundle Organization Conventions](specs/stash-organization-conventions.md) -- How a bundle is laid out
 - [DI Seams Plan](specs/di-seams-plan.md) -- Dependency-injection seams used by the test suite
 - [Improve Collapse/Churn Detector](specs/improve-collapse-churn-detector-design.md) -- Longitudinal collapse/churn detection design (§6.3 is the operator runbook referenced by `akm health`)
 
@@ -42,6 +45,10 @@ Current-truth subsystem references.
 - [Health Advisories](internals/health-advisories.md) -- `akm health` advisory-to-action map for operators
 - [Functional Contract Patterns](internals/functional-contract-patterns.md) -- Quick reference for contributor pipelines and small process contracts
 - [Fresh-Host Rebuild Runbook](internals/fresh-host-rebuild-runbook.md) -- Rebuild an akm install on a new machine
+
+## Comparisons (`comparisons/`)
+
+- [Workflow architecture: Claude Code workflows vs. akm workflows](comparisons/claude-code-vs-akm-workflows-full.md) -- Full technical comparison of the Claude Code `Workflow` tool and akm workflows; see [the short vendor-neutral guide](../guides/claude-code-vs-akm-workflows.md) for the decision-level version
 
 ## Testing (`testing/`)
 

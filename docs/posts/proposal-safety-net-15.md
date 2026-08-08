@@ -13,6 +13,9 @@ id: 3814548
 date: '2026-06-04T00:32:02Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 This is part fifteen in a series about managing the growing pile of skills, scripts, and context that AI coding agents depend on. [Part ten](https://dev.to/itlackey/the-improvement-loop-how-akm-keeps-your-agent-sharp-2d4d) introduced the improve pipeline and how it generates proposals. [Part twelve](https://dev.to/itlackey/belief-aware-memory-teaching-your-agent-when-not-to-write-4egi) covered belief-aware memory, which feeds directly into the confidence scores covered here.
 
 The fundamental problem with agent-generated stash updates is trust. You want to capture what the agent learned — the debugging insight from last Tuesday's session, the architectural pattern it derived from reviewing twenty PRs — without blindly writing unreviewed content into the knowledge base your other agents depend on. One bad promotion and you've contaminated search results with a hallucinated fact that will keep showing up until someone notices.

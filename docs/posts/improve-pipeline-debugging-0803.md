@@ -13,6 +13,9 @@ id: 3814547
 date: '2026-06-04T00:32:02Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 This post is part of the akm-knowledge series. [Part ten](https://dev.to/itlackey/the-improvement-loop-how-akm-keeps-your-agent-sharp-2d4d) introduced the improve pipeline — what each phase does and how to schedule it. This post goes deeper on what continuous operation looks like in practice: the hardware numbers, the reliability bugs we hit at 48 runs per day, and the observability layer we built to keep watch.
 
 Most people think of AI agent memory as something that happens during a session. You talk to your agent, it learns things, maybe you save a few notes, the session ends. The next session starts cold.

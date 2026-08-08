@@ -25,9 +25,9 @@ Drop fetcher modules into:
 <stashDir>/scripts/wiki-fetchers/
 ```
 
-`<stashDir>` is the active stash for the current operation. When a command has a
+`<stashDir>` is the active bundle for the current operation. When a command has a
 resolved write target (for example `akm import --target ...`), akm loads
-fetchers from that target stash before falling back to the built-in website
+fetchers from that target bundle before falling back to the built-in website
 scraper.
 
 Files ending in `.ts`, `.js`, or `.mjs` are loaded in alphabetical order.
@@ -105,5 +105,5 @@ export default {
   knowledge reads that use `fetchWebsiteMarkdownSnapshot()`.
 - The built-in website scraper remains the default path when no custom fetcher
   matches.
-- Stash-local fetchers are loaded before built-ins, so you can override the
+- Bundle-local fetchers are loaded before built-ins, so you can override the
   built-in YouTube behavior for your own workflow when needed.

@@ -12,6 +12,9 @@ published: false
 date: '2026-06-07T00:00:00Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 If you've ever stood up a self-hosted AI assistant, you know how the container list grows.
 
 You start with the assistant itself. Then it needs memory, so you add a memory service. It should run scheduled tasks, so you add a scheduler. You need a place to put secrets, so you stand up a vault. The web UI gets its own container. A reverse proxy goes out front. A socket proxy guards the Docker socket. Before long `docker ps` is a wall of services, and every one of them is a thing that can break, drift, or need its own upgrade path.

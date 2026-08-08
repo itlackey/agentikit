@@ -42,7 +42,7 @@ For a bundle selected as `adapter: okf`, AKM must provide all of the following:
 5. A ref emitted by search for an OKF concept is accepted by show and other
    applicable ref-consuming commands. Adapter-owned concept IDs such as
    `tables/customers` must not be rejected merely because they do not use an
-   AKM stash placement directory.
+   AKM bundle placement directory.
 6. Markdown heading fragments are accepted as input-only selectors and never
    become part of durable identity.
 7. An OKF target without adapter-owned authoring rejects AKM-native write
@@ -122,7 +122,7 @@ and the read/write split stays exactly where §5/§5.1 already drew it:
     top level**, exactly as OKF v0.2 spells them. Neither key has any
     pre-existing AKM consumer, so spelling them the spec's way costs nothing
     and makes the OKF-superset claim above true *for trust metadata* — a
-    third-party OKF v0.2 reader pointed at an AKM stash sees conformant
+    third-party OKF v0.2 reader pointed at an AKM bundle sees conformant
     provenance rather than one unrecognized `provenance:` key.
   - `sources` alone stays namespaced as `provenance: {sources: [...]}`,
     because a bare top-level `sources:` genuinely collides with the

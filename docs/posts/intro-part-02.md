@@ -13,6 +13,9 @@ published: true
 date: '2026-03-16T17:26:29Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 In the [last post](https://dev.to/itlackey/your-ai-agents-skill-list-is-getting-out-of-hand-32ck), I talked about the problem: your agent's skill collection is growing faster than your ability to manage it. Skills scattered across directories, no search, no sharing, no sanity. I introduced [Agent-i-Stash](https://github.com/itlackey/akm) as the fix — a CLI called `akm` that gives your agent a searchable, indexed stash of assets.
 
 But here's what I glossed over: most of you aren't starting from zero. You've already got skills, commands, agents, and rules spread across multiple platforms. Claude Code has `~/.claude/skills/`. OpenCode has `.opencode/`. Cursor has `.cursor/rules/`. Codex has its `agents.md`. You might be using two or three of these tools in the same week, building up assets in each one, and none of them can see each other.

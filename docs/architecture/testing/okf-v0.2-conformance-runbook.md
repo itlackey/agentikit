@@ -3,7 +3,7 @@
 Use this runbook after changing AKM's adapters, indexing, refs, writes, or lint
 behavior. It is the acceptance procedure for
 [first-class OKF format support](../specs/okf-support.md). It runs without
-reading or modifying the host's AKM installation, stash, configuration, cache,
+reading or modifying the host's AKM installation, bundle, configuration, cache,
 or index.
 
 The runbook deliberately tests observable behavior in addition to unit tests.

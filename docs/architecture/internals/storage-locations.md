@@ -47,7 +47,7 @@ Known keys: `version` (stored DB_VERSION), `embeddingDim` (e.g. `"384"`), `hasEm
 | `entry_key` | TEXT NOT NULL UNIQUE | `<stash_dir>:<type>:<name>` (legacy identity column) |
 | `dir_path` | TEXT NOT NULL | Parent directory of the asset file |
 | `file_path` | TEXT NOT NULL | Absolute path to the asset file |
-| `stash_dir` | TEXT NOT NULL | Root stash directory |
+| `stash_dir` | TEXT NOT NULL | Root bundle directory |
 | `entry_json` | TEXT NOT NULL | Full `StashEntry` as JSON |
 | `search_text` | TEXT NOT NULL | Pre-built BM25 search string |
 | `entry_type` | TEXT NOT NULL | Asset type: `memory`, `skill`, `lesson`, etc. |
@@ -100,7 +100,7 @@ Created only when `sqlite-vec` is loadable. Columns: `id INTEGER PRIMARY KEY`, `
 | `entry_id` | INTEGER PRIMARY KEY | FK → `entries(id)` ON DELETE CASCADE |
 | `schema_version` | INTEGER NOT NULL | Workflow schema version |
 | `document_json` | TEXT NOT NULL | Parsed `WorkflowDocument` AST |
-| `source_path` | TEXT NOT NULL | Stash directory path |
+| `source_path` | TEXT NOT NULL | Bundle directory path |
 | `source_hash` | TEXT NOT NULL | FNV-1a hash of raw file bytes (incremental skip key) |
 | `updated_at` | TEXT NOT NULL | ISO-8601 |
 
@@ -268,7 +268,7 @@ Replaces per-uuid JSON directories under `$STASH/.akm/proposals/`. Indexed on `s
 |---|---|---|
 | `id` | TEXT PRIMARY KEY | UUID v4 |
 | `ref` | TEXT NOT NULL | Asset ref |
-| `stash_dir` | TEXT NOT NULL | Stash root directory |
+| `stash_dir` | TEXT NOT NULL | Bundle root directory |
 | `status` | TEXT NOT NULL | `pending`, `accepted`, `rejected` |
 | `source` | TEXT | Origin (e.g. `reflect`) |
 | `payload_json` | TEXT NOT NULL | Full proposal payload JSON |
@@ -425,22 +425,22 @@ One line per memory belief-state transition: `{ appliedAt, ref, parentRef, fromS
 
 | Path | Contents | Retention |
 |---|---|---|
-| `$CONFIG/config.json` | User config (stash dirs, sources, LLM endpoints, feature flags, registries). JSONC — `//` and `/* */` comments stripped at parse time. | Manual |
+| `$CONFIG/config.json` | User config (bundle dirs, sources, LLM endpoints, feature flags, registries). JSONC — `//` and `/* */` comments stripped at parse time. | Manual |
 | `<cwd>/.akm/config.json` | Project-scoped config overrides. Walked up to filesystem root; all ancestors merged. | Manual |
 | `$CACHE/config-backups/config-<ISO-ts>.json` | Pre-save snapshot of `config.json`, written by `backupExistingConfig()` in `src/core/config/config-io.ts` before each config write. `config.latest.json` is a second copy (not a symlink) always overwritten with the newest snapshot. Dir created/chmod'd `0700`; both the timestamped file and `config.latest.json` are chmod'd `0600` (08-F4, mirroring the env-cli write-mode convention). This is the only live backup location — legacy `$DATA/config-backups/` and `$CONFIG/config-backups/` write paths have been removed. | Capped at `MAX_CONFIG_BACKUPS = 5` most-recent timestamped snapshots; `pruneOldBackups()` deletes the rest on every write |
 | `$CONFIG/akm.lock` | Legacy location. Removed in v0.8.0 — akm reads ONLY from `$DATA/akm.lock`. Run the migration script to copy this file to `$DATA/akm.lock` before upgrading. | Legacy |
-| `$DATA/akm.lock` | Installed stash lockfile (moved from `$CONFIG`). Application-managed install state. Same format as `$CONFIG/akm.lock`. | Managed by `akm bundle add`/`akm bundle remove` |
+| `$DATA/akm.lock` | Installed bundle lockfile (moved from `$CONFIG`). Application-managed install state. Same format as `$CONFIG/akm.lock`. | Managed by `akm bundle add`/`akm bundle remove` |
 | `$CACHE/semantic-status.json` | Embedding provider health: `status` (pending/ready-js/ready-vec/blocked), `reason`, `providerFingerprint`, `lastCheckedAt`, `entryCount`, `embeddingCount`. Blocked status auto-expires after 24h. | Reset on `akm index --full` |
 | `$CACHE/registry-index/<slug>.json` | Removed in v0.8.0 — data now stored in `registry_index_cache` table in `$DATA/index.db`. Delete these files after running the migration script. | — |
 | `$CACHE/registry-index/skills-sh-search-<md5>.json` | Skills.sh search result cache. Fresh 15min; stale 1d. Key = MD5 of `url + query + limit`. | TTL |
 | `$STASH/.akm/consolidate-journal.json` | Legacy consolidation journal; current advisory consolidation does not read or write it. | Safe to remove |
-| `$DATA/index.db` (`graph_*` tables) | Knowledge graph index data: per-stash graph metadata plus per-file entities and relations extracted from assets via LLM. `graph_files` is keyed on `entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE` with `(stash_root, file_path)` as `UNIQUE`; `body_hash` is `NOT NULL`; every considered file persists a `status` and `reason`; `graph_file_entities` stores both canonical `entity` and normalized `entity_norm`; `graph_file_relations` stores canonical endpoints plus `from_entity_norm` / `to_entity_norm`; `extraction_run_id` (on `graph_files` and `graph_meta`) and `extractor_id` (on `graph_meta`) record extraction provenance. `graph_meta` also stores the latest graph telemetry: model, prompt version, batch size, cache hits/misses, truncation count, and failure count. A companion `graph_extraction_queue` table holds a lazy, priority-ordered backlog of files awaiting extraction. Indexes: `idx_graph_files_stash_order`, `idx_graph_file_entities_entity_norm(stash_root, entity_norm)`, `idx_entries_file_path` on `entries(file_path)`. | Refreshed by graph extraction; regenerated on the next `akm index`/`akm improve` since `index.db` is a fully rebuildable cache |
+| `$DATA/index.db` (`graph_*` tables) | Knowledge graph index data: per-bundle graph metadata plus per-file entities and relations extracted from assets via LLM. `graph_files` is keyed on `entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE` with `(stash_root, file_path)` as `UNIQUE`; `body_hash` is `NOT NULL`; every considered file persists a `status` and `reason`; `graph_file_entities` stores both canonical `entity` and normalized `entity_norm`; `graph_file_relations` stores canonical endpoints plus `from_entity_norm` / `to_entity_norm`; `extraction_run_id` (on `graph_files` and `graph_meta`) and `extractor_id` (on `graph_meta`) record extraction provenance. `graph_meta` also stores the latest graph telemetry: model, prompt version, batch size, cache hits/misses, truncation count, and failure count. A companion `graph_extraction_queue` table holds a lazy, priority-ordered backlog of files awaiting extraction. Indexes: `idx_graph_files_stash_order`, `idx_graph_file_entities_entity_norm(stash_root, entity_norm)`, `idx_entries_file_path` on `entries(file_path)`. | Refreshed by graph extraction; regenerated on the next `akm index`/`akm improve` since `index.db` is a fully rebuildable cache |
 
 ---
 
 ## Markdown / Asset Files
 
-### Primary Stash Content
+### Primary Bundle Content
 
 All asset files live under `$STASH/` in type-specific subdirectories defined by the `PLACEMENT_SPECS` map in `src/core/asset/asset-placement.ts`:
 
@@ -507,8 +507,8 @@ adapter recognizes — `schema.md` + `pages/` is the probe) contains:
 
 | Path | Contents | TTL / Retention |
 |---|---|---|
-| `$CACHE/registry/<src>/<id>/<ver>/` | Downloaded stash packages (npm tarballs + extracted trees) | No TTL |
-| `$CACHE/registry/<src>/<id>/repo/` | Git mirror working trees for git-sourced stashes | 12h fresh; 7d stale |
+| `$CACHE/registry/<src>/<id>/<ver>/` | Downloaded bundle packages (npm tarballs + extracted trees) | No TTL |
+| `$CACHE/registry/<src>/<id>/repo/` | Git mirror working trees for git-sourced bundles | 12h fresh; 7d stale |
 | `$CACHE/registry-index/website-<sha256-16>/` | Scraped website content as knowledge markdown files + `manifest.json` freshness marker | 12h fresh; 7d stale |
 | `$CACHE/registry-build/build-<random>/` | Temp archive extraction for registry index building | Deleted in `finally` after each run |
 | `$CACHE/tasks/logs/<task-id>/` | Per-run stdout/stderr log files (`<ISO-ts>.log`) | No cleanup |
@@ -559,7 +559,7 @@ Path resolved by `getHarnessStateDir("claude-code")` / `STATE_DIR` in `akm-plugi
 |---|---|---|
 | `events.jsonl` | Append-only memory-event log (`AkmMemoryEvent`: session/tool/workflow/feedback observations), written via `appendMemoryEvent()` | No cleanup |
 | `memory-candidates.jsonl` | Candidate memories extracted from session activity, written via `getCandidateLogPath()` in `akm-plugins/claude/shared/memory-candidates.ts` | No cleanup |
-| `curated/prompt-<sessionId>.md`, `curated/session-<sessionId>.md` | Curated stash context written per prompt/session for the model to read (`CURATED_DIR`) | No cleanup |
+| `curated/prompt-<sessionId>.md`, `curated/session-<sessionId>.md` | Curated bundle context written per prompt/session for the model to read (`CURATED_DIR`) | No cleanup |
 | `sessions/` | Per-session hook working state (`SESSIONS_DIR`) | No cleanup |
 | `session.log`, `feedback.log`, `memory.log` | Human-readable hook activity logs | No cleanup |
 | `quality-cache.tsv` | Cached asset-quality lookups | No cleanup |
@@ -639,7 +639,7 @@ not affect ranking, salience, real-query labels, or GRR.
 | 6 | `$CONFIG/config.json` | JSONC | User configuration |
 | 7 | `<cwd>/.akm/config.json` | JSONC | Project-scoped config overrides |
 | 8 | `$CACHE/config-backups/config-<ts>.json` | JSON | Config pre-save backups (0600 files / 0700 dir; capped at 5, only live backup location) |
-| 9 | `$DATA/akm.lock` | JSON | Installed stash lockfile (moved from $CONFIG) |
+| 9 | `$DATA/akm.lock` | JSON | Installed bundle lockfile (moved from $CONFIG) |
 | 10 | `$CONFIG/akm.lock` | JSON | Legacy location (removed in v0.8.0). Run migration script to move to `$DATA/akm.lock`. |
 | 11 | `$DATA/akm.lock.lck` | Text (PID) | Write-lock sentinel for lockfile |
 | 12 | `$CACHE/semantic-status.json` | JSON | Embedding provider health cache |
@@ -657,7 +657,7 @@ not affect ranking, salience, real-query labels, or GRR.
 | 24 | `$STASH/wikis/<name>/` | Markdown | `llm-wiki`-adapter bundle content (schema/index/log + `raw/` + `pages/`) |
 | 25 | `<dir>/.stash.json` | JSON | Legacy metadata (read-only) |
 | 26 | `$STASH/memories/MEMORY.md` | Markdown | Memory index (user-maintained, read-only for akm) |
-| 27 | `$CACHE/registry/<src>/<id>/<ver>/` | Binary+FS | Downloaded stash package cache |
+| 27 | `$CACHE/registry/<src>/<id>/<ver>/` | Binary+FS | Downloaded bundle package cache |
 | 28 | `$CACHE/registry/<src>/<id>/repo/` | Git tree | Git source mirror cache |
 | 29 | `$CACHE/registry-index/website-<hash>/` | JSON+MD | Website mirror cache |
 | 30 | `$CACHE/registry-build/` | JSON+FS | Registry build workspace |

@@ -2,7 +2,7 @@
   "name": "akm-cli",
   "version": "0.9.0",
   "type": "module",
-  "description": "akm (Agent Knowledge Manager) — a portable, local-first capability library for AI agents. Discover, load, share, and improve reusable skills, scripts, workflows, and knowledge across any shell-capable coding agent, including Claude Code, OpenCode, and Cursor.",
+  "description": "akm (Agent Knowledge Manager) — A knowledge toolkit for AI agents: capture, curate, search, and share skills, commands, tools, and knowledge. Works with Claude Code, OpenCode, Cursor, and any AI coding assistant.",
   "keywords": [
     "akm",
     "agent-knowledge-management",
@@ -21,9 +21,7 @@
     "mcp",
     "ai-coding-assistant",
     "agent-skills",
-    "skill-management",
-    "capability-library",
-    "agent-capabilities"
+    "skill-management"
   ],
   "homepage": "https://github.com/itlackey/akm#readme",
   "repository": {
@@ -74,11 +72,12 @@
     "test:time": "bun scripts/test-timing-report.ts",
     "lint:isolation": "bun scripts/lint-tests-isolation.ts",
     "lint:doc-examples": "bun scripts/lint-doc-examples.ts",
+    "lint:active-docs-terminology": "bun scripts/lint-active-docs-terminology.ts",
     "lint:devto-posts": "bun scripts/lint-devto-posts.ts",
     "lint:devto-posts:fix": "bun scripts/lint-devto-posts.ts --fix",
     "publish:devto": "npx -y @sinedied/devto-cli push \"docs/posts/**/*.md\" --token \"$DEVTO_TOKEN\" --repo \"$GITHUB_REPOSITORY\" --branch \"${GITHUB_REF_NAME:-main}\" --reconcile",
     "release:check": "./tests/release-check.sh",
-    "lint": "bunx biome check src/ tests/ scripts/ && bun scripts/lint-tests-isolation.ts && bun scripts/lint-license-headers.ts && bun scripts/lint-runtime-boundary.ts && bun scripts/lint-write-source-chokepoint.ts && bun scripts/lint-secret-resolver-boundary.ts && bun scripts/lint-process-argv.ts && bun scripts/lint-repository-sql.ts && bun scripts/lint-goldens-presence.ts && bun scripts/lint-golden-captured-at-head.ts && bun scripts/lint-test-ref-literals.ts && bun scripts/lint-shipped-assets.ts && bun scripts/lint-doc-examples.ts && bun scripts/gen-config-schema.ts --check",
+    "lint": "bunx biome check src/ tests/ scripts/ && bun scripts/lint-tests-isolation.ts && bun scripts/lint-license-headers.ts && bun scripts/lint-runtime-boundary.ts && bun scripts/lint-write-source-chokepoint.ts && bun scripts/lint-secret-resolver-boundary.ts && bun scripts/lint-process-argv.ts && bun scripts/lint-repository-sql.ts && bun scripts/lint-goldens-presence.ts && bun scripts/lint-golden-captured-at-head.ts && bun scripts/lint-test-ref-literals.ts && bun scripts/lint-shipped-assets.ts && bun scripts/lint-doc-examples.ts && bun scripts/gen-config-schema.ts --check && bun scripts/lint-active-docs-terminology.ts",
     "lint:runtime-boundary": "bun scripts/lint-runtime-boundary.ts",
     "lint:tests-isolation": "bun scripts/lint-tests-isolation.ts",
     "lint:fix": "bunx biome check --write src/ tests/ scripts/",

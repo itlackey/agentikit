@@ -24,7 +24,7 @@ registration call required. Eleven built-ins, in probe order:
 | `akm-workflow` | Workflow-dir component | workflow programs |
 | `akm-task` | Task-dir component | scheduled task definitions |
 | `llm-wiki` | LLM Wiki bundle | a wiki root (`schema.md` + `pages/`) and its pages, raw, xrefs, citations |
-| `akm` | The classic AKM stash layout | scripts, skills, commands, agents, knowledge, instructions, workflows, memories, lessons, env, secrets, facts, tasks, sessions |
+| `akm` | The classic AKM bundle layout | scripts, skills, commands, agents, knowledge, instructions, workflows, memories, lessons, env, secrets, facts, tasks, sessions |
 | `okf` | Open Knowledge Format bundle | OKF concept documents of any open type |
 | `generic-files` | Catch-all file mount | explicit configuration only — never auto-probed |
 
@@ -50,7 +50,7 @@ the owning adapter decides whether a value receives specialized behavior. The
 `akm` adapter emits its fourteen defined native types (`script`, `skill`,
 `command`, `agent`, `knowledge`, `instruction`, `workflow`, `memory`,
 `lesson`, `env`, `secret`, `fact`, `task`, `session`) — see
-[Bundle Types → akm](../../reference/bundle-types.md#akm) for the full
+[Bundle Types](../../reference/bundle-types.md) for the full
 purpose / agent-output table per type.
 
 `wiki` is **no longer an item type**. Multi-page wikis are a bundle *format* owned
@@ -69,7 +69,7 @@ Each adapter decides which walked files it claims and which it abstains on — t
 core always excludes VCS internals and symlink escapes. An OKF walk includes
 ordinary dot directories and `bin/` because those paths can identify conformant
 concepts; AKM keeps its existing cache/dot-directory hygiene. The `akm`
-adapter's `recognize` abstains (returns `null`) on its own stash's
+adapter's `recognize` abstains (returns `null`) on its own bundle's
 non-content files, using **path/stat checks only** so the bytes of sensitive files
 are never read to make the decision:
 

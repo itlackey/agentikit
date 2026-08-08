@@ -13,6 +13,9 @@ id: 3814550
 date: '2026-06-04T00:32:02Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 This is part sixteen in a series about managing the growing pile of skills, scripts, and context that AI coding agents depend on. The [0.8.0 release notes](https://dev.to/itlackey/akm-080-cli-redesign-task-assets-and-belief-aware-memory-335a) cover the storage and pipeline changes that shipped alongside this rewrite; [Part thirteen](https://dev.to/itlackey/from-30-minutes-to-8-how-llm-mode-reflect-works-5epl) covers how the new `profiles.improve` config drives the improve pipeline.
 
 Config files are where projects go to accumulate technical debt quietly. Each new feature gets a new key. Each new key gets a new parser. Each parser has slightly different error handling, slightly different defaults, and slightly different ideas about what "invalid" means. Nobody notices until a user files an issue that says "I had a typo in my config and akm just silently used defaults for three weeks."

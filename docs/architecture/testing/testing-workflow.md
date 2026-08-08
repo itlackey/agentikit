@@ -184,7 +184,7 @@ The Docker smoke test in `tests/docker/smoke-test.sh` verifies:
 
 - `akm --help`
 - `akm bundle create`
-- stash directory creation
+- bundle directory creation
 - `akm index`
 - `akm search`
 - `akm show`
@@ -211,7 +211,7 @@ scripts/akm-eval/bin/akm-eval-curate-bench \
   --akm "bun /path/to/baseline/src/cli.ts" --compare "bun src/cli.ts" --fail-on-regression
 ```
 
-See `docs/reference/akm-eval.md`.
+See `docs/maintainers/eval.md`.
 
 ## Recommended Workflow
 
@@ -298,7 +298,7 @@ Run one variant if you need a focused repro:
 - runtime dependencies are sufficient for `bundle create`, `index`, `search`, and `show`
 - bun-linked installs work after building from source
 - compiled Linux binaries run correctly when copied into the image
-- the CLI can create a fresh stash, build an index, and discover new assets
+- the CLI can create a fresh bundle, build an index, and discover new assets
 
 Treat this matrix as a release gate for shell-level regressions too. The Docker
 smoke path exercises real entrypoint scripts and container command execution,
