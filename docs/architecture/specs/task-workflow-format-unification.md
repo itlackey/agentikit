@@ -293,7 +293,7 @@ that layer is simply absent, not an implied new task key.)
 2. A **persona snapshot**: the agent asset resolved through the
    provenance ceiling — 07 P1-D, today inline in the show command
    (`src/commands/read/show.ts:433-445`): self-declared `tools:` honored
-   ONLY for the operator's **primary stash**, keyed off primary-stash
+   ONLY for the operator's **primary bundle**, keyed off primary-bundle
    identity, explicitly *not* the writable bit, failing closed. That
    check is **extracted into a shared persona resolver** consumed by both
    `show` and freeze — a named refactor in §9, since its current home is
@@ -483,19 +483,19 @@ provenance ceiling — has **no override at all**. v9 inherits the ceiling
 exactly instead of imitating it loosely:
 
 - Shell-class work (a script asset, or the `run:` text of a task) executes
-  **only when its defining asset lives in the operator's primary stash** —
+  **only when its defining asset lives in the operator's primary bundle** —
   the same line 07 P1-D draws for self-declared tool grants
-  (`show.ts:433-445`): keyed off primary-stash identity, explicitly *not*
+  (`show.ts:433-445`): keyed off primary-bundle identity, explicitly *not*
   the writable bit, failing closed.
 - Evaluated in the **resolve stage** (§5.1) — the shared stage both
   surfaces run before any execution — so there is no sync-time/fire-time
   gap and no standing grant for a bundle update to swap content under.
 - Composition chains inherit the rule from the **defining asset's own
-  source**: a primary-stash task that `uses:` a third-party script — or
+  source**: a primary-bundle task that `uses:` a third-party script — or
   composes a third-party task whose target is shell — refuses with an
   error naming the ref and its source. No chain launders provenance.
 - The remedy is an existing verb, not a config bit: `akm clone <ref>`
-  copies the asset into the primary stash, where the operator owns and
+  copies the asset into the primary bundle, where the operator owns and
   reviews the bytes; the refusal message says exactly that.
 - Scope: this ceiling governs the **new non-AI exec surface only**.
   Agent-dispatched third-party tasks remain governed by the existing
@@ -653,7 +653,7 @@ dead llm guard.
 | C2 shell units unrepresentable (3/3) | §5.2 — IR v4 invocation union, per-kind engine resolution |
 | C3 hash preimage (3/3) | §5.3 — hashVersion 5, preimage table; §2.3 freeze-time append |
 | C4 cascade layers don't exist (3/3) | §4 — "built, not exposed"; build inventory |
-| C5 script execution security (2/3) | §5.6 — the tools: ceiling inherited exactly (primary-stash only, no override); v8's grant key withdrawn after the panel showed it contradicted activation-policy's no-new-trust-machinery decision |
+| C5 script execution security (2/3) | §5.6 — the tools: ceiling inherited exactly (primary-bundle only, no override); v8's grant key withdrawn after the panel showed it contradicted activation-policy's no-new-trust-machinery decision |
 | M1 params overload (3/3) | §2.2 — `with:` for inputs; `params:` declarations only; neither cascades |
 | M2 placeholder grammar (3/3) | §2.4 — `with:`/`with.arguments` against the real grammar; lenient + lint |
 | M3 env not additive (3/3) | §5.5 — literal/ref provenance split; IR v4; per-unit env |

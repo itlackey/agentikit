@@ -1,6 +1,6 @@
 # Registry
 
-A registry is a searchable source of stashes that `akm` can discover and
+A registry is a searchable source of bundles that `akm` can discover and
 install from. The default registry type is a static JSON index, but akm
 supports pluggable **registry providers** that can connect to different
 ecosystems (e.g. skills.sh).
@@ -20,12 +20,12 @@ a static `index.json` (v3 format). It merges three sources:
 - GitHub repos with the `akm-stash` topic
 - `manual-entries.json` for curated additions and overrides
 
-To submit a stash, either tag your repo/package as above (auto-discovery)
+To submit a bundle, either tag your repo/package as above (auto-discovery)
 or open a pull request against `manual-entries.json` for a curated entry.
 
-### Official onboarding stash
+### Official onboarding bundle
 
-In addition to the registry, akm has an official onboarding stash —
+In addition to the registry, akm has an official onboarding bundle —
 [itlackey/akm-stash](https://github.com/itlackey/akm-stash) — that ships
 skills, commands, knowledge, workflows, and a librarian subagent for
 working with akm itself. Install it with:
@@ -82,13 +82,13 @@ Set `enabled: false` to temporarily disable a registry without removing it.
 
 ## Searching Registries
 
-Search registries alongside or instead of the local stash:
+Search registries alongside or instead of the local bundle:
 
 ```bash
 # Search registries only
 akm search "deploy" --from registry
 
-# Search both local stash and registries
+# Search both the local bundle library and registries
 akm search "deploy" --from all
 
 # Include asset-level results from v3 indexes
@@ -102,8 +102,8 @@ Each registry hit includes:
 | Field | Description |
 | --- | --- |
 | `type` | Always `"registry"` |
-| `name` | Stash display name |
-| `id` | Unique identifier (e.g. `npm:@scope/stash`) |
+| `name` | Bundle display name |
+| `id` | Unique identifier (e.g. `npm:@scope/bundle`) |
 | `description` | Summary from the registry |
 | `action` | Ready-to-run next step such as `akm bundle add ... -> then search again` |
 | `quality` | Optional provenance marker — `"generated"`, `"curated"`, or `"proposed"`. Replaces the legacy `curated` boolean removed in 0.7.0 |
@@ -113,7 +113,7 @@ Use `--detail full` to include ranking metadata like `score`.
 ### The `--assets` Flag
 
 When a registry publishes a v3 index (see below), `akm search --from
-registry` can return individual asset-level hits in addition to stash-level
+registry` can return individual asset-level hits in addition to bundle-level
 hits. Pass `--assets` to enable this:
 
 ```bash
@@ -121,12 +121,12 @@ akm search "code review" --from registry --assets
 ```
 
 Asset hits include `assetType`, `assetName`, `description`, and the parent
-`stash` information, so you can install the right stash and immediately know
+`stash` information, so you can install the right bundle and immediately know
 which asset to use.
 
 ## Discovery Filtering
 
-Not every npm package or GitHub repo is an akm stash. To keep results
+Not every npm package or GitHub repo is an akm bundle. To keep results
 relevant, the registry enforces tag-based filtering:
 
 - **npm** -- Only packages whose `keywords` array includes `"akm-stash"` appear in search results.
@@ -139,7 +139,7 @@ relevant, the registry enforces tag-based filtering:
 > [migration guide](../migration/v0.5-to-v0.6.md) for the step-by-step
 > publisher checklist.
 
-If you are publishing a stash, add these tags so it can be discovered:
+If you are publishing a bundle, add these tags so it can be discovered:
 
 ```jsonc
 // package.json
@@ -153,14 +153,14 @@ For GitHub repos, add topics via the repository settings page or the
 
 ## Installing
 
-Install a stash with `akm bundle add` using any supported ref format:
+Install a bundle with `akm bundle add` using any supported ref format:
 
 ```bash
 # npm package
-akm bundle add npm:@scope/my-stash
+akm bundle add npm:@scope/my-bundle
 
 # npm package (shorthand)
-akm bundle add @scope/my-stash
+akm bundle add @scope/my-bundle
 
 # GitHub repo
 akm bundle add github:owner/repo
@@ -172,17 +172,17 @@ akm bundle add github:owner/repo#v1.2.0
 akm bundle add https://github.com/owner/repo
 
 # Any git repo (GitLab, Bitbucket, Gitea, self-hosted, etc.)
-akm bundle add git+https://gitlab.com/org/stash
-akm bundle add git+https://gitlab.com/org/stash#v1.0
-akm bundle add git+ssh://git@gitlab.com/org/stash.git
+akm bundle add git+https://gitlab.com/org/bundle
+akm bundle add git+https://gitlab.com/org/bundle#v1.0
+akm bundle add git+ssh://git@gitlab.com/org/bundle.git
 
 # URLs on known git hosts are treated as git repos
-akm bundle add https://gitlab.com/org/my-stash
+akm bundle add https://gitlab.com/org/my-bundle
 
 # Local directory (path or file: URI)
-akm bundle add ./path/to/local/stash
-akm bundle add file:../relative/stash
-akm bundle add file:///absolute/path/to/stash
+akm bundle add ./path/to/local/bundle
+akm bundle add file:../relative/bundle
+akm bundle add file:///absolute/path/to/bundle
 ```
 
 ### What Happens During Install
@@ -197,7 +197,7 @@ akm bundle add file:///absolute/path/to/stash
 3. **Download and extract** -- The tarball is downloaded (or repo cloned) to a
    cache directory under `~/.cache/akm/registry/` and extracted securely
    (path traversal is rejected).
-4. **Security audit** -- Before install completes, the extracted stash's
+4. **Security audit** -- Before install completes, the extracted bundle's
    `env`/`secret` asset **key names** are checked against a denylist of
    process-execution-hijacking variables -- dynamic-linker hooks
    (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, ...), `PATH`, shell/runtime startup
@@ -208,13 +208,13 @@ akm bundle add file:///absolute/path/to/stash
    This is a **key-name audit only** (plus the path-traversal rejection in step
    3) -- akm does **not** scan source files, prompts, metadata, or install
    scripts for prompt-injection phrases, shell pipes, or lifecycle hooks.
-5. **Stash root detection** -- The extracted contents are scanned for asset
+5. **Bundle root detection** -- The extracted contents are scanned for asset
    type directories (`scripts/`, `skills/`, etc.) or a `.stash/` marker. If the
-   stash nests its stash under an `opencode/` subdirectory, that is detected
+   bundle nests its bundle under an `opencode/` subdirectory, that is detected
    automatically.
 6. **Selective include** -- If the package's `package.json` contains an
    `akm.include` array, only the listed paths are copied into the
-   install cache. This lets a stash ship a subset of its repo as the stash.
+   install cache. This lets a bundle ship a subset of its repo as the bundle.
 7. **Config registration** -- The desired source descriptor (`path`/`git`/
    `website`/`npm`, `writable`, the original `registryId`) is saved to
    `config.bundles.<key>`. Resolved cache state -- id, source, ref, resolved
@@ -226,7 +226,7 @@ akm bundle add file:///absolute/path/to/stash
 
 ### Selective Include
 
-A stash can declare which paths to include via `package.json`:
+A bundle can declare which paths to include via `package.json`:
 
 ```jsonc
 {
@@ -250,18 +250,18 @@ always excluded.
 # List all managed sources with their status
 akm bundle list
 
-# Update a specific stash to its latest version
-akm bundle update npm:@scope/my-stash
+# Update a specific bundle to its latest version
+akm bundle update npm:@scope/my-bundle
 
 # Update all managed sources
 akm bundle update --all
 
 # Force fresh download even if version is unchanged
-akm bundle update npm:@scope/my-stash --force
+akm bundle update npm:@scope/my-bundle --force
 akm bundle update --all --force
 
-# Remove a stash
-akm bundle remove npm:@scope/my-stash
+# Remove a bundle
+akm bundle remove npm:@scope/my-bundle
 ```
 
 ### Cloning Assets
@@ -270,10 +270,10 @@ Managed sources are cache-managed and may be overwritten by `akm bundle update`.
 To edit an asset from a managed source, clone it into the working bundle:
 
 ```bash
-akm clone "npm:@scope/my-stash//scripts/deploy.sh"
+akm clone "npm:@scope/my-bundle//scripts/deploy.sh"
 
 # Clone with a new name
-akm clone "npm:@scope/my-stash//scripts/deploy.sh" --name my-deploy.sh
+akm clone "npm:@scope/my-bundle//scripts/deploy.sh" --name my-deploy.sh
 ```
 
 The cloned asset lives in the working bundle and takes priority over the
@@ -283,7 +283,7 @@ Use `--dest` to clone to a custom directory instead of the working bundle:
 
 ```bash
 # Deploy a script directly into a project's .claude directory
-akm clone "npm:@scope/my-stash//scripts/deploy.sh" --dest ./project/.claude
+akm clone "npm:@scope/my-bundle//scripts/deploy.sh" --dest ./project/.claude
 ```
 
 The type subdirectory (`scripts/`, `skills/`, etc.) is appended automatically,
@@ -300,7 +300,7 @@ a managed source -- it only extracts the single requested asset.
 every configured source's directory. There is no fixed lookup order —
 results are ranked by relevance and utility, and precedence is expressed
 through ranking rather than a per-source fan-out (see
-[concepts.md](../guides/concepts.md#search-priority)).
+[concepts.md](../guides/concepts.md#3-akm-builds-a-local-index-and-uses-progressive-disclosure)).
 
 When two sources contain an asset with the same name, the working bundle
 typically wins by convention because its files are usually more recent.
@@ -314,8 +314,8 @@ akm uses a pluggable provider system for registries. Each registry entry can
 specify a `provider` type that determines how it is searched. When omitted,
 the provider defaults to `"static-index"`.
 
-Registries discover *stashes* (installable source bundles). They never store
-asset content directly — installing a stash creates a regular `bundles`
+Registries discover installable source bundles. They never store
+asset content directly — installing a bundle creates a regular `bundles`
 entry that the indexer walks like any other source.
 
 ### Built-in Providers
@@ -374,10 +374,10 @@ Minimal example:
   "updatedAt": "2026-03-12T00:00:00Z",
   "stashes": [
     {
-      "id": "github:your-org/deploy-stash",
-      "name": "deploy-stash",
+      "id": "github:your-org/deploy-bundle",
+      "name": "deploy-bundle",
       "description": "Deployment scripts and skills",
-      "ref": "your-org/deploy-stash",
+      "ref": "your-org/deploy-bundle",
       "source": "github",
       "tags": ["deploy", "infrastructure"],
       "assetTypes": ["script", "skill", "memory"]
@@ -402,7 +402,7 @@ bun scripts/build-registry-index.ts --out dist/index.json
 This does not scan the current directory. It fans out to three discovery
 sources -- a manually curated `manual-entries.json`, an npm registry keyword
 search for `akm-stash`, and a GitHub topic search for `akm-stash` -- and
-deduplicates the results into a v3 index with stash and asset entries. You
+deduplicates the results into a v3 index with bundle and asset entries. You
 can also use the tooling in the
 [akm-registry](https://github.com/itlackey/akm-registry) repository used by the
 official registry.
@@ -410,8 +410,8 @@ official registry.
 ## Registry Index v3
 
 Version 3 of the registry index schema is the only format `akm-cli >=
-0.6.0` parses. It carries an `assets` array on each stash entry so
-clients can perform asset-level search without installing the stash
+0.6.0` parses. It carries an `assets` array on each bundle entry so
+clients can perform asset-level search without installing the bundle
 first.
 
 ```json
@@ -420,10 +420,10 @@ first.
   "updatedAt": "2026-03-12T00:00:00Z",
   "stashes": [
     {
-      "id": "npm:@scope/my-stash",
-      "name": "my-stash",
+      "id": "npm:@scope/my-bundle",
+      "name": "my-bundle",
       "description": "Scripts and skills for deployment",
-      "ref": "@scope/my-stash",
+      "ref": "@scope/my-bundle",
       "source": "npm",
       "tags": ["deploy"],
       "assetTypes": ["script", "skill", "memory"],
@@ -454,12 +454,12 @@ treats unknown fields inside a v3 entry as forward-compatible.
 
 ## Cache Layout
 
-Installed stashes are cached under `~/.cache/akm/registry/`
+Installed bundles are cached under `~/.cache/akm/registry/`
 (`buildInstallCacheDir`, `src/sources/providers/provider-utils.ts`):
 
 ```
 ~/.cache/akm/registry/
-  npm-@scope-my-stash/
+  npm-@scope-my-bundle/
     1.2.3/                 # the resolved version — reused across installs
       artifact.tar.gz      # Downloaded archive
       extracted/           # Extracted contents

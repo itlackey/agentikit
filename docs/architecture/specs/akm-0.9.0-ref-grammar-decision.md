@@ -61,7 +61,7 @@ exclusively; parsers and CLI/API entrypoints are the only place short forms exis
 This resolves the open recognize/placeNew spelling split documented at
 `src/core/adapter/adapters/akm-adapter.ts:397-403` ("owned downstream (Chunk 3/5)" — i.e., here).
 
-The `akm` adapter's conceptId is the **qualified form**: the placement stash-subdir followed by
+The `akm` adapter's conceptId is the **qualified form**: the placement bundle-subdir followed by
 the per-type canonical name — `knowledge/http-caching`, `skills/code-review`,
 `scripts/db/migrate/run.sh`, `workflows/release`. Not the bare canonical name that `recognize()`
 currently emits (`akm-adapter.ts:198,224`), and not the raw file path (a skill's id is
@@ -149,7 +149,7 @@ Stability semantics:
   the §11.4 `type:name → conceptId` re-key is the only one. After migration, editing a bundle's
   `path` doesn't change its key; changing the key is `akm bundle rename` (§11.5 rekey
   transaction, with the §11.5 startup guard against silently re-minted state).
-- `defaultBundle` = the primary stash's derived id, emitted by the migrator.
+- `defaultBundle` = the primary bundle's derived id, emitted by the migrator.
 - **mkdtemp instability is confined and irrelevant**: an unconfigured tmp-dir fixture gets a
   random slug, but under D-R1/D-R4 tests never need to spell it — they speak short refs. The few
   tests that assert fully-qualified *stored* keys pin identity explicitly (set `registryId`, or

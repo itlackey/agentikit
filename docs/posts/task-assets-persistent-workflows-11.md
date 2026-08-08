@@ -13,6 +13,9 @@ id: 3814542
 date: '2026-06-04T00:32:02Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 This is part eleven in a series about managing the growing pile of skills, scripts, and context that AI coding agents depend on. [Part nine](https://dev.to/itlackey/agents-that-remember-where-they-were-1koe) covered workflow assets and resumable procedures. [Part ten](https://dev.to/itlackey/the-improvement-loop-how-akm-keeps-your-agent-sharp-2d4d) introduced the improve pipeline that continuously curates your stash. Earlier parts addressed teams, distributed stashes, and community knowledge.
 
 Most automation with AI agents is reactive. You open a session, give the agent a task, wait for the result, close the session. The agent's clock runs when you run it.

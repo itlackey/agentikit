@@ -1,6 +1,6 @@
 # akm improve — Workflow Reference
 
-`akm improve` is the scheduled self-improvement loop that walks every asset in the stash (or a scoped subset), invokes the reflection agent and the LLM distiller on each one, runs memory consolidation across the corpus, and then performs improve-owned maintenance passes such as memory inference and graph extraction. It is the primary mechanism for turning accumulated feedback signals into queued proposals. Proposals remain queued until explicit proposal review or the configured drain policy resolves them; events and resolved proposal rows provide the audit trail.
+`akm improve` is the scheduled self-improvement loop that walks every asset in the bundle (or a scoped subset), invokes the reflection agent and the LLM distiller on each one, runs memory consolidation across the corpus, and then performs improve-owned maintenance passes such as memory inference and graph extraction. It is the primary mechanism for turning accumulated feedback signals into queued proposals. Proposals remain queued until explicit proposal review or the configured drain policy resolves them; events and resolved proposal rows provide the audit trail.
 
 ## Command surface
 
@@ -235,7 +235,7 @@ per-asset loop.
 
 **What it writes:**
 - A durable row in the `proposals` table in `state.db` for each emitted
-  `promote` op, partitioned by stash path.
+  `promote` op, partitioned by bundle path.
 
 ### improve-owned maintenance
 
@@ -286,11 +286,11 @@ Two proposals can share the same `ref`; their UUID primary keys prevent collisio
 
 ## Scope restrictions
 
-`akm improve` and `akm lint` only operate on writable stash sources (sources with `writable: true`). Read-only sources (git, npm, website) are excluded from the candidate set before any other filtering.
+`akm improve` and `akm lint` only operate on writable bundle sources (sources with `writable: true`). Read-only sources (git, npm, website) are excluded from the candidate set before any other filtering.
 
 ## Cooldown pre-filter
 
-Before the per-asset loop, `akm improve` builds Sets of all refs that are currently under cooldown (reflect, distill, consolidation, schema-repair) in a single batch of event reads. This replaces the prior design that issued one `readEvents` query per ref inside the loop. The change eliminates the "reflect cooldown" console spam on large stashes and reduces database round-trips to O(1) reads per cooldown category. Reflect cooldown now bypasses refs with a newer `promoted` event than their last `reflect_invoked` event.
+Before the per-asset loop, `akm improve` builds Sets of all refs that are currently under cooldown (reflect, distill, consolidation, schema-repair) in a single batch of event reads. This replaces the prior design that issued one `readEvents` query per ref inside the loop. The change eliminates the "reflect cooldown" console spam on large bundles and reduces database round-trips to O(1) reads per cooldown category. Reflect cooldown now bypasses refs with a newer `promoted` event than their last `reflect_invoked` event.
 
 ## Strategy process configuration
 
@@ -330,7 +330,7 @@ and can report `ok: false` for terminated runs:
 
 | Reason | Meaning |
 |--------|---------|
-| `merge_participant_blocked` | Hot or unparseable memory was a merge participant. Pre-flight guard fires before LLM call. High counts are normal on stashes with many `captureMode: hot` memories. |
+| `merge_participant_blocked` | Hot or unparseable memory was a merge participant. Pre-flight guard fires before LLM call. High counts are normal on bundles with many `captureMode: hot` memories. |
 | `captureMode_hot_refused` | Delete refused on a hot memory. Correct behavior. |
 | `promote_already_exists` | Target knowledge ref already exists on disk. Normal steady-state noise. |
 | `promote_source_too_small` | Source body too short to warrant a promotion proposal. |

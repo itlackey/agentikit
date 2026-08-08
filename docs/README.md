@@ -1,62 +1,103 @@
 # Documentation
 
-Each subdirectory has its own README indexing everything inside it.
+AKM is a portable capability library for AI agents: one library for every
+agent. This hub is organized by what you're trying to do, not by directory —
+start here, then follow links out to the guides, reference, and architecture
+pages as you need more depth. Each subdirectory also has its own README
+indexing everything inside it.
 
-## [Guides](https://github.com/itlackey/akm/blob/main/docs/guides/README.md)
+Full per-directory indexes: [Guides](https://github.com/itlackey/akm/blob/main/docs/guides/README.md),
+[Reference](reference/README.md), [Agents](https://github.com/itlackey/akm/blob/main/docs/agents/README.md),
+[Architecture](https://github.com/itlackey/akm/blob/main/docs/architecture/README.md), [Migration](migration/README.md).
 
-Task-oriented guides for using akm.
+## Start
 
-- [Getting Started](https://github.com/itlackey/akm/blob/main/docs/guides/getting-started.md) -- Quick setup guide
-- [Concepts](https://github.com/itlackey/akm/blob/main/docs/guides/concepts.md) -- Bundles, adapters, asset types, and refs
-- [Stash Maker's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/stash-makers.md) -- Build and share a stash on GitHub, npm, or a network directory
+- [Getting Started](https://github.com/itlackey/akm/blob/main/docs/guides/getting-started.md) -- Install akm, connect a source, and pull a curated shortlist in five to seven minutes
+- [Concepts](https://github.com/itlackey/akm/blob/main/docs/guides/concepts.md) -- Capabilities, bundles, adapters, asset types, and refs -- the mental model in one page
+- [Agent Install Guide](https://github.com/itlackey/akm/blob/main/docs/agents/agent-install.md) -- Step-by-step automated (non-interactive) install for agents
+- `akm help agents` (short guide by default; `akm help agents --full` for the complete guide) -- The CLI reference agents load to use akm; always the embedded corpus at `src/assets/hints/cli-hints-{full,short}.md`
+
+## Use
+
+One library for every agent: connect what you already have, load only what
+the task needs, and capture what you learn along the way.
+
+- [Use AKM With Any Agent](https://github.com/itlackey/akm/blob/main/docs/guides/use-with-any-agent.md) -- Wire akm into Claude Code, OpenCode, Cursor, and other coding assistants with a three-line system prompt block
+- [Discover and Load](https://github.com/itlackey/akm/blob/main/docs/guides/discover-and-load.md) -- Search, curate a shortlist, and load exactly the ref a task needs
+- [Bundles](https://github.com/itlackey/akm/blob/main/docs/guides/bundles.md) -- Connect local dirs, git repos, npm packages, and websites; browse the registry
+- [Capture Knowledge](https://github.com/itlackey/akm/blob/main/docs/guides/capture-knowledge.md) -- `akm remember`, `akm import`, and how captured material becomes available to every agent
 - [Wikis](https://github.com/itlackey/akm/blob/main/docs/guides/wikis.md) -- Multi-wiki knowledge bases (Karpathy-style)
-- [Local Development](https://github.com/itlackey/akm/blob/main/docs/guides/local-development.md) -- Dogfooding akm while editing its own source
-- [Claude Code workflows vs. akm workflows](https://github.com/itlackey/akm/blob/main/docs/guides/claude-code-vs-akm-workflows.md) -- Comparing the two things that share a name
-- Command tours: [search & discovery](https://github.com/itlackey/akm/blob/main/docs/guides/search-discovery.md), [sources & registries](https://github.com/itlackey/akm/blob/main/docs/guides/sources-registries.md), [knowledge management](https://github.com/itlackey/akm/blob/main/docs/guides/knowledge-management.md), [the improvement loop](https://github.com/itlackey/akm/blob/main/docs/guides/improvement-loop.md), [agent integration](https://github.com/itlackey/akm/blob/main/docs/guides/agent-integration.md)
+- [Environment & Secrets](https://github.com/itlackey/akm/blob/main/docs/reference/env-and-secrets.md) -- `akm env` and `akm secret`: exact operations, file modes, and the security guarantee
+- [Run Workflows](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md) -- Start or continue a run, check on it, resume it, or abandon it
+- [Scheduling](https://github.com/itlackey/akm/blob/main/docs/guides/scheduling.md) -- Run akm tasks through the OS scheduler (cron / launchd / schtasks) safely
+- [Improve the Library](https://github.com/itlackey/akm/blob/main/docs/guides/improve-the-library.md) -- Feedback, history, and proposals -- how evidence turns into reviewable changes
+- Recipes: [Turn a Website into a Searchable Bundle](https://github.com/itlackey/akm/blob/main/docs/guides/recipes/website-source.md), [Headless Install](https://github.com/itlackey/akm/blob/main/docs/guides/recipes/headless-install.md)
 
-## [Reference](reference/README.md)
+## Build and operate
 
-- [Bundle Types](reference/bundle-types.md) -- Every bundle format akm recognizes: detection, refs, indexing, validation, read/write
+Package complete capabilities and turn knowledge into repeatable work.
+
+- [Bundle Author's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-bundles.md) -- Build a bundle, make it discoverable, and share it so others can install it with `akm bundle add`
+- [Author's Guide: Writing Workflows](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md) -- Write and test a workflow definition, from a minimal example to gates and outputs
+- [Claude Code workflows vs. akm workflows](https://github.com/itlackey/akm/blob/main/docs/guides/claude-code-vs-akm-workflows.md) -- Short decision guide for choosing between a session-native workflow and an akm workflow ([full technical comparison](https://github.com/itlackey/akm/blob/main/docs/architecture/comparisons/claude-code-vs-akm-workflows-full.md))
+
+### Maintainers
+
+Working on akm itself, not just using it.
+
+- [Maintainer Docs](https://github.com/itlackey/akm/blob/main/docs/maintainers/README.md) -- Start here: local development, measuring improvement, and the curate contract
+- [Local Development](https://github.com/itlackey/akm/blob/main/docs/maintainers/local-development.md) -- Dogfooding akm while editing its own source
+- [akm-eval](https://github.com/itlackey/akm/blob/main/docs/maintainers/eval.md) -- Standalone toolkit for measuring whether `akm improve` is working
+- [Curate Workmap](https://github.com/itlackey/akm/blob/main/docs/maintainers/curate-workmap.md) -- The current `akm curate` contract and the highest-value next fixes
+
+## Look up details
+
 - [CLI](reference/cli.md) -- All `akm` commands and flags
 - [Configuration](reference/configuration.md) -- Engines, strategies, bundles, and settings
-- [Workflows](reference/workflows.md) -- Unified Markdown workflow schema, run state, and native orchestration engine
-- [Wiki Snapshot Fetchers](https://github.com/itlackey/akm/blob/main/docs/reference/wiki-snapshot-fetchers.md) -- The pluggable fetcher API for URL-based knowledge reads
+- [Supported Formats](reference/supported-formats.md) -- Every bundle format akm recognizes, its detection marker, and current read/write support
+- [Asset Types](https://github.com/itlackey/akm/blob/main/docs/reference/asset-types.md) -- The capability taxonomy, directory conventions, and per-type examples
+- [Refs](https://github.com/itlackey/akm/blob/main/docs/reference/refs.md) -- The ref grammar `akm search` emits and `akm show` consumes
+- [Memory](https://github.com/itlackey/akm/blob/main/docs/reference/memory.md) -- The `memory` asset type: capture, belief states, and derived memories
+- [Workflow Schema](reference/workflow-schema.md) -- Authoritative frontmatter/body syntax for a workflow asset
+- [Workflows (overview)](reference/workflows.md) -- Short map across the workflow schema, engine, and how-to guides
 - [Registry](https://github.com/itlackey/akm/blob/main/docs/reference/registry.md) -- Registries, search, hosting, and managing sources
+- [Website Sources](https://github.com/itlackey/akm/blob/main/docs/reference/website-sources.md) -- The pluggable fetcher API for URL-based knowledge reads
 - [Data & Telemetry](reference/data-and-telemetry.md) -- Exactly what akm reads and writes on your machine (no remote telemetry)
-- [akm-eval](https://github.com/itlackey/akm/blob/main/docs/reference/akm-eval.md) -- Standalone toolkit for measuring whether `akm improve` is working
-- [Roadmap](https://github.com/itlackey/akm/blob/main/docs/reference/roadmap.md) -- High-level focus for the 0.9 and 1.0 releases
-
-## [Agents](https://github.com/itlackey/akm/blob/main/docs/agents/README.md)
-
-- `akm help agents` (short guide by default; `akm help agents --full` for the complete guide) -- The CLI reference agents load to use akm; always the embedded corpus at `src/assets/hints/cli-hints-{full,short}.md`
-- [Agent Install Guide](https://github.com/itlackey/akm/blob/main/docs/agents/agent-install.md) -- Step-by-step automated install for agents
-- [Curate Workmap](https://github.com/itlackey/akm/blob/main/docs/agents/curate-workmap.md) -- Read before changing `akm curate` ranking or output
-
-## [Architecture](https://github.com/itlackey/akm/blob/main/docs/architecture/README.md)
-
-System overview, normative specs, decision history, and subsystem internals.
-
 - [Architecture](https://github.com/itlackey/akm/blob/main/docs/architecture/architecture.md) -- How akm's bundles, cache, index, and registries fit together
 - [Core Principles](https://github.com/itlackey/akm/blob/main/docs/architecture/akm-core-principles.md) -- Design principles and constraints
-- [Specs](https://github.com/itlackey/akm/blob/main/docs/architecture/README.md#specs-specs) -- Normative specifications (bundle/adapter model, ref grammar, stash conventions)
+- [Adapters](https://github.com/itlackey/akm/blob/main/docs/architecture/adapters.md) -- How akm picks an adapter, indexes, validates, and writes into a bundle
+- [The Workflow Engine](https://github.com/itlackey/akm/blob/main/docs/architecture/workflow-engine.md) -- How a frozen plan is stored, dispatched, and resumed without replaying completed units
+- [The Improvement Loop](https://github.com/itlackey/akm/blob/main/docs/architecture/improvement.md) -- How a feedback signal becomes a ranking change, and how evidence becomes a proposal
+- [Runtime Boundary Design](https://github.com/itlackey/akm/blob/main/docs/architecture/runtime-boundary-design.md) -- Isolating `bun:sqlite`/`Bun.*` from the core
+- [Architecture Decision History](https://github.com/itlackey/akm/blob/main/docs/architecture/akm-architecture-decision-history.md) -- ADR-style record of the major architecture rulings
+- [Specs](https://github.com/itlackey/akm/blob/main/docs/architecture/README.md#specs-specs) -- Normative specifications (bundle/adapter model, ref grammar, bundle conventions)
 - [Internals](https://github.com/itlackey/akm/blob/main/docs/architecture/README.md#internals-internals) -- Current-truth subsystem references (storage, search, indexing, improve, health)
 - [Testing](https://github.com/itlackey/akm/blob/main/docs/architecture/README.md#testing-testing) -- Testing workflow and pre-release checklist
+- [Migration](migration/README.md) -- Upgrade guides and per-release migration notes
+- [Roadmap](https://github.com/itlackey/akm/blob/main/ROADMAP.md) -- High-level focus for the releases from here through 1.0
 
-## [Migration](migration/README.md)
+## Execution boundary
 
-- [v0.8 -> v0.9 migration guide](migration/v0.8-to-v0.9.md) -- Current-cycle breaking changes
-- [Release notes](migration/release-notes/) -- The short per-release notes `akm help migrate <version>` prints
+AKM retrieves every supported capability type. It directly orchestrates
+defined execution surfaces such as workflows, agent dispatch, tasks, and
+guarded subprocess injection. It does not blindly execute arbitrary indexed
+content merely because that content appears in search results. See
+[Core Principles](https://github.com/itlackey/akm/blob/main/docs/architecture/akm-core-principles.md) for the full boundary,
+and [The Improvement Loop](https://github.com/itlackey/akm/blob/main/docs/architecture/improvement.md) for how that boundary
+applies to akm's own self-generated changes.
 
-## [Posts](https://github.com/itlackey/akm/blob/main/docs/posts/README.md)
+## Posts
 
-Source articles for the dev.to publishing pipeline (historical record).
+Source articles for the dev.to publishing pipeline (historical record). See
+[docs/posts/README.md](https://github.com/itlackey/akm/blob/main/docs/posts/README.md).
 
 ## Official Ecosystem Repositories
 
-- [itlackey/akm-stash](https://github.com/itlackey/akm-stash) -- the official onboarding stash with ready-made assets you can install with `akm bundle add`
+- [itlackey/akm-stash](https://github.com/itlackey/akm-stash) -- the official onboarding bundle with ready-made assets you can install with `akm bundle add`
 - [itlackey/akm-registry](https://github.com/itlackey/akm-registry) -- the official registry index that powers built-in discovery
 - [itlackey/akm-plugins](https://github.com/itlackey/akm-plugins) -- optional integrations for tools like OpenCode
-- [itlackey/akm-bench](https://github.com/itlackey/akm-bench) -- the standalone benchmark and evaluation repo for akm
+- [itlackey/akm-bench](https://github.com/itlackey/akm-bench) -- the standalone benchmark harness for measuring agent performance with akm
+- [itlackey/akm-eval](https://github.com/itlackey/akm-eval) -- the eval framework and tools for akm asset quality (distinct from the in-repo [`scripts/akm-eval/` toolkit](https://github.com/itlackey/akm/blob/main/docs/maintainers/eval.md))
 
 ---
 

@@ -1,4 +1,4 @@
-# Design: the `fact` asset type — durable stash-level knowledge
+# Design: the `fact` asset type — durable bundle-level knowledge
 
 Status: accepted (phase 1 implemented)
 Author: akm
@@ -7,19 +7,19 @@ Date: 2026-06-20
 ## Problem
 
 akm has no home for **durable, mostly-static facts about a user, team, or
-project**. Concretely, users want a stash to carry things like:
+project**. Concretely, users want a bundle to carry things like:
 
 - **Personal** — name, email, address, timezone, favorite blogs, writing/working style.
 - **Team** — tool stacks, primary languages, CI/CD platform, deployment targets, web addresses.
 - **Conventions / constitution** — coding conventions, architecture principles, lint rules.
-- **Stash meta** — folder organization, naming conventions, expected frontmatter, the active-projects list.
+- **Bundle meta** — folder organization, naming conventions, expected frontmatter, the active-projects list.
 
 Today these have nowhere first-class to live:
 
-- `memory` is **episodic** — recency-decayed, belief-state ranked, captured ad-hoc via `akm remember`. It models "what I observed in a session," not "what is durably true about this stash."
-- `knowledge` is curated **reference material** — documents an agent reads on demand, not stash-level identity/conventions injected as context.
+- `memory` is **episodic** — recency-decayed, belief-state ranked, captured ad-hoc via `akm remember`. It models "what I observed in a session," not "what is durably true about this bundle."
+- `knowledge` is curated **reference material** — documents an agent reads on demand, not bundle-level identity/conventions injected as context.
 - `lesson` is a **`when_to_use` trigger** distilled from feedback.
-- The `.meta/` convention (`src/core/asset/stash-meta.ts`, `docs/guides/concepts.md` "Stash orientation") is **documentary only**: not indexed, not searchable, not ranked, and not surfaced to agents automatically.
+- The `.meta/` convention (`src/core/asset/stash-meta.ts`, see also `docs/guides/concepts.md`) is **documentary only**: not indexed, not searchable, not ranked, and not surfaced to agents automatically.
 
 ## Conceptual grounding
 
@@ -46,7 +46,7 @@ only a small high-signal core (cf. CLAUDE.md, kept short).
 ### Type: `fact`
 
 A first-class, indexed, searchable markdown asset type. Stored under
-`facts/` in a stash; ref form `fact:<name>` (nesting allowed, e.g.
+`facts/` in a bundle; ref form `fact:<name>` (nesting allowed, e.g.
 `fact:team/tool-stack`). Singular name matches akm convention
 (`skill`, `memory`, `lesson`, `task`, `session`).
 

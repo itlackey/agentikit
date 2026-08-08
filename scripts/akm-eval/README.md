@@ -644,5 +644,5 @@ scripts/akm-eval/
 
 ## See also
 
-- `docs/reference/akm-eval.md` — operator guide.
+- `docs/maintainers/eval.md` — operator guide.
 - `scripts/improve-stats/` — the toolkit pattern this one mirrors.

@@ -72,7 +72,7 @@ The subdirectory prefix is the item's placement directory:
 | `workflows/` | Workflow documents / programs | `workflows/ship-release` |
 | `memories/` | Recalled context fragments | `memories/deployment-notes` |
 | `lessons/` | Distilled feedback lessons | `lessons/retry-backoff` |
-| `facts/` | Durable stash-level facts | `facts/team/tool-stack` |
+| `facts/` | Durable bundle-level facts | `facts/team/tool-stack` |
 | `sessions/` | Indexed agent sessions | `sessions/claude/2026-07-24-abc` |
 | `env/` | `.env` configuration groups | `env/prod` |
 | `secrets/` | Single sensitive values | `secrets/deploy-token` |

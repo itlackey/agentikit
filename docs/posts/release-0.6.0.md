@@ -13,6 +13,9 @@ id: 3611982
 date: '2026-05-05T02:19:46Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 akm 0.6.0 is out. This one is deliberately boring: a stabilization release that takes a clean break from pre-v1 terminology so the surface area we carry into v1 is honest. The domain model now has one noun for "a source of content" (stash) and one noun for "a service that helps discover them" (registry). The parallel vocabulary that accreted during earlier experiments — "kit", "source", hand-special-cased provider types — is gone. A handful of additive quality-of-life improvements ship alongside, but the headline story is fewer concepts, not more.
 
 If you are on 0.5.x, read [the v0.5 → v0.6 migration guide](https://github.com/itlackey/akm/blob/main/docs/migration/v0.5-to-v0.6.md) before upgrading. Most projects will work without edits thanks to automatic on-disk migrations; a small number of config fields and CLI flags need explicit updates.

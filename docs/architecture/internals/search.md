@@ -187,8 +187,8 @@ When registry results (static-index, skills.sh) are included:
 
 ## Substring Fallback
 
-When no index is available, search falls back to scanning the primary stash
-and installed stash roots, filtering by substring match. This ensures search
+When no index is available, search falls back to scanning the primary bundle
+and installed bundle roots, filtering by substring match. This ensures search
 always works, even before `akm index` has been run.
 
 ## Output Modes

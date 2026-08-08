@@ -118,10 +118,10 @@ testable with hand-built rows (§8).
 
 ### 2.1 Where the canary set lives
 
-**Derived from the live stash, frozen in `state.db`** (table `canary_queries`, §5) —
+**Derived from the live bundle, frozen in `state.db`** (table `canary_queries`, §5) —
 NOT a checked-in file. Rejected alternative: a checked-in fixture like
-`tests/fixtures/stashes/curate-golden` — a fixed corpus cannot measure the *live* stash,
-and the live stash content differs per install, so the canary set must be minted from
+`tests/fixtures/stashes/curate-golden` — a fixed corpus cannot measure the *live* bundle,
+and the live bundle content differs per install, so the canary set must be minted from
 what the store actually contains and then held fixed.
 
 - **How many:** `canaryCount = 40` (config; owner-approved 30–50 range so per-type
@@ -507,11 +507,11 @@ tests (items 1-3, 7) and the curate-golden reuse guard (item 6) all landed toget
 note at the top of this document.)*
 
 1. **`collapse-detector.test.ts` — deterministic collapse
-   simulation (the headline test).** Seed an isolated stash with 30 distinct
+   simulation (the headline test).** Seed an isolated bundle with 30 distinct
    memories (distinct topics, distinct vocabularies), `akmIndex` it (FTS only — the
    detector path needs no embeddings; set `semanticSearchMode: "off"` in the sandbox
    config), mint the canary set, snapshot cycle 0. Then simulate merge passes
-   directly on the stash files: each pass replaces groups of 3 memories with one
+   directly on the bundle files: each pass replaces groups of 3 memories with one
    generic merged body (progressively blander shared phrasing, `xrefs` written
    for pass 1 then deliberately dropped for pass 2+ to model provenance loss),
    reindex, run `computeCycleMetrics` + `evaluateCollapseAlerts`. Assert:

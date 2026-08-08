@@ -1,7 +1,7 @@
 # Getting Started
 
-This guide walks you through installing akm, adding your first asset, and
-using search and show to discover capabilities.
+Install akm, connect a capability source, and pull a curated shortlist for a
+real task. This path takes about five to seven minutes end to end.
 
 ## Runtime Requirement
 
@@ -10,7 +10,7 @@ platform. If a working Bun >= 1.0 is also on `PATH`, the package launcher
 prefers Bun for execution; old, unusable, or absent Bun installations fall back
 to Node.js. The standalone binaries are runtime-free.
 
-## Install
+## 1. Install
 
 **Option 1 — npm package (recommended; requires [Node.js](https://nodejs.org) >= 22):**
 
@@ -31,11 +31,177 @@ irm https://github.com/itlackey/akm/releases/latest/download/install.ps1 | iex
 Or download a standalone binary directly from the
 [GitHub releases](https://github.com/itlackey/akm/releases) page.
 
-### Windows installation notes
+Hitting a PowerShell execution-policy error on Windows? See
+[Troubleshooting](#troubleshooting) at the end of this guide.
 
-`install.ps1` requires Windows PowerShell 5.1 or newer (default on Windows 10
-and Windows 11). If you see a SmartScreen prompt or an ExecutionPolicy error
-when running `irm ... | iex`, do one of:
+**Success check:**
+
+```sh
+akm --version
+```
+
+## 2. Run setup
+
+Guided, interactive setup is the default:
+
+```sh
+akm setup
+```
+
+`akm setup` walks through bundle location, embedding/LLM settings, semantic
+search asset preparation, registries, sources, and task definitions. It also
+reviews your scheduled task definitions and asks whether to activate them in
+the OS scheduler — that part of the flow, plus how to migrate or repair
+scheduler bindings later, is covered in [Scheduling](scheduling.md).
+
+For non-interactive use — scripting, CI, or when you just want a working
+bundle fast — use `--yes`:
+
+```sh
+akm setup --yes
+akm setup --dir ~/custom-bundle   # optional: a non-default bundle location
+```
+
+**Success check:** either form creates `~/akm` (or your `--dir` path) — your
+working bundle, the primary directory where your personal assets live — with
+subdirectories for each asset type: `scripts/`, `skills/`, `commands/`,
+`agents/`, `knowledge/`, `instructions/`, `workflows/`, `memories/`, `env/`,
+`secrets/`, `facts/`, `lessons/`, `tasks/`, and `sessions/`. See
+[Filesystem Layout](../architecture/internals/storage-locations.md) for
+platform-specific paths and environment variable overrides.
+
+## 3. Connect a capability source
+
+Add something to search. Point akm at a directory you already have, or
+install the official onboarding bundle:
+
+```sh
+akm bundle add ~/.claude/skills              # an existing capability directory
+akm bundle add github:itlackey/akm-stash     # the official onboarding bundle
+```
+
+Every source materialises files to a directory; akm indexes them locally.
+
+**Success check:**
+
+```sh
+akm bundle list
+```
+
+lists the source you just added.
+
+## 4. Index
+
+```sh
+akm index
+```
+
+`akm index` scans every configured source, then builds the search database.
+Run it again whenever you add or change assets. Use `akm index --full` to
+force a complete rebuild instead of an incremental update.
+
+**Success check:** the command reports how many assets it indexed. If a
+workflow file is malformed, akm skips that one asset, continues indexing the
+rest of the bundle, and reports the skipped file in `warnings`.
+
+## 5. Curate for a real task
+
+Describe what you're trying to do, in plain language, instead of guessing an
+exact asset name:
+
+```sh
+akm curate "deploy a Bun app"
+```
+
+Unlike `akm search`, `akm curate` reranks by intent, attaches a preview and
+run details per hit, adds related support refs, and summarizes the set — it's
+the usual starting point for an agent.
+
+**Success check:** the response includes a small shortlist; each entry
+carries a `ref` field and a direct follow-up command such as `akm show <ref>`
+or `akm bundle add <ref>`.
+
+## 6. Show one of the results
+
+Pick a `ref` from your curate output and load its full payload:
+
+```sh
+akm show <ref>            # e.g. akm show workflows/deploy
+```
+
+**Success check:** structured JSON with everything an agent needs to use the
+asset — a `run` command plus optional `cwd` and `setup` for scripts, a
+`prompt` payload for agents, or the document `content` for knowledge (append
+`#<heading-slug>` to a ref for one section).
+
+AKM retrieves every supported capability type. It directly orchestrates
+defined execution surfaces such as workflows, agent dispatch, tasks, and
+guarded subprocess injection. It does not blindly execute arbitrary indexed
+content merely because that content appears in search results — `show` hands
+your agent the payload; running it is a deliberate next step.
+
+## 7. Tell your agent about akm
+
+```sh
+akm help agents >> AGENTS.md
+```
+
+**Success check:** `AGENTS.md` now has a block of agent-facing usage
+instructions for the `akm` CLI, so any agent reading that file knows how to
+call it.
+
+## Optional: hand-write a script
+
+Curious how classification works on a file you wrote yourself, rather than
+one that came from a bundle? Add a small script and index it:
+
+```sh
+cat > ~/akm/scripts/hello.sh << 'EOF'
+#!/usr/bin/env bash
+# A simple greeting script
+echo "Hello from akm!"
+EOF
+chmod +x ~/akm/scripts/hello.sh
+akm index
+akm show scripts/hello.sh
+```
+
+Any file with a known extension (`.sh`, `.ts`, `.py`, etc.) placed in your
+working bundle is automatically recognized — the `scripts/` directory isn't
+required, it just increases classification confidence. Assets use inline
+metadata, not `.stash.json` sidecars: markdown assets use frontmatter, and
+scripts use structured header comments (a short leading description,
+`@param`, and execution hints like `@run` / `@setup` / `@cwd` when needed).
+See [Concepts](concepts.md) for how classification works.
+
+## What just happened?
+
+You ran the retrieval loop end to end: **connect** (added a source),
+**index** (built the search database), **curate** (got a relevance-ranked
+shortlist for a real task), and **show** (loaded one asset's full payload).
+The remaining links in that loop — **use/run** the asset, send **feedback**
+on whether it helped, and let akm turn accumulated signal into a
+**proposal** — are what the guides below cover.
+
+## Next steps
+
+- [Discover & Load](discover-and-load.md) — search, curate, and show in depth
+- [Bundles](bundles.md) — sources, registries, and installing more capability
+- [Capture Knowledge](capture-knowledge.md) — memories, imports, and wikis
+- [Improve the Library](improve-the-library.md) — feedback, proposals, and
+  the improvement loop
+- [Run Workflows](run-workflows.md) — structured, resumable
+  multi-step procedures
+
+Scheduling `akm improve` and other background tasks — see
+[Scheduling](scheduling.md).
+
+## Troubleshooting
+
+**Windows PowerShell execution policy.** `install.ps1` requires Windows
+PowerShell 5.1 or newer (default on Windows 10 and Windows 11). If
+`irm ... | iex` triggers a SmartScreen prompt or an ExecutionPolicy error, do
+one of:
 
 ```powershell
 # Allow scripts in this session only, then re-run the install:
@@ -53,222 +219,3 @@ Unblock-File .\install.ps1
 Windows ARM64 hosts install the x64 binary, which Windows runs via x86_64
 emulation. Native ARM64 support is tracked alongside Bun's ARM64-on-Windows
 progress.
-
-## First-Time Setup
-
-For a guided first run, start with:
-
-```sh
-akm setup
-```
-
-`akm setup` walks through bundle location, embedding/LLM settings, semantic
-search asset preparation, registries, sources, and task definitions. Before any
-OS scheduler change, it shows every reviewed task's schedule and enabled state
-and asks one explicit activation question. Confirming runs the scheduler sync;
-declining leaves both task files and scheduler state unchanged.
-
-Verify the resulting setup with:
-
-```sh
-akm task doctor
-```
-
-## Initialize Your Working Bundle
-
-For non-interactive use, run `akm setup --yes` to create your working bundle —
-the primary directory where your personal assets live:
-
-```sh
-akm setup --yes
-akm setup --dir ~/custom-bundle
-```
-
-This creates `~/akm` with subdirectories for each asset type: `scripts/`,
-`skills/`, `commands/`, `agents/`, `knowledge/`, `instructions/`,
-`workflows/`, `memories/`, `env/`, `secrets/`, `facts/`, `lessons/`,
-`tasks/`, and `sessions/`. See
-[Filesystem Layout](../architecture/internals/storage-locations.md) for platform-specific paths and environment
-variable overrides.
-
-`akm setup --yes`, config-file setup, and CI runs do not activate schedules.
-
-## Safe Scheduling Walkthrough
-
-Run interactive setup, review the complete task summary, and confirm activation
-only if the schedules and enabled flags are correct:
-
-```sh
-akm setup
-akm task doctor
-```
-
-Task definitions live under `<bundle>/tasks/`; scheduler entries are separate OS
-state. Activation captures the installed akm runtime so scheduled execution does
-not silently switch to a different checkout or package. Editing definitions and
-running ordinary `akm task sync` preserves that captured runtime. If akm was
-moved, reinstalled under a different package prefix, or repaired after an
-installation problem, migrate scheduler entries deliberately:
-
-```sh
-akm task sync --rebind
-akm task doctor
-```
-
-Use `--rebind` only for that explicit runtime migration or repair.
-
-Rerunning `akm setup` preserves existing scheduler bindings by design. If you
-change the AKM storage path during reconfiguration, or move/install akm at a new
-runtime path, follow setup with `akm task sync --rebind`; setup never silently
-rebinds existing entries.
-
-Setup's review covers both the general-purpose core task-template set and the
-maintainer-oriented multi-cadence improve task set in one pass — see the
-[task CLI reference](../reference/cli.md#task) for the full template list.
-
-## Add Your First Asset
-
-Create a simple shell script in the `scripts/` directory:
-
-```sh
-cat > ~/akm/scripts/hello.sh << 'EOF'
-#!/usr/bin/env bash
-# A simple greeting script
-echo "Hello from akm!"
-EOF
-chmod +x ~/akm/scripts/hello.sh
-```
-
-Any file with a known extension (`.sh`, `.ts`, `.py`, etc.) placed in your
-working bundle is automatically recognized. The `scripts/` directory is not
-required -- it just increases classification confidence. See
-[concepts.md](concepts.md) for how classification works.
-
-Assets use inline metadata, not `.stash.json` sidecars. Markdown assets should
-use frontmatter, and scripts should use structured header comments such as a
-short leading description, `@param`, and execution hints like `@run` /
-`@setup` / `@cwd` when needed.
-
-## Index
-
-Build the search index so your assets are discoverable:
-
-```sh
-akm index
-```
-
-**`setup` vs `index`:** `akm setup` creates your working bundle directory (run
-once). `akm index` scans all sources, then builds the
-search database (run whenever you add or change assets). They are separate
-steps — `setup` creates the bundle, `index` makes its contents searchable.
-
-Run `akm index --full` to force a complete rebuild instead of an incremental
-update. If a workflow file is malformed, akm now skips that asset, continues
-indexing the rest of the bundle, and reports the skipped file in `warnings`.
-
-## Search
-
-Find assets by keyword:
-
-```sh
-akm search "hello"
-```
-
-Results include a `ref` field (for example `scripts/hello.sh`) that you pass
-directly to `akm show`. Filter by type or limit results:
-
-```sh
-akm search "deploy" --type script --limit 5
-```
-
-See [cli.md](../reference/cli.md) for the full set of search flags.
-
-## Show
-
-Inspect an asset by its ref:
-
-```sh
-akm show scripts/hello.sh
-```
-
-The output is structured JSON containing everything an agent needs to use
-the asset. For scripts, this includes a `run` command plus optional `cwd`
-and `setup`. For agents, a `prompt` payload. For knowledge, the document
-`content` — append `#<heading-slug>` to the ref for one section.
-
-See [cli.md](../reference/cli.md#show) for the full per-type field reference.
-
-## Add Sources
-
-Add any source — a local directory, a GitHub repo, an npm package, or a website.
-Every source materialises files to a directory; akm indexes them locally:
-
-```sh
-akm bundle add ~/.claude/skills              # Your Claude Code skills
-akm bundle add github:owner/repo             # A team's shared bundle
-akm bundle add @scope/my-bundle                 # An npm package
-akm bundle add https://docs.example.com --name docs  # A documentation site
-```
-
-All become searchable immediately. Use `akm bundle list` to see your sources and
-`akm bundle update --all` to keep managed sources current.
-
-Website sources are crawled and converted to markdown knowledge assets. Control
-the crawl with `--max-pages` and `--max-depth`:
-
-```sh
-akm bundle add https://www.agentic-patterns.com/ --name agent-patterns --max-pages 100
-```
-
-See [registry.md](../reference/registry.md) for the full install flow and supported
-ref formats.
-
-## Isolated Sandbox Workflow
-
-When testing agent behavior, authoring new assets, or reproducing an issue,
-you often want a clean bundle that does not touch your real one. Every akm
-command honours the standard XDG env vars plus `AKM_BUNDLE_DIR`, so you can
-spin up a disposable environment in a single terminal:
-
-```bash
-SANDBOX=$(mktemp -d)
-export HOME="$SANDBOX"
-export XDG_CONFIG_HOME="$SANDBOX/config"
-export XDG_DATA_HOME="$SANDBOX/data"
-export XDG_CACHE_HOME="$SANDBOX/cache"
-export AKM_BUNDLE_DIR="$SANDBOX/bundle"
-
-akm setup --yes                 # initialize the sandbox bundle
-akm index --full                # empty but valid index
-
-# Workflows need an engine selected before a run can be planned. `akm setup`
-# picks one up automatically when an agent CLI is installed; in a bare
-# sandbox (or CI image) there is nothing to detect, so set one explicitly:
-akm config set engines.claude '{"kind":"agent","platform":"claude"}'
-akm config set defaults.engine claude
-akm config set workflow.judgeEngine claude
-
-akm workflow create demo        # create a template-backed workflow asset
-akm workflow run workflows/demo --example_param sandbox
-
-rm -rf "$SANDBOX"               # tear down when done
-```
-
-Nothing written to `$SANDBOX` ever reaches your default bundle, so this
-pattern is safe to script into CI or agent test harnesses.
-
-## Next Steps
-
-- [Concepts](concepts.md) -- Asset types, classification, and the bundle
-- [CLI Reference](../reference/cli.md) -- All commands and flags
-- [Ref Format](../architecture/specs/ref.md) -- How asset references work
-- [Bundle Maker's Guide](stash-makers.md) -- Build and share your own bundles
-
-## Official akm Repos
-
-If you want the rest of the official akm ecosystem after first-time setup:
-
-- [itlackey/akm-stash](https://github.com/itlackey/akm-stash) -- install the official onboarding bundle with `akm bundle add github:itlackey/akm-stash`
-- [itlackey/akm-registry](https://github.com/itlackey/akm-registry) -- browse the official registry source that ships with akm
-- [itlackey/akm-plugins](https://github.com/itlackey/akm-plugins) -- optional integrations for editors and agent tools
-- [itlackey/akm-bench](https://github.com/itlackey/akm-bench) -- benchmark and evaluation tooling for measuring akm-assisted agent runs

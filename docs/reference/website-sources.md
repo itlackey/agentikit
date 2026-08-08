@@ -1,10 +1,35 @@
-# Wiki Snapshot Fetchers
+# Website Sources
 
 `akm import <url>` and every other URL-based knowledge read path pass through
 a pluggable fetcher seam before the built-in website scraper.
 
-akm currently ships one built-in fetcher: `youtube-transcript`, which extracts
-the video description and transcript when captions are available.
+akm ships five built-in fetchers, probed in this order (host-specific
+fetchers before the deliberately loose path-shaped RSS matcher; any fetcher
+returning `null` falls through to the generic website crawler):
+
+| Fetcher | Handles | What it extracts |
+| --- | --- | --- |
+| `github-repository` | `github.com/<owner>/<repo>` URLs | The repository README, rendered to markdown |
+| `youtube-transcript` | YouTube watch/short URLs | The video description and transcript when captions are available |
+| `bluesky-profile` | `bsky.app` profile URLs | Public profile and recent posts via the unauthenticated AT Protocol API |
+| `x` | `x.com`/`twitter.com` profiles, posts, and articles | Post/article content; profile timelines need a bearer token (below) |
+| `rss-feed` | Feed-shaped paths (`.rss`/`.atom`/`.xml`, `?feed=`) | Feed items as markdown sections |
+
+## X credentials
+
+The `x` fetcher reads public post/article pages without credentials. Profile
+timelines require an API bearer token, resolved in order from the
+`X_BEARER_TOKEN` environment variable, then the `secrets/x-bearer-token` akm
+secret (`akm secret set secrets/x-bearer-token`). Alternatively, set `X_RSS_TEMPLATE`
+to an RSS-bridge URL containing `{username}` to fetch profiles through the
+`rss-feed` path instead.
+
+## Crawl options
+
+When no fetcher claims a URL, the generic crawler applies the `website`
+source descriptor's knobs (see the config schema): `maxPages` (default 50),
+`maxDepth` (default 3), `respectRobots` (default `true`; set `false` to
+bypass robots.txt for that source), and `crawlTimeoutMs` per request.
 
 ## Why
 
@@ -25,9 +50,9 @@ Drop fetcher modules into:
 <stashDir>/scripts/wiki-fetchers/
 ```
 
-`<stashDir>` is the active stash for the current operation. When a command has a
+`<stashDir>` is the active bundle for the current operation. When a command has a
 resolved write target (for example `akm import --target ...`), akm loads
-fetchers from that target stash before falling back to the built-in website
+fetchers from that target bundle before falling back to the built-in website
 scraper.
 
 Files ending in `.ts`, `.js`, or `.mjs` are loaded in alphabetical order.
@@ -56,6 +81,12 @@ export interface FetcherContext {
   stashDir: string;
   timeoutMs: number;
   signal?: AbortSignal;
+  /**
+   * Resolve a secret by ref (e.g. `secrets/x-bearer-token`) from akm's
+   * secret store, or null when absent. Injected rather than imported so
+   * fetchers stay leaves in the import graph; never log the returned value.
+   */
+  resolveSecret?: (ref: string) => string | null;
 }
 
 export interface WikiSnapshotFetcher {
@@ -67,7 +98,8 @@ export interface WikiSnapshotFetcher {
 
 `markdown` should contain only the body content. akm still wraps the result in
 the standard raw snapshot frontmatter (`name`, `description`, `sourceUrl`,
-`title`, `tags`) so downstream wiki tooling continues to work normally.
+`title`, `updated`, a `lint_skip` entry for `stale-path`, and `tags`) so
+downstream wiki tooling continues to work normally.
 
 Custom `tags` are appended to the default snapshot tags (`website` and the
 resolved hostname). They do not replace those defaults.
@@ -105,5 +137,5 @@ export default {
   knowledge reads that use `fetchWebsiteMarkdownSnapshot()`.
 - The built-in website scraper remains the default path when no custom fetcher
   matches.
-- Stash-local fetchers are loaded before built-ins, so you can override the
-  built-in YouTube behavior for your own workflow when needed.
+- Bundle-local fetchers are loaded before built-ins, so you can override any
+  built-in fetcher's behavior for your own workflow when needed.

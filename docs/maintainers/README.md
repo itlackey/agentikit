@@ -1,0 +1,15 @@
+# Maintainer Docs
+
+This is maintainer/contributor documentation, not user-facing. It covers how
+to work on `akm` itself — running it from source, measuring whether changes
+actually improve it, and the current state of the `curate` implementation.
+
+- [Local Development](local-development.md) — the explicit launcher for each
+  kind of contributor check (live source, built launcher, packed-package
+  acceptance, global checkout install) and the verification commands to run
+  before pushing.
+- [akm-eval](eval.md) — the standalone, read-only toolkit that measures
+  whether `akm improve` and retrieval changes are actually working.
+- [Curate Workmap](curate-workmap.md) — the current `akm curate` contract,
+  where its implementation diverges from intended behavior, and the
+  highest-value next fixes.

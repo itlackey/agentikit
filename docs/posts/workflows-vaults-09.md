@@ -13,6 +13,9 @@ id: 3538935
 date: '2026-05-05T02:19:50Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 This is part nine in a series about managing the growing pile of skills, scripts, and context that AI coding agents depend on. [Part one](https://dev.to/itlackey/your-ai-agents-skill-list-is-getting-out-of-hand-32ck) introduced progressive disclosure. [Part two](https://dev.to/itlackey/you-already-have-dozens-of-agent-skills-you-just-cant-find-them-bpo) unified your local assets across platforms. [Part seven](https://dev.to/itlackey) covered shared team skills via Git repos.
 
 Ask an agent to ship a release and it will start confidently. It runs the build, opens the changelog, checks the branch. Then something interrupts the session — you close the terminal, the context window fills up, you need to switch tasks. When you come back, the agent has no idea where it left off. You either restart from scratch or spend time reconstructing what happened.

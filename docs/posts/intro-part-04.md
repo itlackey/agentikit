@@ -13,6 +13,9 @@ id: 3363736
 date: '2026-03-18T18:09:15Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 This is part four in a series about managing the growing pile of skills, scripts, and context that AI coding agents depend on. In [part one](https://dev.to/itlackey/your-ai-agents-skill-list-is-getting-out-of-hand-32ck), I covered why progressive disclosure beats dumping everything into context. [Part two](https://dev.to/itlackey/you-already-have-dozens-of-agent-skills-you-just-cant-find-them) showed how `akm` unifies your local assets across platforms into one searchable stash. [Part three](https://dev.to/itlackey/your-agents-memory-shouldnt-disappear-when-the-session-ends) added remote context via OpenViking for teams that need persistent, shared knowledge. *(note: OpenViking is not supported in akm v1 — see Part three's deprecation notice for details)*
 
 All of that assumed you were building your own library from scratch. Your skills. Your knowledge docs. Your team's accumulated context. That's fine — and it's necessary — but it ignores a much larger resource: everything everyone else has already built.

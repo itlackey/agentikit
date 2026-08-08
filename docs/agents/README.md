@@ -12,5 +12,4 @@ the CLI. There used to be a separate `docs/agents/AGENTS.md` /
 re-diverging from the embedded copy with no test to catch it, so it was
 deleted and its still-true unique content was merged into the embedded files.
 
-- [Agent Install Guide](agent-install.md) -- Step-by-step automated install for agents
-- [Curate Workmap](curate-workmap.md) -- Read before changing `akm curate` ranking or output
+- [Agent Install Guide](agent-install.md) -- Short redirect covering the install shape (binary, `akm setup --yes`, a source, an index, `akm help agents`); for the exact no-prompts command sequence, see the [headless install recipe](../guides/recipes/headless-install.md)

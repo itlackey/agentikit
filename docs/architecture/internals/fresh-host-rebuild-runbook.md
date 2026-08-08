@@ -1,7 +1,7 @@
 # Fresh-Host Rebuild Runbook
 
-Rebuild a working akm install on a new machine. Assumes your stash lives in a
-git remote and that a versioned `config.json` copy is committed to the stash
+Rebuild a working akm install on a new machine. Assumes your bundle lives in a
+git remote and that a versioned `config.json` copy is committed to the bundle
 git (the 08-F1 recovery pattern — see step 3).
 
 1. **Install the CLI.** Prebuilt binary (no runtime needed):
@@ -15,7 +15,7 @@ git (the 08-F1 recovery pattern — see step 3).
 3. **Restore `config.json`.** akm reads a single user config at
    `~/.config/akm/config.json` (`%APPDATA%\akm\config.json` on Windows;
    override with `AKM_CONFIG_DIR`). This file is gitignored on the host, so the
-   recovery source is the ONE versioned copy committed to the stash git
+   recovery source is the ONE versioned copy committed to the bundle git
    (08-F1 pattern). Copy that file into place; it carries named `engines`,
    `defaults.engine` / `defaults.llmEngine`, and cron-load-bearing improve
    strategies that are otherwise unrecoverable.
@@ -23,12 +23,12 @@ git (the 08-F1 recovery pattern — see step 3).
    placeholders; export those environment variables (or restore your env/secret
    assets) so named engines and the embedding connection resolve. Never commit
    the resolved values.
-5. **Restore the working bundle.** Clone your stash git remote to the path
+5. **Restore the working bundle.** Clone your bundle git remote to the path
    named by your working bundle's entry under `bundles` in the restored
    config (`defaultBundle` selects which one; default path `~/akm`). There is
    no top-level `stashDir` config key in 0.9 — it is retired and rejected at
    load. If starting clean instead, run `akm setup --yes` to scaffold it.
-6. **Re-add non-git sources.** For each managed source not carried in the stash
+6. **Re-add non-git sources.** For each managed source not carried in the bundle
    git (websites, npm packages, GitHub repos), run `akm bundle add <ref>`. Verify the
    full set with `akm bundle list`.
 7. **Rebuild the index:** `akm index --full` (forces a complete reindex rather
@@ -37,4 +37,4 @@ git (the 08-F1 recovery pattern — see step 3).
    metrics — exits non-zero if `state.db` is missing) and `akm info` for index
    stats and effective config.
 9. **Smoke-test discovery:** `akm search <term>` returns results, confirming the
-   index and stash are wired correctly.
+   index and bundle are wired correctly.

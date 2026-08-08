@@ -13,6 +13,9 @@ id: 3629633
 date: '2026-05-07T23:51:17Z'
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 If you've looked at `akm` for the first time and thought "this seems useful, but what do all these commands actually *do*?" this post is for you.
 
 At a high level, `akm` is a package manager for AI agent capabilities. It gives your agents a searchable library of scripts, skills, commands, agents, knowledge docs, workflows, environment groups, wikis, lessons, and memories. Instead of dumping everything into a giant system prompt, you let the agent discover what it needs with search, then load the right asset at the right time.

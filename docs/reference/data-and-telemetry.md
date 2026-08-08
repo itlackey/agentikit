@@ -13,7 +13,7 @@ AKM does not:
 AKM adds no network destinations of its own. The requests it *does* make all go to endpoints you chose or invoked, and those third parties receive whatever the request contains:
 
 1. **Your configured LLM/embedding provider** (e.g. Anthropic, OpenAI, a local Ollama, or any OpenAI-compatible endpoint) receives the prompts and asset content sent for reflect/propose/distill/embedding when you enable those features. If you point AKM at Anthropic, Anthropic receives those requests.
-2. **Registry metadata and stash packages** from sources you explicitly configure (GitHub, npm, git remotes, websites) — those hosts receive the fetch/clone/crawl requests, and website sources receive requests for the pages you crawl.
+2. **Registry metadata and bundle packages** from sources you explicitly configure (GitHub, npm, git remotes, websites) — those hosts receive the fetch/clone/crawl requests, and website sources receive requests for the pages you crawl.
 3. **`akm upgrade`** — fetches the latest release from GitHub releases (GitHub sees the request).
 4. **`akm setup`** — a single DNS lookup for `github.com` to decide whether to skip network-dependent steps (Ollama detection, remote embedding probes) when offline. No HTTP request is made by this probe; if it succeeds, akm proceeds with the network-dependent steps you already configured.
 5. **`akm improve` dead-link checks** — a full-scope improve run (the default for a bare `akm improve`) sends best-effort `HEAD` requests (following redirects, with a short timeout and a hard cap on URL count) to URLs found in the bodies of the knowledge assets it is improving, to flag dead links. The hosts of those URLs see a `HEAD` request; no asset content is sent. Keep URLs you don't want probed out of knowledge-asset bodies, or run improve with an explicit narrower scope.
@@ -30,7 +30,7 @@ AKM writes to these locations on your machine. All paths follow [XDG Base Direct
 
 | Path | Contents | Safe to delete? |
 |---|---|---|
-| `config.json` | Your AKM configuration: engines, improve strategies, bundles (stash sources), and experimental opt-ins — see [Configuration](configuration.md) | **No** — deleting resets all settings |
+| `config.json` | Your AKM configuration: engines, improve strategies, bundles (bundle sources), and experimental opt-ins — see [Configuration](configuration.md) | **No** — deleting resets all settings |
 
 Override: set `AKM_CONFIG_DIR` or `XDG_CONFIG_HOME`.
 
@@ -38,7 +38,7 @@ Override: set `AKM_CONFIG_DIR` or `XDG_CONFIG_HOME`.
 
 | Path | Contents | Safe to delete? |
 |---|---|---|
-| `index.db` | Search index for all your stash assets (FTS5 + metadata) | Yes — rebuilds via `akm index --full` |
+| `index.db` | Search index for all your bundle assets (FTS5 + metadata) | Yes — rebuilds via `akm index --full` |
 | `state.db` | Events, local usage telemetry, proposals, task history, improve run results, and workflow run state/history (the former `workflow.db` was folded in during the 0.9.0 cutover) | **No** — deletes event/usage logs, proposal queue, improve history, and workflow run history |
 | `logs.db` | Structured, high-volume task/run log lines (`{ts, task_id, run_id, stream, level, line}`), joined to `state.db`'s `task_history` rows by `task_id@started_at`. Kept separate from `state.db` because log lines are append-only and freely purgeable, unlike durable state | Yes — log lines are regenerable per run; deleting loses historical run output only |
 | `akm.lock` | Inter-process write lock | Yes — recreated automatically |
@@ -54,7 +54,7 @@ Everything in the cache is regenerable. It is safe to delete the entire cache di
 |---|---|---|
 | `config-backups/config-<timestamp>.json` | Pre-save config snapshots (5 retained; owner-only permissions — file `0600`, dir `0700`, since 08-F4) | Yes |
 | `config-backups/config.latest.json` | Latest backup alias (owner-only `0600`) | Yes |
-| `registry/` | Downloaded registry tarballs (stash packages from npm, GitHub, etc.) | Yes — re-downloaded on next `akm bundle add` or `akm bundle update` |
+| `registry/` | Downloaded registry tarballs (bundle packages from npm, GitHub, etc.) | Yes — re-downloaded on next `akm bundle add` or `akm bundle update` |
 | `registry-index/` | Legacy per-URL JSON cache (v0.7 artifact) | Yes — fully replaced by `index.db` in 0.8.0 |
 | `semantic-status.json` | Semantic index build status marker | Yes |
 | `bin/` | Downloaded AKM binary cache (used by `akm upgrade`) | Yes |
@@ -63,7 +63,7 @@ Everything in the cache is regenerable. It is safe to delete the entire cache di
 
 Override: set `AKM_CACHE_DIR` or `XDG_CACHE_HOME`.
 
-### Stash Directory (`~/akm/` by default, or user-configured)
+### Bundle Directory (`~/akm/` by default, or user-configured)
 
 | Path | Contents | Safe to delete? |
 |---|---|---|
@@ -162,7 +162,7 @@ the set of types the code actually emits at HEAD (verified against every
 | `proactive_selected` | The proactive-maintenance selector runs (once per `akm improve` run) | `count`, `dueTotal`, `neverReflected` (aggregated) |
 | `improve_replay_selected` | Bounded replay-budget selection ran | `count`, `budget`, `convergedSkipped`, `candidatePool` (aggregated) |
 | `improve_salience_first_run` | First improve run with no pre-existing salience baseline to compare against | `candidateCount`, `note` |
-| `improve_salience_rank_change` | Stash-wide rank-change report, from the second improve run onward | `stashSize`, `totalChanged`, `forgettingCandidates`, `topDrops` |
+| `improve_salience_rank_change` | Bundle-wide rank-change report, from the second improve run onward | `stashSize`, `totalChanged`, `forgettingCandidates`, `topDrops` |
 | `outcome_proxy_inverted` | Proxy-adequacy tripwire: `outcome_score` correlates *negatively* with accepted-change rate (corr < −0.3) | `correlation`, `n` |
 | `outcome_proxy_dead` | Proxy-adequacy tripwire: `outcome_score` is statistically unrelated to accepted-change rate (\|corr\| < 0.1, n ≥ 500) | `correlation`, `n` |
 | `collapse_detector_alert` | The collapse/churn detector trips an alert rule during an improve cycle | `kind` (collapse-recall\|collapse-entropy\|collapse-shrink\|churn\|merge-floor), `detail`, `metrics`, `canarySetId`, `runId` |
@@ -241,7 +241,7 @@ an identity that production indexing omitted.
 
 ### 3. Proposals Table
 
-The proposal queue: pending, accepted, and rejected improvement proposals for your stash assets. Generated by `akm improve`, `akm proposal new`, and related proposal-producing flows.
+The proposal queue: pending, accepted, and rejected improvement proposals for your bundle assets. Generated by `akm improve`, `akm proposal new`, and related proposal-producing flows.
 
 Contents:
 - Proposal UUID (primary key)
@@ -327,7 +327,7 @@ You can redirect any AKM directory to a custom path:
 | `AKM_SQLITE_JOURNAL_MODE` | SQLite journal mode: `WAL` (default), `DELETE`, or `TRUNCATE`. Use `DELETE`/`TRUNCATE` on network filesystems (NFS/SMB) where WAL is impossible. When left at the `WAL` default, akm auto-detects a network FS for the data dir and falls back to `DELETE`. |
 | `AKM_STATE_DIR` | State directory (`~/.local/state/akm/`) |
 | `AKM_CACHE_DIR` | Cache directory (`~/.cache/akm/`) |
-| `AKM_BUNDLE_DIR` | Default stash directory (`~/akm/`) |
+| `AKM_BUNDLE_DIR` | Default bundle directory (`~/akm/`) |
 | `XDG_CONFIG_HOME` | XDG base — akm appends `/akm` |
 | `XDG_DATA_HOME` | XDG base — akm appends `/akm` |
 | `XDG_STATE_HOME` | XDG base — akm appends `/akm` |

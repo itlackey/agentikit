@@ -4,10 +4,10 @@ This page outlines the high-level focus for the next two releases.
 
 It is intentionally directional rather than exhaustive. Detailed command,
 schema, and migration behavior still lives in the release notes, the
-migration guides, and [STABILITY.md](../../STABILITY.md), which classifies
+migration guides, and [STABILITY.md](STABILITY.md), which classifies
 today's public contract by surface. The internal design specs behind the
 0.9.0 architecture consolidation live under
-[`docs/architecture/specs/`](../architecture/specs/).
+[`docs/architecture/specs/`](docs/architecture/specs/).
 
 ## 0.8 Foundation
 
@@ -57,7 +57,7 @@ small, durable core ready for the `1.0` freeze.
 `0.9.x` is a series of refactoring and clean-up releases. The intent is to
 have **all technical debt paid off and all planned breaking changes handled
 before the 0.10.x series begins**. To get there quickly, 0.9.x patch releases
-may include breaking changes (see [STABILITY.md](../../STABILITY.md)); every
+may include breaking changes (see [STABILITY.md](STABILITY.md)); every
 break ships with a CHANGELOG migration note.
 
 Alongside the bug fixes and compatibility improvements, `0.9.x` also focuses
@@ -84,7 +84,7 @@ stable ecosystem layer around that core.
 
 - Freeze the supported source model, the `[bundle//]conceptId` ref format,
   search behavior, and write-target rules — the surfaces
-  [STABILITY.md](../../STABILITY.md)'s own 1.0 contract-freeze section
+  [STABILITY.md](STABILITY.md)'s own 1.0 contract-freeze section
   already names — and settle the surfaces it currently classifies as
   Evolving or Experimental.
 - Carry the `0.8` agent and improvement workflow forward as a stable,

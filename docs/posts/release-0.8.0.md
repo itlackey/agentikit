@@ -11,6 +11,9 @@ tags:
 published: true
 ---
 
+> This is a dated article from AKM's publishing archive. For current product behavior, see the
+> [documentation index](https://github.com/itlackey/akm/blob/main/docs/README.md).
+
 akm 0.8.0 is out. This release combines the storage reorganization and CLI redesign with the final improve-owned maintenance migration: plain `akm index` now keeps metadata current, while slower memory inference and graph extraction maintenance run from `akm improve` after consolidation.
 
 If you are on 0.7.x, the v1 migration guide covers the per-surface delta. The upgrade requires updating scripts and agent instructions due to breaking CLI changes.
