@@ -74,7 +74,7 @@ Working on akm itself, not just using it.
 - [Internals](architecture/README.md#internals-internals) -- Current-truth subsystem references (storage, search, indexing, improve, health)
 - [Testing](architecture/README.md#testing-testing) -- Testing workflow and pre-release checklist
 - [Migration](migration/README.md) -- Upgrade guides and per-release migration notes
-- [Roadmap](../ROADMAP.md) -- High-level focus for the 0.9 and 1.0 releases
+- [Roadmap](../ROADMAP.md) -- High-level focus for the releases from here through 1.0
 
 ## Execution boundary
 
@@ -96,7 +96,8 @@ Source articles for the dev.to publishing pipeline (historical record). See
 - [itlackey/akm-stash](https://github.com/itlackey/akm-stash) -- the official onboarding bundle with ready-made assets you can install with `akm bundle add`
 - [itlackey/akm-registry](https://github.com/itlackey/akm-registry) -- the official registry index that powers built-in discovery
 - [itlackey/akm-plugins](https://github.com/itlackey/akm-plugins) -- optional integrations for tools like OpenCode
-- [itlackey/akm-bench](https://github.com/itlackey/akm-bench) -- the standalone benchmark and evaluation repo for akm
+- [itlackey/akm-bench](https://github.com/itlackey/akm-bench) -- the standalone benchmark harness for measuring agent performance with akm
+- [itlackey/akm-eval](https://github.com/itlackey/akm-eval) -- the eval framework and tools for akm asset quality (distinct from the in-repo [`scripts/akm-eval/` toolkit](maintainers/eval.md))
 
 ---
 

@@ -83,7 +83,7 @@ Or generate it directly: `akm help agents >> AGENTS.md`
 Full docs, CLI reference, and guides are available on [GitHub](https://github.com/itlackey/akm):
 
 - [Getting Started](https://github.com/itlackey/akm/blob/main/docs/guides/getting-started.md)
-- [Bundle Types](https://github.com/itlackey/akm/blob/main/docs/reference/bundle-types.md)
+- [Supported Formats](https://github.com/itlackey/akm/blob/main/docs/reference/supported-formats.md)
 - [CLI Reference](https://github.com/itlackey/akm/blob/main/docs/reference/cli.md)
 - [Configuration](https://github.com/itlackey/akm/blob/main/docs/reference/configuration.md)
 - [Bundle Authoring Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-bundles.md)
