@@ -79,7 +79,7 @@ const SKIP_MARKER = "doclint:ignore";
  * file carve-out. Keep empty by default; see `scripts/lint-shipped-assets.ts`
  * for the precedent this mirrors.
  *
- * docs/migration/v0.7-to-v0.8.md:1154 — the line is inside a literal
+ * docs/migration/v0.7-to-v0.8.md:1155 — the line is inside a literal
  * box-drawing terminal-banner illustration (the exact text 0.8.0's
  * auto-migration notice printed), not a runnable shell line. A trailing
  * `# doclint:ignore` comment would visibly corrupt the banner's right
@@ -107,9 +107,9 @@ const SKIP_MARKER = "doclint:ignore";
  * archive-banner cause as above.)
  */
 const ALLOWED_VIOLATIONS: ReadonlySet<string> = new Set([
-  "docs/migration/v0.7-to-v0.8.md:1154:migrate",
-  "docs/migration/v0.7-to-v0.8.md:1154:--dry-run",
-  "docs/migration/v0.7-to-v0.8.md:1154:--print-diff",
+  "docs/migration/v0.7-to-v0.8.md:1155:migrate",
+  "docs/migration/v0.7-to-v0.8.md:1155:--dry-run",
+  "docs/migration/v0.7-to-v0.8.md:1155:--print-diff",
   "docs/posts/task-assets-persistent-workflows-11.md:76:wiki",
   "docs/posts/task-assets-persistent-workflows-11.md:89:tasks",
   "docs/posts/task-assets-persistent-workflows-11.md:89:--schedule",
