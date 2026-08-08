@@ -220,7 +220,11 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
     if (step.sequenceIndex !== index) fail("step sequence indices must be contiguous and unique");
     assertString(step.title, `step ${step.stepId} title`);
     if (!!step.root === !!step.route) fail(`step ${step.stepId} must contain exactly one of root or route`);
-    assertKeys(step, ["stepId", "title", "sequenceIndex", "root", "route", "outputSchema", "gate"], `step ${step.stepId}`);
+    assertKeys(
+      step,
+      ["stepId", "title", "sequenceIndex", "root", "route", "outputSchema", "gate"],
+      `step ${step.stepId}`,
+    );
     if (step.outputSchema !== undefined) validateSchema(step.outputSchema, `step ${step.stepId} outputSchema`);
     if (step.root) validateNode(step.root, step.stepId, references, nodeIds, hooks);
     if (step.route) validateRoute(step.route, step.stepId);

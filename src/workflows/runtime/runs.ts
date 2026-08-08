@@ -571,7 +571,7 @@ export async function abandonWorkflowRun(runId: string): Promise<WorkflowRunDeta
  * Marker key stamped on every value this module replaced because it did not fit
  * in `workflow_run_steps.evidence_json`. It is deliberately ugly and unique so a
  * truncated value can NEVER be mistaken for real workflow data by a downstream
- * `${{ steps.<id>.output… }}` reference, by `akm workflow status`, or by a human
+ * `steps.<id>.output…` reference, by `akm workflow status`, or by a human
  * reading the row.
  */
 export const WORKFLOW_EVIDENCE_TRUNCATED_MARKER = "__akm_evidence_truncated__";

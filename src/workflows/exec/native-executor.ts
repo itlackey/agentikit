@@ -9,28 +9,31 @@
  * persistence through the serialized writer queue, and `workflow_unit_*`
  * events for observability.
  *
- * Data flow (redesign addendum, R1): workflow-authored templates go through
- * the deterministic `${{ … }}` expression language (`program/expressions.ts`)
- * — but ONLY for nodes the frontend marked `templating: "expressions"` (YAML
- * program units). Classic linear markdown instructions are `"verbatim"`:
- * opaque data handed to the agent byte-exact (the stable CLI contract — a
- * literal `${{` there is content, never grammar). Expression templates are
- * parsed ONCE per step and resolved per unit against `{ params, stepOutputs,
- * item, item_index }`; `map.over` resolves as a single whole-value reference.
- * Substituted content is data, never re-scanned — the P1 `{{item}}` re-scan
- * injection class is structurally impossible. There is NO ambient key search:
- * a `steps.<id>.output.<path>` reference addresses INTO that step's recorded
+ * Data flow (workflow-format-unification, spec §2.3): there is NO
+ * interpolation language. A unit's instructions are the step's body prose
+ * BYTE-EXACT — prose is never scanned for reference syntax, so a literal `${{`
+ * in a body is content, not grammar. Data reaches the unit as ATTACHED
+ * STRUCTURED CONTEXT rather than string splices: `buildUnitPrompt`
+ * (`exec/step-work.ts`) wraps the verbatim instructions with JSON blocks for
+ * the run params, a map unit's item + index, and the artifacts named by the
+ * step's `inputs:`. Because nothing is ever substituted INTO the prose, the P1
+ * `{{item}}` re-scan injection class is structurally impossible.
+ *
+ * References survive only in the three whole-value FRONTMATTER positions the
+ * closed two-root grammar occupies (`program/expressions.ts`): `map.over`,
+ * `route.input`, and each `inputs[]` entry. They resolve ONCE per step against
+ * `{ params, stepOutputs }`. There is NO ambient key search: a
+ * `steps.<id>.output.<path>` reference addresses INTO that step's recorded
  * output explicitly.
  *
- * Step outputs (`${{ steps.<id>.output… }}`): every engine-executed step
- * journals a promoted ARTIFACT under `evidence.output` — the solo unit's
- * result/text, the collect reducer's per-item array, or the vote reducer's
- * winner — and that artifact is what the expression scope exposes
- * ({@link projectStepOutput}). The documented addressing
- * (`steps.discover.output.files`) therefore resolves against real step
- * results, never the raw evidence envelope (peer review R1). Steps completed
- * manually (no `output` key in their evidence) expose their recorded evidence
- * object as-is.
+ * Step outputs (`steps.<id>.output…`): every engine-executed step journals a
+ * promoted ARTIFACT under `evidence.output` — the solo unit's result/text, the
+ * collect reducer's per-item array, or the vote reducer's winner — and that
+ * artifact is what the reference scope exposes ({@link projectStepOutput}).
+ * The documented addressing (`steps.discover.output.files`) therefore resolves
+ * against real step results, never the raw evidence envelope (peer review R1).
+ * Steps completed manually (no `output` key in their evidence) expose their
+ * recorded evidence object as-is.
  *
  * Empty free-text outputs (peer review): a SUCCESSFUL schemaless unit that
  * returns the empty string is normalized to "no output" — {@link dispatchUnit}
@@ -42,8 +45,8 @@
  * "empty == absent", not special-cased anywhere:
  *   - a SOLO empty step promotes `output = null` (the unit's absent text ??
  *     null); a `collect` fan-out promotes `null` in that item's slot.
- *   - A downstream `${{ steps.x.output }}` of an empty solo step therefore
- *     resolves against `null` and fails LOUDLY at expression resolution
+ *   - A downstream `steps.x.output` reference to an empty solo step therefore
+ *     resolves against `null` and fails LOUDLY at reference resolution
  *     (`… resolved to null`) — a deterministic `expression_error` on BOTH
  *     surfaces, never a silent empty string.
  *   - A SCHEMA unit is unaffected by this normalization: an empty response is
