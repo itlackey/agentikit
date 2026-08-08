@@ -219,6 +219,38 @@ describe("computeStepWorkList — dispatch-input hash envelope (reviewer finding
   });
 });
 
+describe("computeStepWorkList — the frozen timeout reaches dispatch VERBATIM (no engine-side backstop)", () => {
+  // The whole timeout decision belongs to `ir/freeze.ts` (`effectiveTimeout`:
+  // unit `timeout:` → document `defaults.timeout` → `engines.<name>.timeoutMs` →
+  // the engine-kind default). By the time a plan is frozen, `timeoutMs: null`
+  // means genuinely unbounded — reached either by an author writing
+  // `timeout: none` (an explicit, documented opt-out) or by
+  // `DEFAULT_AGENT_TIMEOUT_MS`, which is itself null. The frozen IR collapses
+  // both to the same `null`, so this layer CANNOT distinguish them and must not
+  // guess: a "safety ceiling" applied here would silently cap an explicit opt
+  // out. A now-deleted `DEFAULT_UNIT_TIMEOUT_MS` constant used to claim such a
+  // ceiling existed while being referenced nowhere; these tests pin the real
+  // contract so the claim cannot come back as behavior.
+  function timeoutOf(timeoutMs: number | null): number | null {
+    const step = soloStep("Build it.");
+    (step.root as IrUnitNode).invocation = { ...SDK_INVOCATION, timeoutMs };
+    const wl = computeStepWorkList(step, { runId: "r", params: {}, stepOutputs: {}, engines: FROZEN_ENGINES });
+    if (!wl.ok) throw new Error(wl.error);
+    return wl.list.units[0]!.timeoutMs;
+  }
+
+  test("an explicit `timeout: none` (frozen null) stays unbounded — nothing re-imposes a cap", () => {
+    expect(timeoutOf(null)).toBeNull();
+  });
+
+  test("a frozen numeric timeout passes through unchanged, however large or small", () => {
+    expect(timeoutOf(5_000)).toBe(5_000);
+    expect(timeoutOf(600_000)).toBe(600_000);
+    // Above the old 600_000 "ceiling": it must NOT be clamped down to it.
+    expect(timeoutOf(3_600_000)).toBe(3_600_000);
+  });
+});
+
 describe("computeStepWorkList — purity + content-derived identity", () => {
   test("same inputs ⇒ byte-identical unit ids, input hashes, and prompts", () => {
     // SEMANTIC CHANGE (workflow-format-unification, spec §2.3): instructions

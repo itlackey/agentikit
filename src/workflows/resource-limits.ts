@@ -48,7 +48,7 @@ export const WORKFLOW_MAX_ENGINE_NAME_LENGTH = 63;
  *
  * The promoted step artifact (`evidence.output`) is deliberately NOT clipped
  * when it is built — gates judge the full artifact and downstream
- * `${{ steps.<id>.output }}` references need it intact — but a `collect`
+ * `steps.<id>.output` references need it intact — but a `collect`
  * reducer over a fan-out bounded only by {@link WORKFLOW_MAX_MAP_EXPANSION}
  * (10 000 units, each contributing up to a full unit result) would otherwise
  * write an unbounded blob into a single SQLite row. Persistence is therefore
