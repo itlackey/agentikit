@@ -42,10 +42,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     diagnostic channel only. A schema miss is *not* re-prompted — a fixed argv
     cannot answer feedback, but re-running it could deploy twice.
   - **Exit codes:** non-zero → `non_zero_exit`, wall-clock expiry → `timeout`,
-    cancellation → `aborted`, failure to start → `spawn_failed`. All are
-    pre-existing `retry.on` reasons — the failure taxonomy is unchanged. With
-    the default `on_error: fail`, a non-zero exit fails the step and the run,
-    which is what makes a `test` step a gate.
+    cancellation → `aborted`, failure to start (or a capture that never
+    completed) → `spawn_failed`. All are pre-existing `retry.on` reasons — the
+    failure taxonomy is unchanged. With the default `on_error: fail`, a non-zero
+    exit fails the step and the run, which is what makes a `test` step a gate.
+  - **A partial capture is never promoted as the artifact.** Exiting 0 does not
+    prove stdout was read to the end: a pipe can error, and a background
+    descendant holding the stdout handle open after the command leader exits
+    keeps the pipe alive past the drain deadline. Both leave a *prefix* of the
+    real output, so the unit fails `spawn_failed` — the same treatment, via the
+    same shared classifier, that the agent-dispatch path already gave the
+    identical condition.
+  - **Everything the command can spend is bounded.** Alongside the wall-clock
+    timeout: captured stdout and stderr are capped at **8 MiB each**, and the
+    engine-authored `AKM_*` context is capped at **32 000 bytes per variable /
+    64 000 bytes total**.
+
+    An over-cap command has its process group terminated and fails
+    `exec_output_limit`; the output is *not* silently truncated, because stdout
+    is the artifact and a quietly shortened artifact would flow into
+    `steps.<id>.output`, the completion gate, and the next step while every
+    status surface still reported success. An over-cap context fails
+    `exec_context_too_large` *before* the spawn, with an error naming the
+    variable, its size, the limit and what to do — replacing a bare `E2BIG` from
+    the spawn syscall that named neither the variable nor the data behind it.
+    (The context limits track the smallest supported platform ceiling — Windows'
+    32 767-character per-variable cap — so a workflow cannot pass on Linux and
+    die on a Windows runner.) Both reasons are deliberately outside the
+    `retry.on` vocabulary, alongside `exec_cwd_escape`: each is deterministic, so
+    re-dispatching could only spend the budget again. `PROGRAM_RETRY_REASONS` is
+    unchanged.
+  - **A failing command's stderr survives to a durable surface.** The unit
+    journal now keeps each failed unit's redacted diagnostic (clipped to 2000
+    characters), and the step summary carries the first failure's. For an exec
+    unit that is the difference between `akm workflow status --units` saying
+    `non_zero_exit` and it saying *why* — a command that explains itself only on
+    stderr with empty stdout previously left no diagnostic anywhere durable.
+    This is an output surface only: the unit input hash is computed from
+    plan-frozen inputs, so no completed unit re-dispatches because of it.
   - **The child's environment is an ALLOWLIST, not an inheritance.** The
     command starts from an empty environment and receives `PATH`, `HOME`, the
     identity/locale/temp/terminal variables, the Windows process-creation

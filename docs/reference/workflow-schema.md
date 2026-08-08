@@ -485,7 +485,22 @@ cannot step outside the tree its isolation promised.
   misses the schema fails as `validation_error`.
 - **stderr is never part of the artifact.** It is a diagnostic channel: the tail
   of a failed command's stderr is included (clipped, redacted) in the unit's
-  failure diagnostic and its journal row.
+  failure diagnostic and its journal row. Because a failing command's stderr is
+  frequently the *only* explanation of the failure, that diagnostic is durable —
+  it survives to `akm workflow status --units` and to the step's summary in the
+  run output, not just to the in-memory result. It is clipped to 2000 characters
+  and goes through the same redaction contract as everything else journaled.
+- **Captured output is bounded at 8 MiB per stream.** stdout and stderr are each
+  capped. See [Output limits](#output-limits) — a breach is a hard failure, never
+  a silent truncation.
+- **An incomplete capture is a failure, not a partial artifact.** Exiting 0 is
+  not on its own proof that stdout was fully read: a pipe can error, and a
+  background descendant that keeps the stdout handle open after the command
+  leader exits will hold the pipe past the drain deadline. Either way the
+  captured text is a *prefix* of the real output, so the unit fails
+  `spawn_failed` (the same reason the agent-dispatch path reports for the same
+  condition) rather than promoting the prefix. If you hit this, have the command
+  wait for its children or redirect their output.
 
 Note that a schema failure is **not** retried by the corrective-feedback loop
 that model units use. Re-prompting is meaningless to a fixed argv — the same
@@ -502,6 +517,9 @@ failure reason.
 | exceeded `timeout` | `timeout` | yes |
 | run cancelled (`Ctrl-C`, `--timeout`, budget) | `aborted` | yes |
 | binary missing / working directory unusable | `spawn_failed` | yes |
+| output capture never completed | `spawn_failed` | yes |
+| stdout/stderr past the capture limit | `exec_output_limit` | **no** (a runaway is deterministic) |
+| `AKM_*` context too large to spawn | `exec_context_too_large` | **no** (an authoring/data problem) |
 | `cwd` resolved outside its base | `exec_cwd_escape` | **no** (tampering, never transient) |
 
 A non-zero exit is an ordinary unit failure, so it flows through the ordinary
@@ -512,6 +530,31 @@ failure is recorded in the step's evidence and the completion gate decides.
 On timeout or cancellation the child's whole **process group** gets a
 SIGTERM→SIGKILL ladder, so a command that spawned its own children does not
 leave them orphaned.
+
+### Output limits
+
+akm captures the command's stdout and stderr into memory — stdout *is* the
+artifact — so each stream is capped at **8 MiB**. A command that crosses the cap
+has its **process group terminated** and the unit fails `exec_output_limit`.
+
+Nothing is truncated silently. Truncating would be the dangerous option: stdout
+flows into `steps.<id>.output`, into the completion gate's judge, and into the
+next step's declared inputs, and a quietly shortened artifact would corrupt all
+three while every status surface still said the step succeeded. Terminating is
+also the only honest option mechanically — once akm stops draining the pipe, the
+command blocks on its next write anyway, so "truncate and keep running" would
+just mean waiting out the full timeout for output that is already lost.
+
+The cap is generous (8× the 1 MiB evidence-persistence cap), so an ordinary
+build or test log is nowhere near it. If a command legitimately produces more,
+have it write to a file and print the **path**:
+
+```yaml
+        command: ["bash", "-lc", "bun run build > build.log 2>&1; echo build.log"]
+```
+
+`exec_output_limit` is deliberately outside the `retry.on` vocabulary: a runaway
+command is deterministic, so re-dispatching it can only spend the budget again.
 
 ### Context reaching the command
 
@@ -528,6 +571,52 @@ context blocks a model unit gets in its prompt:
 
 These are applied *after* your `env:` bindings, so a binding can never shadow
 them.
+
+#### Context size limits
+
+An environment variable is an operating-system object with a hard ceiling, and a
+workflow artifact has no comparable bound — so a perfectly legitimate declared
+input can grow past what **process creation itself** accepts. akm therefore
+bounds what it puts in the child's environment:
+
+| Bound | Limit |
+| --- | --- |
+| One `AKM_*` context variable | 32 000 bytes |
+| All `AKM_*` context variables combined | 64 000 bytes |
+
+Crossing either fails the unit `exec_context_too_large` **before anything is
+spawned**, with an error naming the variable, its actual size, the limit, and
+what to do. Without the check the same workflow dies inside the spawn syscall
+with a bare `E2BIG` ("argument list too long") that names neither the variable
+nor the step that produced the data.
+
+The limits are pinned to the *smallest* supported platform ceiling on purpose
+(Windows caps a single environment variable at 32 767 characters; Linux caps one
+entry at ~128 KiB). A portable workflow format should not let a workflow that
+works on your Linux laptop fail on a Windows CI runner, so both fail the same
+way at the same size.
+
+If you hit this, have the producing step emit a **reference** — a file path, an
+id, a key — instead of inline bulk data:
+
+```yaml
+  - id: extract
+    unit:
+      exec:
+        command: ["bash", "-lc", "./extract.sh > /tmp/rows.json; echo /tmp/rows.json"]
+  - id: load
+    inputs: [steps.extract.output]      # a PATH, not the rows
+    unit:
+      exec:
+        command: ["./load.sh"]
+```
+
+akm deliberately does **not** transparently spill an oversized context to a file
+and pass a path instead. That would make the `AKM_INPUTS` contract conditional
+on the size of the data — sometimes JSON, sometimes a filename — so every
+command would have to handle both shapes, and the spill file would have to be
+placed, isolated and cleaned up inside a unit's worktree. A stable contract plus
+an explicit error is the smaller, more predictable surface.
 
 ### The child's environment is an allowlist
 
