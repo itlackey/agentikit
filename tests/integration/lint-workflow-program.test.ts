@@ -25,16 +25,16 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { akmLint } from "../../src/commands/lint/index";
 import { formatLintPlain } from "../../src/output/text/lint-format";
+import { makeSandboxDir } from "../_helpers/sandbox";
 
-const tempDirs: string[] = [];
+const cleanups: Array<() => void> = [];
 
 function makeTempStash(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-lint-workflow-"));
-  tempDirs.push(dir);
+  const { dir, cleanup } = makeSandboxDir("akm-lint-workflow");
+  cleanups.push(cleanup);
   return dir;
 }
 
@@ -47,7 +47,7 @@ function writeWorkflowFile(stashDir: string, name: string, content: string): str
 }
 
 afterEach(() => {
-  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
 const CLEAN_WORKFLOW = [

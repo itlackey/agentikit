@@ -89,9 +89,10 @@ export const DEFAULT_EXEC_TIMEOUT_MS = 600_000;
  * writes continuously (`yes`, a verbose test loop) grows a string in the akm
  * process until the host runs out of memory — and the default budget gives it
  * ten minutes to do so. What the cap buys is a BOUND where there was none: the
- * worst-case simultaneous capture is (units in flight × 2 pipes × this cap)
- * rather than unbounded, and the in-flight width is itself capped by
- * {@link WORKFLOW_MAX_CONCURRENCY}.
+ * retained prefix is promoted into the unit's outcome text and every outcome is
+ * held until the step reduces, so the worst case is (units in the STEP × this
+ * cap) rather than unbounded — the step's width, not the in-flight width, is
+ * what sizes it, up to {@link WORKFLOW_MAX_MAP_EXPANSION}.
  *
  * On reaching the cap the reader switches to DRAIN-AND-DISCARD: it keeps
  * pulling from the pipe (so the child never blocks on backpressure) and stops
@@ -133,67 +134,12 @@ export const WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER = "__akm_exec_output_truncate
 
 // ── exec context environment: PER-PLATFORM spawn ceilings ────────────────────
 //
-// The `AKM_*` context check exists for ONE reason: to convert an INEVITABLE raw
-// `E2BIG` / `CreateProcess` failure into an actionable akm error naming the
-// variable, its size and the limit. It must therefore track the ceiling of the
-// platform the run is actually on. Applying the smallest supported platform's
-// ceiling everywhere would fail spawns on Linux and macOS that the OS would
-// have accepted — a tripwire, not a guard. Windows portability is guidance in
-// the docs, not something enforced on a Linux host.
-
-/**
- * Windows: max UTF-8 bytes of ONE `AKM_*` context variable.
- *
- * Source: Win32 `SetEnvironmentVariable` — "The maximum size of a user-defined
- * environment variable is 32,767 characters." The unit is UTF-16 CODE UNITS;
- * measuring UTF-8 BYTES is conservative in the right direction (an ASCII char
- * is 1 byte / 1 code unit, and every non-ASCII char costs at least as many
- * UTF-8 bytes as UTF-16 code units), so a value that passes this check is
- * always inside the real ceiling.
- */
-export const WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_WIN32 = 32_767;
-
-/**
- * Windows: max UTF-8 bytes of ALL `AKM_*` context variables combined.
- *
- * Source: `CreateProcess` `lpEnvironment` — the ANSI environment BLOCK is
- * limited to 32 767 characters, and while the Unicode block has no documented
- * hard ceiling the same order of magnitude is the practical one. 64 000 bytes
- * is akm's own contribution only; the inherited allowlist, the unit's `env:`
- * bindings and the argv all share the real block with it.
- */
-export const WORKFLOW_MAX_EXEC_CONTEXT_BYTES_WIN32 = 64_000;
-
-/**
- * POSIX (Linux, macOS, BSD): max UTF-8 bytes of ONE `AKM_*` context variable.
- *
- * Sources:
- *   - Linux caps a single `argv`/`envp` STRING at `MAX_ARG_STRLEN`, defined as
- *     `32 * PAGE_SIZE` in `include/uapi/linux/binfmts.h` — 131 072 bytes on
- *     every 4 KiB-page architecture. Crossing it is exactly the `E2BIG` this
- *     check exists to pre-empt.
- *   - macOS has no per-string cap; the binding constraint is `ARG_MAX`
- *     (`sys/syslimits.h`, 256 KiB) over argv + environ COMBINED, which the
- *     total bound below keeps akm's share well inside.
- *
- * 96 KiB = 98 304 bytes is 75% of Linux's per-string ceiling, leaving a 32 KiB
- * margin for the `AKM_*` NAME, the `=`, the NUL, and the kernel's own
- * per-string accounting. That margin is the defensible part: the guard must
- * never reject a spawn the platform would have accepted, so it sits under the
- * real ceiling rather than at it.
- */
-export const WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_POSIX = 96 * 1024;
-
-/**
- * POSIX: max UTF-8 bytes of ALL `AKM_*` context variables combined.
- *
- * 128 KiB = 131 072 bytes is HALF of macOS's 256 KiB `ARG_MAX` (the tightest
- * total budget among supported POSIX platforms), so the other half remains for
- * the argv, the inherited allowlist and the unit's `env:` bindings. Linux's own
- * total budget is far larger (`ARG_MAX` there is derived from the stack rlimit,
- * typically megabytes), so macOS is what this number is sized against.
- */
-export const WORKFLOW_MAX_EXEC_CONTEXT_BYTES_POSIX = 128 * 1024;
+// The `AKM_*` context check exists to convert an INEVITABLE raw `E2BIG` /
+// `CreateProcess` failure into an actionable akm error naming the variable, its
+// size and the limit. It therefore tracks the ceiling of the platform the run is
+// actually on: applying the smallest supported platform's ceiling everywhere
+// would fail spawns Linux and macOS would have accepted — a tripwire, not a
+// guard.
 
 /** The spawn ceilings that apply to one platform's `AKM_*` context environment. */
 export interface ExecContextLimits {
@@ -205,15 +151,24 @@ export interface ExecContextLimits {
   readonly source: string;
 }
 
+// Per-var: Win32 `SetEnvironmentVariable` caps one variable at 32 767 UTF-16
+// code units; measuring UTF-8 bytes is conservative in the right direction.
+// Total: akm's own share of the `CreateProcess` `lpEnvironment` block, which it
+// shares with the allowlist, the unit's `env:` bindings and the argv.
 const EXEC_CONTEXT_LIMITS_WIN32: ExecContextLimits = {
-  perVarBytes: WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_WIN32,
-  totalBytes: WORKFLOW_MAX_EXEC_CONTEXT_BYTES_WIN32,
+  perVarBytes: 32_767,
+  totalBytes: 64_000,
   source: "Windows caps one environment variable at 32 767 characters (SetEnvironmentVariable)",
 };
 
+// Per-var: 75% of Linux's `MAX_ARG_STRLEN` (32 pages = 131 072 bytes), leaving
+// margin for the name, `=`, NUL and the kernel's own accounting — the guard must
+// never reject a spawn the platform would have accepted.
+// Total: half of macOS's 256 KiB `ARG_MAX` (the tightest supported total), so
+// the other half remains for the argv, the allowlist and the `env:` bindings.
 const EXEC_CONTEXT_LIMITS_POSIX: ExecContextLimits = {
-  perVarBytes: WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_POSIX,
-  totalBytes: WORKFLOW_MAX_EXEC_CONTEXT_BYTES_POSIX,
+  perVarBytes: 96 * 1024,
+  totalBytes: 128 * 1024,
   source:
     "Linux caps one argv/environ string at MAX_ARG_STRLEN (32 pages = 131 072 bytes) and macOS caps argv+environ at ARG_MAX (256 KiB)",
 };
@@ -221,9 +176,6 @@ const EXEC_CONTEXT_LIMITS_POSIX: ExecContextLimits = {
 /**
  * The `AKM_*` context ceilings for THIS platform (or an explicitly named one,
  * which is how the tests drive both branches deterministically).
- *
- * Per-platform on purpose: see the section note above. A run on Linux is
- * checked against Linux's ceiling, not against Windows'.
  */
 export function execContextLimits(platform: string = process.platform): ExecContextLimits {
   return platform === "win32" ? EXEC_CONTEXT_LIMITS_WIN32 : EXEC_CONTEXT_LIMITS_POSIX;

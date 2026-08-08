@@ -23,23 +23,22 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { recognizeMatch } from "../../src/core/adapter/adapters/akm-adapter";
 import { buildFileContext, buildRenderContext, getRenderer } from "../../src/indexer/walk/file-context";
 import type { ShowResponse, WorkflowStepOrchestrationSummary } from "../../src/sources/types";
+import { makeSandboxDir } from "../_helpers/sandbox";
 
-// A plain fixture dir (not an AKM env path), so raw mkdtempSync is fine.
-const fixtureDirs: string[] = [];
+const fixtureCleanups: Array<() => void> = [];
 
 afterAll(() => {
-  for (const dir of fixtureDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  for (const cleanup of fixtureCleanups.splice(0)) cleanup();
 });
 
 /** Render `markdown` as `workflows/<name>.md` the way `akm show` would. */
 async function showWorkflow(markdown: string, name = "demo"): Promise<ShowResponse> {
-  const stashRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-show-orch-"));
-  fixtureDirs.push(stashRoot);
+  const { dir: stashRoot, cleanup } = makeSandboxDir("akm-show-orch");
+  fixtureCleanups.push(cleanup);
   const absPath = path.join(stashRoot, "workflows", `${name}.md`);
   fs.mkdirSync(path.dirname(absPath), { recursive: true });
   fs.writeFileSync(absPath, markdown, "utf8");

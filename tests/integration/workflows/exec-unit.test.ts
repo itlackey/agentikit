@@ -33,7 +33,6 @@ import type { IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/sc
 import {
   execContextLimits,
   WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER,
-  WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_WIN32,
   WORKFLOW_MAX_EXEC_OUTPUT_BYTES,
 } from "../../../src/workflows/resource-limits";
 import { requireExecutableWorkflowPlan } from "../../../src/workflows/runtime/plan-classifier";
@@ -1092,9 +1091,9 @@ describe("exec unit — retained output is BOUNDED, but a passing command is nev
     expect(read.error).toBeUndefined();
   });
 
-  test("an UNCAPPED drain is byte-for-byte what it always was", async () => {
-    // The cap is opt-in; a caller that asks for none must see the pre-existing
-    // shape, with no `overflowed`/`bytesRead`/`retainedBytes` fields at all.
+  test("an UNCAPPED drain retains everything and never reports overflow", async () => {
+    // The cap is opt-in; a caller that asks for none gets the whole text back
+    // and an explicitly not-overflowed report.
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode("hello "));
@@ -1103,7 +1102,13 @@ describe("exec unit — retained output is BOUNDED, but a passing command is nev
       },
     });
     const read = await readStream(stream);
-    expect(read).toEqual({ text: "hello world", timedOut: false });
+    expect(read).toEqual({
+      text: "hello world",
+      timedOut: false,
+      overflowed: false,
+      bytesRead: 11,
+      retainedBytes: 11,
+    });
   });
 
   test("output comfortably under the cap is unaffected", async () => {
@@ -1353,7 +1358,7 @@ describe("exec unit — the AKM_* context environment is bounded by THIS PLATFOR
     });
     expect(onWindows.ok).toBe(false);
     expect(onWindows.failureReason).toBe("exec_context_too_large");
-    expect(onWindows.error).toContain(String(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_WIN32));
+    expect(onWindows.error).toContain(String(execContextLimits("win32").perVarBytes));
     expect(onWindows.error).toContain("32 767 characters");
 
     const onLinux = await runExecUnit({

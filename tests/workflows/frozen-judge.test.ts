@@ -73,10 +73,7 @@ describe("frozen workflow judge", () => {
     );
 
     // Journaling caller supplies the exact gate-row identity for this loop.
-    await judge?.(
-      { system: "s", user: "u" },
-      { runId: OWNER.runId, stepId: "review", nodeId: "review.gate", unitId: "review.gate:l3" },
-    );
+    await judge?.({ system: "s", user: "u" }, { runId: OWNER.runId, stepId: "review", unitId: "review.gate:l3" });
     expect(request).toMatchObject({
       runId: OWNER.runId,
       stepId: "review",

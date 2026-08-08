@@ -156,6 +156,7 @@ import { LIFETIME_UNIT_CAP, scheduleUnits, UnitCapExceededError } from "./schedu
 // (this module + run-workflow.ts) on both the fresh-execution and the resume
 // path. This module dispatches; step-work.ts owns the pure decisions.
 import {
+  clip,
   computeStepWorkList,
   type GateFeedback,
   reduceEmptyStep,
@@ -909,10 +910,7 @@ export function journaledUnitResultJson(outcome: UnitOutcome): string | null {
   if (outcome.ok) return outcome.text ? JSON.stringify(outcome.text) : null;
   const parts = [outcome.error, outcome.text].filter((part): part is string => Boolean(part && part.trim()));
   if (parts.length === 0) return null;
-  const joined = parts.join("\n--- unit output ---\n");
-  return JSON.stringify(
-    joined.length > WORKFLOW_UNIT_DIAGNOSTIC_CLIP ? `${joined.slice(0, WORKFLOW_UNIT_DIAGNOSTIC_CLIP)}…` : joined,
-  );
+  return JSON.stringify(clip(parts.join("\n--- unit output ---\n"), WORKFLOW_UNIT_DIAGNOSTIC_CLIP));
 }
 
 /** Journal one dispatch attempt: insert row, events, dispatch, finish row. */
@@ -1166,22 +1164,20 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
   try {
     if (request.schema) {
       const schema = request.schema;
-      const isExec = request.exec !== undefined;
       const structured = await runStructured<unknown>({
         dispatch: dispatchOnce,
-        // An exec unit's stdout must be EXACTLY one JSON value. The default
-        // embedded-JSON scan (fences, think-blocks, "find the JSON inside the
-        // prose") is right for an LLM and wrong for a command: it would happily
-        // pluck a JSON fragment out of unrelated log noise and promote it as
-        // the typed artifact. A command that claims a schema prints JSON.
-        ...(isExec ? { parse: parseExecJson } : {}),
-        // ...and it gets exactly ONE attempt. `runStructured`'s corrective
-        // retry re-dispatches with feedback, which for a command means running
-        // a SIDE-EFFECTING process a second time with byte-identical argv — it
-        // cannot produce different output, and it can produce a second
-        // deployment. Declared `retry:` still applies (the executor's own loop),
-        // because that is a policy the author opted into per failure reason.
-        ...(isExec ? { maxAttempts: 1 } : {}),
+        // A command is not re-promptable. Its stdout must be EXACTLY one JSON
+        // value: the default embedded-JSON scan (fences, think-blocks, "find the
+        // JSON inside the prose") is right for an LLM and wrong for a command,
+        // where it would pluck a JSON fragment out of unrelated log noise and
+        // promote it as the typed artifact. And it gets exactly ONE attempt —
+        // `runStructured`'s corrective retry re-dispatches with feedback, which
+        // for a command means running a SIDE-EFFECTING process a second time
+        // with byte-identical argv: it cannot produce different output, and it
+        // can produce a second deployment. Declared `retry:` still applies (the
+        // executor's own loop), because that is a policy the author opted into
+        // per failure reason.
+        ...(request.exec ? { parse: parseExecJson, maxAttempts: 1 } : {}),
         validate: (candidate) => {
           const errors = validateJsonSchemaSubset(candidate, schema);
           return errors.length === 0 ? { ok: true, value: candidate } : { ok: false, errors };

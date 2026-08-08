@@ -23,31 +23,11 @@
  *     The identity is threaded in from the caller that writes the row
  *     ({@link SummaryJudge}'s `identity` argument); it is never synthesized here.
  *
- * ── Why the judge dispatch receives NO `env` bindings ────────────────────────
- *
- * Deliberate, not an oversight:
- *
- *   - There is nothing authored to thread. A gate judge is an {@link IrInvocation}
- *     (`IrGateNode.judge`) — `engine` / `model` / `timeoutMs` / `llm` and nothing
- *     else. `env:` exists only on `IrUnitNode`, and the v3 decoder rejects unknown
- *     invocation keys, so no workflow can declare env for its judge.
- *   - A step's unit `env` is scoped to the WORK, not to the verifier. The author
- *     granted those secrets to the unit; injecting them into the judge child would
- *     widen the blast radius to a process that was never granted them, and would
- *     escape the per-binding audit trail `resolveEnvBinding` emits for units.
- *   - Judges that legitimately need a credential already get one WITHOUT `env`: an
- *     llm judge materializes `engine.credential.names` out of `process.env`
- *     ({@link materialize}), and an agent judge inherits its harness's
- *     `envPassthrough` allowlist in the spawned child. There is no unmet need.
- *   - Passing env to an llm judge could not work anyway: `defaultUnitDispatcher`
- *     fails an llm dispatch that carries env (`env_unsupported`) because there is
- *     no child process to inject into — a gate that can never verify.
- *
- * Absent env does NOT weaken redaction: the sensitive-value set below still
- * covers the judge engine's credential values and its unsafe passthrough values,
- * which are exactly the secrets a judge child could echo. Unit-`env` secrets are
- * already scrubbed out of the promoted artifact by the unit path before the
- * artifact summary is ever handed to the judge.
+ * A judge dispatch carries NO `env` bindings: a gate judge is an
+ * {@link IrInvocation} (`IrGateNode.judge`), which has no `env` key, so there is
+ * nothing authored to thread — and a step's unit `env` is scoped to the WORK,
+ * not to the verifier. Redaction is unaffected: the sensitive-value set below
+ * still covers the judge engine's credential and unsafe passthrough values.
  *
  * @module workflows/exec/frozen-judge
  */
@@ -73,25 +53,19 @@ export interface JudgeOwner {
 }
 
 /** The gate's node id — identical to what `journalGateEvaluationStart` writes. */
-function gateNodeId(stepId: string): string {
+export function gateNodeId(stepId: string): string {
   return `${stepId}.gate`;
 }
 
 /**
  * Identity for one judge dispatch: the journaling caller's exact row identity
- * when it supplied one, else the owning run/step with the gate's node id. Either
- * way the request names the REAL run — never a synthetic `"gate"` placeholder,
- * which made every judge dispatch indistinguishable from every other one.
+ * when it supplied one, else the owning run/step with the gate's node id as the
+ * unit id. Either way the request names the REAL run — never a synthetic
+ * `"gate"` placeholder, which made every judge dispatch indistinguishable from
+ * every other one.
  */
 function dispatchIdentity(owner: JudgeOwner, identity: JudgeCallIdentity | undefined): JudgeCallIdentity {
-  return (
-    identity ?? {
-      runId: owner.runId,
-      stepId: owner.stepId,
-      nodeId: gateNodeId(owner.stepId),
-      unitId: gateNodeId(owner.stepId),
-    }
-  );
+  return identity ?? { ...owner, unitId: gateNodeId(owner.stepId) };
 }
 
 /** Build a gate judge from a v3 catalog entry without consulting live config. */
@@ -127,7 +101,7 @@ export function frozenSummaryJudge(
         runId: id.runId,
         stepId: id.stepId,
         unitId: id.unitId,
-        nodeId: id.nodeId,
+        nodeId: gateNodeId(id.stepId),
         prompt: user,
         systemPrompt: system,
         engine,

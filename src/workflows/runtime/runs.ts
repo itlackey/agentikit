@@ -30,7 +30,7 @@ import { collectWorkflowWarnings } from "../ir/compile";
 import { compileResolveFreezeWorkflow } from "../ir/freeze";
 import { materializeWorkflowParameterFlags, validateWorkflowParams, type WorkflowParameterFlag } from "../ir/params";
 import { canonicalPlanJson, computePlanHash } from "../ir/plan-hash";
-import { decodeWorkflowPlanV3, type FrozenEngineSnapshot, WORKFLOW_IR_VERSION } from "../ir/schema";
+import { decodeWorkflowPlanV3, type FrozenEngineSnapshot, type IrRuntimeKind, WORKFLOW_IR_VERSION } from "../ir/schema";
 import {
   utf8Bytes,
   WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS,
@@ -101,7 +101,10 @@ export interface WorkflowUnitDiagnostic {
   sessionId: string | null;
   /**
    * The row's `result_json` rendered as text, clipped to
-   * {@link UNIT_DIAGNOSTIC_CLIP} chars. Null when the row journaled nothing.
+   * {@link WORKFLOW_UNIT_DIAGNOSTIC_CLIP} chars — the same bound the dispatch
+   * path clips with before journaling. Re-clipped here regardless, because rows
+   * written by other producers (a driver-reported completion, an older akm)
+   * carry whatever they carry. Null when the row journaled nothing.
    *
    * For a COMPLETED unit that is its result. For a FAILED unit it is the
    * dispatch diagnostic the journal kept — already scrubbed by the dispatch
@@ -130,20 +133,20 @@ export interface WorkflowUnitDiagnostic {
   claimExpiresAt: string | null;
   engine: string | null;
   /** Journaled resolved runtime kind for a frozen-engine unit. */
-  runtimeKind: "llm" | "agent" | "sdk" | "exec" | null;
+  runtimeKind: IrRuntimeKind | null;
   platform: string | null;
 }
 
 /**
- * Clip bound for a unit's `result_json` on the `--units` diagnostic surface.
- *
- * The SAME constant the dispatch path clips with before journaling
- * (`exec/native-executor.ts`), so a diagnostic is never stored larger than the
- * surface that renders it. Re-clipped here regardless, because rows written by
- * other producers (a driver-reported completion, an older akm) carry whatever
- * they carry.
+ * Membership test for the journaled `runner` column, which is an untyped string.
+ * The `Record<IrRuntimeKind, …>` is exhaustiveness-checked, so a new runtime
+ * kind cannot be added to the union without being accepted here too.
  */
-const UNIT_DIAGNOSTIC_CLIP = WORKFLOW_UNIT_DIAGNOSTIC_CLIP;
+const IR_RUNTIME_KINDS: Record<IrRuntimeKind, true> = { llm: true, agent: true, sdk: true, exec: true };
+
+function runtimeKindOf(runner: string | null): IrRuntimeKind | null {
+  return runner !== null && Object.hasOwn(IR_RUNTIME_KINDS, runner) ? (runner as IrRuntimeKind) : null;
+}
 
 function toUnitDiagnostic(
   row: WorkflowRunUnitRow,
@@ -163,7 +166,8 @@ function toUnitDiagnostic(
     } catch {
       /* leave the raw journaled text */
     }
-    diagnostic = text.length > UNIT_DIAGNOSTIC_CLIP ? `${text.slice(0, UNIT_DIAGNOSTIC_CLIP)}…` : text;
+    diagnostic =
+      text.length > WORKFLOW_UNIT_DIAGNOSTIC_CLIP ? `${text.slice(0, WORKFLOW_UNIT_DIAGNOSTIC_CLIP)}…` : text;
   }
   return {
     unitId: row.unit_id,
@@ -183,15 +187,7 @@ function toUnitDiagnostic(
     claimHolder: row.claim_holder,
     claimExpiresAt: row.claim_expires_at,
     engine: row.engine ?? null,
-    // `exec` units carry no engine by construction (they spawn a command), so
-    // the engine-presence guard that validates the three ENGINE runners must
-    // not be applied to them — it would erase the only kind label they have.
-    runtimeKind:
-      row.runner === "exec"
-        ? "exec"
-        : row.engine && (row.runner === "llm" || row.runner === "agent" || row.runner === "sdk")
-          ? row.runner
-          : null,
+    runtimeKind: runtimeKindOf(row.runner),
     platform: plannedEngine?.kind === "agent" ? plannedEngine.platform : null,
   };
 }

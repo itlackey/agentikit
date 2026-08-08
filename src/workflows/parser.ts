@@ -172,38 +172,6 @@ interface RouteCheck {
   defaultTarget?: { stepId: string; line: number };
 }
 
-/**
- * Most parse diagnostics one `parseWorkflow` call reports. The resource limits
- * (`./resource-limits.ts`) bound the INPUT — 256 steps, 64 params, 1 MiB of
- * source — but nothing bounded the OUTPUT, so one badly-malformed large
- * workflow could emit hundreds of lines and bury the first real problem under
- * its own downstream fallout. Errors are sorted by line, so the FIRST ones are
- * the ones to fix first; anything past this cap is replaced by an explicit
- * trailer (see {@link capReportedErrors}) — truncation is never silent, and
- * never changes the fact that the document failed.
- */
-export const WORKFLOW_MAX_REPORTED_ERRORS = 50;
-
-/**
- * The reporting boundary for parse diagnostics: keep the first
- * {@link WORKFLOW_MAX_REPORTED_ERRORS} (already line-sorted) and append one
- * unmistakable trailer naming how many were dropped. `ok: false` is unaffected
- * — a capped list is still a failed parse.
- */
-function capReportedErrors(errors: WorkflowError[]): WorkflowError[] {
-  if (errors.length <= WORKFLOW_MAX_REPORTED_ERRORS) return errors;
-  const kept = errors.slice(0, WORKFLOW_MAX_REPORTED_ERRORS);
-  const hidden = errors.length - kept.length;
-  const lastLine = kept[kept.length - 1]?.line ?? 1;
-  kept.push({
-    line: lastLine,
-    message:
-      `... ${hidden} more error${hidden === 1 ? "" : "s"} not shown (${errors.length} total; reporting is capped ` +
-      `at ${WORKFLOW_MAX_REPORTED_ERRORS}). Fix the errors above and re-run to see the rest.`,
-  });
-  return kept;
-}
-
 export function parseWorkflow(markdown: string, source: { path: string }): WorkflowParseResult {
   if (utf8Bytes(markdown) > WORKFLOW_MAX_SOURCE_BYTES) {
     return {
@@ -255,7 +223,7 @@ export function parseWorkflow(markdown: string, source: { path: string }): Workf
       message: yamlErrorMessage(problem.message),
     });
   }
-  if (errors.length > 0) return { ok: false, errors: capReportedErrors(errors) };
+  if (errors.length > 0) return { ok: false, errors };
 
   let root: unknown;
   try {
@@ -376,7 +344,7 @@ export function parseWorkflow(markdown: string, source: { path: string }): Workf
 
   runSemanticChecks(draft, root, frontmatterEndLine, errors);
 
-  if (errors.length > 0) return { ok: false, errors: capReportedErrors(sortErrors(errors)) };
+  if (errors.length > 0) return { ok: false, errors: sortErrors(errors) };
   return { ok: true, document: draft };
 }
 

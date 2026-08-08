@@ -67,6 +67,7 @@ import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
 import { completeWorkflowStep, type SummaryValidationFailure, type WorkflowNextResult } from "../runtime/runs";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
 import { type JudgeCallIdentity, parseJudgeVerdict, type SummaryJudge } from "../validate-summary";
+import { gateNodeId } from "./frozen-judge";
 import { enqueueUnitWrite } from "./unit-writer";
 
 /** How much raw unit output is retained in step evidence (full text lives on the unit row). */
@@ -332,26 +333,33 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
   // `defaults.timeout` → DEFAULT_EXEC_TIMEOUT_MS.
   const timeoutMs = frozenExec ? frozenExec.timeoutMs : (frozenInvocation?.timeoutMs ?? null);
 
-  const units: StepWorkUnit[] = items.map((item, index) =>
-    buildStepWorkUnit(
-      {
-        plan,
-        input,
-        template,
-        isFanOut,
-        gateLoop,
-        resolvedInputs,
-        runner,
-        timeoutMs,
-        ...(frozenEngine ? { frozenEngine } : {}),
-        ...(frozenInvocation ? { frozenInvocation } : {}),
-        ...(frozenExec ? { frozenExec } : {}),
-      },
-      unitIds[index]!,
-      item,
-      index,
-    ),
-  );
+  // Step-constant exec context: `AKM_PARAMS` / `AKM_INPUTS` depend only on
+  // step-level values, so they are serialized ONCE here and shared by every
+  // unit. Building them inside the per-unit loop deep-cloned and re-stringified
+  // identical data per unit, and retained one distinct copy per unit until the
+  // step reduced.
+  const execParamsJson = frozenExec ? (canonicalJson(input.params) ?? "{}") : undefined;
+  const execInputsJson =
+    frozenExec && resolvedInputs.length > 0
+      ? (canonicalJson(Object.fromEntries(resolvedInputs.map((entry) => [entry.reference, entry.value]))) ?? "{}")
+      : undefined;
+
+  const ctx: StepWorkUnitContext = {
+    plan,
+    input,
+    template,
+    isFanOut,
+    gateLoop,
+    resolvedInputs,
+    runner,
+    timeoutMs,
+    ...(frozenEngine ? { frozenEngine } : {}),
+    ...(frozenInvocation ? { frozenInvocation } : {}),
+    ...(frozenExec ? { frozenExec } : {}),
+    ...(execParamsJson !== undefined ? { execParamsJson } : {}),
+    ...(execInputsJson !== undefined ? { execInputsJson } : {}),
+  };
+  const units: StepWorkUnit[] = items.map((item, index) => buildStepWorkUnit(ctx, unitIds[index]!, item, index));
 
   const concurrency = root.kind === "map" ? root.concurrency : 1;
   return {
@@ -373,6 +381,9 @@ interface StepWorkUnitContext {
   frozenEngine?: FrozenEngineSnapshot;
   frozenInvocation?: IrInvocation;
   frozenExec?: IrExecSpec;
+  /** Step-constant `AKM_PARAMS` / `AKM_INPUTS` payloads, serialized once (exec steps only). */
+  execParamsJson?: string;
+  execInputsJson?: string;
 }
 
 /**
@@ -397,23 +408,25 @@ function buildStepWorkUnit(ctx: StepWorkUnitContext, unitId: string, item: unkno
   // it is a map unit, and the artifacts named by its step's `inputs:`.
   // Instructions reach the unit byte-exact — never interpolated.
   //
-  // An EXEC unit consumes no prompt (there is no model to read it), but it is
-  // still assembled here so the two paths stay one code path; the exec
-  // dispatcher simply ignores it. The same context reaches an exec unit through
-  // {@link buildExecContextEnv} instead — attached as environment, never
-  // spliced into argv, which is the argv-array analogue of "data is attached
-  // context, not string splices".
-  const prompt = buildUnitPrompt({
-    runId: input.runId,
-    stepId: plan.stepId,
-    unitId,
-    params: input.params,
-    ...(isFanOut ? { item, itemIndex: index } : {}),
-    ...(resolvedInputs.length > 0 ? { inputs: resolvedInputs } : {}),
-    ...(input.gateFeedback ? { gateFeedback: input.gateFeedback } : {}),
-    ...(template.schema ? { schema: template.schema } : {}),
-    instructions: template.instructions,
-  });
+  // An EXEC unit gets NO prompt: there is no model to read one, the exec
+  // dispatch branch returns before ever touching `request.prompt`, and the input
+  // hash is built from `template.instructions`, not from the assembled string.
+  // Its context reaches the child through {@link buildExecContextEnv} instead —
+  // attached as environment, never spliced into argv, which is the argv-array
+  // analogue of "data is attached context, not string splices".
+  const prompt = frozenExec
+    ? ""
+    : buildUnitPrompt({
+        runId: input.runId,
+        stepId: plan.stepId,
+        unitId,
+        params: input.params,
+        ...(isFanOut ? { item, itemIndex: index } : {}),
+        ...(resolvedInputs.length > 0 ? { inputs: resolvedInputs } : {}),
+        ...(input.gateFeedback ? { gateFeedback: input.gateFeedback } : {}),
+        ...(template.schema ? { schema: template.schema } : {}),
+        instructions: template.instructions,
+      });
   const inputHash = computeUnitInputHash(ctx, item);
   const resolved: StepWorkUnit["resolved"] = { ok: true, prompt, inputHash };
 
@@ -482,20 +495,19 @@ function buildExecContextEnv(args: {
   index: number;
 }): Record<string, string> {
   const { ctx, unitId, item, index } = args;
+  // The step-constant payloads were serialized once by `computeStepWorkList`;
+  // only the item and the ids vary per unit.
   const env: Record<string, string> = {
     AKM_RUN_ID: ctx.input.runId,
     AKM_STEP_ID: ctx.plan.stepId,
     AKM_UNIT_ID: unitId,
-    AKM_PARAMS: canonicalJson(ctx.input.params) ?? "{}",
+    AKM_PARAMS: ctx.execParamsJson ?? "{}",
   };
   if (ctx.isFanOut) {
     env.AKM_ITEM = canonicalJson(item) ?? "null";
     env.AKM_ITEM_INDEX = String(index);
   }
-  if (ctx.resolvedInputs.length > 0) {
-    env.AKM_INPUTS =
-      canonicalJson(Object.fromEntries(ctx.resolvedInputs.map((entry) => [entry.reference, entry.value]))) ?? "{}";
-  }
+  if (ctx.execInputsJson !== undefined) env.AKM_INPUTS = ctx.execInputsJson;
   return env;
 }
 
@@ -824,17 +836,16 @@ export interface ExecutedStepOutcome {
  * summary into a log) clipped to {@link WORKFLOW_UNIT_DIAGNOSTIC_CLIP} — the same
  * bound the journal and `status --units` use.
  *
- * Reproducible on both surfaces: the diagnostic is journaled on the unit row and
- * `unitOutcomeFromRow` restores it as `error`, so a resume that rebuilds its
- * outcomes from the journal composes the SAME summary a live dispatch did.
+ * Reproducible on both surfaces: a live dispatch carries the diagnostic as
+ * `error`; a unit rehydrated from the journal carries it as `text` (the column
+ * `journaledUnitResultJson` wrote it to), so the fallback below composes the
+ * SAME summary from either.
  */
 function firstFailureDiagnostic(failed: UnitOutcome[]): string {
-  const first = failed.find((u) => u.error?.trim());
-  if (!first?.error) return "";
-  const text = first.error.trim();
-  const clipped =
-    text.length > WORKFLOW_UNIT_DIAGNOSTIC_CLIP ? `${text.slice(0, WORKFLOW_UNIT_DIAGNOSTIC_CLIP)}…` : text;
-  return ` First failure diagnostic (${first.unitId}): ${clipped}`;
+  const first = failed.find((u) => (u.error ?? u.text)?.trim());
+  if (!first) return "";
+  const diagnostic = (first.error ?? first.text ?? "").trim();
+  return ` First failure diagnostic (${first.unitId}): ${clip(diagnostic, WORKFLOW_UNIT_DIAGNOSTIC_CLIP)}`;
 }
 
 export function reduceStepOutcomes(
@@ -905,12 +916,11 @@ export function reduceEmptyStep(plan: IrStepPlan, reducer: IrMapReducer): Execut
  * failed-row branch keeps the mapping TOTAL, so any reduction driven off the
  * journal yields the same outcome the live dispatch produced. A completed row's
  * text unit journals its output as a JSON string; a schema unit journals the
- * validated structure. A failed row carries its `failure_reason`; the journaled
- * diagnostic is surfaced as BOTH `text` (unchanged) and `error`, because
- * `journaledUnitResultJson` (native-executor.ts) writes the failure's `error`
- * into that column. Recovering it as `error` is what keeps the step summary
- * byte-identical between a live dispatch and a resume that rebuilt its outcomes
- * from the journal.
+ * validated structure. A failed row carries its `failure_reason` plus whatever
+ * `journaledUnitResultJson` (native-executor.ts) wrote to `result_json` —
+ * surfaced as `text`, its historical meaning. {@link firstFailureDiagnostic} is
+ * the one consumer that wants it as a diagnostic and falls back to `text`, so
+ * the step summary stays the same on both surfaces.
  */
 export function unitOutcomeFromRow(unitId: string, row: WorkflowRunUnitRow, hasSchema: boolean): UnitOutcome {
   let parsed: unknown;
@@ -938,7 +948,7 @@ export function unitOutcomeFromRow(unitId: string, row: WorkflowRunUnitRow, hasS
     unitId,
     ok: false,
     failureReason: row.failure_reason ?? "reported_failure",
-    ...(typeof parsed === "string" ? { text: parsed, error: parsed } : {}),
+    ...(typeof parsed === "string" ? { text: parsed } : {}),
     ...(row.tokens !== null ? { tokens: row.tokens } : {}),
   };
 }
@@ -1112,7 +1122,7 @@ export async function journalGateEvaluationStart(gate: GateUnitRef): Promise<voi
         runId: gate.runId,
         unitId,
         stepId: gate.stepId,
-        nodeId: `${gate.stepId}.gate`,
+        nodeId: gateNodeId(gate.stepId),
         parentUnitId: null,
         // Marks the row as a judge call, NOT a dispatch: the budget/lifetime
         // seed in `driveRun` skips these so resume accounting matches live.
@@ -1582,12 +1592,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
         // the one place that computes it — instead of being re-derived (or, as
         // before, synthesized as a constant "gate"). Both ids come from the same
         // helpers `journalGateEvaluationStart/Finish` use.
-        const identity: JudgeCallIdentity = {
-          runId,
-          stepId,
-          nodeId: `${stepId}.gate`,
-          unitId: gateUnitId(stepId, gateLoop),
-        };
+        const identity: JudgeCallIdentity = { runId, stepId, unitId: gateUnitId(stepId, gateLoop) };
         let raw: string;
         try {
           raw = await innerJudge(prompt, identity);
@@ -1668,6 +1673,7 @@ function safeJson(value: unknown): string {
   }
 }
 
-function clip(text: string, max: number): string {
+/** Truncate to `max` chars with an ellipsis marker. */
+export function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }

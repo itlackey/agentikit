@@ -12,6 +12,7 @@ import { parseReference } from "../program/expressions";
 import { PROGRAM_PARAM_NAME_PATTERN, PROGRAM_RETRY_REASONS, PROGRAM_STEP_ID_PATTERN } from "../program/schema";
 import {
   jsonBytes,
+  utf8Bytes,
   WORKFLOW_ENGINE_NAME_PATTERN,
   WORKFLOW_ENV_VAR_NAME_PATTERN,
   WORKFLOW_MAX_CONCURRENCY,
@@ -496,7 +497,7 @@ function validateNode(
   )
     fail(`unit ${node.id} is invalid`);
   if (node.id !== stepId && node.id !== `${stepId}.unit`) fail(`unit ${node.id} does not belong to step ${stepId}`);
-  if (Buffer.byteLength(node.instructions, "utf8") > WORKFLOW_MAX_INSTRUCTION_BYTES)
+  if (utf8Bytes(node.instructions) > WORKFLOW_MAX_INSTRUCTION_BYTES)
     fail(`unit ${node.id} instructions exceed the 256 KiB resource limit`);
   if (node.schema !== undefined) validateSchema(node.schema, `unit ${node.id} schema`);
   validateRetry(node.retry, node.id);
@@ -531,10 +532,7 @@ function validateExecSpec(value: unknown, label: string): void {
     !Array.isArray(command) ||
     command.length === 0 ||
     command.length > WORKFLOW_MAX_EXEC_ARGV ||
-    !command.every(
-      (arg) =>
-        typeof arg === "string" && arg.length > 0 && Buffer.byteLength(arg, "utf8") <= WORKFLOW_MAX_EXEC_ARG_BYTES,
-    )
+    !command.every((arg) => typeof arg === "string" && arg.length > 0 && utf8Bytes(arg) <= WORKFLOW_MAX_EXEC_ARG_BYTES)
   ) {
     fail(`${label}.command must be an argv array of 1 through ${WORKFLOW_MAX_EXEC_ARGV} bounded non-empty strings`);
   }

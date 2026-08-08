@@ -35,7 +35,7 @@
  * ## Totality and bounds
  *
  * Evaluation is TOTAL and BOUNDED. Recursion is capped at
- * {@link MAX_VALIDATION_DEPTH} and the whole evaluation shares a single
+ * {@link MAX_DEFINITION_DEPTH} and the whole evaluation shares a single
  * node-visit budget ({@link MAX_VALIDATION_NODES}); exhausting either emits an
  * explicit error rather than silently accepting the value — the subset never
  * fails open. The schema tree is finite and acyclic (no `$ref`), so combinator
@@ -55,17 +55,22 @@
  * change {@link validateJsonSchemaSubset}'s permissive evaluation semantics.
  */
 
-/** Deepest schema nesting {@link validateJsonSchemaSubset} evaluates. */
-const MAX_VALIDATION_DEPTH = 64;
+/**
+ * Deepest schema nesting either walk descends into — {@link
+ * validateJsonSchemaSubset} evaluating a value, and {@link
+ * checkJsonSchemaDefinition} checking the schema object itself. Both walk the
+ * same schema tree, so they share one bound.
+ */
+const MAX_DEFINITION_DEPTH = 64;
 
 /** Total (schema node × value node) visits one {@link validateJsonSchemaSubset} call may make. */
 const MAX_VALIDATION_NODES = 100_000;
 
 export function validateJsonSchemaSubset(value: unknown, schema: Record<string, unknown>): string[] {
   const errors: string[] = [];
-  const budget = { nodes: MAX_VALIDATION_NODES, exceeded: false };
+  const budget = { nodes: MAX_VALIDATION_NODES };
   validateNode(value, schema, "$", { errors, budget, depth: 0 });
-  if (budget.exceeded) {
+  if (budget.nodes < 0) {
     errors.push(`$: schema evaluation exceeded the limit of ${MAX_VALIDATION_NODES} checks and was stopped`);
   }
   return errors;
@@ -174,8 +179,6 @@ const UNSUPPORTED_KEYWORD_HINTS = new Map<string, string>([
   ["else", `use "anyOf"/"oneOf" to express the alternatives directly`],
   ["uniqueItems", `drop the constraint, or validate uniqueness in the step's gate rubric`],
 ]);
-
-const MAX_DEFINITION_DEPTH = 64;
 
 /**
  * Check a JSON Schema DEFINITION (the schema object itself, not a value)
@@ -420,14 +423,14 @@ function matchesType(actual: JsonTypeName, expected: string): boolean {
  */
 interface EvalCtx {
   errors: string[];
-  budget: { nodes: number; exceeded: boolean };
+  budget: { nodes: number };
   depth: number;
 }
 
 /** Evaluate `schema` against `value` in a scratch error list, sharing the caller's budget. */
 function branchErrors(value: unknown, schema: Record<string, unknown>, path: string, ctx: EvalCtx): string[] {
   const errors: string[] = [];
-  validateNode(value, schema, path, { errors, budget: ctx.budget, depth: ctx.depth + 1 });
+  validateNode(value, schema, path, { ...ctx, errors, depth: ctx.depth + 1 });
   return errors;
 }
 
@@ -480,17 +483,13 @@ function validateCombinators(value: unknown, schema: Record<string, unknown>, pa
 
 function validateNode(value: unknown, schema: Record<string, unknown>, path: string, ctx: EvalCtx): void {
   const errors = ctx.errors;
-  if (ctx.depth > MAX_VALIDATION_DEPTH) {
-    errors.push(`${path}: schema nesting exceeds the depth limit of ${MAX_VALIDATION_DEPTH}`);
+  if (ctx.depth > MAX_DEFINITION_DEPTH) {
+    errors.push(`${path}: schema nesting exceeds the depth limit of ${MAX_DEFINITION_DEPTH}`);
     return;
   }
-  if (ctx.budget.nodes <= 0) {
-    // Fail CLOSED: a truncated evaluation never returns "valid" — the wrapper
-    // turns the exhausted budget into a top-level error.
-    ctx.budget.exceeded = true;
-    return;
-  }
-  ctx.budget.nodes--;
+  // Fail CLOSED: a truncated evaluation never returns "valid" — the counter
+  // going negative is what the wrapper turns into a top-level error.
+  if (--ctx.budget.nodes < 0) return;
 
   const actual = typeOf(value);
 
@@ -549,8 +548,7 @@ function validateNode(value: unknown, schema: Record<string, unknown>, path: str
     if (items && typeof items === "object" && !Array.isArray(items)) {
       value.forEach((element, index) => {
         validateNode(element, items as Record<string, unknown>, `${path}[${index}]`, {
-          errors,
-          budget: ctx.budget,
+          ...ctx,
           depth: ctx.depth + 1,
         });
       });
@@ -581,8 +579,7 @@ function validateNode(value: unknown, schema: Record<string, unknown>, path: str
         if (!Object.hasOwn(record, key)) continue;
         if (propSchema && typeof propSchema === "object" && !Array.isArray(propSchema)) {
           validateNode(record[key], propSchema as Record<string, unknown>, `${path}.${key}`, {
-            errors,
-            budget: ctx.budget,
+            ...ctx,
             depth: ctx.depth + 1,
           });
         }

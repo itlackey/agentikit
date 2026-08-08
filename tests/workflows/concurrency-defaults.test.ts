@@ -291,8 +291,11 @@ describe("LLM engine concurrency default (per endpoint)", () => {
     expect(isLoopbackEndpoint("http://127.0.0.1:8080/v1")).toBe(true);
     expect(isLoopbackEndpoint("http://127.0.0.2:11434/v1")).toBe(true);
     expect(isLoopbackEndpoint("http://[::1]:8080/v1")).toBe(true);
-    expect(isLoopbackEndpoint("http://[::ffff:127.0.0.1]:8080/v1")).toBe(true);
     expect(isLoopbackEndpoint("http://lmstudio.localhost/v1")).toBe(true);
+    // WHATWG `URL` re-serializes `[::ffff:127.0.0.1]` to the hex spelling
+    // `[::ffff:7f00:1]`, so the endpoint path only ever sees the hex form —
+    // both are recognized, or a genuinely local server would freeze at width 4.
+    expect(isLoopbackEndpoint("http://[::ffff:127.0.0.1]:8080/v1")).toBe(true);
     expect(isLoopbackEndpoint("https://api.example.test/v1")).toBe(false);
     expect(isLoopbackEndpoint("https://127.0.0.1.evil.com/v1")).toBe(false);
     // Unknown shapes fail SAFE (treated as local): guessing "remote" would
@@ -328,13 +331,17 @@ describe("loopback host classification — the whole loopback space, and its bou
     ["::1", true],
     ["[::1]", true],
     ["0:0:0:0:0:0:0:1", true],
-    // IPv4-mapped, in both the dotted spelling an author writes and the hex
-    // one WHATWG `URL` re-serializes it to.
+    // IPv4-mapped, in the dotted spelling an author actually writes.
     ["::ffff:127.0.0.1", true],
-    ["::ffff:7f00:1", true],
     ["::ffff:127.0.0.2", true],
-    // Deprecated IPv4-compatible form.
-    ["::127.0.0.1", true],
+    // The hex IPv4-mapped spelling, which is what `URL` hands us for the dotted
+    // one — recognized only for 127.x, so a mapped public address stays remote.
+    ["::ffff:7f00:1", true],
+    ["::ffff:0808:0808", false],
+    // NOT recognized: the deprecated IPv4-compatible form. Nobody spells a
+    // model-server endpoint this way; the remedy is
+    // `engines.<name>.concurrency: 1`.
+    ["::127.0.0.1", false],
     // ── the unspecified addresses: a CLIENT connecting there reaches local ──
     ["0.0.0.0", true],
     ["::", true],
@@ -372,8 +379,9 @@ describe("loopback host classification — the whole loopback space, and its bou
     ["::ffff:8.8.8.8", false],
     // Malformed IPv6 (two `::` runs) is not an address, so it is not loopback.
     ["1::2::3", false],
-    // A dotted quad may only be the LAST component of an IPv6 address.
+    // Five dotted parts is not a quad, so the mapped form does not match.
     ["::ffff:127.0.0.1.5", false],
+    ["::ffff:127.0.0.256", false],
   ])("isLoopbackHost(%p) === %p", (host, expected) => {
     expect(isLoopbackHost(host as string)).toBe(expected);
   });

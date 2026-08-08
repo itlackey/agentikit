@@ -4,93 +4,57 @@
 
 /**
  * The `exec` unit runner — the ONE place a frozen workflow spawns a shell
- * command as a unit.
+ * command as a unit. The invariants it exists to hold:
  *
- * ## Why argv, never a shell string
+ *   - ARGV, NEVER A SHELL STRING. {@link IrExecSpec.command} is an argv ARRAY
+ *     and the format has no shell-string spelling at all; the child is spawned
+ *     directly, so `;`, `|`, `&&`, `$(…)`, backticks, `>` and `*` are inert
+ *     literal argument BYTES. A workflow that wants a pipeline names the
+ *     interpreter itself (`["bash", "-lc", "a | b"]`), visibly in frontmatter.
+ *   - NON-BLOCKING. Everything on this path is async. A synchronous call here
+ *     blocks the event loop and with it every concurrently-scheduled unit, the
+ *     run's lease heartbeat, and abort handling.
+ *   - NO LEAKED CHILDREN. {@link runManagedSubprocess} spawns DETACHED and runs
+ *     a SIGTERM→SIGKILL ladder against the whole process group, so `--timeout`
+ *     and Ctrl-C really do stop a running command and its descendants.
+ *   - CONTAINMENT. `exec.cwd` is relative and `..`-free by construction (parser
+ *     and frozen-plan decoder), which is necessary but not sufficient: a
+ *     subdirectory can be a symlink. The RESOLVED path is therefore re-checked
+ *     against the RESOLVED base immediately before spawning.
+ *   - BOUNDED SPEND. A command is arbitrary code with no resource discipline of
+ *     its own, so each resource it spends on akm's behalf has a ceiling in
+ *     `workflows/resource-limits.ts`: wall clock ({@link DEFAULT_EXEC_TIMEOUT_MS}
+ *     or the authored `timeout:`), retained output
+ *     ({@link WORKFLOW_MAX_EXEC_OUTPUT_BYTES} per pipe) and the context
+ *     environment ({@link execContextLimits}, checked BEFORE the spawn so an
+ *     oversized artifact yields an actionable akm error, not a bare `E2BIG`).
+ *   - ALLOWLISTED ENVIRONMENT. The child does NOT inherit akm's environment: it
+ *     starts EMPTY and receives exactly {@link EXEC_DEFAULT_ENV_PASSTHROUGH}
+ *     plus the unit's `exec.passEnv`, then the resolved `env:` bindings, then
+ *     the engine-authored `AKM_*` context. `exec.inheritEnv` opts back into full
+ *     inheritance. See {@link childEnv}.
  *
- * {@link IrExecSpec.command} is an argv ARRAY and the format has no
- * shell-string spelling at all. The child is spawned directly
- * ({@link runManagedSubprocess} → the runtime spawn), so no shell ever parses
- * the words: `;`, `|`, `&&`, `$(…)`, backticks, `>` and `*` are inert literal
- * argument BYTES. The entire quoting/injection class that a
- * `sh -c "<string>"` surface opens is therefore structurally absent rather
- * than defended against. A workflow that genuinely wants a pipeline names the
- * interpreter itself (`["bash", "-lc", "a | b"]`) — which makes the decision
- * visible in the frontmatter diff instead of hiding it behind a convenience.
+ * Secrets: `env` values reaching this module are already resolved from `env:`
+ * bindings by NAME (`resolveEnvBinding`) — the plan never carries inline secrets
+ * and the input hash only ever carries names. The caller scrubs the outcome with
+ * `redactUnitOutcome` BEFORE anything is journaled, which is why this module may
+ * return raw stdout/stderr diagnostics without knowing anything about redaction.
  *
- * ## Non-blocking, and no leaked children
- *
- * Everything here is async. `spawnSync` on the dispatch path would block the
- * event loop and with it every concurrently-scheduled unit, the run's lease
- * heartbeat, and abort handling — so it is never used.
- * {@link runManagedSubprocess} spawns the child DETACHED (its own process
- * group) and runs a SIGTERM→SIGKILL ladder against the whole group on timeout
- * or abort, so a killed command cannot leave orphaned descendants behind, and
- * `--timeout` / Ctrl-C really do stop a running command.
- *
- * ## Containment
- *
- * `exec.cwd` is relative and `..`-free by construction (the parser and the
- * frozen-plan decoder both reject anything else through
- * `isContainedRelativePath`). This module re-checks the RESOLVED path against
- * the resolved base with {@link isWithin} — symlinks included — immediately
- * before spawning, so a checkout that contains a symlinked subdirectory cannot
- * be used to step outside the unit's working tree (the run's work dir, or the
- * unit's fresh worktree under `isolation: worktree`).
- *
- * ## Everything the command can spend is BOUNDED
- *
- * A command is arbitrary code with no lifetime or resource discipline of its
- * own, so every resource it can consume on akm's behalf has a named ceiling in
- * `workflows/resource-limits.ts`:
- *
- *   - WALL CLOCK — {@link DEFAULT_EXEC_TIMEOUT_MS} (or the authored `timeout:`),
- *     enforced by the TERM→KILL ladder.
- *   - RETAINED OUTPUT — {@link WORKFLOW_MAX_EXEC_OUTPUT_BYTES} per pipe. Without
- *     it, capture is bounded only by the command's exit, so `yes` exhausts the
- *     akm process's memory long before the timeout fires. The cap bounds MEMORY
- *     ONLY: past it the reader drains-and-discards, the command runs to
- *     completion and its real exit code stands. What overflow costs is the
- *     ARTIFACT's completeness, and that is never hidden — see
- *     {@link runExecUnit}.
- *   - CONTEXT ENVIRONMENT — {@link execContextLimits} for THIS platform, checked
- *     BEFORE the spawn so an oversized artifact yields an actionable akm error
- *     rather than the OS's bare `E2BIG`.
- *
- * ## The child's environment is an ALLOWLIST
- *
- * The child does NOT inherit akm's environment. It starts EMPTY and receives
- * exactly {@link EXEC_DEFAULT_ENV_PASSTHROUGH} (plus the unit's own
- * `exec.passEnv` names), then the resolved `env:` bindings, then the
- * engine-authored `AKM_*` context. `exec.inheritEnv` opts back into full
- * inheritance. See {@link childEnv} for why.
- *
- * ## Secrets
- *
- * `env` values reaching this module are already resolved from `env:` bindings
- * by NAME (`resolveEnvBinding`) — the plan never carries inline secrets, and
- * the input hash only ever carries the names. The caller collects those exact
- * values through the shared `collectWorkflowDispatchSensitiveValues` and scrubs
- * the outcome with `redactUnitOutcome` BEFORE anything is journaled, which is
- * why this module may return raw stdout/stderr diagnostics without knowing
- * anything about redaction itself.
- *
- * Layering: a LEAF. It imports only node built-ins, `core/common`,
- * `core/spawn-env`, `core/subprocess` and the import-free
- * `workflows/resource-limits` (plus erased types), so the executor can consume
- * it without opening an import cycle.
+ * Layering: a LEAF. Node built-ins, `core/spawn-env`, `core/subprocess` and the
+ * import-free `workflows/resource-limits` (plus erased types) only, so the
+ * executor can consume it without opening an import cycle.
  *
  * @module workflows/exec/exec-unit
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import { isWithin } from "../../core/common";
-import { collectAllowlistedEnv } from "../../core/spawn-env";
+import { collectAllowlistedEnv, supplementPathForSchedulerContext } from "../../core/spawn-env";
 import {
   type ManagedSubprocessResult,
   runManagedSubprocess,
   type SpawnFn,
+  type StreamReadResult,
   streamCaptureFailure,
 } from "../../core/subprocess";
 import type { IrExecSpec } from "../ir/schema";
@@ -115,7 +79,7 @@ import type { UnitDispatchResult } from "./unit-dispatch";
  * command failed — inside the journaled and displayed diagnostic, instead of
  * losing its final few hundred characters to the outer clip.
  */
-export const EXEC_STDERR_DIAGNOSTIC_CLIP = WORKFLOW_UNIT_DIAGNOSTIC_CLIP - 500;
+const EXEC_STDERR_DIAGNOSTIC_CLIP = WORKFLOW_UNIT_DIAGNOSTIC_CLIP - 500;
 
 /**
  * The DEFAULT environment allowlist for an exec unit's child — the single
@@ -235,68 +199,46 @@ export interface RunExecUnitInput {
 }
 
 /**
- * Run one exec unit and map its process outcome onto the dispatch vocabulary.
- *
- * Failure-reason mapping (all values are pre-existing `AgentFailureReason`
- * members — the taxonomy gains nothing, so `retry.on` keeps working unchanged
- * and `tests/integration/workflows/schema-drift.test.ts` stays green):
- *
- *   - non-zero exit          → `non_zero_exit`
- *   - wall-clock expiry      → `timeout`   (after the TERM→KILL ladder)
- *   - cancellation           → `aborted`
- *   - the child never started → `spawn_failed` (missing binary, unusable cwd)
- *   - the capture never completed → `spawn_failed`, matching the agent spawn
- *     path's treatment of the same condition (see below)
- *
- * The out-of-taxonomy `exec_cwd_escape`, `exec_output_limit` and
- * `exec_context_too_large` are deliberate: each is tampering, a runaway, or an
- * authoring bug — never a transient — so no `retry.on` value can ever
- * re-dispatch one, and `PROGRAM_RETRY_REASONS` (and the drift test that pins it)
- * stays exactly as it is.
+ * Run one exec unit and map its process outcome onto the dispatch vocabulary:
+ * non-zero exit → `non_zero_exit`, wall-clock expiry → `timeout`, cancellation
+ * → `aborted`, a child that never started or a capture that never completed →
+ * `spawn_failed`. All four are pre-existing `AgentFailureReason` members, so
+ * `retry.on` keeps working unchanged. The out-of-taxonomy `exec_cwd_escape`,
+ * `exec_output_limit` and `exec_context_too_large` are deliberate: each is
+ * tampering, a runaway, or an authoring bug — never a transient — so no
+ * `retry.on` value can ever re-dispatch one.
  *
  * ## An INCOMPLETE capture is a failure, never a partial artifact
  *
- * `exitCode === 0` is not on its own proof that stdout was fully read. A pipe
- * can error, and `runManagedSubprocess`'s stream-drain timeout can fire while
- * the command LEADER has already exited 0 because a background descendant still
- * holds the stdout fd open. Both leave `result.stdout` holding a PREFIX of the
- * real output. Promoting that prefix would hand the next step, the gate judge
- * and `steps.<id>.output` a silently truncated artifact, so the unit fails
- * instead — and it fails with the same reason and the same shared classifier
- * (`streamCaptureFailure`) the agent spawn path uses, so the two dispatch paths
- * agree on what "the capture did not complete" means.
+ * `exitCode === 0` is not on its own proof that stdout was fully read: a pipe
+ * can error, and the stream-drain timeout can fire while the command LEADER has
+ * already exited 0 because a background descendant still holds the stdout fd
+ * open. Both leave a PREFIX, and promoting it would hand the next step, the gate
+ * judge and `steps.<id>.output` a silently truncated artifact. So the unit fails
+ * instead, through the same shared classifier (`streamCaptureFailure`) the agent
+ * spawn path uses.
  *
  * ## Output OVERFLOW does not fail a command that passed
  *
- * Crossing {@link WORKFLOW_MAX_EXEC_OUTPUT_BYTES} is NOT the same condition. The
- * capture succeeded — the reader drained the pipe to its end — it just stopped
- * RETAINING past the cap, so the child never blocked and its exit code is real.
- * Failing a passing-but-chatty test suite over its log volume would be a
- * tripwire: machinery that makes a run fail where it would otherwise have
- * succeeded, for no benefit the cap needs. So overflow splits by what the unit
- * PROMISED about its output:
+ * Crossing {@link WORKFLOW_MAX_EXEC_OUTPUT_BYTES} is a different condition: the
+ * reader DID drain the pipe to its end, it just stopped RETAINING, so the child
+ * never blocked and its exit code is real. Failing a passing-but-chatty test
+ * suite over its log volume would be a tripwire, so overflow splits by what the
+ * unit PROMISED about its output:
  *
- *   - NO declared `output:` schema → the unit succeeds on exit 0 and its
- *     artifact is the retained prefix with a
- *     {@link WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER} block appended naming the
- *     total and retained byte counts. Nothing is hidden and nothing is silently
- *     shortened — a reader (human, gate judge, or downstream step) sees the
- *     marker or sees a complete artifact, never a truncated one wearing a
- *     complete one's clothes.
- *   - a declared `output:` schema → `exec_output_limit`, still. stdout must
- *     parse as EXACTLY one JSON value; a truncated prefix cannot, validating it
- *     is meaningless, and promoting it would corrupt every downstream reference
- *     to a typed artifact. That is the residual failure the cap genuinely
- *     justifies, and it keeps its out-of-taxonomy no-retry rationale: the
- *     command is deterministic, so re-dispatching it can only spend the budget
- *     to produce the same oversized output again.
+ *   - NO declared `output:` schema → success, with the artifact carrying a
+ *     {@link WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER} block naming both byte
+ *     counts, so truncated text can never pass for complete text.
+ *   - a declared `output:` schema → `exec_output_limit`: stdout must parse as
+ *     EXACTLY one JSON value, a truncated prefix cannot, and promoting it would
+ *     corrupt every downstream reference to the typed artifact.
  *
  * stderr overflow never fails anything: stderr is a diagnostic channel, and
  * {@link EXEC_STDERR_DIAGNOSTIC_CLIP} already bounds and marks what reaches the
  * journal.
  */
 export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatchResult> {
-  const cwd = resolveExecCwd(input);
+  const cwd = await resolveExecCwd(input);
   if (!cwd.ok) return { ok: false, text: "", failureReason: cwd.failureReason, error: cwd.error };
   const context = checkExecContextSize(input);
   if (context) return context;
@@ -390,6 +332,14 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
   return { ok: true, text: stripTrailingNewlines(stdout) };
 }
 
+/** The sentence naming what the retention cap discarded, shared by both reports below. */
+function truncationNote(read: StreamReadResult): string {
+  return (
+    `the command wrote ${read.bytesRead} bytes to stdout and only the first ${read.retainedBytes} were retained ` +
+    `(the ${WORKFLOW_MAX_EXEC_OUTPUT_BYTES}-byte per-pipe capture limit)`
+  );
+}
+
 /**
  * The captured stdout, with an unmistakable truncation block appended when the
  * retention cap discarded part of it.
@@ -402,13 +352,11 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
 function markTruncatedStdout(result: ManagedSubprocessResult): string {
   const read = result.stdoutRead;
   if (!read.overflowed) return result.stdout;
-  const total = read.bytesRead ?? 0;
-  const retained = read.retainedBytes ?? 0;
+  const discarded = read.bytesRead - read.retainedBytes;
   return (
     `${result.stdout}\n\n[${WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER}] ` +
-    `stdout was TRUNCATED: the command wrote ${total} bytes and only the first ${retained} were retained ` +
-    `(the ${WORKFLOW_MAX_EXEC_OUTPUT_BYTES}-byte per-pipe capture limit). ` +
-    `The remaining ${total - retained} bytes were read and discarded — the command itself ran to completion, ` +
+    `stdout was TRUNCATED: ${truncationNote(read)}. ` +
+    `The remaining ${discarded} bytes were read and discarded — the command itself ran to completion, ` +
     `so its exit code is real, but THIS TEXT IS INCOMPLETE and must not be treated as the command's whole output. ` +
     `Have the command write bulk output to a file and print the path, or quiet it down.`
   );
@@ -430,15 +378,12 @@ function outputLimitFailure(
   display: string,
   result: ManagedSubprocessResult,
 ): UnitDispatchResult {
-  const total = result.stdoutRead.bytesRead ?? 0;
-  const retained = result.stdoutRead.retainedBytes ?? 0;
   return {
     ok: false,
     text: "",
     failureReason: "exec_output_limit",
     error:
-      `exec unit "${input.unitId}" ran ${display}, it exited 0, but it wrote ${total} bytes to stdout and only ` +
-      `the first ${retained} were retained (the ${WORKFLOW_MAX_EXEC_OUTPUT_BYTES}-byte per-pipe capture limit). ` +
+      `exec unit "${input.unitId}" ran ${display}, it exited 0, but ${truncationNote(result.stdoutRead)}. ` +
       `This unit declares an output: schema, so its stdout must parse as exactly one JSON value — a truncated ` +
       `prefix cannot, and promoting it would silently corrupt every downstream reference to the typed artifact. ` +
       `NO artifact was promoted. Have the command write bulk output to a file and print the path, quiet it down, ` +
@@ -526,11 +471,14 @@ type ResolvedCwd = { ok: true; path: string } | { ok: false; failureReason: stri
  * RESOLVED base (symlinks included). The syntactic checks the parser and the
  * decoder already ran are necessary but not sufficient: `reports` can be a
  * symlink to `/etc`, and only a realpath comparison catches that.
+ *
+ * Async on purpose: this runs once per unit — up to 10 000 times for one map
+ * step — on the dispatch path that must never block (see the module note).
  */
-function resolveExecCwd(input: RunExecUnitInput): ResolvedCwd {
+async function resolveExecCwd(input: RunExecUnitInput): Promise<ResolvedCwd> {
   const base = path.resolve(input.baseDir);
   const target = input.exec.cwd ? path.resolve(base, input.exec.cwd) : base;
-  if (!isWithin(target, base)) {
+  if (!(await isWithinAsync(target, base))) {
     return {
       ok: false,
       failureReason: "exec_cwd_escape",
@@ -539,7 +487,7 @@ function resolveExecCwd(input: RunExecUnitInput): ResolvedCwd {
         `${target} — outside its working directory ${base}. Refusing to run outside the unit's tree.`,
     };
   }
-  if (!isExistingDirectory(target)) {
+  if (!(await isExistingDirectory(target))) {
     return {
       ok: false,
       failureReason: "spawn_failed",
@@ -549,11 +497,55 @@ function resolveExecCwd(input: RunExecUnitInput): ResolvedCwd {
   return { ok: true, path: target };
 }
 
-function isExistingDirectory(candidate: string): boolean {
+async function isExistingDirectory(candidate: string): Promise<boolean> {
   try {
-    return fs.statSync(candidate).isDirectory();
+    return (await fs.promises.stat(candidate)).isDirectory();
   } catch {
     return false;
+  }
+}
+
+/**
+ * `core/common`'s `isWithin`, without its two blocking `fs.realpathSync` calls.
+ * Same comparison, same normalization, same nearest-existing-ancestor fallback —
+ * only the syscalls are awaited instead of blocking the loop.
+ */
+async function isWithinAsync(candidate: string, root: string): Promise<boolean> {
+  const rel = path.relative(
+    normalizeForComparison(await safeRealpathAsync(root)),
+    normalizeForComparison(await safeRealpathAsync(candidate)),
+  );
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+function normalizeForComparison(value: string): string {
+  return process.platform === "win32" ? value.toLowerCase() : value;
+}
+
+/**
+ * Resolve symlinks on `p`, walking up to the closest existing ancestor when `p`
+ * itself does not exist, so a comparison between an existing base and a
+ * not-yet-created child stays consistent through symlinked hierarchies
+ * (macOS `/tmp` → `/private/tmp`, a symlinked HOME).
+ */
+async function safeRealpathAsync(p: string): Promise<string> {
+  const resolved = path.resolve(p);
+  try {
+    return await fs.promises.realpath(resolved);
+  } catch {
+    const suffix: string[] = [];
+    let current = resolved;
+    for (;;) {
+      const parent = path.dirname(current);
+      if (parent === current) return resolved;
+      suffix.unshift(path.basename(current));
+      current = parent;
+      try {
+        return path.join(await fs.promises.realpath(current), ...suffix);
+      } catch {
+        // parent also doesn't exist; keep walking up
+      }
+    }
   }
 }
 
@@ -590,9 +582,11 @@ function isExistingDirectory(candidate: string): boolean {
  *     {@link collectAllowlistedEnv} does it here, so there is one mechanism to
  *     review instead of two.
  *
- * `inheritEnv` is the honest escape hatch for a command that genuinely needs
- * the caller's whole environment; it passes it through VERBATIM (no PATH
- * supplementation), which is precisely the pre-allowlist behavior.
+ * `inheritEnv` is the honest escape hatch for a command that genuinely needs the
+ * caller's whole environment. It passes everything through, PATH included —
+ * supplemented for scheduler contexts exactly as {@link collectAllowlistedEnv}
+ * does it, because the MORE permissive branch must never hand a command a WORSE
+ * PATH than the restrictive default does under cron/launchd.
  */
 function childEnv(
   exec: IrExecSpec,
@@ -610,12 +604,16 @@ function execAllowlist(exec: IrExecSpec): string[] {
   return exec.passEnv ? [...EXEC_DEFAULT_ENV_PASSTHROUGH, ...exec.passEnv] : [...EXEC_DEFAULT_ENV_PASSTHROUGH];
 }
 
-/** The akm process's own environment, verbatim (`exec.inheritEnv`). */
+/**
+ * The akm process's own environment (`exec.inheritEnv`), with the same
+ * scheduler-context PATH supplementation {@link collectAllowlistedEnv} applies.
+ */
 function inheritedProcessEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {
     if (typeof value === "string") env[name] = value;
   }
+  if (env.PATH !== undefined) env.PATH = supplementPathForSchedulerContext(env.PATH);
   return env;
 }
 
@@ -634,6 +632,6 @@ function stderrTail(stderr: string): string {
 }
 
 /** Strip trailing line terminators, matching shell `$(…)` command substitution. */
-export function stripTrailingNewlines(text: string): string {
+function stripTrailingNewlines(text: string): string {
   return text.replace(/(?:\r?\n)+$/, "");
 }

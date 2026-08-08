@@ -55,8 +55,6 @@ export interface ValidateSummaryResult {
 export interface JudgeCallIdentity {
   runId: string;
   stepId: string;
-  /** The journaled gate row's `node_id` — `<stepId>.gate`. */
-  nodeId: string;
   /** The journaled gate row's `unit_id` — `<stepId>.gate:l<loop>`. */
   unitId: string;
 }

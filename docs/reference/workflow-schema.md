@@ -357,7 +357,6 @@ fail later at `akm workflow run`:
 | `retry.max` | 0 – 100 |
 | `timeout` | ≤ 2147483647 ms (~24.8 days), or `none` |
 | `engine` names | `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, ≤ 63 chars |
-| parse errors reported | first 50, then a `... N more errors not shown` trailer |
 
 `timeout` is resolved **once, at freeze time**, and the frozen value is what
 dispatch applies — there is no separate engine-side ceiling on top of it. The
@@ -826,12 +825,18 @@ The whole loopback space, not one address:
 | all of `127.0.0.0/8` | `http://127.0.0.1:1234`, `http://127.0.0.2:11434` |
 | `localhost` and any `*.localhost` name | `http://localhost:1234`, `http://lmstudio.localhost` |
 | IPv6 `::1`, in any spelling | `http://[::1]:1234`, `http://[0:0:0:0:0:0:0:1]:1234` |
-| the IPv4-mapped forms of `127.0.0.0/8` | `http://[::ffff:127.0.0.1]:1234` |
 | the unspecified addresses (a client connecting there reaches loopback) | `http://0.0.0.0:11434`, `http://[::]:11434` |
 
 `127.0.0.2` matters in practice: running a second LM Studio or Ollama on
 another address inside the `127.0.0.0/8` block is ordinary, and that server is
 exactly as single-model as one on `127.0.0.1`.
+
+**IPv4-mapped IPv6 is recognized for `127.0.0.0/8`** in both spellings —
+`[::ffff:127.0.0.1]` and the hex `[::ffff:7f00:1]` — because the URL parser
+re-serializes the dotted form to the hex one before the check ever sees it. A
+mapped public address such as `[::ffff:8.8.8.8]` still reads as remote. The
+deprecated IPv4-compatible form `[::127.0.0.1]` is not recognized; if you use
+it, set `engines.<name>.concurrency: 1`.
 
 The check is **purely syntactic — it never resolves a name.** A frozen plan has
 to come out the same on your laptop, on CI, and on a machine with no network at

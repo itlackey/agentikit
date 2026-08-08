@@ -16,7 +16,7 @@
  * this is a pre-emptive guarantee against the #222 invariant.
  */
 import { parseEmbeddedJsonResponse } from "../../core/parse";
-import { collectAllowlistedEnv, supplementPathForSchedulerContext } from "../../core/spawn-env";
+import { collectAllowlistedEnv } from "../../core/spawn-env";
 import {
   runManagedSubprocess,
   type SpawnedSubprocess,
@@ -158,11 +158,6 @@ export interface AgentRunResult {
   /** The harness's own session id, when it exposes one (SDK path today). */
   sessionId?: string;
 }
-
-// `supplementPathForSchedulerContext` moved to `core/spawn-env` when the
-// workflow `exec` unit adopted the same allowlist mechanism. Re-exported here
-// because it is this module's long-standing published name.
-export { supplementPathForSchedulerContext };
 
 /**
  * Build the child env. Starts empty and copies through:

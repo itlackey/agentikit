@@ -305,8 +305,7 @@ tuple-form `items`, and schema-form `additionalProperties` (only
 `description`, `title`, `default`, `examples` — always pass through untouched,
 and documenting each property is worth the keystrokes.
 
-If lint reports a very broken workflow, note that it prints at most the first
-50 errors and then says `... N more errors not shown`. They are sorted by
+If lint reports a very broken workflow, note that its errors are sorted by
 line, so fix from the top and re-run — the later ones are usually fallout from
 the first.
 

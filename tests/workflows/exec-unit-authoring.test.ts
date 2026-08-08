@@ -20,10 +20,6 @@ import {
   DEFAULT_EXEC_TIMEOUT_MS,
   execContextLimits,
   WORKFLOW_MAX_EXEC_ARGV,
-  WORKFLOW_MAX_EXEC_CONTEXT_BYTES_POSIX,
-  WORKFLOW_MAX_EXEC_CONTEXT_BYTES_WIN32,
-  WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_POSIX,
-  WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_WIN32,
   WORKFLOW_MAX_EXEC_PASS_ENV,
 } from "../../src/workflows/resource-limits";
 import { freezeWorkflow } from "../_helpers/workflow";
@@ -461,52 +457,49 @@ describe("exec unit — replay identity / input hashing", () => {
 });
 
 describe("exec unit — the AKM_* context ceilings are PER-PLATFORM", () => {
+  const win32 = execContextLimits("win32");
+  const posix = execContextLimits("linux");
+
   test("each platform is checked against its OWN spawn ceiling, not the smallest one", () => {
     // The guard's only job is to convert an INEVITABLE E2BIG / CreateProcess
     // failure into an actionable error. Applying the smallest supported
     // platform's ceiling everywhere would instead fail spawns Linux and macOS
     // accept — machinery that makes a run fail where it would have succeeded.
-    expect(execContextLimits("win32")).toEqual({
-      perVarBytes: WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_WIN32,
-      totalBytes: WORKFLOW_MAX_EXEC_CONTEXT_BYTES_WIN32,
-      source: expect.stringContaining("32 767 characters"),
-    });
+    expect(win32.source).toContain("32 767 characters");
+    expect(posix.source).toContain("MAX_ARG_STRLEN");
+    expect(win32).not.toEqual(posix);
     for (const platform of ["linux", "darwin", "freebsd"]) {
-      expect(execContextLimits(platform)).toEqual({
-        perVarBytes: WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_POSIX,
-        totalBytes: WORKFLOW_MAX_EXEC_CONTEXT_BYTES_POSIX,
-        source: expect.stringContaining("MAX_ARG_STRLEN"),
-      });
+      expect(execContextLimits(platform)).toEqual(posix);
     }
     // Unknown platforms get the POSIX bound; every platform akm supports other
     // than win32 is POSIX, and guessing the tighter Windows number for one would
     // be the same tripwire in miniature.
-    expect(execContextLimits("sunos").perVarBytes).toBe(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_POSIX);
+    expect(execContextLimits("sunos").perVarBytes).toBe(posix.perVarBytes);
     // The default is THIS host.
     expect(execContextLimits()).toEqual(execContextLimits(process.platform));
   });
 
-  test("every constant sits with real margin under the OS number it cites", () => {
+  test("every bound sits with real margin under the OS number it cites", () => {
     // Windows: SetEnvironmentVariable caps one variable at 32 767 CHARACTERS.
     // Measuring UTF-8 bytes is conservative in the right direction, so the
-    // constant may sit exactly at the documented number.
-    expect(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_WIN32).toBe(32_767);
+    // bound may sit exactly at the documented number.
+    expect(win32.perVarBytes).toBe(32_767);
     // Linux: MAX_ARG_STRLEN = 32 * PAGE_SIZE = 131 072 bytes per argv/environ
     // string. The per-variable bound leaves 32 KiB of headroom for the NAME,
     // the `=`, the NUL and the kernel's own accounting.
     const LINUX_MAX_ARG_STRLEN = 32 * 4096;
-    expect(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_POSIX).toBeLessThan(LINUX_MAX_ARG_STRLEN);
-    expect(LINUX_MAX_ARG_STRLEN - WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_POSIX).toBe(32 * 1024);
+    expect(posix.perVarBytes).toBeLessThan(LINUX_MAX_ARG_STRLEN);
+    expect(LINUX_MAX_ARG_STRLEN - posix.perVarBytes).toBe(32 * 1024);
     // macOS: ARG_MAX = 256 KiB over argv + environ COMBINED. akm's own context
     // takes at most half, leaving the rest for argv, the allowlist and bindings.
     const MACOS_ARG_MAX = 256 * 1024;
-    expect(WORKFLOW_MAX_EXEC_CONTEXT_BYTES_POSIX).toBe(MACOS_ARG_MAX / 2);
+    expect(posix.totalBytes).toBe(MACOS_ARG_MAX / 2);
     // A per-variable bound above the total would be unreachable machinery.
-    expect(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_POSIX).toBeLessThan(WORKFLOW_MAX_EXEC_CONTEXT_BYTES_POSIX);
-    expect(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_WIN32).toBeLessThan(WORKFLOW_MAX_EXEC_CONTEXT_BYTES_WIN32);
+    expect(posix.perVarBytes).toBeLessThan(posix.totalBytes);
+    expect(win32.perVarBytes).toBeLessThan(win32.totalBytes);
     // Every POSIX bound is strictly WIDER than the Windows one — that widening
     // is the tripwire removal.
-    expect(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_POSIX).toBeGreaterThan(WORKFLOW_MAX_EXEC_CONTEXT_VAR_BYTES_WIN32);
-    expect(WORKFLOW_MAX_EXEC_CONTEXT_BYTES_POSIX).toBeGreaterThan(WORKFLOW_MAX_EXEC_CONTEXT_BYTES_WIN32);
+    expect(posix.perVarBytes).toBeGreaterThan(win32.perVarBytes);
+    expect(posix.totalBytes).toBeGreaterThan(win32.totalBytes);
   });
 });
