@@ -29,6 +29,7 @@ import { insertEvent, readStateEvents } from "../storage/repositories/events-rep
 import { rethrowIfTestIsolationError } from "./errors";
 import type { EventEnvelope } from "./events-types";
 import { getStateDbPath, openStateDatabase, withStateDb } from "./state-db";
+import { borrowScopedStateDb } from "./state-db-scope";
 import { error } from "./warn";
 
 /**
@@ -220,15 +221,26 @@ function resolveNow(ctx?: EventsContext): () => number {
  * function writes directly to that handle without opening or closing the DB.
  * This eliminates per-event open/migrate/close overhead for high-frequency
  * callers such as `akmImprove`.
+ *
+ * The same fast path is taken IMPLICITLY inside a `withStateDbScope` /
+ * `withWorkflowRunsConnection` scope (`core/state-db-scope.ts`): the ambient
+ * scoped handle for this event's resolved `dbPath` is borrowed, so a workflow
+ * step's `workflow_unit_started` / `workflow_unit_finished` pair rides the same
+ * connection its journal rows do instead of opening state.db twice per unit.
+ * The scope owns that handle's lifetime; `appendEvent` never closes a borrowed
+ * connection.
  */
 export function appendEvent(input: AppendEventInput, ctx?: EventsContext): void {
   const now = resolveNow(ctx);
   const ts = new Date(now()).toISOString();
 
-  // Fast path: caller provided a long-lived connection — use it directly.
-  if (ctx?.db) {
+  // Fast path: an explicitly supplied long-lived connection, or the ambient
+  // scoped one — either way the handle is borrowed and never closed here.
+  const dbPath = resolveDbPath(ctx);
+  const borrowed = ctx?.db ?? borrowScopedStateDb(dbPath);
+  if (borrowed) {
     try {
-      insertEvent(ctx.db, {
+      insertEvent(borrowed, {
         eventType: input.eventType,
         ts,
         ref: input.ref,
@@ -241,7 +253,6 @@ export function appendEvent(input: AppendEventInput, ctx?: EventsContext): void 
   }
 
   // Default path: open, insert, close.
-  const dbPath = resolveDbPath(ctx);
   try {
     withStateDb(
       (db) => {
