@@ -1,16 +1,17 @@
 # akm -- Agent Knowledge Manager
 
-> **akm** (Agent Knowledge Manager) -- A knowledge toolkit for AI agents.
+> Give every coding agent the capabilities your team has already built.
 
 [![npm version](https://img.shields.io/npm/v/akm-cli)](https://www.npmjs.com/package/akm-cli)
 [![npm downloads](https://img.shields.io/npm/dm/akm-cli)](https://www.npmjs.com/package/akm-cli)
 [![license](https://img.shields.io/github/license/itlackey/akm)](https://github.com/itlackey/akm/blob/main/LICENSE)
 
-`akm` is a knowledge toolkit for AI agent capabilities -- scripts, skills, commands,
-agents, knowledge, instructions, memories, workflows, env files, secrets, lessons,
-tasks, sessions, and facts. It can discover and install bundles from npm, git, local
-directories, and configured registries. It works with any AI coding assistant that can run shell commands,
-including [Claude Code](https://claude.ai/code),
+**akm** is a portable capability library for AI agents. Build your agent
+library once. Use it from any shell-capable coding agent. It indexes existing
+agent assets in place, loads only what a task needs, packages capabilities
+into shareable bundles, improves the library through reviewable proposals,
+and runs durable workflows -- locally and without tying the library to one
+assistant, including [Claude Code](https://claude.ai/code),
 [OpenCode](https://opencode.ai), [Cursor](https://cursor.com), and more.
 
 ## Install
@@ -35,54 +36,33 @@ Upgrade in place with `akm upgrade`.
 
 The npm package always uses Node.js to bootstrap its cross-platform command.
 If a working [Bun](https://bun.sh) >= 1.0 is also on `PATH`, the launcher
-prefers Bun for execution; old, unusable, or absent Bun installations fall back
-to Node.js. Node.js remains required for the npm package. The standalone
+prefers Bun for execution; old, unusable, or absent Bun installations fall
+back to Node.js. Node.js remains required for the npm package. The standalone
 binaries are runtime-free.
-
-> The old `vault` asset type was removed in 0.9.0; use `env` for whole `.env`
-> groups and `secret` for standalone sensitive values.
 
 ## Quick Start
 
 ```sh
-akm setup                         # Guided setup: configure, initialize, and index
-akm task doctor                    # Verify scheduler and installed runtime
-akm bundle add github:owner/repo         # Add a bundle from GitHub
-akm search "deploy"               # Find assets across all sources
-akm show scripts/deploy.sh        # View details and run command
+akm setup                          # Guided setup: configure, initialize, and index
+akm bundle add github:owner/repo   # Add a bundle from GitHub
+akm index                          # Index sources into the library
+akm search "deploy"                # Find assets across all sources
+akm show scripts/deploy.sh         # View details and run command
 ```
-
-Non-interactive setup never activates schedules.
-
-## Schedule Tasks Safely
-
-```sh
-akm setup                 # Review definitions, schedules, and enabled state
-# Confirm scheduler activation only after reviewing the complete task summary.
-akm task doctor           # Verify backend, runtime, task state, and warnings
-```
-
-Setup shows the complete task review — both the general-purpose core
-templates and the maintainer-oriented improve cadence — before asking one
-explicit question about changing task files and the OS scheduler. Only
-confirmation prepares the definitions and syncs the scheduler. Declining, or
-running setup non-interactively, leaves both unchanged. A scheduled entry
-captures the installed akm runtime used during activation. Ordinary
-`akm task sync` preserves that runtime; after moving or replacing the
-installation, use `akm task sync --rebind` explicitly to migrate or repair
-scheduler entries, then run `akm task doctor` again.
-
-Rerunning setup preserves existing scheduler bindings. If setup changes the AKM
-storage path, or the installed runtime path changes, run
-`akm task sync --rebind` explicitly.
 
 ## Why akm?
 
-- **Works with any AI agent** -- No plugins or SDKs required. Any model that can run shell commands can use `akm`.
-- **One command to search your knowledge** -- Local assets are searched by default. Add `--from registry` or `--from all` for configured registry results; [skills.sh](https://skills.sh) participates only when enabled.
-- **Install bundles from anywhere** -- npm, GitHub, GitLab, local directories.
-- **Semantic search** -- Optional local embeddings (via Ollama or HuggingFace) for finding assets by meaning, not just keywords.
-- **Private registries** -- Host your own registry for team or enterprise use.
+- **One library for every agent** -- Use the same capability library from Claude Code, OpenCode, Cursor, Aider, Windsurf, or any assistant that can run shell commands.
+- **Load only what the task needs** -- Search or curate a shortlist, then load full content by ref. No giant startup prompt is required.
+- **Package complete capabilities** -- Install and share bundles containing skills, scripts, workflows, agents, instructions, memories, and knowledge -- not just prompt snippets.
+- **Improve through evidence, with review** -- Feedback influences retrieval and produces diffable proposals. Changes remain reviewable and target only writable bundles.
+- **Turn knowledge into repeatable work** -- Run persisted workflows with dispatch, gates, retries, budgets, and resume instead of reconstructing a process from prose every session.
+
+akm retrieves every supported capability type. It directly orchestrates
+defined execution surfaces such as workflows, agent dispatch, tasks, and
+guarded subprocess injection -- it does not blindly execute arbitrary indexed
+content merely because that content appears in search results. It
+complements MCP and assistant-native skills rather than replacing them.
 
 ## Agent Integration
 
@@ -96,34 +76,7 @@ knowledge, instructions, memories, workflows, env files, secrets, lessons, tasks
 sessions, and facts via the `akm` CLI. Use `akm -h` for details.
 ```
 
-## Install Bundles from Anywhere
-
-```sh
-akm bundle add @scope/pkg                          # npm
-akm bundle add github:owner/repo#v1.2.3            # GitHub with tag
-akm bundle add git+https://gitlab.com/org/repo     # Any git repo
-akm bundle add ./path/to/local/dir                 # Local directory
-```
-
-Manage bundles with `akm bundle list`, `akm bundle update --all`, and `akm bundle remove`.
-
-## Bundle Types
-
-akm doesn't only manage its own asset library — it recognizes and indexes
-several existing directory layouts in place: akm's own workspace (writable),
-Open Knowledge Format markdown, Karpathy-style LLM wikis, Claude Code and
-OpenCode tool directories, standalone Agent Skills collections, env/secret-only
-bundles, standalone workflow and task bundles, and crawled website snapshots.
-Most are recognized automatically the moment you `akm bundle add` their
-directory. See the [Bundle Types reference](https://github.com/itlackey/akm/blob/main/docs/reference/bundle-types.md)
-for detection rules, ref shapes, and what's read-only vs. writable.
-
-## Publish Your Own Bundle
-
-1. Organize your assets into a directory
-2. Add `"akm"` to `keywords` in `package.json`
-3. Optionally add `akm.include` in `package.json` to control what gets installed
-4. Publish to npm or push to GitHub
+Or generate it directly: `akm help agents >> AGENTS.md`
 
 ## Documentation
 
@@ -133,7 +86,7 @@ Full docs, CLI reference, and guides are available on [GitHub](https://github.co
 - [Bundle Types](https://github.com/itlackey/akm/blob/main/docs/reference/bundle-types.md)
 - [CLI Reference](https://github.com/itlackey/akm/blob/main/docs/reference/cli.md)
 - [Configuration](https://github.com/itlackey/akm/blob/main/docs/reference/configuration.md)
-- [Bundle Authoring](https://github.com/itlackey/akm/blob/main/docs/guides/author-bundles.md)
+- [Bundle Authoring Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-bundles.md)
 - [Registry](https://github.com/itlackey/akm/blob/main/docs/reference/registry.md)
 
 ## License
