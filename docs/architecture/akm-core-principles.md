@@ -49,9 +49,10 @@ for using.
 
 - **Search is a menu.** Default search output should expose only enough to
   choose the next asset. In the current CLI that usually means:
-  - `brief`: `type`, `name`, `action`, `estimatedTokens`
+  - `brief`: `type`, `name`, `ref`, `action`, `estimatedTokens`, `keys` —
+    `ref` is deliberately present at the leanest level so an agent can run
+    `akm show <ref>` without asking for fuller detail
   - `normal`: adds `description` and `score`
-  - `agent` (via `--shape agent`): includes `ref`
 
   Richer provenance/debug fields belong behind fuller detail modes.
 

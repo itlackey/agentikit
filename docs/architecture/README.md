@@ -16,7 +16,7 @@ subsystem internals.
 Normative specifications and binding conventions.
 
 - [OKF format support](specs/okf-support.md) -- OKF is a first-class format supported through the built-in `okf` adapter
-- [0.9.0 surface decisions](specs/0.9.0-decisions.md) -- The decision record (D1-D11) behind the 0.9.0 breaking changes
+- [0.9.0 surface decisions](specs/0.9.0-decisions.md) -- The decision record (D1-D12) behind the 0.9.0 breaking changes
 - [Bundle & Adapter Spec (0.9.0)](specs/akm-0.9.0-bundle-adapter-spec.md) -- Normative spec for bundles, adapters, and bundle recognition
 - [Ref Grammar Decision (0.9.0)](specs/akm-0.9.0-ref-grammar-decision.md) -- The `[bundle//]conceptId` ref grammar
 - [Ref Format](specs/ref.md) -- Wire format for asset references
@@ -45,6 +45,12 @@ Current-truth subsystem references.
 - [Health Advisories](internals/health-advisories.md) -- `akm health` advisory-to-action map for operators
 - [Functional Contract Patterns](internals/functional-contract-patterns.md) -- Quick reference for contributor pipelines and small process contracts
 - [Fresh-Host Rebuild Runbook](internals/fresh-host-rebuild-runbook.md) -- Rebuild an akm install on a new machine
+
+## Reviews (`reviews/`)
+
+Point-in-time architecture reviews of a specific subsystem question.
+
+- [Runtime secret resolution for in-process source fetchers](reviews/env-secret-access.md) -- Why secret reads are injected as a `SecretResolver` capability instead of imported inside the fetcher subgraph
 
 ## Comparisons (`comparisons/`)
 
