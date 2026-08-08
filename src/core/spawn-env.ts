@@ -24,6 +24,30 @@ import os from "node:os";
 import path from "node:path";
 
 /**
+ * The baseline env names every allowlisted akm child receives regardless of
+ * what it runs: process identity (`HOME`, `USER`), tool resolution (`PATH`),
+ * locale (`LANG`, `LC_ALL`), terminal (`TERM`), scratch space (`TMPDIR`), and
+ * akm's own event provenance (`AKM_EVENT_SOURCE` — machine traffic, never a
+ * secret). BOTH allowlists extend it — the agent-CLI profiles'
+ * `COMMON_PASSTHROUGH` (`integrations/agent/profiles.ts`) and the workflow
+ * exec unit's `EXEC_DEFAULT_ENV_PASSTHROUGH` (`workflows/exec/exec-unit.ts`)
+ * — so a baseline name cannot drift into one child-spawn path but not the
+ * other. NOTE: profile `envPassthrough` is frozen into workflow engine
+ * snapshots, so growing this list changes frozen-plan content — extend
+ * deliberately.
+ */
+export const COMMON_SPAWN_ENV_PASSTHROUGH = [
+  "HOME",
+  "PATH",
+  "USER",
+  "LANG",
+  "LC_ALL",
+  "TERM",
+  "TMPDIR",
+  "AKM_EVENT_SOURCE",
+] as const;
+
+/**
  * Build a child environment from an allowlist: start EMPTY and copy through
  * exactly the named variables that exist in `source`. Names absent from the
  * source are simply absent from the child (never an empty string, which many

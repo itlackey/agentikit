@@ -2377,7 +2377,6 @@ Build the assigned item.
       let seeded = 0;
       for (const u of wl.list.units) {
         if (seeded >= count) break;
-        if (!u.resolved.ok) continue;
         repo.insertUnit({
           runId: RUN_ID,
           unitId: u.unitId,

@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { isIP } from "node:net";
 import os from "node:os";
+import { isLoopbackEndpoint } from "../core/loopback";
 import { WORKFLOW_MAX_CONCURRENCY } from "./resource-limits";
 
 /**
@@ -88,77 +88,14 @@ export const DEFAULT_REMOTE_LLM_ENGINE_CONCURRENCY = 4;
 // ── Loopback classification ──────────────────────────────────────────────────
 //
 // Everything above turns on ONE question: does this endpoint name a model
-// server running on THIS machine? A host is loopback when it is `localhost` or
-// a `*.localhost` name (RFC 6761 §6.3), anywhere in `127.0.0.0/8`, an
-// unspecified address (`0.0.0.0` / `::` — a client connecting there reaches
-// local loopback), IPv6 `::1`, or the dotted IPv4-mapped spelling of a
-// `127.0.0.0/8` address (`::ffff:127.0.0.1`). Address shapes are validated by
-// `node:net`'s `isIP`, so a near-miss NAME like `127.0.0.1.evil.com` is remote.
-//
-// The check is purely syntactic — no DNS, no interface list — so freeze
-// produces the same plan on a laptop, on CI, and on a machine with no network.
-// Ambiguity resolves toward LOOPBACK: misclassifying a local server as remote
-// freezes width 4 and causes the hard failure this policy exists to prevent
-// (one loaded model, reload thrash, HTTP 500); the reverse only costs
-// throughput. The remedy in either direction is one line of config:
-// `engines.<name>.concurrency`.
+// server running on THIS machine? The classifier lives in `core/loopback.ts`
+// (shared with the indexer's LLM pool default); the re-export keeps this
+// module the policy surface workflow callers and the boundary-case table in
+// `tests/workflows/concurrency-defaults.test.ts` import from. The check is
+// purely syntactic — no DNS, no interface list — so freeze produces the same
+// plan on a laptop, on CI, and on a machine with no network.
 
-/**
- * The IPv4-mapped IPv6 spellings of `127.0.0.0/8`: the dotted form, whose
- * capture is validated by `isIP`, and the hex form `::ffff:7fxx:xxxx`. Both are
- * needed because WHATWG `URL` re-serializes `[::ffff:127.0.0.1]` to the hex
- * form, so an endpoint written the dotted way arrives here as hex.
- */
-const IPV4_MAPPED_IPV6 = /^::ffff:(?:([\d.]+)|7f[\da-f]{2}:[\da-f]{1,4})$/;
-/** IPv6 groups before the last one, all of which must be zero (or elided). */
-const ZERO_GROUP = /^0+$/;
-/** The last IPv6 group of `::` / `::1`, in any zero-padding. */
-const LOOPBACK_LAST_GROUP = /^0*[01]?$/;
-
-/**
- * True when `host` — a URL host component, with or without IPv6 brackets —
- * names this machine WITHOUT resolving anything.
- *
- * Not recognized: the IPv4-compatible form (`::127.0.0.1`), and any NAME that
- * merely resolves to loopback.
- *
- * Exported for the boundary-case table in
- * `tests/workflows/concurrency-defaults.test.ts`, which has to reach the host
- * predicate directly: several of its cases (a bare `""`, a malformed literal
- * like `1::2::3`) cannot round-trip through a URL without changing meaning.
- */
-export function isLoopbackHost(host: string): boolean {
-  // Strip IPv6 brackets (`URL.hostname` keeps them) and the DNS root label. An
-  // empty host (`new URL("localhost:1234")` parses as scheme `localhost:` with
-  // no host) has nothing to judge, so it fails safe like an unparseable one.
-  const name = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
-  if (name === "" || name === "localhost" || name.endsWith(".localhost")) return true;
-  const mapped = IPV4_MAPPED_IPV6.exec(name);
-  if (mapped) {
-    const quad = mapped[1];
-    // The hex branch already matched 127.x in the pattern; the dotted one still
-    // needs `isIP` so `::ffff:127.0.0.256` stays remote.
-    return quad === undefined || (isIP(quad) === 4 && quad.startsWith("127."));
-  }
-  const version = isIP(name);
-  if (version === 4) return name.startsWith("127.") || name === "0.0.0.0";
-  if (version !== 6) return false;
-  const groups = name.split(":");
-  const last = groups.pop() ?? "";
-  return groups.every((group) => group === "" || ZERO_GROUP.test(group)) && LOOPBACK_LAST_GROUP.test(last);
-}
-
-/** True when `endpoint` points at this machine (see {@link isLoopbackHost}). */
-export function isLoopbackEndpoint(endpoint: string | undefined): boolean {
-  if (!endpoint) return true;
-  try {
-    return isLoopbackHost(new URL(endpoint).hostname);
-  } catch {
-    // An unparseable endpoint is treated as local: guessing "remote" here would
-    // widen the pool on exactly the configs we understand least.
-    return true;
-  }
-}
+export { isLoopbackEndpoint, isLoopbackHost } from "../core/loopback";
 
 /**
  * Concurrency to freeze for an LLM engine. An explicit

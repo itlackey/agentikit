@@ -785,6 +785,7 @@ async function runStepGateLoop(
         routeSelected,
         routeUnselected,
         summaryJudge,
+        ...(ctx.plan.execution ? { engines: ctx.plan.execution.engines } : {}),
         signal: options.signal,
         leaseHolder,
       });

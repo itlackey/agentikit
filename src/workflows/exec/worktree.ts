@@ -41,10 +41,10 @@
  * same repository. Two invariants close that:
  *
  *   • every repo-mutating operation runs inside {@link withRepoWorktreeLock},
- *     a promise chain keyed by the resolved base repo path (the
- *     `unit-writer.ts` idiom — Bun is single-threaded, so an in-process chain
- *     is sufficient), so at most one add/prune/remove per repository is ever
- *     in flight;
+ *     a promise chain keyed by the resolved base repo path (`serializeByKey`
+ *     in `core/concurrent.ts`, shared with `unit-writer.ts` — Bun is
+ *     single-threaded, so an in-process chain is sufficient), so at most one
+ *     add/prune/remove per repository is ever in flight;
  *   • those git calls are ASYNC ({@link runManagedSubprocess}) rather than
  *     `spawnSync`, so a unit waiting on a git lock parks a promise instead of
  *     wedging the whole event loop (and with it every other in-flight unit,
@@ -62,11 +62,12 @@
  */
 
 import { spawnSync } from "node:child_process";
-import fs, { type Dirent } from "node:fs";
+import type { Dirent } from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { isWithin, safeRealpath } from "../../core/common";
+import { isWithinAsync, safeRealpathAsync } from "../../core/common";
+import { serializeByKey } from "../../core/concurrent";
 import { runManagedSubprocess } from "../../core/subprocess";
 import { warn } from "../../core/warn";
 
@@ -172,29 +173,21 @@ export function assertGitWorkTree(dir: string): string | undefined {
 /** In-flight tail of each base repository's serialized git-worktree chain. */
 const repoOperationTails = new Map<string, Promise<unknown>>();
 
-/** Base repos already pruned in this process, keyed `<repo>\0<runId>`. */
+/**
+ * Base repos already pruned in this process, keyed `<repo>\0<runId>`. A run's
+ * keys are dropped when its drained worktree root is removed
+ * ({@link removeRunRootIfEmpty}), so the set never outgrows the live runs.
+ */
 const prunedRuns = new Set<string>();
 
 /**
  * Serialize `fn` against every other repo-mutating worktree operation on the
- * same base repository. Keyed by the RESOLVED repo path so two spellings of
- * one repo (symlinked tmpdir, relative cwd) share a chain. A failure rejects
- * its own caller but never wedges the chain (`unit-writer.ts` idiom).
+ * same base repository ({@link serializeByKey}). Keyed by the RESOLVED repo
+ * path so two spellings of one repo (symlinked tmpdir, relative cwd) share a
+ * chain. A failure rejects its own caller but never wedges the chain.
  */
 function withRepoWorktreeLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
-  const previous = repoOperationTails.get(repoKey) ?? Promise.resolve();
-  const run = previous.then(fn);
-  const tail = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  repoOperationTails.set(repoKey, tail);
-  // Drop drained keys so a long-lived process does not retain one promise per
-  // repository it ever touched.
-  void tail.then(() => {
-    if (repoOperationTails.get(repoKey) === tail) repoOperationTails.delete(repoKey);
-  });
-  return run;
+  return serializeByKey(repoOperationTails, repoKey, fn);
 }
 
 export type WorktreeCreateResult =
@@ -230,12 +223,19 @@ export function runWorktreeRoot(runId: string): string {
  * (never overwriting an earlier retained copy). Throws on fs errors — the
  * caller maps them onto its result object.
  */
-function moveLeftoverAside(dest: string): string {
+async function moveLeftoverAside(dest: string): Promise<string> {
   const base = `${dest}.retained-${Date.now()}`;
   let aside = base;
-  for (let n = 1; fs.existsSync(aside); n++) aside = `${base}-${n}`;
-  fs.renameSync(dest, aside);
+  for (let n = 1; await pathExists(aside); n++) aside = `${base}-${n}`;
+  await fsp.rename(dest, aside);
   return aside;
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  return fsp.access(p).then(
+    () => true,
+    () => false,
+  );
 }
 
 /**
@@ -257,26 +257,33 @@ function moveLeftoverAside(dest: string): string {
  * administrative state, so a concurrent unit's prune can never land between
  * another unit's prune and its add.
  */
-export function createUnitWorktree(baseDir: string, runId: string, attemptId: string): Promise<WorktreeCreateResult> {
+export async function createUnitWorktree(
+  baseDir: string,
+  runId: string,
+  attemptId: string,
+): Promise<WorktreeCreateResult> {
   // Opportunistic, at most once per process, never awaited — GC must never sit
   // on the dispatch path.
   sweepStaleWorktreesOnce();
-  const repoKey = safeRealpath(baseDir);
+  const repoKey = await safeRealpathAsync(baseDir);
   const dest = path.join(runWorktreeRoot(runId), sanitizeAttemptId(attemptId));
   return withRepoWorktreeLock(repoKey, async () => {
     let preservedLeftover: string | undefined;
     let leftoverHandled = false;
     try {
-      if (fs.existsSync(dest)) {
+      if (await pathExists(dest)) {
         const status = await git(dest, ["status", "--porcelain"]);
         if (status.ok && status.stdout.trim() === "") {
-          fs.rmSync(dest, { recursive: true, force: true });
+          // Async on purpose: a recursive delete of a whole leftover checkout
+          // inside this critical section would otherwise block the event loop
+          // (every other in-flight unit, the lease heartbeat, abort handling).
+          await fsp.rm(dest, { recursive: true, force: true });
         } else {
-          preservedLeftover = moveLeftoverAside(dest);
+          preservedLeftover = await moveLeftoverAside(dest);
         }
         leftoverHandled = true;
       }
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      await fsp.mkdir(path.dirname(dest), { recursive: true });
     } catch (err) {
       return { ok: false, error: `could not prepare worktree directory ${dest}: ${message(err)}` };
     }
@@ -335,13 +342,13 @@ export async function cleanupUnitWorktree(baseDir: string, worktreePath: string)
   if (status.stdout.trim() !== "") {
     return { removed: false, dirty: true };
   }
-  const removed = await withRepoWorktreeLock(safeRealpath(baseDir), () =>
+  const removed = await withRepoWorktreeLock(await safeRealpathAsync(baseDir), () =>
     git(baseDir, ["worktree", "remove", worktreePath]),
   );
   if (!removed.ok) {
     return { removed: false, dirty: false, error: removed.error };
   }
-  removeRunRootIfEmpty(worktreePath);
+  await removeRunRootIfEmpty(worktreePath);
   return { removed: true, dirty: false };
 }
 
@@ -354,14 +361,24 @@ export async function cleanupUnitWorktree(baseDir: string, worktreePath: string)
  * fully drained root disappears. Never touches anything that is not a DIRECT
  * child of the worktrees root.
  */
-function removeRunRootIfEmpty(worktreePath: string): void {
+async function removeRunRootIfEmpty(worktreePath: string): Promise<void> {
   const root = worktreesRoot();
   const runRoot = path.dirname(path.resolve(worktreePath));
-  if (!isWithin(runRoot, root) || safeRealpath(path.dirname(runRoot)) !== safeRealpath(root)) return;
+  if (!(await isWithinAsync(runRoot, root))) return;
+  if ((await safeRealpathAsync(path.dirname(runRoot))) !== (await safeRealpathAsync(root))) return;
   try {
-    fs.rmdirSync(runRoot);
+    await fsp.rmdir(runRoot);
   } catch {
     // ENOTEMPTY (retained work) / ENOENT (already gone) — both fine.
+    return;
+  }
+  // The run's worktrees are fully drained — drop its prune bookkeeping so
+  // `prunedRuns` never outgrows the live runs. (A later worktree of the same
+  // run simply prunes once more; the guard is an optimization, not a
+  // correctness gate.)
+  const suffix = `\u0000${path.basename(runRoot)}`;
+  for (const key of prunedRuns) {
+    if (key.endsWith(suffix)) prunedRuns.delete(key);
   }
 }
 
@@ -413,7 +430,7 @@ export async function sweepStaleWorktrees(opts: SweepStaleWorktreesOptions = {})
   for (const runRootEntry of runRoots) {
     if (!runRootEntry.isDirectory()) continue;
     const runRoot = path.join(root, runRootEntry.name);
-    if (!isWithin(runRoot, root)) continue;
+    if (!(await isWithinAsync(runRoot, root))) continue;
     let entries: Dirent[];
     try {
       entries = await fsp.readdir(runRoot, { withFileTypes: true, encoding: "utf8" });
@@ -424,7 +441,7 @@ export async function sweepStaleWorktrees(opts: SweepStaleWorktreesOptions = {})
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const candidate = path.join(runRoot, entry.name);
-      if (!isWithin(candidate, root)) continue;
+      if (!(await isWithinAsync(candidate, root))) continue;
       if (now - (await lastActivityMs(candidate, entry.name)) < maxAgeMs) continue;
       try {
         await fsp.rm(candidate, { recursive: true, force: true });

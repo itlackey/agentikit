@@ -678,9 +678,7 @@ function loop1Hash(p: WorkflowPlanGraph): string {
     engines: p.execution?.engines,
   });
   if (!c.ok) throw new Error(c.error);
-  const r = c.list.units[0]!.resolved;
-  if (!r.ok) throw new Error(r.error);
-  return r.inputHash;
+  return c.list.units[0]!.resolved.inputHash;
 }
 
 /** The loop-2 solo unit id + hash brief/report would compute for the recovered feedback. */
@@ -695,7 +693,6 @@ function loop2Unit(p: WorkflowPlanGraph, gateFeedback: GateFeedback): { unitId: 
   });
   if (!c.ok) throw new Error(c.error);
   const u = c.list.units[0]!;
-  if (!u.resolved.ok) throw new Error(u.resolved.error);
   return { unitId: u.journalBaseId, inputHash: u.resolved.inputHash };
 }
 

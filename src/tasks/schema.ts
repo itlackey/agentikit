@@ -14,15 +14,19 @@
  * inline prompts use a YAML block scalar (`prompt: |`).
  */
 
+import { WORKFLOW_MAX_TIMEOUT_MS } from "../workflows/resource-limits";
+
 export const TASK_SCHEMA_VERSION = 2;
 
 /**
  * Largest expressible `timeoutMs` — `setTimeout`'s 32-bit signed ceiling
  * (2^31-1, ~24.8 days). A larger delay overflows and fires almost immediately,
  * which would silently abort a run seconds after it started instead of hours
- * later. Mirrored as `maximum` on `timeoutMs` in `schemas/akm-task.json`.
+ * later. One definition with the workflow bound (`WORKFLOW_MAX_TIMEOUT_MS`) —
+ * it is a platform fact, not a per-surface policy. Mirrored as `maximum` on
+ * `timeoutMs` in `schemas/akm-task.json`.
  */
-export const TASK_MAX_TIMEOUT_MS = 2 ** 31 - 1;
+export const TASK_MAX_TIMEOUT_MS = WORKFLOW_MAX_TIMEOUT_MS;
 
 /**
  * Lint-level shape problems for a parsed task YAML mapping: the field rules

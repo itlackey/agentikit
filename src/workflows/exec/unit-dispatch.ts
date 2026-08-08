@@ -2,6 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import type { LlmConnectionConfig } from "../../core/config/config";
+import { deepMergeConfig } from "../../core/config/deep-merge";
+import { ConfigError } from "../../core/errors";
 import type { AgentTokenUsage } from "../../integrations/agent/spawn";
 import type { FrozenEngineSnapshot, IrExecSpec, IrInvocation } from "../ir/schema";
 
@@ -64,3 +67,42 @@ export interface UnitDispatchResult {
 
 /** The one dispatch seam. `feedback` carries a structured-output retry prompt. */
 export type UnitDispatcher = (request: UnitDispatchRequest, feedback?: string) => Promise<UnitDispatchResult>;
+
+/**
+ * Materialize a frozen llm engine snapshot into a live connection: resolve the
+ * credential out of `process.env`, then apply the invocation's model/llm
+ * overrides. The ONE definition — the default dispatcher's llm runner and the
+ * frozen gate judge both dispatch through it, so credential resolution and
+ * connection-field mapping cannot drift between the two llm dispatch paths.
+ */
+export function materializeFrozenLlm(
+  snapshot: Extract<FrozenEngineSnapshot, { kind: "llm" }>,
+  invocation: IrInvocation | undefined,
+): LlmConnectionConfig {
+  let apiKey: string | undefined;
+  for (const name of snapshot.credential?.names ?? []) {
+    const candidate = process.env[name]?.trim();
+    if (candidate) {
+      apiKey = candidate;
+      break;
+    }
+  }
+  if (snapshot.credential?.required && !apiKey)
+    throw new ConfigError(
+      `Required engine credential ${snapshot.credential.names[0]} is not set.`,
+      "INVALID_CONFIG_FILE",
+    );
+  const base = {
+    provider: snapshot.provider,
+    endpoint: snapshot.endpoint,
+    model: invocation?.model ?? snapshot.model,
+    ...(snapshot.temperature !== undefined ? { temperature: snapshot.temperature } : {}),
+    ...(snapshot.maxTokens !== undefined ? { maxTokens: snapshot.maxTokens } : {}),
+    ...(snapshot.supportsJsonSchema !== undefined ? { supportsJsonSchema: snapshot.supportsJsonSchema } : {}),
+    ...(snapshot.extraParams ? { extraParams: snapshot.extraParams } : {}),
+    ...(snapshot.contextLength !== undefined ? { contextLength: snapshot.contextLength } : {}),
+    ...(snapshot.enableThinking !== undefined ? { enableThinking: snapshot.enableThinking } : {}),
+    ...(apiKey ? { apiKey } : {}),
+  };
+  return invocation?.llm ? (deepMergeConfig(base, invocation.llm as Record<string, unknown>) as typeof base) : base;
+}

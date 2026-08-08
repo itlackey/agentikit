@@ -63,7 +63,6 @@ import type {
 } from "../ir/schema";
 import { type ExpressionScope, resolveReferenceString } from "../program/expressions";
 import { WORKFLOW_MAX_MAP_EXPANSION, WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
-import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
 import { completeWorkflowStep, type SummaryValidationFailure, type WorkflowNextResult } from "../runtime/runs";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
 import { type JudgeCallIdentity, parseJudgeVerdict, type SummaryJudge } from "../validate-summary";
@@ -125,10 +124,11 @@ export interface WorkListInput {
 }
 
 /**
- * One unit's fully-resolved dispatch plan. `unitId`/`nodeId`/`item` are always
- * present (content-derived, independent of resolution); `resolved` carries the
- * assembled prompt + input hash, or a deterministic resolution error (a bad
- * `item.<path>` reference) that fails just this unit without dispatching.
+ * One unit's fully-resolved dispatch plan. `unitId`/`nodeId`/`item` are
+ * content-derived; `resolved` carries the assembled prompt + input hash.
+ * Resolution cannot fail per-unit: everything that CAN fail (map.over /
+ * route.input / inputs:) resolves once per step and fails the WHOLE list
+ * ({@link ComputeWorkListResult}).
  */
 export interface StepWorkUnit {
   /** Content-derived base id: `<node_id>:<hash12>` (fan-out) / `<node_id>:solo`. */
@@ -163,7 +163,7 @@ export interface StepWorkUnit {
   retry?: IrRetry;
   onError: IrOnError;
   isolation?: IrIsolation;
-  resolved: { ok: true; prompt: string; inputHash: string } | { ok: false; error: string };
+  resolved: { prompt: string; inputHash: string };
 }
 
 export interface StepWorkList {
@@ -189,14 +189,10 @@ export type ComputeWorkListResult = { ok: true; list: StepWorkList } | { ok: fal
  * units an earlier run already journaled.
  *
  * Whole-list failures (missing subgraph, unresolvable / non-array `over`,
- * null or duplicate fan-out items) return `{ ok: false }`. The per-unit
- * `resolved: { ok: false }` branch is STRUCTURALLY UNREACHABLE in the unified
- * format — prose is never scanned for references, and everything that CAN
- * fail (map.over / route.input / inputs:) resolves once per step, failing the
- * whole list above. The branch is retained because every consumer of the work
- * list shares the shape and defensively handles it; if a future unit kind
- * reintroduces per-unit resolution (e.g. an exec/shell unit with real
- * substitution), the failure plumbing is already in place.
+ * null or duplicate fan-out items) return `{ ok: false }`. Per-unit resolution
+ * cannot fail in the unified format — prose is never scanned for references,
+ * and everything that CAN fail (map.over / route.input / inputs:) resolves
+ * once per step, failing the whole list above.
  */
 /**
  * Validate a fan-out item list BEFORE any identity/dispatch work: expansion
@@ -428,7 +424,7 @@ function buildStepWorkUnit(ctx: StepWorkUnitContext, unitId: string, item: unkno
         instructions: template.instructions,
       });
   const inputHash = computeUnitInputHash(ctx, item);
-  const resolved: StepWorkUnit["resolved"] = { ok: true, prompt, inputHash };
+  const resolved: StepWorkUnit["resolved"] = { prompt, inputHash };
 
   return {
     unitId,
@@ -1402,6 +1398,13 @@ export interface FinalizeStepInput {
    * both mean no judge; live configuration is never consulted here.
    */
   summaryJudge: SummaryJudge | null | undefined;
+  /**
+   * Frozen engine catalog from the SAME decoded plan `stepPlan` came from —
+   * gate-row metadata (`stepPlan.gate.judge` names its engine here). The
+   * caller already holds the hash-verified plan, so it is never re-loaded or
+   * re-decoded down here.
+   */
+  engines?: Record<string, FrozenEngineSnapshot>;
   /** Cooperative run cancellation checked before completion is committed. */
   signal?: AbortSignal;
   /** Engine run-lease holder (engine path only); absent on the manual/report path. */
@@ -1547,25 +1550,17 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // Journal engine-driven judge calls as unit rows. With no criteria there is
   // no judge invocation or row; a criteria-bearing plan without a judge is a
   // configuration error rather than a silent bypass.
-  const frozenGate = innerJudge
-    ? await withWorkflowRunsRepo((repo) => {
-        const row = repo.getRunById(runId);
-        if (!row) throw new UsageError(`Workflow run ${runId} was not found.`);
-        const plan = requireExecutableWorkflowPlan(row);
-        const invocation = plan.steps.find((step) => step.stepId === stepId)?.gate.judge ?? null;
-        return invocation ? { invocation, engine: plan.execution?.engines[invocation.engine] ?? null } : null;
-      })
-    : null;
-  const gateInvocation = frozenGate?.invocation ?? null;
+  const gateInvocation = innerJudge ? (stepPlan.gate.judge ?? null) : null;
+  const gateEngine = gateInvocation ? (input.engines?.[gateInvocation.engine] ?? null) : null;
   let gateUnit: GateUnitRef | undefined;
-  // `failure` classifies a verifier INFRASTRUCTURE failure observed during the
-  // judge call — a throw (transport/service error) or a response that is not a
-  // well-formed verdict (same parser as validateStepSummary, so the fail-closed
-  // rejection it synthesizes is recognizably NOT an honest verdict here).
-  const judgeState: { invoked: boolean; failure?: string } = { invoked: false };
+  // `judgeFailure` records a verifier INFRASTRUCTURE failure observed during
+  // the judge call — a throw (transport/service error) or a response that is
+  // not a well-formed verdict (same parser as validateStepSummary, so the
+  // fail-closed rejection it synthesizes is recognizably NOT an honest verdict
+  // here).
+  let judgeFailure: string | undefined;
   const summaryJudge: SummaryJudge | null = innerJudge
     ? async (prompt) => {
-        judgeState.invoked = true;
         if (gateInvocation) {
           gateUnit = {
             runId,
@@ -1573,12 +1568,12 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
             stepId,
             loop: gateLoop,
             invocation: gateInvocation,
-            runner: frozenGate?.engine?.kind === "agent" ? frozenGate.engine.runnerKind : ("llm" as const),
+            runner: gateEngine?.kind === "agent" ? gateEngine.runnerKind : ("llm" as const),
             inputHash: createHash("sha256")
               .update(
                 canonicalJsonString({
                   hashVersion: 3,
-                  dispatch: frozenGate?.engine ?? null,
+                  dispatch: gateEngine,
                   invocation: gateInvocation,
                   prompt,
                 }),
@@ -1598,11 +1593,11 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
           raw = await innerJudge(prompt, identity);
         } catch (err) {
           const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
-          judgeState.failure = `the verification judge failed${detail}`;
+          judgeFailure = `the verification judge failed${detail}`;
           throw err;
         }
         if (parseJudgeVerdict(raw) === undefined) {
-          judgeState.failure =
+          judgeFailure =
             "the verification judge responded with a malformed verdict instead of the required JSON result";
         }
         return raw;
@@ -1612,7 +1607,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // Reviewer #6: once the judge is invoked, its gate row is journaled `running`
   // (journalGateEvaluationStart) and MUST be finished on every exit. The
   // already-fixed window is the judge itself throwing (caught inside
-  // validateStepSummary — `judgeState.failure` records it). The remaining
+  // validateStepSummary — `judgeFailure` records it). The remaining
   // window is `completeWorkflowStep` throwing AFTER the judge ran — a stolen
   // lease, a concurrent state change, a DB error — which would otherwise skip the
   // finish and strand the gate row in `running`. Finish it as an errored row (the
@@ -1635,7 +1630,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   }
   const rejection =
     "ok" in completion && completion.ok === false ? (completion as SummaryValidationFailure) : undefined;
-  const judgeFailed = judgeState.failure !== undefined;
+  const judgeFailed = judgeFailure !== undefined;
 
   if (gateUnit) {
     // An infrastructure failure journals an ERRORED gate row (no verdict) —
@@ -1648,7 +1643,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // verdict. Consume NO gate loop; block the step (and therefore the run) so
   // `akm workflow resume` retries the gate over the journaled units.
   if (rejection && judgeFailed) {
-    return blockStepForJudgeFailure(input, judgeState.failure ?? "the verification judge failed");
+    return blockStepForJudgeFailure(input, judgeFailure ?? "the verification judge failed");
   }
 
   if (!rejection) {
