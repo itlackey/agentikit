@@ -38,8 +38,10 @@ echo "akm setup complete"
 
 ## Notes on each step
 
-**Install.** The standalone binary (step 1) is runtime-free. `npm install -g
-akm-cli` or `npx akm-cli <command>` also work if Node.js >= 22 is available.
+**Install.** The standalone binary (step 1) is runtime-free. The npm package
+(`npm install -g akm-cli`, or one-shot via `npx akm-cli <command>`) requires
+Node.js >= 22; a working Bun >= 1.0 is optional and preferred for execution
+after Node starts the package launcher.
 
 **Setup.** `akm setup --yes` accepts every default with no prompts. To
 pre-configure an LLM or agent engine at the same time instead of accepting
