@@ -52,6 +52,8 @@
     "docs/reference/cli.md",
     "docs/reference/configuration.md",
     "docs/reference/data-and-telemetry.md",
+    "docs/reference/supported-formats.md",
+    "docs/reference/workflow-schema.md",
     "docs/reference/workflows.md",
     "schemas"
   ],

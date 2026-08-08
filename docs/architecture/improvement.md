@@ -27,7 +27,7 @@ at the end of a run, and how session extraction fits in.
 consolidate) never write asset files directly. The only durable artifact they
 produce is a proposal row in `state.db`. The narrow set of writes that *are*
 allowed to happen without review is enumerated below, under
-[Current decisions — the autonomy gate](#current-decisions--the-autonomy-gate);
+[The autonomy gate](#the-autonomy-gate);
 everything else routes through `akm proposal accept`.
 
 ## Components

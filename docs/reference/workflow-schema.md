@@ -7,11 +7,11 @@ the published JSON Schema (`schemas/akm-workflow.json`) and
 detail.
 
 - For a task-oriented walkthrough of writing your first workflow, see the
-  [Author's Guide](../guides/author-workflows.md).
+  [Author's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md).
 - For how a frozen plan actually executes — persistence, dispatch, resume —
-  see [Architecture: The Workflow Engine](../architecture/workflow-engine.md).
+  see [Architecture: The Workflow Engine](https://github.com/itlackey/akm/blob/main/docs/architecture/workflow-engine.md).
 - For operating a run day to day (`run`, `status`, `resume`, `abandon`), see
-  [Running Workflows](../guides/run-workflows.md).
+  [Running Workflows](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md).
 
 ## One format
 
@@ -42,7 +42,7 @@ families) plus the orchestration keys:
   optional dispatch-override bag (`engine`, `model`, `llm`, `timeout`,
   `retry`, `on_error`, `env`, `isolation`; see
   [Failure policy](#failure-policy) and
-  [Worktree isolation](../architecture/workflow-engine.md#worktree-isolation)).
+  [Worktree isolation](https://github.com/itlackey/akm/blob/main/docs/architecture/workflow-engine.md#worktree-isolation)).
 - `inputs` — on a `unit`/`map` step, the prior-step artifacts this step
   consumes, as bare reference strings (sub-paths legal:
   `steps.x.output.issues`, not just `steps.x.output`). This is how a step's
@@ -258,12 +258,12 @@ unknown step, unknown param, bad path — at lint time.
 Run params are copied verbatim into every unit's dispatched instructions and
 are part of the unit's content-derived input hash — the same hash that makes
 resume-without-replay possible (see
-[Resume is journaled replay](../architecture/workflow-engine.md#resume-is-journaled-replay)).
+[Resume is journaled replay](https://github.com/itlackey/akm/blob/main/docs/architecture/workflow-engine.md#resume-is-journaled-replay)).
 Redacting a param would change what gets hashed and make a resumed run
 diverge from the original, so params are **declared non-secret and
 un-redactable** by design: secrets belong in `env:` refs instead, which carry
-by name only through the plan and are resolved from the process environment
-at dispatch (see [Reference: Env & Secrets](env-and-secrets.md)).
+by name only through the plan and are resolved from akm's env/secret store
+at dispatch (see [Reference: Env & Secrets](https://github.com/itlackey/akm/blob/main/docs/reference/env-and-secrets.md)).
 
 As a best-effort guardrail, `akm workflow run` scans a new run's params for
 values that *look* like credentials — secret-suggesting key names (`token`,
@@ -370,7 +370,7 @@ budget is spent, the rejection stands exactly as in the one-shot case.
 verification runs. When a rubric is present, the workflow requires
 `workflow.judgeEngine` to name a configured LLM or agent engine before the
 plan can be frozen — see
-[Author's Guide: Troubleshooting](../guides/author-workflows.md#troubleshooting)
+[Author's Guide: Troubleshooting](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md#troubleshooting)
 if that engine isn't configured yet. That verifier invocation is frozen into
 the run.
 
@@ -410,12 +410,12 @@ hardcoded) via the config-root `modelAliases` key:
 For an LLM engine, resolution checks its engine-name column, then `llm`, then
 `*`. Agent engines check their harness platform and then `*`. The built-in
 aliases `fable`, `opus`, `sonnet`, and `haiku` resolve per platform with no
-config. See the [Author's Guide](../guides/author-workflows.md#choosing-engines-and-models)
+config. See the [Author's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md#choosing-engines-and-models)
 for guidance on which tier to pick per step.
 
 ## See also
 
-- [Running Workflows](../guides/run-workflows.md) — operating a run day to day
-- [Author's Guide: Writing Workflows](../guides/author-workflows.md) — a task-oriented walkthrough
-- [Architecture: The Workflow Engine](../architecture/workflow-engine.md) — persistence, dispatch, and resume internals
+- [Running Workflows](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md) — operating a run day to day
+- [Author's Guide: Writing Workflows](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md) — a task-oriented walkthrough
+- [Architecture: The Workflow Engine](https://github.com/itlackey/akm/blob/main/docs/architecture/workflow-engine.md) — persistence, dispatch, and resume internals
 - [CLI Reference](cli.md) — full flag documentation for `workflow` and `lint`

@@ -81,7 +81,7 @@ AKM recognizes several existing directory layouts in place, each through its own
 | OKF and LLM wikis | Indexes plain-markdown (OKF) and Karpathy-style wiki (`schema.md` + `raw/` + `pages/`) content, read-only |
 | Git, npm, local dirs, and websites | Any of these can be added as a source; AKM detects the bundle format inside and indexes it |
 
-See [Bundle Types](docs/reference/bundle-types.md) for current write support and detection rules, and [Wikis](docs/guides/wikis.md) for using a living LLM wiki as a bundle.
+See [Supported Formats](docs/reference/supported-formats.md) for current write support and detection rules, and [Wikis](docs/guides/wikis.md) for using a living LLM wiki as a bundle.
 
 ## Common next steps
 
@@ -91,7 +91,7 @@ See [Bundle Types](docs/reference/bundle-types.md) for current write support and
 - Run resumable, multi-step procedures — [Workflows](docs/reference/workflows.md)
 - Wire akm into Claude Code, OpenCode, Cursor, and other assistants — [Use AKM With Any Agent](docs/guides/use-with-any-agent.md)
 
-Scheduling background tasks (like `akm improve`) involves reviewing and activating OS scheduler entries — see [Getting Started](docs/guides/getting-started.md) for the full walkthrough.
+Scheduling background tasks (like `akm improve`) involves reviewing and activating OS scheduler entries — see [Scheduling](docs/guides/scheduling.md) for the full walkthrough.
 
 ## Local-first and privacy
 

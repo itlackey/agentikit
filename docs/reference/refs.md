@@ -20,7 +20,7 @@ hand.
 | Part | Required | Description |
 | --- | --- | --- |
 | `bundle` | no | Narrows lookup to one installed bundle, separated from the rest of the ref by `//`. Omit it and the ref resolves against the workspace `defaultBundle`, then the remaining bundles in installation-priority order. |
-| `conceptId` | yes | Subdir-qualified within its bundle: the placement subdirectory followed by the item's canonical name (extension stripped). `type` is not part of a ref — the subdirectory carries that signal. |
+| `conceptId` | yes | Subdir-qualified within its bundle: the placement subdirectory followed by the item's canonical name (extension stripped for markdown-like types; scripts and secrets keep their natural filename). `type` is not part of a ref — the subdirectory carries that signal. |
 | `fragment` | no | A selector for part of the item. Input-only — never stored. |
 
 Examples: `scripts/deploy.sh`, `agents/reviewer`, `knowledge/api-guide`,

@@ -62,7 +62,8 @@ to stdout.
 
 `.env` files are stored at mode 0600 under `env/` in the target bundle;
 standalone secrets are stored at mode 0600 under `secrets/`. A secret write
-is atomic under an exclusive `<secret>.lock`; maximum secret size is 5 MB.
+is atomic under an exclusive per-secret lock held in akm's data directory;
+maximum secret size is 5 MB.
 Values never cross argv (no `/proc/cmdline` exposure). An `env` file or
 secret can carry a sibling `.sensitive` marker that excludes it from `list`
 output and from the search index entirely; the value remains usable via

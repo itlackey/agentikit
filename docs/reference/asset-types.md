@@ -8,12 +8,15 @@ the bundle directory layout, and the metadata every asset carries.
 - akm's own native format (the `akm` adapter) recognizes **fourteen asset
   types**: script, skill, command, agent, knowledge, instruction, env,
   secret, workflow, lesson, memory, task, session, and fact.
-- Assets are classified by **file extension and content**, not by directory
-  name. A `.sh` file is a script whether it lives in `scripts/`, `deploy/`,
-  or the bundle root. Using the conventional directory names below is an
-  **opt-in convention that improves indexing confidence** — it is not
-  required, with one exception: `.env` env assets are only discovered under
-  `env/` paths.
+- Scripts, knowledge, commands, agents, skills, and workflows are classified
+  by **file extension and content**, not by directory name. A `.sh` file is
+  a script whether it lives in `scripts/`, `deploy/`, or the bundle root; for
+  these types the conventional directory names below are an **opt-in
+  convention that improves indexing confidence**. The remaining types are
+  **directory-required**: env, secret, memory, lesson, fact, session, task,
+  and instruction assets are only discovered under their placement
+  directories (a memory-shaped `.md` outside `memories/` indexes as plain
+  knowledge).
 - `type` is not part of an asset's ref — the placement subdirectory carries
   that signal. See [Refs](refs.md).
 - Ten additional *bundle formats* beyond akm's own (Claude Code and OpenCode
@@ -57,8 +60,8 @@ Scripts and knowledge are classified by **what they are**: a `.sh` file is a
 script; a plain `.md` file is knowledge. Commands and agents are classified
 by **how an LLM should use them**: a `.md` file with `$ARGUMENTS`
 placeholders is a command template; one with `tools` in its frontmatter is an
-agent definition. Workflows are classified by their markdown structure
-(`# Workflow:`, `## Step:`, `Step ID:`, `### Instructions`). Skills are a
+agent definition. Workflows are classified by frontmatter `type: workflow`
+or placement under `workflows/` — never by content sniffing. Skills are a
 **packaging convention**: a directory containing a `SKILL.md` file.
 
 See [Classification](../architecture/internals/classification.md) for the
@@ -120,8 +123,9 @@ For script assets, akm resolves execution hints in this order:
 
 ## Defaults
 
-- Directory placement is advisory except for `env/`, which is required for
-  `.env` discovery.
+- Directory placement is advisory for scripts, knowledge, commands, agents,
+  skills, and workflows; it is required for env, secret, memory, lesson,
+  fact, session, task, and instruction discovery.
 - A memory asset with no source directory pointed at it is written to the
   working bundle by `akm remember`.
 - `facts/` holds durable bundle-level facts, including the organization,
