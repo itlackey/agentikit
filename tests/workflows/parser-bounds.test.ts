@@ -12,23 +12,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { parseWorkflow } from "../../src/workflows/parser";
 import {
   WORKFLOW_MAX_CONCURRENCY,
   WORKFLOW_MAX_GATE_LOOPS,
   WORKFLOW_MAX_RETRIES,
   WORKFLOW_MAX_TIMEOUT_MS,
 } from "../../src/workflows/resource-limits";
-
-function parseErrors(markdown: string): Array<{ line: number; message: string }> {
-  const result = parseWorkflow(markdown, { path: "workflows/bounds.md" });
-  if (result.ok) return [];
-  return result.errors;
-}
-
-function workflowWith(frontmatterStepLines: string[], body = "## work\n\nDo it.\n"): string {
-  return ["---", "type: workflow", "steps:", "  - id: work", ...frontmatterStepLines, "---", "", body].join("\n");
-}
+import { parseErrors, workflowDoc as workflowWith } from "../_helpers/workflow";
 
 describe("bug 9 — parser enforces the decoder's bounds with line anchors", () => {
   test("gate.max_loops above the shared bound is a line-anchored parser error", () => {

@@ -34,7 +34,7 @@ import {
 import { scheduleUnits } from "../../src/workflows/exec/scheduler";
 import { computeStepWorkList } from "../../src/workflows/exec/step-work";
 import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
-import { compileResolveFreezeWorkflow, type FreezeOptions } from "../../src/workflows/ir/freeze";
+import type { FreezeOptions } from "../../src/workflows/ir/freeze";
 import {
   decodeWorkflowPlanV3,
   type FrozenLlmEngine,
@@ -42,8 +42,8 @@ import {
   type IrUnitNode,
   type WorkflowPlanGraph,
 } from "../../src/workflows/ir/schema";
-import { parseWorkflow } from "../../src/workflows/parser";
 import { WORKFLOW_MAX_CONCURRENCY } from "../../src/workflows/resource-limits";
+import { freezeWorkflow } from "../_helpers/workflow";
 
 // `remote` is deliberately NOT loopback and `local` deliberately is — the LLM
 // engine default is endpoint-derived, so both branches need a fixture.
@@ -75,21 +75,9 @@ const BASE_CONFIG = {
   workflow: { judgeEngine: "remote" },
 } as const satisfies AkmConfig;
 
+/** The shared freeze helper, with THIS suite's engine catalog as the default config. */
 function freeze(markdown: string, config: AkmConfig = BASE_CONFIG, options: FreezeOptions = {}): WorkflowPlanGraph {
-  const parsed = parseWorkflow(markdown, { path: "workflows/demo.md" });
-  if (!parsed.ok) throw new Error(parsed.errors.map((error) => `${error.line}: ${error.message}`).join(" | "));
-  return compileResolveFreezeWorkflow(
-    {
-      ref: "workflows/demo",
-      path: "workflows/demo.md",
-      sourcePath: "/tmp",
-      title: "demo",
-      steps: [],
-      document: parsed.document,
-    },
-    config,
-    options,
-  ).plan;
+  return freezeWorkflow(markdown, undefined, config, options);
 }
 
 /** A one-map-step document; `mapKeys` are extra lines inside the `map:` block. */

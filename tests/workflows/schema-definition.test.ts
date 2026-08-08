@@ -12,13 +12,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { checkJsonSchemaDefinition } from "../../src/core/json-schema";
-import { parseWorkflow } from "../../src/workflows/parser";
-
-function parseErrors(markdown: string): Array<{ line: number; message: string }> {
-  const result = parseWorkflow(markdown, { path: "workflows/schemas.md" });
-  if (result.ok) return [];
-  return result.errors;
-}
+import { parseErrors } from "../_helpers/workflow";
 
 describe("checkJsonSchemaDefinition (core/json-schema.ts)", () => {
   test("a valid subset schema produces no issues", () => {
