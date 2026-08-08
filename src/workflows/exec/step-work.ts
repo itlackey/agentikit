@@ -68,13 +68,6 @@ import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
 import { parseJudgeVerdict, type SummaryJudge } from "../validate-summary";
 import { enqueueUnitWrite } from "./unit-writer";
 
-/**
- * Default per-unit timeout for workflow units. A unit's `timeout` declaration
- * overrides this; `none` disables it. Direct agent dispatch has no timeout by
- * default, while workflow units retain an independent safety ceiling.
- */
-export const DEFAULT_UNIT_TIMEOUT_MS = 600_000;
-
 /** How much raw unit output is retained in step evidence (full text lives on the unit row). */
 const EVIDENCE_TEXT_CLIP = 2_000;
 
@@ -307,6 +300,18 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
     return { ok: false, error: `Step "${plan.stepId}" references missing frozen engine "${frozenInvocation.engine}".` };
   }
   const runner: IrRuntimeKind = frozenEngine.kind === "llm" ? "llm" : frozenEngine.runnerKind;
+  // Taken VERBATIM from the frozen plan — there is no engine-side backstop, by
+  // design. The whole timeout decision happens once at freeze time
+  // (`ir/freeze.ts` `effectiveTimeout`: unit `timeout:` → document
+  // `defaults.timeout` → `engines.<name>.timeoutMs` → the engine-kind default,
+  // `DEFAULT_LLM_TIMEOUT_MS` / `DEFAULT_AGENT_TIMEOUT_MS`). A frozen `null`
+  // means genuinely unbounded and is honored as such: it is reached either by an
+  // author writing `timeout: none` — an explicit, documented opt-out that a
+  // silent cap here would break — or by `DEFAULT_AGENT_TIMEOUT_MS`, which is
+  // itself `null` because agent harnesses own their own lifetime. The frozen IR
+  // collapses both to `timeoutMs: null`, so this layer could not tell them apart
+  // even if it wanted to; anything that should bound a unit belongs in
+  // `effectiveTimeout`, not here.
   const timeoutMs = frozenInvocation.timeoutMs;
 
   const units: StepWorkUnit[] = items.map((item, index) => {
@@ -530,7 +535,7 @@ function transitiveDispatchSnapshot(
 // ── Step outputs + reducers + typed artifacts ────────────────────────────────
 
 /**
- * The value `${{ steps.<id>.output }}` resolves to for ONE step, given that
+ * The value a `steps.<id>.output` reference resolves to for ONE step, given that
  * step's journaled evidence: an engine-executed step carries a promoted
  * ARTIFACT under `evidence.output` (solo unit result/text, collect array, or
  * vote winner); evidence without an `output` key (manually-completed steps) is
@@ -618,8 +623,8 @@ export function buildEvidence(units: UnitOutcome[], reducer: IrMapReducer, isFan
   );
   const evidence: Record<string, unknown> = { units: collected, itemCount: units.length };
 
-  // Promoted step artifact (`evidence.output`) — what `${{ steps.<id>.output }}`
-  // resolves to (see projectStepOutput). Values are UNCLIPPED.
+  // Promoted step artifact (`evidence.output`) — what a `steps.<id>.output`
+  // reference resolves to (see projectStepOutput). Values are UNCLIPPED.
   if (reducer === "vote") {
     evidence.output = null;
   } else {
@@ -1019,9 +1024,10 @@ export type RouteDecision = { ok: true; value: string; selected: string } | { ok
 export type RouteSkipInfo = { router: string; selected: string | null };
 
 /**
- * Resolve a route's input (a single whole-value `${{ … }}` reference) and pick
- * the branch. No ambient key search. Only primitive values route; the
- * comparison is exact string equality against the declared `when:` matches.
+ * Resolve a route's input (a single whole-value reference string — `params.x` or
+ * `steps.<id>.output…`, with no `${{ }}` delimiters) and pick the branch. No
+ * ambient key search. Only primitive values route; the comparison is exact
+ * string equality against the declared `when:` matches.
  */
 export function evaluateRoute(route: IrRouteSpec, scope: ExpressionScope): RouteDecision {
   const resolved = resolveReferenceString(route.input, scope);

@@ -629,12 +629,21 @@ async function driveRun(
       continue;
     }
 
-    // `dependsOn` edges (no frontend emits them today,
-    // but a frozen plan may carry them) are a declared ordering contract:
-    // every dependency must already be resolved before this step dispatches.
-    // Execution is sequential (spine order), so a violation means the plan
-    // ordered steps inconsistently with its declared edges — fail fast,
-    // before spending.
+    // `dependsOn` (IR-only surface — `ir/schema.ts`): NO frontend emits it. The
+    // markdown/YAML parser has no syntax for it, so `compileResolveFreezeWorkflow`
+    // never produces a step that carries one, and this loop is a dead guard for
+    // every plan authored through akm. It exists for the plans the strict decoder
+    // is there to police: hand-crafted or persisted-then-reloaded plan JSON, where
+    // the edges are attacker- or drift-supplied rather than compiler-supplied.
+    //
+    // Given such a plan, `dependsOn` is a declared ordering contract, and the
+    // engine walks a strictly SEQUENTIAL spine — it does not schedule on these
+    // edges, it only checks them. So a dependency that is not already resolved by
+    // the time the spine reaches this step means the plan's step ORDER contradicts
+    // its own declared edges, and nothing downstream will ever fix that. Fail
+    // fast, before spending, rather than dispatching against a broken contract.
+    // (`ir/schema.ts` separately rejects cycles at decode time; this is the
+    // ordering half of the same check.)
     for (const dep of stepPlan.dependsOn ?? []) {
       const depState = next.workflow.steps.find((s) => s.id === dep);
       if (!depState || (depState.status !== "completed" && depState.status !== "skipped")) {

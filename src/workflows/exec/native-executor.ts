@@ -424,10 +424,7 @@ export function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContext): Pr
   return withWorkflowRunsConnection(() => executeStepPlanInConnection(plan, ctx));
 }
 
-async function executeStepPlanInConnection(
-  plan: IrStepPlan,
-  ctx: StepExecutionContext,
-): Promise<StepExecutionResult> {
+async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionContext): Promise<StepExecutionResult> {
   const dispatched = ctx.unitsDispatched ?? 0;
 
   // Work-list computation is the SHARED, PURE decision (step-work.ts): resolve

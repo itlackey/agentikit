@@ -339,6 +339,14 @@ fail later at `akm workflow run`:
 | `timeout` | ≤ 2147483647 ms (~24.8 days), or `none` |
 | `engine` names | `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, ≤ 63 chars |
 
+`timeout` is resolved **once, at freeze time**, and the frozen value is what
+dispatch applies — there is no separate engine-side ceiling on top of it. The
+first of these that is set wins: the unit's `timeout`, then the document's
+`defaults.timeout`, then `engines.<name>.timeoutMs`, then the engine-kind
+default — **10m for `kind: llm` engines, and none for agent engines**, which
+manage their own process lifetime. Writing `timeout: none` is an explicit opt
+out and leaves the unit genuinely unbounded; nothing later re-imposes a cap.
+
 ## Routing
 
 A `route` step makes classify-and-dispatch first-class: the engine resolves
