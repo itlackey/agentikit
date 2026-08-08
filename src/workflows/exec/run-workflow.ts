@@ -90,6 +90,7 @@ import {
   cascadeSkippedRouter,
   finalizeExecutedStep,
   type GateFeedback,
+  judgeFailureNotes,
   type RouteSkipInfo,
   recoverGateFeedback,
   seedJournaledRouteDecisions,
@@ -159,10 +160,25 @@ export interface ExecutedStepReport {
 export interface RunWorkflowResult {
   run: WorkflowRunSummary;
   executed: ExecutedStepReport[];
+  /**
+   * Distinct spine steps that FINISHED processing (completed, failed, or
+   * gate-exhausted) across this call. This — not `executed.length`, which
+   * gains one entry per gate-loop iteration and per route-skip — is what
+   * `maxSteps` bounds: gate loops of one step count once, and route-skipped
+   * steps consume nothing.
+   */
+  stepsProcessed: number;
   /** Present when the run reached completed state during this invocation. */
   done?: true;
   /** Present when a step summary was rejected by the completion-criteria gate. */
   gateRejection?: { stepId: string; missing: string[]; feedback: string };
+  /**
+   * Present when the verification judge FAILED (missing/unresolvable judge,
+   * thrown judge call, or malformed verdict) — infrastructure, not a verdict.
+   * No gate loop was consumed; the step and run are left `blocked`, and
+   * `akm workflow resume` retries the gate over the journaled units.
+   */
+  judgeFailure?: { stepId: string; message: string };
   /** Present when cooperative cancellation stopped before advancing the step. */
   aborted?: true;
   /**
@@ -180,6 +196,7 @@ export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<Run
   let remainingRetries = options.maxRetries ?? 0;
   let remainingSteps = options.maxSteps;
   const executed: ExecutedStepReport[] = [];
+  let stepsProcessed = 0;
 
   for (;;) {
     const result = await runWorkflowAttempt({
@@ -190,12 +207,16 @@ export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<Run
       ...(remainingSteps !== undefined ? { maxSteps: remainingSteps } : { maxSteps: undefined }),
     });
     executed.push(...result.executed);
-    const aggregate = { ...result, executed };
+    stepsProcessed += result.stepsProcessed;
+    const aggregate = { ...result, executed, stepsProcessed };
     if (result.run.status !== "failed" || result.aborted || result.gateRejection || remainingRetries <= 0) {
       return aggregate;
     }
     if (remainingSteps !== undefined) {
-      remainingSteps -= result.executed.length;
+      // The step budget is DISTINCT PROCESSED STEPS, not `executed` entries:
+      // gate loops of one step and route-skips must not shrink a retry's
+      // remaining budget (they never counted against maxSteps either).
+      remainingSteps -= result.stepsProcessed;
       if (remainingSteps <= 0) return aggregate;
     }
     await resumeWorkflowRun(result.run.id);
@@ -463,6 +484,7 @@ async function completedRunResult(runId: string): Promise<RunWorkflowResult> {
   return {
     run: doneState.run,
     executed: [],
+    stepsProcessed: 0,
     ...(doneState.run.status === "completed" ? { done: true as const } : {}),
   };
 }
@@ -492,8 +514,14 @@ async function driveRun(
   const dispatchSignal = heartbeat?.signal ?? options.signal;
   const executed: ExecutedStepReport[] = [];
   let gateRejection: RunWorkflowResult["gateRejection"];
+  let judgeFailure: RunWorkflowResult["judgeFailure"];
   let aborted = false;
   const maxSteps = options.maxSteps ?? Number.POSITIVE_INFINITY;
+  // The `maxSteps` budget counts DISTINCT spine steps that finished processing
+  // — never `executed.length`, which grows once per gate-loop iteration and
+  // once per route-skip. A step's whole bounded gate loop consumes ONE step;
+  // a route-skipped step consumes NOTHING (no work was dispatched for it).
+  let stepsProcessed = 0;
 
   // Seed the lifetime unit cap AND the budget ceilings from the journal so
   // both are truly per-RUN: a resumed or re-invoked run must not restart the
@@ -558,7 +586,7 @@ async function driveRun(
     seedJournaledRouteDecisions(plan, next, routeSelected, routeUnselected);
   }
 
-  while (!next.done && next.step && next.run.status === "active" && executed.length < maxSteps) {
+  while (!next.done && next.step && next.run.status === "active" && stepsProcessed < maxSteps) {
     // A LOST lease (the heartbeat's renewal failed mid-step) is a loud stop —
     // another engine owns the spine now. A caller abort (options.signal) is a
     // graceful break, distinct from a lost lease.
@@ -656,9 +684,34 @@ async function driveRun(
       break;
     }
 
+    // Judge-outage contract: resolve the step's frozen completion judge BEFORE
+    // any dispatch. An unresolvable judge (missing frozen engine, no dispatcher
+    // for an agent judge) is verifier INFRASTRUCTURE failure — block the step
+    // for `akm workflow resume` instead of spending on units the gate can never
+    // verify. No gate loop is consumed and nothing is dispatched.
+    let summaryJudge: SummaryJudge | null;
+    try {
+      summaryJudge = workflowSummaryJudge(options, plan, stepPlan, dispatchSignal);
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? ` (${error.message})` : "";
+      const notes = judgeFailureNotes(
+        next.run.id,
+        step.id,
+        `the verification judge could not be resolved from the frozen plan${detail}`,
+      );
+      await completeWorkflowStep({ runId: next.run.id, stepId: step.id, status: "blocked", notes, leaseHolder });
+      executed.push({ stepId: step.id, ok: false, unitCount: 0, failedUnits: 0, summary: notes });
+      judgeFailure = { stepId: step.id, message: notes };
+      break;
+    }
+
     let gateFeedback: GateFeedback | undefined = seededFeedback;
     let advanced = false;
     let stopEngine = false;
+    // True once this step finished processing (completed / failed /
+    // gate-exhausted) — the ONE maxSteps consumption for its whole gate loop.
+    // Aborts and judge failures leave the step unfinished and consume nothing.
+    let stepFinished = false;
 
     for (let gateLoop = startLoop; gateLoop <= maxLoops; gateLoop++) {
       // A loop re-execution dispatches a fresh round of units — renew the
@@ -743,7 +796,7 @@ async function driveRun(
           params: next.run.params ?? {},
           routeSelected,
           routeUnselected,
-          summaryJudge: workflowSummaryJudge(options, plan, stepPlan, dispatchSignal),
+          summaryJudge,
           signal: options.signal,
           leaseHolder,
         });
@@ -771,6 +824,17 @@ async function driveRun(
           executed[executed.length - 1] = { ...executed[executed.length - 1]!, summary: finalize.summaryOverride };
         }
         advanced = true;
+        stepFinished = true;
+        break;
+      }
+      if (finalize.kind === "judge-failed") {
+        // Verifier infrastructure failure (thrown judge / malformed verdict /
+        // missing judge): the step is blocked for resume, NO gate loop was
+        // consumed, and the step does not count against maxSteps. Surface the
+        // resume instruction in the step report so every output mode shows it.
+        executed[executed.length - 1] = { ...executed[executed.length - 1]!, summary: finalize.summary };
+        judgeFailure = { stepId: step.id, message: finalize.summary };
+        stopEngine = true;
         break;
       }
       if (finalize.kind === "failed") {
@@ -779,14 +843,17 @@ async function driveRun(
         if (finalize.routeFailure) {
           executed[executed.length - 1] = { ...executed[executed.length - 1]!, ok: false, summary: finalize.summary };
         }
+        stepFinished = true;
         stopEngine = true;
         break;
       }
       // gate-exhausted: rejected with no loop budget left — stop with feedback.
       gateRejection = finalize.gateRejection;
+      stepFinished = true;
       stopEngine = true;
     }
 
+    if (stepFinished) stepsProcessed += 1;
     if (stopEngine || !advanced) break;
 
     next = await getNextWorkflowStep(next.run.id);
@@ -797,8 +864,10 @@ async function driveRun(
   return {
     run: finalState.run,
     executed,
+    stepsProcessed,
     ...(finalState.run.status === "completed" ? { done: true as const } : {}),
     ...(gateRejection ? { gateRejection } : {}),
+    ...(judgeFailure ? { judgeFailure } : {}),
     ...(aborted ? { aborted: true as const } : {}),
   };
 }

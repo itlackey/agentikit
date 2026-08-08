@@ -65,7 +65,7 @@ import { WORKFLOW_MAX_MAP_EXPANSION } from "../resource-limits";
 import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
 import { completeWorkflowStep, type SummaryValidationFailure, type WorkflowNextResult } from "../runtime/runs";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
-import type { SummaryJudge } from "../validate-summary";
+import { parseJudgeVerdict, type SummaryJudge } from "../validate-summary";
 import { enqueueUnitWrite } from "./unit-writer";
 
 /**
@@ -972,8 +972,12 @@ export async function journalGateEvaluationStart(gate: GateUnitRef): Promise<voi
 /**
  * Finish the gate-evaluation unit row with the verdict as observed from the
  * completion outcome: a rejection journals `{ complete: false, missing,
- * feedback }`; a pass journals `{ complete: true, missing: [] }`; a judge that
- * threw journals a failed row with the synthesized fail-closed rejection.
+ * feedback }`; a pass journals `{ complete: true, missing: [] }`. An ERRORED
+ * evaluation (thrown judge, malformed verdict, completion failure after the
+ * judge ran) journals a failed row with NO verdict (`result_json` NULL) —
+ * `errored` takes precedence over any synthesized fail-closed rejection, so
+ * `activeGateLoop`/`recoverGateFeedback` never mistake a judge outage for an
+ * honest rejection and burn a gate loop on resume.
  */
 export async function journalGateEvaluationFinish(
   gate: GateUnitRef,
@@ -981,10 +985,10 @@ export async function journalGateEvaluationFinish(
   rejection: SummaryValidationFailure | undefined,
 ): Promise<void> {
   const unitId = gateUnitId(gate.stepId, gate.loop);
-  const verdict = rejection
-    ? { complete: false, missing: rejection.missing, feedback: rejection.feedback }
-    : errored
-      ? null
+  const verdict = errored
+    ? null
+    : rejection
+      ? { complete: false, missing: rejection.missing, feedback: rejection.feedback }
       : { complete: true, missing: [] };
   const status = errored ? ("failed" as const) : ("completed" as const);
   await enqueueUnitWrite(() =>
@@ -1234,7 +1238,45 @@ export type FinalizeStepResult =
   | { kind: "advanced"; summaryOverride?: string }
   | { kind: "failed"; summary: string; routeFailure?: true }
   | { kind: "retry"; gateFeedback: GateFeedback }
-  | { kind: "gate-exhausted"; gateRejection: { stepId: string; missing: string[]; feedback: string } };
+  | { kind: "gate-exhausted"; gateRejection: { stepId: string; missing: string[]; feedback: string } }
+  /**
+   * Verifier INFRASTRUCTURE failure — a missing judge, a thrown judge call, or
+   * a malformed verdict — as opposed to an honest negative verdict. The step
+   * was completed `blocked` (run derives `blocked`), NO gate loop was
+   * consumed, and `akm workflow resume` re-evaluates the gate against the
+   * journaled units without re-dispatching them.
+   */
+  | { kind: "judge-failed"; summary: string };
+
+/**
+ * The blocked-step notes for a verifier-infrastructure failure (bug: judge
+ * outage must not burn the gate budget). Shared by every judge-failure path —
+ * missing judge, unresolvable frozen judge, thrown judge call, malformed
+ * verdict — so the resume instruction is worded once.
+ */
+export function judgeFailureNotes(runId: string, stepId: string, cause: string): string {
+  return (
+    `Step "${stepId}" could not be verified: ${cause}. ` +
+    `This is a verification-judge failure, not a verdict — no gate loop was consumed and the step's ` +
+    `journaled units are preserved. Fix the verifier configuration or service, then run ` +
+    `\`akm workflow resume ${runId}\` to re-evaluate the gate against the existing results ` +
+    `without re-dispatching units.`
+  );
+}
+
+/** Complete the step `blocked` for a judge-infrastructure failure and surface it. */
+async function blockStepForJudgeFailure(input: FinalizeStepInput, cause: string): Promise<FinalizeStepResult> {
+  const notes = judgeFailureNotes(input.runId, input.stepId, cause);
+  await completeWorkflowStep({
+    runId: input.runId,
+    stepId: input.stepId,
+    status: "blocked",
+    notes,
+    evidence: input.result.evidence,
+    ...(input.leaseHolder !== undefined ? { leaseHolder: input.leaseHolder } : {}),
+  });
+  return { kind: "judge-failed", summary: notes };
+}
 
 /**
  * Perform ONE completion attempt for an executed step:
@@ -1249,7 +1291,11 @@ export type FinalizeStepResult =
  *    the step declares criteria), journaled as a `<stepId>.gate:l<loop>` unit
  *    row; a rejection with loops remaining returns `retry` (feedback threaded
  *    into the next loop), a rejection with none returns `gate-exhausted`, a pass
- *    returns `advanced`.
+ *    returns `advanced`;
+ *  - a judge INFRASTRUCTURE failure (missing judge, thrown judge call, or a
+ *    malformed verdict) is NOT a verdict: it consumes no gate loop and blocks
+ *    the step for `akm workflow resume` (`judge-failed`) instead of feeding
+ *    the bounded loop's re-dispatch.
  *
  * Every DB advance goes through {@link completeWorkflowStep} — the gate spine is
  * never bypassed. Behavior is byte-identical to the engine's former inline loop
@@ -1281,6 +1327,17 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // A frozen plan either supplies its judge at the dispatch boundary or has no
   // judge. Re-selecting defaults here would let config drift change a run.
   const innerJudge = input.summaryJudge ?? null;
+
+  // A criteria-bearing step with NO judge cannot be verified at all — that is
+  // verifier infrastructure failure, never a silent bypass and never an honest
+  // rejection: block for resume without invoking the gate (no loop consumed).
+  if (completionCriteria.some((c) => c.trim().length > 0) && !innerJudge) {
+    return blockStepForJudgeFailure(
+      input,
+      "this step declares completion criteria but no verification judge is available " +
+        "(the frozen plan resolves no judge — set workflow.judgeEngine, or restore the judge configuration)",
+    );
+  }
 
   // Route evaluation BEFORE completion: an unroutable value is an
   // authoring/config failure that must fail the step deterministically.
@@ -1327,7 +1384,11 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
     : null;
   const gateInvocation = frozenGate?.invocation ?? null;
   let gateUnit: GateUnitRef | undefined;
-  const judgeState = { invoked: false, errored: false };
+  // `failure` classifies a verifier INFRASTRUCTURE failure observed during the
+  // judge call — a throw (transport/service error) or a response that is not a
+  // well-formed verdict (same parser as validateStepSummary, so the fail-closed
+  // rejection it synthesizes is recognizably NOT an honest verdict here).
+  const judgeState: { invoked: boolean; failure?: string } = { invoked: false };
   const summaryJudge: SummaryJudge | null = innerJudge
     ? async (prompt) => {
         judgeState.invoked = true;
@@ -1352,12 +1413,19 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
           };
           await journalGateEvaluationStart(gateUnit);
         }
+        let raw: string;
         try {
-          return await innerJudge(prompt);
+          raw = await innerJudge(prompt);
         } catch (err) {
-          judgeState.errored = true;
+          const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
+          judgeState.failure = `the verification judge failed${detail}`;
           throw err;
         }
+        if (parseJudgeVerdict(raw) === undefined) {
+          judgeState.failure =
+            "the verification judge responded with a malformed verdict instead of the required JSON result";
+        }
+        return raw;
       }
     : null;
 
@@ -1387,9 +1455,20 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   }
   const rejection =
     "ok" in completion && completion.ok === false ? (completion as SummaryValidationFailure) : undefined;
+  const judgeFailed = judgeState.failure !== undefined;
 
   if (gateUnit) {
-    await journalGateEvaluationFinish(gateUnit, judgeState.errored, rejection);
+    // An infrastructure failure journals an ERRORED gate row (no verdict) —
+    // never the synthesized fail-closed rejection, which would read as an
+    // honest rejection to activeGateLoop/recoverGateFeedback on resume.
+    await journalGateEvaluationFinish(gateUnit, judgeFailed, rejection);
+  }
+
+  // Judge infrastructure failure: the fail-closed rejection is synthetic, not a
+  // verdict. Consume NO gate loop; block the step (and therefore the run) so
+  // `akm workflow resume` retries the gate over the journaled units.
+  if (rejection && judgeFailed) {
+    return blockStepForJudgeFailure(input, judgeState.failure ?? "the verification judge failed");
   }
 
   if (!rejection) {

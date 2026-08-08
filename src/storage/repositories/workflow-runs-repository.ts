@@ -656,6 +656,39 @@ export class WorkflowRunsRepository {
       );
     }
   }
+
+  /**
+   * Finish a unit row ONLY while it is still the exact row a specific dispatch
+   * inserted: `running`, with that dispatch's `started_at`. The native
+   * executor's guarded finish (single-driver invariant): a run stolen by
+   * another engine re-dispatches the unit through {@link insertUnit}, which
+   * REPLACES the row (fresh `started_at`, bumped `attempts`) — the stale
+   * driver's finish then matches NOTHING instead of clobbering the new
+   * driver's live dispatch. Returns whether the row was finished; a zero-row
+   * match is a caller-classified outcome here (the executor distinguishes
+   * "replaced by another driver" from "row vanished"), unlike
+   * {@link finishUnit}'s loud throw, whose callers guarantee their row exists.
+   */
+  finishUnitFromDispatch(input: FinishUnitInput & { dispatchStartedAt: string }): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE workflow_run_units
+           SET status = ?, result_json = ?, tokens = ?, failure_reason = ?, session_id = ?, finished_at = ?
+           WHERE run_id = ? AND unit_id = ? AND status = 'running' AND started_at = ?`,
+      )
+      .run(
+        input.status,
+        input.resultJson,
+        input.tokens,
+        input.failureReason,
+        input.sessionId ?? null,
+        input.finishedAt,
+        input.runId,
+        input.unitId,
+        input.dispatchStartedAt,
+      );
+    return Number(result.changes) === 1;
+  }
 }
 
 /**
