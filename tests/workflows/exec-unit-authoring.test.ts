@@ -15,23 +15,13 @@ import { describe, expect, test } from "bun:test";
 import { computeStepWorkList } from "../../src/workflows/exec/step-work";
 import type { IrUnitNode, WorkflowPlanGraph } from "../../src/workflows/ir/schema";
 import { decodeWorkflowPlanV3 } from "../../src/workflows/ir/schema";
-import { parseWorkflow } from "../../src/workflows/parser";
 import {
   DEFAULT_EXEC_TIMEOUT_MS,
   execContextLimits,
   WORKFLOW_MAX_EXEC_ARGV,
   WORKFLOW_MAX_EXEC_PASS_ENV,
 } from "../../src/workflows/resource-limits";
-import { freezeWorkflow } from "../_helpers/workflow";
-
-function doc(stepLines: string[], body = "## work\n\nDo it.\n", extra: string[] = []): string {
-  return ["---", "type: workflow", ...extra, "steps:", "  - id: work", ...stepLines, "---", "", body].join("\n");
-}
-
-function parseErrors(markdown: string): Array<{ line: number; message: string }> {
-  const result = parseWorkflow(markdown, { path: "workflows/exec.md" });
-  return result.ok ? [] : result.errors;
-}
+import { workflowDoc as doc, freezeWorkflow, parseErrors } from "../_helpers/workflow";
 
 function rootUnit(plan: WorkflowPlanGraph, index = 0): IrUnitNode {
   const root = plan.steps[index]!.root;
@@ -376,9 +366,7 @@ describe("exec unit — replay identity / input hashing", () => {
       engines: plan.execution.engines,
     });
     if (!list.ok) throw new Error(list.error);
-    const resolved = list.list.units[0]!.resolved;
-    if (!resolved.ok) throw new Error(resolved.error);
-    return resolved.inputHash;
+    return list.list.units[0]!.resolved.inputHash;
   }
 
   test("ADDITIVE: an existing llm unit's input hash is byte-identical to the pre-exec engine", () => {

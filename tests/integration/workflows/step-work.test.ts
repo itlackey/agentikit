@@ -172,9 +172,7 @@ describe("computeStepWorkList — dispatch-input hash envelope (reviewer finding
     };
     const wl = computeStepWorkList(step, { ...input, engines });
     if (!wl.ok) throw new Error(wl.error);
-    const u = wl.list.units[0]!;
-    if (!u.resolved.ok) throw new Error(u.resolved.error);
-    return u.resolved.inputHash;
+    return wl.list.units[0]!.resolved.inputHash;
   }
 
   const baseline = hashOf({});
@@ -273,16 +271,13 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
 
     const u = a.list.units[0]!;
     expect(u.unitId).toBe("s1:solo");
-    expect(u.resolved.ok).toBe(true);
-    if (u.resolved.ok) {
-      // Instructions reach the unit byte-exact.
-      expect(u.resolved.prompt).toContain("Do the assigned work.");
-      // Params attach as structured JSON context (never interpolated into text).
-      expect(u.resolved.prompt).toContain('"x":"alpha"');
-      expect(u.resolved.prompt).toContain('"y":"beta"');
-      // 64-hex sha256.
-      expect(u.resolved.inputHash).toMatch(/^[0-9a-f]{64}$/);
-    }
+    // Instructions reach the unit byte-exact.
+    expect(u.resolved.prompt).toContain("Do the assigned work.");
+    // Params attach as structured JSON context (never interpolated into text).
+    expect(u.resolved.prompt).toContain('"x":"alpha"');
+    expect(u.resolved.prompt).toContain('"y":"beta"');
+    // 64-hex sha256.
+    expect(u.resolved.inputHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
   test("fan-out identity is content-derived — independent of item order", () => {
@@ -309,10 +304,9 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
     // — the R2 identity guarantee that survives list reordering/regeneration.
     expect(fwdA?.unitId).toBe(revA?.unitId);
     expect(fwdA?.unitId).toMatch(/^review:[0-9a-f]{12}$/);
-    expect(fwdA?.resolved.ok).toBe(true);
     // The item reaches the unit as ATTACHED CONTEXT (never resolved/spliced) —
     // the "## Item (index N)" block `buildUnitPrompt` emits.
-    if (fwdA?.resolved.ok) expect(fwdA.resolved.prompt).toContain("## Item (index 0)\nYou were given this item");
+    expect(fwdA?.resolved.prompt).toContain("## Item (index 0)\nYou were given this item");
   });
 
   test("duplicate fan-out items are a whole-list failure naming the collision", () => {
@@ -345,20 +339,10 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
   // reference (`${{ steps.prior.output.name }}` alongside `${{ item }}`).
   // Instructions are never parsed as references any more, and `inputs:` — the
   // one remaining per-step (not per-unit) reference position besides
-  // `map.over` — resolves ONCE for the whole step BEFORE fan-out. Reading
-  // `computeStepWorkList`'s unit-construction loop (`src/workflows/exec/
-  // step-work.ts`), every unit's `resolved` field is now unconditionally
-  // `{ ok: true, prompt, inputHash }` — there is no remaining code path that
-  // produces `{ ok: false }` on an individual `StepWorkUnit`. A per-unit
-  // "expression_error" outcome (asserted by `native-executor.test.ts`'s "null
-  // item" case, also ported below) is therefore currently UNREACHABLE via
-  // computeStepWorkList; the type still declares the union (for a future
-  // per-unit-resolved need — spec §2.3's non-agent/raw-exec unit-kind note),
-  // but no fixture in this port can construct it. REPORTED to the
-  // orchestrating agent as a behavior-surface change worth confirming
-  // intentional, not fixed here. The closest surviving equivalent — an
-  // unresolvable declared `inputs:` reference — IS still a real failure, just
-  // a WHOLE-LIST one now:
+  // `map.over` — resolves ONCE for the whole step BEFORE fan-out. Per-unit
+  // resolution cannot fail (`StepWorkUnit.resolved` carries no failure arm);
+  // the closest surviving equivalent — an unresolvable declared `inputs:`
+  // reference — IS still a real failure, just a WHOLE-LIST one:
   test("an unresolvable declared `inputs:` reference is a WHOLE-LIST failure (no more per-unit resolution)", () => {
     const step = mapStep("Review the assigned item.", "params.files", ["steps.prior.output.name"]);
     const result = computeStepWorkList(step, {
@@ -382,10 +366,7 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const u = result.list.units[0]!;
-    expect(u.resolved.ok).toBe(true);
-    if (u.resolved.ok) {
-      expect(u.resolved.prompt).toContain("Literal ${{ not.parsed }} and steps.prior.output here.");
-    }
+    expect(u.resolved.prompt).toContain("Literal ${{ not.parsed }} and steps.prior.output here.");
   });
 
   test("gate feedback changes the prompt AND the input hash", () => {
@@ -409,13 +390,10 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
     const u2 = loop2.list.units[0]!;
     expect(u1.journalBaseId).toBe("s1:solo");
     expect(u2.journalBaseId).toBe("s1:solo~l2");
-    expect(u1.resolved.ok && u2.resolved.ok).toBe(true);
-    if (u1.resolved.ok && u2.resolved.ok) {
-      expect(u2.resolved.prompt).toContain("Add analysis.");
-      expect(u2.resolved.prompt).toContain("- thoroughness");
-      expect(u1.resolved.prompt).not.toContain("Add analysis.");
-      expect(u2.resolved.inputHash).not.toBe(u1.resolved.inputHash);
-    }
+    expect(u2.resolved.prompt).toContain("Add analysis.");
+    expect(u2.resolved.prompt).toContain("- thoroughness");
+    expect(u1.resolved.prompt).not.toContain("Add analysis.");
+    expect(u2.resolved.inputHash).not.toBe(u1.resolved.inputHash);
   });
 });
 
@@ -746,12 +724,9 @@ describe("anti-drift — recomputing loop 2 from the journal reproduces the engi
     if (!list.ok) return;
     const u = list.list.units[0]!;
     expect(u.journalBaseId).toBe("work:solo~l2");
-    expect(u.resolved.ok).toBe(true);
-    if (u.resolved.ok) {
-      expect(u.resolved.prompt).toBe(workPrompts[1]!);
-      const journaled = rows.find((r) => r.unit_id === "work:solo~l2");
-      expect(journaled?.input_hash).toBe(u.resolved.inputHash);
-    }
+    expect(u.resolved.prompt).toBe(workPrompts[1]!);
+    const journaled = rows.find((r) => r.unit_id === "work:solo~l2");
+    expect(journaled?.input_hash).toBe(u.resolved.inputHash);
   });
 });
 
@@ -964,40 +939,21 @@ describe("reviewer #7 — a tampered route selection fails loudly on every surfa
 
 // ── Reviewer #6 — the gate row is finalized when completeWorkflowStep throws ───
 
-/** A solo executing step plan whose gate carries criteria (so the judge runs). */
-function gatedStep(): IrStepPlan {
-  return {
-    stepId: "work",
-    title: "Work",
-    sequenceIndex: 0,
-    root: {
-      kind: "unit",
-      id: "work",
-      instructions: "Do the work.",
-      templating: "verbatim",
-      invocation: SDK_INVOCATION,
-      onError: "fail",
-    },
-    gate: {
-      kind: "gate",
-      id: "work.gate",
-      stepId: "work",
-      criteria: ["the work is thorough"],
-    },
-  };
-}
-
 function passingResult(): ExecutedStepOutcome {
   const unit: UnitOutcome = { unitId: "work:solo", ok: true, text: "did the work" };
   return { ok: true, units: [unit], evidence: buildEvidence([unit], "collect", false), summary: "Executed 1 unit." };
 }
 
 function finalizeArgs(overrides: Record<string, unknown>) {
+  // The SAME frozen plan seedRun stores: finalizeExecutedStep reads the gate
+  // judge invocation and its engine snapshot from the caller-held plan, so the
+  // fixture must hand it the real frozen step, not a hand-built lookalike.
+  const frozen = plan(GATED_WF);
   return {
     runId: RUN_ID,
     workflowRef: "workflows/demo",
     stepId: "work",
-    stepPlan: gatedStep(),
+    stepPlan: frozen.steps[0]!,
     completionCriteria: ["the work is thorough"],
     gateLoop: 1,
     loopsRemaining: false,
@@ -1007,6 +963,7 @@ function finalizeArgs(overrides: Record<string, unknown>) {
     routeSelected: new Set<string>(),
     routeUnselected: new Map<string, RouteSkipInfo>(),
     summaryJudge: null as SummaryJudge | null,
+    engines: frozen.execution?.engines,
     ...overrides,
   };
 }

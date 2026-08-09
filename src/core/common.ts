@@ -325,11 +325,25 @@ export function isContainedRelativePath(value: string): boolean {
 }
 
 export function isWithin(candidate: string, root: string): boolean {
-  const resolvedRoot = safeRealpath(root);
-  const resolvedCandidate = safeRealpath(candidate);
-  const normalizedRoot = normalizeFsPathForComparison(resolvedRoot);
-  const normalizedCandidate = normalizeFsPathForComparison(resolvedCandidate);
-  const rel = path.relative(normalizedRoot, normalizedCandidate);
+  return isContainedResolvedPath(safeRealpath(candidate), safeRealpath(root));
+}
+
+/**
+ * {@link isWithin} for callers that must not block the event loop (e.g. the
+ * workflow exec dispatch path, which runs once per fan-out unit). Same
+ * comparison, same normalization, same nearest-existing-ancestor fallback —
+ * only the realpath syscalls are awaited.
+ */
+export async function isWithinAsync(candidate: string, root: string): Promise<boolean> {
+  return isContainedResolvedPath(await safeRealpathAsync(candidate), await safeRealpathAsync(root));
+}
+
+/** The containment comparison shared by {@link isWithin} and {@link isWithinAsync}. */
+function isContainedResolvedPath(resolvedCandidate: string, resolvedRoot: string): boolean {
+  const rel = path.relative(
+    normalizeFsPathForComparison(resolvedRoot),
+    normalizeFsPathForComparison(resolvedCandidate),
+  );
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
@@ -360,6 +374,28 @@ export function safeRealpath(p: string): string {
       try {
         const realParent = fs.realpathSync(current);
         return path.join(realParent, ...suffix);
+      } catch {
+        // parent also doesn't exist; keep walking up
+      }
+    }
+  }
+}
+
+/** {@link safeRealpath}'s async twin — awaited syscalls, identical walk-up. */
+export async function safeRealpathAsync(p: string): Promise<string> {
+  const resolved = path.resolve(p);
+  try {
+    return await fs.promises.realpath(resolved);
+  } catch {
+    const suffix: string[] = [];
+    let current = resolved;
+    for (;;) {
+      const parent = path.dirname(current);
+      if (parent === current) return resolved;
+      suffix.unshift(path.basename(current));
+      current = parent;
+      try {
+        return path.join(await fs.promises.realpath(current), ...suffix);
       } catch {
         // parent also doesn't exist; keep walking up
       }

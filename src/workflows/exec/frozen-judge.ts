@@ -13,8 +13,8 @@
  *     `result_json`, and a judge failure's message becomes the blocked step's
  *     notes. So the judge outcome goes through the SAME scrub every unit outcome
  *     goes through: {@link collectWorkflowDispatchSensitiveValues} +
- *     {@link redactUnitOutcome} (exec/dispatch-redaction.ts). Nothing about a
- *     judge call reaches durable state before that scrub.
+ *     {@link withDispatchRedaction} (exec/dispatch-redaction.ts). Nothing about
+ *     a judge call reaches durable state before that scrub.
  *
  *  2. **Identity.** The dispatch request carries the REAL run/step and the gate's
  *     real node/unit ids — the same ids `journalGateEvaluationStart/Finish` write
@@ -32,14 +32,12 @@
  * @module workflows/exec/frozen-judge
  */
 
-import type { LlmConnectionConfig } from "../../core/config/config";
-import { deepMergeConfig } from "../../core/config/deep-merge";
 import { ConfigError } from "../../core/errors";
 import { redactSensitiveText } from "../../core/redaction";
-import type { FrozenLlmEngine, IrInvocation, WorkflowPlanGraph } from "../ir/schema";
+import type { IrInvocation, WorkflowPlanGraph } from "../ir/schema";
 import type { JudgeCallIdentity, SummaryJudge } from "../validate-summary";
-import { collectWorkflowDispatchSensitiveValues, redactUnitOutcome } from "./dispatch-redaction";
-import type { UnitDispatcher } from "./unit-dispatch";
+import { collectWorkflowDispatchSensitiveValues, withDispatchRedaction } from "./dispatch-redaction";
+import { materializeFrozenLlm, type UnitDispatcher } from "./unit-dispatch";
 
 /**
  * The run/step a judge belongs to, known when the judge is BUILT. Callers that
@@ -87,17 +85,24 @@ export function frozenSummaryJudge(
         "INVALID_CONFIG_FILE",
       );
     }
+    const fallbackEngine = engine.fallbackLlmEngine ? plan.execution.engines[engine.fallbackLlmEngine] : undefined;
+    const fallback = fallbackEngine?.kind === "llm" ? fallbackEngine : undefined;
+    // The engine pair is fixed when the judge is BUILT, so the sensitive-value
+    // set is too — collected once here, not per gate evaluation. Same collector
+    // the unit path uses; see the module doc on why `env` is absent here but
+    // the credential/passthrough values are still collected.
+    const sensitiveValues = collectWorkflowDispatchSensitiveValues(
+      { engine, ...(fallback ? { fallbackEngine: fallback } : {}) },
+      undefined,
+    );
+    // Scrub at the seam: every outcome this judge's dispatcher returns is
+    // redacted BEFORE the verdict (or the failure message) can reach the gate
+    // row / the blocked step's notes. Identical contract to the unit path,
+    // including the failureReason downgrade when redaction altered it.
+    const dispatch = withDispatchRedaction(dispatcher);
     return async ({ system, user }, identity) => {
-      const fallbackEngine = engine.fallbackLlmEngine ? plan.execution.engines[engine.fallbackLlmEngine] : undefined;
-      const fallback = fallbackEngine?.kind === "llm" ? fallbackEngine : undefined;
       const id = dispatchIdentity(owner, identity);
-      // Same collector the unit path uses — see the module doc on why `env` is
-      // absent here but the credential/passthrough values are still collected.
-      const sensitiveValues = collectWorkflowDispatchSensitiveValues(
-        { engine, ...(fallback ? { fallbackEngine: fallback } : {}) },
-        undefined,
-      );
-      const result = await dispatcher({
+      const outcome = await dispatch({
         runId: id.runId,
         stepId: id.stepId,
         unitId: id.unitId,
@@ -111,34 +116,26 @@ export function frozenSummaryJudge(
         ...(sensitiveValues.length > 0 ? { sensitiveValues } : {}),
         ...(signal ? { signal } : {}),
       });
-      // Scrub BEFORE the verdict (or the failure message) can reach the gate row
-      // / the blocked step's notes. Identical contract to the unit path,
-      // including the failureReason downgrade when redaction altered it.
-      const outcome = redactUnitOutcome(
-        {
-          unitId: id.unitId,
-          ok: result.ok,
-          ...(result.text !== undefined ? { text: result.text } : {}),
-          ...(result.failureReason !== undefined ? { failureReason: result.failureReason } : {}),
-          ...(result.error !== undefined ? { error: result.error } : {}),
-        },
-        sensitiveValues,
-      );
       if (!outcome.ok) {
         throw new Error(outcome.error || `Verification engine "${invocation.engine}" failed.`);
       }
       return outcome.text ?? "";
     };
   }
+  // An llm judge's only secret is its own credential (materializeFrozenLlm
+  // reads it out of process.env); collected once at build time through the
+  // SHARED collector so the llm and agent judge paths cannot drift.
+  const sensitiveValues = collectWorkflowDispatchSensitiveValues({ engine }, undefined);
   return async ({ system, user }) => {
+    // Inline chatCompletion rather than the unit dispatcher ON PURPOSE: the
+    // manual completion path (`runtime/runs.ts`) builds an llm judge with no
+    // dispatcher, and a static runs → native-executor edge would close an
+    // import cycle. The materialization itself is the shared
+    // {@link materializeFrozenLlm}, so the two llm dispatch paths cannot drift.
     const { chatCompletion } = await import("../../llm/client");
-    // An llm judge's only secret is its own credential (materialize reads it out
-    // of process.env); collect it through the SHARED collector so the llm and
-    // agent judge paths cannot drift.
-    const sensitiveValues = collectWorkflowDispatchSensitiveValues({ engine }, undefined);
     try {
       const text = await chatCompletion(
-        materialize(engine, invocation),
+        materializeFrozenLlm(engine, invocation),
         [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -151,7 +148,7 @@ export function frozenSummaryJudge(
       return redactSensitiveText(text, sensitiveValues);
     } catch (err) {
       // A transport error's message becomes the blocked step's notes (see
-      // `judgeState.failure` in step-work.ts) — a durable surface. Re-wrap ONLY
+      // `judgeFailure` in step-work.ts) — a durable surface. Re-wrap ONLY
       // when redaction actually changed the message, so the untouched path keeps
       // the original error object (and its type) byte-identical.
       throw redactJudgeError(err, sensitiveValues);
@@ -166,35 +163,4 @@ function redactJudgeError(err: unknown, sensitiveValues: readonly string[]): unk
   const replacement = new Error(redacted);
   replacement.name = err.name;
   return replacement;
-}
-
-function materialize(engine: FrozenLlmEngine, invocation: IrInvocation): LlmConnectionConfig {
-  let apiKey: string | undefined;
-  for (const name of engine.credential?.names ?? []) {
-    const value = process.env[name]?.trim();
-    if (value) {
-      apiKey = value;
-      break;
-    }
-  }
-  if (engine.credential?.required && !apiKey)
-    throw new ConfigError(
-      `Required engine credential ${engine.credential.names[0]} is not set.`,
-      "INVALID_CONFIG_FILE",
-    );
-  const base = {
-    provider: engine.provider,
-    endpoint: engine.endpoint,
-    model: invocation.model ?? engine.model,
-    ...(engine.temperature !== undefined ? { temperature: engine.temperature } : {}),
-    ...(engine.maxTokens !== undefined ? { maxTokens: engine.maxTokens } : {}),
-    ...(engine.supportsJsonSchema !== undefined ? { supportsJsonSchema: engine.supportsJsonSchema } : {}),
-    ...(engine.extraParams ? { extraParams: engine.extraParams } : {}),
-    ...(engine.contextLength !== undefined ? { contextLength: engine.contextLength } : {}),
-    ...(engine.enableThinking !== undefined ? { enableThinking: engine.enableThinking } : {}),
-    ...(apiKey ? { apiKey } : {}),
-  };
-  return (
-    invocation.llm ? deepMergeConfig(base, invocation.llm as Record<string, unknown>) : base
-  ) as LlmConnectionConfig;
 }

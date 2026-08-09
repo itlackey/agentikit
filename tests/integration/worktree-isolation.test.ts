@@ -20,7 +20,6 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -37,6 +36,7 @@ import { isGitAvailable, runWorktreeRoot } from "../../src/workflows/exec/worktr
 import { compileResolveFreezeWorkflow } from "../../src/workflows/ir/freeze";
 import type { FrozenAgentEngine, FrozenLlmEngine, WorkflowPlanGraph } from "../../src/workflows/ir/schema";
 import { parseWorkflow } from "../../src/workflows/parser";
+import { makeGitRepo as makeTempGitRepo } from "../_helpers/git";
 import { makeSandboxDir, withEnv, writeSandboxConfig } from "../_helpers/sandbox";
 
 const GIT = isGitAvailable();
@@ -67,24 +67,9 @@ afterEach(() => {
   }
 });
 
-function git(cwd: string, args: string[]): void {
-  const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 15_000 });
-  if (result.status !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
-  }
-}
-
-/** Init a temp git repo with one committed file (`README.md`). */
+/** Init a temp git repo with one committed file (`README.md`), removed in afterEach. */
 function makeGitRepo(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-wt-repo-"));
-  scratch.push(dir);
-  git(dir, ["init", "-q"]);
-  git(dir, ["config", "user.email", "test@akm.invalid"]);
-  git(dir, ["config", "user.name", "akm-test"]);
-  fs.writeFileSync(path.join(dir, "README.md"), "# fixture\n");
-  git(dir, ["add", "README.md"]);
-  git(dir, ["commit", "-q", "-m", "fixture"]);
-  return dir;
+  return makeTempGitRepo({ prefix: "akm-wt-repo-", register: (dir) => scratch.push(dir) });
 }
 
 function seedRun(steps: Array<{ id: string; title: string }>, params: Record<string, unknown> = {}): void {

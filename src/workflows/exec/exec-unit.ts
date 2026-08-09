@@ -49,7 +49,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { collectAllowlistedEnv, supplementPathForSchedulerContext } from "../../core/spawn-env";
+import { isWithinAsync } from "../../core/common";
+import {
+  COMMON_SPAWN_ENV_PASSTHROUGH,
+  collectAllowlistedEnv,
+  supplementPathForSchedulerContext,
+} from "../../core/spawn-env";
 import {
   type ManagedSubprocessResult,
   runManagedSubprocess,
@@ -88,9 +93,11 @@ const EXEC_STDERR_DIAGNOSTIC_CLIP = WORKFLOW_UNIT_DIAGNOSTIC_CLIP - 500;
  *
  * The child starts from an EMPTY environment and receives only these names,
  * matching how an agent harness child is already built
- * (`profile.envPassthrough` → `collectAllowlistedEnv`). Every entry earns its
- * place by being load-bearing for ordinary commands on some supported
- * platform:
+ * (`profile.envPassthrough` → `collectAllowlistedEnv`) — and literally
+ * extending the same {@link COMMON_SPAWN_ENV_PASSTHROUGH} baseline those
+ * profiles start from, so the two child-spawn allowlists share one floor.
+ * Every entry earns its place by being load-bearing for ordinary commands on
+ * some supported platform:
  *
  *   - `PATH`        — command resolution. Without it only an absolute `argv[0]`
  *                     can ever be spawned.
@@ -135,17 +142,14 @@ const EXEC_STDERR_DIAGNOSTIC_CLIP = WORKFLOW_UNIT_DIAGNOSTIC_CLIP - 500;
  * values as credential-bearing.
  */
 export const EXEC_DEFAULT_ENV_PASSTHROUGH: readonly string[] = [
-  "PATH",
-  "HOME",
-  "USER",
+  // PATH, HOME, USER, LANG, LC_ALL, TERM, TMPDIR, AKM_EVENT_SOURCE
+  ...COMMON_SPAWN_ENV_PASSTHROUGH,
+  // POSIX names a raw shell command needs beyond the agent baseline
   "LOGNAME",
   "SHELL",
-  "LANG",
-  "LC_ALL",
   "LC_CTYPE",
-  "TERM",
   "TZ",
-  "TMPDIR",
+  // Windows process creation, command resolution, and toolchain roots
   "SystemRoot",
   "SystemDrive",
   "WINDIR",
@@ -160,7 +164,6 @@ export const EXEC_DEFAULT_ENV_PASSTHROUGH: readonly string[] = [
   "TMP",
   "ProgramData",
   "ProgramFiles",
-  "AKM_EVENT_SOURCE",
 ];
 
 export interface RunExecUnitInput {
@@ -418,12 +421,34 @@ function outputLimitFailure(
  * authored values a human wrote and sized; this is the surface where the SIZE
  * is data-dependent and therefore surprising.
  */
+/**
+ * Byte sizes of large context payloads, keyed by the payload string itself.
+ * `AKM_PARAMS` / `AKM_INPUTS` are serialized ONCE per step
+ * (`computeStepWorkList`) and every fan-out unit shares the same string, so a
+ * 10 000-unit map step measures each payload once here instead of re-scanning
+ * up to ~96 KiB per unit. Small values skip the cache (measuring is cheaper
+ * than caching), and the map is cleared before it can outgrow a handful of
+ * steps' worth of distinct payloads.
+ */
+const largeContextSizeCache = new Map<string, number>();
+
+function cachedUtf8Bytes(value: string): number {
+  if (value.length < 1024) return utf8Bytes(value);
+  let bytes = largeContextSizeCache.get(value);
+  if (bytes === undefined) {
+    bytes = utf8Bytes(value);
+    if (largeContextSizeCache.size >= 64) largeContextSizeCache.clear();
+    largeContextSizeCache.set(value, bytes);
+  }
+  return bytes;
+}
+
 function checkExecContextSize(input: RunExecUnitInput): UnitDispatchResult | undefined {
   const limits = execContextLimits(input.platform ?? process.platform);
   const entries = Object.entries(input.context ?? {});
   let total = 0;
   for (const [name, value] of entries) {
-    const bytes = utf8Bytes(value);
+    const bytes = cachedUtf8Bytes(value);
     total += bytes + utf8Bytes(name) + 1;
     if (bytes > limits.perVarBytes) {
       return contextTooLarge(
@@ -502,50 +527,6 @@ async function isExistingDirectory(candidate: string): Promise<boolean> {
     return (await fs.promises.stat(candidate)).isDirectory();
   } catch {
     return false;
-  }
-}
-
-/**
- * `core/common`'s `isWithin`, without its two blocking `fs.realpathSync` calls.
- * Same comparison, same normalization, same nearest-existing-ancestor fallback —
- * only the syscalls are awaited instead of blocking the loop.
- */
-async function isWithinAsync(candidate: string, root: string): Promise<boolean> {
-  const rel = path.relative(
-    normalizeForComparison(await safeRealpathAsync(root)),
-    normalizeForComparison(await safeRealpathAsync(candidate)),
-  );
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-}
-
-function normalizeForComparison(value: string): string {
-  return process.platform === "win32" ? value.toLowerCase() : value;
-}
-
-/**
- * Resolve symlinks on `p`, walking up to the closest existing ancestor when `p`
- * itself does not exist, so a comparison between an existing base and a
- * not-yet-created child stays consistent through symlinked hierarchies
- * (macOS `/tmp` → `/private/tmp`, a symlinked HOME).
- */
-async function safeRealpathAsync(p: string): Promise<string> {
-  const resolved = path.resolve(p);
-  try {
-    return await fs.promises.realpath(resolved);
-  } catch {
-    const suffix: string[] = [];
-    let current = resolved;
-    for (;;) {
-      const parent = path.dirname(current);
-      if (parent === current) return resolved;
-      suffix.unshift(path.basename(current));
-      current = parent;
-      try {
-        return path.join(await fs.promises.realpath(current), ...suffix);
-      } catch {
-        // parent also doesn't exist; keep walking up
-      }
-    }
   }
 }
 

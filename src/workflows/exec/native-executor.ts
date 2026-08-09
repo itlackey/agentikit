@@ -47,8 +47,8 @@
  *     null); a `collect` fan-out promotes `null` in that item's slot.
  *   - A downstream `steps.x.output` reference to an empty solo step therefore
  *     resolves against `null` and fails LOUDLY at reference resolution
- *     (`… resolved to null`) — a deterministic `expression_error` on BOTH
- *     surfaces, never a silent empty string.
+ *     (`… resolved to null`) — a deterministic whole-step failure, never a
+ *     silent empty string.
  *   - A SCHEMA unit is unaffected by this normalization: an empty response is
  *     not parseable JSON, so `runStructured` fails it (`parse_error`) — an
  *     empty output can never satisfy a declared schema as a silent `null`.
@@ -131,8 +131,6 @@
  *     engine loop's job (`run-workflow.ts`) via `completeWorkflowStep`.
  */
 
-import { deepMergeConfig } from "../../core/config/deep-merge";
-import { ConfigError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
 import { runStructured } from "../../core/structured";
@@ -166,7 +164,12 @@ import {
   type UnitOutcome,
   unitOutcomeFromRow,
 } from "./step-work";
-import type { UnitDispatcher, UnitDispatchRequest, UnitDispatchResult } from "./unit-dispatch";
+import {
+  materializeFrozenLlm,
+  type UnitDispatcher,
+  type UnitDispatchRequest,
+  type UnitDispatchResult,
+} from "./unit-dispatch";
 
 export { collectWorkflowDispatchSensitiveValues, redactUnitOutcome } from "./dispatch-redaction";
 export type { UnitDispatcher, UnitDispatchRequest, UnitDispatchResult } from "./unit-dispatch";
@@ -358,8 +361,6 @@ class DispatchBudget {
  *                  env/worktree);
  *   - `dispatch` — no reusable row (or a stale gate-loop row that re-dispatches
  *                  live): this unit will actually issue work.
- * The caller guarantees `workUnit.resolved.ok` (an unresolved unit fails as an
- * `expression_error` before reaching here and never dispatches).
  */
 type UnitReuseDecision =
   | { kind: "reuse"; row: WorkflowRunUnitRow }
@@ -368,12 +369,10 @@ type UnitReuseDecision =
 
 function classifyUnitReuse(
   workUnit: StepWorkUnit,
-  existingUnits: Map<string, WorkflowRunUnitRow> | undefined,
+  completedRows: CompletedRowIndex | undefined,
   gateLoop: number,
 ): UnitReuseDecision {
-  if (!workUnit.resolved.ok) return { kind: "dispatch" };
   const inputHash = workUnit.resolved.inputHash;
-  const base = workUnit.journalBaseId;
   // Scan EVERY journaled attempt row of this unit (`<base>` / `<base>~r<N>`
   // for ANY N), not just the attempts the CURRENT retry policy allows:
   // retry/onError are deliberately excluded from the input hash (step-work.ts)
@@ -383,41 +382,48 @@ function classifyUnitReuse(
   // A completed hash-matching row anywhere wins (reuse); a completed loop-1
   // row with a DIFFERENT hash — and no matching sibling — is replay divergence.
   let divergedAttemptId: string | undefined;
-  if (existingUnits) {
-    for (const [attemptId, prior] of existingUnits) {
-      if (prior.status !== "completed" || !isAttemptRowOf(attemptId, base)) continue;
-      if (prior.input_hash === inputHash) return { kind: "reuse", row: prior };
-      // Gate-loop rows are NOT replay-deterministic (the prompt embeds a fresh
-      // judge output): a stale loop-N row with a different hash re-dispatches
-      // live. Divergence only guards loop-1 rows, whose inputs ARE a pure
-      // function of (frozen plan, params, journaled results).
-      if (gateLoop <= 1) divergedAttemptId ??= attemptId;
-    }
+  for (const prior of completedRows?.get(workUnit.journalBaseId) ?? []) {
+    if (prior.input_hash === inputHash) return { kind: "reuse", row: prior };
+    // Gate-loop rows are NOT replay-deterministic (the prompt embeds a fresh
+    // judge output): a stale loop-N row with a different hash re-dispatches
+    // live. Divergence only guards loop-1 rows, whose inputs ARE a pure
+    // function of (frozen plan, params, journaled results).
+    if (gateLoop <= 1) divergedAttemptId ??= prior.unit_id;
   }
   if (divergedAttemptId !== undefined) return { kind: "diverge", attemptId: divergedAttemptId };
   return { kind: "dispatch" };
 }
 
-/** True when `attemptId` journals an attempt of `base`: the base id itself or `<base>~r<N>`. */
-function isAttemptRowOf(attemptId: string, base: string): boolean {
-  if (attemptId === base) return true;
-  if (!attemptId.startsWith(`${base}~r`)) return false;
-  const suffix = attemptId.slice(base.length + 2);
-  return suffix.length > 0 && /^\d+$/.test(suffix);
+/**
+ * The step's COMPLETED journal rows grouped by base journal id (`~r<N>`
+ * stripped), built ONCE per step so classifyUnitReuse — which runs per unit,
+ * twice (preflight gate + runUnit) — is a map probe over that unit's own
+ * attempt rows instead of an O(rows) scan of the whole step journal per call
+ * (a 10 000-unit fan-out resume would otherwise re-walk the full journal
+ * 20 000 times).
+ */
+type CompletedRowIndex = Map<string, WorkflowRunUnitRow[]>;
+
+function indexCompletedRows(rows: Iterable<WorkflowRunUnitRow>): CompletedRowIndex {
+  const index: CompletedRowIndex = new Map();
+  for (const row of rows) {
+    if (row.status !== "completed") continue;
+    const base = row.unit_id.replace(/~r\d+$/, "");
+    const forBase = index.get(base);
+    if (forBase) forBase.push(row);
+    else index.set(base, [row]);
+  }
+  return index;
 }
 
 /**
  * Does the step have at least one unit that will ACTUALLY dispatch? Env
  * resolution and worktree preflight are dispatch prerequisites, so a step whose
- * units are all reused / unresolved / diverged must skip them (reviewer finding
+ * units are all reused / diverged must skip them (reviewer finding
  * #2). Mirrors runUnit's reuse decision exactly (shared {@link classifyUnitReuse}).
  */
-function stepWillDispatch(
-  workUnits: StepWorkUnit[],
-  existingUnits: Map<string, WorkflowRunUnitRow>,
-  gateLoop: number,
-): boolean {
-  return workUnits.some((u) => u.resolved.ok && classifyUnitReuse(u, existingUnits, gateLoop).kind === "dispatch");
+function stepWillDispatch(workUnits: StepWorkUnit[], completedRows: CompletedRowIndex, gateLoop: number): boolean {
+  return workUnits.some((u) => classifyUnitReuse(u, completedRows, gateLoop).kind === "dispatch");
 }
 
 /**
@@ -525,10 +531,9 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
   // is reused, not re-dispatched — a crash-resume must never double-issue
   // side-effecting work. Loading the rows up front is what lets us skip the
   // dispatch prerequisites below when nothing will actually dispatch.
-  const existingUnits = new Map<string, WorkflowRunUnitRow>();
-  for (const row of await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(ctx.runId, plan.stepId))) {
-    existingUnits.set(row.unit_id, row);
-  }
+  const completedRows = indexCompletedRows(
+    await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(ctx.runId, plan.stepId)),
+  );
 
   // Reviewer finding #2: env resolution and worktree preflight are DISPATCH
   // prerequisites, so they must run only when a unit will actually dispatch. A
@@ -538,7 +543,7 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
   // to hand back a cached result. The predicate mirrors runUnit's reuse
   // decision exactly (shared classifyUnitReuse).
   const gateLoop = ctx.gateLoop ?? 1;
-  const willDispatch = stepWillDispatch(workUnits, existingUnits, gateLoop);
+  const willDispatch = stepWillDispatch(workUnits, completedRows, gateLoop);
 
   // Env bindings resolve once per step, before any dispatch; a binding error
   // fails the whole step cleanly rather than N units racing into it. Skipped
@@ -603,7 +608,7 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
           ctx,
           signal,
           dispatcher,
-          existingUnits,
+          completedRows,
           budget,
         }),
       {
@@ -701,8 +706,8 @@ interface RunUnitInput {
    */
   signal?: AbortSignal;
   dispatcher: UnitDispatcher;
-  /** Prior unit rows for this step, for durable-row reuse. */
-  existingUnits?: Map<string, WorkflowRunUnitRow>;
+  /** The step's completed rows indexed by base id, for durable-row reuse. */
+  completedRows?: CompletedRowIndex;
   /** Shared lifetime-cap budget; consumed once per actual dispatch attempt. */
   budget: DispatchBudget;
 }
@@ -711,13 +716,6 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
   const { plan, workUnit, env, ctx, dispatcher } = input;
   const unitId = workUnit.unitId;
 
-  // A per-unit expression resolution failure (missing param, bad `item.<path>`)
-  // is deterministic authoring/data breakage computed by the shared work-list:
-  // the unit fails WITHOUT dispatching — and without journaling a row, since no
-  // resolved input exists to hash.
-  if (!workUnit.resolved.ok) {
-    return { unitId, ok: false, failureReason: "expression_error", error: workUnit.resolved.error };
-  }
   // An `exec` unit legitimately carries neither — it spawns a child process
   // instead of calling an engine. Every OTHER kind must have both.
   if (!workUnit.exec && (!workUnit.engine || !workUnit.invocation)) {
@@ -780,7 +778,7 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
   // tampered with; executeStepPlan promotes this to a hard step failure
   // regardless of on_error). Stale gate-loop rows, failed/running/missing rows,
   // and pre-release R1 positional ids all fall through and dispatch live.
-  const reuse = classifyUnitReuse(workUnit, input.existingUnits, gateLoop);
+  const reuse = classifyUnitReuse(workUnit, input.completedRows, gateLoop);
   if (reuse.kind === "reuse") {
     // Identity in the durable step evidence is the CONTENT-derived base id, not
     // the `~r<n>` attempt row it was reused from — the work list only ever knows
@@ -905,7 +903,7 @@ interface JournaledAttemptInput {
  * replacing it: a tool that fails after printing its real complaint on stdout
  * is common, and the reason lives on whichever stream that tool chose.
  */
-export function journaledUnitResultJson(outcome: UnitOutcome): string | null {
+function journaledUnitResultJson(outcome: UnitOutcome): string | null {
   if (outcome.result !== undefined) return JSON.stringify(outcome.result);
   if (outcome.ok) return outcome.text ? JSON.stringify(outcome.text) : null;
   const parts = [outcome.error, outcome.text].filter((part): part is string => Boolean(part && part.trim()));
@@ -1525,38 +1523,6 @@ function frozenUnitRunner(
   // SDK runner receives a frozen fallback copied into the request by its caller.
   const fallback = request.fallbackEngine ? materializeFrozenLlm(request.fallbackEngine, undefined) : undefined;
   return { kind: "sdk", profile, ...(fallback ? { fallbackConnection: fallback } : {}) };
-}
-
-function materializeFrozenLlm(
-  snapshot: Extract<FrozenEngineSnapshot, { kind: "llm" }>,
-  invocation: IrInvocation | undefined,
-): import("../../core/config/config").LlmConnectionConfig {
-  let apiKey: string | undefined;
-  for (const name of snapshot.credential?.names ?? []) {
-    const candidate = process.env[name]?.trim();
-    if (candidate) {
-      apiKey = candidate;
-      break;
-    }
-  }
-  if (snapshot.credential?.required && !apiKey)
-    throw new ConfigError(
-      `Required engine credential ${snapshot.credential.names[0]} is not set.`,
-      "INVALID_CONFIG_FILE",
-    );
-  const base = {
-    provider: snapshot.provider,
-    endpoint: snapshot.endpoint,
-    model: invocation?.model ?? snapshot.model,
-    ...(snapshot.temperature !== undefined ? { temperature: snapshot.temperature } : {}),
-    ...(snapshot.maxTokens !== undefined ? { maxTokens: snapshot.maxTokens } : {}),
-    ...(snapshot.supportsJsonSchema !== undefined ? { supportsJsonSchema: snapshot.supportsJsonSchema } : {}),
-    ...(snapshot.extraParams ? { extraParams: snapshot.extraParams } : {}),
-    ...(snapshot.contextLength !== undefined ? { contextLength: snapshot.contextLength } : {}),
-    ...(snapshot.enableThinking !== undefined ? { enableThinking: snapshot.enableThinking } : {}),
-    ...(apiKey ? { apiKey } : {}),
-  };
-  return invocation?.llm ? (deepMergeConfig(base, invocation.llm as Record<string, unknown>) as typeof base) : base;
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────────

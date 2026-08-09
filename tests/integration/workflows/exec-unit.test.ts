@@ -38,7 +38,7 @@ import {
 import { requireExecutableWorkflowPlan } from "../../../src/workflows/runtime/plan-classifier";
 import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
-import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
+import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
 let storage: IsolatedAkmStorage;
 /** Scratch root for fixtures the workflow itself touches (never akm storage). */
@@ -56,19 +56,12 @@ function bunArgv(code: string): string[] {
 function seedRun(steps: string[], params: Record<string, unknown> = {}): void {
   const db = openStateDatabase();
   try {
-    const now = new Date().toISOString();
-    db.prepare(
-      `INSERT INTO workflow_runs
-         (id, workflow_ref, scope_key, workflow_entry_id, workflow_title, status,
-          params_json, current_step_id, created_at, updated_at)
-       VALUES (?, 'workflows/exec-demo', 'dir:v1:exec-demo', NULL, 'Exec demo', 'active', ?, ?, ?, ?)`,
-    ).run(RUN_ID, JSON.stringify(params), steps[0]!, now, now);
-    steps.forEach((stepId, index) => {
-      db.prepare(
-        `INSERT INTO workflow_run_steps
-           (run_id, step_id, step_title, instructions, completion_json, sequence_index, status)
-         VALUES (?, ?, ?, 'instructions', NULL, ?, 'pending')`,
-      ).run(RUN_ID, stepId, stepId, index);
+    seedWorkflowRun(db, {
+      runId: RUN_ID,
+      workflowRef: "workflows/exec-demo",
+      workflowTitle: "Exec demo",
+      params,
+      steps,
     });
   } finally {
     db.close();

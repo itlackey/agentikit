@@ -9,6 +9,8 @@
  * coding-agent CLI. Named engines lower canonical harness metadata into this
  * intentionally small internal shape. The wrapper is in `./spawn.ts`.
  */
+import { COMMON_SPAWN_ENV_PASSTHROUGH } from "../../core/spawn-env";
+
 export type AgentStdioMode = "captured" | "interactive";
 export type AgentParseMode = "text" | "json";
 
@@ -65,7 +67,7 @@ export interface AgentProfile {
 // the stamp at the agent boundary — e.g. `akm wiki ingest` spawns an agent whose
 // `akm curate/show/search` tool-calls then log source='user', silently inflating
 // every lane's read-back (GRR). It is a provenance tag, never a secret.
-const COMMON_PASSTHROUGH = ["HOME", "PATH", "USER", "LANG", "LC_ALL", "TERM", "TMPDIR", "AKM_EVENT_SOURCE"] as const;
+const COMMON_PASSTHROUGH = COMMON_SPAWN_ENV_PASSTHROUGH;
 
 /**
  * Built-in profiles for the agent CLIs akm knows out of the box: the five the

@@ -10,12 +10,10 @@ import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow
 import type { UnitDispatchRequest, UnitDispatchResult } from "../../../src/workflows/exec/native-executor";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { computeStepWorkList, recoverGateFeedback } from "../../../src/workflows/exec/step-work";
-import { compileResolveFreezeWorkflow } from "../../../src/workflows/ir/freeze";
 import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
-import { parseWorkflow } from "../../../src/workflows/parser";
 import { getWorkflowStatus, resumeWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { sandboxEnvDir } from "../../_helpers/sandbox";
-import { storeFrozenWorkflowPlan } from "../../_helpers/workflow";
+import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
 /**
  * The gate judge is a real dispatch, held to the same two contracts every unit
@@ -99,36 +97,16 @@ the work is thorough
 `;
 
 function freezeWithAgentJudge(markdown: string): WorkflowPlanGraph {
-  const parsed = parseWorkflow(markdown, { path: "workflows/demo.md" });
-  if (!parsed.ok) throw new Error(parsed.errors.map((e) => `${e.line}: ${e.message}`).join(" | "));
-  return compileResolveFreezeWorkflow(
-    {
-      ref: "workflows/demo",
-      path: "workflows/demo.md",
-      sourcePath: "/tmp",
-      title: "demo",
-      steps: [],
-      document: parsed.document,
-    },
-    JUDGE_CONFIG,
-  ).plan;
+  return freezeWorkflow(markdown, undefined, JUDGE_CONFIG);
 }
 
 function seedRun(): void {
   const db = openStateDatabase(path.join(tmpDir, "state.db"));
   try {
-    const now = new Date().toISOString();
-    db.prepare(
-      `INSERT INTO workflow_runs
-         (id, workflow_ref, scope_key, workflow_entry_id, workflow_title, status,
-          params_json, current_step_id, created_at, updated_at)
-       VALUES (?, 'workflows/demo', 'dir:v1:demo', NULL, 'Demo', 'active', '{}', 'work', ?, ?)`,
-    ).run(RUN_ID, now, now);
-    db.prepare(
-      `INSERT INTO workflow_run_steps
-         (run_id, step_id, step_title, instructions, completion_json, sequence_index, status)
-       VALUES (?, 'work', 'work', 'instructions', ?, 0, 'pending')`,
-    ).run(RUN_ID, JSON.stringify(["the work is thorough"]));
+    seedWorkflowRun(db, {
+      runId: RUN_ID,
+      steps: [{ stepId: "work", completionJson: JSON.stringify(["the work is thorough"]) }],
+    });
   } finally {
     db.close();
   }
@@ -320,7 +298,6 @@ describe("gate judge redaction is replay-deterministic — the recovered feedbac
     });
     if (!replayed.ok) throw new Error(replayed.error);
     const unit = replayed.list.units[0]!;
-    if (!unit.resolved.ok) throw new Error(unit.resolved.error);
     const journaled = rows.find((r) => r.unit_id === unit.journalBaseId);
     expect(unit.journalBaseId).toBe("work:solo~l2");
     expect(journaled?.input_hash).toBe(unit.resolved.inputHash);

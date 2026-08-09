@@ -18,6 +18,7 @@
 
 import { collectSensitiveValues, isEnvPassthroughValueSafeToExpose, redactSensitiveValue } from "../../core/redaction";
 import type { FrozenEngineSnapshot } from "../ir/schema";
+import type { UnitDispatcher } from "./unit-dispatch";
 
 /** The engine pair a dispatch may draw credentials from. `StepWorkUnit` satisfies it structurally. */
 export interface DispatchEngines {
@@ -82,4 +83,16 @@ export function redactUnitOutcome<T extends { failureReason?: string }>(
     redacted.failureReason = "reported_failure";
   }
   return redacted;
+}
+
+/**
+ * Wrap a dispatcher so every result it returns is scrubbed with the request's
+ * own `sensitiveValues` — a caller holding the wrapped dispatcher cannot
+ * observe (or journal) an unredacted outcome. Used at seams whose results head
+ * STRAIGHT for durable state (the gate judge); the unit path instead scrubs
+ * once at its own journal boundary (`dispatchJournaledAttempt`), AFTER the
+ * structured-output parse loop has seen the raw text.
+ */
+export function withDispatchRedaction(inner: UnitDispatcher): UnitDispatcher {
+  return async (request, feedback) => redactUnitOutcome(await inner(request, feedback), request.sensitiveValues ?? []);
 }

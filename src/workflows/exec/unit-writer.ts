@@ -44,9 +44,15 @@
  * A failed write rejects its own caller but never wedges its chain.
  */
 
+import { serializeByKey } from "../../core/concurrent";
 import { getStateDbPath } from "../../core/state-db";
 
-/** One promise chain per database path. Entries are pruned when their chain drains. */
+/**
+ * One promise chain per database path ({@link serializeByKey}). Entries are
+ * pruned when their chain drains, so a long-lived process that touches many
+ * data dirs (the test harness swaps `AKM_DATA_DIR` per test) does not
+ * accumulate one resolved promise per path forever.
+ */
 const chains = new Map<string, Promise<unknown>>();
 
 export interface EnqueueUnitWriteOptions {
@@ -59,22 +65,5 @@ export interface EnqueueUnitWriteOptions {
 }
 
 export function enqueueUnitWrite<T>(fn: () => Promise<T>, opts?: EnqueueUnitWriteOptions): Promise<T> {
-  const key = opts?.key ?? getStateDbPath();
-  const tail = chains.get(key) ?? Promise.resolve();
-  const run = tail.then(() => fn());
-  // Keep the chain alive regardless of individual outcomes.
-  const settled = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  chains.set(key, settled);
-  // Drop the entry once this task is the drained tail, so a long-lived process
-  // that touches many data dirs (the test harness swaps `AKM_DATA_DIR` per
-  // test) does not accumulate one resolved promise per path forever. If another
-  // write was enqueued in the meantime the map now holds ITS tail, and this
-  // check leaves it alone.
-  void settled.then(() => {
-    if (chains.get(key) === settled) chains.delete(key);
-  });
-  return run;
+  return serializeByKey(chains, opts?.key ?? getStateDbPath(), fn);
 }

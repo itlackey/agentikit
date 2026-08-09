@@ -76,14 +76,11 @@ function installExitBackstop(): void {
 /**
  * Close every scope-owned handle. Idempotent and safe to call at any time: a
  * closed scope stops lending, so in-flight borrowers fall back to their own
- * connections instead of using a dead handle.
- *
- * This is the disposal hook the engine can wire next to
- * `disposeDispatchResources` if it ever wants deterministic teardown at the end
- * of a run; until then the per-scope `finally` plus the process-exit backstop
- * above are what guarantee no handle leak.
+ * connections instead of using a dead handle. Module-private: the per-scope
+ * `finally` plus the process-exit backstop above are what guarantee no handle
+ * leak — export this the day a caller actually wires deterministic teardown.
  */
-export function closeAllStateDbScopes(): void {
+function closeAllStateDbScopes(): void {
   for (const scope of [...liveScopes]) closeScope(scope);
 }
 

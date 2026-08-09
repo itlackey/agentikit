@@ -19,7 +19,7 @@ import {
   WORKFLOW_EVIDENCE_TRUNCATED_MARKER,
 } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
-import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
+import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
 /**
  * Persistence / write-path regressions for the workflow journal:
@@ -54,18 +54,11 @@ instructions
 function seedRun(dbPath: string): void {
   const db = openStateDatabase(dbPath);
   try {
-    const now = new Date().toISOString();
-    db.prepare(
-      `INSERT INTO workflow_runs
-         (id, workflow_ref, scope_key, workflow_entry_id, workflow_title, status,
-          params_json, current_step_id, created_at, updated_at, checkin_armed_at)
-       VALUES (?, 'workflows/demo', 'dir:v1:demo', NULL, 'Demo', 'active', '{}', 'step-1', ?, ?, ?)`,
-    ).run(RUN_ID, now, now, now);
-    db.prepare(
-      `INSERT INTO workflow_run_steps
-         (run_id, step_id, step_title, instructions, completion_json, sequence_index, status)
-       VALUES (?, 'step-1', 'Do the thing', 'instructions', NULL, 0, 'pending')`,
-    ).run(RUN_ID);
+    seedWorkflowRun(db, {
+      runId: RUN_ID,
+      steps: [{ stepId: "step-1", stepTitle: "Do the thing" }],
+      checkinArmedAt: new Date().toISOString(),
+    });
     storeFrozenWorkflowPlan(db, RUN_ID, PLAN);
   } finally {
     db.close();

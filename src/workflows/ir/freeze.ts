@@ -134,14 +134,9 @@ export function compileResolveFreezeWorkflow(
    * exactly like `effectiveTimeout`'s null.
    */
   const freezeExec = (exec: NonNullable<WorkflowUnitDraft["exec"]>, unit: ProgramUnit | undefined): IrExecSpec => {
-    const layers = [...(documentDefaults ? [documentDefaults] : []), ...(unit ? [unit] : [])];
-    let timeoutMs: number | null = DEFAULT_EXEC_TIMEOUT_MS;
-    for (let index = layers.length - 1; index >= 0; index--) {
-      if (Object.hasOwn(layers[index] ?? {}, "timeoutMs")) {
-        timeoutMs = layers[index]?.timeoutMs ?? null;
-        break;
-      }
-    }
+    const layers: EngineUseConfig[] = [...(documentDefaults ? [documentDefaults] : []), ...(unit ? [unit] : [])];
+    const declared = layeredTimeout(layers);
+    const timeoutMs = declared === undefined ? DEFAULT_EXEC_TIMEOUT_MS : declared;
     return {
       command: [...exec.command] as [string, ...string[]],
       ...(exec.cwd ? { cwd: exec.cwd } : {}),
@@ -280,10 +275,23 @@ function exactModel(
   return resolveModel(selected, engine.platform, engine.modelAliases, config.modelAliases);
 }
 
-function effectiveTimeout(config: AkmConfig, engine: EngineConfig, layers: readonly EngineUseConfig[]): number | null {
+/**
+ * Newest-layer-first scan for a declared `timeoutMs` across authoring layers
+ * (document `defaults`, then the unit). Returns `undefined` when no layer
+ * declares one; an explicit `timeoutMs: null` ("unbounded") wins over deeper
+ * layers — hence `hasOwn`, not a value test. The ONE definition of authoring
+ * timeout precedence, shared by engine and exec freezing.
+ */
+function layeredTimeout(layers: readonly EngineUseConfig[]): number | null | undefined {
   for (let index = layers.length - 1; index >= 0; index--) {
     if (Object.hasOwn(layers[index] ?? {}, "timeoutMs")) return layers[index]?.timeoutMs ?? null;
   }
+  return undefined;
+}
+
+function effectiveTimeout(config: AkmConfig, engine: EngineConfig, layers: readonly EngineUseConfig[]): number | null {
+  const declared = layeredTimeout(layers);
+  if (declared !== undefined) return declared;
   if (Object.hasOwn(engine, "timeoutMs")) return engine.timeoutMs ?? null;
   if (engine.kind === "llm") return DEFAULT_LLM_TIMEOUT_MS;
   if (engine.platform === "opencode-sdk") {
