@@ -32,7 +32,13 @@ families) plus the orchestration keys:
 - `params` — name → `{ type, description }` (JSON-Schema-typed, unlike a bare
   description string).
 - `defaults` — run-level dispatch defaults (`engine`, `model`, `llm`,
-  `timeout`, `on_error`), overridable per unit.
+  `timeout`, `on_error`), overridable per unit. `defaults.llm` is the
+  exception: `llm:` tuning applies only to engines of kind `llm`, and a
+  document-level `llm:` reaches EVERY step, so a document that also has a step
+  on an agent engine fails to freeze — naming the step and the engine — rather
+  than dropping the settings for that step. There is no per-step opt-out (`llm:
+  {}` is a no-op and `llm: null` is a parse error), so in a mixed document put
+  `llm:` on the `unit:` of each LLM step instead of in `defaults:`.
 - `budget` — run-lifetime ceilings (`max_units`, `max_tokens`; see
   [Budget ceilings](#budget-ceilings) below).
 - `steps` — an ordered list. Each step has an `id`
@@ -458,9 +464,11 @@ cannot step outside the tree its isolation promised.
   background descendant that keeps the stdout handle open after the command
   leader exits will hold the pipe past the drain deadline. Either way the
   captured text is a *prefix* of the real output, so the unit fails
-  `spawn_failed` (the same reason the agent-dispatch path reports for the same
-  condition) rather than promoting the prefix. If you hit this, have the command
-  wait for its children or redirect their output.
+  `exec_capture_incomplete` rather than promoting the prefix. That reason is
+  deliberately outside `retry.on`: the command already RAN, and re-dispatching
+  identical argv to fix a capture problem would run its side effects again. If
+  you hit this, have the command wait for its children or redirect their
+  output.
 
 Note that a schema failure is **not** retried by the corrective-feedback loop
 that model units use. Re-prompting is meaningless to a fixed argv — the same
@@ -477,7 +485,7 @@ failure reason.
 | exceeded `timeout` | `timeout` | yes |
 | run cancelled (`Ctrl-C`, `--timeout`, budget) | `aborted` | yes |
 | binary missing / working directory unusable | `spawn_failed` | yes |
-| output capture never completed | `spawn_failed` | yes |
+| output capture never completed | `exec_capture_incomplete` | **no** (the command already ran) |
 | stdout past the retention limit, **and** the unit declares `output:` | `exec_output_limit` | **no** (deterministic) |
 | stdout past the retention limit, no `output:` schema | — (unit succeeds; artifact marked truncated) | — |
 | `AKM_*` context too large for **this platform** to spawn | `exec_context_too_large` | **no** (an authoring/data problem) |

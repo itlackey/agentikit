@@ -42,17 +42,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     diagnostic channel only. A schema miss is *not* re-prompted — a fixed argv
     cannot answer feedback, but re-running it could deploy twice.
   - **Exit codes:** non-zero → `non_zero_exit`, wall-clock expiry → `timeout`,
-    cancellation → `aborted`, failure to start (or a capture that never
-    completed) → `spawn_failed`. All are pre-existing `retry.on` reasons — the
-    failure taxonomy is unchanged. With the default `on_error: fail`, a non-zero
-    exit fails the step and the run, which is what makes a `test` step a gate.
+    cancellation → `aborted`, failure to start → `spawn_failed`. Those are
+    pre-existing `retry.on` reasons. With the default `on_error: fail`, a
+    non-zero exit fails the step and the run, which is what makes a `test` step
+    a gate.
   - **A partial capture is never promoted as the artifact.** Exiting 0 does not
     prove stdout was read to the end: a pipe can error, and a background
     descendant holding the stdout handle open after the command leader exits
     keeps the pipe alive past the drain deadline. Both leave a *prefix* of the
-    real output, so the unit fails `spawn_failed` — the same treatment, via the
-    same shared classifier, that the agent-dispatch path already gave the
-    identical condition.
+    real output, so the unit fails — with its own reason,
+    `exec_capture_incomplete`, which is deliberately **not** a `retry.on` value.
+    The command already ran; re-dispatching identical argv to fix a capture
+    problem would run its side effects a second time.
   - **Everything the command can spend is bounded — without inventing failures.**
     Alongside the wall-clock timeout, akm bounds the memory it spends on the
     command's behalf and the environment it can hand the command. Both bounds are
@@ -148,9 +149,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **The workflow JSON Schema subset now enforces `allOf`/`anyOf`/`oneOf`/`not`.**
   A step `output:` or `params:` schema may use the combinators, and the runtime
-  evaluates them instead of rejecting them at parse time. Evaluation stays
+  now evaluates them. Previously it ignored them: a schema using one was
+  accepted and simply constrained less than it appeared to. Evaluation stays
   bounded — nesting is capped at 64 levels and one validation at 100 000 checks,
   and exhausting either is reported as an error rather than a truncated pass.
+
+  **This one reaches runs already in flight.** The combinators live in the
+  frozen plan, which the decoder still accepts unchanged, so a run frozen before
+  the upgrade is resumed against the *new* evaluation: an artifact that passed
+  when the combinators were ignored can fail validation now. There is no
+  `irVersion` bump to gate it, because the plan bytes did not change — only what
+  they mean. Runs whose schemas use no combinators are unaffected, as is every
+  step already completed.
 
   `pattern` is **not** part of the subset. It is a recognized-but-unsupported
   keyword like `format` or `const`: using one is a loud, line-anchored authoring
@@ -163,6 +173,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `minLength`/`maxLength` bound the size, and a step's `### gate` rubric can
   check a shape and explain a mismatch. The `format` hint now points at `enum`
   rather than at `pattern`.
+
+  **Existing workflows that use one of these keywords must be edited before
+  they load again.** They previously parsed — the keyword was silently
+  non-constraining — so a workflow carrying `format: date-time` or `pattern:`
+  ran fine and now fails to parse for every caller: `workflow run`, `workflow
+  show`, `workflow create`, and `akm lint`. The quietest surface is `akm index`,
+  which skips an asset it cannot parse with a scan warning, so the workflow
+  simply stops appearing in the stash index. A run already frozen from such an
+  asset still resumes — the frozen-plan decoder does not re-screen keywords —
+  so resuming works while re-creating the same workflow errors until it is
+  edited.
+
+- **A document-level `defaults.llm` is now rejected at freeze when any step
+  resolves onto an agent engine**, naming the step and the engine. The guard
+  existed before but was unreachable: overrides were computed only for `llm`
+  engines, so `defaults.llm` on a document with an agent step was silently
+  DROPPED for that step — the run proceeded with the author's sampling settings
+  quietly discarded. Failing loudly is the point, but it means a document that
+  mixes `defaults.llm` with any agent-engine step no longer freezes.
+
+  There is no per-step opt-out: `llm: {}` is a no-op, `llm: null` is a parse
+  error, and the layer merge is additive. Move the `llm:` block from
+  `defaults:` onto the `unit:` of each LLM step that wants it.
+
+- **A scheduled workflow task now gets a 6-hour whole-run timeout by default.**
+  This applies to task files that declare no `timeoutMs:` — which is every task
+  file written before this release, since the key was previously rejected on
+  workflow targets. An unattended run that legitimately takes longer will be
+  aborted and the attempt reported failed on every firing until the task is
+  edited. `timeoutMs: null` opts out entirely, and any number overrides the
+  default. The abort itself is graceful: it lands at a step boundary, the
+  journal and lease are kept, and the run stays resumable with
+  `akm workflow resume <id>` — which the failure message names.
 
 - **Workflow `map` steps now fan out in parallel by default.** A `map` step
   that declares no `concurrency:` freezes a width of **4** instead of 1, and an
@@ -193,6 +236,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   current host's CPU cap.
 
 ### Fixed
+
+- **`timeout: none` on an exec unit is genuinely unbounded again.** The
+  stream-drain safety net — a one-hour bound on a pipe still being read after
+  the child is gone — was armed when capture STARTED, so a command that ran
+  past an hour had its output reader cancelled mid-run and was then failed for
+  an incomplete capture even though it exited 0. It is now armed from the
+  child's exit, which is the only window it was ever meant to bound. A unit with
+  a declared timeout is unaffected.
+
+- **A step artifact larger than 1 MiB no longer breaks the next step of the run
+  that produced it.** Step evidence is clipped to bound one SQLite row, and the
+  engine rebuilt each downstream `steps.<id>.output` scope by re-reading those
+  rows — so a large artifact (an exec unit's stdout retains up to 8 MiB) reached
+  the very next step as a truncation marker: a path reference failed with a
+  missing-property error that never mentioned truncation, and a whole-value
+  reference silently handed the marker to the unit as its input. The run now
+  carries its own complete values forward; the row stays clipped for resume,
+  where a reference into a clipped artifact fails by name.
+
+- **A workflow task whose run completed is no longer reported as a failed
+  timeout.** The deadline is observed between steps, so one landing during a
+  run's final bookkeeping set the timed-out flag on a run that then finished —
+  and the attempt was recorded as failed, with a hint to resume a run that had
+  nothing left to resume.
+
+- On Windows, an agent CLI, gate judge, or prompt task was spawned into an
+  environment the loader cannot start from: the shared passthrough allowlist
+  named no `SystemRoot`/`SystemDrive`/`WINDIR`, and without `PATHEXT` a
+  `bin: "bun"` profile was unresolvable — while an exec unit on the same host
+  worked, because its own allowlist names them. Those variables are now added
+  when any allowlisted child environment is built.
+
+- Scheduler PATH repair skipped itself in the environments it exists for. It
+  decided a PATH was "interactive" by testing whether any entry began with the
+  user's home directory as a *string*, so a home of `/` — system crontab,
+  launchd, service accounts — matched every absolute entry, and a sibling home
+  (`/home/alice/bin` against `/home/al`) matched too.
+
+- A directory whose name merely begins with two dots (`..data`) was treated as
+  a path escape. For a workflow exec `cwd` that meant the parser and the frozen
+  plan accepted a spelling the executor then failed as tampering, with a reason
+  no retry can clear.
+
+- `appendEvent` resolved the state.db path outside its own error handling, and
+  did so even when the caller supplied an open connection — so a caller holding
+  a perfectly good handle could take a configuration error from a function whose
+  contract is that it never propagates one.
 
 - Workflow freeze attributed per-step `engine`/`model`/`timeout`/`llm` overrides
   by matching the compiled draft step list against the source document
