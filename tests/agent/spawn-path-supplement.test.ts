@@ -9,13 +9,14 @@
  *   • Empty PATH receives only candidates that exist.
  */
 
-import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { describe, expect, spyOn, test } from "bun:test";
+import fs, { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import {
   COMMON_SPAWN_ENV_PASSTHROUGH,
+  collectAllowlistedEnv,
   spawnEnvNamesFor,
   supplementPathForSchedulerContext,
 } from "../../src/core/spawn-env";
@@ -91,6 +92,26 @@ describe("supplementPathForSchedulerContext", () => {
     }
   });
 
+  test("the same PATH is probed once, not once per spawned child", () => {
+    // Every allowlisted child-env build calls this. A fan-out of 10 000 exec
+    // units must not mean 10 000 rounds of synchronous stat probes on the event
+    // loop the run's lease heartbeat shares.
+    const stripped = `/opt/akm-memo-probe-${process.pid}:/usr/bin`;
+    const probes = spyOn(fs, "existsSync");
+    try {
+      const first = supplementPathForSchedulerContext(stripped);
+      const afterFirst = probes.mock.calls.length;
+      expect(afterFirst).toBeGreaterThan(0);
+
+      for (let i = 0; i < 50; i++) {
+        expect(supplementPathForSchedulerContext(stripped)).toBe(first);
+      }
+      expect(probes.mock.calls.length).toBe(afterFirst);
+    } finally {
+      probes.mockRestore();
+    }
+  });
+
   test("a sibling dir that merely string-prefixes home does not read as interactive", () => {
     // `/home/al` must not be satisfied by `/home/alice/...`: the home check is
     // a path-boundary comparison, so this PATH is as stripped as one naming no
@@ -129,10 +150,25 @@ describe("spawnEnvNamesFor", () => {
     }
   });
 
-  test("does not re-add a floor name the caller already spells, in any case", () => {
+  test("does not re-add a floor name the caller already spells exactly", () => {
+    const names = spawnEnvNamesFor(["PATH", "SystemRoot"], "win32");
+    expect(names.filter((name) => name === "SystemRoot")).toEqual(["SystemRoot"]);
+  });
+
+  test("REGRESSION: a caller's non-canonical spelling does not suppress the canonical floor name", () => {
+    // Dropping `SystemRoot` because the caller happened to write `SYSTEMROOT`
+    // would silence exactly the process-creation failure the floor exists to
+    // prevent — the surviving name is looked up with EXACT case against a
+    // source that need not case-fold (the agent spawn's plain-object
+    // `envSource`), so a folded dedupe loses the variable entirely.
     const names = spawnEnvNamesFor(["PATH", "SYSTEMROOT"], "win32");
-    const systemRootSpellings = names.filter((name) => name.toUpperCase() === "SYSTEMROOT");
-    expect(systemRootSpellings).toEqual(["SYSTEMROOT"]);
+    expect(names).toContain("SystemRoot");
+    expect(names).toContain("SYSTEMROOT");
+
+    // Why the canonical spelling has to survive: this is the lookup.
+    const source = { SystemRoot: "C:\\Windows" };
+    expect(collectAllowlistedEnv(["SYSTEMROOT"], source).SYSTEMROOT).toBeUndefined();
+    expect(collectAllowlistedEnv(["SystemRoot"], source).SystemRoot).toBe("C:\\Windows");
   });
 
   test("leaves config and install roots to the caller", () => {

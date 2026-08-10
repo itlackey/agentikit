@@ -5,18 +5,26 @@
 /**
  * The lint advisory channel and the workflow frontend pass behind it.
  *
- * Two properties, both about routing a NON-FATAL finding correctly:
- *   • `ADVISORY_LINT_ISSUES` is the single home for "never `flagged`", so the
- *     adapter path and the sweep cannot disagree about a code and let a
- *     non-fatal hint fail `--fail-on-flagged` (exit 1) on one path only.
- *   • `workflowStructureDiagnostics` / `workflowCompileWarnings` are two views
- *     of ONE parse+compile, so asking for both must not re-run the frontend —
- *     and must never serve an answer computed for different bytes.
+ * Three properties, all about routing a NON-FATAL finding correctly:
+ *   • `ADVISORY_LINT_ISSUES` is the single home for "never `flagged`", so no
+ *     two routing points can disagree about a code and let a non-fatal hint
+ *     fail `--fail-on-flagged` (exit 1) on one path only.
+ *   • `workflowFrontendDiagnostics` is ONE parse+compile carrying both halves,
+ *     so the sweep runs the frontend exactly once per workflow file — the
+ *     property a pair of single-view helpers could only hold by accident, when
+ *     their two call sites happened to sit next to each other.
+ *   • the sweep files each finding by the classifier, never by which half of
+ *     the pass produced it.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
+import { akmLint } from "../../src/commands/lint/index";
 import { ADVISORY_LINT_ISSUES, isAdvisoryLintIssue } from "../../src/commands/lint/types";
-import { workflowCompileWarnings, workflowStructureDiagnostics } from "../../src/core/adapter/adapters/akm-lint";
+import { workflowFrontendDiagnostics, workflowStructureDiagnostics } from "../../src/core/adapter/adapters/akm-lint";
+import * as workflowParser from "../../src/workflows/parser";
+import { makeSandboxDir } from "../_helpers/sandbox";
 import { workflowDoc } from "../_helpers/workflow";
 
 const REL = "workflows/advisory.md";
@@ -27,6 +35,24 @@ const WARNS = workflowDoc([]);
 /** Fails the schema-definition check — errors, and therefore no advisories. */
 const ERRORS = workflowDoc(["    output:", "      type: strig"]);
 
+const cleanups: Array<() => void> = [];
+
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0)) cleanup();
+});
+
+/** A temp stash holding `files` under `workflows/`. */
+function makeWorkflowStash(files: Record<string, string>): string {
+  const { dir, cleanup } = makeSandboxDir("akm-lint-advisory");
+  cleanups.push(cleanup);
+  const workflowsDir = path.join(dir, "workflows");
+  fs.mkdirSync(workflowsDir, { recursive: true });
+  for (const [name, content] of Object.entries(files)) {
+    fs.writeFileSync(path.join(workflowsDir, name), content, "utf8");
+  }
+  return dir;
+}
+
 describe("advisory issue classification", () => {
   test("workflow-warning is advisory and ordinary findings are not", () => {
     expect(isAdvisoryLintIssue({ issue: "workflow-warning" })).toBe(true);
@@ -36,7 +62,7 @@ describe("advisory issue classification", () => {
   });
 
   test("every advisory code the frontend emits is registered", () => {
-    const emitted = workflowCompileWarnings(REL, WARNS, PARSE_PATH);
+    const emitted = workflowFrontendDiagnostics(REL, WARNS, PARSE_PATH).warnings;
     expect(emitted.length).toBeGreaterThan(0);
     for (const diagnostic of emitted) {
       expect(ADVISORY_LINT_ISSUES.has(diagnostic.issue)).toBe(true);
@@ -45,23 +71,68 @@ describe("advisory issue classification", () => {
 });
 
 describe("workflow frontend pass", () => {
-  test("both views agree, and a compile warning never rides the error channel", () => {
-    expect(workflowStructureDiagnostics(REL, WARNS, PARSE_PATH)).toEqual([]);
-    expect(workflowCompileWarnings(REL, WARNS, PARSE_PATH).map((d) => d.issue)).toEqual(["workflow-warning"]);
+  test("one pass carries both halves, and a compile warning never rides the error channel", () => {
+    const pass = workflowFrontendDiagnostics(REL, WARNS, PARSE_PATH);
+    expect(pass.errors).toEqual([]);
+    expect(pass.warnings.map((d) => d.issue)).toEqual(["workflow-warning"]);
   });
 
   test("a document that fails to compile reports errors and no advisories", () => {
-    expect(workflowStructureDiagnostics(REL, ERRORS, PARSE_PATH).length).toBeGreaterThan(0);
-    expect(workflowCompileWarnings(REL, ERRORS, PARSE_PATH)).toEqual([]);
+    const pass = workflowFrontendDiagnostics(REL, ERRORS, PARSE_PATH);
+    expect(pass.errors.length).toBeGreaterThan(0);
+    expect(pass.warnings).toEqual([]);
   });
 
-  test("changed bytes are never served a previous file's answer", () => {
-    // Same relPath and parsePath, different content, interleaved — the shape a
-    // `--fix` rewrite produces. Each answer must describe the bytes passed in.
-    expect(workflowCompileWarnings(REL, WARNS, PARSE_PATH).length).toBe(1);
-    expect(workflowCompileWarnings(REL, ERRORS, PARSE_PATH).length).toBe(0);
-    expect(workflowStructureDiagnostics(REL, ERRORS, PARSE_PATH).length).toBeGreaterThan(0);
+  test("workflowStructureDiagnostics is the error half of the same pass", () => {
+    expect(workflowStructureDiagnostics(REL, ERRORS, PARSE_PATH)).toEqual(
+      workflowFrontendDiagnostics(REL, ERRORS, PARSE_PATH).errors,
+    );
     expect(workflowStructureDiagnostics(REL, WARNS, PARSE_PATH)).toEqual([]);
-    expect(workflowCompileWarnings(REL, WARNS, PARSE_PATH).length).toBe(1);
+  });
+
+  test("each call answers for the arguments it was given", () => {
+    // Two files whose findings must not be confused with each other, then the
+    // same paths re-asked with different bytes (the shape a `--fix` rewrite
+    // produces) — no answer may outlive the call it was computed for.
+    expect(workflowFrontendDiagnostics("workflows/a.md", WARNS, "/stash/workflows/a.md").warnings[0]?.file).toBe(
+      "workflows/a.md",
+    );
+    expect(workflowFrontendDiagnostics("workflows/a b.md", WARNS, "/stash/c.md").warnings[0]?.file).toBe(
+      "workflows/a b.md",
+    );
+    expect(workflowFrontendDiagnostics(REL, ERRORS, PARSE_PATH).warnings).toEqual([]);
+    expect(workflowFrontendDiagnostics(REL, WARNS, PARSE_PATH).warnings).toHaveLength(1);
+  });
+});
+
+describe("akm lint sweep routing", () => {
+  test("the workflow frontend runs exactly once per workflow file", async () => {
+    const stashDir = makeWorkflowStash({
+      "clean.md": WARNS,
+      "broken.md": ERRORS,
+      "also-clean.md": workflowDoc(["    output: { type: string }"]),
+    });
+    const parseSpy = spyOn(workflowParser, "parseWorkflow");
+
+    await akmLint({ dir: stashDir, typeFilter: "workflows" });
+
+    expect(parseSpy.mock.calls).toHaveLength(3);
+    parseSpy.mockRestore();
+  });
+
+  test("every finding lands in the channel the classifier names", async () => {
+    const stashDir = makeWorkflowStash({ "clean.md": WARNS, "broken.md": ERRORS });
+
+    const result = await akmLint({ dir: stashDir, typeFilter: "workflows" });
+
+    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.flagged.length).toBeGreaterThan(0);
+    for (const issue of result.warnings) expect(isAdvisoryLintIssue(issue)).toBe(true);
+    for (const issue of result.flagged) expect(isAdvisoryLintIssue(issue)).toBe(false);
+    expect(result.summary).toEqual({
+      fixed: 0,
+      flagged: result.flagged.length,
+      warnings: result.warnings.length,
+    });
   });
 });

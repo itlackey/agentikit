@@ -72,8 +72,14 @@ export const COMMON_SPAWN_ENV_PASSTHROUGH = [
  * Config and install roots (`APPDATA`, `LOCALAPPDATA`, `ProgramFiles`, …) are
  * deliberately NOT here: a child can be created and can resolve its command
  * without them, so which allowlist wants them stays a per-caller decision.
+ *
+ * THE definition of the floor. The workflow exec allowlist
+ * (`EXEC_DEFAULT_ENV_PASSTHROUGH`) spreads this constant rather than
+ * re-spelling it, because that list is also consumed on POSIX — where
+ * {@link spawnEnvNamesFor} appends nothing — and the names still have to be
+ * requestable there for a win32 run of the same workflow.
  */
-const WIN32_SPAWN_ENV_FLOOR = [
+export const WIN32_SPAWN_ENV_FLOOR = [
   "SystemRoot",
   "SystemDrive",
   "WINDIR",
@@ -95,11 +101,16 @@ const WIN32_SPAWN_ENV_FLOOR = [
 export function spawnEnvNamesFor(names: Iterable<string>, platform: string = process.platform): string[] {
   const effective = [...names];
   if (platform !== "win32") return effective;
-  // Windows env names are case-insensitive; dedupe that way so a caller
-  // spelling `SYSTEMROOT` does not also receive `SystemRoot`.
-  const present = new Set(effective.map((name) => name.toUpperCase()));
+  // Deduped by EXACT spelling, never case-folded: {@link collectAllowlistedEnv}
+  // looks each surviving name up with exactly this case, and a `source` that is
+  // a plain object — the agent spawn's `envSource` seam — does not case-fold.
+  // Suppressing `SystemRoot` because the caller happened to write `SYSTEMROOT`
+  // would therefore drop the loader-critical variable the floor exists to
+  // guarantee. Keeping both spellings is harmless: the win32 environment is
+  // itself case-insensitive, so they resolve to the same value.
+  const present = new Set(effective);
   for (const name of WIN32_SPAWN_ENV_FLOOR) {
-    if (!present.has(name.toUpperCase())) effective.push(name);
+    if (!present.has(name)) effective.push(name);
   }
   return effective;
 }
@@ -133,6 +144,27 @@ export function collectAllowlistedEnv(
 }
 
 /**
+ * Answers already computed by {@link supplementPathForSchedulerContext}, keyed
+ * by the input PATH and the home directory it was computed against.
+ *
+ * Correctness envelope: the answer is a pure function of those two, the
+ * platform, and which candidate directories exist on disk. The platform cannot
+ * change under a running process, and the other two are in the key — so the one
+ * thing the memo assumes is that a candidate directory does not APPEAR while
+ * akm runs. Answering the rest of a run the way its start was answered is what
+ * a shell's own command-path caching already does, and the cost of not
+ * memoizing is paid on every child-env build: two PATH splits and up to seven
+ * SYNCHRONOUS `existsSync` probes, on the event loop a 10 000-unit fan-out
+ * shares with the run's lease heartbeat.
+ *
+ * Bounded so a caller that somehow varies its PATH cannot grow it without
+ * limit; a spawn path only ever sees a handful of distinct PATH strings, so
+ * the reset is effectively unreachable in practice.
+ */
+const supplementedPaths = new Map<string, string>();
+const SUPPLEMENTED_PATH_MEMO_MAX = 64;
+
+/**
  * Supplement `existingPath` with well-known user binary directories when
  * running in a scheduler context (cron/launchd) where PATH is stripped.
  *
@@ -143,9 +175,24 @@ export function collectAllowlistedEnv(
  * Only directories that actually exist on disk are prepended, and only if
  * they are not already present, so interactive-shell PATH ordering is never
  * disturbed.
+ *
+ * Memoized per input PATH — see {@link supplementedPaths} for what that
+ * assumes.
  */
 export function supplementPathForSchedulerContext(existingPath: string): string {
   const home = os.homedir();
+  // NUL-joined so no pair of (home, PATH) can collide onto one key: no path
+  // component can contain a NUL.
+  const key = `${home}\u0000${existingPath}`;
+  const memoized = supplementedPaths.get(key);
+  if (memoized !== undefined) return memoized;
+  const supplemented = computeSupplementedPath(existingPath, home);
+  if (supplementedPaths.size >= SUPPLEMENTED_PATH_MEMO_MAX) supplementedPaths.clear();
+  supplementedPaths.set(key, supplemented);
+  return supplemented;
+}
+
+function computeSupplementedPath(existingPath: string, home: string): string {
   // A home of `/` (system crontab, launchd, service accounts) or of `""`
   // prefixes EVERY entry, so a prefix test would read the most stripped
   // environments there are as interactive and skip the repair they exist for.

@@ -333,28 +333,18 @@ export function matchWorkflowPlaceholder(body: string): string | null {
 
 /**
  * WorkflowLinter's `invalid-workflow-structure` check (`workflow-linter.ts:48-77`):
- * parse and compile through the unified workflow frontend, surfacing every
- * structural or semantic error and skipping the read-only `/.cache/`+`/registry/`
- * cached copies. Shared with the live linter;
- * `parsePath` is the path handed to `parseWorkflow` (the adapter passes the
- * change relPath, the CLI passes the absolute filePath — matching each caller's
- * legacy behavior). NEVER writes.
+ * the ERROR half of {@link workflowFrontendDiagnostics}, for callers that only
+ * ever surface fatal findings — the read-only adapter `validate` path and
+ * `akm migrate`'s stale-workflow probe. A caller that ALSO surfaces the
+ * advisories must call {@link workflowFrontendDiagnostics} once instead of
+ * pairing this with a second view. NEVER writes.
  */
-export function workflowStructureDiagnostics(relPath: string, raw: string, parsePath: string): Diagnostic[] {
+export function workflowStructureDiagnostics(
+  relPath: string,
+  raw: string,
+  parsePath: string,
+): WorkflowFrontendDiagnostic[] {
   return workflowFrontendDiagnostics(relPath, raw, parsePath).errors;
-}
-
-/**
- * Non-fatal compile WARNINGS for a workflow (`compileWorkflowPlan`'s
- * `warnings` — e.g. a step with no `output:` schema, or a reference to an
- * undeclared param). Emitted as `workflow-warning` Diagnostics so `akm lint`
- * can surface them in its human and JSON output WITHOUT failing anything:
- * the lint sweep (`commands/lint/index.ts`) routes this issue code into its
- * separate `warnings` channel, never `flagged`, so `--fail-on-flagged` and
- * the adapter `validate()` error surface are unaffected.
- */
-export function workflowCompileWarnings(relPath: string, raw: string, parsePath: string): Diagnostic[] {
-  return workflowFrontendDiagnostics(relPath, raw, parsePath).warnings;
 }
 
 /**
@@ -369,45 +359,46 @@ function lineOf(err: { line?: number }): { line?: number } {
   return typeof err.line === "number" && Number.isFinite(err.line) && err.line > 0 ? { line: err.line } : {};
 }
 
-interface WorkflowFrontendDiagnostics {
-  errors: Diagnostic[];
-  warnings: Diagnostic[];
+/**
+ * One workflow frontend finding. The issue code is narrowed to the only two
+ * codes this pass emits, so a caller can route the result onto its own closed
+ * issue union (`commands/lint/types.ts`'s `LintIssueType`) without a cast.
+ */
+export type WorkflowFrontendDiagnostic = Diagnostic & {
+  issue: "invalid-workflow-structure" | "workflow-warning";
+};
+
+/** Both halves of one parse+compile — see {@link workflowFrontendDiagnostics}. */
+export interface WorkflowFrontendDiagnostics {
+  errors: WorkflowFrontendDiagnostic[];
+  warnings: WorkflowFrontendDiagnostic[];
 }
 
 /**
- * The last frontend pass, keyed by its exact inputs.
+ * ONE parse+compile of a workflow through the unified frontend, returning both
+ * halves of what it produces: fatal `invalid-workflow-structure` findings, and
+ * `compileWorkflowPlan`'s non-fatal `workflow-warning` advisories (a step with
+ * no `output:` schema, a reference to an undeclared param). The read-only
+ * `/.cache/` + `/registry/` cached copies are skipped, and nothing is written.
  *
- * {@link workflowStructureDiagnostics} and {@link workflowCompileWarnings} are
- * two VIEWS of ONE parse+compile, and the lint sweep asks for both, per file,
- * back to back — so without this the whole frontend ran twice for every
- * workflow in the stash (a full `parseWorkflow` + `compileWorkflowPlan` over
- * instruction bodies that may reach `WORKFLOW_MAX_INSTRUCTION_BYTES`) to throw
- * half the result away each time. One entry is all that buys: the second
- * caller always asks about the file the first just asked about.
+ * `parsePath` is the path handed to `parseWorkflow` (the adapter passes the
+ * change relPath, the CLI passes the absolute filePath — matching each
+ * caller's legacy behavior).
  *
- * Keyed on the full `raw` text, so a rewritten file (`--fix`) can never be
- * served a stale answer — the key stops matching the moment the bytes change.
+ * A caller that surfaces BOTH halves must call this once and route the result
+ * itself. The frontend is expensive — instruction bodies reach
+ * `WORKFLOW_MAX_INSTRUCTION_BYTES` — so asking for each half through its own
+ * view parses and compiles every workflow in the stash twice.
  */
-let lastFrontendPass: { key: string; result: WorkflowFrontendDiagnostics } | undefined;
-
-/** Shared parse+compile pass behind {@link workflowStructureDiagnostics} / {@link workflowCompileWarnings}. */
-function workflowFrontendDiagnostics(relPath: string, raw: string, parsePath: string): WorkflowFrontendDiagnostics {
-  const key = `${relPath} ${parsePath} ${raw}`;
-  if (lastFrontendPass?.key === key) return lastFrontendPass.result;
-  const result = computeWorkflowFrontendDiagnostics(relPath, raw, parsePath);
-  lastFrontendPass = { key, result };
-  return result;
-}
-
-function computeWorkflowFrontendDiagnostics(
+export function workflowFrontendDiagnostics(
   relPath: string,
   raw: string,
   parsePath: string,
 ): WorkflowFrontendDiagnostics {
-  const none = { errors: [], warnings: [] };
+  const none: WorkflowFrontendDiagnostics = { errors: [], warnings: [] };
   if (parsePath.includes("/.cache/") || parsePath.includes("/registry/")) return none;
-  const errors: Diagnostic[] = [];
-  const warnings: Diagnostic[] = [];
+  const errors: WorkflowFrontendDiagnostic[] = [];
+  const warnings: WorkflowFrontendDiagnostic[] = [];
   try {
     const result = parseWorkflow(raw, { path: parsePath });
     if (!result.ok) {
