@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { serializeByKey } from "../../../src/core/concurrent";
 import { getStateDbPath, openStateDatabase } from "../../../src/core/state-db";
 import { borrowScopedStateDb, openScopedStateDbCount } from "../../../src/core/state-db-scope";
 import {
@@ -161,25 +162,24 @@ describe("state.db connection scope", () => {
 
 describe("unit writer queue", () => {
   test("chains are keyed per database path — unrelated databases do not queue behind each other", async () => {
+    // The per-key separation belongs to `serializeByKey`, which is what
+    // `enqueueUnitWrite` calls with the live state.db path; exercise it on its
+    // own chain map rather than asking the wrapper to write somewhere it never
+    // writes in production.
+    const chains = new Map<string, Promise<unknown>>();
     const order: string[] = [];
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
 
-    const blocked = enqueueUnitWrite(
-      async () => {
-        await gate;
-        order.push("a");
-      },
-      { key: "/tmp/does-not-exist/a.db" },
-    );
-    const independent = enqueueUnitWrite(
-      async () => {
-        order.push("b");
-      },
-      { key: "/tmp/does-not-exist/b.db" },
-    );
+    const blocked = serializeByKey(chains, "/tmp/does-not-exist/a.db", async () => {
+      await gate;
+      order.push("a");
+    });
+    const independent = serializeByKey(chains, "/tmp/does-not-exist/b.db", async () => {
+      order.push("b");
+    });
 
     await independent;
     // "b" drained while "a" is still parked ⇒ the chains are genuinely separate.
@@ -190,16 +190,15 @@ describe("unit writer queue", () => {
   });
 
   test("writes sharing one database path stay strictly ordered", async () => {
+    // Every call keys on the live state.db path — the isolated one this suite
+    // installs — so all 12 share a chain, which is the production shape.
     const order: number[] = [];
     await Promise.all(
       Array.from({ length: 12 }, (_, i) =>
-        enqueueUnitWrite(
-          async () => {
-            await new Promise((resolve) => setTimeout(resolve, (12 - i) % 4));
-            order.push(i);
-          },
-          { key: "/tmp/does-not-exist/shared.db" },
-        ),
+        enqueueUnitWrite(async () => {
+          await new Promise((resolve) => setTimeout(resolve, (12 - i) % 4));
+          order.push(i);
+        }),
       ),
     );
     expect(order).toEqual(Array.from({ length: 12 }, (_, i) => i));

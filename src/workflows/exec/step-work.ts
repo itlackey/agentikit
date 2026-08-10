@@ -61,6 +61,7 @@ import type {
   IrUnitNode,
   WorkflowPlanGraph,
 } from "../ir/schema";
+import { engineRuntimeKind } from "../ir/schema";
 import {
   type ExpressionScope,
   parseReference,
@@ -372,7 +373,8 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
   if (frozenInvocation && !frozenEngine) {
     return { ok: false, error: `Step "${plan.stepId}" references missing frozen engine "${frozenInvocation.engine}".` };
   }
-  const runner: IrRuntimeKind = frozenEngine ? (frozenEngine.kind === "llm" ? "llm" : frozenEngine.runnerKind) : "exec";
+  // No frozen engine at all means an exec unit: it carries argv, not an invocation.
+  const runner: IrRuntimeKind = frozenEngine ? engineRuntimeKind(frozenEngine) : "exec";
   // Taken VERBATIM from the frozen plan — there is no engine-side backstop, by
   // design. The whole timeout decision happens once at freeze time
   // (`ir/freeze.ts` `effectiveTimeout`: unit `timeout:` → document
@@ -875,15 +877,6 @@ export interface ExecutedStepOutcome {
 }
 
 /**
- * Reduce a step's terminal unit outcomes into the promoted artifact + step
- * verdict — the shared semantics between native dispatch and the report path.
- * Applies the `on_error` policy (`fail` vs `continue`), the reducer (via
- * {@link buildEvidence}), the vote-tie failure, and the typed-artifact schema
- * validation (fail-fast, errors in the summary, `artifactSchemaFailure` marker).
- * Callers own dispatch-specific concerns (replay-divergence, budget) BEFORE
- * calling this; those never occur on the report path (units are journaled).
- */
-/**
  * The FIRST failed unit's diagnostic, appended to the step summary.
  *
  * A failure reason alone is not a diagnosis. `non_zero_exit` says a command
@@ -905,6 +898,15 @@ function firstFailureDiagnostic(failed: UnitOutcome[]): string {
   return ` First failure diagnostic (${first.unitId}): ${clip(diagnostic, WORKFLOW_UNIT_DIAGNOSTIC_CLIP)}`;
 }
 
+/**
+ * Reduce a step's terminal unit outcomes into the promoted artifact + step
+ * verdict — the shared semantics between native dispatch and the report path.
+ * Applies the `on_error` policy (`fail` vs `continue`), the reducer (via
+ * {@link buildEvidence}), the vote-tie failure, and the typed-artifact schema
+ * validation (fail-fast, errors in the summary, `artifactSchemaFailure` marker).
+ * Callers own dispatch-specific concerns (replay-divergence, budget) BEFORE
+ * calling this; those never occur on the report path (units are journaled).
+ */
 export function reduceStepOutcomes(
   plan: IrStepPlan,
   reducer: IrMapReducer,
@@ -1629,7 +1631,8 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
             stepId,
             loop: gateLoop,
             invocation: gateInvocation,
-            runner: gateEngine?.kind === "agent" ? gateEngine.runnerKind : ("llm" as const),
+            // No engine snapshot means the built-in llm judge.
+            runner: gateEngine ? engineRuntimeKind(gateEngine) : ("llm" as const),
             inputHash: createHash("sha256")
               .update(
                 canonicalJsonString({
