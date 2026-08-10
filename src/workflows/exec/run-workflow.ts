@@ -197,15 +197,23 @@ export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<Run
   let remainingSteps = options.maxSteps;
   const executed: ExecutedStepReport[] = [];
   let stepsProcessed = 0;
+  // Spans the retry loop: a retry re-opens only the ONE failed step, so every
+  // step this call already completed keeps handing its complete artifact
+  // downstream instead of falling back to the (possibly clipped) row. See the
+  // {@link driveRun} declaration.
+  const liveEvidence = new Map<string, Record<string, unknown>>();
 
   for (;;) {
-    const result = await runWorkflowAttempt({
-      ...options,
-      target,
-      ...(params !== undefined ? { params } : { params: undefined }),
-      ...(parameterFlags !== undefined ? { parameterFlags } : { parameterFlags: undefined }),
-      ...(remainingSteps !== undefined ? { maxSteps: remainingSteps } : { maxSteps: undefined }),
-    });
+    const result = await runWorkflowAttempt(
+      {
+        ...options,
+        target,
+        ...(params !== undefined ? { params } : { params: undefined }),
+        ...(parameterFlags !== undefined ? { parameterFlags } : { parameterFlags: undefined }),
+        ...(remainingSteps !== undefined ? { maxSteps: remainingSteps } : { maxSteps: undefined }),
+      },
+      liveEvidence,
+    );
     executed.push(...result.executed);
     stepsProcessed += result.stepsProcessed;
     const aggregate = { ...result, executed, stepsProcessed };
@@ -227,7 +235,10 @@ export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<Run
   }
 }
 
-async function runWorkflowAttempt(options: RunWorkflowOptions): Promise<RunWorkflowResult> {
+async function runWorkflowAttempt(
+  options: RunWorkflowOptions,
+  liveEvidence: Map<string, Record<string, unknown>>,
+): Promise<RunWorkflowResult> {
   const next: WorkflowNextResult = await getNextWorkflowStep(options.target, options.params, {
     parameterFlags: options.parameterFlags,
   });
@@ -289,7 +300,9 @@ async function runWorkflowAttempt(options: RunWorkflowOptions): Promise<RunWorkf
     // handle and does not close it, and this scope's own `finally` closes on
     // every exit path (return, throw, abort), after which escaped async work
     // transparently falls back to opening its own connection.
-    const result = await withWorkflowRunsConnection(() => driveRun(options, next, leaseHolder, heartbeat));
+    const result = await withWorkflowRunsConnection(() =>
+      driveRun(options, next, leaseHolder, heartbeat, liveEvidence),
+    );
     // Creation-time notices reach the caller only here: the run row has no
     // warnings column, and a later invocation of the same run must stay silent
     // about a decision it did not make. `driveRun` never sets `warnings`.
@@ -613,12 +626,26 @@ async function skipUnselectedRouteTarget(input: {
  * replay and making the resumed run diverge from the interrupted one. The rows
  * are re-read per step (NOT the once-at-start budget seed) so a step reached
  * later within THIS same invocation still starts fresh at loop 1.
+ *
+ * Only the STEP's rows are read (index-backed on `(run_id, step_id)`): both
+ * helpers already discard every row carrying a different `step_id`, and gate
+ * rows are journaled under the step's own id, so the narrow query returns a
+ * superset of what they read. Re-reading the whole run journal here would
+ * re-materialize every earlier step's `result_json` — synchronously, blocking
+ * the event loop the lease heartbeat and abort handling share — once per step.
  */
 async function recoverGateLoopState(
   runId: string,
-  stepId: string,
+  stepPlan: IrStepPlan,
 ): Promise<{ startLoop: number; seededFeedback: GateFeedback | undefined }> {
-  const stepJournal = await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(runId));
+  // A step with no effective completion criteria never reaches a judge
+  // (`validateStepSummary` short-circuits before the gate-journaling wrapper),
+  // so it can have no gate rows and needs no query at all.
+  if (!stepPlan.gate.criteria.some((criterion) => criterion.trim().length > 0)) {
+    return { startLoop: 1, seededFeedback: undefined };
+  }
+  const stepId = stepPlan.stepId;
+  const stepJournal = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(runId, stepId));
   const startLoop = activeGateLoop(stepJournal, stepId);
   return { startLoop, seededFeedback: recoverGateFeedback(stepJournal, stepId, startLoop) };
 }
@@ -630,8 +657,15 @@ interface StepDriveContext {
   plan: WorkflowPlanGraph;
   stepPlan: IrStepPlan;
   step: WorkflowRunStepState;
-  /** Every prior step's journaled evidence, keyed by step id. */
+  /** Every prior step's evidence, keyed by step id (live values preferred over rows). */
   evidence: Record<string, Record<string, unknown> | undefined>;
+  /**
+   * The COMPLETE in-memory evidence of every step THIS call completed, keyed by
+   * step id — written here as each step advances and preferred over the re-read
+   * row when {@link driveRun} rebuilds the downstream scope. See `driveRun`'s
+   * parameter docs for why the row alone is not enough.
+   */
+  liveEvidence: Map<string, Record<string, unknown>>;
   /** The run-wide report list — appended in place, one entry per loop iteration. */
   executed: ExecutedStepReport[];
   routeSelected: Set<string>;
@@ -808,6 +842,12 @@ async function runStepGateLoop(
       continue;
     }
     if (finalize.kind === "advanced") {
+      // Hand the rest of this invocation the COMPLETE artifact. `finalize` has
+      // already journaled the step (and stamped any route decision onto
+      // `result.evidence`), and the persisted row may carry a truncation
+      // envelope in place of an over-cap value — the row bound must not change
+      // what the very next step reads.
+      ctx.liveEvidence.set(step.id, result.evidence);
       // A route-only step's summary IS its decision (finalize surfaces it).
       if (finalize.summaryOverride !== undefined) {
         executed[executed.length - 1] = { ...executed[executed.length - 1]!, summary: finalize.summaryOverride };
@@ -860,6 +900,19 @@ async function driveRun(
   initial: WorkflowNextResult,
   leaseHolder: string,
   heartbeat: LeaseHeartbeat | undefined,
+  /**
+   * The COMPLETE in-memory evidence of every step THIS call has completed,
+   * keyed by step id, preferred over the re-read row when the downstream scope
+   * is rebuilt below. The spine rows are re-read between steps, and
+   * `clipStepEvidenceForPersistence` (runtime/runs.ts) may have replaced an
+   * over-cap artifact with a truncation envelope on the way in — a bound on ONE
+   * SQLite row, not on what a run may promote (the exec per-pipe cap alone
+   * retains 8 MiB). Preferring the live value keeps the persistence bound
+   * invisible to the run that produced it. A LATER `akm workflow run` starts
+   * with an empty map and reads the rows, where a reference into a truncated
+   * artifact fails loudly by name (`isTruncatedEvidence`).
+   */
+  liveEvidence: Map<string, Record<string, unknown>>,
 ): Promise<RunWorkflowResult> {
   let next = initial;
   if (initial.done) return completedRunResult(initial.run.id);
@@ -939,7 +992,7 @@ async function driveRun(
     }
 
     const evidence: Record<string, Record<string, unknown> | undefined> = {};
-    for (const s of next.workflow.steps) evidence[s.id] = s.evidence;
+    for (const s of next.workflow.steps) evidence[s.id] = liveEvidence.get(s.id) ?? s.evidence;
 
     // Bounded gate loop (addendum R2, `gate.max_loops`): loop 1 is the normal
     // execution; a gate rejection with attempts left re-executes the subgraph
@@ -948,7 +1001,7 @@ async function driveRun(
     // final rejection — this invocation is done.
     const maxLoops = Math.max(1, stepPlan.gate.maxLoops ?? 1);
 
-    const { startLoop, seededFeedback } = await recoverGateLoopState(next.run.id, step.id);
+    const { startLoop, seededFeedback } = await recoverGateLoopState(next.run.id, stepPlan);
 
     // Resume AFTER the FINAL rejection (`startLoop` past the loop bound): the
     // gate was already exhausted before the crash, so there is NO fresh loop to
@@ -997,6 +1050,7 @@ async function driveRun(
         stepPlan,
         step,
         evidence,
+        liveEvidence,
         executed,
         routeSelected,
         routeUnselected,

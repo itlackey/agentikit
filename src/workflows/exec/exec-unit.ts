@@ -204,12 +204,12 @@ export interface RunExecUnitInput {
 /**
  * Run one exec unit and map its process outcome onto the dispatch vocabulary:
  * non-zero exit → `non_zero_exit`, wall-clock expiry → `timeout`, cancellation
- * → `aborted`, a child that never started or a capture that never completed →
- * `spawn_failed`. All four are pre-existing `AgentFailureReason` members, so
- * `retry.on` keeps working unchanged. The out-of-taxonomy `exec_cwd_escape`,
- * `exec_output_limit` and `exec_context_too_large` are deliberate: each is
- * tampering, a runaway, or an authoring bug — never a transient — so no
- * `retry.on` value can ever re-dispatch one.
+ * → `aborted`, a child that never started → `spawn_failed`. All four are
+ * pre-existing `AgentFailureReason` members, so `retry.on` keeps working
+ * unchanged. The out-of-taxonomy `exec_cwd_escape`, `exec_output_limit`,
+ * `exec_context_too_large` and `exec_capture_incomplete` are deliberate: each is
+ * tampering, a runaway, an authoring bug, or work that ALREADY RAN — never a
+ * transient — so no `retry.on` value can ever re-dispatch one.
  *
  * ## An INCOMPLETE capture is a failure, never a partial artifact
  *
@@ -220,6 +220,13 @@ export interface RunExecUnitInput {
  * judge and `steps.<id>.output` a silently truncated artifact. So the unit fails
  * instead, through the same shared classifier (`streamCaptureFailure`) the agent
  * spawn path uses.
+ *
+ * Its reason is `exec_capture_incomplete`, deliberately OUTSIDE the `retry.on`
+ * taxonomy, for the same reason `journal_write_failed` is: the command RAN TO
+ * COMPLETION and exited 0 — what failed is akm's record of it. A retryable
+ * reason here would let `retry.on: [spawn_failed]` re-dispatch byte-identical
+ * argv for a command that already deployed, already published, already migrated.
+ * `spawn_failed` keeps its documented meaning — the child never started.
  *
  * ## Output OVERFLOW does not fail a command that passed
  *
@@ -312,12 +319,13 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
     return {
       ok: false,
       text: "",
-      failureReason: "spawn_failed",
+      failureReason: "exec_capture_incomplete",
       error:
-        `exec unit "${input.unitId}" ran ${display} and it exited 0, but its output capture did not complete ` +
-        `(${captureFailure}), so the stdout artifact would be incomplete. A background descendant still holding ` +
-        `stdout open is the usual cause — have the command wait for its children, or redirect their output` +
-        `${stderrTail(result.stderr)}`,
+        `exec unit "${input.unitId}" ran ${display} and the command COMPLETED (it exited 0), but its output could ` +
+        `not be fully captured (${captureFailure}), so the stdout artifact would be incomplete. The unit is NOT ` +
+        `retried: the command already ran, and re-dispatching identical argv to fix a capture problem would run its ` +
+        `side effects a second time. A background descendant still holding stdout open is the usual cause — have ` +
+        `the command wait for its children, or redirect their output${stderrTail(result.stderr)}`,
     };
   }
   // The command exited 0 and the pipes drained to their end. The ONE thing an
@@ -421,34 +429,12 @@ function outputLimitFailure(
  * authored values a human wrote and sized; this is the surface where the SIZE
  * is data-dependent and therefore surprising.
  */
-/**
- * Byte sizes of large context payloads, keyed by the payload string itself.
- * `AKM_PARAMS` / `AKM_INPUTS` are serialized ONCE per step
- * (`computeStepWorkList`) and every fan-out unit shares the same string, so a
- * 10 000-unit map step measures each payload once here instead of re-scanning
- * up to ~96 KiB per unit. Small values skip the cache (measuring is cheaper
- * than caching), and the map is cleared before it can outgrow a handful of
- * steps' worth of distinct payloads.
- */
-const largeContextSizeCache = new Map<string, number>();
-
-function cachedUtf8Bytes(value: string): number {
-  if (value.length < 1024) return utf8Bytes(value);
-  let bytes = largeContextSizeCache.get(value);
-  if (bytes === undefined) {
-    bytes = utf8Bytes(value);
-    if (largeContextSizeCache.size >= 64) largeContextSizeCache.clear();
-    largeContextSizeCache.set(value, bytes);
-  }
-  return bytes;
-}
-
 function checkExecContextSize(input: RunExecUnitInput): UnitDispatchResult | undefined {
   const limits = execContextLimits(input.platform ?? process.platform);
   const entries = Object.entries(input.context ?? {});
   let total = 0;
   for (const [name, value] of entries) {
-    const bytes = cachedUtf8Bytes(value);
+    const bytes = utf8Bytes(value);
     total += bytes + utf8Bytes(name) + 1;
     if (bytes > limits.perVarBytes) {
       return contextTooLarge(

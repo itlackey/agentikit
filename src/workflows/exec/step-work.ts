@@ -61,9 +61,20 @@ import type {
   IrUnitNode,
   WorkflowPlanGraph,
 } from "../ir/schema";
-import { type ExpressionScope, resolveReferenceString } from "../program/expressions";
+import {
+  type ExpressionScope,
+  parseReference,
+  type ResolveReferenceResult,
+  resolveReferenceString,
+} from "../program/expressions";
 import { WORKFLOW_MAX_MAP_EXPANSION, WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
-import { completeWorkflowStep, type SummaryValidationFailure, type WorkflowNextResult } from "../runtime/runs";
+import {
+  completeWorkflowStep,
+  isTruncatedEvidence,
+  type SummaryValidationFailure,
+  type TruncatedEvidenceValue,
+  type WorkflowNextResult,
+} from "../runtime/runs";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
 import { type JudgeCallIdentity, parseJudgeVerdict, type SummaryJudge } from "../validate-summary";
 import { gateNodeId } from "./frozen-judge";
@@ -234,6 +245,56 @@ function validateFanOutItems(stepId: string, items: unknown[]): string | undefin
   return undefined;
 }
 
+/**
+ * Resolve one whole-value reference, refusing a value a persisted TRUNCATION
+ * ENVELOPE stands in for (`clipStepEvidenceForPersistence`, runtime/runs.ts).
+ *
+ * The engine threads each step's complete in-memory evidence to the rest of its
+ * own invocation, so only a RESUMED run can meet an envelope here. Left to the
+ * raw resolver, a path reference into one reports a generic missing property
+ * and a whole-value reference at one succeeds — handing the envelope to a unit
+ * as if it were the artifact. Both are silent corruption; name the cause
+ * instead. Every whole-value position (`inputs[]`, `map.over`, `route.input`)
+ * goes through here.
+ */
+function resolveStepReference(reference: string, scope: ExpressionScope): ResolveReferenceResult {
+  const resolved = resolveReferenceString(reference, scope);
+  const truncated = truncatedReferenceTarget(reference, scope, resolved);
+  if (!truncated) return resolved;
+  return {
+    ok: false,
+    error: {
+      reference,
+      message:
+        `${reference} reads a step artifact that was NOT persisted (${truncated.originalBytes} bytes exceeded the ` +
+        `${truncated.limitBytes}-byte evidence_json cap, so the row stores a truncation marker). This run was ` +
+        `resumed from rows that no longer hold the value — it cannot be recovered. Start a new run, or have the ` +
+        `producing step emit a reference (path, id) instead of inline bulk data.`,
+    },
+  };
+}
+
+/** The envelope a reference lands on or walks through, if any. */
+function truncatedReferenceTarget(
+  reference: string,
+  scope: ExpressionScope,
+  resolved: ResolveReferenceResult,
+): TruncatedEvidenceValue | undefined {
+  if (resolved.ok) return isTruncatedEvidence(resolved.value) ? resolved.value : undefined;
+  // A FAILED resolution is re-walked: the envelope is an object with none of
+  // the original's keys, so the raw failure is whatever property went missing
+  // along the way, several segments past the truncation.
+  const parsed = parseReference(reference);
+  if (!parsed.ok || parsed.expr.kind !== "stepOutput") return undefined;
+  let current: unknown = scope.stepOutputs[parsed.expr.stepId];
+  for (const segment of parsed.expr.path) {
+    if (isTruncatedEvidence(current)) return current;
+    if (typeof current !== "object" || current === null) return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return isTruncatedEvidence(current) ? current : undefined;
+}
+
 export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): ComputeWorkListResult {
   const root = plan.root;
   // Route-only steps (YAML `route:`) carry no execution subgraph.
@@ -259,7 +320,7 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
   // attached to every dispatched unit as structured context.
   const resolvedInputs: Array<{ reference: string; value: unknown }> = [];
   for (const reference of template.inputs ?? []) {
-    const resolved = resolveReferenceString(reference, scope);
+    const resolved = resolveStepReference(reference, scope);
     if (!resolved.ok) {
       return {
         ok: false,
@@ -273,7 +334,7 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
   // its producer explicitly — no ambient key search.
   let items: unknown[];
   if (root.kind === "map") {
-    const source = resolveReferenceString(root.over, scope);
+    const source = resolveStepReference(root.over, scope);
     if (!source.ok) {
       return {
         ok: false,
@@ -1194,7 +1255,7 @@ export type RouteSkipInfo = { router: string; selected: string | null };
  * string equality against the declared `when:` matches.
  */
 export function evaluateRoute(route: IrRouteSpec, scope: ExpressionScope): RouteDecision {
-  const resolved = resolveReferenceString(route.input, scope);
+  const resolved = resolveStepReference(route.input, scope);
   if (!resolved.ok) {
     return { ok: false, error: `route input ${route.input} failed to resolve: ${resolved.error.message}` };
   }

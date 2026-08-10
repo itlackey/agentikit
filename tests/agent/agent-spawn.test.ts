@@ -458,10 +458,13 @@ describe("runAgent — cooperative abort (RunAgentOptions.signal, P0.5)", () => 
       signal: controller.signal,
     });
 
-    expect(timers.length).toBe(2);
+    // Counted as a DELTA: with no wall budget the drain deadlines are armed by
+    // the child's exit, so what is already scheduled here is not this test's
+    // subject — the ONE timer the abort adds is.
+    const before = timers.length;
     controller.abort();
-    expect(timers.length).toBe(3);
-    expect(timers[2]?.unrefCalled).toBe(true);
+    expect(timers.length).toBe(before + 1);
+    expect(timers[before]?.unrefCalled).toBe(true);
 
     const result = await promise;
     expect(result.ok).toBe(false);

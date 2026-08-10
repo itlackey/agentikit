@@ -38,7 +38,7 @@ import {
 import { requireExecutableWorkflowPlan } from "../../../src/workflows/runtime/plan-classifier";
 import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
-import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
+import { freezeWorkflow, parseErrors, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
 let storage: IsolatedAkmStorage;
 /** Scratch root for fixtures the workflow itself touches (never akm storage). */
@@ -1116,23 +1116,31 @@ describe("exec unit — retained output is BOUNDED, but a passing command is nev
 });
 
 describe("exec unit — an INCOMPLETE capture is never a success (finding 2)", () => {
-  test("leader exits 0 while a descendant holds stdout open → `spawn_failed`, not a partial artifact", async () => {
-    seedRun(["work"]);
-    // The command LEADER writes a prefix of its output and exits 0 immediately,
-    // but leaves a detached descendant holding the stdout fd open far past the
-    // stream-drain deadline (the unit's wall budget + 2s). `exitCode` is 0 and
-    // `stdout` holds only the leader's prefix — promoting it would hand every
-    // downstream reference a silently truncated artifact.
+  /**
+   * A command whose LEADER writes a prefix of its output and exits 0
+   * immediately, leaving a detached descendant holding the stdout fd open far
+   * past the stream-drain deadline (the unit's wall budget + 2s). `exitCode` is
+   * 0 and `stdout` holds only the leader's prefix — promoting it would hand
+   * every downstream reference a silently truncated artifact. `log`, when
+   * given, records one line per REAL execution.
+   */
+  function fdHolderArgv(log?: string): string[] {
     const holder = "setTimeout(() => {}, 30000)";
-    const code =
-      `const cp=require('node:child_process'); ` +
-      `const child=cp.spawn(${JSON.stringify(BUN)}, ['-e', ${JSON.stringify(holder)}], ` +
-      `{ stdio: ['ignore', 'inherit', 'ignore'] }); child.unref(); ` +
-      `process.stdout.write('partial-artifact');`;
+    return bunArgv(
+      (log ? `require('node:fs').appendFileSync(${JSON.stringify(log)}, 'x'); ` : "") +
+        `const cp=require('node:child_process'); ` +
+        `const child=cp.spawn(${JSON.stringify(BUN)}, ['-e', ${JSON.stringify(holder)}], ` +
+        `{ stdio: ['ignore', 'inherit', 'ignore'] }); child.unref(); ` +
+        `process.stdout.write('partial-artifact');`,
+    );
+  }
+
+  test("leader exits 0 while a descendant holds stdout open → `exec_capture_incomplete`, not a partial artifact", async () => {
+    seedRun(["work"]);
     const plan = execPlan([
       "    unit:",
       "      exec:",
-      `        command: ${JSON.stringify(bunArgv(code))}`,
+      `        command: ${JSON.stringify(fdHolderArgv())}`,
       '      timeout: "2s"',
     ]);
     storePlan(plan);
@@ -1140,14 +1148,74 @@ describe("exec unit — an INCOMPLETE capture is never a success (finding 2)", (
     const result = await run(plan);
 
     expect(result.ok).toBe(false);
-    // The SAME reason the agent spawn path reports for the same condition.
-    expect(result.units[0]!.failureReason).toBe("spawn_failed");
-    expect(result.units[0]!.error).toContain("output capture did not complete");
-    expect(result.units[0]!.error).toContain("drain timed out");
+    // NOT `spawn_failed`: the child started and finished. What failed is akm's
+    // record of its output, which is a different thing and a different reason.
+    expect(result.units[0]!.failureReason).toBe("exec_capture_incomplete");
+    const error = result.units[0]!.error ?? "";
+    expect(error).toContain("the command COMPLETED");
+    expect(error).toContain("could not be fully captured");
+    expect(error).toContain("drain timed out");
     // The prefix never became the step artifact.
     expect(result.evidence.output).toBeNull();
     expect(JSON.stringify(result.evidence)).not.toContain("partial-artifact");
+
+    const rows = await unitRows();
+    expect(rows[0]!.status).toBe("failed");
+    expect(rows[0]!.failure_reason).toBe("exec_capture_incomplete");
   }, 90_000);
+
+  test("`retry: { on: [spawn_failed] }` does NOT re-run a command that already completed", async () => {
+    seedRun(["work"]);
+    // The whole point of the separate reason: a unit that declares the widest
+    // plausible retry policy for a start-up failure must not re-dispatch
+    // byte-identical argv for a command that ALREADY ran its side effects.
+    const log = path.join(tmpDir, "executions.log");
+    const plan = execPlan([
+      "    unit:",
+      "      exec:",
+      `        command: ${JSON.stringify(fdHolderArgv(log))}`,
+      '      timeout: "2s"',
+      "      retry: { max: 2, on: [spawn_failed] }",
+    ]);
+    storePlan(plan);
+
+    const result = await run(plan);
+
+    expect(result.ok).toBe(false);
+    expect(result.units[0]!.failureReason).toBe("exec_capture_incomplete");
+    // ONE execution — not the 1 + 2 retries the declared policy would have run.
+    expect(fs.readFileSync(log, "utf8")).toBe("x");
+    // …and one journal row: no `~r1`/`~r2` attempt ids were ever minted.
+    const rows = await unitRows();
+    expect(rows.map((r) => r.unit_id)).toEqual(["work:solo"]);
+  }, 90_000);
+
+  test("`exec_capture_incomplete` cannot be opted into from retry.on either", () => {
+    // Out of the taxonomy at the AUTHORING surface too, exactly like the other
+    // exec-only reasons: there is no spelling of `retry:` that re-dispatches a
+    // command that already ran.
+    const errors = parseErrors(
+      [
+        "---",
+        "type: workflow",
+        "steps:",
+        "  - id: work",
+        "    unit:",
+        "      exec:",
+        '        command: ["true"]',
+        "      retry: { max: 2, on: [exec_capture_incomplete] }",
+        "---",
+        "",
+        "## work",
+        "",
+        "Run the command.",
+        "",
+      ].join("\n"),
+    );
+    expect(errors.map((error) => error.message).join(" ")).toContain(
+      'unknown failure reason "exec_capture_incomplete"',
+    );
+  });
 });
 
 describe("exec unit — a stderr-only diagnosis survives to the journal (finding 3)", () => {
