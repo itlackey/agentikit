@@ -38,7 +38,13 @@ import {
 import { requireExecutableWorkflowPlan } from "../../../src/workflows/runtime/plan-classifier";
 import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
-import { freezeWorkflow, parseErrors, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
+import {
+  freezeWorkflow,
+  parseErrors,
+  seedWorkflowRun,
+  storeFrozenWorkflowPlan,
+  workflowDoc,
+} from "../../_helpers/workflow";
 
 let storage: IsolatedAkmStorage;
 /** Scratch root for fixtures the workflow itself touches (never akm storage). */
@@ -78,23 +84,8 @@ function storePlan(plan: WorkflowPlanGraph): void {
 }
 
 /** Freeze a one-step exec workflow whose `unit:` block is spelled by the caller. */
-function execPlan(unitLines: string[], opts: { stepId?: string; body?: string; extra?: string[] } = {}) {
-  const stepId = opts.stepId ?? "work";
-  const markdown = [
-    "---",
-    "type: workflow",
-    ...(opts.extra ?? []),
-    "steps:",
-    `  - id: ${stepId}`,
-    ...unitLines,
-    "---",
-    "",
-    `## ${stepId}`,
-    "",
-    opts.body ?? "Run the command.",
-    "",
-  ].join("\n");
-  return freezeWorkflow(markdown);
+function execPlan(unitLines: string[], opts: { extra?: string[] } = {}) {
+  return freezeWorkflow(workflowDoc(unitLines, "## work\n\nRun the command.\n", opts.extra ?? []));
 }
 
 function run(plan: WorkflowPlanGraph, ctx: Partial<StepExecutionContext> = {}): Promise<StepExecutionResult> {

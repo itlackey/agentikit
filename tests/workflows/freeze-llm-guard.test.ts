@@ -14,30 +14,16 @@
 import { describe, expect, test } from "bun:test";
 import { ConfigError } from "../../src/core/errors";
 import type { IrUnitNode } from "../../src/workflows/ir/schema";
-import { freezeWorkflow } from "../_helpers/workflow";
+import { freezeWorkflow, workflowDoc } from "../_helpers/workflow";
 
 // WORKFLOW_TEST_CONFIG's default engine is `test-agent` (opencode-sdk, an
 // agent engine with the `test-llm` fallback) — exactly the shape whose llm
 // overrides used to vanish.
 
-function workflow(frontmatter: string[]): string {
-  return [
-    "---",
-    "type: workflow",
-    ...frontmatter,
-    "steps:",
-    "  - id: review",
-    "---",
-    "",
-    "## review",
-    "",
-    "Review.",
-    "",
-  ].join("\n");
-}
-
 describe("bug 7 — llm overrides on a non-llm engine throw at freeze", () => {
   test("unit-level llm overrides on the (agent) default engine throw a ConfigError naming step and engine", () => {
+    // Spelled out rather than built from `workflowDoc`: this is the one case
+    // that asserts the step NAME, and the shared scaffold hard-codes it.
     const markdown = [
       "---",
       "type: workflow",
@@ -66,26 +52,13 @@ describe("bug 7 — llm overrides on a non-llm engine throw at freeze", () => {
   });
 
   test("document defaults.llm with an agent engine anywhere in the stack also throws", () => {
-    const markdown = workflow(["defaults: { llm: { temperature: 0.2 } }"]);
+    const markdown = workflowDoc([], undefined, ["defaults: { llm: { temperature: 0.2 } }"]);
     expect(() => freezeWorkflow(markdown)).toThrow(ConfigError);
     expect(() => freezeWorkflow(markdown)).toThrow(/agent engine and cannot receive llm/);
   });
 
   test("llm overrides on an actual LLM engine freeze into the invocation (no false positive)", () => {
-    const markdown = [
-      "---",
-      "type: workflow",
-      "steps:",
-      "  - id: review",
-      "    unit: { engine: test-llm, llm: { temperature: 0 } }",
-      "---",
-      "",
-      "## review",
-      "",
-      "Review.",
-      "",
-    ].join("\n");
-    const plan = freezeWorkflow(markdown);
+    const plan = freezeWorkflow(workflowDoc(["    unit: { engine: test-llm, llm: { temperature: 0 } }"]));
     const root = plan.steps[0]!.root as IrUnitNode;
     expect(root.invocation!.engine).toBe("test-llm");
     expect(root.invocation!.llm).toEqual({ temperature: 0 });
@@ -96,7 +69,7 @@ describe("bug 7 — llm overrides on a non-llm engine throw at freeze", () => {
     // fallback resolves a model through a separate mechanism (`llmEngine`),
     // never through the invocation-override layers, so the live guard must
     // not fire on it.
-    const plan = freezeWorkflow(workflow([]));
+    const plan = freezeWorkflow(workflowDoc([]));
     const root = plan.steps[0]!.root as IrUnitNode;
     expect(root.invocation!.engine).toBe("test-agent");
     expect(root.invocation!.llm).toBeUndefined();
