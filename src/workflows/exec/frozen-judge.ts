@@ -14,7 +14,10 @@
  *     notes. So the judge outcome goes through the SAME scrub every unit outcome
  *     goes through: {@link collectWorkflowDispatchSensitiveValues} +
  *     {@link withDispatchRedaction} (exec/dispatch-redaction.ts). Nothing about
- *     a judge call reaches durable state before that scrub.
+ *     a judge call reaches durable state before that scrub. BOTH branches below
+ *     state it that way — the agent branch wrapping the injected dispatcher, the
+ *     llm branch wrapping its own chatCompletion call — so a change to that one
+ *     contract cannot reach only one of the two judge paths.
  *
  *  2. **Identity.** The dispatch request carries the REAL run/step and the gate's
  *     real node/unit ids — the same ids `journalGateEvaluationStart/Finish` write
@@ -33,7 +36,6 @@
  */
 
 import { ConfigError } from "../../core/errors";
-import { redactSensitiveText } from "../../core/redaction";
 import type { IrInvocation, WorkflowPlanGraph } from "../ir/schema";
 import type { JudgeCallIdentity, SummaryJudge } from "../validate-summary";
 import { collectWorkflowDispatchSensitiveValues, withDispatchRedaction } from "./dispatch-redaction";
@@ -87,21 +89,24 @@ export function frozenSummaryJudge(
     }
     const fallbackEngine = engine.fallbackLlmEngine ? plan.execution.engines[engine.fallbackLlmEngine] : undefined;
     const fallback = fallbackEngine?.kind === "llm" ? fallbackEngine : undefined;
-    // The engine pair is fixed when the judge is BUILT, so the sensitive-value
-    // set is too — collected once here, not per gate evaluation. Same collector
-    // the unit path uses; see the module doc on why `env` is absent here but
-    // the credential/passthrough values are still collected.
-    const sensitiveValues = collectWorkflowDispatchSensitiveValues(
-      { engine, ...(fallback ? { fallbackEngine: fallback } : {}) },
-      undefined,
-    );
-    // Scrub at the seam: every outcome this judge's dispatcher returns is
-    // redacted BEFORE the verdict (or the failure message) can reach the gate
-    // row / the blocked step's notes. Identical contract to the unit path,
-    // including the failureReason downgrade when redaction altered it.
+    // Scrub at the seam: every outcome this judge's dispatcher returns — and
+    // every error it throws — is redacted BEFORE the verdict (or the failure
+    // message) can reach the gate row / the blocked step's notes. Identical
+    // contract to the llm branch below and to the unit path, including the
+    // failureReason downgrade when redaction altered it.
     const dispatch = withDispatchRedaction(dispatcher);
     return async ({ system, user }, identity) => {
       const id = dispatchIdentity(owner, identity);
+      // Collected per dispatch, not once per judge: the engine PAIR is fixed at
+      // build time but its secrets are not — they are read from `process.env`,
+      // which the dispatch itself re-reads, so a build-time set would miss a
+      // credential set or rotated between the two reads. Same collector the unit
+      // path uses; see the module doc on why `env` is absent here but the
+      // credential/passthrough values are still collected.
+      const sensitiveValues = collectWorkflowDispatchSensitiveValues(
+        { engine, ...(fallback ? { fallbackEngine: fallback } : {}) },
+        undefined,
+      );
       const outcome = await dispatch({
         runId: id.runId,
         stepId: id.stepId,
@@ -122,45 +127,52 @@ export function frozenSummaryJudge(
       return outcome.text ?? "";
     };
   }
-  // An llm judge's only secret is its own credential (materializeFrozenLlm
-  // reads it out of process.env); collected once at build time through the
-  // SHARED collector so the llm and agent judge paths cannot drift.
-  const sensitiveValues = collectWorkflowDispatchSensitiveValues({ engine }, undefined);
-  return async ({ system, user }) => {
-    // Inline chatCompletion rather than the unit dispatcher ON PURPOSE: the
-    // manual completion path (`runtime/runs.ts`) builds an llm judge with no
-    // dispatcher, and a static runs → native-executor edge would close an
-    // import cycle. The materialization itself is the shared
-    // {@link materializeFrozenLlm}, so the two llm dispatch paths cannot drift.
+  // The llm judge's ONE call, shaped as a {@link UnitDispatcher} so this branch
+  // states its redaction through the SAME {@link withDispatchRedaction} contract
+  // the agent branch above uses — including the throw, which a transport error
+  // takes and which becomes the blocked step's notes (`judgeFailure` in
+  // step-work.ts).
+  //
+  // Inline chatCompletion rather than the injected unit dispatcher ON PURPOSE:
+  // the manual completion path (`runtime/runs.ts`) builds an llm judge with no
+  // dispatcher, and a static runs → native-executor edge would close an import
+  // cycle. The materialization itself is the shared {@link materializeFrozenLlm},
+  // so the two llm dispatch paths cannot drift.
+  const dispatch = withDispatchRedaction(async (request) => {
     const { chatCompletion } = await import("../../llm/client");
-    try {
-      const text = await chatCompletion(
-        materializeFrozenLlm(engine, invocation),
-        [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        {
-          timeoutMs: invocation.timeoutMs,
-          ...(signal ? { signal } : {}),
-        },
-      );
-      return redactSensitiveText(text, sensitiveValues);
-    } catch (err) {
-      // A transport error's message becomes the blocked step's notes (see
-      // `judgeFailure` in step-work.ts) — a durable surface. Re-wrap ONLY
-      // when redaction actually changed the message, so the untouched path keeps
-      // the original error object (and its type) byte-identical.
-      throw redactJudgeError(err, sensitiveValues);
-    }
+    const text = await chatCompletion(
+      materializeFrozenLlm(engine, invocation),
+      [
+        { role: "system", content: request.systemPrompt ?? "" },
+        { role: "user", content: request.prompt },
+      ],
+      {
+        timeoutMs: request.timeoutMs,
+        ...(signal ? { signal } : {}),
+      },
+    );
+    return { ok: true, text };
+  });
+  return async ({ system, user }, identity) => {
+    const id = dispatchIdentity(owner, identity);
+    // An llm judge's only secret is its own credential, which
+    // `materializeFrozenLlm` resolves out of `process.env` inside the dispatch
+    // below — so the set is collected here, per dispatch, and cannot predate the
+    // value the call actually authenticates with.
+    const sensitiveValues = collectWorkflowDispatchSensitiveValues({ engine }, undefined);
+    const outcome = await dispatch({
+      runId: id.runId,
+      stepId: id.stepId,
+      unitId: id.unitId,
+      nodeId: gateNodeId(id.stepId),
+      prompt: user,
+      systemPrompt: system,
+      engine,
+      invocation,
+      timeoutMs: invocation.timeoutMs,
+      ...(sensitiveValues.length > 0 ? { sensitiveValues } : {}),
+      ...(signal ? { signal } : {}),
+    });
+    return outcome.text;
   };
-}
-
-function redactJudgeError(err: unknown, sensitiveValues: readonly string[]): unknown {
-  if (sensitiveValues.length === 0 || !(err instanceof Error)) return err;
-  const redacted = redactSensitiveText(err.message, sensitiveValues);
-  if (redacted === err.message) return err;
-  const replacement = new Error(redacted);
-  replacement.name = err.name;
-  return replacement;
 }

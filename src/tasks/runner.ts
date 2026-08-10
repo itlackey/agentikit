@@ -471,12 +471,18 @@ async function runWorkflowTask(input: {
             (detail?.id ? ` — resume it with \`akm workflow resume ${detail.id}\`.` : "."),
         );
 
+  // One failure value for the three sinks below (status, log line, history
+  // detail): a thrown error outranks a gate rejection, which outranks the
+  // deadline. Re-laddering per sink is how a log line ends up naming a
+  // different cause than the history row it was written beside.
+  const failure = error ?? (gateError ? new Error(gateError) : timeoutError);
+
   const finishedAt = finishAttempt(startedAt, now());
-  const status: TaskRunStatus = error || gateError || timeoutError ? "failed" : mapWorkflowStatus(detail?.status);
+  const status: TaskRunStatus = failure ? "failed" : mapWorkflowStatus(detail?.status);
   const log = renderWorkflowLog({
     task,
     detail,
-    error: error ?? (gateError ? new Error(gateError) : timeoutError),
+    error: failure,
     warnings: runWarnings,
     ...(timedOutAfterMs !== undefined ? { timedOutAfterMs } : {}),
   });
@@ -499,13 +505,7 @@ async function runWorkflowTask(input: {
     target: { kind: "workflow", ref: task.target.ref },
     detail: {
       runId: detail?.id,
-      ...(error
-        ? { error: error.message }
-        : gateError
-          ? { error: gateError }
-          : timeoutError
-            ? { error: timeoutError.message }
-            : {}),
+      ...(failure ? { error: failure.message } : {}),
     },
   };
   appendHistory(result, historyReserved);

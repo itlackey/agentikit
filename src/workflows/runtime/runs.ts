@@ -32,6 +32,7 @@ import { materializeWorkflowParameterFlags, validateWorkflowParams, type Workflo
 import { canonicalPlanJson, computePlanHash } from "../ir/plan-hash";
 import { decodeWorkflowPlanV3, type FrozenEngineSnapshot, type IrRuntimeKind, WORKFLOW_IR_VERSION } from "../ir/schema";
 import {
+  clip,
   utf8Bytes,
   WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS,
   WORKFLOW_MAX_EVIDENCE_JSON_BYTES,
@@ -166,8 +167,7 @@ function toUnitDiagnostic(
     } catch {
       /* leave the raw journaled text */
     }
-    diagnostic =
-      text.length > WORKFLOW_UNIT_DIAGNOSTIC_CLIP ? `${text.slice(0, WORKFLOW_UNIT_DIAGNOSTIC_CLIP)}…` : text;
+    diagnostic = clip(text, WORKFLOW_UNIT_DIAGNOSTIC_CLIP);
   }
   return {
     unitId: row.unit_id,
@@ -678,7 +678,8 @@ export function clipStepEvidenceForPersistence(
   // subtree of a value already proven serializable here.
   let json = JSON.stringify(evidence);
   if (json === undefined) return { json: null, truncatedKeys: [] };
-  if (utf8Bytes(json) <= limitBytes) return { json, truncatedKeys: [] };
+  let bytes = utf8Bytes(json);
+  if (bytes <= limitBytes) return { json, truncatedKeys: [] };
 
   const clipped: Record<string, unknown> = { ...evidence };
   const truncatedKeys: string[] = [];
@@ -692,11 +693,23 @@ export function clipStepEvidenceForPersistence(
       return { key, json, bytes: utf8Bytes(json) };
     })
     .sort((a, b) => b.bytes - a.bytes);
-  for (const entry of bySizeDesc) {
-    clipped[entry.key] = truncatedEvidenceValue(entry.json, `Step evidence "${entry.key}"`, limitBytes, true);
+  for (const [index, entry] of bySizeDesc.entries()) {
+    const envelope = truncatedEvidenceValue(entry.json, `Step evidence "${entry.key}"`, limitBytes, true);
+    clipped[entry.key] = envelope;
     truncatedKeys.push(entry.key);
+    // Track the row size arithmetically from the per-key sizes already computed
+    // for the sort, so a run of replacements costs ONE whole-object
+    // serialization rather than one per replaced key. The total is an ESTIMATE
+    // — a key whose value is `undefined` is charged the `"null"` the sort used
+    // but is OMITTED from the serialized row — so it decides only WHEN to
+    // measure. Whether the row FITS is settled by an exact serialization every
+    // time, the last key included, so an exhausted loop falls through to the
+    // whole-object marker on measurement rather than on drift.
+    bytes += utf8Bytes(JSON.stringify(envelope)) - entry.bytes;
+    if (bytes > limitBytes && index < bySizeDesc.length - 1) continue;
     json = JSON.stringify(clipped);
-    if (utf8Bytes(json) <= limitBytes) return { json, truncatedKeys };
+    bytes = utf8Bytes(json);
+    if (bytes <= limitBytes) return { json, truncatedKeys };
   }
   // Pathological shape (so many keys that even the envelopes overflow): persist
   // ONE whole-object marker. Still unambiguous, still bounded.

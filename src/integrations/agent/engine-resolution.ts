@@ -140,6 +140,29 @@ function resolveCredential(
     : { names: [specific], required: false };
 }
 
+/**
+ * Read a credential descriptor's value out of `process.env`: the FIRST
+ * non-empty trimmed value across `names`, in declared order. A `required`
+ * descriptor that resolves to nothing is a config error naming its PRIMARY
+ * variable — the one an operator is told to set.
+ *
+ * The ONE env-credential seam. The live-config dispatch boundary
+ * ({@link materializeLlmConnection}) and the FROZEN workflow dispatch boundary
+ * (`materializeFrozenLlm` in `workflows/exec/unit-dispatch.ts`, whose frozen
+ * snapshots carry a structurally identical descriptor) both read through it, so
+ * lookup order and the failure message cannot drift between them.
+ */
+export function resolveCredentialFromEnv(credential: CredentialDescriptor | undefined): string | undefined {
+  for (const name of credential?.names ?? []) {
+    const candidate = process.env[name]?.trim();
+    if (candidate) return candidate;
+  }
+  if (credential?.required) {
+    throw new ConfigError(`Required engine credential ${credential.names[0]} is not set.`, "INVALID_CONFIG_FILE");
+  }
+  return undefined;
+}
+
 /** Collect materialized engine credentials for output and persistence redaction. */
 export function collectEngineCredentialValues(
   config: EngineResolutionConfig,
@@ -231,20 +254,7 @@ export function materializeLlmConnection(resolved: ResolvedLlmUse): LlmConnectio
       );
     }
   }
-  let apiKey: string | undefined;
-  for (const name of resolved.credential?.names ?? []) {
-    const candidate = process.env[name]?.trim();
-    if (candidate) {
-      apiKey = candidate;
-      break;
-    }
-  }
-  if (resolved.credential?.required && !apiKey) {
-    throw new ConfigError(
-      `Required engine credential ${resolved.credential.names[0]} is not set.`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
+  const apiKey = resolveCredentialFromEnv(resolved.credential);
   return {
     ...resolved.connection,
     ...(apiKey ? { apiKey } : {}),

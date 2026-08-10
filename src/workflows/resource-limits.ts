@@ -194,6 +194,18 @@ export function execContextLimits(platform: string = process.platform): ExecCont
  */
 export const WORKFLOW_UNIT_DIAGNOSTIC_CLIP = 2_000;
 
+/**
+ * Truncate to `max` chars with an ellipsis marker.
+ *
+ * Lives with the bounds rather than with either caller: the write side
+ * (`exec/step-work.ts`) and the read side (`runtime/runs.ts`) clip against the
+ * same constants, and `runtime/runs.ts` cannot take the helper from
+ * `exec/step-work.ts` — that module imports `runtime/runs.ts`.
+ */
+export function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 // ── Persistence bounds ───────────────────────────────────────────────────────
 
 /**

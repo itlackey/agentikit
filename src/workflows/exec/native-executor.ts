@@ -144,7 +144,8 @@ import {
 import type { FrozenEngineSnapshot, IrBudget, IrInvocation, IrStepPlan } from "../ir/schema";
 import { WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
 // The ONE dispatch redaction contract, shared with the gate-judge path
-// (exec/frozen-judge.ts). Re-exported for existing importers of this module.
+// (exec/frozen-judge.ts). Consumers import the leaf directly — this module is
+// not a second front door onto the seam.
 import { collectWorkflowDispatchSensitiveValues, redactUnitOutcome } from "./dispatch-redaction";
 // The exec (shell) unit runner — a leaf that owns argv spawning, containment,
 // and the process-outcome → failure-reason mapping.
@@ -171,7 +172,6 @@ import {
   type UnitDispatchResult,
 } from "./unit-dispatch";
 
-export { collectWorkflowDispatchSensitiveValues, redactUnitOutcome } from "./dispatch-redaction";
 export type { UnitDispatcher, UnitDispatchRequest, UnitDispatchResult } from "./unit-dispatch";
 
 import { enqueueUnitWrite } from "./unit-writer";
@@ -372,7 +372,7 @@ function classifyUnitReuse(
   completedRows: CompletedRowIndex | undefined,
   gateLoop: number,
 ): UnitReuseDecision {
-  const inputHash = workUnit.resolved.inputHash;
+  const inputHash = workUnit.inputHash;
   // Scan EVERY journaled attempt row of this unit (`<base>` / `<base>~r<N>`
   // for ANY N), not just the attempts the CURRENT retry policy allows:
   // retry/onError are deliberately excluded from the input hash (step-work.ts)
@@ -738,21 +738,18 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
   const { plan, workUnit, env, ctx, dispatcher } = input;
   const unitId = workUnit.unitId;
 
-  // An `exec` unit legitimately carries neither — it spawns a child process
-  // instead of calling an engine. Every OTHER kind must have both.
-  if (!workUnit.exec && (!workUnit.engine || !workUnit.invocation)) {
-    return {
-      unitId,
-      ok: false,
-      failureReason: "dispatch_error",
-      error: `unit "${unitId}" has no frozen engine snapshot and cannot be dispatched`,
-    };
-  }
+  // Engine/exec presence is a WHOLE-LIST invariant, never a per-unit condition:
+  // computeStepWorkList fails the entire step before it builds any unit when a
+  // template carries neither an `exec` spec nor an `invocation`, and when an
+  // `invocation` names an engine absent from the frozen catalog — and
+  // executeStepPlanInConnection returns on `!workList.ok` without reaching here.
+  // So every unit below carries either `exec` (a child process, naming no
+  // engine) or `engine` + `invocation`.
 
   // The prompt (and therefore the input hash) was built once with the BASE
   // unit id by computeStepWorkList: a retry re-dispatches the SAME input, the
   // `~r<n>` suffix is journal bookkeeping only.
-  const { prompt, inputHash } = workUnit.resolved;
+  const { prompt, inputHash } = workUnit;
   const sensitiveValues = input.sensitiveValues;
 
   const request: UnitDispatchRequest = {
@@ -951,9 +948,9 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
   let worktreePath: string | undefined;
   if (input.worktreeBase !== undefined) {
     const created = await createUnitWorktree(input.worktreeBase, ctx.runId, attemptId);
-    if (!created.ok) {
-      return { unitId: request.unitId, ok: false, failureReason: "worktree_failed", error: created.error };
-    }
+    // Reported BEFORE the failure check: when the worktree could not be minted,
+    // the leftover moved aside is the only copy of the prior attempt's
+    // uncollected work, so that is exactly when its path must not be swallowed.
     if (created.preservedLeftover !== undefined) {
       // Never destroy a dirty (or unverifiable) leftover from a prior
       // invocation of the same attempt — it was moved aside instead.
@@ -961,6 +958,9 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
         `Workflow unit ${attemptId}: a previous attempt left uncollected work in its isolation worktree; ` +
           `preserved at ${created.preservedLeftover}`,
       );
+    }
+    if (!created.ok) {
+      return { unitId: request.unitId, ok: false, failureReason: "worktree_failed", error: created.error };
     }
     worktreePath = created.path;
     request = { ...request, cwd: worktreePath };

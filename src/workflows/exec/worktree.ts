@@ -21,6 +21,10 @@
  *      is never destroyed.
  *   4. {@link sweepStaleWorktrees} — opportunistic, at most once per process:
  *      an age-based GC of run roots and retained trees that outlived their run.
+ *      Age alone cannot see a unit that is still running in ANOTHER process, so
+ *      every live worktree carries a liveness lease (pid + host + path) in
+ *      git's own administrative directory for it, and the sweep skips a tree
+ *      whose lease holder is still running.
  *
  * What "uncollected work" means (the honest contract): the clean probe is
  * `git status --porcelain` WITHOUT `--ignored`, so it counts tracked-file
@@ -174,11 +178,13 @@ export function assertGitWorkTree(dir: string): string | undefined {
 const repoOperationTails = new Map<string, Promise<unknown>>();
 
 /**
- * Base repos already pruned in this process, keyed `<repo>\0<runId>`. A run's
- * keys are dropped when its drained worktree root is removed
- * ({@link removeRunRootIfEmpty}), so the set never outgrows the live runs.
+ * Base repos already pruned in this process, per run id. Granularity is
+ * per-(repo, run), not per-repo: a run resuming against a repo another run
+ * already pruned must still reap ITS own orphaned registrations. A run's whole
+ * entry is dropped when its drained worktree root is removed
+ * ({@link removeRunRootIfEmpty}), so the map never outgrows the live runs.
  */
-const prunedRuns = new Set<string>();
+const prunedRuns = new Map<string, Set<string>>();
 
 /**
  * Serialize `fn` against every other repo-mutating worktree operation on the
@@ -201,7 +207,16 @@ export type WorktreeCreateResult =
        */
       preservedLeftover?: string;
     }
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      error: string;
+      /**
+       * Same field on the failure path: when the leftover was moved aside and
+       * the re-creation then failed, that copy is the ONLY one left of the
+       * previous attempt's work, so the caller must still be told where it is.
+       */
+      preservedLeftover?: string;
+    };
 
 /** Journal-safe directory name for a unit attempt id (ids carry `:` / `~`). */
 function sanitizeAttemptId(attemptId: string): string {
@@ -256,6 +271,10 @@ async function pathExists(p: string): Promise<boolean> {
  * the prune and the add form ONE critical section against the base repo's
  * administrative state, so a concurrent unit's prune can never land between
  * another unit's prune and its add.
+ *
+ * A successful add takes a liveness lease ({@link acquireWorktreeLease}) so the
+ * GC sweep — in this process or another one — never collects the tree while the
+ * unit is still running in it.
  */
 export async function createUnitWorktree(
   baseDir: string,
@@ -285,7 +304,11 @@ export async function createUnitWorktree(
       }
       await fsp.mkdir(path.dirname(dest), { recursive: true });
     } catch (err) {
-      return { ok: false, error: `could not prepare worktree directory ${dest}: ${message(err)}` };
+      return {
+        ok: false,
+        error: `could not prepare worktree directory ${dest}: ${message(err)}`,
+        ...(preservedLeftover !== undefined ? { preservedLeftover } : {}),
+      };
     }
     // Prune only drops administrative entries whose worktree directory is
     // already gone; it never touches a live worktree. Two triggers, both
@@ -295,15 +318,21 @@ export async function createUnitWorktree(
     //     before re-adding at the same path;
     //   • first worktree of this (repo, run) — reaps registrations orphaned by
     //     earlier runs whose roots were GC'd or deleted out from under git.
-    const pruneKey = `${repoKey}\u0000${runId}`;
-    if (leftoverHandled || !prunedRuns.has(pruneKey)) {
-      prunedRuns.add(pruneKey);
+    const prunedRepos = prunedRuns.get(runId);
+    if (leftoverHandled || !prunedRepos?.has(repoKey)) {
+      if (prunedRepos) prunedRepos.add(repoKey);
+      else prunedRuns.set(runId, new Set([repoKey]));
       await git(baseDir, ["worktree", "prune"]);
     }
     const added = await git(baseDir, ["worktree", "add", "--detach", dest]);
     if (!added.ok) {
-      return { ok: false, error: `could not create isolation worktree at ${dest}: ${added.error}` };
+      return {
+        ok: false,
+        error: `could not create isolation worktree at ${dest}: ${added.error}`,
+        ...(preservedLeftover !== undefined ? { preservedLeftover } : {}),
+      };
     }
+    await acquireWorktreeLease(dest);
     return { ok: true, path: dest, ...(preservedLeftover !== undefined ? { preservedLeftover } : {}) };
   });
 }
@@ -349,7 +378,11 @@ export async function cleanupUnitWorktree(baseDir: string, worktreePath: string)
     await removeRunRootIfEmpty(worktreePath);
     return { removed: true, dirty: false };
   }
-  // It refused. Ask the probe WHY rather than parsing git's message, whose
+  // It refused, so the tree stays on disk — drop its lease, since no unit is
+  // using it any more and the sweep must be free to collect it once it is
+  // stale. (A successful removal took the whole admin directory, lease with it.)
+  await releaseWorktreeLease(worktreePath);
+  // Ask the probe WHY it refused rather than parsing git's message, whose
   // wording varies with version and locale — and which the caller's warn text
   // has never been written against.
   const status = await git(worktreePath, ["status", "--porcelain"]);
@@ -360,6 +393,112 @@ export async function cleanupUnitWorktree(baseDir: string, worktreePath: string)
     return { removed: false, dirty: true };
   }
   return { removed: false, dirty: false, error: removed.error };
+}
+
+// ── Liveness leases ─────────────────────────────────────────────────────────
+
+/** Marker file, inside a worktree's git admin dir, naming the process using it. */
+const LEASE_FILE_NAME = "akm-lease";
+
+interface WorktreeLease {
+  pid: number;
+  host: string;
+  /**
+   * Resolved path the lease was taken for. Git reuses an admin directory name
+   * once the previous registration is pruned, so a moved-aside
+   * `.retained-<ts>` copy still points at what is now a DIFFERENT worktree's
+   * admin dir; without this check it would inherit that worktree's liveness.
+   */
+  path: string;
+}
+
+/**
+ * Path of `p`'s git administrative directory (`<repo>/.git/worktrees/<name>`),
+ * read from the `.git` FILE every linked worktree carries. Undefined when `p`
+ * is not a readable linked worktree.
+ */
+async function worktreeAdminDir(p: string): Promise<string | undefined> {
+  let contents: string;
+  try {
+    contents = await fsp.readFile(path.join(p, ".git"), "utf8");
+  } catch {
+    return undefined;
+  }
+  const gitdir = /^gitdir:[ \t]*(\S.*)$/m.exec(contents)?.[1];
+  return gitdir?.trim();
+}
+
+/**
+ * Record this process as the user of `worktreePath`, so {@link
+ * sweepStaleWorktrees} can tell a live worktree from an abandoned one.
+ *
+ * The marker lives in git's administrative directory for the worktree, never in
+ * the checkout: an untracked file inside the tree would make it probe DIRTY (and
+ * be retained forever), while git's own `worktree remove`/`prune` delete the
+ * admin dir — lease included — with no extra bookkeeping here. Best effort: a
+ * lease that cannot be written only leaves the tree collectible once stale,
+ * which is the pre-lease behaviour.
+ */
+async function acquireWorktreeLease(worktreePath: string): Promise<void> {
+  const adminDir = await worktreeAdminDir(worktreePath);
+  if (adminDir === undefined) return;
+  const lease: WorktreeLease = {
+    pid: process.pid,
+    host: os.hostname(),
+    path: await safeRealpathAsync(worktreePath),
+  };
+  try {
+    await fsp.writeFile(path.join(adminDir, LEASE_FILE_NAME), JSON.stringify(lease));
+  } catch {
+    /* best effort — see above */
+  }
+}
+
+/** Drop the lease of a worktree this process is done with but is not removing. */
+async function releaseWorktreeLease(worktreePath: string): Promise<void> {
+  const adminDir = await worktreeAdminDir(worktreePath);
+  if (adminDir === undefined) return;
+  try {
+    await fsp.rm(path.join(adminDir, LEASE_FILE_NAME), { force: true });
+  } catch {
+    /* best effort — a stale lease only delays the sweep by one run of it */
+  }
+}
+
+/**
+ * True when a still-running process holds `candidate`'s lease — the guard age
+ * cannot provide. A unit that runs longer than the sweep threshold while
+ * writing only inside subdirectories leaves the worktree ROOT's mtime at
+ * creation time, so another akm process minting a worktree would otherwise
+ * delete a tree that is still in use.
+ *
+ * A lease from a dead pid, from another host (where the pid means nothing), or
+ * for a different path is NOT liveness: crashed runs and retained dirty trees
+ * stay collectible, which is the whole point of the sweep.
+ */
+async function isWorktreeLeaseLive(candidate: string): Promise<boolean> {
+  const adminDir = await worktreeAdminDir(candidate);
+  if (adminDir === undefined) return false;
+  let lease: Partial<WorktreeLease>;
+  try {
+    lease = JSON.parse(await fsp.readFile(path.join(adminDir, LEASE_FILE_NAME), "utf8")) as Partial<WorktreeLease>;
+  } catch {
+    return false;
+  }
+  if (lease.host !== os.hostname()) return false;
+  if (lease.path !== (await safeRealpathAsync(candidate))) return false;
+  return isProcessAlive(lease.pid);
+}
+
+/** `kill(pid, 0)` liveness probe. EPERM proves the process exists but is not ours. */
+function isProcessAlive(pid: unknown): boolean {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 // ── Garbage collection ──────────────────────────────────────────────────────
@@ -386,10 +525,7 @@ async function removeRunRootIfEmpty(worktreePath: string): Promise<void> {
   // `prunedRuns` never outgrows the live runs. (A later worktree of the same
   // run simply prunes once more; the guard is an optimization, not a
   // correctness gate.)
-  const suffix = `\u0000${path.basename(runRoot)}`;
-  for (const key of prunedRuns) {
-    if (key.endsWith(suffix)) prunedRuns.delete(key);
-  }
+  prunedRuns.delete(path.basename(runRoot));
 }
 
 /** Options for {@link sweepStaleWorktrees}. `root`/`now` are test seams. */
@@ -417,8 +553,11 @@ export interface SweepStaleWorktreesOptions {
  *
  * Safety invariants: it only ever descends two levels from `root`; entries
  * that are not real directories (symlinks included — `Dirent.isDirectory()`
- * reflects `lstat`) are skipped, never followed; and every candidate is
- * re-verified with {@link isWithin} against the resolved root before removal.
+ * reflects `lstat`) are skipped, never followed; a stale-looking candidate
+ * whose {@link isWorktreeLeaseLive} lease holder is still running is skipped
+ * (age alone cannot see a unit in flight in another process); and every
+ * candidate is re-verified with {@link isWithin} against the resolved root
+ * before removal.
  * Deleting a directory leaves its registration in whatever base repo minted
  * it; the next run's `git worktree prune` on that repo reaps it.
  *
@@ -453,6 +592,7 @@ export async function sweepStaleWorktrees(opts: SweepStaleWorktreesOptions = {})
       const candidate = path.join(runRoot, entry.name);
       if (!(await isWithinAsync(candidate, root))) continue;
       if (now - (await lastActivityMs(candidate, entry.name)) < maxAgeMs) continue;
+      if (await isWorktreeLeaseLive(candidate)) continue;
       try {
         await fsp.rm(candidate, { recursive: true, force: true });
         removed.push(candidate);

@@ -195,7 +195,12 @@ const workflowRunCommand = defineJsonCommand({
         ...(maxRetries !== undefined ? { maxRetries } : {}),
         signal: controller.signal,
       });
-      const rendered = { ...result, ...(deadline.timedOut() ? { timedOut: true as const } : {}) };
+      // The abort is observed between steps, so a deadline landing in the run's
+      // final bookkeeping fires on a run that then finishes. Reporting that as
+      // timed out would send an operator to resume a run with nothing left to
+      // resume — `tasks/runner.ts` suppresses the same case.
+      const timedOut = deadline.timedOut() && result.run.status !== "completed";
+      const rendered = { ...result, ...(timedOut ? { timedOut: true as const } : {}) };
       output("workflow-run", rendered);
       // `blocked` is a stopped, unverified run — a verification-judge failure
       // leaves it there for `akm workflow resume` — so it must not exit 0 and
