@@ -33,6 +33,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { armAbortDeadline } from "../core/abort-deadline";
 import { shouldSkipUnactivatedTask } from "../core/activation-policy";
 import { assertNever } from "../core/assert";
 import { placementSpecFor } from "../core/asset/asset-placement";
@@ -411,23 +412,19 @@ async function runWorkflowTask(input: {
   // Unset → the unattended default; `null` → the explicit no-timeout opt-out.
   const timeoutMs =
     workflowTarget.timeoutMs === undefined ? DEFAULT_WORKFLOW_TASK_TIMEOUT_MS : workflowTarget.timeoutMs;
-  const setTimeoutImpl = input.setTimeoutFn ?? setTimeout;
-  const clearTimeoutImpl = input.clearTimeoutFn ?? clearTimeout;
-  // Same wiring `akm workflow run --timeout` uses (commands/workflow-cli.ts):
-  // one AbortController for the run's lifetime, aborted by a timer. The engine
-  // reads `options.signal` at every step boundary and breaks GRACEFULLY —
-  // in-flight units are cancelled, the journal and the run lease are retained,
-  // and the run is left `active`, i.e. resumable with `akm workflow resume`.
+  // The shared deadline `akm workflow run --timeout` also arms
+  // ({@link armAbortDeadline}): one AbortController for the run's lifetime,
+  // aborted by a timer. The engine reads `options.signal` at every step
+  // boundary and breaks GRACEFULLY — in-flight units are cancelled, the journal
+  // and the run lease are retained, and the run is left `active`, i.e.
+  // resumable with `akm workflow resume`.
   const controller = new AbortController();
-  let timedOut = false;
-  const timer =
-    timeoutMs === null
-      ? undefined
-      : setTimeoutImpl(() => {
-          timedOut = true;
-          controller.abort(new Error(`Workflow task "${task.id}" timed out after ${timeoutMs}ms.`));
-        }, timeoutMs);
-  (timer as unknown as { unref?: () => void } | undefined)?.unref?.();
+  const deadline = armAbortDeadline(controller, {
+    timeoutMs,
+    reason: `Workflow task "${task.id}" timed out after ${timeoutMs}ms.`,
+    ...(input.setTimeoutFn ? { setTimeoutFn: input.setTimeoutFn } : {}),
+    ...(input.clearTimeoutFn ? { clearTimeoutFn: input.clearTimeoutFn } : {}),
+  });
 
   let detail: WorkflowRunSummary | undefined;
   let gateError: string | undefined;
@@ -452,14 +449,20 @@ async function runWorkflowTask(input: {
     if (e instanceof AkmError && e.kind === "config") throw e;
     error = e instanceof Error ? e : new Error(String(e));
   } finally {
-    if (timer !== undefined) clearTimeoutImpl(timer);
+    deadline.disarm();
   }
 
   // A timeout is a failed ATTEMPT even though the engine stopped cleanly: the
   // aborted run comes back `active` (resumable), which on its own would map to
   // task status "active" and a 0 exit code, telling the OS scheduler nothing
   // went wrong. Surface it like the command target's `timed_out=true` instead.
-  const timedOutAfterMs = timedOut && timeoutMs !== null ? timeoutMs : undefined;
+  //
+  // Unless the run COMPLETED anyway. The abort is observed between steps, so a
+  // deadline landing in the run's final bookkeeping can set the flag on a run
+  // that then finishes — and reporting that as a failure would tell an operator
+  // to resume a run with nothing left to resume.
+  const ranToCompletion = detail?.status === "completed";
+  const timedOutAfterMs = deadline.timedOut() && timeoutMs !== null && !ranToCompletion ? timeoutMs : undefined;
   const timeoutError =
     timedOutAfterMs === undefined
       ? undefined

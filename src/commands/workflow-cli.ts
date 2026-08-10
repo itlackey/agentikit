@@ -11,6 +11,7 @@
 
 import { getStringArg } from "../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
+import { armAbortDeadline } from "../core/abort-deadline";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
 import { NotFoundError, UsageError } from "../core/errors";
 import { akmIndex } from "../indexer/indexer";
@@ -171,7 +172,6 @@ const workflowRunCommand = defineJsonCommand({
     const maxRetries = parseIntegerFlag(getStringArg(args, "max-retries"), "--max-retries", 0, WORKFLOW_MAX_RETRIES);
     const timeoutMs = parseWorkflowTimeout(getStringArg(args, "timeout"));
     const controller = new AbortController();
-    let timedOut = false;
     let signalExitCode: number | undefined;
     const interrupt = (signal: "SIGINT" | "SIGTERM") => {
       signalExitCode = signal === "SIGINT" ? 130 : 143;
@@ -181,14 +181,12 @@ const workflowRunCommand = defineJsonCommand({
     const onSigterm = () => interrupt("SIGTERM");
     process.once("SIGINT", onSigint);
     process.once("SIGTERM", onSigterm);
-    const timer =
-      timeoutMs === undefined
-        ? undefined
-        : setTimeout(() => {
-            timedOut = true;
-            controller.abort(new Error(`Workflow run timed out after ${timeoutMs}ms.`));
-          }, timeoutMs);
-    timer?.unref?.();
+    // The same deadline a scheduled workflow task arms (`tasks/runner.ts`),
+    // sharing this controller with the signal handlers above.
+    const deadline = armAbortDeadline(controller, {
+      timeoutMs,
+      reason: `Workflow run timed out after ${timeoutMs}ms.`,
+    });
     try {
       const result = await runWorkflowSteps({
         target: args.target,
@@ -197,7 +195,7 @@ const workflowRunCommand = defineJsonCommand({
         ...(maxRetries !== undefined ? { maxRetries } : {}),
         signal: controller.signal,
       });
-      const rendered = { ...result, ...(timedOut ? { timedOut: true as const } : {}) };
+      const rendered = { ...result, ...(deadline.timedOut() ? { timedOut: true as const } : {}) };
       output("workflow-run", rendered);
       // `blocked` is a stopped, unverified run — a verification-judge failure
       // leaves it there for `akm workflow resume` — so it must not exit 0 and
@@ -206,7 +204,7 @@ const workflowRunCommand = defineJsonCommand({
         process.exitCode = signalExitCode ?? EXIT_CODES.GENERAL;
       }
     } finally {
-      if (timer) clearTimeout(timer);
+      deadline.disarm();
       process.off("SIGINT", onSigint);
       process.off("SIGTERM", onSigterm);
     }
