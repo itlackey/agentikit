@@ -22,7 +22,7 @@ import { resolveLlmModel, resolveModel } from "../../integrations/agent/model-al
 import { getBuiltinAgentProfile } from "../../integrations/agent/profiles";
 import { HARNESS_BY_ID } from "../../integrations/harnesses";
 import { defaultLlmEngineConcurrency, defaultMapConcurrency, workflowMaxConcurrency } from "../concurrency-policy";
-import type { ProgramUnit } from "../program/schema";
+import { type ProgramUnit, projectExecCore } from "../program/schema";
 import { DEFAULT_EXEC_TIMEOUT_MS } from "../resource-limits";
 import type { WorkflowAsset } from "../runtime/workflow-asset-loader";
 import { compileWorkflowPlan, type WorkflowPlanDraft, type WorkflowUnitDraft } from "./compile";
@@ -137,15 +137,14 @@ export function compileResolveFreezeWorkflow(
     const layers: EngineUseConfig[] = [...(documentDefaults ? [documentDefaults] : []), ...(unit ? [unit] : [])];
     const declared = layeredTimeout(layers);
     const timeoutMs = declared === undefined ? DEFAULT_EXEC_TIMEOUT_MS : declared;
+    // The shared structural projection, plus the one thing freezing adds: the
+    // RESOLVED timeout. The default allowlist stays the ABSENCE of both env
+    // keys — one encoding per state, which is what keeps the canonical hash
+    // preimage stable. `command` is non-empty by parser construction.
+    const core = projectExecCore(exec);
     return {
-      command: [...exec.command] as [string, ...string[]],
-      ...(exec.cwd ? { cwd: exec.cwd } : {}),
-      // Env-scope keys are frozen structurally (the draft already dropped an
-      // empty `passEnv` and a false `inheritEnv`), so the default allowlist
-      // stays the ABSENCE of both keys — one encoding per state, which is what
-      // keeps the canonical hash preimage stable.
-      ...(exec.passEnv && exec.passEnv.length > 0 ? { passEnv: [...exec.passEnv] } : {}),
-      ...(exec.inheritEnv ? { inheritEnv: true as const } : {}),
+      ...core,
+      command: core.command as [string, ...string[]],
       timeoutMs,
     };
   };

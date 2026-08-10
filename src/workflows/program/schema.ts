@@ -140,6 +140,43 @@ export interface ProgramExec {
 }
 
 /**
+ * An exec spec projected into its canonical structural form: argv copied, the
+ * env-scope keys present ONLY in their meaningful state. `inheritEnv` narrows
+ * to `true` because `false` is spelled as absence.
+ */
+export interface ProgramExecCore {
+  command: string[];
+  cwd?: string;
+  passEnv?: string[];
+  inheritEnv?: true;
+}
+
+/**
+ * The ONE structural projection of an exec spec — ONE encoding per state.
+ *
+ * Every layer that carries an exec forward derives from this: the compiled
+ * draft, the frozen plan (which layers `timeoutMs` on top), and the summary
+ * `akm workflow show` prints. Written out per layer instead, a field added to
+ * {@link ProgramExec} reaches whichever copies were remembered and silently
+ * vanishes from the rest — and nothing catches it, because every key here is
+ * optional, so an omitted spread is not a type error. What it would cost:
+ * either the frozen plan loses a field the author wrote (and the canonical
+ * hash preimage stops matching the authored intent), or `show` describes
+ * something other than what runs.
+ *
+ * The ABSENCE of both env keys is the default allowlist. The parser rejects an
+ * empty `pass_env` outright, so no layer has to distinguish absent from empty.
+ */
+export function projectExecCore(exec: ProgramExec): ProgramExecCore {
+  return {
+    command: [...exec.command],
+    ...(exec.cwd ? { cwd: exec.cwd } : {}),
+    ...(exec.passEnv && exec.passEnv.length > 0 ? { passEnv: [...exec.passEnv] } : {}),
+    ...(exec.inheritEnv ? { inheritEnv: true as const } : {}),
+  };
+}
+
+/**
  * The optional dispatch-override bag for a unit/map step. Absent entirely
  * (bare `{ id: validate }`) means the step still IS a unit step — it just
  * carries the run's engine/model/timeout defaults verbatim.

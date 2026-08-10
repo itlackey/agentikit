@@ -29,7 +29,7 @@
  */
 
 import { formatReference, parseReference } from "../program/expressions";
-import type { ProgramDefaults, ProgramExec, ProgramUnit } from "../program/schema";
+import { type ProgramDefaults, type ProgramExec, type ProgramUnit, projectExecCore } from "../program/schema";
 import type { WorkflowDocument, WorkflowError } from "../schema";
 import type { IrIsolation, IrMapReducer, IrOnError, IrRetry, IrRouteSpec } from "./schema";
 
@@ -232,20 +232,11 @@ function compileUnit(
     instructions,
     templating: "verbatim",
     ...(inputs && inputs.length > 0 ? { inputs: [...inputs] } : {}),
-    ...(unit?.exec
-      ? {
-          exec: {
-            command: [...unit.exec.command],
-            ...(unit.exec.cwd ? { cwd: unit.exec.cwd } : {}),
-            // Both env-scope keys are carried CONDITIONALLY (and `inheritEnv`
-            // only when true), so an exec unit that says nothing about its
-            // environment freezes — and therefore hashes — byte-identically to
-            // one authored before these keys existed.
-            ...(unit.exec.passEnv && unit.exec.passEnv.length > 0 ? { passEnv: [...unit.exec.passEnv] } : {}),
-            ...(unit.exec.inheritEnv ? { inheritEnv: true as const } : {}),
-          },
-        }
-      : {}),
+    // Shared projection: both env-scope keys are carried CONDITIONALLY (and
+    // `inheritEnv` only when true), so an exec unit that says nothing about its
+    // environment freezes — and therefore hashes — byte-identically to one
+    // authored before these keys existed.
+    ...(unit?.exec ? { exec: projectExecCore(unit.exec) } : {}),
     ...(unit?.output !== undefined ? { schema: unit.output } : {}),
     ...(unit?.retry ? { retry: { max: unit.retry.max, on: [...unit.retry.on] } } : {}),
     onError: unit?.onError ?? defaults?.onError ?? "fail",

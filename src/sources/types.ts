@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import type { InstalledBundle, InstallKind } from "../registry/types";
+import type { ProgramExecCore } from "../workflows/program/schema";
 
 export type AkmSearchType = string;
 export type SearchSource = "local" | "registry" | "all";
@@ -124,8 +125,12 @@ export interface WorkflowStepOrchestrationSummary {
    * words that will actually be spawned, never shell-parsed and never clipped,
    * so what `show` prints is what runs. `passEnv`/`inheritEnv` describe the
    * child's environment SCOPE by variable name; no value is ever projected.
+   *
+   * The SHARED projection shape (`workflows/program/schema.ts`), not a mirror
+   * of it: a field added there must not be able to reach the frozen plan while
+   * silently missing from what `show` describes.
    */
-  exec?: { command: string[]; cwd?: string; passEnv?: string[]; inheritEnv?: true };
+  exec?: ProgramExecCore;
   fanOut?: { over: string; concurrency?: number; reducer?: string };
   hasSchema?: boolean;
   env?: string[];
