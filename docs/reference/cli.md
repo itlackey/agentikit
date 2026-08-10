@@ -609,15 +609,34 @@ The old `--params <json>` bag is removed.
 
 | Flag | Description |
 | --- | --- |
-| `--max-steps <n>` | Stop after executing at most this many steps, leaving a partial run active. Must be at least 1. |
+| `--max-steps <n>` | Stop once this many steps have finished, leaving a partial run active. Must be at least 1. |
 | `--max-retries <n>` | When a step fails, reopen the same run and retry the failed step up to this many additional times. Range: 0 through 100; default 0. Gate rejection and interruption are not retried. |
 | `--timeout <duration>` | Abort the whole invocation after `N`, `Nms`, `Ns`, or `Nm`; bare `N` is milliseconds. The active step remains resumable. |
 
-The result includes the current `run`, an `executed` step report list, and
-optional `done`, `gateRejection`, `aborted`, or `timedOut` markers. A failed
-run, rejected verification gate, timeout, or interrupt exits nonzero. `SIGINT`
-and `SIGTERM` map to 130 and 143; a timeout maps to exit 1. Reaching
-`--max-steps` with an active resumable run is successful.
+The result includes the current `run`, an `executed` step report list, a
+`stepsProcessed` count of the steps that finished, and optional `done`,
+`gateRejection`, `aborted`, or `timedOut` markers. A failed run, rejected
+verification gate, timeout, or interrupt exits nonzero. `SIGINT` and `SIGTERM`
+map to 130 and 143; a timeout maps to exit 1. Reaching `--max-steps` with an
+active resumable run is successful. A `--timeout` that lands during the run's
+final bookkeeping is not reported as a timeout: a run that reached `completed`
+has nothing left to abort and nothing left to resume.
+
+**What `--max-steps` counts.** The budget is spent by the **steps that
+finish** — completed, failed, or gate-rejected with the loop budget spent — not
+by entries in the `executed` report, which gains one per gate-loop iteration
+and one per route-skip. So a step's whole bounded `gate.max_loops` loop costs
+one, a route-skipped step costs nothing (no work was dispatched for it), and a
+step the invocation left unfinished — an abort, a verification-judge outage —
+costs nothing either, because the next invocation still owes that work.
+`--max-retries` subtracts the same way: a reopened run's remaining budget is
+not shrunk by loops or skips.
+
+The budget is checked **between** steps, so it does not bound what any single
+step dispatches — a step's gate loop runs to its own limit no matter how little
+budget is left. `gate.max_loops` (1–100) is the per-step ceiling;
+`budget.max_units` and `budget.max_tokens` are the whole-run ceilings, seeded
+from the unit journal so they hold across resumes.
 
 `run` is Stable and does not consult `experimental.workflowEngine`. Every
 non-empty `### gate` requires `workflow.judgeEngine` to name a configured LLM

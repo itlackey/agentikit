@@ -235,6 +235,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   frozen `workflow.maxConcurrency`, the selected engine's concurrency, and the
   current host's CPU cap.
 
+- **`--max-steps` now counts steps, not engine-loop iterations.** The budget is
+  spent by the DISTINCT spine steps that finished — completed, failed, or
+  gate-rejected with the loop budget spent. It was previously spent by entries
+  in the `executed` report,
+  which gains one per gate-loop iteration and one per route-skip, so
+  `--max-steps 3` against a step with `gate.max_loops: 3` could stop after a
+  single step had finished, and an unselected branch target consumed budget for
+  work that was never dispatched. Three steps now means three steps, which is
+  what the flag has always said (`Stop after executing this many steps`). A step
+  the invocation left unfinished — an abort, a judge outage — still consumes
+  nothing, because the work is still owed. The same accounting is what a
+  `--max-retries` reopen subtracts, so loops and skips no longer shrink a
+  retry's remaining budget either, and `maxSteps:` in a workflow task file is
+  the same knob and moves with it. The count is now reported: `akm workflow run`
+  carries a `stepsProcessed` field alongside `executed`, so the number the
+  budget is spent on is visible rather than inferred from a list that counts
+  something else.
+
+  **This loosens the dispatch exposure of one invocation, and the loosening is
+  cumulative across steps.** A step's whole bounded gate loop now costs one step
+  instead of one per iteration, so the rounds a single `akm workflow run` can
+  dispatch go from roughly `N + max_loops` to `N × max_loops`.
+
+  What did **not** change is what the flag bounds within one step. `--max-steps`
+  was never a cap on total dispatch rounds on either version: the budget is
+  tested only BETWEEN steps, so a single step's gate loop could always run out
+  its full `gate.max_loops` no matter how little budget was left. The per-step
+  ceiling is `gate.max_loops` (1–100); the whole-run ceilings are
+  `budget.max_units` and `budget.max_tokens`, which are seeded from the unit
+  journal and hold across resumes.
+
 ### Fixed
 
 - **`timeout: none` on an exec unit is genuinely unbounded again.** The
@@ -242,8 +273,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the child is gone — was armed when capture STARTED, so a command that ran
   past an hour had its output reader cancelled mid-run and was then failed for
   an incomplete capture even though it exited 0. It is now armed from the
-  child's exit, which is the only window it was ever meant to bound. A unit with
-  a declared timeout is unaffected.
+  child's exit, which is the only window it was ever meant to bound.
+
+- **A bounded exec unit no longer waits out its whole `timeout` after the
+  command has already exited.** The drain deadline for a unit WITH a wall budget
+  ran from the moment capture started — budget plus a 2 s grace — so a command
+  that exited in milliseconds while a background descendant held a pipe open
+  kept the unit, and with it a fan-out slot, occupied for the entire declared
+  timeout before reporting. It now runs from the moment nothing living owns the
+  pipe: the child's exit, or (for a child that outlived its own kill ladder) the
+  budget's expiry, plus the same 2 s grace. A command that really does spend its
+  whole budget sees the identical ceiling it saw before; only the case that used
+  to stall stopped stalling.
+
+- **A stderr drain that never finished no longer fails an exec unit whose
+  command succeeded.** `exec_capture_incomplete` was raised when EITHER pipe
+  failed to drain, so a command that exited 0 with its stdout captured whole was
+  failed — and a valid artifact thrown away — because a background descendant
+  was still holding STDERR open. stderr is a diagnostic channel that never
+  contributes to the artifact, so only an incomplete STDOUT capture fails the
+  unit now; an incomplete stderr drain is reported on the warn stream instead,
+  naming the unit and warning that any stderr shown for it may be missing its
+  tail.
 
 - **A step artifact larger than 1 MiB no longer breaks the next step of the run
   that produced it.** Step evidence is clipped to bound one SQLite row, and the
@@ -255,11 +306,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   carries its own complete values forward; the row stays clipped for resume,
   where a reference into a clipped artifact fails by name.
 
-- **A workflow task whose run completed is no longer reported as a failed
-  timeout.** The deadline is observed between steps, so one landing during a
-  run's final bookkeeping set the timed-out flag on a run that then finished —
-  and the attempt was recorded as failed, with a hint to resume a run that had
-  nothing left to resume.
+- **A workflow run that completed is no longer reported as timed out.** The
+  deadline is observed between steps, so one landing during a run's final
+  bookkeeping set the timed-out flag on a run that then finished. On a scheduled
+  workflow task that recorded the attempt as failed, with a hint to resume a run
+  that had nothing left to resume; under `akm workflow run --timeout` it
+  rendered a `timedOut` marker on a `completed` run and exited nonzero. Both
+  surfaces now drop the marker once the run reached `completed` — a deadline
+  that lands with nothing left to abort has nothing to report.
+
+- **A rejected gate on an `exec` step no longer re-runs the command.** A gate
+  loop earns its re-dispatch by handing the judge's feedback to a unit that can
+  answer it. An exec unit cannot: its argv is frozen and never interpolated, and
+  the exec context environment carries no feedback variable — so the loop could
+  only re-run the byte-identical command, performing a deploy, a publish, or a
+  migration a second time for a verdict that could not change. The gate still
+  EVALUATES on an exec step and can still fail it: a rejection is final on the
+  first evaluation, carrying the judge's missing criteria and feedback exactly
+  as in the one-shot case. What an author sees is
+  that `gate.max_loops` is capped at 1 on a step whose unit is `exec:` — not an
+  authoring error, and no change at all to an engine step, where a declared
+  `max_loops` is still honored in full. This is the same reasoning that already
+  makes an exec unit's `output:` schema miss fail without a corrective
+  re-dispatch.
+
+- **The stale-worktree sweep no longer collects a worktree that is still in
+  use.** The opportunistic age-based GC of leftover `isolation: worktree` trees
+  judged staleness from the worktree root's mtime, which a unit writing only
+  inside subdirectories never touches — so another akm process minting a
+  worktree could delete the tree a long-running unit was working in. Every live
+  worktree now carries a liveness marker (pid, host, resolved path) in git's own
+  administrative directory for it, and the sweep skips a candidate whose holder
+  is still running here. A marker from a dead pid, from another host, or for a
+  different path is not liveness: crashed runs and retained dirty trees stay
+  collectible, which is what the sweep exists for.
 
 - On Windows, an agent CLI, gate judge, or prompt task was spawned into an
   environment the loader cannot start from: the shared passthrough allowlist
