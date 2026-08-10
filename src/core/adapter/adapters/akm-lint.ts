@@ -369,12 +369,41 @@ function lineOf(err: { line?: number }): { line?: number } {
   return typeof err.line === "number" && Number.isFinite(err.line) && err.line > 0 ? { line: err.line } : {};
 }
 
+interface WorkflowFrontendDiagnostics {
+  errors: Diagnostic[];
+  warnings: Diagnostic[];
+}
+
+/**
+ * The last frontend pass, keyed by its exact inputs.
+ *
+ * {@link workflowStructureDiagnostics} and {@link workflowCompileWarnings} are
+ * two VIEWS of ONE parse+compile, and the lint sweep asks for both, per file,
+ * back to back — so without this the whole frontend ran twice for every
+ * workflow in the stash (a full `parseWorkflow` + `compileWorkflowPlan` over
+ * instruction bodies that may reach `WORKFLOW_MAX_INSTRUCTION_BYTES`) to throw
+ * half the result away each time. One entry is all that buys: the second
+ * caller always asks about the file the first just asked about.
+ *
+ * Keyed on the full `raw` text, so a rewritten file (`--fix`) can never be
+ * served a stale answer — the key stops matching the moment the bytes change.
+ */
+let lastFrontendPass: { key: string; result: WorkflowFrontendDiagnostics } | undefined;
+
 /** Shared parse+compile pass behind {@link workflowStructureDiagnostics} / {@link workflowCompileWarnings}. */
-function workflowFrontendDiagnostics(
+function workflowFrontendDiagnostics(relPath: string, raw: string, parsePath: string): WorkflowFrontendDiagnostics {
+  const key = `${relPath} ${parsePath} ${raw}`;
+  if (lastFrontendPass?.key === key) return lastFrontendPass.result;
+  const result = computeWorkflowFrontendDiagnostics(relPath, raw, parsePath);
+  lastFrontendPass = { key, result };
+  return result;
+}
+
+function computeWorkflowFrontendDiagnostics(
   relPath: string,
   raw: string,
   parsePath: string,
-): { errors: Diagnostic[]; warnings: Diagnostic[] } {
+): WorkflowFrontendDiagnostics {
   const none = { errors: [], warnings: [] };
   if (parsePath.includes("/.cache/") || parsePath.includes("/registry/")) return none;
   const errors: Diagnostic[] = [];

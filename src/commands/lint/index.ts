@@ -31,7 +31,7 @@ import type { FileChange } from "../../core/file-change";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import { runBaseChecks } from "./base-linter";
 import { checkEnvForDangerousKeys } from "./env-key-rules";
-import type { LintContext, LintIssue, LintIssueType } from "./types";
+import { isAdvisoryLintIssue, type LintContext, type LintIssue, type LintIssueType } from "./types";
 
 // ── Public API types (re-exported for consumers) ──────────────────────────────
 
@@ -243,9 +243,11 @@ async function lintViaAdapter(
 
   const mapped = diagnostics.map(diagnosticToLintIssue);
   // Advisory diagnostics travel in their own channel — never `flagged`, so a
-  // `--fail-on-flagged` gate is not tripped by a non-fatal warning.
-  const warnings = mapped.filter((issue) => issue.issue === "workflow-warning");
-  const flagged = mapped.filter((issue) => issue.issue !== "workflow-warning");
+  // `--fail-on-flagged` gate is not tripped by a non-fatal warning. Classified
+  // by the shared `ADVISORY_LINT_ISSUES` set rather than a code spelled out
+  // here, so this and the sweep below can never disagree about a code.
+  const warnings = mapped.filter(isAdvisoryLintIssue);
+  const flagged = mapped.filter((issue) => !isAdvisoryLintIssue(issue));
   // The cross-bundle env dangerous-key sweep (see `runEnvDangerousKeyPass`'s
   // doc comment) ran for every non-akm adapter via the STASH_SUBDIRS
   // fallthrough this dispatch replaces — EXCEPT `okf`, which the old code
@@ -543,6 +545,12 @@ function lintAkmSweep(
         if (isFileDeletion(issue)) {
           fileDeleted = true;
           fixed.push(issue);
+        } else if (isAdvisoryLintIssue(issue)) {
+          // `lintAssetFile` returns errors only today, so this branch is
+          // reached by no current producer — it is here so that an advisory
+          // added to a per-type check later cannot silently become a
+          // `--fail-on-flagged` failure, the way the unclassified default does.
+          warnings.push(issue);
         } else if (issue.fixed === true) {
           fixed.push(issue);
         } else {
