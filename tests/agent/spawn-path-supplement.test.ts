@@ -14,7 +14,11 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { supplementPathForSchedulerContext } from "../../src/core/spawn-env";
+import {
+  COMMON_SPAWN_ENV_PASSTHROUGH,
+  spawnEnvNamesFor,
+  supplementPathForSchedulerContext,
+} from "../../src/core/spawn-env";
 
 const home = os.homedir();
 
@@ -85,5 +89,56 @@ describe("supplementPathForSchedulerContext", () => {
     for (const seg of segments) {
       expect(existsSync(seg)).toBe(true);
     }
+  });
+
+  test("a sibling dir that merely string-prefixes home does not read as interactive", () => {
+    // `/home/al` must not be satisfied by `/home/alice/...`: the home check is
+    // a path-boundary comparison, so this PATH is as stripped as one naming no
+    // home at all and must be supplemented identically.
+    const stripped = ["/usr/bin", "/bin"].join(path.delimiter);
+    const sibling = [`${home}kit`, "/usr/bin", "/bin"].join(path.delimiter);
+    const prefixOf = (result: string, original: string): string => result.slice(0, result.length - original.length);
+
+    const supplementedResult = supplementPathForSchedulerContext(stripped);
+    const siblingResult = supplementPathForSchedulerContext(sibling);
+
+    expect(siblingResult.endsWith(sibling)).toBe(true);
+    expect(prefixOf(siblingResult, sibling)).toBe(prefixOf(supplementedResult, stripped));
+    // Non-vacuous wherever any candidate dir exists: the sibling PATH gets the
+    // same repair the stripped one does, rather than being skipped.
+    expect(siblingResult === sibling).toBe(supplementedResult === stripped);
+  });
+});
+
+describe("spawnEnvNamesFor", () => {
+  test("passes the caller's allowlist through unchanged off win32", () => {
+    expect(spawnEnvNamesFor(["PATH", "HOME"], "linux")).toEqual(["PATH", "HOME"]);
+    expect(spawnEnvNamesFor(["PATH", "HOME"], "darwin")).toEqual(["PATH", "HOME"]);
+  });
+
+  test("adds the win32 process-creation floor to any allowlist", () => {
+    // The agent-CLI baseline carries none of these, yet a Windows child cannot
+    // be created (SystemRoot) or resolve its command (PATHEXT) without them.
+    const names = spawnEnvNamesFor(COMMON_SPAWN_ENV_PASSTHROUGH, "win32");
+    for (const required of ["SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT"]) {
+      expect(names).toContain(required);
+    }
+    // The caller's own names survive.
+    for (const name of COMMON_SPAWN_ENV_PASSTHROUGH) {
+      expect(names).toContain(name);
+    }
+  });
+
+  test("does not re-add a floor name the caller already spells, in any case", () => {
+    const names = spawnEnvNamesFor(["PATH", "SYSTEMROOT"], "win32");
+    const systemRootSpellings = names.filter((name) => name.toUpperCase() === "SYSTEMROOT");
+    expect(systemRootSpellings).toEqual(["SYSTEMROOT"]);
+  });
+
+  test("leaves config and install roots to the caller", () => {
+    // Deliberately not a floor: a child is creatable without them.
+    const names = spawnEnvNamesFor(["PATH"], "win32");
+    expect(names).not.toContain("APPDATA");
+    expect(names).not.toContain("ProgramFiles");
   });
 });
