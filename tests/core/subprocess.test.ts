@@ -15,8 +15,9 @@
  *     `proc.kill()` directly (the negative-pid `process.kill` path is skipped).
  *   • Abort: aborting mid-run runs the same ladder and flags `aborted`.
  *   • Synchronous spawn failure surfaces as `spawnError`, never a throw.
- *   • Drain deadlines: WHEN the stream-drain timeout is armed — with capture
- *     for a bounded run, only on the child's exit for an unbounded one.
+ *   • Drain deadlines: WHEN the stream-drain timeout is armed — never while a
+ *     live command still owns the pipe, so on the child's exit, or for a
+ *     bounded run the earlier of that and the wall budget.
  */
 import { describe, expect, test } from "bun:test";
 import { runManagedSubprocess, type SpawnedSubprocess, type SpawnFn } from "../../src/core/subprocess";
@@ -243,6 +244,8 @@ describe("runManagedSubprocess — abort", () => {
 
 describe("runManagedSubprocess — when the stream-drain deadline is armed", () => {
   const SAFETY_MS = 60 * 60 * 1000;
+  /** The post-exit grace a bounded run's pipes get once nothing owns them. */
+  const GRACE_MS = 2_000;
 
   test("a null timeout schedules NOTHING against a still-running child", async () => {
     const { timers, setTimeoutFn, clearTimeoutFn } = fakeTimers();
@@ -307,7 +310,7 @@ describe("runManagedSubprocess — when the stream-drain deadline is armed", () 
     expect(result.stdout).toBe("prefix");
   });
 
-  test("a bounded run still arms both drain deadlines with capture (budget + 2 s)", async () => {
+  test("a bounded run arms its drain deadline when the CHILD EXITS, not at capture", async () => {
     const { timers, setTimeoutFn, clearTimeoutFn } = fakeTimers();
     const child = controllableSpawn();
 
@@ -319,19 +322,60 @@ describe("runManagedSubprocess — when the stream-drain deadline is armed", () 
       clearTimeoutFn,
     });
 
+    child.writeStdout("prefix");
     await tick();
-    // The kill timer at the budget, plus one drain deadline per pipe: a bounded
-    // child is killed at its budget anyway, so a drain outliving budget + 2 s is
-    // a pipe nobody owns.
+    // The kill timer at the budget and nothing else: while the command runs,
+    // its pipes are a live process's.
     expect(timers.filter((timer) => timer.ms === 30_000)).toHaveLength(1);
-    expect(timers.filter((timer) => timer.ms === 32_000)).toHaveLength(2);
+    expect(timers.filter((timer) => timer.ms === GRACE_MS)).toHaveLength(0);
     expect(timers.some((timer) => timer.ms === SAFETY_MS)).toBe(false);
 
-    child.writeStdout("ok");
-    child.closeStdout();
+    // The leader exits 0 in milliseconds but stdout stays open — a background
+    // descendant holds the fd. The deadline is armed HERE, so the run cannot
+    // stall for a 30 s budget it never came close to spending.
     child.exit(0);
+    await tick();
+    const drain = timers.filter((timer) => timer.ms === GRACE_MS);
+    expect(drain).toHaveLength(1); // stderr drained before the exit; a finished drain arms nothing.
+    drain[0]?.cb();
+
     const result = await promise;
-    expect(result.stdout).toBe("ok");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdoutRead.timedOut).toBe(true);
+    expect(result.stdout).toBe("prefix");
+  });
+
+  test("a bounded child that outlives its kill ladder still has its drain cut at budget + grace", async () => {
+    const { timers, setTimeoutFn, clearTimeoutFn } = fakeTimers();
+    const child = controllableSpawn();
+
+    const promise = runManagedSubprocess(["wedged"], {
+      capture: true,
+      timeoutMs: 30_000,
+      spawnFn: child.spawn,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    child.writeStdout("prefix");
+    await tick();
+    expect(timers.filter((timer) => timer.ms === GRACE_MS)).toHaveLength(0);
+
+    // The budget expires with the child still running (this fake ignores its
+    // signals). Waiting on an exit that may never come would leave the drain
+    // unarmed forever, so the budget arms it too — landing on the same absolute
+    // moment this path always had: budget + grace.
+    timers.find((timer) => timer.ms === 30_000)?.cb();
+    await tick();
+    const drain = timers.filter((timer) => timer.ms === GRACE_MS);
+    expect(drain).toHaveLength(1);
+    drain[0]?.cb();
+
+    child.exit(137);
+    const result = await promise;
+    expect(result.timedOut).toBe(true);
+    expect(result.stdoutRead.timedOut).toBe(true);
+    expect(result.stdout).toBe("prefix");
   });
 });
 

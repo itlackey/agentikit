@@ -68,7 +68,7 @@ import {
   type ResolveReferenceResult,
   resolveReferenceString,
 } from "../program/expressions";
-import { WORKFLOW_MAX_MAP_EXPANSION, WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
+import { clip, WORKFLOW_MAX_MAP_EXPANSION, WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
 import {
   completeWorkflowStep,
   isTruncatedEvidence,
@@ -175,7 +175,10 @@ export interface StepWorkUnit {
   retry?: IrRetry;
   onError: IrOnError;
   isolation?: IrIsolation;
-  resolved: { prompt: string; inputHash: string };
+  /** The unit's rendered instructions, built once by the work-list builder. */
+  prompt: string;
+  /** Canonical hash of this unit's frozen inputs — the durable-reuse identity. */
+  inputHash: string;
 }
 
 export interface StepWorkList {
@@ -487,7 +490,6 @@ function buildStepWorkUnit(ctx: StepWorkUnitContext, unitId: string, item: unkno
         instructions: template.instructions,
       });
   const inputHash = computeUnitInputHash(ctx, item);
-  const resolved: StepWorkUnit["resolved"] = { prompt, inputHash };
 
   return {
     unitId,
@@ -518,7 +520,8 @@ function buildStepWorkUnit(ctx: StepWorkUnitContext, unitId: string, item: unkno
     ...(template.retry ? { retry: template.retry } : {}),
     onError: template.onError,
     ...(template.isolation ? { isolation: template.isolation } : {}),
-    resolved,
+    prompt,
+    inputHash,
   };
 }
 
@@ -755,6 +758,40 @@ export function stepOutputsFromEvidence(
     if (stepEvidence !== undefined) outputs[stepId] = projectStepOutput(stepEvidence);
   }
   return outputs;
+}
+
+/** The step's dispatch template — the map template for a fan-out, else the root unit. */
+function stepTemplate(stepPlan: IrStepPlan): IrUnitNode | undefined {
+  const root = stepPlan.root;
+  if (!root) return undefined;
+  return root.kind === "map" ? root.template : root;
+}
+
+/**
+ * The step ids that ANOTHER step of the frozen plan can still read: the
+ * producers named by an `inputs[]` entry, a `map.over`, or a `route.input`.
+ * Those three fields are the WHOLE reference surface — instructions are never
+ * scanned (workflow-format-unification, spec §2.3) — so a step outside this set
+ * has no in-plan consumer and nothing needs to hold its artifact in memory once
+ * it is journaled.
+ *
+ * Derived from the plan alone: O(plan), independent of run state, and stable
+ * across the retry and gate loops (a retry re-opens one failed step, and a
+ * looping step has not advanced, so neither can turn an unreferenced producer
+ * into a referenced one mid-invocation).
+ */
+export function referencedStepIds(plan: WorkflowPlanGraph): Set<string> {
+  const referenced = new Set<string>();
+  const note = (reference: string): void => {
+    const parsed = parseReference(reference);
+    if (parsed.ok && parsed.expr.kind === "stepOutput") referenced.add(parsed.expr.stepId);
+  };
+  for (const step of plan.steps) {
+    if (step.root?.kind === "map") note(step.root.over);
+    for (const reference of stepTemplate(step)?.inputs ?? []) note(reference);
+    if (step.route) note(step.route.input);
+  }
+  return referenced;
 }
 
 /**
@@ -1045,6 +1082,30 @@ function sortKeys(value: unknown): unknown {
 /** The unit id of a step's gate-evaluation row for a given 1-based loop. */
 export function gateUnitId(stepId: string, loop: number): string {
   return `${stepId}.gate:l${loop}`;
+}
+
+/**
+ * How many times a step's subgraph may run under its completion gate — the
+ * bound the engine loop walks and the one `loopsRemaining` is derived from.
+ *
+ * A gate loop only earns its re-dispatch when the subgraph can ANSWER the
+ * judge: an engine unit reads the rejection feedback in its prompt and produces
+ * different work. An `exec` unit cannot. Its argv is frozen and never
+ * interpolated, {@link buildExecContextEnv} exposes no feedback variable, and
+ * the default dispatcher drops feedback for exec — so a second loop re-runs the
+ * BYTE-IDENTICAL command for a verdict that cannot change, which for a deploy /
+ * publish / migrate command means performing the side effect twice. The same
+ * reasoning already pins exec structured output to a single attempt and makes
+ * `exec_capture_incomplete` non-retryable (`native-executor.ts`).
+ *
+ * So an exec step's gate still EVALUATES — the verdict can still fail the step
+ * — but it never loops: a rejection lands on the gate-exhausted terminal
+ * instead of re-dispatching. An authored `gate.max_loops` on an engine step is
+ * untouched.
+ */
+export function effectiveGateMaxLoops(stepPlan: IrStepPlan): number {
+  const declared = Math.max(1, stepPlan.gate.maxLoops ?? 1);
+  return stepTemplate(stepPlan)?.exec ? 1 : declared;
 }
 
 /**
@@ -1470,6 +1531,16 @@ export interface FinalizeStepInput {
   engines?: Record<string, FrozenEngineSnapshot>;
   /** Cooperative run cancellation checked before completion is committed. */
   signal?: AbortSignal;
+  /**
+   * The EFFECTIVE dispatch signal the judge call runs under — the engine's
+   * heartbeat-chained controller, which aborts on a LOST LEASE as well as on a
+   * caller abort. It must reach the completion path, because the interruption
+   * guard there is what tells an aborted judge apart from a failed one: seeing
+   * only {@link signal}, a lost-lease abort mid-judge reads as a thrown judge
+   * call and durably blocks the step blaming verifier infrastructure, moments
+   * before the real lost-lease error is raised. Defaults to {@link signal}.
+   */
+  dispatchSignal?: AbortSignal;
   /** Engine run-lease holder (engine path only); absent on the manual/report path. */
   leaseHolder?: string;
 }
@@ -1494,7 +1565,7 @@ export type FinalizeStepResult =
  * missing judge, unresolvable frozen judge, thrown judge call, malformed
  * verdict — so the resume instruction is worded once.
  */
-export function judgeFailureNotes(runId: string, stepId: string, cause: string): string {
+function judgeFailureNotes(runId: string, stepId: string, cause: string): string {
   return (
     `Step "${stepId}" could not be verified: ${cause}. ` +
     `This is a verification-judge failure, not a verdict — no gate loop was consumed and the step's ` +
@@ -1504,18 +1575,53 @@ export function judgeFailureNotes(runId: string, stepId: string, cause: string):
   );
 }
 
-/** Complete the step `blocked` for a judge-infrastructure failure and surface it. */
-async function blockStepForJudgeFailure(input: FinalizeStepInput, cause: string): Promise<FinalizeStepResult> {
-  const notes = judgeFailureNotes(input.runId, input.stepId, cause);
+export interface JudgeFailureBlock {
+  runId: string;
+  stepId: string;
+  /** What went wrong, spliced into the shared notes. */
+  cause: string;
+  /**
+   * The executed step's evidence, when the judge failed AFTER its units ran.
+   * Persisting it is what makes the documented recovery real: `akm workflow
+   * resume` re-evaluates the gate against these results instead of
+   * re-dispatching them. The PRE-DISPATCH failure (an unresolvable frozen
+   * judge, caught before a single unit runs) has no results to preserve and
+   * omits it — the difference is what the step produced, not a policy split.
+   */
+  evidence?: Record<string, unknown>;
+  leaseHolder?: string;
+}
+
+/**
+ * Complete a step `blocked` for a verifier-INFRASTRUCTURE failure and return
+ * the notes written. The ONE implementation for both judge-failure paths — the
+ * engine's pre-dispatch judge resolution (`run-workflow.ts`) and this module's
+ * post-execution gate — so the wording, the blocked status, and the evidence
+ * decision cannot drift between them.
+ */
+export async function blockStepForJudgeFailure(input: JudgeFailureBlock): Promise<string> {
+  const notes = judgeFailureNotes(input.runId, input.stepId, input.cause);
   await completeWorkflowStep({
     runId: input.runId,
     stepId: input.stepId,
     status: "blocked",
     notes,
+    ...(input.evidence !== undefined ? { evidence: input.evidence } : {}),
+    ...(input.leaseHolder !== undefined ? { leaseHolder: input.leaseHolder } : {}),
+  });
+  return notes;
+}
+
+/** The finalize path's blocked write: the executed units' evidence is preserved. */
+async function blockFinalizedStep(input: FinalizeStepInput, cause: string): Promise<FinalizeStepResult> {
+  const summary = await blockStepForJudgeFailure({
+    runId: input.runId,
+    stepId: input.stepId,
+    cause,
     evidence: input.result.evidence,
     ...(input.leaseHolder !== undefined ? { leaseHolder: input.leaseHolder } : {}),
   });
-  return { kind: "judge-failed", summary: notes };
+  return { kind: "judge-failed", summary };
 }
 
 /**
@@ -1572,7 +1678,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // verifier infrastructure failure, never a silent bypass and never an honest
   // rejection: block for resume without invoking the gate (no loop consumed).
   if (completionCriteria.some((c) => c.trim().length > 0) && !innerJudge) {
-    return blockStepForJudgeFailure(
+    return blockFinalizedStep(
       input,
       "this step declares completion criteria but no verification judge is available " +
         "(the frozen plan resolves no judge — set workflow.judgeEngine, or restore the judge configuration)",
@@ -1676,7 +1782,15 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // lease, a concurrent state change, a DB error — which would otherwise skip the
   // finish and strand the gate row in `running`. Finish it as an errored row (the
   // observed outcome: the completion did not succeed), then re-propagate.
+  //
+  // The signal handed down is the DISPATCH signal (the judge call runs under
+  // it), not just the caller's: the interruption guard inside the completion
+  // path rethrows an abort instead of classifying it as a judge outage, and a
+  // lost lease aborting mid-judge is an interruption — recording it as a
+  // verifier failure would blame infrastructure and durably block a step whose
+  // gate simply never finished evaluating.
   let completion: Awaited<ReturnType<typeof completeWorkflowStep>>;
+  const completionSignal = input.dispatchSignal ?? input.signal;
   try {
     completion = await completeWorkflowStep({
       runId,
@@ -1685,7 +1799,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
       summary,
       evidence: result.evidence,
       summaryJudge,
-      ...(input.signal ? { signal: input.signal } : {}),
+      ...(completionSignal ? { signal: completionSignal } : {}),
       ...lease,
     });
   } catch (err) {
@@ -1707,7 +1821,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // verdict. Consume NO gate loop; block the step (and therefore the run) so
   // `akm workflow resume` retries the gate over the journaled units.
   if (rejection && judgeFailed) {
-    return blockStepForJudgeFailure(input, judgeFailure ?? "the verification judge failed");
+    return blockFinalizedStep(input, judgeFailure ?? "the verification judge failed");
   }
 
   if (!rejection) {
@@ -1732,7 +1846,8 @@ function safeJson(value: unknown): string {
   }
 }
 
-/** Truncate to `max` chars with an ellipsis marker. */
-export function clip(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max)}…` : text;
-}
+// `clip` lives with the bounds it applies (`workflows/resource-limits.ts`) so
+// the write side here and the read side in `runtime/runs.ts` — which cannot
+// import this module — truncate through one implementation. Re-exported
+// because this module is where the dispatch path already reaches for it.
+export { clip } from "../resource-limits";

@@ -207,11 +207,12 @@ export async function readStream(
      * Keep `timeoutMs` UNARMED until this settles (either way). Omitted, the
      * deadline starts with the drain.
      *
-     * For a caller whose child has no wall budget of its own, arming at the
-     * drain's start would cap the RUN: a healthy process still writing when the
-     * deadline expires loses its reader mid-stream. Passing the child's exit
-     * here bounds only what a pipe does AFTER the process that owned it is
-     * gone, which is the leak this timeout exists for.
+     * Arming at the drain's start would cap the RUN: a healthy process still
+     * writing when the deadline expires loses its reader mid-stream. Passing
+     * the moment the pipe stops belonging to a live process — the child's exit,
+     * or for a bounded run the earlier of that and the wall budget — bounds only
+     * what a pipe does AFTER the process that owned it is gone, which is the
+     * leak this timeout exists for.
      */
     armTimeoutAfter?: Promise<unknown>;
   },
@@ -383,6 +384,15 @@ const EMPTY_READ: StreamReadResult = {
  * is gone, so it can be generous without ever capping the run itself.
  */
 const UNBOUNDED_STREAM_READ_SAFETY_MS = 60 * 60 * 1000;
+/**
+ * Drain deadline for a run WITH a wall budget, counted from the moment the
+ * pipe's owner left — the child exited, or (a child that survived its own kill
+ * ladder) the budget expired. Anything still holding the fd open then is a
+ * background descendant, not the command, so this is the same 2 s the old
+ * capture-anchored deadline allowed past the budget; only its starting point
+ * moved earlier.
+ */
+const POST_EXIT_STREAM_DRAIN_GRACE_MS = 2_000;
 
 function toError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
@@ -448,8 +458,19 @@ export async function runManagedSubprocess(
   // Skipped entirely when timeoutMs is null.
   let timedOut = false;
   let timer: ReturnType<typeof setTimeoutImpl> | undefined;
+  // Settles when a bounded run's wall budget expires — the second way (after
+  // the child's own exit) a captured pipe can stop belonging to a live command.
+  // See the drain-deadline note below.
+  let onBudgetExpiry: (() => void) | undefined;
+  const budgetExpired =
+    capture && timeoutMs !== null
+      ? new Promise<void>((resolve) => {
+          onBudgetExpiry = resolve;
+        })
+      : undefined;
   if (timeoutMs !== null) {
     timer = setTimeoutImpl(() => {
+      onBudgetExpiry?.();
       scheduleKillLadder(proc, {
         onKill: () => {
           timedOut = true;
@@ -480,25 +501,29 @@ export async function runManagedSubprocess(
     else abortSignal.addEventListener("abort", onAbort, { once: true });
   }
 
-  // Stream-drain timeout: the wall budget plus a 2 s grace, or a one-hour
-  // safety bound when execution itself is unbounded.
+  // Stream-drain timeout: a short grace once nothing living owns the pipe any
+  // more, or a one-hour safety bound when execution itself is unbounded.
   //
-  // WHEN it starts differs, and that difference is the whole contract of a null
-  // timeout. Bounded, the deadline runs from capture: the child is killed at
-  // its budget anyway, so a drain outliving budget + 2 s is a pipe nobody owns.
-  // Unbounded, the caller asked for NO cap on the run, so the same net is armed
-  // only once the child has exited — up to then every byte is a live process's,
-  // and cancelling the reader would discard the output of work that is still
-  // going. After the exit it is a background descendant holding the fd, which
-  // is exactly what the safety bound is for.
-  const streamDrainTimeoutMs = timeoutMs !== null ? timeoutMs + 2_000 : UNBOUNDED_STREAM_READ_SAFETY_MS;
+  // Neither is armed while the command is still running: every byte up to then
+  // is a live process's, and cancelling the reader would discard the output of
+  // work that is still going. What ends that ownership is where the two cases
+  // differ. Unbounded, the caller asked for NO cap on the run, so only the
+  // child's own exit can end it. Bounded, the wall budget ends it too — a child
+  // that outlived its own kill ladder is not something akm can keep waiting on
+  // — which leaves the SAME budget + grace ceiling as before for a command that
+  // really did spend its whole budget, and cuts the common case that used to
+  // stall: a leader exiting in milliseconds no longer holds the drain (and with
+  // it the unit, and with it a fan-out slot) open for a budget it never came
+  // close to spending.
+  const streamDrainTimeoutMs = timeoutMs !== null ? POST_EXIT_STREAM_DRAIN_GRACE_MS : UNBOUNDED_STREAM_READ_SAFETY_MS;
   // Settles on a rejected `proc.exited` too: either way the child is gone.
-  const childSettled = capture && timeoutMs === null ? proc.exited.catch(() => undefined) : undefined;
+  const childSettled = capture ? proc.exited.catch(() => undefined) : undefined;
+  const pipeOwnerGone = childSettled && budgetExpired ? Promise.race([childSettled, budgetExpired]) : childSettled;
   const readOpts = {
     timeoutMs: streamDrainTimeoutMs,
     setTimeoutFn: setTimeoutImpl,
     clearTimeoutFn: clearTimeoutImpl,
-    ...(childSettled ? { armTimeoutAfter: childSettled } : {}),
+    ...(pipeOwnerGone ? { armTimeoutAfter: pipeOwnerGone } : {}),
     ...(opts.maxOutputBytes !== undefined ? { maxBytes: opts.maxOutputBytes } : {}),
   };
   const stdoutPromise = capture ? readStream(proc.stdout ?? null, readOpts) : Promise.resolve(EMPTY_READ);

@@ -417,11 +417,14 @@ describe("runAgent — cooperative abort (RunAgentOptions.signal, P0.5)", () => 
       clearTimeoutFn,
     });
 
-    expect(timers.length).toBe(3);
-    // First timer is the main timeout. Fire it so the timeout branch schedules the SIGKILL grace timer.
+    // One timer at capture: the kill deadline. The two stream-drain deadlines
+    // are armed when the child exits or its budget expires, not up front, so a
+    // command whose leader exits early cannot wait out its whole budget.
+    expect(timers.length).toBe(1);
+    // That first timer is the main timeout. Fire it so the timeout branch schedules the SIGKILL grace timer.
     timers[0]?.cb();
-    expect(timers.length).toBe(4);
-    expect(timers[3]?.unrefCalled).toBe(true);
+    expect(timers.length).toBe(2);
+    expect(timers[1]?.unrefCalled).toBe(true);
 
     const result = await promise;
     expect(result.ok).toBe(false);

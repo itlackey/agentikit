@@ -19,7 +19,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
-import { readStream, runManagedSubprocess } from "../../../src/core/subprocess";
+import { readStream } from "../../../src/core/subprocess";
+import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { EXEC_DEFAULT_ENV_PASSTHROUGH, runExecUnit } from "../../../src/workflows/exec/exec-unit";
 import {
@@ -29,6 +30,7 @@ import {
   type StepExecutionResult,
 } from "../../../src/workflows/exec/native-executor";
 import { cpuDerivedUnitConcurrency } from "../../../src/workflows/exec/scheduler";
+import type { UnitDispatchResult } from "../../../src/workflows/exec/unit-dispatch";
 import type { IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
 import {
   execContextLimits,
@@ -37,6 +39,7 @@ import {
 } from "../../../src/workflows/resource-limits";
 import { requireExecutableWorkflowPlan } from "../../../src/workflows/runtime/plan-classifier";
 import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
+import { makeGitRepo } from "../../_helpers/git";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 import {
   freezeWorkflow,
@@ -757,24 +760,10 @@ describe("exec unit — map fan-out", () => {
 });
 
 describe("exec unit — worktree isolation", () => {
-  async function initRepo(dir: string): Promise<void> {
-    fs.mkdirSync(dir, { recursive: true });
-    for (const args of [
-      ["init", "-q"],
-      ["config", "user.email", "t@example.com"],
-      ["config", "user.name", "Test"],
-      ["config", "commit.gpgsign", "false"],
-    ]) {
-      await runManagedSubprocess(["git", "-C", dir, ...args], { capture: true, timeoutMs: 30_000 });
-    }
-    fs.writeFileSync(path.join(dir, "README.md"), "base\n");
-    await runManagedSubprocess(["git", "-C", dir, "add", "."], { capture: true, timeoutMs: 30_000 });
-    await runManagedSubprocess(["git", "-C", dir, "commit", "-qm", "base"], { capture: true, timeoutMs: 30_000 });
-  }
-
   test("the command runs in a fresh detached worktree, not in the base repo", async () => {
-    const repo = path.join(tmpDir, "repo");
-    await initRepo(repo);
+    // The shared fixture, inside this suite's own sandbox root so `afterEach`
+    // takes the repo with it.
+    const repo = makeGitRepo({ dir: path.join(tmpDir, "repo") });
     seedRun(["work"]);
     // Print the cwd and mutate a tracked file — the base repo must stay clean.
     const code =
@@ -798,7 +787,7 @@ describe("exec unit — worktree isolation", () => {
     expect(cwd).toContain(RUN_ID);
 
     // The base checkout was never touched.
-    expect(fs.readFileSync(path.join(repo, "README.md"), "utf8")).toBe("base\n");
+    expect(fs.readFileSync(path.join(repo, "README.md"), "utf8")).toBe("# fixture\n");
     // The dirty worktree is RETAINED (uncollected work is never destroyed) and
     // its path is journaled on the unit row.
     const rows = (await withWorkflowRunsRepo((repo_) => repo_.getUnitsForStep(RUN_ID, "work"))) as Array<{
@@ -1110,10 +1099,10 @@ describe("exec unit — an INCOMPLETE capture is never a success (finding 2)", (
   /**
    * A command whose LEADER writes a prefix of its output and exits 0
    * immediately, leaving a detached descendant holding the stdout fd open far
-   * past the stream-drain deadline (the unit's wall budget + 2s). `exitCode` is
-   * 0 and `stdout` holds only the leader's prefix — promoting it would hand
-   * every downstream reference a silently truncated artifact. `log`, when
-   * given, records one line per REAL execution.
+   * past the stream-drain deadline (the leader's exit plus the post-exit
+   * grace). `exitCode` is 0 and `stdout` holds only the leader's prefix —
+   * promoting it would hand every downstream reference a silently truncated
+   * artifact. `log`, when given, records one line per REAL execution.
    */
   function fdHolderArgv(log?: string): string[] {
     const holder = "setTimeout(() => {}, 30000)";
@@ -1207,6 +1196,60 @@ describe("exec unit — an INCOMPLETE capture is never a success (finding 2)", (
       'unknown failure reason "exec_capture_incomplete"',
     );
   });
+});
+
+describe("exec unit — a STDERR-only drain failure never discards a valid artifact", () => {
+  /**
+   * The mirror image of `fdHolderArgv`: the leader writes its WHOLE stdout
+   * artifact and exits 0, leaving a detached descendant holding only the STDERR
+   * fd open. stdout drained completely, the command exited 0 — the only thing
+   * stuck is the diagnostic channel, which never contributes to the artifact.
+   */
+  function stderrHolderArgv(): string[] {
+    const holder = "setTimeout(() => {}, 30000)";
+    return bunArgv(
+      `const cp=require('node:child_process'); ` +
+        `const child=cp.spawn(${JSON.stringify(BUN)}, ['-e', ${JSON.stringify(holder)}], ` +
+        `{ stdio: ['ignore', 'ignore', 'inherit'] }); child.unref(); ` +
+        `process.stdout.write('complete-artifact');`,
+    );
+  }
+
+  test("the unit SUCCEEDS with its full stdout artifact, and settles nowhere near its wall budget", async () => {
+    // A two-MINUTE budget under a 30-second test timeout: the SETTLE is the
+    // evidence, exactly as in the kill-ladder tests above. A drain deadline
+    // armed from capture instead of from the leader's exit would hold this unit
+    // for the whole 120 s, and the test would fail on its own timeout rather
+    // than pass slowly.
+    const BUDGET_MS = 120_000;
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+
+    let result: UnitDispatchResult;
+    try {
+      result = await runExecUnit({
+        unitId: "work:solo",
+        exec: { command: stderrHolderArgv() as [string, ...string[]], timeoutMs: BUDGET_MS },
+        baseDir: workDir,
+        timeoutMs: BUDGET_MS,
+      });
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
+
+    // A completed command with a complete stdout is a SUCCESS. Failing it
+    // `exec_capture_incomplete` would throw away a valid artifact — and that
+    // reason is non-retryable, so the work could never be recovered either.
+    expect(result.failureReason).toBeUndefined();
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe("complete-artifact");
+
+    // The lost log tail is still SAID somewhere — a success that quietly
+    // dropped part of its diagnostics would be its own kind of dishonest.
+    expect(warnings.join("\n")).toContain("stderr drain timed out");
+  }, 30_000);
 });
 
 describe("exec unit — a stderr-only diagnosis survives to the journal (finding 3)", () => {

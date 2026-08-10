@@ -216,8 +216,9 @@ describe("`runAgent` seam (v1 spec §9.7, §12.2)", () => {
       setTimeoutFn,
       clearTimeoutFn,
     });
-    // Drive the timer synchronously.
-    expect(fakeTimers.length).toBe(3);
+    // Drive the timer synchronously. Only the kill deadline exists at capture —
+    // the stream-drain deadlines are armed off the child's exit or its budget.
+    expect(fakeTimers.length).toBe(1);
     fakeTimers.find((t) => t.ms === 10)?.cb();
     const result = await promise;
     expect(result.ok).toBe(false);

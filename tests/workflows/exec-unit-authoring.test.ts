@@ -13,8 +13,10 @@
 
 import { describe, expect, test } from "bun:test";
 import { computeStepWorkList } from "../../src/workflows/exec/step-work";
+import { collectWorkflowWarnings } from "../../src/workflows/ir/compile";
 import type { IrUnitNode, WorkflowPlanGraph } from "../../src/workflows/ir/schema";
 import { decodeWorkflowPlanV3 } from "../../src/workflows/ir/schema";
+import { parseWorkflow } from "../../src/workflows/parser";
 import {
   DEFAULT_EXEC_TIMEOUT_MS,
   execContextLimits,
@@ -366,7 +368,7 @@ describe("exec unit — replay identity / input hashing", () => {
       engines: plan.execution.engines,
     });
     if (!list.ok) throw new Error(list.error);
-    return list.list.units[0]!.resolved.inputHash;
+    return list.list.units[0]!.inputHash;
   }
 
   test("ADDITIVE: an existing llm unit's input hash is byte-identical to the pre-exec engine", () => {
@@ -489,5 +491,35 @@ describe("exec unit — the AKM_* context ceilings are PER-PLATFORM", () => {
     // is the tripwire removal.
     expect(posix.perVarBytes).toBeGreaterThan(win32.perVarBytes);
     expect(posix.totalBytes).toBeGreaterThan(win32.totalBytes);
+  });
+});
+
+describe("exec unit — the completion gate judges once, never loops", () => {
+  const GATED_BODY = "## work\n\nDo it.\n\n### gate\n\nthe deployment is verified\n";
+
+  function warningsFor(markdown: string): string[] {
+    const parsed = parseWorkflow(markdown, { path: "workflows/demo.md" });
+    if (!parsed.ok) throw new Error(parsed.errors.map((error) => error.message).join(" | "));
+    return collectWorkflowWarnings(parsed.document).map((warning) => warning.message);
+  }
+
+  test("`gate.max_loops` above 1 on an exec step warns that the command still runs once", () => {
+    const messages = warningsFor(doc([...EXEC_STEP, "    gate: { max_loops: 3 }"], GATED_BODY));
+    const warning = messages.find((message) => message.includes("runs its command ONCE"));
+    expect(warning).toBeDefined();
+    expect(warning).toContain("max_loops: 3");
+    expect(warning).toContain("cannot read that feedback");
+  });
+
+  test("an ENGINE step with the same max_loops is not warned about — the bound is exec-specific", () => {
+    const messages = warningsFor(doc(["    gate: { max_loops: 3 }"], GATED_BODY));
+    expect(messages.some((message) => message.includes("runs its command ONCE"))).toBe(false);
+  });
+
+  test("an exec step that never asked for a loop is not warned about", () => {
+    expect(warningsFor(doc(EXEC_STEP, GATED_BODY)).some((m) => m.includes("runs its command ONCE"))).toBe(false);
+    // Nor is one with loops declared but no rubric — there is no gate to loop.
+    const noRubric = warningsFor(doc([...EXEC_STEP, "    gate: { max_loops: 3 }"]));
+    expect(noRubric.some((m) => m.includes("runs its command ONCE"))).toBe(false);
   });
 });
