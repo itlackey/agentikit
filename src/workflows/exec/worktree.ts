@@ -330,11 +330,28 @@ export interface WorktreeCleanupResult {
  * blow up disk. "Uncollected work" the caller preserves is therefore
  * tracked-or-untracked-unignored changes only (module doc).
  *
- * Only `git worktree remove` takes the base repo's lock, so the status probe
- * stays OFF {@link withRepoWorktreeLock} — parallel units probe concurrently
- * and serialize only on the mutation.
+ * Only `git worktree remove` takes the base repo's lock; the status probe stays
+ * OFF {@link withRepoWorktreeLock}. Since the probe now runs only when a
+ * removal was refused, a dirty worktree costs one failed removal inside the
+ * lock that it used to avoid — the trade that makes every CLEAN cleanup a
+ * single git process.
  */
 export async function cleanupUnitWorktree(baseDir: string, worktreePath: string): Promise<WorktreeCleanupResult> {
+  // Try the removal FIRST and let it be the cleanliness check: `git worktree
+  // remove` without `--force` already refuses a worktree carrying changes, on
+  // the same terms as the probe (ignored files excluded either way). The clean
+  // case — the overwhelmingly common one — is then ONE git process per unit
+  // instead of two, which a wide fan-out pays per unit.
+  const removed = await withRepoWorktreeLock(await safeRealpathAsync(baseDir), () =>
+    git(baseDir, ["worktree", "remove", worktreePath]),
+  );
+  if (removed.ok) {
+    await removeRunRootIfEmpty(worktreePath);
+    return { removed: true, dirty: false };
+  }
+  // It refused. Ask the probe WHY rather than parsing git's message, whose
+  // wording varies with version and locale — and which the caller's warn text
+  // has never been written against.
   const status = await git(worktreePath, ["status", "--porcelain"]);
   if (!status.ok) {
     return { removed: false, dirty: false, error: status.error };
@@ -342,14 +359,7 @@ export async function cleanupUnitWorktree(baseDir: string, worktreePath: string)
   if (status.stdout.trim() !== "") {
     return { removed: false, dirty: true };
   }
-  const removed = await withRepoWorktreeLock(await safeRealpathAsync(baseDir), () =>
-    git(baseDir, ["worktree", "remove", worktreePath]),
-  );
-  if (!removed.ok) {
-    return { removed: false, dirty: false, error: removed.error };
-  }
-  await removeRunRootIfEmpty(worktreePath);
-  return { removed: true, dirty: false };
+  return { removed: false, dirty: false, error: removed.error };
 }
 
 // ── Garbage collection ──────────────────────────────────────────────────────
