@@ -17,6 +17,39 @@
  * must report failure detail, or distinguish "threw" from "never claimed",
  * catches inside `fn` and returns an explicit outcome value instead.
  */
+/**
+ * Serialize `fn` behind every task previously enqueued under `key`: an
+ * in-process keyed promise chain (Bun is single-threaded, so this is a
+ * sufficient — and free — admission control for per-key mutual exclusion).
+ *
+ * `chains` is the caller's own module-state map, so independent subsystems
+ * (the unit-writer's per-database write queue, the worktree module's per-repo
+ * git lock) never share chains. A failed task rejects its OWN caller but
+ * never wedges the chain, and a drained tail deletes its map entry so a
+ * long-lived process does not retain one settled promise per key it ever
+ * touched.
+ */
+export function serializeByKey<T>(
+  chains: Map<string, Promise<unknown>>,
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const tail = chains.get(key) ?? Promise.resolve();
+  const run = tail.then(() => fn());
+  // Keep the chain alive regardless of individual outcomes.
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  chains.set(key, settled);
+  // If another task was enqueued in the meantime the map now holds ITS tail,
+  // and this check leaves it alone.
+  void settled.then(() => {
+    if (chains.get(key) === settled) chains.delete(key);
+  });
+  return run;
+}
+
 export async function concurrentMap<T, R>(
   items: T[],
   fn: (item: T, index: number) => Promise<R>,

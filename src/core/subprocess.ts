@@ -13,8 +13,10 @@
  *     kill reaps the whole descendant tree — no orphaned children.
  *   • A SIGTERM→SIGKILL kill ladder on timeout/abort — a child that ignores
  *     SIGTERM is force-killed after a grace period instead of wedging forever.
- *   • Bounded output capture ({@link readStream}) that cannot block past the
- *     wall budget even when the child leaves a pipe endpoint open.
+ *   • Time-bounded output capture ({@link readStream}) that cannot block past
+ *     the wall budget even when the child leaves a pipe endpoint open, plus an
+ *     OPT-IN RETENTION cap (`maxOutputBytes`); see {@link readStream} for what
+ *     the cap does and does not bound.
  *   • Injectable `spawnFn`/`setTimeoutFn`/`clearTimeoutFn` seams so callers
  *     can drive the machinery deterministically in tests.
  *
@@ -107,9 +109,62 @@ export interface StreamReadResult {
   text: string;
   timedOut: boolean;
   error?: unknown;
+  /**
+   * The caller's `maxBytes` RETENTION cap was reached. The drain continues past
+   * that point (see {@link readStream}), so the stream was still read to its end
+   * — but `text` holds only the retained PREFIX and must never be promoted as if
+   * it were the whole output. Always `false` when no cap was requested.
+   */
+  overflowed: boolean;
+  /**
+   * TOTAL raw bytes read off the pipe, including the ones discarded past the
+   * cap. Together with {@link StreamReadResult.retainedBytes} this is what lets
+   * a caller say honestly how much of the output it is holding.
+   */
+  bytesRead: number;
+  /** Raw bytes actually RETAINED in `text`. */
+  retainedBytes: number;
+}
+
+/**
+ * The joined, human-readable reason ONE managed run's capture is incomplete, or
+ * `undefined` when both pipes drained cleanly.
+ *
+ * Shared so every caller that promotes captured output treats an incomplete
+ * capture the same way. A pipe that errored, or that hit the stream-drain
+ * timeout because a background descendant kept the fd open after the leader
+ * exited 0, yields a PARTIAL string — and a caller that reads only `exitCode`
+ * would promote that partial as if it were the command's whole output.
+ * `maxBytes` overflow is deliberately NOT reported here: it is a distinct,
+ * caller-classified condition (see {@link StreamReadResult.overflowed}), not a
+ * drain malfunction.
+ */
+export function streamCaptureFailure(stdout: StreamReadResult, stderr: StreamReadResult): string | undefined {
+  const failures: string[] = [];
+  if (stdout.error) failures.push(`stdout read failed: ${errorText(stdout.error)}`);
+  if (stderr.error) failures.push(`stderr read failed: ${errorText(stderr.error)}`);
+  if (stdout.timedOut) failures.push("stdout drain timed out");
+  if (stderr.timedOut) failures.push("stderr drain timed out");
+  return failures.length === 0 ? undefined : failures.join("; ");
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 const STREAM_READ_TIMEOUT = Symbol("stream-read-timeout");
+
+/**
+ * Index at or before `limit` where a UTF-8 CHARACTER starts, so a retention cut
+ * never lands inside a multi-byte sequence. Continuation bytes are `10xxxxxx`;
+ * a well-formed sequence has at most three of them, so this walks back at most
+ * three positions.
+ */
+function utf8BoundaryAtOrBefore(value: Uint8Array, limit: number): number {
+  let cut = limit;
+  while (cut > 0 && (value[cut]! & 0xc0) === 0x80) cut--;
+  return cut;
+}
 
 /**
  * Drain a readable stream to text, optionally racing each read against a
@@ -117,6 +172,16 @@ const STREAM_READ_TIMEOUT = Symbol("stream-read-timeout");
  * endpoints stay open (e.g. background threads still holding the fd) cannot
  * block the caller indefinitely. On timeout we return whatever was decoded
  * before the pipe stopped draining.
+ *
+ * ## The `maxBytes` cap bounds MEMORY, not the child
+ *
+ * The drain ALWAYS runs to the end of the stream. `maxBytes` caps only what is
+ * RETAINED: once the cap is reached the loop keeps calling `reader.read()` and
+ * throws the bytes away. That is what makes the cap safe to impose on a
+ * process that is still running — a reader that stopped pulling would fill the
+ * pipe buffer and BLOCK the child on its next write, turning "the output got
+ * long" into "the command hangs until the wall timeout". Draining and
+ * discarding costs nothing but the reads, and the child finishes normally.
  */
 export async function readStream(
   stream: ReadableStream<Uint8Array> | null | undefined,
@@ -124,23 +189,68 @@ export async function readStream(
     timeoutMs?: number;
     setTimeoutFn?: typeof setTimeout;
     clearTimeoutFn?: typeof clearTimeout;
+    /**
+     * Hard BYTE cap on what this drain RETAINS. Omitted = unbounded. Past the
+     * cap the result is flagged {@link StreamReadResult.overflowed} with both
+     * counts — the caller decides what a partial capture means, because only it
+     * knows whether the stream was an artifact or a diagnostic.
+     *
+     * The retained text is at most `maxBytes` bytes: a cut landing inside a
+     * multi-byte character is trimmed back to the character boundary. (In the
+     * one case where the split spans a chunk boundary the decoder's trailing
+     * partial flushes to a single U+FFFD, so the string can exceed `maxBytes`
+     * by at most two bytes — still a hard bound, which is the property that
+     * matters.)
+     */
+    maxBytes?: number;
   },
 ): Promise<StreamReadResult> {
-  if (!stream) return { text: "", timedOut: false };
+  if (!stream) return { text: "", timedOut: false, overflowed: false, bytesRead: 0, retainedBytes: 0 };
   const reader = stream.getReader();
   const decoder = new TextDecoder();
+  const maxBytes = opts?.maxBytes;
   let text = "";
+  let bytesRead = 0;
+  let retainedBytes = 0;
+  let overflowed = false;
+  /**
+   * Common per-chunk accumulate. Uncapped it appends everything. Capped, it
+   * appends until the cap and then only COUNTS — the caller's loop keeps reading
+   * either way, which is the whole point.
+   */
+  const absorb = (value: Uint8Array): void => {
+    bytesRead += value.byteLength;
+    if (maxBytes === undefined) {
+      retainedBytes += value.byteLength;
+      text += decoder.decode(value, { stream: true });
+      return;
+    }
+    // Already past the cap: discard. Never resume retaining — a gap in the
+    // middle would splice two disjoint regions into one string.
+    if (overflowed) return;
+    if (retainedBytes + value.byteLength <= maxBytes) {
+      retainedBytes += value.byteLength;
+      text += decoder.decode(value, { stream: true });
+      return;
+    }
+    overflowed = true;
+    const keep = utf8BoundaryAtOrBefore(value, maxBytes - retainedBytes);
+    if (keep > 0) {
+      retainedBytes += keep;
+      text += decoder.decode(value.subarray(0, keep), { stream: true });
+    }
+  };
   if (!opts?.timeoutMs) {
     try {
       while (true) {
         const chunk = await reader.read();
         if (chunk.done) break;
-        text += decoder.decode(chunk.value, { stream: true });
+        absorb(chunk.value);
       }
       text += decoder.decode();
-      return { text, timedOut: false };
+      return { text, timedOut: false, overflowed, bytesRead, retainedBytes };
     } catch (error) {
-      return { text, timedOut: false, error };
+      return { text, timedOut: false, error, overflowed, bytesRead, retainedBytes };
     } finally {
       try {
         reader.releaseLock();
@@ -164,15 +274,15 @@ export async function readStream(
       const chunk = await Promise.race([reader.read(), timeoutPromise]);
       if (chunk === STREAM_READ_TIMEOUT) {
         void reader.cancel().catch(() => {});
-        return { text, timedOut: true };
+        return { text, timedOut: true, overflowed, bytesRead, retainedBytes };
       }
       if (chunk.done) break;
-      text += decoder.decode(chunk.value, { stream: true });
+      absorb(chunk.value);
     }
     text += decoder.decode();
-    return { text, timedOut: false };
+    return { text, timedOut: false, overflowed, bytesRead, retainedBytes };
   } catch (error) {
-    return { text, timedOut: false, error };
+    return { text, timedOut: false, error, overflowed, bytesRead, retainedBytes };
   } finally {
     if (timer !== undefined) {
       clearTimeoutImpl(timer);
@@ -201,6 +311,12 @@ export interface RunManagedSubprocessOptions {
   stdin?: string;
   /** Hard timeout (ms). null = no kill timer (runs until the process exits). */
   timeoutMs: number | null;
+  /**
+   * Hard BYTE RETENTION cap per captured pipe, forwarded to {@link readStream}.
+   * Omitted = unbounded capture. The per-stream
+   * {@link StreamReadResult.overflowed} flag says which pipe crossed it.
+   */
+  maxOutputBytes?: number;
   /** Cooperative cancellation. Aborting runs the same TERM→KILL ladder. */
   signal?: AbortSignal;
   /** SIGTERM→SIGKILL grace period (ms). Defaults to 5000. */
@@ -232,7 +348,13 @@ export interface ManagedSubprocessResult {
   stderrRead: StreamReadResult;
 }
 
-const EMPTY_READ: StreamReadResult = { text: "", timedOut: false };
+const EMPTY_READ: StreamReadResult = {
+  text: "",
+  timedOut: false,
+  overflowed: false,
+  bytesRead: 0,
+  retainedBytes: 0,
+};
 const UNBOUNDED_STREAM_READ_SAFETY_MS = 60 * 60 * 1000;
 
 function toError(err: unknown): Error {
@@ -336,20 +458,14 @@ export async function runManagedSubprocess(
   // capture, so the null-timeout path must not impose a short hidden deadline
   // on an otherwise healthy long-running process.
   const streamDrainTimeoutMs = timeoutMs !== null ? timeoutMs + 2_000 : UNBOUNDED_STREAM_READ_SAFETY_MS;
-  const stdoutPromise = capture
-    ? readStream(proc.stdout ?? null, {
-        timeoutMs: streamDrainTimeoutMs,
-        setTimeoutFn: setTimeoutImpl,
-        clearTimeoutFn: clearTimeoutImpl,
-      })
-    : Promise.resolve(EMPTY_READ);
-  const stderrPromise = capture
-    ? readStream(proc.stderr ?? null, {
-        timeoutMs: streamDrainTimeoutMs,
-        setTimeoutFn: setTimeoutImpl,
-        clearTimeoutFn: clearTimeoutImpl,
-      })
-    : Promise.resolve(EMPTY_READ);
+  const readOpts = {
+    timeoutMs: streamDrainTimeoutMs,
+    setTimeoutFn: setTimeoutImpl,
+    clearTimeoutFn: clearTimeoutImpl,
+    ...(opts.maxOutputBytes !== undefined ? { maxBytes: opts.maxOutputBytes } : {}),
+  };
+  const stdoutPromise = capture ? readStream(proc.stdout ?? null, readOpts) : Promise.resolve(EMPTY_READ);
+  const stderrPromise = capture ? readStream(proc.stderr ?? null, readOpts) : Promise.resolve(EMPTY_READ);
 
   // Optional stdin payload (captured mode only). Race the write/close against
   // proc.exited so a child that never drains stdin cannot pin us past the
@@ -393,5 +509,13 @@ export async function runManagedSubprocess(
   abortSignal?.removeEventListener("abort", onAbort);
 
   const [stdoutRead, stderrRead] = await Promise.all([stdoutPromise, stderrPromise]);
-  return { exitCode, stdout: stdoutRead.text, stderr: stderrRead.text, timedOut, aborted, stdoutRead, stderrRead };
+  return {
+    exitCode,
+    stdout: stdoutRead.text,
+    stderr: stderrRead.text,
+    timedOut,
+    aborted,
+    stdoutRead,
+    stderrRead,
+  };
 }

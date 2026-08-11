@@ -24,7 +24,6 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -38,6 +37,7 @@ import {
   WORKTREES_DIR_NAME,
   worktreesRoot,
 } from "../../../src/workflows/exec/worktree";
+import { git, makeGitRepo as makeTempGitRepo } from "../../_helpers/git";
 
 const GIT = isGitAvailable();
 
@@ -60,25 +60,9 @@ afterEach(() => {
   }
 });
 
-function git(cwd: string, args: string[]): string {
-  const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 15_000 });
-  if (result.status !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
-  }
-  return result.stdout ?? "";
-}
-
-/** Init a temp git repo with one committed file (`README.md`). */
+/** Init a temp git repo with one committed file (`README.md`), removed in afterEach. */
 function makeGitRepo(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-wt-conc-repo-"));
-  scratch.push(dir);
-  git(dir, ["init", "-q"]);
-  git(dir, ["config", "user.email", "test@akm.invalid"]);
-  git(dir, ["config", "user.name", "akm-test"]);
-  fs.writeFileSync(path.join(dir, "README.md"), "# fixture\n");
-  git(dir, ["add", "README.md"]);
-  git(dir, ["commit", "-q", "-m", "fixture"]);
-  return dir;
+  return makeTempGitRepo({ prefix: "akm-wt-conc-repo-", register: (dir) => scratch.push(dir) });
 }
 
 /** Worktree paths git currently has REGISTERED for `repo` (excluding the repo itself). */

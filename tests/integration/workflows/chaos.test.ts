@@ -99,10 +99,10 @@ function workListFor(
 ): Array<{ unitId: string; inputHash: string }> {
   // Projection over `fullWorkList` — one place computes the work list, so the
   // two helpers cannot drift when `WorkListInput` grows a field.
-  return fullWorkList(plan, stepIndex, runId, params, stepOutputs).units.map((u) => {
-    if (!u.resolved.ok) throw new Error(`unit ${u.unitId} did not resolve: ${u.resolved.error}`);
-    return { unitId: u.journalBaseId, inputHash: u.resolved.inputHash };
-  });
+  return fullWorkList(plan, stepIndex, runId, params, stepOutputs).units.map((u) => ({
+    unitId: u.journalBaseId,
+    inputHash: u.resolved.inputHash,
+  }));
 }
 
 /**

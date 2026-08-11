@@ -1,5 +1,6 @@
 /**
- * Tests for `supplementPathForSchedulerContext` in the agent spawn wrapper.
+ * Tests for `supplementPathForSchedulerContext` in `core/spawn-env` — the PATH
+ * repair every allowlisted-child spawn path shares (agent CLI, workflow `exec`).
  *
  * Verifies that:
  *   • PATH containing the user home directory is returned unchanged (interactive shell).
@@ -13,7 +14,7 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { supplementPathForSchedulerContext } from "../../src/integrations/agent/spawn";
+import { supplementPathForSchedulerContext } from "../../src/core/spawn-env";
 
 const home = os.homedir();
 
