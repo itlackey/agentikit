@@ -16,7 +16,12 @@
  * @module workflows/exec/dispatch-redaction
  */
 
-import { collectSensitiveValues, isEnvPassthroughValueSafeToExpose, redactSensitiveValue } from "../../core/redaction";
+import {
+  collectSensitiveValues,
+  isEnvPassthroughValueSafeToExpose,
+  redactSensitiveText,
+  redactSensitiveValue,
+} from "../../core/redaction";
 import type { FrozenEngineSnapshot } from "../ir/schema";
 import type { UnitDispatcher } from "./unit-dispatch";
 
@@ -35,6 +40,12 @@ export interface DispatchEngines {
  * Shared by the unit path and the gate-judge path. There is deliberately ONE
  * collector: a second, parallel implementation is exactly how a dispatch path
  * silently loses the scrub.
+ *
+ * The credential values are read from `process.env` AT CALL TIME, so a caller
+ * must collect no earlier than the dispatch whose outcome it scrubs. A snapshot
+ * taken when the dispatch was merely *planned* can predate a credential the
+ * dispatch then resolves live, leaving the exact value it must remove out of
+ * the set.
  */
 export function collectWorkflowDispatchSensitiveValues(
   dispatch: DispatchEngines,
@@ -86,13 +97,37 @@ export function redactUnitOutcome<T extends { failureReason?: string }>(
 }
 
 /**
- * Wrap a dispatcher so every result it returns is scrubbed with the request's
- * own `sensitiveValues` — a caller holding the wrapped dispatcher cannot
- * observe (or journal) an unredacted outcome. Used at seams whose results head
- * STRAIGHT for durable state (the gate judge); the unit path instead scrubs
- * once at its own journal boundary (`dispatchJournaledAttempt`), AFTER the
- * structured-output parse loop has seen the raw text.
+ * Scrub a value THROWN out of a dispatch. A rejection is as durable as a
+ * resolved failure — the message becomes the blocked step's notes — so it goes
+ * through the same value set. Re-wrapped ONLY when redaction actually changed
+ * the message, so an untouched throw keeps its original object (and its type,
+ * which callers branch on) byte-identical.
+ */
+function redactDispatchError(err: unknown, sensitiveValues: readonly string[]): unknown {
+  if (sensitiveValues.length === 0 || !(err instanceof Error)) return err;
+  const redacted = redactSensitiveText(err.message, sensitiveValues);
+  if (redacted === err.message) return err;
+  const replacement = new Error(redacted);
+  replacement.name = err.name;
+  return replacement;
+}
+
+/**
+ * Wrap a dispatcher so BOTH its exits are scrubbed with the request's own
+ * `sensitiveValues` — the outcome it resolves to and the error it throws — so a
+ * caller holding the wrapped dispatcher cannot observe (or journal) either one
+ * unredacted. Used at seams whose results head STRAIGHT for durable state (the
+ * gate judge, on both its agent and its llm branch); the unit path instead
+ * scrubs once at its own journal boundary (`dispatchJournaledAttempt`), AFTER
+ * the structured-output parse loop has seen the raw text.
  */
 export function withDispatchRedaction(inner: UnitDispatcher): UnitDispatcher {
-  return async (request, feedback) => redactUnitOutcome(await inner(request, feedback), request.sensitiveValues ?? []);
+  return async (request, feedback) => {
+    const sensitiveValues = request.sensitiveValues ?? [];
+    try {
+      return redactUnitOutcome(await inner(request, feedback), sensitiveValues);
+    } catch (err) {
+      throw redactDispatchError(err, sensitiveValues);
+    }
+  };
 }

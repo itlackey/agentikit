@@ -101,7 +101,7 @@ function workListFor(
   // two helpers cannot drift when `WorkListInput` grows a field.
   return fullWorkList(plan, stepIndex, runId, params, stepOutputs).units.map((u) => ({
     unitId: u.journalBaseId,
-    inputHash: u.resolved.inputHash,
+    inputHash: u.inputHash,
   }));
 }
 

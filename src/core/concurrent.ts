@@ -3,21 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Maps over items concurrently with a pool size limit.
- * Uses Promise.allSettled semantics — one failure does not cancel others.
- *
- * Cooperative cancellation (P0.5 seam for the workflow scheduler): when
- * `opts.signal` aborts, workers stop CLAIMING new items — in-flight `fn`
- * calls run to completion (pass the same signal into `fn`'s own work to
- * preempt those too). Unclaimed items stay `undefined` in the result,
- * indistinguishable from individual failures by design: callers already
- * treat `undefined` as "no result".
- *
- * A thrown `fn` is SWALLOWED (its slot stays `undefined`) — a caller that
- * must report failure detail, or distinguish "threw" from "never claimed",
- * catches inside `fn` and returns an explicit outcome value instead.
- */
-/**
  * Serialize `fn` behind every task previously enqueued under `key`: an
  * in-process keyed promise chain (Bun is single-threaded, so this is a
  * sufficient — and free — admission control for per-key mutual exclusion).
@@ -50,6 +35,23 @@ export function serializeByKey<T>(
   return run;
 }
 
+/**
+ * Maps over items concurrently with a pool size limit.
+ * Uses Promise.allSettled semantics — one failure does not cancel others.
+ *
+ * Cooperative cancellation (P0.5 seam for the workflow scheduler): when
+ * `opts.signal` aborts, workers stop CLAIMING new items — in-flight `fn`
+ * calls run to completion (pass the same signal into `fn`'s own work to
+ * preempt those too). Unclaimed items stay `undefined` in the result,
+ * indistinguishable from individual failures by design: callers already
+ * treat `undefined` as "no result".
+ *
+ * A thrown `fn` is SWALLOWED (its slot stays `undefined`) — a caller that
+ * must report failure detail, or distinguish "threw" from "never claimed",
+ * catches inside `fn` and returns an explicit outcome value instead. This is
+ * the OPPOSITE of {@link serializeByKey} above, whose failures reject their
+ * own caller.
+ */
 export async function concurrentMap<T, R>(
   items: T[],
   fn: (item: T, index: number) => Promise<R>,

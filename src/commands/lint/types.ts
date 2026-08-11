@@ -32,7 +32,7 @@ export type LintIssueType =
    * e.g. a step with no `output:` schema, or a `params.<name>` reference to an
    * undeclared param). Routed into `AkmLintResult.warnings`, never `flagged`,
    * so `--fail-on-flagged` ignores it (see
-   * `core/adapter/adapters/akm-lint.ts#workflowCompileWarnings`).
+   * `core/adapter/adapters/akm-lint.ts#workflowFrontendDiagnostics`).
    */
   | "workflow-warning"
   /**
@@ -47,6 +47,30 @@ export type LintIssueType =
    * ever lost, even though the closed union can't type it precisely.
    */
   | "adapter-diagnostic";
+
+/**
+ * The issue codes that are ADVISORY: surfaced in lint output but never routed
+ * into `flagged`, so `--fail-on-flagged` cannot fail a run over one.
+ *
+ * ONE home for that decision. EVERY routing point consults it — the adapter
+ * path (`lint/index.ts#lintViaAdapter`), the sweep's per-file loop, and the
+ * sweep's workflow-frontend pass — so a new advisory code cannot be classified
+ * correctly in one place and land in `flagged` (exit 1) in another; a finding
+ * is never filed by which producer emitted it. A future advisory belongs in
+ * BOTH this set and {@link LintIssueType}: an unrecognized code is folded onto
+ * `adapter-diagnostic` at the adapter boundary, which is deliberately NOT
+ * advisory, so a code missing from the union cannot be routed by this set.
+ *
+ * Advisory-ness is deliberately NOT a field on {@link LintIssue}: issues are
+ * serialized verbatim by `--format json`, and a new key on every advisory
+ * would change every consumer's output to restate what `issue` already says.
+ */
+export const ADVISORY_LINT_ISSUES: ReadonlySet<string> = new Set<LintIssueType>(["workflow-warning"]);
+
+/** True when `issue` belongs to the advisory channel — see {@link ADVISORY_LINT_ISSUES}. */
+export function isAdvisoryLintIssue(issue: { issue: string }): boolean {
+  return ADVISORY_LINT_ISSUES.has(issue.issue);
+}
 
 export interface LintIssue {
   file: string;

@@ -233,16 +233,24 @@ function resolveNow(ctx?: EventsContext): () => number {
 export function appendEvent(input: AppendEventInput, ctx?: EventsContext): void {
   const now = resolveNow(ctx);
   const ts = new Date(now()).toISOString();
-  const dbPath = resolveDbPath(ctx);
   const row = { eventType: input.eventType, ts, ref: input.ref, metadata: input.metadata };
 
-  // One try covers BOTH paths — including the ambient scope's lazy open — so
-  // the best-effort contract ("a write failure never propagates") holds no
-  // matter which handle this event lands on.
+  // One try covers EVERY path — including resolving the state.db path, which
+  // reads the environment and throws where no data dir can be derived — so the
+  // best-effort contract ("a write failure never propagates") holds no matter
+  // which handle this event lands on.
   try {
-    // Fast path: an explicitly supplied long-lived connection, or the ambient
-    // scoped one — either way the handle is borrowed and never closed here.
-    const borrowed = ctx?.db ?? borrowScopedStateDb(dbPath);
+    // Fast path: an explicitly supplied long-lived connection. Resolution is
+    // skipped outright, which is what "`dbPath` is ignored when `db` is
+    // provided" has to mean for a caller that already holds an open handle.
+    if (ctx?.db) {
+      insertEvent(ctx.db, row);
+      return;
+    }
+    const dbPath = resolveDbPath(ctx);
+    // The ambient scoped handle for this path, when a scope is open — borrowed
+    // exactly like the explicit one, and never closed here.
+    const borrowed = borrowScopedStateDb(dbPath);
     if (borrowed) {
       insertEvent(borrowed, row);
       return;

@@ -12,7 +12,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { checkJsonSchemaDefinition } from "../../src/core/json-schema";
-import { parseErrors } from "../_helpers/workflow";
+import { parseErrors, workflowDoc } from "../_helpers/workflow";
 
 describe("checkJsonSchemaDefinition (core/json-schema.ts)", () => {
   test("a valid subset schema produces no issues", () => {
@@ -145,20 +145,7 @@ describe("checkJsonSchemaDefinition (core/json-schema.ts)", () => {
 
 describe("bug 10 — workflow parser rejects malformed / unsupported schemas", () => {
   test('`type: "strig"` in a step output schema is a line-anchored parser error', () => {
-    const markdown = [
-      "---",
-      "type: workflow",
-      "steps:",
-      "  - id: work",
-      "    output:",
-      "      type: strig",
-      "---",
-      "",
-      "## work",
-      "",
-      "Do it.",
-      "",
-    ].join("\n");
+    const markdown = workflowDoc(["    output:", "      type: strig"]);
     const errors = parseErrors(markdown);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.line).toBe(6); // the `type: strig` line
@@ -167,21 +154,7 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
   });
 
   test("`format:` in an output schema is a parser error naming the unsupported keyword and the supported subset", () => {
-    const markdown = [
-      "---",
-      "type: workflow",
-      "steps:",
-      "  - id: work",
-      "    output:",
-      "      type: string",
-      "      format: email",
-      "---",
-      "",
-      "## work",
-      "",
-      "Do it.",
-      "",
-    ].join("\n");
+    const markdown = workflowDoc(["    output:", "      type: string", "      format: email"]);
     const errors = parseErrors(markdown);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.line).toBe(7); // the `format:` line
@@ -194,41 +167,17 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
   });
 
   test("`oneOf:` in an output schema parses cleanly (the combinators are enforced)", () => {
-    const markdown = [
-      "---",
-      "type: workflow",
-      "steps:",
-      "  - id: work",
+    const markdown = workflowDoc([
       "    output:",
       "      type: object",
       "      properties:",
       "        result: { oneOf: [{ type: string }, { type: integer }] }",
-      "---",
-      "",
-      "## work",
-      "",
-      "Do it.",
-      "",
-    ].join("\n");
+    ]);
     expect(parseErrors(markdown)).toHaveLength(0);
   });
 
   test("`pattern:` in an output schema is a line-anchored authoring error naming the keyword", () => {
-    const markdown = [
-      "---",
-      "type: workflow",
-      "steps:",
-      "  - id: work",
-      "    output:",
-      "      type: string",
-      "      pattern: '^\\d+\\.\\d+\\.\\d+$'",
-      "---",
-      "",
-      "## work",
-      "",
-      "Do it.",
-      "",
-    ].join("\n");
+    const markdown = workflowDoc(["    output:", "      type: string", "      pattern: '^\\d+\\.\\d+\\.\\d+$'"]);
     const errors = parseErrors(markdown);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.line).toBe(7); // the `pattern:` line
@@ -241,21 +190,11 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
     // to reason about the regex itself. There is no such analysis now: this is
     // the same "not enforced" message `format` or `const` gets, with no claim
     // about the pattern's own shape.
-    const markdown = [
-      "---",
-      "type: workflow",
-      "steps:",
-      "  - id: work",
+    const markdown = workflowDoc([
       "    output:",
       "      type: string",
       "      pattern: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$'",
-      "---",
-      "",
-      "## work",
-      "",
-      "Do it.",
-      "",
-    ].join("\n");
+    ]);
     const errors = parseErrors(markdown);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.line).toBe(7);
@@ -266,20 +205,7 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
   });
 
   test("a params schema gets the same definition checking", () => {
-    const markdown = [
-      "---",
-      "type: workflow",
-      "params:",
-      "  files: { type: aray }",
-      "steps:",
-      "  - id: work",
-      "---",
-      "",
-      "## work",
-      "",
-      "Do it.",
-      "",
-    ].join("\n");
+    const markdown = workflowDoc([], undefined, ["params:", "  files: { type: aray }"]);
     const errors = parseErrors(markdown);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.line).toBe(4);
@@ -288,43 +214,25 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
   });
 
   test("a valid subset schema (with annotations) still parses cleanly", () => {
-    const markdown = [
-      "---",
-      "type: workflow",
-      "params:",
-      "  files: { type: array, description: The files to review, items: { type: string } }",
-      "steps:",
-      "  - id: work",
-      "    output:",
-      "      type: object",
-      "      required: [verdict]",
-      "      properties:",
-      "        verdict: { type: string, enum: [pass, fail] }",
-      "---",
-      "",
-      "## work",
-      "",
-      "Do it.",
-      "",
-    ].join("\n");
+    const markdown = workflowDoc(
+      [
+        "    output:",
+        "      type: object",
+        "      required: [verdict]",
+        "      properties:",
+        "        verdict: { type: string, enum: [pass, fail] }",
+      ],
+      undefined,
+      ["params:", "  files: { type: array, description: The files to review, items: { type: string } }"],
+    );
     expect(parseErrors(markdown)).toHaveLength(0);
   });
 
   test("a unit-level output schema is checked too", () => {
-    const markdown = [
-      "---",
-      "type: workflow",
-      "steps:",
-      "  - id: work",
+    const markdown = workflowDoc([
       "    unit:",
       "      output: { type: object, patternProperties: { '^x': { type: string } } }",
-      "---",
-      "",
-      "## work",
-      "",
-      "Do it.",
-      "",
-    ].join("\n");
+    ]);
     const errors = parseErrors(markdown);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('keyword "patternProperties" is not enforced');

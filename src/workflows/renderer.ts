@@ -21,7 +21,7 @@ import type {
   WorkflowStepOrchestrationSummary,
 } from "../sources/types";
 import { parseWorkflow } from "./parser";
-import type { ProgramDefaults } from "./program/schema";
+import { type ProgramDefaults, projectExecCore } from "./program/schema";
 import type { WorkflowDocument, WorkflowStep } from "./schema";
 
 function shellQuote(value: string): string {
@@ -116,16 +116,9 @@ function summarizeStepOrchestration(
     ...(engine !== undefined ? { engine } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-    ...(exec
-      ? {
-          exec: {
-            command: [...exec.command],
-            ...(exec.cwd !== undefined ? { cwd: exec.cwd } : {}),
-            ...(exec.passEnv !== undefined ? { passEnv: [...exec.passEnv] } : {}),
-            ...(exec.inheritEnv === true ? { inheritEnv: true as const } : {}),
-          },
-        }
-      : {}),
+    // Same projection the draft and the frozen plan use, so what `show` prints
+    // cannot drift from what runs.
+    ...(exec ? { exec: projectExecCore(exec) } : {}),
     ...(step.map
       ? {
           fanOut: {

@@ -144,7 +144,8 @@ import {
 import type { FrozenEngineSnapshot, IrBudget, IrInvocation, IrStepPlan } from "../ir/schema";
 import { WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
 // The ONE dispatch redaction contract, shared with the gate-judge path
-// (exec/frozen-judge.ts). Re-exported for existing importers of this module.
+// (exec/frozen-judge.ts). Consumers import the leaf directly — this module is
+// not a second front door onto the seam.
 import { collectWorkflowDispatchSensitiveValues, redactUnitOutcome } from "./dispatch-redaction";
 // The exec (shell) unit runner — a leaf that owns argv spawning, containment,
 // and the process-outcome → failure-reason mapping.
@@ -171,7 +172,6 @@ import {
   type UnitDispatchResult,
 } from "./unit-dispatch";
 
-export { collectWorkflowDispatchSensitiveValues, redactUnitOutcome } from "./dispatch-redaction";
 export type { UnitDispatcher, UnitDispatchRequest, UnitDispatchResult } from "./unit-dispatch";
 
 import { enqueueUnitWrite } from "./unit-writer";
@@ -372,7 +372,7 @@ function classifyUnitReuse(
   completedRows: CompletedRowIndex | undefined,
   gateLoop: number,
 ): UnitReuseDecision {
-  const inputHash = workUnit.resolved.inputHash;
+  const inputHash = workUnit.inputHash;
   // Scan EVERY journaled attempt row of this unit (`<base>` / `<base>~r<N>`
   // for ANY N), not just the attempts the CURRENT retry policy allows:
   // retry/onError are deliberately excluded from the input hash (step-work.ts)
@@ -396,11 +396,10 @@ function classifyUnitReuse(
 
 /**
  * The step's COMPLETED journal rows grouped by base journal id (`~r<N>`
- * stripped), built ONCE per step so classifyUnitReuse — which runs per unit,
- * twice (preflight gate + runUnit) — is a map probe over that unit's own
- * attempt rows instead of an O(rows) scan of the whole step journal per call
- * (a 10 000-unit fan-out resume would otherwise re-walk the full journal
- * 20 000 times).
+ * stripped), built ONCE per step so classifyUnitReuse is a map probe over that
+ * unit's own attempt rows instead of an O(rows) scan of the whole step journal
+ * (a 10 000-unit fan-out resume would otherwise re-walk the full journal once
+ * per unit).
  */
 type CompletedRowIndex = Map<string, WorkflowRunUnitRow[]>;
 
@@ -414,16 +413,6 @@ function indexCompletedRows(rows: Iterable<WorkflowRunUnitRow>): CompletedRowInd
     else index.set(base, [row]);
   }
   return index;
-}
-
-/**
- * Does the step have at least one unit that will ACTUALLY dispatch? Env
- * resolution and worktree preflight are dispatch prerequisites, so a step whose
- * units are all reused / diverged must skip them (reviewer finding
- * #2). Mirrors runUnit's reuse decision exactly (shared {@link classifyUnitReuse}).
- */
-function stepWillDispatch(workUnits: StepWorkUnit[], completedRows: CompletedRowIndex, gateLoop: number): boolean {
-  return workUnits.some((u) => classifyUnitReuse(u, completedRows, gateLoop).kind === "dispatch");
 }
 
 /**
@@ -543,7 +532,12 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
   // to hand back a cached result. The predicate mirrors runUnit's reuse
   // decision exactly (shared classifyUnitReuse).
   const gateLoop = ctx.gateLoop ?? 1;
-  const willDispatch = stepWillDispatch(workUnits, completedRows, gateLoop);
+  // Classify every unit ONCE. The gate below and each unit's own dispatch then
+  // read the SAME decision rather than recomputing it from inputs that must be
+  // identical — the agreement the gate depends on is structural, not a property
+  // two call sites have to keep re-establishing.
+  const reuseDecisions = workUnits.map((unit) => classifyUnitReuse(unit, completedRows, gateLoop));
+  const willDispatch = reuseDecisions.some((decision) => decision.kind === "dispatch");
 
   // Env bindings resolve once per step, before any dispatch; a binding error
   // fails the whole step cleanly rather than N units racing into it. Skipped
@@ -583,12 +577,25 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
     worktreeBase = base;
   }
 
+  // The values that must never survive into the journal. Collected once per
+  // step, not once per unit: the frozen engine and its SDK fallback are
+  // resolved from the step template and handed unchanged to every unit, and
+  // `env` is step-wide, so a fan-out was re-scanning process.env — and
+  // re-inspecting every passthrough value — once per unit, including for units
+  // that go on to reuse a journaled row and dispatch nothing at all.
+  const sensitiveValues = willDispatch && workUnits[0] ? collectWorkflowDispatchSensitiveValues(workUnits[0], env) : [];
+
   // Budget ceilings + lifetime-cap accounting, and the budget-chained abort
   // signal they trip. Extracted verbatim (behavior-identical) — see
   // {@link openDispatchBudget}.
   const { signal, budget, unchainSignal } = openDispatchBudget(ctx, dispatched);
 
   let outcomes: Array<UnitOutcome | undefined>;
+  // Worktree removals started by finished units and awaited below, before this
+  // step reports anything. Cleanup is best-effort, but "the step resolved" must
+  // still mean "its clean worktrees are gone" — only the WAIT moves off the
+  // unit's scheduler slot, not the guarantee.
+  const pendingWorktreeCleanups: Array<Promise<void>> = [];
   const selectedEngine = template.invocation ? ctx.engines?.[template.invocation.engine] : undefined;
   const selectedLlmEngine =
     selectedEngine?.kind === "llm"
@@ -599,7 +606,7 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
   try {
     outcomes = await scheduleUnits(
       workUnits,
-      (workUnit) =>
+      (workUnit, index) =>
         runUnit({
           plan,
           workUnit,
@@ -608,7 +615,9 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
           ctx,
           signal,
           dispatcher,
-          completedRows,
+          reuse: reuseDecisions[index]!,
+          sensitiveValues,
+          pendingWorktreeCleanups,
           budget,
         }),
       {
@@ -620,6 +629,9 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
     );
   } finally {
     unchainSignal?.();
+    // The barrier. `allSettled` because each task already swallowed its own
+    // failure into a warn — nothing here can fail the step.
+    await Promise.allSettled(pendingWorktreeCleanups);
   }
 
   // Declared budget ceilings and the lifetime cap are hard backstops: a step
@@ -706,8 +718,18 @@ interface RunUnitInput {
    */
   signal?: AbortSignal;
   dispatcher: UnitDispatcher;
-  /** The step's completed rows indexed by base id, for durable-row reuse. */
-  completedRows?: CompletedRowIndex;
+  /**
+   * This unit's durable-row decision, classified once per step alongside the
+   * gate that consumes the same array — never re-derived here.
+   */
+  reuse: UnitReuseDecision;
+  /**
+   * The step's sensitive values, collected once (step-constant — see the
+   * collection site in {@link executeStepPlanInConnection}).
+   */
+  sensitiveValues: string[];
+  /** The step's worktree-removal barrier — see {@link JournaledAttemptInput}. */
+  pendingWorktreeCleanups: Array<Promise<void>>;
   /** Shared lifetime-cap budget; consumed once per actual dispatch attempt. */
   budget: DispatchBudget;
 }
@@ -716,22 +738,19 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
   const { plan, workUnit, env, ctx, dispatcher } = input;
   const unitId = workUnit.unitId;
 
-  // An `exec` unit legitimately carries neither — it spawns a child process
-  // instead of calling an engine. Every OTHER kind must have both.
-  if (!workUnit.exec && (!workUnit.engine || !workUnit.invocation)) {
-    return {
-      unitId,
-      ok: false,
-      failureReason: "dispatch_error",
-      error: `unit "${unitId}" has no frozen engine snapshot and cannot be dispatched`,
-    };
-  }
+  // Engine/exec presence is a WHOLE-LIST invariant, never a per-unit condition:
+  // computeStepWorkList fails the entire step before it builds any unit when a
+  // template carries neither an `exec` spec nor an `invocation`, and when an
+  // `invocation` names an engine absent from the frozen catalog — and
+  // executeStepPlanInConnection returns on `!workList.ok` without reaching here.
+  // So every unit below carries either `exec` (a child process, naming no
+  // engine) or `engine` + `invocation`.
 
   // The prompt (and therefore the input hash) was built once with the BASE
   // unit id by computeStepWorkList: a retry re-dispatches the SAME input, the
   // `~r<n>` suffix is journal bookkeeping only.
-  const { prompt, inputHash } = workUnit.resolved;
-  const sensitiveValues = collectWorkflowDispatchSensitiveValues(workUnit, env);
+  const { prompt, inputHash } = workUnit;
+  const sensitiveValues = input.sensitiveValues;
 
   const request: UnitDispatchRequest = {
     runId: ctx.runId,
@@ -764,13 +783,12 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
   // `retry.on`.
   const retry = workUnit.retry;
   const maxAttempts = 1 + Math.max(0, retry?.max ?? 0);
-  const gateLoop = ctx.gateLoop ?? 1;
   const journalBaseId = workUnit.journalBaseId;
   const attemptIdFor = (attempt: number): string => (attempt === 0 ? journalBaseId : `${journalBaseId}~r${attempt}`);
 
-  // Durable-row reuse (shared classifyUnitReuse — the SAME decision
-  // executeStepPlan's preflight gate uses, so the gate can never disagree with
-  // what happens here). A completed row with the matching input hash IS the
+  // Durable-row reuse — literally the decision executeStepPlan's preflight gate
+  // counted, handed down rather than recomputed, so the gate cannot disagree
+  // with what happens here. A completed row with the matching input hash IS the
   // result: return it without touching rows, dispatching, or re-emitting events
   // (a crash-resume must never double-issue work). A completed loop-1 row with
   // a DIFFERENT hash is replay divergence (under a frozen plan the same
@@ -778,7 +796,7 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
   // tampered with; executeStepPlan promotes this to a hard step failure
   // regardless of on_error). Stale gate-loop rows, failed/running/missing rows,
   // and pre-release R1 positional ids all fall through and dispatch live.
-  const reuse = classifyUnitReuse(workUnit, input.completedRows, gateLoop);
+  const reuse = input.reuse;
   if (reuse.kind === "reuse") {
     // Identity in the durable step evidence is the CONTENT-derived base id, not
     // the `~r<n>` attempt row it was reused from — the work list only ever knows
@@ -833,6 +851,7 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
       attemptId,
       inputHash,
       ...(input.worktreeBase !== undefined ? { worktreeBase: input.worktreeBase } : {}),
+      pendingWorktreeCleanups: input.pendingWorktreeCleanups,
     });
     // The journal ROW keeps the `~r<n>`/`~l<loop>` attempt id (dispatchJournaledAttempt
     // wrote it), but the returned outcome's identity in the DURABLE step evidence is
@@ -865,6 +884,12 @@ interface JournaledAttemptInput {
   inputHash: string;
   /** Git repo to mint this attempt's isolation worktree from (`isolation: worktree`). */
   worktreeBase?: string;
+  /**
+   * Where this attempt parks its worktree removal for the step to await. See
+   * the barrier in {@link executeStepPlanInConnection} for why it is not
+   * awaited here.
+   */
+  pendingWorktreeCleanups: Array<Promise<void>>;
 }
 
 /**
@@ -923,9 +948,9 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
   let worktreePath: string | undefined;
   if (input.worktreeBase !== undefined) {
     const created = await createUnitWorktree(input.worktreeBase, ctx.runId, attemptId);
-    if (!created.ok) {
-      return { unitId: request.unitId, ok: false, failureReason: "worktree_failed", error: created.error };
-    }
+    // Reported BEFORE the failure check: when the worktree could not be minted,
+    // the leftover moved aside is the only copy of the prior attempt's
+    // uncollected work, so that is exactly when its path must not be swallowed.
     if (created.preservedLeftover !== undefined) {
       // Never destroy a dirty (or unverifiable) leftover from a prior
       // invocation of the same attempt — it was moved aside instead.
@@ -933,6 +958,9 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
         `Workflow unit ${attemptId}: a previous attempt left uncollected work in its isolation worktree; ` +
           `preserved at ${created.preservedLeftover}`,
       );
+    }
+    if (!created.ok) {
+      return { unitId: request.unitId, ok: false, failureReason: "worktree_failed", error: created.error };
     }
     worktreePath = created.path;
     request = { ...request, cwd: worktreePath };
@@ -1067,19 +1095,32 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
     journalError = err;
   }
 
-  // Worktree lifecycle epilogue: a CLEAN worktree (`git status --porcelain`
-  // empty) is removed; a DIRTY one is retained and logged — the unit left
-  // uncollected work, and its journaled worktree_path says where. Cleanup is
-  // best-effort observability, never a unit failure.
+  // Worktree lifecycle epilogue: a CLEAN worktree is removed; a DIRTY one is
+  // retained and logged — the unit left uncollected work, and its journaled
+  // worktree_path says where. Cleanup is best-effort observability, never a
+  // unit failure, so it is STARTED here and awaited at the step barrier: the
+  // removal serializes on the same per-repo chain as every sibling's
+  // `git worktree add`, and awaiting it in this unit's scheduler slot made a
+  // finished unit wait out other units' full checkouts before its worker could
+  // claim the next item.
   if (worktreePath !== undefined && input.worktreeBase !== undefined) {
-    const cleanup = await cleanupUnitWorktree(input.worktreeBase, worktreePath);
-    if (cleanup.dirty) {
-      warn(
-        `Workflow unit ${attemptId} left uncommitted changes in its isolation worktree; retained at ${worktreePath}`,
-      );
-    } else if (!cleanup.removed) {
-      warn(`Workflow unit ${attemptId}: could not clean up isolation worktree ${worktreePath}: ${cleanup.error}`);
-    }
+    const worktreeBase = input.worktreeBase;
+    input.pendingWorktreeCleanups.push(
+      (async () => {
+        try {
+          const cleanup = await cleanupUnitWorktree(worktreeBase, worktreePath);
+          if (cleanup.dirty) {
+            warn(
+              `Workflow unit ${attemptId} left uncommitted changes in its isolation worktree; retained at ${worktreePath}`,
+            );
+          } else if (!cleanup.removed) {
+            warn(`Workflow unit ${attemptId}: could not clean up isolation worktree ${worktreePath}: ${cleanup.error}`);
+          }
+        } catch (err) {
+          warn(`Workflow unit ${attemptId}: could not clean up isolation worktree ${worktreePath}: ${message(err)}`);
+        }
+      })(),
+    );
   }
 
   // A journal-write failure AFTER a successful dispatch is its own loud

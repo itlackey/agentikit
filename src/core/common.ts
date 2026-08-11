@@ -344,7 +344,13 @@ function isContainedResolvedPath(resolvedCandidate: string, resolvedRoot: string
     normalizeFsPathForComparison(resolvedRoot),
     normalizeFsPathForComparison(resolvedCandidate),
   );
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  if (rel === "") return true;
+  if (path.isAbsolute(rel)) return false;
+  // Compare the first SEGMENT, not a string prefix: `..data` and `...v2` are
+  // legal directory names, and only a leading `..` segment means the candidate
+  // climbed out of the root. Both separators, because `path.relative` answers
+  // in the host's spelling while callers may hold either.
+  return rel.split(/[/\\]+/)[0] !== "..";
 }
 
 /**

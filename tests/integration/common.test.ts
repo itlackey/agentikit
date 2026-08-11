@@ -243,6 +243,16 @@ describe("isWithin", () => {
   test("returns false for sibling directory with similar prefix", () => {
     expect(isWithin("/root-other/file.txt", "/root")).toBe(false);
   });
+
+  test("returns true for a contained directory whose NAME begins with two dots", () => {
+    // `..data` is a legal directory name; only a leading `..` SEGMENT escapes.
+    expect(isWithin("/root/..data/file.txt", "/root")).toBe(true);
+    expect(isWithin("/root/...v2", "/root")).toBe(true);
+  });
+
+  test("still returns false when a real traversal lands on a dot-prefixed name", () => {
+    expect(isWithin("/root/../..data", "/root")).toBe(false);
+  });
 });
 
 // ── readBodyWithByteCap / jsonWithByteCap ────────────────────────────────────

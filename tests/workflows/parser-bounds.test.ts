@@ -95,20 +95,7 @@ describe("bug 9 — parser enforces the decoder's bounds with line anchors", () 
     expect(unitCase[0]!.message).toContain(`invalid engine name "My_Engine"`);
     expect(unitCase[0]!.message).toContain("lowercase");
 
-    const markdown = [
-      "---",
-      "type: workflow",
-      "defaults:",
-      "  engine: UPPER",
-      "steps:",
-      "  - id: work",
-      "---",
-      "",
-      "## work",
-      "",
-      "Do it.",
-      "",
-    ].join("\n");
+    const markdown = workflowWith([], undefined, ["defaults:", "  engine: UPPER"]);
     const defaultsCase = parseErrors(markdown);
     expect(defaultsCase).toHaveLength(1);
     expect(defaultsCase[0]!.line).toBe(4);

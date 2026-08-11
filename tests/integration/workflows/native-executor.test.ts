@@ -2387,7 +2387,7 @@ Build the assigned item.
           runner: u.runner,
           engine: u.engine?.name ?? null,
           model: u.invocation?.model ?? null,
-          inputHash: u.resolved.inputHash,
+          inputHash: u.inputHash,
           startedAt: now,
         });
         repo.finishUnit({

@@ -599,6 +599,119 @@ every file reviewed thoroughly
   });
 });
 
+// ── exec steps: the gate judges, but never loops ─────────────────────────────
+//
+// An exec unit's argv is frozen and never interpolated, its context env carries
+// no feedback variable, and the dispatcher drops feedback for exec — so a gate
+// loop could only re-run the BYTE-IDENTICAL command, performing its side effect
+// again for a verdict that cannot change. The gate still evaluates and can
+// still fail the step; it just never re-dispatches (`effectiveGateMaxLoops`).
+
+const EXEC_UNIT_LINES = `    unit:
+      exec:
+        command: ["bin/deploy", "--prod"]
+`;
+
+const EXEC_GATED_WF = `---
+type: workflow
+steps:
+  - id: deploy
+${EXEC_UNIT_LINES}    gate: { max_loops: 3 }
+---
+
+## deploy
+
+Deploy the service.
+
+### gate
+
+the deployment is verified
+`;
+
+const EXEC_GATED_STEPS = [{ id: "deploy", criteria: ["the deployment is verified"] }];
+
+const REJECTION = '{"complete": false, "missing": ["the deployment is verified"], "feedback": "No health check."}';
+
+describe("exec steps under a completion gate — judged once, never looped", () => {
+  test("a rejected gate exhausts immediately: the command is dispatched exactly once", async () => {
+    seedRun({ steps: EXEC_GATED_STEPS });
+    let execDispatches = 0;
+    let judgeCalls = 0;
+    const result = await runWorkflowSteps({
+      target: RUN_ID,
+      dispatcher: async (req: UnitDispatchRequest): Promise<UnitDispatchResult> => {
+        if (req.exec) execDispatches++;
+        return { ok: true, text: "deployed" };
+      },
+      loadPlan: usePlan(EXEC_GATED_WF),
+      summaryJudge: async () => {
+        judgeCalls++;
+        return REJECTION;
+      },
+    });
+
+    // The invariant: one dispatch of a side-effecting command, even though the
+    // plan declares max_loops 3.
+    expect(execDispatches).toBe(1);
+    expect(judgeCalls).toBe(1);
+    // Exhaustion, not a bypass — the verdict still stopped the run.
+    expect(result.done).toBeUndefined();
+    expect(result.judgeFailure).toBeUndefined();
+    expect(result.gateRejection).toEqual({
+      stepId: "deploy",
+      missing: ["the deployment is verified"],
+      feedback: "No health check.",
+    });
+    expect(result.stepsProcessed).toBe(1);
+    await withWorkflowRunsRepo((repo) => {
+      const ids = repo
+        .getUnitsForStep(RUN_ID, "deploy")
+        .map((r) => r.unit_id)
+        .sort();
+      // No `~l2` re-dispatch and no second gate evaluation.
+      expect(ids).toEqual(["deploy.gate:l1", "deploy:solo"]);
+    });
+    // A gate rejection leaves the step pending and the run active, as ever.
+    const status = await getWorkflowStatus(RUN_ID);
+    expect(status.run.status).toBe("active");
+    expect(status.workflow.steps[0]!.status).toBe("pending");
+  });
+
+  test("a passing gate advances the exec step normally — evaluation is not skipped", async () => {
+    seedRun({ steps: EXEC_GATED_STEPS });
+    let judgeCalls = 0;
+    const result = await runWorkflowSteps({
+      target: RUN_ID,
+      dispatcher: async () => ({ ok: true, text: "deployed" }),
+      loadPlan: usePlan(EXEC_GATED_WF),
+      summaryJudge: async () => {
+        judgeCalls++;
+        return '{"complete": true, "missing": []}';
+      },
+    });
+    expect(judgeCalls).toBe(1);
+    expect(result.done).toBe(true);
+    expect((await getWorkflowStatus(RUN_ID)).workflow.steps[0]!.status).toBe("completed");
+  });
+
+  test("the same document with an ENGINE unit still loops — the bound is exec-specific", async () => {
+    const ENGINE_GATED_WF = EXEC_GATED_WF.replace(EXEC_UNIT_LINES, "");
+    seedRun({ steps: EXEC_GATED_STEPS });
+    let dispatches = 0;
+    const result = await runWorkflowSteps({
+      target: RUN_ID,
+      dispatcher: async () => {
+        dispatches++;
+        return { ok: true, text: "deployed" };
+      },
+      loadPlan: usePlan(ENGINE_GATED_WF),
+      summaryJudge: async () => REJECTION,
+    });
+    expect(dispatches).toBe(3); // the declared max_loops, honored in full
+    expect(result.gateRejection?.stepId).toBe("deploy");
+  });
+});
+
 // ── Crash-resume seeds the gate loop from the journal (Codex round-3 P1) ──────
 //
 // The engine loop must SEED its per-step gate state from the journal exactly as
@@ -678,7 +791,7 @@ function loop1Hash(p: WorkflowPlanGraph): string {
     engines: p.execution?.engines,
   });
   if (!c.ok) throw new Error(c.error);
-  return c.list.units[0]!.resolved.inputHash;
+  return c.list.units[0]!.inputHash;
 }
 
 /** The loop-2 solo unit id + hash brief/report would compute for the recovered feedback. */
@@ -693,7 +806,7 @@ function loop2Unit(p: WorkflowPlanGraph, gateFeedback: GateFeedback): { unitId: 
   });
   if (!c.ok) throw new Error(c.error);
   const u = c.list.units[0]!;
-  return { unitId: u.journalBaseId, inputHash: u.resolved.inputHash };
+  return { unitId: u.journalBaseId, inputHash: u.inputHash };
 }
 
 describe("gate max_loops — crash-resume seeds the loop from the journal", () => {

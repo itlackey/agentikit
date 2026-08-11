@@ -1486,7 +1486,30 @@ Adapters may add named diagnostics; unknown adapter codes map to
       boundaries and either behaves transactionally or reports partial mutation
       explicitly. Silent direct edits/deletes are a failure.
 
-### 12.4 Output parity and automated coverage
+### 12.4 Advisory channel
+
+Non-fatal workflow compile advisories (a step with no `output:` schema, a
+reference to an undeclared param) travel in their own channel so a hint cannot
+fail a build.
+
+```sh
+akm lint --type workflows --format json > "$AKM_SANDBOX/lint-advisory.json"
+jq -e '.warnings | length > 0' "$AKM_SANDBOX/lint-advisory.json"
+jq -e '[.flagged[].issue] | index("workflow-warning") == null' "$AKM_SANDBOX/lint-advisory.json"
+akm lint --type workflows --fail-on-flagged; echo "exit=$?"
+```
+
+- [ ] **[CORE]** A compile advisory appears in `warnings` with issue code
+      `workflow-warning`, never in `flagged`, and `summary.warnings` counts it.
+- [ ] **[CORE]** `--fail-on-flagged` exits `0` for a bundle whose only findings
+      are advisories, and non-zero once a real error is present.
+- [ ] **[LOCAL]** Both lint paths agree: the akm sweep and a bundle linted
+      through its own adapter classify the same code the same way.
+- [ ] **[LOCAL]** A workflow file is parsed and compiled **once** per sweep, not
+      once per output channel — check with a large workflow and compare sweep
+      time against a bundle with the same file count and no workflows.
+
+### 12.5 Output parity and automated coverage
 
 - [ ] **[CORE]** JSON/JSONL/YAML/text/Markdown/HTML preserve the same finding
       set and summary. Text renders flagged before fixed.
@@ -1591,6 +1614,20 @@ akm lint --type workflows --fail-on-flagged
 - [ ] **LOCAL** Flat name plus safe path creates hierarchy; slash/traversal/duplicate step/missing section/unknown route/invalid params fail before write.
 - [ ] **LOCAL** Existing workflow requires force plus from/reset; force alone fails.
 - [ ] **LOCAL** Lint catches structure without rewriting valid prose.
+- [ ] **CORE** A schema keyword outside the enforced subset (`format`, `pattern`,
+      `$ref`, `const`, `uniqueItems`, `patternProperties`, …) in `output:` or
+      `params:` is a **line-anchored parse error naming the keyword**, not a
+      silently non-constraining schema. Confirm the same document fails
+      `workflow run`, `workflow show`, `workflow create`, and `akm lint`.
+- [ ] **LOCAL** `akm index` skips such a workflow with a scan warning rather
+      than indexing it — the quietest surface, so check it deliberately.
+- [ ] **LOCAL** `allOf`/`anyOf`/`oneOf`/`not` are accepted and **enforced** at
+      runtime; a bounded-evaluation overrun is reported as an error, never as a
+      truncated pass.
+- [ ] **LOCAL** A document-level `defaults.llm` combined with any step on an
+      agent engine fails at freeze, naming the step and the engine. Moving the
+      `llm:` block onto the LLM step's `unit:` is the documented remedy; `llm: {}`
+      is a no-op and `llm: null` is a parse error.
 
 ### 14.2 Typed params and partial run without an engine call
 
@@ -1619,6 +1656,10 @@ jq -e '
 - [ ] **LOCAL** Unknown param, underscore-hyphen alias, invalid JSON/enum/range, missing required, duplicate scalar, flags before target, and retired params bag fail exit `2`.
 - [ ] **LOCAL** Params supplied to active run fail because creation-only.
 - [ ] **LOCAL** Invalid max-steps values fail; bounded partial exits `0`, remains active.
+- [ ] **LOCAL** `--max-steps` counts **finished spine steps**: a step's whole
+      bounded gate loop counts as one, and a route-skipped step consumes none.
+      It does not bound the dispatches inside a single step's gate loop — pair
+      it with `budget.max_units` when that is what you need capped.
 
 ### 14.3 Status, list, abandon, resume, and scope
 
@@ -1657,10 +1698,158 @@ run freezes its own judge selection.
 - [ ] **AI** Gate journal distinguishes running/error/pass/reject and survives resume.
 - [ ] **AI** Config changes after start do not replace frozen execution/judge engine/model/timeout.
 
-### 14.5 Failure, interruption, concurrency, and events
+### 14.5 Exec (shell) units
+
+An exec unit spawns a command instead of dispatching to an engine, so run this
+whole subsection with **no engine configured** — that is the first assertion,
+not a setup shortcut. Author the fixtures first:
+
+```sh
+cat > "$AKM_BUNDLE_DIR/workflows/exec-basic.md" <<'EOF'
+---
+type: workflow
+description: Exec unit smoke
+steps:
+  - id: emit
+    unit:
+      exec:
+        command: ["printf", "hello\n\n"]
+---
+
+# Exec Basic
+
+## emit
+
+Print a greeting. Stdout is the promoted artifact; this prose never reaches the
+command.
+EOF
+
+cat > "$AKM_BUNDLE_DIR/workflows/exec-json.md" <<'EOF'
+---
+type: workflow
+description: Exec unit with a typed artifact
+steps:
+  - id: emit
+    unit:
+      exec:
+        command: ["echo", '{"verdict":"pass"}']
+      output: { type: object, required: [verdict], properties: { verdict: { type: string } } }
+---
+
+# Exec JSON
+
+## emit
+
+Emit exactly one JSON value.
+EOF
+
+akm index
+akm lint --type workflows --fail-on-flagged
+akm workflow run workflows/exec-basic --format json > "$AKM_SANDBOX/exec-basic.json"
+jq -e '.run.status == "completed"' "$AKM_SANDBOX/exec-basic.json"
+akm workflow status "$(jq -r .run.id "$AKM_SANDBOX/exec-basic.json")" --units
+```
+
+Authoring and dispatch:
+
+- [ ] **CORE** A workflow of only exec steps freezes and completes with **no
+      engine configured at all**; the run spends no tokens.
+- [ ] **CORE** Without `output:`, the artifact is stdout with trailing newlines
+      stripped (`hello`, not `hello\n\n`); empty stdout is *no output*.
+- [ ] **CORE** With `output:`, stdout must be exactly one JSON value — leading
+      and trailing whitespace tolerated, any other trailing text fails the unit
+      — and the value is validated against the schema.
+- [ ] **CORE** `engine`, `model`, or `llm` alongside `exec:` fails at parse,
+      naming the conflict.
+- [ ] **LOCAL** `command` is argv, never a shell string: an argument containing
+      `;`, `|`, `&&`, `$(…)`, backticks, `>`, or `*` reaches the child as those
+      literal bytes. `["bash", "-lc", "…"]` is the supported way to get a shell.
+- [ ] **LOCAL** Argv bounds hold: 1–64 entries, each non-empty and at most 4096
+      bytes; violations fail at parse and at frozen-plan decode.
+- [ ] **LOCAL** A step body is still required and is **not** passed to the
+      command.
+- [ ] **LOCAL** stderr is a diagnostic channel only — it never becomes the
+      artifact, and a passing command that writes to stderr still succeeds.
+
+Failure taxonomy — each reason, and whether `retry.on` may name it:
+
+- [ ] **CORE** Non-zero exit is `non_zero_exit` and, under the default
+      `on_error: fail`, fails the step and the run (this is what makes a `test`
+      step a gate). `on_error: continue` records it in evidence instead.
+- [ ] **LOCAL** Wall-clock expiry is `timeout`; run cancellation is `aborted`; a
+      missing binary or unusable working directory is `spawn_failed`. All three
+      are retryable via `retry.on`.
+- [ ] **LOCAL** `exec_output_limit`, `exec_context_too_large`, `exec_cwd_escape`
+      and `exec_capture_incomplete` are **rejected** in a `retry.on` list —
+      each is deterministic, an authoring problem, or work that already ran.
+- [ ] **LOCAL** On timeout or cancellation the child's whole **process group**
+      takes the SIGTERM→SIGKILL ladder; no orphaned grandchildren survive.
+
+Capture and retention:
+
+- [ ] **LOCAL** Past the 8 MiB per-stream retention cap akm keeps draining the
+      pipe, so the command never blocks: with no `output:` schema the unit
+      **succeeds** with the artifact marked truncated; with a schema it fails
+      `exec_output_limit`.
+- [ ] **LOCAL** A command that backgrounds a descendant inheriting **stderr**
+      (`sh -c 'daemon 2>&1 & echo ok'` shapes) and exits 0 **succeeds** with its
+      complete stdout artifact, and warns that the stderr tail may be missing.
+      Only an incomplete **stdout** capture fails the unit.
+- [ ] **LOCAL** That same unit settles promptly after its leader exits — it does
+      **not** sit until its declared timeout expires.
+- [ ] **LOCAL** `timeout: none` is genuinely unbounded: a command that runs well
+      past an hour still completes and promotes its artifact.
+
+Environment scope and context:
+
+- [ ] **LOCAL** The child gets the default allowlist only: credentials and cloud
+      or CI variables present in akm's own environment are **absent** unless
+      named. `pass_env:` widens it by name; `inherit_env: true` hands over the
+      whole environment verbatim.
+- [ ] **LOCAL** `env:` bindings inject resolved values, and the `AKM_*` context
+      is applied *after* them, so a binding cannot shadow it.
+- [ ] **LOCAL** `AKM_RUN_ID`, `AKM_STEP_ID`, `AKM_UNIT_ID`, `AKM_PARAMS`,
+      `AKM_INPUTS`, and (in a `map`) `AKM_ITEM` / `AKM_ITEM_INDEX` reach the
+      command with the documented shapes.
+- [ ] **LOCAL** An oversized `AKM_*` context fails `exec_context_too_large`
+      **before** the spawn, naming the variable, rather than surfacing a raw
+      `E2BIG`.
+
+`cwd` and isolation:
+
+- [ ] **LOCAL** `cwd` is relative and contained: absolute paths, drive letters,
+      `~`, and `..` **segments** are rejected by the parser *and* the
+      frozen-plan decoder, and containment is re-checked against the resolved
+      base (symlinks included) immediately before the spawn.
+- [ ] **LOCAL** A directory whose *name* merely begins with dots (`..data`) is a
+      legal contained `cwd` and must **not** fail `exec_cwd_escape`.
+- [ ] **LOCAL** Under `isolation: worktree` each unit gets a fresh detached
+      worktree; a clean one is gone once the step resolves, a dirty one is
+      retained and its path logged.
+- [ ] **LOCAL** When a dirty leftover is moved aside and the worktree then fails
+      to mint, the failure still reports **where the preserved work went**.
+- [ ] **DESTRUCTIVE** The stale-worktree sweep removes abandoned trees after
+      seven days but leaves a tree that is still in use by a live run.
+
+Gates, retry, and reuse:
+
+- [ ] **LOCAL** A `### gate` rubric on an exec step **evaluates** — a rejection
+      still fails the step — but never loops: the command runs exactly **once**
+      regardless of `gate.max_loops`, because a frozen argv cannot answer
+      feedback. Verify with a command that appends to a file.
+- [ ] **LOCAL** A declared `retry:` re-runs the command only for reasons it
+      names; a schema miss is never re-prompted (re-running could deploy twice).
+- [ ] **LOCAL** A completed exec unit is reused on resume, never re-executed —
+      confirm with a command whose side effect is observable.
+- [ ] **LOCAL** `map` fan-out over exec units respects the frozen concurrency
+      width, and each unit sees its own `AKM_ITEM`.
+
+### 14.6 Failure, interruption, concurrency, and events
 
 - [ ] **LOCAL** Execution nonzero returns workflow stdout result, exit `1`.
 - [ ] **LOCAL** Whole-run timeout leaves current step resumable and records evidence.
+- [ ] **LOCAL** A run that **completes** after its `--timeout` deadline landed is
+      reported as completed, not as timed out.
 - [ ] **LOCAL** SIGINT/SIGTERM map to `130`/`143`, release claims, leave recoverable run.
 - [ ] **LOCAL** Concurrent same-ref/scope starts create one active run; second driver loses lease safely.
 - [ ] **LOCAL** Map fan-out respects workflow and frozen engine concurrency caps.
@@ -1668,7 +1857,21 @@ run freezes its own judge selection.
 - [ ] **DESTRUCTIVE** Kill before unit, after unit, after judge; resume reclaims only unfinished work, no duplicate unit.
 - [ ] **DESTRUCTIVE** Run focused lease/crash/contention/publication suites.
 
-### 14.6 Retired surfaces and fallback
+### 14.7 Step artifacts, bounds, and evidence
+
+A step's promoted artifact is bounded for *persistence* only. The distinction
+between what the running invocation sees and what the row keeps is the point.
+
+- [ ] **LOCAL** A step promoting an artifact larger than the 1 MiB persistence
+      cap still hands the **complete** value to the next step of the same run —
+      both a whole-value `inputs:` reference and a path reference into it.
+- [ ] **LOCAL** The persisted row for that step carries a truncation marker, and
+      **resuming** into the truncated artifact fails loudly, naming truncation
+      as the cause rather than reporting a missing property.
+- [ ] **LOCAL** Over-cap evidence sacrifices the byte-largest values first, and
+      the persisted row is never left over cap.
+
+### 14.8 Retired surfaces and fallback
 
 - [ ] **CORE** Start/next/complete/brief/report fail `UNKNOWN_COMMAND` with run/status guidance.
 - [ ] **LOCAL** No template/validate/watch; replacements are create-print/lint/log.
@@ -1715,6 +1918,15 @@ akm task history --id manual-failure --limit 1
 - [ ] **LOCAL** Command child `78` maps CLI `78`; other failed status maps `1`.
 - [ ] **LOCAL** Missing/malformed task, invalid id, prompt/workflow failure, timeout, and signal record bounded history.
 - [ ] **LOCAL** Flat log and logs DB agree and redact credentials.
+- [ ] **LOCAL** A **workflow** task that declares no `timeoutMs:` gets the
+      6-hour unattended default: the log records `timed_out=true` with the
+      applied `timeout_ms`, the attempt is `failed` so the scheduler sees a
+      non-zero exit, and the aborted run is left **resumable** with the error
+      naming `akm workflow resume <id>`.
+- [ ] **LOCAL** `timeoutMs: null` opts a workflow task out entirely and arms no
+      timer; an explicit number overrides the default.
+- [ ] **LOCAL** A workflow task whose run **completes** as the deadline lands is
+      recorded `completed` with no timeout error and no resume hint.
 
 ### 15.3 Scheduler binding and native lifecycle
 
@@ -2865,6 +3077,8 @@ and not a substitute for the full check.
 | Sources/registry/write-source | provider/write/publication suites, controlled service; LIVE git/npm/HTTPS when lifecycle changed |
 | Storage/migration/transactions | crash/concurrency/property/published-upgrade gates, section 19, destructive rehearsal for cutover changes |
 | Workflow | workflow unit/integration, gate fake agents, slow expansion, crash/contention when scheduler changed |
+| Workflow exec units / subprocess capture | section 14.5 end to end on an engine-less install, plus the worktree isolation and stale-sweep gates; any capture, timeout, or process-group change also runs the agent spawn suites, which share that subprocess layer |
+| Workflow child environment / allowlist | section 14.5 environment gates plus section 11; a change to the shared floor is native Windows, not Linux emulation |
 | Task/scheduler | task suites, Linux standalone; native macOS/Windows for backend/quoting/binding; published upgrade for schema changes |
 | Env/secret/security path/archive/network | env/secret plus traversal/SSRF/archive/redaction/dangerous-key suites, section 20 |
 | Agent/LLM/improve/proposal | family suites and fake-service AI pass; live bounded provider only for changed external dispatch |

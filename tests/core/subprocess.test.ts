@@ -15,6 +15,9 @@
  *     `proc.kill()` directly (the negative-pid `process.kill` path is skipped).
  *   • Abort: aborting mid-run runs the same ladder and flags `aborted`.
  *   • Synchronous spawn failure surfaces as `spawnError`, never a throw.
+ *   • Drain deadlines: WHEN the stream-drain timeout is armed — never while a
+ *     live command still owns the pipe, so on the child's exit, or for a
+ *     bounded run the earlier of that and the wall budget.
  */
 import { describe, expect, test } from "bun:test";
 import { runManagedSubprocess, type SpawnedSubprocess, type SpawnFn } from "../../src/core/subprocess";
@@ -87,6 +90,50 @@ function killTrackingSpawn(config: { pid?: number; ignoreSigterm?: boolean; exit
     return proc;
   };
   return { spawn, signals };
+}
+
+/**
+ * A fake child whose stdout the test writes by hand and whose exit it resolves
+ * by hand — the two things a drain-deadline test has to drive. stderr is a
+ * closed empty pipe, so it drains immediately.
+ */
+function controllableSpawn(): {
+  spawn: SpawnFn;
+  writeStdout: (text: string) => void;
+  closeStdout: () => void;
+  exit: (code: number) => void;
+} {
+  let stdoutController!: ReadableStreamDefaultController<Uint8Array>;
+  let resolveExit!: (code: number) => void;
+  const exited = new Promise<number>((resolve) => {
+    resolveExit = resolve;
+  });
+  const proc: SpawnedSubprocess = {
+    exitCode: null,
+    exited,
+    stdout: new ReadableStream<Uint8Array>({
+      start(controller) {
+        stdoutController = controller;
+      },
+    }),
+    stderr: asReadableStream(""),
+    stdin: null,
+    kill() {},
+  };
+  return {
+    spawn: () => proc,
+    writeStdout: (text) => stdoutController.enqueue(new TextEncoder().encode(text)),
+    closeStdout: () => stdoutController.close(),
+    exit: (code) => {
+      proc.exitCode = code;
+      resolveExit(code);
+    },
+  };
+}
+
+/** Flush pending microtasks (fake timers never fire on their own). */
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 5));
 }
 
 describe("runManagedSubprocess — timeout escalation (SIGKILL ladder)", () => {
@@ -195,31 +242,144 @@ describe("runManagedSubprocess — abort", () => {
   });
 });
 
-describe("runManagedSubprocess — capture and failure surfacing", () => {
-  test("does not impose a short stream deadline when the process timeout is disabled", async () => {
-    const { timers, setTimeoutFn, clearTimeoutFn } = fakeTimers();
-    const spawn: SpawnFn = () => ({
-      exitCode: 0,
-      exited: Promise.resolve(0),
-      stdout: asReadableStream("out\n"),
-      stderr: asReadableStream(""),
-      stdin: null,
-      kill() {},
-    });
+describe("runManagedSubprocess — when the stream-drain deadline is armed", () => {
+  const SAFETY_MS = 60 * 60 * 1000;
+  /** The post-exit grace a bounded run's pipes get once nothing owns them. */
+  const GRACE_MS = 2_000;
 
-    const result = await runManagedSubprocess(["echo"], {
+  test("a null timeout schedules NOTHING against a still-running child", async () => {
+    const { timers, setTimeoutFn, clearTimeoutFn } = fakeTimers();
+    const child = controllableSpawn();
+
+    const promise = runManagedSubprocess(["long-job"], {
       capture: true,
       timeoutMs: null,
-      spawnFn: spawn,
+      spawnFn: child.spawn,
       setTimeoutFn,
       clearTimeoutFn,
     });
 
+    child.writeStdout("before\n");
+    await tick();
+    // No kill timer (the caller asked for no budget) and no drain deadline: an
+    // unbounded run must have no timer that could cancel a live child's reader,
+    // which is the slot the old arm-at-capture safety bound occupied.
+    expect(timers).toHaveLength(0);
+
+    // So output written arbitrarily far past that old deadline still lands, and
+    // the exit-0 verdict stands on the WHOLE artifact.
+    child.writeStdout("after\n");
+    child.closeStdout();
+    child.exit(0);
+
+    const result = await promise;
     expect(result.exitCode).toBe(0);
-    expect(timers.filter((timer) => timer.ms === 60 * 60 * 1000)).toHaveLength(2);
-    expect(timers.some((timer) => timer.ms === 30_000)).toBe(false);
+    expect(result.stdout).toBe("before\nafter\n");
+    expect(result.stdoutRead.timedOut).toBe(false);
   });
 
+  test("the safety bound is armed by the child's EXIT, so a descendant cannot hold the drain open forever", async () => {
+    const { timers, setTimeoutFn, clearTimeoutFn } = fakeTimers();
+    const child = controllableSpawn();
+
+    const promise = runManagedSubprocess(["leader"], {
+      capture: true,
+      timeoutMs: null,
+      spawnFn: child.spawn,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    child.writeStdout("prefix");
+    await tick();
+    expect(timers).toHaveLength(0);
+
+    // The leader exits 0 but stdout stays open — a background descendant still
+    // holds the fd. THAT is what the safety bound exists to cut.
+    child.exit(0);
+    await tick();
+    // One, not two: stderr drained before the exit, and a finished drain arms
+    // no timer at all.
+    const safety = timers.filter((timer) => timer.ms === SAFETY_MS);
+    expect(safety).toHaveLength(1);
+    safety[0]?.cb();
+
+    const result = await promise;
+    expect(result.exitCode).toBe(0);
+    expect(result.stdoutRead.timedOut).toBe(true);
+    expect(result.stdout).toBe("prefix");
+  });
+
+  test("a bounded run arms its drain deadline when the CHILD EXITS, not at capture", async () => {
+    const { timers, setTimeoutFn, clearTimeoutFn } = fakeTimers();
+    const child = controllableSpawn();
+
+    const promise = runManagedSubprocess(["job"], {
+      capture: true,
+      timeoutMs: 30_000,
+      spawnFn: child.spawn,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    child.writeStdout("prefix");
+    await tick();
+    // The kill timer at the budget and nothing else: while the command runs,
+    // its pipes are a live process's.
+    expect(timers.filter((timer) => timer.ms === 30_000)).toHaveLength(1);
+    expect(timers.filter((timer) => timer.ms === GRACE_MS)).toHaveLength(0);
+    expect(timers.some((timer) => timer.ms === SAFETY_MS)).toBe(false);
+
+    // The leader exits 0 in milliseconds but stdout stays open — a background
+    // descendant holds the fd. The deadline is armed HERE, so the run cannot
+    // stall for a 30 s budget it never came close to spending.
+    child.exit(0);
+    await tick();
+    const drain = timers.filter((timer) => timer.ms === GRACE_MS);
+    expect(drain).toHaveLength(1); // stderr drained before the exit; a finished drain arms nothing.
+    drain[0]?.cb();
+
+    const result = await promise;
+    expect(result.exitCode).toBe(0);
+    expect(result.stdoutRead.timedOut).toBe(true);
+    expect(result.stdout).toBe("prefix");
+  });
+
+  test("a bounded child that outlives its kill ladder still has its drain cut at budget + grace", async () => {
+    const { timers, setTimeoutFn, clearTimeoutFn } = fakeTimers();
+    const child = controllableSpawn();
+
+    const promise = runManagedSubprocess(["wedged"], {
+      capture: true,
+      timeoutMs: 30_000,
+      spawnFn: child.spawn,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    child.writeStdout("prefix");
+    await tick();
+    expect(timers.filter((timer) => timer.ms === GRACE_MS)).toHaveLength(0);
+
+    // The budget expires with the child still running (this fake ignores its
+    // signals). Waiting on an exit that may never come would leave the drain
+    // unarmed forever, so the budget arms it too — landing on the same absolute
+    // moment this path always had: budget + grace.
+    timers.find((timer) => timer.ms === 30_000)?.cb();
+    await tick();
+    const drain = timers.filter((timer) => timer.ms === GRACE_MS);
+    expect(drain).toHaveLength(1);
+    drain[0]?.cb();
+
+    child.exit(137);
+    const result = await promise;
+    expect(result.timedOut).toBe(true);
+    expect(result.stdoutRead.timedOut).toBe(true);
+    expect(result.stdout).toBe("prefix");
+  });
+});
+
+describe("runManagedSubprocess — capture and failure surfacing", () => {
   test("captures stdout/stderr on a clean exit", async () => {
     const spawn: SpawnFn = () => ({
       exitCode: 0,

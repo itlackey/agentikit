@@ -300,7 +300,7 @@ describe("gate judge redaction is replay-deterministic — the recovered feedbac
     const unit = replayed.list.units[0]!;
     const journaled = rows.find((r) => r.unit_id === unit.journalBaseId);
     expect(unit.journalBaseId).toBe("work:solo~l2");
-    expect(journaled?.input_hash).toBe(unit.resolved.inputHash);
+    expect(journaled?.input_hash).toBe(unit.inputHash);
     // …and loop 2's hash still differs from loop 1's, so the loop really did
     // re-dispatch rather than reuse the rejected attempt's row.
     expect(journaled?.input_hash).not.toBe(rows.find((r) => r.unit_id === "work:solo")?.input_hash);

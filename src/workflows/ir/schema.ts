@@ -54,6 +54,21 @@ export type IrInstructionTemplating = "verbatim";
 export type IrRuntimeKind = "llm" | "agent" | "sdk" | "exec";
 
 /**
+ * The {@link IrRuntimeKind} a frozen engine dispatches as — the value journaled
+ * in `workflow_run_units.runner` and read back by `status --units`.
+ *
+ * Lives here, beside the union, because the mapping is a property OF the union:
+ * spelled at each call site instead, a kind added to `FrozenEngineSnapshot`
+ * would type-check against whichever site happens to end with a default and be
+ * silently mis-journaled. Callers supply their own answer for the ABSENCE of an
+ * engine, which genuinely differs — a unit without one is an `exec` unit, while
+ * a gate without one is an llm judge.
+ */
+export function engineRuntimeKind(engine: FrozenEngineSnapshot): IrRuntimeKind {
+  return engine.kind === "llm" ? "llm" : engine.runnerKind;
+}
+
+/**
  * A frozen exec (shell) unit: the argv the engine spawns, where it spawns it,
  * and the wall-clock budget it gets.
  *

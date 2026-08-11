@@ -4,7 +4,7 @@
 
 import type { LlmConnectionConfig } from "../../core/config/config";
 import { deepMergeConfig } from "../../core/config/deep-merge";
-import { ConfigError } from "../../core/errors";
+import { resolveCredentialFromEnv } from "../../integrations/agent/engine-resolution";
 import type { AgentTokenUsage } from "../../integrations/agent/spawn";
 import type { FrozenEngineSnapshot, IrExecSpec, IrInvocation } from "../ir/schema";
 
@@ -74,24 +74,18 @@ export type UnitDispatcher = (request: UnitDispatchRequest, feedback?: string) =
  * overrides. The ONE definition — the default dispatcher's llm runner and the
  * frozen gate judge both dispatch through it, so credential resolution and
  * connection-field mapping cannot drift between the two llm dispatch paths.
+ *
+ * The credential read itself is {@link resolveCredentialFromEnv}, shared with
+ * the live-config dispatch boundary (`materializeLlmConnection`): a frozen
+ * snapshot's `credential` and a resolved engine's `CredentialDescriptor` are the
+ * same descriptor, so lookup order and the "required … is not set" failure are
+ * one implementation, not two that happen to agree.
  */
 export function materializeFrozenLlm(
   snapshot: Extract<FrozenEngineSnapshot, { kind: "llm" }>,
   invocation: IrInvocation | undefined,
 ): LlmConnectionConfig {
-  let apiKey: string | undefined;
-  for (const name of snapshot.credential?.names ?? []) {
-    const candidate = process.env[name]?.trim();
-    if (candidate) {
-      apiKey = candidate;
-      break;
-    }
-  }
-  if (snapshot.credential?.required && !apiKey)
-    throw new ConfigError(
-      `Required engine credential ${snapshot.credential.names[0]} is not set.`,
-      "INVALID_CONFIG_FILE",
-    );
+  const apiKey = resolveCredentialFromEnv(snapshot.credential);
   const base = {
     provider: snapshot.provider,
     endpoint: snapshot.endpoint,

@@ -203,6 +203,18 @@ export async function readStream(
      * matters.)
      */
     maxBytes?: number;
+    /**
+     * Keep `timeoutMs` UNARMED until this settles (either way). Omitted, the
+     * deadline starts with the drain.
+     *
+     * Arming at the drain's start would cap the RUN: a healthy process still
+     * writing when the deadline expires loses its reader mid-stream. Passing
+     * the moment the pipe stops belonging to a live process — the child's exit,
+     * or for a bounded run the earlier of that and the wall budget — bounds only
+     * what a pipe does AFTER the process that owned it is gone, which is the
+     * leak this timeout exists for.
+     */
+    armTimeoutAfter?: Promise<unknown>;
   },
 ): Promise<StreamReadResult> {
   if (!stream) return { text: "", timedOut: false, overflowed: false, bytesRead: 0, retainedBytes: 0 };
@@ -261,13 +273,22 @@ export async function readStream(
   }
   const setTimeoutImpl = opts.setTimeoutFn ?? setTimeout;
   const clearTimeoutImpl = opts.clearTimeoutFn ?? clearTimeout;
+  const timeoutMs = opts.timeoutMs;
   let timer: ReturnType<typeof setTimeoutImpl> | undefined;
+  let drained = false;
   const timeoutPromise = new Promise<typeof STREAM_READ_TIMEOUT>((resolve) => {
-    timer = setTimeoutImpl(() => {
-      timer = undefined;
-      resolve(STREAM_READ_TIMEOUT);
-    }, opts.timeoutMs);
-    if (typeof timer !== "number") timer.unref?.();
+    const arm = () => {
+      // The drain already finished while the deadline was still waiting to be
+      // armed; a timer started now would belong to nobody.
+      if (drained) return;
+      timer = setTimeoutImpl(() => {
+        timer = undefined;
+        resolve(STREAM_READ_TIMEOUT);
+      }, timeoutMs);
+      if (typeof timer !== "number") timer.unref?.();
+    };
+    if (opts.armTimeoutAfter) void opts.armTimeoutAfter.then(arm, arm);
+    else arm();
   });
   try {
     while (true) {
@@ -284,6 +305,7 @@ export async function readStream(
   } catch (error) {
     return { text, timedOut: false, error, overflowed, bytesRead, retainedBytes };
   } finally {
+    drained = true;
     if (timer !== undefined) {
       clearTimeoutImpl(timer);
     }
@@ -355,7 +377,22 @@ const EMPTY_READ: StreamReadResult = {
   bytesRead: 0,
   retainedBytes: 0,
 };
+/**
+ * Drain deadline for a run with no wall budget, counted from the child's EXIT
+ * (never from capture — see {@link runManagedSubprocess}). It bounds only the
+ * window in which a descendant can keep an inherited pipe open after the leader
+ * is gone, so it can be generous without ever capping the run itself.
+ */
 const UNBOUNDED_STREAM_READ_SAFETY_MS = 60 * 60 * 1000;
+/**
+ * Drain deadline for a run WITH a wall budget, counted from the moment the
+ * pipe's owner left — the child exited, or (a child that survived its own kill
+ * ladder) the budget expired. Anything still holding the fd open then is a
+ * background descendant, not the command, so this is the same 2 s the old
+ * capture-anchored deadline allowed past the budget; only its starting point
+ * moved earlier.
+ */
+const POST_EXIT_STREAM_DRAIN_GRACE_MS = 2_000;
 
 function toError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
@@ -421,8 +458,19 @@ export async function runManagedSubprocess(
   // Skipped entirely when timeoutMs is null.
   let timedOut = false;
   let timer: ReturnType<typeof setTimeoutImpl> | undefined;
+  // Settles when a bounded run's wall budget expires — the second way (after
+  // the child's own exit) a captured pipe can stop belonging to a live command.
+  // See the drain-deadline note below.
+  let onBudgetExpiry: (() => void) | undefined;
+  const budgetExpired =
+    capture && timeoutMs !== null
+      ? new Promise<void>((resolve) => {
+          onBudgetExpiry = resolve;
+        })
+      : undefined;
   if (timeoutMs !== null) {
     timer = setTimeoutImpl(() => {
+      onBudgetExpiry?.();
       scheduleKillLadder(proc, {
         onKill: () => {
           timedOut = true;
@@ -453,15 +501,29 @@ export async function runManagedSubprocess(
     else abortSignal.addEventListener("abort", onAbort, { once: true });
   }
 
-  // Stream-drain timeout: the wall budget plus a 2 s grace, or a one-hour
-  // safety bound when execution itself is unbounded. This timer starts with
-  // capture, so the null-timeout path must not impose a short hidden deadline
-  // on an otherwise healthy long-running process.
-  const streamDrainTimeoutMs = timeoutMs !== null ? timeoutMs + 2_000 : UNBOUNDED_STREAM_READ_SAFETY_MS;
+  // Stream-drain timeout: a short grace once nothing living owns the pipe any
+  // more, or a one-hour safety bound when execution itself is unbounded.
+  //
+  // Neither is armed while the command is still running: every byte up to then
+  // is a live process's, and cancelling the reader would discard the output of
+  // work that is still going. What ends that ownership is where the two cases
+  // differ. Unbounded, the caller asked for NO cap on the run, so only the
+  // child's own exit can end it. Bounded, the wall budget ends it too — a child
+  // that outlived its own kill ladder is not something akm can keep waiting on
+  // — which leaves the SAME budget + grace ceiling as before for a command that
+  // really did spend its whole budget, and cuts the common case that used to
+  // stall: a leader exiting in milliseconds no longer holds the drain (and with
+  // it the unit, and with it a fan-out slot) open for a budget it never came
+  // close to spending.
+  const streamDrainTimeoutMs = timeoutMs !== null ? POST_EXIT_STREAM_DRAIN_GRACE_MS : UNBOUNDED_STREAM_READ_SAFETY_MS;
+  // Settles on a rejected `proc.exited` too: either way the child is gone.
+  const childSettled = capture ? proc.exited.catch(() => undefined) : undefined;
+  const pipeOwnerGone = childSettled && budgetExpired ? Promise.race([childSettled, budgetExpired]) : childSettled;
   const readOpts = {
     timeoutMs: streamDrainTimeoutMs,
     setTimeoutFn: setTimeoutImpl,
     clearTimeoutFn: clearTimeoutImpl,
+    ...(pipeOwnerGone ? { armTimeoutAfter: pipeOwnerGone } : {}),
     ...(opts.maxOutputBytes !== undefined ? { maxBytes: opts.maxOutputBytes } : {}),
   };
   const stdoutPromise = capture ? readStream(proc.stdout ?? null, readOpts) : Promise.resolve(EMPTY_READ);

@@ -55,15 +55,13 @@ import { getStateDbPath } from "../../core/state-db";
  */
 const chains = new Map<string, Promise<unknown>>();
 
-export interface EnqueueUnitWriteOptions {
-  /**
-   * Serialization key. Defaults to the current state.db path — the file whose
-   * single write lock the chain is protecting. Callers should only override it
-   * when they are writing to a DIFFERENT database file.
-   */
-  key?: string;
-}
-
-export function enqueueUnitWrite<T>(fn: () => Promise<T>, opts?: EnqueueUnitWriteOptions): Promise<T> {
-  return serializeByKey(chains, opts?.key ?? getStateDbPath(), fn);
+/**
+ * Enqueue a `workflow_run_units` write behind every write already queued for
+ * the same state.db. The key is the current state.db path — the file whose one
+ * write lock this exists to protect — and is not a caller's choice: a caller
+ * writing somewhere else is not on this queue at all, and wants
+ * {@link serializeByKey} with its own chain map.
+ */
+export function enqueueUnitWrite<T>(fn: () => Promise<T>): Promise<T> {
+  return serializeByKey(chains, getStateDbPath(), fn);
 }

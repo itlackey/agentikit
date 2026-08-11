@@ -32,6 +32,7 @@ import { materializeWorkflowParameterFlags, validateWorkflowParams, type Workflo
 import { canonicalPlanJson, computePlanHash } from "../ir/plan-hash";
 import { decodeWorkflowPlanV3, type FrozenEngineSnapshot, type IrRuntimeKind, WORKFLOW_IR_VERSION } from "../ir/schema";
 import {
+  clip,
   utf8Bytes,
   WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS,
   WORKFLOW_MAX_EVIDENCE_JSON_BYTES,
@@ -166,8 +167,7 @@ function toUnitDiagnostic(
     } catch {
       /* leave the raw journaled text */
     }
-    diagnostic =
-      text.length > WORKFLOW_UNIT_DIAGNOSTIC_CLIP ? `${text.slice(0, WORKFLOW_UNIT_DIAGNOSTIC_CLIP)}…` : text;
+    diagnostic = clip(text, WORKFLOW_UNIT_DIAGNOSTIC_CLIP);
   }
   return {
     unitId: row.unit_id,
@@ -627,6 +627,25 @@ function truncatedEvidenceValue(
 }
 
 /**
+ * True when `value` is the {@link TruncatedEvidenceValue} envelope persisted in
+ * place of an over-cap evidence entry.
+ *
+ * A LIVE invocation never sees one: the engine threads each step's complete
+ * in-memory evidence to the rest of its own run. A RESUMED invocation rebuilds
+ * the downstream scope from these rows, so `exec/step-work.ts` tests every
+ * whole-value reference with this predicate — otherwise a reference INTO the
+ * envelope reports a generic missing property and a reference AT it silently
+ * hands the envelope to a unit as if it were the artifact.
+ */
+export function isTruncatedEvidence(value: unknown): value is TruncatedEvidenceValue {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>)[WORKFLOW_EVIDENCE_TRUNCATED_MARKER] === true
+  );
+}
+
+/**
  * Bound what a step's evidence costs in ONE SQLite row.
  *
  * `buildEvidence` (exec/step-work.ts) promotes `evidence.output` UNCLIPPED by
@@ -637,13 +656,14 @@ function truncatedEvidenceValue(
  * megabytes. This is the write boundary, so the bound lives here rather than in
  * the shared step-semantics module.
  *
- * Over-cap values are REPLACED (largest top-level entry first, until the row
- * fits) with a {@link TruncatedEvidenceValue} envelope. Nothing is silently
- * shortened: a consumer either sees the real value or sees an object whose
- * marker key says the data is gone. `preview` is intentionally not shaped like
- * the original, so an expression reaching INTO a truncated artifact
- * (`steps.x.output.files`) fails loudly at resolution instead of quietly
- * resolving against a half-array.
+ * Over-cap values are REPLACED (largest top-level entry BY UTF-8 BYTES first —
+ * the unit the cap is measured in — until the row fits) with a
+ * {@link TruncatedEvidenceValue} envelope. Nothing is silently shortened: a
+ * consumer either sees the real value or sees an object whose marker key says
+ * the data is gone. `preview` is intentionally not shaped like the original, so
+ * an expression reaching INTO a truncated artifact (`steps.x.output.files`)
+ * cannot quietly resolve against a half-array; a resumed run's reference is
+ * rejected by name through {@link isTruncatedEvidence}.
  *
  * Returns the JSON to persist plus the keys that were replaced (empty in the
  * overwhelmingly common case, where nothing is copied or re-serialized twice).
@@ -658,18 +678,38 @@ export function clipStepEvidenceForPersistence(
   // subtree of a value already proven serializable here.
   let json = JSON.stringify(evidence);
   if (json === undefined) return { json: null, truncatedKeys: [] };
-  if (utf8Bytes(json) <= limitBytes) return { json, truncatedKeys: [] };
+  let bytes = utf8Bytes(json);
+  if (bytes <= limitBytes) return { json, truncatedKeys: [] };
 
   const clipped: Record<string, unknown> = { ...evidence };
   const truncatedKeys: string[] = [];
+  // Ordered by UTF-8 BYTES, the unit the cap itself is measured in: ordering by
+  // `json.length` (UTF-16 code units) sacrifices the char-largest key rather
+  // than the byte-largest one, so multibyte-heavy evidence loses extra keys the
+  // cap never required.
   const bySizeDesc = Object.keys(evidence)
-    .map((key) => ({ key, json: JSON.stringify(evidence[key]) ?? "null" }))
-    .sort((a, b) => b.json.length - a.json.length);
-  for (const entry of bySizeDesc) {
-    clipped[entry.key] = truncatedEvidenceValue(entry.json, `Step evidence "${entry.key}"`, limitBytes, true);
+    .map((key) => {
+      const json = JSON.stringify(evidence[key]) ?? "null";
+      return { key, json, bytes: utf8Bytes(json) };
+    })
+    .sort((a, b) => b.bytes - a.bytes);
+  for (const [index, entry] of bySizeDesc.entries()) {
+    const envelope = truncatedEvidenceValue(entry.json, `Step evidence "${entry.key}"`, limitBytes, true);
+    clipped[entry.key] = envelope;
     truncatedKeys.push(entry.key);
+    // Track the row size arithmetically from the per-key sizes already computed
+    // for the sort, so a run of replacements costs ONE whole-object
+    // serialization rather than one per replaced key. The total is an ESTIMATE
+    // — a key whose value is `undefined` is charged the `"null"` the sort used
+    // but is OMITTED from the serialized row — so it decides only WHEN to
+    // measure. Whether the row FITS is settled by an exact serialization every
+    // time, the last key included, so an exhausted loop falls through to the
+    // whole-object marker on measurement rather than on drift.
+    bytes += utf8Bytes(JSON.stringify(envelope)) - entry.bytes;
+    if (bytes > limitBytes && index < bySizeDesc.length - 1) continue;
     json = JSON.stringify(clipped);
-    if (utf8Bytes(json) <= limitBytes) return { json, truncatedKeys };
+    bytes = utf8Bytes(json);
+    if (bytes <= limitBytes) return { json, truncatedKeys };
   }
   // Pathological shape (so many keys that even the envelopes overflow): persist
   // ONE whole-object marker. Still unambiguous, still bounded.
@@ -797,9 +837,11 @@ export async function completeWorkflowStep(
       const completedAt = new Date().toISOString();
       // Bound the single-row cost of the promoted artifact (issue C). The
       // caller's in-memory evidence object is never mutated — a clipped COPY is
-      // serialized — so the live step result, the gate's artifact judging, and
-      // this invocation's downstream `steps.<id>.output` scope all keep the
-      // complete value.
+      // serialized — so the live step result and the gate's artifact judging
+      // keep the complete value. The DOWNSTREAM scope keeps it only because the
+      // engine threads this same in-memory evidence forward (`driveRun` prefers
+      // it over the re-read row): what the clip actually costs is a LATER
+      // invocation, which has nothing but these rows to rebuild the scope from.
       const persistedEvidence = clipStepEvidenceForPersistence(input.evidence);
       if (persistedEvidence.truncatedKeys.length > 0) {
         warn(
@@ -807,7 +849,8 @@ export async function completeWorkflowStep(
             `${WORKFLOW_MAX_EVIDENCE_JSON_BYTES}-byte persistence cap; ` +
             `${persistedEvidence.truncatedKeys.map((k) => `"${k}"`).join(", ")} ` +
             `${persistedEvidence.truncatedKeys.length === 1 ? "was" : "were"} stored as a truncation marker. ` +
-            `Steps that reference this step's output on resume will fail loudly rather than read partial data.`,
+            `The rest of THIS invocation still reads the complete value, but a run resumed from these rows will ` +
+            `fail loudly when a later step references this step's output rather than read partial data.`,
         );
       }
       repo.updateStepCompletion({

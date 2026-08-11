@@ -325,6 +325,47 @@ describe("runTask — workflow target", () => {
     };
   }
 
+  /**
+   * An orchestrator whose run COMPLETES even though the deadline fired — the
+   * narrow window where the timer lands during the run's final bookkeeping,
+   * after the last step boundary the abort could have stopped it at.
+   */
+  function completesDespiteAbortRunner(captured: CapturedRunOptions[]) {
+    return async (options: CapturedRunOptions) => {
+      captured.push(options);
+      await new Promise<void>((resolve) => {
+        if (options.signal?.aborted) return resolve();
+        options.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return {
+        run: runSummary("run-finished", options.target, "completed"),
+        executed: [],
+        stepsProcessed: 1,
+        done: true,
+      };
+    };
+  }
+
+  /**
+   * An orchestrator stopped by a verification gate whose deadline ALSO fired,
+   * so two of the runner's three failure channels are live in one attempt.
+   */
+  function gateRejectedRunner(captured: CapturedRunOptions[]) {
+    return async (options: CapturedRunOptions) => {
+      captured.push(options);
+      await new Promise<void>((resolve) => {
+        if (options.signal?.aborted) return resolve();
+        options.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return {
+        run: runSummary("run-gated", options.target, "active"),
+        executed: [],
+        stepsProcessed: 1,
+        gateRejection: { stepId: "verify", missing: ["evidence"], feedback: "no evidence for the claim" },
+      };
+    };
+  }
+
   /** An orchestrator that completes immediately, so only the wiring is observed. */
   function instantWorkflowRunner(captured: CapturedRunOptions[]) {
     return async (options: CapturedRunOptions) => {
@@ -366,6 +407,68 @@ describe("runTask — workflow target", () => {
     expect(log).toContain("timed_out=true timeout_ms=100");
     expect(log).toContain("run_id=run-wedged status=active");
     expect(readRunLogRows("wf-timeout").some((row) => row.line.includes("timed_out=true timeout_ms=100"))).toBe(true);
+  });
+
+  test("a run that completes anyway is not reported as a timeout", async () => {
+    writeTask(
+      "wf-raced",
+      ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "timeoutMs: 100", ""].join("\n"),
+    );
+    const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
+    const captured: CapturedRunOptions[] = [];
+
+    const promise = runTask("wf-raced", {
+      stashDir,
+      logDir,
+      runWorkflowStepsImpl: completesDespiteAbortRunner(captured) as never,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+    await fireWhenRegistered(timers, 100);
+    const result = await promise;
+
+    // The deadline fired — but the run finished, so there is nothing to resume
+    // and nothing failed.
+    expect(captured[0]!.signal?.aborted).toBe(true);
+    expect(result.status).toBe("completed");
+    expect(exitCodeForStatus(result.status)).toBe(0);
+    expect(result.detail?.error).toBeUndefined();
+    const log = fs.readFileSync(result.log, "utf8");
+    expect(log).not.toContain("timed_out=true");
+    expect(log).toContain("run_id=run-finished status=completed");
+  });
+
+  test("a gate rejection outranks the deadline in the status, the log and the history row alike", async () => {
+    writeTask(
+      "wf-gated",
+      ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "timeoutMs: 100", ""].join("\n"),
+    );
+    const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
+    const captured: CapturedRunOptions[] = [];
+
+    const promise = runTask("wf-gated", {
+      stashDir,
+      logDir,
+      runWorkflowStepsImpl: gateRejectedRunner(captured) as never,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+    await fireWhenRegistered(timers, 100);
+    const result = await promise;
+
+    // Two failure channels are live at once (gate rejection + fired deadline).
+    // Whichever one wins must win everywhere: a log naming one cause beside a
+    // history row naming the other is unreadable after the fact.
+    expect(captured[0]!.signal?.aborted).toBe(true);
+    expect(result.status).toBe("failed");
+    const gateMessage = 'Verification rejected step "verify": no evidence for the claim';
+    expect(result.detail?.error).toBe(gateMessage);
+    const log = fs.readFileSync(result.log, "utf8");
+    expect(log).toContain(`error=${gateMessage}`);
+    expect(log).not.toContain("timed out after");
+    // The deadline is still recorded as a fact about the attempt.
+    expect(log).toContain("timed_out=true timeout_ms=100");
+    expect(readTaskHistory({ id: "wf-gated" })[0]?.detail?.error).toBe(gateMessage);
   });
 
   test("an explicit timeout overrides the unattended default", async () => {

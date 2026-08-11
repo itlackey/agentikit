@@ -40,9 +40,9 @@
  * `redactUnitOutcome` BEFORE anything is journaled, which is why this module may
  * return raw stdout/stderr diagnostics without knowing anything about redaction.
  *
- * Layering: a LEAF. Node built-ins, `core/spawn-env`, `core/subprocess` and the
- * import-free `workflows/resource-limits` (plus erased types) only, so the
- * executor can consume it without opening an import cycle.
+ * Layering: a LEAF. Node built-ins, `core/spawn-env`, `core/subprocess`,
+ * `core/warn` and the import-free `workflows/resource-limits` (plus erased
+ * types) only, so the executor can consume it without opening an import cycle.
  *
  * @module workflows/exec/exec-unit
  */
@@ -54,6 +54,7 @@ import {
   COMMON_SPAWN_ENV_PASSTHROUGH,
   collectAllowlistedEnv,
   supplementPathForSchedulerContext,
+  WIN32_SPAWN_ENV_FLOOR,
 } from "../../core/spawn-env";
 import {
   type ManagedSubprocessResult,
@@ -62,6 +63,7 @@ import {
   type StreamReadResult,
   streamCaptureFailure,
 } from "../../core/subprocess";
+import { warn } from "../../core/warn";
 import type { IrExecSpec } from "../ir/schema";
 import {
   type ExecContextLimits,
@@ -88,8 +90,10 @@ const EXEC_STDERR_DIAGNOSTIC_CLIP = WORKFLOW_UNIT_DIAGNOSTIC_CLIP - 500;
 
 /**
  * The DEFAULT environment allowlist for an exec unit's child — the single
- * definition, mirrored nowhere else (the docs describe it, the tests assert
- * against it, and `exec.passEnv` extends it per unit).
+ * definition of the EXEC list (the docs describe it, the tests assert against
+ * it, and `exec.passEnv` extends it per unit). The win32 process-creation
+ * names are not re-spelled here: they are spread from
+ * {@link WIN32_SPAWN_ENV_FLOOR}, which owns them.
  *
  * The child starts from an EMPTY environment and receives only these names,
  * matching how an agent harness child is already built
@@ -117,19 +121,17 @@ const EXEC_STDERR_DIAGNOSTIC_CLIP = WORKFLOW_UNIT_DIAGNOSTIC_CLIP - 500;
  *                     switch to the host default.
  *   - `TMPDIR`      — POSIX scratch space; absent, tools write to `/tmp` or
  *                     fail on read-only hosts.
- *   - `SystemRoot`, `SystemDrive`, `WINDIR` — Windows PROCESS CREATION itself
- *                     needs these: with an empty environment the loader cannot
- *                     find system DLLs and the spawn fails before the command
- *                     runs. Not optional on win32.
- *   - `COMSPEC`     — Windows resolves `.bat`/`.cmd` targets through cmd.exe.
- *   - `PATHEXT`     — Windows only treats these extensions as executable; an
- *                     absent PATHEXT makes `command: ["bun", …]` unresolvable
- *                     because `bun.exe`/`bun.cmd` are never tried.
- *   - `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH` — the Windows `HOME` analogues.
+ *   - {@link WIN32_SPAWN_ENV_FLOOR} — what Windows itself requires of any
+ *                     child (process creation, command resolution, and the
+ *                     win32 analogues of `HOME`/`TMPDIR`). Spread in rather
+ *                     than re-spelled: `spawnEnvNamesFor` appends the same
+ *                     names on win32, and two hand-written copies of one OS
+ *                     requirement is exactly how a floor drifts.
  *   - `APPDATA`, `LOCALAPPDATA` — Windows config/cache roots (npm, bun, git).
- *   - `TEMP`, `TMP` — the Windows `TMPDIR` analogues.
  *   - `ProgramData`, `ProgramFiles` — machine-wide install roots that Windows
- *                     toolchain shims resolve against.
+ *                     toolchain shims resolve against. These four are NOT on
+ *                     the floor (a child is creatable without them), so an
+ *                     arbitrary shell command asks for them here.
  *   - `AKM_EVENT_SOURCE` — provenance, never a secret: an exec unit that calls
  *                     `akm` must record machine traffic rather than user
  *                     demand, exactly as the agent passthrough list does
@@ -149,19 +151,13 @@ export const EXEC_DEFAULT_ENV_PASSTHROUGH: readonly string[] = [
   "SHELL",
   "LC_CTYPE",
   "TZ",
-  // Windows process creation, command resolution, and toolchain roots
-  "SystemRoot",
-  "SystemDrive",
-  "WINDIR",
-  "COMSPEC",
-  "PATHEXT",
-  "USERPROFILE",
-  "HOMEDRIVE",
-  "HOMEPATH",
+  // SystemRoot, SystemDrive, WINDIR, COMSPEC, PATHEXT, USERPROFILE, HOMEDRIVE,
+  // HOMEPATH, TEMP, TMP. Named here as well as appended by `spawnEnvNamesFor`
+  // because this list is consumed on POSIX too, where nothing is appended.
+  ...WIN32_SPAWN_ENV_FLOOR,
+  // Windows toolchain roots, deliberately not part of the floor
   "APPDATA",
   "LOCALAPPDATA",
-  "TEMP",
-  "TMP",
   "ProgramData",
   "ProgramFiles",
 ];
@@ -204,14 +200,14 @@ export interface RunExecUnitInput {
 /**
  * Run one exec unit and map its process outcome onto the dispatch vocabulary:
  * non-zero exit → `non_zero_exit`, wall-clock expiry → `timeout`, cancellation
- * → `aborted`, a child that never started or a capture that never completed →
- * `spawn_failed`. All four are pre-existing `AgentFailureReason` members, so
- * `retry.on` keeps working unchanged. The out-of-taxonomy `exec_cwd_escape`,
- * `exec_output_limit` and `exec_context_too_large` are deliberate: each is
- * tampering, a runaway, or an authoring bug — never a transient — so no
- * `retry.on` value can ever re-dispatch one.
+ * → `aborted`, a child that never started → `spawn_failed`. All four are
+ * pre-existing `AgentFailureReason` members, so `retry.on` keeps working
+ * unchanged. The out-of-taxonomy `exec_cwd_escape`, `exec_output_limit`,
+ * `exec_context_too_large` and `exec_capture_incomplete` are deliberate: each is
+ * tampering, a runaway, an authoring bug, or work that ALREADY RAN — never a
+ * transient — so no `retry.on` value can ever re-dispatch one.
  *
- * ## An INCOMPLETE capture is a failure, never a partial artifact
+ * ## An INCOMPLETE STDOUT capture is a failure, never a partial artifact
  *
  * `exitCode === 0` is not on its own proof that stdout was fully read: a pipe
  * can error, and the stream-drain timeout can fire while the command LEADER has
@@ -220,6 +216,22 @@ export interface RunExecUnitInput {
  * judge and `steps.<id>.output` a silently truncated artifact. So the unit fails
  * instead, through the same shared classifier (`streamCaptureFailure`) the agent
  * spawn path uses.
+ *
+ * Only STDOUT is fatal here. stderr is a diagnostic channel that never
+ * contributes to the artifact, so a stderr drain that did not finish leaves the
+ * unit's actual result — a completed command, a fully captured stdout — intact;
+ * failing it would throw away a valid artifact over a lost log tail. The agent
+ * path classifies both pipes because there stderr genuinely feeds its
+ * diagnostics; the difference lives in the CALLERS, not in the shared
+ * classifier.
+ *
+ * The stdout reason is `exec_capture_incomplete`, deliberately OUTSIDE the
+ * `retry.on` taxonomy, for the same reason `journal_write_failed` is: the
+ * command RAN TO COMPLETION and exited 0 — what failed is akm's record of it. A
+ * retryable reason here would let `retry.on: [spawn_failed]` re-dispatch
+ * byte-identical argv for a command that already deployed, already published,
+ * already migrated. `spawn_failed` keeps its documented meaning — the child
+ * never started.
  *
  * ## Output OVERFLOW does not fail a command that passed
  *
@@ -307,19 +319,21 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
   // An exit code of 0 does NOT prove the output was fully captured — see the
   // module note above. Checked before the artifact is promoted, so a partial
   // stdout can never become `steps.<id>.output`.
-  const captureFailure = streamCaptureFailure(result.stdoutRead, result.stderrRead);
+  const captureFailure = streamCaptureFailure(result.stdoutRead, DRAINED_CLEAN);
   if (captureFailure) {
     return {
       ok: false,
       text: "",
-      failureReason: "spawn_failed",
+      failureReason: "exec_capture_incomplete",
       error:
-        `exec unit "${input.unitId}" ran ${display} and it exited 0, but its output capture did not complete ` +
-        `(${captureFailure}), so the stdout artifact would be incomplete. A background descendant still holding ` +
-        `stdout open is the usual cause — have the command wait for its children, or redirect their output` +
-        `${stderrTail(result.stderr)}`,
+        `exec unit "${input.unitId}" ran ${display} and the command COMPLETED (it exited 0), but its stdout could ` +
+        `not be fully captured (${captureFailure}), so the stdout artifact would be incomplete. The unit is NOT ` +
+        `retried: the command already ran, and re-dispatching identical argv to fix a capture problem would run its ` +
+        `side effects a second time. A background descendant still holding stdout open is the usual cause — have ` +
+        `the command wait for its children, or redirect their output${stderrTail(result.stderr)}`,
     };
   }
+  reportStderrCaptureFailure(input, display, result);
   // The command exited 0 and the pipes drained to their end. The ONE thing an
   // overflow can still ruin is a TYPED artifact: a truncated prefix is not one
   // JSON value, so there is nothing to validate and nothing safe to promote.
@@ -333,6 +347,40 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
   // overflowed, `stdout` already carries the truncation marker (which is
   // deliberately the LAST thing in the artifact, so it survives the strip).
   return { ok: true, text: stripTrailingNewlines(stdout) };
+}
+
+/**
+ * A drain report with nothing wrong in it, passed as the OTHER pipe so
+ * {@link streamCaptureFailure} classifies exactly one of them.
+ *
+ * The classifier stays shared with the agent path — what a failed drain means
+ * must not drift — while each caller decides which pipes are fatal for IT.
+ */
+const DRAINED_CLEAN: StreamReadResult = {
+  text: "",
+  timedOut: false,
+  overflowed: false,
+  bytesRead: 0,
+  retainedBytes: 0,
+};
+
+/**
+ * Report a stderr drain that did not finish on an otherwise successful unit.
+ *
+ * Warn-only by construction: the artifact is stdout, which was captured whole,
+ * so there is nothing wrong with the unit's RESULT — only with how much of its
+ * log tail akm holds. A dispatch result has no channel for a non-fatal note, so
+ * the operator surface is the warn stream.
+ */
+function reportStderrCaptureFailure(input: RunExecUnitInput, display: string, result: ManagedSubprocessResult): void {
+  const stderrFailure = streamCaptureFailure(DRAINED_CLEAN, result.stderrRead);
+  if (!stderrFailure) return;
+  warn(
+    `exec unit "${input.unitId}" ran ${display} and it exited 0 with its stdout fully captured, but ` +
+      `${stderrFailure}. stderr is a diagnostic channel and never contributes to the artifact, so the unit stands; ` +
+      `any stderr shown for it may be missing its tail. A background descendant still holding stderr open is the ` +
+      `usual cause.`,
+  );
 }
 
 /** The sentence naming what the retention cap discarded, shared by both reports below. */
@@ -421,34 +469,12 @@ function outputLimitFailure(
  * authored values a human wrote and sized; this is the surface where the SIZE
  * is data-dependent and therefore surprising.
  */
-/**
- * Byte sizes of large context payloads, keyed by the payload string itself.
- * `AKM_PARAMS` / `AKM_INPUTS` are serialized ONCE per step
- * (`computeStepWorkList`) and every fan-out unit shares the same string, so a
- * 10 000-unit map step measures each payload once here instead of re-scanning
- * up to ~96 KiB per unit. Small values skip the cache (measuring is cheaper
- * than caching), and the map is cleared before it can outgrow a handful of
- * steps' worth of distinct payloads.
- */
-const largeContextSizeCache = new Map<string, number>();
-
-function cachedUtf8Bytes(value: string): number {
-  if (value.length < 1024) return utf8Bytes(value);
-  let bytes = largeContextSizeCache.get(value);
-  if (bytes === undefined) {
-    bytes = utf8Bytes(value);
-    if (largeContextSizeCache.size >= 64) largeContextSizeCache.clear();
-    largeContextSizeCache.set(value, bytes);
-  }
-  return bytes;
-}
-
 function checkExecContextSize(input: RunExecUnitInput): UnitDispatchResult | undefined {
   const limits = execContextLimits(input.platform ?? process.platform);
   const entries = Object.entries(input.context ?? {});
   let total = 0;
   for (const [name, value] of entries) {
-    const bytes = cachedUtf8Bytes(value);
+    const bytes = utf8Bytes(value);
     total += bytes + utf8Bytes(name) + 1;
     if (bytes > limits.perVarBytes) {
       return contextTooLarge(

@@ -19,7 +19,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
-import { readStream, runManagedSubprocess } from "../../../src/core/subprocess";
+import { readStream } from "../../../src/core/subprocess";
+import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { EXEC_DEFAULT_ENV_PASSTHROUGH, runExecUnit } from "../../../src/workflows/exec/exec-unit";
 import {
@@ -29,6 +30,7 @@ import {
   type StepExecutionResult,
 } from "../../../src/workflows/exec/native-executor";
 import { cpuDerivedUnitConcurrency } from "../../../src/workflows/exec/scheduler";
+import type { UnitDispatchResult } from "../../../src/workflows/exec/unit-dispatch";
 import type { IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
 import {
   execContextLimits,
@@ -37,8 +39,15 @@ import {
 } from "../../../src/workflows/resource-limits";
 import { requireExecutableWorkflowPlan } from "../../../src/workflows/runtime/plan-classifier";
 import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
+import { makeGitRepo } from "../../_helpers/git";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
-import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
+import {
+  freezeWorkflow,
+  parseErrors,
+  seedWorkflowRun,
+  storeFrozenWorkflowPlan,
+  workflowDoc,
+} from "../../_helpers/workflow";
 
 let storage: IsolatedAkmStorage;
 /** Scratch root for fixtures the workflow itself touches (never akm storage). */
@@ -78,23 +87,8 @@ function storePlan(plan: WorkflowPlanGraph): void {
 }
 
 /** Freeze a one-step exec workflow whose `unit:` block is spelled by the caller. */
-function execPlan(unitLines: string[], opts: { stepId?: string; body?: string; extra?: string[] } = {}) {
-  const stepId = opts.stepId ?? "work";
-  const markdown = [
-    "---",
-    "type: workflow",
-    ...(opts.extra ?? []),
-    "steps:",
-    `  - id: ${stepId}`,
-    ...unitLines,
-    "---",
-    "",
-    `## ${stepId}`,
-    "",
-    opts.body ?? "Run the command.",
-    "",
-  ].join("\n");
-  return freezeWorkflow(markdown);
+function execPlan(unitLines: string[], opts: { extra?: string[] } = {}) {
+  return freezeWorkflow(workflowDoc(unitLines, "## work\n\nRun the command.\n", opts.extra ?? []));
 }
 
 function run(plan: WorkflowPlanGraph, ctx: Partial<StepExecutionContext> = {}): Promise<StepExecutionResult> {
@@ -766,24 +760,10 @@ describe("exec unit — map fan-out", () => {
 });
 
 describe("exec unit — worktree isolation", () => {
-  async function initRepo(dir: string): Promise<void> {
-    fs.mkdirSync(dir, { recursive: true });
-    for (const args of [
-      ["init", "-q"],
-      ["config", "user.email", "t@example.com"],
-      ["config", "user.name", "Test"],
-      ["config", "commit.gpgsign", "false"],
-    ]) {
-      await runManagedSubprocess(["git", "-C", dir, ...args], { capture: true, timeoutMs: 30_000 });
-    }
-    fs.writeFileSync(path.join(dir, "README.md"), "base\n");
-    await runManagedSubprocess(["git", "-C", dir, "add", "."], { capture: true, timeoutMs: 30_000 });
-    await runManagedSubprocess(["git", "-C", dir, "commit", "-qm", "base"], { capture: true, timeoutMs: 30_000 });
-  }
-
   test("the command runs in a fresh detached worktree, not in the base repo", async () => {
-    const repo = path.join(tmpDir, "repo");
-    await initRepo(repo);
+    // The shared fixture, inside this suite's own sandbox root so `afterEach`
+    // takes the repo with it.
+    const repo = makeGitRepo({ dir: path.join(tmpDir, "repo") });
     seedRun(["work"]);
     // Print the cwd and mutate a tracked file — the base repo must stay clean.
     const code =
@@ -807,7 +787,7 @@ describe("exec unit — worktree isolation", () => {
     expect(cwd).toContain(RUN_ID);
 
     // The base checkout was never touched.
-    expect(fs.readFileSync(path.join(repo, "README.md"), "utf8")).toBe("base\n");
+    expect(fs.readFileSync(path.join(repo, "README.md"), "utf8")).toBe("# fixture\n");
     // The dirty worktree is RETAINED (uncollected work is never destroyed) and
     // its path is journaled on the unit row.
     const rows = (await withWorkflowRunsRepo((repo_) => repo_.getUnitsForStep(RUN_ID, "work"))) as Array<{
@@ -1116,23 +1096,31 @@ describe("exec unit — retained output is BOUNDED, but a passing command is nev
 });
 
 describe("exec unit — an INCOMPLETE capture is never a success (finding 2)", () => {
-  test("leader exits 0 while a descendant holds stdout open → `spawn_failed`, not a partial artifact", async () => {
-    seedRun(["work"]);
-    // The command LEADER writes a prefix of its output and exits 0 immediately,
-    // but leaves a detached descendant holding the stdout fd open far past the
-    // stream-drain deadline (the unit's wall budget + 2s). `exitCode` is 0 and
-    // `stdout` holds only the leader's prefix — promoting it would hand every
-    // downstream reference a silently truncated artifact.
+  /**
+   * A command whose LEADER writes a prefix of its output and exits 0
+   * immediately, leaving a detached descendant holding the stdout fd open far
+   * past the stream-drain deadline (the leader's exit plus the post-exit
+   * grace). `exitCode` is 0 and `stdout` holds only the leader's prefix —
+   * promoting it would hand every downstream reference a silently truncated
+   * artifact. `log`, when given, records one line per REAL execution.
+   */
+  function fdHolderArgv(log?: string): string[] {
     const holder = "setTimeout(() => {}, 30000)";
-    const code =
-      `const cp=require('node:child_process'); ` +
-      `const child=cp.spawn(${JSON.stringify(BUN)}, ['-e', ${JSON.stringify(holder)}], ` +
-      `{ stdio: ['ignore', 'inherit', 'ignore'] }); child.unref(); ` +
-      `process.stdout.write('partial-artifact');`;
+    return bunArgv(
+      (log ? `require('node:fs').appendFileSync(${JSON.stringify(log)}, 'x'); ` : "") +
+        `const cp=require('node:child_process'); ` +
+        `const child=cp.spawn(${JSON.stringify(BUN)}, ['-e', ${JSON.stringify(holder)}], ` +
+        `{ stdio: ['ignore', 'inherit', 'ignore'] }); child.unref(); ` +
+        `process.stdout.write('partial-artifact');`,
+    );
+  }
+
+  test("leader exits 0 while a descendant holds stdout open → `exec_capture_incomplete`, not a partial artifact", async () => {
+    seedRun(["work"]);
     const plan = execPlan([
       "    unit:",
       "      exec:",
-      `        command: ${JSON.stringify(bunArgv(code))}`,
+      `        command: ${JSON.stringify(fdHolderArgv())}`,
       '      timeout: "2s"',
     ]);
     storePlan(plan);
@@ -1140,14 +1128,128 @@ describe("exec unit — an INCOMPLETE capture is never a success (finding 2)", (
     const result = await run(plan);
 
     expect(result.ok).toBe(false);
-    // The SAME reason the agent spawn path reports for the same condition.
-    expect(result.units[0]!.failureReason).toBe("spawn_failed");
-    expect(result.units[0]!.error).toContain("output capture did not complete");
-    expect(result.units[0]!.error).toContain("drain timed out");
+    // NOT `spawn_failed`: the child started and finished. What failed is akm's
+    // record of its output, which is a different thing and a different reason.
+    expect(result.units[0]!.failureReason).toBe("exec_capture_incomplete");
+    const error = result.units[0]!.error ?? "";
+    expect(error).toContain("the command COMPLETED");
+    expect(error).toContain("could not be fully captured");
+    expect(error).toContain("drain timed out");
     // The prefix never became the step artifact.
     expect(result.evidence.output).toBeNull();
     expect(JSON.stringify(result.evidence)).not.toContain("partial-artifact");
+
+    const rows = await unitRows();
+    expect(rows[0]!.status).toBe("failed");
+    expect(rows[0]!.failure_reason).toBe("exec_capture_incomplete");
   }, 90_000);
+
+  test("`retry: { on: [spawn_failed] }` does NOT re-run a command that already completed", async () => {
+    seedRun(["work"]);
+    // The whole point of the separate reason: a unit that declares the widest
+    // plausible retry policy for a start-up failure must not re-dispatch
+    // byte-identical argv for a command that ALREADY ran its side effects.
+    const log = path.join(tmpDir, "executions.log");
+    const plan = execPlan([
+      "    unit:",
+      "      exec:",
+      `        command: ${JSON.stringify(fdHolderArgv(log))}`,
+      '      timeout: "2s"',
+      "      retry: { max: 2, on: [spawn_failed] }",
+    ]);
+    storePlan(plan);
+
+    const result = await run(plan);
+
+    expect(result.ok).toBe(false);
+    expect(result.units[0]!.failureReason).toBe("exec_capture_incomplete");
+    // ONE execution — not the 1 + 2 retries the declared policy would have run.
+    expect(fs.readFileSync(log, "utf8")).toBe("x");
+    // …and one journal row: no `~r1`/`~r2` attempt ids were ever minted.
+    const rows = await unitRows();
+    expect(rows.map((r) => r.unit_id)).toEqual(["work:solo"]);
+  }, 90_000);
+
+  test("`exec_capture_incomplete` cannot be opted into from retry.on either", () => {
+    // Out of the taxonomy at the AUTHORING surface too, exactly like the other
+    // exec-only reasons: there is no spelling of `retry:` that re-dispatches a
+    // command that already ran.
+    const errors = parseErrors(
+      [
+        "---",
+        "type: workflow",
+        "steps:",
+        "  - id: work",
+        "    unit:",
+        "      exec:",
+        '        command: ["true"]',
+        "      retry: { max: 2, on: [exec_capture_incomplete] }",
+        "---",
+        "",
+        "## work",
+        "",
+        "Run the command.",
+        "",
+      ].join("\n"),
+    );
+    expect(errors.map((error) => error.message).join(" ")).toContain(
+      'unknown failure reason "exec_capture_incomplete"',
+    );
+  });
+});
+
+describe("exec unit — a STDERR-only drain failure never discards a valid artifact", () => {
+  /**
+   * The mirror image of `fdHolderArgv`: the leader writes its WHOLE stdout
+   * artifact and exits 0, leaving a detached descendant holding only the STDERR
+   * fd open. stdout drained completely, the command exited 0 — the only thing
+   * stuck is the diagnostic channel, which never contributes to the artifact.
+   */
+  function stderrHolderArgv(): string[] {
+    const holder = "setTimeout(() => {}, 30000)";
+    return bunArgv(
+      `const cp=require('node:child_process'); ` +
+        `const child=cp.spawn(${JSON.stringify(BUN)}, ['-e', ${JSON.stringify(holder)}], ` +
+        `{ stdio: ['ignore', 'ignore', 'inherit'] }); child.unref(); ` +
+        `process.stdout.write('complete-artifact');`,
+    );
+  }
+
+  test("the unit SUCCEEDS with its full stdout artifact, and settles nowhere near its wall budget", async () => {
+    // A two-MINUTE budget under a 30-second test timeout: the SETTLE is the
+    // evidence, exactly as in the kill-ladder tests above. A drain deadline
+    // armed from capture instead of from the leader's exit would hold this unit
+    // for the whole 120 s, and the test would fail on its own timeout rather
+    // than pass slowly.
+    const BUDGET_MS = 120_000;
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+
+    let result: UnitDispatchResult;
+    try {
+      result = await runExecUnit({
+        unitId: "work:solo",
+        exec: { command: stderrHolderArgv() as [string, ...string[]], timeoutMs: BUDGET_MS },
+        baseDir: workDir,
+        timeoutMs: BUDGET_MS,
+      });
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
+
+    // A completed command with a complete stdout is a SUCCESS. Failing it
+    // `exec_capture_incomplete` would throw away a valid artifact — and that
+    // reason is non-retryable, so the work could never be recovered either.
+    expect(result.failureReason).toBeUndefined();
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe("complete-artifact");
+
+    // The lost log tail is still SAID somewhere — a success that quietly
+    // dropped part of its diagnostics would be its own kind of dishonest.
+    expect(warnings.join("\n")).toContain("stderr drain timed out");
+  }, 30_000);
 });
 
 describe("exec unit — a stderr-only diagnosis survives to the journal (finding 3)", () => {

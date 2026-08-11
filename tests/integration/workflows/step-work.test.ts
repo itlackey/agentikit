@@ -26,6 +26,7 @@ import {
   finalizeExecutedStep,
   type RouteSkipInfo,
   recoverGateFeedback,
+  referencedStepIds,
   seedJournaledRouteDecisions,
   type UnitOutcome,
   unitOutcomeFromRow,
@@ -172,7 +173,7 @@ describe("computeStepWorkList — dispatch-input hash envelope (reviewer finding
     };
     const wl = computeStepWorkList(step, { ...input, engines });
     if (!wl.ok) throw new Error(wl.error);
-    return wl.list.units[0]!.resolved.inputHash;
+    return wl.list.units[0]!.inputHash;
   }
 
   const baseline = hashOf({});
@@ -272,12 +273,12 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
     const u = a.list.units[0]!;
     expect(u.unitId).toBe("s1:solo");
     // Instructions reach the unit byte-exact.
-    expect(u.resolved.prompt).toContain("Do the assigned work.");
+    expect(u.prompt).toContain("Do the assigned work.");
     // Params attach as structured JSON context (never interpolated into text).
-    expect(u.resolved.prompt).toContain('"x":"alpha"');
-    expect(u.resolved.prompt).toContain('"y":"beta"');
+    expect(u.prompt).toContain('"x":"alpha"');
+    expect(u.prompt).toContain('"y":"beta"');
     // 64-hex sha256.
-    expect(u.resolved.inputHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(u.inputHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
   test("fan-out identity is content-derived — independent of item order", () => {
@@ -306,7 +307,7 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
     expect(fwdA?.unitId).toMatch(/^review:[0-9a-f]{12}$/);
     // The item reaches the unit as ATTACHED CONTEXT (never resolved/spliced) —
     // the "## Item (index N)" block `buildUnitPrompt` emits.
-    expect(fwdA?.resolved.prompt).toContain("## Item (index 0)\nYou were given this item");
+    expect(fwdA?.prompt).toContain("## Item (index 0)\nYou were given this item");
   });
 
   test("duplicate fan-out items are a whole-list failure naming the collision", () => {
@@ -366,7 +367,7 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const u = result.list.units[0]!;
-    expect(u.resolved.prompt).toContain("Literal ${{ not.parsed }} and steps.prior.output here.");
+    expect(u.prompt).toContain("Literal ${{ not.parsed }} and steps.prior.output here.");
   });
 
   test("gate feedback changes the prompt AND the input hash", () => {
@@ -390,10 +391,10 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
     const u2 = loop2.list.units[0]!;
     expect(u1.journalBaseId).toBe("s1:solo");
     expect(u2.journalBaseId).toBe("s1:solo~l2");
-    expect(u2.resolved.prompt).toContain("Add analysis.");
-    expect(u2.resolved.prompt).toContain("- thoroughness");
-    expect(u1.resolved.prompt).not.toContain("Add analysis.");
-    expect(u2.resolved.inputHash).not.toBe(u1.resolved.inputHash);
+    expect(u2.prompt).toContain("Add analysis.");
+    expect(u2.prompt).toContain("- thoroughness");
+    expect(u1.prompt).not.toContain("Add analysis.");
+    expect(u2.inputHash).not.toBe(u1.inputHash);
   });
 });
 
@@ -724,9 +725,9 @@ describe("anti-drift — recomputing loop 2 from the journal reproduces the engi
     if (!list.ok) return;
     const u = list.list.units[0]!;
     expect(u.journalBaseId).toBe("work:solo~l2");
-    expect(u.resolved.prompt).toBe(workPrompts[1]!);
+    expect(u.prompt).toBe(workPrompts[1]!);
     const journaled = rows.find((r) => r.unit_id === "work:solo~l2");
-    expect(journaled?.input_hash).toBe(u.resolved.inputHash);
+    expect(journaled?.input_hash).toBe(u.inputHash);
   });
 });
 
@@ -802,6 +803,85 @@ describe("buildEvidence — surface-independent unit projection (R4 anti-drift)"
     const reportEvidence = buildEvidence([reportOutcome], "collect", false);
     expect(canonicalJson(engineEvidence.units)).toBe(canonicalJson(reportEvidence.units));
     expect(engineEvidence.units).toEqual([{ unitId: "s1:solo", ok: true, text: "did the work" }]);
+  });
+});
+
+// ── Live-evidence retention set (referencedStepIds) ──────────────────────────
+//
+// The engine holds a completed step's COMPLETE artifact in memory only while
+// some other step can still read it. The retention set is derived from the
+// frozen plan's whole reference surface — `inputs[]`, `map.over`,
+// `route.input` — and nothing else, since instructions are never scanned.
+
+const REFERENCE_SURFACE_WF = `---
+type: workflow
+params:
+  seeds: { type: array }
+steps:
+  - id: bulk
+  - id: listing
+  - id: flagging
+    unit:
+      output: { type: object, properties: { verdict: { type: string } }, required: [verdict] }
+  - id: fanned
+    map:
+      over: steps.listing.output
+  - id: summarize
+    inputs: [steps.flagging.output.verdict]
+  - id: triage
+    route:
+      input: steps.flagging.output.verdict
+      when: [{ match: pass, step: ship }]
+      default: rework
+  - id: ship
+  - id: rework
+---
+
+## bulk
+
+Emit a lot.
+
+## listing
+
+List things.
+
+## flagging
+
+Flag it.
+
+## fanned
+
+Handle one.
+
+## summarize
+
+Summarize.
+
+## triage
+
+Route.
+
+## ship
+
+Ship.
+
+## rework
+
+Rework.
+`;
+
+describe("referencedStepIds — what the live-evidence map is allowed to hold", () => {
+  test("collects producers named by inputs[], map.over and route.input, and nothing else", () => {
+    const referenced = referencedStepIds(plan(REFERENCE_SURFACE_WF));
+    expect([...referenced].sort()).toEqual(["flagging", "listing"]);
+    // `bulk` produces an artifact no step names — nothing can read it, so
+    // nothing needs to keep it complete for the rest of the invocation.
+    expect(referenced.has("bulk")).toBe(false);
+    // Consumers are not producers: naming a reference does not make a step's
+    // own artifact live.
+    expect(referenced.has("fanned")).toBe(false);
+    expect(referenced.has("summarize")).toBe(false);
+    expect(referenced.has("triage")).toBe(false);
   });
 });
 
@@ -1079,6 +1159,35 @@ describe("fail-closed validation gates", () => {
     const gate = rows.find((r) => r.unit_id === "work.gate:l1");
     expect(gate?.status).toBe("failed");
     expect(gate?.result_json).toBeNull();
+  });
+
+  test("an abort on the DISPATCH signal mid-judge rethrows — it is never recorded as a verifier failure", async () => {
+    // The judge dispatches under the heartbeat-chained signal, not the caller's,
+    // so a lost lease aborts THERE. Seeing only `signal`, the completion path's
+    // interruption guard classified the aborted judge as an outage and durably
+    // blocked the step blaming verifier infrastructure — misattribution plus a
+    // spurious blocked run, moments before the real lost-lease error surfaced.
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
+    const dispatch = new AbortController();
+    const judge: SummaryJudge = async () => {
+      dispatch.abort(new Error("Workflow run lost its run lease mid-dispatch"));
+      throw dispatch.signal.reason;
+    };
+    await expect(
+      finalizeExecutedStep(finalizeArgs({ summaryJudge: judge, dispatchSignal: dispatch.signal })),
+    ).rejects.toThrow(/lost its run lease mid-dispatch/);
+
+    // No blocked write: the step is untouched and the run stays active, so the
+    // next invocation re-evaluates the gate over the journaled units.
+    const status = await getWorkflowStatus(RUN_ID);
+    expect(status.run.status).toBe("active");
+    const step = status.workflow.steps.find((s) => s.id === "work");
+    expect(step?.status).toBe("pending");
+    expect(step?.notes ?? "").not.toContain("could not be verified");
+    // The gate row is still finished (errored, no verdict) — an interruption
+    // must not strand it `running` either.
+    const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(RUN_ID, "work"));
+    expect(rows.find((r) => r.unit_id === "work.gate:l1")?.status).toBe("failed");
   });
 
   test("the engine also refuses to bypass validation when no judge is configured — run blocked, resumable", async () => {

@@ -26,15 +26,25 @@ export interface MakeGitRepoOptions {
   prefix?: string;
   /** Called with the new repo dir so the suite can schedule its removal. */
   register?: (dir: string) => void;
+  /**
+   * Init here instead of a fresh mkdtemp dir (created if absent). For a suite
+   * whose repo has to live at a path it already owns — an isolated storage
+   * sandbox it cleans up wholesale.
+   */
+  dir?: string;
 }
 
 /** Init a temp git repo with one committed file (`README.md`). */
 export function makeGitRepo(options: MakeGitRepoOptions = {}): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), options.prefix ?? "akm-git-repo-"));
+  const dir = options.dir ?? fs.mkdtempSync(path.join(os.tmpdir(), options.prefix ?? "akm-git-repo-"));
+  fs.mkdirSync(dir, { recursive: true });
   options.register?.(dir);
   git(dir, ["init", "-q"]);
   git(dir, ["config", "user.email", "test@akm.invalid"]);
   git(dir, ["config", "user.name", "akm-test"]);
+  // A developer or CI runner with `commit.gpgsign = true` in their own git
+  // config would otherwise fail every fixture commit here.
+  git(dir, ["config", "commit.gpgsign", "false"]);
   fs.writeFileSync(path.join(dir, "README.md"), "# fixture\n");
   git(dir, ["add", "README.md"]);
   git(dir, ["commit", "-q", "-m", "fixture"]);

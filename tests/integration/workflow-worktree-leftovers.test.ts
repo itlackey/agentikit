@@ -124,6 +124,29 @@ describe.skipIf(!GIT)("createUnitWorktree — leftover handling (never destroy d
     expect(fs.existsSync(path.join(created.path, "README.md"))).toBe(true);
   });
 
+  test("a preserved leftover is reported even when the re-creation then FAILS", async () => {
+    const repo = makeGitRepo();
+
+    const first = await mustCreate(repo, "work:solo");
+    fs.writeFileSync(path.join(first.path, "uncollected-work.txt"), "important\n");
+
+    // The base repo is gone by the time the attempt is retried: the leftover
+    // can no longer be verified (so it is moved aside) and the `git worktree
+    // add` that follows fails. The moved-aside copy is now the ONLY one of the
+    // previous attempt's work, so the failure result must still carry it —
+    // otherwise the operator is told worktree_failed and nothing else.
+    fs.rmSync(path.join(repo, ".git"), { recursive: true, force: true });
+
+    const failed = await createUnitWorktree(repo, RUN_ID, "work:solo");
+    expect(failed.ok).toBe(false);
+    if (failed.ok) return;
+    expect(failed.error).toContain("could not create isolation worktree");
+    const preserved = failed.preservedLeftover as string;
+    expect(preserved).toBeDefined();
+    expect(preserved.startsWith(`${first.path}.retained-`)).toBe(true);
+    expect(fs.readFileSync(path.join(preserved, "uncollected-work.txt"), "utf8")).toBe("important\n");
+  });
+
   test("successive dirty leftovers get DISTINCT retained paths (no overwrite)", async () => {
     const repo = makeGitRepo();
 

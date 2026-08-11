@@ -12,8 +12,7 @@ import {
   nameOrTypeDiagnostics,
   ORPHANED_STUB_DETAIL,
   taskDiagnostics,
-  workflowCompileWarnings,
-  workflowStructureDiagnostics,
+  workflowFrontendDiagnostics,
 } from "../../core/adapter/adapters/akm-lint";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { adapterForId } from "../../core/adapter/registry";
@@ -31,7 +30,7 @@ import type { FileChange } from "../../core/file-change";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import { runBaseChecks } from "./base-linter";
 import { checkEnvForDangerousKeys } from "./env-key-rules";
-import type { LintContext, LintIssue, LintIssueType } from "./types";
+import { isAdvisoryLintIssue, type LintContext, type LintIssue, type LintIssueType } from "./types";
 
 // ── Public API types (re-exported for consumers) ──────────────────────────────
 
@@ -243,9 +242,11 @@ async function lintViaAdapter(
 
   const mapped = diagnostics.map(diagnosticToLintIssue);
   // Advisory diagnostics travel in their own channel — never `flagged`, so a
-  // `--fail-on-flagged` gate is not tripped by a non-fatal warning.
-  const warnings = mapped.filter((issue) => issue.issue === "workflow-warning");
-  const flagged = mapped.filter((issue) => issue.issue !== "workflow-warning");
+  // `--fail-on-flagged` gate is not tripped by a non-fatal warning. Classified
+  // by the shared `ADVISORY_LINT_ISSUES` set rather than a code spelled out
+  // here, so this and the sweep below can never disagree about a code.
+  const warnings = mapped.filter(isAdvisoryLintIssue);
+  const flagged = mapped.filter((issue) => !isAdvisoryLintIssue(issue));
   // The cross-bundle env dangerous-key sweep (see `runEnvDangerousKeyPass`'s
   // doc comment) ran for every non-akm adapter via the STASH_SUBDIRS
   // fallthrough this dispatch replaces — EXCEPT `okf`, which the old code
@@ -384,39 +385,41 @@ function appendMemoryStubIssue(ctx: LintContext, issues: LintIssue[]): void {
   issues.push({ file: ctx.relPath, issue: "orphaned-stub", detail: ORPHANED_STUB_DETAIL, fixed: false });
 }
 
-/** WorkflowLinter's `placeholder-stub` (WITH `--fix` delete) + `invalid-workflow-structure` (workflow-linter.ts:22-79). */
-function appendWorkflowIssues(ctx: LintContext, issues: LintIssue[]): void {
+/**
+ * WorkflowLinter's `placeholder-stub` check WITH its `--fix` delete
+ * (workflow-linter.ts:22-79). Its sibling `invalid-workflow-structure` check is
+ * deliberately NOT here: parse+compile is a single pass shared with the
+ * advisory channel, so {@link lintAkmSweep} runs it once per file and routes
+ * both halves.
+ */
+function appendWorkflowStubIssue(ctx: LintContext, issues: LintIssue[]): void {
   const placeholder = matchWorkflowPlaceholder(ctx.body);
-  if (placeholder) {
-    if (ctx.fix) {
-      try {
-        fs.unlinkSync(ctx.filePath);
-        issues.push({
-          file: ctx.relPath,
-          issue: "placeholder-stub",
-          detail: `deleted: found "${placeholder}"`,
-          fixed: true,
-        });
-      } catch (e) {
-        issues.push({
-          file: ctx.relPath,
-          issue: "placeholder-stub",
-          detail: `could not delete: ${e instanceof Error ? e.message : String(e)}`,
-          fixed: "failed",
-        });
-      }
-      return; // WorkflowLinter returns before the structure check once a stub is fixed.
+  if (!placeholder) return;
+  if (ctx.fix) {
+    try {
+      fs.unlinkSync(ctx.filePath);
+      issues.push({
+        file: ctx.relPath,
+        issue: "placeholder-stub",
+        detail: `deleted: found "${placeholder}"`,
+        fixed: true,
+      });
+    } catch (e) {
+      issues.push({
+        file: ctx.relPath,
+        issue: "placeholder-stub",
+        detail: `could not delete: ${e instanceof Error ? e.message : String(e)}`,
+        fixed: "failed",
+      });
     }
-    issues.push({
-      file: ctx.relPath,
-      issue: "placeholder-stub",
-      detail: `placeholder text: "${placeholder}"`,
-      fixed: false,
-    });
+    return;
   }
-  // NB: the CLI passes the ABSOLUTE filePath to parseWorkflow (matching the old
-  // WorkflowLinter), whereas the adapter passes the change relPath.
-  issues.push(...(workflowStructureDiagnostics(ctx.relPath, ctx.raw, ctx.filePath) as LintIssue[]));
+  issues.push({
+    file: ctx.relPath,
+    issue: "placeholder-stub",
+    detail: `placeholder text: "${placeholder}"`,
+    fixed: false,
+  });
 }
 
 /**
@@ -424,6 +427,10 @@ function appendWorkflowIssues(ctx: LintContext, issues: LintIssue[]): void {
  * per-`type` extra rules. Replaces `getLinterForType(subdir).lint(ctx)`.
  * `--fix` mutations (frontmatter rewrites inside `runBaseChecks`; stub deletes
  * here) are applied when `ctx.fix` is set.
+ *
+ * The workflow parse/compile frontend is NOT one of these rules — it is one
+ * pass feeding two channels, so {@link lintAkmSweep} owns it (see
+ * {@link appendWorkflowStubIssue}).
  */
 export function lintAssetFile(ctx: LintContext, subdir: string): LintIssue[] {
   const issues = runBaseChecks(ctx);
@@ -444,7 +451,7 @@ export function lintAssetFile(ctx: LintContext, subdir: string): LintIssue[] {
       appendMemoryStubIssue(ctx, issues);
       break;
     case "workflows":
-      appendWorkflowIssues(ctx, issues);
+      appendWorkflowStubIssue(ctx, issues);
       break;
     // knowledge / lessons / skills: base checks only (skill directory-level
     // `missing-skill-md` runs separately, per-subdir, in the sweep loop).
@@ -543,6 +550,12 @@ function lintAkmSweep(
         if (isFileDeletion(issue)) {
           fileDeleted = true;
           fixed.push(issue);
+        } else if (isAdvisoryLintIssue(issue)) {
+          // `lintAssetFile` returns errors only today, so this branch is
+          // reached by no current producer — it is here so that an advisory
+          // added to a per-type check later cannot silently become a
+          // `--fail-on-flagged` failure, the way the unclassified default does.
+          warnings.push(issue);
         } else if (issue.fixed === true) {
           fixed.push(issue);
         } else {
@@ -553,11 +566,24 @@ function lintAkmSweep(
 
       if (fileDeleted) continue; // file is gone — skip any remaining checks
 
-      // Workflow compile warnings are non-fatal advisories (`compileWorkflowPlan`'s
-      // `warnings`): surfaced in the result's separate `warnings` channel so
-      // they reach human + JSON lint output without tripping `--fail-on-flagged`.
+      // The workflow frontend is ONE parse+compile whose output feeds BOTH
+      // channels, so it runs here — once per file — rather than inside
+      // `lintAssetFile`, which is an errors-only surface (pinned by the lint
+      // golden). Which channel a finding lands in is decided by
+      // `ADVISORY_LINT_ISSUES`, never by which half of the pass produced it, so
+      // a future compile-warning kind carrying a fatal code cannot slip past
+      // `--fail-on-flagged`.
+      // NB: the CLI passes the ABSOLUTE filePath to parseWorkflow (matching the
+      // old WorkflowLinter), whereas the adapter passes the change relPath.
       if (subdir === "workflows") {
-        warnings.push(...(workflowCompileWarnings(relPath, raw, filePath) as LintIssue[]));
+        const frontend = workflowFrontendDiagnostics(relPath, raw, filePath);
+        for (const finding of [...frontend.errors, ...frontend.warnings]) {
+          if (isAdvisoryLintIssue(finding)) {
+            warnings.push(finding);
+          } else {
+            flagged.push(finding);
+          }
+        }
       }
     }
   }
