@@ -82,13 +82,13 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parse as parseYaml } from "yaml";
 import {
   applyPostContributorFields,
   applyPreContributorFields,
   extractPackageMetadata,
 } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
+import { parseTaskYaml, taskYamlParseDetail } from "../../../tasks/schema";
 import {
   assetPathForName,
   deriveCanonicalAssetNameFromStashRoot,
@@ -402,14 +402,19 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
     // everything else → `parseFrontmatter`.
     let parsed: ParsedForValidate;
     if (type === "task") {
-      let data: Record<string, unknown> = {};
-      try {
-        const doc = parseYaml(raw);
-        if (doc && typeof doc === "object" && !Array.isArray(doc)) data = doc as Record<string, unknown>;
-      } catch {
-        data = {};
+      const task = parseTaskYaml(raw);
+      // A parse failure is its OWN finding: every task rule short-circuits on
+      // an empty mapping, so collapsing "unparseable" onto `{}` made a broken
+      // task file validate clean (issue #760). Mirrors the CLI sweep.
+      if (!task.ok) {
+        diagnostics.push({
+          file: change.path,
+          issue: "invalid-task-yaml",
+          detail: taskYamlParseDetail(task.error),
+          fixed: false,
+        });
       }
-      parsed = { data, content: raw, frontmatter: null };
+      parsed = { data: task.data, content: raw, frontmatter: null };
     } else {
       const p = parseFrontmatter(raw);
       parsed = { data: p.data, content: p.content, frontmatter: p.frontmatter };

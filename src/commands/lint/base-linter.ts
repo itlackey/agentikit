@@ -462,11 +462,17 @@ function parseInnerFrontmatterBlock(body: string): Record<string, unknown> | nul
  * File mutations triggered by the fixable base checks (`unquoted-colon`,
  * `missing-updated`) are flushed to disk here when `ctx.fix` is set, and
  * `ctx.raw` is updated in place so a caller can re-parse the post-fix content.
+ * A failed flush (read-only file, full disk) DOWNGRADES the optimistic
+ * `fixed: true` findings this call made to `fixed: "failed"` rather than
+ * throwing — an uncaught throw here used to kill the whole sweep and hide
+ * which earlier files had already been rewritten (issue #761).
  */
 export function runBaseChecks(ctx: LintContext): LintIssue[] {
   const issues: LintIssue[] = [];
   let currentRaw = ctx.raw;
   let modified = false;
+  /** Findings whose `fixed: true` is only true once the flush below succeeds. */
+  const pendingFixes: LintIssue[] = [];
 
   // M8: Parse lint_skip from frontmatter for per-file rule suppression.
   // Accept both an array (`lint_skip: [missing-ref, stale-path]`) and a
@@ -485,12 +491,14 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
       if (ctx.fix) {
         currentRaw = fixUnquotedColon(currentRaw);
         modified = true;
-        issues.push({
+        const issue: LintIssue = {
           file: ctx.relPath,
           issue: "unquoted-colon",
           detail: unquotedColonDetail,
           fixed: true,
-        });
+        };
+        issues.push(issue);
+        pendingFixes.push(issue);
       } else {
         issues.push({
           file: ctx.relPath,
@@ -513,12 +521,14 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
       }
       currentRaw = fixMissingUpdated(currentRaw, mtime);
       modified = true;
-      issues.push({
+      const issue: LintIssue = {
         file: ctx.relPath,
         issue: "missing-updated",
         detail: `stamped updated: ${localDateStamp(mtime)}`,
         fixed: true,
-      });
+      };
+      issues.push(issue);
+      pendingFixes.push(issue);
     } else {
       issues.push({
         file: ctx.relPath,
@@ -530,9 +540,22 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
   }
 
   if (modified) {
-    fs.writeFileSync(ctx.filePath, currentRaw, "utf8");
-    // Propagate the mutated raw back so subclasses can re-parse if needed
-    ctx.raw = currentRaw;
+    // Mirrors the two stub-delete call sites in `commands/lint/index.ts`
+    // (`appendMemoryStubIssue`/`appendWorkflowStubIssue`), which already report
+    // a failed mutation as `fixed: "failed"` instead of throwing. Without this
+    // the sweep aborted mid-run on the first unwritable file and the caller got
+    // an exception instead of a result naming the fixes that HAD landed.
+    try {
+      fs.writeFileSync(ctx.filePath, currentRaw, "utf8");
+      // Propagate the mutated raw back so subclasses can re-parse if needed
+      ctx.raw = currentRaw;
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      for (const issue of pendingFixes) {
+        issue.fixed = "failed";
+        issue.detail = `${issue.detail} — could not write fix: ${reason}`;
+      }
+    }
   }
 
   // ── 3. stale-path ──────────────────────────────────────────────────────

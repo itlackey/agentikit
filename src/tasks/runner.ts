@@ -38,6 +38,7 @@ import { shouldSkipUnactivatedTask } from "../core/activation-policy";
 import { assertNever } from "../core/assert";
 import { placementSpecFor } from "../core/asset/asset-placement";
 import { parseRefInput } from "../core/asset/resolve-ref";
+import { writeFileAtomic } from "../core/common";
 import { loadConfig } from "../core/config/config";
 import { AkmError, NotFoundError, rethrowIfTestIsolationError } from "../core/errors";
 import {
@@ -806,8 +807,12 @@ function persistRunLog(input: {
   const dbLines = input.dbLines.map((entry) => ({ ...entry, line: redactCredentialPatterns(entry.line) }));
   if (input.logPath) {
     try {
-      fs.mkdirSync(path.dirname(input.logPath), { recursive: true });
-      fs.writeFileSync(input.logPath, fileText);
+      // 0600/0700, not the umask default (issue #756): a run log holds captured
+      // command/agent output, which is exactly the material the redaction
+      // passes above are trying to keep out of other users' hands.
+      // `writeFileAtomic` pins mode 0600 by default.
+      fs.mkdirSync(path.dirname(input.logPath), { recursive: true, mode: 0o700 });
+      writeFileAtomic(input.logPath, fileText);
     } catch (error) {
       rethrowIfTestIsolationError(error);
       // Transitional file logging is fully best-effort.

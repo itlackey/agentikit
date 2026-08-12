@@ -52,11 +52,22 @@ describe("akm-task adapter — metadata", () => {
   test("id / version / extensions", () => {
     expect(akmTaskAdapter.id).toBe("akm-task");
     expect(akmTaskAdapter.version).toBe("0.9.0");
-    expect(akmTaskAdapter.extensions).toEqual([".yml"]);
+    // `.yaml` is a COLLECTION hint only (issue #760) so `akm lint` routes the
+    // near-miss spelling into `validate` instead of walking past it.
+    expect(akmTaskAdapter.extensions).toEqual([".yml", ".yaml"]);
   });
 
   test("a README markdown abstains (tasks are YAML)", () => {
     expect(recognizeRel("README.md")).toBeNull();
+  });
+
+  test("recognition still gates on .yml — a .yaml file is never indexed as a task", () => {
+    const doc = akmTaskAdapter.recognize(component(), {
+      ...buildFileContext(FIXTURE_ROOT, path.join(FIXTURE_ROOT, "nightly-index.yml")),
+      relPath: "misnamed.yaml",
+      ext: ".yaml",
+    });
+    expect(doc).toBeNull();
   });
 });
 

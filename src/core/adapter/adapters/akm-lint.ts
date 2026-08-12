@@ -199,23 +199,34 @@ export function dangerousEnvKeyDiagnostics(type: string | undefined, relPath: st
 
 // ── skill directory check (SkillLinter.lintDirectory) ────────────────────────
 
+/** The akm-native skill placement dir — the default gate for {@link skillDirectoryDiagnostics}. */
+const AKM_SKILL_DIRS: ReadonlySet<string> = new Set(["skills"]);
+
 /**
  * Reproduce `SkillLinter.lintDirectory` (`skill-linter.ts:31-45`) in the
- * change-set model: for a change under `skills/<name>/…`, emit `missing-skill-md`
- * when `skills/<name>/SKILL.md` is absent from the overlay. `seen` dedups so a
- * dir with multiple changed files reports once (matching the per-subdir call).
- * `file`/`detail` mirror the live check exactly (relDir + `no SKILL.md in <relDir>/`).
+ * change-set model: for a change under `<skillDir>/<name>/…`, emit
+ * `missing-skill-md` when `<skillDir>/<name>/SKILL.md` is absent from the
+ * overlay. `seen` dedups so a dir with multiple changed files reports once
+ * (matching the per-subdir call). `file`/`detail` mirror the live check exactly
+ * (relDir + `no SKILL.md in <relDir>/`).
+ *
+ * `skillDirs` defaults to the akm-native `skills/` placement dir. The tool-dir
+ * adapters pass their OWN accepted spellings, because opencode also accepts the
+ * singular `skill/` alias on read (`opencode-adapter.ts` LAYOUT) — with the
+ * gate hardcoded to `"skills"`, an identical manifest-less package went flagged
+ * under `skills/` and unflagged under `skill/` (issue #774).
  */
 export async function skillDirectoryDiagnostics(
   relPath: string,
   seen: Set<string>,
   ctx: ValidateContext,
+  skillDirs: ReadonlySet<string> = AKM_SKILL_DIRS,
 ): Promise<Diagnostic[]> {
   const segments = relPath
     .replace(/\\/g, "/")
     .split("/")
     .filter((s) => s.length > 0);
-  if (segments.length < 3 || segments[0] !== "skills") return []; // must be skills/<name>/<file…>
+  if (segments.length < 3 || !skillDirs.has(segments[0]!)) return []; // must be <skillDir>/<name>/<file…>
   const skillDir = `${segments[0]}/${segments[1]}`;
   if (seen.has(skillDir)) return [];
   seen.add(skillDir);

@@ -28,7 +28,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { akmLint } from "../../src/commands/lint/index";
 import { detectAdapterId } from "../../src/core/adapter/detect-adapter";
+import { _setWarnSinkForTests } from "../../src/core/warn";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { overrideSeam } from "../_helpers/seams";
 
 function write(root: string, relPath: string, content: string): void {
   const full = path.join(root, relPath);
@@ -98,5 +100,58 @@ describe("akm lint dispatches an llm-wiki bundle through llmWikiAdapter.validate
     expect(result.ok).toBe(true);
     expect(result.flagged).toEqual([]);
     expect(result.fixed).toEqual([]);
+  });
+});
+
+/**
+ * `--type` names an AKM stash subdir. For a non-akm bundle the adapter's
+ * `validate()` sees the whole bundle no matter what, so the flag is a silent
+ * no-op — a user scoping a run got full-bundle output with nothing saying the
+ * flag had not applied (issue #762). The refusal is deliberately a WARNING and
+ * not an error: full-bundle validation is a superset of the requested scope, so
+ * nothing goes unreported, and a hard error would break scripts passing one
+ * `--type` across mixed-adapter bundle sets.
+ */
+describe("akm lint warns that --type is a no-op for a non-akm adapter (issue #762)", () => {
+  let storage: IsolatedAkmStorage;
+  afterEach(() => storage?.cleanup());
+
+  function wikiBundle(root: string): void {
+    write(root, "schema.md", "# Wiki schema\n");
+    write(root, "pages/topic.md", "---\ndescription: A well-formed page\n---\n\nBody.\n");
+  }
+
+  function captureWarnings(): string[] {
+    const lines: string[] = [];
+    overrideSeam(_setWarnSinkForTests, (_level, args) => {
+      lines.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+    });
+    return lines;
+  }
+
+  test("the warning names the flag and the adapter, and the findings are unchanged", async () => {
+    storage = withIsolatedAkmStorage();
+    const wikiRoot = path.join(storage.root, "typed-wiki");
+    wikiBundle(wikiRoot);
+
+    const warnings = captureWarnings();
+    const scoped = await akmLint({ dir: wikiRoot, typeFilter: "memories" });
+
+    expect(warnings.some((line) => /--type "memories"/.test(line) && /llm-wiki/.test(line))).toBe(true);
+    // The content contract from the issue: scoping changes nothing, it only
+    // gains a signal. Compare against an unscoped run of the same bundle.
+    const unscoped = await akmLint({ dir: wikiRoot });
+    expect(scoped.flagged).toEqual(unscoped.flagged);
+  });
+
+  test("no warning is emitted when --type is absent", async () => {
+    storage = withIsolatedAkmStorage();
+    const wikiRoot = path.join(storage.root, "untyped-wiki");
+    wikiBundle(wikiRoot);
+
+    const warnings = captureWarnings();
+    await akmLint({ dir: wikiRoot });
+
+    expect(warnings.filter((line) => /--type/.test(line))).toEqual([]);
   });
 });

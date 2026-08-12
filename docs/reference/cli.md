@@ -1852,14 +1852,24 @@ akm lint --fail-on-flagged      # CI-friendly: exit non-zero when summary.flagge
 
 | Flag | Description |
 | --- | --- |
-| `--fix` (alias `--auto-fix`) | Apply auto-fixes in place |
+| `--fix` (alias `--auto-fix`) | Apply auto-fixes in place. Refused with a usage error when the target bundle is configured `writable: false`. |
 | `--dir` | Override the bundle root directory (default: from config) |
-| `--type` | Only lint assets of this type (e.g. `workflows`, `tasks`, `memories`) |
+| `--type` | Only lint assets of this type (e.g. `workflows`, `tasks`, `memories`). **akm bundles only** — every other adapter validates the whole bundle and warns on stderr that the flag had no effect. |
 | `--fail-on-flagged` | Exit non-zero when `summary.flagged > 0`. Default: exit 0 regardless of findings. |
 
 Returns `fixed[]` and `flagged[]` arrays plus a `summary: { fixed, flagged }`
 count. Each entry carries `file`, `issue`, `detail`, and whether it was
 `fixed`.
+
+Task files are checked for more than their fields: a `tasks/*.yml` whose YAML
+does not parse is reported as `invalid-task-yaml` (it used to fall through as an
+empty mapping and lint clean), and a `tasks/*.yaml` file — a spelling akm never
+indexes or schedules — is flagged for the extension rather than skipped.
+
+`--fix` is transactional per file: a fix that cannot be written (read-only file,
+full disk) is reported as `fixed: "failed"` on that file and the sweep continues,
+so a mid-run write failure can no longer abort the command and hide the fixes
+that already landed.
 
 ### improve
 

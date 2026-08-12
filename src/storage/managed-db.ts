@@ -40,19 +40,65 @@ export interface ManagedDbSpec {
   create?: boolean;
 }
 
+/** Owner-only file mode for the databases and owner-only mode for their directory. */
+const DB_FILE_MODE = 0o600;
+const DB_DIR_MODE = 0o700;
+
+/**
+ * The WAL sidecars SQLite creates next to a database in `journal_mode=WAL`.
+ * They carry the same page content as the database itself, so leaving them at
+ * the umask default would defeat tightening only the main file.
+ */
+const WAL_SIDECAR_SUFFIXES = ["-wal", "-shm"] as const;
+
+/**
+ * Tighten a managed database and its directory to owner-only (issue #756).
+ *
+ * `state.db` / `index.db` / `logs.db` hold task history, captured command
+ * output, and indexed content, but were created at whatever the process umask
+ * left them at (typically `0644`), unlike every env/secret file akm writes —
+ * those pin `0600` through {@link import("../core/common").writeFileAtomic}'s
+ * default mode. On a shared host any local user could read them straight off
+ * disk without going through akm.
+ *
+ * Best-effort by design: POSIX modes are meaningless on Windows, and a chmod
+ * can legitimately fail on a mounted/foreign filesystem or a file owned by
+ * another user. Neither is a reason to fail an otherwise healthy open — and
+ * `akm health`'s `secret-file-perms` advisory now scans these same paths, so a
+ * chmod that could not be applied is surfaced rather than lost.
+ */
+function tightenDatabasePermissions(dbPath: string, dir: string): void {
+  if (process.platform === "win32") return;
+  const chmod = (target: string, mode: number): void => {
+    try {
+      fs.chmodSync(target, mode);
+    } catch {
+      // Not our file / not a POSIX-mode filesystem — `akm health` reports it.
+    }
+  };
+  chmod(dir, DB_DIR_MODE);
+  chmod(dbPath, DB_FILE_MODE);
+  for (const suffix of WAL_SIDECAR_SUFFIXES) chmod(`${dbPath}${suffix}`, DB_FILE_MODE);
+}
+
 /**
  * Open a managed SQLite database: ensure the parent dir exists, open the handle,
  * apply standard pragmas, then run the schema initializer. The single home for
- * the open→pragmas→migrate recipe.
+ * the open→pragmas→migrate recipe — and therefore the single home for the
+ * owner-only permission enforcement every one of these databases needs
+ * ({@link tightenDatabasePermissions}).
  */
 export function openManagedDatabase(spec: ManagedDbSpec): Database {
   const dir = path.dirname(spec.path);
   if (spec.create !== false && !fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: DB_DIR_MODE });
   }
   const db = spec.create === false ? openDatabase(spec.path, { create: false }) : openDatabase(spec.path);
   applyStandardPragmas(db, spec.pragmas ?? { dataDir: dir });
   spec.init?.(db);
+  // AFTER pragmas + init: `journal_mode=WAL` and the first DDL write are what
+  // materialize the `-wal`/`-shm` sidecars, so chmodding earlier would miss them.
+  tightenDatabasePermissions(spec.path, dir);
   return db;
 }
 

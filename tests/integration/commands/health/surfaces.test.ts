@@ -56,6 +56,58 @@ describe("collectSecretPermsAdvisory (08-F4)", () => {
     fs.mkdirSync(path.join(stashDir, "env"), { mode: 0o755 });
     expect(collectSecretPermsAdvisory({ stashDir, cacheDir: stashDir }, "win32")).toBeUndefined();
   });
+
+  // ── issue #756: the DB + task-log surfaces the advisory always claimed ──
+  //
+  // `docs/architecture/testing/manual-testing-checklist.md` describes health as
+  // scanning "every bundle plus config, DB/WAL/SHM, backup, and task-log
+  // surfaces", but the collector's roots were only env/secrets/config-backups —
+  // so the two paths that hold task history and captured command output were
+  // never checked.
+
+  test("warns on a group/other-readable state.db, its WAL sidecar, and the data dir", () => {
+    const stashDir = makeTempDir("akm-surfaces-perms-");
+    const cacheDir = makeTempDir("akm-surfaces-cache-");
+    const dataDir = makeTempDir("akm-surfaces-data-");
+    fs.chmodSync(dataDir, 0o755);
+    fs.writeFileSync(path.join(dataDir, "state.db"), "sqlite", { mode: 0o644 });
+    fs.writeFileSync(path.join(dataDir, "state.db-wal"), "wal", { mode: 0o644 });
+
+    const adv = collectSecretPermsAdvisory({ stashDir, cacheDir, dataDir }, "linux");
+    const offenders = (adv?.evidence?.offenders as string[]) ?? [];
+    expect(offenders.some((o) => o.endsWith(`${dataDir}/ (755, want 700)`))).toBe(true);
+    expect(offenders.some((o) => o.includes("state.db (644, want 600)"))).toBe(true);
+    expect(offenders.some((o) => o.includes("state.db-wal (644, want 600)"))).toBe(true);
+  });
+
+  test("warns on a group/other-readable per-run task log", () => {
+    const stashDir = makeTempDir("akm-surfaces-perms-");
+    const cacheDir = makeTempDir("akm-surfaces-cache-");
+    const runDir = path.join(cacheDir, "tasks", "logs", "nightly");
+    fs.mkdirSync(runDir, { recursive: true, mode: 0o755 });
+    fs.writeFileSync(path.join(runDir, "2026-01-01T00-00-00-000Z.log"), "output", { mode: 0o644 });
+
+    const adv = collectSecretPermsAdvisory({ stashDir, cacheDir }, "linux");
+    const offenders = (adv?.evidence?.offenders as string[]) ?? [];
+    expect(offenders.some((o) => o.includes(".log (644, want 600)"))).toBe(true);
+  });
+
+  test("silent when the databases and task logs are 0600 under 0700 dirs", () => {
+    const stashDir = makeTempDir("akm-surfaces-perms-");
+    const cacheDir = makeTempDir("akm-surfaces-cache-");
+    const dataDir = makeTempDir("akm-surfaces-data-");
+    fs.chmodSync(dataDir, 0o700);
+    for (const name of ["state.db", "index.db", "logs.db"]) {
+      fs.writeFileSync(path.join(dataDir, name), "sqlite", { mode: 0o600 });
+    }
+    const runDir = path.join(cacheDir, "tasks", "logs", "nightly");
+    fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(runDir, "run.log"), "output", { mode: 0o600 });
+    fs.chmodSync(path.join(cacheDir, "tasks", "logs"), 0o700);
+    fs.chmodSync(path.join(cacheDir, "tasks"), 0o700);
+
+    expect(collectSecretPermsAdvisory({ stashDir, cacheDir, dataDir }, "linux")).toBeUndefined();
+  });
 });
 
 describe("collectConfigSkewAdvisory (08-F3)", () => {

@@ -13,6 +13,7 @@ import { openLogsDatabase } from "../core/logs-db";
 import { getCacheDir, getConfigPath, getDataDir, getStateDbPathInDataDir } from "../core/paths";
 import { listExistingTableNames, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
+import { resolveSourceEntries } from "../indexer/search/search-source";
 import { readSemanticStatus } from "../indexer/search/semantic-status";
 import type { SessionLogEntry } from "../integrations/session-logs";
 import { getExecutionLogCandidates } from "../integrations/session-logs";
@@ -370,6 +371,22 @@ function gatherImproveSummaryPhase(
  * probe/filesystem failure in either try/catch must not abort the health
  * report — each group degrades to "no advisory" independently.
  */
+/**
+ * Configured bundle roots other than `primary`, for the permission sweep.
+ * Best-effort: a config that cannot be resolved yields none rather than
+ * aborting the (already best-effort) advisory group.
+ */
+function secondaryStashDirs(primary: string): string[] {
+  try {
+    const primaryResolved = path.resolve(primary);
+    return resolveSourceEntries()
+      .map((source) => path.resolve(source.path))
+      .filter((dir) => dir !== primaryResolved && fs.existsSync(dir));
+  } catch {
+    return [];
+  }
+}
+
 function gatherAncillaryAdvisories(
   db: Database,
   stateDbPath: string,
@@ -402,10 +419,15 @@ function gatherAncillaryAdvisories(
   // binary-config-skew, egress-endpoints). Best-effort — a
   // filesystem probe failure must not abort the health report.
   try {
+    const primaryStashDir = options.stashDir ?? resolveStashDir();
     advisories.push(
       ...collectSurfacesAdvisories({
-        stashDir: options.stashDir ?? resolveStashDir(),
+        stashDir: primaryStashDir,
+        // Secondary bundles hold env/secret assets too (issue #756) — the
+        // advisory used to stop at the primary stash.
+        extraStashDirs: secondaryStashDirs(primaryStashDir),
         cacheDir: getCacheDir(),
+        dataDir: getDataDir(),
         configPath: getConfigPath(),
         config: egressConfigView,
       }),

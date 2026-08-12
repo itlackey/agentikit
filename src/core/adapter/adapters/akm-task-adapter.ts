@@ -11,6 +11,10 @@
  * invalid task (e.g. two targets) is still RECOGNIZED; the `invalid-task-yaml`
  * violation surfaces only in `validate`.
  *
+ * `.yaml` is the one extension `validate` inspects but `recognize` refuses: it
+ * is not a task spelling (nothing indexes or schedules it), so it is reported
+ * as `invalid-task-yaml` rather than silently skipped (issue #760).
+ *
  * ── validate (spec §6 task validation column) ──
  *
  * A task must declare `version: 2`, a `schedule`, and EXACTLY ONE target
@@ -28,9 +32,15 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parse as parseYaml } from "yaml";
 import type { FileContext } from "../../../indexer/walk/file-context";
-import { taskFieldProblems } from "../../../tasks/schema";
+import {
+  parseTaskYaml,
+  TASK_EXTENSION,
+  TASK_NEAR_MISS_EXTENSION,
+  taskExtensionDetail,
+  taskFieldProblems,
+  taskYamlParseDetail,
+} from "../../../tasks/schema";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
@@ -39,7 +49,7 @@ import { hashContent } from "./shared";
 /** A native task bundle is single-component; its one component is `main`. */
 const COMPONENT_ID = "main";
 /** The task YAML extension (spec §6 task row). */
-const TASK_EXT = ".yml";
+const TASK_EXT = TASK_EXTENSION;
 /** The mutually-exclusive task target keys (exactly one required). */
 const TARGET_KEYS = ["prompt", "workflow", "command"] as const;
 /** Upper bound on the bounded `content` FTS field (mirrors okf-adapter). */
@@ -69,17 +79,6 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   };
 }
 
-/** Parse a task YAML into a plain record (tolerant: malformed / non-mapping → {}). */
-function parseTaskYaml(raw: string): Record<string, unknown> {
-  try {
-    const doc = parseYaml(raw);
-    if (doc && typeof doc === "object" && !Array.isArray(doc)) return doc as Record<string, unknown>;
-  } catch {
-    // malformed YAML
-  }
-  return {};
-}
-
 /**
  * The native `invalid-task-yaml` check: the shared field rules
  * ({@link taskFieldProblems} — see its doc for the lint-vs-parser
@@ -103,8 +102,34 @@ async function validate(_c: BundleComponent, changes: FileChange[], ctx: Validat
     if (change.op === "delete") continue;
     const raw = change.after ?? (await ctx.readFile(change.path));
     if (typeof raw !== "string") continue;
-    if (path.extname(change.path).toLowerCase() !== TASK_EXT) continue;
-    diagnostics.push(...taskDiagnostics(toPosix(change.path), parseTaskYaml(raw)));
+    const ext = path.extname(change.path).toLowerCase();
+    // `.yaml` is NOT a task extension — the file never indexes and never runs.
+    // It is validated here purely so the near miss is REPORTED rather than
+    // skipped the way every other extension is (issue #760).
+    if (ext !== TASK_EXT && ext !== TASK_NEAR_MISS_EXTENSION) continue;
+    const relPath = toPosix(change.path);
+    if (ext === TASK_NEAR_MISS_EXTENSION) {
+      diagnostics.push({
+        file: relPath,
+        issue: "invalid-task-yaml",
+        detail: taskExtensionDetail(relPath),
+        fixed: false,
+      });
+    }
+    const parsed = parseTaskYaml(raw);
+    if (!parsed.ok) {
+      // Distinguish "unparseable" from "empty": `taskDiagnostics` returns []
+      // for an empty mapping, so collapsing a parse failure onto `{}` made a
+      // broken task file lint clean.
+      diagnostics.push({
+        file: relPath,
+        issue: "invalid-task-yaml",
+        detail: taskYamlParseDetail(parsed.error),
+        fixed: false,
+      });
+      continue;
+    }
+    diagnostics.push(...taskDiagnostics(relPath, parsed.data));
   }
   return diagnostics;
 }
@@ -112,7 +137,11 @@ async function validate(_c: BundleComponent, changes: FileChange[], ctx: Validat
 export const akmTaskAdapter: BundleAdapter = {
   id: "akm-task",
   version: "0.9.0",
-  extensions: [TASK_EXT],
+  // `.yaml` is listed as a COLLECTION hint only — `recognize` still gates on
+  // `.yml`, so a `.yaml` file is never indexed as a task. Listing it is what
+  // routes the near-miss file into `validate`, where it is reported instead of
+  // silently skipped (issue #760).
+  extensions: [TASK_EXT, TASK_NEAR_MISS_EXTENSION],
 
   recognize,
   validate,
@@ -148,7 +177,7 @@ export const akmTaskAdapter: BundleAdapter = {
       } catch {
         continue;
       }
-      const data = parseTaskYaml(raw);
+      const { data } = parseTaskYaml(raw);
       if (typeof data.schedule === "string" && data.schedule.trim() !== "") return true;
     }
     return false;
