@@ -4,7 +4,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parse as parseYaml } from "yaml";
 import {
   factDiagnostics,
   matchWorkflowPlaceholder,
@@ -27,7 +26,15 @@ import type { AkmConfig } from "../../core/config/config";
 import { loadConfig, primaryBundlePath } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import type { FileChange } from "../../core/file-change";
+import { warn } from "../../core/warn";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
+import {
+  parseTaskYaml,
+  TASK_EXTENSION,
+  TASK_NEAR_MISS_EXTENSION,
+  taskExtensionDetail,
+  taskYamlParseDetail,
+} from "../../tasks/schema";
 import { runBaseChecks } from "./base-linter";
 import { checkEnvForDangerousKeys } from "./env-key-rules";
 import { isAdvisoryLintIssue, type LintContext, type LintIssue, type LintIssueType } from "./types";
@@ -72,18 +79,33 @@ const STASH_SUBDIRS = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function collectYamlFiles(dir: string): string[] {
+/**
+ * Every task-shaped file under `tasks/`: the recognized `.yml` spelling AND the
+ * `.yaml` near-miss. A `.yaml` file is not a runnable task — it is invisible to
+ * the indexer's `tasks` matcher — but collecting it here is what lets the sweep
+ * SAY so (`invalid-task-yaml`, see {@link taskExtensionDetail}) instead of
+ * walking past it and reporting a clean scan (issue #760).
+ */
+function collectTaskFiles(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
   const results: string[] = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      results.push(...collectYamlFiles(full));
-    } else if (entry.isFile() && entry.name.endsWith(".yml")) {
+      results.push(...collectTaskFiles(full));
+    } else if (entry.isFile() && (isTaskFileName(entry.name) || isNearMissTaskFileName(entry.name))) {
       results.push(full);
     }
   }
   return results;
+}
+
+function isTaskFileName(fileName: string): boolean {
+  return fileName.toLowerCase().endsWith(TASK_EXTENSION);
+}
+
+function isNearMissTaskFileName(fileName: string): boolean {
+  return fileName.toLowerCase().endsWith(TASK_NEAR_MISS_EXTENSION);
 }
 
 function collectMarkdownFiles(dir: string, caseInsensitive = false): string[] {
@@ -177,6 +199,10 @@ const KNOWN_ADAPTER_ISSUE_TYPES: ReadonlySet<string> = new Set<LintIssueType>([
   "missing-type",
   "missing-name-or-type",
   "missing-skill-md",
+  // The `akm-task` adapter's own code. Now reachable from `akm lint` for a
+  // malformed or misnamed task file (issue #760); without it here, a genuine
+  // task finding would arrive folded onto `adapter-diagnostic`.
+  "invalid-task-yaml",
   "dangerous-env-key",
   "uncited-raw",
   "missing-description",
@@ -223,6 +249,20 @@ async function lintViaAdapter(
   // falls back to the akm-shaped sweep, the same default `akm lint` has
   // always applied to a bundle it can't otherwise place.
   if (!adapter) return lintAkmSweep(stashRoot, extraStashRoots, cfg, sources, options);
+
+  // `--type` names an AKM stash subdir; every other adapter has its own type
+  // vocabulary and `validate()` sees the whole bundle regardless. That is not a
+  // correctness problem (full-bundle validation is a superset of the requested
+  // scope), but a user narrowing a run deserves to hear the flag did nothing
+  // rather than infer it from identical output (issue #762). Warn, don't throw:
+  // a hard error would break scripts passing one `--type` across mixed-adapter
+  // bundle sets.
+  if (options.typeFilter) {
+    warn(
+      `Warning: lint --type "${options.typeFilter}" is not supported for the "${adapterId}" adapter — ` +
+        "type scoping applies to akm bundles only; the whole bundle was validated.",
+    );
+  }
 
   const files = collectAdapterFiles(stashRoot, adapter.extensions);
   const changes: FileChange[] = files.map((filePath) => ({
@@ -334,6 +374,32 @@ function runEnvDangerousKeyPass(
     }
   }
   return flagged;
+}
+
+/**
+ * Refuse `--fix` against a bundle the config marks `writable: false`, BEFORE
+ * the sweep touches a single file (issue #761).
+ *
+ * Every other mutating command routes through `core/write-source.ts`'s
+ * `ensureWritable`/`resolveWritable` pair; `akm lint --fix` writes and deletes
+ * directly and never consulted the flag, so it happily rewrote frontmatter in a
+ * bundle explicitly configured read-only. `SearchSource.writable` is already the
+ * EFFECTIVE policy (`resolveWritable` applied — see `resolveSourceEntries`), so
+ * this reads the same answer the write path would, without a second resolver.
+ *
+ * A root that is not a configured source at all (an ad-hoc `--dir`) carries no
+ * policy and stays fixable, exactly as today.
+ */
+function assertFixTargetWritable(stashRoot: string, sources: SearchSource[]): void {
+  const target = sources.find((source) => path.resolve(source.path) === path.resolve(stashRoot));
+  if (target?.writable !== false) return;
+  // Same error kind and code `write-source.ts#ensureWritable` raises for the
+  // identical refusal, so a scripted caller classifies both the same way.
+  throw new UsageError(
+    `lint --fix: bundle "${stashRoot}" is configured \`writable: false\`; refusing to modify it. ` +
+      "Run `akm lint` without --fix to report findings, or set `writable: true` on the bundle.",
+    "INVALID_FLAG_VALUE",
+  );
 }
 
 /** True when the issue represents a file deletion that was successfully applied. */
@@ -478,6 +544,7 @@ function lintAkmSweep(
   options: AkmLintOptions,
 ): AkmLintResult {
   const fix = options.fix === true;
+  if (fix) assertFixTargetWritable(stashRoot, sources);
   const fixed: LintIssue[] = [];
   const flagged: LintIssue[] = [];
   const warnings: LintIssue[] = [];
@@ -488,7 +555,7 @@ function lintAkmSweep(
     const dirPath = path.join(stashRoot, subdir);
     // Tasks are .yml files; everything else (including workflows, one
     // markdown format now) is .md
-    const files = subdir === "tasks" ? collectYamlFiles(dirPath) : collectMarkdownFiles(dirPath, true);
+    const files = subdir === "tasks" ? collectTaskFiles(dirPath) : collectMarkdownFiles(dirPath, true);
     const assetFiles =
       subdir === "workflows" ? files.filter((file) => path.basename(file).toLowerCase() !== "readme.md") : files;
 
@@ -524,15 +591,33 @@ function lintAkmSweep(
       let data: Record<string, unknown>;
       let body: string;
       let frontmatter: string | null;
+      // File-identity findings the per-type rules cannot produce: they describe
+      // the FILE (its extension, whether it parsed at all), not its fields.
+      const fileIssues: LintIssue[] = [];
 
       if (subdir === "tasks") {
         // Task files are pure YAML — parseFrontmatter returns empty data for them.
-        try {
-          const parsed = parseYaml(raw);
-          data =
-            parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-        } catch {
-          data = {};
+        const parsed = parseTaskYaml(raw);
+        data = parsed.data;
+        if (!parsed.ok) {
+          // A parse failure used to fall through as `data = {}`, and every task
+          // rule short-circuits on an empty mapping — so an unparseable task
+          // file reported a CLEAN scan. Report the parse failure itself
+          // (issue #760).
+          fileIssues.push({
+            file: relPath,
+            issue: "invalid-task-yaml",
+            detail: taskYamlParseDetail(parsed.error),
+            fixed: false,
+          });
+        }
+        if (isNearMissTaskFileName(relPath)) {
+          fileIssues.push({
+            file: relPath,
+            issue: "invalid-task-yaml",
+            detail: taskExtensionDetail(relPath),
+            fixed: false,
+          });
         }
         body = raw;
         frontmatter = null;
@@ -540,10 +625,29 @@ function lintAkmSweep(
         ({ data, content: body, frontmatter } = parseFrontmatter(raw));
       }
 
-      const issues = lintAssetFile(
-        { filePath, relPath, raw, data, body, frontmatter, fix, stashRoot, extraStashRoots },
-        subdir,
-      );
+      // One file's checks — including its `--fix` mutations — must never abort
+      // the sweep: an uncaught throw here left the caller with an exception and
+      // no record of which earlier files had ALREADY been rewritten on disk
+      // (issue #761). A failure is reported per-file, in-band, and the sweep
+      // continues so the rest of the bundle is still linted.
+      let issues: LintIssue[];
+      try {
+        issues = [
+          ...fileIssues,
+          ...lintAssetFile(
+            { filePath, relPath, raw, data, body, frontmatter, fix, stashRoot, extraStashRoots },
+            subdir,
+          ),
+        ];
+      } catch (e) {
+        flagged.push(...fileIssues, {
+          file: relPath,
+          issue: "lint-failed",
+          detail: `lint ${fix ? "--fix " : ""}failed for this file: ${e instanceof Error ? e.message : String(e)}`,
+          fixed: fix ? "failed" : false,
+        });
+        continue;
+      }
 
       let fileDeleted = false;
       for (const issue of issues) {

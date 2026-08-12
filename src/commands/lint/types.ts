@@ -16,6 +16,15 @@ export type LintIssueType =
   | "dangerous-env-key"
   | "invalid-workflow-structure"
   | "missing-category"
+  /**
+   * A file the sweep reached but could not finish checking — the per-file
+   * dispatch threw (unreadable mid-run, a `--fix` write that failed in a way
+   * the fixer could not absorb). Reported in-band so a partial sweep is
+   * VISIBLE: before this code existed the throw escaped `akmLint()` entirely
+   * and the caller learned neither which file failed nor which fixes had
+   * already landed on disk (issue #761).
+   */
+  | "lint-failed"
   // ── non-akm adapter `validate()` codes (akm 0.9.0 lint/adapter-dispatch wiring) ──
   //
   // These four are `llm-wiki`'s native structural checks

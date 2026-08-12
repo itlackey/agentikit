@@ -3241,19 +3241,31 @@ remaining gaps carry approved waivers with the expiries recorded below.
   - Covered: exact-value redaction for prompt-target and workflow-target task
     logs (`tests/integration/tasks-runner.test.ts` "redacts echoed agent
     credentials before task logs are persisted", webhook-URL case).
-  - Open: command-target task logs (secret echoed by a scheduled command is
-    persisted verbatim when not pattern-shaped), 0600 enforcement for
-    state.db / index.db / logs.db and per-run log files (created with umask
-    default, typically 0644), multi-bundle secret coverage (untested).
-  - Tracking: [#755](https://github.com/itlackey/akm/issues/755) (command-target log redaction),
-    [#756](https://github.com/itlackey/akm/issues/756) (0600 DB/log permissions, incl. multi-bundle coverage).
-  - issue: permission hardening + one redaction lane. impact: multi-user
-    hosts can read task history/telemetry; single-user machines unaffected.
-    owner: itlackey. verification test: per-item notes (stat-mode asserts
-    mirroring the existing secret-file-perms pattern). temporary mitigation:
-    data dir lives under the user's `$XDG_DATA_HOME`; env/secret files
-    themselves already carry 0600 enforcement. waiver approver: itlackey —
-    approved 2026-08-06 (0.9.0 release triage). waiver expiry: 0.9.1.
+  - **Fixed for 0.9.1** ([#756](https://github.com/itlackey/akm/issues/756)):
+    `openManagedDatabase` — the single home for the open recipe — now chmods
+    each database and its `-wal`/`-shm` sidecars to `0600` and its directory to
+    `0700`, so `state.db` / `index.db` / `logs.db` pick it up without per-call
+    changes; per-run task logs are written through `writeFileAtomic` (mode
+    `0600`) into a `0700` directory. `akm health`'s `secret-file-perms`
+    advisory now scans the data dir (databases + WAL/SHM), `<cache>/tasks/logs`,
+    and **every configured bundle's** `env/`/`secrets/`, not just the default
+    one. Pinned by `tests/integration/db-file-permissions.test.ts`
+    (stat-mode asserts under a deliberately widened `0o022` umask) and the new
+    cases in `tests/integration/commands/health/surfaces.test.ts`. POSIX only,
+    matching the advisory's existing `win32` early return.
+  - Open: command-target task logs (a secret echoed by a scheduled command is
+    persisted verbatim when it is not pattern-shaped).
+  - Tracking: [#755](https://github.com/itlackey/akm/issues/755) (command-target log redaction).
+  - issue: one redaction lane. impact: a multi-user host could read a
+    non-pattern-shaped secret out of a command task's history; single-user
+    machines unaffected, and the log/DB files are now `0600` regardless.
+    owner: itlackey. verification test: an exact-value redaction test for the
+    command arm mirroring the existing prompt-arm test in
+    `tests/integration/tasks-runner.test.ts`. temporary mitigation:
+    pattern-based redaction already catches the common credential shapes for
+    every task kind; the data dir lives under the user's `$XDG_DATA_HOME` and
+    is now `0700`. waiver approver: itlackey — approved 2026-08-06 (0.9.0
+    release triage). waiver expiry: 0.9.1.
 - [ ] **Package/release:** exact package-manager upgrade version verification,
       native installer/scheduler coverage, action/dependency provenance hardening,
       and post-publication artifact parity.
@@ -3291,20 +3303,32 @@ remaining gaps carry approved waivers with the expiries recorded below.
     errors instead of a false-clean `ok:true, flagged:0`
     (`src/commands/lint/index.ts`; pinned by
     `tests/integration/lint-fail-closed.test.ts`).
-  - Partial: adapter type scoping (adapter dispatch tested; `--type` is
-    silently ignored by non-akm adapter validation with no diagnostic).
-  - Open: malformed task YAML (and the `.yaml` misspelling) produces zero
-    findings; `--fix` against a read-only bundle or mid-sweep write failure
-    is neither transactional nor explicitly reported.
-  - Tracking: [#760](https://github.com/itlackey/akm/issues/760) (malformed task YAML),
-    [#761](https://github.com/itlackey/akm/issues/761) (--fix writable/transactional),
-    [#762](https://github.com/itlackey/akm/issues/762) (--type ignored on non-akm bundles).
-  - issue: lint trustworthiness at the edges. impact: a hand-edited task file
-    with broken YAML can pass lint silently. owner: itlackey. verification
-    test: per-item notes (§20 checklist lines). temporary mitigation:
-    interactive use surfaces empty summaries visibly; `--fix` remains
-    opt-in. waiver approver: itlackey — approved 2026-08-06 (0.9.0 release
-    triage). waiver expiry: 0.9.1.
+  - **Fixed for 0.9.1** (waiver discharged): all three tracked rows landed.
+    - [#760](https://github.com/itlackey/akm/issues/760) malformed task YAML —
+      the parse failure is now its own `invalid-task-yaml` finding instead of
+      collapsing onto `{}` (which every task rule short-circuits on), and a
+      `tasks/*.yaml` near miss is collected and flagged for the extension
+      rather than skipped by the walk. Fixed on all three task-lint surfaces
+      (the CLI sweep, the `akm` adapter's `validate`, and `akm-task`) from one
+      shared parse in `src/tasks/schema.ts`; pinned by
+      `tests/integration/lint-task-yaml.test.ts`.
+    - [#761](https://github.com/itlackey/akm/issues/761) `--fix` safety —
+      `--fix` against a bundle configured `writable: false` is now a usage
+      error raised before any file is touched, and a per-file fix-write
+      failure is reported in-band as `fixed: "failed"` (plus a `lint-failed`
+      finding if the per-file dispatch throws) instead of aborting the sweep
+      with an uncaught error that hid the fixes already on disk. Pinned by
+      `tests/integration/lint-fix-safety.test.ts`.
+    - [#762](https://github.com/itlackey/akm/issues/762) adapter type scoping —
+      a `--type` passed to a non-akm bundle now emits a warning naming the
+      flag and the adapter; findings are unchanged (validation was already a
+      superset). Pinned in `tests/integration/lint-adapter-dispatch.test.ts`.
+  - Also closed alongside these: [#774](https://github.com/itlackey/akm/issues/774)
+    — `missing-skill-md` is reachable again for `agent-skills` (a real
+    directory pass over `ValidateContext.list`, replacing the dangling
+    `{@link directorySkillDiagnostics}` reference), and opencode's singular
+    `skill/` alias is checked identically to `skills/`. Pinned by
+    `tests/integration/lint-missing-skill-md.test.ts`.
 
 For each unchecked row record:
 

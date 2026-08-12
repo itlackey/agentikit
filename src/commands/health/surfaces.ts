@@ -35,54 +35,92 @@ function modeOctal(mode: number): string {
 }
 
 /**
- * `secret-file-perms` (08-F4): flag env/secret/backup files that are not 0600
- * and their directories when not 0700. Scans `<stash>/env`, `<stash>/secrets`
- * and `<cache>/config-backups`; anything readable by group/other is an
- * offender. Silent when every path is tight (or none of the dirs exist).
+ * The managed SQLite databases, plus the WAL sidecars that carry the same page
+ * content. Checked individually rather than by sweeping the whole data dir:
+ * `$DATA` also holds registry caches and materialized bundle content, which is
+ * not sensitive and would bury the real offenders in the evidence list.
+ */
+const DATA_DB_BASENAMES = ["state.db", "index.db", "logs.db", "workflow.db"] as const;
+const DB_SIDECAR_SUFFIXES = ["", "-wal", "-shm"] as const;
+
+interface PermOffenderScan {
+  /** Directories walked recursively; every entry within is checked. */
+  roots: string[];
+  /** Individual files checked on their own, without walking their parent. */
+  files: string[];
+  /** Directories checked for their own mode only (not walked). */
+  dirs: string[];
+}
+
+function checkPathMode(abs: string, offenders: string[], expectDirectory?: boolean): fs.Stats | undefined {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(abs);
+  } catch {
+    return undefined; // absent → nothing to protect
+  }
+  if ((stat.mode & GROUP_OTHER_BITS) === 0) return stat;
+  const isDir = expectDirectory ?? stat.isDirectory();
+  offenders.push(isDir ? `${abs}/ (${modeOctal(stat.mode)}, want 700)` : `${abs} (${modeOctal(stat.mode)}, want 600)`);
+  return stat;
+}
+
+/**
+ * `secret-file-perms` (08-F4): flag files that are not 0600 and directories
+ * that are not 0700, anywhere akm stores credentials or captured content.
+ *
+ * Scans `<stash>/env`, `<stash>/secrets`, `<cache>/config-backups`, the
+ * per-run task logs under `<cache>/tasks/logs`, and the managed databases in
+ * `<data>` (`state.db` / `index.db` / `logs.db` / `workflow.db` plus their
+ * `-wal`/`-shm` sidecars). The database and task-log surfaces were the gap this
+ * advisory was always documented to cover but never actually scanned
+ * (issue #756) — those files hold task history and captured command output, and
+ * they are created by the umask, so on a shared host they were the easiest
+ * thing to read off disk. Silent when every path is tight (or absent).
  */
 export function collectSecretPermsAdvisory(
-  input: { stashDir: string; cacheDir: string },
+  input: { stashDir: string; extraStashDirs?: readonly string[]; cacheDir: string; dataDir?: string },
   platform: PlatformLike = process.platform,
 ): HealthCheckResult | undefined {
   if (platform === "win32") return undefined;
 
-  const roots = [
-    path.join(input.stashDir, "env"),
-    path.join(input.stashDir, "secrets"),
-    path.join(input.cacheDir, "config-backups"),
-  ];
+  // Every CONFIGURED bundle, not only the primary one: a secondary bundle's
+  // `env/`/`secrets/` hold exactly the same material, and an operator running
+  // `akm health` has no reason to expect the check stops at the default stash.
+  const stashDirs = [input.stashDir, ...(input.extraStashDirs ?? [])];
+  const scan: PermOffenderScan = {
+    roots: [
+      ...stashDirs.flatMap((dir) => [path.join(dir, "env"), path.join(dir, "secrets")]),
+      path.join(input.cacheDir, "config-backups"),
+      // Per-run task logs: raw command/agent stdout+stderr, one file per run.
+      path.join(input.cacheDir, "tasks", "logs"),
+    ],
+    files: [],
+    dirs: [],
+  };
+  if (input.dataDir) {
+    scan.dirs.push(input.dataDir);
+    for (const basename of DATA_DB_BASENAMES) {
+      for (const suffix of DB_SIDECAR_SUFFIXES) {
+        scan.files.push(path.join(input.dataDir, `${basename}${suffix}`));
+      }
+    }
+  }
+
   const offenders: string[] = [];
 
-  for (const root of roots) {
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(root);
-    } catch {
-      continue; // absent → nothing to protect
-    }
-    if ((stat.mode & GROUP_OTHER_BITS) !== 0) offenders.push(`${root}/ (${modeOctal(stat.mode)}, want 700)`);
+  for (const root of scan.roots) {
+    if (checkPathMode(root, offenders, true) === undefined) continue;
     let entries: string[];
     try {
       entries = fs.readdirSync(root, { recursive: true }) as string[];
     } catch {
       continue;
     }
-    for (const entry of entries) {
-      const abs = path.join(root, entry);
-      let entryStat: fs.Stats;
-      try {
-        entryStat = fs.statSync(abs);
-      } catch {
-        continue;
-      }
-      if ((entryStat.mode & GROUP_OTHER_BITS) === 0) continue;
-      offenders.push(
-        entryStat.isDirectory()
-          ? `${abs}/ (${modeOctal(entryStat.mode)}, want 700)`
-          : `${abs} (${modeOctal(entryStat.mode)}, want 600)`,
-      );
-    }
+    for (const entry of entries) checkPathMode(path.join(root, entry), offenders);
   }
+  for (const dir of scan.dirs) checkPathMode(dir, offenders, true);
+  for (const file of scan.files) checkPathMode(file, offenders, false);
 
   if (offenders.length === 0) return undefined;
   const preview = offenders.slice(0, 5).join("; ") + (offenders.length > 5 ? `; +${offenders.length - 5} more` : "");
@@ -92,8 +130,9 @@ export function collectSecretPermsAdvisory(
     status: "warn",
     confidence: "high",
     message:
-      `${offenders.length} env/secret/backup path(s) are readable by group/other: ${preview}. ` +
-      "Tighten with chmod 600 (files) / chmod 700 (dirs) — these hold tokens, keys, and config snapshots.",
+      `${offenders.length} secret/backup/database/task-log path(s) are readable by group/other: ${preview}. ` +
+      "Tighten with chmod 600 (files) / chmod 700 (dirs) — these hold tokens, keys, config snapshots, " +
+      "task history, and captured command output.",
     evidence: { offenders: offenders.slice(0, OFFENDER_EVIDENCE_CAP) },
   };
 }
@@ -194,14 +233,23 @@ export function collectEgressAdvisory(config: EgressConfigView | undefined): Hea
  */
 export function collectSurfacesAdvisories(input: {
   stashDir: string;
+  /** Secondary configured bundle roots, scanned for `env/`/`secrets/` alongside the primary. */
+  extraStashDirs?: readonly string[];
   cacheDir: string;
+  /** `$DATA` — the managed databases' home. Omitted by callers that have none resolved. */
+  dataDir?: string;
   configPath: string;
   config: EgressConfigView | undefined;
   platform?: PlatformLike;
 }): HealthCheckResult[] {
   const results = [
     collectSecretPermsAdvisory(
-      { stashDir: input.stashDir, cacheDir: input.cacheDir },
+      {
+        stashDir: input.stashDir,
+        ...(input.extraStashDirs ? { extraStashDirs: input.extraStashDirs } : {}),
+        cacheDir: input.cacheDir,
+        ...(input.dataDir ? { dataDir: input.dataDir } : {}),
+      },
       input.platform ?? process.platform,
     ),
     collectConfigSkewAdvisory(input.configPath),

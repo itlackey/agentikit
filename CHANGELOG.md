@@ -268,6 +268,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`akm lint` no longer reports a clean scan for a task file that cannot run.**
+  A `tasks/*.yml` whose YAML does not parse (bad indentation, an unterminated
+  quote, tab characters) produced `flagged: 0`: every task reader collapsed a
+  parse failure onto an empty mapping, and every task rule short-circuits on
+  one — so a CI gate on `--fail-on-flagged` passed a task that would die at
+  schedule time. The parse failure is now its own `invalid-task-yaml` finding.
+  A `tasks/*.yaml` file — a spelling akm never indexes and never schedules —
+  used to be skipped by the directory walk entirely; it is now collected and
+  flagged for the extension, with the rename in the message. Fixed on all three
+  task-lint surfaces (the CLI sweep, the `akm` adapter's `validate`, and the
+  `akm-task` format adapter) from one shared parse, so they cannot disagree.
+
+- **`akm lint --fix` refuses a bundle configured `writable: false`.** Every
+  other mutating command checks the flag before touching disk; `--fix` wrote
+  directly and never consulted it, so it rewrote frontmatter in a bundle
+  explicitly marked read-only. It is now a usage error raised before any file
+  is modified.
+
+- **A `--fix` write failure no longer aborts the run and hides the fixes that
+  already landed.** One unwritable file (read-only file, full disk) threw
+  straight out of `akm lint`, so the caller got an exception instead of a
+  result — with no way to tell which earlier files in the same sweep had
+  already been rewritten. A failed fix is now reported in-band on its own file
+  as `fixed: "failed"`, and the sweep continues through the rest of the bundle.
+
+- **`akm lint --type` says so when it does nothing.** For a non-akm bundle the
+  adapter validates the whole bundle regardless of `--type`, so scoping a run
+  silently had no effect. It now warns, naming the flag and the adapter.
+  Findings are unchanged (full-bundle validation was already a superset), and
+  it is deliberately a warning, not an error, so scripts passing one `--type`
+  across mixed-adapter bundle sets keep working.
+
+- **`missing-skill-md` fires again for an `agent-skills` package with no
+  manifest.** The check iterated pending CHANGES, and a change is always a
+  file — so a package directory holding resources but no `SKILL.md`
+  contributed nothing it could see, and a skills pack with a broken package
+  linted clean. It is now a real directory pass over the bundle root. Related:
+  under opencode's supported singular `skill/` alias the same package went
+  unflagged while an identical one under `skills/` was caught; both spellings
+  are now checked.
+
+- **`state.db`, `index.db`, `logs.db` and per-run task logs are created
+  owner-only.** They were created at whatever the process umask left them at
+  (typically `0644`), unlike the env/secret files akm writes, so on a shared
+  host any local user could read task history, captured command output, and
+  indexed content straight off disk. Databases and their `-wal`/`-shm`
+  sidecars are now `0600` in a `0700` data directory, and task logs are written
+  `0600` into a `0700` directory (POSIX only). `akm health`'s
+  `secret-file-perms` advisory now scans those paths too — and every configured
+  bundle's `env/`/`secrets/`, not just the default one.
+
 - **`timeout: none` on an exec unit is genuinely unbounded again.** The
   stream-drain safety net — a one-hour bound on a pipe still being read after
   the child is gone — was armed when capture STARTED, so a command that ran

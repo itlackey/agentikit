@@ -28,10 +28,13 @@
  *   - `skill-description-too-long` — description must be 1-1024 chars.
  *   - `missing-skill-md` — a package dir with no SKILL.md (edge case; git cannot
  *     commit an empty dir, so it is covered by a directory-level check, not a
- *     fixture).
+ *     fixture). Implemented by {@link missingManifestDiagnostics}, which scans
+ *     the component root through `ValidateContext.list` — the change-set loop
+ *     cannot reach it, because a change is always a file and a manifest-less
+ *     package contributes no SKILL.md change (issue #774).
  *
- * Only `missing-skill-md` is coded elsewhere today; the two field codes are
- * APPROVED-BUT-NOT-YET-CODED and are implemented here. Base checks are NOT run:
+ * The two field codes are APPROVED-BUT-NOT-YET-CODED elsewhere and are
+ * implemented here. Base checks are NOT run:
  * a SKILL.md carries no `updated` field, so `missing-updated` would fire on
  * every conformant skill and contradict the lint golden.
  *
@@ -141,6 +144,64 @@ function skillFieldDiagnostics(relPath: string, dirName: string, data: Record<st
   return diagnostics;
 }
 
+/**
+ * How deep below a candidate package directory the manifest probe looks. Agent
+ * Skills packages sit at the component root (`<name>/SKILL.md`), occasionally
+ * one group level down (`<group>/<name>/SKILL.md`) — this bound keeps a deep
+ * resource tree (a package's `reference/`, `assets/`, …) from turning the lint
+ * sweep into a full recursive walk.
+ */
+const MAX_PACKAGE_PROBE_DEPTH = 3;
+
+/** True when `SKILL.md` exists at `dir` or anywhere within {@link MAX_PACKAGE_PROBE_DEPTH} below it. */
+async function subtreeHasManifest(
+  dir: string,
+  entries: readonly string[],
+  ctx: ValidateContext,
+  depth: number,
+): Promise<boolean> {
+  if (entries.includes(SKILL_MANIFEST)) return true;
+  if (depth >= MAX_PACKAGE_PROBE_DEPTH) return false;
+  for (const entry of entries) {
+    const child = `${dir}/${entry}`;
+    // `list` on a FILE yields `[]` (the read throws and is swallowed), so an
+    // empty listing is the "not a directory worth descending" signal — no
+    // separate stat is available on ValidateContext, and none is needed.
+    const childEntries = await ctx.list(child);
+    if (childEntries.length === 0) continue;
+    if (await subtreeHasManifest(child, childEntries, ctx, depth + 1)) return true;
+  }
+  return false;
+}
+
+/**
+ * The directory-level `missing-skill-md` check (issue #774).
+ *
+ * `validate` walks CHANGES, and a change is always a file — so a package
+ * directory carrying resources but no manifest contributes nothing the
+ * change-loop can see, and the check the spec (§4.5) and the lint golden's
+ * `missingSkillMd` edge case both name was unreachable. This scans the
+ * component root through {@link ValidateContext.list} instead, so the case is
+ * actually reported.
+ *
+ * Deliberately TOP-LEVEL only: a package's own resource dirs
+ * (`pdf-processing/reference/`) are part of the item, not candidate packages,
+ * and flagging them would turn every conformant bundle red. A top-level dir
+ * that holds a manifest ANYWHERE beneath it is a grouping dir, not a broken
+ * package, so it is left alone too.
+ */
+async function missingManifestDiagnostics(ctx: ValidateContext): Promise<Diagnostic[]> {
+  const diagnostics: Diagnostic[] = [];
+  for (const name of await ctx.list(".")) {
+    if (name.startsWith(".")) continue; // .git, .github, … are not skill packages
+    const entries = await ctx.list(name);
+    if (entries.length === 0) continue; // a root file (README.md), or an untrackable empty dir
+    if (await subtreeHasManifest(name, entries, ctx, 1)) continue;
+    diagnostics.push({ file: name, issue: "missing-skill-md", detail: `no SKILL.md in ${name}/`, fixed: false });
+  }
+  return diagnostics;
+}
+
 async function validate(_c: BundleComponent, changes: FileChange[], ctx: ValidateContext): Promise<Diagnostic[]> {
   const diagnostics: Diagnostic[] = [];
   const seenDirs = new Set<string>();
@@ -154,10 +215,12 @@ async function validate(_c: BundleComponent, changes: FileChange[], ctx: Validat
     if (seenDirs.has(pkg.conceptId)) continue;
     seenDirs.add(pkg.conceptId);
 
-    // missing-skill-md is unreachable here (the change IS a SKILL.md); the empty-dir
-    // case is served by {@link directorySkillDiagnostics} for callers that scan dirs.
+    // `missing-skill-md` cannot fire here — the change IS a SKILL.md. The
+    // manifest-less package case is served by {@link missingManifestDiagnostics}
+    // below, which scans directories rather than changes.
     diagnostics.push(...skillFieldDiagnostics(toPosix(change.path), pkg.dirName, parseFrontmatter(raw).data));
   }
+  diagnostics.push(...(await missingManifestDiagnostics(ctx)));
   return diagnostics;
 }
 

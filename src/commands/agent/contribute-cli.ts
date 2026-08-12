@@ -201,7 +201,8 @@ export const lintCommand = defineCommand({
     },
     type: {
       type: "string",
-      description: "Only lint assets of this type (e.g. workflows, tasks, memories)",
+      description:
+        "Only lint assets of this type (e.g. workflows, tasks, memories). akm bundles only — every other adapter validates the whole bundle and warns that the flag had no effect.",
       default: undefined,
     },
   },

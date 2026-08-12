@@ -174,17 +174,20 @@ happens to expose a `placeNew()` implementation.
 A few adapter-specific behaviors are easy to assume differently from how
 they actually work:
 
-- **`agent-skills` recognition/validation are decoupled.** `validate()`
-  only inspects changes that resolve to an actual `SKILL.md`, so a package
-  directory with no manifest at all is never flagged by `missing-skill-md`
-  — an invalid skill is still indexed as `skill` (with its raw, invalid
-  name projected), and the violation only surfaces for files that exist.
+- **`agent-skills` recognition/validation are decoupled.** The per-change
+  half of `validate()` only inspects changes that resolve to an actual
+  `SKILL.md`, so an invalid skill is still indexed as `skill` (with its raw,
+  invalid name projected) and its field violations surface only for files
+  that exist. `missing-skill-md` is the exception and runs as a separate
+  directory pass over `ValidateContext.list`: a **top-level** directory that
+  holds files but no `SKILL.md` anywhere within three levels is flagged. A
+  package's own resource dirs (`pdf-processing/reference/`) are part of the
+  item, not candidate packages, and are never considered.
 - **`claude`/`opencode` share one codec** (`tool-dir-shared.ts`) and differ
   only in instruction filename, accepted subdirectory spellings, and
-  adapter/component ids. `opencode`'s `missing-skill-md` check matches the
-  literal `skills/` segment, so a skill package under the singular `skill/`
-  alias is never checked for a missing manifest, while the same package
-  under `skills/` is.
+  adapter/component ids. `missing-skill-md` is gated on each layout's own
+  accepted spellings, so opencode's singular `skill/` alias is checked
+  exactly like `skills/`.
 - **`dotenv` redaction is a hard, adapter-level contract.** No frontmatter
   `type:` override can bypass it: `env` entries surface only key names,
   `secret` entries surface only the file name, never content. A `.env`
@@ -193,7 +196,12 @@ they actually work:
 - **`akm-task`'s validation is stricter than the native `akm` adapter's.**
   Standalone `akm-task` bundles require `version: 2`, a `schedule`, and
   *exactly one* target; the native `akm` adapter's task check only requires
-  "at least one" target.
+  "at least one" target. Both report `invalid-task-yaml` when the YAML does
+  not parse at all — a parse failure is distinguished from an empty document,
+  which the field rules legitimately pass over. `.yaml` is listed in
+  `akm-task`'s `extensions` as a **collection hint only**: `recognize` still
+  gates on `.yml`, so a `.yaml` file is never indexed or scheduled — listing it
+  is what lets `validate` report the near-miss spelling instead of skipping it.
 - **`llm-wiki`, `akm`, and `okf` all reserve `index.md`/`log.md`** as
   structural files — never indexed as concepts, never valid write targets —
   at any depth.
