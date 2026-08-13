@@ -2732,9 +2732,9 @@ test "$(akm log --format json | jq -r '.events[-1].id // 0')" = "$before_event"
       task logs, databases, reports, proposals, workflows, backups, and config.
 - [ ] **[LOCAL]** JSON/YAML stay parseable; text/Markdown visibly encode terminal
       controls; HTML escapes attacker fields. Inspect captured bytes only.
-- [ ] **[LOCAL]** Sensitive directories/files are `0700`/`0600` under umask 022.
-      Health scans every bundle plus config, DB/WAL/SHM, backup, and task-log
-      surfaces; lax mode warns exit `4`.
+- [ ] **[LOCAL]** Env/secret directories and files akm creates are `0700`/`0600`
+      even under umask 022. Databases, task logs, and everything else akm writes
+      take the process umask: akm neither sets nor reports on those modes.
 - [ ] **[PLATFORM]** Windows ACL evidence replaces POSIX mode checks and is marked
       N/A only when genuinely unsupported.
 
@@ -3262,8 +3262,8 @@ remaining gaps carry approved waivers with the expiries recorded below.
     install; opencode listener binds loopback only. waiver approver:
     itlackey — approved 2026-08-06 (0.9.0 release triage). waiver expiry:
     0.10.0 (hardening series).
-- [ ] **Secrets/permissions:** exact-value task-log redaction and managed DB/log/
-      backup permission coverage across every configured bundle.
+- [ ] **Secrets/permissions:** exact-value task-log redaction; managed-file
+      permission coverage (rejected — see below).
   - Covered: exact-value redaction for prompt-target and workflow-target task
     logs (`tests/integration/tasks-runner.test.ts` "redacts echoed agent
     credentials before task logs are persisted", webhook-URL case).
@@ -3278,27 +3278,21 @@ remaining gaps carry approved waivers with the expiries recorded below.
     sharing `$XDG_DATA_HOME` across uids, which worked in 0.9.0.
     **Decision: akm does not manage file permissions.** Everything it writes
     takes the process umask; protecting the data directory is the operator's
-    call and umask/`chmod` is their lever.
-  - Retained from that work: `akm health`'s `secret-file-perms` advisory scans
-    `env`/`secrets` under **every configured bundle**, not just the default one.
-    It does NOT scan the databases or task logs — akm no longer sets their mode,
-    so umask-default `0644` is the correct state and flagging it would exit 4 on
-    nearly every install. The advisory's scope is now exactly "files akm wrote
-    `0600` that are no longer `0600`". Pinned by
-    `tests/integration/commands/health/surfaces.test.ts`; POSIX only.
+    call and umask/`chmod` is their lever. Nothing survives from that work:
+    the health advisory that reported on those modes is gone too — akm does not
+    nag about permissions it does not set.
   - Open: command-target task logs (a secret echoed by a scheduled command is
     persisted verbatim when it is not pattern-shaped).
   - Tracking: [#755](https://github.com/itlackey/akm/issues/755) (command-target log redaction).
   - issue: one redaction lane. impact: a multi-user host could read a
     non-pattern-shaped secret out of a command task's history; single-user
-    machines unaffected, and the log/DB files are now `0600` regardless.
-    owner: itlackey. verification test: an exact-value redaction test for the
-    command arm mirroring the existing prompt-arm test in
+    machines unaffected. owner: itlackey. verification test: an exact-value
+    redaction test for the command arm mirroring the existing prompt-arm test in
     `tests/integration/tasks-runner.test.ts`. temporary mitigation:
     pattern-based redaction already catches the common credential shapes for
-    every task kind; the data dir lives under the user's `$XDG_DATA_HOME` and
-    is now `0700`. waiver approver: itlackey — approved 2026-08-06 (0.9.0
-    release triage). waiver expiry: 0.9.1.
+    every task kind; the data dir lives under the user's `$XDG_DATA_HOME`, whose
+    mode is the operator's to set. waiver approver: itlackey — approved
+    2026-08-06 (0.9.0 release triage). waiver expiry: 0.9.1.
 - [ ] **Package/release:** exact package-manager upgrade version verification,
       native installer/scheduler coverage, action/dependency provenance hardening,
       and post-publication artifact parity.

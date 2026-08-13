@@ -3,93 +3,22 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * 08 "surfaces" advisory group for `akm health` (secret-file-perms,
- * binary-config-skew, egress-endpoints). Every collector is
- * silent (`undefined`) when there is nothing to report, mirroring the shipped
- * `stash-git-exposure` advisory; only `egress-endpoints` emits a pass-status
- * informational entry whenever any remote endpoint is configured.
+ * 08 "surfaces" advisory group for `akm health` (binary-config-skew,
+ * egress-endpoints). Every collector is silent (`undefined`) when there is
+ * nothing to report, mirroring the shipped `stash-git-exposure` advisory; only
+ * `egress-endpoints` emits a pass-status informational entry whenever any
+ * remote endpoint is configured.
  */
 
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  collectConfigSkewAdvisory,
-  collectEgressAdvisory,
-  collectSecretPermsAdvisory,
-} from "../../../../src/commands/health/surfaces";
+import { collectConfigSkewAdvisory, collectEgressAdvisory } from "../../../../src/commands/health/surfaces";
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
-
-describe("collectSecretPermsAdvisory (08-F4)", () => {
-  test("warns on group/other-readable env files and dirs", () => {
-    const stashDir = makeTempDir("akm-surfaces-perms-");
-    const cacheDir = makeTempDir("akm-surfaces-cache-");
-    fs.mkdirSync(path.join(stashDir, "env"), { mode: 0o755 });
-    fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "K=v", { mode: 0o644 });
-
-    const adv = collectSecretPermsAdvisory({ stashDir, cacheDir }, "linux");
-    expect(adv?.name).toBe("secret-file-perms");
-    expect(adv?.status).toBe("warn");
-    const offenders = adv?.evidence?.offenders as string[];
-    expect(offenders.some((o) => o.includes("env"))).toBe(true);
-    expect(offenders.some((o) => o.includes("prod.env"))).toBe(true);
-  });
-
-  test("silent when env/secrets/backups are 0600/0700 (or absent)", () => {
-    const stashDir = makeTempDir("akm-surfaces-perms-");
-    const cacheDir = makeTempDir("akm-surfaces-cache-");
-    fs.mkdirSync(path.join(stashDir, "secrets"), { mode: 0o700 });
-    fs.writeFileSync(path.join(stashDir, "secrets", "signing.key"), "s", { mode: 0o600 });
-    const backups = path.join(cacheDir, "config-backups");
-    fs.mkdirSync(backups, { mode: 0o700 });
-    fs.writeFileSync(path.join(backups, "config-1.json"), "{}", { mode: 0o600 });
-
-    expect(collectSecretPermsAdvisory({ stashDir, cacheDir }, "linux")).toBeUndefined();
-  });
-
-  test("silent on win32 (POSIX modes are meaningless there)", () => {
-    const stashDir = makeTempDir("akm-surfaces-perms-");
-    fs.mkdirSync(path.join(stashDir, "env"), { mode: 0o755 });
-    expect(collectSecretPermsAdvisory({ stashDir, cacheDir: stashDir }, "win32")).toBeUndefined();
-  });
-
-  // #791: the databases and per-run task logs are deliberately NOT scanned.
-  // akm no longer sets their mode (the #756 chmod was reverted), so they carry
-  // the process umask — `0644` on a typical `022` machine is the correct
-  // default, and warning about it would make `akm health` exit 4 on nearly
-  // every single-user install.
-
-  test("does not flag umask-default databases or task logs", () => {
-    const stashDir = makeTempDir("akm-surfaces-perms-");
-    const cacheDir = makeTempDir("akm-surfaces-cache-");
-    const dataDir = makeTempDir("akm-surfaces-data-");
-    fs.chmodSync(dataDir, 0o755);
-    for (const name of ["state.db", "state.db-wal", "index.db", "logs.db"]) {
-      fs.writeFileSync(path.join(dataDir, name), "sqlite", { mode: 0o644 });
-    }
-    const runDir = path.join(cacheDir, "tasks", "logs", "nightly");
-    fs.mkdirSync(runDir, { recursive: true, mode: 0o755 });
-    fs.writeFileSync(path.join(runDir, "run.log"), "output", { mode: 0o644 });
-
-    expect(collectSecretPermsAdvisory({ stashDir, cacheDir }, "linux")).toBeUndefined();
-  });
-
-  test("still flags a loose env file in a SECONDARY configured bundle", () => {
-    const stashDir = makeTempDir("akm-surfaces-perms-");
-    const second = makeTempDir("akm-surfaces-second-");
-    const cacheDir = makeTempDir("akm-surfaces-cache-");
-    fs.mkdirSync(path.join(second, "env"), { mode: 0o700 });
-    fs.writeFileSync(path.join(second, "env", "prod.env"), "K=v", { mode: 0o644 });
-
-    const adv = collectSecretPermsAdvisory({ stashDir, extraStashDirs: [second], cacheDir }, "linux");
-    const offenders = (adv?.evidence?.offenders as string[]) ?? [];
-    expect(offenders.some((o) => o.includes("prod.env"))).toBe(true);
-  });
-});
 
 describe("collectConfigSkewAdvisory (08-F3)", () => {
   test("warns when the on-disk configVersion is newer than this binary's", () => {

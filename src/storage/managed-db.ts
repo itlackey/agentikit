@@ -62,9 +62,7 @@ export interface ManagedDbSpec {
  *     "No search index available" at exit 0 rather than an error (#791).
  *
  * Files akm creates here get the process umask, which is the operator's lever
- * for this and always was. `akm health`'s `secret-file-perms` advisory still
- * REPORTS group/other-readable databases and task logs — informing the operator
- * is the appropriate scope; enforcing against their wishes is not.
+ * for this and always was. akm neither sets these modes nor reports on them.
  */
 export function openManagedDatabase(spec: ManagedDbSpec): Database {
   const dir = path.dirname(spec.path);

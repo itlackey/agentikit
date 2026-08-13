@@ -11,10 +11,9 @@ import { readEvents } from "../core/events";
 import { listTxnJournalsTolerant, TXN_SWEEP_GRACE_MS } from "../core/fs-txn";
 import { openLogsDatabase } from "../core/logs-db";
 import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
-import { getCacheDir, getConfigPath, getDataDir, getStateDbPathInDataDir } from "../core/paths";
+import { getConfigPath, getDataDir, getStateDbPathInDataDir } from "../core/paths";
 import { listExistingTableNames, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
-import { resolveSourceEntries } from "../indexer/search/search-source";
 import { readSemanticStatus } from "../indexer/search/semantic-status";
 import type { SessionLogEntry } from "../integrations/session-logs";
 import { getExecutionLogCandidates } from "../integrations/session-logs";
@@ -367,27 +366,10 @@ function gatherImproveSummaryPhase(
 /**
  * The three best-effort advisory groups beyond the health-check registry:
  * improve advisories, the `stash-git-exposure` probe, and the 08 surfaces
- * group (secret-file-perms, binary-config-skew, egress-endpoints). Order
- * matches emission order in the returned array. A
- * probe/filesystem failure in either try/catch must not abort the health
- * report — each group degrades to "no advisory" independently.
+ * group (binary-config-skew, egress-endpoints). Order matches emission order in
+ * the returned array. A probe/filesystem failure in either try/catch must not
+ * abort the health report — each group degrades to "no advisory" independently.
  */
-/**
- * Configured bundle roots other than `primary`, for the permission sweep.
- * Best-effort: a config that cannot be resolved yields none rather than
- * aborting the (already best-effort) advisory group.
- */
-function secondaryStashDirs(primary: string): string[] {
-  try {
-    const primaryResolved = path.resolve(primary);
-    return resolveSourceEntries()
-      .map((source) => path.resolve(source.path))
-      .filter((dir) => dir !== primaryResolved && fs.existsSync(dir));
-  } catch {
-    return [];
-  }
-}
-
 function gatherAncillaryAdvisories(
   db: Database,
   stateDbPath: string,
@@ -416,18 +398,12 @@ function gatherAncillaryAdvisories(
     // Non-fatal — a git/probe failure must not abort the health report.
   }
 
-  // 08 surfaces: the remaining read-only advisory group (secret-file-perms,
-  // binary-config-skew, egress-endpoints). Best-effort — a
-  // filesystem probe failure must not abort the health report.
+  // 08 surfaces: the remaining read-only advisory group (binary-config-skew,
+  // egress-endpoints). Best-effort — a filesystem probe failure must not abort
+  // the health report.
   try {
-    const primaryStashDir = options.stashDir ?? resolveStashDir();
     advisories.push(
       ...collectSurfacesAdvisories({
-        stashDir: primaryStashDir,
-        // Secondary bundles hold env/secret assets too (issue #756) — the
-        // advisory used to stop at the primary stash.
-        extraStashDirs: secondaryStashDirs(primaryStashDir),
-        cacheDir: getCacheDir(),
         configPath: getConfigPath(),
         config: egressConfigView,
       }),
@@ -576,8 +552,8 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
   // #791: an UNREADABLE state.db is the one failure `akm health` most needs to
   // be able to report, because it is the command an operator runs to find out
   // why everything else is behaving oddly. Dying here with exit 78 meant health
-  // could not diagnose the very permission problem it is meant to surface — the
-  // secret-file-perms advisory never even ran. Report it as a finding instead.
+  // could not diagnose that state at all — not even the checks that never touch
+  // state.db got to run. Report it as a finding instead.
   let db: ReturnType<typeof openStateDatabase>;
   try {
     db = openStateDatabase(stateDbPath);
