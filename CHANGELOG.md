@@ -323,15 +323,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unflagged while an identical one under `skills/` was caught; both spellings
   are now checked.
 
-- **`state.db`, `index.db`, `logs.db` and per-run task logs are created
-  owner-only.** They were created at whatever the process umask left them at
-  (typically `0644`), unlike the env/secret files akm writes, so on a shared
-  host any local user could read task history, captured command output, and
-  indexed content straight off disk. Databases and their `-wal`/`-shm`
-  sidecars are now `0600` in a `0700` data directory, and task logs are written
-  `0600` into a `0700` directory (POSIX only). `akm health`'s
-  `secret-file-perms` advisory now scans those paths too — and every configured
-  bundle's `env/`/`secrets/`, not just the default one.
+- **`akm health` checks every configured bundle for loose secret permissions,
+  not just the default one.** The `secret-file-perms` advisory scans `env` and
+  `secrets` across all configured bundles plus `config-backups`. Its scope is
+  deliberately "files akm writes `0600` that are no longer `0600`" — a looser
+  mode there means something else changed them.
+
+  akm does **not** manage file permissions. Everything it writes takes your
+  process umask, and the mode of your data directory is yours to set; the
+  advisory does not flag umask-default databases or task logs. An earlier
+  0.9.1 pre-release chmodded these paths to `0600`/`0700` on every open — that
+  was reverted before release, because re-permissioning a directory akm did not
+  create silently broke installs that share `$XDG_DATA_HOME` between two uids
+  (agent sandboxes, containers, service accounts). If a pre-release tightened
+  your data directory, `chmod` it back.
 
 - **`timeout: none` on an exec unit is genuinely unbounded again.** The
   stream-drain safety net — a one-hour bound on a pipe still being read after

@@ -38,7 +38,6 @@ import { shouldSkipUnactivatedTask } from "../core/activation-policy";
 import { assertNever } from "../core/assert";
 import { placementSpecFor } from "../core/asset/asset-placement";
 import { parseRefInput } from "../core/asset/resolve-ref";
-import { writeFileAtomic } from "../core/common";
 import { loadConfig } from "../core/config/config";
 import { AkmError, NotFoundError, rethrowIfTestIsolationError } from "../core/errors";
 import {
@@ -807,12 +806,12 @@ function persistRunLog(input: {
   const dbLines = input.dbLines.map((entry) => ({ ...entry, line: redactCredentialPatterns(entry.line) }));
   if (input.logPath) {
     try {
-      // 0600/0700, not the umask default (issue #756): a run log holds captured
-      // command/agent output, which is exactly the material the redaction
-      // passes above are trying to keep out of other users' hands.
-      // `writeFileAtomic` pins mode 0600 by default.
-      fs.mkdirSync(path.dirname(input.logPath), { recursive: true, mode: 0o700 });
-      writeFileAtomic(input.logPath, fileText);
+      // Written at the process umask. #756 pinned 0600/0700 here; that went out
+      // with the rest of akm's permission enforcement (#791) — the operator owns
+      // the mode of their own data directory. `akm health` still reports a
+      // group/other-readable task log rather than silently changing it.
+      fs.mkdirSync(path.dirname(input.logPath), { recursive: true });
+      fs.writeFileSync(input.logPath, fileText);
     } catch (error) {
       rethrowIfTestIsolationError(error);
       // Transitional file logging is fully best-effort.

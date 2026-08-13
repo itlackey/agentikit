@@ -427,7 +427,6 @@ function gatherAncillaryAdvisories(
         // advisory used to stop at the primary stash.
         extraStashDirs: secondaryStashDirs(primaryStashDir),
         cacheDir: getCacheDir(),
-        dataDir: getDataDir(),
         configPath: getConfigPath(),
         config: egressConfigView,
       }),
