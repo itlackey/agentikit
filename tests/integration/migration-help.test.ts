@@ -20,18 +20,6 @@ describe("migration help", () => {
     expect(result).toContain("## [0.5.0]");
   });
 
-  test("supports latest alias when changelog text is available", () => {
-    const result = renderMigrationHelp("latest");
-    // Derive the expected version from the changelog so this never re-breaks on a
-    // version bump: "latest" resolves to the newest RELEASED (non-Unreleased) section.
-    const changelog = fs.readFileSync(path.join(PROJECT_ROOT, "CHANGELOG.md"), "utf8");
-    const latest = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)]
-      .map((m) => m[1])
-      .find((v) => v!.toLowerCase() !== "unreleased");
-    expect(latest).toBeTruthy();
-    expect(result).toContain(`## [${latest}]`);
-  });
-
   test("ensures published static files exist in the repo", () => {
     const packageJson = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8")) as {
       files?: string[];
@@ -61,13 +49,22 @@ describe("migration help", () => {
     }
   });
 
-  test("latest alias resolves to the newest release changelog section", () => {
+  test("supports latest alias when changelog text is available", () => {
+    // Behavior only: `latest` resolves to the newest RELEASED (non-Unreleased)
+    // section. The expectation is derived from the changelog so this never
+    // re-breaks on a version bump.
+    //
+    // Whether that section names the version actually being shipped is a
+    // property of the RELEASE, not of this renderer, and is asserted in
+    // tests/integration/workflow-release.test.ts — which is
+    // `run_step "Workflow Release Contract"` in tests/release-check.sh.
     const result = renderMigrationHelp("latest");
-    // The final [0.9.0] section must sit ABOVE the rc/beta history:
-    // resolveLatestVersion() returns the first non-Unreleased heading, so a
-    // misplaced section would make `akm help migrate latest` report an rc.
-    expect(result).toContain("## [0.9.0]");
-    expect(result).not.toContain("## [0.9.0-rc");
+    const changelog = fs.readFileSync(path.join(PROJECT_ROOT, "CHANGELOG.md"), "utf8");
+    const latest = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)]
+      .map((match) => match[1])
+      .find((heading) => heading?.toLowerCase() !== "unreleased");
+    expect(latest).toBeTruthy();
+    expect(result).toContain(`## [${latest}]`);
   });
 
   test("renders dedicated message when no bundled note or changelog entry exists", () => {

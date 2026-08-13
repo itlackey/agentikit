@@ -2733,8 +2733,9 @@ test "$(akm log --format json | jq -r '.events[-1].id // 0')" = "$before_event"
 - [ ] **[LOCAL]** JSON/YAML stay parseable; text/Markdown visibly encode terminal
       controls; HTML escapes attacker fields. Inspect captured bytes only.
 - [ ] **[LOCAL]** Env/secret directories and files akm creates are `0700`/`0600`
-      even under umask 022. Databases, task logs, and everything else akm writes
-      take the process umask: akm neither sets nor reports on those modes.
+      even under umask 022, as are config backups and scheduler invocation
+      files. The data directory, the databases and their sidecars, and per-run
+      task logs take the process umask: akm neither sets nor reports on those.
 - [ ] **[PLATFORM]** Windows ACL evidence replaces POSIX mode checks and is marked
       N/A only when genuinely unsupported.
 
@@ -2801,7 +2802,7 @@ Current known failing gates must be fixed or explicitly waived with expiry:
 | Source lifecycle rollback across config/lock/root/index/events | `FAIL` until atomic/recoverable |
 | OpenCode local-listener authentication/documentation | `FAIL` until authenticated |
 | Exact-value command-target task-log redaction | `PASS` — fixed in 0.9.1 (#755) |
-| Package-manager upgrade exact-version verification | `FAIL` until verified |
+| Package-manager upgrade exact-version verification | `PASS` — fixed 2026-08-06 (`self-update.ts`) |
 
 ---
 
@@ -2861,7 +2862,15 @@ bun test --timeout=120000 \
   tests/integration/npm-bin-contract.test.ts
 
 bun run build
-npm install --no-save better-sqlite3@^11.8.0
+# Install the exact spec package.json declares — never a range of your own.
+# better-sqlite3 compiles from source whenever there is no prebuilt binary for
+# the running Node's ABI, and a from-source build against Node 24.19+ headers
+# aborts at teardown (#790). CI does the same read-back. Remove it first:
+# `npm install pkg@version` is a no-op when that version is already installed
+# and will NOT rebuild the binding for the Node you are about to test with.
+rm -rf node_modules/better-sqlite3
+npm install --no-save \
+  "better-sqlite3@$(node -p "require('./package.json').optionalDependencies['better-sqlite3']")"
 AKM_SMOKE_NODE=node bun run test:node-smoke
 AKM_SMOKE_NODE=node bun run test:node-compat
 ```
@@ -2998,6 +3007,17 @@ bun run release:check
       partial unless a separate exact-commit matrix transcript exists.
 - [ ] **[RELEASE]** Run slow migration/workflow property gates separately with
       `AKM_RUN_SLOW_TESTS=1` and their 20-minute timeout.
+- [ ] **[RELEASE]** Cut the changelog BEFORE triggering the workflow: bump
+      `package.json` `version`, rename `## [Unreleased]` to
+      `## [<version>] - <YYYY-MM-DD>`, and leave a fresh empty `## [Unreleased]`
+      above it. This is functional, not cosmetic —
+      `src/commands/sources/migration-help.ts:84` resolves release notes by
+      skipping the `Unreleased` heading, so shipping an un-renamed section makes
+      the released binary's `akm help migrate latest` report the PREVIOUS
+      release's notes. Enforced by `tests/integration/workflow-release.test.ts`
+      ("the changelog is cut…"), which `tests/release-check.sh` runs as
+      `run_step "Workflow Release Contract"` — so a missed cut fails the release
+      gate rather than depending on this checklist being read.
 - [ ] **[RELEASE]** Official workflow input version equals committed package
       version and targets the tested SHA. Stable uses npm `latest`; prerelease
       uses `next` and GitHub prerelease.
@@ -3182,9 +3202,11 @@ remaining gaps carry approved waivers with the expiries recorded below.
     full run heals them); whether to surface that gap at write time is a 0.10
     placement-era product decision, not a regression — tracked in
     [#772](https://github.com/itlackey/akm/issues/772).
-- [ ] **Durability:** atomic reader-visible index generations, live-lock age,
+- [x] **Durability:** atomic reader-visible index generations, live-lock age,
       full source lifecycle rollback, safe website/npm refresh, strict lockfile,
       registry stale fallback, and sync/write serialization.
+      **Closed for 0.9.1** — the last open item (#758) landed; see the
+      per-item history below.
   - Covered: strict lockfile (`tests/integration/lockfile.test.ts` corrupt-
     lockfile fail-closed + CAS cases).
   - **Fixed 2026-08-06** (fix-now directed at 0.9.0 triage): registry stale
@@ -3222,20 +3244,32 @@ remaining gaps carry approved waivers with the expiries recorded below.
       code: publication is two renames, so a kill in that one-syscall window
       leaves the mirror absent — `requireStashDir` callers refresh immediately,
       others recover on the next expiry or `--force`.
-  - Open: full source lifecycle rollback (no test walks
-    add→blocked-install→rollback against a dangerous fixture).
-  - Tracking: [#758](https://github.com/itlackey/akm/issues/758) (blocked-install rollback).
-  - issue: one recovery-path coverage gap (blocked-install rollback). impact:
-    the mixed-website-snapshot outcome this waiver was written for is now
-    fixed, not merely mitigated; what remains is untested rollback on a
-    blocked install, recoverable by re-running `akm bundle add`. owner:
-    itlackey. verification test: a test walking add→blocked-install→rollback
-    against a dangerous fixture, asserting config.json/akm.lock parity.
-    temporary mitigation: all paths recover via re-run (`akm bundle update`,
-    `akm index --full`); the dangerous-env audit already blocks the install
-    itself, so rollback fidelity is the only untested part.
-    waiver approver: itlackey — approved 2026-08-06 (0.9.0 release triage).
-    waiver expiry: 0.9.1.
+  - **Closed for 0.9.1** ([#758](https://github.com/itlackey/akm/issues/758)):
+    full source lifecycle rollback — the waiver's named verification test now
+    exists as `tests/integration/vault-dangerous-key-blocked-install-rollback.test.ts`.
+    It drives the real `akm bundle add` CLI end-to-end against a materialized
+    copy of `tests/fixtures/manual-qa/dangerous-bundle/` (whose
+    `env/runtime.env` carries `NODE_OPTIONS`), non-TTY and without
+    `--allow-insecure`, and asserts every lifecycle surface after the block:
+    **byte-level** parity of `config.json` and `akm.lock`, no surviving content
+    root, and no orphaned index row. Three workspace states are covered —
+    pristine, pre-existing operator config, and a bundle already installed —
+    the last of which pins the other direction too: a rollback that reverts
+    the FIRST bundle's records is as wrong as one that leaves the refused
+    bundle's behind.
+    Rollback was found already correct in every case constructible here; the
+    test's value is as a pin, so it was mutation-verified against five separate
+    breaks (skip the rollback; drop `removeLockEntry`; delete every bundle
+    instead of the target; leave the content root; skip the post-rollback
+    reindex) and fails on each.
+  - Residue accepted by design, asserted explicitly rather than left implicit:
+    (a) on a pristine workspace the attempt still SCAFFOLDS `config.json` and
+    `akm.lock` — the config/lock writers create their file on first mutation —
+    so the test pins that the created `config.json` deep-equals `DEFAULT_CONFIG`
+    with no `bundles` key and that `akm.lock` is the empty array, rather than
+    asserting absence; (b) the events stream keeps the `add` event for the
+    refused ref, because it is an append-only audit log of ATTEMPTS and an
+    operator investigating a blocked install needs it on record.
 - [ ] **Security:** Git/direct-write symlink containment, authenticated OpenCode
       listener, registry credential/control-data redaction, archive expansion
       budgets, universal redirect/SSRF policy, and unsuppressible update audit.
@@ -3262,8 +3296,11 @@ remaining gaps carry approved waivers with the expiries recorded below.
     install; opencode listener binds loopback only. waiver approver:
     itlackey — approved 2026-08-06 (0.9.0 release triage). waiver expiry:
     0.10.0 (hardening series).
-- [ ] **Secrets/permissions:** exact-value task-log redaction; managed-file
-      permission coverage (rejected — see below).
+- [x] **Secrets/permissions:** exact-value task-log redaction; managed-file
+      permission coverage (rejected — see below). **Row closed in 0.9.1:** both
+      halves are resolved — the redaction gap is fixed, and permission
+      management is a rejected concept rather than outstanding work. No waiver
+      remains on this row.
   - Covered: exact-value redaction for prompt-target and workflow-target task
     logs (`tests/integration/tasks-runner.test.ts` "redacts echoed agent
     credentials before task logs are persisted", webhook-URL case).
@@ -3276,9 +3313,13 @@ remaining gaps carry approved waivers with the expiries recorded below.
     operator owns — on the most-traveled path in the CLI, including read-only
     opens — silently converted legacy `0755` data dirs and broke installs
     sharing `$XDG_DATA_HOME` across uids, which worked in 0.9.0.
-    **Decision: akm does not manage file permissions.** Everything it writes
-    takes the process umask; protecting the data directory is the operator's
-    call and umask/`chmod` is their lever. Nothing survives from that work:
+    **Decision: akm does not manage permissions on the data directory, the
+    databases, or task logs.** Those take the process umask; protecting the
+    data directory is the operator's call and umask/`chmod` is their lever.
+    This is scoped, not blanket — akm still creates `env`/`secret` assets,
+    config backups and scheduler invocation files at `0600`/`0700` at creation
+    time, which is a different act from re-permissioning a directory the
+    operator already owned. Nothing survives from that work:
     the health advisory that reported on those modes is gone too — akm does not
     nag about permissions it does not set.
   - **Fixed** ([#755](https://github.com/itlackey/akm/issues/755), 0.9.1).
@@ -3305,6 +3346,13 @@ remaining gaps carry approved waivers with the expiries recorded below.
     binary). Fail-open only when verification itself is unavailable.
     (`src/commands/sources/self-update.ts`; pinned in
     `tests/integration/self-update.test.ts`.)
+  - **Fixed** ([#771](https://github.com/itlackey/akm/issues/771), 0.9.1):
+    publication is gated on the real release-acceptance script.
+    `.github/workflows/release.yml` runs `./tests/release-check.sh
+    --skip-docker` before version-verify/build/publish, so the npm bin shim,
+    the migration bundle under both the Bun and Node entry points, and the
+    packed-artifact install are all checked by CI instead of depending on the
+    operator remembering `bun run release:check` locally.
   - Partial: installer coverage (install.sh harness-tested;
     install.ps1 manual-only), native scheduler (Linux standalone covered via
     release-check; macOS/Windows suites unreachable — no such CI runner).
@@ -3313,8 +3361,7 @@ remaining gaps carry approved waivers with the expiries recorded below.
     release assets).
   - Tracking: [#768](https://github.com/itlackey/akm/issues/768) (SHA-pin actions),
     [#769](https://github.com/itlackey/akm/issues/769) (post-publish artifact parity),
-    [#770](https://github.com/itlackey/akm/issues/770) (install.ps1 + macOS/Windows scheduler coverage),
-    [#771](https://github.com/itlackey/akm/issues/771) (gate publish on release-check.sh).
+    [#770](https://github.com/itlackey/akm/issues/770) (install.ps1 + macOS/Windows scheduler coverage).
   - issue: release-infrastructure hardening. impact: a clobbered release
     asset ships silently; tag-hijack of a third-party action could
     compromise the release job. owner: itlackey. verification test: per-item

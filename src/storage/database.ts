@@ -278,7 +278,12 @@ function loadBetterSqlite3(): BetterSqlite3Ctor {
     } catch (err) {
       throw new Error(
         "akm could not load 'better-sqlite3', the SQLite driver it needs on Node.js.\n" +
-          "  • Reinstall akm with a working C/C++ build toolchain so its optional\n" +
+          "  • If the error below says the module was compiled against a DIFFERENT Node.js\n" +
+          "    version, you upgraded Node after installing akm. Reinstall akm (or run\n" +
+          "    `npm rebuild better-sqlite3` in its install directory) so the binding is\n" +
+          "    rebuilt for the Node you are now running. This is the common case after a\n" +
+          "    Node major upgrade, and it is NOT a broken install.\n" +
+          "  • Otherwise, reinstall akm with a working C/C++ build toolchain so its optional\n" +
           "    'better-sqlite3' native binding rebuilds (a global `npm i -g better-sqlite3`\n" +
           "    will NOT be resolved — Node loads it from akm's own node_modules).\n" +
           "  • Or run akm under Bun, which has a built-in SQLite driver and needs no native build.\n" +
