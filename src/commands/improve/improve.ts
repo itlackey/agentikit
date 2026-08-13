@@ -161,6 +161,36 @@ export function armBudgetWatchdog(
   };
 }
 
+/**
+ * The run's write-provenance journal lifecycle as one named unit (#652).
+ *
+ * The journal is opened once the run owns its lock — so it spans exactly the
+ * window in which this run, and only this run, is allowed to write — and closed
+ * on every exit path including the crash-safety commit. Keeping the mutable
+ * handle behind this factory rather than as a bare `let` in {@link akmImprove}
+ * is also what keeps that function under the R31 size gate
+ * (`tests/architecture/improve-fn-size-ratchet.test.ts`, absolute 220-line bar
+ * with an empty baseline): lifecycle state belongs in a named unit, not in the
+ * orchestrator's preamble.
+ */
+function createRunWriteJournal(): {
+  open(): void;
+  close(): void;
+  current(): WriteProvenanceJournal | undefined;
+} {
+  let journal: WriteProvenanceJournal | undefined;
+  return {
+    open: () => {
+      journal = beginWriteProvenance();
+    },
+    close: () => {
+      journal?.end();
+      journal = undefined;
+    },
+    current: () => journal,
+  };
+}
+
 export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmImproveResult> {
   const setup = resolveImproveRunSetup(options);
   options = setup.options;
@@ -176,14 +206,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
   } = setup;
   let clearBudgetTimer = (): void => {};
   let initialGitPaths = new Set<string>();
-  // #652: run-scoped write-provenance journal. Opened once the run owns its
-  // lock (so it spans every write the run can make) and closed on every exit
-  // path. While open, every akm write path records the file it mutated.
-  let writeJournal: WriteProvenanceJournal | undefined;
-  const closeWriteJournal = (): void => {
-    writeJournal?.end();
-    writeJournal = undefined;
-  };
+  const runJournal = createRunWriteJournal();
 
   const preEnsureCleanupWarnings: string[] = [];
   // Assigned by runIndexAndCollect() (closure) so TS cannot prove definite
@@ -220,7 +243,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
   const commitStashBatch = makeCommitStashBatch({
     run: setup,
     getInitialGitPaths: () => initialGitPaths,
-    getWriteJournal: () => writeJournal,
+    getWriteJournal: () => runJournal.current(),
     // Captured via getter: the live `eventsCtx` binding is reassigned after the
     // prepass, and the catch-path sync must write through the current context.
     getEventsCtx: () => eventsCtx,
@@ -249,7 +272,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
         syncRepoDir && isGitBackedStash(syncRepoDir) ? new Set(listGitChangedPaths(syncRepoDir)) : new Set<string>();
       // #652: open AFTER the lock, so the journal covers exactly the window in
       // which this run — and only this run — is allowed to write.
-      writeJournal = beginWriteProvenance();
+      runJournal.open();
 
       // Drain the standing proposal backlog before indexing so fresh proposal
       // generation sees promotions from this same serialized run.
@@ -282,7 +305,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
       exitBackstop = undefined;
     }
     releaseRunLock();
-    closeWriteJournal();
+    runJournal.close();
     throw err;
   }
 
@@ -341,7 +364,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
     // #652: surface the run's write provenance on the envelope BEFORE the sync
     // (the sync itself writes no assets), so `result.writtenPaths` describes
     // exactly the set the commit below was scoped to.
-    const writtenPaths = describeRunWrittenPaths(setup, writeJournal?.writtenPaths() ?? []);
+    const writtenPaths = describeRunWrittenPaths(setup, runJournal.current()?.writtenPaths() ?? []);
     if (writtenPaths.length > 0) result.writtenPaths = writtenPaths;
     result.sync = commitStashBatch(result);
 
@@ -376,7 +399,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
     // #652: close the write-provenance journal LAST among the write-facing
     // teardown steps — the catch path's crash-safety commit above still needs
     // it open to know what this run wrote.
-    closeWriteJournal();
+    runJournal.close();
     // I1: close the long-lived state.db connection opened at the top of the run.
     try {
       eventsDb?.close();
