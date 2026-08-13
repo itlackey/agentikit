@@ -3187,27 +3187,53 @@ remaining gaps carry approved waivers with the expiries recorded below.
       registry stale fallback, and sync/write serialization.
   - Covered: strict lockfile (`tests/integration/lockfile.test.ts` corrupt-
     lockfile fail-closed + CAS cases).
-  - Partial: atomic index generations (single-transaction swap exists; no test
-    reads concurrently mid-rebuild), safe website/npm refresh (npm side
-    covered; website snapshot interrupted mid-write can strand a mixed dir),
-    sync serialization (git-source CAS race tested; `akm sync`'s own
-    `createExactPathCommit` race not directly).
   - **Fixed 2026-08-06** (fix-now directed at 0.9.0 triage): registry stale
     fallback — a failed registry fetch now serves the cached index even past
     its TTL, with a warning, instead of hard-failing
     (`src/storage/repositories/registry-cache.ts`; pinned by
     `tests/integration/registry-stale-fallback.test.ts`).
-  - Open: live-lock age (an alive-but-slow writer past `staleAfterMs` can be
-    reclaimed; no test pins reclaim behavior), full source lifecycle rollback
-    (no test walks add→blocked-install→rollback against a dangerous fixture).
-  - Tracking: [#757](https://github.com/itlackey/akm/issues/757) (live-lock reclaim),
-    [#758](https://github.com/itlackey/akm/issues/758) (blocked-install rollback),
-    [#759](https://github.com/itlackey/akm/issues/759) (concurrency/atomicity coverage).
-  - issue: recovery-path coverage gaps. impact: worst plausible outcome is a
-    mixed website snapshot after a crash; recovery via re-run. owner:
-    itlackey. verification test: per-item notes. temporary mitigation: all
-    paths recover via re-run (`akm bundle update`, `akm index --full`); locks
-    are per-purpose and 12h-stale thresholds make live reclaim unlikely.
+  - **Fixed for 0.9.1** ([#757](https://github.com/itlackey/akm/issues/757),
+    [#759](https://github.com/itlackey/akm/issues/759)): four of the five
+    partial/open items landed.
+    - Live-lock age — a lock whose holder PID is genuinely ALIVE but whose
+      mtime has aged past the threshold is now pinned in both directions, at
+      the production thresholds, for the index-writer lease and the improve
+      run lock (`tests/integration/index-writer-lock.test.ts`,
+      `tests/integration/commands/improve/improve-lock-invariants.test.ts`).
+      Each positive test fails when `probeLock`'s age branch is disabled; each
+      negative control fails when it is made unconditional.
+    - Atomic index generations — a second reader connection opened from inside
+      `insertTransaction` now proves it observes the complete previous
+      generation, never zero or partial rows
+      (`tests/integration/indexer/reindex-generation-atomicity.test.ts`).
+    - Sync serialization — `createExactPathCommit`'s own CAS is raced by a real
+      concurrent commit landing inside the `update-ref` window, mirroring the
+      `write-source.ts` pattern
+      (`tests/integration/sync-exact-commit-cas.test.ts`).
+    - Safe website refresh — this one was a REAL BUG, not just missing
+      coverage: the refresh deleted the whole mirror and then wrote pages in
+      place, so an interrupted run left a partial mirror that a later
+      non-forced run would serve (the freshness marker is only rewritten on
+      success, so the stale marker still looked fresh). Fixed with
+      staging-dir-then-rename plus an age-gated sweep of abandoned staging
+      dirs (`src/sources/snapshot-fetchers/website-ingest.ts`; pinned by
+      `tests/integration/website-refresh-interruption.test.ts`, all four cases
+      of which fail against the old in-place write). Residual, documented in
+      code: publication is two renames, so a kill in that one-syscall window
+      leaves the mirror absent — `requireStashDir` callers refresh immediately,
+      others recover on the next expiry or `--force`.
+  - Open: full source lifecycle rollback (no test walks
+    add→blocked-install→rollback against a dangerous fixture).
+  - Tracking: [#758](https://github.com/itlackey/akm/issues/758) (blocked-install rollback).
+  - issue: one recovery-path coverage gap (blocked-install rollback). impact:
+    the mixed-website-snapshot outcome this waiver was written for is now
+    fixed, not merely mitigated; what remains is untested rollback on a
+    blocked install, recoverable by re-running `akm bundle add`. owner:
+    itlackey. verification test: a test walking add→blocked-install→rollback
+    against a dangerous fixture, asserting config.json/akm.lock parity.
+    temporary mitigation: all paths recover via re-run (`akm bundle update`,
+    `akm index --full`); the dangerous-env audit already blocks the install
+    itself, so rollback fidelity is the only untested part.
     waiver approver: itlackey — approved 2026-08-06 (0.9.0 release triage).
     waiver expiry: 0.9.1.
 - [ ] **Security:** Git/direct-write symlink containment, authenticated OpenCode
