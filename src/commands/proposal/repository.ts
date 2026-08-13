@@ -73,6 +73,7 @@ import {
 import { canonicalBundleIdForTarget, resolveBundleWriteTarget } from "../../core/mutation-target";
 import { withImmediateTransaction, withStateDb } from "../../core/state-db";
 import { warn } from "../../core/warn";
+import { recordWrittenPath } from "../../core/write-provenance";
 import {
   assertAkmAssetWrite,
   assertWriteTargetPathsClean,
@@ -1322,6 +1323,9 @@ function rollbackPreparedProposalTransaction(txn: ProposalTxn): void {
     if (p.originalHash === null) {
       if (currentHash === p.publishedHash && sameProposalFile(p.assetPath, p.publishPath)) {
         fs.unlinkSync(p.assetPath);
+        // #652: un-publishing is a mutation of this run's own write — journal
+        // it so the sync stages the FINAL state of a written-then-reverted path.
+        recordWrittenPath(p.assetPath);
       } else if (currentHash !== null) {
         throw new Error(`Cannot roll back proposal transaction: target was created externally.`);
       }
@@ -1331,8 +1335,10 @@ function rollbackPreparedProposalTransaction(txn: ProposalTxn): void {
     cleanupProposalPublication(p);
     return;
   }
-  if (currentHash === p.publishedHash) fs.unlinkSync(p.assetPath);
-  else if (currentHash !== null && currentHash !== p.originalHash) {
+  if (currentHash === p.publishedHash) {
+    fs.unlinkSync(p.assetPath);
+    recordWrittenPath(p.assetPath);
+  } else if (currentHash !== null && currentHash !== p.originalHash) {
     throw new Error(`Cannot roll back proposal transaction: ${p.assetPath} diverged.`);
   }
   if (fs.existsSync(p.displacedPath)) {
@@ -1340,6 +1346,9 @@ function rollbackPreparedProposalTransaction(txn: ProposalTxn): void {
       throw new Error(`Cannot restore proposal backup: ${p.assetPath} is occupied.`);
     }
     fs.linkSync(p.displacedPath, p.assetPath);
+    // #652: restoring the displaced original still leaves the path in a state
+    // this run produced; journal it so the final on-disk bytes are staged.
+    recordWrittenPath(p.assetPath);
   }
   cleanupProposalPublication(p);
 }
@@ -1455,6 +1464,10 @@ async function finalizeProposalTransaction(
 ): Promise<Proposal> {
   const p = txn.journal.payload;
   validatePublishedProposal(p);
+  // #652: finalizing an `asset-published` transaction that a CRASHED earlier
+  // run left behind is this run adopting that write — journal the asset so the
+  // adopting run's auto-sync commits it instead of leaving it stranded.
+  recordWrittenPath(p.assetPath);
   cleanupProposalPublication(p);
   if (txn.journal.phase === "asset-published") {
     const commitRoot = target.source.repoPath ?? target.source.path;
@@ -1837,6 +1850,9 @@ function publishProposalAsset(txn: ProposalTxn, target: ResolvedWriteTarget): vo
       }
     }
     fs.linkSync(p.publishPath, p.assetPath);
+    // #652: the accepted-proposal (and revert) target is the run's headline
+    // write — journal it the instant the asset lands, before the txn advances.
+    recordWrittenPath(p.assetPath);
     fsyncTxnDir(path.dirname(p.assetPath));
     const snapshot = captureWriteTargetPathSnapshot(target, p.assetPath);
     if (snapshot) p.gitSnapshots = { [snapshot.path]: snapshot.state };

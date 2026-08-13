@@ -57,6 +57,7 @@ import { resolveConfiguredSources } from "./config/config";
 import { ConfigError, UsageError } from "./errors";
 import { sanitizeCommitMessage } from "./git-message";
 import { warn } from "./warn";
+import { recordWrittenPath } from "./write-provenance";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -428,6 +429,9 @@ export async function writeAssetToSource(
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, normalized, "utf8");
     recordWriteTargetPath(source, filePath);
+    // #652: run-scoped write provenance — the canonical asset write is the
+    // single largest contributor to an improve run's written-path set.
+    recordWrittenPath(filePath);
   } catch (error) {
     discardEmptyGitPreflight(preflight);
     throw error;
@@ -473,6 +477,9 @@ export async function deleteAssetFromSource(
   try {
     fs.unlinkSync(filePath);
     recordWriteTargetPath(source, filePath);
+    // #652: a removal is journaled exactly like a write — the stager stages the
+    // final on-disk state, so a deleted path lands as a staged deletion.
+    recordWrittenPath(filePath);
   } catch (error) {
     discardEmptyGitPreflight(preflight);
     throw error;

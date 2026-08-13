@@ -46,6 +46,7 @@ import { todayIso } from "../../core/common";
 import { concurrentMap } from "../../core/concurrent";
 import type { SourceConfigEntry } from "../../core/config/config";
 import { warn } from "../../core/warn";
+import { recordWrittenPath } from "../../core/write-provenance";
 import { type WriteTargetSource, writeAssetToSource } from "../../core/write-source";
 import { isProcessEnabled } from "../../llm/feature-gate";
 import { resolveIndexPassLLM } from "../../llm/index-passes";
@@ -608,6 +609,9 @@ function markParentProcessed(parent: MemoryRecord): void {
   const next = assembleAsset(updatedFm, block.content);
   try {
     fs.writeFileSync(parent.filePath, next, "utf8");
+    // #652: the parent's `inference_processed` stamp is a real asset mutation
+    // (the documented writeAssetToSource exception above) — journal it.
+    recordWrittenPath(parent.filePath);
   } catch (err) {
     warn(
       `memory inference: failed to mark parent processed ${parent.filePath}: ${err instanceof Error ? err.message : String(err)}`,

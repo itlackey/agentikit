@@ -657,6 +657,18 @@ export interface AkmImproveResult {
    * (a sync failure is non-fatal and never fails the run).
    */
   sync?: { committed: boolean; pushed: boolean; skipped: boolean; reason?: string };
+  /**
+   * #652 — run-scoped write provenance: every path this run actually wrote,
+   * created, or removed, as recorded by the write-provenance journal (NOT
+   * inferred from a Git dirty-path diff). This is the exact set the end-of-run
+   * auto-sync scopes its commit to, minus paths whose final bytes match HEAD.
+   *
+   * Deduped and sorted. Entries are POSIX paths relative to the run's primary
+   * stash dir; a write that landed outside it (e.g. a `--target` bundle) is
+   * reported as an absolute path. Omitted entirely when the run wrote nothing —
+   * and always absent on a dry run, which writes nothing by construction.
+   */
+  writtenPaths?: string[];
   /** Present only when a started run was persisted after abnormal termination. */
   terminated?: { reason: string; at: string; errorMessage?: string };
 }

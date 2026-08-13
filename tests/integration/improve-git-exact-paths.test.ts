@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { akmImprove } from "../../src/commands/improve/improve";
 import type { AkmConfig } from "../../src/core/config/config";
+import { recordWrittenPath } from "../../src/core/write-provenance";
 import { type Cleanup, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 let cleanup: Cleanup = () => {};
@@ -69,7 +70,13 @@ test("improve auto-sync excludes pre-staged WIP from the same content directory"
       strategyFilteredRefs: [],
     })) as never,
     runImprovePreparationStageFn: (async (args: { plannedRefs: Array<{ ref: string }> }) => {
-      fs.writeFileSync(path.join(memoriesDir, "operation.md"), "operation\n", "utf8");
+      // Stand in for a real akm write: every production write path journals the
+      // file it mutated (#652), and only journaled paths are staged. A bare
+      // `fs.writeFileSync` here would be indistinguishable from a concurrent
+      // human edit — which is exactly the distinction this suite pins.
+      const operationPath = path.join(memoriesDir, "operation.md");
+      fs.writeFileSync(operationPath, "operation\n", "utf8");
+      recordWrittenPath(operationPath);
       return {
         actionableRefs: args.plannedRefs,
         loopRefs: args.plannedRefs,

@@ -50,6 +50,7 @@ const COMMON_FIELDS = [
   "cycleMetrics",
   "runId",
   "sync",
+  "writtenPaths",
   "terminated",
 ] as const;
 
@@ -93,8 +94,12 @@ function validateCommon(value: Record<string, unknown>): void {
     "extract",
     "coverageGaps",
     "deadUrls",
+    "writtenPaths",
   ] as const) {
     if (value[field] !== undefined && !Array.isArray(value[field])) fail(`${field} must be an array`);
+  }
+  if (Array.isArray(value.writtenPaths) && value.writtenPaths.some((entry) => typeof entry !== "string")) {
+    fail("writtenPaths must be an array of strings");
   }
   for (const field of [
     "cyclesRun",

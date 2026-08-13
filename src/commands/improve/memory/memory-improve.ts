@@ -9,6 +9,7 @@ import { mutateFrontmatter, parseFrontmatter } from "../../../core/asset/frontma
 import { conceptIdFromTypeName } from "../../../core/asset/resolve-ref";
 import { asNonEmptyString, groupBy, stringArray } from "../../../core/common";
 import { DERIVED_SUFFIX } from "../../../core/recognition-util";
+import { recordWrittenPath } from "../../../core/write-provenance";
 import { isDerivedMemory, memoryIdentityRef, parseMemoryName, resolveParentRef } from "./derived-ref";
 
 export type MemoryPruneReason = "duplicate-derived" | "superseded-derived" | "obsolete-derived";
@@ -327,6 +328,8 @@ export function applyMemoryCleanup(stashDir: string, plan: MemoryCleanupPlan): M
       if (resolvedBody === (fm.content ?? "")) continue; // no change
       const newContent = assembleAsset(fm.data, resolvedBody);
       fs.writeFileSync(candidate.filePath, newContent, "utf8");
+      // #652: relative-date resolution rewrites the asset in place.
+      recordWrittenPath(candidate.filePath);
       relativeDatesResolved++;
     } catch (error) {
       warnings.push(formatApplyWarning("relative-date-resolve", candidate.ref, error));
@@ -609,6 +612,10 @@ function archiveCleanupCandidate(
   const archivedPath = path.join(archiveDir, originalPath);
   fs.mkdirSync(path.dirname(archivedPath), { recursive: true });
   fs.renameSync(filePath, archivedPath);
+  // #652: an archive is a delete + a create. BOTH ends are journaled so the
+  // sync stages the removal of the original alongside the archived copy.
+  recordWrittenPath(filePath);
+  recordWrittenPath(archivedPath);
 
   const archiveRef = path.relative(stashDir, archivedPath).replace(/\\/g, "/");
   const auditPath = path.join(archiveDir, "cleanup.md");
@@ -630,6 +637,7 @@ function archiveCleanupCandidate(
     "Archived derived memory for recoverable cleanup.\n",
   );
   fs.writeFileSync(auditPath, auditAsset, "utf8");
+  recordWrittenPath(auditPath);
 
   return {
     ref: candidate.ref,
