@@ -2,10 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import fs from "node:fs";
 import { placementTypes } from "../../core/asset/asset-placement";
 import { resolveStashDir } from "../../core/common";
 import { getSources, loadConfig } from "../../core/config/config";
+import { classifyPathAccess, describeInaccessiblePath } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
 import { error } from "../../core/warn";
 import { getEffectiveSemanticStatus, readSemanticStatus } from "../../indexer/search/semantic-status";
@@ -97,7 +97,17 @@ function readIndexStats(resolvedPath: string): InfoResponse["indexStats"] {
     vecAvailable: false,
   };
 
-  if (!fs.existsSync(resolvedPath)) return EMPTY;
+  // "Absent" is the ordinary first-run state; "inaccessible" is a fault that
+  // must not present as an empty index (#791). `akm info` is the command an
+  // operator reaches for to DIAGNOSE this, so it reports rather than throws —
+  // but it says so explicitly instead of returning zeros that look healthy.
+  const { access, code } = classifyPathAccess(resolvedPath);
+  if (access === "absent") return EMPTY;
+  if (access === "inaccessible") {
+    const detail = describeInaccessiblePath(resolvedPath, code);
+    error(`[akm info] index database is not readable: ${detail}`);
+    return { ...EMPTY, unreadable: detail };
+  }
 
   let db: Database | undefined;
   try {

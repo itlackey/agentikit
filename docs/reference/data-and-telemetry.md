@@ -53,6 +53,13 @@ set a tighter umask, or `chmod` the directory yourself. akm will not do it for
 you, and `akm health` will not nag about it either — `0644` under a default
 `022` umask is simply the expected state.
 
+If akm **cannot read** this directory — a uid/ownership mismatch, for instance
+when two accounts share one `$XDG_DATA_HOME` — commands fail loudly with a
+`DATA_DIR_UNREADABLE` config error (exit 78) naming the path, the errno, the
+mode and owner, and the uid you are running as. They do **not** report an empty
+index. `akm health` stays runnable in that state and reports it as a failing
+`state-db-readable` check, so it remains the command to reach for.
+
 > **0.9.1 note.** A pre-release build briefly chmodded this directory to `0700`
 > and the databases to `0600` on every open. That was reverted: it silently
 > changed the permissions of directories akm did not create, which broke installs

@@ -323,6 +323,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unflagged while an identical one under `skills/` was caught; both spellings
   are now checked.
 
+- **An index akm cannot read no longer reports as an index that does not
+  exist.** `fs.existsSync()` answers `false` for a permission error exactly as
+  it does for a missing file, and the read path used it as its "is there an
+  index?" gate — so `akm search` and `akm curate` returned no hits at **exit 0**
+  with the tip *"No search index available. Run 'akm index' to build one."* for
+  a populated index sitting right there on disk, and `akm info` reported
+  `entryCount: 0, vecAvailable: false` for the same index. Nothing said
+  "permission". A consuming agent had no way to tell that from a genuine empty
+  result, so it relayed the false answer to its user with an explanation it had
+  invented.
+
+  Absent and inaccessible are now distinct everywhere it matters:
+
+  - `search` / `curate` / the index openers raise a `ConfigError`
+    (`DATA_DIR_UNREADABLE`, exit 78) naming the path, the errno, the mode and
+    owner, and the uid actually running — instead of an empty success.
+  - `akm info` reports an `indexStats.unreadable` diagnostic rather than zeros
+    that look healthy. The field is absent on every healthy run.
+  - `akm health` now *diagnoses* an unreadable `state.db` as a failing
+    `state-db-readable` check instead of dying on the open before it could
+    report anything — it is the command you reach for when this happens.
+  - `probeLock` returns a distinct `inaccessible` state instead of classifying a
+    permission error as a stale lock. "I cannot read this lock" and "the holder
+    is dead" are opposite facts, and `akm improve` now stops rather than
+    reclaiming a lease that may be genuinely held.
+
 - **`akm health` checks every configured bundle for loose secret permissions,
   not just the default one.** The `secret-file-perms` advisory scans `env` and
   `secrets` across all configured bundles plus `config-backups`. Its scope is

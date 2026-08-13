@@ -15,6 +15,7 @@ import {
   tryAcquireLockSync,
 } from "../../core/file-lock";
 import { tryWithMaintenanceStartBarrier, withMaintenanceStartBarrier } from "../../core/maintenance-barrier";
+import { describeInaccessiblePath } from "../../core/path-access";
 import { warn } from "../../core/warn";
 
 export const MIN_IMPROVE_LOCK_STALE_MS = 4 * 60 * 60 * 1000;
@@ -81,6 +82,16 @@ function tryAcquireImproveLockUnlocked(
       return { state: "acquired", ownership };
     }
     // Re-grabbed by another racer in the window — fall through and treat as held.
+  }
+
+  // A lock we cannot READ is a hard stop, never a reclaim candidate (#791): the
+  // holder may be alive and working, and we simply lack permission to see it.
+  // Stealing the lease here would let two improve runs mutate the same bundle.
+  if (probe.state === "inaccessible") {
+    throw new ConfigError(
+      `improve lock exists but is not readable: ${describeInaccessiblePath(lockPath, probe.code)}.`,
+      "DATA_DIR_UNREADABLE",
+    );
   }
 
   const rawContent = probe.state === "absent" ? undefined : probe.rawContent;
