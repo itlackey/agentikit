@@ -2733,8 +2733,9 @@ test "$(akm log --format json | jq -r '.events[-1].id // 0')" = "$before_event"
 - [ ] **[LOCAL]** JSON/YAML stay parseable; text/Markdown visibly encode terminal
       controls; HTML escapes attacker fields. Inspect captured bytes only.
 - [ ] **[LOCAL]** Env/secret directories and files akm creates are `0700`/`0600`
-      even under umask 022. Databases, task logs, and everything else akm writes
-      take the process umask: akm neither sets nor reports on those modes.
+      even under umask 022, as are config backups and scheduler invocation
+      files. The data directory, the databases and their sidecars, and per-run
+      task logs take the process umask: akm neither sets nor reports on those.
 - [ ] **[PLATFORM]** Windows ACL evidence replaces POSIX mode checks and is marked
       N/A only when genuinely unsupported.
 
@@ -3293,9 +3294,13 @@ remaining gaps carry approved waivers with the expiries recorded below.
     operator owns — on the most-traveled path in the CLI, including read-only
     opens — silently converted legacy `0755` data dirs and broke installs
     sharing `$XDG_DATA_HOME` across uids, which worked in 0.9.0.
-    **Decision: akm does not manage file permissions.** Everything it writes
-    takes the process umask; protecting the data directory is the operator's
-    call and umask/`chmod` is their lever. Nothing survives from that work:
+    **Decision: akm does not manage permissions on the data directory, the
+    databases, or task logs.** Those take the process umask; protecting the
+    data directory is the operator's call and umask/`chmod` is their lever.
+    This is scoped, not blanket — akm still creates `env`/`secret` assets,
+    config backups and scheduler invocation files at `0600`/`0700` at creation
+    time, which is a different act from re-permissioning a directory the
+    operator already owned. Nothing survives from that work:
     the health advisory that reported on those modes is gone too — akm does not
     nag about permissions it does not set.
   - **Fixed** ([#755](https://github.com/itlackey/akm/issues/755), 0.9.1).

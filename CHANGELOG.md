@@ -401,9 +401,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     is dead" are opposite facts, and `akm improve` now stops rather than
     reclaiming a lease that may be genuinely held.
 
-- **akm does not manage file permissions, and no longer reports on them
-  either.** Everything akm writes takes your process umask; the mode of your
-  data directory is yours to set, and `chmod`/`umask` are your levers.
+- **akm no longer manages permissions on your data directory, its databases, or
+  your task logs — and no longer reports on them either.** Those take your
+  process umask; their mode is yours to set, and `chmod`/`umask` are your
+  levers.
+
+  This is scoped, not blanket: akm still creates a handful of files at
+  restrictive modes *at creation time*, as it always has — `env` and `secret`
+  assets and config backups at `0600`, their directories at `0700`, and the
+  scheduler invocation files it writes for cron/launchd/schtasks. Those are
+  files akm authors itself and whose contents are credentials; setting their
+  mode when creating them is not the same as re-permissioning a directory you
+  already owned.
 
   Two 0.9.1 pre-release changes are gone. The first chmodded akm's databases
   and task logs to `0600`/`0700` on every open — reverted because
