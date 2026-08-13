@@ -2999,6 +2999,15 @@ bun run release:check
       partial unless a separate exact-commit matrix transcript exists.
 - [ ] **[RELEASE]** Run slow migration/workflow property gates separately with
       `AKM_RUN_SLOW_TESTS=1` and their 20-minute timeout.
+- [ ] **[RELEASE]** Cut the changelog BEFORE triggering the workflow: bump
+      `package.json` `version`, rename `## [Unreleased]` to
+      `## [<version>] - <YYYY-MM-DD>`, and leave a fresh empty `## [Unreleased]`
+      above it. This is functional, not cosmetic —
+      `src/commands/sources/migration-help.ts:84` resolves release notes by
+      skipping the `Unreleased` heading, so shipping an un-renamed section makes
+      the released binary's `akm help migrate latest` report the PREVIOUS
+      release's notes. Nothing in `release.yml`, `tests/release-check.sh` or any
+      lint gate enforces this; it is checked here or not at all.
 - [ ] **[RELEASE]** Official workflow input version equals committed package
       version and targets the tested SHA. Stable uses npm `latest`; prerelease
       uses `next` and GitHub prerelease.

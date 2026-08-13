@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-13
+
+### Breaking changes & migration
+
+The 0.9.x series carries breaking changes as it works toward the 0.10.x
+stabilization line. Every item here is detailed further down; this section is
+what an upgrader reads first.
+
+- **A data directory akm cannot READ is now an error, not an empty result.**
+  Commands that previously returned `hits: []` / `entryCount: 0` / "nothing
+  eligible" at exit 0 for an index, lockfile or database they lacked permission
+  on now raise `DATA_DIR_UNREADABLE` (exit 78) naming the path, errno, mode,
+  owner and running uid. *Affected:* anyone whose data dir is partly unreadable
+  — most often a `$XDG_DATA_HOME` shared across uids. *Remedy:* fix the
+  ownership or mode the error names, or point `AKM_DATA_DIR` somewhere this
+  user owns. The old behaviour was a false success, so a script that treated
+  exit 0 as "no results" was already being lied to.
+
+- **Lockfile writes refuse to run against an unreadable `akm.lock`.**
+  `akm bundle add` / `remove` / `update` now fail closed instead of reading the
+  lock as empty and writing the single incoming entry over the whole record.
+  *Remedy:* as above. This one prevented real data loss — see Fixed.
+
+- **`akm workflow run` exits 1 when a run ends `blocked`.** Previously 0.
+  *Affected:* CI steps and scheduled wrappers that branched only on `failed`.
+  *Remedy:* treat nonzero as "not verified"; resume with
+  `akm workflow resume <id>`.
+
+- **`akm index --clean` no longer deletes entries whose file it cannot read.**
+  It keeps and names them. *Affected:* anyone relying on `--clean` to prune
+  aggressively; it is now conservative where it cannot see.
+
+- **Workflow documents are bounds-checked at authoring time.** `engine:` name
+  grammar, `retry.max` 0–100, `gate.max_loops` 1–100, `map.concurrency` and
+  `engines.<name>.concurrency` 1–64, and any `timeout:` ≤ 2 147 483 647 ms are
+  now enforced by the parser. *Affected:* documents that parsed at 0.9.0 but
+  could never actually run — the frozen-plan decoder already refused them.
+  *Remedy:* edit the offending field; the error is now line-anchored.
+
+- **`akm health` no longer emits `secret-file-perms`, and no longer exits 4 for
+  it.** The check is gone. *Affected:* anything parsing health output for that
+  check name.
+
+- **Command-target task logs are now redacted.** Output that previously
+  persisted verbatim may now contain `[REDACTED]`. *Affected:* anything
+  grepping task logs for values that are now recognised as secrets.
+
+- **Leftover `isolation: worktree` trees are garbage-collected after 7 days.**
+  *Remedy:* copy anything you want to keep out of a retained worktree within a
+  week.
+
 ### Added
 
 - **`exec` workflow units — run a shell command as a workflow step.** A step
@@ -147,6 +198,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`akm workflow run` now exits non-zero when the run ends `blocked`.** A
+  verification judge that throws, cannot be resolved, or returns a malformed
+  verdict stops the run `blocked` — unverified, and resumable with `akm
+  workflow resume <id>`. That previously exited 0, so a CI step or scheduled
+  wrapper read an unverified run as a passing one. It now exits 1, matching
+  `failed` and gate rejections, and matching how the scheduled-task path
+  already reported it.
+
+- **Workflow dispatch bounds are enforced at authoring time, not only by the
+  frozen-plan decoder.** `engine:` names must match the decoder's own grammar
+  (lowercase dash-separated letters/digits, starting with a letter, ≤63
+  chars); `retry.max` is 0–100; `gate.max_loops` is 1–100; `map.concurrency`
+  and `engines.<name>.concurrency` are 1–64; any `timeout:` must resolve to at
+  most 2 147 483 647 ms (~24.8 days, `setTimeout`'s 32-bit ceiling). Every one
+  of these was already refused by the frozen-plan decoder, so such a document
+  could never actually run — but it *parsed*, so `akm lint`, `akm workflow
+  show` and `akm workflow create` all reported it clean and the failure arrived
+  at `workflow run` as an unlocated "Invalid frozen workflow plan". The error is
+  now line-anchored at parse time. Nothing changes for a document already
+  inside the bounds.
+
+- **`akm lint` gained an advisory channel.** The result envelope carries
+  `warnings: LintIssue[]` alongside `fixed`/`flagged`, `summary` gains a
+  `warnings` count, and text output prints a `warnings` section. Advisories
+  never route into `flagged`, so `--fail-on-flagged` cannot fail a run over
+  one. Workflow compile advisories (`workflow-warning`) are surfaced for the
+  first time — a step with no `output:` schema, a `params.<name>` reference to
+  an undeclared param, a `gate.max_loops` above 1 on an `exec` step — so a
+  bundle that linted clean at 0.9.0 may now report warnings without becoming a
+  failure. Findings that know a location carry `line` in `--format json` and
+  render as `file:line` in text. A new `lint-failed` code reports a file the
+  sweep reached but could not finish.
+
+- **Leftover `isolation: worktree` trees are now garbage-collected.** A run
+  that crashed, or one whose worktree was retained after a dirty unit, used to
+  leave its tree under the worktrees root forever. akm now opportunistically
+  removes such trees once they are 7 days old, confined to the worktrees root,
+  symlinks skipped, containment re-checked. A worktree still in use is never
+  collected: every live tree carries a liveness marker (pid, host, resolved
+  path) in git's administrative directory for it, and the sweep skips a
+  candidate whose holder is still running here.
+
 - **The workflow JSON Schema subset now enforces `allOf`/`anyOf`/`oneOf`/`not`.**
   A step `output:` or `params:` schema may use the combinators, and the runtime
   now evaluates them. Previously it ignored them: a schema using one was
@@ -267,6 +360,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   journal and hold across resumes.
 
 ### Fixed
+
+- **A website source interrupted mid-refresh no longer loses the snapshot it
+  already had.** A refresh deleted the whole mirror and then rebuilt it page by
+  page, so a process killed inside that loop left an empty or partial directory
+  with the old content already gone — and the freshness marker still looked
+  recent, so the next `sync()` served the wreckage instead of rebuilding. The
+  new snapshot is built in a dot-prefixed sibling directory and swapped in with
+  renames: an interrupted refresh leaves the PREVIOUS complete snapshot
+  untouched. Abandoned staging directories are dot-prefixed so the indexer's
+  walk skips them, and are swept by the next refresh once an hour old.
+
+- **A resumed workflow run no longer re-dispatches work that already ran.** The
+  single-driver guard was checked at the run level, so a run whose lease had
+  been stolen left its still-owned unit row `running` and discarded the real
+  outcome — the resume then re-dispatched a unit that had already executed its
+  side effects and already spent its tokens. The guard now lives on the row, so
+  a stale driver's finish matches nothing and a live outcome is never dropped.
+
+- **Lowering `retry.max` no longer re-runs finished work.** The completed-attempt
+  scan matched only attempts the *current* retry policy could have produced, so
+  reducing `retry.max` between invocations hid a journaled `~rN` row and the
+  unit was dispatched again. It now matches any journaled attempt of the unit.
 
 - **A scheduled `command` task no longer writes your secrets into its log.**
   Task logs were scrubbed for credential *shapes* — `Bearer …`, `sk-…`, webhook
@@ -401,6 +516,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     is dead" are opposite facts, and `akm improve` now stops rather than
     reclaiming a lease that may be genuinely held.
 
+  The same conflation existed on the write paths, where the consequence was
+  worse than a wrong answer:
+
+  - **An unreadable `akm.lock` could destroy every bundle record in it.** The
+    lockfile read that exists specifically so a write path never sees `[]`
+    returned `[]` for *any* read failure, permission errors included — and
+    every lockfile write is read-modify-write, so the next atomic write
+    replaced the operator's whole lock record with the single entry being
+    added. Verified by probe: the symlink was replaced by a regular file
+    holding one entry. Lockfile writes now refuse to run against a lock they
+    cannot read.
+  - **The migration recovery gate failed open.** "I cannot tell whether a
+    recovery is pending" cleared the gate exactly as "no recovery is pending"
+    did, so akm would open the canonical databases on top of a half-applied
+    migration. It now fails closed.
+  - **`akm index --clean` deleted rows for files it merely could not look at**,
+    and reported the deletions as a clean success. Unreadable entries are now
+    kept and named.
+  - `indexWrittenAssets` returned `true` — "the index is as you expect" — for
+    an index it could not open, on the strength of which `acceptProposal`
+    advanced its journal to `index-finalized`.
+  - `akm improve` eligibility, `akm feedback`, `akm bundle list` and the graph
+    loaders each turned a permission fault into an empty result, a zero count,
+    or the advice to "Run `akm index` first".
+
 - **akm no longer manages permissions on your data directory, its databases, or
   your task logs — and no longer reports on them either.** Those take your
   process umask; their mode is yours to set, and `chmod`/`umask` are your
@@ -527,6 +667,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and order-preserving; a compile pass that filtered or reordered steps would
   have silently applied one step's overrides to another. Attribution is now
   keyed by `stepId`.
+
+### Security
+
+- **A gate judge's response is now scrubbed before it is journaled.** The judge
+  verdict is written into the gate row's `result_json`, and a judge failure's
+  message becomes the blocked step's notes — but the judge dispatch bypassed
+  the redaction contract every unit dispatch goes through, so a judge that
+  echoed a credential out of the promoted artifact persisted it unredacted into
+  the workflow journal. Both judge paths (agent and llm) now wrap their
+  dispatch in the same scrub, with the sensitive-value set collected per
+  dispatch rather than at build time, so a credential rotated between the two
+  reads is still caught. The dispatch also carries the real run/step/gate ids
+  instead of a synthetic `"gate"` placeholder, so a gate row and its telemetry
+  describe the same thing.
+
+- **Command-target task logs are scrubbed of exact secret values**, closing the
+  last redaction lane — see the `### Fixed` entry above for the full account.
 
 ## [0.9.0] - 2026-08-06
 

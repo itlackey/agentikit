@@ -61,13 +61,21 @@ describe("migration help", () => {
     }
   });
 
-  test("latest alias resolves to the newest release changelog section", () => {
+  test("latest alias resolves to the changelog section for the shipping version", () => {
+    // Derived from package.json, NOT hardcoded. `resolveLatestVersion()`
+    // returns the first non-`Unreleased` heading, which makes this the one
+    // check that catches a release cut where `## [Unreleased]` was never
+    // renamed to `## [<version>]`: the shipped binary would then answer
+    // `akm help migrate latest` with the PREVIOUS release's notes, and a
+    // hardcoded expectation here would still pass because it names that
+    // previous release. Nothing in release.yml, tests/release-check.sh or any
+    // lint gate covers this.
+    const version = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8")).version as string;
     const result = renderMigrationHelp("latest");
-    // The final [0.9.0] section must sit ABOVE the rc/beta history:
-    // resolveLatestVersion() returns the first non-Unreleased heading, so a
-    // misplaced section would make `akm help migrate latest` report an rc.
-    expect(result).toContain("## [0.9.0]");
-    expect(result).not.toContain("## [0.9.0-rc");
+    expect(result).toContain(`## [${version}]`);
+    // The stable section must also sit ABOVE the rc/beta history, or the alias
+    // reports a prerelease.
+    expect(result).not.toContain(`## [${version}-rc`);
   });
 
   test("renders dedicated message when no bundled note or changelog entry exists", () => {
