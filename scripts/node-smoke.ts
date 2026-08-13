@@ -33,7 +33,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { satisfies } from "semver";
+import { BOUNDARY_MARKERS, NATIVE_CRASH_MARKER } from "./node-runtime-markers";
 
 const repoRoot = path.resolve(import.meta.dir, "..");
 const cliEntry = path.join(repoRoot, "dist", "cli-node.mjs");
@@ -72,6 +72,18 @@ if (!existsSync(cliEntry)) {
       optionalDependencies?: Record<string, string>;
     }
   ).optionalDependencies?.["better-sqlite3"];
+  // Absent means package.json changed shape, not that the check is optional.
+  // Threading `declared` through as possibly-undefined bought a degraded mode
+  // where the probe passes, the version check is silently skipped, and the
+  // script continues green — which is the outcome this preflight exists to
+  // prevent.
+  if (!declared) {
+    console.error(
+      "node-smoke: package.json declares no optionalDependencies['better-sqlite3'] — cannot verify the binding.",
+    );
+    process.exit(1);
+  }
+  const remedy = `rm -rf node_modules/better-sqlite3 && npm install --no-save better-sqlite3@${declared}`;
   const probe = spawnSync(
     nodeBin,
     [
@@ -86,18 +98,23 @@ if (!existsSync(cliEntry)) {
     console.error(
       "node-smoke: could not load 'better-sqlite3' under the smoke's node.\n" +
         `  Install the declared binding for this runtime:\n` +
-        `    rm -rf node_modules/better-sqlite3 && npm install --no-save better-sqlite3@${declared ?? "<see package.json>"}\n` +
+        `    ${remedy}\n` +
         `  ${(probe.stderr ?? "").trim().split("\n").slice(0, 8).join("\n  ")}`,
     );
     process.exit(1);
   }
-  const [installed = "", abi = ""] = probe.stdout.trim().split(" ");
-  if (declared && !satisfies(installed, declared)) {
+  const [installed, abi] = probe.stdout.trim().split(" ");
+  // EXACT equality, not a semver range match. `declared` is an exact pin by
+  // policy (package.json → pinNotes), and #790's whole lesson is that a range
+  // on a native dep is the hazard: `satisfies("11.10.0", "^11.8.0")` is true,
+  // so a range check would green-light the exact build that crashes on Node 24.
+  // If the spec is ever re-loosened, this fails and says so.
+  if (installed !== declared) {
     console.error(
       `node-smoke: better-sqlite3@${installed} is installed but package.json declares ${declared}.\n` +
         "  This job exists to prove the binding npm users actually get works, so it must test\n" +
-        "  the declared spec. Reinstall it (npm skips its install script when the version already\n" +
-        `  matches): rm -rf node_modules/better-sqlite3 && npm install --no-save better-sqlite3@${declared}`,
+        "  the declared spec exactly. Reinstall it (npm skips its install script when the\n" +
+        `  version already matches): ${remedy}`,
     );
     process.exit(1);
   }
@@ -173,19 +190,14 @@ function step(label: string, args: string[], opts: StepOptions = {}): string {
   // `stdout missing expected substring` — while the `search` step, which allows
   // a non-zero exit, would not have failed at all. Name the crash for what it
   // is so the next one is diagnosed instead of re-run.
-  if (err.includes("----- Native stack trace -----")) {
+  if (err.includes(NATIVE_CRASH_MARKER)) {
     ok = false;
     const assertion = err.split("\n").find((l) => l.includes("Assertion failed") || l.includes("FATAL ERROR"));
     problems.push(`native crash under node${assertion ? `: ${assertion.trim()}` : ""}`);
   }
   // A Node-branch regression in the runtime boundary surfaces as these messages
   // even when the command still prints a result — treat them as hard failures.
-  for (const marker of [
-    "appendEvent failed",
-    "ERR_MODULE_NOT_FOUND",
-    "ERR_UNKNOWN_FILE_EXTENSION",
-    "Bun is not defined",
-  ]) {
+  for (const marker of BOUNDARY_MARKERS) {
     if (err.includes(marker) || out.includes(marker)) {
       ok = false;
       problems.push(`runtime-boundary marker in output: ${marker}`);

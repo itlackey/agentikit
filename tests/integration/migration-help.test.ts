@@ -20,18 +20,6 @@ describe("migration help", () => {
     expect(result).toContain("## [0.5.0]");
   });
 
-  test("supports latest alias when changelog text is available", () => {
-    const result = renderMigrationHelp("latest");
-    // Derive the expected version from the changelog so this never re-breaks on a
-    // version bump: "latest" resolves to the newest RELEASED (non-Unreleased) section.
-    const changelog = fs.readFileSync(path.join(PROJECT_ROOT, "CHANGELOG.md"), "utf8");
-    const latest = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)]
-      .map((m) => m[1])
-      .find((v) => v!.toLowerCase() !== "unreleased");
-    expect(latest).toBeTruthy();
-    expect(result).toContain(`## [${latest}]`);
-  });
-
   test("ensures published static files exist in the repo", () => {
     const packageJson = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8")) as {
       files?: string[];
@@ -61,21 +49,22 @@ describe("migration help", () => {
     }
   });
 
-  test("latest alias resolves to the changelog section for the shipping version", () => {
-    // Derived from package.json, NOT hardcoded. `resolveLatestVersion()`
-    // returns the first non-`Unreleased` heading, which makes this the one
-    // check that catches a release cut where `## [Unreleased]` was never
-    // renamed to `## [<version>]`: the shipped binary would then answer
-    // `akm help migrate latest` with the PREVIOUS release's notes, and a
-    // hardcoded expectation here would still pass because it names that
-    // previous release. Nothing in release.yml, tests/release-check.sh or any
-    // lint gate covers this.
-    const version = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8")).version as string;
+  test("supports latest alias when changelog text is available", () => {
+    // Behavior only: `latest` resolves to the newest RELEASED (non-Unreleased)
+    // section. The expectation is derived from the changelog so this never
+    // re-breaks on a version bump.
+    //
+    // Whether that section names the version actually being shipped is a
+    // property of the RELEASE, not of this renderer, and is asserted in
+    // tests/integration/workflow-release.test.ts — which is
+    // `run_step "Workflow Release Contract"` in tests/release-check.sh.
     const result = renderMigrationHelp("latest");
-    expect(result).toContain(`## [${version}]`);
-    // The stable section must also sit ABOVE the rc/beta history, or the alias
-    // reports a prerelease.
-    expect(result).not.toContain(`## [${version}-rc`);
+    const changelog = fs.readFileSync(path.join(PROJECT_ROOT, "CHANGELOG.md"), "utf8");
+    const latest = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)]
+      .map((match) => match[1])
+      .find((heading) => heading?.toLowerCase() !== "unreleased");
+    expect(latest).toBeTruthy();
+    expect(result).toContain(`## [${latest}]`);
   });
 
   test("renders dedicated message when no bundled note or changelog entry exists", () => {

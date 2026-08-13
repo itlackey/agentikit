@@ -45,12 +45,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_CONFIG } from "../../src/core/config/config";
 import { readEvents } from "../../src/core/events";
-import { getDbPath } from "../../src/core/paths";
+import { getConfigPath, getDbPath, getLockfilePath } from "../../src/core/paths";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
 import { closeDatabase, openReadonlyExistingDatabase } from "../../src/storage/repositories/index-connection";
 import { getAllEntries } from "../../src/storage/repositories/index-entries-repository";
 import { runCliCapture } from "../_helpers/cli";
-import { type IsolatedAkmStorage, makeSandboxDir, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { type IsolatedAkmStorage, makeSandboxDir, withIsolatedAkmStorage, withTTY } from "../_helpers/sandbox";
 
 /** The shipped dangerous fixture (`env/runtime.env` carries `NODE_OPTIONS`). */
 const DANGEROUS_FIXTURE = path.resolve(import.meta.dir, "../fixtures/manual-qa/dangerous-bundle");
@@ -128,26 +128,25 @@ async function addBundleNonInteractive(ref: string, contentRoot: string): Promis
     syncedAt: "2026-08-10T00:00:00.000Z",
     writable: false,
   });
-  const originalIsTTY = process.stdin.isTTY;
-  Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
   try {
-    const result = await runCliCapture(["bundle", "add", ref]);
+    // Non-TTY is the fail-closed arm of the gate: no prompt, refuse outright.
+    const result = await withTTY(false, () => runCliCapture(["bundle", "add", ref]));
     return { code: result.code, stderr: result.stderr };
   } finally {
-    Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY, configurable: true });
     spy.mockRestore();
   }
 }
 
 // ── Surface readers ──────────────────────────────────────────────────────────
 
-function configPath(): string {
-  return path.join(storage.configDir, "akm", "config.json");
-}
-
-function lockfilePath(): string {
-  return path.join(storage.dataDir, "akm", "akm.lock");
-}
+// Resolved through the real helpers, NOT rebuilt from `storage.*`. `getConfigDir`
+// has three branches (AKM_CONFIG_DIR, XDG/APPDATA, transient-AKM_BUNDLE_DIR) and
+// `getDataDir` differs again on win32; a hand-joined path agrees with them only
+// by coincidence on Linux. It would fail OPEN if it ever stopped agreeing —
+// `readOrNull` returns null for a path that is simply wrong, and the
+// "no trace of the refused bundle" assertions below would pass against nothing.
+const configPath = getConfigPath;
+const lockfilePath = getLockfilePath;
 
 /** Raw bytes of a lifecycle file, or `null` when the file does not exist. */
 function readOrNull(target: string): string | null {
@@ -185,9 +184,11 @@ function readIndexedRows(): Array<{ bundleId: string; filePath: string }> {
  * surface the rollback deliberately does not revert.
  */
 function readAddEventTargets(): string[] {
-  return readEvents({ limit: 100 })
-    .events.filter((event) => event.eventType === "add")
-    .map((event) => String((event.metadata as { target?: unknown } | undefined)?.target ?? ""));
+  // Filtered by the query, not after a capped fetch: with `limit` the `add` rows
+  // could be pushed out of the window by unrelated event volume.
+  return readEvents({ type: "add" }).events.map((event) =>
+    String((event.metadata as { target?: unknown } | undefined)?.target ?? ""),
+  );
 }
 
 // ── Assertions ───────────────────────────────────────────────────────────────
@@ -204,10 +205,14 @@ function expectBlockedByDangerousKeyGate(result: { code: number; stderr: string 
 /** No lifecycle surface may still reference the refused bundle's content root. */
 function expectNoTraceOfRefusedBundle(dangerousRoot: string): void {
   expect(fs.existsSync(dangerousRoot)).toBe(false);
+  // `?? ""` deliberately: an absent file genuinely has no trace of the bundle,
+  // and only these two `not.toContain` readers may treat it that way. Callers
+  // asserting the lockfile's CONTENT assert on the value directly, so a missing
+  // file fails there instead of being papered over with a `?? "[]"` default.
   const configText = readOrNull(configPath()) ?? "";
   expect(configText).not.toContain(dangerousRoot);
   expect(configText).not.toContain(DANGEROUS_REF);
-  const lockText = readOrNull(lockfilePath()) ?? "[]";
+  const lockText = readOrNull(lockfilePath()) ?? "";
   expect(lockText).not.toContain(dangerousRoot);
   expect(lockText).not.toContain(DANGEROUS_REF);
   for (const row of readIndexedRows()) {
@@ -236,10 +241,10 @@ describe("dangerous-key blocked install — rollback leaves config.json/akm.lock
     // literal) keeps this exact even as defaults evolve.
     const after = snapshotLifecycleFiles();
     expect(after.configJson).not.toBeNull();
-    const parsedConfig = JSON.parse(after.configJson as string) as Record<string, unknown>;
-    expect(parsedConfig).toEqual(JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as Record<string, unknown>);
-    expect(parsedConfig.bundles).toBeUndefined();
-    expect(JSON.parse(after.lockfile ?? "[]")).toEqual([]);
+    // `toEqual` against DEFAULT_CONFIG already proves `bundles` is absent —
+    // DEFAULT_CONFIG has no such key, so any bundle record fails the compare.
+    expect(JSON.parse(after.configJson ?? "")).toEqual(DEFAULT_CONFIG);
+    expect(JSON.parse(after.lockfile ?? "")).toEqual([]);
 
     expectNoTraceOfRefusedBundle(dangerousRoot);
     expect(readIndexedRows()).toEqual([]);
@@ -263,7 +268,7 @@ describe("dangerous-key blocked install — rollback leaves config.json/akm.lock
 
     const after = snapshotLifecycleFiles();
     expect(after.configJson).toBe(before.configJson);
-    expect(JSON.parse(after.lockfile ?? "[]")).toEqual([]);
+    expect(JSON.parse(after.lockfile ?? "")).toEqual([]);
     expectNoTraceOfRefusedBundle(dangerousRoot);
   }, 30_000);
 

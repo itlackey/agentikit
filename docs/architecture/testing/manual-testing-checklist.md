@@ -3014,8 +3014,10 @@ bun run release:check
       `src/commands/sources/migration-help.ts:84` resolves release notes by
       skipping the `Unreleased` heading, so shipping an un-renamed section makes
       the released binary's `akm help migrate latest` report the PREVIOUS
-      release's notes. Nothing in `release.yml`, `tests/release-check.sh` or any
-      lint gate enforces this; it is checked here or not at all.
+      release's notes. Enforced by `tests/integration/workflow-release.test.ts`
+      ("the changelog is cut…"), which `tests/release-check.sh` runs as
+      `run_step "Workflow Release Contract"` — so a missed cut fails the release
+      gate rather than depending on this checklist being read.
 - [ ] **[RELEASE]** Official workflow input version equals committed package
       version and targets the tested SHA. Stable uses npm `latest`; prerelease
       uses `next` and GitHub prerelease.

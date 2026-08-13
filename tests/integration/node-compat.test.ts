@@ -38,6 +38,7 @@ import { type ChildProcess, spawn as nodeSpawn, spawnSync as nodeSpawnSync } fro
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { BOUNDARY_MARKERS, NATIVE_CRASH_MARKER } from "../../scripts/node-runtime-markers";
 import { runCliCapture } from "../_helpers/cli";
 import { withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
@@ -103,23 +104,14 @@ function parseJson(text: string): unknown {
   }
 }
 
-// Runtime-boundary regression markers — any of these in output means the
-// Node path tried to call a Bun built-in directly.
-const BOUNDARY_MARKERS = ["Bun is not defined", "ERR_MODULE_NOT_FOUND", "ERR_UNKNOWN_FILE_EXTENSION"];
-
-// Node's own banner when a native addon aborts the process. Distinct from a
-// boundary leak — nothing in akm's JS produced it — but just as much a hard
-// failure, and one this suite previously swallowed whenever the command had
-// already flushed enough stdout to satisfy the assertion (#790).
-const NATIVE_CRASH_MARKER = "----- Native stack trace -----";
-
 function assertNoBoundaryLeak(result: NodeResult, label: string): void {
   for (const marker of BOUNDARY_MARKERS) {
     expect(result.stdout + result.stderr, `[${label}] boundary leak: ${marker}`).not.toContain(marker);
   }
-  expect(result.stderr, `[${label}] the node subprocess aborted in native code:\n${result.stderr}`).not.toContain(
-    NATIVE_CRASH_MARKER,
-  );
+  // Static message: bun prints the received string on failure anyway, and
+  // interpolating stderr here builds it on every passing call too — `nodeRun`
+  // allows a 32 MiB buffer, so that is unbounded work on the happy path.
+  expect(result.stderr, `[${label}] the node subprocess aborted in native code`).not.toContain(NATIVE_CRASH_MARKER);
 }
 
 // ── Shared state for each describe block ─────────────────────────────────────

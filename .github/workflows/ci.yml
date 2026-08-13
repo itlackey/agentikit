@@ -80,16 +80,14 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: bun install --frozen-lockfile
       - run: bun run build
-      # This job's whole point is to prove the binding npm users actually get
-      # works, so it must install the SPEC THE PACKAGE DECLARES rather than a
-      # range of its own. The version is read back out of package.json — the
-      # single source of truth — so the two cannot drift (#790: they had, and
-      # the job spent its time exercising a from-source build of an 11.x that
-      # has no Node 24 prebuild, which aborts at teardown on Node 24.19+).
+      # Installs the SPEC THE PACKAGE DECLARES, read back out of package.json so
+      # the two cannot drift — this job exists to prove the binding npm users
+      # actually get works. Why it is pinned at all: package.json → pinNotes
+      # ["better-sqlite3@12.11.1"] (#790). scripts/node-smoke.ts preflights that
+      # what landed is that exact version and that it loads under this node.
       - name: Verify the Node fallback
         run: |
           spec=$(node -p "require('./package.json').optionalDependencies['better-sqlite3']")
-          echo "node-smoke: installing better-sqlite3@$spec (declared in package.json)"
           # Remove it first. `npm install pkg@version` is a NO-OP when that exact
           # version is already present and does NOT re-run the install script, so
           # the binding `bun install` built a moment ago — under whichever node
