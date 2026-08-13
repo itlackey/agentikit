@@ -12,6 +12,7 @@ import { isHttpUrl, toErrorMessage } from "../core/common";
 import { concurrentMap } from "../core/concurrent";
 import type { AkmConfig, LlmConnectionConfig } from "../core/config/config";
 import { isLoopbackEndpoint } from "../core/loopback";
+import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { SCRIPT_EXTENSIONS } from "../core/recognition-util";
 import { withStateDb } from "../core/state-db";
@@ -513,6 +514,14 @@ export function reconcileBodyOpeningIndexState(
  *
  * Only rows with a non-empty `file_path` are checked — remote/virtual entries
  * that have no local path are always skipped.
+ *
+ * "No longer exists" means ABSENT, never merely unreadable (#791). This pass
+ * DELETES rows, and `fs.existsSync` reported `false` for a file akm lacked
+ * permission to look at exactly as for one that had been removed — so a
+ * bundle temporarily mounted read-restricted (a uid mismatch, a tightened
+ * parent directory) had its whole index wiped, and the run reported the
+ * deletions as a clean success. Unreadable files keep their rows and are
+ * reported instead.
  */
 function runCleanPass(db: Database, dryRun: boolean): IndexCleanResult {
   const allEntries = db.prepare("SELECT id, entry_key AS ref, file_path AS path FROM entries").all() as {
@@ -524,7 +533,20 @@ function runCleanPass(db: Database, dryRun: boolean): IndexCleanResult {
   // Only check entries that have a non-empty local path (skip remote/virtual).
   const localEntries = allEntries.filter((e) => typeof e.path === "string" && e.path.trim() !== "");
 
-  const missing = localEntries.filter((e) => !fs.existsSync(e.path));
+  const missing: typeof localEntries = [];
+  const unreadable: Array<{ path: string; code?: string }> = [];
+  for (const entry of localEntries) {
+    const { access, code } = classifyPathAccess(entry.path);
+    if (access === "absent") missing.push(entry);
+    else if (access === "inaccessible") unreadable.push({ path: entry.path, ...(code ? { code } : {}) });
+  }
+  if (unreadable.length > 0) {
+    const shown = unreadable.slice(0, 5).map((u) => describeInaccessiblePath(u.path, u.code));
+    warn(
+      `Index clean pass kept ${unreadable.length} entr${unreadable.length === 1 ? "y" : "ies"} whose file akm cannot ` +
+        `read (unreadable is not deleted): ${shown.join("; ")}${unreadable.length > shown.length ? "; …" : ""}`,
+    );
+  }
 
   if (!dryRun && missing.length > 0) {
     deleteEntriesByIds(

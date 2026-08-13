@@ -15,6 +15,7 @@ import path from "node:path";
 import { parseBundleRef } from "../../core/asset/asset-ref";
 import { conceptIdFromTypeName } from "../../core/asset/resolve-ref";
 import { bestEffort } from "../../core/best-effort";
+import { isPathAbsent } from "../../core/path-access";
 import { getStateDbPath, withStateDb } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import type { IndexDocument } from "../../indexer/passes/metadata";
@@ -361,7 +362,11 @@ export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number
  * history (live-asset-wins). Best-effort + guarded on state.db's existence.
  */
 function rewriteUsageEventRefForMove(opts: RekeyEntryOptions): void {
-  if (!fs.existsSync(getStateDbPath())) return;
+  // Every other failure in here throws (see the catch below) precisely because
+  // a move that quietly drops its usage history is a wrong answer wearing a
+  // success. An unreadable state.db must not be the one silent exception —
+  // only a state.db that was never created skips (#791).
+  if (isPathAbsent(getStateDbPath())) return;
   // `usage_events.entry_ref` is the fully-qualified item_ref
   // (`<bundle>//<conceptId>`).
   const rename = (stateDb: Database, oldR: string, newR: string): void => {

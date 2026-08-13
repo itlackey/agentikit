@@ -11,6 +11,7 @@ import { loadConfig } from "../../core/config/config";
 import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
 import { readEvents } from "../../core/events";
 import type { ImproveEligibleRef } from "../../core/improve-types";
+import { isPathAbsent } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
 import { deriveInstallations } from "../../indexer/installations";
 import { getWritableStashDirs, resolveSourceEntries } from "../../indexer/search/search-source";
@@ -37,10 +38,15 @@ import { improveStateReadRefs } from "./source-identity";
  * yet. `openExistingDatabase` refuses to create a missing `index.db` (see
  * index-connection.ts) — for eligibility, "no index" simply means nothing is
  * eligible, exactly like the readOnly arm's `undefined`.
+ *
+ * `undefined` is reserved for a genuinely ABSENT index. The readOnly arm has
+ * refused to conflate that with an unreadable one since #791; this arm used
+ * `fs.existsSync`, so the same run reported "nothing eligible to improve" at
+ * exit 0 depending only on which branch it took. Both arms now raise.
  */
 function openEligibilityDb(readOnly: boolean): Database | undefined {
   if (readOnly) return openReadonlyExistingDatabase();
-  return fs.existsSync(getDbPath()) ? openExistingDatabase() : undefined;
+  return isPathAbsent(getDbPath()) ? undefined : openExistingDatabase();
 }
 
 export function resolveImproveScope(scope: string | undefined): { mode: "all" | "type" | "ref"; value?: string } {

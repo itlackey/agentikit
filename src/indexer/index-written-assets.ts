@@ -24,8 +24,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { akmAdapter } from "../core/adapter/adapters/akm-adapter";
+import { isDataDirUnreadableError } from "../core/errors";
+import { isPathAbsent } from "../core/path-access";
 import { getDbPath } from "../core/paths";
-import { warnVerbose } from "../core/warn";
+import { warn, warnVerbose } from "../core/warn";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import {
   deleteEntriesByIds,
@@ -74,7 +76,12 @@ export async function indexWrittenAssets(
   try {
     return await withIndexWriterLease({ purpose: "index-written-assets" }, async () => {
       const dbPath = getDbPath();
-      if (!fs.existsSync(dbPath)) return true;
+      // `true` here means "the index is in the state the caller expects" — and
+      // `acceptProposal` advances its journal to `index-finalized` on the
+      // strength of it. Only a genuinely ABSENT index earns that answer: an
+      // index we cannot read has NOT been updated, so it falls through to
+      // `openExistingDatabase` and surfaces as the honest `false` (#791).
+      if (isPathAbsent(dbPath)) return true;
 
       // The full walk never descends into dot-directories (for example `.meta/`)
       // — mirror that dot-segment skip here so this fast path indexes exactly
@@ -174,6 +181,16 @@ export async function indexWrittenAssets(
       return true;
     });
   } catch (error) {
+    // A permission fault is the one failure the next full index will NOT heal,
+    // so it does not get the verbose-only treatment the other skips do: fail
+    // open (the caller's write still stands) but say so where an operator can
+    // see it (#791).
+    if (isDataDirUnreadableError(error)) {
+      warn(
+        `Write-path index update skipped — ${error.message} The asset will not appear in search until that is fixed.`,
+      );
+      return false;
+    }
     warnVerbose(
       "Write-path index update skipped (asset appears after the next full index):",
       error instanceof Error ? error.message : String(error),

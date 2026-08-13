@@ -33,22 +33,7 @@ import { probeLock } from "../../src/core/file-lock";
 import { classifyPathAccess, describeInaccessiblePath } from "../../src/core/path-access";
 import { openExistingDatabase, openReadonlyExistingDatabase } from "../../src/storage/repositories/index-connection";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
-
-/** Permission bits are unenforced for uid 0; the ELOOP cases cover every uid. */
-const enforcesPermissionBits = !(typeof process.getuid === "function" && process.getuid() === 0);
-
-/**
- * A path that exists as a name but cannot be resolved: `a -> b -> a`. `statSync`
- * raises `ELOOP` for any uid, which is the "present as far as anyone knows, and
- * unusable" case the classifier must NOT report as absent.
- */
-function makeUnresolvablePath(dir: string, name: string): string {
-  const target = path.join(dir, name);
-  const partner = path.join(dir, `${name}.partner`);
-  fs.symlinkSync(partner, target);
-  fs.symlinkSync(target, partner);
-  return target;
-}
+import { enforcesPermissionBits, makeUnresolvablePath } from "../_helpers/unreadable-path";
 
 describe("classifyPathAccess (#791)", () => {
   let storage: IsolatedAkmStorage;
