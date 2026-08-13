@@ -27,6 +27,8 @@ export {
   syncMirroredRepo,
 } from "./git-provider";
 export {
+  _setGitExactCommitHookForTests,
+  type GitExactCommitPoint,
   GitStashPushError,
   isGitBackedStash,
   listGitChangedPaths,

@@ -141,13 +141,25 @@ explicit promote surface independent of this gate.
 ### Auto-sync
 
 For git-backed bundles (detected by a `.git` directory), `akm improve`
-automatically commits all changes as a single batch at the end of the run —
+automatically commits its changes as a single batch at the end of the run —
 the same operation as `akm sync` — and pushes if the bundle is writable, per
 the active strategy's `sync` setting. The `reflect-distill` and
 `proactive-maintenance` strategies skip sync entirely, so an interrupted run
 does not leave an uncommitted backlog. `--no-sync` disables sync for a single
 run; `--no-push` commits without pushing. Strategy sync behavior is
 configured via the `sync` block under `improve.strategies.<name>`.
+
+The commit is scoped by **write provenance**, not by directory: every akm write
+path records the file it mutated into a run-scoped journal
+(`src/core/write-provenance.ts`), and the end-of-run sync stages exactly the
+journaled paths that Git still reports as changed. A file someone else edits
+under a managed directory while the run is in flight is therefore left dirty for
+its author, while a file that was already dirty when the run started and was
+then rewritten by the run IS committed. Deletions are journaled like writes, so
+the final on-disk state is what lands — a path written and then reverted or
+purged produces no commit at all. The run reports its journal as
+`writtenPaths` on the improve result. Callers that supply no explicit path list
+(`akm sync`, `akm push`) keep the managed-pathspec fallback in `saveGitStash`.
 
 ### Session extraction
 

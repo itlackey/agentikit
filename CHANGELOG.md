@@ -268,6 +268,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`akm improve` auto-sync now commits exactly the files the run wrote.**
+  Every akm write path records the file it mutated into a run-scoped
+  write-provenance journal, and the end-of-run (and crash-path) commit stages
+  precisely those paths. A managed-directory file someone else edits while a
+  long run is in flight is left dirty for its author instead of being swept into
+  akm's commit, and a file that was already dirty when the run started and was
+  then rewritten by the run is now committed instead of being silently skipped.
+  Deletions are journaled like writes, so a path written and then reverted or
+  purged stages its final on-disk state — or produces no commit at all. The run
+  reports its journal as `writtenPaths` on the improve result, and the
+  `stash_synced` event gains `attributed` / `unattributed` counts. `akm sync` /
+  `akm push`, which supply no explicit path list, keep the managed-pathspec
+  fallback unchanged. (#652)
+
 - **`akm lint` no longer reports a clean scan for a task file that cannot run.**
   A `tasks/*.yml` whose YAML does not parse (bad indentation, an unterminated
   quote, tab characters) produced `flagged: 0`: every task reader collapsed a

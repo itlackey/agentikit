@@ -12,6 +12,7 @@
 
 import fs from "node:fs";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
+import { recordWrittenPath } from "../write-provenance";
 import { assembleAsset, serializeFrontmatter } from "./asset-serialize";
 
 /**
@@ -166,6 +167,9 @@ export function mutateFrontmatter(
       ? `---\n${serializeFrontmatter(nextFrontmatter)}\n---\n${parsed.content}`
       : assembleAsset(nextFrontmatter, parsed.content);
   fs.writeFileSync(filePath, next, "utf8");
+  // #652: in-place frontmatter stamps (belief state, contradiction markers,
+  // salience) are real asset mutations — journal them for the run's sync.
+  recordWrittenPath(filePath);
   return true;
 }
 
