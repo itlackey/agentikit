@@ -2801,7 +2801,7 @@ Current known failing gates must be fixed or explicitly waived with expiry:
 | Source lifecycle rollback across config/lock/root/index/events | `FAIL` until atomic/recoverable |
 | OpenCode local-listener authentication/documentation | `FAIL` until authenticated |
 | Exact-value command-target task-log redaction | `PASS` — fixed in 0.9.1 (#755) |
-| Package-manager upgrade exact-version verification | `FAIL` until verified |
+| Package-manager upgrade exact-version verification | `PASS` — fixed 2026-08-06 (`self-update.ts`) |
 
 ---
 
@@ -3262,8 +3262,11 @@ remaining gaps carry approved waivers with the expiries recorded below.
     install; opencode listener binds loopback only. waiver approver:
     itlackey — approved 2026-08-06 (0.9.0 release triage). waiver expiry:
     0.10.0 (hardening series).
-- [ ] **Secrets/permissions:** exact-value task-log redaction; managed-file
-      permission coverage (rejected — see below).
+- [x] **Secrets/permissions:** exact-value task-log redaction; managed-file
+      permission coverage (rejected — see below). **Row closed in 0.9.1:** both
+      halves are resolved — the redaction gap is fixed, and permission
+      management is a rejected concept rather than outstanding work. No waiver
+      remains on this row.
   - Covered: exact-value redaction for prompt-target and workflow-target task
     logs (`tests/integration/tasks-runner.test.ts` "redacts echoed agent
     credentials before task logs are persisted", webhook-URL case).
@@ -3305,6 +3308,13 @@ remaining gaps carry approved waivers with the expiries recorded below.
     binary). Fail-open only when verification itself is unavailable.
     (`src/commands/sources/self-update.ts`; pinned in
     `tests/integration/self-update.test.ts`.)
+  - **Fixed** ([#771](https://github.com/itlackey/akm/issues/771), 0.9.1):
+    publication is gated on the real release-acceptance script.
+    `.github/workflows/release.yml` runs `./tests/release-check.sh
+    --skip-docker` before version-verify/build/publish, so the npm bin shim,
+    the migration bundle under both the Bun and Node entry points, and the
+    packed-artifact install are all checked by CI instead of depending on the
+    operator remembering `bun run release:check` locally.
   - Partial: installer coverage (install.sh harness-tested;
     install.ps1 manual-only), native scheduler (Linux standalone covered via
     release-check; macOS/Windows suites unreachable — no such CI runner).
@@ -3313,8 +3323,7 @@ remaining gaps carry approved waivers with the expiries recorded below.
     release assets).
   - Tracking: [#768](https://github.com/itlackey/akm/issues/768) (SHA-pin actions),
     [#769](https://github.com/itlackey/akm/issues/769) (post-publish artifact parity),
-    [#770](https://github.com/itlackey/akm/issues/770) (install.ps1 + macOS/Windows scheduler coverage),
-    [#771](https://github.com/itlackey/akm/issues/771) (gate publish on release-check.sh).
+    [#770](https://github.com/itlackey/akm/issues/770) (install.ps1 + macOS/Windows scheduler coverage).
   - issue: release-infrastructure hardening. impact: a clobbered release
     asset ships silently; tag-hijack of a third-party action could
     compromise the release job. owner: itlackey. verification test: per-item
