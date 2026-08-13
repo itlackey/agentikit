@@ -2283,6 +2283,34 @@ Prompt targets dispatch through `--engine` or `defaults.engine` and may set
 task sync`). A v1 task is diagnosed by sync and doctor but is never rewritten
 or executed.
 
+**Task-log redaction and `redact:`.** A task's persisted output — the run `.log`
+file and its `logs.db` rows — is scrubbed before it is written. Two passes run:
+credential *shapes* (`Bearer …`, `sk-…`, webhook URLs) are matched by pattern,
+and exact secret values are matched by value. akm knows a value is secret when
+the config declares it (`engines.<name>.apiKey`, `embedding.apiKey`, and the
+`AKM_ENGINE_<NAME>_API_KEY` / `AKM_LLM_API_KEY` / `AKM_EMBED_API_KEY` recipes),
+and it infers others from the variable name (`*_TOKEN`, `*_SECRET`, `*_API_KEY`,
+`*_PASSWORD`, …) provided the value is at least 8 characters — a short one is
+far more likely to be a flag than a credential, and redaction replaces
+substrings, so guessing wrong mangles the log.
+
+Any task kind may add `redact:` for a secret exported under a name none of those
+rules recognise:
+
+```yaml
+version: 2
+schedule: "0 3 * * *"
+command: ./deploy.sh
+redact: [ACME_DEPLOY_TOKEN]   # NAMES, never values — max 32
+```
+
+akm looks each name up in the environment the run is given; a name that is unset
+contributes nothing. **Names only.** A literal secret in a task file would leak
+far more widely than the redaction closes: task files are indexed into the search
+database, can be sent to an embedding provider, are printed verbatim by `akm
+show`, and ship inside bundles over git and npm. This is the same rule exec
+units' `pass_env:` follows.
+
 A workflow-target task executes the same native orchestration as `akm workflow
 run`; it does not stop after creating a run. Completion maps to task
 `completed`, while workflow failure or verifier rejection maps to task

@@ -2732,9 +2732,9 @@ test "$(akm log --format json | jq -r '.events[-1].id // 0')" = "$before_event"
       task logs, databases, reports, proposals, workflows, backups, and config.
 - [ ] **[LOCAL]** JSON/YAML stay parseable; text/Markdown visibly encode terminal
       controls; HTML escapes attacker fields. Inspect captured bytes only.
-- [ ] **[LOCAL]** Sensitive directories/files are `0700`/`0600` under umask 022.
-      Health scans every bundle plus config, DB/WAL/SHM, backup, and task-log
-      surfaces; lax mode warns exit `4`.
+- [ ] **[LOCAL]** Env/secret directories and files akm creates are `0700`/`0600`
+      even under umask 022. Databases, task logs, and everything else akm writes
+      take the process umask: akm neither sets nor reports on those modes.
 - [ ] **[PLATFORM]** Windows ACL evidence replaces POSIX mode checks and is marked
       N/A only when genuinely unsupported.
 
@@ -2800,7 +2800,7 @@ Current known failing gates must be fixed or explicitly waived with expiry:
 | Suppressible/add-only dangerous-key audit and event ordering | `FAIL` until pre-publication |
 | Source lifecycle rollback across config/lock/root/index/events | `FAIL` until atomic/recoverable |
 | OpenCode local-listener authentication/documentation | `FAIL` until authenticated |
-| Exact-value task-log/DB permission coverage | `FAIL` until contained |
+| Exact-value command-target task-log redaction | `PASS` — fixed in 0.9.1 (#755) |
 | Package-manager upgrade exact-version verification | `FAIL` until verified |
 
 ---
@@ -3262,8 +3262,8 @@ remaining gaps carry approved waivers with the expiries recorded below.
     install; opencode listener binds loopback only. waiver approver:
     itlackey — approved 2026-08-06 (0.9.0 release triage). waiver expiry:
     0.10.0 (hardening series).
-- [ ] **Secrets/permissions:** exact-value task-log redaction and managed DB/log/
-      backup permission coverage across every configured bundle.
+- [ ] **Secrets/permissions:** exact-value task-log redaction; managed-file
+      permission coverage (rejected — see below).
   - Covered: exact-value redaction for prompt-target and workflow-target task
     logs (`tests/integration/tasks-runner.test.ts` "redacts echoed agent
     credentials before task logs are persisted", webhook-URL case).
@@ -3278,27 +3278,22 @@ remaining gaps carry approved waivers with the expiries recorded below.
     sharing `$XDG_DATA_HOME` across uids, which worked in 0.9.0.
     **Decision: akm does not manage file permissions.** Everything it writes
     takes the process umask; protecting the data directory is the operator's
-    call and umask/`chmod` is their lever.
-  - Retained from that work: `akm health`'s `secret-file-perms` advisory scans
-    `env`/`secrets` under **every configured bundle**, not just the default one.
-    It does NOT scan the databases or task logs — akm no longer sets their mode,
-    so umask-default `0644` is the correct state and flagging it would exit 4 on
-    nearly every install. The advisory's scope is now exactly "files akm wrote
-    `0600` that are no longer `0600`". Pinned by
-    `tests/integration/commands/health/surfaces.test.ts`; POSIX only.
-  - Open: command-target task logs (a secret echoed by a scheduled command is
-    persisted verbatim when it is not pattern-shaped).
-  - Tracking: [#755](https://github.com/itlackey/akm/issues/755) (command-target log redaction).
-  - issue: one redaction lane. impact: a multi-user host could read a
-    non-pattern-shaped secret out of a command task's history; single-user
-    machines unaffected, and the log/DB files are now `0600` regardless.
-    owner: itlackey. verification test: an exact-value redaction test for the
-    command arm mirroring the existing prompt-arm test in
-    `tests/integration/tasks-runner.test.ts`. temporary mitigation:
-    pattern-based redaction already catches the common credential shapes for
-    every task kind; the data dir lives under the user's `$XDG_DATA_HOME` and
-    is now `0700`. waiver approver: itlackey — approved 2026-08-06 (0.9.0
-    release triage). waiver expiry: 0.9.1.
+    call and umask/`chmod` is their lever. Nothing survives from that work:
+    the health advisory that reported on those modes is gone too — akm does not
+    nag about permissions it does not set.
+  - **Fixed** ([#755](https://github.com/itlackey/akm/issues/755), 0.9.1).
+    Exact-value redaction now runs in `persistRunLog`, the one sink all three
+    target kinds funnel through, so the command arm is covered alongside the
+    other two. Secret values come from three places, and the distinction matters:
+    config-declared credentials and a task's own `redact:` names are redacted at
+    any length, while values merely *inferred* from a variable's name must clear
+    an 8-character floor. Applying the naive rule the issue proposed — treat
+    every non-allowlisted value in the inherited environment as secret —
+    classified 127 of 132 variables as credentials, 25 of them one character
+    long, and rewrote `3 tests passed` into `[REDACTED] tests passed`. Pinned by
+    `tests/tasks/log-redaction.test.ts` and the `runTask — command target` cases
+    in `tests/integration/tasks-runner.test.ts`, including an over-redaction
+    guard that fails if ordinary build output is ever mangled.
 - [ ] **Package/release:** exact package-manager upgrade version verification,
       native installer/scheduler coverage, action/dependency provenance hardening,
       and post-publication artifact parity.

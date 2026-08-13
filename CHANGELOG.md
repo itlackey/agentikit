@@ -268,6 +268,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A scheduled `command` task no longer writes your secrets into its log.**
+  Task logs were scrubbed for credential *shapes* — `Bearer …`, `sk-…`, webhook
+  URLs — but only prompt- and workflow-target runs also scrubbed exact secret
+  *values*. A command that echoed a configured secret shaped like nothing in
+  particular persisted it verbatim into both the run `.log` and `logs.db`, for
+  the whole retention window. Exact-value redaction now runs in the one sink all
+  three target kinds share, so every task kind is covered.
+
+  akm treats a value as secret when your config declares it
+  (`engines.<name>.apiKey`, `embedding.apiKey`, and the
+  `AKM_ENGINE_<NAME>_API_KEY` / `AKM_LLM_API_KEY` / `AKM_EMBED_API_KEY`
+  recipes), and infers others from the variable name (`*_TOKEN`, `*_SECRET`,
+  `*_API_KEY`, `*_PASSWORD`, …) when the value is at least 8 characters. The
+  floor applies only to the *guesses*: a declared secret is redacted at any
+  length. Redaction replaces substrings, so an over-eager rule does real damage
+  — treating every non-allowlisted variable in the inherited environment as a
+  secret classified 127 of 132 variables as credentials, 25 of them one
+  character long, and turned `3 tests passed, 0 failed` into `[REDACTED] tests
+  passed, [REDACTED] failed`.
+
+  For a secret exported under a name none of those rules recognise, any task may
+  name it:
+
+  ```yaml
+  command: ./deploy.sh
+  redact: [ACME_DEPLOY_TOKEN]   # NAMES, never values — max 32
+  ```
+
+  Names only, and a name that is unset at run time contributes nothing. A
+  literal secret in a task file would leak far more widely than the redaction
+  closes: task files are indexed into the search database, can be sent to an
+  embedding provider, are printed verbatim by `akm show`, and ship inside
+  bundles over git and npm — the same rule exec units' `pass_env:` follows.
+
+- **Redacting a log can no longer explode it.** Exact-value redaction took a
+  fast path that rewrote the text once per secret, over an accumulator it had
+  already rewritten — so a secret containing any of the letters in `[REDACTED]`
+  matched the tokens it had just inserted, and the output grew geometrically.
+  Fifty characters against six single-letter values produced 32,450 characters,
+  a 649x blowup reachable from ordinary command output. Matches are now found
+  against the original text and the result emitted once. Overlapping matches
+  merge into a single `[REDACTED]`, and the two redaction paths no longer
+  disagree about output shape depending on whether the text happened to contain
+  a `%`.
+
+- **Redacting a structured value no longer drops fields.** When two distinct
+  object keys redacted to the same string, the rebuilt object silently kept only
+  the last — `{a, b, ab}` came back with two entries, one of them simply gone
+  rather than redacted. Colliding keys are now suffixed, so the value survives
+  with its key still hidden. This affected persisted improve results and
+  journaled workflow outcomes.
+
 - **`akm improve` auto-sync now commits exactly the files the run wrote.**
   Every akm write path records the file it mutated into a run-scoped
   write-provenance journal, and the end-of-run (and crash-path) commit stages
@@ -349,20 +401,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     is dead" are opposite facts, and `akm improve` now stops rather than
     reclaiming a lease that may be genuinely held.
 
-- **`akm health` checks every configured bundle for loose secret permissions,
-  not just the default one.** The `secret-file-perms` advisory scans `env` and
-  `secrets` across all configured bundles plus `config-backups`. Its scope is
-  deliberately "files akm writes `0600` that are no longer `0600`" — a looser
-  mode there means something else changed them.
+- **akm does not manage file permissions, and no longer reports on them
+  either.** Everything akm writes takes your process umask; the mode of your
+  data directory is yours to set, and `chmod`/`umask` are your levers.
 
-  akm does **not** manage file permissions. Everything it writes takes your
-  process umask, and the mode of your data directory is yours to set; the
-  advisory does not flag umask-default databases or task logs. An earlier
-  0.9.1 pre-release chmodded these paths to `0600`/`0700` on every open — that
-  was reverted before release, because re-permissioning a directory akm did not
-  create silently broke installs that share `$XDG_DATA_HOME` between two uids
-  (agent sandboxes, containers, service accounts). If a pre-release tightened
-  your data directory, `chmod` it back.
+  Two 0.9.1 pre-release changes are gone. The first chmodded akm's databases
+  and task logs to `0600`/`0700` on every open — reverted because
+  re-permissioning a directory akm did not create silently broke installs that
+  share `$XDG_DATA_HOME` between two uids (agent sandboxes, containers, service
+  accounts). If a pre-release tightened your data directory, `chmod` it back.
+  The second was an `akm health` advisory (`secret-file-perms`) that reported
+  group/other-readable `env`, `secrets` and `config-backups` paths — removed
+  too: it is meaningless on Windows, and nagging about modes akm does not set
+  is not health reporting. `akm health` no longer emits this check, and no
+  longer exits `4` on account of it.
 
 - **`timeout: none` on an exec unit is genuinely unbounded again.** The
   stream-drain safety net — a one-hour bound on a pipe still being read after

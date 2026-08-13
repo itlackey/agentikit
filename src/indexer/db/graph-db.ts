@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import fs from "node:fs";
-import { rethrowIfTestIsolationError } from "../../core/errors";
+import { rethrowIfDataDirUnreadable, rethrowIfTestIsolationError } from "../../core/errors";
+import { isPathAbsent } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
 import type { GraphRelation } from "../../llm/graph-extract";
 import type { Database } from "../../storage/database";
@@ -34,7 +34,11 @@ export interface StoredGraphMeta {
 function withReadableGraphDb<T>(db: Database | undefined, fn: (db: Database) => T): T {
   if (db) return fn(db);
   const dbPath = getDbPath();
-  if (!fs.existsSync(dbPath)) throw new Error("GRAPH_DB_MISSING");
+  // `GRAPH_DB_MISSING` is the loaders' "nothing extracted yet" sentinel — every
+  // caller below turns it into `null`/`[]`. Reserve it for a genuinely ABSENT
+  // index: an index that exists and cannot be read must reach the caller as the
+  // ConfigError `openExistingDatabase` raises, not as "no graph data" (#791).
+  if (isPathAbsent(dbPath)) throw new Error("GRAPH_DB_MISSING");
   const opened = openExistingDatabase(dbPath);
   try {
     return fn(opened);
@@ -382,8 +386,11 @@ export function loadGraphFilesOnly(
       }
     });
   } catch (err) {
-    // Never mask the bun-test isolation guard as "no stored graph files".
+    // Never mask the bun-test isolation guard as "no stored graph files",
+    // and never mask an index we are not allowed to read as one with no
+    // graph in it (#791) — `GRAPH_DB_MISSING` above is the only "absent".
     rethrowIfTestIsolationError(err);
+    rethrowIfDataDirUnreadable(err);
     return [];
   }
 }
@@ -474,8 +481,10 @@ export function loadStoredGraphMeta(stashPath: string, db?: Database): StoredGra
       }
     });
   } catch (err) {
-    // Never mask the bun-test isolation guard as "no stored graph meta".
+    // Never mask the bun-test isolation guard as "no stored graph meta",
+    // nor an unreadable index as one that simply has no graph (#791).
     rethrowIfTestIsolationError(err);
+    rethrowIfDataDirUnreadable(err);
     return null;
   }
 }
@@ -586,8 +595,10 @@ export function loadStoredGraphSnapshot(stashPath: string, db?: Database): Store
       }
     });
   } catch (err) {
-    // Never mask the bun-test isolation guard as "no stored graph snapshot".
+    // Never mask the bun-test isolation guard as "no stored graph snapshot",
+    // nor an unreadable index as one that simply has no graph (#791).
     rethrowIfTestIsolationError(err);
+    rethrowIfDataDirUnreadable(err);
     return null;
   }
 }

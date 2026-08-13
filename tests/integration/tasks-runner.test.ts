@@ -721,6 +721,142 @@ describe("runTask — command target", () => {
     for (const row of rows) expect(row.line).not.toContain("abcDEF-123_token");
     expect(rows.some((row) => row.line.includes("discord.com/api/webhooks/123456789012345678/[REDACTED]"))).toBe(true);
   });
+
+  // ── #755: exact-value redaction for the command arm ──────────────────────
+  //
+  // The pattern arm above only catches credential SHAPES. A configured secret
+  // whose value looks like nothing in particular went to disk verbatim.
+
+  const echoTask = (id: string, text: string, extraYaml: readonly string[] = []): void => {
+    writeTask(
+      id,
+      [
+        "version: 2",
+        'schedule: "@daily"',
+        `command: ${JSON.stringify([process.execPath, "-e", `console.log(${JSON.stringify(text)})`])}`,
+        ...extraYaml,
+        "",
+      ].join("\n"),
+    );
+  };
+
+  const assertAbsentFromBothSinks = (id: string, logPath: string, secret: string): void => {
+    expect(fs.readFileSync(logPath, "utf8")).not.toContain(secret);
+    const rows = readRunLogRows(id);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.line).not.toContain(secret);
+  };
+
+  test("redacts a config-declared engine credential that is not credential-shaped", async () => {
+    // Deliberately shaped like nothing: no `sk-`, no `Bearer`, no webhook URL.
+    // The pattern arm cannot see this, which is the whole point of #755.
+    const secret = "wolfram-tuesday-lantern";
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, "config.json"),
+      JSON.stringify({
+        configVersion: "0.9.0",
+        engines: { main: { kind: "llm", apiKey: "${ACME_LLM_KEY}", endpoint: "https://api.example.com" } },
+      }),
+    );
+    echoTask("leaky-config-secret", `calling out with ${secret}`);
+
+    const result = await withEnv({ ACME_LLM_KEY: secret }, () => runTask("leaky-config-secret", { stashDir, logDir }));
+
+    expect(result.status).toBe("completed");
+    assertAbsentFromBothSinks("leaky-config-secret", result.log, secret);
+    expect(fs.readFileSync(result.log, "utf8")).toContain("[REDACTED]");
+  });
+
+  test("redacts an ambient credential inferred from its variable name", async () => {
+    const secret = "opalescent-badger-parade";
+    echoTask("leaky-ambient-secret", `deploying with ${secret}`);
+
+    const result = await withEnv({ ACME_DEPLOY_TOKEN: secret }, () =>
+      runTask("leaky-ambient-secret", { stashDir, logDir }),
+    );
+
+    expect(result.status).toBe("completed");
+    assertAbsentFromBothSinks("leaky-ambient-secret", result.log, secret);
+  });
+
+  test("`redact:` names a secret no rule would otherwise recognise", async () => {
+    // Neither config-declared nor name-shaped — the escape hatch is the only
+    // thing that can catch this one.
+    const secret = "harbour-lantern-drift";
+    echoTask("leaky-declared-secret", `token is ${secret}`, ["redact: [ACME_UNGUESSABLE]"]);
+
+    const result = await withEnv({ ACME_UNGUESSABLE: secret }, () =>
+      runTask("leaky-declared-secret", { stashDir, logDir }),
+    );
+
+    expect(result.status).toBe("completed");
+    assertAbsentFromBothSinks("leaky-declared-secret", result.log, secret);
+
+    // And without the declaration the same value would have leaked — otherwise
+    // this test proves nothing about `redact:`.
+    echoTask("leaky-undeclared-secret", `token is ${secret}`);
+    const leaked = await withEnv({ ACME_UNGUESSABLE: secret }, () =>
+      runTask("leaky-undeclared-secret", { stashDir, logDir }),
+    );
+    expect(fs.readFileSync(leaked.log, "utf8")).toContain(secret);
+  });
+
+  test("redaction survives a secret reaching the spawn_error path", async () => {
+    const secret = "cinnabar-thicket-verso";
+    writeTask(
+      "leaky-spawn-error",
+      ["version: 2", 'schedule: "@daily"', `command: [${JSON.stringify(`/nonexistent/${secret}/bin`)}]`, ""].join("\n"),
+    );
+
+    const result = await withEnv({ ACME_API_TOKEN: secret }, () => runTask("leaky-spawn-error", { stashDir, logDir }));
+
+    expect(result.status).toBe("failed");
+    assertAbsentFromBothSinks("leaky-spawn-error", result.log, secret);
+  });
+
+  test("ordinary command output is left intact", async () => {
+    // The over-redaction guard. Treating every non-allowlisted env value as a
+    // secret — the fix #755 literally proposed — turns this log into confetti:
+    // `SHLVL=1` alone rewrites every "1" in the output.
+    echoTask("clean-output", "Build finished in 12.4s | 3 tests passed, 0 failed | wrote dist/index.js (48 KB)");
+
+    const result = await withEnv({ ACME_DEPLOY_TOKEN: "opalescent-badger-parade" }, () =>
+      runTask("clean-output", { stashDir, logDir }),
+    );
+
+    const log = fs.readFileSync(result.log, "utf8");
+    expect(log).toContain("Build finished in 12.4s");
+    expect(log).toContain("3 tests passed, 0 failed");
+    expect(log).toContain("wrote dist/index.js (48 KB)");
+  });
+
+  test("redacts regardless of which configured bundle the task came from", async () => {
+    // Acceptance criterion 3: the fixtures elsewhere in this suite use a single
+    // default bundle, so a per-bundle regression would go unnoticed.
+    const secret = "meridian-thistle-vault";
+    const secondaryStash = path.join(tmpRoot, "stash-secondary");
+    fs.rmSync(secondaryStash, { recursive: true, force: true });
+    fs.mkdirSync(path.join(secondaryStash, "tasks"), { recursive: true });
+    fs.mkdirSync(path.join(secondaryStash, "workflows"), { recursive: true });
+    fs.writeFileSync(
+      path.join(secondaryStash, "tasks", "secondary-leak.yml"),
+      [
+        "version: 2",
+        'schedule: "@daily"',
+        `command: ${JSON.stringify([process.execPath, "-e", `console.log(${JSON.stringify(`shipping ${secret}`)})`])}`,
+        "redact: [ACME_SECONDARY_VALUE]",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await withEnv({ ACME_SECONDARY_VALUE: secret }, () =>
+      runTask("secondary-leak", { stashDir: secondaryStash, logDir }),
+    );
+
+    expect(result.status).toBe("completed");
+    assertAbsentFromBothSinks("secondary-leak", result.log, secret);
+  });
 });
 
 describe("runTask — prompt target", () => {

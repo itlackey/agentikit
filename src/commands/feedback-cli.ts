@@ -13,6 +13,7 @@ import { FEEDBACK_FAILURE_MODES, loadConfig } from "../core/config/config";
 import { NotFoundError, UsageError } from "../core/errors";
 import { appendEvent } from "../core/events";
 import { resolveMutationTarget } from "../core/mutation-target";
+import { isPathAbsent } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { withStateDb } from "../core/state-db";
 import { warn } from "../core/warn";
@@ -353,7 +354,12 @@ export const feedbackCommand = defineJsonCommand({
     // background process that holds the writer lock, causing the feedback write
     // to spin-wait for the full reindex duration. If the DB is absent we give a
     // clear error below rather than silently triggering a rebuild.
-    if (!fs.existsSync(getDbPath())) {
+    // "Run 'akm index' first" is only true advice for an index that was never
+    // built. Told to someone whose index exists but is unreadable it is a lie
+    // that sends them to rebuild a file they may not have permission to touch
+    // (#791), so that case falls through to `openExistingDatabase` below, which
+    // names the path, errno, mode/owner and uid instead.
+    if (isPathAbsent(getDbPath())) {
       throw new UsageError(
         "Index not found. Run 'akm index' first to build the index before recording feedback.",
         "MISSING_REQUIRED_ARGUMENT",

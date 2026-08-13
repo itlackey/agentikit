@@ -21,6 +21,7 @@ import { isWithin, resolveStashDir } from "../../core/common";
 import type { AkmConfig, BundleConfigEntry } from "../../core/config/config";
 import { getSources, loadConfig } from "../../core/config/config";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
+import { isPathAbsent } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
 import { warn } from "../../core/warn";
 import { withAssetMutationLease } from "../../indexer/index-writer-lock";
@@ -169,7 +170,11 @@ interface BundleCounts {
 function readBundleCounts(): Map<string, BundleCounts> {
   const counts = new Map<string, BundleCounts>();
   const dbPath = getDbPath();
-  if (!fs.existsSync(dbPath)) return counts;
+  // An empty map renders as `itemCount: 0` for every bundle — indistinguishable
+  // from "these bundles really are empty". Only a never-built index gets to say
+  // that silently; an unreadable one falls through to the opener and is
+  // reported by the `warn` in the catch below (#791).
+  if (isPathAbsent(dbPath)) return counts;
 
   let db: Database | undefined;
   try {

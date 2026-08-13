@@ -8,6 +8,7 @@ import { writeFileAtomic } from "../core/common";
 import { ConfigError, rethrowIfTestIsolationError } from "../core/errors";
 import { createLockPayload, probeLock, reclaimStaleLock, releaseLock, tryAcquireLockSync } from "../core/file-lock";
 import { acquireMaintenanceBarrier } from "../core/maintenance-barrier";
+import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
 import { getDataDir, getLockfileLockPath, getLockfilePath } from "../core/paths";
 import type { InstallKind } from "../registry/types";
 // `InstallKind` is the install/registry source discriminator — exactly the
@@ -107,6 +108,32 @@ export function readLockfile(): LockfileEntry[] {
 }
 
 /**
+ * Refuse to treat an UNREADABLE lockfile (or data dir) as an absent one (#791).
+ *
+ * Every write path here is read-modify-WRITE: it loads the current entries and
+ * writes the whole array back. An unreadable `akm.lock` that reads as `[]`
+ * therefore does not merely lose information — the very next
+ * `writeFileAtomic` replaces the operator's entire lock record with the single
+ * entry this call happened to be adding. That is the same catastrophe R-012
+ * guards against for a *corrupt* file, reached instead through a permission
+ * fault, and `fs.existsSync`/a swallowed `readFileSync` could not tell the two
+ * apart from "the file was never created".
+ *
+ * No-op when the path is genuinely absent — that case really does have nothing
+ * to preserve.
+ */
+function assertLockfilePathReadable(target: string): void {
+  const { access, code } = classifyPathAccess(target);
+  if (access !== "inaccessible") return;
+  throw new ConfigError(
+    `Refusing to modify the lockfile: ${describeInaccessiblePath(target, code)}. akm cannot read the existing lock ` +
+      "records, and writing over them would destroy every bundle they track. Fix the ownership or mode of that " +
+      "path (or point AKM_DATA_DIR / XDG_DATA_HOME somewhere this user owns) and retry.",
+    "DATA_DIR_UNREADABLE",
+  );
+}
+
+/**
  * Like {@link readLockfile}, but THROWS instead of silently degrading to `[]`
  * when the on-disk lockfile exists yet is not parseable JSON or not a JSON
  * array (R-012).
@@ -133,7 +160,15 @@ function readLockfileOrThrow(): LockfileEntry[] {
     raw = fs.readFileSync(lockfilePath, "utf8");
   } catch (err) {
     rethrowIfTestIsolationError(err);
-    return []; // File does not exist (or is otherwise unreadable) — nothing to preserve.
+    // "Missing file" is the only failure with nothing to preserve. An
+    // UNREADABLE lockfile has everything to preserve and we cannot see it —
+    // degrading it to `[]` here is precisely the destructive overwrite this
+    // function was written to prevent, only triggered by a permission fault
+    // instead of a corrupt file (#791). Classify AFTER the failed read so the
+    // happy path costs no extra syscall and the answer describes the failure
+    // we actually got.
+    assertLockfilePathReadable(lockfilePath);
+    return [];
   }
   let parsed: unknown;
   try {
@@ -229,6 +264,11 @@ export async function upsertLockEntry(entry: LockfileEntry): Promise<void> {
 function readLockEntriesForMigration(): LockfileEntry[] {
   let existing: LockfileEntry[] = [];
   const lockfilePath = getLockfilePath();
+  // `mergeLockEntriesSync` writes `existing` straight back out, so an
+  // unreadable lockfile read as absent would be overwritten with just the
+  // migrator's sparse entries (#791). This is also what
+  // `assertMigrationLockfileReadable` promises to have checked.
+  assertLockfilePathReadable(lockfilePath);
   if (fs.existsSync(lockfilePath)) {
     let raw: unknown;
     try {
@@ -275,7 +315,13 @@ export function mergeLockEntriesSync(entries: LockfileEntry[]): void {
 }
 
 export async function removeLockEntry(id: string): Promise<void> {
-  if (!fs.existsSync(getDataDir())) return;
+  // Returning early says "there is no lock record to remove", and the uninstall
+  // that called us reports success on that basis. Only an absent data dir earns
+  // it — one we cannot read may hold the very entry we were asked to drop, and
+  // silently leaving it behind is how a bundle stays "installed" forever (#791).
+  const dataDir = getDataDir();
+  assertLockfilePathReadable(dataDir);
+  if (!fs.existsSync(dataDir)) return;
   const release = await acquireLockSentinel();
   try {
     // R-012: see upsertLockEntry — same destructive-overwrite risk on a
