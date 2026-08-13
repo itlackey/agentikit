@@ -24,9 +24,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { type AssetSpec, placementSpecList } from "../core/asset/asset-placement";
+import { classifyPathAccess } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { warn } from "../core/warn";
-import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
+import { assertIndexPathReadable, closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import { getEntryCount, getIndexedFilePaths } from "../storage/repositories/index-entries-repository";
 import { getMeta } from "../storage/repositories/index-meta-repository";
 import { warnOnBundleRenameDrift } from "./bundle-identity-guard";
@@ -113,7 +114,11 @@ function hasNewerIndexableFiles(stashDir: string, builtAt: string | undefined, i
  */
 export function isIndexStale(stashDir: string): boolean {
   const dbPath = getDbPath();
-  if (!fs.existsSync(dbPath)) return true;
+  // Raises on an index we cannot READ rather than calling it stale — "stale"
+  // sends us into an inline reindex that will fail anyway, and whose failure is
+  // reported as the misleading "proceeding with existing index" (#791).
+  assertIndexPathReadable(dbPath);
+  if (classifyPathAccess(dbPath).access === "absent") return true;
 
   let db: ReturnType<typeof openExistingDatabase> | undefined;
   try {
@@ -152,8 +157,10 @@ export function isIndexStale(stashDir: string): boolean {
  * or built for a different stash), so those cases must rebuild inline.
  */
 function indexCanServeStash(stashDir: string): boolean {
+  // Same rule as isIndexStale: unreadable is an error, not "cannot serve" (#791).
   const dbPath = getDbPath();
-  if (!fs.existsSync(dbPath)) return false;
+  assertIndexPathReadable(dbPath);
+  if (classifyPathAccess(dbPath).access === "absent") return false;
 
   let db: ReturnType<typeof openExistingDatabase> | undefined;
   try {

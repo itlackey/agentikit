@@ -46,11 +46,25 @@ Override: set `AKM_CONFIG_DIR` or `XDG_CONFIG_HOME`.
 
 Override: set `AKM_DATA_DIR` or `XDG_DATA_HOME`.
 
-On POSIX hosts the data directory is created `0700`, and `index.db`, `state.db`,
-`logs.db` and their `-wal`/`-shm` sidecars are created `0600` — regardless of
-your umask. They hold task history, captured command output, and indexed
-content, so on a shared machine they should not be world-readable. `akm health`
-warns (`secret-file-perms`) if any of these are group/other-readable.
+These files take your **process umask** — akm does not set or change their
+permissions. They hold task history, captured command output, and indexed
+content, so on a shared machine you probably do not want them world-readable;
+set a tighter umask, or `chmod` the directory yourself. akm will not do it for
+you, and `akm health` will not nag about it either — `0644` under a default
+`022` umask is simply the expected state.
+
+If akm **cannot read** this directory — a uid/ownership mismatch, for instance
+when two accounts share one `$XDG_DATA_HOME` — commands fail loudly with a
+`DATA_DIR_UNREADABLE` config error (exit 78) naming the path, the errno, the
+mode and owner, and the uid you are running as. They do **not** report an empty
+index. `akm health` stays runnable in that state and reports it as a failing
+`state-db-readable` check, so it remains the command to reach for.
+
+> **0.9.1 note.** A pre-release build briefly chmodded this directory to `0700`
+> and the databases to `0600` on every open. That was reverted: it silently
+> changed the permissions of directories akm did not create, which broke installs
+> sharing `$XDG_DATA_HOME` between two uids. If a 0.9.1 pre-release tightened
+> your data directory and you need it shared again, `chmod` it back.
 
 ### Cache Directory (`$XDG_CACHE_HOME/akm` or `~/.cache/akm/`)
 
@@ -64,7 +78,7 @@ Everything in the cache is regenerable. It is safe to delete the entire cache di
 | `registry-index/` | Legacy per-URL JSON cache (v0.7 artifact) | Yes — fully replaced by `index.db` in 0.8.0 |
 | `semantic-status.json` | Semantic index build status marker | Yes |
 | `bin/` | Downloaded AKM binary cache (used by `akm upgrade`) | Yes |
-| `tasks/logs/` | Scheduled task log files (owner-only — file `0600`, dir `0700`, since they hold captured command/agent output) | Yes — ephemeral logs |
+| `tasks/logs/` | Scheduled task log files. Written at your umask; they hold captured command/agent output, so tighten the directory yourself if the machine is shared | Yes — ephemeral logs |
 | `tasks/history/` | Legacy task history JSONL (v0.7 migration artifact) | Yes |
 
 Override: set `AKM_CACHE_DIR` or `XDG_CACHE_HOME`.

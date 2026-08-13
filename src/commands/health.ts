@@ -10,6 +10,7 @@ import { ConfigError, UsageError } from "../core/errors";
 import { readEvents } from "../core/events";
 import { listTxnJournalsTolerant, TXN_SWEEP_GRACE_MS } from "../core/fs-txn";
 import { openLogsDatabase } from "../core/logs-db";
+import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
 import { getCacheDir, getConfigPath, getDataDir, getStateDbPathInDataDir } from "../core/paths";
 import { listExistingTableNames, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
@@ -29,7 +30,7 @@ import {
   summarizeImproveCompleted,
   summarizeImproveRuns,
 } from "./health/improve-metrics";
-import { readLlmUsageAggregate } from "./health/llm-usage";
+import { emptyLlmUsageAggregate, readLlmUsageAggregate } from "./health/llm-usage";
 import {
   computeDegradationMetrics,
   computeDenominatorFixedCoverage,
@@ -427,7 +428,6 @@ function gatherAncillaryAdvisories(
         // advisory used to stop at the primary stash.
         extraStashDirs: secondaryStashDirs(primaryStashDir),
         cacheDir: getCacheDir(),
-        dataDir: getDataDir(),
         configPath: getConfigPath(),
         config: egressConfigView,
       }),
@@ -515,6 +515,55 @@ function resolveWindowComparePhase(
   return { windowResults, deltas };
 }
 
+/**
+ * The health report for a state.db this process cannot read (#791).
+ *
+ * `akm health` is what an operator runs when other commands are misbehaving, so
+ * it must survive the permission problem long enough to NAME it. Previously it
+ * threw `ConfigError` (exit 78) on the state.db open, which meant the one
+ * command able to explain a data-directory permission fault died before
+ * reaching any of its advisories.
+ *
+ * Reported as a hard-channel `fail` — the run genuinely could not assess the
+ * install — with the path, errno, mode/owner and running uid in the message. It
+ * exits non-zero either way; the difference is that the operator is now told
+ * WHY instead of being handed a bare "unable to open database file".
+ */
+function unreadableStateDbReport(detail: string, options: AkmHealthOptions): AkmHealthResult {
+  return {
+    schemaVersion: 3,
+    ok: false,
+    status: "fail",
+    since: parseHealthSince(options.since),
+    hardChecks: [
+      {
+        name: "state-db-readable",
+        kind: "deterministic",
+        status: "fail",
+        confidence: "high",
+        message:
+          `state.db exists but is not readable: ${detail}. Every other health check is skipped because ` +
+          "none of them can read it. Check the owner and mode of the data directory, or point " +
+          "AKM_DATA_DIR / XDG_DATA_HOME at a location this user owns.",
+        evidence: { detail },
+      },
+    ],
+    advisories: [],
+    metrics: {
+      taskFailRate: 0,
+      agentFailureRate: 0,
+      stuckActiveRuns: 0,
+      logBackingRate: 0,
+      // `null`, not 0: the round-trip probe did not run, which is not the same
+      // as it running instantly.
+      probeRoundTripMs: null,
+      llmUsage: emptyLlmUsageAggregate(),
+    },
+    improve: summarizeImproveCompleted([]),
+    sessionLogAdvisories: [],
+  };
+}
+
 export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
   validateAkmHealthOptions(options);
   const now = options.now ?? (() => Date.now());
@@ -524,10 +573,19 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
   const advisories: HealthCheckResult[] = [];
   const getExecutionLogCandidatesFn = options.getExecutionLogCandidatesFn ?? getExecutionLogCandidates;
 
-  let db: ReturnType<typeof openStateDatabase> | undefined;
+  // #791: an UNREADABLE state.db is the one failure `akm health` most needs to
+  // be able to report, because it is the command an operator runs to find out
+  // why everything else is behaving oddly. Dying here with exit 78 meant health
+  // could not diagnose the very permission problem it is meant to surface — the
+  // secret-file-perms advisory never even ran. Report it as a finding instead.
+  let db: ReturnType<typeof openStateDatabase>;
   try {
     db = openStateDatabase(stateDbPath);
   } catch (error) {
+    const { access, code } = classifyPathAccess(stateDbPath);
+    if (access === "inaccessible") {
+      return unreadableStateDbReport(describeInaccessiblePath(stateDbPath, code), options);
+    }
     throw new ConfigError(
       `Unable to open state.db: ${error instanceof Error ? error.message : String(error)}`,
       "INVALID_CONFIG_FILE",

@@ -21,12 +21,17 @@ import { buildActionFromContributors, defaultActionContributors } from "../../co
 import { stashDirFor } from "../../core/asset/asset-placement";
 import { displayRef } from "../../core/asset/resolve-ref";
 import type { AkmConfig, ImproveConfig } from "../../core/config/config";
+import { classifyPathAccess } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
 import { defaultRendererRegistry, type RendererRegistry } from "../../core/type-presentation";
 import { warn } from "../../core/warn";
 import type { AkmSearchType, BeliefFilterMode, SearchHitSize, SourceSearchHit } from "../../sources/types";
 import type { Database } from "../../storage/database";
-import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
+import {
+  assertIndexPathReadable,
+  closeDatabase,
+  openExistingDatabase,
+} from "../../storage/repositories/index-connection";
 import {
   getAllEntries,
   getBaseBeliefStatesForDerivedTwins,
@@ -253,7 +258,12 @@ export async function searchLocal(input: {
   await ensureIndex(stashDir);
 
   const dbPath = getDbPath();
-  if (!fs.existsSync(dbPath)) {
+  // An index we cannot READ is not an index that does not exist (#791). Saying
+  // "No search index available" for a populated index the caller merely lacks
+  // permission on is a lie at exit 0 — and an agent consuming this JSON has no
+  // way to tell it from a genuine empty result, so it relays the lie onward.
+  assertIndexPathReadable(dbPath);
+  if (classifyPathAccess(dbPath).access === "absent") {
     return {
       hits: [],
       tip: "No search index available. Run 'akm index' to build one.",

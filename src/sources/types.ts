@@ -506,6 +506,15 @@ export interface InfoResponse {
     lastBuiltAt: string | null;
     hasEmbeddings: boolean;
     vecAvailable: boolean;
+    /**
+     * Set only when the index exists but could not be READ (#791) — carries the
+     * path, errno, mode/owner and the running uid. Without it, an unreadable
+     * index is indistinguishable from an unbuilt one: both report
+     * `entryCount: 0, vecAvailable: false` at exit 0, which is what led a
+     * consuming agent to tell its user akm's "vector service is unavailable".
+     * Absent on every healthy run, so no existing consumer sees a new key.
+     */
+    unreadable?: string;
   };
 }
 

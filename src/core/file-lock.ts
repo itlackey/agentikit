@@ -43,7 +43,19 @@ export type LockProbeResult =
       ageMs?: number;
       rawContent?: string;
       identity?: LockFileIdentity;
-    };
+    }
+  /**
+   * The sentinel is there but this process cannot read it — a permission or
+   * ownership problem, not a dead holder (#791).
+   *
+   * Previously this collapsed into `stale`/`unreadable`, i.e. "the holder is
+   * gone, take the lock". It was not destructive only by accident:
+   * `reclaimStaleLock` bails when `rawContent` is undefined. But "I cannot see
+   * this lock" and "the holder is dead" are opposite facts, and a caller acting
+   * on the wrong one would hand out a nominally exclusive lease that someone
+   * else is actively holding. Callers must treat this as a hard stop.
+   */
+  | { state: "inaccessible"; code?: string };
 
 export interface ReclaimStaleLockOptions {
   /** Test seam for a replacement installed after quarantine verification. */
@@ -191,7 +203,12 @@ export function probeLock(lockPath: string, opts?: LockProbeOptions): LockProbeR
   let snapshot: ReturnType<typeof readLockSnapshot>;
   try {
     snapshot = readLockSnapshot(lockPath);
-  } catch {
+  } catch (error) {
+    // A permission error means the lock may be genuinely HELD by someone we
+    // cannot see. Reporting it as stale would invite a caller to steal a live
+    // lease (#791) — `unreadable` stays for the corrupt/undecodable case.
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "EACCES" || code === "EPERM") return { state: "inaccessible", code };
     return { state: "stale", reason: "unreadable" };
   }
   if (!snapshot) return { state: "absent" };

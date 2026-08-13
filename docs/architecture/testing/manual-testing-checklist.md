@@ -3267,18 +3267,25 @@ remaining gaps carry approved waivers with the expiries recorded below.
   - Covered: exact-value redaction for prompt-target and workflow-target task
     logs (`tests/integration/tasks-runner.test.ts` "redacts echoed agent
     credentials before task logs are persisted", webhook-URL case).
-  - **Fixed for 0.9.1** ([#756](https://github.com/itlackey/akm/issues/756)):
-    `openManagedDatabase` — the single home for the open recipe — now chmods
-    each database and its `-wal`/`-shm` sidecars to `0600` and its directory to
-    `0700`, so `state.db` / `index.db` / `logs.db` pick it up without per-call
-    changes; per-run task logs are written through `writeFileAtomic` (mode
-    `0600`) into a `0700` directory. `akm health`'s `secret-file-perms`
-    advisory now scans the data dir (databases + WAL/SHM), `<cache>/tasks/logs`,
-    and **every configured bundle's** `env/`/`secrets/`, not just the default
-    one. Pinned by `tests/integration/db-file-permissions.test.ts`
-    (stat-mode asserts under a deliberately widened `0o022` umask) and the new
-    cases in `tests/integration/commands/health/surfaces.test.ts`. POSIX only,
-    matching the advisory's existing `win32` early return.
+  - **REJECTED, not fixed** ([#756](https://github.com/itlackey/akm/issues/756),
+    reverted in [#791](https://github.com/itlackey/akm/issues/791)). akm briefly
+    chmodded the databases, their `-wal`/`-shm` sidecars, and the containing
+    data directory to owner-only on every `openManagedDatabase`, and wrote task
+    logs `0600` into a `0700` directory. That is no longer the intended
+    behavior and should not be re-attempted: enforcing a mode on a directory the
+    operator owns — on the most-traveled path in the CLI, including read-only
+    opens — silently converted legacy `0755` data dirs and broke installs
+    sharing `$XDG_DATA_HOME` across uids, which worked in 0.9.0.
+    **Decision: akm does not manage file permissions.** Everything it writes
+    takes the process umask; protecting the data directory is the operator's
+    call and umask/`chmod` is their lever.
+  - Retained from that work: `akm health`'s `secret-file-perms` advisory scans
+    `env`/`secrets` under **every configured bundle**, not just the default one.
+    It does NOT scan the databases or task logs — akm no longer sets their mode,
+    so umask-default `0644` is the correct state and flagging it would exit 4 on
+    nearly every install. The advisory's scope is now exactly "files akm wrote
+    `0600` that are no longer `0600`". Pinned by
+    `tests/integration/commands/health/surfaces.test.ts`; POSIX only.
   - Open: command-target task logs (a secret echoed by a scheduled command is
     persisted verbatim when it is not pattern-shaped).
   - Tracking: [#755](https://github.com/itlackey/akm/issues/755) (command-target log redaction).

@@ -26,6 +26,11 @@ export type ConfigErrorCode =
   | "STASH_DIR_NOT_FOUND"
   | "STASH_DIR_NOT_A_DIRECTORY"
   | "STASH_DIR_UNREADABLE"
+  // The index/state database exists (or may exist) but this process cannot read
+  // it — a permission or ownership mismatch, not a missing index. Distinct from
+  // "not built yet" precisely so a read can fail loudly instead of returning an
+  // empty-but-successful result for an index that is sitting right there (#791).
+  | "DATA_DIR_UNREADABLE"
   | "EMBEDDING_NOT_CONFIGURED"
   | "LLM_NOT_CONFIGURED"
   | "INVALID_CONFIG_FILE"
@@ -101,6 +106,8 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
   STASH_DIR_NOT_A_DIRECTORY:
     "The configured default bundle path exists but isn't a directory. Update it to point at a folder.",
   STASH_DIR_UNREADABLE: "Check the path exists and your user has read permission, or update the default bundle path.",
+  DATA_DIR_UNREADABLE:
+    "The data directory is not readable by the user running akm. Check its owner and mode, or point AKM_DATA_DIR / XDG_DATA_HOME somewhere this user owns.",
   EMBEDDING_NOT_CONFIGURED: 'Run `akm config set embedding \'{"endpoint":"...","model":"..."}\'` to enable embeddings.',
   LLM_NOT_CONFIGURED:
     'Run `akm setup` or configure an `engines` entry with `kind: "llm"`, then select it with `defaults.llmEngine`.',

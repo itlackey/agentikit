@@ -34,22 +34,9 @@ function modeOctal(mode: number): string {
   return (mode & 0o777).toString(8).padStart(3, "0");
 }
 
-/**
- * The managed SQLite databases, plus the WAL sidecars that carry the same page
- * content. Checked individually rather than by sweeping the whole data dir:
- * `$DATA` also holds registry caches and materialized bundle content, which is
- * not sensitive and would bury the real offenders in the evidence list.
- */
-const DATA_DB_BASENAMES = ["state.db", "index.db", "logs.db", "workflow.db"] as const;
-const DB_SIDECAR_SUFFIXES = ["", "-wal", "-shm"] as const;
-
 interface PermOffenderScan {
   /** Directories walked recursively; every entry within is checked. */
   roots: string[];
-  /** Individual files checked on their own, without walking their parent. */
-  files: string[];
-  /** Directories checked for their own mode only (not walked). */
-  dirs: string[];
 }
 
 function checkPathMode(abs: string, offenders: string[], expectDirectory?: boolean): fs.Stats | undefined {
@@ -69,43 +56,43 @@ function checkPathMode(abs: string, offenders: string[], expectDirectory?: boole
  * `secret-file-perms` (08-F4): flag files that are not 0600 and directories
  * that are not 0700, anywhere akm stores credentials or captured content.
  *
- * Scans `<stash>/env`, `<stash>/secrets`, `<cache>/config-backups`, the
- * per-run task logs under `<cache>/tasks/logs`, and the managed databases in
- * `<data>` (`state.db` / `index.db` / `logs.db` / `workflow.db` plus their
- * `-wal`/`-shm` sidecars). The database and task-log surfaces were the gap this
- * advisory was always documented to cover but never actually scanned
- * (issue #756) — those files hold task history and captured command output, and
- * they are created by the umask, so on a shared host they were the easiest
- * thing to read off disk. Silent when every path is tight (or absent).
+ * Scans `env` and `secrets` under every configured bundle, plus
+ * `<cache>/config-backups`. Silent when every path is tight (or absent).
+ *
+ * ── What this check is, and what it deliberately is NOT (#791) ──
+ *
+ * It flags files whose mode deviates from the mode **akm itself wrote them
+ * with**. Env and secret assets and config backups are pinned to `0600` by
+ * `writeFileAtomic` at the moment akm creates them, so finding one at `0644`
+ * means something else changed it — that is real signal.
+ *
+ * It deliberately does NOT scan the managed databases or the per-run task logs.
+ * A previous revision did (#756, alongside a chmod that has since been
+ * reverted); with akm no longer setting those modes they are written at the
+ * process umask, so `0644` is simply the correct default state on a typical
+ * `022` machine. Flagging it would make `akm health` exit 4 on essentially
+ * every single-user install — an alarm that fires always is not an alarm.
+ * Protecting the data directory is the operator's call; umask and `chmod` are
+ * their levers, and akm has no business either enforcing a mode there or
+ * nagging about the default one.
  */
 export function collectSecretPermsAdvisory(
-  input: { stashDir: string; extraStashDirs?: readonly string[]; cacheDir: string; dataDir?: string },
+  input: { stashDir: string; extraStashDirs?: readonly string[]; cacheDir: string },
   platform: PlatformLike = process.platform,
 ): HealthCheckResult | undefined {
   if (platform === "win32") return undefined;
 
   // Every CONFIGURED bundle, not only the primary one: a secondary bundle's
-  // `env/`/`secrets/` hold exactly the same material, and an operator running
-  // `akm health` has no reason to expect the check stops at the default stash.
+  // `env`/`secrets` hold exactly the same akm-written `0600` material, and an
+  // operator running `akm health` has no reason to expect the check stops at
+  // the default bundle.
   const stashDirs = [input.stashDir, ...(input.extraStashDirs ?? [])];
   const scan: PermOffenderScan = {
     roots: [
       ...stashDirs.flatMap((dir) => [path.join(dir, "env"), path.join(dir, "secrets")]),
       path.join(input.cacheDir, "config-backups"),
-      // Per-run task logs: raw command/agent stdout+stderr, one file per run.
-      path.join(input.cacheDir, "tasks", "logs"),
     ],
-    files: [],
-    dirs: [],
   };
-  if (input.dataDir) {
-    scan.dirs.push(input.dataDir);
-    for (const basename of DATA_DB_BASENAMES) {
-      for (const suffix of DB_SIDECAR_SUFFIXES) {
-        scan.files.push(path.join(input.dataDir, `${basename}${suffix}`));
-      }
-    }
-  }
 
   const offenders: string[] = [];
 
@@ -119,8 +106,6 @@ export function collectSecretPermsAdvisory(
     }
     for (const entry of entries) checkPathMode(path.join(root, entry), offenders);
   }
-  for (const dir of scan.dirs) checkPathMode(dir, offenders, true);
-  for (const file of scan.files) checkPathMode(file, offenders, false);
 
   if (offenders.length === 0) return undefined;
   const preview = offenders.slice(0, 5).join("; ") + (offenders.length > 5 ? `; +${offenders.length - 5} more` : "");
@@ -130,9 +115,9 @@ export function collectSecretPermsAdvisory(
     status: "warn",
     confidence: "high",
     message:
-      `${offenders.length} secret/backup/database/task-log path(s) are readable by group/other: ${preview}. ` +
-      "Tighten with chmod 600 (files) / chmod 700 (dirs) — these hold tokens, keys, config snapshots, " +
-      "task history, and captured command output.",
+      `${offenders.length} env/secret/backup path(s) are readable by group/other: ${preview}. ` +
+      "Tighten with chmod 600 (files) / chmod 700 (dirs) — these hold tokens, keys, and config snapshots, " +
+      "and akm writes them 0600, so a looser mode means something else changed them.",
     evidence: { offenders: offenders.slice(0, OFFENDER_EVIDENCE_CAP) },
   };
 }
@@ -236,8 +221,6 @@ export function collectSurfacesAdvisories(input: {
   /** Secondary configured bundle roots, scanned for `env/`/`secrets/` alongside the primary. */
   extraStashDirs?: readonly string[];
   cacheDir: string;
-  /** `$DATA` — the managed databases' home. Omitted by callers that have none resolved. */
-  dataDir?: string;
   configPath: string;
   config: EgressConfigView | undefined;
   platform?: PlatformLike;
@@ -248,7 +231,6 @@ export function collectSurfacesAdvisories(input: {
         stashDir: input.stashDir,
         ...(input.extraStashDirs ? { extraStashDirs: input.extraStashDirs } : {}),
         cacheDir: input.cacheDir,
-        ...(input.dataDir ? { dataDir: input.dataDir } : {}),
       },
       input.platform ?? process.platform,
     ),

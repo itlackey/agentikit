@@ -57,56 +57,37 @@ describe("collectSecretPermsAdvisory (08-F4)", () => {
     expect(collectSecretPermsAdvisory({ stashDir, cacheDir: stashDir }, "win32")).toBeUndefined();
   });
 
-  // ── issue #756: the DB + task-log surfaces the advisory always claimed ──
-  //
-  // `docs/architecture/testing/manual-testing-checklist.md` describes health as
-  // scanning "every bundle plus config, DB/WAL/SHM, backup, and task-log
-  // surfaces", but the collector's roots were only env/secrets/config-backups —
-  // so the two paths that hold task history and captured command output were
-  // never checked.
+  // #791: the databases and per-run task logs are deliberately NOT scanned.
+  // akm no longer sets their mode (the #756 chmod was reverted), so they carry
+  // the process umask — `0644` on a typical `022` machine is the correct
+  // default, and warning about it would make `akm health` exit 4 on nearly
+  // every single-user install.
 
-  test("warns on a group/other-readable state.db, its WAL sidecar, and the data dir", () => {
+  test("does not flag umask-default databases or task logs", () => {
     const stashDir = makeTempDir("akm-surfaces-perms-");
     const cacheDir = makeTempDir("akm-surfaces-cache-");
     const dataDir = makeTempDir("akm-surfaces-data-");
     fs.chmodSync(dataDir, 0o755);
-    fs.writeFileSync(path.join(dataDir, "state.db"), "sqlite", { mode: 0o644 });
-    fs.writeFileSync(path.join(dataDir, "state.db-wal"), "wal", { mode: 0o644 });
-
-    const adv = collectSecretPermsAdvisory({ stashDir, cacheDir, dataDir }, "linux");
-    const offenders = (adv?.evidence?.offenders as string[]) ?? [];
-    expect(offenders.some((o) => o.endsWith(`${dataDir}/ (755, want 700)`))).toBe(true);
-    expect(offenders.some((o) => o.includes("state.db (644, want 600)"))).toBe(true);
-    expect(offenders.some((o) => o.includes("state.db-wal (644, want 600)"))).toBe(true);
-  });
-
-  test("warns on a group/other-readable per-run task log", () => {
-    const stashDir = makeTempDir("akm-surfaces-perms-");
-    const cacheDir = makeTempDir("akm-surfaces-cache-");
-    const runDir = path.join(cacheDir, "tasks", "logs", "nightly");
-    fs.mkdirSync(runDir, { recursive: true, mode: 0o755 });
-    fs.writeFileSync(path.join(runDir, "2026-01-01T00-00-00-000Z.log"), "output", { mode: 0o644 });
-
-    const adv = collectSecretPermsAdvisory({ stashDir, cacheDir }, "linux");
-    const offenders = (adv?.evidence?.offenders as string[]) ?? [];
-    expect(offenders.some((o) => o.includes(".log (644, want 600)"))).toBe(true);
-  });
-
-  test("silent when the databases and task logs are 0600 under 0700 dirs", () => {
-    const stashDir = makeTempDir("akm-surfaces-perms-");
-    const cacheDir = makeTempDir("akm-surfaces-cache-");
-    const dataDir = makeTempDir("akm-surfaces-data-");
-    fs.chmodSync(dataDir, 0o700);
-    for (const name of ["state.db", "index.db", "logs.db"]) {
-      fs.writeFileSync(path.join(dataDir, name), "sqlite", { mode: 0o600 });
+    for (const name of ["state.db", "state.db-wal", "index.db", "logs.db"]) {
+      fs.writeFileSync(path.join(dataDir, name), "sqlite", { mode: 0o644 });
     }
     const runDir = path.join(cacheDir, "tasks", "logs", "nightly");
-    fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(runDir, "run.log"), "output", { mode: 0o600 });
-    fs.chmodSync(path.join(cacheDir, "tasks", "logs"), 0o700);
-    fs.chmodSync(path.join(cacheDir, "tasks"), 0o700);
+    fs.mkdirSync(runDir, { recursive: true, mode: 0o755 });
+    fs.writeFileSync(path.join(runDir, "run.log"), "output", { mode: 0o644 });
 
-    expect(collectSecretPermsAdvisory({ stashDir, cacheDir, dataDir }, "linux")).toBeUndefined();
+    expect(collectSecretPermsAdvisory({ stashDir, cacheDir }, "linux")).toBeUndefined();
+  });
+
+  test("still flags a loose env file in a SECONDARY configured bundle", () => {
+    const stashDir = makeTempDir("akm-surfaces-perms-");
+    const second = makeTempDir("akm-surfaces-second-");
+    const cacheDir = makeTempDir("akm-surfaces-cache-");
+    fs.mkdirSync(path.join(second, "env"), { mode: 0o700 });
+    fs.writeFileSync(path.join(second, "env", "prod.env"), "K=v", { mode: 0o644 });
+
+    const adv = collectSecretPermsAdvisory({ stashDir, extraStashDirs: [second], cacheDir }, "linux");
+    const offenders = (adv?.evidence?.offenders as string[]) ?? [];
+    expect(offenders.some((o) => o.includes("prod.env"))).toBe(true);
   });
 });
 
