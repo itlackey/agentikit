@@ -2800,7 +2800,7 @@ Current known failing gates must be fixed or explicitly waived with expiry:
 | Suppressible/add-only dangerous-key audit and event ordering | `FAIL` until pre-publication |
 | Source lifecycle rollback across config/lock/root/index/events | `FAIL` until atomic/recoverable |
 | OpenCode local-listener authentication/documentation | `FAIL` until authenticated |
-| Exact-value task-log/DB permission coverage | `FAIL` until contained |
+| Exact-value command-target task-log redaction | `FAIL` until contained |
 | Package-manager upgrade exact-version verification | `FAIL` until verified |
 
 ---

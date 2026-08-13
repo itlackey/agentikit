@@ -349,20 +349,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     is dead" are opposite facts, and `akm improve` now stops rather than
     reclaiming a lease that may be genuinely held.
 
-- **`akm health` checks every configured bundle for loose secret permissions,
-  not just the default one.** The `secret-file-perms` advisory scans `env` and
-  `secrets` across all configured bundles plus `config-backups`. Its scope is
-  deliberately "files akm writes `0600` that are no longer `0600`" — a looser
-  mode there means something else changed them.
+- **akm does not manage file permissions, and no longer reports on them
+  either.** Everything akm writes takes your process umask; the mode of your
+  data directory is yours to set, and `chmod`/`umask` are your levers.
 
-  akm does **not** manage file permissions. Everything it writes takes your
-  process umask, and the mode of your data directory is yours to set; the
-  advisory does not flag umask-default databases or task logs. An earlier
-  0.9.1 pre-release chmodded these paths to `0600`/`0700` on every open — that
-  was reverted before release, because re-permissioning a directory akm did not
-  create silently broke installs that share `$XDG_DATA_HOME` between two uids
-  (agent sandboxes, containers, service accounts). If a pre-release tightened
-  your data directory, `chmod` it back.
+  Two 0.9.1 pre-release changes are gone. The first chmodded akm's databases
+  and task logs to `0600`/`0700` on every open — reverted because
+  re-permissioning a directory akm did not create silently broke installs that
+  share `$XDG_DATA_HOME` between two uids (agent sandboxes, containers, service
+  accounts). If a pre-release tightened your data directory, `chmod` it back.
+  The second was an `akm health` advisory (`secret-file-perms`) that reported
+  group/other-readable `env`, `secrets` and `config-backups` paths — removed
+  too: it is meaningless on Windows, and nagging about modes akm does not set
+  is not health reporting. `akm health` no longer emits this check, and no
+  longer exits `4` on account of it.
 
 - **`timeout: none` on an exec unit is genuinely unbounded again.** The
   stream-drain safety net — a one-hour bound on a pipe still being read after
