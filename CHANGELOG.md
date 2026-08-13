@@ -361,6 +361,34 @@ what an upgrader reads first.
 
 ### Fixed
 
+- **akm's Node fallback no longer aborts at teardown on Node 24.** On Node
+  24.19.0 and later, any command that opened a database could intermittently
+  die with `node::RemoveEnvironmentCleanupHook … Assertion (env) != nullptr`
+  and exit 134 — after its work was done, so the failure looked random and
+  depended on garbage-collection timing.
+
+  The cause was upstream and nothing to do with akm's own code.
+  `better-sqlite3` ships one prebuilt binary per Node ABI and falls back to
+  `node-gyp rebuild` when none matches, and the 11.x line publishes no prebuild
+  for Node 24 — so installing it there silently compiled the driver from source.
+  Node 24.19.0 had just changed the public `node_object_wrap.h` so that
+  `ObjectWrap`'s constructor and destructor register and unregister an
+  environment cleanup hook; a binding compiled against those headers
+  unregisters the hook after the environment is already gone, and aborts from
+  V8's teardown path. Only the Node 24 line was affected, and only from that
+  release on.
+
+  akm now pins `better-sqlite3` to `12.11.1`, which publishes prebuilt binaries
+  for Node 22, 24, 25 and 26 — so no Node version akm supports compiles the
+  driver at all. This affected real installs, not just CI: an npm user on Node
+  24 LTS was getting the same crash-prone from-source build.
+
+  The Node-fallback CI job now installs the exact spec `package.json` declares
+  instead of carrying a range of its own, and both that job and the smoke
+  script fail loudly on a native crash banner — previously an abort was
+  reported only as missing output, and the one step that tolerates a non-zero
+  exit would not have failed at all.
+
 - **A website source interrupted mid-refresh no longer loses the snapshot it
   already had.** A refresh deleted the whole mirror and then rebuilt it page by
   page, so a process killed inside that loop left an empty or partial directory
