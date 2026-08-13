@@ -89,6 +89,40 @@ export interface SaveGitStashOptions {
 const GIT_PUSH_TIMEOUT_MS = 120_000;
 const ZERO_OID = "0000000000000000000000000000000000000000";
 
+// ── Test seam: exact-path commit race window ─────────────────────────────────
+
+/**
+ * Named points inside {@link createExactPathCommit}'s publication sequence.
+ * TEST-ONLY.
+ *
+ *  - `before-update-ref` — the commit object exists, every pre-check has
+ *    passed, and the branch ref is about to be compare-and-swapped from
+ *    `baseHead` to it. A concurrent process that commits at exactly this
+ *    instant is the race the `update-ref <ref> <new> <old>` CAS defends
+ *    against, and it is the ONLY guard on the `akm sync` path (`akm sync`
+ *    passes no `expectedBaseHead`, so the earlier preflight check is inert
+ *    there).
+ */
+export type GitExactCommitPoint = "before-update-ref";
+
+let exactCommitHookForTests: ((point: GitExactCommitPoint) => void) | undefined;
+
+/**
+ * TEST-ONLY. Interleave work into the exact-path commit sequence; `undefined`
+ * restores. Exists because the CAS window is a few microseconds wide between
+ * two synchronous `git` invocations — a wall-clock race would be
+ * non-deterministic, and every earlier pre-check would swallow a commit that
+ * landed before the window opened. Inert in production.
+ */
+export function _setGitExactCommitHookForTests(hook?: (point: GitExactCommitPoint) => void): void {
+  exactCommitHookForTests = hook;
+}
+
+/** Fire a named exact-path-commit race point (no-op outside tests). */
+function gitExactCommitHook(point: GitExactCommitPoint): void {
+  exactCommitHookForTests?.(point);
+}
+
 /**
  * Resolve the writable flag for an end-of-run / `akm sync` commit from the
  * configured default bundle.
@@ -649,6 +683,10 @@ function createExactPathCommit(
       throw new Error(`Git target changed before its exact commit could be attached.`);
     }
     assertWorktreeMatchesExpected(repoDir, options.paths, expected);
+    // Race window: everything below this line is defended only by the
+    // update-ref compare-and-swap. See
+    // tests/integration/sync-exact-commit-cas.test.ts.
+    gitExactCommitHook("before-update-ref");
     const update = runGit(["-C", repoDir, "update-ref", branchRef, commitOid, options.baseHead ?? ZERO_OID]);
     if (update.status !== 0) {
       throw new Error(`Git target advanced before its exact commit could be attached.`);

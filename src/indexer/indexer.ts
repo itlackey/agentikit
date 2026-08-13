@@ -558,6 +558,39 @@ export async function akmIndex(options: IndexOptions): Promise<IndexResponse> {
 }
 
 /**
+ * Named observation points fired from INSIDE the reindex write transaction
+ * (see {@link persistDirRecords}). TEST-ONLY.
+ *
+ *  - `full-delete-applied` — every `DELETE` of the full-rebuild wipe has run,
+ *    but the re-insert has not started. This is the instant at which a
+ *    non-atomic implementation would expose an empty database.
+ *  - `records-persisted` — all rows are re-inserted, but the transaction has
+ *    not committed yet, so the new generation is still invisible outside.
+ */
+export type IndexTransactionPoint = "full-delete-applied" | "records-persisted";
+
+let indexTransactionHookForTests: ((point: IndexTransactionPoint) => void) | undefined;
+
+/**
+ * TEST-ONLY. Observe the in-flight reindex transaction; `undefined` restores.
+ *
+ * Exists because the delete-then-reinsert atomicity guarantee is, by
+ * construction, invisible from outside the transaction: by the time
+ * `akmIndex()` resolves, the commit has already collapsed both generations
+ * into one observable state. Concurrency tests install a hook that opens a
+ * SECOND connection at these points and asserts it still sees the previous
+ * complete generation. Inert in production (one `undefined?.()` per reindex).
+ */
+export function _setIndexTransactionHookForTests(hook?: (point: IndexTransactionPoint) => void): void {
+  indexTransactionHookForTests = hook;
+}
+
+/** Fire a named in-transaction observation point (no-op outside tests). */
+function indexTransactionHook(point: IndexTransactionPoint): void {
+  indexTransactionHookForTests?.(point);
+}
+
+/**
  * Detect an adapter for every resolvable source that does not declare one, and
  * persist each detection into `config.json`.
  *
@@ -1410,6 +1443,10 @@ function persistDirRecords(
       // (cross-DB) nulls entry_ids that no longer resolve to a rebuilt entry and
       // re-resolves the rest by entry_ref — subsuming the old detach.
       db.exec("DELETE FROM entries");
+      // Atomicity observation point: inside the transaction the tables are now
+      // empty, but no other connection may observe that. See
+      // tests/integration/indexer/reindex-generation-atomicity.test.ts.
+      indexTransactionHook("full-delete-applied");
     }
 
     for (const {
@@ -1560,6 +1597,9 @@ function persistDirRecords(
         }
       }
     }
+    // Atomicity observation point: the new generation is fully written but
+    // uncommitted, so it must still be invisible to other connections.
+    indexTransactionHook("records-persisted");
   });
 
   insertTransaction();
