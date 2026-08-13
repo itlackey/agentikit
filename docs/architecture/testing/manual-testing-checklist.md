@@ -3182,9 +3182,11 @@ remaining gaps carry approved waivers with the expiries recorded below.
     full run heals them); whether to surface that gap at write time is a 0.10
     placement-era product decision, not a regression — tracked in
     [#772](https://github.com/itlackey/akm/issues/772).
-- [ ] **Durability:** atomic reader-visible index generations, live-lock age,
+- [x] **Durability:** atomic reader-visible index generations, live-lock age,
       full source lifecycle rollback, safe website/npm refresh, strict lockfile,
       registry stale fallback, and sync/write serialization.
+      **Closed for 0.9.1** — the last open item (#758) landed; see the
+      per-item history below.
   - Covered: strict lockfile (`tests/integration/lockfile.test.ts` corrupt-
     lockfile fail-closed + CAS cases).
   - **Fixed 2026-08-06** (fix-now directed at 0.9.0 triage): registry stale
@@ -3222,20 +3224,32 @@ remaining gaps carry approved waivers with the expiries recorded below.
       code: publication is two renames, so a kill in that one-syscall window
       leaves the mirror absent — `requireStashDir` callers refresh immediately,
       others recover on the next expiry or `--force`.
-  - Open: full source lifecycle rollback (no test walks
-    add→blocked-install→rollback against a dangerous fixture).
-  - Tracking: [#758](https://github.com/itlackey/akm/issues/758) (blocked-install rollback).
-  - issue: one recovery-path coverage gap (blocked-install rollback). impact:
-    the mixed-website-snapshot outcome this waiver was written for is now
-    fixed, not merely mitigated; what remains is untested rollback on a
-    blocked install, recoverable by re-running `akm bundle add`. owner:
-    itlackey. verification test: a test walking add→blocked-install→rollback
-    against a dangerous fixture, asserting config.json/akm.lock parity.
-    temporary mitigation: all paths recover via re-run (`akm bundle update`,
-    `akm index --full`); the dangerous-env audit already blocks the install
-    itself, so rollback fidelity is the only untested part.
-    waiver approver: itlackey — approved 2026-08-06 (0.9.0 release triage).
-    waiver expiry: 0.9.1.
+  - **Closed for 0.9.1** ([#758](https://github.com/itlackey/akm/issues/758)):
+    full source lifecycle rollback — the waiver's named verification test now
+    exists as `tests/integration/vault-dangerous-key-blocked-install-rollback.test.ts`.
+    It drives the real `akm bundle add` CLI end-to-end against a materialized
+    copy of `tests/fixtures/manual-qa/dangerous-bundle/` (whose
+    `env/runtime.env` carries `NODE_OPTIONS`), non-TTY and without
+    `--allow-insecure`, and asserts every lifecycle surface after the block:
+    **byte-level** parity of `config.json` and `akm.lock`, no surviving content
+    root, and no orphaned index row. Three workspace states are covered —
+    pristine, pre-existing operator config, and a bundle already installed —
+    the last of which pins the other direction too: a rollback that reverts
+    the FIRST bundle's records is as wrong as one that leaves the refused
+    bundle's behind.
+    Rollback was found already correct in every case constructible here; the
+    test's value is as a pin, so it was mutation-verified against five separate
+    breaks (skip the rollback; drop `removeLockEntry`; delete every bundle
+    instead of the target; leave the content root; skip the post-rollback
+    reindex) and fails on each.
+  - Residue accepted by design, asserted explicitly rather than left implicit:
+    (a) on a pristine workspace the attempt still SCAFFOLDS `config.json` and
+    `akm.lock` — the config/lock writers create their file on first mutation —
+    so the test pins that the created `config.json` deep-equals `DEFAULT_CONFIG`
+    with no `bundles` key and that `akm.lock` is the empty array, rather than
+    asserting absence; (b) the events stream keeps the `add` event for the
+    refused ref, because it is an append-only audit log of ATTEMPTS and an
+    operator investigating a blocked install needs it on record.
 - [ ] **Security:** Git/direct-write symlink containment, authenticated OpenCode
       listener, registry credential/control-data redaction, archive expansion
       budgets, universal redirect/SSRF policy, and unsuppressible update audit.
