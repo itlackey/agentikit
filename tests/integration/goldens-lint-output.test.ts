@@ -94,7 +94,13 @@ import { expectGolden } from "../_helpers/golden";
 
 const STASH_ROOT = path.resolve(__dirname, "../fixtures/stashes/all-types");
 const LINT_GOLDEN_PATH = "tests/fixtures/goldens/lint/all-types.json";
-const HEAD_SHA = "cd94d26c6de251fa5dcadd9e9e40f6991bf87eb5";
+// The commit whose tree produced this golden's current bytes. Repointed in
+// 0.9.1 (#795): it named a 2026-07-21 docs commit that never touched the
+// golden, while the file had been re-captured twice since. That is invisible to
+// scripts/lint-golden-captured-at-head.ts, which only checks the SHA is real
+// and branch-reachable — both of which an unrelated commit satisfies. Update
+// this alongside any re-capture; the fixture is generated from it.
+const HEAD_SHA = "2d0e39c5a253b869bc51267403e66a1fd0c6daf6";
 
 /** [type key, stash subdir, relPath] for all 14 `ASSET_SPECS_INTERNAL` types (workflow is one form now). */
 const ALL_TYPE_CASES: Array<[type: string, subdir: string, relPath: string]> = [
