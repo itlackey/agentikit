@@ -2800,7 +2800,7 @@ Current known failing gates must be fixed or explicitly waived with expiry:
 | Suppressible/add-only dangerous-key audit and event ordering | `FAIL` until pre-publication |
 | Source lifecycle rollback across config/lock/root/index/events | `FAIL` until atomic/recoverable |
 | OpenCode local-listener authentication/documentation | `FAIL` until authenticated |
-| Exact-value command-target task-log redaction | `FAIL` until contained |
+| Exact-value command-target task-log redaction | `PASS` — fixed in 0.9.1 (#755) |
 | Package-manager upgrade exact-version verification | `FAIL` until verified |
 
 ---
@@ -3281,18 +3281,19 @@ remaining gaps carry approved waivers with the expiries recorded below.
     call and umask/`chmod` is their lever. Nothing survives from that work:
     the health advisory that reported on those modes is gone too — akm does not
     nag about permissions it does not set.
-  - Open: command-target task logs (a secret echoed by a scheduled command is
-    persisted verbatim when it is not pattern-shaped).
-  - Tracking: [#755](https://github.com/itlackey/akm/issues/755) (command-target log redaction).
-  - issue: one redaction lane. impact: a multi-user host could read a
-    non-pattern-shaped secret out of a command task's history; single-user
-    machines unaffected. owner: itlackey. verification test: an exact-value
-    redaction test for the command arm mirroring the existing prompt-arm test in
-    `tests/integration/tasks-runner.test.ts`. temporary mitigation:
-    pattern-based redaction already catches the common credential shapes for
-    every task kind; the data dir lives under the user's `$XDG_DATA_HOME`, whose
-    mode is the operator's to set. waiver approver: itlackey — approved
-    2026-08-06 (0.9.0 release triage). waiver expiry: 0.9.1.
+  - **Fixed** ([#755](https://github.com/itlackey/akm/issues/755), 0.9.1).
+    Exact-value redaction now runs in `persistRunLog`, the one sink all three
+    target kinds funnel through, so the command arm is covered alongside the
+    other two. Secret values come from three places, and the distinction matters:
+    config-declared credentials and a task's own `redact:` names are redacted at
+    any length, while values merely *inferred* from a variable's name must clear
+    an 8-character floor. Applying the naive rule the issue proposed — treat
+    every non-allowlisted value in the inherited environment as secret —
+    classified 127 of 132 variables as credentials, 25 of them one character
+    long, and rewrote `3 tests passed` into `[REDACTED] tests passed`. Pinned by
+    `tests/tasks/log-redaction.test.ts` and the `runTask — command target` cases
+    in `tests/integration/tasks-runner.test.ts`, including an over-redaction
+    guard that fails if ordinary build output is ever mangled.
 - [ ] **Package/release:** exact package-manager upgrade version verification,
       native installer/scheduler coverage, action/dependency provenance hardening,
       and post-publication artifact parity.

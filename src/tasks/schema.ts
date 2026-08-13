@@ -15,7 +15,7 @@
  */
 
 import { parse as parseYaml } from "yaml";
-import { WORKFLOW_MAX_TIMEOUT_MS } from "../workflows/resource-limits";
+import { WORKFLOW_MAX_EXEC_PASS_ENV, WORKFLOW_MAX_TIMEOUT_MS } from "../workflows/resource-limits";
 
 export const TASK_SCHEMA_VERSION = 2;
 
@@ -40,6 +40,14 @@ export const TASK_NEAR_MISS_EXTENSION = ".yaml";
  * `timeoutMs` in `schemas/akm-task.json`.
  */
 export const TASK_MAX_TIMEOUT_MS = WORKFLOW_MAX_TIMEOUT_MS;
+
+/**
+ * Most names a task's `redact:` list may carry. Shares its bound with exec
+ * units' `pass_env:` — both are "name the one or two the defaults miss", not a
+ * way to declare the whole environment secret. Mirrored as `maxItems` on
+ * `redact` in `schemas/akm-task.json`.
+ */
+export const TASK_MAX_REDACT_NAMES = WORKFLOW_MAX_EXEC_PASS_ENV;
 
 /**
  * Lint-level shape problems for a parsed task YAML mapping: the field rules
@@ -198,4 +206,22 @@ export interface TaskDocument {
    * where that kind's dispatch consumes it.
    */
   timeoutMs?: number | null;
+  /**
+   * Environment variable NAMES whose values are scrubbed from this task's
+   * persisted output (the run `.log` and `logs.db`) before it is written.
+   *
+   * NAMES ONLY, never values. akm looks each name up in the environment the run
+   * is given and feeds the value to the log redactor. A literal secret here
+   * would leak through a channel far wider than the one it closes: a task file
+   * is an indexed, searchable asset whose raw text lands in the FTS `content`
+   * column and can be sent to an embedding provider, `akm show` prints it
+   * verbatim, and bundles ship over git and npm. This is the same ruling
+   * `pass_env:` states for exec units.
+   *
+   * The escape hatch, not the mechanism: akm already redacts config-declared
+   * credentials and infers others from the variable name. Use this for a secret
+   * exported under a name none of those rules recognise. A name that is unset
+   * at run time contributes nothing. Present only when non-empty.
+   */
+  redact?: string[];
 }

@@ -49,7 +49,7 @@ import {
   type TaskLogStream,
 } from "../core/logs-db";
 import { getTaskLogDir } from "../core/paths";
-import { redactCredentialPatterns } from "../core/redaction";
+import { redactCredentialPatterns, redactSensitiveText } from "../core/redaction";
 import { withStateDb } from "../core/state-db";
 import { runManagedSubprocess, type SpawnFn } from "../core/subprocess";
 import type { AgentRunResult, RunAgentOptions } from "../integrations/agent";
@@ -76,6 +76,7 @@ import {
 } from "../storage/repositories/task-history-repository";
 import { runWorkflowSteps } from "../workflows/exec/run-workflow";
 import { findBareAkmExecutableIndex } from "./command-executable";
+import { collectTaskLogSensitiveValues } from "./log-redaction";
 import { parseTaskDocument } from "./parser";
 import { resolveAkmInvocation } from "./resolve-akm-bin";
 import type { TaskDocument } from "./schema";
@@ -204,6 +205,7 @@ export async function runTask(id: string, options: RunTaskOptions): Promise<Task
         logPath,
         fileText: `${disabledLine}\n`,
         dbLines: [{ line: disabledLine }],
+        redactNames: task.redact,
       });
       appendHistory(result, attempt.historyReserved);
       return result;
@@ -339,6 +341,7 @@ async function runCommandTask(input: {
     logPath,
     fileText: `${logLines.join("\n")}\n`,
     dbLines,
+    redactNames: task.redact,
   });
   const status: TaskRunStatus = exitCode === 0 ? "completed" : "failed";
   const result: TaskRunResult = {
@@ -493,6 +496,7 @@ async function runWorkflowTask(input: {
     logPath,
     fileText: log.fileText,
     dbLines: log.dbLines,
+    redactNames: task.redact,
   });
 
   const result: TaskRunResult = {
@@ -666,6 +670,7 @@ async function runPromptTask(input: {
     logPath,
     fileText: log.fileText,
     dbLines: log.dbLines,
+    redactNames: task.redact,
   });
 
   const status: TaskRunStatus = result.ok ? "completed" : "failed";
@@ -794,6 +799,34 @@ function streamLines(text: string, stream: TaskLogStream, level: TaskLogLevel): 
  * The DB write is best-effort, mirroring {@link appendHistory}: an unwritable
  * logs.db must never fail a task run.
  */
+/**
+ * Exact secret values to scrub from this run's persisted output (#755).
+ *
+ * Best-effort by construction: this runs on the persistence path of a run that
+ * has already finished, so a config that will not load must degrade to
+ * "pattern-based redaction only" rather than fail the run. It does NOT degrade
+ * to "log it anyway with no redaction at all" — `redactCredentialPatterns`
+ * still runs unconditionally in the caller.
+ */
+function taskLogSensitiveValues(redactNames: readonly string[] | undefined): string[] {
+  try {
+    return collectTaskLogSensitiveValues({
+      env: process.env,
+      config: loadConfig(),
+      declaredNames: redactNames,
+    });
+  } catch (error) {
+    rethrowIfTestIsolationError(error);
+    // No config — the name heuristic and the task's own `redact:` list still apply.
+    try {
+      return collectTaskLogSensitiveValues({ env: process.env, declaredNames: redactNames });
+    } catch (fallbackError) {
+      rethrowIfTestIsolationError(fallbackError);
+      return [];
+    }
+  }
+}
+
 function persistRunLog(input: {
   taskId: string;
   startedAtIso: string;
@@ -801,15 +834,30 @@ function persistRunLog(input: {
   logPath: string;
   fileText: string;
   dbLines: readonly TaskLogLineInput[];
+  /** The task's `redact:` names, if any (#755). */
+  redactNames?: readonly string[] | undefined;
 }): void {
-  const fileText = redactCredentialPatterns(input.fileText);
-  const dbLines = input.dbLines.map((entry) => ({ ...entry, line: redactCredentialPatterns(entry.line) }));
+  // Two arms, and both are needed. `redactCredentialPatterns` catches
+  // credential SHAPES nobody listed; the exact-value pass catches configured
+  // secrets whose value is shaped like nothing in particular (#755). The
+  // command target had only the first, so a scheduled command that echoed an
+  // ordinary-looking secret persisted it verbatim to both sinks. Applying the
+  // exact pass here — the one sink all three target kinds funnel through —
+  // covers every arm once rather than per-arm; prompt/workflow runs already
+  // scrub upstream, and redaction is idempotent, so the overlap is free.
+  const sensitive = taskLogSensitiveValues(input.redactNames);
+  const scrub = (text: string): string =>
+    sensitive.length > 0
+      ? redactSensitiveText(redactCredentialPatterns(text), sensitive)
+      : redactCredentialPatterns(text);
+  const fileText = scrub(input.fileText);
+  const dbLines = input.dbLines.map((entry) => ({ ...entry, line: scrub(entry.line) }));
   if (input.logPath) {
     try {
       // Written at the process umask. #756 pinned 0600/0700 here; that went out
       // with the rest of akm's permission enforcement (#791) — the operator owns
-      // the mode of their own data directory. `akm health` still reports a
-      // group/other-readable task log rather than silently changing it.
+      // the mode of their own data directory, and akm neither sets nor reports
+      // on it.
       fs.mkdirSync(path.dirname(input.logPath), { recursive: true });
       fs.writeFileSync(input.logPath, fileText);
     } catch (error) {

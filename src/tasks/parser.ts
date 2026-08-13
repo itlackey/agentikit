@@ -32,6 +32,8 @@
  * description: …
  * when_to_use: …
  * tags: [scheduled, backup]
+ * redact: [ACME_DEPLOY_TOKEN]     # optional: env var NAMES (never values) to
+ *                                 # scrub from this task's persisted log
  * ```
  *
  * Validation lives in {@link validateTaskDocument}. The parser enforces the
@@ -44,8 +46,9 @@ import { parse as parseYaml } from "yaml";
 import { isFullRefInput } from "../core/asset/resolve-ref";
 import { UsageError } from "../core/errors";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
-import { WORKFLOW_MAX_RETRIES } from "../workflows/resource-limits";
+import { WORKFLOW_ENV_VAR_NAME_PATTERN, WORKFLOW_MAX_RETRIES } from "../workflows/resource-limits";
 import {
+  TASK_MAX_REDACT_NAMES,
   TASK_MAX_TIMEOUT_MS,
   TASK_SCHEMA_VERSION,
   type TaskDocument,
@@ -165,6 +168,7 @@ export function parseTaskDocument(input: ParseTaskInput): TaskDocument {
   }
 
   const timeoutMs = hasCommand ? readTimeout(data.timeoutMs, filePath) : undefined;
+  const redact = readRedactNames(data.redact, filePath);
 
   return {
     version: TASK_SCHEMA_VERSION,
@@ -179,6 +183,7 @@ export function parseTaskDocument(input: ParseTaskInput): TaskDocument {
     ...(tags ? { tags } : {}),
     source: { path: filePath },
     timeoutMs,
+    ...(redact ? { redact } : {}),
   };
 }
 
@@ -200,8 +205,19 @@ const TASK_KEYS = new Set([
   "maxSteps",
   "maxRetries",
   "llm",
+  "redact",
 ]);
-const SHARED_KEYS = new Set(["version", "name", "description", "when_to_use", "tags", "schedule", "enabled"]);
+const SHARED_KEYS = new Set([
+  "version",
+  "name",
+  "description",
+  "when_to_use",
+  "tags",
+  "schedule",
+  "enabled",
+  // `redact:` is target-agnostic: every kind funnels through the same log sink.
+  "redact",
+]);
 
 function requireVersion(data: Record<string, unknown>, id: string, filePath: string): void {
   if (data.version === TASK_SCHEMA_VERSION) return;
@@ -348,6 +364,37 @@ function readTimeout(value: unknown, filePath: string): number | null | undefine
     `Key "timeoutMs" must be an integer from 1 through ${TASK_MAX_TIMEOUT_MS}, or null. File: ${filePath}`,
     "INVALID_FLAG_VALUE",
   );
+}
+
+/**
+ * Read the `redact:` opt-in list — environment variable NAMES whose values are
+ * scrubbed from this task's persisted log (#755).
+ *
+ * A value that looks like a secret rather than a name is rejected outright, not
+ * silently accepted: a literal in a task file would be indexed, searchable and
+ * printed verbatim by `akm show`, so accepting one would leak the secret
+ * through a wider channel than the redaction closes.
+ */
+function readRedactNames(value: unknown, filePath: string): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  const invalid = (detail: string): never => {
+    throw new UsageError(`Key "redact" ${detail}. File: ${filePath}`, "INVALID_FLAG_VALUE");
+  };
+  if (!Array.isArray(value)) return invalid("must be a list of environment variable names");
+  if (value.length > TASK_MAX_REDACT_NAMES) {
+    return invalid(`accepts at most ${TASK_MAX_REDACT_NAMES} names (got ${value.length})`);
+  }
+  const names: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string" || !WORKFLOW_ENV_VAR_NAME_PATTERN.test(entry)) {
+      return invalid(
+        `takes environment variable NAMES only (matching ${WORKFLOW_ENV_VAR_NAME_PATTERN.source}), not values — ` +
+          `got ${JSON.stringify(entry)}. A secret written here would be indexed and printed by \`akm show\``,
+      );
+    }
+    if (!names.includes(entry)) names.push(entry);
+  }
+  return names.length > 0 ? names : undefined;
 }
 
 function readBoundedInteger(
