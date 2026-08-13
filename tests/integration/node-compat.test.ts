@@ -107,10 +107,19 @@ function parseJson(text: string): unknown {
 // Node path tried to call a Bun built-in directly.
 const BOUNDARY_MARKERS = ["Bun is not defined", "ERR_MODULE_NOT_FOUND", "ERR_UNKNOWN_FILE_EXTENSION"];
 
+// Node's own banner when a native addon aborts the process. Distinct from a
+// boundary leak — nothing in akm's JS produced it — but just as much a hard
+// failure, and one this suite previously swallowed whenever the command had
+// already flushed enough stdout to satisfy the assertion (#790).
+const NATIVE_CRASH_MARKER = "----- Native stack trace -----";
+
 function assertNoBoundaryLeak(result: NodeResult, label: string): void {
   for (const marker of BOUNDARY_MARKERS) {
     expect(result.stdout + result.stderr, `[${label}] boundary leak: ${marker}`).not.toContain(marker);
   }
+  expect(result.stderr, `[${label}] the node subprocess aborted in native code:\n${result.stderr}`).not.toContain(
+    NATIVE_CRASH_MARKER,
+  );
 }
 
 // ── Shared state for each describe block ─────────────────────────────────────

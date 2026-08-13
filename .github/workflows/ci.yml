@@ -80,9 +80,23 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: bun install --frozen-lockfile
       - run: bun run build
+      # This job's whole point is to prove the binding npm users actually get
+      # works, so it must install the SPEC THE PACKAGE DECLARES rather than a
+      # range of its own. The version is read back out of package.json — the
+      # single source of truth — so the two cannot drift (#790: they had, and
+      # the job spent its time exercising a from-source build of an 11.x that
+      # has no Node 24 prebuild, which aborts at teardown on Node 24.19+).
       - name: Verify the Node fallback
         run: |
-          npm install --no-save better-sqlite3@^11.8.0
+          spec=$(node -p "require('./package.json').optionalDependencies['better-sqlite3']")
+          echo "node-smoke: installing better-sqlite3@$spec (declared in package.json)"
+          # Remove it first. `npm install pkg@version` is a NO-OP when that exact
+          # version is already present and does NOT re-run the install script, so
+          # the binding `bun install` built a moment ago — under whichever node
+          # its `prebuild-install` saw — would otherwise survive into this job
+          # with the wrong ABI. scripts/node-smoke.ts preflights that it loads.
+          rm -rf node_modules/better-sqlite3
+          npm install --no-save "better-sqlite3@$spec"
           bun run test:node-smoke
           bun run test:node-compat
         env:

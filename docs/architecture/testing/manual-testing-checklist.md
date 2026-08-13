@@ -2862,7 +2862,15 @@ bun test --timeout=120000 \
   tests/integration/npm-bin-contract.test.ts
 
 bun run build
-npm install --no-save better-sqlite3@^11.8.0
+# Install the exact spec package.json declares — never a range of your own.
+# better-sqlite3 compiles from source whenever there is no prebuilt binary for
+# the running Node's ABI, and a from-source build against Node 24.19+ headers
+# aborts at teardown (#790). CI does the same read-back. Remove it first:
+# `npm install pkg@version` is a no-op when that version is already installed
+# and will NOT rebuild the binding for the Node you are about to test with.
+rm -rf node_modules/better-sqlite3
+npm install --no-save \
+  "better-sqlite3@$(node -p "require('./package.json').optionalDependencies['better-sqlite3']")"
 AKM_SMOKE_NODE=node bun run test:node-smoke
 AKM_SMOKE_NODE=node bun run test:node-compat
 ```
