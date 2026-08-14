@@ -64,11 +64,13 @@ const SHA_RE = /^[0-9a-f]{7,40}$/i;
  * never add a NEW one; a fresh violation should fail lint like any other.
  */
 const KNOWN_STALE: Record<string, string> = {
-  "tests/fixtures/goldens/lint/all-types.json":
-    "flagged 2026-07-30 (#730 capturedAtHead guard introduction): recorded capturedAtHead " +
-    "cd94d26c6de251fa5dcadd9e9e40f6991bf87eb5 does not exist in this clone's object database at all. " +
-    "Pre-existing and unrelated to #730 — this guard's author did not attempt to reconstruct which " +
-    "chunk-3 commit it should name; its surface owner should repoint or re-capture it.",
+  // Empty, and worth keeping that way. The last entry
+  // (tests/fixtures/goldens/lint/all-types.json) was retired in 0.9.1 (#795) by
+  // repointing the pin to 2d0e39c5, the commit that produced the golden's
+  // current bytes. Its grandfather note had itself gone stale: it claimed the
+  // recorded commit "does not exist in this clone's object database at all",
+  // but cd94d26c resolves fine — it was simply a July-21 docs commit that never
+  // touched the golden, which the two reachability checks below cannot see.
 };
 
 function git(args: string[]): { ok: boolean; stdout: string } {

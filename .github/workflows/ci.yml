@@ -31,6 +31,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+        # Full history: scripts/lint-golden-captured-at-head.ts resolves recorded
+        # `capturedAtHead` commits, and under the default fetch-depth: 1 none of
+        # them exist in the clone — the gate then takes its own "inconclusive"
+        # branch for EVERY pin and reports OK having judged nothing (#795).
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14

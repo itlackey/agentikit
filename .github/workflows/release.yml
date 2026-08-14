@@ -30,6 +30,9 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
+          # Full history — release-check.sh runs lint, and the golden pin gate
+          # judges nothing in a shallow clone (#795).
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
