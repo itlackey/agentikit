@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.9.1-beta.1] - 2026-08-13
+## [0.9.1-beta.2] - 2026-08-14
 
 ### Breaking changes & migration
 
@@ -360,6 +360,23 @@ what an upgrader reads first.
   journal and hold across resumes.
 
 ### Fixed
+
+- **Upgrading Node after installing akm now explains itself.** A native binding
+  is built for the Node ABI present at install time, so upgrading Node major
+  versions afterwards leaves akm reporting a bare Node internals message —
+  *"The module … was compiled against a different Node.js version"*, or on a
+  second attempt the even less helpful *"Module did not self-register"*. akm now
+  recognises that failure and answers with the one command that fixes it
+  (`npm rebuild better-sqlite3`), names the ABI actually running, and says
+  plainly that this is not a broken install.
+
+  The diagnostic had to move to do this. It wrapped the `require`, but
+  `require("better-sqlite3")` **succeeds** against a mismatched binding — the
+  package resolves its `.node` file lazily — so the error lands at
+  `new Database(...)` and the loader's handler never saw it. The previous text
+  telling the user to look for a version mismatch "in the error below" was
+  unreachable. Found by installing the published build under Node 22 and running
+  it under Node 24.
 
 - **akm's Node fallback no longer aborts at teardown on Node 24.** On Node
   24.19.0 and later, any command that opened a database could intermittently
