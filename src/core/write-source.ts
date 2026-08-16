@@ -1306,10 +1306,34 @@ function ensureWritable(source: WriteTargetSource, config: SourceConfigEntry): v
   }
 }
 
+/**
+ * MS-DOS device names Windows still reserves in every directory, with or
+ * without an extension (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
+ */
+const WINDOWS_RESERVED_DEVICE_NAMES = new Set([
+  "con",
+  "prn",
+  "aux",
+  "nul",
+  ...Array.from({ length: 9 }, (_, i) => `com${i + 1}`),
+  ...Array.from({ length: 9 }, (_, i) => `lpt${i + 1}`),
+]);
+
 function resolveAssetFilePath(source: WriteTargetSource, ref: AssetRef): string {
   const basename = path.posix.basename(ref.name.replaceAll("\\", "/")).replace(/\.md$/i, "").toLowerCase();
   if (basename === "index" || basename === "log") {
     throw new UsageError(`Reserved concept name "${basename}" cannot be written.`, "INVALID_FLAG_VALUE");
+  }
+  // Windows resolves these names as DEVICES no matter the directory or the
+  // extension, so `CON.md` is not a file — a write goes to the console and a
+  // read blocks on console input. Rejected on every platform so a stash stays
+  // portable: an asset authored on Linux must not become unopenable when the
+  // same bundle is used on Windows.
+  if (WINDOWS_RESERVED_DEVICE_NAMES.has(basename)) {
+    throw new UsageError(
+      `Asset name "${basename}" is a reserved Windows device name and cannot be written.`,
+      "INVALID_FLAG_VALUE",
+    );
   }
   const typeDir = stashDirFor(ref.type);
   if (!typeDir) {

@@ -189,6 +189,13 @@ let _serverFactory: SdkServerFactory | null = null;
 let _exitHookInstalled = false;
 
 /**
+ * True once `process.on("exit")` has fired. Close paths consult it because an
+ * exit handler runs after the event loop has stopped: no timer scheduled there
+ * will ever fire, so any cleanup that needs to happen must happen inline.
+ */
+let _processExiting = false;
+
+/**
  * Test-only seam: inject a fake {@link SdkServer} so `runOpencodeSdk` can be
  * exercised without the real `@opencode-ai/sdk` (which would spin up a server).
  * Pass `null` to clear. NOT part of the public runtime API — used only to
@@ -502,6 +509,20 @@ async function createManagedOpencode(options: {
     }
     if (childExited()) return;
 
+    if (_processExiting) {
+      // During `process.on("exit")` the event loop is finished, so a timer
+      // scheduled here would never fire and the SIGKILL escalation could not
+      // happen at all — a server child that ignores SIGTERM outlived akm.
+      // Exit handlers must be synchronous, so escalate immediately instead of
+      // waiting out a grace period we have no way to wait for.
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        /* already dead */
+      }
+      return;
+    }
+
     closeEscalation = setTimeout(() => {
       closeEscalation = undefined;
       if (childExited()) return;
@@ -615,6 +636,7 @@ async function startServer(
   if (!_exitHookInstalled) {
     _exitHookInstalled = true;
     process.once("exit", () => {
+      _processExiting = true;
       void closeServer();
     });
   }

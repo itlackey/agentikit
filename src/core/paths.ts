@@ -184,9 +184,24 @@ export function getCacheDir(env: NodeJS.ProcessEnv = process.env): string {
   }
 
   const home = env.HOME?.trim();
-  if (!home) return path.join("/tmp", "akm-cache");
+  if (!home) return homelessFallbackDir("akm-cache");
 
   return path.join(home, ".cache", "akm");
+}
+
+/**
+ * Last-resort directory when neither the XDG variable nor HOME is set.
+ *
+ * Scoped by uid. A fixed `/tmp/akm-<kind>` path is world-shared and entirely
+ * predictable: on a multi-user host the first uid to run akm owns the
+ * directory and every other user then reads and writes the same databases, and
+ * any local user can pre-create the path (or a symlink at it) and wait. Adding
+ * the uid gives each account its own path; the caller still creates it with
+ * restrictive permissions.
+ */
+function homelessFallbackDir(kind: string): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  return path.join(os.tmpdir(), uid === undefined ? kind : `${kind}-${uid}`);
 }
 
 // ── Data directory ───────────────────────────────────────────────────────────
@@ -240,7 +255,7 @@ export function getDataDir(env: NodeJS.ProcessEnv = process.env, platform = proc
   if (xdgDataHome) return path.join(xdgDataHome, "akm");
 
   const home = env.HOME?.trim();
-  if (!home) return path.join("/tmp", "akm-data");
+  if (!home) return homelessFallbackDir("akm-data");
 
   return path.join(home, ".local", "share", "akm");
 }
