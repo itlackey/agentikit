@@ -2003,6 +2003,7 @@ async function generateEmbeddingsForDb(
       let storedCount = 0;
       let skippedCount = 0;
       let vecFailedCount = 0;
+      let vecUnavailableCount = 0;
       db.transaction(() => {
         for (let i = 0; i < allEntries.length; i++) {
           const res = upsertEmbedding(db, allEntries[i]!.id, embeddings[i]!);
@@ -2012,6 +2013,7 @@ async function generateEmbeddingsForDb(
             skippedCount++;
           }
           if (res.vec === "failed") vecFailedCount++;
+          if (res.vec === "unavailable") vecUnavailableCount++;
         }
       })();
       if (skippedCount > 0) {
@@ -2023,7 +2025,13 @@ async function generateEmbeddingsForDb(
       // instead of inferring readiness from stored-BLOB counts. Any failure
       // marks the fast path degraded, routing search to the JS-cosine fallback
       // over the (complete) BLOB table — honest degradation, not a hard failure.
-      setVecFastPathReady(db, vecFailedCount === 0);
+      //
+      // 'unavailable' has to degrade the flag too. It means no vec row was
+      // written at all, so marking the fast path ready left a later open (a
+      // different runtime, or sqlite-vec installed afterwards) trusting an
+      // empty entries_vec and returning zero semantic hits against a fully
+      // populated BLOB table.
+      setVecFastPathReady(db, vecFailedCount === 0 && vecUnavailableCount === 0);
       if (vecFailedCount > 0) {
         warn(
           `[embed] ${vecFailedCount} sqlite-vec fast-path insert${vecFailedCount === 1 ? "" : "s"} failed — ` +

@@ -87,7 +87,14 @@ function resolveLatestVersion(changelog: string): string | undefined {
 }
 
 function extractChangelogSection(changelog: string, version: string): string | undefined {
-  const pattern = new RegExp(`^## \\[${escapeRegexString(version)}\\][^\\n]*\\n([\\s\\S]*?)(?=^## \\[|\\Z)`, "m");
+  // `\Z` is not a JavaScript anchor — it matches a literal "Z", which truncated
+  // the section at the first capital Z in the body (and failed outright for the
+  // last entry). `$` with the `m` flag would stop at the first line end, so the
+  // end-of-input alternative has to be an explicit lookahead for the input end.
+  const pattern = new RegExp(
+    `^## \\[${escapeRegexString(version)}\\][^\\n]*\\n([\\s\\S]*?)(?=^## \\[|$(?![\\s\\S]))`,
+    "m",
+  );
   const match = changelog.match(pattern);
   if (!match) return undefined;
   return `## [${version}]\n${match[1]!.trim()}\n`;

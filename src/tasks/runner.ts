@@ -778,12 +778,53 @@ function resolveTaskLogPath(logDir: string | undefined, taskId: string, startedA
   }
 }
 
+/**
+ * Redact logs.db rows against the SAME contiguous text the file sink sees.
+ *
+ * The rows arrive already split on "\n" (see {@link streamLines}), but the
+ * redaction needles are whole env values — and a needle containing a newline
+ * can never match inside a single line. Scrubbing row-by-row therefore left
+ * multi-line secrets (PEM keys, multi-line service-account credentials) intact
+ * in logs.db while the flat .log was correctly scrubbed, defeating all three
+ * tiers including the explicit `redact:` opt-in.
+ *
+ * Consecutive rows sharing a stream and level are rejoined, scrubbed as one
+ * string, and re-split, so a needle spanning lines matches. Collapsing a
+ * multi-line secret into a single [REDACTED] row is the intended outcome.
+ */
+export function scrubDbLines(
+  dbLines: readonly TaskLogLineInput[],
+  scrub: (text: string) => string,
+): TaskLogLineInput[] {
+  const out: TaskLogLineInput[] = [];
+  for (let i = 0; i < dbLines.length; ) {
+    const { stream, level } = dbLines[i]!;
+    let end = i;
+    while (end < dbLines.length && dbLines[end]!.stream === stream && dbLines[end]!.level === level) end++;
+    const joined = dbLines
+      .slice(i, end)
+      .map((entry) => entry.line)
+      .join("\n");
+    for (const line of scrub(joined).split("\n")) {
+      if (line.length > 0) out.push({ stream, level, line });
+    }
+    i = end;
+  }
+  return out;
+}
+
 /** Split captured pipe output into per-line logs.db rows (blank lines dropped). */
 function streamLines(text: string, stream: TaskLogStream, level: TaskLogLevel): TaskLogLineInput[] {
-  return text
-    .split("\n")
-    .filter((line) => line.length > 0)
-    .map((line) => ({ stream, level, line }));
+  return (
+    text
+      .split("\n")
+      // Windows child output is CRLF-terminated. Splitting on "\n" alone left a
+      // trailing "\r" on every row and turned blank CRLF lines into phantom
+      // rows containing just "\r" (length 1 passes the filter below).
+      .map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line))
+      .filter((line) => line.length > 0)
+      .map((line) => ({ stream, level, line }))
+  );
 }
 
 /**
@@ -851,7 +892,7 @@ function persistRunLog(input: {
       ? redactSensitiveText(redactCredentialPatterns(text), sensitive)
       : redactCredentialPatterns(text);
   const fileText = scrub(input.fileText);
-  const dbLines = input.dbLines.map((entry) => ({ ...entry, line: scrub(entry.line) }));
+  const dbLines = scrubDbLines(input.dbLines, scrub);
   if (input.logPath) {
     try {
       // Written at the process umask. #756 pinned 0600/0700 here; that went out

@@ -214,11 +214,13 @@ describe("full-index bundle identity", () => {
     fs.rmSync(removedPath);
     writeConcept(storage.stashDir, "healthy", "healthywhileincompletemarker");
 
-    const originalStatSync = fs.statSync;
-    const statSpy = spyOn(fs, "statSync").mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+    // walkStashGit inspects entries with lstatSync so tracked symlinks are not
+    // dereferenced; spy on that call to make the source look uninspectable.
+    const originalLstatSync = fs.lstatSync;
+    const statSpy = spyOn(fs, "lstatSync").mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
       if (path.resolve(String(target)) === path.resolve(blockedPath)) throw new Error("simulated stat failure");
-      return originalStatSync(target, options as never);
-    }) as typeof fs.statSync);
+      return originalLstatSync(target, options as never);
+    }) as typeof fs.lstatSync);
     try {
       await akmIndex({ stashDir: storage.stashDir, full: true });
     } finally {

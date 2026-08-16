@@ -13,7 +13,7 @@ import { fetchWithTimeout, readBodyWithByteCap } from "../core/common";
 import { type LlmConnectionConfig, resolveSecret } from "../core/config/config";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
 import { parseJsonResponse } from "../core/parse";
-import { redactCredentialPatterns, redactSensitiveText } from "../core/redaction";
+import { redactErrorBody, redactSensitiveText } from "../core/redaction";
 import { warnVerbose } from "../core/warn";
 import { DEFAULT_LLM_TIMEOUT_MS } from "../integrations/agent/config";
 import {
@@ -24,29 +24,17 @@ import {
   type RawUsage,
 } from "./usage-telemetry";
 
-/** Maximum length of an LLM error response body included in thrown errors. */
+/** Maximum length of an upstream response excerpt included in thrown errors. */
 const ERROR_BODY_MAX_LEN = 200;
 
 /** Stable OpenAI-compatible response-schema name used for every structured call. */
 const JSON_SCHEMA_RESPONSE_NAME = "akm_response";
 
 /**
- * Redact credential-shaped substrings from an upstream error body before
- * including it in a thrown Error. The body is also trimmed to a fixed length
- * so that a verbose provider response cannot leak large amounts of context.
- *
- * The pattern set itself lives in {@link redactCredentialPatterns}
- * (src/core/redaction.ts) so other output paths (e.g. task run logs) can
- * reuse it without this function's length cap.
+ * Re-exported from src/core/redaction.ts, where it now lives so every HTTP
+ * transport can apply the same hardening — the embeddings client needs it too.
  */
-export function redactErrorBody(input: string): string {
-  if (!input) return "";
-  let out = redactCredentialPatterns(input);
-  if (out.length > ERROR_BODY_MAX_LEN) {
-    out = `${out.slice(0, ERROR_BODY_MAX_LEN)}…`;
-  }
-  return out;
-}
+export { redactErrorBody } from "../core/redaction";
 
 // ── Typed error class ───────────────────────────────────────────────────────
 

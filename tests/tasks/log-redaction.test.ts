@@ -20,6 +20,7 @@ import {
   isInferredSecretName,
   MIN_INFERRED_SECRET_LENGTH,
 } from "../../src/tasks/log-redaction";
+import { scrubDbLines } from "../../src/tasks/runner";
 
 describe("secret-name inference (#755)", () => {
   test("matches credential-ish names without swallowing ordinary configuration", () => {
@@ -145,5 +146,64 @@ describe("collectTaskLogSensitiveValues (#755)", () => {
     expect(output).toContain("Build finished in 12.4s");
     expect(output).toContain("3 tests passed, 0 failed");
     expect(output).toContain("wrote dist/index.js (48 KB)");
+  });
+});
+
+describe("multi-line secrets reach BOTH sinks", () => {
+  // #755 scrubbed the flat .log (one contiguous string) and the logs.db rows,
+  // but the rows were split on "\n" BEFORE redaction while the needles are whole
+  // env values. A needle containing a newline can never match inside one line,
+  // so a PEM key was scrubbed from the file and written verbatim into logs.db —
+  // the primary record per #579, kept for the whole retention window, and past
+  // the explicit `redact:` opt-in this release documents as the escape hatch.
+  const PEM = [
+    "-----BEGIN RSA PRIVATE KEY-----",
+    "MIIEowIBAAKCAQEA1exampleexamplekeymaterial",
+    "Zq9xK2mQ7vLpTnExampleSecondLineOfKey",
+    "-----END RSA PRIVATE KEY-----",
+  ].join("\n");
+
+  const scrubFor = (declaredNames: string[]) => {
+    const values = collectTaskLogSensitiveValues({ env: { DEPLOY_KEY: PEM }, declaredNames });
+    return (text: string) => redactSensitiveText(text, values);
+  };
+
+  test("a per-line scrub cannot match a needle that spans lines", () => {
+    const scrub = scrubFor(["DEPLOY_KEY"]);
+    const perLine = PEM.split("\n").map(scrub);
+    expect(perLine.join("\n")).toContain("MIIEowIBAAKCAQEA1exampleexamplekeymaterial");
+  });
+
+  test("scrubDbLines redacts it by rejoining the rows first", () => {
+    const scrub = scrubFor(["DEPLOY_KEY"]);
+    const rows = PEM.split("\n").map((line) => ({ stream: "stdout" as const, level: "info" as const, line }));
+    const out = scrubDbLines(rows, scrub);
+    const text = out.map((row) => row.line).join("\n");
+    expect(text).not.toContain("MIIEowIBAAKCAQEA1exampleexamplekeymaterial");
+    expect(text).not.toContain("Zq9xK2mQ7vLpTnExampleSecondLineOfKey");
+  });
+
+  test("the inferred tier covers it too, not just an explicit redact:", () => {
+    const scrub = scrubFor([]);
+    const rows = PEM.split("\n").map((line) => ({ stream: "stdout" as const, level: "info" as const, line }));
+    const text = scrubDbLines(rows, scrub)
+      .map((row) => row.line)
+      .join("\n");
+    expect(text).not.toContain("MIIEowIBAAKCAQEA1exampleexamplekeymaterial");
+  });
+
+  test("surrounding output survives and stream/level are preserved", () => {
+    const scrub = scrubFor(["DEPLOY_KEY"]);
+    const rows = [
+      { stream: "stdout" as const, level: "info" as const, line: "starting deploy" },
+      ...PEM.split("\n").map((line) => ({ stream: "stdout" as const, level: "info" as const, line })),
+      { stream: "stderr" as const, level: "error" as const, line: "deploy failed" },
+    ];
+    const out = scrubDbLines(rows, scrub);
+    expect(out.map((row) => row.line)).toContain("starting deploy");
+    expect(out.map((row) => row.line)).toContain("deploy failed");
+    expect(out.find((row) => row.line === "deploy failed")?.stream).toBe("stderr");
+    expect(out.find((row) => row.line === "deploy failed")?.level).toBe("error");
+    expect(out.some((row) => row.line.includes("MIIEowIBAAKCAQEA1"))).toBe(false);
   });
 });

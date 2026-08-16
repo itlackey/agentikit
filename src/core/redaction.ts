@@ -328,7 +328,7 @@ function addPlainMatches(coverageDelta: Int32Array, text: string, needle: string
  * unlike {@link redactSensitiveText}, which requires the exact secret value
  * up front, this catches credentials no caller ever knew to list. No
  * truncation is applied; callers that need a length cap (e.g.
- * {@link redactErrorBody} in src/llm/client.ts) apply it themselves.
+ * {@link redactErrorBody}) apply it themselves.
  *
  * Targets:
  *  - `Bearer <token>` headers echoed back by a provider
@@ -375,6 +375,28 @@ export function redactCredentialPatterns(input: string): string {
  * that is a memory-exhaustion hazard reachable from ordinary command output.
  * The encoded-form path never had the bug because it always worked this way.
  */
+/** Max characters of a provider error body worth surfacing in a message. */
+const ERROR_BODY_MAX_LEN = 200;
+
+/**
+ * Make an HTTP error body safe to put in an error message: pattern-redact
+ * credential shapes, then clip. Provider bodies can echo the credential that
+ * was sent and can be megabytes of HTML, and these messages travel — into
+ * persisted status files, `--json` output, and agent transcripts.
+ *
+ * Lives here rather than beside one transport because every HTTP client in the
+ * codebase needs it; the embeddings transport originally lacked it and leaked
+ * raw 10 MB bodies into `semantic-status.json`.
+ */
+export function redactErrorBody(input: string): string {
+  if (!input) return "";
+  let out = redactCredentialPatterns(input);
+  if (out.length > ERROR_BODY_MAX_LEN) {
+    out = `${out.slice(0, ERROR_BODY_MAX_LEN)}…`;
+  }
+  return out;
+}
+
 export function redactSensitiveText(text: string, sensitiveValues: Iterable<string>): string {
   const values = [...new Set(sensitiveValues)]
     .filter((value) => value.length > 0)

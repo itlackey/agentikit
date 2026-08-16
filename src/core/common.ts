@@ -829,13 +829,18 @@ export function stringArray(value: unknown): string[] {
  * Return true if a process with the given PID is currently alive.
  * Uses `process.kill(pid, 0)` which does not deliver a signal but
  * throws ESRCH when the process does not exist.
+ *
+ * EPERM means the process EXISTS but belongs to another uid, so it must be
+ * reported alive. Treating it as dead let a lock held by a live process in a
+ * shared data dir (agent sandboxes, containers, service accounts — a
+ * configuration managed-db.ts explicitly supports) be reclaimed as stale.
  */
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException | undefined)?.code === "EPERM";
   }
 }
 

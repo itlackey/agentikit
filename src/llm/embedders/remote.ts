@@ -11,6 +11,7 @@
 
 import { fetchWithTimeout, isHttpUrl, readBodyWithByteCap } from "../../core/common";
 import { type EmbeddingConnectionConfig, resolveSecret } from "../../core/config/config";
+import { redactErrorBody, redactSensitiveText } from "../../core/redaction";
 import type { Embedder, EmbeddingVector } from "./types";
 
 const DEFAULT_REMOTE_BATCH_SIZE = 100;
@@ -66,7 +67,7 @@ export class RemoteEmbedder implements Embedder {
         if (signal?.aborted) throw err;
         return "";
       });
-      throw new Error(`Embedding request failed (${response.status}): ${errBody}`);
+      throw new Error(`Embedding request failed (${response.status}): ${this.safeErrorBody(errBody)}`);
     }
 
     const json = JSON.parse(await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: 30_000, signal })) as {
@@ -122,7 +123,7 @@ export class RemoteEmbedder implements Embedder {
             return "";
           },
         );
-        throw new Error(`Embedding batch request failed (${response.status}): ${respBody}`);
+        throw new Error(`Embedding batch request failed (${response.status}): ${this.safeErrorBody(respBody)}`);
       }
 
       const json = JSON.parse(await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: 30_000, signal })) as {
@@ -156,6 +157,22 @@ export class RemoteEmbedder implements Embedder {
       headers.Authorization = `Bearer ${resolvedKey}`;
     }
     return headers;
+  }
+
+  /**
+   * Make a provider error body safe to embed in a thrown Error, matching the
+   * hardening llm/client.ts applies on the identical path: pattern-redact
+   * credential shapes, exact-scrub this connection's own key, and clip.
+   *
+   * These messages are durable — generateEmbeddingsForDb surfaces them as
+   * `embeddingResult.message`, which is written to semantic-status.json and
+   * replayed by `akm info` (including `--json`) until the next successful
+   * index, and printed on every vector-search attempt. Raw bodies reached that
+   * far unredacted and uncapped, at readBodyWithByteCap's 10 MB default.
+   */
+  private safeErrorBody(body: string): string {
+    const resolvedKey = resolveSecret(this.config.apiKey);
+    return redactSensitiveText(redactErrorBody(body), resolvedKey ? [resolvedKey] : []);
   }
 }
 

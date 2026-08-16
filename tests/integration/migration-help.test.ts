@@ -67,6 +67,47 @@ describe("migration help", () => {
     expect(result).toContain(`## [${latest}]`);
   });
 
+  test("renders the whole changelog section, not just up to the first capital Z", () => {
+    // The section pattern anchored its end with `\Z`, which is not a JavaScript
+    // anchor — it matches a literal "Z". The body therefore stopped at the first
+    // capital Z (in the real changelog: inside `PAGE_SIZE`, ~7.1KB into a 45KB
+    // section), silently dropping breaking changes, Added and Fixed. `latest`
+    // resolves to the newest heading, which is precisely the version with no
+    // bundled note, so it always renders through this path.
+    const changelog = fs.readFileSync(path.join(PROJECT_ROOT, "CHANGELOG.md"), "utf8");
+    const latest = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)]
+      .map((match) => match[1])
+      .find((heading) => heading?.toLowerCase() !== "unreleased");
+    const start = changelog.indexOf(`## [${latest}]`);
+    const nextHeading = changelog.indexOf("\n## [", start + 1);
+    const expectedBody = (nextHeading === -1 ? changelog.slice(start) : changelog.slice(start, nextHeading)).trim();
+
+    const result = renderMigrationHelp("latest");
+
+    // The last non-empty line of the real section must survive.
+    const lastLine = expectedBody
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .at(-1);
+    expect(lastLine).toBeTruthy();
+    expect(result).toContain(lastLine!);
+    // And a section containing a capital Z must not be cut short at it.
+    const zIndex = expectedBody.search(/[A-Z]*Z/);
+    if (zIndex > 0) expect(result.length).toBeGreaterThan(zIndex + 1);
+  });
+
+  test("renders the final changelog entry, which has no following heading", () => {
+    // With `\Z` the end-of-input alternative never matched, so the LAST entry in
+    // the changelog returned undefined and fell through to the generic message.
+    const changelog = fs.readFileSync(path.join(PROJECT_ROOT, "CHANGELOG.md"), "utf8");
+    const headings = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)].map((match) => match[1]!);
+    const oldest = headings.at(-1);
+    expect(oldest).toBeTruthy();
+    const result = renderMigrationHelp(oldest!, undefined);
+    expect(result).toContain(`## [${oldest}]`);
+    expect(result).not.toContain("No dedicated migration note");
+  });
+
   test("renders dedicated message when no bundled note or changelog entry exists", () => {
     const result = renderMigrationHelp("9.9.9", undefined);
     expect(result).toContain("No dedicated migration note");

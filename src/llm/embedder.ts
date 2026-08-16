@@ -126,13 +126,37 @@ export async function embed(
   const cached = getCachedEmbedding(key);
   if (cached) return cached;
 
-  const result =
-    embeddingConfig && hasRemoteEndpoint(embeddingConfig)
-      ? await new RemoteEmbedder(embeddingConfig).embed(text, signal)
-      : await getLocalEmbedder().embed(text, signal);
+  const result = await embedOnce(text, embeddingConfig, signal);
 
   setCachedEmbedding(key, result);
   return result;
+}
+
+/**
+ * Resolve a single embedding through the configured provider.
+ *
+ * The local branch must honour `localModel` exactly as {@link embedBatch}
+ * does. The singleton is constructed with no default model, so routing through
+ * `getLocalEmbedder().embed()` silently used DEFAULT_LOCAL_MODEL: queries were
+ * embedded with a different model than the index was built with. Nothing
+ * detected it, because the provider fingerprint keys on `localModel`, so no
+ * purge or "pending" status ever fired — a dimension mismatch made semantic
+ * ranking contribute nothing, and a same-dimension override silently produced
+ * meaningless cross-model scores.
+ */
+async function embedOnce(
+  text: string,
+  embeddingConfig: EmbeddingConnectionConfig | undefined,
+  signal?: AbortSignal,
+): Promise<EmbeddingVector> {
+  if (embeddingConfig && hasRemoteEndpoint(embeddingConfig)) {
+    return new RemoteEmbedder(embeddingConfig).embed(text, signal);
+  }
+  const localModel = embeddingConfig?.localModel;
+  if (localModel) {
+    return getLocalEmbedder().embedWithModel(text, localModel);
+  }
+  return getLocalEmbedder().embed(text, signal);
 }
 
 /**

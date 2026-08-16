@@ -52,6 +52,13 @@ export interface Subprocess {
   readonly stdin: WritableStream<Uint8Array> | null;
   readonly exited: Promise<number>;
   readonly exitCode: number | null;
+  /**
+   * Signal that terminated the child, if any. Bun exposes this natively; the
+   * Node adapter populates it too. Without it a signal death is indistinguishable
+   * from a clean exit at this boundary, which made an OOM-killed agent look
+   * successful downstream.
+   */
+  readonly signalCode?: string | null;
   readonly pid?: number;
   kill(signal?: number | string): void;
 }
@@ -128,8 +135,17 @@ function nodeSpawnAdapter(cmd: string[], options: SpawnOptions): Subprocess {
     detached: options.detached,
     stdio: [stdioFor(options.stdin), stdioFor(options.stdout), stdioFor(options.stderr)],
   });
+  // Node's 'exit' fires (null, signal) when the child dies from a signal.
+  // Resolving `code ?? 0` reported that as SUCCESS, so an OOM-killed or
+  // segfaulted child came back exit 0 with partial stdout. Bun resolves
+  // 128 + signum for the same case; match it so both runtimes agree and
+  // callers that only check `exitCode !== 0` classify signal deaths correctly.
+  let signalCode: NodeJS.Signals | null = null;
   const exited = new Promise<number>((resolve, reject) => {
-    child.once("exit", (code) => resolve(code ?? 0));
+    child.once("exit", (code, signal) => {
+      signalCode = signal;
+      resolve(code ?? (signal ? 128 + signalNumber(signal) : 0));
+    });
     child.once("error", reject);
   });
   return {
@@ -146,11 +162,25 @@ function nodeSpawnAdapter(cmd: string[], options: SpawnOptions): Subprocess {
     get exitCode() {
       return child.exitCode;
     },
+    get signalCode() {
+      return signalCode ?? child.signalCode;
+    },
     pid: child.pid,
     kill(signal?: number | string) {
       child.kill(signal as NodeJS.Signals | number | undefined);
     },
   };
+}
+
+/**
+ * Map a signal name to its number so a signal death can be reported as the
+ * conventional 128 + signum exit status. Falls back to SIGKILL's 9 for a name
+ * this platform does not define, which still yields a non-zero status — the
+ * property that matters for classifying the run as failed.
+ */
+function signalNumber(signal: NodeJS.Signals): number {
+  const { constants } = nodeRequire("node:os") as typeof import("node:os");
+  return constants.signals[signal] ?? 9;
 }
 
 // `node:stream`'s Writable.toWeb is available on Node >=17; referenced via the

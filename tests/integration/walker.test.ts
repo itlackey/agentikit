@@ -227,11 +227,14 @@ describe("walkStashFlat", () => {
     writeFile(blocked, "# Blocked\n");
     expect(spawnSync("git", ["init"], { cwd: root }).status).toBe(0);
 
-    const originalStatSync = fs.statSync;
-    const statSpy = spyOn(fs, "statSync").mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+    // The git walk inspects entries with lstatSync (not statSync) so a tracked
+    // symlink is never dereferenced — see walkStashGit. Spy on the call the
+    // walker actually makes.
+    const originalLstatSync = fs.lstatSync;
+    const statSpy = spyOn(fs, "lstatSync").mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
       if (path.resolve(String(target)) === path.resolve(blocked)) throw new Error("simulated stat failure");
-      return originalStatSync(target, options as never);
-    }) as typeof fs.statSync);
+      return originalLstatSync(target, options as never);
+    }) as typeof fs.lstatSync);
     try {
       const result = walkStashFlatWithStatus(root);
       expect(result.complete).toBe(false);
@@ -239,6 +242,29 @@ describe("walkStashFlat", () => {
     } finally {
       statSpy.mockRestore();
     }
+  });
+
+  test("does not dereference a tracked symlink pointing outside the stash root", () => {
+    // The git walk resolved entries with statSync, which follows symlinks, while
+    // the manual walk skipped them explicitly to prevent traversal outside
+    // stashRoot. A tracked symlink therefore pulled its target's content into
+    // the searchable index — reachable from any added bundle that is a git repo,
+    // since `akm index` runs automatically after `bundle add`.
+    const parent = tmpDir();
+    const root = path.join(parent, "stash");
+    const outside = path.join(parent, "secret.txt");
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(outside, "SECRET OUTSIDE STASH\n");
+    writeFile(path.join(root, "knowledge", "real.md"), "# Real\n");
+    fs.symlinkSync(path.join("..", "..", "secret.txt"), path.join(root, "knowledge", "leak.md"));
+    expect(spawnSync("git", ["init"], { cwd: root }).status).toBe(0);
+    expect(spawnSync("git", ["add", "-A"], { cwd: root }).status).toBe(0);
+
+    const result = walkStashFlatWithStatus(root);
+
+    const paths = result.files.map((file) => file.relPath).sort();
+    expect(paths).toEqual(["knowledge/real.md"]);
+    expect(result.files.some((file) => file.content().includes("SECRET OUTSIDE STASH"))).toBe(false);
   });
 
   test("ignores tracked files deleted from the worktree", () => {
