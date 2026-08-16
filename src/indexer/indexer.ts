@@ -72,6 +72,7 @@ import { clearStaleCacheEntries } from "../storage/repositories/index-llm-cache-
 import {
   deleteIndexDirState,
   deleteIndexDirStatesByStashDir,
+  deleteMeta,
   getMeta,
   setMeta,
   upsertIndexDirState,
@@ -1957,9 +1958,20 @@ async function generateEmbeddingsForDb(
   const currentFingerprint = deriveSemanticProviderFingerprint(config.embedding);
   const storedFingerprint = getMeta(db, "embeddingFingerprint");
   if (storedFingerprint && storedFingerprint !== currentFingerprint) {
-    // Model/provider changed → stored vectors are incompatible. Clear them
-    // (same dimension, so keep the vec table); re-embedded by this index run.
-    purgeEmbeddings(db);
+    // Model/provider changed → stored vectors are incompatible. Clear them;
+    // re-embedded by this index run.
+    //
+    // The vec table goes too. "Same dimension, so keep the vec table" only held
+    // for a same-width model swap: entries_vec is a vec0 virtual table declared
+    // at a FIXED width, so after a dimension-changing model change every insert
+    // failed against the old width, and ensureSchema's dim-change rebuild never
+    // fired because it only runs for callers that pass an explicit
+    // embeddingDim. The stale table survived `--full` — the exact remedy the
+    // warning recommended. Clearing the stored dim lets the next ensureSchema
+    // materialize it at the new width; until then the fast-path flag reads
+    // false (no table) and search uses the complete BLOB table.
+    purgeEmbeddings(db, { dropVecTable: true });
+    deleteMeta(db, "embeddingDim");
   }
 
   try {

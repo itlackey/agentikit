@@ -139,6 +139,23 @@ export function shouldQueryPositiveFeedbackCounts(utilityDecayRaw: ImproveConfig
 
 // ── Main search entrypoint ───────────────────────────────────────────────────
 
+/**
+ * Whether an embedding provider is actually configured.
+ *
+ * A remote provider needs BOTH endpoint and model. A LOCAL provider needs
+ * neither — `embedding.localModel` selects a transformers model that runs in
+ * process. Checking only the remote pair told every local-provider user that
+ * "no embedding provider is configured" and pointed them at
+ * `akm config set embedding '{"endpoint":...}'`, which is the wrong remedy and
+ * hid the real diagnostic recorded in the semantic status.
+ */
+function hasConfiguredEmbeddingProvider(config: {
+  embedding?: { endpoint?: string; model?: string; localModel?: string };
+}): boolean {
+  if (config.embedding?.localModel) return true;
+  return Boolean(config.embedding?.endpoint && config.embedding?.model);
+}
+
 export async function searchLocal(input: {
   query: string;
   searchType: AkmSearchType;
@@ -209,7 +226,7 @@ export async function searchLocal(input: {
       warnings.push(
         "Embedding config changed. Run 'akm index --full' to rebuild the semantic index with the new provider.",
       );
-    } else if (!config.embedding?.endpoint || !config.embedding?.model) {
+    } else if (!hasConfiguredEmbeddingProvider(config)) {
       // #480: when semantic mode is `auto` but no embedding provider is
       // configured (e.g. `akm setup --yes` ran without picking one), telling
       // the user to "run akm setup" is misleading — they just did. Surface
@@ -227,7 +244,7 @@ export async function searchLocal(input: {
     }
   }
   if (config.semanticSearchMode === "auto" && semanticStatus === "blocked") {
-    if (!config.embedding?.endpoint || !config.embedding?.model) {
+    if (!hasConfiguredEmbeddingProvider(config)) {
       // F7/A2: same predicate as the `pending` branch above (#480) — a
       // `blocked` status can outlive the provider config that produced it
       // (e.g. the embedding config was later unset). This is not a fault;

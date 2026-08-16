@@ -51,7 +51,7 @@ import { assetPathForName, stashDirFor } from "./asset/asset-placement";
 import type { AssetRef } from "./asset/resolve-ref";
 import { conceptIdFromTypeName, displayRef } from "./asset/resolve-ref";
 import { deriveBundleId } from "./bundle-id";
-import { isWithin, resolveStashDir } from "./common";
+import { existingFileMode, isWithin, resolveStashDir, writeFileAtomic } from "./common";
 import type { AkmConfig, ConfiguredSource, SourceConfigEntry } from "./config/config";
 import { resolveConfiguredSources } from "./config/config";
 import { ConfigError, UsageError } from "./errors";
@@ -427,7 +427,11 @@ export async function writeAssetToSource(
   const preflight = preflightGitPathMutation(source, filePath);
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, normalized, "utf8");
+    // Atomic: truncate-and-rewrite left a window in which a crash, a full disk,
+    // or a concurrent reader saw a half-written or empty asset — destroying user
+    // content that was fine a moment earlier. writeFileAtomic writes a sibling
+    // temp file, fdatasyncs it, and renames over the target.
+    writeFileAtomic(filePath, normalized, existingFileMode(filePath));
     recordWriteTargetPath(source, filePath);
     // #652: run-scoped write provenance — the canonical asset write is the
     // single largest contributor to an improve run's written-path set.

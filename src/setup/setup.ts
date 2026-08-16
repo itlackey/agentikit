@@ -581,20 +581,41 @@ export function buildSetupSteps(options: {
   return { steps, outcome };
 }
 
-export async function runSetupWizard(opts?: { dir?: string; noInit?: boolean }): Promise<void> {
-  assertSetupConfigPreflight();
-  p.intro("akm setup");
+/**
+ * Resolve the stash directory, apply stash isolation, and THEN read the config.
+ *
+ * Order is the whole point. The pre-isolation read exists only to discover
+ * where the stash is; `applyStashIsolationToEnv` can repoint AKM_CONFIG_DIR,
+ * after which both the config contents and `getConfigPath()` differ. Reading
+ * the merge base before isolation meant an isolated run merged the wizard's
+ * answers onto the HOST config and reported the host path as the save target
+ * while writing somewhere else.
+ */
+function resolveIsolatedSetupConfig(opts?: { dir?: string }): {
+  current: ReturnType<typeof loadUserConfig>;
+  configPath: string;
+  resolvedStashDir: string;
+} {
+  const preIsolationConfig = loadUserConfig();
 
-  const current = loadUserConfig();
-  const configPath = getConfigPath();
-
-  // Resolve stash directory early so akmInit can run before any prompts
-  const resolvedStashDir = opts?.dir ? path.resolve(opts.dir) : (primaryBundlePath(current) ?? getDefaultStashDir());
+  // Resolve stash directory early so akmInit can run before any prompts.
+  const resolvedStashDir = opts?.dir
+    ? path.resolve(opts.dir)
+    : (primaryBundlePath(preIsolationConfig) ?? getDefaultStashDir());
 
   // Refuse explicit --dir /tmp/... before doing any work — protects the host
   // config from being clobbered with a stashDir that the OS may reap.
   assertSetupSandbox(resolvedStashDir, opts?.dir != null);
   applyStashIsolationToEnv(resolvedStashDir, opts?.dir != null);
+
+  return { current: loadUserConfig(), configPath: getConfigPath(), resolvedStashDir };
+}
+
+export async function runSetupWizard(opts?: { dir?: string; noInit?: boolean }): Promise<void> {
+  assertSetupConfigPreflight();
+  p.intro("akm setup");
+
+  const { current, configPath, resolvedStashDir } = resolveIsolatedSetupConfig(opts);
 
   // Quick connectivity check — skip network-dependent steps when offline
   const online = await isOnline();

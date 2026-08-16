@@ -1228,6 +1228,14 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
       return {
         unitId: request.unitId,
         ok: false,
+        // NOTE: `validation_error` is deliberately outside PROGRAM_RETRY_REASONS,
+        // so no `retry.on:` can name it and a schema-violating unit is not
+        // re-run — see "fails with `validation_error` and is NOT re-run" in
+        // tests/integration/workflows/exec-unit.test.ts. A sweep finding
+        // proposed mapping it onto `llm_invalid_json` (which the parser accepts
+        // but this path never emits) to make such failures retryable; that is a
+        // behaviour change against an intentional design, not a bug fix, so it
+        // is left alone. Reconciling the vocabulary is a 0.9.2 decision.
         failureReason: structured.reason,
         error: structured.errors.join("; "),
         text: structured.raw,

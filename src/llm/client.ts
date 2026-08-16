@@ -11,6 +11,7 @@
 
 import { fetchWithTimeout, readBodyWithByteCap } from "../core/common";
 import { type LlmConnectionConfig, resolveSecret } from "../core/config/config";
+import { ENV_REFERENCE_PATTERN } from "../core/config/schema/primitives";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
 import { parseJsonResponse } from "../core/parse";
 import { redactErrorBody, redactSensitiveText } from "../core/redaction";
@@ -323,7 +324,14 @@ async function chatCompletionAttempt(
     if (issue) throw new Error(formatExtraParamsIssue("LLM extraParams", issue));
   }
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const resolvedKey = resolveSecret(config.apiKey);
+  // Resolve ONLY a whole-string env reference. Every live caller already hands
+  // us the materialized credential (materializeLlmConnection / materializeFrozenLlm
+  // resolve `$VAR` upstream, and engine config REQUIRES the symbolic form), so
+  // re-running the substitution over a literal key mangled any credential
+  // containing `$` — `sk-live$ecret` lost everything from the `$` onward, and
+  // the request failed with an opaque 401. The narrow check keeps the symbolic
+  // form working for any direct caller that still passes one.
+  const resolvedKey = ENV_REFERENCE_PATTERN.test(config.apiKey ?? "") ? resolveSecret(config.apiKey) : config.apiKey;
   if (resolvedKey) {
     headers.Authorization = `Bearer ${resolvedKey}`;
   }
