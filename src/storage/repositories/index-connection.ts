@@ -19,6 +19,7 @@ import { getDbPath } from "../../core/paths";
 import type { Database } from "../database";
 import { openDatabase } from "../database";
 import { openManagedDatabase } from "../managed-db";
+import { SQLITE_BUSY_TIMEOUT_MS } from "../sqlite-pragmas";
 import { ensureSchema } from "./index-schema";
 import { loadVecExtension, warnIfVecMissing } from "./index-vec-repository";
 
@@ -119,7 +120,16 @@ export function openReadonlyExistingDatabase(dbPath?: string): Database | undefi
   // let an unreadable index raise instead of masquerading as absent (#791).
   assertIndexPathReadable(resolvedPath);
   if (classifyPathAccess(resolvedPath).access === "absent") return undefined;
-  return openDatabase(resolvedPath, { readonly: true, create: false });
+  const db = openDatabase(resolvedPath, { readonly: true, create: false });
+  // This opener bypasses openManagedDatabase/applyStandardPragmas by design (no
+  // journal or schema work on a read-only handle), but that also left
+  // busy_timeout at SQLite's default of 0. In WAL that is harmless — readers
+  // never block — but in the DELETE/TRUNCATE modes the network-FS fallback and
+  // AKM_SQLITE_JOURNAL_MODE can select, a concurrent writer makes every read
+  // fail instantly with SQLITE_BUSY. busy_timeout is legal on a read-only
+  // connection, so apply just that one.
+  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+  return db;
 }
 
 export function closeDatabase(db: Database): void {

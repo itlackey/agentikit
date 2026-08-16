@@ -4,6 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import embeddedChangelog from "../../../CHANGELOG.md" with { type: "text" };
 import { getDirname } from "../../runtime";
 
 const CHANGELOG_URL = "https://github.com/itlackey/akm/blob/main/CHANGELOG.md";
@@ -27,9 +28,13 @@ function loadChangelog(): string | undefined {
       return fs.readFileSync(changelogPath, "utf8");
     }
   } catch {
-    // fall through to bundled notes
+    // fall through to the embedded copy
   }
-  return undefined;
+  // In the `bun build --compile` standalone binary, import.meta.url points into
+  // the virtual /$bunfs tree and every existsSync above misses, so `akm help
+  // migrate <version>` degraded to the generic "no dedicated note" message for
+  // EVERY version. Only assets imported `with { type: "text" }` are embedded.
+  return embeddedChangelog.length > 0 ? embeddedChangelog : undefined;
 }
 
 /**
@@ -87,7 +92,14 @@ function resolveLatestVersion(changelog: string): string | undefined {
 }
 
 function extractChangelogSection(changelog: string, version: string): string | undefined {
-  const pattern = new RegExp(`^## \\[${escapeRegexString(version)}\\][^\\n]*\\n([\\s\\S]*?)(?=^## \\[|\\Z)`, "m");
+  // `\Z` is not a JavaScript anchor — it matches a literal "Z", which truncated
+  // the section at the first capital Z in the body (and failed outright for the
+  // last entry). `$` with the `m` flag would stop at the first line end, so the
+  // end-of-input alternative has to be an explicit lookahead for the input end.
+  const pattern = new RegExp(
+    `^## \\[${escapeRegexString(version)}\\][^\\n]*\\n([\\s\\S]*?)(?=^## \\[|$(?![\\s\\S]))`,
+    "m",
+  );
   const match = changelog.match(pattern);
   if (!match) return undefined;
   return `## [${version}]\n${match[1]!.trim()}\n`;

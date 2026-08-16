@@ -95,6 +95,73 @@ export function readTextFileWithLimit(filePath: string, maxBytes: number, label 
  *      don't fail on those mounts. Windows does not support opening a
  *      directory for fsync, so the directory-sync step is skipped there.
  */
+/**
+ * Strip JavaScript-style comments from a JSON string (JSONC support).
+ * Handles `//` line comments and `/* *​/` block comments while preserving
+ * comment-like sequences inside quoted strings.
+ */
+export function stripJsonComments(text: string): string {
+  let result = "";
+  let i = 0;
+  let inString = false;
+  while (i < text.length) {
+    if (inString) {
+      if (text[i] === "\\") {
+        result += text[i] + (text[i + 1] ?? "");
+        i += 2;
+        continue;
+      }
+      if (text[i] === '"') {
+        inString = false;
+      }
+      result += text[i];
+      i++;
+      continue;
+    }
+    if (text[i] === '"') {
+      inString = true;
+      result += text[i];
+      i++;
+      continue;
+    }
+    if (text[i] === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+      continue;
+    }
+    if (text[i] === "/" && text[i + 1] === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    result += text[i];
+    i++;
+  }
+  return result;
+}
+
+/**
+ * The mode to rewrite an existing USER-owned file with.
+ *
+ * {@link writeFileAtomic} creates its temp file with an explicit mode and
+ * chmods it, so it needs one — and its 0600 default is right for akm's own
+ * state but wrong for a user's asset, where rewriting must never change
+ * permissions. Returns the file's current mode, or the umask-derived default
+ * `fs.writeFileSync` would have produced for a new file.
+ */
+export function existingFileMode(filePath: string): number {
+  try {
+    return fs.statSync(filePath).mode & 0o777;
+  } catch {
+    // Absent (a new asset) or unreadable: fall back to the default create mode.
+    try {
+      return 0o666 & ~process.umask();
+    } catch {
+      return 0o644;
+    }
+  }
+}
+
 export function writeFileAtomic(target: string, content: string | Buffer, mode?: number): void {
   const tmp = `${target}.tmp.${process.pid}.${crypto.randomBytes(8).toString("hex")}`;
   const data = typeof content === "string" ? Buffer.from(content) : content;
@@ -234,7 +301,11 @@ function readStashDirFromConfig(): string | undefined {
   try {
     const configPath = getConfigPath();
     const text = readTextFileWithLimit(configPath, MAX_CONFIG_FILE_BYTES, "Config file");
-    const raw = JSON.parse(text);
+    // The config loader accepts JSONC, so a commented config.json is valid and
+    // in use. Parsing it raw here threw, the catch swallowed it, and every
+    // caller silently fell back — operating on the wrong bundle or failing with
+    // STASH_DIR_NOT_FOUND despite a perfectly good config.
+    const raw = JSON.parse(stripJsonComments(text));
     if (typeof raw !== "object" || raw === null) return undefined;
     // 0.9.0 config-shape cutover (spec §10.1): the primary stash is the
     // `defaultBundle`'s filesystem `path`. Read it directly (no config module
@@ -829,13 +900,18 @@ export function stringArray(value: unknown): string[] {
  * Return true if a process with the given PID is currently alive.
  * Uses `process.kill(pid, 0)` which does not deliver a signal but
  * throws ESRCH when the process does not exist.
+ *
+ * EPERM means the process EXISTS but belongs to another uid, so it must be
+ * reported alive. Treating it as dead let a lock held by a live process in a
+ * shared data dir (agent sandboxes, containers, service accounts — a
+ * configuration managed-db.ts explicitly supports) be reclaimed as stale.
  */
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException | undefined)?.code === "EPERM";
   }
 }
 

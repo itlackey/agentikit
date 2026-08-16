@@ -16,7 +16,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { sleepSync } from "../../runtime";
-import { MAX_CONFIG_FILE_BYTES, readTextFileWithLimit, writeFileAtomic } from "../common";
+import { MAX_CONFIG_FILE_BYTES, readTextFileWithLimit, stripJsonComments, writeFileAtomic } from "../common";
 import { ConfigError } from "../errors";
 import { createLockPayload, probeLock, reclaimStaleLock, releaseLock, tryAcquireLockSync } from "../file-lock";
 import { getCacheDir, getConfigDir } from "../paths";
@@ -271,46 +271,8 @@ export function withConfigLock<T>(fn: () => T): T {
 }
 
 /**
- * Strip JavaScript-style comments from a JSON string (JSONC support).
- * Handles `//` line comments and `/* *​/` block comments while preserving
- * comment-like sequences inside quoted strings.
+ * Re-exported from core/common.ts, where it now lives so `resolveStashDir`
+ * can strip comments too without importing this module (common cannot depend
+ * on config-io — config-io already depends on common).
  */
-export function stripJsonComments(text: string): string {
-  let result = "";
-  let i = 0;
-  let inString = false;
-  while (i < text.length) {
-    if (inString) {
-      if (text[i] === "\\") {
-        result += text[i] + (text[i + 1] ?? "");
-        i += 2;
-        continue;
-      }
-      if (text[i] === '"') {
-        inString = false;
-      }
-      result += text[i];
-      i++;
-      continue;
-    }
-    if (text[i] === '"') {
-      inString = true;
-      result += text[i];
-      i++;
-      continue;
-    }
-    if (text[i] === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-      continue;
-    }
-    if (text[i] === "/" && text[i + 1] === "*") {
-      i += 2;
-      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
-      i += 2;
-      continue;
-    }
-    result += text[i];
-    i++;
-  }
-  return result;
-}
+export { stripJsonComments } from "../common";

@@ -34,6 +34,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import {
+  isPresentTarget,
   parseTaskYaml,
   TASK_EXTENSION,
   TASK_NEAR_MISS_EXTENSION,
@@ -87,7 +88,9 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
 function taskDiagnostics(relPath: string, data: Record<string, unknown>): Diagnostic[] {
   if (Object.keys(data).length === 0) return [];
   const problems = taskFieldProblems(data);
-  const targets = TARGET_KEYS.filter((k) => k in data && data[k] !== undefined && data[k] !== null);
+  // Shared presence rule (src/tasks/schema.ts): an empty string or empty array
+  // is not a target, matching the runtime parser.
+  const targets = TARGET_KEYS.filter((k) => isPresentTarget(data[k]));
   if (targets.length === 0) problems.push("exactly one target (prompt, workflow, or command)");
   else if (targets.length > 1) problems.push(`exactly one target — declares ${targets.length} (${targets.join(", ")})`);
   if (problems.length === 0) return [];

@@ -72,6 +72,7 @@ import { clearStaleCacheEntries } from "../storage/repositories/index-llm-cache-
 import {
   deleteIndexDirState,
   deleteIndexDirStatesByStashDir,
+  deleteMeta,
   getMeta,
   setMeta,
   upsertIndexDirState,
@@ -367,7 +368,12 @@ async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
 
   throwIfAborted(signal);
 
-  ctx.embeddingResult = await generateEmbeddingsForDb(db, config, onProgress);
+  // Forward the signal. Without it generateEmbeddingsForDb's abort machinery was
+  // inert — its throwIfAborted checks and the signal it threads into embedBatch
+  // (which RemoteEmbedder passes to every fetch and LocalEmbedder honours between
+  // chunks) never saw a controller. Ctrl-C and the improve budget abort could not
+  // stop the embedding phase, the longest phase of an index run.
+  ctx.embeddingResult = await generateEmbeddingsForDb(db, config, onProgress, signal);
   ctx.timing.tEmbedEnd = Date.now();
 }
 
@@ -1952,9 +1958,20 @@ async function generateEmbeddingsForDb(
   const currentFingerprint = deriveSemanticProviderFingerprint(config.embedding);
   const storedFingerprint = getMeta(db, "embeddingFingerprint");
   if (storedFingerprint && storedFingerprint !== currentFingerprint) {
-    // Model/provider changed → stored vectors are incompatible. Clear them
-    // (same dimension, so keep the vec table); re-embedded by this index run.
-    purgeEmbeddings(db);
+    // Model/provider changed → stored vectors are incompatible. Clear them;
+    // re-embedded by this index run.
+    //
+    // The vec table goes too. "Same dimension, so keep the vec table" only held
+    // for a same-width model swap: entries_vec is a vec0 virtual table declared
+    // at a FIXED width, so after a dimension-changing model change every insert
+    // failed against the old width, and ensureSchema's dim-change rebuild never
+    // fired because it only runs for callers that pass an explicit
+    // embeddingDim. The stale table survived `--full` — the exact remedy the
+    // warning recommended. Clearing the stored dim lets the next ensureSchema
+    // materialize it at the new width; until then the fast-path flag reads
+    // false (no table) and search uses the complete BLOB table.
+    purgeEmbeddings(db, { dropVecTable: true });
+    deleteMeta(db, "embeddingDim");
   }
 
   try {
@@ -2003,6 +2020,7 @@ async function generateEmbeddingsForDb(
       let storedCount = 0;
       let skippedCount = 0;
       let vecFailedCount = 0;
+      let vecUnavailableCount = 0;
       db.transaction(() => {
         for (let i = 0; i < allEntries.length; i++) {
           const res = upsertEmbedding(db, allEntries[i]!.id, embeddings[i]!);
@@ -2012,6 +2030,7 @@ async function generateEmbeddingsForDb(
             skippedCount++;
           }
           if (res.vec === "failed") vecFailedCount++;
+          if (res.vec === "unavailable") vecUnavailableCount++;
         }
       })();
       if (skippedCount > 0) {
@@ -2023,7 +2042,13 @@ async function generateEmbeddingsForDb(
       // instead of inferring readiness from stored-BLOB counts. Any failure
       // marks the fast path degraded, routing search to the JS-cosine fallback
       // over the (complete) BLOB table — honest degradation, not a hard failure.
-      setVecFastPathReady(db, vecFailedCount === 0);
+      //
+      // 'unavailable' has to degrade the flag too. It means no vec row was
+      // written at all, so marking the fast path ready left a later open (a
+      // different runtime, or sqlite-vec installed afterwards) trusting an
+      // empty entries_vec and returning zero semantic hits against a fully
+      // populated BLOB table.
+      setVecFastPathReady(db, vecFailedCount === 0 && vecUnavailableCount === 0);
       if (vecFailedCount > 0) {
         warn(
           `[embed] ${vecFailedCount} sqlite-vec fast-path insert${vecFailedCount === 1 ? "" : "s"} failed — ` +

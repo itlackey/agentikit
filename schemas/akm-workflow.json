@@ -309,11 +309,12 @@
         },
         "env": {
           "type": "array",
+          "uniqueItems": true,
           "items": {
             "type": "string",
             "minLength": 1
           },
-          "description": "Env asset refs injected into the dispatched unit env."
+          "description": "Env asset refs injected into the dispatched unit env. Entries must be unique: the frozen-plan decoder rejects duplicates at run start."
         },
         "isolation": {
           "$ref": "#/definitions/isolation"
@@ -350,7 +351,9 @@
       "additionalProperties": false,
       "properties": {
         "match": {
-          "type": ["string", "number", "boolean"]
+          "type": ["string", "number", "boolean"],
+          "minLength": 1,
+          "description": "Branch key. An empty string is rejected: the frozen-plan decoder requires every `when` key to be non-empty."
         },
         "step": {
           "$ref": "#/definitions/identifier"
@@ -397,10 +400,11 @@
       "type": "array",
       "minItems": 1,
       "maxItems": 64,
+      "uniqueItems": true,
       "items": {
         "$ref": "#/definitions/reference"
       },
-      "description": "Prior-step artifacts this unit/map step consumes, as reference strings (sub-paths legal). Attached to the dispatched unit as structured context; never spliced into instructions."
+      "description": "Prior-step artifacts this unit/map step consumes, as reference strings (sub-paths legal). Attached to the dispatched unit as structured context; never spliced into instructions. Entries must be unique: the frozen-plan decoder rejects duplicates at run start."
     },
     "step": {
       "type": "object",

@@ -149,7 +149,12 @@ function walkStashGit(stashRoot: string, options: WalkStashFlatOptions): WalkSta
   for (const relFile of files) {
     const absPath = path.join(stashRoot, relFile);
     try {
-      if (fs.statSync(absPath).isFile()) {
+      // lstat, not stat: a tracked symlink must not be dereferenced. statSync
+      // follows the link, so a target outside stashRoot would be read and
+      // indexed. The manual walk below already skips symlinks for exactly this
+      // reason; the two walkers have to agree regardless of whether the stash
+      // happens to sit inside a git repo.
+      if (fs.lstatSync(absPath).isFile()) {
         results.push(buildFileContext(stashRoot, absPath));
       }
     } catch {

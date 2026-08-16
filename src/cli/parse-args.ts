@@ -54,8 +54,14 @@ export function parsePositiveIntFlag(raw: string | undefined, flagName = "--limi
   if (raw === undefined) return undefined;
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
+  // Strict digits, matching parseNonNegativeIntFlag below. parseInt stops at the
+  // first non-digit, so "10x" silently became 10, "3.5" became 3, and
+  // "5 apples" became 5 — accepted rather than rejected as invalid.
+  if (!/^\d+$/.test(trimmed)) {
+    throw new UsageError(`Invalid ${flagName} value: "${raw}". Must be a positive integer.`, "INVALID_FLAG_VALUE");
+  }
   const parsed = parseInt(trimmed, 10);
-  if (Number.isNaN(parsed) || parsed <= 0) {
+  if (parsed <= 0) {
     throw new UsageError(`Invalid ${flagName} value: "${raw}". Must be a positive integer.`, "INVALID_FLAG_VALUE");
   }
   return parsed;

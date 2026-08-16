@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import os from "node:os";
 import path from "node:path";
 import {
   getCacheDir,
@@ -211,13 +212,19 @@ describe("getCacheDir", () => {
     expect(result).toBe(path.join("/home/user", ".cache", "akm"));
   });
 
-  test("falls back to /tmp/akm-cache when HOME is also unset", () => {
+  test("falls back to a UID-SCOPED tmp cache dir when HOME is also unset", () => {
     delete process.env.AKM_CACHE_DIR;
     delete process.env.XDG_CACHE_HOME;
     delete process.env.AKM_BUNDLE_DIR;
     delete process.env.HOME;
     const result = getCacheDir();
-    expect(result).toBe(path.join("/tmp", "akm-cache"));
+    // The uid suffix is load-bearing: a fixed /tmp/akm-cache is world-shared and
+    // entirely predictable, so on a multi-user host the first uid to run akm
+    // owns it and every other user then reads and writes the same cache — and
+    // any local user can pre-create the path (or a symlink at it) and wait.
+    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    expect(result).toBe(path.join(os.tmpdir(), uid === undefined ? "akm-cache" : `akm-cache-${uid}`));
+    expect(result.startsWith(path.join(os.tmpdir(), "akm-cache"))).toBe(true);
   });
 
   test("AKM_CACHE_DIR overrides all other paths", () => {
@@ -287,9 +294,12 @@ describe("getDataDir", () => {
     expect(result).toBe(path.join("/home/user", ".local", "share", "akm"));
   });
 
-  test("falls back to /tmp/akm-data when HOME is also unset", () => {
+  test("falls back to a UID-SCOPED tmp data dir when HOME is also unset", () => {
     const result = getDataDir({}, "linux");
-    expect(result).toBe(path.join("/tmp", "akm-data"));
+    // See the cache-dir case above: the index and state DBs must not land on a
+    // world-shared, predictable path.
+    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    expect(result).toBe(path.join(os.tmpdir(), uid === undefined ? "akm-data" : `akm-data-${uid}`));
   });
 
   test("uses LOCALAPPDATA on Windows", () => {

@@ -18,6 +18,7 @@ import { warn } from "../../core/warn";
 import { githubHeaders } from "../../integrations/github";
 import { getDirname, mainPath, semverOrder } from "../../runtime";
 import type { UpgradeCheckResponse, UpgradeResponse } from "../../sources/types";
+import { resolveAkmInvocation } from "../../tasks/resolve-akm-bin";
 
 const REPO = "itlackey/akm";
 const DEFAULT_PACKAGE_NAME = "akm-cli";
@@ -572,7 +573,14 @@ function readInstalledCliVersion(akmBin: string): string | undefined {
 }
 
 function runRequiredCommand(akmBin: string, args: string[], label: string): void {
-  const result = childProcess.spawnSync(akmBin, args, {
+  // A bare "akm" is not spawnable on Windows: npm/pnpm/yarn install a global CLI
+  // as akm.cmd / akm.ps1 shims, and spawnSync without a shell does not apply
+  // PATHEXT — so the package-manager upgrade arm died with ENOENT before it ever
+  // ran. resolveAkmInvocation returns a concrete argv (launcher, runtime + main
+  // script, or a standalone binary) for however this install actually runs.
+  // An explicit path (the standalone arm passes one) is used as given.
+  const [command, ...prefixArgs] = path.isAbsolute(akmBin) ? [akmBin] : resolveAkmInvocation().argv;
+  const result = childProcess.spawnSync(command ?? akmBin, [...prefixArgs, ...args], {
     encoding: "utf8",
     env: process.env,
     stdio: "pipe",

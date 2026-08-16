@@ -885,8 +885,16 @@ export function buildEvidence(units: UnitOutcome[], reducer: IrMapReducer, isFan
     } else if (ranked.length > 1 && ranked[0]!.count === ranked[1]!.count) {
       evidence.voteError = `Vote reducer tied at ${ranked[0]!.count} vote(s) — no majority.`;
     } else {
-      evidence.vote = { winner: ranked[0]!.value, votes: ranked[0]!.count, total: units.length };
-      evidence.output = ranked[0]!.value;
+      const winner = ranked[0]!.value;
+      evidence.vote = { winner, votes: ranked[0]!.count, total: units.length };
+      // An empty free-text unit normalizes to absent text, so its vote value is
+      // `undefined`. Assigning that to `evidence.output` made the key vanish
+      // under JSON serialization: a LIVE run then saw `output` absent (and fell
+      // back to the whole evidence envelope), while a RESUMED run rehydrated the
+      // same step from the journal and produced a different artifact — with the
+      // raw envelope exposed as `steps.<id>.output`. Normalize to an explicit
+      // empty string so both paths promote the same value.
+      evidence.output = winner === undefined ? "" : winner;
     }
   }
 
