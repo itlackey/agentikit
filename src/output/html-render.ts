@@ -16,9 +16,30 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import healthTemplate from "../assets/templates/html/health.html" with { type: "text" };
 import { getDirname } from "../runtime";
 
 const TEMPLATES_DIR = path.join(getDirname(import.meta.url), "../assets/templates/html");
+
+/**
+ * Templates embedded at build time, keyed by command name.
+ *
+ * `bun build --compile` embeds only what is imported `with { type: "text" }`;
+ * a plain `readFileSync` from a path relative to `import.meta.url` resolves
+ * into the virtual `/$bunfs` tree and misses. `akm health --report --format
+ * html` therefore crashed with ENOENT (exit 70) on the standalone binary that
+ * the CLI's own install error and the CHANGELOG promote as the runtime-free
+ * option. The text import works on all three runtimes: natively on Bun, via
+ * scripts/node-runtime/text-import-hook.mjs on Node, and embedded in the
+ * compiled binary.
+ */
+const EMBEDDED_TEMPLATES: Record<string, string> = {
+  // bun-types declares `*.html` as an `HTMLBundle` (its HTML-bundler entrypoint
+  // feature), which is not what a `type: "text"` import yields — the value is
+  // the file's contents as a string on every runtime. The cast reconciles the
+  // ambient declaration with the actual import attribute.
+  health: healthTemplate as unknown as string,
+};
 
 /**
  * Resolve the on-disk template path for a command's bespoke `<command>.html`.
@@ -43,8 +64,26 @@ const TOKEN_RE = /%%[A-Z_]+%%/g;
  * matching the skill renderer's behaviour.
  */
 export function renderHtml(templatePath: string, replacements: Record<string, string>): string {
-  const html = fs.readFileSync(templatePath, "utf8");
+  const html = readTemplate(templatePath);
   return html.replace(TOKEN_RE, (token) => replacements[token] ?? token);
+}
+
+/**
+ * Read a template from disk, falling back to the embedded copy.
+ *
+ * Disk stays primary so an operator (or a test) editing
+ * `src/assets/templates/html/<name>.html` sees the change without a rebuild.
+ * The fallback covers the standalone binary, where the file does not exist on
+ * any real filesystem.
+ */
+function readTemplate(templatePath: string): string {
+  try {
+    return fs.readFileSync(templatePath, "utf8");
+  } catch (err) {
+    const embedded = EMBEDDED_TEMPLATES[path.basename(templatePath, ".html")];
+    if (embedded !== undefined) return embedded;
+    throw err;
+  }
 }
 
 /**

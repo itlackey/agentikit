@@ -155,7 +155,11 @@ export function txnFileHash(filePath: string): string {
 }
 
 export function fsyncTxnFile(filePath: string): void {
-  const fd = fs.openSync(filePath, "r");
+  // Open for WRITE. Windows implements fsync as FlushFileBuffers, which
+  // requires write access on the handle — a read-only descriptor fails with
+  // EACCES/EPERM, so every proposal accept and reject failed on that platform.
+  // POSIX accepts "r+" here just as readily as "r".
+  const fd = fs.openSync(filePath, "r+");
   try {
     fs.fsyncSync(fd);
   } finally {
@@ -165,7 +169,15 @@ export function fsyncTxnFile(filePath: string): void {
 
 export function fsyncTxnDir(dirPath: string): void {
   try {
-    fsyncTxnFile(dirPath);
+    // Read-only, unlike {@link fsyncTxnFile}: a directory cannot be opened for
+    // write on POSIX (EISDIR), and on Windows this whole operation is
+    // unsupported anyway and falls into the catch.
+    const fd = fs.openSync(dirPath, "r");
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
     // Directory fsync is unavailable on some platforms.
   }

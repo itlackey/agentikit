@@ -4,6 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import embeddedChangelog from "../../../CHANGELOG.md" with { type: "text" };
 import { getDirname } from "../../runtime";
 
 const CHANGELOG_URL = "https://github.com/itlackey/akm/blob/main/CHANGELOG.md";
@@ -27,9 +28,13 @@ function loadChangelog(): string | undefined {
       return fs.readFileSync(changelogPath, "utf8");
     }
   } catch {
-    // fall through to bundled notes
+    // fall through to the embedded copy
   }
-  return undefined;
+  // In the `bun build --compile` standalone binary, import.meta.url points into
+  // the virtual /$bunfs tree and every existsSync above misses, so `akm help
+  // migrate <version>` degraded to the generic "no dedicated note" message for
+  // EVERY version. Only assets imported `with { type: "text" }` are embedded.
+  return embeddedChangelog.length > 0 ? embeddedChangelog : undefined;
 }
 
 /**

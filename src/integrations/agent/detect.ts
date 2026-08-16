@@ -81,6 +81,17 @@ const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
  * on win32 or when the env supplies PATHEXT (which is also the seam tests use
  * to cover Windows resolution from a POSIX runner).
  */
+/**
+ * Script shims that `child_process.spawn` cannot execute directly on Windows.
+ *
+ * Node refuses to spawn `.bat`/`.cmd` without a shell (the CVE-2024-27980
+ * hardening), so a detection that returns one of these reports an agent as
+ * available that dispatch then fails to launch. They stay in the candidate
+ * list — a shim is better than reporting the CLI as missing — but they sort
+ * last, so a real `.exe` next to `claude.cmd` wins.
+ */
+const NON_SPAWNABLE_SUFFIXES = new Set([".cmd", ".bat"]);
+
 function executableSuffixes(envSource: NodeJS.ProcessEnv): string[] {
   const pathext = envSource.PATHEXT ?? envSource.Pathext ?? envSource.pathext;
   if (process.platform !== "win32" && !pathext) return [""];
@@ -89,7 +100,9 @@ function executableSuffixes(envSource: NodeJS.ProcessEnv): string[] {
     .map((ext) => ext.trim())
     .filter(Boolean)
     .map((ext) => (ext.startsWith(".") ? ext : `.${ext}`));
-  return ["", ...exts];
+  const directlySpawnable = exts.filter((ext) => !NON_SPAWNABLE_SUFFIXES.has(ext.toLowerCase()));
+  const shims = exts.filter((ext) => NON_SPAWNABLE_SUFFIXES.has(ext.toLowerCase()));
+  return ["", ...directlySpawnable, ...shims];
 }
 
 /** Result of probing one profile during setup. */
