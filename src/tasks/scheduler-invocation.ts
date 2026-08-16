@@ -19,6 +19,25 @@ export const SCHEDULED_TASK_CONTEXT_KEYS = [
 
 type ScheduledTaskContextKey = (typeof SCHEDULED_TASK_CONTEXT_KEYS)[number];
 
+/**
+ * The AKM_* directory context currently in effect, as a plain env fragment.
+ *
+ * A scheduled run restores these into `process.env` from its
+ * `--scheduler-context` descriptor precisely because such installs have
+ * non-default directories. Paths that build a child environment from an
+ * allowlist rather than inheriting (the agent spawn) must forward this
+ * explicitly, or the child's `akm` sub-commands silently target the default
+ * stash and DB.
+ */
+export function scheduledTaskContextEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of SCHEDULED_TASK_CONTEXT_KEYS) {
+    const value = env[key];
+    if (value) out[key] = value;
+  }
+  return out;
+}
+
 export type ScheduledTaskContext = Record<ScheduledTaskContextKey, string>;
 
 export interface ScheduledTaskContextDescriptor {

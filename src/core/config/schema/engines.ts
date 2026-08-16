@@ -15,6 +15,7 @@ import { z } from "zod";
 // `typeof import("./config-schema")` — routing through config-types would mint
 // a config-schema ↔ config-types type cycle that collapses inference.
 import { HARNESS_AGENT_DISPATCH_IDS, VALID_HARNESS_IDS } from "../../../integrations/harnesses/ids";
+import { WORKFLOW_MAX_TIMEOUT_MS } from "../../../workflows/resource-limits";
 import {
   chatCompletionsEndpoint,
   ENV_REFERENCE_PATTERN,
@@ -25,6 +26,17 @@ import {
   nonEmptyString,
   positiveInt,
 } from "./primitives";
+
+/**
+ * Engine-config timeouts share the workflow ceiling.
+ *
+ * 0.9.1 bounded workflow-authored timeouts (parser) and frozen invocations
+ * (decoder) at 2^31-1, but the third source — `engines.<name>.timeoutMs` — was
+ * validated only as a positive integer. A larger value passed config validation
+ * and then failed EVERY run of that engine with an unlocated "Invalid frozen
+ * workflow plan: invocation is invalid". Reject it where the value is written.
+ */
+const timeoutMsField = z.union([positiveInt.max(WORKFLOW_MAX_TIMEOUT_MS), z.null()]).optional();
 
 // ── Connection configs (LLM) ────────────────────────────────────────────────
 
@@ -44,7 +56,7 @@ export const LlmConnectionConfigSchema = z
     apiKey: z.string().optional(),
     temperature: z.number().finite().optional(),
     maxTokens: positiveInt.optional(),
-    timeoutMs: z.union([positiveInt, z.null()]).optional(),
+    timeoutMs: timeoutMsField,
     concurrency: positiveInt.optional(),
     capabilities: LlmCapabilitiesSchema.optional(),
     extraParams: ExtraParamsSchema.optional(),
@@ -72,7 +84,7 @@ const LlmEngineSchema = z
     apiKey: z.string().regex(ENV_REFERENCE_PATTERN, `apiKey must be $VAR or \${VAR}`).optional(),
     temperature: z.number().finite().optional(),
     maxTokens: positiveInt.optional(),
-    timeoutMs: z.union([positiveInt, z.null()]).optional(),
+    timeoutMs: timeoutMsField,
     concurrency: positiveInt.optional(),
     supportsJsonSchema: z.boolean().optional(),
     extraParams: ExtraParamsSchema.optional(),
@@ -97,7 +109,7 @@ const AgentEngineSchema = z
     args: z.array(z.string()).optional(),
     workspace: nonEmptyString.optional(),
     model: nonEmptyString.optional(),
-    timeoutMs: z.union([positiveInt, z.null()]).optional(),
+    timeoutMs: timeoutMsField,
     modelAliases: ModelAliasMapSchema.optional(),
     llmEngine: engineName.optional(),
   })

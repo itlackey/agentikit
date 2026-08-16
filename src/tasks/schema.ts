@@ -60,8 +60,26 @@ export const TASK_MAX_REDACT_NAMES = WORKFLOW_MAX_EXEC_PASS_ENV;
  * at runtime with TASK_SCHEMA_VERSION_UNSUPPORTED). `schemas/akm-task.json`
  * agrees with the parser: `required: [version, schedule]`, `version:
  * {const: 2}`, `enabled` optional but boolean. Target-arity rules stay with
- * each caller (they legitimately differ: at-least-one vs exactly-one).
+ * each caller (they legitimately differ: at-least-one vs exactly-one), but
+ * what COUNTS as a target is shared — see {@link isPresentTarget}.
  */
+/**
+ * Whether a task-target field counts as declared.
+ *
+ * The arity rules differ between the two linters, but the presence test must
+ * not: the runtime parser treats `""` as absent, so a key-existence check let
+ * `workflow: ""` lint clean and then die with MISSING_REQUIRED_ARGUMENT. An
+ * array target (`command`) counts only when it has entries, for the same
+ * reason. Kept beside {@link taskFieldProblems} so all three definitions of
+ * "valid task" stay in one file.
+ */
+export function isPresentTarget(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "string") return value.trim() !== "";
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
 export function taskFieldProblems(data: Record<string, unknown>): string[] {
   const problems: string[] = [];
   if (data.version !== TASK_SCHEMA_VERSION) problems.push(`version (must be ${TASK_SCHEMA_VERSION})`);

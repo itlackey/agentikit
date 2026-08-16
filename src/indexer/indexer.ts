@@ -367,7 +367,12 @@ async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
 
   throwIfAborted(signal);
 
-  ctx.embeddingResult = await generateEmbeddingsForDb(db, config, onProgress);
+  // Forward the signal. Without it generateEmbeddingsForDb's abort machinery was
+  // inert — its throwIfAborted checks and the signal it threads into embedBatch
+  // (which RemoteEmbedder passes to every fetch and LocalEmbedder honours between
+  // chunks) never saw a controller. Ctrl-C and the improve budget abort could not
+  // stop the embedding phase, the longest phase of an index run.
+  ctx.embeddingResult = await generateEmbeddingsForDb(db, config, onProgress, signal);
   ctx.timing.tEmbedEnd = Date.now();
 }
 

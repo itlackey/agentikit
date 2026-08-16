@@ -168,9 +168,66 @@ export function runMigrations(db: Database, migrations: readonly Migration[], op
 
     opts?.beforeMigration?.(migration);
 
-    db.transaction(() => {
+    withImmediateWriteLock(db, () => {
+      // Re-check under the write lock. `applied` is a snapshot taken before the
+      // loop, so two processes bootstrapping the same fresh DB concurrently
+      // (both see existed=false, both run with applyPending) could each decide
+      // to apply migration N. The first commits; the second must not re-run the
+      // DDL and must not hit a UNIQUE violation on the ledger insert.
+      const already = db.prepare("SELECT 1 FROM schema_migrations WHERE id = ?").get(migration.id);
+      if (already) return;
       db.exec(migration.up);
       db.prepare("INSERT INTO schema_migrations (id) VALUES (?)").run(migration.id);
-    })();
+    });
+    applied.add(migration.id);
   }
+}
+
+/** Attempts to acquire the write lock before giving up to the caller. */
+const IMMEDIATE_LOCK_MAX_ATTEMPTS = 5;
+
+/**
+ * Run `fn` inside a `BEGIN IMMEDIATE` transaction.
+ *
+ * The write lock is taken up front rather than upgraded from a read lock, so a
+ * second process bootstrapping the same database WAITS for the first to commit
+ * instead of racing it. `db.transaction()` opens a DEFERRED transaction, which
+ * only takes the write lock on first write — leaving the read-then-write gap
+ * this guards.
+ *
+ * Deliberately local rather than reusing `withImmediateTransaction` from
+ * core/state-db: that module imports this one, so the dependency cannot be
+ * pointed the other way.
+ */
+function withImmediateWriteLock(db: Database, fn: () => void): void {
+  if (db.inTransaction) {
+    fn();
+    return;
+  }
+  let lastBeginErr: unknown;
+  for (let attempt = 1; attempt <= IMMEDIATE_LOCK_MAX_ATTEMPTS; attempt++) {
+    try {
+      db.exec("BEGIN IMMEDIATE");
+    } catch (err) {
+      // Busy despite busy_timeout (another writer holding it across the whole
+      // window). Retry a bounded number of times before surfacing.
+      lastBeginErr = err;
+      continue;
+    }
+    try {
+      fn();
+      db.exec("COMMIT");
+      return;
+    } catch (err) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // Already rolled back by SQLite (e.g. the statement aborted the txn).
+      }
+      throw err;
+    }
+  }
+  throw lastBeginErr instanceof Error
+    ? lastBeginErr
+    : new Error(`could not acquire the migration write lock after ${IMMEDIATE_LOCK_MAX_ATTEMPTS} attempts`);
 }

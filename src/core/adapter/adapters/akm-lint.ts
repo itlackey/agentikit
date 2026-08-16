@@ -54,7 +54,7 @@
 
 import path from "node:path";
 import { isDangerousEnvKey } from "../../../commands/lint/env-key-rules";
-import { taskFieldProblems } from "../../../tasks/schema";
+import { isPresentTarget, taskFieldProblems } from "../../../tasks/schema";
 import { compileWorkflowPlan } from "../../../workflows/ir/compile";
 import { parseWorkflow } from "../../../workflows/parser";
 import { conceptIdForStashFile } from "../../asset/resolve-ref";
@@ -317,7 +317,11 @@ export function factDiagnostics(relPath: string, data: Record<string, unknown>):
 export function taskDiagnostics(relPath: string, data: Record<string, unknown>): Diagnostic[] {
   if (data === null || Object.keys(data).length === 0) return [];
   const missing = taskFieldProblems(data);
-  const hasTarget = "prompt" in data || "workflow" in data || "command" in data;
+  // Presence, matching the runtime parser's rule (src/tasks/parser.ts): an
+  // empty string is NOT a target there, so a `workflow: ""` that linted clean
+  // here failed at run time with MISSING_REQUIRED_ARGUMENT — a file the linter
+  // called valid but that could never run.
+  const hasTarget = (["prompt", "workflow", "command"] as const).some((key) => isPresentTarget(data[key]));
   if (!hasTarget) missing.push("prompt, workflow, or command");
   if (missing.length > 0) {
     return [

@@ -814,7 +814,15 @@ function parseUnit(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
 
   if (raw.env !== undefined) {
     if (Array.isArray(raw.env) && raw.env.every((entry) => typeof entry === "string" && entry.trim() !== "")) {
-      unit.env = raw.env.map((entry) => (entry as string).trim());
+      const envRefs = raw.env.map((entry) => (entry as string).trim());
+      // Same decoder uniqueness requirement as `inputs` above: duplicates linted
+      // clean and then failed the run with an unlocated frozen-plan error.
+      const duplicate = envRefs.find((ref, i) => envRefs.indexOf(ref) !== i);
+      if (duplicate !== undefined) {
+        ctx.err([...path, "env"], `${stepLabel} "env" contains a duplicate entry: "${duplicate}".`);
+      } else {
+        unit.env = envRefs;
+      }
     } else {
       ctx.err([...path, "env"], `${stepLabel} "env" must be a list of non-empty env asset refs.`);
     }
@@ -1064,6 +1072,13 @@ function parseRoute(
         return;
       }
       const match = String(branch.match);
+      // The frozen-plan decoder requires every `when` key to be non-empty, so an
+      // empty match parsed and linted clean and then failed the run with an
+      // unlocated "Invalid frozen workflow plan". Reject it here, at the line.
+      if (match === "") {
+        ctx.errAtLine(matchLine, `${stepLabel} "when[${i}].match" must not be empty.`);
+        return;
+      }
       if (typeof branch.step !== "string" || branch.step.trim() === "") {
         ctx.err([...branchPath, "step"], `${stepLabel} "when[${i}].step" must be a step id string.`);
         return;
@@ -1110,12 +1125,21 @@ function parseInputs(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): str
     ctx.err(path, `${stepLabel} "inputs" must contain at most ${WORKFLOW_MAX_INPUTS} entries.`);
   }
   const out: string[] = [];
+  // The frozen-plan decoder requires uniqueness (validateStringArray(..., true)),
+  // so duplicates parsed and linted clean and then failed the run with an
+  // unlocated "Invalid frozen workflow plan". Reject them here, on the entry.
+  const seen = new Set<string>();
   raw.forEach((entry, i) => {
     if (typeof entry !== "string" || entry.trim() === "") {
       ctx.err([...path, i], `${stepLabel} "inputs[${i}]" must be a non-empty reference string.`);
       return;
     }
     const value = entry.trim();
+    if (seen.has(value)) {
+      ctx.err([...path, i], `${stepLabel} "inputs[${i}]" duplicates an earlier entry: "${value}".`);
+      return;
+    }
+    seen.add(value);
     checkReferenceSyntax(ctx, value, [...path, i], `${stepLabel} "inputs[${i}]"`);
     out.push(value);
   });

@@ -11,6 +11,7 @@ import { decideDangerousKeyInstall } from "../../core/activation-policy";
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { warn } from "../../core/warn";
+import { sanitizeString } from "../../sources/providers/provider-utils";
 import { akmRemove } from "./installed-stashes";
 import { akmAdd } from "./source-add";
 import { addStash } from "./source-manage";
@@ -230,9 +231,16 @@ export async function auditInstalledStashForDangerousKeys(opts: {
       groupedByEnv.set(f.envRef, existing);
     }
     for (const [envRef, keys] of groupedByEnv) {
-      warn(`[warn] Env "${envRef}" in stash "${stashLabel}" contains potentially dangerous keys:`);
+      // envRef and keys come from filenames and KEY names inside a downloaded or
+      // cloned bundle, i.e. attacker-controllable. Tar validation rejects NUL but
+      // not ESC/CSI, and git checkout allows them in filenames on Linux/macOS —
+      // so printing them raw let a crafted bundle rewrite this security prompt
+      // with terminal escapes right before an "Install anyway?" confirmation.
+      warn(
+        `[warn] Env "${sanitizeString(envRef)}" in stash "${sanitizeString(stashLabel)}" contains potentially dangerous keys:`,
+      );
       for (const key of keys) {
-        warn(`  - ${key}: can hijack process execution via \`akm env run\``);
+        warn(`  - ${sanitizeString(key)}: can hijack process execution via \`akm env run\``);
       }
     }
     const confirmed = await p.confirm({

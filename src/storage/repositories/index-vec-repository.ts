@@ -29,10 +29,10 @@ export function loadVecExtension(db: Database): void {
   try {
     const esmRequire = createRequire(import.meta.url);
     const sqliteVec = esmRequire("sqlite-vec");
-    // `db` here is the genuine underlying driver handle returned by the storage
-    // boundary (bun:sqlite on Bun, better-sqlite3 on Node) — only structurally
-    // narrowed for callers. sqlite-vec's `load()` accepts either real handle,
-    // so no raw-handle escape hatch is required.
+    // `db` is the storage boundary's handle. On Bun that IS the bun:sqlite
+    // handle; on Node it is a wrapper, which must forward `loadExtension` for
+    // this call to work at all (see openNodeDatabase in storage/database.ts —
+    // it did not, so vec could never load on the entire npm distribution).
     sqliteVec.load(db);
     vecStatus.set(db, true);
   } catch {
@@ -66,7 +66,43 @@ export function setVecFastPathReady(db: Database, ready: boolean): void {
  * rather than silently returning partial fast-path results.
  */
 export function isVecFastPathReady(db: Database): boolean {
-  return getMeta(db, VEC_FAST_PATH_READY_META) !== "0";
+  if (getMeta(db, VEC_FAST_PATH_READY_META) === "0") return false;
+  // The meta flag alone is not sufficient. An index built while sqlite-vec was
+  // unavailable wrote only BLOB rows, and because "unavailable" outcomes were
+  // not counted as failures the flag was still set to "1" against a table that
+  // is empty or absent. If sqlite-vec later becomes loadable — the user installs
+  // it, or the same index is opened under the other runtime — the fast path
+  // would then be trusted and return zero neighbours while the BLOB table holds
+  // every embedding. Indexes written by earlier versions still carry that stale
+  // flag, so the read path has to verify the table really exists.
+  return hasVecTable(db);
+}
+
+const vecTablePresent = new WeakMap<Database, boolean>();
+
+/**
+ * Whether `entries_vec` exists on this connection, memoized per handle.
+ *
+ * openExistingDatabase loads the vec extension but deliberately does not run
+ * ensureSchema, so the table is not created on read paths — its absence is a
+ * normal state, not an error.
+ */
+function hasVecTable(db: Database): boolean {
+  // Only a POSITIVE result is memoized. The table cannot vanish from a live
+  // connection, but it CAN appear — ensureSchema creates it partway through an
+  // index run — so caching "absent" would pin a stale answer for the rest of
+  // the handle's life.
+  if (vecTablePresent.get(db) === true) return true;
+  let present = false;
+  try {
+    present =
+      db.prepare("SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = 'entries_vec'").get() !==
+      undefined;
+  } catch {
+    present = false;
+  }
+  if (present) vecTablePresent.set(db, true);
+  return present;
 }
 
 /** Remove both vector representations for an entry whose embedding input changed. */

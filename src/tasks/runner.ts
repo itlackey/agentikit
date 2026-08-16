@@ -70,6 +70,7 @@ import {
   decodeTaskHistoryMetadata,
   finalizeTaskHistoryAttempt,
   getTaskHistory,
+  getTaskHistoryRuns,
   queryTaskHistory,
   reserveTaskHistoryAttempt,
   upsertTaskHistory,
@@ -79,6 +80,7 @@ import { findBareAkmExecutableIndex } from "./command-executable";
 import { collectTaskLogSensitiveValues } from "./log-redaction";
 import { parseTaskDocument } from "./parser";
 import { resolveAkmInvocation } from "./resolve-akm-bin";
+import { scheduledTaskContextEnv } from "./scheduler-invocation";
 import type { TaskDocument } from "./schema";
 import { validateTaskId } from "./task-id";
 
@@ -279,7 +281,8 @@ async function runCommandTask(input: {
   const { cmd } = task.target;
   const spawnCmd = resolveNestedAkmCommand(cmd);
 
-  const timeoutMs: number | null = task.timeoutMs !== undefined ? task.timeoutMs : null;
+  // Unset → the unattended default; `null` → the explicit no-timeout opt-out.
+  const timeoutMs: number | null = task.timeoutMs !== undefined ? task.timeoutMs : DEFAULT_SCHEDULED_TASK_TIMEOUT_MS;
 
   const header = `[akm task] task=${task.id} kind=command cmd=${cmd.join(" ")}`;
   const logLines: string[] = [header];
@@ -391,6 +394,19 @@ function resolveNestedAkmCommand(cmd: string[]): string[] {
  */
 export const DEFAULT_WORKFLOW_TASK_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * The same unattended default for command and prompt tasks.
+ *
+ * The reasoning above is about SCHEDULED runs, not about workflows: nobody is
+ * watching, and one wedged run silently stops the schedule. Command tasks
+ * defaulted to `null` (no kill timer) and prompt tasks inherited
+ * DEFAULT_AGENT_TIMEOUT_MS, also null — so a hung `curl`, a prompting agent
+ * waiting on stdin, or a stuck engine wedged the task forever while the
+ * workflow arm was protected. Same value, same opt-out: an explicit
+ * `timeoutMs:` wins, and `timeoutMs: null` restores unbounded.
+ */
+export const DEFAULT_SCHEDULED_TASK_TIMEOUT_MS = DEFAULT_WORKFLOW_TASK_TIMEOUT_MS;
+
 async function runWorkflowTask(input: {
   task: TaskDocument;
   logPath: string;
@@ -435,6 +451,13 @@ async function runWorkflowTask(input: {
   // The prompt path logs the engine-fallback announcement; a workflow-backed
   // task must leave the same trace rather than silently using a chosen engine.
   let runWarnings: string[] = [];
+  // Stamp task-runner provenance for the duration of the run (DRIFT-6), as the
+  // command and prompt arms do. This arm executes IN-PROCESS, so the stamp goes
+  // on process.env — child akm invocations made by workflow steps inherit it.
+  // Without it, workflow-task traffic was recorded as user demand. A more
+  // specific stamp already present wins, matching the command arm.
+  const priorEventSource = process.env.AKM_EVENT_SOURCE;
+  process.env.AKM_EVENT_SOURCE = priorEventSource ?? "task";
   try {
     const execution = await runWorkflowStepsImpl({
       target: workflowTarget.ref,
@@ -453,6 +476,8 @@ async function runWorkflowTask(input: {
     error = e instanceof Error ? e : new Error(String(e));
   } finally {
     deadline.disarm();
+    if (priorEventSource === undefined) delete process.env.AKM_EVENT_SOURCE;
+    else process.env.AKM_EVENT_SOURCE = priorEventSource;
   }
 
   // A timeout is a failed ATTEMPT even though the engine stopped cleanly: the
@@ -632,7 +657,10 @@ async function runPromptTask(input: {
     runner = {
       ...runner,
       profile: { ...runner.profile, ...(model ? { model, modelIsExact: true } : {}) },
-      ...(promptTarget.timeoutMs !== undefined ? { timeoutMs: promptTarget.timeoutMs } : {}),
+      // Unset → the unattended default (DEFAULT_AGENT_TIMEOUT_MS is null, which
+      // let a prompting or wedged agent CLI hang the schedule); `null` → the
+      // explicit no-timeout opt-out.
+      timeoutMs: promptTarget.timeoutMs !== undefined ? promptTarget.timeoutMs : DEFAULT_SCHEDULED_TASK_TIMEOUT_MS,
     };
   }
   const promptText = await resolvePromptText(task, stashDir);
@@ -647,7 +675,13 @@ async function runPromptTask(input: {
       // Stamp task-runner provenance for any akm invocation the agent makes
       // (DRIFT-6: agent-task traffic must not be recorded as user demand).
       // Caller-supplied env still wins on conflicts.
-      env: { AKM_EVENT_SOURCE: "task", ...agentOptions?.env },
+      //
+      // The agent child env is built from an allowlist, not inherited, so the
+      // scheduler's AKM_* directory context was dropped here — an agent's `akm`
+      // sub-commands then targeted the DEFAULT stash and DB rather than the
+      // ones the scheduled run was configured for. The command arm keeps this
+      // context because it inherits process.env; forward it explicitly.
+      env: { AKM_EVENT_SOURCE: "task", ...scheduledTaskContextEnv(), ...agentOptions?.env },
     },
     {
       ...(input.runAgentImpl ? { runAgent: input.runAgentImpl } : {}),
@@ -1075,6 +1109,12 @@ export function readTaskHistory(options: ReadHistoryOptions = {}): TaskRunResult
   return withStateDb((db) => {
     if (options.limit === 0) return [];
     if (options.id) {
+      // An id-scoped query used the single-row helper, so `--limit` was silently
+      // discarded and `akm task history --id X --limit 20` always returned one
+      // run. The CLI documents --limit as "Maximum rows to return"; honour it.
+      if (options.limit !== undefined && options.limit > 0) {
+        return getTaskHistoryRuns(db, options.id, options.limit).map(taskHistoryRowToResult);
+      }
       const row = getTaskHistory(db, options.id);
       return row ? [taskHistoryRowToResult(row)] : [];
     }

@@ -44,14 +44,23 @@ export function validateExtraParams(value: unknown): ExtraParamsIssue[] {
   }
 
   const issues: ExtraParamsIssue[] = [];
+  // A self-referential YAML anchor (`extraParams: &a { nested: *a }`) resolves
+  // to a genuinely cyclic object — the yaml package's alias-count guard does not
+  // catch cycles — so an unguarded walk overflowed the stack with a RangeError
+  // that escaped task parsing. Track visited containers and stop at a revisit.
+  const seen = new WeakSet<object>();
   const visit = (entry: unknown, path: (string | number)[]): void => {
     if (Array.isArray(entry)) {
+      if (seen.has(entry)) return;
+      seen.add(entry);
       entry.forEach((child, index) => {
         visit(child, [...path, index]);
       });
       return;
     }
     if (!entry || typeof entry !== "object") return;
+    if (seen.has(entry)) return;
+    seen.add(entry);
     for (const [key, child] of Object.entries(entry as Record<string, unknown>)) {
       const normalized = normalizeExtraParamKey(key);
       if (path.length === 0 && PROTECTED_TOP_LEVEL_KEYS.has(normalized)) {
