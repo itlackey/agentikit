@@ -185,6 +185,19 @@ function readLockfileOrThrow(): LockfileEntry[] {
       "INVALID_CONFIG_FILE",
     );
   }
+  // Refuse rather than filter. This is the WRITE path's read: everything it
+  // returns is what gets written back, so silently dropping entries that fail
+  // per-entry validation destroyed them on the next write — the same
+  // data-losing overwrite the two refusals above exist to prevent, just at
+  // entry granularity instead of file granularity.
+  const invalid = parsed.filter((entry) => !isValidLockfileEntry(entry));
+  if (invalid.length > 0) {
+    throw new ConfigError(
+      `Refusing to modify lockfile ${lockfilePath}: ${invalid.length} existing entr${invalid.length === 1 ? "y is" : "ies are"} malformed. ` +
+        "Fix or remove the file by hand before retrying — those entries would otherwise be lost.",
+      "INVALID_CONFIG_FILE",
+    );
+  }
   return parsed.filter(isValidLockfileEntry);
 }
 

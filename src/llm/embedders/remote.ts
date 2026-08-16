@@ -200,6 +200,15 @@ export function normalizeEmbeddingEndpoint(endpoint: string): string {
   if (normalizedPath.endsWith("/embeddings")) {
     return parsed.toString();
   }
+  // Ollama's NATIVE embedding route is `/api/embed` (and the older
+  // `/api/embeddings`). Appending "/embeddings" to it produced
+  // `/api/embed/embeddings`, a 404 — so pointing akm at the native endpoint,
+  // which is what its own options like ollamaOptions and contextLength are
+  // for, could never work. An explicit path that is already an embedding route
+  // is left alone.
+  if (normalizedPath.endsWith("/embed")) {
+    return parsed.toString();
+  }
 
   parsed.pathname = normalizedPath ? `${normalizedPath}/embeddings` : "/embeddings";
   return parsed.toString();

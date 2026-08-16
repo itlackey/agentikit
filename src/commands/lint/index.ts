@@ -579,7 +579,11 @@ function lintAkmSweep(
 
     for (const filePath of assetFiles) {
       // Skip registry-cached read-only files — --fix must not mutate them.
-      if (filePath.includes("/.cache/") || filePath.includes("/registry/")) continue;
+      // Compare on a separator-normalized copy: on Windows these paths carry
+      // backslashes, so the forward-slash substring never matched and --fix
+      // rewrote files inside the registry cache.
+      const posixPath = filePath.replace(/\\/g, "/");
+      if (posixPath.includes("/.cache/") || posixPath.includes("/registry/")) continue;
       const relPath = path.relative(stashRoot, filePath);
       let raw: string;
       try {
