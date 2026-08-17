@@ -70,6 +70,15 @@ describe("release workflow", () => {
     expect(source).toContain("sha256sum akm-* install.sh install.ps1");
   });
 
+  test("Bun Docker source builds include the changelog runtime asset", () => {
+    const dockerDir = path.resolve(import.meta.dir, "../docker");
+    for (const distro of ["ubuntu", "debian", "alpine", "fedora"]) {
+      const dockerfile = fs.readFileSync(path.join(dockerDir, `Dockerfile.${distro}-bun`), "utf8");
+      expect(dockerfile).toContain("COPY CHANGELOG.md ./");
+      expect(dockerfile.indexOf("COPY CHANGELOG.md ./")).toBeLessThan(dockerfile.indexOf("RUN bun run build"));
+    }
+  });
+
   test("keeps the dispatch value out of shell source", () => {
     const workflow = YAML.parse(source) as {
       jobs: { release: { steps: Array<{ run?: string }> } };
