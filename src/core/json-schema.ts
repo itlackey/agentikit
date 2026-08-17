@@ -211,6 +211,16 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Values the runtime's reference-equality `enum` check can enforce correctly. */
+function isSupportedEnumValue(value: unknown): value is string | number | boolean | null {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  );
+}
+
 function checkDefinitionNode(
   schema: Record<string, unknown>,
   path: Array<string | number>,
@@ -264,8 +274,22 @@ function checkDefinitionNode(
     }
   }
 
-  if (schema.enum !== undefined && (!Array.isArray(schema.enum) || schema.enum.length === 0)) {
-    pushIssue(issues, [...path, "enum"], "enum", "malformed", `"enum" must be a non-empty array of allowed values`);
+  if (schema.enum !== undefined) {
+    if (!Array.isArray(schema.enum) || schema.enum.length === 0) {
+      pushIssue(issues, [...path, "enum"], "enum", "malformed", `"enum" must be a non-empty array of allowed values`);
+    } else {
+      schema.enum.forEach((value, index) => {
+        if (isSupportedEnumValue(value)) return;
+        pushIssue(
+          issues,
+          [...path, "enum", index],
+          "enum",
+          "unsupported",
+          `"enum" values must be JSON primitives (string, finite number, boolean, or null) in the workflow ` +
+            `schema subset — object and array enum members cannot be matched by the runtime subset`,
+        );
+      });
+    }
   }
 
   for (const keyword of ["allOf", "anyOf", "oneOf"] as const) {

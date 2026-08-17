@@ -698,6 +698,7 @@ function appendBeliefStateTransitionLog(stashDir: string, transitions: MemoryBel
     )
     .join("\n");
   fs.appendFileSync(logPath, `${lines}\n`, "utf8");
+  recordWrittenPath(logPath);
   return logPath;
 }
 

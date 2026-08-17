@@ -26,6 +26,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { writeEvalCase } from "../../src/commands/improve/eval-cases";
 import { akmImprove, resolveSyncPathSet } from "../../src/commands/improve/improve";
 import { parseRefInput } from "../../src/core/asset/resolve-ref";
 import type { AkmConfig, SourceConfigEntry } from "../../src/core/config/config";
@@ -264,6 +265,25 @@ test("auto-sync stages a deletion the run performed", async () => {
   expect(git("show", "--name-status", "--format=", "HEAD").trim().startsWith("D")).toBe(true);
   expect(fs.existsSync(path.join(stashDir, "memories", "human.md"))).toBe(false);
   expect(result.writtenPaths).toEqual(["memories/human.md"]);
+});
+
+test("auto-sync includes an eval case captured by the run", async () => {
+  initRepo();
+
+  const result = await runImprove(() => {
+    writeEvalCase(stashDir, {
+      ref: "memories/human",
+      failureReason: "quality gate rejected",
+      assetType: "memory",
+      rejectedAt: 1,
+      source: "proposal_rejected",
+      slug: "human-rejected",
+    });
+  });
+
+  expect(result.sync?.committed).toBe(true);
+  expect(lastCommitPaths()).toEqual([".akm/eval-cases/human-rejected.md"]);
+  expect(result.writtenPaths).toEqual([".akm/eval-cases/human-rejected.md"]);
 });
 
 test("a path written then removed again during the run produces no commit", async () => {

@@ -138,6 +138,15 @@ describe("checkJsonSchemaDefinition (core/json-schema.ts)", () => {
     expect(checkJsonSchemaDefinition({ items: "string" })[0]!.kind).toBe("malformed");
   });
 
+  test("object and array enum members are rejected because the subset supports primitive enums only", () => {
+    const issues = checkJsonSchemaDefinition({ enum: [{ status: "ok" }, ["fallback"]] });
+    expect(issues.map((issue) => [issue.kind, issue.pointer])).toEqual([
+      ["unsupported", "$.enum.0"],
+      ["unsupported", "$.enum.1"],
+    ]);
+    expect(issues.every((issue) => issue.message.includes("JSON primitives"))).toBe(true);
+  });
+
   test("unknown non-JSON-Schema keywords are ignored (open-keyword behavior, e.g. x- extensions)", () => {
     expect(checkJsonSchemaDefinition({ type: "object", "x-custom": true, notAKeyword: 1 })).toEqual([]);
   });
@@ -226,6 +235,14 @@ describe("bug 10 — workflow parser rejects malformed / unsupported schemas", (
       ["params:", "  files: { type: array, description: The files to review, items: { type: string } }"],
     );
     expect(parseErrors(markdown)).toHaveLength(0);
+  });
+
+  test("an object-valued enum is rejected at authoring time instead of becoming unsatisfiable at runtime", () => {
+    const markdown = workflowDoc(["    output:", "      enum: [{ status: ok }]"]);
+    const errors = parseErrors(markdown);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.line).toBe(6);
+    expect(errors[0]!.message).toContain('"enum" values must be JSON primitives');
   });
 
   test("a unit-level output schema is checked too", () => {

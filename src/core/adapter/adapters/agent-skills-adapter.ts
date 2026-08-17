@@ -153,25 +153,55 @@ function skillFieldDiagnostics(relPath: string, dirName: string, data: Record<st
  */
 const MAX_PACKAGE_PROBE_DEPTH = 3;
 
-/** True when `SKILL.md` exists at `dir` or anywhere within {@link MAX_PACKAGE_PROBE_DEPTH} below it. */
-async function subtreeHasManifest(
+interface ManifestScanResult {
+  /** At least one real package root (`SKILL.md`) exists in this subtree. */
+  containsManifest: boolean;
+  /** Broken package candidates below a grouping directory. */
+  diagnostics: Diagnostic[];
+}
+
+function missingManifestDiagnostic(dir: string): Diagnostic {
+  return { file: dir, issue: "missing-skill-md", detail: `no SKILL.md in ${dir}/`, fixed: false };
+}
+
+/**
+ * Classify one directory as a package, a grouping directory, or one broken
+ * package candidate. Once a real package root is found, its resource
+ * directories are never descended into. If manifests exist only below this
+ * directory, it is a group and each sibling candidate is checked independently.
+ */
+async function scanPackageCandidate(
   dir: string,
   entries: readonly string[],
   ctx: ValidateContext,
   depth: number,
-): Promise<boolean> {
-  if (entries.includes(SKILL_MANIFEST)) return true;
-  if (depth >= MAX_PACKAGE_PROBE_DEPTH) return false;
+): Promise<ManifestScanResult> {
+  if (entries.includes(SKILL_MANIFEST)) return { containsManifest: true, diagnostics: [] };
+  if (depth >= MAX_PACKAGE_PROBE_DEPTH) {
+    return { containsManifest: false, diagnostics: [missingManifestDiagnostic(dir)] };
+  }
+
+  const children: ManifestScanResult[] = [];
   for (const entry of entries) {
+    if (entry.startsWith(".")) continue;
     const child = `${dir}/${entry}`;
     // `list` on a FILE yields `[]` (the read throws and is swallowed), so an
     // empty listing is the "not a directory worth descending" signal — no
     // separate stat is available on ValidateContext, and none is needed.
     const childEntries = await ctx.list(child);
     if (childEntries.length === 0) continue;
-    if (await subtreeHasManifest(child, childEntries, ctx, depth + 1)) return true;
+    children.push(await scanPackageCandidate(child, childEntries, ctx, depth + 1));
   }
-  return false;
+
+  if (children.some((child) => child.containsManifest)) {
+    return {
+      containsManifest: true,
+      diagnostics: children.flatMap((child) => child.diagnostics),
+    };
+  }
+  // No descendant establishes this as a grouping directory. Diagnose the
+  // candidate itself, not its resource subdirectories.
+  return { containsManifest: false, diagnostics: [missingManifestDiagnostic(dir)] };
 }
 
 /**
@@ -184,11 +214,10 @@ async function subtreeHasManifest(
  * component root through {@link ValidateContext.list} instead, so the case is
  * actually reported.
  *
- * Deliberately TOP-LEVEL only: a package's own resource dirs
- * (`pdf-processing/reference/`) are part of the item, not candidate packages,
- * and flagging them would turn every conformant bundle red. A top-level dir
- * that holds a manifest ANYWHERE beneath it is a grouping dir, not a broken
- * package, so it is left alone too.
+ * A package's own resource dirs (`pdf-processing/reference/`) are part of the
+ * item, not candidate packages. Grouping directories are supported too, but
+ * their children are classified independently so one valid package cannot hide
+ * a manifest-less sibling.
  */
 async function missingManifestDiagnostics(ctx: ValidateContext): Promise<Diagnostic[]> {
   const diagnostics: Diagnostic[] = [];
@@ -196,8 +225,7 @@ async function missingManifestDiagnostics(ctx: ValidateContext): Promise<Diagnos
     if (name.startsWith(".")) continue; // .git, .github, … are not skill packages
     const entries = await ctx.list(name);
     if (entries.length === 0) continue; // a root file (README.md), or an untrackable empty dir
-    if (await subtreeHasManifest(name, entries, ctx, 1)) continue;
-    diagnostics.push({ file: name, issue: "missing-skill-md", detail: `no SKILL.md in ${name}/`, fixed: false });
+    diagnostics.push(...(await scanPackageCandidate(name, entries, ctx, 1)).diagnostics);
   }
   return diagnostics;
 }

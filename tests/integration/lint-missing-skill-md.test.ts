@@ -98,6 +98,29 @@ describe("agent-skills: a package directory with no SKILL.md is flagged (issue #
     expect(diagnostics.filter((d) => d.issue === "missing-skill-md")).toEqual([]);
   });
 
+  test("one valid grouped package does not hide a manifest-less sibling", async () => {
+    storage = withIsolatedAkmStorage();
+    const root = path.join(storage.root, "mixed-grouped-pack");
+
+    write(root, "team/pdf-processing/SKILL.md", skillManifest("pdf-processing"));
+    write(root, "team/half-built/reference/NOTES.md", "# Notes\n");
+
+    const diagnostics = await agentSkillsAdapter.validate(
+      { id: "mixed-grouped", adapter: "agent-skills", root, writable: true },
+      [{ path: "team/pdf-processing/SKILL.md", op: "update" }],
+      createValidateContext({ root }),
+    );
+
+    expect(diagnostics.filter((d) => d.issue === "missing-skill-md")).toEqual([
+      {
+        file: "team/half-built",
+        issue: "missing-skill-md",
+        detail: "no SKILL.md in team/half-built/",
+        fixed: false,
+      },
+    ]);
+  });
+
   test("dot-directories (.git, .github) are never candidate packages", async () => {
     storage = withIsolatedAkmStorage();
     const root = path.join(storage.root, "dotted-pack");

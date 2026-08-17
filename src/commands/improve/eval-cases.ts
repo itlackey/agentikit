@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "../../core/common";
+import { recordWrittenPath } from "../../core/write-provenance";
 
 export interface EvalCase {
   ref: string;
@@ -40,6 +41,7 @@ Use it as a regression test: future improve runs on this ref should not produce
 output that would be rejected for the same reason.
 `;
   writeFileAtomic(filePath, content);
+  recordWrittenPath(filePath);
   return filePath;
 }
 
