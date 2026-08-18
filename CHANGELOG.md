@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.1-beta.3] - 2026-08-18
+
+### Fixed
+
+- Preserve multiline frontmatter descriptions when `akm lint --fix` quotes
+  colons, recover already-malformed quoted descriptions, and report a fix only
+  when the file actually changes.
+- Skip consolidation promotion proposals whose body already exists in a live
+  knowledge asset, preventing exact-content duplicates from recurring in the
+  proposal backlog.
+- Derive utility `last_used_at` values only from real user retrieval events
+  (`search`, `show`, and `curate`) instead of stamping assets with index time.
+- Compute the salience-distribution health metric over every positive,
+  non-missing salience value rather than a top-ranked 100-row slice, and report
+  the evaluated sample size.
+
 ## [0.9.1-beta.2] - 2026-08-17
 
 ### Breaking changes & migration

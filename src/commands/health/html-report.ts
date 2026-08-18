@@ -472,8 +472,8 @@ function renderActionItems(vm: HealthReportViewModel): string {
       cls: "warn",
       title: "Salience distribution collapsed: retrieval_salience Gini < 0.08",
       descHtml:
-        "The top-100 salience scores are near-uniform (uniform baseline ≈ 0.1) — " +
-        "ranking currently carries little to no discrimination between assets. " +
+        `The ${vm.degradation.retrievalSalienceSampleSize} observed, resolvable salience scores are near-uniform — ` +
+        "ranking carries little discrimination among assets with retrieval evidence. " +
         `Corpus diversity proxy: ${esc(String(vm.degradation.corpusCentroidDistance))}.`,
       remedy: "akm health --format json | jq '.improve.degradation'",
     });

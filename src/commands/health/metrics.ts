@@ -15,7 +15,7 @@ import type { Database } from "../../storage/database";
 import { insertEvent } from "../../storage/repositories/events-repository";
 import { queryImproveRuns } from "../../storage/repositories/improve-runs-repository";
 import { listStateProposals } from "../../storage/repositories/proposals-repository";
-import { getTopRetrievalSalience } from "../../storage/repositories/salience-repository";
+import { getObservedRetrievalSalience } from "../../storage/repositories/salience-repository";
 import { roundRate, toFiniteNumber } from "./improve-metrics";
 import {
   ENRICHMENT_LANES,
@@ -27,6 +27,19 @@ import {
 
 /** Event type appended + read back by the state.db round-trip probe. */
 const HEALTH_PROBE_EVENT = "health_probe";
+
+/**
+ * Retrieval-salience Gini guardrails.
+ *
+ * These are distribution-shape thresholds, not quantiles tied to a corpus
+ * size. Synthetic anchors pinned in monitor-liveness.test.ts are ~0.01 for a
+ * near-uniform two-band distribution, 0.25 for a balanced 0.25/0.75 spread,
+ * and ~0.82 for one dominant value among nine 0.01 values. Full-observation
+ * production snapshots also sit stably in the neutral band: 0.2613 at n=1,209
+ * (2026-07-12) and 0.2506 at n=1,454 (2026-08-17, missing rows excluded).
+ */
+const SALIENCE_UNIFORMITY_GINI_THRESHOLD = 0.08;
+const SALIENCE_ENTRENCHMENT_GINI_THRESHOLD = 0.35;
 
 /** Synthetic sentinel ref (ref-grammar decision D-R3): a colon-free
  * `<subsystem>/_<marker>` label. `health` has no asset stash-subdir, so
@@ -235,38 +248,41 @@ export function computeDegradationMetrics(
   since: string,
   until: string,
 ): ImproveDegradationMetrics | undefined {
-  // (a) Corpus diversity — salience rank distribution of the top-100 assets.
-  // We use the Gini coefficient of retrieval_salience scores as an intra-corpus
-  // diversity proxy. A Gini close to 1 = highly concentrated (entrenched top
-  // assets), Gini near 0 = flat/diverse. This is a single-snapshot metric;
-  // consecutive-run centroid distance requires cross-run history not yet stored.
+  // (a) Corpus diversity — distribution of every observed retrieval-salience
+  // value for a currently resolvable asset. Zero is the no-observation floor
+  // and is excluded: the diagnostic measures discrimination among assets that
+  // have a retrieval signal, not corpus coverage.
+  //
+  // Do not preselect by rank_score here. The old top-100 sample truncated the
+  // distribution before measuring it, producing a low Gini even when the full
+  // observed corpus had a healthy spread.
   let corpusCentroidDistance = Number.NaN;
+  let retrievalSalienceSampleSize = 0;
   let entrenchmentFlagged: boolean | undefined;
   let salienceUniformityFlagged: boolean | undefined;
   try {
     // Fail-open: the asset_salience table may not exist yet (pre-WS-1 install).
-    // getTopRetrievalSalience (storage/repositories/salience-repository.ts,
-    // #672 part 2) owns the raw SQL; this call site's try/catch is unchanged.
-    const rows = getTopRetrievalSalience(db, 100);
+    const rows = getObservedRetrievalSalience(db);
+    retrievalSalienceSampleSize = rows.length;
     if (rows.length >= 5) {
+      // The repository returns ascending values. Keep a defensive sort so the
+      // O(n log n) closed-form Gini remains correct if that contract changes.
       const vals = rows.map((r) => r.retrieval_salience).sort((a, b) => a - b);
       const n = vals.length;
-      const sumAbsDiff = vals.reduce((acc, xi, i) => {
-        return acc + vals.slice(i + 1).reduce((a, xj) => a + Math.abs(xi - xj), 0);
-      }, 0);
-      const mean = vals.reduce((a, b) => a + b, 0) / n;
-      // `sumAbsDiff` contains each unordered pair once, so the standard Gini
-      // denominator is n² × mean (the equivalent ordered-pair formula has 2n²).
-      const gini = mean > 0 ? sumAbsDiff / (n * n * mean) : 0;
+      const sum = vals.reduce((acc, value) => acc + value, 0);
+      const weightedSum = vals.reduce((acc, value, index) => acc + (index + 1) * value, 0);
+      // Closed-form Gini for sorted non-negative values. This is O(n log n)
+      // including the defensive sort; the previous pairwise implementation
+      // was O(n²) and only safe because the sample was capped at 100.
+      const gini = sum > 0 ? (2 * weightedSum) / (n * sum) - (n + 1) / n : 0;
       // Re-express as a diversity proxy in [0,1]: high gini = low diversity.
       // corpusCentroidDistance approximation: gini is "distance from uniform".
-      // Two-tailed: >0.35 flags entrenchment (robustly above the ~0.1 uniform
-      // baseline); <0.08 flags uniformity collapse — the distribution no longer
-      // discriminates between assets (live 2026-07 value 0.040 sat unflagged
-      // in this tail under the old one-tailed check).
+      // Two-tailed: high concentration flags entrenchment; very low spread
+      // flags near-uniformity. Calibration provenance is documented with the
+      // constants above and pinned by synthetic distribution tests.
       corpusCentroidDistance = roundRate(gini);
-      entrenchmentFlagged = gini > 0.35;
-      salienceUniformityFlagged = gini < 0.08;
+      entrenchmentFlagged = gini > SALIENCE_ENTRENCHMENT_GINI_THRESHOLD;
+      salienceUniformityFlagged = gini < SALIENCE_UNIFORMITY_GINI_THRESHOLD;
     }
   } catch {
     // Table not present (pre-WS-1 install) — leave NaN.
@@ -336,6 +352,7 @@ export function computeDegradationMetrics(
 
   return {
     corpusCentroidDistance,
+    retrievalSalienceSampleSize,
     entrenchmentFlagged,
     salienceUniformityFlagged,
     mergeFidelityContradictionRate,

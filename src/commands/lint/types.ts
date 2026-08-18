@@ -85,7 +85,7 @@ export interface LintIssue {
   file: string;
   issue: LintIssueType;
   detail: string;
-  /** `true` = fix applied; `false` = not fixable or no fix requested; `"failed"` = fix attempted but threw. */
+  /** `true` = fix applied; `false` = not fixable or no fix requested; `"failed"` = no safe replacement was produced or written. */
   fixed: boolean | "failed";
   /**
    * 1-indexed line in `file`, when the producing check knows one — the same

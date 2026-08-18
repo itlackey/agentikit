@@ -8,8 +8,7 @@
  * unchanged, only relocated behind the repository boundary. Re-exported by
  * commands/improve/salience.ts so existing importers resolve.
  *
- * `getTopRetrievalSalience` is new behavior added here (not a move): it
- * absorbs the health read formerly inlined in commands/health/metrics.ts.
+ * `getObservedRetrievalSalience` owns the health distribution read.
  *
  * This file deliberately imports NOTHING from commands/improve/salience.ts.
  * salience.ts re-exports this module's functions (a mandatory edge in that
@@ -199,21 +198,24 @@ export function getConsecutiveNoOps(db: Database, ref: string): number {
 // ── New in #672 part 2 ────────────────────────────────────────────────────────
 
 /**
- * Load the `retrieval_salience` column for the top `limit` assets ordered by
- * `rank_score` descending.
+ * Load every observed retrieval-salience value for a currently resolvable
+ * asset. Zero is the no-observation floor and is excluded so corpus sparsity
+ * does not masquerade as score entrenchment.
  *
- * Absorbs the health read formerly inlined in `commands/health/metrics.ts`
- * (`computeDegradationMetrics`'s corpus-diversity Gini calculation) — same
- * query, now parameterised on `limit` instead of a hardcoded 100. This is new
- * behavior (a named, parameterised repository entry point), not a verbatim
- * move; callers that need fail-open behaviour on a missing table (pre-WS-1
- * installs) must wrap the call in their own try/catch, matching the existing
- * call site.
+ * Health computes its distribution diagnostic over this full observed set.
+ * Sampling the top-N rows by `rank_score` first truncates the distribution and
+ * can make a healthy corpus look artificially uniform.
  */
-export function getTopRetrievalSalience(db: Database, limit: number): Array<{ retrieval_salience: number }> {
+export function getObservedRetrievalSalience(db: Database): Array<{ retrieval_salience: number }> {
   return db
-    .prepare(`SELECT retrieval_salience FROM asset_salience ORDER BY rank_score DESC LIMIT ?`)
-    .all(limit) as Array<{
+    .prepare(
+      `SELECT retrieval_salience
+         FROM asset_salience
+        WHERE retrieval_salience > 0
+          AND missing_since IS NULL
+        ORDER BY retrieval_salience ASC`,
+    )
+    .all() as Array<{
     retrieval_salience: number;
   }>;
 }

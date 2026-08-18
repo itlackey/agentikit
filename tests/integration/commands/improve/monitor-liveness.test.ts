@@ -8,8 +8,8 @@
  * The watchdogs previously fired on only one tail: proxy-adequacy alarmed only
  * when corr < −0.3 (a proxy decaying to pure noise passed forever), and the
  * salience Gini check flagged only entrenchment (> 0.35) while a distribution
- * collapsed toward uniform (live value 0.040, below the ~0.1 uniform baseline)
- * rendered as healthy. These tests pin both new tails.
+ * collapsed toward uniform rendered as healthy. These tests pin both tails and
+ * ensure the salience sample is not truncated by rank before measurement.
  */
 
 import { Database } from "bun:sqlite";
@@ -93,7 +93,7 @@ describe("computeProxyAdequacy — two-tailed", () => {
 
 // ── salience Gini ────────────────────────────────────────────────────────────
 
-function salienceDb(retrievalSaliences: number[]): AkmDatabase {
+function salienceDb(retrievalSaliences: number[], rankScores = retrievalSaliences): AkmDatabase {
   const db = new Database(":memory:") as unknown as AkmDatabase;
   db.exec(`
     CREATE TABLE asset_salience (
@@ -103,12 +103,13 @@ function salienceDb(retrievalSaliences: number[]): AkmDatabase {
       retrieval_salience REAL    NOT NULL DEFAULT 0.0,
       rank_score         REAL    NOT NULL DEFAULT 0.0,
       consecutive_no_ops INTEGER NOT NULL DEFAULT 0,
-      updated_at         INTEGER NOT NULL DEFAULT 0
+      updated_at         INTEGER NOT NULL DEFAULT 0,
+      missing_since      INTEGER DEFAULT NULL
     );
   `);
   const stmt = db.prepare("INSERT INTO asset_salience (asset_ref, retrieval_salience, rank_score) VALUES (?, ?, ?)");
   retrievalSaliences.forEach((v, i) => {
-    stmt.run(`x:${i}`, v, v);
+    stmt.run(`x:${i}`, v, rankScores[i] ?? v);
   });
   return db;
 }
@@ -118,10 +119,11 @@ const UNTIL = "2026-12-31T00:00:00.000Z";
 
 describe("computeDegradationMetrics — Gini two-tailed", () => {
   test("collapsed-toward-uniform distribution (Gini < 0.08) flags uniformity, not entrenchment", () => {
-    // Near-identical scores: Gini ≈ 0.01 — the live 2026-07 failure shape.
+    // Near-identical observed scores: Gini ≈ 0.01.
     const values = Array.from({ length: 10 }, (_, i) => (i % 2 === 0 ? 0.49 : 0.51));
     const db = salienceDb(values);
     const result = computeDegradationMetrics(db, SINCE, UNTIL);
+    expect(result?.retrievalSalienceSampleSize).toBe(10);
     expect(result?.salienceUniformityFlagged).toBe(true);
     expect(result?.entrenchmentFlagged).toBe(false);
   });
@@ -136,6 +138,37 @@ describe("computeDegradationMetrics — Gini two-tailed", () => {
     expect(result?.entrenchmentFlagged).toBe(false);
   });
 
+  test("does not mistake a uniform top-ranked slice for a uniform corpus", () => {
+    const values = [
+      ...Array.from({ length: 100 }, () => 0.5),
+      ...Array.from({ length: 50 }, () => 0.25),
+      ...Array.from({ length: 50 }, () => 0.75),
+    ];
+    // The first 100 rows are the top-ranked set and all have retrieval=0.5.
+    // The full observed corpus has a healthy spread.
+    const ranks = values.map((_, i) => (i < 100 ? 1_000 - i : -i));
+    const db = salienceDb(values, ranks);
+
+    const result = computeDegradationMetrics(db, SINCE, UNTIL);
+
+    expect(result?.retrievalSalienceSampleSize).toBe(200);
+    expect(result?.corpusCentroidDistance).toBeGreaterThan(0.08);
+    expect(result?.corpusCentroidDistance).toBeLessThan(0.35);
+    expect(result?.salienceUniformityFlagged).toBe(false);
+    expect(result?.entrenchmentFlagged).toBe(false);
+  });
+
+  test("excludes zero no-observation floors and missing assets from the sample", () => {
+    const db = salienceDb([0, 0, 0.25, 0.75, 0.25, 0.75, 0.25]);
+    db.prepare("UPDATE asset_salience SET missing_since = 1 WHERE asset_ref = ?").run("x:6");
+
+    const result = computeDegradationMetrics(db, SINCE, UNTIL);
+
+    expect(result?.retrievalSalienceSampleSize).toBe(4);
+    expect(result?.entrenchmentFlagged).toBeUndefined();
+    expect(result?.salienceUniformityFlagged).toBeUndefined();
+  });
+
   test("entrenched distribution (Gini > 0.35) still flags entrenchment, not uniformity", () => {
     // One dominant asset, nine near-zero → Gini ≈ 0.82.
     const values = [1.0, ...Array.from({ length: 9 }, () => 0.01)];
@@ -148,6 +181,7 @@ describe("computeDegradationMetrics — Gini two-tailed", () => {
   test("fewer than 5 salience rows leaves both flags undefined (insufficient data)", () => {
     const db = salienceDb([0.5, 0.5, 0.5]);
     const result = computeDegradationMetrics(db, SINCE, UNTIL);
+    expect(result?.retrievalSalienceSampleSize).toBe(3);
     expect(result?.entrenchmentFlagged).toBeUndefined();
     expect(result?.salienceUniformityFlagged).toBeUndefined();
   });

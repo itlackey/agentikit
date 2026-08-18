@@ -2554,7 +2554,12 @@ export function recomputeUtilityScores(db: Database, stateDb: Database): void {
              SUM(CASE WHEN u.event_type = 'show'   THEN 1 ELSE 0 END) AS show_count,
              SUM(CASE WHEN u.event_type = 'feedback' AND u.signal = 'positive' THEN 1 ELSE 0 END) AS positive_feedback_count,
              SUM(CASE WHEN u.event_type = 'feedback' AND u.signal = 'negative' THEN 1 ELSE 0 END) AS negative_feedback_count,
-             MAX(u.created_at) AS last_used_at
+             MAX(
+               CASE
+                 WHEN u.event_type IN ('search', 'show', 'curate') THEN u.created_at
+                 ELSE NULL
+               END
+             ) AS last_used_at
       FROM usage_events u
       WHERE u.entry_id IS NOT NULL
         AND u.source = 'user'
@@ -2584,8 +2589,6 @@ export function recomputeUtilityScores(db: Database, stateDb: Database): void {
     existingScores.set(row.entry_id, { utility: row.utility, lastUsedAt: row.last_used_at ?? undefined });
   }
 
-  const now = new Date().toISOString();
-
   const entryIds = new Set([...existingScores.keys(), ...usageByEntry.keys()]);
   for (const entryId of entryIds) {
     const row = usageByEntry.get(entryId) ?? {
@@ -2604,7 +2607,17 @@ export function recomputeUtilityScores(db: Database, stateDb: Database): void {
     const existing = existingScores.get(row.entry_id);
     const prevUtility = existing?.utility ?? 0;
     const utility = prevUtility * emaDecay + effectiveRate * emaNew;
-    const lastUsedAt = effectiveRate > 0.5 ? now : (existing?.lastUsedAt ?? undefined);
+    // `utility_scores.last_used_at` is consumed by salience as the timestamp of
+    // the most-recent retrieval. Preserve that meaning by carrying the event's
+    // timestamp through verbatim. The former `effectiveRate > 0.5 ? now : ...`
+    // branch stamped every high-select-rate entry with the index run time,
+    // making unrelated assets look simultaneously fresh and flattening the
+    // recency component of retrieval salience.
+    //
+    // `usage_events` is the source of truth within its retention window. A
+    // missing row therefore clears legacy/index-time stamps on the next index
+    // pass; salience already treats an absent timestamp as long ago.
+    const lastUsedAt = row.last_used_at ?? undefined;
 
     upsertUtilityScore(db, row.entry_id, {
       utility,

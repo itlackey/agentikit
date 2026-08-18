@@ -498,23 +498,21 @@ export interface ImprovePerfTelemetry {
  */
 export interface ImproveDegradationMetrics {
   /**
-   * Inter-run corpus diversity: cosine centroid distance of the top-N retrieved
-   * assets between the most recent two runs. A >10% drop flags entrenchment.
-   * NaN when fewer than 2 runs or no retrieved-asset data.
+   * Gini coefficient of positive `retrieval_salience` values across currently
+   * resolvable assets. NaN when fewer than 5 assets have retrieval evidence.
    */
   corpusCentroidDistance: number;
+  /** Number of positive, resolvable salience rows in the Gini sample. */
+  retrievalSalienceSampleSize: number;
   /**
-   * Whether corpusCentroidDistance represents a >10% drop vs the prior run.
+   * Whether corpusCentroidDistance exceeds the 0.35 entrenchment threshold.
    * `undefined` when the metric is NaN.
    */
   entrenchmentFlagged?: boolean;
   /**
-   * Low-tail Gini flag: `true` when the top-100 retrieval_salience Gini is
-   * below 0.08 — the salience distribution has collapsed toward uniform and
-   * no longer discriminates between assets (ranking carries no signal).
-   * The uniform baseline for this formula is ~0.1, so a healthy distribution
-   * sits above it; the old one-tailed check (>0.35 entrenchment only)
-   * rendered a fully collapsed distribution as healthy.
+   * Low-tail Gini flag: `true` when observed retrieval-salience values across
+   * the resolvable corpus have Gini below 0.08 and therefore carry little
+   * discrimination between assets with retrieval evidence.
    * `undefined` when the metric is NaN.
    */
   salienceUniformityFlagged?: boolean;

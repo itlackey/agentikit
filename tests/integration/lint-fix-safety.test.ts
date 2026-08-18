@@ -23,8 +23,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { parseDocument } from "yaml";
 import { runBaseChecks } from "../../src/commands/lint/base-linter";
 import { akmLint } from "../../src/commands/lint/index";
+import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
 import { UsageError } from "../../src/core/errors";
 import { makeConfig } from "../_helpers/factories";
@@ -168,5 +170,70 @@ describe("akm lint --fix is transactional per file (issue #761)", () => {
     expect(updated.length).toBe(1);
     expect(updated[0]?.fixed).toBe("failed");
     expect(updated[0]?.detail).toMatch(/could not write fix/);
+  });
+});
+
+describe("akm lint --fix preserves multiline descriptions", () => {
+  let storage: IsolatedAkmStorage;
+  afterEach(() => storage?.cleanup());
+
+  test("repairs valid plain and malformed quoted wrapping without corrupting YAML", async () => {
+    storage = withIsolatedAkmStorage();
+    const cases = [
+      {
+        name: "plain-wrapped",
+        description:
+          "The release gate runs on localhost:5173 and preserves the complete description across physical lines.",
+        frontmatter: [
+          "description: The release gate runs on localhost:5173 and preserves the",
+          "  complete description across physical lines.",
+        ],
+      },
+      {
+        name: "malformed-quoted-wrapped",
+        description:
+          '"The Account contract: GET /my/account resolves bearer subject to profile; POST rejects uninvited users."',
+        frontmatter: [
+          'description: "\\"The Account contract: GET /my/account resolves bearer"',
+          '  subject to profile; POST rejects uninvited users."',
+        ],
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const filePath = path.join(storage.stashDir, "memories", `${testCase.name}.md`);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(
+        filePath,
+        [
+          "---",
+          `name: ${testCase.name}`,
+          "type: memory",
+          ...testCase.frontmatter,
+          "updated: 2026-08-17",
+          "---",
+          "",
+          "Substantive body content.",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+    }
+
+    const result = await akmLint({ fix: true, config: makeConfig(storage.stashDir) });
+    expect(result.fixed.filter((issue) => issue.issue === "unquoted-colon")).toHaveLength(cases.length);
+    expect(result.flagged.filter((issue) => issue.issue === "unquoted-colon")).toEqual([]);
+
+    for (const testCase of cases) {
+      const filePath = path.join(storage.stashDir, "memories", `${testCase.name}.md`);
+      const after = parseFrontmatter(fs.readFileSync(filePath, "utf8"));
+      const document = parseDocument(after.frontmatter ?? "");
+      expect(document.errors, `${testCase.name} should remain valid YAML`).toEqual([]);
+      expect(after.data.description).toBe(testCase.description);
+    }
+
+    const secondPass = await akmLint({ fix: true, config: makeConfig(storage.stashDir) });
+    expect(secondPass.fixed.filter((issue) => issue.issue === "unquoted-colon")).toEqual([]);
+    expect(secondPass.flagged.filter((issue) => issue.issue === "unquoted-colon")).toEqual([]);
   });
 });
