@@ -21,12 +21,17 @@ import { buildActionFromContributors, defaultActionContributors } from "../../co
 import { stashDirFor } from "../../core/asset/asset-placement";
 import { displayRef } from "../../core/asset/resolve-ref";
 import type { AkmConfig, ImproveConfig } from "../../core/config/config";
+import { classifyPathAccess } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
 import { defaultRendererRegistry, type RendererRegistry } from "../../core/type-presentation";
 import { warn } from "../../core/warn";
 import type { AkmSearchType, BeliefFilterMode, SearchHitSize, SourceSearchHit } from "../../sources/types";
 import type { Database } from "../../storage/database";
-import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
+import {
+  assertIndexPathReadable,
+  closeDatabase,
+  openExistingDatabase,
+} from "../../storage/repositories/index-connection";
 import {
   getAllEntries,
   getBaseBeliefStatesForDerivedTwins,
@@ -134,6 +139,23 @@ export function shouldQueryPositiveFeedbackCounts(utilityDecayRaw: ImproveConfig
 
 // ── Main search entrypoint ───────────────────────────────────────────────────
 
+/**
+ * Whether an embedding provider is actually configured.
+ *
+ * A remote provider needs BOTH endpoint and model. A LOCAL provider needs
+ * neither — `embedding.localModel` selects a transformers model that runs in
+ * process. Checking only the remote pair told every local-provider user that
+ * "no embedding provider is configured" and pointed them at
+ * `akm config set embedding '{"endpoint":...}'`, which is the wrong remedy and
+ * hid the real diagnostic recorded in the semantic status.
+ */
+function hasConfiguredEmbeddingProvider(config: {
+  embedding?: { endpoint?: string; model?: string; localModel?: string };
+}): boolean {
+  if (config.embedding?.localModel) return true;
+  return Boolean(config.embedding?.endpoint && config.embedding?.model);
+}
+
 export async function searchLocal(input: {
   query: string;
   searchType: AkmSearchType;
@@ -204,7 +226,7 @@ export async function searchLocal(input: {
       warnings.push(
         "Embedding config changed. Run 'akm index --full' to rebuild the semantic index with the new provider.",
       );
-    } else if (!config.embedding?.endpoint || !config.embedding?.model) {
+    } else if (!hasConfiguredEmbeddingProvider(config)) {
       // #480: when semantic mode is `auto` but no embedding provider is
       // configured (e.g. `akm setup --yes` ran without picking one), telling
       // the user to "run akm setup" is misleading — they just did. Surface
@@ -222,7 +244,7 @@ export async function searchLocal(input: {
     }
   }
   if (config.semanticSearchMode === "auto" && semanticStatus === "blocked") {
-    if (!config.embedding?.endpoint || !config.embedding?.model) {
+    if (!hasConfiguredEmbeddingProvider(config)) {
       // F7/A2: same predicate as the `pending` branch above (#480) — a
       // `blocked` status can outlive the provider config that produced it
       // (e.g. the embedding config was later unset). This is not a fault;
@@ -253,7 +275,12 @@ export async function searchLocal(input: {
   await ensureIndex(stashDir);
 
   const dbPath = getDbPath();
-  if (!fs.existsSync(dbPath)) {
+  // An index we cannot READ is not an index that does not exist (#791). Saying
+  // "No search index available" for a populated index the caller merely lacks
+  // permission on is a lie at exit 0 — and an agent consuming this JSON has no
+  // way to tell it from a genuine empty result, so it relays the lie onward.
+  assertIndexPathReadable(dbPath);
+  if (classifyPathAccess(dbPath).access === "absent") {
     return {
       hits: [],
       tip: "No search index available. Run 'akm index' to build one.",

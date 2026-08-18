@@ -5,3 +5,9 @@ dist
 .plans
 .dev
 tests/fixtures/openviking/workspace
+# Agent scratch state. `.claude/worktrees/` holds a full checkout per agent and
+# reached 738 MB in one session — without this the Docker release gate ships it
+# all as build context.
+.claude
+.akm
+.akm-run

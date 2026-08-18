@@ -29,6 +29,7 @@ import { insertEvent, readStateEvents } from "../storage/repositories/events-rep
 import { rethrowIfTestIsolationError } from "./errors";
 import type { EventEnvelope } from "./events-types";
 import { getStateDbPath, openStateDatabase, withStateDb } from "./state-db";
+import { borrowScopedStateDb } from "./state-db-scope";
 import { error } from "./warn";
 
 /**
@@ -220,40 +221,42 @@ function resolveNow(ctx?: EventsContext): () => number {
  * function writes directly to that handle without opening or closing the DB.
  * This eliminates per-event open/migrate/close overhead for high-frequency
  * callers such as `akmImprove`.
+ *
+ * The same fast path is taken IMPLICITLY inside a `withStateDbScope` /
+ * `withWorkflowRunsConnection` scope (`core/state-db-scope.ts`): the ambient
+ * scoped handle for this event's resolved `dbPath` is borrowed, so a workflow
+ * step's `workflow_unit_started` / `workflow_unit_finished` pair rides the same
+ * connection its journal rows do instead of opening state.db twice per unit.
+ * The scope owns that handle's lifetime; `appendEvent` never closes a borrowed
+ * connection.
  */
 export function appendEvent(input: AppendEventInput, ctx?: EventsContext): void {
   const now = resolveNow(ctx);
   const ts = new Date(now()).toISOString();
+  const row = { eventType: input.eventType, ts, ref: input.ref, metadata: input.metadata };
 
-  // Fast path: caller provided a long-lived connection — use it directly.
-  if (ctx?.db) {
-    try {
-      insertEvent(ctx.db, {
-        eventType: input.eventType,
-        ts,
-        ref: input.ref,
-        metadata: input.metadata,
-      });
-    } catch (err) {
-      error(`akm: appendEvent failed: ${String(err)}`);
-    }
-    return;
-  }
-
-  // Default path: open, insert, close.
-  const dbPath = resolveDbPath(ctx);
+  // One try covers EVERY path — including resolving the state.db path, which
+  // reads the environment and throws where no data dir can be derived — so the
+  // best-effort contract ("a write failure never propagates") holds no matter
+  // which handle this event lands on.
   try {
-    withStateDb(
-      (db) => {
-        insertEvent(db, {
-          eventType: input.eventType,
-          ts,
-          ref: input.ref,
-          metadata: input.metadata,
-        });
-      },
-      { path: dbPath },
-    );
+    // Fast path: an explicitly supplied long-lived connection. Resolution is
+    // skipped outright, which is what "`dbPath` is ignored when `db` is
+    // provided" has to mean for a caller that already holds an open handle.
+    if (ctx?.db) {
+      insertEvent(ctx.db, row);
+      return;
+    }
+    const dbPath = resolveDbPath(ctx);
+    // The ambient scoped handle for this path, when a scope is open — borrowed
+    // exactly like the explicit one, and never closed here.
+    const borrowed = borrowScopedStateDb(dbPath);
+    if (borrowed) {
+      insertEvent(borrowed, row);
+      return;
+    }
+    // Default path: open, insert, close.
+    withStateDb((db) => insertEvent(db, row), { path: dbPath });
   } catch (err) {
     // Never mask the bun-test isolation guard as a silent "events failed".
     rethrowIfTestIsolationError(err);

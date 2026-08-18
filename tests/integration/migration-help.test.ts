@@ -20,18 +20,6 @@ describe("migration help", () => {
     expect(result).toContain("## [0.5.0]");
   });
 
-  test("supports latest alias when changelog text is available", () => {
-    const result = renderMigrationHelp("latest");
-    // Derive the expected version from the changelog so this never re-breaks on a
-    // version bump: "latest" resolves to the newest RELEASED (non-Unreleased) section.
-    const changelog = fs.readFileSync(path.join(PROJECT_ROOT, "CHANGELOG.md"), "utf8");
-    const latest = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)]
-      .map((m) => m[1])
-      .find((v) => v!.toLowerCase() !== "unreleased");
-    expect(latest).toBeTruthy();
-    expect(result).toContain(`## [${latest}]`);
-  });
-
   test("ensures published static files exist in the repo", () => {
     const packageJson = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8")) as {
       files?: string[];
@@ -61,13 +49,63 @@ describe("migration help", () => {
     }
   });
 
-  test("latest alias resolves to the newest release changelog section", () => {
+  test("supports latest alias when changelog text is available", () => {
+    // Behavior only: `latest` resolves to the newest RELEASED (non-Unreleased)
+    // section. The expectation is derived from the changelog so this never
+    // re-breaks on a version bump.
+    //
+    // Whether that section names the version actually being shipped is a
+    // property of the RELEASE, not of this renderer, and is asserted in
+    // tests/integration/workflow-release.test.ts — which is
+    // `run_step "Workflow Release Contract"` in tests/release-check.sh.
     const result = renderMigrationHelp("latest");
-    // The final [0.9.0] section must sit ABOVE the rc/beta history:
-    // resolveLatestVersion() returns the first non-Unreleased heading, so a
-    // misplaced section would make `akm help migrate latest` report an rc.
-    expect(result).toContain("## [0.9.0]");
-    expect(result).not.toContain("## [0.9.0-rc");
+    const changelog = fs.readFileSync(path.join(PROJECT_ROOT, "CHANGELOG.md"), "utf8");
+    const latest = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)]
+      .map((match) => match[1])
+      .find((heading) => heading?.toLowerCase() !== "unreleased");
+    expect(latest).toBeTruthy();
+    expect(result).toContain(`## [${latest}]`);
+  });
+
+  test("renders the whole changelog section, not just up to the first capital Z", () => {
+    // The section pattern anchored its end with `\Z`, which is not a JavaScript
+    // anchor — it matches a literal "Z". The body therefore stopped at the first
+    // capital Z (in the real changelog: inside `PAGE_SIZE`, ~7.1KB into a 45KB
+    // section), silently dropping breaking changes, Added and Fixed. `latest`
+    // resolves to the newest heading, which is precisely the version with no
+    // bundled note, so it always renders through this path.
+    const changelog = fs.readFileSync(path.join(PROJECT_ROOT, "CHANGELOG.md"), "utf8");
+    const latest = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)]
+      .map((match) => match[1])
+      .find((heading) => heading?.toLowerCase() !== "unreleased");
+    const start = changelog.indexOf(`## [${latest}]`);
+    const nextHeading = changelog.indexOf("\n## [", start + 1);
+    const expectedBody = (nextHeading === -1 ? changelog.slice(start) : changelog.slice(start, nextHeading)).trim();
+
+    const result = renderMigrationHelp("latest");
+
+    // The last non-empty line of the real section must survive.
+    const lastLine = expectedBody
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .at(-1);
+    expect(lastLine).toBeTruthy();
+    expect(result).toContain(lastLine!);
+    // And a section containing a capital Z must not be cut short at it.
+    const zIndex = expectedBody.search(/[A-Z]*Z/);
+    if (zIndex > 0) expect(result.length).toBeGreaterThan(zIndex + 1);
+  });
+
+  test("renders the final changelog entry, which has no following heading", () => {
+    // With `\Z` the end-of-input alternative never matched, so the LAST entry in
+    // the changelog returned undefined and fell through to the generic message.
+    const changelog = fs.readFileSync(path.join(PROJECT_ROOT, "CHANGELOG.md"), "utf8");
+    const headings = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)].map((match) => match[1]!);
+    const oldest = headings.at(-1);
+    expect(oldest).toBeTruthy();
+    const result = renderMigrationHelp(oldest!, undefined);
+    expect(result).toContain(`## [${oldest}]`);
+    expect(result).not.toContain("No dedicated migration note");
   });
 
   test("renders dedicated message when no bundled note or changelog entry exists", () => {

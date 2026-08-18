@@ -107,6 +107,17 @@ export function isNetworkFilesystem(fsType: number | undefined): boolean {
 }
 
 /** Options for {@link applyStandardPragmas}. */
+/**
+ * How long a statement waits for a lock before failing with SQLITE_BUSY.
+ *
+ * Exported so read-only openers can apply it too. They cannot run the rest of
+ * the standard set (journal_mode and foreign_keys are write operations), but
+ * the default of 0 makes reads fail INSTANTLY under writer contention — which
+ * matters in the DELETE/TRUNCATE journal modes 0.9.1's network-filesystem
+ * fallback and `AKM_SQLITE_JOURNAL_MODE` can select, where readers do block.
+ */
+export const SQLITE_BUSY_TIMEOUT_MS = 30_000;
+
 export interface StandardPragmaOptions {
   /**
    * When `false`, `PRAGMA foreign_keys = ON` is NOT applied. Default `true`
@@ -169,7 +180,7 @@ export function applyStandardPragmas(db: Database, opts: StandardPragmaOptions =
   // lock instead of failing immediately with SQLITE_BUSY. For the WAL default
   // this is a no-op (WAL→WAL changes nothing), so byte-identical behaviour is
   // preserved.
-  db.exec("PRAGMA busy_timeout = 30000");
+  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
   db.exec(`PRAGMA journal_mode = ${mode}`);
   if (opts.foreignKeys !== false) {
     db.exec("PRAGMA foreign_keys = ON");

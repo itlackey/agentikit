@@ -239,5 +239,81 @@ Each step is additive and green in isolation, so the cycle ratchet never goes re
 
 - **No new command surface / return path.** Do not add an `x-bearer-token path`-style command; the precedent (`secret path` / `secret remove` removal, R-027 / D-49) is that akm removes a surface rather than risk a resolver mismatch or accidental exposure.
 - **Do not rely on `--format` / `output()` exemption as the safety mechanism.** The new path must be structurally value-free on its own (same-frame header set, never returned upward), not depend on CLI-level formatting exemptions.
-- **Do not ship Proposal 3's independent enumerator now.** Deleting the `env-secret-ref → search-source` edge (P3) is the correct *eventual* structural cleanup, but only if `secretSourceRoots` **delegates to a shared lock-first helper** also used by `resolveEntryContentDir`; the as-written second-source-of-truth reintroduces the resolver-mismatch class that already cost `secret path` / `secret remove`. Track it as a separate, later refactor.
+- **Do not ship Proposal 3's independent enumerator now.** Deleting the `env-secret-ref → search-source` edge (P3) is the correct *eventual* structural cleanup, but only if `secretSourceRoots` **delegates to a shared lock-first helper** also used by `resolveEntryContentDir`; the as-written second-source-of-truth reintroduces the resolver-mismatch class that already cost `secret path` / `secret remove`. Track it as a separate, later refactor. **Update (issue #744): that condition was tested and cannot be met today — see §8 for the measurements and the single blocking edge.**
 - **Do not adopt Proposal 2's breaking field rename now.** The opaque `CredentialProvider` (void/boolean methods, strongest containment) is the principled long-term target if a breaking contract change ever becomes acceptable; today its lockstep churn is unjustified when P4 reaches the same consumers additively.
+
+---
+
+## 8. P3 feasibility re-assessment (issue #744, 2026-08-12) — BLOCKED on one edge
+
+§7 defers P3 with a condition: it may land "only if `secretSourceRoots` **delegates to a shared lock-first helper** also used by `resolveEntryContentDir`." That condition was tested directly. **It cannot be met today.** The blocker is a single import edge, named at the end of this section; P3 should stay deferred until that edge is severed.
+
+### 8.1 What was built and measured
+
+The strongest possible reading of the §7 condition was implemented as a probe: rather than write a *new* `secretSourceRoots` that "delegates to" a shared helper, `SearchSource`, `resolveSourceEntries` and `resolveEntryContentDir` were moved **verbatim** out of `indexer/search/search-source.ts` into a candidate leaf module, so the reader and the indexer would call the *same function object* — one resolver by construction, not two that agree by convention. That is strictly better than the proposal's sketch and removes any second-source-of-truth argument.
+
+It still fails, for a reason the original critique did not reach.
+
+### 8.2 Finding 1 — the "lock-first helper" is lock-first but **provider-second**, and the second half is load-bearing
+
+`lockContentRootFor` (`src/integrations/lockfile.ts:169-177`) answers **only** for `git`/`npm` bundles that carry a lock `localRoot`; its first line returns `undefined` for every other kind by construction:
+
+```ts
+if (!bundleId || (type !== "git" && type !== "npm")) return undefined;
+```
+
+So for a **filesystem** bundle (the primary bundle — where `secrets/` actually live), a **website** cache, and a **legacy/unlocked git** bundle, the content root comes exclusively from the second half of `resolveEntryContentDir`: `resolveSourceProviderFactory(entry.type)` → `factory(entry)` → `provider.path()`. Exactly the three cases the issue's acceptance criteria demand be pinned.
+
+And that second half is not an implementation detail to route around — it is the repo's *declared* single source of truth (`search-source.ts:161-166`): "each provider owns its own path… This replaces the old per-kind switch ladder (filesystem path / git cache / website cache) that lived here in 0.6.0." Any leaf resolver that derives those paths itself reintroduces the ladder 0.6.0 deleted.
+
+### 8.3 Finding 2 — a leaf cannot populate the provider registry, and a half-populated registry mis-resolves **silently**
+
+The registry is populated by one eager side-effect import, `search-source.ts:16` (`import "../../sources/providers/index"`). A leaf reader structurally cannot perform it: `providers/index → website.ts → website-ingest.ts → snapshot-fetchers/registry.ts → x.ts` is the fetcher subgraph, and pulling it in is the very coupling P3 exists to delete.
+
+Measured against a fixture config holding all five shapes (filesystem primary, lock-managed git, **legacy/unlocked git**, **website cache**, lock-managed npm), same config, two processes:
+
+| bundle | via `search-source` (registered) | via the leaf (not registered) |
+|---|---|---|
+| `primary` (filesystem) | `…/fixture/primary-stash` | `…/.akm/unresolved-sources/primary` ❌ |
+| `locked-git` | `…/installs/locked-git/content` | same ✅ (lock-first) |
+| `legacy-git` | `…/cache/registry-index/git-07aa…/repo` | same ✅ *(by accident — see below)* |
+| `site-cache` (website) | `…/cache/registry-index/website-de10…` | `…/.akm/unresolved-sources/site-cache` ❌ |
+| `locked-npm` | `…/installs/locked-npm` | same ✅ (lock-first) |
+
+End to end, with the secret genuinely present in the primary bundle:
+
+- `resolveSecretPath("secrets/x-bearer-token")` today → `…/fixture/primary-stash/secrets/x-bearer-token`
+- the same logic on the leaf enumerator → `…/.akm/unresolved-sources/primary/secrets/x-bearer-token`
+
+**A different file, no error, no warning** — `findEnvSource` falls back to `candidates[0]` when its `existsSync` probe finds nothing, and `resolveSecretFromStore` swallows every failure to `null`. This is precisely the resolver-mismatch class that cost `secret path` / `secret remove` (R-027 / D-49).
+
+Worse than a clean failure: registration is **partial and accidental**. In the leaf's import closure `git` *is* registered — not deliberately, but because `core/write-source.ts` happens to import `sources/providers/git.ts`. So the leaf resolves git correctly and filesystem/website incorrectly, and which kinds work depends on which unrelated modules got pulled in. A resolver whose correctness varies by transitive import order is the worst available property.
+
+### 8.4 Finding 3 — all three escapes are closed
+
+| Escape | Result |
+|---|---|
+| (a) Derive filesystem/website/git roots in the leaf | Reinstates the per-kind switch ladder deleted in 0.6.0 — the second source of truth §7 forbids. |
+| (b) Side-effect-import `providers/index` from the leaf | Measured: **7 cycle participants** (`env-secret-read`, `source-entries`, `providers/index`, `website`, `website-ingest`, `snapshot-fetchers/registry`, `x`) against an **absolute 0 baseline**. This is the subgraph coming back through another door. |
+| (c) Rely on ambient registration order | §4.1's rejected P1 flaw, with a worse failure mode: P1 degraded to env-var-only, this resolves a *different file*. Making it loud needs either a hardcoded four-kind list (new duplicated truth) or turning `resolveEntryContentDir`'s deliberately-soft `undefined` degradation — which the indexer relies on to keep running past a bad source — into a throw. |
+
+### 8.5 The one blocking edge, and the prerequisite
+
+The single edge that makes `providers/index` unimportable from a leaf is:
+
+```
+src/sources/providers/website.ts  ──▶  src/sources/snapshot-fetchers/website-ingest.ts
+```
+
+`website.ts` needs `getWebsiteCachePaths` / `validateWebsiteUrl` / `shouldAllowPrivateWebsiteUrlForTests` for `path()`, and `ensureWebsiteMirror` for `sync()`. The other three providers are already subgraph-free (`filesystem.ts`, `git.ts`, `npm.ts`).
+
+Re-running the P3 graph with **only that edge removed** yields **0 cycle participants**. So the prerequisite is exact and singular:
+
+1. Extract the pure path derivations (`getWebsiteCachePaths` + `normalizeSiteUrl`, `validateWebsiteUrl`, `shouldAllowPrivateWebsiteUrlForTests`) from `website-ingest.ts` into a leaf module both it and `website.ts` import. Necessary, **not sufficient** — `sync()` still reaches `ensureWebsiteMirror`.
+2. Stop `website.ts`'s `sync()` from statically importing `ensureWebsiteMirror` — inject the mirror as a capability on `SyncOptions`, bound from a composition root, exactly the P4 idiom applied to the mirror instead of the secret.
+
+With both done, `providers/index` becomes a leaf-importable registration point, the moved `resolveSourceEntries` is genuinely one shared resolver, and P3's acceptance criteria are reachable. Until then P3 cannot satisfy §7's condition and must not land.
+
+### 8.6 Correction to the issue's framing
+
+`CYCLE_PARTICIPANT_BASELINE` is **already empty** and the ratchet is absolute; `bun scripts/lint-import-cycles.ts` reports `0 cycle participant(s)`. There is no import cycle in `src/` today — `env-secret-ref → search-source` is a one-way DAG edge, and the cycle is only *latent* (it closes if a fetcher imports the reader). So #744's "the baseline shrinks" criterion is vacuous as written: the measurable win P3 offers is not a smaller baseline but the removal of the latent back-edge, which is what §8.5 gates.

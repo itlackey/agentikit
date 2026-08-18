@@ -6,6 +6,746 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-18
+
+### Fixed
+
+- Preserve multiline frontmatter descriptions when `akm lint --fix` quotes
+  colons, recover already-malformed quoted descriptions, and report a fix only
+  when the file actually changes.
+- Skip consolidation promotion proposals whose body already exists in a live
+  knowledge asset, preventing exact-content duplicates from recurring in the
+  proposal backlog.
+- Derive utility `last_used_at` values only from real user retrieval events
+  (`search`, `show`, and `curate`) instead of stamping assets with index time.
+- Compute the salience-distribution health metric over every positive,
+  non-missing salience value rather than a top-ranked 100-row slice, and report
+  the evaluated sample size.
+
+## [0.9.1-beta.2] - 2026-08-17
+
+### Breaking changes & migration
+
+The 0.9.x series carries breaking changes as it works toward the 0.10.x
+stabilization line. Every item here is detailed further down; this section is
+what an upgrader reads first.
+
+- **A data directory akm cannot READ is now an error, not an empty result.**
+  Commands that previously returned `hits: []` / `entryCount: 0` / "nothing
+  eligible" at exit 0 for an index, lockfile or database they lacked permission
+  on now raise `DATA_DIR_UNREADABLE` (exit 78) naming the path, errno, mode,
+  owner and running uid. *Affected:* anyone whose data dir is partly unreadable
+  — most often a `$XDG_DATA_HOME` shared across uids. *Remedy:* fix the
+  ownership or mode the error names, or point `AKM_DATA_DIR` somewhere this
+  user owns. The old behaviour was a false success, so a script that treated
+  exit 0 as "no results" was already being lied to.
+
+- **Lockfile writes refuse to run against an unreadable `akm.lock`.**
+  `akm bundle add` / `remove` / `update` now fail closed instead of reading the
+  lock as empty and writing the single incoming entry over the whole record.
+  *Remedy:* as above. This one prevented real data loss — see Fixed.
+
+- **`akm workflow run` exits 1 when a run ends `blocked`.** Previously 0.
+  *Affected:* CI steps and scheduled wrappers that branched only on `failed`.
+  *Remedy:* treat nonzero as "not verified"; resume with
+  `akm workflow resume <id>`.
+
+- **`akm index --clean` no longer deletes entries whose file it cannot read.**
+  It keeps and names them. *Affected:* anyone relying on `--clean` to prune
+  aggressively; it is now conservative where it cannot see.
+
+- **Workflow documents are bounds-checked at authoring time.** `engine:` name
+  grammar, `retry.max` 0–100, `gate.max_loops` 1–100, `map.concurrency` and
+  `engines.<name>.concurrency` 1–64, and any `timeout:` ≤ 2 147 483 647 ms are
+  now enforced by the parser. *Affected:* documents that parsed at 0.9.0 but
+  could never actually run — the frozen-plan decoder already refused them.
+  *Remedy:* edit the offending field; the error is now line-anchored.
+
+- **`akm health` no longer emits `secret-file-perms`, and no longer exits 4 for
+  it.** The check is gone. *Affected:* anything parsing health output for that
+  check name.
+
+- **Command-target task logs are now redacted.** Output that previously
+  persisted verbatim may now contain `[REDACTED]`. *Affected:* anything
+  grepping task logs for values that are now recognised as secrets.
+
+- **Leftover `isolation: worktree` trees are garbage-collected after 7 days.**
+  *Remedy:* copy anything you want to keep out of a retained worktree within a
+  week.
+
+### Added
+
+- **`exec` workflow units — run a shell command as a workflow step.** A step
+  whose `unit:` block declares `exec:` runs a command directly instead of
+  dispatching to an LLM or an agent, so deterministic work (test suites,
+  builds, lint, scripts) no longer costs a model dispatch, its latency, its
+  tokens, or its nondeterminism.
+
+  ```yaml
+  - id: test
+    unit:
+      exec:
+        command: ["bun", "run", "test:unit"]
+        pass_env: [CARGO_HOME]   # optional: widen the default env allowlist
+      timeout: "10m"
+      retry: { max: 1, on: [timeout] }
+  ```
+
+  - **`command:` is an argv array; there is no shell-string spelling.** The
+    child is spawned directly, so `;`, `|`, `&&`, `$(…)` and `*` inside an
+    argument are inert literal bytes — the quoting/injection class is
+    structurally absent, not defended against. Write `["bash", "-lc", "…"]`
+    when a pipeline is genuinely wanted, and own that choice in the diff.
+  - **An exec unit names no engine.** It rejects `engine`/`model`/`llm`, spends
+    no tokens, and a workflow made only of exec steps runs on an install with
+    no engine configured at all.
+  - **Everything else about a unit still applies:** `timeout`, `retry`,
+    `on_error`, `output`, `env`, `isolation: worktree`, `map` fan-out and its
+    concurrency limits, the unit journal, budget accounting, and replay/reuse
+    (a completed exec unit is never re-run on resume).
+  - **Output rule:** stdout is the promoted artifact with trailing newlines
+    stripped (like shell `$(…)`); with an `output:` schema on the unit, stdout
+    must be exactly one JSON value, strictly parsed and validated. stderr is a
+    diagnostic channel only. A schema miss is *not* re-prompted — a fixed argv
+    cannot answer feedback, but re-running it could deploy twice.
+  - **Exit codes:** non-zero → `non_zero_exit`, wall-clock expiry → `timeout`,
+    cancellation → `aborted`, failure to start → `spawn_failed`. Those are
+    pre-existing `retry.on` reasons. With the default `on_error: fail`, a
+    non-zero exit fails the step and the run, which is what makes a `test` step
+    a gate.
+  - **A partial capture is never promoted as the artifact.** Exiting 0 does not
+    prove stdout was read to the end: a pipe can error, and a background
+    descendant holding the stdout handle open after the command leader exits
+    keeps the pipe alive past the drain deadline. Both leave a *prefix* of the
+    real output, so the unit fails — with its own reason,
+    `exec_capture_incomplete`, which is deliberately **not** a `retry.on` value.
+    The command already ran; re-dispatching identical argv to fix a capture
+    problem would run its side effects a second time.
+  - **Everything the command can spend is bounded — without inventing failures.**
+    Alongside the wall-clock timeout, akm bounds the memory it spends on the
+    command's behalf and the environment it can hand the command. Both bounds are
+    built so that they only ever *explain* a failure that was going to happen
+    anyway; neither fails a run that would otherwise have succeeded.
+
+    **Retained output: 8 MiB per stream, drain-and-discard.** akm keeps at most
+    8 MiB of stdout and 8 MiB of stderr. Past the cap it keeps *reading* the pipe
+    and throws the extra bytes away, so the child never blocks on backpressure:
+    the command runs to completion and its real exit code decides the unit. A
+    verbose-but-passing test suite is not failed over its log volume. What
+    overflow costs is completeness of the artifact, and that is never hidden —
+    a step with **no** `output:` schema succeeds and its artifact is the retained
+    head with a `__akm_exec_output_truncated__` block appended (naming bytes
+    written vs bytes retained), so truncated data can never be mistaken for
+    complete data by `steps.<id>.output`, a gate judge, or a human. A step **with**
+    an `output:` schema still fails `exec_output_limit`: stdout must parse as
+    exactly one JSON value, a truncated prefix cannot, and promoting it would
+    corrupt every downstream reference to the typed artifact.
+
+    **Context environment: this platform's ceiling, not the smallest one.** The
+    engine-authored `AKM_*` context is capped at **96 KiB per variable / 128 KiB
+    total** on Linux, macOS and BSD, and at **32 767 bytes per variable / 64 000
+    bytes total** on Windows. The numbers cite their sources: Linux's
+    `MAX_ARG_STRLEN` (`32 * PAGE_SIZE` = 131 072 bytes per `argv`/`environ`
+    string), macOS's 256 KiB `ARG_MAX` over argv + environ combined, and Win32
+    `SetEnvironmentVariable`'s 32 767-character per-variable limit. Crossing the
+    bound fails `exec_context_too_large` *before* the spawn, with an error naming
+    the variable, its size, this platform's limit and where that limit comes from
+    — replacing a bare `E2BIG` from the spawn syscall that named neither the
+    variable nor the data behind it. Converting that inevitable failure into an
+    actionable one is the check's *only* job, so it uses the ceiling of the
+    platform the run is on: previously it applied Windows' limit everywhere and
+    refused spawns Linux and macOS would have accepted. Workflows that must also
+    run on Windows should stay under the smaller bound — that is documented
+    guidance now, not something a Linux host enforces.
+
+    `exec_output_limit` and `exec_context_too_large` keep their meanings and
+    their place outside the `retry.on` vocabulary, alongside `exec_cwd_escape`:
+    each is deterministic, so re-dispatching could only spend the budget again.
+    `PROGRAM_RETRY_REASONS` is unchanged.
+  - **A failing command's stderr survives to a durable surface.** The unit
+    journal now keeps each failed unit's redacted diagnostic (clipped to 2000
+    characters), and the step summary carries the first failure's. For an exec
+    unit that is the difference between `akm workflow status --units` saying
+    `non_zero_exit` and it saying *why* — a command that explains itself only on
+    stderr with empty stdout previously left no diagnostic anywhere durable.
+    This is an output surface only: the unit input hash is computed from
+    plan-frozen inputs, so no completed unit re-dispatches because of it.
+  - **The child's environment is an ALLOWLIST, not an inheritance.** The
+    command starts from an empty environment and receives `PATH`, `HOME`, the
+    identity/locale/temp/terminal variables, the Windows process-creation
+    essentials (`SystemRoot`, `SystemDrive`, `WINDIR`, `COMSPEC`, `PATHEXT`)
+    and the Windows home/config roots, plus `AKM_EVENT_SOURCE` — then the
+    unit's `env:` bindings, then the `AKM_*` context. `exec.pass_env: [NAME…]`
+    adds a few more names (for a per-machine toolchain variable like
+    `CARGO_HOME`, which a committed `env:` asset cannot express);
+    `exec.inherit_env: true` opts all the way back into akm's whole
+    environment. Both keys live inside `exec:` because the unit-level `env:`
+    key already means "env asset binding refs", and both are dispatch-
+    significant, so both are in the input hash.
+
+    This is not a claim to stop a determined attacker — a command that runs at
+    all can read the same credentials off disk. It bounds **accidental**
+    exposure (the invoking shell or CI job routinely exports tokens for
+    unrelated services), makes the environment surface **explicit and
+    reviewable**, and **matches the convention akm already applies** to
+    agent-harness children (`profile.envPassthrough`), which now share one
+    mechanism with exec units instead of two.
+  - **Security:** commands run inside the existing workflow trust model.
+    Secrets come from `env:` bindings by NAME — the frozen plan and the replay
+    hash carry only ref names, and resolved values are scrubbed from stdout,
+    stderr, and failure diagnostics by the same redaction contract every other
+    dispatch uses, before anything is journaled. `cwd:` is relative and
+    `..`-free, re-checked against the resolved base (symlinks included) before
+    spawning.
+  - **Cancellation is real:** the child is spawned in its own process group and
+    gets a SIGTERM→SIGKILL ladder on timeout or abort, so `--timeout` / Ctrl-C
+    stop a running command without orphaning its children.
+  - **No replay churn:** the exec spec was added to the unit input-hash preimage
+    as a key present only on exec units, so `hashVersion` stays 4 and every
+    previously-frozen llm/agent/sdk unit hashes byte-identically — runs already
+    in flight neither re-dispatch nor diverge. The env-scope keys are inside
+    that same spec and are frozen only in their non-default form (`inherit_env`
+    only when `true`, `pass_env` only when non-empty), so an exec unit that says
+    nothing about its environment hashes byte-identically too.
+
+  See [Workflow Schema: Exec (shell) units](docs/reference/workflow-schema.md#exec-shell-units)
+  and the worked example in
+  [Author's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md#deterministic-steps-run-a-command-gate-on-it).
+
+### Changed
+
+- **`akm workflow run` now exits non-zero when the run ends `blocked`.** A
+  verification judge that throws, cannot be resolved, or returns a malformed
+  verdict stops the run `blocked` — unverified, and resumable with `akm
+  workflow resume <id>`. That previously exited 0, so a CI step or scheduled
+  wrapper read an unverified run as a passing one. It now exits 1, matching
+  `failed` and gate rejections, and matching how the scheduled-task path
+  already reported it.
+
+- **Workflow dispatch bounds are enforced at authoring time, not only by the
+  frozen-plan decoder.** `engine:` names must match the decoder's own grammar
+  (lowercase dash-separated letters/digits, starting with a letter, ≤63
+  chars); `retry.max` is 0–100; `gate.max_loops` is 1–100; `map.concurrency`
+  and `engines.<name>.concurrency` are 1–64; any `timeout:` must resolve to at
+  most 2 147 483 647 ms (~24.8 days, `setTimeout`'s 32-bit ceiling). Every one
+  of these was already refused by the frozen-plan decoder, so such a document
+  could never actually run — but it *parsed*, so `akm lint`, `akm workflow
+  show` and `akm workflow create` all reported it clean and the failure arrived
+  at `workflow run` as an unlocated "Invalid frozen workflow plan". The error is
+  now line-anchored at parse time. Nothing changes for a document already
+  inside the bounds.
+
+- **`akm lint` gained an advisory channel.** The result envelope carries
+  `warnings: LintIssue[]` alongside `fixed`/`flagged`, `summary` gains a
+  `warnings` count, and text output prints a `warnings` section. Advisories
+  never route into `flagged`, so `--fail-on-flagged` cannot fail a run over
+  one. Workflow compile advisories (`workflow-warning`) are surfaced for the
+  first time — a step with no `output:` schema, a `params.<name>` reference to
+  an undeclared param, a `gate.max_loops` above 1 on an `exec` step — so a
+  bundle that linted clean at 0.9.0 may now report warnings without becoming a
+  failure. Findings that know a location carry `line` in `--format json` and
+  render as `file:line` in text. A new `lint-failed` code reports a file the
+  sweep reached but could not finish.
+
+- **Leftover `isolation: worktree` trees are now garbage-collected.** A run
+  that crashed, or one whose worktree was retained after a dirty unit, used to
+  leave its tree under the worktrees root forever. akm now opportunistically
+  removes such trees once they are 7 days old, confined to the worktrees root,
+  symlinks skipped, containment re-checked. A worktree still in use is never
+  collected: every live tree carries a liveness marker (pid, host, resolved
+  path) in git's administrative directory for it, and the sweep skips a
+  candidate whose holder is still running here.
+
+- **The workflow JSON Schema subset now enforces `allOf`/`anyOf`/`oneOf`/`not`.**
+  A step `output:` or `params:` schema may use the combinators, and the runtime
+  now evaluates them. Previously it ignored them: a schema using one was
+  accepted and simply constrained less than it appeared to. Evaluation stays
+  bounded — nesting is capped at 64 levels and one validation at 100 000 checks,
+  and exhausting either is reported as an error rather than a truncated pass.
+
+  **This one reaches runs already in flight.** The combinators live in the
+  frozen plan, which the decoder still accepts unchanged, so a run frozen before
+  the upgrade is resumed against the *new* evaluation: an artifact that passed
+  when the combinators were ignored can fail validation now. There is no
+  `irVersion` bump to gate it, because the plan bytes did not change — only what
+  they mean. Runs whose schemas use no combinators are unaffected, as is every
+  step already completed.
+
+  `pattern` is **not** part of the subset. It is a recognized-but-unsupported
+  keyword like `format` or `const`: using one is a loud, line-anchored authoring
+  error naming the keyword, so no schema silently fails to constrain what it
+  looks like it constrains. Enforcing it would mean screening every author
+  regex for catastrophic backtracking before the match — and any such screen
+  also refuses regexes authors legitimately write (the usual hand-rolled email
+  pattern among them), which is authoring friction with no workflow asking for
+  it. Where a string's shape matters, `enum` lists the allowed values,
+  `minLength`/`maxLength` bound the size, and a step's `### gate` rubric can
+  check a shape and explain a mismatch. The `format` hint now points at `enum`
+  rather than at `pattern`.
+
+  **Existing workflows that use one of these keywords must be edited before
+  they load again.** They previously parsed — the keyword was silently
+  non-constraining — so a workflow carrying `format: date-time` or `pattern:`
+  ran fine and now fails to parse for every caller: `workflow run`, `workflow
+  show`, `workflow create`, and `akm lint`. The quietest surface is `akm index`,
+  which skips an asset it cannot parse with a scan warning, so the workflow
+  simply stops appearing in the stash index. A run already frozen from such an
+  asset still resumes — the frozen-plan decoder does not re-screen keywords —
+  so resuming works while re-creating the same workflow errors until it is
+  edited.
+
+- **A document-level `defaults.llm` is now rejected at freeze when any step
+  resolves onto an agent engine**, naming the step and the engine. The guard
+  existed before but was unreachable: overrides were computed only for `llm`
+  engines, so `defaults.llm` on a document with an agent step was silently
+  DROPPED for that step — the run proceeded with the author's sampling settings
+  quietly discarded. Failing loudly is the point, but it means a document that
+  mixes `defaults.llm` with any agent-engine step no longer freezes.
+
+  There is no per-step opt-out: `llm: {}` is a no-op, `llm: null` is a parse
+  error, and the layer merge is additive. Move the `llm:` block from
+  `defaults:` onto the `unit:` of each LLM step that wants it.
+
+- **A scheduled workflow task now gets a 6-hour whole-run timeout by default.**
+  This applies to task files that declare no `timeoutMs:` — which is every task
+  file written before this release, since the key was previously rejected on
+  workflow targets. An unattended run that legitimately takes longer will be
+  aborted and the attempt reported failed on every firing until the task is
+  edited. `timeoutMs: null` opts out entirely, and any number overrides the
+  default. The abort itself is graceful: it lands at a step boundary, the
+  journal and lease are kept, and the run stays resumable with
+  `akm workflow resume <id>` — which the failure message names.
+
+- **Workflow `map` steps now fan out in parallel by default.** A `map` step
+  that declares no `concurrency:` freezes a width of **4** instead of 1, and an
+  LLM engine that declares no `engines.<name>.concurrency` freezes **4** for a
+  remote endpoint (loopback endpoints stay at **1** — a local model server holds
+  one loaded model and returns HTTP 500 under concurrent inference). Both
+  defaults previously froze 1, which made every fan-out serial unless the author
+  opted in at two independent layers, and left `workflow.maxConcurrency` and the
+  host CPU cap binding on nothing.
+
+  This is a behavior change on a patch release, so every escape hatch is
+  explicit:
+  - `map.concurrency: 1` on a step is honored exactly as before — an authored
+    `1` is kept distinct from an unset field and always wins.
+  - New config key **`workflow.defaultMapConcurrency`** sets the default for
+    every workflow on the machine. `akm config set workflow.defaultMapConcurrency 1`
+    restores the pre-0.9.1 serial default wholesale.
+  - `engines.<name>.concurrency` pins any engine's own limit (and is now clamped
+    to `1..64` at freeze time instead of freezing a plan the decoder would then
+    refuse to load).
+  - **Runs already in flight are unaffected.** Both values are frozen into
+    `plan_json` when a run starts and the frozen-plan decoder requires them, so
+    a resumed run keeps the widths it began with. The new defaults apply only to
+    runs started after the upgrade.
+
+  The effective width remains the minimum of the step's `concurrency`, the run's
+  frozen `workflow.maxConcurrency`, the selected engine's concurrency, and the
+  current host's CPU cap.
+
+- **`--max-steps` now counts steps, not engine-loop iterations.** The budget is
+  spent by the DISTINCT spine steps that finished — completed, failed, or
+  gate-rejected with the loop budget spent. It was previously spent by entries
+  in the `executed` report,
+  which gains one per gate-loop iteration and one per route-skip, so
+  `--max-steps 3` against a step with `gate.max_loops: 3` could stop after a
+  single step had finished, and an unselected branch target consumed budget for
+  work that was never dispatched. Three steps now means three steps, which is
+  what the flag has always said (`Stop after executing this many steps`). A step
+  the invocation left unfinished — an abort, a judge outage — still consumes
+  nothing, because the work is still owed. The same accounting is what a
+  `--max-retries` reopen subtracts, so loops and skips no longer shrink a
+  retry's remaining budget either, and `maxSteps:` in a workflow task file is
+  the same knob and moves with it. The count is now reported: `akm workflow run`
+  carries a `stepsProcessed` field alongside `executed`, so the number the
+  budget is spent on is visible rather than inferred from a list that counts
+  something else.
+
+  **This loosens the dispatch exposure of one invocation, and the loosening is
+  cumulative across steps.** A step's whole bounded gate loop now costs one step
+  instead of one per iteration, so the rounds a single `akm workflow run` can
+  dispatch go from roughly `N + max_loops` to `N × max_loops`.
+
+  What did **not** change is what the flag bounds within one step. `--max-steps`
+  was never a cap on total dispatch rounds on either version: the budget is
+  tested only BETWEEN steps, so a single step's gate loop could always run out
+  its full `gate.max_loops` no matter how little budget was left. The per-step
+  ceiling is `gate.max_loops` (1–100); the whole-run ceilings are
+  `budget.max_units` and `budget.max_tokens`, which are seeded from the unit
+  journal and hold across resumes.
+
+### Fixed
+
+- **Upgrading Node after installing akm now explains itself.** A native binding
+  is built for the Node ABI present at install time, so upgrading Node major
+  versions afterwards leaves akm reporting a bare Node internals message —
+  *"The module … was compiled against a different Node.js version"*, or on a
+  second attempt the even less helpful *"Module did not self-register"*. akm now
+  recognises that failure and answers with the one command that fixes it
+  (`npm rebuild better-sqlite3`), names the ABI actually running, and says
+  plainly that this is not a broken install.
+
+  The diagnostic had to move to do this. It wrapped the `require`, but
+  `require("better-sqlite3")` **succeeds** against a mismatched binding — the
+  package resolves its `.node` file lazily — so the error lands at
+  `new Database(...)` and the loader's handler never saw it. The previous text
+  telling the user to look for a version mismatch "in the error below" was
+  unreachable. Found by installing the published build under Node 22 and running
+  it under Node 24.
+
+- **akm's Node fallback no longer aborts at teardown on Node 24.** On Node
+  24.19.0 and later, any command that opened a database could intermittently
+  die with `node::RemoveEnvironmentCleanupHook … Assertion (env) != nullptr`
+  and exit 134 — after its work was done, so the failure looked random and
+  depended on garbage-collection timing.
+
+  The cause was upstream and nothing to do with akm's own code.
+  `better-sqlite3` ships one prebuilt binary per Node ABI and falls back to
+  `node-gyp rebuild` when none matches, and the 11.x line publishes no prebuild
+  for Node 24 — so installing it there silently compiled the driver from source.
+  Node 24.19.0 had just changed the public `node_object_wrap.h` so that
+  `ObjectWrap`'s constructor and destructor register and unregister an
+  environment cleanup hook; a binding compiled against those headers
+  unregisters the hook after the environment is already gone, and aborts from
+  V8's teardown path. Only the Node 24 line was affected, and only from that
+  release on.
+
+  akm now pins `better-sqlite3` to `12.11.1`, which publishes prebuilt binaries
+  for Node 22, 24, 25 and 26 — so no Node version akm supports compiles the
+  driver at all. This affected real installs, not just CI: an npm user on Node
+  24 LTS was getting the same crash-prone from-source build.
+
+  The Node-fallback CI job now installs the exact spec `package.json` declares
+  instead of carrying a range of its own, and both that job and the smoke
+  script fail loudly on a native crash banner — previously an abort was
+  reported only as missing output, and the one step that tolerates a non-zero
+  exit would not have failed at all.
+
+- **A website source interrupted mid-refresh no longer loses the snapshot it
+  already had.** A refresh deleted the whole mirror and then rebuilt it page by
+  page, so a process killed inside that loop left an empty or partial directory
+  with the old content already gone — and the freshness marker still looked
+  recent, so the next `sync()` served the wreckage instead of rebuilding. The
+  new snapshot is built in a dot-prefixed sibling directory and swapped in with
+  renames: an interrupted refresh leaves the PREVIOUS complete snapshot
+  untouched. Abandoned staging directories are dot-prefixed so the indexer's
+  walk skips them, and are swept by the next refresh once an hour old.
+
+- **A resumed workflow run no longer re-dispatches work that already ran.** The
+  single-driver guard was checked at the run level, so a run whose lease had
+  been stolen left its still-owned unit row `running` and discarded the real
+  outcome — the resume then re-dispatched a unit that had already executed its
+  side effects and already spent its tokens. The guard now lives on the row, so
+  a stale driver's finish matches nothing and a live outcome is never dropped.
+
+- **Lowering `retry.max` no longer re-runs finished work.** The completed-attempt
+  scan matched only attempts the *current* retry policy could have produced, so
+  reducing `retry.max` between invocations hid a journaled `~rN` row and the
+  unit was dispatched again. It now matches any journaled attempt of the unit.
+
+- **A scheduled `command` task no longer writes your secrets into its log.**
+  Task logs were scrubbed for credential *shapes* — `Bearer …`, `sk-…`, webhook
+  URLs — but only prompt- and workflow-target runs also scrubbed exact secret
+  *values*. A command that echoed a configured secret shaped like nothing in
+  particular persisted it verbatim into both the run `.log` and `logs.db`, for
+  the whole retention window. Exact-value redaction now runs in the one sink all
+  three target kinds share, so every task kind is covered.
+
+  akm treats a value as secret when your config declares it
+  (`engines.<name>.apiKey`, `embedding.apiKey`, and the
+  `AKM_ENGINE_<NAME>_API_KEY` / `AKM_LLM_API_KEY` / `AKM_EMBED_API_KEY`
+  recipes), and infers others from the variable name (`*_TOKEN`, `*_SECRET`,
+  `*_API_KEY`, `*_PASSWORD`, …) when the value is at least 8 characters. The
+  floor applies only to the *guesses*: a declared secret is redacted at any
+  length. Redaction replaces substrings, so an over-eager rule does real damage
+  — treating every non-allowlisted variable in the inherited environment as a
+  secret classified 127 of 132 variables as credentials, 25 of them one
+  character long, and turned `3 tests passed, 0 failed` into `[REDACTED] tests
+  passed, [REDACTED] failed`.
+
+  For a secret exported under a name none of those rules recognise, any task may
+  name it:
+
+  ```yaml
+  command: ./deploy.sh
+  redact: [ACME_DEPLOY_TOKEN]   # NAMES, never values — max 32
+  ```
+
+  Names only, and a name that is unset at run time contributes nothing. A
+  literal secret in a task file would leak far more widely than the redaction
+  closes: task files are indexed into the search database, can be sent to an
+  embedding provider, are printed verbatim by `akm show`, and ship inside
+  bundles over git and npm — the same rule exec units' `pass_env:` follows.
+
+- **Redacting a log can no longer explode it.** Exact-value redaction took a
+  fast path that rewrote the text once per secret, over an accumulator it had
+  already rewritten — so a secret containing any of the letters in `[REDACTED]`
+  matched the tokens it had just inserted, and the output grew geometrically.
+  Fifty characters against six single-letter values produced 32,450 characters,
+  a 649x blowup reachable from ordinary command output. Matches are now found
+  against the original text and the result emitted once. Overlapping matches
+  merge into a single `[REDACTED]`, and the two redaction paths no longer
+  disagree about output shape depending on whether the text happened to contain
+  a `%`.
+
+- **Redacting a structured value no longer drops fields.** When two distinct
+  object keys redacted to the same string, the rebuilt object silently kept only
+  the last — `{a, b, ab}` came back with two entries, one of them simply gone
+  rather than redacted. Colliding keys are now suffixed, so the value survives
+  with its key still hidden. This affected persisted improve results and
+  journaled workflow outcomes.
+
+- **`akm improve` auto-sync now commits exactly the files the run wrote.**
+  Every akm write path records the file it mutated into a run-scoped
+  write-provenance journal, and the end-of-run (and crash-path) commit stages
+  precisely those paths. A managed-directory file someone else edits while a
+  long run is in flight is left dirty for its author instead of being swept into
+  akm's commit, and a file that was already dirty when the run started and was
+  then rewritten by the run is now committed instead of being silently skipped.
+  Deletions are journaled like writes, so a path written and then reverted or
+  purged stages its final on-disk state — or produces no commit at all. The run
+  reports its journal as `writtenPaths` on the improve result, and the
+  `stash_synced` event gains `attributed` / `unattributed` counts. `akm sync` /
+  `akm push`, which supply no explicit path list, keep the managed-pathspec
+  fallback unchanged. (#652)
+
+- **`akm lint` no longer reports a clean scan for a task file that cannot run.**
+  A `tasks/*.yml` whose YAML does not parse (bad indentation, an unterminated
+  quote, tab characters) produced `flagged: 0`: every task reader collapsed a
+  parse failure onto an empty mapping, and every task rule short-circuits on
+  one — so a CI gate on `--fail-on-flagged` passed a task that would die at
+  schedule time. The parse failure is now its own `invalid-task-yaml` finding.
+  A `tasks/*.yaml` file — a spelling akm never indexes and never schedules —
+  used to be skipped by the directory walk entirely; it is now collected and
+  flagged for the extension, with the rename in the message. Fixed on all three
+  task-lint surfaces (the CLI sweep, the `akm` adapter's `validate`, and the
+  `akm-task` format adapter) from one shared parse, so they cannot disagree.
+
+- **`akm lint --fix` refuses a bundle configured `writable: false`.** Every
+  other mutating command checks the flag before touching disk; `--fix` wrote
+  directly and never consulted it, so it rewrote frontmatter in a bundle
+  explicitly marked read-only. It is now a usage error raised before any file
+  is modified.
+
+- **A `--fix` write failure no longer aborts the run and hides the fixes that
+  already landed.** One unwritable file (read-only file, full disk) threw
+  straight out of `akm lint`, so the caller got an exception instead of a
+  result — with no way to tell which earlier files in the same sweep had
+  already been rewritten. A failed fix is now reported in-band on its own file
+  as `fixed: "failed"`, and the sweep continues through the rest of the bundle.
+
+- **`akm lint --type` says so when it does nothing.** For a non-akm bundle the
+  adapter validates the whole bundle regardless of `--type`, so scoping a run
+  silently had no effect. It now warns, naming the flag and the adapter.
+  Findings are unchanged (full-bundle validation was already a superset), and
+  it is deliberately a warning, not an error, so scripts passing one `--type`
+  across mixed-adapter bundle sets keep working.
+
+- **`missing-skill-md` fires again for an `agent-skills` package with no
+  manifest.** The check iterated pending CHANGES, and a change is always a
+  file — so a package directory holding resources but no `SKILL.md`
+  contributed nothing it could see, and a skills pack with a broken package
+  linted clean. It is now a real directory pass over the bundle root. Related:
+  under opencode's supported singular `skill/` alias the same package went
+  unflagged while an identical one under `skills/` was caught; both spellings
+  are now checked.
+
+- **An index akm cannot read no longer reports as an index that does not
+  exist.** `fs.existsSync()` answers `false` for a permission error exactly as
+  it does for a missing file, and the read path used it as its "is there an
+  index?" gate — so `akm search` and `akm curate` returned no hits at **exit 0**
+  with the tip *"No search index available. Run 'akm index' to build one."* for
+  a populated index sitting right there on disk, and `akm info` reported
+  `entryCount: 0, vecAvailable: false` for the same index. Nothing said
+  "permission". A consuming agent had no way to tell that from a genuine empty
+  result, so it relayed the false answer to its user with an explanation it had
+  invented.
+
+  Absent and inaccessible are now distinct everywhere it matters:
+
+  - `search` / `curate` / the index openers raise a `ConfigError`
+    (`DATA_DIR_UNREADABLE`, exit 78) naming the path, the errno, the mode and
+    owner, and the uid actually running — instead of an empty success.
+  - `akm info` reports an `indexStats.unreadable` diagnostic rather than zeros
+    that look healthy. The field is absent on every healthy run.
+  - `akm health` now *diagnoses* an unreadable `state.db` as a failing
+    `state-db-readable` check instead of dying on the open before it could
+    report anything — it is the command you reach for when this happens.
+  - `probeLock` returns a distinct `inaccessible` state instead of classifying a
+    permission error as a stale lock. "I cannot read this lock" and "the holder
+    is dead" are opposite facts, and `akm improve` now stops rather than
+    reclaiming a lease that may be genuinely held.
+
+  The same conflation existed on the write paths, where the consequence was
+  worse than a wrong answer:
+
+  - **An unreadable `akm.lock` could destroy every bundle record in it.** The
+    lockfile read that exists specifically so a write path never sees `[]`
+    returned `[]` for *any* read failure, permission errors included — and
+    every lockfile write is read-modify-write, so the next atomic write
+    replaced the operator's whole lock record with the single entry being
+    added. Verified by probe: the symlink was replaced by a regular file
+    holding one entry. Lockfile writes now refuse to run against a lock they
+    cannot read.
+  - **The migration recovery gate failed open.** "I cannot tell whether a
+    recovery is pending" cleared the gate exactly as "no recovery is pending"
+    did, so akm would open the canonical databases on top of a half-applied
+    migration. It now fails closed.
+  - **`akm index --clean` deleted rows for files it merely could not look at**,
+    and reported the deletions as a clean success. Unreadable entries are now
+    kept and named.
+  - `indexWrittenAssets` returned `true` — "the index is as you expect" — for
+    an index it could not open, on the strength of which `acceptProposal`
+    advanced its journal to `index-finalized`.
+  - `akm improve` eligibility, `akm feedback`, `akm bundle list` and the graph
+    loaders each turned a permission fault into an empty result, a zero count,
+    or the advice to "Run `akm index` first".
+
+- **akm no longer manages permissions on your data directory, its databases, or
+  your task logs — and no longer reports on them either.** Those take your
+  process umask; their mode is yours to set, and `chmod`/`umask` are your
+  levers.
+
+  This is scoped, not blanket: akm still creates a handful of files at
+  restrictive modes *at creation time*, as it always has — `env` and `secret`
+  assets and config backups at `0600`, their directories at `0700`, and the
+  scheduler invocation files it writes for cron/launchd/schtasks. Those are
+  files akm authors itself and whose contents are credentials; setting their
+  mode when creating them is not the same as re-permissioning a directory you
+  already owned.
+
+  Two 0.9.1 pre-release changes are gone. The first chmodded akm's databases
+  and task logs to `0600`/`0700` on every open — reverted because
+  re-permissioning a directory akm did not create silently broke installs that
+  share `$XDG_DATA_HOME` between two uids (agent sandboxes, containers, service
+  accounts). If a pre-release tightened your data directory, `chmod` it back.
+  The second was an `akm health` advisory (`secret-file-perms`) that reported
+  group/other-readable `env`, `secrets` and `config-backups` paths — removed
+  too: it is meaningless on Windows, and nagging about modes akm does not set
+  is not health reporting. `akm health` no longer emits this check, and no
+  longer exits `4` on account of it.
+
+- **`timeout: none` on an exec unit is genuinely unbounded again.** The
+  stream-drain safety net — a one-hour bound on a pipe still being read after
+  the child is gone — was armed when capture STARTED, so a command that ran
+  past an hour had its output reader cancelled mid-run and was then failed for
+  an incomplete capture even though it exited 0. It is now armed from the
+  child's exit, which is the only window it was ever meant to bound.
+
+- **A bounded exec unit no longer waits out its whole `timeout` after the
+  command has already exited.** The drain deadline for a unit WITH a wall budget
+  ran from the moment capture started — budget plus a 2 s grace — so a command
+  that exited in milliseconds while a background descendant held a pipe open
+  kept the unit, and with it a fan-out slot, occupied for the entire declared
+  timeout before reporting. It now runs from the moment nothing living owns the
+  pipe: the child's exit, or (for a child that outlived its own kill ladder) the
+  budget's expiry, plus the same 2 s grace. A command that really does spend its
+  whole budget sees the identical ceiling it saw before; only the case that used
+  to stall stopped stalling.
+
+- **A stderr drain that never finished no longer fails an exec unit whose
+  command succeeded.** `exec_capture_incomplete` was raised when EITHER pipe
+  failed to drain, so a command that exited 0 with its stdout captured whole was
+  failed — and a valid artifact thrown away — because a background descendant
+  was still holding STDERR open. stderr is a diagnostic channel that never
+  contributes to the artifact, so only an incomplete STDOUT capture fails the
+  unit now; an incomplete stderr drain is reported on the warn stream instead,
+  naming the unit and warning that any stderr shown for it may be missing its
+  tail.
+
+- **A step artifact larger than 1 MiB no longer breaks the next step of the run
+  that produced it.** Step evidence is clipped to bound one SQLite row, and the
+  engine rebuilt each downstream `steps.<id>.output` scope by re-reading those
+  rows — so a large artifact (an exec unit's stdout retains up to 8 MiB) reached
+  the very next step as a truncation marker: a path reference failed with a
+  missing-property error that never mentioned truncation, and a whole-value
+  reference silently handed the marker to the unit as its input. The run now
+  carries its own complete values forward; the row stays clipped for resume,
+  where a reference into a clipped artifact fails by name.
+
+- **A workflow run that completed is no longer reported as timed out.** The
+  deadline is observed between steps, so one landing during a run's final
+  bookkeeping set the timed-out flag on a run that then finished. On a scheduled
+  workflow task that recorded the attempt as failed, with a hint to resume a run
+  that had nothing left to resume; under `akm workflow run --timeout` it
+  rendered a `timedOut` marker on a `completed` run and exited nonzero. Both
+  surfaces now drop the marker once the run reached `completed` — a deadline
+  that lands with nothing left to abort has nothing to report.
+
+- **A rejected gate on an `exec` step no longer re-runs the command.** A gate
+  loop earns its re-dispatch by handing the judge's feedback to a unit that can
+  answer it. An exec unit cannot: its argv is frozen and never interpolated, and
+  the exec context environment carries no feedback variable — so the loop could
+  only re-run the byte-identical command, performing a deploy, a publish, or a
+  migration a second time for a verdict that could not change. The gate still
+  EVALUATES on an exec step and can still fail it: a rejection is final on the
+  first evaluation, carrying the judge's missing criteria and feedback exactly
+  as in the one-shot case. What an author sees is
+  that `gate.max_loops` is capped at 1 on a step whose unit is `exec:` — not an
+  authoring error, and no change at all to an engine step, where a declared
+  `max_loops` is still honored in full. This is the same reasoning that already
+  makes an exec unit's `output:` schema miss fail without a corrective
+  re-dispatch.
+
+- **The stale-worktree sweep no longer collects a worktree that is still in
+  use.** The opportunistic age-based GC of leftover `isolation: worktree` trees
+  judged staleness from the worktree root's mtime, which a unit writing only
+  inside subdirectories never touches — so another akm process minting a
+  worktree could delete the tree a long-running unit was working in. Every live
+  worktree now carries a liveness marker (pid, host, resolved path) in git's own
+  administrative directory for it, and the sweep skips a candidate whose holder
+  is still running here. A marker from a dead pid, from another host, or for a
+  different path is not liveness: crashed runs and retained dirty trees stay
+  collectible, which is what the sweep exists for.
+
+- On Windows, an agent CLI, gate judge, or prompt task was spawned into an
+  environment the loader cannot start from: the shared passthrough allowlist
+  named no `SystemRoot`/`SystemDrive`/`WINDIR`, and without `PATHEXT` a
+  `bin: "bun"` profile was unresolvable — while an exec unit on the same host
+  worked, because its own allowlist names them. Those variables are now added
+  when any allowlisted child environment is built.
+
+- Scheduler PATH repair skipped itself in the environments it exists for. It
+  decided a PATH was "interactive" by testing whether any entry began with the
+  user's home directory as a *string*, so a home of `/` — system crontab,
+  launchd, service accounts — matched every absolute entry, and a sibling home
+  (`/home/alice/bin` against `/home/al`) matched too.
+
+- A directory whose name merely begins with two dots (`..data`) was treated as
+  a path escape. For a workflow exec `cwd` that meant the parser and the frozen
+  plan accepted a spelling the executor then failed as tampering, with a reason
+  no retry can clear.
+
+- `appendEvent` resolved the state.db path outside its own error handling, and
+  did so even when the caller supplied an open connection — so a caller holding
+  a perfectly good handle could take a configuration error from a function whose
+  contract is that it never propagates one.
+
+- Workflow freeze attributed per-step `engine`/`model`/`timeout`/`llm` overrides
+  by matching the compiled draft step list against the source document
+  **positionally**. That was correct only because compilation happens to be 1:1
+  and order-preserving; a compile pass that filtered or reordered steps would
+  have silently applied one step's overrides to another. Attribution is now
+  keyed by `stepId`.
+
+### Security
+
+- **A gate judge's response is now scrubbed before it is journaled.** The judge
+  verdict is written into the gate row's `result_json`, and a judge failure's
+  message becomes the blocked step's notes — but the judge dispatch bypassed
+  the redaction contract every unit dispatch goes through, so a judge that
+  echoed a credential out of the promoted artifact persisted it unredacted into
+  the workflow journal. Both judge paths (agent and llm) now wrap their
+  dispatch in the same scrub, with the sensitive-value set collected per
+  dispatch rather than at build time, so a credential rotated between the two
+  reads is still caught. The dispatch also carries the real run/step/gate ids
+  instead of a synthetic `"gate"` placeholder, so a gate row and its telemetry
+  describe the same thing.
+
+- **Command-target task logs are scrubbed of exact secret values**, closing the
+  last redaction lane — see the `### Fixed` entry above for the full account.
+
 ## [0.9.0] - 2026-08-06
 
 0.9.0 is the format-neutral **bundle / adapter** refactor: it replaces the flat

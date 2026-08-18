@@ -11,6 +11,7 @@
 
 import { getStringArg } from "../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
+import { armAbortDeadline } from "../core/abort-deadline";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
 import { NotFoundError, UsageError } from "../core/errors";
 import { akmIndex } from "../indexer/indexer";
@@ -171,7 +172,6 @@ const workflowRunCommand = defineJsonCommand({
     const maxRetries = parseIntegerFlag(getStringArg(args, "max-retries"), "--max-retries", 0, WORKFLOW_MAX_RETRIES);
     const timeoutMs = parseWorkflowTimeout(getStringArg(args, "timeout"));
     const controller = new AbortController();
-    let timedOut = false;
     let signalExitCode: number | undefined;
     const interrupt = (signal: "SIGINT" | "SIGTERM") => {
       signalExitCode = signal === "SIGINT" ? 130 : 143;
@@ -181,14 +181,12 @@ const workflowRunCommand = defineJsonCommand({
     const onSigterm = () => interrupt("SIGTERM");
     process.once("SIGINT", onSigint);
     process.once("SIGTERM", onSigterm);
-    const timer =
-      timeoutMs === undefined
-        ? undefined
-        : setTimeout(() => {
-            timedOut = true;
-            controller.abort(new Error(`Workflow run timed out after ${timeoutMs}ms.`));
-          }, timeoutMs);
-    timer?.unref?.();
+    // The same deadline a scheduled workflow task arms (`tasks/runner.ts`),
+    // sharing this controller with the signal handlers above.
+    const deadline = armAbortDeadline(controller, {
+      timeoutMs,
+      reason: `Workflow run timed out after ${timeoutMs}ms.`,
+    });
     try {
       const result = await runWorkflowSteps({
         target: args.target,
@@ -197,13 +195,21 @@ const workflowRunCommand = defineJsonCommand({
         ...(maxRetries !== undefined ? { maxRetries } : {}),
         signal: controller.signal,
       });
+      // The abort is observed between steps, so a deadline landing in the run's
+      // final bookkeeping fires on a run that then finishes. Reporting that as
+      // timed out would send an operator to resume a run with nothing left to
+      // resume — `tasks/runner.ts` suppresses the same case.
+      const timedOut = deadline.timedOut() && result.run.status !== "completed";
       const rendered = { ...result, ...(timedOut ? { timedOut: true as const } : {}) };
       output("workflow-run", rendered);
-      if (result.run.status === "failed" || result.gateRejection || result.aborted) {
+      // `blocked` is a stopped, unverified run — a verification-judge failure
+      // leaves it there for `akm workflow resume` — so it must not exit 0 and
+      // read as success to a script (it maps to 1 for scheduled tasks too).
+      if (result.run.status === "failed" || result.run.status === "blocked" || result.gateRejection || result.aborted) {
         process.exitCode = signalExitCode ?? EXIT_CODES.GENERAL;
       }
     } finally {
-      if (timer) clearTimeout(timer);
+      deadline.disarm();
       process.off("SIGINT", onSigint);
       process.off("SIGTERM", onSigterm);
     }

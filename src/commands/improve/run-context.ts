@@ -46,6 +46,7 @@ import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import type { LlmConnectionConfig } from "../../core/config/config-types";
 import type { EventsContext } from "../../core/events";
+import { recordWrittenPath } from "../../core/write-provenance";
 import { chatCompletion } from "../../llm/client";
 import type { ProposalsContext } from "../proposal/repository";
 
@@ -180,6 +181,10 @@ function buildRunContext(carriers: RunContextCarriers, memo: Map<string, string>
     },
     writeAsset(filePath: string, content: string): void {
       carriers.writeFile(filePath, content);
+      // #652: journal the write for the run's write-provenance set. Recorded
+      // here (not in the default `writeFile` carrier) so an injected IO seam is
+      // attributed identically to a real `fs` write.
+      recordWrittenPath(filePath);
       memo?.set(memoKey(filePath), content);
     },
     noteAssetWrite(filePath: string): void {

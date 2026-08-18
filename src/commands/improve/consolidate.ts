@@ -412,6 +412,45 @@ function loadPendingConsolidateProposalHashes(stashDir: string): Set<string> {
   return hashes;
 }
 
+/**
+ * Hash the bodies of live knowledge assets once per consolidation run.
+ *
+ * Pending-proposal dedup prevents repeated queue entries, but accepted
+ * proposals leave that set. Without a live-asset guard, the next run can copy
+ * the same memory body into a new knowledge slug indefinitely. Scan the target
+ * tree directly (rather than trusting the asynchronously refreshed index) so
+ * an already-written asset suppresses recurrence immediately.
+ */
+export function loadExistingKnowledgeBodyHashes(targetRoot: string): Set<string> {
+  const hashes = new Set<string>();
+  const knowledgeRoot = path.join(targetRoot, "knowledge");
+  if (!fs.existsSync(knowledgeRoot)) return hashes;
+
+  const visit = (dir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(entryPath);
+      } else if (entry.isFile() && entry.name.endsWith(".md")) {
+        try {
+          hashes.add(cacheHash(fs.readFileSync(entryPath, "utf8")));
+        } catch {
+          // An unreadable asset cannot provide reliable duplicate evidence.
+        }
+      }
+    }
+  };
+
+  visit(knowledgeRoot);
+  return hashes;
+}
+
 /** Parse a stored provenance ref and emit its canonical D-R5 display spelling. */
 function canonicalStoredXref(ref: string): string | undefined {
   try {
@@ -1285,6 +1324,7 @@ async function akmConsolidateInner(
     memoryByRef,
     promoted,
     promotedSourceRefs: new Set<string>(),
+    existingKnowledgeBodyHashes: loadExistingKnowledgeBodyHashes((opts.writeTarget as ResolvedWriteTarget).source.path),
     promotionFailures,
     warnings,
     pushSkipReason: accounting.pushSkipReason,
@@ -1321,7 +1361,8 @@ async function akmConsolidateInner(
   });
 }
 
-interface PromoteContext {
+/** @internal Exported for promotion-path integration tests. */
+export interface PromoteContext {
   config: AkmConfig;
   stashDir: string;
   sourceRun: string;
@@ -1330,14 +1371,44 @@ interface PromoteContext {
   memoryByRef: Map<string, MemoryEntry>;
   promoted: string[];
   promotedSourceRefs: Set<string>;
+  existingKnowledgeBodyHashes: Set<string>;
   promotionFailures: { count: number };
   warnings: string[];
   pushSkipReason: ConsolidateAccounting["pushSkipReason"];
   llmConfig?: import("../../core/config/config").LlmConnectionConfig | null;
 }
 
+/** Reject a promotion when its body already exists in knowledge or the queue. */
+function shouldSkipPromotionBodyDuplicate(args: {
+  bodyHash: string;
+  op: ConsolidatePromoteOp;
+  knowledgeRef: string;
+  ctx: PromoteContext;
+}): boolean {
+  const { bodyHash, op, knowledgeRef, ctx } = args;
+  if (ctx.existingKnowledgeBodyHashes.has(bodyHash)) {
+    ctx.warnings.push(
+      `Skipping promote: identical body already exists in knowledge; skipping duplicate for ${op.ref} → ${knowledgeRef}`,
+    );
+    ctx.pushSkipReason("promote", op.ref, "dedup_existing_knowledge");
+    return true;
+  }
+
+  const contentDupProposal = listProposals(ctx.stashDir, { status: "pending" })
+    .filter((proposal) => proposal.source === "consolidate")
+    .find((proposal) => cacheHash(proposalContent(proposal)) === bodyHash);
+  if (!contentDupProposal) return false;
+
+  ctx.warnings.push(
+    `Skipping promote: identical body already pending as proposal ${contentDupProposal.id} (ref: ${contentDupProposal.ref}); skipping duplicate for ${op.ref} → ${knowledgeRef}`,
+  );
+  ctx.pushSkipReason("promote", op.ref, "dedup_pending_proposal");
+  return true;
+}
+
 /** Execute one reconciled promotion by emitting a reviewable proposal. */
-async function emitPromotionProposal(op: ConsolidatePromoteOp, ctx: PromoteContext): Promise<void> {
+/** @internal Executes the real proposal-emission path for one promote operation. */
+export async function emitPromotionProposal(op: ConsolidatePromoteOp, ctx: PromoteContext): Promise<void> {
   const { config, stashDir, sourceRun, target, memoryByRef, warnings, pushSkipReason, promoted, promotedSourceRefs } =
     ctx;
   const entry = memoryByRef.get(op.ref);
@@ -1451,19 +1522,7 @@ async function emitPromotionProposal(op: ConsolidatePromoteOp, ctx: PromoteConte
   // Use cacheHash (case-preserving stripped body) to match the canonical
   // hash domain used by the body-embedding cache and pending-proposal set.
   const bodyHash = cacheHash(sourceBody);
-  const allPendingConsolidateProposals = listProposals(stashDir, { status: "pending" }).filter(
-    (p) => p.source === "consolidate",
-  );
-  const contentDupProposal = allPendingConsolidateProposals.find((p) => {
-    return cacheHash(proposalContent(p)) === bodyHash;
-  });
-  if (contentDupProposal) {
-    warnings.push(
-      `Skipping promote: identical body already pending as proposal ${contentDupProposal.id} (ref: ${contentDupProposal.ref}); skipping duplicate for ${op.ref} → ${knowledgeRef}`,
-    );
-    pushSkipReason("promote", op.ref, "dedup_pending_proposal");
-    return;
-  }
+  if (shouldSkipPromotionBodyDuplicate({ bodyHash, op, knowledgeRef, ctx })) return;
 
   try {
     // Use LLM-provided description; fall back to memory's own description

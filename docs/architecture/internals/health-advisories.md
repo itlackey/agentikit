@@ -24,11 +24,18 @@ and whether to act. Some `warn`s below are *adjudicated, expected* states — tr
 | `session-log-failures` | Informational only (pre-LLM keyword scan, false-positive prone). | No action — never gates; does not reflect the real extract pipeline. |
 | `outcome-proxy-adequacy` | Retrieval proxy is *inverted* (corr < −0.3): popular assets are the most-needing-improvement. | Known WS-2 limitation; no live action — see plan §WS-2 / CONTEXT before tuning. |
 | `outcome-proxy-dead` | Retrieval proxy is *dead* (\|corr\| < 0.1 at n≥500): outcome_score is noise. | **Adjudicated/expected** during the minting-shutdown re-baseline (12-D1); no action. |
-| `salience-uniformity-collapse` | Top-100 salience Gini fell below the uniform baseline — ranking no longer discriminates. | **Adjudicated/expected** during re-baseline; no action until the shutdown baseline settles. |
+| `salience-uniformity-collapse` | Gini across all positive, resolvable retrieval-salience values is below 0.08 — ranking no longer discriminates among assets with retrieval evidence. | Inspect the reported sample size and salience freshness; run `akm index` to refresh retrieval timestamps, then let the improve schedule recompute salience before tuning weights. |
 | `enrichment-lane-minting` | Enrichment lanes minted new assets above threshold (5% warn / higher = fail). | Adjudicated against the ratified minting rules; act only if the share keeps climbing post-shutdown. |
 | `improve-churn-ratio` | Accepted proposals rewrote the same few refs (ratio > 1.5) instead of covering the corpus. | Expected while coverage is low; watch the trend, do not retune on a single window. |
 | `collapse-churn-detector` | R5 detector fired collapse/churn alerts (or `unknown` = no cycle rows yet). | Inspect recent collapse/churn cycle rows and the detector's advisory output before acting. |
 
-> Adjudicated states (`outcome-proxy-dead`, `salience-uniformity-collapse`, `enrichment-lane-minting`)
+> Adjudicated states (`outcome-proxy-dead`, `enrichment-lane-minting`)
 > are the before/after instrument for the 12-D1 minting shutdown — do not "fix" them by retuning.
 > When in doubt, prefer no action over panic-retuning (per the review-12 guard).
+
+The salience Gini guardrails are calibrated against distribution shape, not a
+top-ranked quantile: near-uniform `0.49/0.51` scores produce about `0.01`, a
+balanced `0.25/0.75` spread produces `0.25`, and one dominant score among nine
+`0.01` scores produces about `0.82`. Read-only full-observation snapshots were
+also stable inside the neutral `0.08..0.35` band: `0.2613` across 1,209 assets
+on 2026-07-12 and `0.2506` across 1,454 non-missing assets on 2026-08-17.

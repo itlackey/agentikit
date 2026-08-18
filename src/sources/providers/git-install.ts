@@ -115,6 +115,17 @@ export function assertNoIgnoredPathOverwrite(repoDir: string, targetRevision: st
   }
 }
 
+/**
+ * Whether a requested ref is a full commit hash rather than a branch or tag.
+ *
+ * Only the unambiguous 40-hex (SHA-1) and 64-hex (SHA-256) forms count. An
+ * abbreviated hash is indistinguishable from a legal branch name, so it stays
+ * on the `--branch` path where git itself reports the mismatch.
+ */
+function isCommitSha(ref: string): boolean {
+  return /^[0-9a-f]{40}$/i.test(ref) || /^[0-9a-f]{64}$/i.test(ref);
+}
+
 function normalizeRemoteUrl(value: string): string {
   return value
     .trim()
@@ -241,9 +252,16 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
   let installRoot: string;
   let stashRoot: string;
   try {
+    // `git clone --branch` accepts only a branch or tag name, never a raw commit
+    // hash — so pinning an install to a commit (`#<40-hex-sha>`, which
+    // parseGithubShorthand/parseGitUrl accept and validateGitRef allows) made the
+    // clone fail outright. A commit pin needs a full clone followed by a
+    // checkout of that revision; `--depth 1` cannot fetch an arbitrary commit
+    // either, so the read-only shallow optimization is skipped in that case.
+    const pinnedCommit = parsed.requestedRef !== undefined && isCommitSha(parsed.requestedRef);
     const cloneArgs = ["clone"];
-    if (!options?.writable) cloneArgs.push("--depth", "1");
-    if (parsed.requestedRef) {
+    if (!options?.writable && !pinnedCommit) cloneArgs.push("--depth", "1");
+    if (parsed.requestedRef && !pinnedCommit) {
       cloneArgs.push("--branch", parsed.requestedRef);
     }
     cloneArgs.push(parsed.url, cloneDir);
@@ -251,6 +269,15 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
     const cloneResult = runGit(cloneArgs, { timeout: 120_000 });
     if (cloneResult.status !== 0) {
       throw new Error(classifyCloneFailure(parsed.url, cloneResult.stderr, cloneResult.error));
+    }
+
+    if (pinnedCommit) {
+      const checkout = runGit(["-C", cloneDir, "checkout", "--detach", parsed.requestedRef!], { timeout: 120_000 });
+      if (checkout.status !== 0) {
+        throw new Error(
+          `Could not check out commit ${parsed.requestedRef} from ${parsed.url}: ${checkout.stderr.trim() || "unknown git error"}`,
+        );
+      }
     }
 
     // R-011: `resolved.resolvedRevision` was resolved via a SEPARATE

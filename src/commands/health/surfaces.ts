@@ -5,9 +5,8 @@
 /**
  * The remaining `surfaces` advisory group for `akm health` (meta-review 08).
  * `stash-git-exposure` (08-F1) shipped first in ./stash-exposure.ts; this
- * module adds the other three read-only checks the adjudication approved:
+ * module adds the other two read-only checks the adjudication approved:
  *
- *   - `secret-file-perms`   — env/secret/backup files not 0600, dirs not 0700 (F4)
  *   - `binary-config-skew`  — config.json written by a NEWER akm than this binary (F3)
  *   - `egress-endpoints`    — the remote-destination list, for eyeball diff (surfaces 3/9)
  *
@@ -17,86 +16,10 @@
  * (pass-status) entry: it emits whenever any remote endpoint is configured.
  */
 
-import fs from "node:fs";
-import path from "node:path";
 import { MAX_CONFIG_FILE_BYTES, readTextFileWithLimit } from "../../core/common";
 import { CURRENT_CONFIG_VERSION } from "../../core/config/config-schema";
 import { compareConfigVersion } from "../../core/config/config-version";
 import type { HealthCheckResult } from "./types";
-
-/** POSIX permission checks are meaningless on Windows. */
-type PlatformLike = NodeJS.Platform | string;
-
-const GROUP_OTHER_BITS = 0o077;
-const OFFENDER_EVIDENCE_CAP = 50;
-
-function modeOctal(mode: number): string {
-  return (mode & 0o777).toString(8).padStart(3, "0");
-}
-
-/**
- * `secret-file-perms` (08-F4): flag env/secret/backup files that are not 0600
- * and their directories when not 0700. Scans `<stash>/env`, `<stash>/secrets`
- * and `<cache>/config-backups`; anything readable by group/other is an
- * offender. Silent when every path is tight (or none of the dirs exist).
- */
-export function collectSecretPermsAdvisory(
-  input: { stashDir: string; cacheDir: string },
-  platform: PlatformLike = process.platform,
-): HealthCheckResult | undefined {
-  if (platform === "win32") return undefined;
-
-  const roots = [
-    path.join(input.stashDir, "env"),
-    path.join(input.stashDir, "secrets"),
-    path.join(input.cacheDir, "config-backups"),
-  ];
-  const offenders: string[] = [];
-
-  for (const root of roots) {
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(root);
-    } catch {
-      continue; // absent → nothing to protect
-    }
-    if ((stat.mode & GROUP_OTHER_BITS) !== 0) offenders.push(`${root}/ (${modeOctal(stat.mode)}, want 700)`);
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(root, { recursive: true }) as string[];
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const abs = path.join(root, entry);
-      let entryStat: fs.Stats;
-      try {
-        entryStat = fs.statSync(abs);
-      } catch {
-        continue;
-      }
-      if ((entryStat.mode & GROUP_OTHER_BITS) === 0) continue;
-      offenders.push(
-        entryStat.isDirectory()
-          ? `${abs}/ (${modeOctal(entryStat.mode)}, want 700)`
-          : `${abs} (${modeOctal(entryStat.mode)}, want 600)`,
-      );
-    }
-  }
-
-  if (offenders.length === 0) return undefined;
-  const preview = offenders.slice(0, 5).join("; ") + (offenders.length > 5 ? `; +${offenders.length - 5} more` : "");
-  return {
-    name: "secret-file-perms",
-    kind: "deterministic",
-    status: "warn",
-    confidence: "high",
-    message:
-      `${offenders.length} env/secret/backup path(s) are readable by group/other: ${preview}. ` +
-      "Tighten with chmod 600 (files) / chmod 700 (dirs) — these hold tokens, keys, and config snapshots.",
-    evidence: { offenders: offenders.slice(0, OFFENDER_EVIDENCE_CAP) },
-  };
-}
 
 /**
  * `binary-config-skew` (08-F3): warn when config.json carries a configVersion
@@ -189,23 +112,13 @@ export function collectEgressAdvisory(config: EgressConfigView | undefined): Hea
 }
 
 /**
- * Aggregate the three collectors into the advisories array shape `akmHealth`
- * consumes. Order is fixed: perms → skew → egress.
+ * Aggregate the two collectors into the advisories array shape `akmHealth`
+ * consumes. Order is fixed: skew → egress.
  */
 export function collectSurfacesAdvisories(input: {
-  stashDir: string;
-  cacheDir: string;
   configPath: string;
   config: EgressConfigView | undefined;
-  platform?: PlatformLike;
 }): HealthCheckResult[] {
-  const results = [
-    collectSecretPermsAdvisory(
-      { stashDir: input.stashDir, cacheDir: input.cacheDir },
-      input.platform ?? process.platform,
-    ),
-    collectConfigSkewAdvisory(input.configPath),
-    collectEgressAdvisory(input.config),
-  ];
+  const results = [collectConfigSkewAdvisory(input.configPath), collectEgressAdvisory(input.config)];
   return results.filter((r): r is HealthCheckResult => r !== undefined);
 }

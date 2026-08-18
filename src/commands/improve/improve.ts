@@ -24,7 +24,8 @@ import { resolveMutationTarget } from "../../core/mutation-target";
 import { getDbPath, getStateDbPathInDataDir } from "../../core/paths";
 import { redactSensitiveText } from "../../core/redaction";
 import { openStateDatabase } from "../../core/state-db";
-import { info, warn } from "../../core/warn";
+import { info, warn, warnVerbose } from "../../core/warn";
+import { beginWriteProvenance, relativeWrittenPath, type WriteProvenanceJournal } from "../../core/write-provenance";
 import { resolveWritable, resolveWriteTarget } from "../../core/write-source";
 import { ensureIndex } from "../../indexer/ensure-index";
 import { akmIndex } from "../../indexer/indexer";
@@ -160,6 +161,36 @@ export function armBudgetWatchdog(
   };
 }
 
+/**
+ * The run's write-provenance journal lifecycle as one named unit (#652).
+ *
+ * The journal is opened once the run owns its lock — so it spans exactly the
+ * window in which this run, and only this run, is allowed to write — and closed
+ * on every exit path including the crash-safety commit. Keeping the mutable
+ * handle behind this factory rather than as a bare `let` in {@link akmImprove}
+ * is also what keeps that function under the R31 size gate
+ * (`tests/architecture/improve-fn-size-ratchet.test.ts`, absolute 220-line bar
+ * with an empty baseline): lifecycle state belongs in a named unit, not in the
+ * orchestrator's preamble.
+ */
+function createRunWriteJournal(): {
+  open(): void;
+  close(): void;
+  current(): WriteProvenanceJournal | undefined;
+} {
+  let journal: WriteProvenanceJournal | undefined;
+  return {
+    open: () => {
+      journal = beginWriteProvenance();
+    },
+    close: () => {
+      journal?.end();
+      journal = undefined;
+    },
+    current: () => journal,
+  };
+}
+
 export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmImproveResult> {
   const setup = resolveImproveRunSetup(options);
   options = setup.options;
@@ -175,6 +206,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
   } = setup;
   let clearBudgetTimer = (): void => {};
   let initialGitPaths = new Set<string>();
+  const runJournal = createRunWriteJournal();
 
   const preEnsureCleanupWarnings: string[] = [];
   // Assigned by runIndexAndCollect() (closure) so TS cannot prove definite
@@ -211,6 +243,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
   const commitStashBatch = makeCommitStashBatch({
     run: setup,
     getInitialGitPaths: () => initialGitPaths,
+    getWriteJournal: () => runJournal.current(),
     // Captured via getter: the live `eventsCtx` binding is reassigned after the
     // prepass, and the catch-path sync must write through the current context.
     getEventsCtx: () => eventsCtx,
@@ -237,6 +270,9 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
       process.on("exit", exitBackstop);
       initialGitPaths =
         syncRepoDir && isGitBackedStash(syncRepoDir) ? new Set(listGitChangedPaths(syncRepoDir)) : new Set<string>();
+      // #652: open AFTER the lock, so the journal covers exactly the window in
+      // which this run — and only this run — is allowed to write.
+      runJournal.open();
 
       // Drain the standing proposal backlog before indexing so fresh proposal
       // generation sees promotions from this same serialized run.
@@ -269,6 +305,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
       exitBackstop = undefined;
     }
     releaseRunLock();
+    runJournal.close();
     throw err;
   }
 
@@ -323,6 +360,12 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
     // the only commit; for a multi-cycle run the earlier cycles were banked by
     // the inter-cycle calls and this records the last batch). `result` carries
     // the full `{accepted}`/`{refs}`/`{triage_*}` token data for the message.
+    //
+    // #652: surface the run's write provenance on the envelope BEFORE the sync
+    // (the sync itself writes no assets), so `result.writtenPaths` describes
+    // exactly the set the commit below was scoped to.
+    const writtenPaths = describeRunWrittenPaths(setup, runJournal.current()?.writtenPaths() ?? []);
+    if (writtenPaths.length > 0) result.writtenPaths = writtenPaths;
     result.sync = commitStashBatch(result);
 
     return result;
@@ -353,6 +396,10 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
       exitBackstop = undefined;
     }
     releaseRunLock();
+    // #652: close the write-provenance journal LAST among the write-facing
+    // teardown steps — the catch path's crash-safety commit above still needs
+    // it open to know what this run wrote.
+    runJournal.close();
     // I1: close the long-lived state.db connection opened at the top of the run.
     try {
       eventsDb?.close();
@@ -360,6 +407,23 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
       // ignore — DB may already be closed
     }
   }
+}
+
+/**
+ * Shape the run's journaled absolute paths for `result.writtenPaths` (#652):
+ * POSIX-relative to the run's primary stash dir (the repo root for a git-backed
+ * stash) when the write landed inside it, absolute otherwise — a run writing to
+ * a `--target` bundle outside the stash still reports what it wrote. Deduped and
+ * sorted so the field is stable across runs.
+ */
+function describeRunWrittenPaths(setup: ImproveRunSetup, writtenPaths: readonly string[]): string[] {
+  const root = setup.primaryStashDir ?? setup.syncRepoDir;
+  const described = new Set<string>();
+  for (const absolutePath of writtenPaths) {
+    const relative = root ? relativeWrittenPath(root, absolutePath) : undefined;
+    described.add(relative ?? absolutePath.replaceAll(path.sep, "/"));
+  }
+  return [...described].sort();
 }
 
 // ── akmImprove run-setup / stage-sequencing / run-teardown units ────────────
@@ -818,23 +882,83 @@ async function runTriagePrePass(run: ImproveRunSetup): Promise<DrainResult | und
   return triageDrain;
 }
 
+/** A path is never staged by auto-sync when it is (or looks like) a lock file. */
+function isSyncExcludedPath(relativePath: string): boolean {
+  return path.basename(relativePath).includes(".lock");
+}
+
+/**
+ * Resolve the EXACT repo-relative path set the auto-sync commit stages (#652).
+ *
+ * Precedence:
+ *
+ *   1. **Run-scoped write provenance** (`writtenPaths`, absolute) — the paths
+ *      this run actually wrote, created, or removed, intersected with the paths
+ *      Git currently reports as changed. The intersection is what makes the set
+ *      correct rather than merely plausible: it drops a journaled path whose
+ *      final bytes match HEAD (nothing to commit), a journaled path that was
+ *      created and then removed again (never existed for Git), and any journaled
+ *      path Git ignores (which `saveGitStash` would otherwise reject outright).
+ *      A journaled path that was ALREADY dirty when the run started stays IN —
+ *      this run rewrote it, so this run owns it.
+ *   2. **Dirty-path diff** (pre-#652 behaviour) — only when no journal was open,
+ *      which a live run never hits. Kept as the defensive fallback so a future
+ *      caller that commits outside the journal window degrades to the previous,
+ *      battle-tested heuristic instead of silently committing nothing.
+ *
+ * `unattributed` counts in-scope paths that became dirty DURING the run without
+ * this run writing them: concurrent human edits (correctly excluded) and, if the
+ * number is ever surprising, the fingerprint of a missing journal call site.
+ */
+export function resolveSyncPathSet(input: {
+  repoDir: string;
+  assetPrefix: string;
+  changedPaths: readonly string[];
+  initialPaths: ReadonlySet<string>;
+  writtenPaths: readonly string[];
+  provenance: boolean;
+}): { paths: string[]; unattributed: string[] } {
+  const { repoDir, assetPrefix, changedPaths, initialPaths, writtenPaths, provenance } = input;
+  const inScope = (relativePath: string): boolean =>
+    !isSyncExcludedPath(relativePath) &&
+    (!assetPrefix || relativePath === assetPrefix || relativePath.startsWith(`${assetPrefix}/`));
+
+  if (!provenance) {
+    return { paths: changedPaths.filter((p) => !initialPaths.has(p) && inScope(p)), unattributed: [] };
+  }
+
+  const changed = new Set(changedPaths);
+  const attributed = new Set<string>();
+  for (const absolutePath of writtenPaths) {
+    const relativePath = relativeWrittenPath(repoDir, absolutePath);
+    if (!relativePath || !changed.has(relativePath) || !inScope(relativePath)) continue;
+    attributed.add(relativePath);
+  }
+  return {
+    paths: [...attributed].sort(),
+    unattributed: changedPaths.filter((p) => !attributed.has(p) && !initialPaths.has(p) && inScope(p)).sort(),
+  };
+}
+
 /**
  * Crash-safe / incremental stash sync (#662) — see the factory-returned
  * closure's original doc block: the primary stash writes as a filesystem
  * source DURING the run; this commits them at end-of-run AND from the catch
- * path. Idempotent + NON-FATAL. `getEventsCtx`/`getInitialGitPaths` are
- * getters because both outer bindings are (re)assigned after this factory
- * runs — the returned closure must observe the live values.
+ * path. Idempotent + NON-FATAL. `getEventsCtx`/`getInitialGitPaths`/
+ * `getWriteJournal` are getters because those outer bindings are (re)assigned
+ * after this factory runs — the returned closure must observe the live values.
  */
 function makeCommitStashBatch(deps: {
   run: ImproveRunSetup;
   getInitialGitPaths: () => Set<string>;
+  getWriteJournal: () => WriteProvenanceJournal | undefined;
   getEventsCtx: () => EventsContext;
 }): (messageContext: Parameters<typeof renderSyncCommitMessage>[1]) => AkmImproveResult["sync"] | undefined {
   const { writeTarget, primaryStashDir, effectiveSync, options, _earlyConfig, improveProfile } = deps.run;
   return (messageContext) => {
     const eventsCtx = deps.getEventsCtx();
     const initialGitPaths = deps.getInitialGitPaths();
+    const writeJournal = deps.getWriteJournal();
     const repoDir = writeTarget?.source.repoPath ?? primaryStashDir;
     if (!primaryStashDir || !repoDir || effectiveSync.enabled === false || !isGitBackedStash(repoDir)) {
       return undefined;
@@ -850,11 +974,19 @@ function makeCommitStashBatch(deps: {
     try {
       const assetRoot = writeTarget?.source.path ?? primaryStashDir;
       const assetPrefix = assetRoot ? path.relative(repoDir, assetRoot).replaceAll(path.sep, "/") : "";
-      const paths = listGitChangedPaths(repoDir).filter((changedPath) => {
-        if (initialGitPaths.has(changedPath)) return false;
-        if (path.basename(changedPath).includes(".lock")) return false;
-        return !assetPrefix || changedPath === assetPrefix || changedPath.startsWith(`${assetPrefix}/`);
+      const { paths, unattributed } = resolveSyncPathSet({
+        repoDir,
+        assetPrefix,
+        changedPaths: listGitChangedPaths(repoDir),
+        initialPaths: initialGitPaths,
+        writtenPaths: writeJournal?.writtenPaths() ?? [],
+        provenance: writeJournal !== undefined,
       });
+      if (unattributed.length > 0) {
+        warnVerbose(
+          `[improve] auto-sync left ${unattributed.length} path(s) uncommitted — not written by this run: ${unattributed.join(", ")}`,
+        );
+      }
       const syncResult = saveGitStashFn(undefined, message, writableOverride, {
         push,
         repoDir,
@@ -868,6 +1000,11 @@ function makeCommitStashBatch(deps: {
             pushed: syncResult.pushed,
             skipped: syncResult.skipped,
             reason: syncResult.reason ?? null,
+            // #652 provenance audit trail: how many paths this run staged, and
+            // how many in-scope paths went dirty during the run that it did NOT
+            // write (concurrent edits — deliberately left for their author).
+            attributed: paths.length,
+            unattributed: unattributed.length,
           },
         },
         eventsCtx,

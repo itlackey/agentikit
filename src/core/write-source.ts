@@ -51,12 +51,13 @@ import { assetPathForName, stashDirFor } from "./asset/asset-placement";
 import type { AssetRef } from "./asset/resolve-ref";
 import { conceptIdFromTypeName, displayRef } from "./asset/resolve-ref";
 import { deriveBundleId } from "./bundle-id";
-import { isWithin, resolveStashDir } from "./common";
+import { existingFileMode, isWithin, resolveStashDir, writeFileAtomic } from "./common";
 import type { AkmConfig, ConfiguredSource, SourceConfigEntry } from "./config/config";
 import { resolveConfiguredSources } from "./config/config";
 import { ConfigError, UsageError } from "./errors";
 import { sanitizeCommitMessage } from "./git-message";
 import { warn } from "./warn";
+import { recordWrittenPath } from "./write-provenance";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -426,8 +427,15 @@ export async function writeAssetToSource(
   const preflight = preflightGitPathMutation(source, filePath);
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, normalized, "utf8");
+    // Atomic: truncate-and-rewrite left a window in which a crash, a full disk,
+    // or a concurrent reader saw a half-written or empty asset — destroying user
+    // content that was fine a moment earlier. writeFileAtomic writes a sibling
+    // temp file, fdatasyncs it, and renames over the target.
+    writeFileAtomic(filePath, normalized, existingFileMode(filePath));
     recordWriteTargetPath(source, filePath);
+    // #652: run-scoped write provenance — the canonical asset write is the
+    // single largest contributor to an improve run's written-path set.
+    recordWrittenPath(filePath);
   } catch (error) {
     discardEmptyGitPreflight(preflight);
     throw error;
@@ -473,6 +481,9 @@ export async function deleteAssetFromSource(
   try {
     fs.unlinkSync(filePath);
     recordWriteTargetPath(source, filePath);
+    // #652: a removal is journaled exactly like a write — the stager stages the
+    // final on-disk state, so a deleted path lands as a staged deletion.
+    recordWrittenPath(filePath);
   } catch (error) {
     discardEmptyGitPreflight(preflight);
     throw error;
@@ -1295,10 +1306,34 @@ function ensureWritable(source: WriteTargetSource, config: SourceConfigEntry): v
   }
 }
 
+/**
+ * MS-DOS device names Windows still reserves in every directory, with or
+ * without an extension (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
+ */
+const WINDOWS_RESERVED_DEVICE_NAMES = new Set([
+  "con",
+  "prn",
+  "aux",
+  "nul",
+  ...Array.from({ length: 9 }, (_, i) => `com${i + 1}`),
+  ...Array.from({ length: 9 }, (_, i) => `lpt${i + 1}`),
+]);
+
 function resolveAssetFilePath(source: WriteTargetSource, ref: AssetRef): string {
   const basename = path.posix.basename(ref.name.replaceAll("\\", "/")).replace(/\.md$/i, "").toLowerCase();
   if (basename === "index" || basename === "log") {
     throw new UsageError(`Reserved concept name "${basename}" cannot be written.`, "INVALID_FLAG_VALUE");
+  }
+  // Windows resolves these names as DEVICES no matter the directory or the
+  // extension, so `CON.md` is not a file — a write goes to the console and a
+  // read blocks on console input. Rejected on every platform so a stash stays
+  // portable: an asset authored on Linux must not become unopenable when the
+  // same bundle is used on Windows.
+  if (WINDOWS_RESERVED_DEVICE_NAMES.has(basename)) {
+    throw new UsageError(
+      `Asset name "${basename}" is a reserved Windows device name and cannot be written.`,
+      "INVALID_FLAG_VALUE",
+    );
   }
   const typeDir = stashDirFor(ref.type);
   if (!typeDir) {

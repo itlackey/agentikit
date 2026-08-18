@@ -30,7 +30,14 @@ import { collectWorkflowWarnings } from "../ir/compile";
 import { compileResolveFreezeWorkflow } from "../ir/freeze";
 import { materializeWorkflowParameterFlags, validateWorkflowParams, type WorkflowParameterFlag } from "../ir/params";
 import { canonicalPlanJson, computePlanHash } from "../ir/plan-hash";
-import { decodeWorkflowPlanV3, type FrozenEngineSnapshot, WORKFLOW_IR_VERSION } from "../ir/schema";
+import { decodeWorkflowPlanV3, type FrozenEngineSnapshot, type IrRuntimeKind, WORKFLOW_IR_VERSION } from "../ir/schema";
+import {
+  clip,
+  utf8Bytes,
+  WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS,
+  WORKFLOW_MAX_EVIDENCE_JSON_BYTES,
+  WORKFLOW_UNIT_DIAGNOSTIC_CLIP,
+} from "../resource-limits";
 import { type SummaryJudge, validateStepSummary } from "../validate-summary";
 import { resolveAgentIdentity } from "./agent-identity";
 import { type CheckinDirective, evaluateCheckin } from "./checkin";
@@ -94,9 +101,19 @@ export interface WorkflowUnitDiagnostic {
   failureReason: string | null;
   sessionId: string | null;
   /**
-   * The row's `result_json` rendered as text (a completed unit's result, or any
-   * partial/error text a failed unit produced), clipped to
-   * {@link UNIT_DIAGNOSTIC_CLIP} chars. Null when the row journaled no result.
+   * The row's `result_json` rendered as text, clipped to
+   * {@link WORKFLOW_UNIT_DIAGNOSTIC_CLIP} chars — the same bound the dispatch
+   * path clips with before journaling. Re-clipped here regardless, because rows
+   * written by other producers (a driver-reported completion, an older akm)
+   * carry whatever they carry. Null when the row journaled nothing.
+   *
+   * For a COMPLETED unit that is its result. For a FAILED unit it is the
+   * dispatch diagnostic the journal kept — already scrubbed by the dispatch
+   * redaction contract before it was written. For an `exec` unit that is where
+   * a failing command's stderr lands, and it is frequently the ONLY explanation
+   * of the failure: `failure_reason: non_zero_exit` says a command failed, and a
+   * command that explains itself on stderr with empty stdout would otherwise say
+   * nothing at all here.
    */
   diagnostic: string | null;
   startedAt: string | null;
@@ -117,12 +134,20 @@ export interface WorkflowUnitDiagnostic {
   claimExpiresAt: string | null;
   engine: string | null;
   /** Journaled resolved runtime kind for a frozen-engine unit. */
-  runtimeKind: "llm" | "agent" | "sdk" | null;
+  runtimeKind: IrRuntimeKind | null;
   platform: string | null;
 }
 
-/** Clip bound for a unit's `result_json` on the `--units` diagnostic surface. */
-const UNIT_DIAGNOSTIC_CLIP = 2000;
+/**
+ * Membership test for the journaled `runner` column, which is an untyped string.
+ * The `Record<IrRuntimeKind, …>` is exhaustiveness-checked, so a new runtime
+ * kind cannot be added to the union without being accepted here too.
+ */
+const IR_RUNTIME_KINDS: Record<IrRuntimeKind, true> = { llm: true, agent: true, sdk: true, exec: true };
+
+function runtimeKindOf(runner: string | null): IrRuntimeKind | null {
+  return runner !== null && Object.hasOwn(IR_RUNTIME_KINDS, runner) ? (runner as IrRuntimeKind) : null;
+}
 
 function toUnitDiagnostic(
   row: WorkflowRunUnitRow,
@@ -142,7 +167,7 @@ function toUnitDiagnostic(
     } catch {
       /* leave the raw journaled text */
     }
-    diagnostic = text.length > UNIT_DIAGNOSTIC_CLIP ? `${text.slice(0, UNIT_DIAGNOSTIC_CLIP)}…` : text;
+    diagnostic = clip(text, WORKFLOW_UNIT_DIAGNOSTIC_CLIP);
   }
   return {
     unitId: row.unit_id,
@@ -162,8 +187,7 @@ function toUnitDiagnostic(
     claimHolder: row.claim_holder,
     claimExpiresAt: row.claim_expires_at,
     engine: row.engine ?? null,
-    runtimeKind:
-      row.engine && (row.runner === "llm" || row.runner === "agent" || row.runner === "sdk") ? row.runner : null,
+    runtimeKind: runtimeKindOf(row.runner),
     platform: plannedEngine?.kind === "agent" ? plannedEngine.platform : null,
   };
 }
@@ -560,6 +584,141 @@ export async function abandonWorkflowRun(runId: string): Promise<WorkflowRunDeta
   });
 }
 
+// ── Step-evidence persistence bound (issue C) ────────────────────────────────
+
+/**
+ * Marker key stamped on every value this module replaced because it did not fit
+ * in `workflow_run_steps.evidence_json`. It is deliberately ugly and unique so a
+ * truncated value can NEVER be mistaken for real workflow data by a downstream
+ * `steps.<id>.output…` reference, by `akm workflow status`, or by a human
+ * reading the row.
+ */
+export const WORKFLOW_EVIDENCE_TRUNCATED_MARKER = "__akm_evidence_truncated__";
+
+/** The replacement value persisted in place of an over-cap evidence entry. */
+export interface TruncatedEvidenceValue {
+  readonly [WORKFLOW_EVIDENCE_TRUNCATED_MARKER]: true;
+  /** Human-readable explanation, including that the full value is unrecoverable from this row. */
+  readonly reason: string;
+  /** Serialized size of the value that was dropped. */
+  readonly originalBytes: number;
+  /** The cap that was exceeded. */
+  readonly limitBytes: number;
+  /** Leading slice of the dropped value's JSON — evidence for debugging, NEVER usable as data. */
+  readonly preview?: string;
+}
+
+function truncatedEvidenceValue(
+  json: string,
+  what: string,
+  limitBytes: number,
+  withPreview: boolean,
+): TruncatedEvidenceValue {
+  return {
+    [WORKFLOW_EVIDENCE_TRUNCATED_MARKER]: true,
+    reason:
+      `${what} exceeded the ${limitBytes}-byte evidence_json persistence cap and was NOT stored. ` +
+      `The complete value existed only in the live step result; it cannot be recovered from this row. ` +
+      `Reduce the step's fan-out or have it emit a reference (path, id) instead of inline bulk data.`,
+    originalBytes: utf8Bytes(json),
+    limitBytes,
+    ...(withPreview ? { preview: json.slice(0, WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS) } : {}),
+  } as TruncatedEvidenceValue;
+}
+
+/**
+ * True when `value` is the {@link TruncatedEvidenceValue} envelope persisted in
+ * place of an over-cap evidence entry.
+ *
+ * A LIVE invocation never sees one: the engine threads each step's complete
+ * in-memory evidence to the rest of its own run. A RESUMED invocation rebuilds
+ * the downstream scope from these rows, so `exec/step-work.ts` tests every
+ * whole-value reference with this predicate — otherwise a reference INTO the
+ * envelope reports a generic missing property and a reference AT it silently
+ * hands the envelope to a unit as if it were the artifact.
+ */
+export function isTruncatedEvidence(value: unknown): value is TruncatedEvidenceValue {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>)[WORKFLOW_EVIDENCE_TRUNCATED_MARKER] === true
+  );
+}
+
+/**
+ * Bound what a step's evidence costs in ONE SQLite row.
+ *
+ * `buildEvidence` (exec/step-work.ts) promotes `evidence.output` UNCLIPPED by
+ * design: gates judge the full promoted artifact and the in-memory
+ * {@link StepExecutionResult} carries it to the caller intact. Nothing bounded
+ * the PERSISTED form, though — a `collect` reducer over a fan-out capped only by
+ * `WORKFLOW_MAX_MAP_EXPANSION` (10 000 units) can serialize to hundreds of
+ * megabytes. This is the write boundary, so the bound lives here rather than in
+ * the shared step-semantics module.
+ *
+ * Over-cap values are REPLACED (largest top-level entry BY UTF-8 BYTES first —
+ * the unit the cap is measured in — until the row fits) with a
+ * {@link TruncatedEvidenceValue} envelope. Nothing is silently shortened: a
+ * consumer either sees the real value or sees an object whose marker key says
+ * the data is gone. `preview` is intentionally not shaped like the original, so
+ * an expression reaching INTO a truncated artifact (`steps.x.output.files`)
+ * cannot quietly resolve against a half-array; a resumed run's reference is
+ * rejected by name through {@link isTruncatedEvidence}.
+ *
+ * Returns the JSON to persist plus the keys that were replaced (empty in the
+ * overwhelmingly common case, where nothing is copied or re-serialized twice).
+ */
+export function clipStepEvidenceForPersistence(
+  evidence: Record<string, unknown> | undefined,
+  limitBytes: number = WORKFLOW_MAX_EVIDENCE_JSON_BYTES,
+): { json: string | null; truncatedKeys: string[] } {
+  if (!evidence) return { json: null, truncatedKeys: [] };
+  // Throws exactly as the previous inline `JSON.stringify` did on unserializable
+  // evidence — that contract is unchanged. Every stringify below operates on a
+  // subtree of a value already proven serializable here.
+  let json = JSON.stringify(evidence);
+  if (json === undefined) return { json: null, truncatedKeys: [] };
+  let bytes = utf8Bytes(json);
+  if (bytes <= limitBytes) return { json, truncatedKeys: [] };
+
+  const clipped: Record<string, unknown> = { ...evidence };
+  const truncatedKeys: string[] = [];
+  // Ordered by UTF-8 BYTES, the unit the cap itself is measured in: ordering by
+  // `json.length` (UTF-16 code units) sacrifices the char-largest key rather
+  // than the byte-largest one, so multibyte-heavy evidence loses extra keys the
+  // cap never required.
+  const bySizeDesc = Object.keys(evidence)
+    .map((key) => {
+      const json = JSON.stringify(evidence[key]) ?? "null";
+      return { key, json, bytes: utf8Bytes(json) };
+    })
+    .sort((a, b) => b.bytes - a.bytes);
+  for (const [index, entry] of bySizeDesc.entries()) {
+    const envelope = truncatedEvidenceValue(entry.json, `Step evidence "${entry.key}"`, limitBytes, true);
+    clipped[entry.key] = envelope;
+    truncatedKeys.push(entry.key);
+    // Track the row size arithmetically from the per-key sizes already computed
+    // for the sort, so a run of replacements costs ONE whole-object
+    // serialization rather than one per replaced key. The total is an ESTIMATE
+    // — a key whose value is `undefined` is charged the `"null"` the sort used
+    // but is OMITTED from the serialized row — so it decides only WHEN to
+    // measure. Whether the row FITS is settled by an exact serialization every
+    // time, the last key included, so an exhausted loop falls through to the
+    // whole-object marker on measurement rather than on drift.
+    bytes += utf8Bytes(JSON.stringify(envelope)) - entry.bytes;
+    if (bytes > limitBytes && index < bySizeDesc.length - 1) continue;
+    json = JSON.stringify(clipped);
+    bytes = utf8Bytes(json);
+    if (bytes <= limitBytes) return { json, truncatedKeys };
+  }
+  // Pathological shape (so many keys that even the envelopes overflow): persist
+  // ONE whole-object marker. Still unambiguous, still bounded.
+  return {
+    json: JSON.stringify(truncatedEvidenceValue(JSON.stringify(evidence), "Step evidence", limitBytes, false)),
+    truncatedKeys: Object.keys(evidence),
+  };
+}
+
 export async function completeWorkflowStep(
   input: CompleteWorkflowStepInput,
 ): Promise<WorkflowRunDetail | SummaryValidationFailure> {
@@ -608,7 +767,13 @@ export async function completeWorkflowStep(
     if (input.signal?.aborted) throw interruptionReason(input.signal);
     const judge =
       input.summaryJudge === undefined
-        ? frozenSummaryJudge(preflight.plan, preflight.stepPlan.gate.judge, input.signal)
+        ? // Manual completion journals no gate row, so there is no `<stepId>.gate:l<loop>`
+          // identity to agree with — but the dispatch still names the REAL run and
+          // step (frozen-judge falls back to the gate node id for the unit id).
+          frozenSummaryJudge(preflight.plan, preflight.stepPlan.gate.judge, input.signal, undefined, {
+            runId: input.runId,
+            stepId: input.stepId,
+          })
         : input.summaryJudge;
     if (criteria.length > 0 && !judge) {
       throw new ConfigError(
@@ -670,10 +835,28 @@ export async function completeWorkflowStep(
       if (input.signal?.aborted) throw interruptionReason(input.signal);
 
       const completedAt = new Date().toISOString();
+      // Bound the single-row cost of the promoted artifact (issue C). The
+      // caller's in-memory evidence object is never mutated — a clipped COPY is
+      // serialized — so the live step result and the gate's artifact judging
+      // keep the complete value. The DOWNSTREAM scope keeps it only because the
+      // engine threads this same in-memory evidence forward (`driveRun` prefers
+      // it over the re-read row): what the clip actually costs is a LATER
+      // invocation, which has nothing but these rows to rebuild the scope from.
+      const persistedEvidence = clipStepEvidenceForPersistence(input.evidence);
+      if (persistedEvidence.truncatedKeys.length > 0) {
+        warn(
+          `Workflow run ${run.id} step "${input.stepId}": evidence exceeded the ` +
+            `${WORKFLOW_MAX_EVIDENCE_JSON_BYTES}-byte persistence cap; ` +
+            `${persistedEvidence.truncatedKeys.map((k) => `"${k}"`).join(", ")} ` +
+            `${persistedEvidence.truncatedKeys.length === 1 ? "was" : "were"} stored as a truncation marker. ` +
+            `The rest of THIS invocation still reads the complete value, but a run resumed from these rows will ` +
+            `fail loudly when a later step references this step's output rather than read partial data.`,
+        );
+      }
       repo.updateStepCompletion({
         status: input.status,
         notes: input.notes?.trim() || null,
-        evidenceJson: input.evidence ? JSON.stringify(input.evidence) : null,
+        evidenceJson: persistedEvidence.json,
         summary: summary || null,
         completedAt,
         runId: run.id,

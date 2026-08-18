@@ -564,8 +564,22 @@ function ensureBundleRefColumns(db: Database): void {
  * fallback.
  */
 function ensureUniqueItemRefIndex(db: Database): void {
-  db.exec("DROP INDEX IF EXISTS idx_entries_item_ref");
-  db.exec("CREATE UNIQUE INDEX idx_entries_item_ref ON entries(item_ref)");
+  // Probe before mutating. This ran unconditionally on EVERY open as two
+  // separate autocommit statements, so there was always a window in which the
+  // index did not exist — a concurrent open (registry-cache search, indexer,
+  // improve) could DROP between the other's DROP and CREATE and then fail with
+  // "index idx_entries_item_ref already exists", or serve a query with no index
+  // at all. A DB whose index is already UNIQUE needs no work.
+  const existing = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_entries_item_ref'")
+    .get() as { sql: string | null } | undefined;
+  if (existing?.sql && /\bUNIQUE\b/i.test(existing.sql)) return;
+  // Pre-v19 (non-unique index) or absent: convert atomically so a racing open
+  // sees either the old index or the new one, never neither.
+  db.transaction(() => {
+    db.exec("DROP INDEX IF EXISTS idx_entries_item_ref");
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_item_ref ON entries(item_ref)");
+  })();
 }
 
 /**

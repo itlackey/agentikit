@@ -167,6 +167,29 @@ export function withEnvSync<T>(overrides: Record<string, string | undefined>, fn
  * or to a subprocess env. Registering cleanup here keeps `fs.mkdtempSync` out of
  * test files (which the isolation lint flags).
  */
+/**
+ * Run `fn` with `process.stdin.isTTY` forced to `isTTY`, restoring it after.
+ *
+ * `isTTY` is process-global, so a hand-rolled save/override/restore that gets
+ * its restore wrong leaks into unrelated tests — and `tests/_preload.ts`'s leak
+ * tripwire guards env vars and tmpdirs, not stream descriptors, so nothing
+ * would catch it. This existed as four separate inline copies before it lived
+ * here; prefer this over writing a fifth.
+ *
+ * Restores by re-defining the property, which is also how the value was set —
+ * a getter on the original descriptor is not preserved, but no caller has ever
+ * needed one.
+ */
+export async function withTTY<T>(isTTY: boolean, fn: () => T | Promise<T>): Promise<T> {
+  const original = process.stdin.isTTY;
+  Object.defineProperty(process.stdin, "isTTY", { value: isTTY, configurable: true });
+  try {
+    return await fn();
+  } finally {
+    Object.defineProperty(process.stdin, "isTTY", { value: original, configurable: true });
+  }
+}
+
 export function makeStashDir(): SandboxedDir {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `akm-sb-stash2-${sandboxCounter++}-`));
   for (const sub of STASH_SKELETON_SUBDIRS) {

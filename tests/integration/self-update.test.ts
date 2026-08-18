@@ -251,7 +251,14 @@ describe("performUpgrade", () => {
   test("runs migration preflight and apply before rebuilding the index", async () => {
     const events: string[] = [];
     spyOn(childProcess, "spawnSync").mockImplementation(((_command: string, args: string[]) => {
-      events.push(args[0] === "install" ? "install" : args.join(" "));
+      // The migration commands no longer spawn a bare "akm" — that is not
+      // spawnable on Windows, where npm installs only akm.cmd/akm.ps1 shims and
+      // spawnSync does not apply PATHEXT. runRequiredCommand resolves how this
+      // install actually invokes akm, which prepends at most one absolute script
+      // path (running from source: `bun <repo>/src/cli.ts`). Drop that prefix so
+      // these assertions stay about the akm subcommand, which is their point.
+      const akmArgs = args.length > 0 && path.isAbsolute(args[0]!) ? args.slice(1) : args;
+      events.push(akmArgs[0] === "install" ? "install" : akmArgs.join(" "));
       return { status: 0, stdout: "", stderr: "" } as never;
     }) as never);
 
@@ -369,7 +376,14 @@ describe("performUpgrade", () => {
   test("preserves migration preflight and apply for contract-capable future upgrades", async () => {
     const events: string[] = [];
     spyOn(childProcess, "spawnSync").mockImplementation(((_command: string, args: string[]) => {
-      events.push(args[0] === "install" ? "install" : args.join(" "));
+      // The migration commands no longer spawn a bare "akm" — that is not
+      // spawnable on Windows, where npm installs only akm.cmd/akm.ps1 shims and
+      // spawnSync does not apply PATHEXT. runRequiredCommand resolves how this
+      // install actually invokes akm, which prepends at most one absolute script
+      // path (running from source: `bun <repo>/src/cli.ts`). Drop that prefix so
+      // these assertions stay about the akm subcommand, which is their point.
+      const akmArgs = args.length > 0 && path.isAbsolute(args[0]!) ? args.slice(1) : args;
+      events.push(akmArgs[0] === "install" ? "install" : akmArgs.join(" "));
       return { status: 0, stdout: "", stderr: "" } as never;
     }) as never);
 

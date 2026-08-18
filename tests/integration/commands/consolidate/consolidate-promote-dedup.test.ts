@@ -27,10 +27,13 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { emitPromotionProposal, loadExistingKnowledgeBodyHashes } from "../../../../src/commands/improve/consolidate";
 import { mergePlans } from "../../../../src/commands/improve/consolidate/merge";
 import type { ConsolidateOperation, ConsolidatePromoteOp } from "../../../../src/commands/improve/consolidate/types";
 import { cacheHash } from "../../../../src/commands/improve/content-hash";
 import { createProposal, isProposalSkipped, listProposals } from "../../../../src/commands/proposal/repository";
+import type { AkmConfig } from "../../../../src/core/config/config";
+import { resolveWriteTarget } from "../../../../src/core/write-source";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../../../src/indexer/installations";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -300,5 +303,81 @@ describe("content-hash dedup — identical content blocked regardless of target 
     const allPending = listProposals(stash, { status: "pending" });
     expect(allPending).toHaveLength(1);
     expect(allPending[0]?.ref).toBe(durableRef(stash, "knowledge", "paged-review-efficiency"));
+  });
+});
+
+describe("existing knowledge body dedup", () => {
+  it("finds an accepted knowledge body despite different frontmatter and a nested path", () => {
+    const stash = makeStashDir();
+    const nested = path.join(stash, "knowledge", "accepted");
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(
+      path.join(nested, "existing.md"),
+      "---\ntype: knowledge\ndescription: Existing title\n---\n\nReusable body text with enough substance.\n",
+    );
+    fs.writeFileSync(path.join(stash, "knowledge", "ignored.txt"), "Reusable body text with enough substance.\n");
+
+    const hashes = loadExistingKnowledgeBodyHashes(stash);
+
+    expect(
+      hashes.has(
+        cacheHash(
+          "---\ntype: memory\ndescription: Different title\n---\n\nReusable body text with enough substance.\n",
+        ),
+      ),
+    ).toBe(true);
+    expect(hashes.has(cacheHash("A genuinely different body."))).toBe(false);
+    expect(hashes).toHaveLength(1);
+  });
+
+  it("returns an empty set when the knowledge directory is absent", () => {
+    const stash = makeTempDir("akm-promote-dedup-no-knowledge-");
+    expect(loadExistingKnowledgeBodyHashes(stash)).toEqual(new Set());
+  });
+
+  it("suppresses proposal emission on the real promotion path and records the skip reason", async () => {
+    const stash = makeStashDir();
+    const sourceBody =
+      "Reusable accepted knowledge body with enough substance to pass the promotion size gate. " +
+      "The second sentence keeps this fixture above the production minimum without changing its meaning.";
+    const memoryPath = path.join(stash, "memories", "source.md");
+    fs.writeFileSync(memoryPath, `---\ndescription: Source memory\n---\n\n${sourceBody}\n`);
+    fs.writeFileSync(
+      path.join(stash, "knowledge", "already-accepted.md"),
+      `---\ntype: knowledge\ndescription: Different accepted title\n---\n\n${sourceBody}\n`,
+    );
+    const config = {
+      semanticSearchMode: "off",
+      bundles: { stash: { path: stash, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+    } as AkmConfig;
+    const promoted: string[] = [];
+    const warnings: string[] = [];
+    const skips: Array<{ op: string; ref: string; reason: string }> = [];
+
+    await emitPromotionProposal(makePromoteOp("memories/source", "knowledge/new-slug"), {
+      config,
+      stashDir: stash,
+      sourceRun: "consolidate-test",
+      target: resolveWriteTarget(config),
+      memoryByRef: new Map([
+        [
+          "memories/source",
+          { name: "source", filePath: memoryPath, description: "Source memory", tags: [], stashDir: stash },
+        ],
+      ]),
+      promoted,
+      promotedSourceRefs: new Set(),
+      existingKnowledgeBodyHashes: loadExistingKnowledgeBodyHashes(stash),
+      promotionFailures: { count: 0 },
+      warnings,
+      pushSkipReason: (op, ref, reason) => skips.push({ op, ref, reason }),
+    });
+
+    expect(listProposals(stash, { status: "pending" })).toHaveLength(0);
+    expect(promoted).toEqual([]);
+    expect(skips).toEqual([{ op: "promote", ref: "memories/source", reason: "dedup_existing_knowledge" }]);
+    expect(warnings.some((warning) => warning.includes("identical body already exists in knowledge"))).toBe(true);
   });
 });

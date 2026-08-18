@@ -12,6 +12,8 @@
 
 import fs from "node:fs";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
+import { existingFileMode, writeFileAtomic } from "../common";
+import { recordWrittenPath } from "../write-provenance";
 import { assembleAsset, serializeFrontmatter } from "./asset-serialize";
 
 /**
@@ -165,7 +167,14 @@ export function mutateFrontmatter(
     parsed.frontmatter !== null
       ? `---\n${serializeFrontmatter(nextFrontmatter)}\n---\n${parsed.content}`
       : assembleAsset(nextFrontmatter, parsed.content);
-  fs.writeFileSync(filePath, next, "utf8");
+  // Atomic, like the canonical asset write: this rewrites a file the user
+  // authored, and a truncate-in-place left a window where a crash or a
+  // concurrent reader saw a half-written or empty asset. The existing mode is
+  // preserved so stamping frontmatter never changes an asset's permissions.
+  writeFileAtomic(filePath, next, existingFileMode(filePath));
+  // #652: in-place frontmatter stamps (belief state, contradiction markers,
+  // salience) are real asset mutations — journal them for the run's sync.
+  recordWrittenPath(filePath);
   return true;
 }
 

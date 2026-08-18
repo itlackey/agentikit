@@ -9,28 +9,31 @@
  * persistence through the serialized writer queue, and `workflow_unit_*`
  * events for observability.
  *
- * Data flow (redesign addendum, R1): workflow-authored templates go through
- * the deterministic `${{ … }}` expression language (`program/expressions.ts`)
- * — but ONLY for nodes the frontend marked `templating: "expressions"` (YAML
- * program units). Classic linear markdown instructions are `"verbatim"`:
- * opaque data handed to the agent byte-exact (the stable CLI contract — a
- * literal `${{` there is content, never grammar). Expression templates are
- * parsed ONCE per step and resolved per unit against `{ params, stepOutputs,
- * item, item_index }`; `map.over` resolves as a single whole-value reference.
- * Substituted content is data, never re-scanned — the P1 `{{item}}` re-scan
- * injection class is structurally impossible. There is NO ambient key search:
- * a `steps.<id>.output.<path>` reference addresses INTO that step's recorded
+ * Data flow (workflow-format-unification, spec §2.3): there is NO
+ * interpolation language. A unit's instructions are the step's body prose
+ * BYTE-EXACT — prose is never scanned for reference syntax, so a literal `${{`
+ * in a body is content, not grammar. Data reaches the unit as ATTACHED
+ * STRUCTURED CONTEXT rather than string splices: `buildUnitPrompt`
+ * (`exec/step-work.ts`) wraps the verbatim instructions with JSON blocks for
+ * the run params, a map unit's item + index, and the artifacts named by the
+ * step's `inputs:`. Because nothing is ever substituted INTO the prose, the P1
+ * `{{item}}` re-scan injection class is structurally impossible.
+ *
+ * References survive only in the three whole-value FRONTMATTER positions the
+ * closed two-root grammar occupies (`program/expressions.ts`): `map.over`,
+ * `route.input`, and each `inputs[]` entry. They resolve ONCE per step against
+ * `{ params, stepOutputs }`. There is NO ambient key search: a
+ * `steps.<id>.output.<path>` reference addresses INTO that step's recorded
  * output explicitly.
  *
- * Step outputs (`${{ steps.<id>.output… }}`): every engine-executed step
- * journals a promoted ARTIFACT under `evidence.output` — the solo unit's
- * result/text, the collect reducer's per-item array, or the vote reducer's
- * winner — and that artifact is what the expression scope exposes
- * ({@link projectStepOutput}). The documented addressing
- * (`steps.discover.output.files`) therefore resolves against real step
- * results, never the raw evidence envelope (peer review R1). Steps completed
- * manually (no `output` key in their evidence) expose their recorded evidence
- * object as-is.
+ * Step outputs (`steps.<id>.output…`): every engine-executed step journals a
+ * promoted ARTIFACT under `evidence.output` — the solo unit's result/text, the
+ * collect reducer's per-item array, or the vote reducer's winner — and that
+ * artifact is what the reference scope exposes ({@link projectStepOutput}).
+ * The documented addressing (`steps.discover.output.files`) therefore resolves
+ * against real step results, never the raw evidence envelope (peer review R1).
+ * Steps completed manually (no `output` key in their evidence) expose their
+ * recorded evidence object as-is.
  *
  * Empty free-text outputs (peer review): a SUCCESSFUL schemaless unit that
  * returns the empty string is normalized to "no output" — {@link dispatchUnit}
@@ -42,10 +45,10 @@
  * "empty == absent", not special-cased anywhere:
  *   - a SOLO empty step promotes `output = null` (the unit's absent text ??
  *     null); a `collect` fan-out promotes `null` in that item's slot.
- *   - A downstream `${{ steps.x.output }}` of an empty solo step therefore
- *     resolves against `null` and fails LOUDLY at expression resolution
- *     (`… resolved to null`) — a deterministic `expression_error` on BOTH
- *     surfaces, never a silent empty string.
+ *   - A downstream `steps.x.output` reference to an empty solo step therefore
+ *     resolves against `null` and fails LOUDLY at reference resolution
+ *     (`… resolved to null`) — a deterministic whole-step failure, never a
+ *     silent empty string.
  *   - A SCHEMA unit is unaffected by this normalization: an empty response is
  *     not parseable JSON, so `runStructured` fails it (`parse_error`) — an
  *     empty output can never satisfy a declared schema as a silent `null`.
@@ -128,21 +131,31 @@
  *     engine loop's job (`run-workflow.ts`) via `completeWorkflowStep`.
  */
 
-import { deepMergeConfig } from "../../core/config/deep-merge";
-import { ConfigError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
-import { collectSensitiveValues, isEnvPassthroughValueSafeToExpose, redactSensitiveValue } from "../../core/redaction";
 import { runStructured } from "../../core/structured";
 import { warn } from "../../core/warn";
 import { insertEventStrict } from "../../storage/repositories/events-repository";
-import { type WorkflowRunUnitRow, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
+import {
+  type WorkflowRunUnitRow,
+  withWorkflowRunsConnection,
+  withWorkflowRunsRepo,
+} from "../../storage/repositories/workflow-runs-repository";
 import type { FrozenEngineSnapshot, IrBudget, IrInvocation, IrStepPlan } from "../ir/schema";
+import { WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
+// The ONE dispatch redaction contract, shared with the gate-judge path
+// (exec/frozen-judge.ts). Consumers import the leaf directly — this module is
+// not a second front door onto the seam.
+import { collectWorkflowDispatchSensitiveValues, redactUnitOutcome } from "./dispatch-redaction";
+// The exec (shell) unit runner — a leaf that owns argv spawning, containment,
+// and the process-outcome → failure-reason mapping.
+import { runExecUnit } from "./exec-unit";
 import { LIFETIME_UNIT_CAP, scheduleUnits, UnitCapExceededError } from "./scheduler";
 // Shared step semantics — the ONE implementation consumed by the engine
 // (this module + run-workflow.ts) on both the fresh-execution and the resume
 // path. This module dispatches; step-work.ts owns the pure decisions.
 import {
+  clip,
   computeStepWorkList,
   type GateFeedback,
   reduceEmptyStep,
@@ -152,7 +165,12 @@ import {
   type UnitOutcome,
   unitOutcomeFromRow,
 } from "./step-work";
-import type { UnitDispatcher, UnitDispatchRequest, UnitDispatchResult } from "./unit-dispatch";
+import {
+  materializeFrozenLlm,
+  type UnitDispatcher,
+  type UnitDispatchRequest,
+  type UnitDispatchResult,
+} from "./unit-dispatch";
 
 export type { UnitDispatcher, UnitDispatchRequest, UnitDispatchResult } from "./unit-dispatch";
 
@@ -203,10 +221,12 @@ export interface StepExecutionContext {
   /** Plan-local engine catalog, frozen at run start. */
   engines?: Record<string, FrozenEngineSnapshot>;
   /**
-   * Base directory for `isolation: worktree` units — the git repository the
-   * per-attempt detached worktrees are minted from. Defaults to
-   * `process.cwd()` (the directory the engine invocation runs in); injected
-   * by tests so no chdir is needed.
+   * The engine invocation's working directory. Two uses:
+   *   - the git repository `isolation: worktree` mints its per-attempt
+   *     detached worktrees from;
+   *   - the base directory a NON-isolated `exec` unit spawns in (an isolated
+   *     one spawns in its worktree instead).
+   * Defaults to `process.cwd()`; injected by tests so no chdir is needed.
    */
   workDir?: string;
   /**
@@ -341,8 +361,6 @@ class DispatchBudget {
  *                  env/worktree);
  *   - `dispatch` — no reusable row (or a stale gate-loop row that re-dispatches
  *                  live): this unit will actually issue work.
- * The caller guarantees `workUnit.resolved.ok` (an unresolved unit fails as an
- * `expression_error` before reaching here and never dispatches).
  */
 type UnitReuseDecision =
   | { kind: "reuse"; row: WorkflowRunUnitRow }
@@ -351,44 +369,119 @@ type UnitReuseDecision =
 
 function classifyUnitReuse(
   workUnit: StepWorkUnit,
-  existingUnits: Map<string, WorkflowRunUnitRow> | undefined,
+  completedRows: CompletedRowIndex | undefined,
   gateLoop: number,
 ): UnitReuseDecision {
-  if (!workUnit.resolved.ok) return { kind: "dispatch" };
-  const inputHash = workUnit.resolved.inputHash;
-  const maxAttempts = 1 + Math.max(0, workUnit.retry?.max ?? 0);
-  const base = workUnit.journalBaseId;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const attemptId = attempt === 0 ? base : `${base}~r${attempt}`;
-    const prior = existingUnits?.get(attemptId);
-    if (!prior || prior.status !== "completed") continue;
+  const inputHash = workUnit.inputHash;
+  // Scan EVERY journaled attempt row of this unit (`<base>` / `<base>~r<N>`
+  // for ANY N), not just the attempts the CURRENT retry policy allows:
+  // retry/onError are deliberately excluded from the input hash (step-work.ts)
+  // precisely so completed rows stay valid across policy changes — a run
+  // re-invoked with a lowered retry.max must still find the `~rN` row a prior
+  // invocation completed beyond the new max, never re-dispatch finished work.
+  // A completed hash-matching row anywhere wins (reuse); a completed loop-1
+  // row with a DIFFERENT hash — and no matching sibling — is replay divergence.
+  let divergedAttemptId: string | undefined;
+  for (const prior of completedRows?.get(workUnit.journalBaseId) ?? []) {
     if (prior.input_hash === inputHash) return { kind: "reuse", row: prior };
     // Gate-loop rows are NOT replay-deterministic (the prompt embeds a fresh
     // judge output): a stale loop-N row with a different hash re-dispatches
     // live. Divergence only guards loop-1 rows, whose inputs ARE a pure
     // function of (frozen plan, params, journaled results).
-    if (gateLoop > 1) return { kind: "dispatch" };
-    return { kind: "diverge", attemptId };
+    if (gateLoop <= 1) divergedAttemptId ??= prior.unit_id;
   }
+  if (divergedAttemptId !== undefined) return { kind: "diverge", attemptId: divergedAttemptId };
   return { kind: "dispatch" };
 }
 
 /**
- * Does the step have at least one unit that will ACTUALLY dispatch? Env
- * resolution and worktree preflight are dispatch prerequisites, so a step whose
- * units are all reused / unresolved / diverged must skip them (reviewer finding
- * #2). Mirrors runUnit's reuse decision exactly (shared {@link classifyUnitReuse}).
+ * The step's COMPLETED journal rows grouped by base journal id (`~r<N>`
+ * stripped), built ONCE per step so classifyUnitReuse is a map probe over that
+ * unit's own attempt rows instead of an O(rows) scan of the whole step journal
+ * (a 10 000-unit fan-out resume would otherwise re-walk the full journal once
+ * per unit).
  */
-function stepWillDispatch(
-  workUnits: StepWorkUnit[],
-  existingUnits: Map<string, WorkflowRunUnitRow>,
-  gateLoop: number,
-): boolean {
-  return workUnits.some((u) => u.resolved.ok && classifyUnitReuse(u, existingUnits, gateLoop).kind === "dispatch");
+type CompletedRowIndex = Map<string, WorkflowRunUnitRow[]>;
+
+function indexCompletedRows(rows: Iterable<WorkflowRunUnitRow>): CompletedRowIndex {
+  const index: CompletedRowIndex = new Map();
+  for (const row of rows) {
+    if (row.status !== "completed") continue;
+    const base = row.unit_id.replace(/~r\d+$/, "");
+    const forBase = index.get(base);
+    if (forBase) forBase.push(row);
+    else index.set(base, [row]);
+  }
+  return index;
 }
 
-/** Execute one step plan natively. Never throws for unit-level failures. */
-export async function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContext): Promise<StepExecutionResult> {
+/**
+ * Execute one step plan natively. Never throws for unit-level failures.
+ *
+ * The whole step runs inside ONE state.db connection scope
+ * ({@link withWorkflowRunsConnection}): the journal read, every unit's
+ * insert/finish transaction, and every `workflow_unit_*` event share a single
+ * handle for the step's lifetime instead of opening and closing state.db twice
+ * per unit plus twice per unit's events. The scope closes the handle when the
+ * step settles (success, failure, or throw), so there is no handle to leak and
+ * no lifetime that outlives the step. Everything inside keeps its existing
+ * transaction boundaries — see `core/state-db-scope.ts` for why sharing a
+ * handle across concurrently-scheduled units is safe here.
+ */
+export function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContext): Promise<StepExecutionResult> {
+  return withWorkflowRunsConnection(() => executeStepPlanInConnection(plan, ctx));
+}
+
+/**
+ * Open the step's dispatch budget and the abort signal it trips.
+ *
+ * Budget ceilings (addendum R2): when the frozen plan declares a budget,
+ * dispatch runs under an AbortController CHAINED onto `ctx.signal` — hitting a
+ * ceiling aborts pending and in-flight dispatches, and the step fails hard.
+ * Without a budget the context signal passes through untouched (the no-budget
+ * path is byte-identical to pre-R2 behavior).
+ *
+ * The returned {@link DispatchBudget} is seeded with the run's journaled
+ * dispatch count and token total and consumed per ACTUAL dispatch inside
+ * `runUnit` — never for durable-row reuses, so resuming a large
+ * partially-completed fan-out works.
+ *
+ * `unchainSignal` MUST be called when dispatch finishes (the caller's
+ * `finally`) so the upstream abort listener is removed.
+ */
+function openDispatchBudget(
+  ctx: StepExecutionContext,
+  dispatched: number,
+): { signal: AbortSignal | undefined; budget: DispatchBudget; unchainSignal: (() => void) | undefined } {
+  const declaredBudget =
+    ctx.budget && (ctx.budget.maxUnits !== undefined || ctx.budget.maxTokens !== undefined) ? ctx.budget : undefined;
+  let signal = ctx.signal;
+  let onExceeded: (() => void) | undefined;
+  let unchainSignal: (() => void) | undefined;
+  if (declaredBudget) {
+    const controller = new AbortController();
+    const upstream = ctx.signal;
+    if (upstream) {
+      if (upstream.aborted) {
+        controller.abort();
+      } else {
+        const onUpstreamAbort = () => controller.abort();
+        upstream.addEventListener("abort", onUpstreamAbort, { once: true });
+        unchainSignal = () => upstream.removeEventListener("abort", onUpstreamAbort);
+      }
+    }
+    signal = controller.signal;
+    onExceeded = () => controller.abort();
+  }
+  const budget = new DispatchBudget(dispatched, {
+    tokensUsed: ctx.tokensUsed ?? 0,
+    ...(declaredBudget ? { budget: declaredBudget } : {}),
+    ...(onExceeded ? { onExceeded } : {}),
+  });
+  return { signal, budget, unchainSignal };
+}
+
+async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionContext): Promise<StepExecutionResult> {
   const dispatched = ctx.unitsDispatched ?? 0;
 
   // Work-list computation is the SHARED, PURE decision (step-work.ts): resolve
@@ -427,10 +520,9 @@ export async function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContex
   // is reused, not re-dispatched — a crash-resume must never double-issue
   // side-effecting work. Loading the rows up front is what lets us skip the
   // dispatch prerequisites below when nothing will actually dispatch.
-  const existingUnits = new Map<string, WorkflowRunUnitRow>();
-  for (const row of await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(ctx.runId, plan.stepId))) {
-    existingUnits.set(row.unit_id, row);
-  }
+  const completedRows = indexCompletedRows(
+    await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(ctx.runId, plan.stepId)),
+  );
 
   // Reviewer finding #2: env resolution and worktree preflight are DISPATCH
   // prerequisites, so they must run only when a unit will actually dispatch. A
@@ -440,7 +532,12 @@ export async function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContex
   // to hand back a cached result. The predicate mirrors runUnit's reuse
   // decision exactly (shared classifyUnitReuse).
   const gateLoop = ctx.gateLoop ?? 1;
-  const willDispatch = stepWillDispatch(workUnits, existingUnits, gateLoop);
+  // Classify every unit ONCE. The gate below and each unit's own dispatch then
+  // read the SAME decision rather than recomputing it from inputs that must be
+  // identical — the agreement the gate depends on is structural, not a property
+  // two call sites have to keep re-establishing.
+  const reuseDecisions = workUnits.map((unit) => classifyUnitReuse(unit, completedRows, gateLoop));
+  const willDispatch = reuseDecisions.some((decision) => decision.kind === "dispatch");
 
   // Env bindings resolve once per step, before any dispatch; a binding error
   // fails the whole step cleanly rather than N units racing into it. Skipped
@@ -480,43 +577,25 @@ export async function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContex
     worktreeBase = base;
   }
 
-  // Budget ceilings (addendum R2): when the frozen plan declares a budget,
-  // dispatch runs under an AbortController CHAINED onto ctx.signal — hitting
-  // a ceiling aborts pending and in-flight dispatches, and the step fails
-  // hard below. Without a budget the context signal passes through untouched
-  // (the no-budget path is byte-identical to pre-R2 behavior).
-  const declaredBudget =
-    ctx.budget && (ctx.budget.maxUnits !== undefined || ctx.budget.maxTokens !== undefined) ? ctx.budget : undefined;
-  let signal = ctx.signal;
-  let onExceeded: (() => void) | undefined;
-  let unchainSignal: (() => void) | undefined;
-  if (declaredBudget) {
-    const controller = new AbortController();
-    const upstream = ctx.signal;
-    if (upstream) {
-      if (upstream.aborted) {
-        controller.abort();
-      } else {
-        const onUpstreamAbort = () => controller.abort();
-        upstream.addEventListener("abort", onUpstreamAbort, { once: true });
-        unchainSignal = () => upstream.removeEventListener("abort", onUpstreamAbort);
-      }
-    }
-    signal = controller.signal;
-    onExceeded = () => controller.abort();
-  }
+  // The values that must never survive into the journal. Collected once per
+  // step, not once per unit: the frozen engine and its SDK fallback are
+  // resolved from the step template and handed unchanged to every unit, and
+  // `env` is step-wide, so a fan-out was re-scanning process.env — and
+  // re-inspecting every passthrough value — once per unit, including for units
+  // that go on to reuse a journaled row and dispatch nothing at all.
+  const sensitiveValues = willDispatch && workUnits[0] ? collectWorkflowDispatchSensitiveValues(workUnits[0], env) : [];
 
-  // Lifetime-cap + declared-budget accounting: seeded with the run's
-  // journaled dispatch count and token total, consumed per ACTUAL dispatch
-  // inside runUnit — never for durable-row reuses, so resuming a large
-  // partially-completed fan-out works.
-  const budget = new DispatchBudget(dispatched, {
-    tokensUsed: ctx.tokensUsed ?? 0,
-    ...(declaredBudget ? { budget: declaredBudget } : {}),
-    ...(onExceeded ? { onExceeded } : {}),
-  });
+  // Budget ceilings + lifetime-cap accounting, and the budget-chained abort
+  // signal they trip. Extracted verbatim (behavior-identical) — see
+  // {@link openDispatchBudget}.
+  const { signal, budget, unchainSignal } = openDispatchBudget(ctx, dispatched);
 
   let outcomes: Array<UnitOutcome | undefined>;
+  // Worktree removals started by finished units and awaited below, before this
+  // step reports anything. Cleanup is best-effort, but "the step resolved" must
+  // still mean "its clean worktrees are gone" — only the WAIT moves off the
+  // unit's scheduler slot, not the guarantee.
+  const pendingWorktreeCleanups: Array<Promise<void>> = [];
   const selectedEngine = template.invocation ? ctx.engines?.[template.invocation.engine] : undefined;
   const selectedLlmEngine =
     selectedEngine?.kind === "llm"
@@ -527,7 +606,7 @@ export async function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContex
   try {
     outcomes = await scheduleUnits(
       workUnits,
-      (workUnit) =>
+      (workUnit, index) =>
         runUnit({
           plan,
           workUnit,
@@ -536,7 +615,9 @@ export async function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContex
           ctx,
           signal,
           dispatcher,
-          existingUnits,
+          reuse: reuseDecisions[index]!,
+          sensitiveValues,
+          pendingWorktreeCleanups,
           budget,
         }),
       {
@@ -548,6 +629,9 @@ export async function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContex
     );
   } finally {
     unchainSignal?.();
+    // The barrier. `allSettled` because each task already swallowed its own
+    // failure into a warn — nothing here can fail the step.
+    await Promise.allSettled(pendingWorktreeCleanups);
   }
 
   // Declared budget ceilings and the lifetime cap are hard backstops: a step
@@ -581,6 +665,23 @@ export async function executeStepPlan(plan: IrStepPlan, ctx: StepExecutionContex
         .map((u) => u.error ?? `replay divergence: unit "${u.unitId}" was journaled with different inputs`)
         .join(" "),
     );
+  }
+
+  // A journal-write failure is likewise HARD regardless of on_error: the
+  // unit dispatched (spent tokens, ran side effects) but its result could not
+  // be persisted, so completing the step would promote an artifact the
+  // journal cannot rebuild on resume — and the stuck-`running` row would
+  // wedge or double-dispatch a later invocation. The summary carries the
+  // per-unit cause verbatim.
+  const unjournaled = units.filter((u) => u.failureReason === "journal_write_failed");
+  if (unjournaled.length > 0) {
+    return {
+      ...failedStep(
+        budget.used,
+        unjournaled.map((u) => u.error ?? `unit "${u.unitId}" result could not be journaled`).join(" "),
+      ),
+      tokensUsed: budget.tokens,
+    };
   }
 
   // Failure policy + reducer + typed-artifact validation are the SHARED
@@ -617,8 +718,18 @@ interface RunUnitInput {
    */
   signal?: AbortSignal;
   dispatcher: UnitDispatcher;
-  /** Prior unit rows for this step, for durable-row reuse. */
-  existingUnits?: Map<string, WorkflowRunUnitRow>;
+  /**
+   * This unit's durable-row decision, classified once per step alongside the
+   * gate that consumes the same array — never re-derived here.
+   */
+  reuse: UnitReuseDecision;
+  /**
+   * The step's sensitive values, collected once (step-constant — see the
+   * collection site in {@link executeStepPlanInConnection}).
+   */
+  sensitiveValues: string[];
+  /** The step's worktree-removal barrier — see {@link JournaledAttemptInput}. */
+  pendingWorktreeCleanups: Array<Promise<void>>;
   /** Shared lifetime-cap budget; consumed once per actual dispatch attempt. */
   budget: DispatchBudget;
 }
@@ -627,27 +738,19 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
   const { plan, workUnit, env, ctx, dispatcher } = input;
   const unitId = workUnit.unitId;
 
-  // A per-unit expression resolution failure (missing param, bad `item.<path>`)
-  // is deterministic authoring/data breakage computed by the shared work-list:
-  // the unit fails WITHOUT dispatching — and without journaling a row, since no
-  // resolved input exists to hash.
-  if (!workUnit.resolved.ok) {
-    return { unitId, ok: false, failureReason: "expression_error", error: workUnit.resolved.error };
-  }
-  if (!workUnit.engine || !workUnit.invocation) {
-    return {
-      unitId,
-      ok: false,
-      failureReason: "dispatch_error",
-      error: `unit "${unitId}" has no frozen engine snapshot and cannot be dispatched`,
-    };
-  }
+  // Engine/exec presence is a WHOLE-LIST invariant, never a per-unit condition:
+  // computeStepWorkList fails the entire step before it builds any unit when a
+  // template carries neither an `exec` spec nor an `invocation`, and when an
+  // `invocation` names an engine absent from the frozen catalog — and
+  // executeStepPlanInConnection returns on `!workList.ok` without reaching here.
+  // So every unit below carries either `exec` (a child process, naming no
+  // engine) or `engine` + `invocation`.
 
   // The prompt (and therefore the input hash) was built once with the BASE
   // unit id by computeStepWorkList: a retry re-dispatches the SAME input, the
   // `~r<n>` suffix is journal bookkeeping only.
-  const { prompt, inputHash } = workUnit.resolved;
-  const sensitiveValues = collectWorkflowDispatchSensitiveValues(workUnit, env);
+  const { prompt, inputHash } = workUnit;
+  const sensitiveValues = input.sensitiveValues;
 
   const request: UnitDispatchRequest = {
     runId: ctx.runId,
@@ -655,9 +758,17 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
     unitId,
     nodeId: workUnit.nodeId,
     prompt,
-    engine: workUnit.engine,
+    ...(workUnit.engine ? { engine: workUnit.engine } : {}),
     ...(workUnit.fallbackEngine ? { fallbackEngine: workUnit.fallbackEngine } : {}),
-    invocation: workUnit.invocation,
+    ...(workUnit.invocation ? { invocation: workUnit.invocation } : {}),
+    ...(workUnit.exec ? { exec: workUnit.exec } : {}),
+    ...(workUnit.execContext ? { execContext: workUnit.execContext } : {}),
+    // A NON-isolated exec unit spawns in the engine invocation's working
+    // directory. `dispatchJournaledAttempt` overwrites this with the unit's
+    // fresh worktree when `isolation: worktree` is in play. Only exec units get
+    // it: handing an agent unit a cwd it never had would change harness
+    // behavior, and the agent path already takes its cwd from its profile.
+    ...(workUnit.exec && ctx.workDir !== undefined ? { cwd: ctx.workDir } : {}),
     timeoutMs: workUnit.timeoutMs,
     ...(workUnit.schema ? { schema: workUnit.schema } : {}),
     ...(env ? { env } : {}),
@@ -672,13 +783,12 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
   // `retry.on`.
   const retry = workUnit.retry;
   const maxAttempts = 1 + Math.max(0, retry?.max ?? 0);
-  const gateLoop = ctx.gateLoop ?? 1;
   const journalBaseId = workUnit.journalBaseId;
   const attemptIdFor = (attempt: number): string => (attempt === 0 ? journalBaseId : `${journalBaseId}~r${attempt}`);
 
-  // Durable-row reuse (shared classifyUnitReuse — the SAME decision
-  // executeStepPlan's preflight gate uses, so the gate can never disagree with
-  // what happens here). A completed row with the matching input hash IS the
+  // Durable-row reuse — literally the decision executeStepPlan's preflight gate
+  // counted, handed down rather than recomputed, so the gate cannot disagree
+  // with what happens here. A completed row with the matching input hash IS the
   // result: return it without touching rows, dispatching, or re-emitting events
   // (a crash-resume must never double-issue work). A completed loop-1 row with
   // a DIFFERENT hash is replay divergence (under a frozen plan the same
@@ -686,7 +796,7 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
   // tampered with; executeStepPlan promotes this to a hard step failure
   // regardless of on_error). Stale gate-loop rows, failed/running/missing rows,
   // and pre-release R1 positional ids all fall through and dispatch live.
-  const reuse = classifyUnitReuse(workUnit, input.existingUnits, gateLoop);
+  const reuse = input.reuse;
   if (reuse.kind === "reuse") {
     // Identity in the durable step evidence is the CONTENT-derived base id, not
     // the `~r<n>` attempt row it was reused from — the work list only ever knows
@@ -741,6 +851,7 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
       attemptId,
       inputHash,
       ...(input.worktreeBase !== undefined ? { worktreeBase: input.worktreeBase } : {}),
+      pendingWorktreeCleanups: input.pendingWorktreeCleanups,
     });
     // The journal ROW keeps the `~r<n>`/`~l<loop>` attempt id (dispatchJournaledAttempt
     // wrote it), but the returned outcome's identity in the DURABLE step evidence is
@@ -773,6 +884,56 @@ interface JournaledAttemptInput {
   inputHash: string;
   /** Git repo to mint this attempt's isolation worktree from (`isolation: worktree`). */
   worktreeBase?: string;
+  /**
+   * Where this attempt parks its worktree removal for the step to await. See
+   * the barrier in {@link executeStepPlanInConnection} for why it is not
+   * awaited here.
+   */
+  pendingWorktreeCleanups: Array<Promise<void>>;
+}
+
+/**
+ * What a finished attempt writes to `workflow_run_steps`' unit row
+ * `result_json` — the ONE durable, human-facing surface for a dispatch outcome
+ * (`akm workflow status --units` reads exactly this, and the step summary is
+ * built from the same text).
+ *
+ * A SUCCESS journals its promoted value, unchanged.
+ *
+ * A FAILURE journals its DIAGNOSTIC. Before this, only `result`/`text` were
+ * written: `outcome.error` — the one field that says WHY — reached nothing
+ * durable, because `buildEvidence` deliberately drops it from the deterministic
+ * evidence graph and nothing else persisted it. For an engine unit that mostly
+ * cost detail; for an `exec` unit it lost the diagnostic entirely, since a
+ * command that fails and explains itself on stderr with empty stdout left
+ * `status --units` showing a bare `non_zero_exit`.
+ *
+ * Three constraints hold:
+ *
+ *   - REDACTION — the caller journals only `redactUnitOutcome(...)` output, so
+ *     `error` has already been through the shared dispatch redaction contract
+ *     (`exec/dispatch-redaction.ts`) with this dispatch's resolved `env:`
+ *     values. It is scrubbed by construction, exactly like `text`.
+ *   - BOUNDS — clipped to {@link WORKFLOW_UNIT_DIAGNOSTIC_CLIP}, the same bound
+ *     `status --units` renders with, so a runaway command cannot use the journal
+ *     as its log file.
+ *   - HASHES — `result_json` is an OUTPUT. The unit input hash
+ *     (`computeUnitInputHash`) is computed from plan-frozen INPUTS only
+ *     (template bytes, item, declared inputs, params, dispatch/invocation/exec
+ *     snapshots, env ref names, isolation), and reuse compares the stored
+ *     `input_hash` against that. Nothing here is a hash preimage input, so no
+ *     completed unit re-dispatches because of it.
+ *
+ * Partial output on a failed unit is kept ALONGSIDE the diagnostic rather than
+ * replacing it: a tool that fails after printing its real complaint on stdout
+ * is common, and the reason lives on whichever stream that tool chose.
+ */
+function journaledUnitResultJson(outcome: UnitOutcome): string | null {
+  if (outcome.result !== undefined) return JSON.stringify(outcome.result);
+  if (outcome.ok) return outcome.text ? JSON.stringify(outcome.text) : null;
+  const parts = [outcome.error, outcome.text].filter((part): part is string => Boolean(part && part.trim()));
+  if (parts.length === 0) return null;
+  return JSON.stringify(clip(parts.join("\n--- unit output ---\n"), WORKFLOW_UNIT_DIAGNOSTIC_CLIP));
 }
 
 /** Journal one dispatch attempt: insert row, events, dispatch, finish row. */
@@ -786,10 +947,10 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
   // row — nothing was dispatched (same contract as an expression failure).
   let worktreePath: string | undefined;
   if (input.worktreeBase !== undefined) {
-    const created = createUnitWorktree(input.worktreeBase, ctx.runId, attemptId);
-    if (!created.ok) {
-      return { unitId: request.unitId, ok: false, failureReason: "worktree_failed", error: created.error };
-    }
+    const created = await createUnitWorktree(input.worktreeBase, ctx.runId, attemptId);
+    // Reported BEFORE the failure check: when the worktree could not be minted,
+    // the leftover moved aside is the only copy of the prior attempt's
+    // uncollected work, so that is exactly when its path must not be swallowed.
     if (created.preservedLeftover !== undefined) {
       // Never destroy a dirty (or unverifiable) leftover from a prior
       // invocation of the same attempt — it was moved aside instead.
@@ -798,28 +959,49 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
           `preserved at ${created.preservedLeftover}`,
       );
     }
+    if (!created.ok) {
+      return { unitId: request.unitId, ok: false, failureReason: "worktree_failed", error: created.error };
+    }
     worktreePath = created.path;
     request = { ...request, cwd: worktreePath };
   }
 
-  await enqueueUnitWrite(async () => {
-    await withWorkflowRunsRepo((repo) =>
-      repo.insertUnit({
-        runId: ctx.runId,
-        unitId: attemptId,
-        stepId: plan.stepId,
-        nodeId: workUnit.nodeId,
-        parentUnitId: workUnit.isFanOut ? `${plan.stepId}.map` : null,
-        phase: null,
-        runner: workUnit.runner,
-        engine: request.engine.name,
-        model: request.invocation.model,
-        inputHash,
-        worktreePath: worktreePath ?? null,
-        startedAt: new Date().toISOString(),
-      }),
-    );
-  });
+  const startedAt = new Date().toISOString();
+  try {
+    await enqueueUnitWrite(async () => {
+      await withWorkflowRunsRepo((repo) =>
+        repo.insertUnit({
+          runId: ctx.runId,
+          unitId: attemptId,
+          stepId: plan.stepId,
+          nodeId: workUnit.nodeId,
+          parentUnitId: workUnit.isFanOut ? `${plan.stepId}.map` : null,
+          phase: null,
+          runner: workUnit.runner,
+          engine: request.engine?.name ?? null,
+          model: request.invocation?.model ?? null,
+          inputHash,
+          worktreePath: worktreePath ?? null,
+          startedAt,
+        }),
+      );
+    });
+  } catch (err) {
+    // A failed dispatch-row insert means NOTHING dispatched (the row is the
+    // dispatch's precondition) — fail the unit with the real cause instead of
+    // letting the throw escape into the scheduler, where a swallowed worker
+    // error is indistinguishable from "never claimed" and used to be
+    // misreported as an aborted, never-dispatched unit.
+    if (worktreePath !== undefined && input.worktreeBase !== undefined) {
+      await cleanupUnitWorktree(input.worktreeBase, worktreePath);
+    }
+    return {
+      unitId: request.unitId,
+      ok: false,
+      failureReason: "dispatch_error",
+      error: `unit "${attemptId}" could not journal its dispatch row (nothing was dispatched): ${message(err)}`,
+    };
+  }
   // Ids/status only — instructions and results are workflow-authored content
   // and stay out of the events stream (07 P1-B).
   appendEvent({
@@ -831,62 +1013,157 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
   const outcome = redactUnitOutcome(await dispatchUnit(request, dispatcher), request.sensitiveValues ?? []);
 
   const finishedAt = new Date().toISOString();
-  await enqueueUnitWrite(() =>
-    withWorkflowRunsRepo((repo) =>
-      repo.immediateTransaction((db) => {
-        const run = repo.getRunById(ctx.runId);
-        if (run?.status !== "active") return;
-        if (ctx.leaseHolder !== undefined && run.engine_lease_holder !== ctx.leaseHolder) return;
-        repo.finishUnit({
-          runId: ctx.runId,
-          unitId: attemptId,
-          status: outcome.ok ? "completed" : "failed",
-          resultJson:
-            outcome.result !== undefined
-              ? JSON.stringify(outcome.result)
-              : outcome.text
-                ? JSON.stringify(outcome.text)
-                : null,
-          tokens: outcome.tokens ?? null,
-          failureReason: outcome.failureReason ?? null,
-          // Harness-native session id (P2): journaled so resume can replay the
-          // harness's own context cache (e.g. `codex exec resume <id>`).
-          sessionId: outcome.sessionId ?? null,
-          finishedAt,
-        });
-        insertEventStrict(db, {
-          eventType: "workflow_unit_finished",
-          ts: finishedAt,
-          ref: ctx.workflowRef,
-          metadata: {
+  // A dispatched unit's outcome is NEVER silently discarded. The single-driver
+  // guard lives at the ROW level (`finishUnitFromDispatch`: still `running`,
+  // still this dispatch's `started_at`): a stolen run's new driver re-dispatches
+  // through insertUnit, which REPLACES the row with a fresh started_at, so the
+  // stale driver's finish matches nothing and can never clobber the new
+  // driver's live dispatch. A row that IS still ours is finished with the real
+  // result even when the run went non-active or the lease moved mid-flight —
+  // dropping it would leave the row `running` and make a later resume
+  // re-dispatch side-effecting work that already ran and already spent tokens.
+  // Persisting a unit result never advances the run; spine advancement stays
+  // lease-guarded in completeWorkflowStep.
+  let journalError: unknown;
+  try {
+    await enqueueUnitWrite(() =>
+      withWorkflowRunsRepo((repo) =>
+        repo.immediateTransaction((db) => {
+          const finished = repo.finishUnitFromDispatch({
             runId: ctx.runId,
-            stepId: plan.stepId,
             unitId: attemptId,
             status: outcome.ok ? "completed" : "failed",
-            ...(outcome.failureReason ? { failureReason: outcome.failureReason } : {}),
-            ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}),
-          },
-        });
-      }),
-    ),
-  );
+            resultJson: journaledUnitResultJson(outcome),
+            tokens: outcome.tokens ?? null,
+            failureReason: outcome.failureReason ?? null,
+            // Harness-native session id (P2): journaled so resume can replay the
+            // harness's own context cache (e.g. `codex exec resume <id>`).
+            sessionId: outcome.sessionId ?? null,
+            finishedAt,
+            dispatchStartedAt: startedAt,
+          });
+          if (!finished) {
+            if (!repo.getUnit(ctx.runId, attemptId)) {
+              // The dispatch row vanished (run deleted mid-flight, journal
+              // tampered): the same journaling-bug contract finishUnit throws
+              // for — surfaced below as a journal-write failure, never a no-op.
+              throw new Error(
+                `finishUnit updated no row: no unit "${attemptId}" exists for run "${ctx.runId}". ` +
+                  `The dispatch row this invocation inserted is gone, so the unit's terminal state cannot be journaled.`,
+              );
+            }
+            // The row exists but is no longer this dispatch's `running` row:
+            // another engine invocation re-dispatched (or finished) the unit
+            // after taking the run. Its journal owns the unit now — writing
+            // would clobber a live dispatch — so the outcome is surfaced
+            // loudly instead of silently dropped.
+            warn(
+              `Workflow unit ${attemptId} (run ${ctx.runId}) ${outcome.ok ? "completed" : `failed (${outcome.failureReason ?? "error"})`}, ` +
+                `but its journal row was re-dispatched by another engine invocation mid-flight — refusing to overwrite ` +
+                `the new driver's row. This dispatch's result is not journaled.`,
+            );
+            return;
+          }
+          const run = repo.getRunById(ctx.runId);
+          if (
+            run?.status !== "active" ||
+            (ctx.leaseHolder !== undefined && run.engine_lease_holder !== ctx.leaseHolder)
+          ) {
+            warn(
+              `Workflow unit ${attemptId} (run ${ctx.runId}): the run ` +
+                `${run?.status !== "active" ? `is now ${run?.status ?? "gone"}` : `lease moved to ${run?.engine_lease_holder ?? "(nobody)"}`} ` +
+                `while the unit was in flight; its result was journaled so a resume reuses it instead of re-dispatching.`,
+            );
+          }
+          insertEventStrict(db, {
+            eventType: "workflow_unit_finished",
+            ts: finishedAt,
+            ref: ctx.workflowRef,
+            metadata: {
+              runId: ctx.runId,
+              stepId: plan.stepId,
+              unitId: attemptId,
+              status: outcome.ok ? "completed" : "failed",
+              ...(outcome.failureReason ? { failureReason: outcome.failureReason } : {}),
+              ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}),
+            },
+          });
+        }),
+      ),
+    );
+  } catch (err) {
+    journalError = err;
+  }
 
-  // Worktree lifecycle epilogue: a CLEAN worktree (`git status --porcelain`
-  // empty) is removed; a DIRTY one is retained and logged — the unit left
-  // uncollected work, and its journaled worktree_path says where. Cleanup is
-  // best-effort observability, never a unit failure.
+  // Worktree lifecycle epilogue: a CLEAN worktree is removed; a DIRTY one is
+  // retained and logged — the unit left uncollected work, and its journaled
+  // worktree_path says where. Cleanup is best-effort observability, never a
+  // unit failure, so it is STARTED here and awaited at the step barrier: the
+  // removal serializes on the same per-repo chain as every sibling's
+  // `git worktree add`, and awaiting it in this unit's scheduler slot made a
+  // finished unit wait out other units' full checkouts before its worker could
+  // claim the next item.
   if (worktreePath !== undefined && input.worktreeBase !== undefined) {
-    const cleanup = cleanupUnitWorktree(input.worktreeBase, worktreePath);
-    if (cleanup.dirty) {
-      warn(
-        `Workflow unit ${attemptId} left uncommitted changes in its isolation worktree; retained at ${worktreePath}`,
-      );
-    } else if (!cleanup.removed) {
-      warn(`Workflow unit ${attemptId}: could not clean up isolation worktree ${worktreePath}: ${cleanup.error}`);
-    }
+    const worktreeBase = input.worktreeBase;
+    input.pendingWorktreeCleanups.push(
+      (async () => {
+        try {
+          const cleanup = await cleanupUnitWorktree(worktreeBase, worktreePath);
+          if (cleanup.dirty) {
+            warn(
+              `Workflow unit ${attemptId} left uncommitted changes in its isolation worktree; retained at ${worktreePath}`,
+            );
+          } else if (!cleanup.removed) {
+            warn(`Workflow unit ${attemptId}: could not clean up isolation worktree ${worktreePath}: ${cleanup.error}`);
+          }
+        } catch (err) {
+          warn(`Workflow unit ${attemptId}: could not clean up isolation worktree ${worktreePath}: ${message(err)}`);
+        }
+      })(),
+    );
+  }
+
+  // A journal-write failure AFTER a successful dispatch is its own loud
+  // failure class: the unit's work ran (and may have succeeded), but its
+  // terminal state could not be recorded, so the row may be stuck `running`.
+  // It must never masquerade as "not dispatched" — the outcome names the unit
+  // and the real cause, and executeStepPlan fails the step hard on it
+  // (out-of-taxonomy reason, so retry.on can never re-dispatch the work).
+  if (journalError !== undefined) {
+    return {
+      unitId: request.unitId,
+      ok: false,
+      failureReason: "journal_write_failed",
+      error:
+        `unit "${attemptId}" dispatched and ${outcome.ok ? "completed" : `failed (${outcome.failureReason ?? "error"})`}, ` +
+        `but its result could not be journaled: ${message(journalError)}`,
+      ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}),
+      ...(outcome.sessionId !== undefined ? { sessionId: outcome.sessionId } : {}),
+    };
   }
 
   return outcome;
+}
+
+/**
+ * Strict JSON parse for an `exec` unit's declared-schema output: stdout must be
+ * EXACTLY one JSON value (leading/trailing whitespace tolerated, nothing else).
+ *
+ * Deliberately NOT `parseEmbeddedJsonResponse` — that scan strips code fences
+ * and hunts for a JSON island inside prose, which is the right forgiving
+ * behavior for an LLM and the wrong one for a command, where it would silently
+ * promote a JSON fragment found in unrelated log noise as the typed artifact.
+ * Returning `undefined` makes `runStructured` report `parse_error` (a real
+ * member of the retry taxonomy), so `retry.on: [parse_error]` still works.
+ */
+function parseExecJson(raw: string): unknown {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Transport failures surface as this sentinel so runStructured doesn't retry them. */
@@ -928,6 +1205,18 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
       const schema = request.schema;
       const structured = await runStructured<unknown>({
         dispatch: dispatchOnce,
+        // A command is not re-promptable. Its stdout must be EXACTLY one JSON
+        // value: the default embedded-JSON scan (fences, think-blocks, "find the
+        // JSON inside the prose") is right for an LLM and wrong for a command,
+        // where it would pluck a JSON fragment out of unrelated log noise and
+        // promote it as the typed artifact. And it gets exactly ONE attempt —
+        // `runStructured`'s corrective retry re-dispatches with feedback, which
+        // for a command means running a SIDE-EFFECTING process a second time
+        // with byte-identical argv: it cannot produce different output, and it
+        // can produce a second deployment. Declared `retry:` still applies (the
+        // executor's own loop), because that is a policy the author opted into
+        // per failure reason.
+        ...(request.exec ? { parse: parseExecJson, maxAttempts: 1 } : {}),
         validate: (candidate) => {
           const errors = validateJsonSchemaSubset(candidate, schema);
           return errors.length === 0 ? { ok: true, value: candidate } : { ok: false, errors };
@@ -939,6 +1228,14 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
       return {
         unitId: request.unitId,
         ok: false,
+        // NOTE: `validation_error` is deliberately outside PROGRAM_RETRY_REASONS,
+        // so no `retry.on:` can name it and a schema-violating unit is not
+        // re-run — see "fails with `validation_error` and is NOT re-run" in
+        // tests/integration/workflows/exec-unit.test.ts. A sweep finding
+        // proposed mapping it onto `llm_invalid_json` (which the parser accepts
+        // but this path never emits) to make such failures retryable; that is a
+        // behaviour change against an intentional design, not a bug fix, so it
+        // is left alone. Reconciling the vocabulary is a 0.9.2 decision.
         failureReason: structured.reason,
         error: structured.errors.join("; "),
         text: structured.raw,
@@ -1032,15 +1329,49 @@ export function buildAgentDispatchRequest(
   return {
     prompt,
     ...(request.systemPrompt ? { systemPrompt: request.systemPrompt } : {}),
-    ...(request.invocation.model ? { model: request.invocation.model } : {}),
-    ...(request.invocation.model ? { modelIsExact: true } : {}),
+    ...(request.invocation?.model ? { model: request.invocation.model } : {}),
+    ...(request.invocation?.model ? { modelIsExact: true } : {}),
     ...(request.schema ? { schema: request.schema } : {}),
   };
 }
 
 export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) => {
+  // `exec` units are dispatched FIRST and separately: they name no engine, so
+  // none of the engine-resolution below applies. `feedback` is deliberately
+  // ignored — a corrective re-prompt is meaningless to a fixed argv, and
+  // `dispatchUnit` already pins exec structured output to a single attempt.
+  if (request.exec) {
+    return runExecUnit({
+      unitId: request.unitId,
+      exec: request.exec,
+      // Worktree isolation supplies `cwd`; otherwise the unit runs in the
+      // engine invocation's own working directory.
+      baseDir: request.cwd ?? process.cwd(),
+      ...(request.env ? { env: request.env } : {}),
+      ...(request.execContext ? { context: request.execContext } : {}),
+      // A declared `output:` schema is what makes an output-cap overflow fatal:
+      // stdout must then parse as exactly one JSON value, which a truncated
+      // prefix cannot. Without one, overflow is marked in the artifact and the
+      // command's own exit code decides the unit. See `exec-unit.ts`.
+      ...(request.schema ? { hasOutputSchema: true } : {}),
+      timeoutMs: request.timeoutMs,
+      ...(request.signal ? { signal: request.signal } : {}),
+    });
+  }
+  if (!request.engine || !request.invocation) {
+    return {
+      ok: false,
+      text: "",
+      failureReason: "dispatch_error",
+      error: `unit "${request.unitId}" has neither a frozen engine snapshot nor an exec command to dispatch.`,
+    };
+  }
+  const engineRequest = request as UnitDispatchRequest & {
+    engine: FrozenEngineSnapshot;
+    invocation: IrInvocation;
+  };
   const prompt = feedback ? `${request.prompt}\n\n${feedback}` : request.prompt;
-  const resolved = frozenUnitRunner(request);
+  const resolved = frozenUnitRunner(engineRequest);
 
   // `env` bindings can only reach a child process. The agent (CLI) runner
   // spawns one per call, and the sdk runner now injects them for real via the
@@ -1159,38 +1490,6 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
   };
 };
 
-function collectWorkflowDispatchSensitiveValues(
-  workUnit: StepWorkUnit,
-  env: Record<string, string> | undefined,
-): string[] {
-  const values = new Set<string>(Object.values(env ?? {}));
-  const addCredential = (engine: FrozenEngineSnapshot | undefined): void => {
-    if (!engine) return;
-    if (engine.kind === "llm") {
-      for (const name of engine.credential?.names ?? []) {
-        const value = process.env[name]?.trim();
-        if (value) values.add(value);
-      }
-      return;
-    }
-    for (const name of engine.envPassthrough) {
-      const value = process.env[name];
-      if (!isEnvPassthroughValueSafeToExpose(name, value) && value) values.add(value);
-    }
-  };
-  addCredential(workUnit.engine);
-  addCredential(workUnit.fallbackEngine);
-  return collectSensitiveValues(values);
-}
-
-function redactUnitOutcome(outcome: UnitOutcome, sensitiveValues: readonly string[]): UnitOutcome {
-  const redacted = redactSensitiveValue(outcome, sensitiveValues);
-  if (outcome.failureReason !== undefined && redacted.failureReason !== outcome.failureReason) {
-    redacted.failureReason = "reported_failure";
-  }
-  return redacted;
-}
-
 /**
  * Map a typed {@link import("../../llm/client").LlmCallErrorCode} into the
  * persisted `AgentFailureReason` taxonomy (agent/spawn.ts) — the ONLY
@@ -1249,7 +1548,9 @@ type ResolvedUnitRunner =
     };
 
 /** Reconstruct the existing RunnerSpec substrate from the frozen allowlist only. */
-function frozenUnitRunner(request: UnitDispatchRequest): ResolvedUnitRunner {
+function frozenUnitRunner(
+  request: UnitDispatchRequest & { engine: FrozenEngineSnapshot; invocation: IrInvocation },
+): ResolvedUnitRunner {
   const snapshot = request.engine;
   if (snapshot.kind === "llm") {
     return { kind: "llm", connection: materializeFrozenLlm(snapshot, request.invocation) };
@@ -1271,38 +1572,6 @@ function frozenUnitRunner(request: UnitDispatchRequest): ResolvedUnitRunner {
   // SDK runner receives a frozen fallback copied into the request by its caller.
   const fallback = request.fallbackEngine ? materializeFrozenLlm(request.fallbackEngine, undefined) : undefined;
   return { kind: "sdk", profile, ...(fallback ? { fallbackConnection: fallback } : {}) };
-}
-
-function materializeFrozenLlm(
-  snapshot: Extract<FrozenEngineSnapshot, { kind: "llm" }>,
-  invocation: IrInvocation | undefined,
-): import("../../core/config/config").LlmConnectionConfig {
-  let apiKey: string | undefined;
-  for (const name of snapshot.credential?.names ?? []) {
-    const candidate = process.env[name]?.trim();
-    if (candidate) {
-      apiKey = candidate;
-      break;
-    }
-  }
-  if (snapshot.credential?.required && !apiKey)
-    throw new ConfigError(
-      `Required engine credential ${snapshot.credential.names[0]} is not set.`,
-      "INVALID_CONFIG_FILE",
-    );
-  const base = {
-    provider: snapshot.provider,
-    endpoint: snapshot.endpoint,
-    model: invocation?.model ?? snapshot.model,
-    ...(snapshot.temperature !== undefined ? { temperature: snapshot.temperature } : {}),
-    ...(snapshot.maxTokens !== undefined ? { maxTokens: snapshot.maxTokens } : {}),
-    ...(snapshot.supportsJsonSchema !== undefined ? { supportsJsonSchema: snapshot.supportsJsonSchema } : {}),
-    ...(snapshot.extraParams ? { extraParams: snapshot.extraParams } : {}),
-    ...(snapshot.contextLength !== undefined ? { contextLength: snapshot.contextLength } : {}),
-    ...(snapshot.enableThinking !== undefined ? { enableThinking: snapshot.enableThinking } : {}),
-    ...(apiKey ? { apiKey } : {}),
-  };
-  return invocation?.llm ? (deepMergeConfig(base, invocation.llm as Record<string, unknown>) as typeof base) : base;
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────────

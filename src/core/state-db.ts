@@ -150,6 +150,7 @@ export function openStateDatabase(dbPath?: string): Database {
       exec: db.exec.bind(db),
       run: db.run.bind(db),
       transaction: db.transaction.bind(db),
+      loadExtension: db.loadExtension.bind(db),
       get inTransaction() {
         return db.inTransaction;
       },

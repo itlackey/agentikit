@@ -227,6 +227,31 @@ function markdownDestination(url: string): string {
  */
 const MAX_NESTING_DEPTH = 2_000;
 
+/**
+ * HTML5 void elements. They have no closing tag and are conventionally written
+ * WITHOUT a trailing slash, so a depth counter that only decrements on `</x>`
+ * or `<x/>` treats each one as a permanent +1. The counter then measured total
+ * void-element COUNT rather than nesting depth, and an ordinary page with more
+ * than MAX_NESTING_DEPTH images or line breaks was misjudged as pathologically
+ * nested and degraded to plain text.
+ */
+const VOID_ELEMENTS = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
+]);
+
 function exceedsNestingBudget(html: string): boolean {
   let depth = 0;
   let max = 0;
@@ -235,6 +260,7 @@ function exceedsNestingBudget(html: string): boolean {
     const closing = match[1] === "/";
     const selfClosing = match[3] === "/";
     if (selfClosing) continue;
+    if (VOID_ELEMENTS.has(match[2]!.toLowerCase())) continue;
     if (closing) depth = Math.max(0, depth - 1);
     else {
       depth += 1;
@@ -481,9 +507,44 @@ function escapeResidualMarkup(markdown: string): string {
   return markdown.replace(/<(?=[a-zA-Z/!?])/g, "&lt;");
 }
 
+/**
+ * Apply {@link escapeResidualMarkup} everywhere EXCEPT inside fenced code
+ * blocks.
+ *
+ * Markup inside a fence is inert — a renderer shows it as text, it cannot
+ * execute — so the escape buys no safety there and actively corrupts content.
+ * Turndown emits code with entities already decoded, so a documentation page
+ * showing `&lt;div&gt;` in a `<pre><code>` block became a fence containing
+ * `<div>`, which this rewrote to `&lt;div>`: a half-escaped, wrong-on-both-ends
+ * rendering of the example the page exists to show. Every HTML, XML and JSX
+ * snippet in a snapshot was affected.
+ */
+function escapeOutsideCodeFences(markdown: string): string {
+  const lines = markdown.split("\n");
+  let inFence = false;
+  let fenceMarker = "";
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const fence = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      const marker = fence[1]!;
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = marker[0]!;
+      } else if (marker[0] === fenceMarker) {
+        inFence = false;
+        fenceMarker = "";
+      }
+      continue;
+    }
+    if (!inFence) lines[i] = escapeResidualMarkup(line);
+  }
+  return lines.join("\n");
+}
+
 /** Escape residual markup, then normalize whitespace, into the final snapshot. */
 function finalizeMarkdown(markdown: string): string {
-  return escapeResidualMarkup(markdown)
+  return escapeOutsideCodeFences(markdown)
     .replace(/\r/g, "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")

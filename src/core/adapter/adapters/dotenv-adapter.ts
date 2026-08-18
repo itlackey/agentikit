@@ -72,6 +72,26 @@ function classify(relPath: string): DotenvType | null {
   return null;
 }
 
+/**
+ * True when `--sensitive` marked this asset, via the sibling marker file that
+ * `akm env create --sensitive` / `akm secret create --sensitive` writes:
+ * `env/<name>.sensitive` for `env/<name>.env`, `secrets/<name>.sensitive` for
+ * `secrets/<name>`.
+ *
+ * The flag documents itself as excluding the asset from BOTH `env list` output
+ * and the search index. Indexing filters are adapter-owned (the walk no longer
+ * pre-filters), and the akm adapter abstains on the marker — but this adapter
+ * only skipped files whose OWN name ended in `.sensitive`. A dotenv bundle is a
+ * legal env/secret write target, so a marked `env/prod.env` there was still
+ * indexed with every KEY NAME as a hint and a marked secret still indexed by
+ * name, while `env list` / `secret list` correctly hid them. The two surfaces
+ * disagreed about a documented promise.
+ */
+function hasSensitiveMarker(absPath: string, type: DotenvType): boolean {
+  const marker = type === "env" ? absPath.replace(/\.env$/i, ".sensitive") : `${absPath}.sensitive`;
+  return marker !== absPath && fs.existsSync(marker);
+}
+
 /** Extract KEY NAMES (never values) from an env file's raw content, first-appearance order, deduped. */
 function scanKeyNames(raw: string): string[] {
   const keys: string[] = [];
@@ -90,6 +110,7 @@ function scanKeyNames(raw: string): string[] {
 function recognize(c: BundleComponent, file: FileContext): IndexDocument | null {
   const type = classify(file.relPath);
   if (type === null) return null;
+  if (hasSensitiveMarker(file.absPath, type)) return null;
   const posix = toPosix(file.relPath);
   const raw = file.content();
 

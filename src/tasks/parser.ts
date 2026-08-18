@@ -13,6 +13,10 @@
  * workflow: workflows/daily-backup
  * params:
  *   region: us-east-1
+ * timeoutMs: 3600000               # whole-run bound; omit for the unattended
+ *                                  # default, `null` to opt out entirely
+ * maxSteps: 20                     # optional run bounds, same as the
+ * maxRetries: 1                    # `akm workflow run` flags
  * # ...or:
  * prompt: agents/my-agent           # asset ref
  * # ...or:
@@ -28,6 +32,8 @@
  * description: …
  * when_to_use: …
  * tags: [scheduled, backup]
+ * redact: [ACME_DEPLOY_TOKEN]     # optional: env var NAMES (never values) to
+ *                                 # scrub from this task's persisted log
  * ```
  *
  * Validation lives in {@link validateTaskDocument}. The parser enforces the
@@ -40,7 +46,15 @@ import { parse as parseYaml } from "yaml";
 import { isFullRefInput } from "../core/asset/resolve-ref";
 import { UsageError } from "../core/errors";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
-import { TASK_SCHEMA_VERSION, type TaskDocument, type TaskPromptTarget, type TaskTarget } from "./schema";
+import { WORKFLOW_ENV_VAR_NAME_PATTERN, WORKFLOW_MAX_RETRIES } from "../workflows/resource-limits";
+import {
+  TASK_MAX_REDACT_NAMES,
+  TASK_MAX_TIMEOUT_MS,
+  TASK_SCHEMA_VERSION,
+  type TaskDocument,
+  type TaskPromptTarget,
+  type TaskTarget,
+} from "./schema";
 import { validateTaskId } from "./task-id";
 
 export interface ParseTaskInput {
@@ -110,15 +124,25 @@ export function parseTaskDocument(input: ParseTaskInput): TaskDocument {
 
   let target: TaskTarget;
   if (hasWorkflow) {
-    rejectTargetFields(data, ["params"], id, filePath);
+    rejectTargetFields(data, ["params", "timeoutMs", "maxSteps", "maxRetries"], id, filePath);
     const ref = requireString(data.workflow, "workflow", filePath);
     if (!ref) {
       throw new UsageError(`Task "${id}" has empty \`workflow\`. File: ${filePath}`, "INVALID_FLAG_VALUE");
     }
+    // The three run bounds `akm workflow run` takes as flags, declared in the
+    // task file instead: an unattended run gets the same abort path the
+    // interactive CLI has. `timeoutMs` left unset falls back to the runner's
+    // default (see DEFAULT_WORKFLOW_TASK_TIMEOUT_MS); `null` opts out.
+    const workflowTimeoutMs = readTimeout(data.timeoutMs, filePath);
+    const maxSteps = readBoundedInteger(data.maxSteps, "maxSteps", 1, undefined, filePath);
+    const maxRetries = readBoundedInteger(data.maxRetries, "maxRetries", 0, WORKFLOW_MAX_RETRIES, filePath);
     target = {
       kind: "workflow",
       ref,
       params: readParams(data.params, filePath),
+      ...(workflowTimeoutMs !== undefined ? { timeoutMs: workflowTimeoutMs } : {}),
+      ...(maxSteps !== undefined ? { maxSteps } : {}),
+      ...(maxRetries !== undefined ? { maxRetries } : {}),
     };
   } else if (hasCommand) {
     rejectTargetFields(data, ["timeoutMs"], id, filePath);
@@ -144,6 +168,7 @@ export function parseTaskDocument(input: ParseTaskInput): TaskDocument {
   }
 
   const timeoutMs = hasCommand ? readTimeout(data.timeoutMs, filePath) : undefined;
+  const redact = readRedactNames(data.redact, filePath);
 
   return {
     version: TASK_SCHEMA_VERSION,
@@ -158,6 +183,7 @@ export function parseTaskDocument(input: ParseTaskInput): TaskDocument {
     ...(tags ? { tags } : {}),
     source: { path: filePath },
     timeoutMs,
+    ...(redact ? { redact } : {}),
   };
 }
 
@@ -176,9 +202,22 @@ const TASK_KEYS = new Set([
   "engine",
   "model",
   "timeoutMs",
+  "maxSteps",
+  "maxRetries",
   "llm",
+  "redact",
 ]);
-const SHARED_KEYS = new Set(["version", "name", "description", "when_to_use", "tags", "schedule", "enabled"]);
+const SHARED_KEYS = new Set([
+  "version",
+  "name",
+  "description",
+  "when_to_use",
+  "tags",
+  "schedule",
+  "enabled",
+  // `redact:` is target-agnostic: every kind funnels through the same log sink.
+  "redact",
+]);
 
 function requireVersion(data: Record<string, unknown>, id: string, filePath: string): void {
   if (data.version === TASK_SCHEMA_VERSION) return;
@@ -318,8 +357,64 @@ function readParams(value: unknown, filePath: string): Record<string, unknown> {
 function readTimeout(value: unknown, filePath: string): number | null | undefined {
   if (value === undefined) return undefined;
   if (value === null) return null;
-  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
-  throw new UsageError(`Key "timeoutMs" must be a positive integer or null. File: ${filePath}`, "INVALID_FLAG_VALUE");
+  // The ceiling is `setTimeout`'s, not a policy: a larger delay overflows and
+  // fires immediately, turning a generous timeout into an instant abort.
+  if (typeof value === "number" && Number.isInteger(value) && value > 0 && value <= TASK_MAX_TIMEOUT_MS) return value;
+  throw new UsageError(
+    `Key "timeoutMs" must be an integer from 1 through ${TASK_MAX_TIMEOUT_MS}, or null. File: ${filePath}`,
+    "INVALID_FLAG_VALUE",
+  );
+}
+
+/**
+ * Read the `redact:` opt-in list — environment variable NAMES whose values are
+ * scrubbed from this task's persisted log (#755).
+ *
+ * A value that looks like a secret rather than a name is rejected outright, not
+ * silently accepted: a literal in a task file would be indexed, searchable and
+ * printed verbatim by `akm show`, so accepting one would leak the secret
+ * through a wider channel than the redaction closes.
+ */
+function readRedactNames(value: unknown, filePath: string): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  const invalid = (detail: string): never => {
+    throw new UsageError(`Key "redact" ${detail}. File: ${filePath}`, "INVALID_FLAG_VALUE");
+  };
+  if (!Array.isArray(value)) return invalid("must be a list of environment variable names");
+  if (value.length > TASK_MAX_REDACT_NAMES) {
+    return invalid(`accepts at most ${TASK_MAX_REDACT_NAMES} names (got ${value.length})`);
+  }
+  const names: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string" || !WORKFLOW_ENV_VAR_NAME_PATTERN.test(entry)) {
+      return invalid(
+        `takes environment variable NAMES only (matching ${WORKFLOW_ENV_VAR_NAME_PATTERN.source}), not values — ` +
+          `got ${JSON.stringify(entry)}. A secret written here would be indexed and printed by \`akm show\``,
+      );
+    }
+    if (!names.includes(entry)) names.push(entry);
+  }
+  return names.length > 0 ? names : undefined;
+}
+
+function readBoundedInteger(
+  value: unknown,
+  key: string,
+  minimum: number,
+  maximum: number | undefined,
+  filePath: string,
+): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= minimum &&
+    (maximum === undefined || value <= maximum)
+  ) {
+    return value;
+  }
+  const range = maximum === undefined ? `at least ${minimum}` : `from ${minimum} through ${maximum}`;
+  throw new UsageError(`Key "${key}" must be an integer ${range}. File: ${filePath}`, "INVALID_FLAG_VALUE");
 }
 
 function readLlmOverrides(value: unknown, filePath: string): TaskPromptTarget["llm"] | undefined {

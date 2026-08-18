@@ -231,9 +231,11 @@ export async function validateToolDir(
 
     const relPath = toPosix(change.path);
     // The one coded skill check (missing-skill-md) fires on ANY change under a
-    // `skills/<name>/…` package (self-gated + deduped), even a bundled resource —
-    // mirrors the akm adapter's per-change SkillLinter.lintDirectory pass.
-    diagnostics.push(...(await skillDirectoryDiagnostics(relPath, seenSkillDirs, ctx)));
+    // `<skillDir>/<name>/…` package (self-gated + deduped), even a bundled
+    // resource — mirrors the akm adapter's per-change SkillLinter.lintDirectory
+    // pass. `layout.skillDirs` is passed so opencode's singular `skill/` alias
+    // is checked identically to `skills/` (issue #774).
+    diagnostics.push(...(await skillDirectoryDiagnostics(relPath, seenSkillDirs, ctx, layout.skillDirs)));
 
     const cls = classify(change.path, layout);
     if (cls === null) continue;

@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import path from "node:path";
+import { isContainedRelativePath } from "../../core/common";
 import { UsageError } from "../../core/errors";
 import { formatExtraParamsIssue, validateExtraParams } from "../../core/extra-params";
 import type { LlmInvocationOverrides } from "../../integrations/agent/engine-resolution";
@@ -11,17 +12,29 @@ import { parseReference } from "../program/expressions";
 import { PROGRAM_PARAM_NAME_PATTERN, PROGRAM_RETRY_REASONS, PROGRAM_STEP_ID_PATTERN } from "../program/schema";
 import {
   jsonBytes,
+  utf8Bytes,
+  WORKFLOW_ENGINE_NAME_PATTERN,
+  WORKFLOW_ENV_VAR_NAME_PATTERN,
+  WORKFLOW_MAX_CONCURRENCY,
+  WORKFLOW_MAX_ENGINE_NAME_LENGTH,
   WORKFLOW_MAX_ENGINES,
+  WORKFLOW_MAX_EXEC_ARG_BYTES,
+  WORKFLOW_MAX_EXEC_ARGV,
+  WORKFLOW_MAX_EXEC_CWD_LENGTH,
+  WORKFLOW_MAX_EXEC_PASS_ENV,
   WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
+  WORKFLOW_MAX_GATE_LOOPS,
   WORKFLOW_MAX_INPUTS,
   WORKFLOW_MAX_INSTRUCTION_BYTES,
   WORKFLOW_MAX_JSON_DEPTH,
   WORKFLOW_MAX_MAP_EXPANSION,
   WORKFLOW_MAX_PARAMS,
   WORKFLOW_MAX_PLAN_BYTES,
+  WORKFLOW_MAX_RETRIES,
   WORKFLOW_MAX_ROUTE_BRANCHES,
   WORKFLOW_MAX_SCHEMA_BYTES,
   WORKFLOW_MAX_STEPS,
+  WORKFLOW_MAX_TIMEOUT_MS,
 } from "../resource-limits";
 import type { SourceRef } from "../schema";
 
@@ -30,8 +43,67 @@ export const WORKFLOW_IR_VERSION = 3;
 export type IrOnError = "fail" | "continue";
 export type IrIsolation = "none" | "worktree";
 export type IrMapReducer = "collect" | "vote";
-export type IrInstructionTemplating = "expressions" | "verbatim";
-export type IrRuntimeKind = "llm" | "agent" | "sdk";
+/**
+ * Instruction-delivery mode. Single-valued on purpose: the `${{ … }}`
+ * interpolation language is GONE, so instructions always reach a unit
+ * byte-exact. The field itself survives because every frozen plan already
+ * persisted (`plan_json`, migration 006) carries it and the decoder rejects
+ * unknown keys — dropping it would fail decode for in-flight runs.
+ */
+export type IrInstructionTemplating = "verbatim";
+export type IrRuntimeKind = "llm" | "agent" | "sdk" | "exec";
+
+/**
+ * The {@link IrRuntimeKind} a frozen engine dispatches as — the value journaled
+ * in `workflow_run_units.runner` and read back by `status --units`.
+ *
+ * Lives here, beside the union, because the mapping is a property OF the union:
+ * spelled at each call site instead, a kind added to `FrozenEngineSnapshot`
+ * would type-check against whichever site happens to end with a default and be
+ * silently mis-journaled. Callers supply their own answer for the ABSENCE of an
+ * engine, which genuinely differs — a unit without one is an `exec` unit, while
+ * a gate without one is an llm judge.
+ */
+export function engineRuntimeKind(engine: FrozenEngineSnapshot): IrRuntimeKind {
+  return engine.kind === "llm" ? "llm" : engine.runnerKind;
+}
+
+/**
+ * A frozen exec (shell) unit: the argv the engine spawns, where it spawns it,
+ * and the wall-clock budget it gets.
+ *
+ * `command` is an ARGV ARRAY and there is deliberately no shell-string form —
+ * the child is spawned directly, so shell metacharacters (`;`, `|`, `&&`,
+ * `$(…)`, `>`) are inert literal argument bytes. An author who wants a
+ * pipeline writes the interpreter explicitly (`["bash", "-lc", "a | b"]`),
+ * which keeps that choice reviewable in the frontmatter diff.
+ *
+ * `cwd` is relative and contained (no absolute form, no `..`); the executor
+ * re-checks containment against the RESOLVED base directory before spawning,
+ * so neither a crafted plan nor a symlink can escape the unit's tree.
+ *
+ * `timeoutMs` lives here rather than on an `IrInvocation` because an exec unit
+ * has no engine to inherit one from — it is resolved once at freeze
+ * (`ir/freeze.ts`) from the unit `timeout:` → document `defaults.timeout` →
+ * {@link DEFAULT_EXEC_TIMEOUT_MS}. `null` means the author wrote `timeout: none`.
+ *
+ * `passEnv`/`inheritEnv` describe the child's ENVIRONMENT SCOPE, which defaults
+ * to an allowlist (`exec/exec-unit.ts`, `EXEC_DEFAULT_ENV_PASSTHROUGH`). Both
+ * are dispatch-significant — they change what the command can see — so both are
+ * in the unit's input-hash preimage. Each has exactly ONE encoding per state:
+ * `inheritEnv` is present only as `true`, `passEnv` only when non-empty. A
+ * frozen `false`/`[]` would mean the same thing while hashing differently, so
+ * the decoder rejects it rather than letting two spellings of "default" exist.
+ */
+export interface IrExecSpec {
+  command: [string, ...string[]];
+  cwd?: string;
+  /** Extra parent-env NAMES on top of the default allowlist. Never empty when present. */
+  passEnv?: string[];
+  /** Present only as `true`: the child gets akm's whole environment instead of the allowlist. */
+  inheritEnv?: true;
+  timeoutMs: number | null;
+}
 
 export interface IrRetry {
   max: number;
@@ -90,7 +162,14 @@ export interface IrUnitNode {
   templating?: IrInstructionTemplating;
   /** Prior-step artifacts attached to this unit as structured context (reference strings). */
   inputs?: string[];
-  invocation: IrInvocation;
+  /**
+   * Engine dispatch settings. Present on EXACTLY the units that reach an
+   * engine — an `exec` unit has none (it spawns a process instead), and the
+   * decoder enforces the exclusive-or.
+   */
+  invocation?: IrInvocation;
+  /** Shell-command dispatch. Mutually exclusive with {@link invocation}. */
+  exec?: IrExecSpec;
   schema?: Record<string, unknown>;
   retry?: IrRetry;
   onError: IrOnError;
@@ -130,7 +209,6 @@ export interface IrStepPlan {
   stepId: string;
   title: string;
   sequenceIndex: number;
-  dependsOn?: string[];
   root?: IrExecNode;
   route?: IrRouteSpec;
   outputSchema?: Record<string, unknown>;
@@ -152,14 +230,14 @@ export interface WorkflowPlanGraph {
   steps: IrStepPlan[];
 }
 
-export const WORKFLOW_MAX_CONCURRENCY = 64;
-export const WORKFLOW_MAX_GATE_LOOPS = 100;
-export const WORKFLOW_MAX_RETRIES = 100;
+// Shared dispatch-significant bounds now live in `../resource-limits` so the
+// parser, the published JSON Schema, and this decoder enforce identical
+// values. Re-exported here for existing importers (e.g. `commands/workflow-cli.ts`).
+export { WORKFLOW_MAX_CONCURRENCY, WORKFLOW_MAX_GATE_LOOPS, WORKFLOW_MAX_RETRIES, WORKFLOW_MAX_TIMEOUT_MS };
 export const WORKFLOW_MAX_UNITS = WORKFLOW_MAX_MAP_EXPANSION;
-export const WORKFLOW_MAX_TIMEOUT_MS = 2 ** 31 - 1;
 const MAX_LIST_ITEMS = 1024;
 const MAX_STRING_LENGTH = 1_000_000;
-const ENGINE_NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const ENGINE_NAME_PATTERN = WORKFLOW_ENGINE_NAME_PATTERN;
 
 export interface WorkflowPlanValidationHooks {
   /** Optional shared config-policy hook. Structural and byte bounds remain owned here. */
@@ -182,7 +260,7 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
     (plan.execution.maxConcurrency as number) < 1 ||
     (plan.execution.maxConcurrency as number) > WORKFLOW_MAX_CONCURRENCY
   ) {
-    fail("execution.maxConcurrency must be an integer from 1 through 64");
+    fail(`execution.maxConcurrency must be an integer from 1 through ${WORKFLOW_MAX_CONCURRENCY}`);
   }
   assertKeys(plan.execution, ["maxConcurrency", "engines"], "execution");
   if (!isRecord(plan.execution.engines)) fail("execution.engines must be an object");
@@ -210,10 +288,9 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
     if (!!step.root === !!step.route) fail(`step ${step.stepId} must contain exactly one of root or route`);
     assertKeys(
       step,
-      ["stepId", "title", "sequenceIndex", "dependsOn", "root", "route", "outputSchema", "gate"],
+      ["stepId", "title", "sequenceIndex", "root", "route", "outputSchema", "gate"],
       `step ${step.stepId}`,
     );
-    validateStringArray(step.dependsOn, `step ${step.stepId} dependsOn`, WORKFLOW_MAX_STEPS, true);
     if (step.outputSchema !== undefined) validateSchema(step.outputSchema, `step ${step.stepId} outputSchema`);
     if (step.root) validateNode(step.root, step.stepId, references, nodeIds, hooks);
     if (step.route) validateRoute(step.route, step.stepId);
@@ -227,13 +304,6 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
       const targetIndex = stepIndex.get(target);
       if (targetIndex === undefined) fail(`route target ${target} does not name a step`);
       if (targetIndex <= index) fail(`route target ${target} must come after step ${step.stepId}`);
-    }
-    const dependencies = new Set<string>();
-    for (const dependency of step.dependsOn ?? []) {
-      const dependencyIndex = stepIndex.get(dependency);
-      if (dependencyIndex === undefined || dependencyIndex >= index || dependencies.has(dependency))
-        fail(`step ${step.stepId} has an invalid dependency`);
-      dependencies.add(dependency);
     }
     validateStepExpressions(step, index, stepIndex);
   }
@@ -267,7 +337,7 @@ function validateEngine(
 ): void {
   if (
     !ENGINE_NAME_PATTERN.test(key) ||
-    key.length > 63 ||
+    key.length > WORKFLOW_MAX_ENGINE_NAME_LENGTH ||
     !isRecord(engine) ||
     engine.name !== key ||
     (engine.kind !== "llm" && engine.kind !== "agent")
@@ -361,7 +431,7 @@ function validateEngine(
     !(typeof engine.workspace === "string" || engine.workspace === null) ||
     !Array.isArray(engine.envPassthrough) ||
     engine.envPassthrough.length > MAX_LIST_ITEMS ||
-    !engine.envPassthrough.every((name) => typeof name === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) ||
+    !engine.envPassthrough.every((name) => typeof name === "string" && WORKFLOW_ENV_VAR_NAME_PATTERN.test(name)) ||
     new Set(engine.envPassthrough).size !== engine.envPassthrough.length ||
     typeof engine.commandBuilder !== "string" ||
     engine.commandBuilder !== engine.platform ||
@@ -423,6 +493,7 @@ function validateNode(
       "templating",
       "inputs",
       "invocation",
+      "exec",
       "schema",
       "retry",
       "onError",
@@ -435,20 +506,101 @@ function validateNode(
   if (
     typeof node.instructions !== "string" ||
     !node.instructions ||
-    (node.templating !== "expressions" && node.templating !== "verbatim") ||
+    node.templating !== "verbatim" ||
     (node.onError !== "fail" && node.onError !== "continue") ||
     (node.isolation !== "none" && node.isolation !== "worktree")
   )
     fail(`unit ${node.id} is invalid`);
   if (node.id !== stepId && node.id !== `${stepId}.unit`) fail(`unit ${node.id} does not belong to step ${stepId}`);
-  if (Buffer.byteLength(node.instructions, "utf8") > WORKFLOW_MAX_INSTRUCTION_BYTES)
+  if (utf8Bytes(node.instructions) > WORKFLOW_MAX_INSTRUCTION_BYTES)
     fail(`unit ${node.id} instructions exceed the 256 KiB resource limit`);
   if (node.schema !== undefined) validateSchema(node.schema, `unit ${node.id} schema`);
   validateRetry(node.retry, node.id);
   validateStringArray(node.env, `unit ${node.id} env`, MAX_LIST_ITEMS, true);
   validateStringArray(node.inputs, `unit ${node.id} inputs`, WORKFLOW_MAX_INPUTS, true);
   validateSource(node.source, `unit ${node.id} source`);
+  // Exactly one dispatch mechanism per unit. A node carrying both would let a
+  // tampered plan smuggle a shell command past the engine-compatibility checks
+  // (which key off the invocation); one carrying neither has nothing to run.
+  if ((node.invocation === undefined) === (node.exec === undefined)) {
+    fail(`unit ${node.id} must declare exactly one of invocation or exec`);
+  }
+  if (node.exec !== undefined) {
+    validateExecSpec(node.exec, `unit ${node.id} exec`);
+    return;
+  }
   validateInvocation(node.invocation, references, hooks);
+}
+
+/**
+ * Strictly decode a frozen {@link IrExecSpec}. This is the corruption gate for
+ * a persisted plan: the argv bounds, the relative-and-contained `cwd`, and the
+ * timeout range are all re-checked here, because `plan_json` may have been
+ * hand-edited between freeze and dispatch.
+ */
+function validateExecSpec(value: unknown, label: string): void {
+  if (!isRecord(value)) fail(`${label} must be an object`);
+  assertKeys(value, ["command", "cwd", "passEnv", "inheritEnv", "timeoutMs"], label);
+  validateExecEnvScope(value, label);
+  const command = value.command;
+  if (
+    !Array.isArray(command) ||
+    command.length === 0 ||
+    command.length > WORKFLOW_MAX_EXEC_ARGV ||
+    !command.every((arg) => typeof arg === "string" && arg.length > 0 && utf8Bytes(arg) <= WORKFLOW_MAX_EXEC_ARG_BYTES)
+  ) {
+    fail(`${label}.command must be an argv array of 1 through ${WORKFLOW_MAX_EXEC_ARGV} bounded non-empty strings`);
+  }
+  if (value.cwd !== undefined) {
+    if (
+      typeof value.cwd !== "string" ||
+      value.cwd.length === 0 ||
+      value.cwd.length > WORKFLOW_MAX_EXEC_CWD_LENGTH ||
+      !isContainedRelativePath(value.cwd)
+    ) {
+      fail(`${label}.cwd must be a relative path contained in the unit working directory`);
+    }
+  }
+  if (
+    !(
+      value.timeoutMs === null ||
+      (Number.isSafeInteger(value.timeoutMs) &&
+        (value.timeoutMs as number) >= 1 &&
+        (value.timeoutMs as number) <= WORKFLOW_MAX_TIMEOUT_MS)
+    )
+  ) {
+    fail(`${label}.timeoutMs must be null or an integer from 1 through ${WORKFLOW_MAX_TIMEOUT_MS}`);
+  }
+}
+
+/**
+ * The child's ENVIRONMENT SCOPE half of a frozen exec spec. Split out so
+ * {@link validateExecSpec} keeps its shape (and the src-fn-size ratchet stays
+ * shrink-only).
+ *
+ * Both keys are canonical-form-only: `inheritEnv` may only be `true` and
+ * `passEnv` may only be a non-empty deduplicated name list. A persisted `false`
+ * or `[]` means exactly what absence means, and admitting a second spelling of
+ * the default would give the same unit two different input hashes.
+ */
+function validateExecEnvScope(value: Record<string, unknown>, label: string): void {
+  if (value.inheritEnv !== undefined && value.inheritEnv !== true) {
+    fail(`${label}.inheritEnv must be true when present (the allowlist default is the key's ABSENCE)`);
+  }
+  if (value.passEnv === undefined) return;
+  const passEnv = value.passEnv;
+  if (
+    !Array.isArray(passEnv) ||
+    passEnv.length === 0 ||
+    passEnv.length > WORKFLOW_MAX_EXEC_PASS_ENV ||
+    !passEnv.every((name) => typeof name === "string" && WORKFLOW_ENV_VAR_NAME_PATTERN.test(name)) ||
+    new Set(passEnv).size !== passEnv.length
+  ) {
+    fail(
+      `${label}.passEnv must be 1 through ${WORKFLOW_MAX_EXEC_PASS_ENV} distinct environment variable names ` +
+        `matching ${WORKFLOW_ENV_VAR_NAME_PATTERN.source}`,
+    );
+  }
 }
 
 function validateGate(
@@ -516,6 +668,13 @@ function validateRoute(route: unknown, stepId: string): void {
 
 function assertUnitEngineCompatibility(node: IrExecNode, engines: Record<string, FrozenEngineSnapshot>): void {
   const unit = node.kind === "map" ? node.template : node;
+  // An exec unit names no engine at all, so there is no engine pairing to
+  // check. It is the ONE kind that may carry `env` + `isolation: worktree`
+  // without an engine behind it: it spawns a real child process, which is
+  // exactly the precondition those two features require. `validateNode` has
+  // already proven it carries no `invocation`, so nothing here can be bypassed
+  // by declaring both.
+  if (unit.exec !== undefined) return;
   const engine = unit.invocation ? engines[unit.invocation.engine] : undefined;
   if (!engine) return;
   if (engine.kind === "llm" && unit.invocation?.model === null) fail(`LLM unit ${unit.id} has no exact model`);

@@ -747,7 +747,7 @@ function buildSummaryRows(aggregates: AggregatesPhase, trend: TrendBlock): Summa
         "Corpus diversity (Gini)",
         num(degradation.corpusCentroidDistance),
         degradation.entrenchmentFlagged || degradation.salienceUniformityFlagged ? "down" : "flat",
-        "Gini coefficient of retrieval_salience for top-100 ranked assets. Two-tailed: >0.35 = entrenchment risk; <0.08 = collapsed toward uniform (ranking no longer discriminates).",
+        `Gini coefficient of positive retrieval_salience values across ${degradation.retrievalSalienceSampleSize} resolvable assets. Two-tailed: >0.35 = entrenchment risk; <0.08 = collapsed toward uniform.`,
       ],
       [
         "Merge fidelity contradiction rate",

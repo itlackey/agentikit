@@ -35,6 +35,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { isScalar, parseDocument } from "yaml";
 import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
 import { BUNDLE_REF_RE } from "../../core/asset/asset-ref";
 import { spliceFrontmatterLine } from "../../core/asset/frontmatter";
@@ -46,25 +47,89 @@ import type { LintContext, LintIssue } from "./types";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fixUnquotedColon(raw: string): string {
-  const lines = raw.split(/\r?\n/);
-  if (lines[0]?.trim() !== "---") return raw;
-  const closeIdx = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
-  if (closeIdx === -1) return raw;
-  for (let i = 1; i < closeIdx; i++) {
-    const m = lines[i]!.match(/^(description:\s*)(.*)/);
-    if (!m) continue;
-    const prefix = m[1];
-    const value = m[2]!.trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
-      (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
-    )
+/** Fold physically wrapped prose the same way a YAML plain scalar does. */
+function foldDescriptionLines(lines: string[]): string {
+  let value = "";
+  let blankLines = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      blankLines++;
       continue;
-    lines[i] = `${prefix}"${value.replace(/"/g, '\\"')}"`;
-    break;
+    }
+    if (value) value += blankLines > 0 ? "\n".repeat(blankLines) : " ";
+    value += trimmed;
+    blankLines = 0;
   }
-  return lines.join("\n");
+  return value;
+}
+
+/**
+ * Recover a description from malformed wrapped YAML.
+ *
+ * Older producers emitted a valid quoted first physical line followed by
+ * indented prose outside the quote. The full document cannot be parsed, but
+ * the first line can still be decoded independently and the continuation can
+ * be folded without guessing at escape sequences in that first segment.
+ */
+function recoverMalformedDescription(firstSegment: string, continuation: string[]): string | null {
+  const firstLine = parseDocument(`description: ${firstSegment}`);
+  const firstValue = firstLine.get("description", true);
+  const decodedFirst =
+    firstLine.errors.length === 0 && isScalar(firstValue) && typeof firstValue.value === "string"
+      ? firstValue.value
+      : firstSegment.trim();
+  const value = foldDescriptionLines([decodedFirst, ...continuation]);
+  return value || null;
+}
+
+/**
+ * Quote the complete description scalar, including physical continuation
+ * lines, and verify that the replacement is valid YAML before returning it.
+ */
+function fixUnquotedColon(raw: string): string | null {
+  const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+  const lines = raw.split(/\r?\n/);
+  if (lines[0]?.trim() !== "---") return null;
+  const closeIdx = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+  if (closeIdx === -1) return null;
+  for (let i = 1; i < closeIdx; i++) {
+    const m = lines[i]?.match(/^(description:\s*)(.*)/);
+    if (!m) continue;
+    const [, prefix, firstSegment] = m;
+    if (prefix === undefined || firstSegment === undefined) continue;
+
+    let continuationEnd = i + 1;
+    while (continuationEnd < closeIdx) {
+      const continuationLine = lines[continuationEnd];
+      if (continuationLine === undefined || (!/^[ \t]/.test(continuationLine) && continuationLine.trim())) break;
+      continuationEnd++;
+    }
+
+    const frontmatter = lines.slice(1, closeIdx).join("\n");
+    const document = parseDocument(frontmatter);
+    const description = document.get("description", true);
+    const value =
+      document.errors.length === 0 && isScalar(description) && typeof description.value === "string"
+        ? description.value
+        : recoverMalformedDescription(firstSegment.trim(), lines.slice(i + 1, continuationEnd));
+    if (value === null) return null;
+
+    lines.splice(i, continuationEnd - i, `${prefix}${JSON.stringify(value)}`);
+    const candidate = lines.join(eol);
+    const candidateCloseIdx = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
+    const candidateDocument = parseDocument(lines.slice(1, candidateCloseIdx).join("\n"));
+    const candidateDescription = candidateDocument.get("description", true);
+    if (
+      candidateDocument.errors.length > 0 ||
+      !isScalar(candidateDescription) ||
+      candidateDescription.value !== value
+    ) {
+      return null;
+    }
+    return candidate;
+  }
+  return null;
 }
 
 function checkMissingUpdated(data: Record<string, unknown>, frontmatterText: string | null): boolean {
@@ -462,11 +527,17 @@ function parseInnerFrontmatterBlock(body: string): Record<string, unknown> | nul
  * File mutations triggered by the fixable base checks (`unquoted-colon`,
  * `missing-updated`) are flushed to disk here when `ctx.fix` is set, and
  * `ctx.raw` is updated in place so a caller can re-parse the post-fix content.
+ * A failed flush (read-only file, full disk) DOWNGRADES the optimistic
+ * `fixed: true` findings this call made to `fixed: "failed"` rather than
+ * throwing — an uncaught throw here used to kill the whole sweep and hide
+ * which earlier files had already been rewritten (issue #761).
  */
 export function runBaseChecks(ctx: LintContext): LintIssue[] {
   const issues: LintIssue[] = [];
   let currentRaw = ctx.raw;
   let modified = false;
+  /** Findings whose `fixed: true` is only true once the flush below succeeds. */
+  const pendingFixes: LintIssue[] = [];
 
   // M8: Parse lint_skip from frontmatter for per-file rule suppression.
   // Accept both an array (`lint_skip: [missing-ref, stale-path]`) and a
@@ -483,14 +554,26 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
     const unquotedColonDetail = checkUnquotedDescriptionColon(ctx.frontmatter);
     if (unquotedColonDetail) {
       if (ctx.fix) {
-        currentRaw = fixUnquotedColon(currentRaw);
-        modified = true;
-        issues.push({
-          file: ctx.relPath,
-          issue: "unquoted-colon",
-          detail: unquotedColonDetail,
-          fixed: true,
-        });
+        const fixedRaw = fixUnquotedColon(currentRaw);
+        if (fixedRaw === null) {
+          issues.push({
+            file: ctx.relPath,
+            issue: "unquoted-colon",
+            detail: `${unquotedColonDetail} — could not construct a valid YAML replacement`,
+            fixed: "failed",
+          });
+        } else {
+          currentRaw = fixedRaw;
+          modified = true;
+          const issue: LintIssue = {
+            file: ctx.relPath,
+            issue: "unquoted-colon",
+            detail: unquotedColonDetail,
+            fixed: true,
+          };
+          issues.push(issue);
+          pendingFixes.push(issue);
+        }
       } else {
         issues.push({
           file: ctx.relPath,
@@ -513,12 +596,14 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
       }
       currentRaw = fixMissingUpdated(currentRaw, mtime);
       modified = true;
-      issues.push({
+      const issue: LintIssue = {
         file: ctx.relPath,
         issue: "missing-updated",
         detail: `stamped updated: ${localDateStamp(mtime)}`,
         fixed: true,
-      });
+      };
+      issues.push(issue);
+      pendingFixes.push(issue);
     } else {
       issues.push({
         file: ctx.relPath,
@@ -530,9 +615,22 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
   }
 
   if (modified) {
-    fs.writeFileSync(ctx.filePath, currentRaw, "utf8");
-    // Propagate the mutated raw back so subclasses can re-parse if needed
-    ctx.raw = currentRaw;
+    // Mirrors the two stub-delete call sites in `commands/lint/index.ts`
+    // (`appendMemoryStubIssue`/`appendWorkflowStubIssue`), which already report
+    // a failed mutation as `fixed: "failed"` instead of throwing. Without this
+    // the sweep aborted mid-run on the first unwritable file and the caller got
+    // an exception instead of a result naming the fixes that HAD landed.
+    try {
+      fs.writeFileSync(ctx.filePath, currentRaw, "utf8");
+      // Propagate the mutated raw back so subclasses can re-parse if needed
+      ctx.raw = currentRaw;
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      for (const issue of pendingFixes) {
+        issue.fixed = "failed";
+        issue.detail = `${issue.detail} — could not write fix: ${reason}`;
+      }
+    }
   }
 
   // ── 3. stale-path ──────────────────────────────────────────────────────

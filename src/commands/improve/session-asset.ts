@@ -28,6 +28,7 @@ import path from "node:path";
 import { stashDirFor } from "../../core/asset/asset-placement";
 import { assembleAsset } from "../../core/asset/asset-serialize";
 import { conceptIdFromTypeName } from "../../core/asset/resolve-ref";
+import { recordWrittenPath } from "../../core/write-provenance";
 import { normalizeHarnessId } from "../../integrations/harnesses";
 import type { SessionData, SessionEvent } from "../../integrations/session-logs/types";
 
@@ -301,6 +302,9 @@ export async function writeSessionAsset(
   const filePath = resolveSessionAssetPath(stashDir, harness, sessionId);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content, "utf8");
+  // #652: extract's session asset is written outside the proposal queue —
+  // journal it so the run's auto-sync stages it as one of its own writes.
+  recordWrittenPath(filePath);
 
   return {
     written: true,

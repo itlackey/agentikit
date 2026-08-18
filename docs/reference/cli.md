@@ -527,7 +527,7 @@ Returns type-specific payloads:
 | command | `template`, `description` |
 | agent | `prompt`, `description`, `modelHint` |
 | knowledge | `content` — the whole document, or one section via `#fragment` |
-| workflow | `workflowTitle`, `workflowParameters`, `steps` |
+| workflow | `workflowTitle`, `workflowParameters`, `steps` (each step's `orchestration` summary names its engine/model, or — for an [exec step](https://github.com/itlackey/akm/blob/main/docs/reference/workflow-schema.md#what-akm-show-reports-for-an-exec-step) — its `exec.command` and no engine at all) |
 | memory | `content` |
 | env | `keys` (key names only — values and comment text never returned) |
 | lesson | `content` plus `when_to_use` surfaced from frontmatter |
@@ -609,15 +609,34 @@ The old `--params <json>` bag is removed.
 
 | Flag | Description |
 | --- | --- |
-| `--max-steps <n>` | Stop after executing at most this many steps, leaving a partial run active. Must be at least 1. |
+| `--max-steps <n>` | Stop once this many steps have finished, leaving a partial run active. Must be at least 1. |
 | `--max-retries <n>` | When a step fails, reopen the same run and retry the failed step up to this many additional times. Range: 0 through 100; default 0. Gate rejection and interruption are not retried. |
 | `--timeout <duration>` | Abort the whole invocation after `N`, `Nms`, `Ns`, or `Nm`; bare `N` is milliseconds. The active step remains resumable. |
 
-The result includes the current `run`, an `executed` step report list, and
-optional `done`, `gateRejection`, `aborted`, or `timedOut` markers. A failed
-run, rejected verification gate, timeout, or interrupt exits nonzero. `SIGINT`
-and `SIGTERM` map to 130 and 143; a timeout maps to exit 1. Reaching
-`--max-steps` with an active resumable run is successful.
+The result includes the current `run`, an `executed` step report list, a
+`stepsProcessed` count of the steps that finished, and optional `done`,
+`gateRejection`, `aborted`, or `timedOut` markers. A failed run, rejected
+verification gate, timeout, or interrupt exits nonzero. `SIGINT` and `SIGTERM`
+map to 130 and 143; a timeout maps to exit 1. Reaching `--max-steps` with an
+active resumable run is successful. A `--timeout` that lands during the run's
+final bookkeeping is not reported as a timeout: a run that reached `completed`
+has nothing left to abort and nothing left to resume.
+
+**What `--max-steps` counts.** The budget is spent by the **steps that
+finish** — completed, failed, or gate-rejected with the loop budget spent — not
+by entries in the `executed` report, which gains one per gate-loop iteration
+and one per route-skip. So a step's whole bounded `gate.max_loops` loop costs
+one, a route-skipped step costs nothing (no work was dispatched for it), and a
+step the invocation left unfinished — an abort, a verification-judge outage —
+costs nothing either, because the next invocation still owes that work.
+`--max-retries` subtracts the same way: a reopened run's remaining budget is
+not shrunk by loops or skips.
+
+The budget is checked **between** steps, so it does not bound what any single
+step dispatches — a step's gate loop runs to its own limit no matter how little
+budget is left. `gate.max_loops` (1–100) is the per-step ceiling;
+`budget.max_units` and `budget.max_tokens` are the whole-run ceilings, seeded
+from the unit journal so they hold across resumes.
 
 `run` is Stable and does not consult `experimental.workflowEngine`. Every
 non-empty `### gate` requires `workflow.judgeEngine` to name a configured LLM
@@ -1833,14 +1852,24 @@ akm lint --fail-on-flagged      # CI-friendly: exit non-zero when summary.flagge
 
 | Flag | Description |
 | --- | --- |
-| `--fix` (alias `--auto-fix`) | Apply auto-fixes in place |
+| `--fix` (alias `--auto-fix`) | Apply auto-fixes in place. Refused with a usage error when the target bundle is configured `writable: false`. |
 | `--dir` | Override the bundle root directory (default: from config) |
-| `--type` | Only lint assets of this type (e.g. `workflows`, `tasks`, `memories`) |
+| `--type` | Only lint assets of this type (e.g. `workflows`, `tasks`, `memories`). **akm bundles only** — every other adapter validates the whole bundle and warns on stderr that the flag had no effect. |
 | `--fail-on-flagged` | Exit non-zero when `summary.flagged > 0`. Default: exit 0 regardless of findings. |
 
 Returns `fixed[]` and `flagged[]` arrays plus a `summary: { fixed, flagged }`
 count. Each entry carries `file`, `issue`, `detail`, and whether it was
 `fixed`.
+
+Task files are checked for more than their fields: a `tasks/*.yml` whose YAML
+does not parse is reported as `invalid-task-yaml` (it used to fall through as an
+empty mapping and lint clean), and a `tasks/*.yaml` file — a spelling akm never
+indexes or schedules — is flagged for the extension rather than skipped.
+
+`--fix` is transactional per file: a fix that cannot be written (read-only file,
+full disk) is reported as `fixed: "failed"` on that file and the sweep continues,
+so a mid-run write failure can no longer abort the command and hide the fixes
+that already landed.
 
 ### improve
 
@@ -2247,13 +2276,67 @@ Each task targets exactly one of `--workflow <ref>`, `--prompt <text-or-ref>`,
 or `--command <shell>`. Task YAML is strict and begins with `version: 2`.
 Prompt targets dispatch through `--engine` or `defaults.engine` and may set
 `model`, `timeoutMs`, and LLM request overrides; command tasks may set only
-`timeoutMs`; workflow tasks may set only `params`. `task add` accepts
-`--engine`, `--model`, `--timeout-ms`, `--params`, `--name`, `--when-to-use`,
-`--description`, and `--tags`. A v1 task is diagnosed by sync and doctor
-but is never rewritten or executed.
+`timeoutMs`; workflow tasks may set `params`, `timeoutMs`, `maxSteps`, and
+`maxRetries`. `task add` accepts `--engine`, `--model`, `--timeout-ms`,
+`--params`, `--name`, `--when-to-use`, `--description`, and `--tags`
+(`maxSteps` / `maxRetries` are YAML-only — set them in the file and run `akm
+task sync`). A v1 task is diagnosed by sync and doctor but is never rewritten
+or executed.
+
+**Task-log redaction and `redact:`.** A task's persisted output — the run `.log`
+file and its `logs.db` rows — is scrubbed before it is written. Two passes run:
+credential *shapes* (`Bearer …`, `sk-…`, webhook URLs) are matched by pattern,
+and exact secret values are matched by value. akm knows a value is secret when
+the config declares it (`engines.<name>.apiKey`, `embedding.apiKey`, and the
+`AKM_ENGINE_<NAME>_API_KEY` / `AKM_LLM_API_KEY` / `AKM_EMBED_API_KEY` recipes),
+and it infers others from the variable name (`*_TOKEN`, `*_SECRET`, `*_API_KEY`,
+`*_PASSWORD`, …) provided the value is at least 8 characters — a short one is
+far more likely to be a flag than a credential, and redaction replaces
+substrings, so guessing wrong mangles the log.
+
+Any task kind may add `redact:` for a secret exported under a name none of those
+rules recognise:
+
+```yaml
+version: 2
+schedule: "0 3 * * *"
+command: ./deploy.sh
+redact: [ACME_DEPLOY_TOKEN]   # NAMES, never values — max 32
+```
+
+akm looks each name up in the environment the run is given; a name that is unset
+contributes nothing. **Names only.** A literal secret in a task file would leak
+far more widely than the redaction closes: task files are indexed into the search
+database, can be sent to an embedding provider, are printed verbatim by `akm
+show`, and ship inside bundles over git and npm. This is the same rule exec
+units' `pass_env:` follows.
 
 A workflow-target task executes the same native orchestration as `akm workflow
 run`; it does not stop after creating a run. Completion maps to task
 `completed`, while workflow failure or verifier rejection maps to task
 `failed`. The task schema's `params` mapping remains the non-CLI way a scheduled
 definition supplies its new-run parameter snapshot.
+
+**Workflow-task run bounds.** `timeoutMs`, `maxSteps`, and `maxRetries` are the
+task-file spellings of `akm workflow run --timeout`, `--max-steps`, and
+`--max-retries`. Unlike the interactive command, a scheduled workflow task gets
+a **default whole-run timeout of 6 hours**
+(`DEFAULT_WORKFLOW_TASK_TIMEOUT_MS`): nobody is at the terminal to Ctrl-C an
+unattended run, so without one a single wedged unit hangs the task forever. An
+explicit `timeoutMs` always wins, and `timeoutMs: null` opts out entirely. On
+expiry the runner aborts the run's signal, which the engine treats as a
+graceful break at the next step boundary — the journal is kept and the run
+stays resumable with `akm workflow resume <run-id>` (the run id is in the task
+run's `detail.error` and log). The attempt itself is recorded as `failed`, so
+the OS scheduler sees a non-zero exit.
+
+```yaml
+version: 2
+schedule: "@daily"
+workflow: workflows/nightly-report
+params:
+  region: us-east-1
+timeoutMs: 3600000   # 1h whole-run bound (omit for the 6h default, null for none)
+maxSteps: 20         # optional
+maxRetries: 1        # optional
+```

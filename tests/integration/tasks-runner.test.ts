@@ -10,7 +10,7 @@ import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
 import type { AgentRunResult } from "../../src/integrations/agent";
 import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
 import { resolveAkmInvocation } from "../../src/tasks/resolve-akm-bin";
-import { exitCodeForStatus, readTaskHistory, runTask } from "../../src/tasks/runner";
+import { DEFAULT_WORKFLOW_TASK_TIMEOUT_MS, exitCodeForStatus, readTaskHistory, runTask } from "../../src/tasks/runner";
 import { withEnv } from "../_helpers/sandbox";
 
 type FakeWorkflowRunner = (options: { target: string; params?: Record<string, unknown> }) => Promise<{
@@ -269,6 +269,315 @@ describe("runTask — workflow target", () => {
       expect(result.status).toBe(expected);
     });
   }
+
+  // ── issue 11: whole-run timeout for unattended workflow tasks ─────────────
+  //
+  // The runner used to call `runWorkflowSteps({ target, params })` with no
+  // signal, no maxSteps and no maxRetries: a scheduled run had no abort path
+  // at all, so one wedged agent unit hung the task indefinitely. It now wires
+  // an AbortController + timer exactly like `akm workflow run --timeout`
+  // (src/commands/workflow-cli.ts) and threads the run bounds the task file
+  // declares.
+
+  /** Records what the runner passed to `runWorkflowSteps`. */
+  interface CapturedRunOptions {
+    target: string;
+    params?: Record<string, unknown>;
+    signal?: AbortSignal;
+    maxSteps?: number;
+    maxRetries?: number;
+  }
+
+  function runSummary(id: string, target: string, status: "active" | "completed") {
+    return {
+      id,
+      workflowRef: target,
+      workflowTitle: "Noop",
+      status,
+      params: {},
+      createdAt: "2025-01-01T00:00:00Z",
+      updatedAt: "2025-01-01T00:00:00Z",
+      completedAt: status === "completed" ? "2025-01-01T00:00:00Z" : null,
+      currentStepId: status === "active" ? "step-2" : null,
+    };
+  }
+
+  /**
+   * A workflow orchestrator that never finishes on its own — it resolves only
+   * when the caller's signal aborts, reproducing the engine's documented abort
+   * contract (`driveRun` in src/workflows/exec/run-workflow.ts breaks at the
+   * next step boundary, keeps the journal + lease, and returns the still-`active`
+   * — i.e. resumable — run with `aborted: true`).
+   */
+  function wedgedWorkflowRunner(captured: CapturedRunOptions[]) {
+    return async (options: CapturedRunOptions) => {
+      captured.push(options);
+      await new Promise<void>((resolve) => {
+        if (options.signal?.aborted) return resolve();
+        options.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return {
+        run: runSummary("run-wedged", options.target, "active"),
+        executed: [],
+        stepsProcessed: 0,
+        aborted: true,
+      };
+    };
+  }
+
+  /**
+   * An orchestrator whose run COMPLETES even though the deadline fired — the
+   * narrow window where the timer lands during the run's final bookkeeping,
+   * after the last step boundary the abort could have stopped it at.
+   */
+  function completesDespiteAbortRunner(captured: CapturedRunOptions[]) {
+    return async (options: CapturedRunOptions) => {
+      captured.push(options);
+      await new Promise<void>((resolve) => {
+        if (options.signal?.aborted) return resolve();
+        options.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return {
+        run: runSummary("run-finished", options.target, "completed"),
+        executed: [],
+        stepsProcessed: 1,
+        done: true,
+      };
+    };
+  }
+
+  /**
+   * An orchestrator stopped by a verification gate whose deadline ALSO fired,
+   * so two of the runner's three failure channels are live in one attempt.
+   */
+  function gateRejectedRunner(captured: CapturedRunOptions[]) {
+    return async (options: CapturedRunOptions) => {
+      captured.push(options);
+      await new Promise<void>((resolve) => {
+        if (options.signal?.aborted) return resolve();
+        options.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return {
+        run: runSummary("run-gated", options.target, "active"),
+        executed: [],
+        stepsProcessed: 1,
+        gateRejection: { stepId: "verify", missing: ["evidence"], feedback: "no evidence for the claim" },
+      };
+    };
+  }
+
+  /** An orchestrator that completes immediately, so only the wiring is observed. */
+  function instantWorkflowRunner(captured: CapturedRunOptions[]) {
+    return async (options: CapturedRunOptions) => {
+      captured.push(options);
+      return { run: runSummary("run-fast", options.target, "completed"), executed: [], stepsProcessed: 0, done: true };
+    };
+  }
+
+  test("a declared timeout aborts the run and reports it as resumable", async () => {
+    writeTask(
+      "wf-timeout",
+      ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "timeoutMs: 100", ""].join("\n"),
+    );
+    const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
+    const captured: CapturedRunOptions[] = [];
+
+    const promise = runTask("wf-timeout", {
+      stashDir,
+      logDir,
+      runWorkflowStepsImpl: wedgedWorkflowRunner(captured) as never,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+    await fireWhenRegistered(timers, 100);
+    const result = await promise;
+
+    // The signal reached runWorkflowSteps and actually fired.
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.signal).toBeInstanceOf(AbortSignal);
+    expect(captured[0]!.signal?.aborted).toBe(true);
+    // A timed-out attempt is a task failure even though the ENGINE stopped
+    // cleanly, so cron/launchd see a non-zero exit instead of a silent success.
+    expect(result.status).toBe("failed");
+    expect(exitCodeForStatus(result.status)).toBe(1);
+    // The aborted run is left resumable, and its id is surfaced for that.
+    expect(result.detail?.runId).toBe("run-wedged");
+    expect(result.detail?.error).toContain("akm workflow resume run-wedged");
+    const log = fs.readFileSync(result.log, "utf8");
+    expect(log).toContain("timed_out=true timeout_ms=100");
+    expect(log).toContain("run_id=run-wedged status=active");
+    expect(readRunLogRows("wf-timeout").some((row) => row.line.includes("timed_out=true timeout_ms=100"))).toBe(true);
+  });
+
+  test("a run that completes anyway is not reported as a timeout", async () => {
+    writeTask(
+      "wf-raced",
+      ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "timeoutMs: 100", ""].join("\n"),
+    );
+    const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
+    const captured: CapturedRunOptions[] = [];
+
+    const promise = runTask("wf-raced", {
+      stashDir,
+      logDir,
+      runWorkflowStepsImpl: completesDespiteAbortRunner(captured) as never,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+    await fireWhenRegistered(timers, 100);
+    const result = await promise;
+
+    // The deadline fired — but the run finished, so there is nothing to resume
+    // and nothing failed.
+    expect(captured[0]!.signal?.aborted).toBe(true);
+    expect(result.status).toBe("completed");
+    expect(exitCodeForStatus(result.status)).toBe(0);
+    expect(result.detail?.error).toBeUndefined();
+    const log = fs.readFileSync(result.log, "utf8");
+    expect(log).not.toContain("timed_out=true");
+    expect(log).toContain("run_id=run-finished status=completed");
+  });
+
+  test("a gate rejection outranks the deadline in the status, the log and the history row alike", async () => {
+    writeTask(
+      "wf-gated",
+      ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "timeoutMs: 100", ""].join("\n"),
+    );
+    const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
+    const captured: CapturedRunOptions[] = [];
+
+    const promise = runTask("wf-gated", {
+      stashDir,
+      logDir,
+      runWorkflowStepsImpl: gateRejectedRunner(captured) as never,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+    await fireWhenRegistered(timers, 100);
+    const result = await promise;
+
+    // Two failure channels are live at once (gate rejection + fired deadline).
+    // Whichever one wins must win everywhere: a log naming one cause beside a
+    // history row naming the other is unreadable after the fact.
+    expect(captured[0]!.signal?.aborted).toBe(true);
+    expect(result.status).toBe("failed");
+    const gateMessage = 'Verification rejected step "verify": no evidence for the claim';
+    expect(result.detail?.error).toBe(gateMessage);
+    const log = fs.readFileSync(result.log, "utf8");
+    expect(log).toContain(`error=${gateMessage}`);
+    expect(log).not.toContain("timed out after");
+    // The deadline is still recorded as a fact about the attempt.
+    expect(log).toContain("timed_out=true timeout_ms=100");
+    expect(readTaskHistory({ id: "wf-gated" })[0]?.detail?.error).toBe(gateMessage);
+  });
+
+  test("an explicit timeout overrides the unattended default", async () => {
+    writeTask(
+      "wf-explicit",
+      ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "timeoutMs: 60000", ""].join("\n"),
+    );
+    const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
+    const captured: CapturedRunOptions[] = [];
+
+    const result = await runTask("wf-explicit", {
+      stashDir,
+      logDir,
+      runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    expect(result.status).toBe("completed");
+    expect(timers.map((timer) => timer.ms)).toEqual([60_000]);
+    expect(timers[0]!.ms).not.toBe(DEFAULT_WORKFLOW_TASK_TIMEOUT_MS);
+    expect(captured[0]!.signal?.aborted).toBe(false);
+  });
+
+  test("applies the unattended default timeout when the task declares none", async () => {
+    writeTask("wf-default", ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", ""].join("\n"));
+    const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
+    const captured: CapturedRunOptions[] = [];
+
+    const result = await runTask("wf-default", {
+      stashDir,
+      logDir,
+      runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    expect(result.status).toBe("completed");
+    expect(timers.map((timer) => timer.ms)).toEqual([DEFAULT_WORKFLOW_TASK_TIMEOUT_MS]);
+    // Bounded, but generously: an aborted run is resumable, so the default errs
+    // long rather than cutting a legitimate multi-step run short.
+    expect(DEFAULT_WORKFLOW_TASK_TIMEOUT_MS).toBe(6 * 60 * 60 * 1000);
+  });
+
+  test("`timeoutMs: null` opts a workflow task out of any whole-run timeout", async () => {
+    writeTask(
+      "wf-unbounded",
+      ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "timeoutMs: null", ""].join("\n"),
+    );
+    const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
+    const captured: CapturedRunOptions[] = [];
+
+    const result = await runTask("wf-unbounded", {
+      stashDir,
+      logDir,
+      runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    expect(result.status).toBe("completed");
+    expect(timers).toEqual([]);
+    // The signal is still threaded — only the timer is gone.
+    expect(captured[0]!.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  test("threads declared maxSteps / maxRetries into the orchestrator", async () => {
+    writeTask(
+      "wf-bounds",
+      [
+        "version: 2",
+        'schedule: "@daily"',
+        "workflow: workflows/noop",
+        "params:",
+        "  region: us-east-1",
+        "maxSteps: 4",
+        "maxRetries: 2",
+        "",
+      ].join("\n"),
+    );
+    const captured: CapturedRunOptions[] = [];
+
+    const result = await runTask("wf-bounds", {
+      stashDir,
+      logDir,
+      runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
+    });
+
+    expect(result.status).toBe("completed");
+    expect(captured[0]!.maxSteps).toBe(4);
+    expect(captured[0]!.maxRetries).toBe(2);
+    expect(captured[0]!.params).toEqual({ region: "us-east-1" });
+  });
+
+  test("omits maxSteps / maxRetries when the task declares none", async () => {
+    writeTask("wf-nobounds", ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", ""].join("\n"));
+    const captured: CapturedRunOptions[] = [];
+
+    await runTask("wf-nobounds", {
+      stashDir,
+      logDir,
+      runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
+    });
+
+    // Absent, not zero: `maxRetries: 0` and "unset" mean the same thing to the
+    // engine today, but passing undefined keeps the engine's own default.
+    expect(captured[0]).not.toHaveProperty("maxSteps");
+    expect(captured[0]).not.toHaveProperty("maxRetries");
+  });
 });
 
 describe("runTask — command target", () => {
@@ -411,6 +720,142 @@ describe("runTask — command target", () => {
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) expect(row.line).not.toContain("abcDEF-123_token");
     expect(rows.some((row) => row.line.includes("discord.com/api/webhooks/123456789012345678/[REDACTED]"))).toBe(true);
+  });
+
+  // ── #755: exact-value redaction for the command arm ──────────────────────
+  //
+  // The pattern arm above only catches credential SHAPES. A configured secret
+  // whose value looks like nothing in particular went to disk verbatim.
+
+  const echoTask = (id: string, text: string, extraYaml: readonly string[] = []): void => {
+    writeTask(
+      id,
+      [
+        "version: 2",
+        'schedule: "@daily"',
+        `command: ${JSON.stringify([process.execPath, "-e", `console.log(${JSON.stringify(text)})`])}`,
+        ...extraYaml,
+        "",
+      ].join("\n"),
+    );
+  };
+
+  const assertAbsentFromBothSinks = (id: string, logPath: string, secret: string): void => {
+    expect(fs.readFileSync(logPath, "utf8")).not.toContain(secret);
+    const rows = readRunLogRows(id);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.line).not.toContain(secret);
+  };
+
+  test("redacts a config-declared engine credential that is not credential-shaped", async () => {
+    // Deliberately shaped like nothing: no `sk-`, no `Bearer`, no webhook URL.
+    // The pattern arm cannot see this, which is the whole point of #755.
+    const secret = "wolfram-tuesday-lantern";
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, "config.json"),
+      JSON.stringify({
+        configVersion: "0.9.0",
+        engines: { main: { kind: "llm", apiKey: "${ACME_LLM_KEY}", endpoint: "https://api.example.com" } },
+      }),
+    );
+    echoTask("leaky-config-secret", `calling out with ${secret}`);
+
+    const result = await withEnv({ ACME_LLM_KEY: secret }, () => runTask("leaky-config-secret", { stashDir, logDir }));
+
+    expect(result.status).toBe("completed");
+    assertAbsentFromBothSinks("leaky-config-secret", result.log, secret);
+    expect(fs.readFileSync(result.log, "utf8")).toContain("[REDACTED]");
+  });
+
+  test("redacts an ambient credential inferred from its variable name", async () => {
+    const secret = "opalescent-badger-parade";
+    echoTask("leaky-ambient-secret", `deploying with ${secret}`);
+
+    const result = await withEnv({ ACME_DEPLOY_TOKEN: secret }, () =>
+      runTask("leaky-ambient-secret", { stashDir, logDir }),
+    );
+
+    expect(result.status).toBe("completed");
+    assertAbsentFromBothSinks("leaky-ambient-secret", result.log, secret);
+  });
+
+  test("`redact:` names a secret no rule would otherwise recognise", async () => {
+    // Neither config-declared nor name-shaped — the escape hatch is the only
+    // thing that can catch this one.
+    const secret = "harbour-lantern-drift";
+    echoTask("leaky-declared-secret", `token is ${secret}`, ["redact: [ACME_UNGUESSABLE]"]);
+
+    const result = await withEnv({ ACME_UNGUESSABLE: secret }, () =>
+      runTask("leaky-declared-secret", { stashDir, logDir }),
+    );
+
+    expect(result.status).toBe("completed");
+    assertAbsentFromBothSinks("leaky-declared-secret", result.log, secret);
+
+    // And without the declaration the same value would have leaked — otherwise
+    // this test proves nothing about `redact:`.
+    echoTask("leaky-undeclared-secret", `token is ${secret}`);
+    const leaked = await withEnv({ ACME_UNGUESSABLE: secret }, () =>
+      runTask("leaky-undeclared-secret", { stashDir, logDir }),
+    );
+    expect(fs.readFileSync(leaked.log, "utf8")).toContain(secret);
+  });
+
+  test("redaction survives a secret reaching the spawn_error path", async () => {
+    const secret = "cinnabar-thicket-verso";
+    writeTask(
+      "leaky-spawn-error",
+      ["version: 2", 'schedule: "@daily"', `command: [${JSON.stringify(`/nonexistent/${secret}/bin`)}]`, ""].join("\n"),
+    );
+
+    const result = await withEnv({ ACME_API_TOKEN: secret }, () => runTask("leaky-spawn-error", { stashDir, logDir }));
+
+    expect(result.status).toBe("failed");
+    assertAbsentFromBothSinks("leaky-spawn-error", result.log, secret);
+  });
+
+  test("ordinary command output is left intact", async () => {
+    // The over-redaction guard. Treating every non-allowlisted env value as a
+    // secret — the fix #755 literally proposed — turns this log into confetti:
+    // `SHLVL=1` alone rewrites every "1" in the output.
+    echoTask("clean-output", "Build finished in 12.4s | 3 tests passed, 0 failed | wrote dist/index.js (48 KB)");
+
+    const result = await withEnv({ ACME_DEPLOY_TOKEN: "opalescent-badger-parade" }, () =>
+      runTask("clean-output", { stashDir, logDir }),
+    );
+
+    const log = fs.readFileSync(result.log, "utf8");
+    expect(log).toContain("Build finished in 12.4s");
+    expect(log).toContain("3 tests passed, 0 failed");
+    expect(log).toContain("wrote dist/index.js (48 KB)");
+  });
+
+  test("redacts regardless of which configured bundle the task came from", async () => {
+    // Acceptance criterion 3: the fixtures elsewhere in this suite use a single
+    // default bundle, so a per-bundle regression would go unnoticed.
+    const secret = "meridian-thistle-vault";
+    const secondaryStash = path.join(tmpRoot, "stash-secondary");
+    fs.rmSync(secondaryStash, { recursive: true, force: true });
+    fs.mkdirSync(path.join(secondaryStash, "tasks"), { recursive: true });
+    fs.mkdirSync(path.join(secondaryStash, "workflows"), { recursive: true });
+    fs.writeFileSync(
+      path.join(secondaryStash, "tasks", "secondary-leak.yml"),
+      [
+        "version: 2",
+        'schedule: "@daily"',
+        `command: ${JSON.stringify([process.execPath, "-e", `console.log(${JSON.stringify(`shipping ${secret}`)})`])}`,
+        "redact: [ACME_SECONDARY_VALUE]",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await withEnv({ ACME_SECONDARY_VALUE: secret }, () =>
+      runTask("secondary-leak", { stashDir: secondaryStash, logDir }),
+    );
+
+    expect(result.status).toBe("completed");
+    assertAbsentFromBothSinks("secondary-leak", result.log, secret);
   });
 });
 

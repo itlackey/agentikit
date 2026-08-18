@@ -32,6 +32,9 @@
  * the one-shot case. A typed-artifact schema mismatch feeds the same loop
  * (the validation errors are the feedback; no judge ran, so no gate unit is
  * journaled for that attempt) — only the FINAL loop's mismatch fails the run.
+ * A step whose subgraph is an `exec` unit is judged but NEVER looped
+ * (`effectiveGateMaxLoops`): its argv cannot read the feedback, so a second
+ * loop would only re-run the identical side effect.
  *
  * Frozen plan (redesign addendum, R1): the plan graph is read from the run
  * row (`plan_json`, persisted by `startWorkflowRun` under migration 006) with
@@ -65,8 +68,8 @@ import { randomUUID } from "node:crypto";
 import { UsageError } from "../../core/errors";
 import { withMaintenanceStartBarrierAsync } from "../../core/maintenance-barrier";
 import { disposeDispatchResources } from "../../integrations/agent/runner-dispatch";
-import type { WorkflowRunSummary } from "../../sources/types";
-import { withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
+import type { WorkflowRunStepState, WorkflowRunSummary } from "../../sources/types";
+import { withWorkflowRunsConnection, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
 import { assertRunParamsSatisfyPlan, type WorkflowParameterFlag } from "../ir/params";
 import { computePlanHash } from "../ir/plan-hash";
 import { decodeWorkflowPlanV3, type IrStepPlan, type WorkflowPlanGraph } from "../ir/schema";
@@ -87,11 +90,14 @@ import {
 // fresh-execution and resume paths cannot drift from each other.
 import {
   activeGateLoop,
+  blockStepForJudgeFailure,
   cascadeSkippedRouter,
+  effectiveGateMaxLoops,
   finalizeExecutedStep,
   type GateFeedback,
   type RouteSkipInfo,
   recoverGateFeedback,
+  referencedStepIds,
   seedJournaledRouteDecisions,
 } from "./step-work";
 
@@ -159,10 +165,25 @@ export interface ExecutedStepReport {
 export interface RunWorkflowResult {
   run: WorkflowRunSummary;
   executed: ExecutedStepReport[];
+  /**
+   * Distinct spine steps that FINISHED processing (completed, failed, or
+   * gate-exhausted) across this call. This — not `executed.length`, which
+   * gains one entry per gate-loop iteration and per route-skip — is what
+   * `maxSteps` bounds: gate loops of one step count once, and route-skipped
+   * steps consume nothing.
+   */
+  stepsProcessed: number;
   /** Present when the run reached completed state during this invocation. */
   done?: true;
   /** Present when a step summary was rejected by the completion-criteria gate. */
   gateRejection?: { stepId: string; missing: string[]; feedback: string };
+  /**
+   * Present when the verification judge FAILED (missing/unresolvable judge,
+   * thrown judge call, or malformed verdict) — infrastructure, not a verdict.
+   * No gate loop was consumed; the step and run are left `blocked`, and
+   * `akm workflow resume` retries the gate over the journaled units.
+   */
+  judgeFailure?: { stepId: string; message: string };
   /** Present when cooperative cancellation stopped before advancing the step. */
   aborted?: true;
   /**
@@ -180,22 +201,35 @@ export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<Run
   let remainingRetries = options.maxRetries ?? 0;
   let remainingSteps = options.maxSteps;
   const executed: ExecutedStepReport[] = [];
+  let stepsProcessed = 0;
+  // Spans the retry loop: a retry re-opens only the ONE failed step, so every
+  // step this call already completed keeps handing its complete artifact
+  // downstream instead of falling back to the (possibly clipped) row. See the
+  // {@link driveRun} declaration.
+  const liveEvidence = new Map<string, Record<string, unknown>>();
 
   for (;;) {
-    const result = await runWorkflowAttempt({
-      ...options,
-      target,
-      ...(params !== undefined ? { params } : { params: undefined }),
-      ...(parameterFlags !== undefined ? { parameterFlags } : { parameterFlags: undefined }),
-      ...(remainingSteps !== undefined ? { maxSteps: remainingSteps } : { maxSteps: undefined }),
-    });
+    const result = await runWorkflowAttempt(
+      {
+        ...options,
+        target,
+        ...(params !== undefined ? { params } : { params: undefined }),
+        ...(parameterFlags !== undefined ? { parameterFlags } : { parameterFlags: undefined }),
+        ...(remainingSteps !== undefined ? { maxSteps: remainingSteps } : { maxSteps: undefined }),
+      },
+      liveEvidence,
+    );
     executed.push(...result.executed);
-    const aggregate = { ...result, executed };
+    stepsProcessed += result.stepsProcessed;
+    const aggregate = { ...result, executed, stepsProcessed };
     if (result.run.status !== "failed" || result.aborted || result.gateRejection || remainingRetries <= 0) {
       return aggregate;
     }
     if (remainingSteps !== undefined) {
-      remainingSteps -= result.executed.length;
+      // The step budget is DISTINCT PROCESSED STEPS, not `executed` entries:
+      // gate loops of one step and route-skips must not shrink a retry's
+      // remaining budget (they never counted against maxSteps either).
+      remainingSteps -= result.stepsProcessed;
       if (remainingSteps <= 0) return aggregate;
     }
     await resumeWorkflowRun(result.run.id);
@@ -206,7 +240,10 @@ export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<Run
   }
 }
 
-async function runWorkflowAttempt(options: RunWorkflowOptions): Promise<RunWorkflowResult> {
+async function runWorkflowAttempt(
+  options: RunWorkflowOptions,
+  liveEvidence: Map<string, Record<string, unknown>>,
+): Promise<RunWorkflowResult> {
   const next: WorkflowNextResult = await getNextWorkflowStep(options.target, options.params, {
     parameterFlags: options.parameterFlags,
   });
@@ -258,7 +295,19 @@ async function runWorkflowAttempt(options: RunWorkflowOptions): Promise<RunWorkf
     : undefined;
   heartbeat?.start();
   try {
-    const result = await driveRun(options, next, leaseHolder, heartbeat);
+    // Run-wide state.db connection scope: `executeStepPlan` already opens one
+    // per STEP, so widening it to the whole drive loop additionally folds the
+    // spine writes (`completeWorkflowStep`), the per-step lease renewals, the
+    // journal reads, and `finalizeExecutedStep`'s gate-row journaling onto that
+    // one handle — `openStateDatabase` costs a maintenance-activity lockfile
+    // plus a read-only ledger preflight on EVERY call. Nesting is an idempotent
+    // join (`core/state-db-scope.ts`): the inner per-step scope reuses this
+    // handle and does not close it, and this scope's own `finally` closes on
+    // every exit path (return, throw, abort), after which escaped async work
+    // transparently falls back to opening its own connection.
+    const result = await withWorkflowRunsConnection(() =>
+      driveRun(options, next, leaseHolder, heartbeat, liveEvidence),
+    );
     // Creation-time notices reach the caller only here: the run row has no
     // warnings column, and a later invocation of the same run must stay silent
     // about a decision it did not make. `driveRun` never sets `warnings`.
@@ -463,6 +512,7 @@ async function completedRunResult(runId: string): Promise<RunWorkflowResult> {
   return {
     run: doneState.run,
     executed: [],
+    stepsProcessed: 0,
     ...(doneState.run.status === "completed" ? { done: true as const } : {}),
   };
 }
@@ -472,9 +522,377 @@ function workflowSummaryJudge(
   plan: WorkflowPlanGraph,
   stepPlan: IrStepPlan,
   signal: AbortSignal | undefined,
+  owner: { runId: string; stepId: string },
 ): SummaryJudge | null {
   if (options.summaryJudge !== undefined) return options.summaryJudge;
-  return frozenSummaryJudge(plan, stepPlan.gate.judge, signal, options.dispatcher ?? defaultUnitDispatcher);
+  // The judge dispatches under the REAL run/step identity; the per-loop gate row
+  // identity is threaded in per call by the completion path that journals it.
+  return frozenSummaryJudge(plan, stepPlan.gate.judge, signal, options.dispatcher ?? defaultUnitDispatcher, owner);
+}
+
+/**
+ * Seed the lifetime unit cap AND the budget ceilings from the journal so
+ * both are truly per-RUN: a resumed or re-invoked run must not restart the
+ * runaway backstop — or a declared `budget` — at zero. Journal rows = past
+ * dispatch ATTEMPTS (counted against `budget.max_units`); their summed
+ * `tokens` column is the run's spend so far (counted against
+ * `budget.max_tokens`). The executor consumes both only on new dispatches
+ * (durable-row reuses are free), so a large partially-completed fan-out
+ * stays resumable.
+ *
+ * Gate-evaluation rows (`phase = "gate"`, journaled by the completion-gate
+ * judge) are EXCLUDED from the seed: the live path never consumes
+ * DispatchBudget for a judge call, so counting its journal row on resume
+ * would make an interrupted run hit `max_units` (and the lifetime cap)
+ * earlier than the identical uninterrupted run — a spurious hard failure
+ * that `on_error` cannot soften. The seed must reproduce exactly what live
+ * accounting would have accumulated.
+ *
+ * The seed sums each dispatch row's `attempts` (migration 008), NOT the row
+ * COUNT: a crash between a unit's dispatch and its finish leaves a `running`
+ * row that resume re-dispatches under the SAME content-derived unit_id, and
+ * `insertUnit` REPLACES that one row while bumping `attempts`. Counting rows
+ * would erase every prior crash-retried dispatch from budget/lifetime
+ * accounting, letting the run spend past its declared ceiling; summing
+ * `attempts` charges each dispatch exactly once.
+ */
+async function seedRunAccountingFromJournal(runId: string): Promise<{ unitsDispatched: number; tokensUsed: number }> {
+  const journaledUnits = await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(runId));
+  const journaledDispatches = journaledUnits.filter((row) => row.phase !== GATE_EVALUATION_PHASE);
+  return {
+    unitsDispatched: journaledDispatches.reduce((sum, row) => sum + row.attempts, 0),
+    tokensUsed: journaledDispatches.reduce((sum, row) => sum + (row.tokens ?? 0), 0),
+  };
+}
+
+/**
+ * The decoded/hash-verified row plan is the sole execution authority. The
+ * loader seam may assert an expected plan in tests, but can never replace it.
+ *
+ * Reviewer #12: the journaled params row must still satisfy the frozen param
+ * schemas before the engine resolves any unit prompt from it, so
+ * schema-violating params — post-start corruption — fail loudly BEFORE any
+ * unit is dispatched (start already validated the params it stored).
+ */
+async function loadAuthoritativeRunPlan(
+  options: RunWorkflowOptions,
+  next: WorkflowNextResult,
+): Promise<WorkflowPlanGraph> {
+  const plan = await loadFrozenPlan(next.run.id);
+  if (options.loadPlan) {
+    const expected = decodeWorkflowPlanV3(await options.loadPlan(next.run.workflowRef));
+    if (computePlanHash(expected) !== computePlanHash(plan))
+      throw new UsageError(`Injected workflow plan for run ${next.run.id} differs from its frozen plan.`);
+  }
+  assertRunParamsSatisfyPlan(next.run.id, plan, next.run.params ?? {});
+  return plan;
+}
+
+/**
+ * Complete a branch target no completed router selected as `skipped` — no
+ * dispatch, no gate loop, and (per the `maxSteps` contract) no step consumed.
+ * Returns the re-read spine state so the caller can continue its walk.
+ */
+async function skipUnselectedRouteTarget(input: {
+  runId: string;
+  stepId: string;
+  stepPlan: IrStepPlan;
+  skipInfo: RouteSkipInfo;
+  routeUnselected: Map<string, RouteSkipInfo>;
+  executed: ExecutedStepReport[];
+  leaseHolder: string;
+}): Promise<WorkflowNextResult> {
+  const { runId, stepId, stepPlan, skipInfo, routeUnselected, executed, leaseHolder } = input;
+  // Cascade (peer review R1): a skipped step that is ITSELF a router
+  // never evaluates its route, so none of its declared targets were
+  // selected — mark them all skip-on-reach too (a target another
+  // completed router selects stays protected via routeSelected). Without
+  // this, every branch of the skipped router would run unconditionally.
+  if (stepPlan.route) {
+    cascadeSkippedRouter(stepPlan.route, stepId, routeUnselected);
+  }
+  const notes =
+    skipInfo.selected === null
+      ? `Skipped by route: step "${skipInfo.router}" was itself skipped, so none of its branch targets run.`
+      : `Skipped by route: step "${skipInfo.router}" selected "${skipInfo.selected}".`;
+  executed.push({ stepId, ok: true, unitCount: 0, failedUnits: 0, summary: notes });
+  await completeWorkflowStep({ runId, stepId, status: "skipped", notes, leaseHolder });
+  return getNextWorkflowStep(runId);
+}
+
+/**
+ * Crash-resume gate state (Codex P1): SEED the starting gate loop from the
+ * journal through the SAME shared helpers the first pass used — no fork.
+ * A run interrupted after a rejected gate was journaled
+ * (`<step>.gate:l<n>`, complete:false) must resume at loop n+1 with the
+ * stored corrective feedback threaded into the unit prompts; without this
+ * the engine restarts at loop 1, reuses the rejected loop-1 rows, overwrites
+ * `<step>.gate:l1`, and re-judges the stale artifact — breaking journaled
+ * replay and making the resumed run diverge from the interrupted one. The rows
+ * are re-read per step (NOT the once-at-start budget seed) so a step reached
+ * later within THIS same invocation still starts fresh at loop 1.
+ *
+ * Only the STEP's rows are read (index-backed on `(run_id, step_id)`): both
+ * helpers already discard every row carrying a different `step_id`, and gate
+ * rows are journaled under the step's own id, so the narrow query returns a
+ * superset of what they read. Re-reading the whole run journal here would
+ * re-materialize every earlier step's `result_json` — synchronously, blocking
+ * the event loop the lease heartbeat and abort handling share — once per step.
+ */
+async function recoverGateLoopState(
+  runId: string,
+  stepPlan: IrStepPlan,
+): Promise<{ startLoop: number; seededFeedback: GateFeedback | undefined }> {
+  // A step with no effective completion criteria never reaches a judge
+  // (`validateStepSummary` short-circuits before the gate-journaling wrapper),
+  // so it can have no gate rows and needs no query at all.
+  if (!stepPlan.gate.criteria.some((criterion) => criterion.trim().length > 0)) {
+    return { startLoop: 1, seededFeedback: undefined };
+  }
+  const stepId = stepPlan.stepId;
+  const stepJournal = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(runId, stepId));
+  const startLoop = activeGateLoop(stepJournal, stepId);
+  return { startLoop, seededFeedback: recoverGateFeedback(stepJournal, stepId, startLoop) };
+}
+
+/** Everything the bounded gate loop needs about the ONE step it is driving. */
+interface StepDriveContext {
+  options: RunWorkflowOptions;
+  next: WorkflowNextResult;
+  plan: WorkflowPlanGraph;
+  stepPlan: IrStepPlan;
+  step: WorkflowRunStepState;
+  /** Every prior step's evidence, keyed by step id (live values preferred over rows). */
+  evidence: Record<string, Record<string, unknown> | undefined>;
+  /**
+   * The COMPLETE in-memory evidence of every step THIS call completed AND some
+   * later step can still read, keyed by step id — written here as each step
+   * advances and preferred over the re-read row when {@link driveRun} rebuilds
+   * the downstream scope. See `driveRun`'s parameter docs for why the row alone
+   * is not enough.
+   */
+  liveEvidence: Map<string, Record<string, unknown>>;
+  /** Step ids some other step's `inputs[]` / `map.over` / `route.input` names. */
+  liveEvidenceConsumers: ReadonlySet<string>;
+  /** The run-wide report list — appended in place, one entry per loop iteration. */
+  executed: ExecutedStepReport[];
+  routeSelected: Set<string>;
+  routeUnselected: Map<string, RouteSkipInfo>;
+  summaryJudge: SummaryJudge | null;
+  leaseHolder: string;
+  heartbeat: LeaseHeartbeat | undefined;
+  /** The effective dispatch signal: the heartbeat's controller while leased, else the caller signal. */
+  dispatchSignal: AbortSignal | undefined;
+}
+
+/**
+ * Loop-control + accounting outcome of one step's bounded gate loop. `kind` is
+ * the SINGLE discriminator every consumer derives from — whether the engine
+ * keeps walking the spine (only `"advanced"` does) and whether the step consumed
+ * its one `maxSteps` allowance ({@link STEP_FINISHED_KINDS}). A new exit point
+ * must name its kind, so it cannot silently skew the remaining-steps accounting
+ * the way a forgotten boolean could.
+ */
+interface StepGateLoopOutcome {
+  kind: "advanced" | "failed" | "gate-exhausted" | "judge-failed" | "aborted";
+  gateRejection?: RunWorkflowResult["gateRejection"];
+  judgeFailure?: RunWorkflowResult["judgeFailure"];
+  /** Running per-run dispatch/token totals, threaded back into the engine loop. */
+  unitsDispatched: number;
+  tokensUsed: number;
+}
+
+/**
+ * The kinds that FINISHED the step (completed / failed / gate-exhausted) — the
+ * ONE `maxSteps` consumption for its whole gate loop. An abort and a judge
+ * outage leave the step unfinished and consume nothing: the next invocation
+ * still owes the work.
+ */
+const STEP_FINISHED_KINDS: ReadonlySet<StepGateLoopOutcome["kind"]> = new Set(["advanced", "failed", "gate-exhausted"]);
+
+/**
+ * One attempt at a step's work. Route-only steps (YAML `route:` — no execution
+ * subgraph) dispatch no units; they only decide the spine's path in
+ * `finalizeExecutedStep`. Everything else executes its subgraph through the
+ * native executor.
+ */
+async function executeStepSubgraph(
+  ctx: StepDriveContext,
+  loop: { gateLoop: number; gateFeedback: GateFeedback | undefined; unitsDispatched: number; tokensUsed: number },
+): Promise<StepExecutionResult> {
+  const { options, next, plan, stepPlan, step, evidence, leaseHolder, dispatchSignal } = ctx;
+  const { gateLoop, gateFeedback, unitsDispatched, tokensUsed } = loop;
+  return !stepPlan.root && stepPlan.route
+    ? {
+        ok: true,
+        units: [],
+        evidence: {},
+        summary: `Step "${step.id}" is a route step — no units dispatched.`,
+        unitsDispatched,
+      }
+    : await executeStepPlan(stepPlan, {
+        runId: next.run.id,
+        leaseHolder,
+        workflowRef: next.run.workflowRef,
+        params: next.run.params ?? {},
+        evidence,
+        unitsDispatched,
+        tokensUsed,
+        // Budget ceilings ride the FROZEN plan (addendum R2): a mid-run
+        // asset edit can never loosen or tighten a run's budget.
+        ...(plan.budget ? { budget: plan.budget } : {}),
+        ...(plan.execution ? { engines: plan.execution.engines } : {}),
+        gateLoop,
+        ...(gateFeedback ? { gateFeedback } : {}),
+        // The heartbeat's signal is the effective dispatch signal: a lost
+        // lease (or a caller abort) aborts in-flight units promptly.
+        ...(dispatchSignal ? { signal: dispatchSignal } : {}),
+        ...(options.dispatcher ? { dispatcher: options.dispatcher } : {}),
+        maxConcurrency: Math.min(
+          options.maxConcurrency ?? Number.POSITIVE_INFINITY,
+          plan.execution?.maxConcurrency ?? 1,
+        ),
+      });
+}
+
+/**
+ * Drive ONE step's bounded gate loop (addendum R2, `gate.max_loops`): loop 1 is
+ * the normal execution; a gate rejection with attempts left re-executes the
+ * subgraph with the judge's feedback threaded into unit prompts.
+ *
+ * The engine owns only the loop control the shared completion path
+ * (`finalizeExecutedStep`) maps onto — retry re-executes; advanced moves on;
+ * failure/judge-failure/exhaustion stops this invocation — and returns that
+ * decision plus the running budget totals to {@link driveRun}. `ctx.executed`
+ * is appended in place (one report per iteration); everything else the caller
+ * must observe travels back through {@link StepGateLoopOutcome}.
+ */
+async function runStepGateLoop(
+  ctx: StepDriveContext,
+  gate: { startLoop: number; maxLoops: number; seededFeedback: GateFeedback | undefined },
+  totals: { unitsDispatched: number; tokensUsed: number },
+): Promise<StepGateLoopOutcome> {
+  const { options, next, stepPlan, step, evidence, executed, routeSelected, routeUnselected } = ctx;
+  const { summaryJudge, leaseHolder, heartbeat } = ctx;
+  const { startLoop, maxLoops } = gate;
+  let { unitsDispatched, tokensUsed } = totals;
+  let gateFeedback: GateFeedback | undefined = gate.seededFeedback;
+  // Every exit carries the running totals back to the engine loop; naming the
+  // kind is the whole decision an exit point has to make.
+  const outcome = (rest: Omit<StepGateLoopOutcome, "unitsDispatched" | "tokensUsed">): StepGateLoopOutcome => ({
+    ...rest,
+    unitsDispatched,
+    tokensUsed,
+  });
+
+  for (let gateLoop = startLoop; gateLoop <= maxLoops; gateLoop++) {
+    // A loop re-execution dispatches a fresh round of units — renew the
+    // lease so a long evaluator-optimizer cycle cannot outlive the TTL.
+    if (gateLoop > 1) await renewRunLease(next.run.id, leaseHolder);
+
+    const result = await executeStepSubgraph(ctx, { gateLoop, gateFeedback, unitsDispatched, tokensUsed });
+    // If the heartbeat lost the lease WHILE this step dispatched, another
+    // engine now owns the run — stop loudly BEFORE finalizing the step
+    // (completeWorkflowStep would race the new owner's spine).
+    heartbeat?.assertAlive();
+    unitsDispatched = result.unitsDispatched;
+    if (result.tokensUsed !== undefined) tokensUsed = result.tokensUsed;
+    if (options.signal?.aborted) return outcome({ kind: "aborted" });
+
+    executed.push({
+      stepId: step.id,
+      ok: result.ok,
+      unitCount: result.units.length,
+      failedUnits: result.units.filter((u) => !u.ok).length,
+      summary: result.summary,
+    });
+
+    // Route evaluation + artifact-judged completion gate + gate-row
+    // journaling + the bounded-loop rejection contract are the SHARED
+    // completion path (`finalizeExecutedStep`): every step advances through
+    // that one sequence, whether its units were just dispatched or rehydrated
+    // from the journal on resume, so the same frozen plan always promotes the
+    // same artifact and advances (or rejects) the spine identically.
+    let finalize: Awaited<ReturnType<typeof finalizeExecutedStep>>;
+    try {
+      finalize = await finalizeExecutedStep({
+        runId: next.run.id,
+        workflowRef: next.run.workflowRef,
+        stepId: step.id,
+        stepPlan,
+        completionCriteria: stepPlan.gate.criteria,
+        gateLoop,
+        loopsRemaining: gateLoop < maxLoops,
+        result,
+        priorEvidence: evidence,
+        params: next.run.params ?? {},
+        routeSelected,
+        routeUnselected,
+        summaryJudge,
+        ...(ctx.plan.execution ? { engines: ctx.plan.execution.engines } : {}),
+        signal: options.signal,
+        // The judge runs under the DISPATCH signal, so the completion path must
+        // see it too: an abort delivered there (a lost lease, a caller Ctrl-C)
+        // is an interruption, not a verifier outage.
+        ...(ctx.dispatchSignal ? { dispatchSignal: ctx.dispatchSignal } : {}),
+        leaseHolder,
+      });
+    } catch (error) {
+      heartbeat?.assertAlive();
+      if (options.signal?.aborted) return outcome({ kind: "aborted" });
+      throw error;
+    }
+    heartbeat?.assertAlive();
+
+    if (finalize.kind === "retry") {
+      // Re-execute the subgraph with the judge/validation feedback threaded
+      // into unit prompts — the changed prompt changes each unit's input
+      // hash, so the re-run dispatches fresh work instead of reusing rows.
+      gateFeedback = finalize.gateFeedback;
+      continue;
+    }
+    if (finalize.kind === "advanced") {
+      // Hand the rest of this invocation the COMPLETE artifact — but only when
+      // some LATER step's frozen references can actually read it (set-time
+      // retention, see `referencedStepIds`). `finalize` has already journaled
+      // the step (and stamped any route decision onto `result.evidence`), and
+      // the persisted row may carry a truncation envelope in place of an
+      // over-cap value — the row bound must not change what the very next step
+      // reads.
+      if (ctx.liveEvidenceConsumers.has(step.id)) ctx.liveEvidence.set(step.id, result.evidence);
+      // A route-only step's summary IS its decision (finalize surfaces it).
+      if (finalize.summaryOverride !== undefined) {
+        executed[executed.length - 1] = { ...executed[executed.length - 1]!, summary: finalize.summaryOverride };
+      }
+      return outcome({ kind: "advanced" });
+    }
+    if (finalize.kind === "judge-failed") {
+      // Verifier infrastructure failure (thrown judge / malformed verdict /
+      // missing judge): the step is blocked for resume, NO gate loop was
+      // consumed, and the step does not count against maxSteps. Surface the
+      // resume instruction in the step report so every output mode shows it.
+      executed[executed.length - 1] = { ...executed[executed.length - 1]!, summary: finalize.summary };
+      return outcome({ kind: "judge-failed", judgeFailure: { stepId: step.id, message: finalize.summary } });
+    }
+    if (finalize.kind === "failed") {
+      // A route-failure was pushed as ok:true (the units succeeded); reflect
+      // the deterministic route failure in the executed report.
+      if (finalize.routeFailure) {
+        executed[executed.length - 1] = { ...executed[executed.length - 1]!, ok: false, summary: finalize.summary };
+      }
+      return outcome({ kind: "failed" });
+    }
+    // gate-exhausted: rejected with no loop budget left — stop with feedback.
+    return outcome({ kind: "gate-exhausted", gateRejection: finalize.gateRejection });
+  }
+
+  // Unreachable: `retry` is the ONLY path that continues the loop, and
+  // `finalizeExecutedStep` returns it exclusively while `gateLoop < maxLoops`,
+  // so the final iteration always exits through a terminal kind. Falling out
+  // here would mean those two bounds disagree — a bug, not a run outcome.
+  throw new Error(
+    `Workflow run ${next.run.id} step "${step.id}" left its gate loop with no terminal outcome (loop bounds disagree).`,
+  );
 }
 
 /** The engine loop proper — runs under the lease held by `runWorkflowSteps`. */
@@ -483,6 +901,24 @@ async function driveRun(
   initial: WorkflowNextResult,
   leaseHolder: string,
   heartbeat: LeaseHeartbeat | undefined,
+  /**
+   * The COMPLETE in-memory evidence of every step THIS call has completed,
+   * keyed by step id, preferred over the re-read row when the downstream scope
+   * is rebuilt below. The spine rows are re-read between steps, and
+   * `clipStepEvidenceForPersistence` (runtime/runs.ts) may have replaced an
+   * over-cap artifact with a truncation envelope on the way in — a bound on ONE
+   * SQLite row, not on what a run may promote (the exec per-pipe cap alone
+   * retains 8 MiB). Preferring the live value keeps the persistence bound
+   * invisible to the run that produced it. A LATER `akm workflow run` starts
+   * with an empty map and reads the rows, where a reference into a truncated
+   * artifact fails loudly by name (`isTruncatedEvidence`).
+   *
+   * Only steps some OTHER step's references NAME are stored (`referencedStepIds`
+   * — the set-time filter): a step nothing downstream reads has no consumer to
+   * keep it complete for, so retaining it would buy nothing and cost its bytes
+   * for the rest of the invocation.
+   */
+  liveEvidence: Map<string, Record<string, unknown>>,
 ): Promise<RunWorkflowResult> {
   let next = initial;
   if (initial.done) return completedRunResult(initial.run.id);
@@ -492,52 +928,25 @@ async function driveRun(
   const dispatchSignal = heartbeat?.signal ?? options.signal;
   const executed: ExecutedStepReport[] = [];
   let gateRejection: RunWorkflowResult["gateRejection"];
+  let judgeFailure: RunWorkflowResult["judgeFailure"];
   let aborted = false;
   const maxSteps = options.maxSteps ?? Number.POSITIVE_INFINITY;
+  // The `maxSteps` budget counts DISTINCT spine steps that finished processing
+  // — never `executed.length`, which grows once per gate-loop iteration and
+  // once per route-skip. A step's whole bounded gate loop consumes ONE step;
+  // a route-skipped step consumes NOTHING (no work was dispatched for it).
+  let stepsProcessed = 0;
 
-  // Seed the lifetime unit cap AND the budget ceilings from the journal so
-  // both are truly per-RUN: a resumed or re-invoked run must not restart the
-  // runaway backstop — or a declared `budget` — at zero. Journal rows = past
-  // dispatch ATTEMPTS (counted against `budget.max_units`); their summed
-  // `tokens` column is the run's spend so far (counted against
-  // `budget.max_tokens`). The executor consumes both only on new dispatches
-  // (durable-row reuses are free), so a large partially-completed fan-out
-  // stays resumable.
-  //
-  // Gate-evaluation rows (`phase = "gate"`, journaled by the completion-gate
-  // judge below) are EXCLUDED from the seed: the live path never consumes
-  // DispatchBudget for a judge call, so counting its journal row on resume
-  // would make an interrupted run hit `max_units` (and the lifetime cap)
-  // earlier than the identical uninterrupted run — a spurious hard failure
-  // that `on_error` cannot soften. The seed must reproduce exactly what live
-  // accounting would have accumulated.
-  //
-  // The seed sums each dispatch row's `attempts` (migration 008), NOT the row
-  // COUNT: a crash between a unit's dispatch and its finish leaves a `running`
-  // row that resume re-dispatches under the SAME content-derived unit_id, and
-  // `insertUnit` REPLACES that one row while bumping `attempts`. Counting rows
-  // would erase every prior crash-retried dispatch from budget/lifetime
-  // accounting, letting the run spend past its declared ceiling; summing
-  // `attempts` charges each dispatch exactly once.
-  const journaledUnits = await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(next.run.id));
-  const journaledDispatches = journaledUnits.filter((row) => row.phase !== GATE_EVALUATION_PHASE);
-  let unitsDispatched = journaledDispatches.reduce((sum, row) => sum + row.attempts, 0);
-  let tokensUsed = journaledDispatches.reduce((sum, row) => sum + (row.tokens ?? 0), 0);
+  let { unitsDispatched, tokensUsed } = await seedRunAccountingFromJournal(next.run.id);
 
-  // The decoded/hash-verified row plan is the sole execution authority. The
-  // loader seam may assert an expected plan in tests, but can never replace it.
-  const plan = await loadFrozenPlan(next.run.id);
-  if (options.loadPlan) {
-    const expected = decodeWorkflowPlanV3(await options.loadPlan(next.run.workflowRef));
-    if (computePlanHash(expected) !== computePlanHash(plan))
-      throw new UsageError(`Injected workflow plan for run ${next.run.id} differs from its frozen plan.`);
-  }
+  const plan = await loadAuthoritativeRunPlan(options, next);
 
-  // Reviewer #12: the journaled params row must still satisfy the frozen param
-  // schemas before the engine resolves any unit prompt from it, so
-  // schema-violating params — post-start corruption — fail loudly BEFORE any
-  // unit is dispatched (start already validated the params it stored).
-  assertRunParamsSatisfyPlan(next.run.id, plan, next.run.params ?? {});
+  // Live-evidence retention is decided at SET time, from the frozen plan alone:
+  // a completed step's complete artifact is held only while some other step's
+  // references can still read it. An exec unit's promoted stdout can be 8 MiB,
+  // and holding every step's for the whole invocation is pure ballast when
+  // nothing downstream names it.
+  const liveEvidenceConsumers = referencedStepIds(plan);
 
   // Route bookkeeping: targets a completed router did NOT select are skipped
   // when the spine reaches them; a target ANY router selected is protected
@@ -558,7 +967,7 @@ async function driveRun(
     seedJournaledRouteDecisions(plan, next, routeSelected, routeUnselected);
   }
 
-  while (!next.done && next.step && next.run.status === "active" && executed.length < maxSteps) {
+  while (!next.done && next.step && next.run.status === "active" && stepsProcessed < maxSteps) {
     // A LOST lease (the heartbeat's renewal failed mid-step) is a loud stop —
     // another engine owns the spine now. A caller abort (options.signal) is a
     // graceful break, distinct from a lost lease.
@@ -583,63 +992,29 @@ async function driveRun(
     // A branch target no completed router selected → auto-skip, no dispatch.
     const skipInfo = routeUnselected.get(step.id);
     if (skipInfo && !routeSelected.has(step.id)) {
-      // Cascade (peer review R1): a skipped step that is ITSELF a router
-      // never evaluates its route, so none of its declared targets were
-      // selected — mark them all skip-on-reach too (a target another
-      // completed router selects stays protected via routeSelected). Without
-      // this, every branch of the skipped router would run unconditionally.
-      if (stepPlan.route) {
-        cascadeSkippedRouter(stepPlan.route, step.id, routeUnselected);
-      }
-      const notes =
-        skipInfo.selected === null
-          ? `Skipped by route: step "${skipInfo.router}" was itself skipped, so none of its branch targets run.`
-          : `Skipped by route: step "${skipInfo.router}" selected "${skipInfo.selected}".`;
-      executed.push({ stepId: step.id, ok: true, unitCount: 0, failedUnits: 0, summary: notes });
-      await completeWorkflowStep({ runId: next.run.id, stepId: step.id, status: "skipped", notes, leaseHolder });
-      next = await getNextWorkflowStep(next.run.id);
+      next = await skipUnselectedRouteTarget({
+        runId: next.run.id,
+        stepId: step.id,
+        stepPlan,
+        skipInfo,
+        routeUnselected,
+        executed,
+        leaseHolder,
+      });
       continue;
     }
 
-    // `dependsOn` edges (no frontend emits them today,
-    // but a frozen plan may carry them) are a declared ordering contract:
-    // every dependency must already be resolved before this step dispatches.
-    // Execution is sequential (spine order), so a violation means the plan
-    // ordered steps inconsistently with its declared edges — fail fast,
-    // before spending.
-    for (const dep of stepPlan.dependsOn ?? []) {
-      const depState = next.workflow.steps.find((s) => s.id === dep);
-      if (!depState || (depState.status !== "completed" && depState.status !== "skipped")) {
-        throw new UsageError(
-          `Step "${step.id}" depends on step "${dep}", which is ${depState?.status ?? "missing"}. ` +
-            `Reorder the workflow so dependencies come first (execution is sequential in step order).`,
-        );
-      }
-    }
-
     const evidence: Record<string, Record<string, unknown> | undefined> = {};
-    for (const s of next.workflow.steps) evidence[s.id] = s.evidence;
+    for (const s of next.workflow.steps) evidence[s.id] = liveEvidence.get(s.id) ?? s.evidence;
 
     // Bounded gate loop (addendum R2, `gate.max_loops`): loop 1 is the normal
     // execution; a gate rejection with attempts left re-executes the subgraph
-    // with the judge's feedback threaded into unit prompts. `advanced` = the
-    // step completed and the spine may move on; `stopEngine` = failure or
-    // final rejection — this invocation is done.
-    const maxLoops = Math.max(1, stepPlan.gate.maxLoops ?? 1);
+    // with the judge's feedback threaded into unit prompts. The bound comes
+    // from the shared derivation, which holds an exec step to a single
+    // execution — its argv cannot answer feedback (see effectiveGateMaxLoops).
+    const maxLoops = effectiveGateMaxLoops(stepPlan);
 
-    // Crash-resume gate state (Codex P1): SEED the starting gate loop from the
-    // journal through the SAME shared helpers the first pass used — no fork.
-    // A run interrupted after a rejected gate was journaled
-    // (`<step>.gate:l<n>`, complete:false) must resume at loop n+1 with the
-    // stored corrective feedback threaded into the unit prompts; without this
-    // the engine restarts at loop 1, reuses the rejected loop-1 rows, overwrites
-    // `<step>.gate:l1`, and re-judges the stale artifact — breaking journaled
-    // replay and making the resumed run diverge from the interrupted one. The rows
-    // are re-read here (NOT the once-at-start `journaledUnits` budget seed) so a
-    // step reached later within THIS same invocation still starts fresh at loop 1.
-    const stepJournal = await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(next.run.id));
-    const startLoop = activeGateLoop(stepJournal, step.id);
-    const seededFeedback = recoverGateFeedback(stepJournal, step.id, startLoop);
+    const { startLoop, seededFeedback } = await recoverGateLoopState(next.run.id, stepPlan);
 
     // Resume AFTER the FINAL rejection (`startLoop` past the loop bound): the
     // gate was already exhausted before the crash, so there is NO fresh loop to
@@ -656,138 +1031,64 @@ async function driveRun(
       break;
     }
 
-    let gateFeedback: GateFeedback | undefined = seededFeedback;
-    let advanced = false;
-    let stopEngine = false;
-
-    for (let gateLoop = startLoop; gateLoop <= maxLoops; gateLoop++) {
-      // A loop re-execution dispatches a fresh round of units — renew the
-      // lease so a long evaluator-optimizer cycle cannot outlive the TTL.
-      if (gateLoop > 1) await renewRunLease(next.run.id, leaseHolder);
-
-      // Route-only steps (YAML `route:` — no execution subgraph) dispatch no
-      // units; they only decide the spine's path below. Everything else
-      // executes its subgraph through the native executor.
-      const result: StepExecutionResult =
-        !stepPlan.root && stepPlan.route
-          ? {
-              ok: true,
-              units: [],
-              evidence: {},
-              summary: `Step "${step.id}" is a route step — no units dispatched.`,
-              unitsDispatched,
-            }
-          : await executeStepPlan(stepPlan, {
-              runId: next.run.id,
-              leaseHolder,
-              workflowRef: next.run.workflowRef,
-              params: next.run.params ?? {},
-              evidence,
-              unitsDispatched,
-              tokensUsed,
-              // Budget ceilings ride the FROZEN plan (addendum R2): a mid-run
-              // asset edit can never loosen or tighten a run's budget.
-              ...(plan.budget ? { budget: plan.budget } : {}),
-              ...(plan.execution ? { engines: plan.execution.engines } : {}),
-              gateLoop,
-              ...(gateFeedback ? { gateFeedback } : {}),
-              // The heartbeat's signal is the effective dispatch signal: a lost
-              // lease (or a caller abort) aborts in-flight units promptly.
-              ...(dispatchSignal ? { signal: dispatchSignal } : {}),
-              ...(options.dispatcher ? { dispatcher: options.dispatcher } : {}),
-              maxConcurrency: Math.min(
-                options.maxConcurrency ?? Number.POSITIVE_INFINITY,
-                plan.execution?.maxConcurrency ?? 1,
-              ),
-            });
-      // If the heartbeat lost the lease WHILE this step dispatched, another
-      // engine now owns the run — stop loudly BEFORE finalizing the step
-      // (completeWorkflowStep would race the new owner's spine).
-      heartbeat?.assertAlive();
-      unitsDispatched = result.unitsDispatched;
-      if (result.tokensUsed !== undefined) tokensUsed = result.tokensUsed;
-      if (options.signal?.aborted) {
-        aborted = true;
-        stopEngine = true;
-        break;
-      }
-
-      executed.push({
+    // Judge-outage contract: resolve the step's frozen completion judge BEFORE
+    // any dispatch. An unresolvable judge (missing frozen engine, no dispatcher
+    // for an agent judge) is verifier INFRASTRUCTURE failure — block the step
+    // for `akm workflow resume` instead of spending on units the gate can never
+    // verify. No gate loop is consumed and nothing is dispatched.
+    let summaryJudge: SummaryJudge | null;
+    try {
+      summaryJudge = workflowSummaryJudge(options, plan, stepPlan, dispatchSignal, {
+        runId: next.run.id,
         stepId: step.id,
-        ok: result.ok,
-        unitCount: result.units.length,
-        failedUnits: result.units.filter((u) => !u.ok).length,
-        summary: result.summary,
       });
-
-      // Route evaluation + artifact-judged completion gate + gate-row
-      // journaling + the bounded-loop rejection contract are the SHARED
-      // completion path (`finalizeExecutedStep`): every step advances through
-      // that one sequence, whether its units were just dispatched or rehydrated
-      // from the journal on resume, so the same frozen plan always promotes the
-      // same artifact and advances (or rejects) the spine identically. The
-      // engine owns only the loop control the result maps onto (retry
-      // re-executes; advanced moves on; failure/exhaustion stops this invocation).
-      let finalize: Awaited<ReturnType<typeof finalizeExecutedStep>>;
-      try {
-        finalize = await finalizeExecutedStep({
-          runId: next.run.id,
-          workflowRef: next.run.workflowRef,
-          stepId: step.id,
-          stepPlan,
-          completionCriteria: stepPlan.gate.criteria,
-          gateLoop,
-          loopsRemaining: gateLoop < maxLoops,
-          result,
-          priorEvidence: evidence,
-          params: next.run.params ?? {},
-          routeSelected,
-          routeUnselected,
-          summaryJudge: workflowSummaryJudge(options, plan, stepPlan, dispatchSignal),
-          signal: options.signal,
-          leaseHolder,
-        });
-      } catch (error) {
-        heartbeat?.assertAlive();
-        if (options.signal?.aborted) {
-          aborted = true;
-          stopEngine = true;
-          break;
-        }
-        throw error;
-      }
-      heartbeat?.assertAlive();
-
-      if (finalize.kind === "retry") {
-        // Re-execute the subgraph with the judge/validation feedback threaded
-        // into unit prompts — the changed prompt changes each unit's input
-        // hash, so the re-run dispatches fresh work instead of reusing rows.
-        gateFeedback = finalize.gateFeedback;
-        continue;
-      }
-      if (finalize.kind === "advanced") {
-        // A route-only step's summary IS its decision (finalize surfaces it).
-        if (finalize.summaryOverride !== undefined) {
-          executed[executed.length - 1] = { ...executed[executed.length - 1]!, summary: finalize.summaryOverride };
-        }
-        advanced = true;
-        break;
-      }
-      if (finalize.kind === "failed") {
-        // A route-failure was pushed as ok:true (the units succeeded); reflect
-        // the deterministic route failure in the executed report.
-        if (finalize.routeFailure) {
-          executed[executed.length - 1] = { ...executed[executed.length - 1]!, ok: false, summary: finalize.summary };
-        }
-        stopEngine = true;
-        break;
-      }
-      // gate-exhausted: rejected with no loop budget left — stop with feedback.
-      gateRejection = finalize.gateRejection;
-      stopEngine = true;
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? ` (${error.message})` : "";
+      // Nothing was dispatched, so there is no evidence to preserve — the same
+      // blocked write the post-execution path uses, minus the results it does
+      // not have.
+      const notes = await blockStepForJudgeFailure({
+        runId: next.run.id,
+        stepId: step.id,
+        cause: `the verification judge could not be resolved from the frozen plan${detail}`,
+        leaseHolder,
+      });
+      executed.push({ stepId: step.id, ok: false, unitCount: 0, failedUnits: 0, summary: notes });
+      judgeFailure = { stepId: step.id, message: notes };
+      break;
     }
 
-    if (stopEngine || !advanced) break;
+    const outcome = await runStepGateLoop(
+      {
+        options,
+        next,
+        plan,
+        stepPlan,
+        step,
+        evidence,
+        liveEvidence,
+        liveEvidenceConsumers,
+        executed,
+        routeSelected,
+        routeUnselected,
+        summaryJudge,
+        leaseHolder,
+        heartbeat,
+        dispatchSignal,
+      },
+      { startLoop, maxLoops, seededFeedback },
+      { unitsDispatched, tokensUsed },
+    );
+    unitsDispatched = outcome.unitsDispatched;
+    tokensUsed = outcome.tokensUsed;
+    if (outcome.kind === "aborted") aborted = true;
+    if (outcome.gateRejection) gateRejection = outcome.gateRejection;
+    if (outcome.judgeFailure) judgeFailure = outcome.judgeFailure;
+
+    if (STEP_FINISHED_KINDS.has(outcome.kind)) stepsProcessed += 1;
+    // Only an advance leaves the spine walkable; every other kind ends this
+    // invocation (failure, exhausted gate, judge outage, abort).
+    if (outcome.kind !== "advanced") break;
 
     next = await getNextWorkflowStep(next.run.id);
   }
@@ -797,8 +1098,10 @@ async function driveRun(
   return {
     run: finalState.run,
     executed,
+    stepsProcessed,
     ...(finalState.run.status === "completed" ? { done: true as const } : {}),
     ...(gateRejection ? { gateRejection } : {}),
+    ...(judgeFailure ? { judgeFailure } : {}),
     ...(aborted ? { aborted: true as const } : {}),
   };
 }

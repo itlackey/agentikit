@@ -54,7 +54,7 @@
 
 import path from "node:path";
 import { isDangerousEnvKey } from "../../../commands/lint/env-key-rules";
-import { taskFieldProblems } from "../../../tasks/schema";
+import { isPresentTarget, taskFieldProblems } from "../../../tasks/schema";
 import { compileWorkflowPlan } from "../../../workflows/ir/compile";
 import { parseWorkflow } from "../../../workflows/parser";
 import { conceptIdForStashFile } from "../../asset/resolve-ref";
@@ -199,23 +199,34 @@ export function dangerousEnvKeyDiagnostics(type: string | undefined, relPath: st
 
 // ── skill directory check (SkillLinter.lintDirectory) ────────────────────────
 
+/** The akm-native skill placement dir — the default gate for {@link skillDirectoryDiagnostics}. */
+const AKM_SKILL_DIRS: ReadonlySet<string> = new Set(["skills"]);
+
 /**
  * Reproduce `SkillLinter.lintDirectory` (`skill-linter.ts:31-45`) in the
- * change-set model: for a change under `skills/<name>/…`, emit `missing-skill-md`
- * when `skills/<name>/SKILL.md` is absent from the overlay. `seen` dedups so a
- * dir with multiple changed files reports once (matching the per-subdir call).
- * `file`/`detail` mirror the live check exactly (relDir + `no SKILL.md in <relDir>/`).
+ * change-set model: for a change under `<skillDir>/<name>/…`, emit
+ * `missing-skill-md` when `<skillDir>/<name>/SKILL.md` is absent from the
+ * overlay. `seen` dedups so a dir with multiple changed files reports once
+ * (matching the per-subdir call). `file`/`detail` mirror the live check exactly
+ * (relDir + `no SKILL.md in <relDir>/`).
+ *
+ * `skillDirs` defaults to the akm-native `skills/` placement dir. The tool-dir
+ * adapters pass their OWN accepted spellings, because opencode also accepts the
+ * singular `skill/` alias on read (`opencode-adapter.ts` LAYOUT) — with the
+ * gate hardcoded to `"skills"`, an identical manifest-less package went flagged
+ * under `skills/` and unflagged under `skill/` (issue #774).
  */
 export async function skillDirectoryDiagnostics(
   relPath: string,
   seen: Set<string>,
   ctx: ValidateContext,
+  skillDirs: ReadonlySet<string> = AKM_SKILL_DIRS,
 ): Promise<Diagnostic[]> {
   const segments = relPath
     .replace(/\\/g, "/")
     .split("/")
     .filter((s) => s.length > 0);
-  if (segments.length < 3 || segments[0] !== "skills") return []; // must be skills/<name>/<file…>
+  if (segments.length < 3 || !skillDirs.has(segments[0]!)) return []; // must be <skillDir>/<name>/<file…>
   const skillDir = `${segments[0]}/${segments[1]}`;
   if (seen.has(skillDir)) return [];
   seen.add(skillDir);
@@ -306,7 +317,11 @@ export function factDiagnostics(relPath: string, data: Record<string, unknown>):
 export function taskDiagnostics(relPath: string, data: Record<string, unknown>): Diagnostic[] {
   if (data === null || Object.keys(data).length === 0) return [];
   const missing = taskFieldProblems(data);
-  const hasTarget = "prompt" in data || "workflow" in data || "command" in data;
+  // Presence, matching the runtime parser's rule (src/tasks/parser.ts): an
+  // empty string is NOT a target there, so a `workflow: ""` that linted clean
+  // here failed at run time with MISSING_REQUIRED_ARGUMENT — a file the linter
+  // called valid but that could never run.
+  const hasTarget = (["prompt", "workflow", "command"] as const).some((key) => isPresentTarget(data[key]));
   if (!hasTarget) missing.push("prompt, workflow, or command");
   if (missing.length > 0) {
     return [
@@ -333,49 +348,117 @@ export function matchWorkflowPlaceholder(body: string): string | null {
 
 /**
  * WorkflowLinter's `invalid-workflow-structure` check (`workflow-linter.ts:48-77`):
- * parse and compile through the unified workflow frontend, surfacing every
- * structural or semantic error and skipping the read-only `/.cache/`+`/registry/`
- * cached copies. Shared with the live linter;
- * `parsePath` is the path handed to `parseWorkflow` (the adapter passes the
- * change relPath, the CLI passes the absolute filePath — matching each caller's
- * legacy behavior). NEVER writes.
+ * the ERROR half of {@link workflowFrontendDiagnostics}, for callers that only
+ * ever surface fatal findings — the read-only adapter `validate` path and
+ * `akm migrate`'s stale-workflow probe. A caller that ALSO surfaces the
+ * advisories must call {@link workflowFrontendDiagnostics} once instead of
+ * pairing this with a second view. NEVER writes.
  */
-export function workflowStructureDiagnostics(relPath: string, raw: string, parsePath: string): Diagnostic[] {
-  if (parsePath.includes("/.cache/") || parsePath.includes("/registry/")) return [];
-  const diagnostics: Diagnostic[] = [];
+export function workflowStructureDiagnostics(
+  relPath: string,
+  raw: string,
+  parsePath: string,
+): WorkflowFrontendDiagnostic[] {
+  return workflowFrontendDiagnostics(relPath, raw, parsePath).errors;
+}
+
+/**
+ * The `Diagnostic.line` fragment for a line-anchored workflow finding. Every
+ * `WorkflowError` carries a 1-indexed `line`; this used to be DROPPED here, so
+ * an author linting a 300-line workflow got a message with no location while
+ * the same error rendered as `path:line — message` on the `workflow create`
+ * path. Spread (`...lineOf(err)`) rather than assigned, so a nonsense line
+ * never materializes the optional key on a whole-file finding.
+ */
+function lineOf(err: { line?: number }): { line?: number } {
+  return typeof err.line === "number" && Number.isFinite(err.line) && err.line > 0 ? { line: err.line } : {};
+}
+
+/**
+ * One workflow frontend finding. The issue code is narrowed to the only two
+ * codes this pass emits, so a caller can route the result onto its own closed
+ * issue union (`commands/lint/types.ts`'s `LintIssueType`) without a cast.
+ */
+export type WorkflowFrontendDiagnostic = Diagnostic & {
+  issue: "invalid-workflow-structure" | "workflow-warning";
+};
+
+/** Both halves of one parse+compile — see {@link workflowFrontendDiagnostics}. */
+export interface WorkflowFrontendDiagnostics {
+  errors: WorkflowFrontendDiagnostic[];
+  warnings: WorkflowFrontendDiagnostic[];
+}
+
+/**
+ * ONE parse+compile of a workflow through the unified frontend, returning both
+ * halves of what it produces: fatal `invalid-workflow-structure` findings, and
+ * `compileWorkflowPlan`'s non-fatal `workflow-warning` advisories (a step with
+ * no `output:` schema, a reference to an undeclared param). The read-only
+ * `/.cache/` + `/registry/` cached copies are skipped, and nothing is written.
+ *
+ * `parsePath` is the path handed to `parseWorkflow` (the adapter passes the
+ * change relPath, the CLI passes the absolute filePath — matching each
+ * caller's legacy behavior).
+ *
+ * A caller that surfaces BOTH halves must call this once and route the result
+ * itself. The frontend is expensive — instruction bodies reach
+ * `WORKFLOW_MAX_INSTRUCTION_BYTES` — so asking for each half through its own
+ * view parses and compiles every workflow in the stash twice.
+ */
+export function workflowFrontendDiagnostics(
+  relPath: string,
+  raw: string,
+  parsePath: string,
+): WorkflowFrontendDiagnostics {
+  const none: WorkflowFrontendDiagnostics = { errors: [], warnings: [] };
+  if (parsePath.includes("/.cache/") || parsePath.includes("/registry/")) return none;
+  const errors: WorkflowFrontendDiagnostic[] = [];
+  const warnings: WorkflowFrontendDiagnostic[] = [];
   try {
     const result = parseWorkflow(raw, { path: parsePath });
     if (!result.ok) {
       for (const err of result.errors ?? []) {
-        diagnostics.push({
+        errors.push({
           file: relPath,
           issue: "invalid-workflow-structure",
           detail: err.message ?? String(err),
           fixed: false,
+          ...lineOf(err),
         });
       }
-      return diagnostics;
+      return { errors, warnings };
     }
     const compiled = compileWorkflowPlan(result.document, path.basename(parsePath, path.extname(parsePath)));
     if (!compiled.ok) {
       for (const err of compiled.errors) {
-        diagnostics.push({
+        errors.push({
           file: relPath,
           issue: "invalid-workflow-structure",
           detail: err.message,
           fixed: false,
+          ...lineOf(err),
         });
       }
+      return { errors, warnings };
+    }
+    for (const warning of compiled.warnings) {
+      warnings.push({
+        file: relPath,
+        issue: "workflow-warning",
+        detail: warning.message,
+        fixed: false,
+        ...lineOf(warning),
+      });
     }
   } catch (e) {
-    diagnostics.push({
+    errors.push({
       file: relPath,
       issue: "invalid-workflow-structure",
       detail: `workflow parser error: ${e instanceof Error ? e.message : String(e)}`,
       fixed: false,
     });
   }
-  return diagnostics;
+  return { errors, warnings };
 }
 
 /**

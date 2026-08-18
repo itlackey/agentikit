@@ -16,6 +16,15 @@ export type LintIssueType =
   | "dangerous-env-key"
   | "invalid-workflow-structure"
   | "missing-category"
+  /**
+   * A file the sweep reached but could not finish checking — the per-file
+   * dispatch threw (unreadable mid-run, a `--fix` write that failed in a way
+   * the fixer could not absorb). Reported in-band so a partial sweep is
+   * VISIBLE: before this code existed the throw escaped `akmLint()` entirely
+   * and the caller learned neither which file failed nor which fixes had
+   * already landed on disk (issue #761).
+   */
+  | "lint-failed"
   // ── non-akm adapter `validate()` codes (akm 0.9.0 lint/adapter-dispatch wiring) ──
   //
   // These four are `llm-wiki`'s native structural checks
@@ -27,6 +36,14 @@ export type LintIssueType =
   | "missing-description"
   | "broken-xref"
   | "broken-source"
+  /**
+   * Non-fatal workflow compile ADVISORY (`compileWorkflowPlan().warnings` —
+   * e.g. a step with no `output:` schema, or a `params.<name>` reference to an
+   * undeclared param). Routed into `AkmLintResult.warnings`, never `flagged`,
+   * so `--fail-on-flagged` ignores it (see
+   * `core/adapter/adapters/akm-lint.ts#workflowFrontendDiagnostics`).
+   */
+  | "workflow-warning"
   /**
    * Fallback for a `Diagnostic.issue` code this union does not (yet) name.
    * `Diagnostic.issue` (`core/adapter/types.ts`) is deliberately an OPEN
@@ -40,12 +57,45 @@ export type LintIssueType =
    */
   | "adapter-diagnostic";
 
+/**
+ * The issue codes that are ADVISORY: surfaced in lint output but never routed
+ * into `flagged`, so `--fail-on-flagged` cannot fail a run over one.
+ *
+ * ONE home for that decision. EVERY routing point consults it — the adapter
+ * path (`lint/index.ts#lintViaAdapter`), the sweep's per-file loop, and the
+ * sweep's workflow-frontend pass — so a new advisory code cannot be classified
+ * correctly in one place and land in `flagged` (exit 1) in another; a finding
+ * is never filed by which producer emitted it. A future advisory belongs in
+ * BOTH this set and {@link LintIssueType}: an unrecognized code is folded onto
+ * `adapter-diagnostic` at the adapter boundary, which is deliberately NOT
+ * advisory, so a code missing from the union cannot be routed by this set.
+ *
+ * Advisory-ness is deliberately NOT a field on {@link LintIssue}: issues are
+ * serialized verbatim by `--format json`, and a new key on every advisory
+ * would change every consumer's output to restate what `issue` already says.
+ */
+export const ADVISORY_LINT_ISSUES: ReadonlySet<string> = new Set<LintIssueType>(["workflow-warning"]);
+
+/** True when `issue` belongs to the advisory channel — see {@link ADVISORY_LINT_ISSUES}. */
+export function isAdvisoryLintIssue(issue: { issue: string }): boolean {
+  return ADVISORY_LINT_ISSUES.has(issue.issue);
+}
+
 export interface LintIssue {
   file: string;
   issue: LintIssueType;
   detail: string;
-  /** `true` = fix applied; `false` = not fixable or no fix requested; `"failed"` = fix attempted but threw. */
+  /** `true` = fix applied; `false` = not fixable or no fix requested; `"failed"` = no safe replacement was produced or written. */
   fixed: boolean | "failed";
+  /**
+   * 1-indexed line in `file`, when the producing check knows one — the same
+   * optional field `Diagnostic.line` carries (`core/adapter/types.ts`), kept
+   * OPTIONAL because most lint checks are whole-file and have no location.
+   * Workflow parse/compile findings are line-anchored
+   * (`WorkflowError.line`), so `akm lint` renders them as `file:line` in text
+   * output and emits `"line": <n>` in `--format json`.
+   */
+  line?: number;
 }
 
 export interface LintContext {

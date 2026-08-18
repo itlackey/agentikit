@@ -26,6 +26,11 @@ export type ConfigErrorCode =
   | "STASH_DIR_NOT_FOUND"
   | "STASH_DIR_NOT_A_DIRECTORY"
   | "STASH_DIR_UNREADABLE"
+  // The index/state database exists (or may exist) but this process cannot read
+  // it — a permission or ownership mismatch, not a missing index. Distinct from
+  // "not built yet" precisely so a read can fail loudly instead of returning an
+  // empty-but-successful result for an index that is sitting right there (#791).
+  | "DATA_DIR_UNREADABLE"
   | "EMBEDDING_NOT_CONFIGURED"
   | "LLM_NOT_CONFIGURED"
   | "INVALID_CONFIG_FILE"
@@ -101,6 +106,8 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
   STASH_DIR_NOT_A_DIRECTORY:
     "The configured default bundle path exists but isn't a directory. Update it to point at a folder.",
   STASH_DIR_UNREADABLE: "Check the path exists and your user has read permission, or update the default bundle path.",
+  DATA_DIR_UNREADABLE:
+    "The data directory is not readable by the user running akm. Check its owner and mode, or point AKM_DATA_DIR / XDG_DATA_HOME somewhere this user owns.",
   EMBEDDING_NOT_CONFIGURED: 'Run `akm config set embedding \'{"endpoint":"...","model":"..."}\'` to enable embeddings.',
   LLM_NOT_CONFIGURED:
     'Run `akm setup` or configure an `engines` entry with `kind: "llm"`, then select it with `defaults.llmEngine`.',
@@ -250,6 +257,32 @@ export function isTestIsolationError(err: unknown): boolean {
 
 export function rethrowIfTestIsolationError(err: unknown): void {
   if (isTestIsolationError(err)) {
+    throw err;
+  }
+}
+
+/**
+ * Unreadable-data-dir guard helper — the #791 sibling of the test-isolation
+ * pair above, and it exists for the same reason.
+ *
+ * `DATA_DIR_UNREADABLE` says "this path is there and I am not allowed to read
+ * it". It is raised by `assertIndexPathReadable` and friends precisely so a
+ * permission fault stops being indistinguishable from "nothing indexed yet".
+ * That distinction is destroyed again the moment a best-effort `catch` around
+ * the open collapses it into the same `null`/`[]`/`0` the absent case returns —
+ * which is how `akm search` came to answer "No search index available. Run
+ * 'akm index'" at exit 0 for a populated index sitting right there on disk.
+ *
+ * Call `rethrowIfDataDirUnreadable(err)` from any catch block that returns a
+ * fallback value after touching a data-dir path. Absent stays absent; a fault
+ * the operator has to fix keeps travelling.
+ */
+export function isDataDirUnreadableError(err: unknown): err is ConfigError {
+  return err instanceof ConfigError && err.code === "DATA_DIR_UNREADABLE";
+}
+
+export function rethrowIfDataDirUnreadable(err: unknown): void {
+  if (isDataDirUnreadableError(err)) {
     throw err;
   }
 }

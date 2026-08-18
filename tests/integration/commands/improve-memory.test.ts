@@ -419,6 +419,7 @@ describe("akm improve memory cleanup", () => {
     expect(result.memoryCleanup?.archived).toEqual([]);
     expect(result.memoryCleanup?.transitionLogEntries).toBe(1);
     expect(result.memoryCleanup?.transitionLogPath).toBe(".akm/memory-cleanup/belief-transitions.jsonl");
+    expect(result.writtenPaths).toContain(".akm/memory-cleanup/belief-transitions.jsonl");
     expect(result.memoryCleanup?.warnings).toBeUndefined();
 
     const legacyRaw = fs.readFileSync(path.join(stashDir, "memories", "deploy-legacy.derived.md"), "utf8");

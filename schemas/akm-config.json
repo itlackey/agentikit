@@ -45,7 +45,8 @@
                 "anyOf": [
                   {
                     "type": "integer",
-                    "exclusiveMinimum": 0
+                    "exclusiveMinimum": 0,
+                    "maximum": 2147483647
                   },
                   {
                     "type": "null"
@@ -122,7 +123,8 @@
                 "anyOf": [
                   {
                     "type": "integer",
-                    "exclusiveMinimum": 0
+                    "exclusiveMinimum": 0,
+                    "maximum": 2147483647
                   },
                   {
                     "type": "null"
@@ -1622,6 +1624,10 @@
           "type": "integer",
           "exclusiveMinimum": 0
         },
+        "defaultMapConcurrency": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
         "judgeEngine": {
           "type": "string",
           "maxLength": 63,
@@ -1693,7 +1699,8 @@
                     "anyOf": [
                       {
                         "type": "integer",
-                        "exclusiveMinimum": 0
+                        "exclusiveMinimum": 0,
+                        "maximum": 2147483647
                       },
                       {
                         "type": "null"
@@ -1770,7 +1777,8 @@
                     "anyOf": [
                       {
                         "type": "integer",
-                        "exclusiveMinimum": 0
+                        "exclusiveMinimum": 0,
+                        "maximum": 2147483647
                       },
                       {
                         "type": "null"
@@ -3270,6 +3278,10 @@
               "type": "integer",
               "exclusiveMinimum": 0
             },
+            "defaultMapConcurrency": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
             "judgeEngine": {
               "type": "string",
               "maxLength": 63,
@@ -3324,7 +3336,8 @@
           "anyOf": [
             {
               "type": "integer",
-              "exclusiveMinimum": 0
+              "exclusiveMinimum": 0,
+              "maximum": 2147483647
             },
             {
               "type": "null"

@@ -35,7 +35,9 @@
 import { LineCounter, parseDocument } from "yaml";
 import { parseFrontmatterBlock } from "../core/asset/frontmatter";
 import { parseMarkdownToc } from "../core/asset/markdown";
+import { isContainedRelativePath } from "../core/common";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
+import { checkJsonSchemaDefinition, JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS } from "../core/json-schema";
 import { parseReference } from "./program/expressions";
 import {
   PROGRAM_ISOLATION_KINDS,
@@ -46,6 +48,7 @@ import {
   PROGRAM_STEP_ID_PATTERN,
   type ProgramBudget,
   type ProgramDefaults,
+  type ProgramExec,
   type ProgramGate,
   type ProgramIsolation,
   type ProgramMap,
@@ -59,14 +62,25 @@ import {
 import {
   jsonBytes,
   utf8Bytes,
+  WORKFLOW_ENGINE_NAME_PATTERN,
+  WORKFLOW_ENV_VAR_NAME_PATTERN,
+  WORKFLOW_MAX_CONCURRENCY,
+  WORKFLOW_MAX_ENGINE_NAME_LENGTH,
+  WORKFLOW_MAX_EXEC_ARG_BYTES,
+  WORKFLOW_MAX_EXEC_ARGV,
+  WORKFLOW_MAX_EXEC_CWD_LENGTH,
+  WORKFLOW_MAX_EXEC_PASS_ENV,
   WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
+  WORKFLOW_MAX_GATE_LOOPS,
   WORKFLOW_MAX_INPUTS,
   WORKFLOW_MAX_MAP_EXPANSION,
   WORKFLOW_MAX_PARAMS,
+  WORKFLOW_MAX_RETRIES,
   WORKFLOW_MAX_ROUTE_BRANCHES,
   WORKFLOW_MAX_SCHEMA_BYTES,
   WORKFLOW_MAX_SOURCE_BYTES,
   WORKFLOW_MAX_STEPS,
+  WORKFLOW_MAX_TIMEOUT_MS,
 } from "./resource-limits";
 import {
   type SourceRef,
@@ -104,7 +118,10 @@ const TOP_LEVEL_KEYS = [...ENVELOPE_KEYS, ...WORKFLOW_KEYS];
 const DEFAULTS_KEYS = ["engine", "model", "timeout", "on_error", "llm"];
 const BUDGET_KEYS = ["max_tokens", "max_units"];
 const STEP_KEYS = ["id", "unit", "map", "route", "inputs", "output", "gate"];
-const UNIT_KEYS = ["engine", "model", "llm", "timeout", "retry", "on_error", "output", "env", "isolation"];
+const UNIT_KEYS = ["exec", "engine", "model", "llm", "timeout", "retry", "on_error", "output", "env", "isolation"];
+const EXEC_KEYS = ["command", "cwd", "pass_env", "inherit_env"];
+/** Unit keys that name an ENGINE dispatch and therefore cannot appear beside `exec:`. */
+const UNIT_ENGINE_KEYS = ["engine", "model", "llm"] as const;
 const MAP_KEYS = ["over", "concurrency", "reducer", "unit"];
 const ROUTE_KEYS = ["input", "when", "default"];
 const RETRY_KEYS = ["max", "on"];
@@ -554,6 +571,10 @@ function parseParams(ctx: Ctx, raw: unknown): Record<string, Record<string, unkn
       ctx.err(["params", paramName], `Param "${paramName}" must be a JSON Schema object (e.g. { type: string }).`);
       continue;
     }
+    if (jsonBytes(value) > WORKFLOW_MAX_SCHEMA_BYTES) {
+      ctx.err(["params", paramName], `Param "${paramName}" schema exceeds the 256 KiB resource limit.`);
+    }
+    checkSchemaDefinition(ctx, value, ["params", paramName], `Param "${paramName}" schema`);
     params[paramName] = value;
   }
   return Object.keys(params).length > 0 ? params : undefined;
@@ -569,8 +590,8 @@ function parseDefaults(ctx: Ctx, raw: unknown): ProgramDefaults | undefined {
   checkUnknownKeys(ctx, raw, path, DEFAULTS_KEYS, `"defaults"`);
   const defaults: ProgramDefaults = {};
   if (raw.engine !== undefined) {
-    if (typeof raw.engine === "string" && raw.engine.trim() !== "") defaults.engine = raw.engine.trim();
-    else ctx.err([...path, "engine"], `"defaults.engine" must be a non-empty engine name.`);
+    const engine = parseEngineName(ctx, raw.engine, [...path, "engine"], `"defaults.engine"`);
+    if (engine !== undefined) defaults.engine = engine;
   }
   if (raw.model !== undefined) {
     if (typeof raw.model === "string" && raw.model.trim() !== "") defaults.model = raw.model.trim();
@@ -752,9 +773,25 @@ function parseUnit(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
 
   const unit: ProgramUnit = { source: ctx.refAt(path) };
 
+  if (raw.exec !== undefined) {
+    const exec = parseExec(ctx, raw.exec, [...path, "exec"], stepLabel);
+    if (exec !== undefined) unit.exec = exec;
+    // An exec unit dispatches no engine call, so every engine-selection key is
+    // a contradiction rather than a harmless extra. Reported per key so the
+    // author sees exactly which line to delete.
+    for (const key of UNIT_ENGINE_KEYS) {
+      if (raw[key] === undefined) continue;
+      ctx.err(
+        [...path, key],
+        `${stepLabel} "unit" declares both "exec" and "${key}". An exec unit runs a shell command and never ` +
+          `reaches an engine, so "${key}" would have no effect — remove one of the two.`,
+      );
+    }
+  }
+
   if (raw.engine !== undefined) {
-    if (typeof raw.engine === "string" && raw.engine.trim() !== "") unit.engine = raw.engine.trim();
-    else ctx.err([...path, "engine"], `${stepLabel} "engine" must be a non-empty engine name.`);
+    const engine = parseEngineName(ctx, raw.engine, [...path, "engine"], `${stepLabel} "engine"`);
+    if (engine !== undefined) unit.engine = engine;
   }
   if (raw.model !== undefined) {
     if (typeof raw.model === "string" && raw.model.trim() !== "") unit.model = raw.model.trim();
@@ -777,7 +814,15 @@ function parseUnit(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
 
   if (raw.env !== undefined) {
     if (Array.isArray(raw.env) && raw.env.every((entry) => typeof entry === "string" && entry.trim() !== "")) {
-      unit.env = raw.env.map((entry) => (entry as string).trim());
+      const envRefs = raw.env.map((entry) => (entry as string).trim());
+      // Same decoder uniqueness requirement as `inputs` above: duplicates linted
+      // clean and then failed the run with an unlocated frozen-plan error.
+      const duplicate = envRefs.find((ref, i) => envRefs.indexOf(ref) !== i);
+      if (duplicate !== undefined) {
+        ctx.err([...path, "env"], `${stepLabel} "env" contains a duplicate entry: "${duplicate}".`);
+      } else {
+        unit.env = envRefs;
+      }
     } else {
       ctx.err([...path, "env"], `${stepLabel} "env" must be a list of non-empty env asset refs.`);
     }
@@ -793,6 +838,142 @@ function parseUnit(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
   if (isolation !== undefined) unit.isolation = isolation as ProgramIsolation;
 
   return unit;
+}
+
+/**
+ * Parse `unit.exec` — the argv-array shell-command surface.
+ *
+ * Deliberately NO shell-string spelling: the child is spawned directly from
+ * this array, so shell metacharacters are inert literal bytes and the whole
+ * quoting/injection class is structurally absent. An author who wants a
+ * pipeline writes the interpreter explicitly (`["bash", "-lc", "…"]`), which
+ * keeps that decision visible in the frontmatter diff.
+ */
+function parseExec(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramExec | undefined {
+  if (!isPlainRecord(raw)) {
+    ctx.err(path, `${stepLabel} "exec" must be a mapping with a "command" argv list.`);
+    return undefined;
+  }
+  checkUnknownKeys(ctx, raw, path, EXEC_KEYS, `${stepLabel} "exec"`);
+
+  const command = parseExecCommand(ctx, raw.command, [...path, "command"], stepLabel);
+  if (command === undefined) return undefined;
+
+  const exec: ProgramExec = { command };
+  const cwd = parseExecCwd(ctx, raw.cwd, [...path, "cwd"], stepLabel);
+  if (cwd !== undefined) exec.cwd = cwd;
+  const passEnv = parseExecPassEnv(ctx, raw.pass_env, [...path, "pass_env"], stepLabel);
+  if (passEnv !== undefined) exec.passEnv = passEnv;
+  if (raw.inherit_env !== undefined) {
+    if (typeof raw.inherit_env !== "boolean") {
+      ctx.err(
+        [...path, "inherit_env"],
+        `${stepLabel} "exec.inherit_env" must be true or false. true gives the command akm's whole environment ` +
+          `instead of the default allowlist; omit it (or write false) to keep the allowlist.`,
+      );
+    } else if (raw.inherit_env) {
+      exec.inheritEnv = true;
+    }
+  }
+  return exec;
+}
+
+/**
+ * `pass_env:` — extra parent-process env var NAMES the child may see on top of
+ * the default allowlist. NAMES ONLY: a value would be a plaintext secret in the
+ * frozen plan, which is exactly what `env:` bindings exist to avoid.
+ */
+function parseExecPassEnv(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    ctx.err(
+      path,
+      `${stepLabel} "exec.pass_env" must be a non-empty list of environment variable NAMES to copy through from ` +
+        `akm's own environment, e.g. pass_env: [CARGO_HOME]. Values never appear here — use "env:" bindings for those.`,
+    );
+    return undefined;
+  }
+  if (raw.length > WORKFLOW_MAX_EXEC_PASS_ENV) {
+    ctx.err(
+      path,
+      `${stepLabel} "exec.pass_env" must have at most ${WORKFLOW_MAX_EXEC_PASS_ENV} entries. A command needing ` +
+        `more than that wants "inherit_env: true", which says so explicitly.`,
+    );
+    return undefined;
+  }
+  const names: string[] = [];
+  for (const [index, entry] of raw.entries()) {
+    if (typeof entry !== "string" || !WORKFLOW_ENV_VAR_NAME_PATTERN.test(entry)) {
+      ctx.err(
+        path,
+        `${stepLabel} "exec.pass_env[${index}]" must be an environment variable name matching ` +
+          `${WORKFLOW_ENV_VAR_NAME_PATTERN.source}.`,
+      );
+      return undefined;
+    }
+    if (names.includes(entry)) {
+      ctx.err(path, `${stepLabel} "exec.pass_env" lists "${entry}" more than once.`);
+      return undefined;
+    }
+    names.push(entry);
+  }
+  return names;
+}
+
+/** The argv array itself: 1..WORKFLOW_MAX_EXEC_ARGV bounded non-empty strings. */
+function parseExecCommand(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): string[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    ctx.err(
+      path,
+      `${stepLabel} "exec" requires "command": a non-empty argv list, e.g. command: ["bun", "run", "test:unit"]. ` +
+        `A single shell string is not accepted — the command is spawned directly, never through a shell.`,
+    );
+    return undefined;
+  }
+  if (raw.length > WORKFLOW_MAX_EXEC_ARGV) {
+    ctx.err(path, `${stepLabel} "exec.command" must have at most ${WORKFLOW_MAX_EXEC_ARGV} entries.`);
+    return undefined;
+  }
+  const argv: string[] = [];
+  for (const [index, entry] of raw.entries()) {
+    if (typeof entry !== "string" || entry === "") {
+      ctx.err(path, `${stepLabel} "exec.command[${index}]" must be a non-empty string.`);
+      return undefined;
+    }
+    if (utf8Bytes(entry) > WORKFLOW_MAX_EXEC_ARG_BYTES) {
+      ctx.err(path, `${stepLabel} "exec.command[${index}]" exceeds ${WORKFLOW_MAX_EXEC_ARG_BYTES} bytes.`);
+      return undefined;
+    }
+    argv.push(entry);
+  }
+  return argv;
+}
+
+/**
+ * The optional relative `cwd:`. Rejected here (statically) for absolute paths
+ * and `..` segments; containment against the resolved base directory is
+ * re-checked at dispatch, so a symlinked subdirectory cannot escape either.
+ */
+function parseExecCwd(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || raw.trim() === "") {
+    ctx.err(path, `${stepLabel} "exec.cwd" must be a non-empty relative path inside the unit's working directory.`);
+    return undefined;
+  }
+  const value = raw.trim();
+  if (value.length > WORKFLOW_MAX_EXEC_CWD_LENGTH) {
+    ctx.err(path, `${stepLabel} "exec.cwd" exceeds ${WORKFLOW_MAX_EXEC_CWD_LENGTH} characters.`);
+    return undefined;
+  }
+  if (!isContainedRelativePath(value)) {
+    ctx.err(
+      path,
+      `${stepLabel} "exec.cwd" (${JSON.stringify(value)}) must be a RELATIVE path inside the unit's working ` +
+        `directory — absolute paths, Windows drive letters, "~", and ".." segments are rejected.`,
+    );
+    return undefined;
+  }
+  return value;
 }
 
 function parseMap(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramMap | undefined {
@@ -815,10 +996,18 @@ function parseMap(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progra
 
   let concurrency: number | undefined;
   if (raw.concurrency !== undefined) {
-    if (typeof raw.concurrency === "number" && Number.isInteger(raw.concurrency) && raw.concurrency > 0) {
+    if (
+      typeof raw.concurrency === "number" &&
+      Number.isInteger(raw.concurrency) &&
+      raw.concurrency > 0 &&
+      raw.concurrency <= WORKFLOW_MAX_CONCURRENCY
+    ) {
       concurrency = raw.concurrency;
     } else {
-      ctx.err([...path, "concurrency"], `${stepLabel} "concurrency" must be a positive integer.`);
+      ctx.err(
+        [...path, "concurrency"],
+        `${stepLabel} "concurrency" must be an integer from 1 through ${WORKFLOW_MAX_CONCURRENCY}.`,
+      );
     }
   }
 
@@ -883,6 +1072,13 @@ function parseRoute(
         return;
       }
       const match = String(branch.match);
+      // The frozen-plan decoder requires every `when` key to be non-empty, so an
+      // empty match parsed and linted clean and then failed the run with an
+      // unlocated "Invalid frozen workflow plan". Reject it here, at the line.
+      if (match === "") {
+        ctx.errAtLine(matchLine, `${stepLabel} "when[${i}].match" must not be empty.`);
+        return;
+      }
       if (typeof branch.step !== "string" || branch.step.trim() === "") {
         ctx.err([...branchPath, "step"], `${stepLabel} "when[${i}].step" must be a step id string.`);
         return;
@@ -929,12 +1125,21 @@ function parseInputs(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): str
     ctx.err(path, `${stepLabel} "inputs" must contain at most ${WORKFLOW_MAX_INPUTS} entries.`);
   }
   const out: string[] = [];
+  // The frozen-plan decoder requires uniqueness (validateStringArray(..., true)),
+  // so duplicates parsed and linted clean and then failed the run with an
+  // unlocated "Invalid frozen workflow plan". Reject them here, on the entry.
+  const seen = new Set<string>();
   raw.forEach((entry, i) => {
     if (typeof entry !== "string" || entry.trim() === "") {
       ctx.err([...path, i], `${stepLabel} "inputs[${i}]" must be a non-empty reference string.`);
       return;
     }
     const value = entry.trim();
+    if (seen.has(value)) {
+      ctx.err([...path, i], `${stepLabel} "inputs[${i}]" duplicates an earlier entry: "${value}".`);
+      return;
+    }
+    seen.add(value);
     checkReferenceSyntax(ctx, value, [...path, i], `${stepLabel} "inputs[${i}]"`);
     out.push(value);
   });
@@ -950,10 +1155,18 @@ function parseGate(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
 
   const gate: ProgramGate = {};
   if (raw.max_loops !== undefined) {
-    if (typeof raw.max_loops === "number" && Number.isInteger(raw.max_loops) && raw.max_loops >= 1) {
+    if (
+      typeof raw.max_loops === "number" &&
+      Number.isInteger(raw.max_loops) &&
+      raw.max_loops >= 1 &&
+      raw.max_loops <= WORKFLOW_MAX_GATE_LOOPS
+    ) {
       gate.maxLoops = raw.max_loops;
     } else {
-      ctx.err([...path, "max_loops"], `${stepLabel} "gate.max_loops" must be an integer >= 1.`);
+      ctx.err(
+        [...path, "max_loops"],
+        `${stepLabel} "gate.max_loops" must be an integer from 1 through ${WORKFLOW_MAX_GATE_LOOPS}.`,
+      );
     }
   }
   return gate;
@@ -962,6 +1175,30 @@ function parseGate(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
 // ---------------------------------------------------------------------------
 // Field helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Engine names must already satisfy the frozen-plan grammar
+ * (`WORKFLOW_ENGINE_NAME_PATTERN`, max 63 chars) at parse time — the decoder
+ * enforces the same bound on persisted plans, and a name that only fails there
+ * surfaces as an unlocated "Invalid frozen workflow plan" at `workflow run`.
+ */
+function parseEngineName(ctx: Ctx, raw: unknown, path: Path, label: string): string | undefined {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    ctx.err(path, `${label} must be a non-empty engine name.`);
+    return undefined;
+  }
+  const name = raw.trim();
+  if (!WORKFLOW_ENGINE_NAME_PATTERN.test(name) || name.length > WORKFLOW_MAX_ENGINE_NAME_LENGTH) {
+    ctx.err(
+      path,
+      `${label} has an invalid engine name ${JSON.stringify(name)}. Engine names are lowercase words of letters ` +
+        `and digits separated by single dashes, starting with a letter (e.g. "code-review-llm"), at most ` +
+        `${WORKFLOW_MAX_ENGINE_NAME_LENGTH} characters.`,
+    );
+    return undefined;
+  }
+  return name;
+}
 
 function parseRetry(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramRetry | undefined {
   if (raw === undefined) return undefined;
@@ -972,8 +1209,11 @@ function parseRetry(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Prog
   checkUnknownKeys(ctx, raw, path, RETRY_KEYS, `${stepLabel} "retry"`);
 
   let ok = true;
-  if (!(typeof raw.max === "number" && Number.isInteger(raw.max) && raw.max >= 0)) {
-    ctx.err([...path, "max"], `${stepLabel} "retry.max" is required and must be a non-negative integer.`);
+  if (!(typeof raw.max === "number" && Number.isInteger(raw.max) && raw.max >= 0 && raw.max <= WORKFLOW_MAX_RETRIES)) {
+    ctx.err(
+      [...path, "max"],
+      `${stepLabel} "retry.max" is required and must be an integer from 0 through ${WORKFLOW_MAX_RETRIES}.`,
+    );
     ok = false;
   }
   const on: ProgramRetry["on"] = [];
@@ -1002,7 +1242,7 @@ function parseRetry(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Prog
 function parseTimeoutField(ctx: Ctx, raw: unknown, path: Path, label: string): number | null | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw === "number") {
-    if (Number.isInteger(raw) && raw > 0) return raw;
+    if (Number.isInteger(raw) && raw > 0) return checkTimeoutCeiling(ctx, raw, path, label, String(raw));
     ctx.err(path, `${label} has a non-positive timeout ${JSON.stringify(raw)}. ${TIMEOUT_HINT}.`);
     return undefined;
   }
@@ -1024,7 +1264,23 @@ function parseTimeoutField(ctx: Ctx, raw: unknown, path: Path, label: string): n
     ctx.err(path, `${label} has a non-positive timeout "${raw}". Use a positive duration or "none".`);
     return undefined;
   }
-  return timeoutMs;
+  return checkTimeoutCeiling(ctx, timeoutMs, path, label, raw);
+}
+
+/**
+ * Timeouts freeze into `IrInvocation.timeoutMs`, whose decoder bound is
+ * `WORKFLOW_MAX_TIMEOUT_MS` (setTimeout's 32-bit signed ceiling). Enforce the
+ * same ceiling here so an oversized duration fails with a line anchor instead
+ * of an unlocated decode error at `workflow run`.
+ */
+function checkTimeoutCeiling(ctx: Ctx, timeoutMs: number, path: Path, label: string, raw: string): number | undefined {
+  if (timeoutMs <= WORKFLOW_MAX_TIMEOUT_MS) return timeoutMs;
+  ctx.err(
+    path,
+    `${label} has a timeout "${raw}" above the maximum of ${WORKFLOW_MAX_TIMEOUT_MS} ms (about 24.8 days). ` +
+      `Use a shorter duration or "none" for no timeout.`,
+  );
+  return undefined;
 }
 
 function parseEnumField(
@@ -1107,7 +1363,30 @@ function parseSchemaObject(ctx: Ctx, raw: unknown, path: Path, label: string): R
   if (jsonBytes(raw) > WORKFLOW_MAX_SCHEMA_BYTES) {
     ctx.err(path, `${label} exceeds the 256 KiB resource limit.`);
   }
+  checkSchemaDefinition(ctx, raw, path, label);
   return raw;
+}
+
+/**
+ * Validate an author-declared schema AS a schema (`output:` and `params`
+ * declarations). The runtime enforces only a JSON Schema subset
+ * (`core/json-schema.ts`); a typo'd `type` or a keyword the subset ignores
+ * would silently constrain nothing at run time — a gate depending on a no-op
+ * schema is worse than a loud failure here, so both are parse ERRORS.
+ */
+function checkSchemaDefinition(ctx: Ctx, schema: Record<string, unknown>, path: Path, label: string): void {
+  for (const issue of checkJsonSchemaDefinition(schema)) {
+    const issuePath = [...path, ...issue.path];
+    if (issue.kind === "unsupported") {
+      ctx.err(
+        issuePath,
+        `${label} (at ${issue.pointer}): ${issue.message}. Supported JSON Schema keywords: ` +
+          `${JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS}.`,
+      );
+    } else {
+      ctx.err(issuePath, `${label} is not a valid JSON Schema (at ${issue.pointer}): ${issue.message}.`);
+    }
+  }
 }
 
 function checkReferenceSyntax(ctx: Ctx, text: string, path: Path, label: string): void {

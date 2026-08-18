@@ -11,6 +11,8 @@ import type { BundleComponent } from "../core/adapter/types";
 import { isHttpUrl, toErrorMessage } from "../core/common";
 import { concurrentMap } from "../core/concurrent";
 import type { AkmConfig, LlmConnectionConfig } from "../core/config/config";
+import { isLoopbackEndpoint } from "../core/loopback";
+import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { SCRIPT_EXTENSIONS } from "../core/recognition-util";
 import { withStateDb } from "../core/state-db";
@@ -70,6 +72,7 @@ import { clearStaleCacheEntries } from "../storage/repositories/index-llm-cache-
 import {
   deleteIndexDirState,
   deleteIndexDirStatesByStashDir,
+  deleteMeta,
   getMeta,
   setMeta,
   upsertIndexDirState,
@@ -223,20 +226,14 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 export function getDefaultLlmConcurrency(llmConfig?: LlmConnectionConfig): number {
   if (typeof llmConfig?.concurrency === "number") return llmConfig.concurrency;
-  if (!llmConfig?.endpoint) return 1;
-  try {
-    const url = new URL(llmConfig.endpoint);
-    // URL.hostname keeps IPv6 brackets ("[::1]") — strip them so the loopback
-    // comparison actually matches.
-    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-    if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".localhost")) return 1;
-  } catch {
-    return 1;
-  }
+  // Local model servers stay at 1 (single loaded model; parallel requests
+  // trigger reload thrash); an absent or unparseable endpoint fails safe as
+  // local. ONE classifier decides what "local" means (`core/loopback.ts`,
+  // shared with the workflow engine's frozen concurrency default).
+  if (isLoopbackEndpoint(llmConfig?.endpoint)) return 1;
   // Remote endpoints default to a modest 2-wide pool (owner ruling 2026-07-21):
   // enough to overlap request latency without hammering rate-limited APIs.
-  // Local model servers stay at 1 (single loaded model; parallel requests
-  // trigger reload thrash). The explicit-override branch above only fires for
+  // The explicit-override branch above only fires for
   // callers that put `concurrency` on the connection themselves —
   // `engines.<name>.concurrency` is a valid schema field but `resolveLlmEngineUse`
   // does NOT copy it into the resolved connection, so on the enrichment path the
@@ -371,7 +368,12 @@ async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
 
   throwIfAborted(signal);
 
-  ctx.embeddingResult = await generateEmbeddingsForDb(db, config, onProgress);
+  // Forward the signal. Without it generateEmbeddingsForDb's abort machinery was
+  // inert — its throwIfAborted checks and the signal it threads into embedBatch
+  // (which RemoteEmbedder passes to every fetch and LocalEmbedder honours between
+  // chunks) never saw a controller. Ctrl-C and the improve budget abort could not
+  // stop the embedding phase, the longest phase of an index run.
+  ctx.embeddingResult = await generateEmbeddingsForDb(db, config, onProgress, signal);
   ctx.timing.tEmbedEnd = Date.now();
 }
 
@@ -518,6 +520,14 @@ export function reconcileBodyOpeningIndexState(
  *
  * Only rows with a non-empty `file_path` are checked — remote/virtual entries
  * that have no local path are always skipped.
+ *
+ * "No longer exists" means ABSENT, never merely unreadable (#791). This pass
+ * DELETES rows, and `fs.existsSync` reported `false` for a file akm lacked
+ * permission to look at exactly as for one that had been removed — so a
+ * bundle temporarily mounted read-restricted (a uid mismatch, a tightened
+ * parent directory) had its whole index wiped, and the run reported the
+ * deletions as a clean success. Unreadable files keep their rows and are
+ * reported instead.
  */
 function runCleanPass(db: Database, dryRun: boolean): IndexCleanResult {
   const allEntries = db.prepare("SELECT id, entry_key AS ref, file_path AS path FROM entries").all() as {
@@ -529,7 +539,20 @@ function runCleanPass(db: Database, dryRun: boolean): IndexCleanResult {
   // Only check entries that have a non-empty local path (skip remote/virtual).
   const localEntries = allEntries.filter((e) => typeof e.path === "string" && e.path.trim() !== "");
 
-  const missing = localEntries.filter((e) => !fs.existsSync(e.path));
+  const missing: typeof localEntries = [];
+  const unreadable: Array<{ path: string; code?: string }> = [];
+  for (const entry of localEntries) {
+    const { access, code } = classifyPathAccess(entry.path);
+    if (access === "absent") missing.push(entry);
+    else if (access === "inaccessible") unreadable.push({ path: entry.path, ...(code ? { code } : {}) });
+  }
+  if (unreadable.length > 0) {
+    const shown = unreadable.slice(0, 5).map((u) => describeInaccessiblePath(u.path, u.code));
+    warn(
+      `Index clean pass kept ${unreadable.length} entr${unreadable.length === 1 ? "y" : "ies"} whose file akm cannot ` +
+        `read (unreadable is not deleted): ${shown.join("; ")}${unreadable.length > shown.length ? "; …" : ""}`,
+    );
+  }
 
   if (!dryRun && missing.length > 0) {
     deleteEntriesByIds(
@@ -560,6 +583,39 @@ export function _setAkmIndexForTests(fake?: typeof akmIndexReal): void {
 export async function akmIndex(options: IndexOptions): Promise<IndexResponse> {
   if (akmIndexOverride) return akmIndexOverride(options);
   return akmIndexReal(options);
+}
+
+/**
+ * Named observation points fired from INSIDE the reindex write transaction
+ * (see {@link persistDirRecords}). TEST-ONLY.
+ *
+ *  - `full-delete-applied` — every `DELETE` of the full-rebuild wipe has run,
+ *    but the re-insert has not started. This is the instant at which a
+ *    non-atomic implementation would expose an empty database.
+ *  - `records-persisted` — all rows are re-inserted, but the transaction has
+ *    not committed yet, so the new generation is still invisible outside.
+ */
+export type IndexTransactionPoint = "full-delete-applied" | "records-persisted";
+
+let indexTransactionHookForTests: ((point: IndexTransactionPoint) => void) | undefined;
+
+/**
+ * TEST-ONLY. Observe the in-flight reindex transaction; `undefined` restores.
+ *
+ * Exists because the delete-then-reinsert atomicity guarantee is, by
+ * construction, invisible from outside the transaction: by the time
+ * `akmIndex()` resolves, the commit has already collapsed both generations
+ * into one observable state. Concurrency tests install a hook that opens a
+ * SECOND connection at these points and asserts it still sees the previous
+ * complete generation. Inert in production (one `undefined?.()` per reindex).
+ */
+export function _setIndexTransactionHookForTests(hook?: (point: IndexTransactionPoint) => void): void {
+  indexTransactionHookForTests = hook;
+}
+
+/** Fire a named in-transaction observation point (no-op outside tests). */
+function indexTransactionHook(point: IndexTransactionPoint): void {
+  indexTransactionHookForTests?.(point);
 }
 
 /**
@@ -1415,6 +1471,10 @@ function persistDirRecords(
       // (cross-DB) nulls entry_ids that no longer resolve to a rebuilt entry and
       // re-resolves the rest by entry_ref — subsuming the old detach.
       db.exec("DELETE FROM entries");
+      // Atomicity observation point: inside the transaction the tables are now
+      // empty, but no other connection may observe that. See
+      // tests/integration/indexer/reindex-generation-atomicity.test.ts.
+      indexTransactionHook("full-delete-applied");
     }
 
     for (const {
@@ -1565,6 +1625,9 @@ function persistDirRecords(
         }
       }
     }
+    // Atomicity observation point: the new generation is fully written but
+    // uncommitted, so it must still be invisible to other connections.
+    indexTransactionHook("records-persisted");
   });
 
   insertTransaction();
@@ -1895,9 +1958,20 @@ async function generateEmbeddingsForDb(
   const currentFingerprint = deriveSemanticProviderFingerprint(config.embedding);
   const storedFingerprint = getMeta(db, "embeddingFingerprint");
   if (storedFingerprint && storedFingerprint !== currentFingerprint) {
-    // Model/provider changed → stored vectors are incompatible. Clear them
-    // (same dimension, so keep the vec table); re-embedded by this index run.
-    purgeEmbeddings(db);
+    // Model/provider changed → stored vectors are incompatible. Clear them;
+    // re-embedded by this index run.
+    //
+    // The vec table goes too. "Same dimension, so keep the vec table" only held
+    // for a same-width model swap: entries_vec is a vec0 virtual table declared
+    // at a FIXED width, so after a dimension-changing model change every insert
+    // failed against the old width, and ensureSchema's dim-change rebuild never
+    // fired because it only runs for callers that pass an explicit
+    // embeddingDim. The stale table survived `--full` — the exact remedy the
+    // warning recommended. Clearing the stored dim lets the next ensureSchema
+    // materialize it at the new width; until then the fast-path flag reads
+    // false (no table) and search uses the complete BLOB table.
+    purgeEmbeddings(db, { dropVecTable: true });
+    deleteMeta(db, "embeddingDim");
   }
 
   try {
@@ -1946,6 +2020,7 @@ async function generateEmbeddingsForDb(
       let storedCount = 0;
       let skippedCount = 0;
       let vecFailedCount = 0;
+      let vecUnavailableCount = 0;
       db.transaction(() => {
         for (let i = 0; i < allEntries.length; i++) {
           const res = upsertEmbedding(db, allEntries[i]!.id, embeddings[i]!);
@@ -1955,6 +2030,7 @@ async function generateEmbeddingsForDb(
             skippedCount++;
           }
           if (res.vec === "failed") vecFailedCount++;
+          if (res.vec === "unavailable") vecUnavailableCount++;
         }
       })();
       if (skippedCount > 0) {
@@ -1966,7 +2042,13 @@ async function generateEmbeddingsForDb(
       // instead of inferring readiness from stored-BLOB counts. Any failure
       // marks the fast path degraded, routing search to the JS-cosine fallback
       // over the (complete) BLOB table — honest degradation, not a hard failure.
-      setVecFastPathReady(db, vecFailedCount === 0);
+      //
+      // 'unavailable' has to degrade the flag too. It means no vec row was
+      // written at all, so marking the fast path ready left a later open (a
+      // different runtime, or sqlite-vec installed afterwards) trusting an
+      // empty entries_vec and returning zero semantic hits against a fully
+      // populated BLOB table.
+      setVecFastPathReady(db, vecFailedCount === 0 && vecUnavailableCount === 0);
       if (vecFailedCount > 0) {
         warn(
           `[embed] ${vecFailedCount} sqlite-vec fast-path insert${vecFailedCount === 1 ? "" : "s"} failed — ` +
@@ -2472,7 +2554,12 @@ export function recomputeUtilityScores(db: Database, stateDb: Database): void {
              SUM(CASE WHEN u.event_type = 'show'   THEN 1 ELSE 0 END) AS show_count,
              SUM(CASE WHEN u.event_type = 'feedback' AND u.signal = 'positive' THEN 1 ELSE 0 END) AS positive_feedback_count,
              SUM(CASE WHEN u.event_type = 'feedback' AND u.signal = 'negative' THEN 1 ELSE 0 END) AS negative_feedback_count,
-             MAX(u.created_at) AS last_used_at
+             MAX(
+               CASE
+                 WHEN u.event_type IN ('search', 'show', 'curate') THEN u.created_at
+                 ELSE NULL
+               END
+             ) AS last_used_at
       FROM usage_events u
       WHERE u.entry_id IS NOT NULL
         AND u.source = 'user'
@@ -2502,8 +2589,6 @@ export function recomputeUtilityScores(db: Database, stateDb: Database): void {
     existingScores.set(row.entry_id, { utility: row.utility, lastUsedAt: row.last_used_at ?? undefined });
   }
 
-  const now = new Date().toISOString();
-
   const entryIds = new Set([...existingScores.keys(), ...usageByEntry.keys()]);
   for (const entryId of entryIds) {
     const row = usageByEntry.get(entryId) ?? {
@@ -2522,7 +2607,17 @@ export function recomputeUtilityScores(db: Database, stateDb: Database): void {
     const existing = existingScores.get(row.entry_id);
     const prevUtility = existing?.utility ?? 0;
     const utility = prevUtility * emaDecay + effectiveRate * emaNew;
-    const lastUsedAt = effectiveRate > 0.5 ? now : (existing?.lastUsedAt ?? undefined);
+    // `utility_scores.last_used_at` is consumed by salience as the timestamp of
+    // the most-recent retrieval. Preserve that meaning by carrying the event's
+    // timestamp through verbatim. The former `effectiveRate > 0.5 ? now : ...`
+    // branch stamped every high-select-rate entry with the index run time,
+    // making unrelated assets look simultaneously fresh and flattening the
+    // recency component of retrieval salience.
+    //
+    // `usage_events` is the source of truth within its retention window. A
+    // missing row therefore clears legacy/index-time stamps on the next index
+    // pass; salience already treats an absent timestamp as long ago.
+    const lastUsedAt = row.last_used_at ?? undefined;
 
     upsertUtilityScore(db, row.entry_id, {
       utility,

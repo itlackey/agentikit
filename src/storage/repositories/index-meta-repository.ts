@@ -25,6 +25,18 @@ export function setMeta(db: Database, key: string, value: string): void {
   db.prepare("INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)").run(key, value);
 }
 
+/**
+ * Remove a meta key entirely.
+ *
+ * Distinct from writing an empty string: absence is what callers test for
+ * (`getMeta(...) === undefined`), and it is what lets a value be re-derived —
+ * clearing `embeddingDim` after a model change is how the vec table gets
+ * rebuilt at the new width.
+ */
+export function deleteMeta(db: Database, key: string): void {
+  db.prepare("DELETE FROM index_meta WHERE key = ?").run(key);
+}
+
 // ── Per-directory index state ───────────────────────────────────────────────
 
 export function getIndexDirState(db: Database, dirPath: string): IndexDirState | undefined {

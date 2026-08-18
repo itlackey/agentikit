@@ -74,18 +74,18 @@ export function collectImproveAdvisories(
     });
   }
 
-  // Salience-distribution collapse: Gini below the uniform baseline means
-  // ranking no longer discriminates between assets.
+  // Salience-distribution collapse across all assets with retrieval evidence.
   if (improveSummary.degradation?.salienceUniformityFlagged) {
+    const sampleSize = improveSummary.degradation.retrievalSalienceSampleSize;
     advisories.push({
       name: "salience-uniformity-collapse",
       status: "warn",
       kind: "deterministic",
       confidence: "high",
       message:
-        `Salience distribution collapsed toward uniform: top-100 retrieval_salience Gini = ` +
-        `${improveSummary.degradation.corpusCentroidDistance} < 0.08 (uniform baseline ≈ 0.1). ` +
-        "Ranking currently carries little to no discrimination between assets.",
+        `Salience distribution collapsed toward uniform: retrieval_salience Gini = ` +
+        `${improveSummary.degradation.corpusCentroidDistance} < 0.08 across ${sampleSize} ` +
+        "observed, resolvable assets. Ranking carries little discrimination among assets with retrieval evidence.",
     });
   }
 

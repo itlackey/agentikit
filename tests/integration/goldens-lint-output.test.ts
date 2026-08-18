@@ -94,7 +94,13 @@ import { expectGolden } from "../_helpers/golden";
 
 const STASH_ROOT = path.resolve(__dirname, "../fixtures/stashes/all-types");
 const LINT_GOLDEN_PATH = "tests/fixtures/goldens/lint/all-types.json";
-const HEAD_SHA = "cd94d26c6de251fa5dcadd9e9e40f6991bf87eb5";
+// The commit whose tree produced this golden's current bytes. Repointed in
+// 0.9.1 (#795): it named a 2026-07-21 docs commit that never touched the
+// golden, while the file had been re-captured twice since. That is invisible to
+// scripts/lint-golden-captured-at-head.ts, which only checks the SHA is real
+// and branch-reachable — both of which an unrelated commit satisfies. Update
+// this alongside any re-capture; the fixture is generated from it.
+const HEAD_SHA = "2d0e39c5a253b869bc51267403e66a1fd0c6daf6";
 
 /** [type key, stash subdir, relPath] for all 14 `ASSET_SPECS_INTERNAL` types (workflow is one form now). */
 const ALL_TYPE_CASES: Array<[type: string, subdir: string, relPath: string]> = [
@@ -238,6 +244,19 @@ describe("golden fixture: lint output parity (WI-0b.4b)", () => {
           "env/all-types-env.env (matches) but NOT secrets/all-types-secret (bare filename, no .env suffix). Net " +
           "result for this fixture stash: script, secret, wiki, and session are 100% unreached by akmLint() in " +
           "production; workflows/all-types-workflow.md IS reached (it always was, being the only form now).",
+        "RE-BASELINED (workflow validation-gap fixes): akmLint() now surfaces compileWorkflowPlan()'s non-fatal " +
+          "compile WARNINGS through a separate `warnings` channel ({warnings: LintIssue[], summary.warnings} -- " +
+          "issue code `workflow-warning`; never `flagged`, so --fail-on-flagged is unaffected). The fixture " +
+          "workflow's single step declares no `output:` schema, so akmLintFullSweep now carries exactly one " +
+          "workflow-warning entry; flagged/fixed and every perType issues array stay empty (lintAssetFile still " +
+          "returns errors only -- warnings come from the separate workflowCompileWarnings pass).",
+        "RE-BASELINED (lint line anchors): LintIssue/Diagnostic gained an OPTIONAL `line` (1-indexed) carrying " +
+          "WorkflowError.line all the way from the workflow parse/compile frontend into lint output -- `akm lint` " +
+          "used to drop it, so a finding in a 300-line workflow had no location while the same error rendered as " +
+          "`path:line — message` on the `workflow create` path. The ONLY diff in this golden is the new " +
+          "`line: 6` on akmLintFullSweep's single workflow-warning (the fixture's `- id: announce` step " +
+          "declaration); every whole-file finding (missing-skill-md, orphaned-stub, dangerous-env-key, …) omits " +
+          "the key entirely, so their serialization is byte-identical.",
         "Determinism: LintIssue.file is always ctx.relPath (never absPath). No absolute path appears " +
           "anywhere in this golden -- normalization is a no-op.",
         "Behavior-parity oracle: the format adapters + the CLI lint sweep must reproduce this lint dispatch " +

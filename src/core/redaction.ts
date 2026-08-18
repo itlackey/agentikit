@@ -305,11 +305,30 @@ function addMappedMatches(coverageDelta: Int32Array, haystack: NormalizedText, n
 }
 
 /**
+ * Mark every occurrence of `needle` in `text` — no encoding normalization, for
+ * text that contains neither `%` nor `+` and so cannot carry an encoded form.
+ *
+ * Matching against the ORIGINAL text (rather than an accumulator being rewritten
+ * in place) is the whole point: see {@link redactSensitiveText}.
+ */
+function addPlainMatches(coverageDelta: Int32Array, text: string, needle: string): void {
+  if (!needle) return;
+  let offset = 0;
+  while (offset <= text.length - needle.length) {
+    const match = text.indexOf(needle, offset);
+    if (match < 0) break;
+    coverageDelta[match] = coverageDelta[match]! + 1;
+    coverageDelta[match + needle.length] = coverageDelta[match + needle.length]! - 1;
+    offset = match + needle.length;
+  }
+}
+
+/**
  * Redact credential-shaped substrings from arbitrary text by pattern alone —
  * unlike {@link redactSensitiveText}, which requires the exact secret value
  * up front, this catches credentials no caller ever knew to list. No
  * truncation is applied; callers that need a length cap (e.g.
- * {@link redactErrorBody} in src/llm/client.ts) apply it themselves.
+ * {@link redactErrorBody}) apply it themselves.
  *
  * Targets:
  *  - `Bearer <token>` headers echoed back by a provider
@@ -341,28 +360,63 @@ export function redactCredentialPatterns(input: string): string {
 }
 
 /**
- * Replace exact sensitive values in text. Longer values are replaced first so
- * an overlapping prefix cannot expose the suffix of a longer credential.
+ * Replace exact sensitive values in text.
+ *
+ * Every match is located against the ORIGINAL text and the result is emitted
+ * once, so overlapping matches merge into a single `[REDACTED]` and no needle
+ * can ever match inside a token an earlier needle produced.
+ *
+ * That last property is load-bearing. This function used to take a `replaceAll`
+ * fast path that chained over a *mutating* accumulator, which meant any needle
+ * drawn from the letters of `[REDACTED]` re-matched the tokens already injected
+ * and the output grew geometrically: `redactSensitiveText("a".repeat(50),
+ * ["a","E","D","T","C","R"])` returned 32,450 characters — 649x the input. On a
+ * path where the needle set is derived from configuration or the environment,
+ * that is a memory-exhaustion hazard reachable from ordinary command output.
+ * The encoded-form path never had the bug because it always worked this way.
  */
+/** Max characters of a provider error body worth surfacing in a message. */
+const ERROR_BODY_MAX_LEN = 200;
+
+/**
+ * Make an HTTP error body safe to put in an error message: pattern-redact
+ * credential shapes, then clip. Provider bodies can echo the credential that
+ * was sent and can be megabytes of HTML, and these messages travel — into
+ * persisted status files, `--json` output, and agent transcripts.
+ *
+ * Lives here rather than beside one transport because every HTTP client in the
+ * codebase needs it; the embeddings transport originally lacked it and leaked
+ * raw 10 MB bodies into `semantic-status.json`.
+ */
+export function redactErrorBody(input: string): string {
+  if (!input) return "";
+  let out = redactCredentialPatterns(input);
+  if (out.length > ERROR_BODY_MAX_LEN) {
+    out = `${out.slice(0, ERROR_BODY_MAX_LEN)}…`;
+  }
+  return out;
+}
+
 export function redactSensitiveText(text: string, sensitiveValues: Iterable<string>): string {
   const values = [...new Set(sensitiveValues)]
     .filter((value) => value.length > 0)
     .sort((a, b) => b.length - a.length || a.localeCompare(b));
   if (values.length === 0) return text;
-  if (!text.includes("%") && !text.includes("+")) {
-    let redacted = text;
-    for (const value of values) redacted = redacted.replaceAll(value, "[REDACTED]");
-    return redacted;
-  }
   const coverageDelta = new Int32Array(text.length + 1);
-  const addMatchesForMode = (plusAsSpace: boolean): void => {
-    const haystack = normalizeEncodedText(text, plusAsSpace);
-    for (const value of values) {
-      addMappedMatches(coverageDelta, haystack, normalizeEncodedText(value, plusAsSpace).text);
-    }
-  };
-  addMatchesForMode(false);
-  if (text.includes("+")) addMatchesForMode(true);
+  if (text.includes("%") || text.includes("+")) {
+    // Percent-/plus-encoded text: match needle and haystack in their decoded
+    // forms, mapping hits back to source offsets.
+    const addMatchesForMode = (plusAsSpace: boolean): void => {
+      const haystack = normalizeEncodedText(text, plusAsSpace);
+      for (const value of values) {
+        addMappedMatches(coverageDelta, haystack, normalizeEncodedText(value, plusAsSpace).text);
+      }
+    };
+    addMatchesForMode(false);
+    if (text.includes("+")) addMatchesForMode(true);
+  } else {
+    for (const value of values) addPlainMatches(coverageDelta, text, value);
+  }
   let redacted = "";
   let coverage = 0;
   let offset = 0;
@@ -388,9 +442,19 @@ export function redactSensitiveValue<T>(value: T, sensitiveValues: Iterable<stri
     if (typeof entry === "string") return redactSensitiveText(entry, values);
     if (Array.isArray(entry)) return entry.map(redact);
     if (entry && typeof entry === "object") {
-      return Object.fromEntries(
-        Object.entries(entry).map(([key, child]) => [redactSensitiveText(key, values), redact(child)]),
-      );
+      const out: Record<string, unknown> = {};
+      for (const [key, child] of Object.entries(entry)) {
+        const redactedKey = redactSensitiveText(key, values);
+        // Two DISTINCT keys can redact to the same string (`{a, b, ab}` under
+        // needles `a`/`b` all collapse toward `[REDACTED]`). Building this with
+        // `Object.fromEntries` kept only the last of each colliding group, so a
+        // field was silently DROPPED rather than redacted — data loss disguised
+        // as redaction. Suffix instead: the value stays, the key stays hidden.
+        let finalKey = redactedKey;
+        for (let n = 2; Object.hasOwn(out, finalKey); n++) finalKey = `${redactedKey} (${n})`;
+        out[finalKey] = redact(child);
+      }
+      return out;
     }
     return entry;
   };

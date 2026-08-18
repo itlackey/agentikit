@@ -3,9 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import crypto from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 import { ConfigError } from "./errors";
+import { classifyPathAccess, describeInaccessiblePath } from "./path-access";
 import { getConfigPath, getDataDir } from "./paths";
 
 let afterPendingCheckHook: (() => void) | undefined;
@@ -54,12 +54,30 @@ export function getMigrationGeneratedConfigPath(): string {
   return path.join(getMigrationOperationRoot(), "generated-config.json");
 }
 
+/**
+ * Refuse canonical config/database access while a migration or restore is
+ * mid-flight.
+ *
+ * This is a SAFETY gate, so "I could not tell" must fail the same way "yes"
+ * does. `fs.existsSync` answered `false` for an unreadable journal exactly as
+ * for an absent one (#791), which meant a permission fault on the journal
+ * silently CLEARED the gate and let akm open the canonical databases on top of
+ * a half-applied migration. Absence is the only answer that may open the door.
+ */
 export function assertNoPendingMigrationOperation(): void {
   for (const [kind, journalPath] of [
     ["restore", getMigrationRestoreJournalPath()],
     ["migration apply", getMigrationApplyJournalPath()],
   ] as const) {
-    if (fs.existsSync(journalPath)) {
+    const { access, code } = classifyPathAccess(journalPath);
+    if (access === "inaccessible") {
+      throw new ConfigError(
+        `Cannot determine whether an AKM ${kind} recovery is pending: ${describeInaccessiblePath(journalPath, code)}. ` +
+          "Refusing canonical config/database access — proceeding could write on top of a half-applied migration.",
+        "DATA_DIR_UNREADABLE",
+      );
+    }
+    if (access === "present") {
       throw new ConfigError(
         `AKM ${kind} recovery is pending at ${journalPath}; refusing canonical config/database access until recovery completes.`,
         "INVALID_CONFIG_FILE",

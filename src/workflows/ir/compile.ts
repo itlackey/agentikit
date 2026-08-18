@@ -29,7 +29,7 @@
  */
 
 import { formatReference, parseReference } from "../program/expressions";
-import type { ProgramDefaults, ProgramUnit } from "../program/schema";
+import { type ProgramDefaults, type ProgramExec, type ProgramUnit, projectExecCore } from "../program/schema";
 import type { WorkflowDocument, WorkflowError } from "../schema";
 import type { IrIsolation, IrMapReducer, IrOnError, IrRetry, IrRouteSpec } from "./schema";
 
@@ -40,6 +40,12 @@ export interface WorkflowUnitDraft {
   templating: "verbatim";
   /** Prior-step artifacts this unit consumes, as reference strings (compile-time validated). */
   inputs?: string[];
+  /**
+   * Shell-command dispatch (`unit.exec`). Carried structurally here; the
+   * timeout it needs is a RESOLVED setting and stays on the parsed override bag
+   * until the single freeze boundary, exactly like engine/model/timeout.
+   */
+  exec?: ProgramExec;
   schema?: Record<string, unknown>;
   retry?: IrRetry;
   onError: IrOnError;
@@ -226,6 +232,11 @@ function compileUnit(
     instructions,
     templating: "verbatim",
     ...(inputs && inputs.length > 0 ? { inputs: [...inputs] } : {}),
+    // Shared projection: both env-scope keys are carried CONDITIONALLY (and
+    // `inheritEnv` only when true), so an exec unit that says nothing about its
+    // environment freezes — and therefore hashes — byte-identically to one
+    // authored before these keys existed.
+    ...(unit?.exec ? { exec: projectExecCore(unit.exec) } : {}),
     ...(unit?.output !== undefined ? { schema: unit.output } : {}),
     ...(unit?.retry ? { retry: { max: unit.retry.max, on: [...unit.retry.on] } } : {}),
     onError: unit?.onError ?? defaults?.onError ?? "fail",
@@ -297,8 +308,10 @@ function checkInputReference(text: string, index: number, check: ReferenceCheck)
 
 /**
  * Collect the document's non-fatal WARNINGS — advisories that never fail
- * compilation, never change the frozen plan or its hash, and are surfaced by
- * lint output (human + JSON) and as `warn()` lines at `workflow run`.
+ * compilation, never change the frozen plan or its hash, and are surfaced as
+ * `workflow-warning` entries in `akm lint`'s separate `warnings` channel
+ * (human + JSON output, via `core/adapter/adapters/akm-lint.ts#
+ * workflowCompileWarnings`) and as `warn()` lines at `workflow run`.
  *
  *   A. A unit/map step with NO step-level `output:` schema carries its units'
  *      raw results as an untyped artifact — permitted, but worth flagging.
@@ -307,12 +320,30 @@ function checkInputReference(text: string, index: number, check: ReferenceCheck)
  *      block — a likely typo. Prose can no longer carry param references at
  *      all (it is never scanned), so this warning's surface shrinks to the
  *      two whole-value fields that can legally contain one.
+ *   C. `gate.max_loops` above 1 on an `exec` step. The engine judges such a
+ *      step but never loops it (`exec/step-work.ts#effectiveGateMaxLoops`):
+ *      a frozen argv cannot read the judge's feedback, so a second loop would
+ *      only re-run the identical command — and its side effects. The declared
+ *      budget is not silently different from what runs; say so.
  */
 export function collectWorkflowWarnings(document: WorkflowDocument): WorkflowError[] {
   const warnings: WorkflowError[] = [];
   const declaredParams = document.params ? new Set(Object.keys(document.params)) : undefined;
 
   for (const step of document.steps) {
+    const maxLoops = step.gate?.maxLoops ?? 1;
+    const execUnit = step.map ? step.map.unit?.exec : step.unit?.exec;
+    if (maxLoops > 1 && execUnit && step.gateRubric?.text.trim()) {
+      warnings.push({
+        line: step.source.start,
+        message:
+          `Step "${step.id}" declares \`gate.max_loops: ${maxLoops}\` on an \`exec\` step — it runs its command ` +
+          `ONCE. A gate loop re-executes the step so it can address the judge's feedback, and a frozen argv cannot ` +
+          `read that feedback; looping would only repeat the command's side effects. The gate still evaluates and ` +
+          `can still fail the step.`,
+      });
+    }
+
     if ((step.map || step.route === undefined) && step.output === undefined) {
       warnings.push({
         line: step.source.start,

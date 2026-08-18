@@ -30,6 +30,9 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
+          # Full history — release-check.sh runs lint, and the golden pin gate
+          # judges nothing in a shallow clone (#795).
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -82,8 +85,14 @@ jobs:
           bun-windows-x64 akm-windows-x64.exe
           EOF
           cp install.sh install.ps1 artifacts/
-          (cd artifacts && sha256sum akm-* install.sh install.ps1 > checksums.txt)
+          # Pack BEFORE checksumming. The tarball is uploaded to the GitHub
+          # release by the `artifacts/akm-*` glob below, so computing checksums
+          # first left one published asset that checksums.txt did not cover —
+          # silently unverifiable for anyone checking the release by hand. The
+          # existing `akm-*` glob already matches akm-cli-<version>.tgz, so
+          # ordering is the whole fix; adding *.tgz would checksum it twice.
           npm pack --ignore-scripts --pack-destination artifacts
+          (cd artifacts && sha256sum akm-* install.sh install.ps1 > checksums.txt)
 
       - run: npm install -g npm@latest
 

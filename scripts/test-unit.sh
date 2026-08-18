@@ -42,6 +42,14 @@ bun run sweep:tmp >/dev/null 2>&1 || true
 # per its own charter; the full suite always runs, local and CI alike.)
 mapfile -t files < <(find tests -name '*.test.ts' -not -path 'tests/integration/*' | sort)
 total="${#files[@]}"
+
+# Floor on tests actually executed (pass + skip), checked after aggregation.
+# The files-ran cross-check below cannot see this: a file whose every test is
+# skipped still counts toward `across N files`. The header above records the bun
+# `--shard` incident where shards 2-4 ran ZERO tests at exit 0 — this is the
+# same hole reached through skips instead of sharding (#795). Set below the
+# current unit count with room for churn; raise it as the suite grows.
+MIN_TESTS="${AKM_MIN_UNIT_TESTS:-3500}"
 if [ "$total" -eq 0 ]; then
   echo "── unit: no test files found under tests/ (excluding integration)" >&2
   exit 1
@@ -76,13 +84,15 @@ for p in "${pids[@]}"; do
 done
 
 # Aggregate and surface results.
-pass=0 fail=0 filecount=0
+pass=0 fail=0 skip=0 filecount=0
 for t in "${tmps[@]}"; do
   p="$(grep -oE '[0-9]+ pass' "$t" | tail -1 | grep -oE '[0-9]+' || true)"
   f="$(grep -oE '[0-9]+ fail' "$t" | tail -1 | grep -oE '[0-9]+' || true)"
+  s="$(grep -oE '[0-9]+ skip' "$t" | tail -1 | grep -oE '[0-9]+' || true)"
   c="$(grep -oE 'across [0-9]+ files' "$t" | tail -1 | grep -oE '[0-9]+' || true)"
   pass=$((pass + ${p:-0}))
   fail=$((fail + ${f:-0}))
+  skip=$((skip + ${s:-0}))
   filecount=$((filecount + ${c:-0}))
   # Surface any real failures from this shard — summary lines first, then the
   # full tail so assertion diffs survive aggregation (a flake with no diff is
@@ -94,7 +104,18 @@ for t in "${tmps[@]}"; do
   fi
 done
 
-echo "── unit: ${pass} pass / ${fail} fail across ${N} process-shards (${filecount}/${total} files)"
+echo "── unit: ${pass} pass / ${skip} skip / ${fail} fail across ${N} process-shards (${filecount}/${total} files)"
+# `filecount` counts files RAN, not tests executed — a file whose every test is
+# skipped still contributes to `across N files`, so it clears that check while
+# asserting nothing. Pin the executed+skipped total against a floor so a suite
+# that silently loses tests fails instead of just reporting a smaller number
+# nobody diffs (#795). Raise the floor when the suite legitimately grows;
+# LOWERING it is the thing to argue about in review.
+executed=$((pass + skip))
+if [ "$executed" -lt "$MIN_TESTS" ]; then
+  echo "── unit: only ${executed} tests ran+skipped, floor is ${MIN_TESTS} — tests disappeared rather than failed."
+  rc=1
+fi
 if [ "$rc" -ne 0 ] || [ "$fail" -ne 0 ] || [ "$filecount" -ne "$total" ]; then
   echo "── unit: shard logs kept for diagnosis: ${logdir}"
   exit 1

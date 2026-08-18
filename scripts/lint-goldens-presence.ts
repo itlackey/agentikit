@@ -123,8 +123,16 @@ for (const [rel, src] of consumerContents) {
   if (!src.includes("expectGolden(") && !src.includes("loadGolden(")) {
     problems.push(`consumer suite no longer calls expectGolden/loadGolden (gutted?): ${rel}`);
   }
-  if (/\b(?:describe|test|it)\.skip\(/.test(src)) {
-    problems.push(`consumer suite contains .skip( — golden coverage silently disabled: ${rel}`);
+  // No trailing `(`: that required an immediate call, so `describe.skipIf(...)`
+  // slipped past (an `I` follows `skip`) and so did the alias form already used
+  // in this tree — `const d = platform === "win32" ? describe.skip : describe`
+  // (tests/integration/akm-eval-snapshot-cli.test.ts). Either disables a whole
+  // golden consumer suite while this gate still reports "consumer suites
+  // intact" (#795). `.todo` and `.failing` are the same hole by another name.
+  // A golden consumer has no legitimate reason to be conditional.
+  const disabled = /\b(?:describe|test|it)\.(skip|skipIf|todo|failing)\b/.exec(src);
+  if (disabled) {
+    problems.push(`consumer suite contains .${disabled[1]} — golden coverage silently disabled: ${rel}`);
   }
 }
 

@@ -30,21 +30,95 @@
 // shells out to `node`.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { BOUNDARY_MARKERS, NATIVE_CRASH_MARKER } from "./node-runtime-markers";
 
 const repoRoot = path.resolve(import.meta.dir, "..");
 const cliEntry = path.join(repoRoot, "dist", "cli-node.mjs");
 const nodeBin = process.env.AKM_SMOKE_NODE ?? "node";
 
 // Fail fast with a clear message if the build artifact is missing.
+if (!existsSync(cliEntry)) {
+  console.error(`node-smoke: missing build artifact ${cliEntry} — run \`bun run build\` first.`);
+  process.exit(1);
+}
+
+/**
+ * Preflight the native SQLite binding before running a single step (#790).
+ *
+ * Two ways this suite can end up exercising the wrong binding, both of which
+ * used to surface only as a downstream mystery — an opaque `Unable to acquire
+ * config lock: … was compiled against a different Node.js version` from some
+ * unrelated command, or a teardown crash reported as a missing substring:
+ *
+ *   1. WRONG VERSION. `better-sqlite3` compiles from source whenever there is
+ *      no prebuilt binary for the running Node's ABI, and a from-source build
+ *      against Node 24.19+ headers aborts at teardown. The version under test
+ *      must therefore be the one package.json declares, not whatever happened
+ *      to be resolved.
+ *   2. WRONG ABI. `npm install <pkg>@<version>` is a NO-OP when that exact
+ *      version is already present — it does not re-run the install script. So
+ *      a binding built for a different Node (e.g. by `bun install`, whose
+ *      `prebuild-install` runs under whichever `node` is on PATH) survives
+ *      unrebuilt into a run against a different `AKM_SMOKE_NODE`.
+ *
+ * Loading the module under the smoke's own `node` catches both.
+ */
 {
-  const fs = await import("node:fs");
-  if (!fs.existsSync(cliEntry)) {
-    console.error(`node-smoke: missing build artifact ${cliEntry} — run \`bun run build\` first.`);
+  const declared = (
+    JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8")) as {
+      optionalDependencies?: Record<string, string>;
+    }
+  ).optionalDependencies?.["better-sqlite3"];
+  // Absent means package.json changed shape, not that the check is optional.
+  // Threading `declared` through as possibly-undefined bought a degraded mode
+  // where the probe passes, the version check is silently skipped, and the
+  // script continues green — which is the outcome this preflight exists to
+  // prevent.
+  if (!declared) {
+    console.error(
+      "node-smoke: package.json declares no optionalDependencies['better-sqlite3'] — cannot verify the binding.",
+    );
     process.exit(1);
   }
+  const remedy = `rm -rf node_modules/better-sqlite3 && npm install --no-save better-sqlite3@${declared}`;
+  const probe = spawnSync(
+    nodeBin,
+    [
+      "-e",
+      "const v=require('better-sqlite3/package.json').version;" +
+        "const D=require('better-sqlite3');new D(':memory:').close();" +
+        "process.stdout.write(v+' '+process.versions.modules)",
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  if (probe.status !== 0) {
+    console.error(
+      "node-smoke: could not load 'better-sqlite3' under the smoke's node.\n" +
+        `  Install the declared binding for this runtime:\n` +
+        `    ${remedy}\n` +
+        `  ${(probe.stderr ?? "").trim().split("\n").slice(0, 8).join("\n  ")}`,
+    );
+    process.exit(1);
+  }
+  const [installed, abi] = probe.stdout.trim().split(" ");
+  // EXACT equality, not a semver range match. `declared` is an exact pin by
+  // policy (package.json → pinNotes), and #790's whole lesson is that a range
+  // on a native dep is the hazard: `satisfies("11.10.0", "^11.8.0")` is true,
+  // so a range check would green-light the exact build that crashes on Node 24.
+  // If the spec is ever re-loosened, this fails and says so.
+  if (installed !== declared) {
+    console.error(
+      `node-smoke: better-sqlite3@${installed} is installed but package.json declares ${declared}.\n` +
+        "  This job exists to prove the binding npm users actually get works, so it must test\n" +
+        "  the declared spec exactly. Reinstall it (npm skips its install script when the\n" +
+        `  version already matches): ${remedy}`,
+    );
+    process.exit(1);
+  }
+  console.log(`node-smoke: better-sqlite3 = ${installed} (node abi ${abi})`);
 }
 
 const root = mkdtempSync(path.join(tmpdir(), "akm-node-smoke-"));
@@ -110,14 +184,20 @@ function step(label: string, args: string[], opts: StepOptions = {}): string {
     ok = false;
     problems.push(`stdout missing expected substring ${JSON.stringify(opts.expect)}`);
   }
+  // A native addon that aborts (SIGABRT) prints Node's own crash banner. #790:
+  // a `better-sqlite3` built from source against Node 24.19+ headers died in
+  // `Statement::~Statement()` at teardown, and this script reported it only as
+  // `stdout missing expected substring` — while the `search` step, which allows
+  // a non-zero exit, would not have failed at all. Name the crash for what it
+  // is so the next one is diagnosed instead of re-run.
+  if (err.includes(NATIVE_CRASH_MARKER)) {
+    ok = false;
+    const assertion = err.split("\n").find((l) => l.includes("Assertion failed") || l.includes("FATAL ERROR"));
+    problems.push(`native crash under node${assertion ? `: ${assertion.trim()}` : ""}`);
+  }
   // A Node-branch regression in the runtime boundary surfaces as these messages
   // even when the command still prints a result — treat them as hard failures.
-  for (const marker of [
-    "appendEvent failed",
-    "ERR_MODULE_NOT_FOUND",
-    "ERR_UNKNOWN_FILE_EXTENSION",
-    "Bun is not defined",
-  ]) {
+  for (const marker of BOUNDARY_MARKERS) {
     if (err.includes(marker) || out.includes(marker)) {
       ok = false;
       problems.push(`runtime-boundary marker in output: ${marker}`);

@@ -1486,7 +1486,30 @@ Adapters may add named diagnostics; unknown adapter codes map to
       boundaries and either behaves transactionally or reports partial mutation
       explicitly. Silent direct edits/deletes are a failure.
 
-### 12.4 Output parity and automated coverage
+### 12.4 Advisory channel
+
+Non-fatal workflow compile advisories (a step with no `output:` schema, a
+reference to an undeclared param) travel in their own channel so a hint cannot
+fail a build.
+
+```sh
+akm lint --type workflows --format json > "$AKM_SANDBOX/lint-advisory.json"
+jq -e '.warnings | length > 0' "$AKM_SANDBOX/lint-advisory.json"
+jq -e '[.flagged[].issue] | index("workflow-warning") == null' "$AKM_SANDBOX/lint-advisory.json"
+akm lint --type workflows --fail-on-flagged; echo "exit=$?"
+```
+
+- [ ] **[CORE]** A compile advisory appears in `warnings` with issue code
+      `workflow-warning`, never in `flagged`, and `summary.warnings` counts it.
+- [ ] **[CORE]** `--fail-on-flagged` exits `0` for a bundle whose only findings
+      are advisories, and non-zero once a real error is present.
+- [ ] **[LOCAL]** Both lint paths agree: the akm sweep and a bundle linted
+      through its own adapter classify the same code the same way.
+- [ ] **[LOCAL]** A workflow file is parsed and compiled **once** per sweep, not
+      once per output channel — check with a large workflow and compare sweep
+      time against a bundle with the same file count and no workflows.
+
+### 12.5 Output parity and automated coverage
 
 - [ ] **[CORE]** JSON/JSONL/YAML/text/Markdown/HTML preserve the same finding
       set and summary. Text renders flagged before fixed.
@@ -1591,6 +1614,20 @@ akm lint --type workflows --fail-on-flagged
 - [ ] **LOCAL** Flat name plus safe path creates hierarchy; slash/traversal/duplicate step/missing section/unknown route/invalid params fail before write.
 - [ ] **LOCAL** Existing workflow requires force plus from/reset; force alone fails.
 - [ ] **LOCAL** Lint catches structure without rewriting valid prose.
+- [ ] **CORE** A schema keyword outside the enforced subset (`format`, `pattern`,
+      `$ref`, `const`, `uniqueItems`, `patternProperties`, …) in `output:` or
+      `params:` is a **line-anchored parse error naming the keyword**, not a
+      silently non-constraining schema. Confirm the same document fails
+      `workflow run`, `workflow show`, `workflow create`, and `akm lint`.
+- [ ] **LOCAL** `akm index` skips such a workflow with a scan warning rather
+      than indexing it — the quietest surface, so check it deliberately.
+- [ ] **LOCAL** `allOf`/`anyOf`/`oneOf`/`not` are accepted and **enforced** at
+      runtime; a bounded-evaluation overrun is reported as an error, never as a
+      truncated pass.
+- [ ] **LOCAL** A document-level `defaults.llm` combined with any step on an
+      agent engine fails at freeze, naming the step and the engine. Moving the
+      `llm:` block onto the LLM step's `unit:` is the documented remedy; `llm: {}`
+      is a no-op and `llm: null` is a parse error.
 
 ### 14.2 Typed params and partial run without an engine call
 
@@ -1619,6 +1656,10 @@ jq -e '
 - [ ] **LOCAL** Unknown param, underscore-hyphen alias, invalid JSON/enum/range, missing required, duplicate scalar, flags before target, and retired params bag fail exit `2`.
 - [ ] **LOCAL** Params supplied to active run fail because creation-only.
 - [ ] **LOCAL** Invalid max-steps values fail; bounded partial exits `0`, remains active.
+- [ ] **LOCAL** `--max-steps` counts **finished spine steps**: a step's whole
+      bounded gate loop counts as one, and a route-skipped step consumes none.
+      It does not bound the dispatches inside a single step's gate loop — pair
+      it with `budget.max_units` when that is what you need capped.
 
 ### 14.3 Status, list, abandon, resume, and scope
 
@@ -1657,10 +1698,158 @@ run freezes its own judge selection.
 - [ ] **AI** Gate journal distinguishes running/error/pass/reject and survives resume.
 - [ ] **AI** Config changes after start do not replace frozen execution/judge engine/model/timeout.
 
-### 14.5 Failure, interruption, concurrency, and events
+### 14.5 Exec (shell) units
+
+An exec unit spawns a command instead of dispatching to an engine, so run this
+whole subsection with **no engine configured** — that is the first assertion,
+not a setup shortcut. Author the fixtures first:
+
+```sh
+cat > "$AKM_BUNDLE_DIR/workflows/exec-basic.md" <<'EOF'
+---
+type: workflow
+description: Exec unit smoke
+steps:
+  - id: emit
+    unit:
+      exec:
+        command: ["printf", "hello\n\n"]
+---
+
+# Exec Basic
+
+## emit
+
+Print a greeting. Stdout is the promoted artifact; this prose never reaches the
+command.
+EOF
+
+cat > "$AKM_BUNDLE_DIR/workflows/exec-json.md" <<'EOF'
+---
+type: workflow
+description: Exec unit with a typed artifact
+steps:
+  - id: emit
+    unit:
+      exec:
+        command: ["echo", '{"verdict":"pass"}']
+      output: { type: object, required: [verdict], properties: { verdict: { type: string } } }
+---
+
+# Exec JSON
+
+## emit
+
+Emit exactly one JSON value.
+EOF
+
+akm index
+akm lint --type workflows --fail-on-flagged
+akm workflow run workflows/exec-basic --format json > "$AKM_SANDBOX/exec-basic.json"
+jq -e '.run.status == "completed"' "$AKM_SANDBOX/exec-basic.json"
+akm workflow status "$(jq -r .run.id "$AKM_SANDBOX/exec-basic.json")" --units
+```
+
+Authoring and dispatch:
+
+- [ ] **CORE** A workflow of only exec steps freezes and completes with **no
+      engine configured at all**; the run spends no tokens.
+- [ ] **CORE** Without `output:`, the artifact is stdout with trailing newlines
+      stripped (`hello`, not `hello\n\n`); empty stdout is *no output*.
+- [ ] **CORE** With `output:`, stdout must be exactly one JSON value — leading
+      and trailing whitespace tolerated, any other trailing text fails the unit
+      — and the value is validated against the schema.
+- [ ] **CORE** `engine`, `model`, or `llm` alongside `exec:` fails at parse,
+      naming the conflict.
+- [ ] **LOCAL** `command` is argv, never a shell string: an argument containing
+      `;`, `|`, `&&`, `$(…)`, backticks, `>`, or `*` reaches the child as those
+      literal bytes. `["bash", "-lc", "…"]` is the supported way to get a shell.
+- [ ] **LOCAL** Argv bounds hold: 1–64 entries, each non-empty and at most 4096
+      bytes; violations fail at parse and at frozen-plan decode.
+- [ ] **LOCAL** A step body is still required and is **not** passed to the
+      command.
+- [ ] **LOCAL** stderr is a diagnostic channel only — it never becomes the
+      artifact, and a passing command that writes to stderr still succeeds.
+
+Failure taxonomy — each reason, and whether `retry.on` may name it:
+
+- [ ] **CORE** Non-zero exit is `non_zero_exit` and, under the default
+      `on_error: fail`, fails the step and the run (this is what makes a `test`
+      step a gate). `on_error: continue` records it in evidence instead.
+- [ ] **LOCAL** Wall-clock expiry is `timeout`; run cancellation is `aborted`; a
+      missing binary or unusable working directory is `spawn_failed`. All three
+      are retryable via `retry.on`.
+- [ ] **LOCAL** `exec_output_limit`, `exec_context_too_large`, `exec_cwd_escape`
+      and `exec_capture_incomplete` are **rejected** in a `retry.on` list —
+      each is deterministic, an authoring problem, or work that already ran.
+- [ ] **LOCAL** On timeout or cancellation the child's whole **process group**
+      takes the SIGTERM→SIGKILL ladder; no orphaned grandchildren survive.
+
+Capture and retention:
+
+- [ ] **LOCAL** Past the 8 MiB per-stream retention cap akm keeps draining the
+      pipe, so the command never blocks: with no `output:` schema the unit
+      **succeeds** with the artifact marked truncated; with a schema it fails
+      `exec_output_limit`.
+- [ ] **LOCAL** A command that backgrounds a descendant inheriting **stderr**
+      (`sh -c 'daemon 2>&1 & echo ok'` shapes) and exits 0 **succeeds** with its
+      complete stdout artifact, and warns that the stderr tail may be missing.
+      Only an incomplete **stdout** capture fails the unit.
+- [ ] **LOCAL** That same unit settles promptly after its leader exits — it does
+      **not** sit until its declared timeout expires.
+- [ ] **LOCAL** `timeout: none` is genuinely unbounded: a command that runs well
+      past an hour still completes and promotes its artifact.
+
+Environment scope and context:
+
+- [ ] **LOCAL** The child gets the default allowlist only: credentials and cloud
+      or CI variables present in akm's own environment are **absent** unless
+      named. `pass_env:` widens it by name; `inherit_env: true` hands over the
+      whole environment verbatim.
+- [ ] **LOCAL** `env:` bindings inject resolved values, and the `AKM_*` context
+      is applied *after* them, so a binding cannot shadow it.
+- [ ] **LOCAL** `AKM_RUN_ID`, `AKM_STEP_ID`, `AKM_UNIT_ID`, `AKM_PARAMS`,
+      `AKM_INPUTS`, and (in a `map`) `AKM_ITEM` / `AKM_ITEM_INDEX` reach the
+      command with the documented shapes.
+- [ ] **LOCAL** An oversized `AKM_*` context fails `exec_context_too_large`
+      **before** the spawn, naming the variable, rather than surfacing a raw
+      `E2BIG`.
+
+`cwd` and isolation:
+
+- [ ] **LOCAL** `cwd` is relative and contained: absolute paths, drive letters,
+      `~`, and `..` **segments** are rejected by the parser *and* the
+      frozen-plan decoder, and containment is re-checked against the resolved
+      base (symlinks included) immediately before the spawn.
+- [ ] **LOCAL** A directory whose *name* merely begins with dots (`..data`) is a
+      legal contained `cwd` and must **not** fail `exec_cwd_escape`.
+- [ ] **LOCAL** Under `isolation: worktree` each unit gets a fresh detached
+      worktree; a clean one is gone once the step resolves, a dirty one is
+      retained and its path logged.
+- [ ] **LOCAL** When a dirty leftover is moved aside and the worktree then fails
+      to mint, the failure still reports **where the preserved work went**.
+- [ ] **DESTRUCTIVE** The stale-worktree sweep removes abandoned trees after
+      seven days but leaves a tree that is still in use by a live run.
+
+Gates, retry, and reuse:
+
+- [ ] **LOCAL** A `### gate` rubric on an exec step **evaluates** — a rejection
+      still fails the step — but never loops: the command runs exactly **once**
+      regardless of `gate.max_loops`, because a frozen argv cannot answer
+      feedback. Verify with a command that appends to a file.
+- [ ] **LOCAL** A declared `retry:` re-runs the command only for reasons it
+      names; a schema miss is never re-prompted (re-running could deploy twice).
+- [ ] **LOCAL** A completed exec unit is reused on resume, never re-executed —
+      confirm with a command whose side effect is observable.
+- [ ] **LOCAL** `map` fan-out over exec units respects the frozen concurrency
+      width, and each unit sees its own `AKM_ITEM`.
+
+### 14.6 Failure, interruption, concurrency, and events
 
 - [ ] **LOCAL** Execution nonzero returns workflow stdout result, exit `1`.
 - [ ] **LOCAL** Whole-run timeout leaves current step resumable and records evidence.
+- [ ] **LOCAL** A run that **completes** after its `--timeout` deadline landed is
+      reported as completed, not as timed out.
 - [ ] **LOCAL** SIGINT/SIGTERM map to `130`/`143`, release claims, leave recoverable run.
 - [ ] **LOCAL** Concurrent same-ref/scope starts create one active run; second driver loses lease safely.
 - [ ] **LOCAL** Map fan-out respects workflow and frozen engine concurrency caps.
@@ -1668,7 +1857,21 @@ run freezes its own judge selection.
 - [ ] **DESTRUCTIVE** Kill before unit, after unit, after judge; resume reclaims only unfinished work, no duplicate unit.
 - [ ] **DESTRUCTIVE** Run focused lease/crash/contention/publication suites.
 
-### 14.6 Retired surfaces and fallback
+### 14.7 Step artifacts, bounds, and evidence
+
+A step's promoted artifact is bounded for *persistence* only. The distinction
+between what the running invocation sees and what the row keeps is the point.
+
+- [ ] **LOCAL** A step promoting an artifact larger than the 1 MiB persistence
+      cap still hands the **complete** value to the next step of the same run —
+      both a whole-value `inputs:` reference and a path reference into it.
+- [ ] **LOCAL** The persisted row for that step carries a truncation marker, and
+      **resuming** into the truncated artifact fails loudly, naming truncation
+      as the cause rather than reporting a missing property.
+- [ ] **LOCAL** Over-cap evidence sacrifices the byte-largest values first, and
+      the persisted row is never left over cap.
+
+### 14.8 Retired surfaces and fallback
 
 - [ ] **CORE** Start/next/complete/brief/report fail `UNKNOWN_COMMAND` with run/status guidance.
 - [ ] **LOCAL** No template/validate/watch; replacements are create-print/lint/log.
@@ -1715,6 +1918,15 @@ akm task history --id manual-failure --limit 1
 - [ ] **LOCAL** Command child `78` maps CLI `78`; other failed status maps `1`.
 - [ ] **LOCAL** Missing/malformed task, invalid id, prompt/workflow failure, timeout, and signal record bounded history.
 - [ ] **LOCAL** Flat log and logs DB agree and redact credentials.
+- [ ] **LOCAL** A **workflow** task that declares no `timeoutMs:` gets the
+      6-hour unattended default: the log records `timed_out=true` with the
+      applied `timeout_ms`, the attempt is `failed` so the scheduler sees a
+      non-zero exit, and the aborted run is left **resumable** with the error
+      naming `akm workflow resume <id>`.
+- [ ] **LOCAL** `timeoutMs: null` opts a workflow task out entirely and arms no
+      timer; an explicit number overrides the default.
+- [ ] **LOCAL** A workflow task whose run **completes** as the deadline lands is
+      recorded `completed` with no timeout error and no resume hint.
 
 ### 15.3 Scheduler binding and native lifecycle
 
@@ -2520,9 +2732,10 @@ test "$(akm log --format json | jq -r '.events[-1].id // 0')" = "$before_event"
       task logs, databases, reports, proposals, workflows, backups, and config.
 - [ ] **[LOCAL]** JSON/YAML stay parseable; text/Markdown visibly encode terminal
       controls; HTML escapes attacker fields. Inspect captured bytes only.
-- [ ] **[LOCAL]** Sensitive directories/files are `0700`/`0600` under umask 022.
-      Health scans every bundle plus config, DB/WAL/SHM, backup, and task-log
-      surfaces; lax mode warns exit `4`.
+- [ ] **[LOCAL]** Env/secret directories and files akm creates are `0700`/`0600`
+      even under umask 022, as are config backups and scheduler invocation
+      files. The data directory, the databases and their sidecars, and per-run
+      task logs take the process umask: akm neither sets nor reports on those.
 - [ ] **[PLATFORM]** Windows ACL evidence replaces POSIX mode checks and is marked
       N/A only when genuinely unsupported.
 
@@ -2588,8 +2801,8 @@ Current known failing gates must be fixed or explicitly waived with expiry:
 | Suppressible/add-only dangerous-key audit and event ordering | `FAIL` until pre-publication |
 | Source lifecycle rollback across config/lock/root/index/events | `FAIL` until atomic/recoverable |
 | OpenCode local-listener authentication/documentation | `FAIL` until authenticated |
-| Exact-value task-log/DB permission coverage | `FAIL` until contained |
-| Package-manager upgrade exact-version verification | `FAIL` until verified |
+| Exact-value command-target task-log redaction | `PASS` — fixed in 0.9.1 (#755) |
+| Package-manager upgrade exact-version verification | `PASS` — fixed 2026-08-06 (`self-update.ts`) |
 
 ---
 
@@ -2649,7 +2862,15 @@ bun test --timeout=120000 \
   tests/integration/npm-bin-contract.test.ts
 
 bun run build
-npm install --no-save better-sqlite3@^11.8.0
+# Install the exact spec package.json declares — never a range of your own.
+# better-sqlite3 compiles from source whenever there is no prebuilt binary for
+# the running Node's ABI, and a from-source build against Node 24.19+ headers
+# aborts at teardown (#790). CI does the same read-back. Remove it first:
+# `npm install pkg@version` is a no-op when that version is already installed
+# and will NOT rebuild the binding for the Node you are about to test with.
+rm -rf node_modules/better-sqlite3
+npm install --no-save \
+  "better-sqlite3@$(node -p "require('./package.json').optionalDependencies['better-sqlite3']")"
 AKM_SMOKE_NODE=node bun run test:node-smoke
 AKM_SMOKE_NODE=node bun run test:node-compat
 ```
@@ -2786,6 +3007,17 @@ bun run release:check
       partial unless a separate exact-commit matrix transcript exists.
 - [ ] **[RELEASE]** Run slow migration/workflow property gates separately with
       `AKM_RUN_SLOW_TESTS=1` and their 20-minute timeout.
+- [ ] **[RELEASE]** Cut the changelog BEFORE triggering the workflow: bump
+      `package.json` `version`, rename `## [Unreleased]` to
+      `## [<version>] - <YYYY-MM-DD>`, and leave a fresh empty `## [Unreleased]`
+      above it. This is functional, not cosmetic —
+      `src/commands/sources/migration-help.ts:84` resolves release notes by
+      skipping the `Unreleased` heading, so shipping an un-renamed section makes
+      the released binary's `akm help migrate latest` report the PREVIOUS
+      release's notes. Enforced by `tests/integration/workflow-release.test.ts`
+      ("the changelog is cut…"), which `tests/release-check.sh` runs as
+      `run_step "Workflow Release Contract"` — so a missed cut fails the release
+      gate rather than depending on this checklist being read.
 - [ ] **[RELEASE]** Official workflow input version equals committed package
       version and targets the tested SHA. Stable uses npm `latest`; prerelease
       uses `next` and GitHub prerelease.
@@ -2865,6 +3097,8 @@ and not a substitute for the full check.
 | Sources/registry/write-source | provider/write/publication suites, controlled service; LIVE git/npm/HTTPS when lifecycle changed |
 | Storage/migration/transactions | crash/concurrency/property/published-upgrade gates, section 19, destructive rehearsal for cutover changes |
 | Workflow | workflow unit/integration, gate fake agents, slow expansion, crash/contention when scheduler changed |
+| Workflow exec units / subprocess capture | section 14.5 end to end on an engine-less install, plus the worktree isolation and stale-sweep gates; any capture, timeout, or process-group change also runs the agent spawn suites, which share that subprocess layer |
+| Workflow child environment / allowlist | section 14.5 environment gates plus section 11; a change to the shared floor is native Windows, not Linux emulation |
 | Task/scheduler | task suites, Linux standalone; native macOS/Windows for backend/quoting/binding; published upgrade for schema changes |
 | Env/secret/security path/archive/network | env/secret plus traversal/SSRF/archive/redaction/dangerous-key suites, section 20 |
 | Agent/LLM/improve/proposal | family suites and fake-service AI pass; live bounded provider only for changed external dispatch |
@@ -2968,34 +3202,74 @@ remaining gaps carry approved waivers with the expiries recorded below.
     full run heals them); whether to surface that gap at write time is a 0.10
     placement-era product decision, not a regression — tracked in
     [#772](https://github.com/itlackey/akm/issues/772).
-- [ ] **Durability:** atomic reader-visible index generations, live-lock age,
+- [x] **Durability:** atomic reader-visible index generations, live-lock age,
       full source lifecycle rollback, safe website/npm refresh, strict lockfile,
       registry stale fallback, and sync/write serialization.
+      **Closed for 0.9.1** — the last open item (#758) landed; see the
+      per-item history below.
   - Covered: strict lockfile (`tests/integration/lockfile.test.ts` corrupt-
     lockfile fail-closed + CAS cases).
-  - Partial: atomic index generations (single-transaction swap exists; no test
-    reads concurrently mid-rebuild), safe website/npm refresh (npm side
-    covered; website snapshot interrupted mid-write can strand a mixed dir),
-    sync serialization (git-source CAS race tested; `akm sync`'s own
-    `createExactPathCommit` race not directly).
   - **Fixed 2026-08-06** (fix-now directed at 0.9.0 triage): registry stale
     fallback — a failed registry fetch now serves the cached index even past
     its TTL, with a warning, instead of hard-failing
     (`src/storage/repositories/registry-cache.ts`; pinned by
     `tests/integration/registry-stale-fallback.test.ts`).
-  - Open: live-lock age (an alive-but-slow writer past `staleAfterMs` can be
-    reclaimed; no test pins reclaim behavior), full source lifecycle rollback
-    (no test walks add→blocked-install→rollback against a dangerous fixture).
-  - Tracking: [#757](https://github.com/itlackey/akm/issues/757) (live-lock reclaim),
-    [#758](https://github.com/itlackey/akm/issues/758) (blocked-install rollback),
-    [#759](https://github.com/itlackey/akm/issues/759) (concurrency/atomicity coverage).
-  - issue: recovery-path coverage gaps. impact: worst plausible outcome is a
-    mixed website snapshot after a crash; recovery via re-run. owner:
-    itlackey. verification test: per-item notes. temporary mitigation: all
-    paths recover via re-run (`akm bundle update`, `akm index --full`); locks
-    are per-purpose and 12h-stale thresholds make live reclaim unlikely.
-    waiver approver: itlackey — approved 2026-08-06 (0.9.0 release triage).
-    waiver expiry: 0.9.1.
+  - **Fixed for 0.9.1** ([#757](https://github.com/itlackey/akm/issues/757),
+    [#759](https://github.com/itlackey/akm/issues/759)): four of the five
+    partial/open items landed.
+    - Live-lock age — a lock whose holder PID is genuinely ALIVE but whose
+      mtime has aged past the threshold is now pinned in both directions, at
+      the production thresholds, for the index-writer lease and the improve
+      run lock (`tests/integration/index-writer-lock.test.ts`,
+      `tests/integration/commands/improve/improve-lock-invariants.test.ts`).
+      Each positive test fails when `probeLock`'s age branch is disabled; each
+      negative control fails when it is made unconditional.
+    - Atomic index generations — a second reader connection opened from inside
+      `insertTransaction` now proves it observes the complete previous
+      generation, never zero or partial rows
+      (`tests/integration/indexer/reindex-generation-atomicity.test.ts`).
+    - Sync serialization — `createExactPathCommit`'s own CAS is raced by a real
+      concurrent commit landing inside the `update-ref` window, mirroring the
+      `write-source.ts` pattern
+      (`tests/integration/sync-exact-commit-cas.test.ts`).
+    - Safe website refresh — this one was a REAL BUG, not just missing
+      coverage: the refresh deleted the whole mirror and then wrote pages in
+      place, so an interrupted run left a partial mirror that a later
+      non-forced run would serve (the freshness marker is only rewritten on
+      success, so the stale marker still looked fresh). Fixed with
+      staging-dir-then-rename plus an age-gated sweep of abandoned staging
+      dirs (`src/sources/snapshot-fetchers/website-ingest.ts`; pinned by
+      `tests/integration/website-refresh-interruption.test.ts`, all four cases
+      of which fail against the old in-place write). Residual, documented in
+      code: publication is two renames, so a kill in that one-syscall window
+      leaves the mirror absent — `requireStashDir` callers refresh immediately,
+      others recover on the next expiry or `--force`.
+  - **Closed for 0.9.1** ([#758](https://github.com/itlackey/akm/issues/758)):
+    full source lifecycle rollback — the waiver's named verification test now
+    exists as `tests/integration/vault-dangerous-key-blocked-install-rollback.test.ts`.
+    It drives the real `akm bundle add` CLI end-to-end against a materialized
+    copy of `tests/fixtures/manual-qa/dangerous-bundle/` (whose
+    `env/runtime.env` carries `NODE_OPTIONS`), non-TTY and without
+    `--allow-insecure`, and asserts every lifecycle surface after the block:
+    **byte-level** parity of `config.json` and `akm.lock`, no surviving content
+    root, and no orphaned index row. Three workspace states are covered —
+    pristine, pre-existing operator config, and a bundle already installed —
+    the last of which pins the other direction too: a rollback that reverts
+    the FIRST bundle's records is as wrong as one that leaves the refused
+    bundle's behind.
+    Rollback was found already correct in every case constructible here; the
+    test's value is as a pin, so it was mutation-verified against five separate
+    breaks (skip the rollback; drop `removeLockEntry`; delete every bundle
+    instead of the target; leave the content root; skip the post-rollback
+    reindex) and fails on each.
+  - Residue accepted by design, asserted explicitly rather than left implicit:
+    (a) on a pristine workspace the attempt still SCAFFOLDS `config.json` and
+    `akm.lock` — the config/lock writers create their file on first mutation —
+    so the test pins that the created `config.json` deep-equals `DEFAULT_CONFIG`
+    with no `bundles` key and that `akm.lock` is the empty array, rather than
+    asserting absence; (b) the events stream keeps the `add` event for the
+    refused ref, because it is an append-only audit log of ATTEMPTS and an
+    operator investigating a blocked install needs it on record.
 - [ ] **Security:** Git/direct-write symlink containment, authenticated OpenCode
       listener, registry credential/control-data redaction, archive expansion
       budgets, universal redirect/SSRF policy, and unsuppressible update audit.
@@ -3022,24 +3296,45 @@ remaining gaps carry approved waivers with the expiries recorded below.
     install; opencode listener binds loopback only. waiver approver:
     itlackey — approved 2026-08-06 (0.9.0 release triage). waiver expiry:
     0.10.0 (hardening series).
-- [ ] **Secrets/permissions:** exact-value task-log redaction and managed DB/log/
-      backup permission coverage across every configured bundle.
+- [x] **Secrets/permissions:** exact-value task-log redaction; managed-file
+      permission coverage (rejected — see below). **Row closed in 0.9.1:** both
+      halves are resolved — the redaction gap is fixed, and permission
+      management is a rejected concept rather than outstanding work. No waiver
+      remains on this row.
   - Covered: exact-value redaction for prompt-target and workflow-target task
     logs (`tests/integration/tasks-runner.test.ts` "redacts echoed agent
     credentials before task logs are persisted", webhook-URL case).
-  - Open: command-target task logs (secret echoed by a scheduled command is
-    persisted verbatim when not pattern-shaped), 0600 enforcement for
-    state.db / index.db / logs.db and per-run log files (created with umask
-    default, typically 0644), multi-bundle secret coverage (untested).
-  - Tracking: [#755](https://github.com/itlackey/akm/issues/755) (command-target log redaction),
-    [#756](https://github.com/itlackey/akm/issues/756) (0600 DB/log permissions, incl. multi-bundle coverage).
-  - issue: permission hardening + one redaction lane. impact: multi-user
-    hosts can read task history/telemetry; single-user machines unaffected.
-    owner: itlackey. verification test: per-item notes (stat-mode asserts
-    mirroring the existing secret-file-perms pattern). temporary mitigation:
-    data dir lives under the user's `$XDG_DATA_HOME`; env/secret files
-    themselves already carry 0600 enforcement. waiver approver: itlackey —
-    approved 2026-08-06 (0.9.0 release triage). waiver expiry: 0.9.1.
+  - **REJECTED, not fixed** ([#756](https://github.com/itlackey/akm/issues/756),
+    reverted in [#791](https://github.com/itlackey/akm/issues/791)). akm briefly
+    chmodded the databases, their `-wal`/`-shm` sidecars, and the containing
+    data directory to owner-only on every `openManagedDatabase`, and wrote task
+    logs `0600` into a `0700` directory. That is no longer the intended
+    behavior and should not be re-attempted: enforcing a mode on a directory the
+    operator owns — on the most-traveled path in the CLI, including read-only
+    opens — silently converted legacy `0755` data dirs and broke installs
+    sharing `$XDG_DATA_HOME` across uids, which worked in 0.9.0.
+    **Decision: akm does not manage permissions on the data directory, the
+    databases, or task logs.** Those take the process umask; protecting the
+    data directory is the operator's call and umask/`chmod` is their lever.
+    This is scoped, not blanket — akm still creates `env`/`secret` assets,
+    config backups and scheduler invocation files at `0600`/`0700` at creation
+    time, which is a different act from re-permissioning a directory the
+    operator already owned. Nothing survives from that work:
+    the health advisory that reported on those modes is gone too — akm does not
+    nag about permissions it does not set.
+  - **Fixed** ([#755](https://github.com/itlackey/akm/issues/755), 0.9.1).
+    Exact-value redaction now runs in `persistRunLog`, the one sink all three
+    target kinds funnel through, so the command arm is covered alongside the
+    other two. Secret values come from three places, and the distinction matters:
+    config-declared credentials and a task's own `redact:` names are redacted at
+    any length, while values merely *inferred* from a variable's name must clear
+    an 8-character floor. Applying the naive rule the issue proposed — treat
+    every non-allowlisted value in the inherited environment as secret —
+    classified 127 of 132 variables as credentials, 25 of them one character
+    long, and rewrote `3 tests passed` into `[REDACTED] tests passed`. Pinned by
+    `tests/tasks/log-redaction.test.ts` and the `runTask — command target` cases
+    in `tests/integration/tasks-runner.test.ts`, including an over-redaction
+    guard that fails if ordinary build output is ever mangled.
 - [ ] **Package/release:** exact package-manager upgrade version verification,
       native installer/scheduler coverage, action/dependency provenance hardening,
       and post-publication artifact parity.
@@ -3051,6 +3346,13 @@ remaining gaps carry approved waivers with the expiries recorded below.
     binary). Fail-open only when verification itself is unavailable.
     (`src/commands/sources/self-update.ts`; pinned in
     `tests/integration/self-update.test.ts`.)
+  - **Fixed** ([#771](https://github.com/itlackey/akm/issues/771), 0.9.1):
+    publication is gated on the real release-acceptance script.
+    `.github/workflows/release.yml` runs `./tests/release-check.sh
+    --skip-docker` before version-verify/build/publish, so the npm bin shim,
+    the migration bundle under both the Bun and Node entry points, and the
+    packed-artifact install are all checked by CI instead of depending on the
+    operator remembering `bun run release:check` locally.
   - Partial: installer coverage (install.sh harness-tested;
     install.ps1 manual-only), native scheduler (Linux standalone covered via
     release-check; macOS/Windows suites unreachable — no such CI runner).
@@ -3059,8 +3361,7 @@ remaining gaps carry approved waivers with the expiries recorded below.
     release assets).
   - Tracking: [#768](https://github.com/itlackey/akm/issues/768) (SHA-pin actions),
     [#769](https://github.com/itlackey/akm/issues/769) (post-publish artifact parity),
-    [#770](https://github.com/itlackey/akm/issues/770) (install.ps1 + macOS/Windows scheduler coverage),
-    [#771](https://github.com/itlackey/akm/issues/771) (gate publish on release-check.sh).
+    [#770](https://github.com/itlackey/akm/issues/770) (install.ps1 + macOS/Windows scheduler coverage).
   - issue: release-infrastructure hardening. impact: a clobbered release
     asset ships silently; tag-hijack of a third-party action could
     compromise the release job. owner: itlackey. verification test: per-item
@@ -3077,20 +3378,32 @@ remaining gaps carry approved waivers with the expiries recorded below.
     errors instead of a false-clean `ok:true, flagged:0`
     (`src/commands/lint/index.ts`; pinned by
     `tests/integration/lint-fail-closed.test.ts`).
-  - Partial: adapter type scoping (adapter dispatch tested; `--type` is
-    silently ignored by non-akm adapter validation with no diagnostic).
-  - Open: malformed task YAML (and the `.yaml` misspelling) produces zero
-    findings; `--fix` against a read-only bundle or mid-sweep write failure
-    is neither transactional nor explicitly reported.
-  - Tracking: [#760](https://github.com/itlackey/akm/issues/760) (malformed task YAML),
-    [#761](https://github.com/itlackey/akm/issues/761) (--fix writable/transactional),
-    [#762](https://github.com/itlackey/akm/issues/762) (--type ignored on non-akm bundles).
-  - issue: lint trustworthiness at the edges. impact: a hand-edited task file
-    with broken YAML can pass lint silently. owner: itlackey. verification
-    test: per-item notes (§20 checklist lines). temporary mitigation:
-    interactive use surfaces empty summaries visibly; `--fix` remains
-    opt-in. waiver approver: itlackey — approved 2026-08-06 (0.9.0 release
-    triage). waiver expiry: 0.9.1.
+  - **Fixed for 0.9.1** (waiver discharged): all three tracked rows landed.
+    - [#760](https://github.com/itlackey/akm/issues/760) malformed task YAML —
+      the parse failure is now its own `invalid-task-yaml` finding instead of
+      collapsing onto `{}` (which every task rule short-circuits on), and a
+      `tasks/*.yaml` near miss is collected and flagged for the extension
+      rather than skipped by the walk. Fixed on all three task-lint surfaces
+      (the CLI sweep, the `akm` adapter's `validate`, and `akm-task`) from one
+      shared parse in `src/tasks/schema.ts`; pinned by
+      `tests/integration/lint-task-yaml.test.ts`.
+    - [#761](https://github.com/itlackey/akm/issues/761) `--fix` safety —
+      `--fix` against a bundle configured `writable: false` is now a usage
+      error raised before any file is touched, and a per-file fix-write
+      failure is reported in-band as `fixed: "failed"` (plus a `lint-failed`
+      finding if the per-file dispatch throws) instead of aborting the sweep
+      with an uncaught error that hid the fixes already on disk. Pinned by
+      `tests/integration/lint-fix-safety.test.ts`.
+    - [#762](https://github.com/itlackey/akm/issues/762) adapter type scoping —
+      a `--type` passed to a non-akm bundle now emits a warning naming the
+      flag and the adapter; findings are unchanged (validation was already a
+      superset). Pinned in `tests/integration/lint-adapter-dispatch.test.ts`.
+  - Also closed alongside these: [#774](https://github.com/itlackey/akm/issues/774)
+    — `missing-skill-md` is reachable again for `agent-skills` (a real
+    directory pass over `ValidateContext.list`, replacing the dangling
+    `{@link directorySkillDiagnostics}` reference), and opencode's singular
+    `skill/` alias is checked identically to `skills/`. Pinned by
+    `tests/integration/lint-missing-skill-md.test.ts`.
 
 For each unchecked row record:
 

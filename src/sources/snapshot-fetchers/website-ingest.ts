@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -322,27 +322,160 @@ async function fetchSnapshotViaRegistry(
   return dispatchSnapshotFetchers(parsed, context, stashDir);
 }
 
+// ── Snapshot staging (refresh atomicity, issue #759) ─────────────────────────
+
+/**
+ * TEST-ONLY crash-window event, fired after each page file of a refresh lands.
+ * See {@link _setWebsiteSnapshotWriteHookForTests}.
+ */
+export interface WebsiteSnapshotWriteEvent {
+  point: "page-written";
+  /** 1-based index of the page just written. */
+  index: number;
+  /** Total pages this refresh will write. */
+  total: number;
+  /** Stash-relative path of the page just written. */
+  relPath: string;
+}
+
+let snapshotWriteHookForTests: ((event: WebsiteSnapshotWriteEvent) => void) | undefined;
+
+/**
+ * TEST-ONLY. Interrupt a refresh partway through its page-write loop;
+ * `undefined` restores. Exists because "a process killed mid-refresh" cannot
+ * be staged from outside the module — the whole loop is a single synchronous
+ * burst between two awaits. Inert in production (one `undefined?.()` per page).
+ */
+export function _setWebsiteSnapshotWriteHookForTests(hook?: (event: WebsiteSnapshotWriteEvent) => void): void {
+  snapshotWriteHookForTests = hook;
+}
+
+function snapshotWriteHook(event: WebsiteSnapshotWriteEvent): void {
+  snapshotWriteHookForTests?.(event);
+}
+
+/**
+ * A refresh replaces the ENTIRE stash directory. Writing in place meant
+ * deleting the previous snapshot first and then materializing the new one file
+ * by file, so a process killed anywhere in that loop left the mirror empty or
+ * holding an arbitrary subset of the new pages with the old content already
+ * destroyed — and, because the freshness marker still looked recent, the next
+ * `sync()` could serve that wreckage instead of rebuilding it.
+ *
+ * The new snapshot is built in a sibling staging directory and swapped in with
+ * renames instead. An interrupted refresh leaves the PREVIOUS complete snapshot
+ * untouched; the abandoned staging directory is swept by the next refresh. The
+ * staging/retired names are dot-prefixed so the indexer's walk (which skips
+ * dot-directories) never sees a half-written snapshot even mid-flight.
+ */
+interface SnapshotStaging {
+  /** Directory the new snapshot is materialized into. */
+  readonly dir: string;
+  /** Final location the staging directory is renamed onto. */
+  readonly target: string;
+}
+
+function snapshotSiblingPrefix(stashDir: string, kind: "staging" | "retired"): string {
+  return `.${path.basename(stashDir)}.${kind}-`;
+}
+
+function snapshotSiblingPath(stashDir: string, kind: "staging" | "retired"): string {
+  const unique = `${process.pid}-${randomBytes(6).toString("hex")}`;
+  return path.join(path.dirname(stashDir), `${snapshotSiblingPrefix(stashDir, kind)}${unique}`);
+}
+
+/**
+ * Age gate for the staging sweep. Nothing enforces one refresh at a time for a
+ * given website source, so a sibling directory may belong to a refresh that is
+ * still running in another process; deleting it would break a healthy run
+ * instead of cleaning up after a dead one. Only clearly-abandoned directories
+ * (untouched for an hour — far longer than the 10-minute crawl wall-clock cap)
+ * are swept. Leftovers are inert until then: they are dot-prefixed, so the
+ * indexer's walk skips them.
+ */
+const SNAPSHOT_STAGING_SWEEP_AGE_MS = 60 * 60 * 1000;
+
+/** Remove staging/retired directories abandoned by an earlier interrupted run. */
+function sweepSnapshotStaging(stashDir: string): void {
+  const parent = path.dirname(stashDir);
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(parent);
+  } catch {
+    return;
+  }
+  const prefixes = [snapshotSiblingPrefix(stashDir, "staging"), snapshotSiblingPrefix(stashDir, "retired")];
+  const cutoff = Date.now() - SNAPSHOT_STAGING_SWEEP_AGE_MS;
+  for (const entry of entries) {
+    if (!prefixes.some((prefix) => entry.startsWith(prefix))) continue;
+    const abandoned = path.join(parent, entry);
+    try {
+      if (fs.statSync(abandoned).mtimeMs > cutoff) continue;
+    } catch {
+      continue;
+    }
+    fs.rmSync(abandoned, { recursive: true, force: true });
+  }
+}
+
+function beginSnapshotStaging(stashDir: string): SnapshotStaging {
+  fs.mkdirSync(path.dirname(stashDir), { recursive: true });
+  sweepSnapshotStaging(stashDir);
+  const dir = snapshotSiblingPath(stashDir, "staging");
+  fs.mkdirSync(dir, { recursive: true });
+  return { dir, target: stashDir };
+}
+
+/**
+ * Swap the staged snapshot in. POSIX cannot atomically exchange two non-empty
+ * directories, so the previous snapshot is renamed ASIDE first and deleted
+ * afterwards: the window in which the target does not exist is one syscall
+ * wide instead of an entire write loop.
+ */
+function publishSnapshotStaging(staging: SnapshotStaging): void {
+  let retired: string | undefined;
+  if (fs.existsSync(staging.target)) {
+    retired = snapshotSiblingPath(staging.target, "retired");
+    fs.renameSync(staging.target, retired);
+  }
+  fs.renameSync(staging.dir, staging.target);
+  if (retired) fs.rmSync(retired, { recursive: true, force: true });
+}
+
+/** Drop an unpublished staging directory (no-op once it has been renamed). */
+function discardSnapshotStaging(staging: SnapshotStaging): void {
+  fs.rmSync(staging.dir, { recursive: true, force: true });
+}
+
 /** Materialize a single fetcher snapshot as the source's whole stash. */
 function writeSnapshotToStash(stashDir: string, snapshot: WikiSnapshotResult): void {
   const preferredName = snapshot.preferredName ?? deriveImportPath(snapshot.url);
   const relPath = avoidReservedBasename(preferredName);
+  // Validate against the FINAL location so the guarantee (and the error text)
+  // is independent of where the file is staged.
   const knowledgeDir = path.join(stashDir, "knowledge");
-  const filePath = path.resolve(knowledgeDir, `${relPath}.md`);
-  if (!isWithin(filePath, knowledgeDir)) {
+  if (!isWithin(path.resolve(knowledgeDir, `${relPath}.md`), knowledgeDir)) {
     throw new UsageError(`Snapshot fetcher returned an unsafe preferred name: ${JSON.stringify(preferredName)}`);
   }
-  fs.rmSync(stashDir, { recursive: true, force: true });
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const slug = relPath.split("/").pop() ?? "index";
-  fs.writeFileSync(
-    filePath,
-    buildMarkdownSnapshot(
-      { url: snapshot.url, title: snapshot.title, markdown: snapshot.markdown },
-      slug,
-      snapshot.tags,
-    ),
-    "utf8",
-  );
+  const staging = beginSnapshotStaging(stashDir);
+  try {
+    const filePath = path.resolve(path.join(staging.dir, "knowledge"), `${relPath}.md`);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const slug = relPath.split("/").pop() ?? "index";
+    fs.writeFileSync(
+      filePath,
+      buildMarkdownSnapshot(
+        { url: snapshot.url, title: snapshot.title, markdown: snapshot.markdown },
+        slug,
+        snapshot.tags,
+      ),
+      "utf8",
+    );
+    snapshotWriteHook({ point: "page-written", index: 1, total: 1, relPath: `knowledge/${relPath}.md` });
+    publishSnapshotStaging(staging);
+  } finally {
+    discardSnapshotStaging(staging);
+  }
 }
 
 async function scrapeWebsiteToStash(
@@ -381,19 +514,32 @@ async function scrapeWebsiteToStash(
     throw new Error(`No content could be scraped from ${startUrl}`);
   }
 
-  fs.rmSync(stashDir, { recursive: true, force: true });
-  const knowledgeDir = path.join(stashDir, "knowledge");
-  fs.mkdirSync(knowledgeDir, { recursive: true });
+  const staging = beginSnapshotStaging(stashDir);
+  try {
+    const knowledgeDir = path.join(staging.dir, "knowledge");
+    fs.mkdirSync(knowledgeDir, { recursive: true });
 
-  const usedPaths = new Set<string>();
-  for (const page of pages) {
-    const relPath = avoidReservedBasename(urlToRelativePath(page.url));
-    const uniquePath = uniqueSlug(relPath, usedPaths);
-    const filePath = path.join(knowledgeDir, `${uniquePath}.md`);
-    const dir = path.dirname(filePath);
-    if (dir !== knowledgeDir) fs.mkdirSync(dir, { recursive: true });
-    const slug = uniquePath.split("/").pop() ?? "index";
-    fs.writeFileSync(filePath, buildMarkdownSnapshot(page, slug), "utf8");
+    const usedPaths = new Set<string>();
+    let written = 0;
+    for (const page of pages) {
+      const relPath = avoidReservedBasename(urlToRelativePath(page.url));
+      const uniquePath = uniqueSlug(relPath, usedPaths);
+      const filePath = path.join(knowledgeDir, `${uniquePath}.md`);
+      const dir = path.dirname(filePath);
+      if (dir !== knowledgeDir) fs.mkdirSync(dir, { recursive: true });
+      const slug = uniquePath.split("/").pop() ?? "index";
+      fs.writeFileSync(filePath, buildMarkdownSnapshot(page, slug), "utf8");
+      written++;
+      snapshotWriteHook({
+        point: "page-written",
+        index: written,
+        total: pages.length,
+        relPath: `knowledge/${uniquePath}.md`,
+      });
+    }
+    publishSnapshotStaging(staging);
+  } finally {
+    discardSnapshotStaging(staging);
   }
 }
 

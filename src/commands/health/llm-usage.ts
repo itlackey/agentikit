@@ -26,7 +26,8 @@ function emptyLlmUsageStageAggregate(): LlmUsageStageAggregate {
   };
 }
 
-function emptyLlmUsageAggregate(): LlmUsageAggregate {
+/** A zeroed aggregate — also the value health reports when it could not read state.db at all (#791). */
+export function emptyLlmUsageAggregate(): LlmUsageAggregate {
   return { ...emptyLlmUsageStageAggregate(), byStage: {}, byProcess: {}, byEngine: {} };
 }
 

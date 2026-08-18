@@ -71,6 +71,26 @@ steps:
 Finish the workflow.
 `;
 
+/** A one-step workflow whose unit is a shell command — no engine required. */
+function execWorkflow(command: string[]): string {
+  return [
+    "---",
+    "type: workflow",
+    "description: Exec workflow",
+    "steps:",
+    "  - id: work",
+    "    unit:",
+    "      exec:",
+    `        command: ${JSON.stringify(command)}`,
+    "---",
+    "",
+    "## work",
+    "",
+    "Do it.",
+    "",
+  ].join("\n");
+}
+
 describe("workflow CLI", () => {
   test("runtime accepts only canonical conceptId refs", () => {
     expect(parseWorkflowRefInput("workflows/release")).toEqual({
@@ -153,6 +173,33 @@ describe("workflow CLI", () => {
     expect((JSON.parse(listed.stdout) as { runs: Array<{ id: string }> }).runs.map((item) => item.id)).toEqual([
       run.run.id,
     ]);
+  });
+
+  test("--timeout tags an unfinished run, and never a run that reached completed", async () => {
+    // An exec unit needs no engine, so both runs below execute for real.
+    await createWorkflow("wedged", execWorkflow(["bun", "-e", "await Bun.sleep(30000)"]));
+    const wedged = await runCliCapture(["workflow", "run", "workflows/wedged", "--timeout=150ms"]);
+    expect(wedged.code).toBe(1);
+    expect(JSON.parse(wedged.stdout)).toMatchObject({
+      run: { status: "active" },
+      aborted: true,
+      timedOut: true,
+    });
+
+    await createWorkflow("quick", execWorkflow(["bun", "-e", "process.stdout.write('ok')"]));
+    const completed = await runCliCapture(["workflow", "run", "workflows/quick"]);
+    expect(completed.code).toBe(0);
+    const finished = (JSON.parse(completed.stdout) as { run: { id: string; status: string } }).run;
+    expect(finished.status).toBe("completed");
+
+    // Re-running a completed run is a no-op that returns `done`; a deadline
+    // that fires around it describes nothing an operator could resume.
+    const rerun = await runCliCapture(["workflow", "run", finished.id, "--timeout=1ms"]);
+    expect(rerun.code).toBe(0);
+    const rendered = JSON.parse(rerun.stdout) as { run: { status: string }; done?: true; timedOut?: true };
+    expect(rendered.run.status).toBe("completed");
+    expect(rendered.done).toBe(true);
+    expect(rendered.timedOut).toBeUndefined();
   });
 
   test("run rejects aliases, retired JSON params, and params on an active run", async () => {

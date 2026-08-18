@@ -19,6 +19,7 @@ import { appendEvent, type EventsContext } from "../../../core/events";
 import type { AkmDistillResult, DistillOutcome } from "../../../core/improve-types";
 import { parseEmbeddedJsonResponse } from "../../../core/parse";
 import { withStateDb } from "../../../core/state-db";
+import { recordWrittenPath } from "../../../core/write-provenance";
 import { getDefaultLlmConfig } from "../../../integrations/agent/engine-resolution";
 import type { ChatCompletionOptions, ChatMessage } from "../../../llm/client";
 import type { LlmFeatureKey } from "../../../llm/feature-gate";
@@ -330,11 +331,15 @@ export function writeQualityRejection(
   const rejectDir = path.join(stash, ".akm", "distill-rejected");
   fs.mkdirSync(rejectDir, { recursive: true });
   const ts = timestampForFilename();
+  const rejectPath = path.join(rejectDir, `${ts}-${proposalRef.replace(/[:/\\]/g, "-")}.md`);
   fs.writeFileSync(
-    path.join(rejectDir, `${ts}-${proposalRef.replace(/[:/\\]/g, "-")}.md`),
+    rejectPath,
     `---\nscore: ${score}\nreason: ${reason}\noutcome: ${outcome}\n---\n\n${content}`,
     "utf8",
   );
+  // #652: the rejection envelope lands under the managed `.akm/` tree, which
+  // the pre-provenance sync swept up by pathspec — journal it explicitly.
+  recordWrittenPath(rejectPath);
   appendEvent(
     {
       eventType: "distill_invoked",

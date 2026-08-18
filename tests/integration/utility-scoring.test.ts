@@ -448,19 +448,24 @@ describe("recomputeUtilityScores", () => {
       };
       const entryId = entryRow.id;
 
-      // Record usage events: 5 searches that returned this entry, 3 shows
+      // Record usage events: 5 searches that returned this entry, then 3 shows.
+      // last_used_at must preserve the latest event time;
+      // recompute must not replace it with the index run time.
+      const now = Date.now();
+      const searchAt = new Date(now - 180_000).toISOString();
+      const showAt = new Date(now - 120_000).toISOString();
       for (let i = 0; i < 5; i++) {
         recordUsageEvent(stateDb, {
           eventType: "search",
           entryId,
-          timestamp: new Date().toISOString(),
+          timestamp: searchAt,
         });
       }
       for (let i = 0; i < 3; i++) {
         recordUsageEvent(stateDb, {
           eventType: "show",
           entryId,
-          timestamp: new Date().toISOString(),
+          timestamp: showAt,
         });
       }
 
@@ -474,6 +479,7 @@ describe("recomputeUtilityScores", () => {
       expect(score?.showCount).toBe(3);
       expect(score?.selectRate).toBeCloseTo(3 / 5, 2);
       expect(score?.utility).toBeGreaterThan(0);
+      expect(score?.lastUsedAt).toBe(showAt);
     } finally {
       closeDatabase(db);
       stateDb.close();
@@ -509,6 +515,43 @@ describe("recomputeUtilityScores", () => {
       if (score) {
         expect(score.utility).toBe(0);
       }
+    } finally {
+      closeDatabase(db);
+      stateDb.close();
+    }
+  });
+
+  test("recompute clears a synthetic last-used stamp when no retained retrieval event exists", () => {
+    const dbPath = path.join(createTmpDir("akm-util-db-"), "test.db");
+    const db = openIndexDatabase(dbPath);
+    const stateDb = new Database(":memory:") as unknown as typeof db;
+    ensureUsageEventsSchema(stateDb);
+    try {
+      db.prepare(
+        "INSERT INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        "test:script:stale-last-use",
+        "/tmp",
+        "/tmp/stale-last-use.sh",
+        "/tmp",
+        '{"name":"stale-last-use","type":"script"}',
+        "stale last use",
+        "script",
+      );
+      const entry = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get("test:script:stale-last-use") as {
+        id: number;
+      };
+      upsertUtilityScore(db, entry.id, {
+        utility: 0.8,
+        showCount: 10,
+        searchCount: 10,
+        selectRate: 1,
+        lastUsedAt: new Date().toISOString(),
+      });
+
+      recomputeUtilityScores(db, stateDb);
+
+      expect(getUtilityScore(db, entry.id)?.lastUsedAt).toBeUndefined();
     } finally {
       closeDatabase(db);
       stateDb.close();

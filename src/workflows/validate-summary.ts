@@ -42,10 +42,56 @@ export interface ValidateSummaryResult {
 }
 
 /**
+ * REAL dispatch identity of one gate-judge invocation.
+ *
+ * A judge call is journaled exactly like a unit (`journalGateEvaluationStart` /
+ * `journalGateEvaluationFinish` in `exec/step-work.ts`): node `<stepId>.gate`,
+ * unit `<stepId>.gate:l<loop>`, under the run's real id. The dispatch request
+ * the judge issues MUST agree with that row, so per-dispatch telemetry, harness
+ * session-id capture, and any harness-side correlation describe the same thing
+ * the journal describes. The identity therefore travels from the caller that
+ * WRITES the row down to the dispatcher, rather than being synthesized twice.
+ */
+export interface JudgeCallIdentity {
+  runId: string;
+  stepId: string;
+  /** The journaled gate row's `unit_id` — `<stepId>.gate:l<loop>`. */
+  unitId: string;
+}
+
+/**
  * Judge function: given a fully-rendered prompt, return the raw model text.
  * Injected so the gate can be tested deterministically.
+ *
+ * `identity` is supplied by the caller that journals the gate row (the engine's
+ * completion path); callers with no journaled row — the manual
+ * `akm workflow step complete` path — omit it and the judge falls back to the
+ * run/step identity it was constructed with. It is never synthesized from
+ * placeholders.
  */
-export type SummaryJudge = (prompt: { system: string; user: string }) => Promise<string>;
+export type SummaryJudge = (prompt: { system: string; user: string }, identity?: JudgeCallIdentity) => Promise<string>;
+
+/** The verdict shape a well-formed judge response must parse to. */
+export interface JudgeVerdict {
+  complete: boolean;
+  missing?: unknown;
+  feedback?: unknown;
+}
+
+/**
+ * Parse the judge's raw response into a well-formed verdict, or `undefined`
+ * when the response is malformed (unparseable, or missing a boolean
+ * `complete`). This is the ONE verdict parser: {@link validateStepSummary}
+ * fails closed through it, and the engine's gate wrapper (step-work.ts) uses
+ * the same function to classify a malformed verdict as verifier
+ * INFRASTRUCTURE failure — never an honest rejection that would consume a
+ * gate loop — so the two classifications cannot drift.
+ */
+export function parseJudgeVerdict(raw: string): JudgeVerdict | undefined {
+  const parsed = parseJsonResponse<{ complete?: unknown; missing?: unknown; feedback?: unknown }>(raw);
+  if (!parsed || typeof parsed.complete !== "boolean") return undefined;
+  return parsed as JudgeVerdict;
+}
 
 const JUDGE_SYSTEM = validateSummaryJudgePrompt;
 
@@ -101,8 +147,8 @@ export async function validateStepSummary(
     };
   }
 
-  const parsed = parseJsonResponse<{ complete?: unknown; missing?: unknown; feedback?: unknown }>(raw);
-  if (!parsed || typeof parsed.complete !== "boolean") {
+  const parsed = parseJudgeVerdict(raw);
+  if (!parsed) {
     return {
       complete: false,
       missing: criteria,

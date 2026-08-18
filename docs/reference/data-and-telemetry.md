@@ -46,6 +46,26 @@ Override: set `AKM_CONFIG_DIR` or `XDG_CONFIG_HOME`.
 
 Override: set `AKM_DATA_DIR` or `XDG_DATA_HOME`.
 
+These files take your **process umask** — akm does not set or change their
+permissions. They hold task history, captured command output, and indexed
+content, so on a shared machine you probably do not want them world-readable;
+set a tighter umask, or `chmod` the directory yourself. akm will not do it for
+you, and `akm health` will not nag about it either — `0644` under a default
+`022` umask is simply the expected state.
+
+If akm **cannot read** this directory — a uid/ownership mismatch, for instance
+when two accounts share one `$XDG_DATA_HOME` — commands fail loudly with a
+`DATA_DIR_UNREADABLE` config error (exit 78) naming the path, the errno, the
+mode and owner, and the uid you are running as. They do **not** report an empty
+index. `akm health` stays runnable in that state and reports it as a failing
+`state-db-readable` check, so it remains the command to reach for.
+
+> **0.9.1 note.** A pre-release build briefly chmodded this directory to `0700`
+> and the databases to `0600` on every open. That was reverted: it silently
+> changed the permissions of directories akm did not create, which broke installs
+> sharing `$XDG_DATA_HOME` between two uids. If a 0.9.1 pre-release tightened
+> your data directory and you need it shared again, `chmod` it back.
+
 ### Cache Directory (`$XDG_CACHE_HOME/akm` or `~/.cache/akm/`)
 
 Everything in the cache is regenerable. It is safe to delete the entire cache directory; AKM will recreate what it needs on next use.
@@ -58,7 +78,7 @@ Everything in the cache is regenerable. It is safe to delete the entire cache di
 | `registry-index/` | Legacy per-URL JSON cache (v0.7 artifact) | Yes — fully replaced by `index.db` in 0.8.0 |
 | `semantic-status.json` | Semantic index build status marker | Yes |
 | `bin/` | Downloaded AKM binary cache (used by `akm upgrade`) | Yes |
-| `tasks/logs/` | Scheduled task log files | Yes — ephemeral logs |
+| `tasks/logs/` | Scheduled task log files. Written at your umask; they hold captured command/agent output, so tighten the directory yourself if the machine is shared | Yes — ephemeral logs |
 | `tasks/history/` | Legacy task history JSONL (v0.7 migration artifact) | Yes |
 
 Override: set `AKM_CACHE_DIR` or `XDG_CACHE_HOME`.
@@ -122,7 +142,7 @@ the set of types the code actually emits at HEAD (verified against every
 | `select` | `akm show` after a search returning the same ref | `ref`, `entryId` |
 | `feedback` | `akm feedback <ref>` | `signal` (positive/negative) |
 | `sync` | `akm sync` (renamed from `save` in 0.9.0; historical rows keep `save`, and `akm log --type save`/`--type sync` are synonyms on read) | `ref` |
-| `stash_synced` | `akm improve`'s internal auto-sync pass (the `sync.push` feature), **distinct from** the `akm sync` command above | `committed`, `pushed`, `skipped`, `reason` |
+| `stash_synced` | `akm improve`'s internal auto-sync pass (the `sync.push` feature), **distinct from** the `akm sync` command above | `committed`, `pushed`, `skipped`, `reason`, `attributed` (paths the run wrote and staged), `unattributed` (in-scope paths that went dirty during the run without the run writing them — left for their author) |
 | `env_access` | `akm env run <name> -- <command>` (audit trail: key **names** only, values never recorded) | `ref`, `keys` |
 | `secret_access` | `akm secret run <ref> <VAR> -- <command>` (audit trail: var **name** only, value never recorded) | `ref`, `var` |
 

@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import type { InstalledBundle, InstallKind } from "../registry/types";
+import type { ProgramExecCore } from "../workflows/program/schema";
 
 export type AkmSearchType = string;
 export type SearchSource = "local" | "registry" | "all";
@@ -104,16 +105,32 @@ export interface WorkflowParameter {
 }
 
 /**
- * Read-only projection of a YAML workflow-program step's orchestration
- * declarations for `show` (`summarizeProgramStepOrchestration` in
- * src/workflows/program/project.ts). `fanOut.over` and `route.input` carry
- * raw `${{ … }}` expressions; the full JSON Schema is reduced to a presence
- * flag to keep show output compact.
+ * Read-only projection of a workflow step's orchestration declarations for
+ * `show` (`summarizeStepOrchestration` in src/workflows/renderer.ts).
+ * `fanOut.over` and `route.input` carry raw reference strings from the closed
+ * grammar (`params.<name>` / `steps.<id>.output…`, no `${{ }}` delimiters); the
+ * full JSON Schema is reduced to a presence flag to keep show output compact.
+ *
+ * The step's dispatch kind is carried by FIELD PRESENCE, the same way `fanOut`
+ * and `route` carry the step kind: `exec` present means the step runs a shell
+ * command, and `engine`/`model` are then absent because an exec unit names no
+ * engine — it must never be described as running on the workflow's default one.
  */
 export interface WorkflowStepOrchestrationSummary {
   engine?: string;
   model?: string;
   timeoutMs?: number | null;
+  /**
+   * An exec (shell) unit's dispatch. `command` is the argv verbatim — the
+   * words that will actually be spawned, never shell-parsed and never clipped,
+   * so what `show` prints is what runs. `passEnv`/`inheritEnv` describe the
+   * child's environment SCOPE by variable name; no value is ever projected.
+   *
+   * The SHARED projection shape (`workflows/program/schema.ts`), not a mirror
+   * of it: a field added there must not be able to reach the frozen plan while
+   * silently missing from what `show` describes.
+   */
+  exec?: ProgramExecCore;
   fanOut?: { over: string; concurrency?: number; reducer?: string };
   hasSchema?: boolean;
   env?: string[];
@@ -489,6 +506,15 @@ export interface InfoResponse {
     lastBuiltAt: string | null;
     hasEmbeddings: boolean;
     vecAvailable: boolean;
+    /**
+     * Set only when the index exists but could not be READ (#791) — carries the
+     * path, errno, mode/owner and the running uid. Without it, an unreadable
+     * index is indistinguishable from an unbuilt one: both report
+     * `entryCount: 0, vecAvailable: false` at exit 0, which is what led a
+     * consuming agent to tell its user akm's "vector service is unavailable".
+     * Absent on every healthy run, so no existing consumer sees a new key.
+     */
+    unreadable?: string;
   };
 }
 

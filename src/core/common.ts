@@ -95,6 +95,73 @@ export function readTextFileWithLimit(filePath: string, maxBytes: number, label 
  *      don't fail on those mounts. Windows does not support opening a
  *      directory for fsync, so the directory-sync step is skipped there.
  */
+/**
+ * Strip JavaScript-style comments from a JSON string (JSONC support).
+ * Handles `//` line comments and `/* *​/` block comments while preserving
+ * comment-like sequences inside quoted strings.
+ */
+export function stripJsonComments(text: string): string {
+  let result = "";
+  let i = 0;
+  let inString = false;
+  while (i < text.length) {
+    if (inString) {
+      if (text[i] === "\\") {
+        result += text[i] + (text[i + 1] ?? "");
+        i += 2;
+        continue;
+      }
+      if (text[i] === '"') {
+        inString = false;
+      }
+      result += text[i];
+      i++;
+      continue;
+    }
+    if (text[i] === '"') {
+      inString = true;
+      result += text[i];
+      i++;
+      continue;
+    }
+    if (text[i] === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+      continue;
+    }
+    if (text[i] === "/" && text[i + 1] === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    result += text[i];
+    i++;
+  }
+  return result;
+}
+
+/**
+ * The mode to rewrite an existing USER-owned file with.
+ *
+ * {@link writeFileAtomic} creates its temp file with an explicit mode and
+ * chmods it, so it needs one — and its 0600 default is right for akm's own
+ * state but wrong for a user's asset, where rewriting must never change
+ * permissions. Returns the file's current mode, or the umask-derived default
+ * `fs.writeFileSync` would have produced for a new file.
+ */
+export function existingFileMode(filePath: string): number {
+  try {
+    return fs.statSync(filePath).mode & 0o777;
+  } catch {
+    // Absent (a new asset) or unreadable: fall back to the default create mode.
+    try {
+      return 0o666 & ~process.umask();
+    } catch {
+      return 0o644;
+    }
+  }
+}
+
 export function writeFileAtomic(target: string, content: string | Buffer, mode?: number): void {
   const tmp = `${target}.tmp.${process.pid}.${crypto.randomBytes(8).toString("hex")}`;
   const data = typeof content === "string" ? Buffer.from(content) : content;
@@ -234,7 +301,11 @@ function readStashDirFromConfig(): string | undefined {
   try {
     const configPath = getConfigPath();
     const text = readTextFileWithLimit(configPath, MAX_CONFIG_FILE_BYTES, "Config file");
-    const raw = JSON.parse(text);
+    // The config loader accepts JSONC, so a commented config.json is valid and
+    // in use. Parsing it raw here threw, the catch swallowed it, and every
+    // caller silently fell back — operating on the wrong bundle or failing with
+    // STASH_DIR_NOT_FOUND despite a perfectly good config.
+    const raw = JSON.parse(stripJsonComments(text));
     if (typeof raw !== "object" || raw === null) return undefined;
     // 0.9.0 config-shape cutover (spec §10.1): the primary stash is the
     // `defaultBundle`'s filesystem `path`. Read it directly (no config module
@@ -306,13 +377,51 @@ export function hasErrnoCode(error: unknown, code: string): boolean {
   return (error as Record<string, unknown>).code === code;
 }
 
+/**
+ * True when `value` is a RELATIVE path that cannot leave its base directory:
+ * no absolute form (POSIX `/`, Windows `\` or a `C:` drive prefix), no `~`
+ * home expansion, and no `..` segment under either separator.
+ *
+ * This is the SYNTACTIC half of containment — cheap, string-only, usable at
+ * authoring time before any directory exists. It is deliberately paired with
+ * (never a substitute for) {@link isWithin}, which resolves symlinks against a
+ * real base at use time. Workflow `exec` units run both: the parser and the
+ * frozen-plan decoder reject uncontained spellings, and the executor re-checks
+ * the resolved path before spawning.
+ */
+export function isContainedRelativePath(value: string): boolean {
+  if (value === "" || value.startsWith("/") || value.startsWith("\\") || value.startsWith("~")) return false;
+  if (/^[A-Za-z]:/.test(value)) return false;
+  return !value.split(/[/\\]+/).includes("..");
+}
+
 export function isWithin(candidate: string, root: string): boolean {
-  const resolvedRoot = safeRealpath(root);
-  const resolvedCandidate = safeRealpath(candidate);
-  const normalizedRoot = normalizeFsPathForComparison(resolvedRoot);
-  const normalizedCandidate = normalizeFsPathForComparison(resolvedCandidate);
-  const rel = path.relative(normalizedRoot, normalizedCandidate);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  return isContainedResolvedPath(safeRealpath(candidate), safeRealpath(root));
+}
+
+/**
+ * {@link isWithin} for callers that must not block the event loop (e.g. the
+ * workflow exec dispatch path, which runs once per fan-out unit). Same
+ * comparison, same normalization, same nearest-existing-ancestor fallback —
+ * only the realpath syscalls are awaited.
+ */
+export async function isWithinAsync(candidate: string, root: string): Promise<boolean> {
+  return isContainedResolvedPath(await safeRealpathAsync(candidate), await safeRealpathAsync(root));
+}
+
+/** The containment comparison shared by {@link isWithin} and {@link isWithinAsync}. */
+function isContainedResolvedPath(resolvedCandidate: string, resolvedRoot: string): boolean {
+  const rel = path.relative(
+    normalizeFsPathForComparison(resolvedRoot),
+    normalizeFsPathForComparison(resolvedCandidate),
+  );
+  if (rel === "") return true;
+  if (path.isAbsolute(rel)) return false;
+  // Compare the first SEGMENT, not a string prefix: `..data` and `...v2` are
+  // legal directory names, and only a leading `..` segment means the candidate
+  // climbed out of the root. Both separators, because `path.relative` answers
+  // in the host's spelling while callers may hold either.
+  return rel.split(/[/\\]+/)[0] !== "..";
 }
 
 /**
@@ -342,6 +451,28 @@ export function safeRealpath(p: string): string {
       try {
         const realParent = fs.realpathSync(current);
         return path.join(realParent, ...suffix);
+      } catch {
+        // parent also doesn't exist; keep walking up
+      }
+    }
+  }
+}
+
+/** {@link safeRealpath}'s async twin — awaited syscalls, identical walk-up. */
+export async function safeRealpathAsync(p: string): Promise<string> {
+  const resolved = path.resolve(p);
+  try {
+    return await fs.promises.realpath(resolved);
+  } catch {
+    const suffix: string[] = [];
+    let current = resolved;
+    for (;;) {
+      const parent = path.dirname(current);
+      if (parent === current) return resolved;
+      suffix.unshift(path.basename(current));
+      current = parent;
+      try {
+        return path.join(await fs.promises.realpath(current), ...suffix);
       } catch {
         // parent also doesn't exist; keep walking up
       }
@@ -769,13 +900,18 @@ export function stringArray(value: unknown): string[] {
  * Return true if a process with the given PID is currently alive.
  * Uses `process.kill(pid, 0)` which does not deliver a signal but
  * throws ESRCH when the process does not exist.
+ *
+ * EPERM means the process EXISTS but belongs to another uid, so it must be
+ * reported alive. Treating it as dead let a lock held by a live process in a
+ * shared data dir (agent sandboxes, containers, service accounts — a
+ * configuration managed-db.ts explicitly supports) be reclaimed as stale.
  */
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException | undefined)?.code === "EPERM";
   }
 }
 

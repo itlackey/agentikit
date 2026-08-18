@@ -27,6 +27,36 @@ describe("release workflow", () => {
     expect(source).not.toContain("npm version");
   });
 
+  test("the changelog is cut: its newest released section names the shipping version", () => {
+    // The release-cut step nothing else enforces. `release.yml` verifies
+    // package.json against the workflow input, and the test above pins that —
+    // but nothing checks the CHANGELOG was cut alongside it, and the failure is
+    // silent and shipped: `resolveLatestVersion()`
+    // (src/commands/sources/migration-help.ts) resolves release notes by
+    // SKIPPING the `## [Unreleased]` heading, so a released binary whose
+    // changelog still says `Unreleased` answers `akm help migrate latest` with
+    // the PREVIOUS release's notes.
+    //
+    // Lives here rather than beside the renderer's own tests because this is a
+    // property of the release, not of `renderMigrationHelp` — and this file is
+    // `run_step "Workflow Release Contract"`, the first gate in
+    // tests/release-check.sh, so it fails in seconds under the name a release
+    // engineer is looking at.
+    const root = path.resolve(import.meta.dir, "../..");
+    const version = (JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as { version: string })
+      .version;
+    const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
+    const newestReleased = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)]
+      .map((match) => match[1])
+      .find((heading) => heading?.toLowerCase() !== "unreleased");
+
+    expect(
+      newestReleased,
+      `CHANGELOG.md's newest released section is [${newestReleased}] but package.json is ${version}. ` +
+        `Rename "## [Unreleased]" to "## [${version}] - <YYYY-MM-DD>" and leave a fresh empty Unreleased above it.`,
+    ).toBe(version);
+  });
+
   test("builds all supported standalone binaries", () => {
     for (const artifact of [
       "akm-linux-x64",
@@ -38,6 +68,15 @@ describe("release workflow", () => {
       expect(source).toContain(artifact);
     }
     expect(source).toContain("sha256sum akm-* install.sh install.ps1");
+  });
+
+  test("Bun Docker source builds include the changelog runtime asset", () => {
+    const dockerDir = path.resolve(import.meta.dir, "../docker");
+    for (const distro of ["ubuntu", "debian", "alpine", "fedora"]) {
+      const dockerfile = fs.readFileSync(path.join(dockerDir, `Dockerfile.${distro}-bun`), "utf8");
+      expect(dockerfile).toContain("COPY CHANGELOG.md ./");
+      expect(dockerfile.indexOf("COPY CHANGELOG.md ./")).toBeLessThan(dockerfile.indexOf("RUN bun run build"));
+    }
   });
 
   test("keeps the dispatch value out of shell source", () => {
