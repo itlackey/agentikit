@@ -92,14 +92,17 @@ Valid `--kind` values are the four bundle providers: `filesystem`, `git`,
 
 ## akm bundle update / akm bundle remove
 
-`akm bundle update` pulls the latest version of a managed (git or npm)
-bundle. `akm bundle remove` disconnects a bundle and re-indexes without it.
+`akm bundle update` refreshes git, npm, and website bundles. Each candidate is
+staged outside its active root, audited for dangerous environment keys, and
+only then published and indexed. `akm bundle remove` disconnects a bundle and
+re-indexes without it.
 
 ```sh
 # Update
 akm bundle update @scope/bundle          # One managed bundle
 akm bundle update --all                 # All managed bundles
 akm bundle update --all --force         # Force fresh download even if version unchanged
+akm bundle update @scope/bundle --allow-insecure  # Approve reviewed dangerous env keys
 
 # Remove
 akm bundle remove @scope/bundle          # By npm id
@@ -107,6 +110,13 @@ akm bundle remove github:owner/repo     # By git ref
 akm bundle remove ~/.claude/skills      # By path
 akm bundle remove my-provider           # By name
 ```
+
+Dangerous keys prompt in a terminal (default: No) and block non-interactive
+updates unless `--allow-insecure` is explicit. `--yes` only approves deletion
+of an obsolete moved install directory; it never approves security findings.
+For `--all`, blocked and failed bundles are reported separately and later
+bundles continue. A rejected or failed bundle keeps its prior bytes, lock/config
+state, and search-index generation.
 
 **Example: keep bundles fresh**
 

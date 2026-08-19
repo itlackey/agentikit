@@ -23,7 +23,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { akmUpdate } from "../../src/commands/sources/installed-stashes";
+import { _setUpdateTransactionHookForTests, akmUpdate } from "../../src/commands/sources/installed-stashes";
 import { loadConfig, saveConfig } from "../../src/core/config/config";
 import { probeIndexWriterLease } from "../../src/indexer/index-writer-lock";
 import { _setAkmIndexForTests } from "../../src/indexer/indexer";
@@ -553,12 +553,15 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
       syncedAt: new Date().toISOString(),
       writable: false,
     });
-    overrideSeam(_setAkmIndexForTests, async () => {
+    overrideSeam(_setUpdateTransactionHookForTests, (point) => {
+      if (point !== "audited") return;
       const concurrent = loadConfig();
       saveConfig({
         ...concurrent,
-        bundles: { ...concurrent.bundles, "left-pad": { npm: "third-generation" } },
+        bundles: { ...concurrent.bundles, concurrent: { path: oldRoot } },
       });
+    });
+    overrideSeam(_setAkmIndexForTests, async () => {
       throw new Error("publish index failed");
     });
 
@@ -568,7 +571,8 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
       syncSpy.mockRestore();
     }
 
-    expect(loadConfig().bundles?.["left-pad"]?.npm).toBe("third-generation");
+    expect(loadConfig().bundles?.concurrent?.path).toBe(oldRoot);
+    expect(loadConfig().bundles?.["left-pad"]?.npm).toBe("left-pad");
     expect(readLockfile().find((e) => e.id === "left-pad")?.localRoot).toBe(oldRoot);
     expect(fs.existsSync(oldRoot)).toBe(true);
     expect(fs.existsSync(newRoot)).toBe(true);

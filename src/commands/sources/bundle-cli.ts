@@ -128,10 +128,10 @@ const removeCommand = defineJsonCommand({
 });
 
 const updateCommand = defineJsonCommand({
-  meta: { name: "update", description: "Update one or all managed bundles" },
+  meta: { name: "update", description: "Stage, audit, and update one or all remote bundles" },
   args: {
     target: { type: "positional", description: "Bundle to update (id or ref)", required: false },
-    all: { type: "boolean", description: "Update all installed entries", default: false },
+    all: { type: "boolean", description: "Update all configured bundles and report each outcome", default: false },
     force: { type: "boolean", description: "Force fresh download even if version is unchanged", default: false },
     "allow-insecure": {
       type: "boolean",

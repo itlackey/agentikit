@@ -15,7 +15,7 @@ import { isLoopbackEndpoint } from "../core/loopback";
 import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { SCRIPT_EXTENSIONS } from "../core/recognition-util";
-import { withStateDb } from "../core/state-db";
+import { beginImmediateTransaction, withStateDb } from "../core/state-db";
 import { isVerbose, warn, warnVerbose } from "../core/warn";
 import { resolveIndexPassLLM } from "../llm/index-passes";
 import { resolveSourcesForOrigin } from "../registry/origin-resolve";
@@ -206,6 +206,13 @@ interface IndexOptions {
    */
   persistDetectedAdapters?: boolean;
   /**
+   * Borrow the source-update coordinator's canonical state.db handle and leave
+   * its finalize mutations uncommitted for the coordinator to commit only
+   * after the remaining publication checks succeed. Internal lifecycle seam;
+   * ordinary index callers omit it.
+   */
+  deferredStateTransaction?: { db: Database; started?: boolean };
+  /**
    * Whether this run was triggered implicitly by another command's inline
    * auto-index rather than by an explicit `akm index`.
    *
@@ -387,7 +394,10 @@ async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
  * Finalize phase: rebuild FTS, re-link usage events, recompute utility scores,
  * regenerate wiki indexes, update index metadata, and emit the verify event.
  */
-async function runFinalizePhase(ctx: IndexRunContext): Promise<void> {
+async function runFinalizePhase(
+  ctx: IndexRunContext,
+  deferredStateTransaction?: { db: Database; started?: boolean },
+): Promise<void> {
   const { db, config, sources, sourceDirs, isIncremental, stashDir, signal, onProgress } = ctx;
   ctx.timing.tFinalizeStart = Date.now();
 
@@ -409,12 +419,29 @@ async function runFinalizePhase(ctx: IndexRunContext): Promise<void> {
   // Chunk-8 WI-8.3: usage_events lives in state.db now (index.db no longer holds
   // it), so these cross-DB passes take both handles — entries in `db` (index.db),
   // usage_events in the loaned state.db.
-  withStateDb((stateDb) => {
+  const mutateState = (stateDb: Database): void => {
     onProgress({ phase: "finalize", message: "Relinking usage events." });
     relinkUsageEvents(db, stateDb, { sources, defaultStashDir: stashDir });
     onProgress({ phase: "finalize", message: "Recomputing utility scores." });
     recomputeUtilityScores(db, stateDb);
-  });
+  };
+  if (deferredStateTransaction) {
+    const deferredStateDb = deferredStateTransaction.db;
+    // This is the first state.db mutation in the update path. BEGIN here—not
+    // during source staging or the index scan—so events committed before this
+    // boundary survive any later update rollback. The update coordinator owns
+    // the matching COMMIT/ROLLBACK and keeps this borrowed handle open.
+    beginImmediateTransaction(deferredStateDb);
+    deferredStateTransaction.started = true;
+    try {
+      mutateState(deferredStateDb);
+    } catch (error) {
+      if (deferredStateDb.inTransaction) deferredStateDb.exec("ROLLBACK");
+      throw error;
+    }
+  } else {
+    withStateDb(mutateState);
+  }
 
   // Purge LLM cache entries for assets that no longer exist in the index.
   try {
@@ -587,8 +614,33 @@ export function _setAkmIndexForTests(fake?: typeof akmIndexReal): void {
 }
 
 export async function akmIndex(options: IndexOptions): Promise<IndexResponse> {
-  if (akmIndexOverride) return akmIndexOverride(options);
-  return akmIndexReal(options);
+  try {
+    const override = akmIndexOverride;
+    const response = override ? await override(options) : await akmIndexReal(options);
+    const deferred = options.deferredStateTransaction;
+    if (deferred && !deferred.started) {
+      if (!override) {
+        throw new Error("Index finalize returned without starting its required deferred state transaction.");
+      }
+      // Test overrides stand in for the whole indexer and therefore perform no
+      // real finalize state writes. Still open an empty deferred transaction so
+      // update tests exercise the same exactly-once commit/rollback protocol.
+      beginImmediateTransaction(deferred.db);
+      deferred.started = true;
+    }
+    return response;
+  } catch (error) {
+    const stateDb = options.deferredStateTransaction?.db;
+    if (stateDb?.inTransaction) {
+      try {
+        stateDb.exec("ROLLBACK");
+      } catch {
+        // Preserve the indexing error. The update coordinator will retry the
+        // rollback before closing its borrowed handle.
+      }
+    }
+    throw error;
+  }
 }
 
 /**
@@ -742,7 +794,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       // Durable state must be runtime-compatible before source hydration,
       // adapter persistence, or index.db creation can mutate the installation.
       onProgress({ phase: "preflight", message: "Validating durable state." });
-      withStateDb(() => undefined);
+      withStateDb(() => undefined, { borrowed: options.deferredStateTransaction?.db });
 
       // Ensure git stash caches are extracted before resolving stash dirs,
       // so their content directories exist on disk for the walker to discover.
@@ -840,7 +892,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
         await runWalkPhase(ctx);
         applyRemovedSources(ctx);
         await runEmbeddingPhase(ctx);
-        await runFinalizePhase(ctx);
+        await runFinalizePhase(ctx, options.deferredStateTransaction);
         // ────────────────────────────────────────────────────────────────────────
 
         // runFinalizePhase always populates these before returning.

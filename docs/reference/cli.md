@@ -864,24 +864,36 @@ akm bundle remove my-provider --yes        # Skip the confirmation prompt
 
 ### bundle update
 
-Update one or all managed sources to the latest available version. Local and
-remote sources are not updatable — akm explains why if you target one.
+Update one remote bundle, or refresh every configured bundle with `--all`.
+Git, npm, and website candidates are staged and audited before they replace the
+active generation; filesystem bundles are reported as skipped because they
+already reflect local files in place.
 
 ```sh
 akm bundle update npm:@scope/pkg
 akm bundle update --all
 akm bundle update --all --force   # Force fresh download even if version is unchanged
 akm bundle update --all --yes     # Skip confirmation when an update needs to delete a moved install dir
+akm bundle update npm:@scope/pkg --allow-insecure  # Explicitly approve reviewed dangerous env keys
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--all` | Update all managed sources |
 | `--force` | Delete cached extraction before re-downloading |
+| `--allow-insecure` | Permit a staged update containing dangerous environment keys after warning. Without it, an interactive terminal prompts with a default of No; non-interactive use fails closed. This is independent of `--yes`. |
 | `-y`, `--yes` | Skip the confirmation prompt for the rare branch where the resolved content location moved and the previous install directory must be deleted. No effect on a normal refresh, which deletes nothing. |
 
-Reports per-entry change flags: `changed.version`, `changed.revision`,
-`changed.any`.
+The audit examines key names in `.env`-suffixed files under the staged
+component root. Publisher lint suppressions do not bypass it. Rejection or an
+audit/publication/index failure preserves the prior active bytes, lock/config
+generation, and searchable index for that bundle.
+
+Reports per-entry change flags: `changed.version`, `changed.revision`, and
+`changed.any`. With `--all`, each bundle is isolated: successful entries appear
+in `processed`/`plainSynced`; rejected entries report `status: "blocked"` and a
+security code; provider or transaction errors report `status: "failed"`. The
+command continues with later bundles without half-publishing a blocked one.
 
 ### upgrade
 

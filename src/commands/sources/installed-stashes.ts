@@ -19,16 +19,22 @@ import fs from "node:fs";
 import path from "node:path";
 import { isWithin, resolveStashDir } from "../../core/common";
 import type { AkmConfig, BundleConfigEntry } from "../../core/config/config";
-import { bundleComponentConfig, getSources, loadConfig } from "../../core/config/config";
+import { acquireConfigReadFence, bundleComponentConfig, getSources, loadConfig } from "../../core/config/config";
 import { AkmError, ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { isPathAbsent } from "../../core/path-access";
 import { getDbPath, getRegistryCacheDir } from "../../core/paths";
+import { openStateDatabase } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import { resolveGitContentRoot } from "../../core/write-source";
 import { withAssetMutationLease } from "../../indexer/index-writer-lock";
 import { akmIndex } from "../../indexer/indexer";
 import type { LockfileEntry } from "../../integrations/lockfile";
-import { compareAndSwapLockfile, readLockfile, readLockfileForUpdate } from "../../integrations/lockfile";
+import {
+  compareAndSwapLockfileSnapshot,
+  publishLockfileUpdate,
+  readLockfile,
+  readLockfileForUpdate,
+} from "../../integrations/lockfile";
 import { parseRegistryRef } from "../../registry/resolve";
 import type { InstalledBundle, InstallKind } from "../../registry/types";
 import { sha256Hex } from "../../runtime";
@@ -63,7 +69,9 @@ import {
   cleanupStagingParent,
   createStagingParent,
   type DirectoryPublication,
+  discardIndexSnapshot,
   prepareDirectoryPublication,
+  prepareWritableGitPublication,
   restoreIndexSnapshot,
 } from "./update-transaction";
 
@@ -84,6 +92,59 @@ interface ManagedInstall {
   writable: boolean;
   componentRoot: string;
   requiredRoots: string[];
+  auditConfigGeneration: string;
+}
+
+interface BundleAuditFence {
+  componentRoot: string;
+  generation: string;
+  writable: boolean;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function bundleAuditGeneration(entry: BundleConfigEntry | undefined): string {
+  return sha256Hex(canonicalJson(entry ?? null));
+}
+
+function bundleAuditFence(config: AkmConfig, id: string): BundleAuditFence {
+  const bundle = config.bundles?.[id];
+  if (!bundle) throw new ConfigError(`Source "${id}" disappeared before update staging.`);
+  return {
+    componentRoot: bundleComponentConfig(bundle)?.root ?? ".",
+    generation: bundleAuditGeneration(bundle),
+    writable: bundleComponentConfig(bundle)?.writable ?? bundle.writable === true,
+  };
+}
+
+function assertBundleAuditFence(config: AkmConfig, id: string, expectedGeneration: string): void {
+  const current = config.bundles?.[id];
+  if (bundleAuditGeneration(current) !== expectedGeneration) {
+    throw new ConfigError(
+      `Source "${id}" config changed after its staged bytes were audited; refusing to publish without re-staging and re-auditing.`,
+    );
+  }
+}
+
+function currentPlainSource(
+  config: AkmConfig,
+  id: string,
+  type: "git" | "website" | "npm",
+): ReturnType<typeof getSources>[number] {
+  const source = getSources(config).find((candidate) => candidate.name === id && candidate.type === type);
+  if (!source) {
+    throw new ConfigError(`Source "${id}" changed or disappeared before update staging; retry to re-resolve it.`);
+  }
+  return source;
 }
 
 /** Enumerate the registry-managed installs (lock-backed bundles) in a config. */
@@ -107,6 +168,7 @@ function listManagedInstalls(config: AkmConfig): ManagedInstall[] {
       writable: componentWritable ?? bundle.writable === true,
       componentRoot,
       requiredRoots: lock.localRoot ? [path.resolve(lock.localRoot, componentRoot)] : [],
+      auditConfigGeneration: bundleAuditGeneration(bundle),
     });
   }
   return out;
@@ -413,6 +475,56 @@ interface PreparedManagedUpdate extends PreparedUpdate {
   synced: SourceLockData;
 }
 
+function gitHead(repoDir: string): string | undefined {
+  const result = runGit(["-C", repoDir, "rev-parse", "HEAD"]);
+  return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : undefined;
+}
+
+function invalidWritableGitPublication(repoDir: string): DirectoryPublication {
+  return {
+    publish() {
+      throw new ConfigError(
+        `Writable Git source at ${repoDir} is not a valid checkout; refusing to replace its live directory.`,
+      );
+    },
+    rollback() {},
+    commit() {},
+  };
+}
+
+function writableGitPublication(opts: {
+  stagedRepo: string;
+  liveRepo: string;
+  expectedOldHead?: string;
+  auditedTargetHead?: string;
+}): DirectoryPublication {
+  const auditedTargetHead = opts.auditedTargetHead ?? gitHead(opts.stagedRepo);
+  if (!opts.expectedOldHead || !auditedTargetHead) return invalidWritableGitPublication(opts.liveRepo);
+  return prepareWritableGitPublication({
+    stagedRepo: opts.stagedRepo,
+    liveRepo: opts.liveRepo,
+    expectedOldHead: opts.expectedOldHead,
+    auditedTargetHead,
+  });
+}
+
+function rollbackStateTransaction(db: Database): unknown {
+  if (!db.inTransaction) return undefined;
+  try {
+    db.exec("ROLLBACK");
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+function commitStateTransaction(db: Database): void {
+  if (!db.inTransaction) {
+    throw new Error("Source update index returned without an active deferred state transaction.");
+  }
+  db.exec("COMMIT");
+}
+
 function pathAtOrBelow(candidate: string, root: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
@@ -451,6 +563,7 @@ function prepareWritableManagedUpdate(managed: ManagedInstall, force: boolean): 
     topLevel.status === 0 && topLevel.stdout.trim()
       ? path.resolve(topLevel.stdout.trim())
       : path.resolve(managed.localRoot);
+  const expectedOldHead = gitHead(liveRepo);
   const stagingParent = createStagingParent(path.dirname(liveRepo));
   const stagedRepo = path.join(stagingParent, path.basename(liveRepo));
   fs.cpSync(liveRepo, stagedRepo, { recursive: true, preserveTimestamps: true });
@@ -464,8 +577,10 @@ function prepareWritableManagedUpdate(managed: ManagedInstall, force: boolean): 
     ...(stagedRequiredRoots.length > 0 ? { writableRequiredRoots: stagedRequiredRoots } : {}),
   })
     .then((staged) => {
+      const auditedTargetHead = gitHead(stagedRepo);
       const synced: SourceLockData = {
         ...staged,
+        resolvedRevision: auditedTargetHead ?? staged.resolvedRevision,
         contentDir: remapStagedPath(staged.contentDir, stagedRepo, liveRepo),
         cacheDir: remapStagedPath(staged.cacheDir, stagedRepo, liveRepo),
         extractedDir: remapStagedPath(staged.extractedDir, stagedRepo, liveRepo),
@@ -473,7 +588,7 @@ function prepareWritableManagedUpdate(managed: ManagedInstall, force: boolean): 
       return {
         synced,
         auditRoot: stagedRequiredRoots[0] ?? staged.contentDir,
-        publication: prepareDirectoryPublication(stagedRepo, liveRepo),
+        publication: writableGitPublication({ stagedRepo, liveRepo, expectedOldHead, auditedTargetHead }),
         cleanup: () => cleanupStagingParent(stagingParent),
       };
     })
@@ -539,11 +654,6 @@ function resolveComponentAuditRoot(contentRoot: string, componentRoot: string, i
   return resolved;
 }
 
-function configuredComponentAuditRoot(contentRoot: string, id: string): string {
-  const componentRoot = bundleComponentConfig(loadConfig().bundles?.[id])?.root ?? ".";
-  return resolveComponentAuditRoot(contentRoot, componentRoot, id);
-}
-
 async function publishPreparedPlainUpdate(
   id: string,
   ref: string,
@@ -551,33 +661,68 @@ async function publishPreparedPlainUpdate(
   stashDir: string,
   allowInsecure: boolean,
   full: boolean,
+  expectedConfigGeneration: string,
 ): Promise<Awaited<ReturnType<typeof akmIndex>>> {
   try {
     await auditPreparedUpdate(prepared, id, ref, allowInsecure);
     return await withAssetMutationLease("source-update", async () => {
       const indexSnapshot = captureIndexSnapshot();
-      let published = false;
+      let stateDb: Database | undefined;
+      let releaseConfigFence: (() => void) | undefined;
+      let contentPublished = false;
+      let indexAttempted = false;
       try {
-        prepared.publication?.publish();
-        published = true;
+        stateDb = openStateDatabase();
+        const configFence = acquireConfigReadFence();
+        releaseConfigFence = configFence.release;
+        assertBundleAuditFence(configFence.config, id, expectedConfigGeneration);
+        if (prepared.publication) {
+          prepared.publication.publish();
+          contentPublished = true;
+        }
         updateTransactionHook("published", id);
         updateTransactionHook("before-index", id);
+        indexAttempted = true;
         const index = await akmIndex({
           stashDir,
           ...(full ? { full: true } : {}),
           hydrateSources: false,
           persistDetectedAdapters: false,
+          deferredStateTransaction: { db: stateDb },
         });
         updateTransactionHook("indexed", id);
+        commitStateTransaction(stateDb);
         prepared.publication?.commit();
         return index;
       } catch (error) {
+        let recoveryError = stateDb ? rollbackStateTransaction(stateDb) : undefined;
         try {
-          if (published) prepared.publication?.rollback();
-        } finally {
-          restoreIndexSnapshot(indexSnapshot);
+          if (contentPublished) prepared.publication?.rollback();
+        } catch (rollbackError) {
+          recoveryError ??= rollbackError;
         }
+        if (indexAttempted) {
+          try {
+            restoreIndexSnapshot(indexSnapshot);
+          } catch (restoreError) {
+            recoveryError ??= restoreError;
+          }
+        }
+        if (recoveryError) throw recoveryError;
         throw error;
+      } finally {
+        try {
+          if (stateDb) {
+            rollbackStateTransaction(stateDb);
+            stateDb.close();
+          }
+        } finally {
+          try {
+            discardIndexSnapshot(indexSnapshot);
+          } finally {
+            releaseConfigFence?.();
+          }
+        }
       }
     });
   } finally {
@@ -585,22 +730,31 @@ async function publishPreparedPlainUpdate(
   }
 }
 
-async function prepareGitPlainUpdate(gitSource: ReturnType<typeof getSources>[number]): Promise<PreparedUpdate> {
+async function prepareGitPlainUpdate(
+  gitSource: ReturnType<typeof getSources>[number],
+  componentRoot: string,
+  writable: boolean,
+): Promise<PreparedUpdate> {
   if (!gitSource.url) throw new ConfigError(`Git source "${gitSource.name ?? "git"}" has no URL.`);
   const repo = parseGitRepoUrl(gitSource.url);
   const livePaths = getCachePaths(repo.canonicalUrl);
   const stagingParent = createStagingParent(path.dirname(livePaths.rootDir));
   const stagedPaths = getCachePaths(repo.canonicalUrl, stagingParent);
   try {
-    if (gitSource.writable === true && fs.existsSync(livePaths.rootDir)) {
+    const expectedOldHead = writable ? gitHead(livePaths.repoDir) : undefined;
+    if (writable && fs.existsSync(livePaths.rootDir)) {
       fs.cpSync(livePaths.rootDir, stagedPaths.rootDir, { recursive: true, preserveTimestamps: true });
     }
     const staged = await syncMirroredRepo(gitSource, {
       force: true,
-      writable: gitSource.writable === true,
+      writable,
       cacheRootDir: stagingParent,
     });
-    const auditRoot = configuredComponentAuditRoot(resolveGitContentRoot(staged.contentDir), gitSource.name ?? "git");
+    const auditRoot = resolveComponentAuditRoot(
+      resolveGitContentRoot(staged.contentDir),
+      componentRoot,
+      gitSource.name ?? "git",
+    );
     if (!pathAtOrBelow(staged.cacheDir, stagingParent)) {
       if (pathAtOrBelow(auditRoot, livePaths.rootDir)) {
         throw new ConfigError(
@@ -617,7 +771,13 @@ async function prepareGitPlainUpdate(gitSource: ReturnType<typeof getSources>[nu
     }
     return {
       auditRoot,
-      publication: prepareDirectoryPublication(staged.cacheDir, livePaths.rootDir),
+      publication: writable
+        ? writableGitPublication({
+            stagedRepo: stagedPaths.repoDir,
+            liveRepo: livePaths.repoDir,
+            expectedOldHead,
+          })
+        : prepareDirectoryPublication(staged.cacheDir, livePaths.rootDir),
       cleanup: () => cleanupStagingParent(stagingParent),
     };
   } catch (error) {
@@ -632,14 +792,18 @@ async function syncGitPlainSource(
   allowInsecure: boolean,
 ): Promise<{ item: UpdatePlainSyncedItem; index: Awaited<ReturnType<typeof akmIndex>> }> {
   const id = gitSource.name ?? gitSource.url ?? "";
-  const ref = gitSource.url ?? "";
-  const prepared = await prepareGitPlainUpdate(gitSource);
-  const index = await publishPreparedPlainUpdate(id, ref, prepared, stashDir, allowInsecure, true);
+  const currentConfig = loadConfig();
+  const currentSource = currentPlainSource(currentConfig, id, "git");
+  const ref = currentSource.url ?? "";
+  const fence = bundleAuditFence(currentConfig, id);
+  const prepared = await prepareGitPlainUpdate(currentSource, fence.componentRoot, fence.writable);
+  const index = await publishPreparedPlainUpdate(id, ref, prepared, stashDir, allowInsecure, true, fence.generation);
   return { item: { id, kind: "git", ref }, index };
 }
 
 async function prepareWebsitePlainUpdate(
   websiteSource: ReturnType<typeof getSources>[number],
+  componentRoot: string,
 ): Promise<PreparedUpdate> {
   if (!websiteSource.url) throw new ConfigError(`Website source "${websiteSource.name ?? "website"}" has no URL.`);
   const livePaths = getWebsiteCachePaths(websiteSource.url);
@@ -658,7 +822,7 @@ async function prepareWebsitePlainUpdate(
         }),
     });
     return {
-      auditRoot: configuredComponentAuditRoot(stagedPaths.stashDir, websiteSource.name ?? "website"),
+      auditRoot: resolveComponentAuditRoot(stagedPaths.stashDir, componentRoot, websiteSource.name ?? "website"),
       publication: prepareDirectoryPublication(stagedPaths.rootDir, livePaths.rootDir),
       cleanup: () => cleanupStagingParent(stagingParent),
     };
@@ -674,9 +838,12 @@ async function syncWebsitePlainSource(
   allowInsecure: boolean,
 ): Promise<{ item: UpdatePlainSyncedItem; index: Awaited<ReturnType<typeof akmIndex>> }> {
   const id = websiteSource.name ?? websiteSource.url ?? "";
-  const ref = websiteSource.url ?? "";
-  const prepared = await prepareWebsitePlainUpdate(websiteSource);
-  const index = await publishPreparedPlainUpdate(id, ref, prepared, stashDir, allowInsecure, true);
+  const currentConfig = loadConfig();
+  const currentSource = currentPlainSource(currentConfig, id, "website");
+  const ref = currentSource.url ?? "";
+  const fence = bundleAuditFence(currentConfig, id);
+  const prepared = await prepareWebsitePlainUpdate(currentSource, fence.componentRoot);
+  const index = await publishPreparedPlainUpdate(id, ref, prepared, stashDir, allowInsecure, true, fence.generation);
   return { item: { id, kind: "website", ref }, index };
 }
 
@@ -717,9 +884,12 @@ async function updateWebsiteSource(
  * bookkeeping.
  */
 function managedInstallViewOfPlainNpm(npmSource: ReturnType<typeof getSources>[number]): ManagedInstall {
-  const spec = npmSource.path ?? "";
+  const id = npmSource.name ?? npmSource.path ?? "";
+  const config = loadConfig();
+  const currentSource = currentPlainSource(config, id, "npm");
+  const spec = currentSource.path ?? "";
   const ref = spec.startsWith("npm:") ? spec : `npm:${spec}`;
-  const id = npmSource.name ?? ref;
+  const fence = bundleAuditFence(config, id);
   return {
     bundleKey: id,
     installId: id,
@@ -729,8 +899,9 @@ function managedInstallViewOfPlainNpm(npmSource: ReturnType<typeof getSources>[n
     resolvedVersion: undefined,
     resolvedRevision: undefined,
     writable: false,
-    componentRoot: bundleComponentConfig(loadConfig().bundles?.[id])?.root ?? ".",
+    componentRoot: fence.componentRoot,
     requiredRoots: [],
+    auditConfigGeneration: fence.generation,
   };
 }
 
@@ -794,11 +965,8 @@ async function updateManagedInstall(
     }
 
     return await withAssetMutationLease("source-update", async () => {
-      const config = loadConfig();
-      const oldLocks = readLockfileForUpdate();
-      if (!config.bundles?.[managed.bundleKey]) {
-        throw new ConfigError(`Managed source "${managed.installId}" disappeared before update publication.`);
-      }
+      const oldLockSnapshot = readLockfileForUpdate();
+      const oldLocks = oldLockSnapshot.entries;
       const desiredLock: LockfileEntry = {
         id: managed.bundleKey,
         // Preserve the STORED install kind: a `github:`-ref entry recorded as
@@ -814,33 +982,56 @@ async function updateManagedInstall(
       const desiredLocks = [...oldLocks.filter((entry) => entry.id !== desiredLock.id), desiredLock];
       const desiredLockGeneration = generationHash(desiredLocks);
       const indexSnapshot = captureIndexSnapshot();
+      let stateDb: Database | undefined;
+      let releaseConfigFence: (() => void) | undefined;
       let contentPublished = false;
       let lockPublished = false;
+      let publishedLockSnapshot: ReturnType<typeof readLockfileForUpdate> | null | undefined;
+      let indexAttempted = false;
       let index: Awaited<ReturnType<typeof akmIndex>>;
       try {
-        prepared.publication?.publish();
-        contentPublished = true;
-        if (!(await compareAndSwapLockfile(oldLocks, desiredLocks))) throw concurrentGenerationError(managed);
+        stateDb = openStateDatabase();
+        const configFence = acquireConfigReadFence();
+        releaseConfigFence = configFence.release;
+        assertBundleAuditFence(configFence.config, managed.bundleKey, managed.auditConfigGeneration);
+        if (prepared.publication) {
+          prepared.publication.publish();
+          contentPublished = true;
+        }
+        publishedLockSnapshot = await publishLockfileUpdate(oldLockSnapshot, desiredLocks);
+        if (!publishedLockSnapshot) throw concurrentGenerationError(managed);
         lockPublished = true;
         updateTransactionHook("published", managed.installId);
         updateTransactionHook("before-index", managed.installId);
+        indexAttempted = true;
         index = await akmIndex({
           stashDir,
           full: true,
           hydrateSources: false,
           persistDetectedAdapters: false,
+          deferredStateTransaction: { db: stateDb },
         });
-        if (generationHash(readLockfile()) !== desiredLockGeneration) throw concurrentGenerationError(managed);
+        const currentLockSnapshot = readLockfileForUpdate();
+        if (
+          generationHash(currentLockSnapshot.entries) !== desiredLockGeneration ||
+          currentLockSnapshot.raw !== publishedLockSnapshot.raw
+        ) {
+          throw concurrentGenerationError(managed);
+        }
         updateTransactionHook("indexed", managed.installId);
+        commitStateTransaction(stateDb);
       } catch (error) {
-        let lockCompensationError: unknown;
+        let recoveryError = stateDb ? rollbackStateTransaction(stateDb) : undefined;
         let concurrentGeneration = false;
         let concurrentGenerationOwnsPublishedRoot = false;
         if (lockPublished) {
           try {
-            if (!(await compareAndSwapLockfile(desiredLocks, oldLocks))) {
+            if (
+              !publishedLockSnapshot ||
+              !(await compareAndSwapLockfileSnapshot(publishedLockSnapshot, oldLockSnapshot))
+            ) {
               concurrentGeneration = true;
-              const concurrentLocks = readLockfileForUpdate();
+              const concurrentLocks = readLockfileForUpdate().entries;
               const concurrentEntry = concurrentLocks.find((entry) => entry.id === desiredLock.id);
               concurrentGenerationOwnsPublishedRoot =
                 prepared.publication !== undefined &&
@@ -848,24 +1039,41 @@ async function updateManagedInstall(
                 path.resolve(concurrentEntry.localRoot) === path.resolve(synced.contentDir);
             }
           } catch (compensationError) {
-            // A corrupt/unreadable concurrent generation is not proof that it
-            // owns our candidate. Restore the bytes and index in the finally
-            // path below; never let a lock compensation fault strand content.
-            lockCompensationError = compensationError;
+            recoveryError ??= compensationError;
           }
         }
 
         if (!concurrentGenerationOwnsPublishedRoot) {
           try {
             if (contentPublished) prepared.publication?.rollback();
-          } finally {
-            restoreIndexSnapshot(indexSnapshot);
+          } catch (rollbackError) {
+            recoveryError ??= rollbackError;
+          }
+          if (indexAttempted) {
+            try {
+              restoreIndexSnapshot(indexSnapshot);
+            } catch (restoreError) {
+              recoveryError ??= restoreError;
+            }
           }
         }
 
-        if (lockCompensationError) throw lockCompensationError;
+        if (recoveryError) throw recoveryError;
         if (concurrentGeneration) throw concurrentGenerationError(managed);
         throw error;
+      } finally {
+        try {
+          if (stateDb) {
+            rollbackStateTransaction(stateDb);
+            stateDb.close();
+          }
+        } finally {
+          try {
+            discardIndexSnapshot(indexSnapshot);
+          } finally {
+            releaseConfigFence?.();
+          }
+        }
       }
 
       prepared.publication?.commit();

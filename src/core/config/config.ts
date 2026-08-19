@@ -187,6 +187,25 @@ export function loadUserConfig(): AkmConfig {
 }
 
 /**
+ * Acquire the existing config-write sentinel and read a fresh validated
+ * generation while keeping the sentinel held. Source update uses this to
+ * fence an audited bundle descriptor through publication: a cooperating
+ * config writer can commit either before this snapshot or after the update,
+ * never between the final generation check and index commit.
+ */
+export function acquireConfigReadFence(): { config: AkmConfig; release: () => void } {
+  assertNoPendingMigrationOperation();
+  const release = acquireConfigLock();
+  try {
+    cachedConfig = undefined;
+    return { config: loadUserConfig(), release };
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
+
+/**
  * Parse raw config text and validate via Zod.
  * ({@link AkmConfigSchema}). Returns the merged-with-defaults AkmConfig.
  *

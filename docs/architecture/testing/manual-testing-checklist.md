@@ -3272,7 +3272,7 @@ remaining gaps carry approved waivers with the expiries recorded below.
     operator investigating a blocked install needs it on record.
 - [ ] **Security:** Git/direct-write symlink containment, authenticated OpenCode
       listener, registry credential/control-data redaction, archive expansion
-      budgets, universal redirect/SSRF policy, and unsuppressible update audit.
+      budgets, and universal redirect/SSRF policy.
   - Partial: symlink containment (walker escape cases tested; not exercised
     through a real git-repo walk), registry redaction (response-shape limits
     tested; embedded-credential echo in error paths not), redirect/SSRF
@@ -3280,11 +3280,12 @@ remaining gaps carry approved waivers with the expiries recorded below.
     same private-IP guard).
   - Open: authenticated OpenCode listener (localhost listener carries no
     per-process credential), archive expansion budgets (download size capped;
-    expansion ratio/member budgets untested), unsuppressible update audit
-    (dangerous-key scan runs on add, not re-verified on bundle update).
+    expansion ratio/member budgets untested).
+  - Closed in #765: the unsuppressible update audit stages and re-verifies every
+    refreshed bundle before publication; keep the rejection, approval, and
+    rollback cases above in the release matrix.
   - Tracking: [#763](https://github.com/itlackey/akm/issues/763) (listener credential),
     [#764](https://github.com/itlackey/akm/issues/764) (archive expansion budgets),
-    [#765](https://github.com/itlackey/akm/issues/765) (update audit),
     [#766](https://github.com/itlackey/akm/issues/766) (git symlink containment),
     [#767](https://github.com/itlackey/akm/issues/767) (registry SSRF + credential echo).
   - issue: local-attack-surface and hostile-upstream hardening gaps, all

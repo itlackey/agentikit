@@ -37,6 +37,12 @@ function makeStashDir(base: string): void {
   }
 }
 
+function git(repoDir: string, args: string[]): string {
+  const result = gitProvider.runGit(["-C", repoDir, ...args]);
+  if (result.status !== 0) throw new Error(result.stderr.trim() || `git ${args.join(" ")} failed`);
+  return result.stdout.trim();
+}
+
 afterAll(() => {
   for (const dir of createdTmpDirs) {
     try {
@@ -459,6 +465,17 @@ describe("update preserves entry.source for writable installed entries", () => {
   test("updating a github: entry stored as source:git preserves source:git and writable:true", async () => {
     const stashRoot = createTmpDir("akm-qa-writable-stash-");
     makeStashDir(stashRoot);
+    fs.writeFileSync(path.join(stashRoot, "knowledge", "revision.md"), "writable old\n");
+    const init = gitProvider.runGit(["init", stashRoot]);
+    if (init.status !== 0) throw new Error(init.stderr.trim() || "git init failed");
+    git(stashRoot, ["config", "user.name", "AKM QA"]);
+    git(stashRoot, ["config", "user.email", "qa@example.invalid"]);
+    git(stashRoot, ["remote", "add", "origin", "https://github.com/dimm-city/agent-stash.git"]);
+    git(stashRoot, ["add", "-A"]);
+    git(stashRoot, ["commit", "-m", "old revision"]);
+    const oldHead = git(stashRoot, ["rev-parse", "HEAD"]);
+    const oldBranch = git(stashRoot, ["symbolic-ref", "--short", "HEAD"]);
+    const oldOrigin = git(stashRoot, ["remote", "get-url", "origin"]);
     const cacheDir = createTmpDir("akm-qa-writable-cache-");
 
     saveConfig({
@@ -478,23 +495,32 @@ describe("update preserves entry.source for writable installed entries", () => {
         ref: "github:dimm-city/agent-stash",
         localRoot: stashRoot,
         installedAt: "2026-04-22T16:39:07.564Z",
-        resolvedRevision: "abc123",
+        resolvedRevision: oldHead,
       },
     ]);
 
     // syncFromRef for a github: ref returns source: "github" — this is what
     // triggered the bug: updateRegistryEntry was using synced.source ("github")
     // instead of entry.source ("git"), causing the validator to reject writable:true.
-    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
-      id: "github:dimm-city/agent-stash",
-      source: "github",
-      ref: "github:dimm-city/agent-stash",
-      artifactUrl: "https://github.com/dimm-city/agent-stash.git",
-      contentDir: stashRoot,
-      cacheDir,
-      extractedDir: stashRoot,
-      syncedAt: new Date().toISOString(),
-      resolvedRevision: "def456",
+    let auditedHead = "";
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) => {
+      const stagedRoot = options?.writableRoot;
+      if (!stagedRoot) throw new Error("writable update did not pass a staged root");
+      fs.writeFileSync(path.join(stagedRoot, "knowledge", "revision.md"), "writable audited new\n");
+      git(stagedRoot, ["add", "-A"]);
+      git(stagedRoot, ["commit", "-m", "audited revision"]);
+      auditedHead = git(stagedRoot, ["rev-parse", "HEAD"]);
+      return {
+        id: "github:dimm-city/agent-stash",
+        source: "github",
+        ref: "github:dimm-city/agent-stash",
+        artifactUrl: "https://github.com/dimm-city/agent-stash.git",
+        contentDir: stagedRoot,
+        cacheDir,
+        extractedDir: stagedRoot,
+        syncedAt: new Date().toISOString(),
+        resolvedRevision: auditedHead,
+      };
     });
     const mirrorSpy = spyOn(gitProvider, "syncMirroredRepo").mockResolvedValue({
       id: "github:dimm-city/agent-stash",
@@ -541,7 +567,10 @@ describe("update preserves entry.source for writable installed entries", () => {
     // resolved revision lives in the lock and should be updated
     const lock = readLockfile().find((e) => e.ref === "github:dimm-city/agent-stash");
     expect(lock?.source).toBe("git");
-    expect(lock?.resolvedRevision).toBe("def456");
+    expect(lock?.resolvedRevision).toBe(auditedHead);
+    expect(git(stashRoot, ["rev-parse", "HEAD"])).toBe(auditedHead);
+    expect(git(stashRoot, ["symbolic-ref", "--short", "HEAD"])).toBe(oldBranch);
+    expect(git(stashRoot, ["remote", "get-url", "origin"])).toBe(oldOrigin);
   });
 
   test("re-adding a writable install without --writable preserves and updates its checkout in place", async () => {

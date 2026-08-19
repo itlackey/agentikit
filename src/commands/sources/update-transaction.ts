@@ -5,11 +5,11 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { writeFileAtomic } from "../../core/common";
 import { ConfigError } from "../../core/errors";
-import { getDbPath, getSemanticStatusPath, getStateDbPathInDataDir } from "../../core/paths";
+import { getDbPath, getSemanticStatusPath } from "../../core/paths";
 import { warn } from "../../core/warn";
-import type { Database } from "../../storage/database";
+import { runGit } from "../../sources/providers/git";
+import { assertNoIgnoredPathOverwrite } from "../../sources/providers/git-install";
 import { closeDatabase, openReadonlyExistingDatabase } from "../../storage/repositories/index-connection";
 
 export interface DirectoryPublication {
@@ -79,6 +79,100 @@ export function prepareDirectoryPublication(stagedRoot: string, liveRoot: string
   };
 }
 
+function gitOutput(repoDir: string, args: string[], description: string): string {
+  const result = runGit(["-C", repoDir, ...args], { timeout: 120_000 });
+  if (result.status !== 0) {
+    throw new ConfigError(`${description}: ${result.stderr.trim() || result.stdout.trim() || "git failed"}`);
+  }
+  return result.stdout.trim();
+}
+
+function assertGitCheckoutGeneration(repoDir: string, expectedHead: string, phase: string): void {
+  const actualHead = gitOutput(repoDir, ["rev-parse", "HEAD"], `Cannot read writable Git HEAD at ${repoDir}`);
+  if (actualHead !== expectedHead) {
+    throw new ConfigError(
+      `Writable Git checkout at ${repoDir} changed after the update was audited (${phase}: expected ${expectedHead}, found ${actualHead}); refusing to overwrite the live commit.`,
+    );
+  }
+  const status = gitOutput(repoDir, ["status", "--porcelain"], `Cannot inspect writable Git checkout at ${repoDir}`);
+  if (status) {
+    throw new ConfigError(
+      `Writable Git checkout at ${repoDir} changed after the update was audited (${phase}: working tree is no longer clean); refusing to overwrite live files.`,
+    );
+  }
+}
+
+/**
+ * Publish the exact audited commit into a writable checkout without replacing
+ * the checkout directory. The expected-old-HEAD and clean-tree fence runs
+ * under the caller's asset mutation lease immediately before the fast-forward.
+ */
+export function prepareWritableGitPublication(opts: {
+  stagedRepo: string;
+  liveRepo: string;
+  expectedOldHead: string;
+  auditedTargetHead: string;
+}): DirectoryPublication {
+  let published = false;
+  return {
+    publish() {
+      if (published) throw new ConfigError(`Writable Git update at ${opts.liveRepo} was already published.`);
+      assertGitCheckoutGeneration(opts.liveRepo, opts.expectedOldHead, "pre-publish fence");
+      assertGitCheckoutGeneration(opts.stagedRepo, opts.auditedTargetHead, "staged audit fence");
+      const ancestor = runGit([
+        "-C",
+        opts.stagedRepo,
+        "merge-base",
+        "--is-ancestor",
+        opts.expectedOldHead,
+        opts.auditedTargetHead,
+      ]);
+      if (ancestor.status !== 0) {
+        throw new ConfigError(
+          `Audited Git target ${opts.auditedTargetHead} is not a fast-forward of live HEAD ${opts.expectedOldHead}; refusing writable update.`,
+        );
+      }
+      gitOutput(
+        opts.liveRepo,
+        ["fetch", "--no-tags", opts.stagedRepo, opts.auditedTargetHead],
+        `Cannot import audited Git target ${opts.auditedTargetHead} into ${opts.liveRepo}`,
+      );
+      // A non-cooperating local Git command may have committed while fetch ran.
+      assertGitCheckoutGeneration(opts.liveRepo, opts.expectedOldHead, "post-fetch fence");
+      assertNoIgnoredPathOverwrite(opts.liveRepo, opts.auditedTargetHead);
+      gitOutput(
+        opts.liveRepo,
+        ["merge", "--ff-only", "--no-overwrite-ignore", opts.auditedTargetHead],
+        `Cannot fast-forward writable Git checkout ${opts.liveRepo}`,
+      );
+      const publishedHead = gitOutput(
+        opts.liveRepo,
+        ["rev-parse", "HEAD"],
+        `Cannot verify writable Git checkout ${opts.liveRepo}`,
+      );
+      if (publishedHead !== opts.auditedTargetHead) {
+        throw new ConfigError(
+          `Writable Git checkout ${opts.liveRepo} reached ${publishedHead}, not audited target ${opts.auditedTargetHead}.`,
+        );
+      }
+      published = true;
+    },
+    rollback() {
+      if (!published) return;
+      assertGitCheckoutGeneration(opts.liveRepo, opts.auditedTargetHead, "rollback fence");
+      gitOutput(
+        opts.liveRepo,
+        ["reset", "--hard", opts.expectedOldHead],
+        `Cannot restore writable Git checkout ${opts.liveRepo} to ${opts.expectedOldHead}`,
+      );
+      published = false;
+    },
+    commit() {
+      published = false;
+    },
+  };
+}
+
 export function createStagingParent(parent: string): string {
   fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
   return fs.mkdtempSync(path.join(parent, ".akm-update-stage-"));
@@ -94,30 +188,33 @@ export function cleanupStagingParent(stagingParent: string): void {
   }
 }
 
-interface FileSnapshot {
+interface DiskFileSnapshot {
   readonly target: string;
-  readonly bytes: Buffer | null;
+  readonly snapshotPath: string | null;
   readonly mode: number;
   readonly sqlite: boolean;
 }
 
-interface IndexSnapshot {
-  readonly files: FileSnapshot[];
+export interface IndexSnapshot {
+  readonly directory: string;
+  readonly files: DiskFileSnapshot[];
 }
 
-type SerializableDatabase = Database & { serialize(): Uint8Array };
+function sqliteStringLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
 
-function captureSqliteSnapshot(dbPath: string): FileSnapshot {
+function captureSqliteSnapshot(dbPath: string, snapshotPath: string): DiskFileSnapshot {
   const db = openReadonlyExistingDatabase(dbPath);
-  if (!db) return { target: dbPath, bytes: null, mode: 0o600, sqlite: true };
+  if (!db) return { target: dbPath, snapshotPath: null, mode: 0o600, sqlite: true };
   try {
-    const serializable = db as Partial<SerializableDatabase>;
-    if (typeof serializable.serialize !== "function") {
-      throw new ConfigError("The active SQLite driver cannot snapshot index.db; refusing a non-atomic update.");
-    }
+    // SQLite's online VACUUM INTO path produces a transactionally consistent,
+    // bounded-memory file even when the source database currently has WAL
+    // pages. The update already owns the exclusive index-writer lease.
+    db.exec(`VACUUM INTO ${sqliteStringLiteral(snapshotPath)}`);
     return {
       target: dbPath,
-      bytes: Buffer.from(serializable.serialize.call(db)),
+      snapshotPath,
       mode: fs.statSync(dbPath).mode & 0o777,
       sqlite: true,
     };
@@ -126,42 +223,71 @@ function captureSqliteSnapshot(dbPath: string): FileSnapshot {
   }
 }
 
-function captureOrdinaryFile(filePath: string): FileSnapshot {
+function captureOrdinaryFile(filePath: string, snapshotPath: string): DiskFileSnapshot {
   try {
     const stat = fs.statSync(filePath);
+    fs.copyFileSync(filePath, snapshotPath);
     return {
       target: filePath,
-      bytes: fs.readFileSync(filePath),
+      snapshotPath,
       mode: stat.mode & 0o777,
       sqlite: false,
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { target: filePath, bytes: null, mode: 0o600, sqlite: false };
+      return { target: filePath, snapshotPath: null, mode: 0o600, sqlite: false };
     }
     throw error;
   }
 }
 
 export function captureIndexSnapshot(): IndexSnapshot {
-  return {
-    files: [
-      captureSqliteSnapshot(getDbPath()),
-      captureSqliteSnapshot(getStateDbPathInDataDir()),
-      captureOrdinaryFile(getSemanticStatusPath()),
-    ],
-  };
+  const dbPath = getDbPath();
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
+  const directory = fs.mkdtempSync(path.join(path.dirname(dbPath), ".akm-update-index-snapshot-"));
+  try {
+    return {
+      directory,
+      files: [
+        captureSqliteSnapshot(dbPath, path.join(directory, "index.db")),
+        captureOrdinaryFile(getSemanticStatusPath(), path.join(directory, "semantic-status.json")),
+      ],
+    };
+  } catch (error) {
+    fs.rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function restoreDiskFile(file: DiskFileSnapshot): void {
+  const displaced = `${file.target}.akm-update-failed-${randomBytes(6).toString("hex")}`;
+  const stage = `${file.target}.akm-update-restore-${randomBytes(6).toString("hex")}`;
+  fs.mkdirSync(path.dirname(file.target), { recursive: true, mode: 0o700 });
+  if (file.sqlite) {
+    for (const suffix of ["-wal", "-shm", "-journal"]) fs.rmSync(`${file.target}${suffix}`, { force: true });
+  }
+  const hadCurrent = fs.existsSync(file.target);
+  if (hadCurrent) fs.renameSync(file.target, displaced);
+  try {
+    if (file.snapshotPath !== null) {
+      fs.copyFileSync(file.snapshotPath, stage);
+      fs.chmodSync(stage, file.mode);
+      fs.renameSync(stage, file.target);
+    }
+  } catch (error) {
+    fs.rmSync(stage, { force: true });
+    if (hadCurrent && fs.existsSync(displaced) && !fs.existsSync(file.target)) {
+      fs.renameSync(displaced, file.target);
+    }
+    throw error;
+  }
+  fs.rmSync(displaced, { recursive: true, force: true });
 }
 
 export function restoreIndexSnapshot(snapshot: IndexSnapshot): void {
-  for (const file of snapshot.files) {
-    if (file.sqlite) {
-      for (const suffix of ["-wal", "-shm", "-journal"]) fs.rmSync(`${file.target}${suffix}`, { force: true });
-    }
-    if (file.bytes === null) {
-      fs.rmSync(file.target, { force: true });
-    } else {
-      writeFileAtomic(file.target, file.bytes, file.mode);
-    }
-  }
+  for (const file of snapshot.files) restoreDiskFile(file);
+}
+
+export function discardIndexSnapshot(snapshot: IndexSnapshot): void {
+  cleanupStagingParent(snapshot.directory);
 }

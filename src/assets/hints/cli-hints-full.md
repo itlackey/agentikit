@@ -269,6 +269,7 @@ akm bundle list --kind git                           # Filter by provider (files
 akm bundle remove <target>                           # Remove by id, ref, path, or name
 akm bundle update --all                              # Update all managed sources
 akm bundle update <target> --force                   # Force re-download
+akm bundle update <target> --allow-insecure          # Approve reviewed dangerous env keys
 ```
 
 ## Registries
