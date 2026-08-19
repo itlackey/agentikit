@@ -61,7 +61,7 @@ function buildPromptPayload(req: AgentDispatchRequest): string {
 /**
  * Claude Code builder.
  * Command shape:
- *   claude [--system-prompt "..."] [--model <m>] [--allowedTools <t>]
+ *   claude [--agent <name>] [--system-prompt "..."] [--model <m>] [--allowedTools <t>]
  *          [--output-format json] --print -- "<prompt (+ schema directive)>"
  *
  * --print switches Claude Code to non-interactive captured output mode.
@@ -72,13 +72,18 @@ export const claudeBuilder: AgentCommandBuilder = {
   lower: createAgentRequestLowerer({
     adapter: "claude",
     personaChannel: "native",
+    nativeAgentSelector: true,
     tools: "all",
     outputSchema: true,
   }),
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");
+    assertNotFlag(req.agent, "agent");
     const args: string[] = [...profile.args];
+    if (req.agent) {
+      args.push("--agent", req.agent);
+    }
     if (req.systemPrompt) {
       args.push("--system-prompt", req.systemPrompt);
     }

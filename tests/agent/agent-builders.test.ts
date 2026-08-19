@@ -136,6 +136,20 @@ describe("opencodeBuilder — basic dispatch", () => {
     expect(cmd.argv).toEqual(["opencode", "run", "--model", "openai/gpt-5.4-mini", "--", "do work"]);
   });
 
+  test("forwards an exact native agent selector through --agent", async () => {
+    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
+    const builder = getCommandBuilder("opencode");
+    const req = { prompt: "do work", agent: "Review-Team.Exact" } as AgentDispatchRequest;
+    expect(builder.build(makeOpencodeProfile(), req).argv).toEqual([
+      "opencode",
+      "run",
+      "--agent",
+      "Review-Team.Exact",
+      "--",
+      "do work",
+    ]);
+  });
+
   test("with systemPrompt: --system-prompt flag present before prompt", async () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const builder = getCommandBuilder("opencode");
@@ -232,6 +246,20 @@ describe("claudeBuilder — basic dispatch", () => {
     // No extra flags
     const cmd = builder.build(profile, { prompt: "task" });
     expect((cmd.argv as string[]).includes("--print")).toBe(true);
+  });
+
+  test("forwards an exact native agent selector through --agent", async () => {
+    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
+    const builder = getCommandBuilder("claude");
+    const req = { prompt: "do work", agent: "Review-Team.Exact" } as AgentDispatchRequest;
+    expect(builder.build(makeClaudeProfile(), req).argv).toEqual([
+      "claude",
+      "--agent",
+      "Review-Team.Exact",
+      "--print",
+      "--",
+      "do work",
+    ]);
   });
 
   test("with systemPrompt: --system-prompt flag present", async () => {

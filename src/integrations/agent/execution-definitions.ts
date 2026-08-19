@@ -8,6 +8,14 @@ import type { UnresolvedExecutionDefaults } from "../../execution/source";
 import type { ExecutionEngineDefinition } from "./execution-cascade";
 import type { RunnerSpec } from "./runner";
 
+/**
+ * Canonical engine-setting marker: an SDK without its own model selected the
+ * fallback LLM model through the common cascade. The lowerer must project the
+ * request-owned exact model/inference back onto symbolic fallback transport
+ * material instead of consulting aliases again.
+ */
+export const SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING = "sdkFallbackModelFromRequest" as const;
+
 function own(value: object, key: PropertyKey): boolean {
   return Object.hasOwn(value, key);
 }
@@ -39,6 +47,17 @@ function engineDefaults(engine: EngineConfig): UnresolvedExecutionDefaults {
   return Object.freeze(defaults) as UnresolvedExecutionDefaults;
 }
 
+function configuredSdkFallback(
+  engine: Extract<EngineConfig, { kind: "agent" }>,
+  config: AkmConfig,
+): readonly [name: string, engine: Extract<EngineConfig, { kind: "llm" }>] | undefined {
+  if (engine.platform !== "opencode-sdk") return undefined;
+  const fallbackName = ownValue(engine, "llmEngine") ?? ownValue(config.defaults ?? {}, "llmEngine");
+  if (!fallbackName) return undefined;
+  const fallback = ownValue(config.engines ?? {}, fallbackName);
+  return fallback?.kind === "llm" ? [fallbackName, fallback] : undefined;
+}
+
 /** Project validated named-engine config into the pure common cascade registry. */
 export function executionEngineDefinitionsFromConfig(
   config: AkmConfig,
@@ -46,16 +65,28 @@ export function executionEngineDefinitionsFromConfig(
   const definitions: Record<string, ExecutionEngineDefinition> = Object.create(null);
   for (const [name, engine] of Object.entries(ownValue(config, "engines") ?? {})) {
     const platform = engine.kind === "agent" ? engine.platform : (ownValue(engine, "provider") ?? name);
+    const sdkFallback = engine.kind === "agent" ? configuredSdkFallback(engine, config) : undefined;
+    const usesSdkFallbackModel = engine.kind === "agent" && !own(engine, "model") && sdkFallback !== undefined;
+    const fallbackName = sdkFallback?.[0];
+    const fallbackEngine = sdkFallback?.[1];
     const settings =
       engine.kind === "agent"
         ? withoutUndefined({
             bin: ownValue(engine, "bin"),
             args: ownValue(engine, "args"),
             workspace: ownValue(engine, "workspace"),
+            ...(usesSdkFallbackModel ? { [SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING]: true } : {}),
           })
         : withoutUndefined({ endpoint: engine.endpoint, provider: ownValue(engine, "provider") });
     const engineModelAliases = engine.kind === "agent" ? ownValue(engine, "modelAliases") : undefined;
     const globalModelAliases = ownValue(config, "modelAliases");
+    const defaults =
+      usesSdkFallbackModel && fallbackEngine
+        ? Object.freeze({ ...engineDefaults(fallbackEngine), ...engineDefaults(engine) })
+        : engineDefaults(engine);
+    const modelMapKey = usesSdkFallbackModel && fallbackName ? fallbackName : engine.kind === "agent" ? platform : name;
+    const compatibilityPlatform =
+      usesSdkFallbackModel && fallbackEngine ? (ownValue(fallbackEngine, "provider") ?? modelMapKey) : platform;
     definitions[name] = Object.freeze({
       selection: Object.freeze({
         name,
@@ -65,12 +96,12 @@ export function executionEngineDefinitionsFromConfig(
           ? { settings: cloneExecutionJsonObject(settings, `engines.${name}.settings`) }
           : {}),
       }),
-      defaults: engineDefaults(engine),
-      modelMapKey: engine.kind === "agent" ? engine.platform : name,
+      defaults,
+      modelMapKey,
       modelCompatibility: Object.freeze({
-        ...(engineModelAliases ? { engineAliases: engineModelAliases } : {}),
+        ...(!usesSdkFallbackModel && engineModelAliases ? { engineAliases: engineModelAliases } : {}),
         ...(globalModelAliases ? { globalAliases: globalModelAliases } : {}),
-        fallbackEngines: engine.kind === "llm" ? [platform, "llm"] : [],
+        fallbackEngines: engine.kind === "llm" || usesSdkFallbackModel ? [compatibilityPlatform, "llm"] : [],
       }),
     });
   }
@@ -139,6 +170,19 @@ export function executionEngineDefinitionFromRunner(input: RunnerSpec): RunnerEx
 
   const platform = runner.profile.platform ?? runner.profile.name;
   if (!platform) throw new TypeError("frozen agent runner requires a stable platform");
+  const fallbackConnection = runner.kind === "sdk" ? runner.fallbackConnection : undefined;
+  const usesSdkFallbackModel =
+    runner.kind === "sdk" && !own(runner.profile, "model") && fallbackConnection !== undefined;
+  const fallbackInference = fallbackConnection
+    ? withoutUndefined({
+        temperature: fallbackConnection.temperature,
+        maxTokens: fallbackConnection.maxTokens,
+        supportsJsonSchema: fallbackConnection.supportsJsonSchema,
+        extraParams: fallbackConnection.extraParams,
+        contextLength: fallbackConnection.contextLength,
+        enableThinking: fallbackConnection.enableThinking,
+      })
+    : {};
   return Object.freeze({
     engineName,
     runner,
@@ -148,12 +192,23 @@ export function executionEngineDefinitionFromRunner(input: RunnerSpec): RunnerEx
         kind: runner.kind,
         platform,
         settings: cloneExecutionJsonObject(
-          { bin: runner.profile.bin, args: runner.profile.args },
+          {
+            bin: runner.profile.bin,
+            args: runner.profile.args,
+            ...(usesSdkFallbackModel ? { [SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING]: true } : {}),
+          },
           "frozen execution runner settings",
         ),
       }),
       defaults: Object.freeze({
-        ...(own(runner.profile, "model") ? { model: runner.profile.model } : {}),
+        ...(own(runner.profile, "model")
+          ? { model: runner.profile.model }
+          : usesSdkFallbackModel
+            ? { model: fallbackConnection?.model }
+            : {}),
+        ...(Object.keys(fallbackInference).length > 0
+          ? { inference: cloneExecutionJsonObject(fallbackInference, "frozen SDK fallback inference") }
+          : {}),
         ...(own(runner, "timeoutMs") ? { timeout: runner.timeoutMs } : {}),
         ...(own(runner.profile, "workspace") ? { workspace: runner.profile.workspace } : {}),
       }),

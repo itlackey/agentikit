@@ -38,7 +38,7 @@ import {
   redactSensitiveValue,
 } from "../../core/redaction";
 import { closeServer as disposeOpencodeSdkServers, runOpencodeSdk } from "../harnesses/opencode-sdk/sdk-runner";
-import { materializeLlmConnection } from "./engine-resolution";
+import { lookupCredentialFromEnv, materializeLlmConnection } from "./engine-resolution";
 import type { AgentProfile } from "./profiles";
 import { type DispatchedLlmRunner, materializeLlmRunnerConnection, type RunnerSpec } from "./runner";
 import { type AgentRunResult, type RunAgentOptions, runAgent } from "./spawn";
@@ -80,6 +80,8 @@ export function collectDispatchSensitiveValues(
 
   if (spec.kind === "llm") addConnection(spec.connection);
   if (spec.kind === "sdk") addConnection(spec.fallbackConnection);
+  if (spec.kind === "llm") add(lookupCredentialFromEnv(spec.credential, envSource));
+  if (spec.kind === "sdk") add(lookupCredentialFromEnv(spec.fallbackCredential, envSource));
   if (spec.kind !== "llm") {
     for (const value of Object.values(spec.profile.env ?? {})) add(value);
     for (const name of spec.profile.envPassthrough) {

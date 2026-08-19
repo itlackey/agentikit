@@ -49,6 +49,7 @@ export class OpencodeSdkHarness extends BaseHarness {
     lower: createAgentRequestLowerer({
       adapter: "opencode-sdk",
       personaChannel: "native",
+      nativeAgentSelector: true,
       tools: "sdk",
       outputSchema: false,
     }),

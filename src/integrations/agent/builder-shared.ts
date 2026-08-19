@@ -30,6 +30,8 @@ import type { AgentProfile } from "./profiles";
 export interface AgentDispatchRequest {
   /** User task / prompt to execute. */
   prompt: string;
+  /** Exact harness-native agent name selected by a bare agent selector. Never alias-resolved. */
+  agent?: string;
   /** System prompt body — from agent asset content field. */
   systemPrompt?: string;
   /**

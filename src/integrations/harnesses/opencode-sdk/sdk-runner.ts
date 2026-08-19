@@ -114,9 +114,10 @@ interface SdkClient {
       path: { id: string };
       // `system` and `tools` are forwarded when present — see the #564 bug
       // fixes in runOpencodeSdk(). They mirror @opencode-ai/sdk's
-      // SessionPromptData.body shape (system?: string; tools?: Record<string, boolean>).
+      // SessionPromptData.body shape (agent?: string; system?: string; tools?: Record<string, boolean>).
       body: {
         parts: { type: string; text: string }[];
+        agent?: string;
         system?: string;
         tools?: Record<string, boolean>;
       };
@@ -966,18 +967,21 @@ export async function runOpencodeSdk(
     };
   }
 
-  // #564 bug fixes (1) + (2): forward systemPrompt and tools from the abstract
+  // Forward the exact native agent selector, systemPrompt, and tools from the abstract
   // dispatch request. Both were previously accepted on AgentDispatchRequest but
   // silently dropped on the SDK path, so SDK-mode dispatch ignored agent-asset
   // system prompts and tool policies entirely (the CLI path honours both).
   const dispatch = opts.dispatch;
+  const agent = dispatch?.agent;
   const system = dispatch?.systemPrompt;
   const tools = toolsToSdkAllowlist(dispatch?.tools);
   const body: {
     parts: { type: string; text: string }[];
+    agent?: string;
     system?: string;
     tools?: Record<string, boolean>;
   } = { parts: [{ type: "text", text: prompt }] };
+  if (agent) body.agent = agent;
   if (system) body.system = system;
   if (tools) body.tools = tools;
 

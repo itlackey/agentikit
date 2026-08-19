@@ -21,7 +21,7 @@ import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /**
  * OpenCode builder.
- * Command shape: opencode run [--system-prompt "..."] [--model <m>] "<prompt>"
+ * Command shape: opencode run [--system-prompt "..."] [--agent <name>] [--model <m>] "<prompt>"
  *
  * Tool policy is omitted — opencode manages tool access through its own agent
  * config files, not via CLI flags.
@@ -32,12 +32,14 @@ export const opencodeBuilder: AgentCommandBuilder = {
   lower: createAgentRequestLowerer({
     adapter: "opencode",
     personaChannel: "native",
+    nativeAgentSelector: true,
     tools: "none",
     outputSchema: false,
   }),
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");
+    assertNotFlag(req.agent, "agent");
     let configuredModel: string | undefined;
     const args: string[] = req.model ? [] : [...profile.args];
     if (req.model) {
@@ -56,6 +58,9 @@ export const opencodeBuilder: AgentCommandBuilder = {
     }
     if (req.systemPrompt) {
       args.push("--system-prompt", req.systemPrompt);
+    }
+    if (req.agent) {
+      args.push("--agent", req.agent);
     }
     if (req.model) {
       const resolved = resolveDispatchModel(req, profile, "opencode") as string;

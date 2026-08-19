@@ -156,22 +156,27 @@ function resolveCredential(
 }
 
 /**
- * Read a credential descriptor's value out of `process.env`: the FIRST
- * non-empty trimmed value across `names`, in declared order. A `required`
- * descriptor that resolves to nothing is a config error naming its PRIMARY
- * variable — the one an operator is told to set.
- *
- * The ONE env-credential seam. The live-config dispatch boundary
- * ({@link materializeLlmConnection}) and the FROZEN workflow dispatch boundary
- * (`materializeFrozenLlm` in `workflows/exec/unit-dispatch.ts`, whose frozen
- * snapshots carry a structurally identical descriptor) both read through it, so
- * lookup order and the failure message cannot drift between them.
+ * Lookup-only credential projection used by redaction inventories. Returns the
+ * first non-empty trimmed value without enforcing a required descriptor.
  */
-export function resolveCredentialFromEnv(credential: CredentialDescriptor | undefined): string | undefined {
+export function lookupCredentialFromEnv(
+  credential: CredentialDescriptor | undefined,
+  envSource: NodeJS.ProcessEnv = process.env,
+): string | undefined {
   for (const name of credential?.names ?? []) {
-    const candidate = process.env[name]?.trim();
+    const candidate = envSource[name]?.trim();
     if (candidate) return candidate;
   }
+  return undefined;
+}
+
+/**
+ * The enforcing env-credential seam. Live and frozen dispatch use the same
+ * ordered lookup; a missing required descriptor names its primary variable.
+ */
+export function resolveCredentialFromEnv(credential: CredentialDescriptor | undefined): string | undefined {
+  const value = lookupCredentialFromEnv(credential);
+  if (value) return value;
   if (credential?.required) {
     throw new ConfigError(`Required engine credential ${credential.names[0]} is not set.`, "INVALID_CONFIG_FILE");
   }
@@ -394,9 +399,12 @@ export function resolveEngine(name: string, config: EngineResolutionConfig): Run
 
 /**
  * Resolve only transport/profile/credential material for an already-resolved
- * execution request. Unlike {@link resolveEngine}, this never interprets a
- * configured model alias; the engine lowerer projects the request's exact
- * model afterward (or preserves an explicit null/omission).
+ * execution request. Unlike {@link resolveEngine}, this never reinterprets the
+ * request-owned primary model; the engine lowerer projects that exact value
+ * afterward (or preserves an explicit null/omission). SDK fallback model and
+ * inference selection is likewise frozen into the canonical request during
+ * preparation; this function returns only its raw symbolic transport material
+ * so lowering cannot reinterpret a changed alias/model map.
  */
 export function resolveEngineTransportMaterial(name: string, config: EngineResolutionConfig): RunnerSpec {
   const engine = resolveEngineConfig(name, config);

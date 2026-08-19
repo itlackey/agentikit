@@ -13,10 +13,17 @@ import {
   type ResolvedExecutionRequestV1,
 } from "../../execution/resolved-request";
 import type { ToolSelection } from "../../execution/source";
-import { type ChatCompletionOptions, type ChatMessage, chatCompletion, LlmCallError } from "../../llm/client";
+import {
+  type ChatCompletionOptions,
+  type ChatMessage,
+  chatCompletion,
+  LlmCallError,
+  type LlmCallErrorCode,
+} from "../../llm/client";
 import { HARNESS_REGISTRY } from "../harnesses";
 import type { AgentDispatchRequest, AgentRequestLowerer } from "./builder-shared";
 import { resolveEngineTransportMaterial } from "./engine-resolution";
+import { SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING } from "./execution-definitions";
 import type { RunnerSpec } from "./runner";
 import { executeRunner, type RunnerSeams } from "./runner-dispatch";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "./spawn";
@@ -60,6 +67,8 @@ function registerLoweredExecution<T extends LoweredExecutionRequest>(value: T): 
 export interface DispatchLoweredExecutionOptions {
   readonly executeRunner?: typeof executeRunner;
   readonly chat?: typeof chatCompletion;
+  /** Direct-LLM retry telemetry only; never canonicalized or forwarded to agent/SDK transports. */
+  readonly onRetryAttempt?: NonNullable<ChatCompletionOptions["onRetryAttempt"]>;
   readonly runAgent?: RunnerSeams["runAgent"];
   readonly runSdk?: RunnerSeams["runSdk"];
   /** Operational test/cancellation seams; resolved content/argv/env/cwd/timeout cannot be overridden here. */
@@ -80,6 +89,35 @@ function sortedUnique(values: Iterable<string>): readonly string[] {
 
 function freezeNotices(values: Iterable<Readonly<LoweringNotice>>): readonly Readonly<LoweringNotice>[] {
   return Object.freeze([...values]);
+}
+
+const SAFE_ENGINE_FALLBACK_NOTICE: Readonly<LoweringNotice> = Object.freeze({
+  code: "engine-fallback",
+  severity: "info",
+  adapter: "akm",
+  field: "engine",
+  message: "No engine was selected; using the fixed opencode-sdk fallback.",
+});
+
+const UNRECOGNIZED_REQUEST_NOTICE: Readonly<LoweringNotice> = Object.freeze({
+  code: "unrecognized-request-notice",
+  severity: "warning",
+  adapter: "akm",
+  message: "An unrecognized durable execution notice was omitted at the engine lowering boundary.",
+});
+
+/** Reconstruct durable/untrusted notices without forwarding message/details bytes. */
+function safeRequestNotices(request: ResolvedExecutionRequestV1): readonly Readonly<LoweringNotice>[] {
+  let fallback = false;
+  let unknown = false;
+  for (const notice of request.notices) {
+    if (notice.code === "engine-fallback") fallback = true;
+    else unknown = true;
+  }
+  return Object.freeze([
+    ...(fallback ? [SAFE_ENGINE_FALLBACK_NOTICE] : []),
+    ...(unknown ? [UNRECOGNIZED_REQUEST_NOTICE] : []),
+  ]);
 }
 
 function untranslatedNotice(adapter: string, field: string): Readonly<LoweringNotice> {
@@ -222,7 +260,10 @@ function validateProfile(value: unknown, path: string): void {
 }
 
 /** Strictly detach and deep-freeze non-secret runner material before lowering. */
-function snapshotRunnerSpec(input: RunnerSpec, options: { allowMissingLlmModel?: boolean } = {}): RunnerSpec {
+function snapshotRunnerSpec(
+  input: RunnerSpec,
+  options: { allowMissingLlmModel?: boolean; allowMissingSdkFallbackModel?: boolean } = {},
+): RunnerSpec {
   const cloned = cloneExecutionJsonObject(input, "execution runner material") as unknown as Record<string, unknown>;
   const kind = cloned.kind;
   validateOptionalString(cloned, "engine", "execution runner material");
@@ -242,7 +283,11 @@ function snapshotRunnerSpec(input: RunnerSpec, options: { allowMissingLlmModel?:
     );
     validateProfile(cloned.profile, "execution runner material.profile");
     if (own(cloned, "fallbackConnection")) {
-      validateConnection(cloned.fallbackConnection, "execution runner material.fallbackConnection");
+      validateConnection(
+        cloned.fallbackConnection,
+        "execution runner material.fallbackConnection",
+        !options.allowMissingSdkFallbackModel,
+      );
     }
     if (own(cloned, "fallbackCredential")) {
       validateCredential(cloned.fallbackCredential, "execution runner material.fallbackCredential");
@@ -311,22 +356,59 @@ function requireRunnerShape(request: ResolvedExecutionRequestV1, runner: RunnerS
   }
 }
 
-function directLlmFailureReason(error: unknown): AgentFailureReason {
-  if (!(error instanceof LlmCallError)) return "spawn_failed";
-  switch (error.code) {
+interface DirectLlmFailureClassification {
+  readonly reason: AgentFailureReason;
+  readonly code?: LlmCallErrorCode;
+}
+
+const LLM_CALL_ERROR_CODES = new Set<LlmCallErrorCode>([
+  "aborted",
+  "timeout",
+  "rate_limited",
+  "parse_error",
+  "provider_html_error",
+  "network_error",
+  "provider_error",
+]);
+
+function safeLlmCallErrorCode(error: unknown): LlmCallErrorCode | undefined {
+  if (!(error instanceof LlmCallError)) return undefined;
+  const descriptor = Reflect.getOwnPropertyDescriptor(error, "code");
+  if (!descriptor || !("value" in descriptor) || !LLM_CALL_ERROR_CODES.has(descriptor.value as LlmCallErrorCode)) {
+    return undefined;
+  }
+  return descriptor.value as LlmCallErrorCode;
+}
+
+function directLlmFailure(error: unknown): DirectLlmFailureClassification {
+  const code = safeLlmCallErrorCode(error);
+  if (!code) return { reason: "spawn_failed" };
+  switch (code) {
     case "aborted":
-      return "aborted";
+      return { reason: "aborted", code };
     case "timeout":
-      return "timeout";
+      return { reason: "timeout", code };
     case "rate_limited":
-      return "llm_rate_limit";
+      return { reason: "llm_rate_limit", code };
     case "parse_error":
     case "provider_html_error":
-      return "parse_error";
+      return { reason: "parse_error", code };
     case "network_error":
     case "provider_error":
-      return "spawn_failed";
+      return { reason: "spawn_failed", code };
   }
+}
+
+function safeCaughtErrorMessage(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) {
+    const descriptor = Reflect.getOwnPropertyDescriptor(error, "message");
+    if (descriptor && "value" in descriptor && typeof descriptor.value === "string") return descriptor.value;
+  }
+  if (error === null || error === undefined || typeof error === "number" || typeof error === "boolean") {
+    return String(error);
+  }
+  return "LLM transport failed.";
 }
 
 function requestRuntimeOptions(request: ResolvedExecutionRequestV1): Readonly<RunAgentOptions> {
@@ -373,9 +455,36 @@ function projectAgentRunner(
     ...base,
     profile: Object.freeze(profile) as unknown as typeof base.profile,
   };
+  const sdkFallbackModelFromRequest =
+    base.kind === "sdk" &&
+    settings !== null &&
+    settings !== undefined &&
+    own(settings, SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING);
+  if (sdkFallbackModelFromRequest) {
+    if (settings?.[SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING] !== true) {
+      throw new ConfigError("Resolved SDK fallback model marker is invalid.", "INVALID_CONFIG_FILE");
+    }
+    if (!base.fallbackConnection || !own(request, "model")) {
+      throw new ConfigError("Resolved SDK fallback model material is incomplete.", "INVALID_CONFIG_FILE");
+    }
+    const fallbackConnection: Record<string, unknown> = sterileRecord({ ...base.fallbackConnection });
+    for (const key of LLM_INFERENCE_CONNECTION_FIELDS) delete fallbackConnection[key];
+    delete fallbackConnection.model;
+    if (request.model) fallbackConnection.model = request.model.resolved;
+    const inference = own(request, "inference") ? request.inference : undefined;
+    if (inference) {
+      for (const key of LLM_INFERENCE_CONNECTION_FIELDS) {
+        if (own(inference, key)) fallbackConnection[key] = inference[key];
+      }
+    }
+    common.fallbackConnection = Object.freeze(fallbackConnection) as LlmConnectionConfig;
+  }
   delete common.timeoutMs;
   if (own(request.runtime, "timeoutMs")) common.timeoutMs = request.runtime.timeoutMs;
-  return snapshotRunnerSpec(common as unknown as RunnerSpec) as Extract<RunnerSpec, { kind: "agent" | "sdk" }>;
+  else if (own(base, "timeoutMs")) common.timeoutMs = base.timeoutMs;
+  return snapshotRunnerSpec(common as unknown as RunnerSpec, {
+    allowMissingSdkFallbackModel: sdkFallbackModelFromRequest && request.model === null,
+  }) as Extract<RunnerSpec, { kind: "agent" | "sdk" }>;
 }
 
 function selectedExtensionPaths(request: ResolvedExecutionRequestV1): string[] {
@@ -432,6 +541,7 @@ function projectLlmRunner(
   };
   delete projected.timeoutMs;
   if (own(request.runtime, "timeoutMs")) projected.timeoutMs = request.runtime.timeoutMs;
+  else if (own(base, "timeoutMs")) projected.timeoutMs = base.timeoutMs;
   return snapshotRunnerSpec(projected as unknown as RunnerSpec, { allowMissingLlmModel: true }) as Extract<
     RunnerSpec,
     { kind: "llm" }
@@ -472,7 +582,7 @@ function lowerAgent(
       ...(own(request.engine, "settings") ? ["engine.settings"] : []),
     ]),
     untranslatedFields: lowered.untranslatedFields,
-    notices: freezeNotices([...request.notices, ...lowered.notices]),
+    notices: freezeNotices([...safeRequestNotices(request), ...lowered.notices]),
   });
 }
 
@@ -483,7 +593,7 @@ function lowerLlm(
   const runner = projectLlmRunner(base, request);
   const translated = new Set<string>(["command.content", "engine"]);
   const untranslated = new Set<string>();
-  const notices: Readonly<LoweringNotice>[] = [...request.notices];
+  const notices: Readonly<LoweringNotice>[] = [...safeRequestNotices(request)];
   const reject = (field: string): void => {
     untranslated.add(field);
     notices.push(untranslatedNotice("llm", field));
@@ -491,6 +601,15 @@ function lowerLlm(
   if (own(request.engine, "settings")) translated.add("engine.settings");
   if (own(request, "model")) translated.add("model");
   if (own(request, "persona")) translated.add("persona");
+  if (own(request, "agent")) {
+    if (typeof request.agent === "string" && request.persona === null) {
+      throw new ConfigError(
+        `The direct LLM transport cannot consume native agent selector ${JSON.stringify(request.agent)}.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    translated.add("agent");
+  }
   if (own(request, "conversation")) translated.add("conversation");
   if (own(request, "inference")) {
     const inference = request.inference;
@@ -614,10 +733,13 @@ export async function dispatchLoweredExecutionRequest(
   const optionSnapshot = snapshotStrictRecord(options, "lowered execution dispatch options");
   assertSnapshotKeys(
     optionSnapshot,
-    ["executeRunner", "chat", "runAgent", "runSdk", "runOptions"],
+    ["executeRunner", "chat", "onRetryAttempt", "runAgent", "runSdk", "runOptions"],
     "lowered execution dispatch options",
   );
   const strictOptions = optionSnapshot as unknown as DispatchLoweredExecutionOptions;
+  if (strictOptions.onRetryAttempt !== undefined && typeof strictOptions.onRetryAttempt !== "function") {
+    throw new TypeError("lowered execution dispatch options.onRetryAttempt must be a function");
+  }
   const run = strictOptions.executeRunner ?? executeRunner;
   const operationalSnapshot = snapshotStrictRecord(
     strictOptions.runOptions ?? {},
@@ -666,20 +788,26 @@ export async function dispatchLoweredExecutionRequest(
             try {
               const stdout = await (strictOptions.chat ?? chatCompletion)(spec.connection, [...lowered.messages], {
                 ...lowered.chatOptions,
+                ...(!own(lowered.chatOptions, "timeoutMs") && own(runOptions, "timeoutMs")
+                  ? { timeoutMs: runOptions.timeoutMs }
+                  : {}),
                 ...(runOptions.signal ? { signal: runOptions.signal } : {}),
+                ...(strictOptions.onRetryAttempt ? { onRetryAttempt: strictOptions.onRetryAttempt } : {}),
               });
               return { ok: true, exitCode: 0, stdout, stderr: "", durationMs: Date.now() - started };
             } catch (error) {
               // Return through executeRunner so its credential-aware redactor
               // handles provider bodies before any caller can persist them.
+              const failure = directLlmFailure(error);
               return {
                 ok: false,
                 exitCode: null,
                 stdout: "",
                 stderr: "",
                 durationMs: Date.now() - started,
-                error: error instanceof Error ? error.message : String(error),
-                reason: directLlmFailureReason(error),
+                error: safeCaughtErrorMessage(error),
+                reason: failure.reason,
+                ...(failure.code ? { llmErrorCode: failure.code } : {}),
               };
             }
           },

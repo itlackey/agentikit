@@ -34,6 +34,7 @@ const baseProfile: AgentProfile = {
 interface PromptCapture {
   body?: {
     parts: { type: string; text: string }[];
+    agent?: string;
     system?: string;
     tools?: Record<string, boolean>;
   };
@@ -98,6 +99,20 @@ afterEach(() => {
 });
 
 describe("runOpencodeSdk — #564 bug fix (1): systemPrompt forwarding", () => {
+  test("forwards an exact native agent selector to the SDK prompt body", async () => {
+    const capture: PromptCapture = {};
+    const fake = makeFakeServer(capture);
+    __setTestServer(fake.server as never);
+
+    const res = await runOpencodeSdk(baseProfile, "do the thing", {
+      dispatch: { prompt: "do the thing", agent: "Review-Team.Exact" } as RunAgentOptions["dispatch"],
+      timeoutMs: null,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(capture.body?.agent).toBe("Review-Team.Exact");
+  });
+
   test("forwards dispatch.systemPrompt to the SDK prompt body", async () => {
     const capture: PromptCapture = {};
     const fake = makeFakeServer(capture);

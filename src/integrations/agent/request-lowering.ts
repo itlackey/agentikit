@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { ConfigError } from "../../core/errors";
 import type { ExecutionJsonObject } from "../../execution/json";
 import type { LoweringNotice, ResolvedExecutionRequestV1 } from "../../execution/resolved-request";
 import type { ToolSelection } from "../../execution/source";
@@ -17,6 +18,8 @@ export interface AgentLowererOptions {
   readonly personaChannel: "native" | "prompt";
   readonly tools: ToolTranslation;
   readonly outputSchema: boolean;
+  /** This harness has a documented exact native-agent selector channel. */
+  readonly nativeAgentSelector?: boolean;
   /** Exact inference keys this harness currently translates. */
   readonly inference?: readonly string[];
 }
@@ -113,6 +116,7 @@ export function createAgentRequestLowerer(
     let systemPrompt: string | undefined;
     const persona = own(request, "persona") ? request.persona : undefined;
     const agent = own(request, "agent") ? request.agent : undefined;
+    let nativeAgent: string | undefined;
     if (persona) {
       if (options.personaChannel === "native") {
         systemPrompt = persona.content;
@@ -125,10 +129,20 @@ export function createAgentRequestLowerer(
       }
       if (typeof agent === "string") translated.add("agent");
     } else if (typeof agent === "string") {
-      reject("agent");
+      if (!options.nativeAgentSelector) {
+        throw new ConfigError(
+          `The ${options.adapter} transport cannot consume native agent selector ${JSON.stringify(agent)}.`,
+          "INVALID_CONFIG_FILE",
+        );
+      }
+      nativeAgent = agent;
+      translated.add("agent");
+    } else if (own(request, "agent")) {
+      translated.add("agent");
     }
 
     const dispatch: Record<string, unknown> = { prompt };
+    if (nativeAgent !== undefined) dispatch.agent = nativeAgent;
     if (systemPrompt !== undefined) dispatch.systemPrompt = systemPrompt;
     if (own(request, "model")) {
       translated.add("model");

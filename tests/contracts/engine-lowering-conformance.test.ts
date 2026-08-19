@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderMarkdownExecutionSource } from "../../src/core/adapter/execution-source";
 import type { AkmConfig } from "../../src/core/config/config";
+import { redactSensitiveText } from "../../src/core/redaction";
 import {
   canonicalResolvedExecutionRequest,
   createInlineResolvedCommand,
@@ -13,6 +14,7 @@ import {
   CONVERSATION_FALLBACK_BEGIN,
   CONVERSATION_FALLBACK_END,
 } from "../../src/integrations/agent/conversation-fallback";
+import { resolveEngine } from "../../src/integrations/agent/engine-resolution";
 import {
   dispatchLoweredExecutionRequest,
   listExecutionLowerers,
@@ -23,9 +25,13 @@ import {
   prepareInlineExecution,
   prepareInlineExecutionWithRunner,
 } from "../../src/integrations/agent/inline-execution";
+import type { ResolvedModelMapV1 } from "../../src/integrations/agent/model-map";
 import { PERSONA_FALLBACK_BEGIN, PERSONA_FALLBACK_END } from "../../src/integrations/agent/persona-fallback";
+import type { RunnerSpec } from "../../src/integrations/agent/runner";
+import { collectDispatchSensitiveValues, executeRunner } from "../../src/integrations/agent/runner-dispatch";
 import { HARNESS_REGISTRY } from "../../src/integrations/harnesses";
 import { LlmCallError, type LlmCallErrorCode } from "../../src/llm/client";
+import { withEnv } from "../_helpers/sandbox";
 
 const CLI_HARNESSES = HARNESS_REGISTRY.filter((harness) => harness.agentBuilder).map((harness) => harness.id);
 
@@ -167,6 +173,70 @@ describe("resolved execution lowerer registry", () => {
     });
     expect(lowered.untranslatedFields).toContain("tools");
     expect(lowered.notices.some((notice) => notice.field === "tools")).toBe(true);
+  });
+
+  test.each([
+    "direct",
+    "task",
+    "workflow",
+  ] as const)("%s preserves an exact bare selector for matching native harness lowering", (invocationKind) => {
+    const exactAgent = "Review-Team.Exact";
+    const prepared = prepareInlineExecution({
+      content: "Review exact selector dispatch.",
+      config: configFor("claude"),
+      invocationKind,
+      current: { agent: exactAgent, tools: [] },
+    });
+    const lowered = lowerResolvedExecutionRequest(prepared.request, prepared.config);
+    if (!("dispatch" in lowered)) throw new Error("fixture must use a native agent lowerer");
+    expect(lowered.request.agent).toBe(exactAgent);
+    expect(lowered.dispatch.agent).toBe(exactAgent);
+    expect(lowered.translatedFields).toContain("agent");
+    expect(lowered.untranslatedFields).not.toContain("agent");
+  });
+
+  test("rejects a bare selector before dispatch when the chosen harness has no exact native channel", async () => {
+    const unsupported = requestFor("aider", "agent", {
+      agent: "Review-Team.Exact",
+      persona: null,
+      tools: [],
+      authorization: { status: "not-required" },
+    });
+    expect(() => lowerResolvedExecutionRequest(unsupported, configFor("aider"))).toThrow(
+      /aider.*native agent|agent selector.*aider|cannot.*agent/i,
+    );
+
+    const directLlm = requestFor("fixture-llm", "llm", {
+      agent: "Review-Team.Exact",
+      persona: null,
+      tools: [],
+      authorization: { status: "not-required" },
+    });
+    expect(() => lowerResolvedExecutionRequest(directLlm, configFor("fixture-llm", "llm"))).toThrow(
+      /llm.*native agent|agent selector.*llm|cannot.*agent/i,
+    );
+  });
+
+  test("rejects forged native-agent request state before touching its accessor", () => {
+    const valid = requestFor("claude", "agent", {
+      agent: "Review-Team.Exact",
+      persona: null,
+      tools: [],
+      authorization: { status: "not-required" },
+    });
+    let touched = false;
+    const forged = Object.create(valid) as ResolvedExecutionRequestV1;
+    Object.defineProperty(forged, "agent", {
+      enumerable: true,
+      get() {
+        touched = true;
+        throw new Error("native agent accessor ran");
+      },
+    });
+    expect(() => lowerResolvedExecutionRequest(forged, configFor("claude"))).toThrow(
+      /constructed|boundary|resolved execution request/i,
+    );
+    expect(touched).toBe(false);
   });
 
   test("preserves ordered conversation roles natively for LLM and canonically for CLI fallback", () => {
@@ -332,6 +402,195 @@ describe("optimistic lowering safety", () => {
     expect(lowered.runner.profile).not.toHaveProperty("modelAliases");
   });
 
+  test.each([
+    "direct",
+    "task",
+    "workflow",
+  ] as const)("freezes an SDK fallback model-map selection and structured inference during %s preparation", (invocationKind) => {
+    const config = {
+      engines: {
+        fixture: {
+          kind: "agent",
+          platform: "opencode-sdk",
+          llmEngine: "fallback",
+        },
+        fallback: {
+          kind: "llm",
+          provider: "openai-compatible",
+          endpoint: "https://fallback.invalid/v1/chat/completions",
+          model: "fast",
+          temperature: 0.25,
+        },
+      },
+      defaults: { engine: "fixture", llmEngine: "fallback" },
+    } as unknown as AkmConfig;
+    const modelMap = {
+      version: 1,
+      aliases: {
+        fast: {
+          fallback: {
+            model: "provider/exact-fallback-model",
+            inference: { maxTokens: 321, enableThinking: true },
+          },
+        },
+      },
+    } as const satisfies ResolvedModelMapV1;
+    const prepared = prepareInlineExecution({
+      content: "Use the frozen fallback.",
+      config,
+      modelMap,
+      invocationKind,
+      current: { tools: [] },
+    });
+
+    expect(prepared.request.model).toEqual({
+      input: "fast",
+      interpretation: "alias",
+      resolved: "provider/exact-fallback-model",
+    });
+    expect(prepared.request.inference).toEqual({
+      maxTokens: 321,
+      enableThinking: true,
+      temperature: 0.25,
+    });
+    expect(prepared.request.engine.settings).toMatchObject({ sdkFallbackModelFromRequest: true });
+
+    // Lowering must consume only the canonical request selection. Neither a
+    // later config edit nor a changed model map can reinterpret the frozen
+    // fallback identity.
+    const mutableEngines = config.engines as Record<string, { llmEngine?: string }>;
+    (mutableEngines.fixture as { llmEngine: string }).llmEngine = "changed-after-preparation";
+    (modelMap.aliases.fast.fallback as { model: string }).model = "changed-after-preparation";
+    const lowered = lowerResolvedExecutionRequest(prepared.request, prepared.config);
+    expect(lowered.runner.kind).toBe("sdk");
+    if (lowered.runner.kind !== "sdk") throw new Error("fixture must use SDK lowering");
+    expect(lowered.runner.profile.model).toBe("provider/exact-fallback-model");
+    expect(lowered.runner.fallbackConnection).toMatchObject({
+      model: "provider/exact-fallback-model",
+      maxTokens: 321,
+      enableThinking: true,
+      temperature: 0.25,
+    });
+  });
+
+  test("does not re-alias an explicit SDK primary model while freezing fallback transport", () => {
+    const config = {
+      engines: {
+        fixture: {
+          kind: "agent",
+          platform: "opencode-sdk",
+          model: "configured-primary-must-not-win",
+          llmEngine: "fallback",
+        },
+        fallback: {
+          kind: "llm",
+          provider: "openai-compatible",
+          endpoint: "https://fallback.invalid/v1/chat/completions",
+          model: "fast",
+        },
+      },
+      defaults: { engine: "fixture", llmEngine: "fallback" },
+      modelAliases: {
+        fast: { fallback: "provider/exact-fallback-model" },
+        "provider/exact-primary-model": { "opencode-sdk": "must-not-double-alias-primary" },
+      },
+    } as unknown as AkmConfig;
+    const modelMap = {
+      version: 1,
+      aliases: {
+        primary: {
+          "opencode-sdk": { model: "provider/exact-primary-model" },
+        },
+      },
+    } as const satisfies ResolvedModelMapV1;
+    const prepared = prepareInlineExecution({
+      content: "Keep the primary exact.",
+      config,
+      modelMap,
+      invocationKind: "direct",
+      current: {
+        model: "primary",
+        tools: [],
+      },
+    });
+    const lowered = lowerResolvedExecutionRequest(prepared.request, prepared.config);
+    expect(lowered.runner.kind).toBe("sdk");
+    if (lowered.runner.kind !== "sdk") throw new Error("fixture must use SDK lowering");
+    expect(lowered.runner.profile.model).toBe("provider/exact-primary-model");
+    expect(lowered.runner.fallbackConnection?.model).toBe("fast");
+  });
+
+  test.each([
+    ["operator/exact-model", "operator/exact-model"],
+    [null, undefined],
+  ] as const)("projects an SDK model override %p onto primary and fallback transport", (model, expected) => {
+    const config = {
+      engines: {
+        fixture: { kind: "agent", platform: "opencode-sdk", llmEngine: "fallback" },
+        fallback: {
+          kind: "llm",
+          provider: "openai-compatible",
+          endpoint: "https://fallback.invalid/v1/chat/completions",
+          model: "provider/configured-fallback",
+        },
+      },
+      defaults: { engine: "fixture", llmEngine: "fallback" },
+    } as unknown as AkmConfig;
+    const prepared = prepareInlineExecution({
+      content: "Use the selected SDK model.",
+      config,
+      invocationKind: "direct",
+      current: { model, tools: [] },
+    });
+    const lowered = lowerResolvedExecutionRequest(prepared.request, prepared.config);
+    expect(lowered.runner.kind).toBe("sdk");
+    if (lowered.runner.kind !== "sdk") throw new Error("fixture must use SDK lowering");
+    expect(lowered.runner.profile.model).toBe(expected);
+    expect(lowered.runner.fallbackConnection?.model).toBe(expected);
+  });
+
+  test("preserves an SDK fallback-derived whole-run timeout unless request runtime explicitly overrides it", () => {
+    const config = {
+      engines: {
+        fixture: { kind: "agent", platform: "opencode-sdk", llmEngine: "fallback" },
+        fallback: {
+          kind: "llm",
+          provider: "openai-compatible",
+          endpoint: "https://fallback.invalid/v1/chat/completions",
+          model: "provider/fallback",
+          timeoutMs: 12_345,
+        },
+      },
+      defaults: { engine: "fixture", llmEngine: "fallback" },
+    } as unknown as AkmConfig;
+    const legacy = resolveEngine("fixture", config);
+    expect(legacy.kind).toBe("sdk");
+    if (legacy.kind !== "sdk") throw new Error("fixture must resolve to SDK");
+    expect(legacy.timeoutMs).toBe(12_345);
+    expect(legacy.fallbackTimeoutMs).toBe(12_345);
+
+    const prepared = prepareInlineExecution({
+      content: "Preserve SDK timeout.",
+      config,
+      invocationKind: "direct",
+      current: { tools: [] },
+    });
+    const lowered = lowerResolvedExecutionRequest(prepared.request, prepared.config);
+    expect(lowered.runner.kind).toBe("sdk");
+    if (lowered.runner.kind !== "sdk") throw new Error("fixture must lower to SDK");
+    expect(lowered.runner.timeoutMs).toBe(legacy.timeoutMs);
+    expect(lowered.runner.fallbackTimeoutMs).toBe(legacy.fallbackTimeoutMs);
+
+    const explicit = lowerResolvedExecutionRequest(
+      requestFor("opencode-sdk", "sdk", { runtime: { timeoutMs: null } }),
+      config,
+    );
+    expect(explicit.runner.kind).toBe("sdk");
+    if (explicit.runner.kind !== "sdk") throw new Error("fixture must lower to SDK");
+    expect(explicit.runner.timeoutMs).toBeNull();
+    expect(explicit.runner.fallbackTimeoutMs).toBe(12_345);
+  });
+
   test("frozen-runner lowering validates authorization before touching hostile runner material", () => {
     const denied = requestFor("claude", "agent", {
       authorization: { status: "denied", reason: "runner must stay untouched", policy: { id: "deny" } },
@@ -401,11 +660,139 @@ describe("optimistic lowering safety", () => {
         reason: "spawn_failed",
         error: "provider rejected fixture option with [REDACTED]",
       });
+      expect(Object.hasOwn(result, "llmErrorCode")).toBe(false);
       expect(JSON.stringify(result)).not.toContain("wp5-super-secret");
       expect(calls).toBe(1);
     } finally {
       delete process.env.AKM_WP5_FIXTURE_KEY;
     }
+  });
+
+  test("reconstructs durable request notices from a fixed safe vocabulary", () => {
+    const sentinel = "DO-NOT-LEAK-request-notice";
+    for (const [platform, kind, config] of [
+      ["claude", "agent", configFor("claude")],
+      ["fixture-llm", "llm", configFor("fixture-llm", "llm")],
+    ] as const) {
+      const request = requestFor(platform, kind, {
+        notices: [
+          {
+            code: "engine-fallback",
+            severity: "warning",
+            adapter: sentinel,
+            field: sentinel,
+            message: sentinel,
+            details: { sentinel },
+          },
+          {
+            code: "unknown-provider-body",
+            severity: "warning",
+            adapter: sentinel,
+            message: sentinel,
+            details: { nested: sentinel },
+          },
+          {
+            code: "second-unknown-provider-body",
+            severity: "info",
+            adapter: sentinel,
+            message: sentinel,
+          },
+        ],
+      });
+      const resumed = decodeResolvedExecutionRequest(JSON.parse(canonicalResolvedExecutionRequest(request)));
+      const lowered = lowerResolvedExecutionRequest(resumed, config);
+      expect(JSON.stringify(lowered.notices)).not.toContain(sentinel);
+      expect(lowered.notices.filter((notice) => notice.code === "engine-fallback")).toEqual([
+        {
+          code: "engine-fallback",
+          severity: "info",
+          adapter: "akm",
+          field: "engine",
+          message: "No engine was selected; using the fixed opencode-sdk fallback.",
+        },
+      ]);
+      expect(lowered.notices.filter((notice) => notice.code === "unrecognized-request-notice")).toEqual([
+        {
+          code: "unrecognized-request-notice",
+          severity: "warning",
+          adapter: "akm",
+          message: "An unrecognized durable execution notice was omitted at the engine lowering boundary.",
+        },
+      ]);
+    }
+  });
+
+  test("collects symbolic primary and SDK fallback credentials for result and out-of-band redaction", async () => {
+    const primarySecret = "primary-symbolic-secret";
+    const fallbackSecret = "fallback-symbolic-secret";
+    const envSource = {
+      PRIMARY_SYMBOLIC_KEY: primarySecret,
+      FALLBACK_SYMBOLIC_KEY: fallbackSecret,
+    } as NodeJS.ProcessEnv;
+    const primary: RunnerSpec = {
+      kind: "llm",
+      engine: "primary",
+      connection: {
+        provider: "openai-compatible",
+        endpoint: "https://primary.invalid/v1/chat/completions",
+        model: "primary",
+      },
+      credential: { names: ["PRIMARY_SYMBOLIC_KEY"], required: true },
+    };
+    const sdk: RunnerSpec = {
+      kind: "sdk",
+      engine: "sdk",
+      profile: {
+        name: "sdk",
+        platform: "opencode-sdk",
+        bin: "opencode",
+        args: [],
+        stdio: "captured",
+        envPassthrough: [],
+        parseOutput: "text",
+      },
+      fallbackConnection: {
+        provider: "openai-compatible",
+        endpoint: "https://fallback.invalid/v1/chat/completions",
+        model: "fallback",
+      },
+      fallbackCredential: { names: ["FALLBACK_SYMBOLIC_KEY"], required: true },
+    };
+
+    expect(collectDispatchSensitiveValues(primary, { envSource }, envSource)).toContain(primarySecret);
+    const sensitive = collectDispatchSensitiveValues(sdk, { envSource }, envSource);
+    expect(sensitive).toContain(fallbackSecret);
+    expect(redactSensitiveText(`draft=${fallbackSecret}`, sensitive)).toBe("draft=[REDACTED]");
+
+    const result = await withEnv({ PRIMARY_SYMBOLIC_KEY: primarySecret, FALLBACK_SYMBOLIC_KEY: fallbackSecret }, () =>
+      executeRunner(
+        sdk,
+        "run",
+        {},
+        {
+          runSdk: async (_profile, _prompt, _options, fallback) => {
+            expect(fallback?.apiKey).toBe(fallbackSecret);
+            return {
+              ok: false,
+              exitCode: 1,
+              stdout: `OPENCODE_CONFIG_CONTENT=${JSON.stringify({ key: fallbackSecret })}`,
+              stderr: fallbackSecret,
+              durationMs: 1,
+              error: `provider echoed ${fallbackSecret}`,
+              parsed: { body: fallbackSecret },
+              reason: "spawn_failed",
+            };
+          },
+        },
+      ),
+    );
+    expect(JSON.stringify(result)).not.toContain(fallbackSecret);
+    expect(result).toMatchObject({
+      stdout: 'OPENCODE_CONFIG_CONTENT={"key":"[REDACTED]"}',
+      stderr: "[REDACTED]",
+      error: "provider echoed [REDACTED]",
+      parsed: { body: "[REDACTED]" },
+    });
   });
 
   test.each([
@@ -434,7 +821,62 @@ describe("optimistic lowering safety", () => {
         throw new LlmCallError(`typed ${code} failure`, code satisfies LlmCallErrorCode);
       },
     });
-    expect(result).toMatchObject({ ok: false, reason, error: `typed ${code} failure` });
+    expect(result).toMatchObject({ ok: false, reason, error: `typed ${code} failure`, llmErrorCode: code });
+  });
+
+  test("preserves a safe LLM error code while redacting a typed provider body", async () => {
+    const secret = "typed-provider-secret";
+    await withEnv({ AKM_WP5_FIXTURE_KEY: secret }, async () => {
+      const lowered = lowerResolvedExecutionRequest(
+        requestFor("fixture-llm", "llm", { tools: [], authorization: { status: "not-required" } }),
+        configFor("fixture-llm", "llm"),
+      );
+      const result = await dispatchLoweredExecutionRequest(lowered, {
+        chat: async () => {
+          throw new LlmCallError(`<html>provider echoed ${secret}</html>`, "provider_html_error");
+        },
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        reason: "parse_error",
+        llmErrorCode: "provider_html_error",
+        error: "<html>provider echoed [REDACTED]</html>",
+      });
+      expect(JSON.stringify(result)).not.toContain(secret);
+    });
+  });
+
+  test("does not invoke an accessor-backed LLM error discriminator", async () => {
+    const lowered = lowerResolvedExecutionRequestWithRunner(
+      requestFor("fixture-llm", "llm", { tools: [], authorization: { status: "not-required" } }),
+      {
+        kind: "llm",
+        engine: "fixture",
+        connection: {
+          provider: "openai-compatible",
+          endpoint: "https://fixture.invalid/v1/chat/completions",
+          model: "provider/exact-model",
+        },
+      },
+    );
+    let touched = false;
+    const hostile = Object.create(LlmCallError.prototype) as LlmCallError;
+    Object.defineProperty(hostile, "message", { value: "safe hostile failure" });
+    Object.defineProperty(hostile, "code", {
+      enumerable: true,
+      get() {
+        touched = true;
+        throw new Error("error-code accessor ran");
+      },
+    });
+    const result = await dispatchLoweredExecutionRequest(lowered, {
+      chat: async () => {
+        throw hostile;
+      },
+    });
+    expect(touched).toBe(false);
+    expect(result).toMatchObject({ ok: false, reason: "spawn_failed", error: "safe hostile failure" });
+    expect(Object.hasOwn(result, "llmErrorCode")).toBe(false);
   });
 
   test("persona fallback is byte-exact and applied once across durable resume", () => {
@@ -555,6 +997,138 @@ describe("optimistic lowering safety", () => {
       },
     });
     expect(captured).toMatchObject({ timeoutMs: 0, signal: controller.signal });
+  });
+
+  test("propagates retry telemetry only into direct LLM chat options", async () => {
+    const lowered = lowerResolvedExecutionRequestWithRunner(
+      requestFor("fixture-llm", "llm", { tools: [], authorization: { status: "not-required" } }),
+      {
+        kind: "llm",
+        engine: "fixture",
+        connection: {
+          provider: "openai-compatible",
+          endpoint: "https://fixture.invalid/v1/chat/completions",
+          model: "provider/exact-model",
+        },
+      },
+    );
+    const onRetryAttempt = () => {};
+    let captured: unknown;
+    await dispatchLoweredExecutionRequest(lowered, {
+      onRetryAttempt,
+      chat: async (_connection, _messages, options) => {
+        captured = options;
+        return "done";
+      },
+    } as Parameters<typeof dispatchLoweredExecutionRequest>[1]);
+    expect(captured).toMatchObject({ timeoutMs: 0, onRetryAttempt });
+
+    for (const platform of ["claude", "opencode-sdk"] as const) {
+      const native = lowerResolvedExecutionRequest(requestFor(platform), configFor(platform));
+      let capturedRunOptions: unknown;
+      const nativeResult = await dispatchLoweredExecutionRequest(native, {
+        onRetryAttempt,
+        executeRunner: async (_runner, _prompt, options) => {
+          capturedRunOptions = options;
+          return { ok: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 };
+        },
+      } as Parameters<typeof dispatchLoweredExecutionRequest>[1]);
+      expect(Object.hasOwn(capturedRunOptions as object, "onRetryAttempt")).toBe(false);
+      expect(Object.hasOwn(nativeResult, "llmErrorCode")).toBe(false);
+    }
+  });
+
+  test("rejects hostile retry telemetry descriptors without invoking accessors", async () => {
+    const lowered = lowerResolvedExecutionRequestWithRunner(
+      requestFor("fixture-llm", "llm", { tools: [], authorization: { status: "not-required" } }),
+      {
+        kind: "llm",
+        engine: "fixture",
+        connection: {
+          provider: "openai-compatible",
+          endpoint: "https://fixture.invalid/v1/chat/completions",
+          model: "provider/exact-model",
+        },
+      },
+    );
+    let touched = false;
+    const accessor = Object.defineProperty({}, "onRetryAttempt", {
+      enumerable: true,
+      get() {
+        touched = true;
+        throw new Error("retry accessor ran");
+      },
+    });
+    await expect(
+      dispatchLoweredExecutionRequest(lowered, accessor as Parameters<typeof dispatchLoweredExecutionRequest>[1]),
+    ).rejects.toThrow(/accessor|data property/i);
+    expect(touched).toBe(false);
+
+    const inherited = Object.create({ onRetryAttempt() {} }) as Parameters<typeof dispatchLoweredExecutionRequest>[1];
+    await expect(dispatchLoweredExecutionRequest(lowered, inherited)).rejects.toThrow(/plain|null prototype/i);
+    await expect(
+      dispatchLoweredExecutionRequest(lowered, {
+        onRetryAttempt: "not-a-function",
+      } as unknown as Parameters<typeof dispatchLoweredExecutionRequest>[1]),
+    ).rejects.toThrow(/onRetryAttempt.*function/i);
+  });
+
+  test("uses the frozen runner timeout when request runtime omits timeout", async () => {
+    const lowered = lowerResolvedExecutionRequestWithRunner(
+      requestFor("fixture-llm", "llm", {
+        tools: [],
+        authorization: { status: "not-required" },
+        runtime: {},
+      }),
+      {
+        kind: "llm",
+        engine: "fixture",
+        connection: {
+          provider: "openai-compatible",
+          endpoint: "https://fixture.invalid/v1/chat/completions",
+          model: "provider/exact-model",
+        },
+        timeoutMs: 4_321,
+      },
+    );
+    let captured: unknown;
+    await dispatchLoweredExecutionRequest(lowered, {
+      runOptions: { timeoutMs: 99_999 },
+      chat: async (_connection, _messages, options) => {
+        captured = options;
+        return "done";
+      },
+    });
+    expect(captured).toMatchObject({ timeoutMs: 4_321 });
+  });
+
+  test.each([null, 0] as const)("preserves explicit request timeout %s over runner defaults", async (timeoutMs) => {
+    const lowered = lowerResolvedExecutionRequestWithRunner(
+      requestFor("fixture-llm", "llm", {
+        tools: [],
+        authorization: { status: "not-required" },
+        runtime: { timeoutMs },
+      }),
+      {
+        kind: "llm",
+        engine: "fixture",
+        connection: {
+          provider: "openai-compatible",
+          endpoint: "https://fixture.invalid/v1/chat/completions",
+          model: "provider/exact-model",
+        },
+        timeoutMs: 4_321,
+      },
+    );
+    let captured: unknown;
+    await dispatchLoweredExecutionRequest(lowered, {
+      runOptions: { timeoutMs: 99_999 },
+      chat: async (_connection, _messages, options) => {
+        captured = options;
+        return "done";
+      },
+    });
+    expect(captured).toMatchObject({ timeoutMs });
   });
 
   test("rejects accessor-backed operational options without invoking them", async () => {
