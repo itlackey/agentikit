@@ -34,6 +34,9 @@ import {
   cloneAdapterExtensions,
   cloneToolSelection,
   cloneUnresolvedExecutionDefaults,
+  executionPersonaMatchesSelector,
+  isPortableExecutionAgentSelector,
+  requireStableExecutionSelector,
   type ToolSelection,
   type UnresolvedExecutionDefaults,
 } from "../../execution/source";
@@ -141,8 +144,6 @@ const planInstances = new WeakSet<object>();
 const ENGINE_NAME_PATTERN = new RegExp(ENGINE_NAME_PATTERN_SOURCE);
 const MODEL_ALIAS_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const RESERVED_ENGINE_KEYS = new Set(["__proto__", "constructor", "prototype", "tostring"]);
-const CONTROL_OR_LINE_SEPARATOR_PATTERN = /[\p{Cc}\p{Zl}\p{Zp}]/u;
-const FORMAT_CHARACTER_PATTERN = /\p{Cf}/u;
 
 function record(value: unknown, path: string): StrictRecordSnapshot {
   return snapshotStrictRecord(value, path);
@@ -161,38 +162,7 @@ function required(recordValue: StrictRecordSnapshot, key: string, path: string):
 }
 
 function stableIdentifier(value: unknown, path: string): string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > 512 ||
-    value.trim() !== value ||
-    value.normalize("NFC") !== value ||
-    !isWellFormedUnicode(value) ||
-    hasUnsafeIdentifierCharacter(value)
-  ) {
-    throw new TypeError(`${path} must be a non-empty stable NFC identifier`);
-  }
-  return value;
-}
-
-function isWellFormedUnicode(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) return false;
-  }
-  return true;
-}
-
-function hasUnsafeIdentifierCharacter(value: string): boolean {
-  for (const character of value) {
-    if (CONTROL_OR_LINE_SEPARATOR_PATTERN.test(character)) return true;
-    if (FORMAT_CHARACTER_PATTERN.test(character) && character !== "\u200C" && character !== "\u200D") return true;
-  }
-  return false;
+  return requireStableExecutionSelector(value, path);
 }
 
 function canonicalEngineName(value: unknown, path: string): string {
@@ -333,7 +303,7 @@ function normalizeModelMap(value: unknown): ResolvedModelMapV1 {
     const engineInput = record(rawEngines, `modelMap.aliases.${alias}`);
     const profiles: Array<readonly [string, Readonly<{ model: string; inference?: ExecutionJsonObject | null }>]> = [];
     for (const [engine, rawProfile] of Object.entries(engineInput)) {
-      canonicalEngineName(engine, `modelMap.aliases.${alias}.${engine}`);
+      if (engine !== "*") canonicalEngineName(engine, `modelMap.aliases.${alias}.${engine}`);
       const profile = record(rawProfile, `modelMap.aliases.${alias}.${engine}`);
       only(profile, ["model", "inference"], `modelMap.aliases.${alias}.${engine}`);
       const model = required(profile, "model", `modelMap.aliases.${alias}.${engine}`);
@@ -415,14 +385,6 @@ function fallbackProvenance(): ExecutionFieldProvenance {
 
 function sourceProvenance(layer: string, kind: "command" | "agent"): ExecutionFieldProvenance {
   return Object.freeze({ layer, kind, via: "source" });
-}
-
-function isPortableAgentSelector(value: string): boolean {
-  return /^(?:[^/]+\/\/)?agents\/[^/]/.test(value);
-}
-
-function personaMatchesSelector(selector: string, personaRef: string): boolean {
-  return selector.includes("//") ? selector === personaRef : personaRef.endsWith(`//${selector}`);
 }
 
 function chooseEngine(
@@ -736,14 +698,17 @@ export function planExecutionCascade(raw: PlanExecutionCascadeInput): ResolvedEx
     } else {
       const selector = stableIdentifier(selectedAgent.value, "selected agent");
       resolvedAgent = selector;
-      if (isPortableAgentSelector(selector)) {
-        if (!persona || !personaMatchesSelector(selector, persona.source.ref)) {
+      if (isPortableExecutionAgentSelector(selector)) {
+        if (!persona || !executionPersonaMatchesSelector(selector, persona.source.ref)) {
           throw new ConfigError(
             `Selected agent ${JSON.stringify(selector)} does not match the resolved persona source.`,
             "INVALID_CONFIG_FILE",
             "Resolve the selected agent through its bundle adapter before planning execution.",
           );
         }
+      } else {
+        persona = null;
+        requestPersonaPresent = true;
       }
     }
   }

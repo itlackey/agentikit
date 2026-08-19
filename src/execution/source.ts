@@ -170,6 +170,32 @@ function requireCanonicalString(value: unknown, path: string): string {
   return value;
 }
 
+/**
+ * Validate a selector/layer identifier that may cross the durable execution
+ * boundary. Keep this shared with the cascade planner so resume cannot admit a
+ * selector the live planner would reject.
+ */
+export function requireStableExecutionSelector(value: unknown, path: string): string {
+  let selector: string;
+  try {
+    selector = requireCanonicalString(value, path);
+  } catch (cause) {
+    throw new TypeError(`${path} must be a non-empty stable NFC identifier`, { cause });
+  }
+  if (selector.length > 512 || selector.trim() !== selector) {
+    throw new TypeError(`${path} must be a non-empty stable NFC identifier`);
+  }
+  return selector;
+}
+
+export function isPortableExecutionAgentSelector(value: string): boolean {
+  return /^(?:[^/]+\/\/)?agents\/[^/]/.test(value);
+}
+
+export function executionPersonaMatchesSelector(selector: string, personaRef: string): boolean {
+  return selector.includes("//") ? selector === personaRef : personaRef.endsWith(`//${selector}`);
+}
+
 function hasUnsafeIdentityCharacter(value: string): boolean {
   for (const character of value) {
     if (CONTROL_OR_LINE_SEPARATOR_PATTERN.test(character)) return true;

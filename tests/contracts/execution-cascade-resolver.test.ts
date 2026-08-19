@@ -507,6 +507,43 @@ describe("common execution cascade resolver", () => {
     });
   });
 
+  test("expands the valid wildcard model-map profile for engines without a dedicated column", () => {
+    const wildcardMap = mergeModelMapLayers(
+      parseModelMapLayer(
+        JSON.stringify({
+          version: 1,
+          aliases: {
+            balanced: {
+              "*": { model: "provider/default", inference: { effort: "medium", wildcard: true } },
+            },
+          },
+        }),
+        "wildcard cascade models.json",
+      ),
+    );
+    const input = baseInput();
+    const plan = planExecutionCascade({
+      ...input,
+      modelMap: wildcardMap,
+      layers: {
+        installation: layer("installation", { engine: "reviewer" }),
+        current: layer("current", { model: "balanced", tools: [] }),
+      },
+    });
+
+    expect(plan.request.model).toEqual({
+      input: "balanced",
+      interpretation: "alias",
+      resolved: "provider/default",
+    });
+    expect(plan.request.inference).toMatchObject({ effort: "medium", wildcard: true });
+    expect(plan.provenance["/inference/wildcard"]).toEqual({
+      layer: "current",
+      kind: "current",
+      via: "model-alias",
+    });
+  });
+
   test("uses segment-safe JSON Pointer provenance for inference keys", () => {
     const input = baseInput();
     const plan = planExecutionCascade({

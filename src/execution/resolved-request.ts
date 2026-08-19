@@ -13,8 +13,11 @@ import {
   cloneToolSelection,
   decodeExecutionSourceIdentity,
   type ExecutionSourceIdentity,
+  executionPersonaMatchesSelector,
   isAdapterRenderedCommandSource,
   isAdapterRenderedPersonaSource,
+  isPortableExecutionAgentSelector,
+  requireStableExecutionSelector,
   type ToolSelection,
 } from "./source";
 
@@ -442,10 +445,29 @@ export function cloneResolvedPersonaContent(input: ResolvedPersonaContent): Reso
 
 function cloneAgentSelector(input: unknown, path: string): string | null {
   if (input === null) return null;
-  if (typeof input !== "string" || input.length === 0) {
-    throw new TypeError(`${path} must be null or a non-empty string`);
+  return requireStableExecutionSelector(input, path);
+}
+
+function assertAgentPersonaInvariant(request: Record<string, unknown>, path: string): void {
+  if (!Object.hasOwn(request, "agent")) return;
+  if (!Object.hasOwn(request, "persona")) {
+    throw new TypeError(`${path}.persona must be present when ${path}.agent is selected or explicitly null`);
   }
-  return input;
+  const agent = request.agent as string | null;
+  const persona = request.persona as ResolvedPersonaContent | null;
+  if (agent === null) {
+    if (persona !== null) throw new TypeError(`${path}.agent null requires ${path}.persona null`);
+    return;
+  }
+  if (isPortableExecutionAgentSelector(agent)) {
+    if (persona === null || !executionPersonaMatchesSelector(agent, persona.source.ref)) {
+      throw new TypeError(`${path}.agent portable selector must match the non-null persona source`);
+    }
+    return;
+  }
+  if (persona !== null) {
+    throw new TypeError(`${path}.agent native selector requires ${path}.persona null`);
+  }
 }
 
 export type ResolvedExecutionRequestInput = Omit<ResolvedExecutionRequestV1, "schemaVersion">;
@@ -497,6 +519,7 @@ export function createResolvedExecutionRequest(input: ResolvedExecutionRequestIn
     }
     out.persona = record.persona === null ? null : cloneResolvedPersonaLeaf(record.persona);
   }
+  assertAgentPersonaInvariant(out, "resolved execution request");
   if (Object.hasOwn(record, "model")) {
     if (record.model === undefined) throw new TypeError("model must be omitted, null, or a model selection");
     out.model = record.model === null ? null : cloneModel(record.model as ResolvedModelSelection);
