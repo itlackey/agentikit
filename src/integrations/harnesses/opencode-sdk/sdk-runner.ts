@@ -813,6 +813,18 @@ async function deleteSessionBestEffort(
   }
 }
 
+function abortedBeforeSdkStart(profile: AgentProfile): AgentRunResult {
+  return {
+    ok: false,
+    stdout: "",
+    stderr: "",
+    durationMs: 0,
+    exitCode: null,
+    reason: "aborted" as AgentFailureReason,
+    error: `opencode-sdk agent "${profile.name}" not started: caller signal already aborted`,
+  };
+}
+
 export async function runOpencodeSdk(
   profile: AgentProfile,
   prompt: string,
@@ -826,17 +838,7 @@ export async function runOpencodeSdk(
   const setTimeoutImpl = opts.setTimeoutFn ?? setTimeout;
   const clearTimeoutImpl = opts.clearTimeoutFn ?? clearTimeout;
 
-  if (opts.signal?.aborted) {
-    return {
-      ok: false,
-      stdout: "",
-      stderr: "",
-      durationMs: 0,
-      exitCode: null,
-      reason: "aborted" as AgentFailureReason,
-      error: `opencode-sdk agent "${profile.name}" not started: caller signal already aborted`,
-    };
-  }
+  if (opts.signal?.aborted) return abortedBeforeSdkStart(profile);
 
   let client: SdkClient;
   if (_testServer) {

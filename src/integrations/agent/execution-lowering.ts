@@ -460,21 +460,25 @@ function projectAgentRunner(
     settings !== null &&
     settings !== undefined &&
     own(settings, SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING);
-  if (sdkFallbackModelFromRequest) {
-    if (settings?.[SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING] !== true) {
-      throw new ConfigError("Resolved SDK fallback model marker is invalid.", "INVALID_CONFIG_FILE");
-    }
-    if (!base.fallbackConnection || !own(request, "model")) {
-      throw new ConfigError("Resolved SDK fallback model material is incomplete.", "INVALID_CONFIG_FILE");
-    }
+  const clearsSdkFallbackModel = base.kind === "sdk" && base.fallbackConnection !== undefined && request.model === null;
+  if (sdkFallbackModelFromRequest && settings?.[SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING] !== true) {
+    throw new ConfigError("Resolved SDK fallback model marker is invalid.", "INVALID_CONFIG_FILE");
+  }
+  if (sdkFallbackModelFromRequest && (!base.fallbackConnection || !own(request, "model"))) {
+    throw new ConfigError("Resolved SDK fallback model material is incomplete.", "INVALID_CONFIG_FILE");
+  }
+  if (base.kind === "sdk" && base.fallbackConnection) {
     const fallbackConnection: Record<string, unknown> = sterileRecord({ ...base.fallbackConnection });
-    for (const key of LLM_INFERENCE_CONNECTION_FIELDS) delete fallbackConnection[key];
-    delete fallbackConnection.model;
-    if (request.model) fallbackConnection.model = request.model.resolved;
-    const inference = own(request, "inference") ? request.inference : undefined;
-    if (inference) {
-      for (const key of LLM_INFERENCE_CONNECTION_FIELDS) {
-        if (own(inference, key)) fallbackConnection[key] = inference[key];
+    if (sdkFallbackModelFromRequest || clearsSdkFallbackModel) {
+      delete fallbackConnection.model;
+      if (sdkFallbackModelFromRequest && request.model) fallbackConnection.model = request.model.resolved;
+    }
+    if (own(request, "inference")) {
+      for (const key of LLM_INFERENCE_CONNECTION_FIELDS) delete fallbackConnection[key];
+      if (request.inference) {
+        for (const key of LLM_INFERENCE_CONNECTION_FIELDS) {
+          if (own(request.inference, key)) fallbackConnection[key] = request.inference[key];
+        }
       }
     }
     common.fallbackConnection = Object.freeze(fallbackConnection) as LlmConnectionConfig;
@@ -483,7 +487,7 @@ function projectAgentRunner(
   if (own(request.runtime, "timeoutMs")) common.timeoutMs = request.runtime.timeoutMs;
   else if (own(base, "timeoutMs")) common.timeoutMs = base.timeoutMs;
   return snapshotRunnerSpec(common as unknown as RunnerSpec, {
-    allowMissingSdkFallbackModel: sdkFallbackModelFromRequest && request.model === null,
+    allowMissingSdkFallbackModel: clearsSdkFallbackModel,
   }) as Extract<RunnerSpec, { kind: "agent" | "sdk" }>;
 }
 

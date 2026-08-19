@@ -253,6 +253,91 @@ describe("RunnerSpec dispatch authority", () => {
             "(falseLoader as unknown as typeof require)('./integrations/agent/runner-dispatch').executeRunner();",
           ].join("\n"),
         ),
+        writeFixture(
+          sandbox.dir,
+          "src/value-star-barrel.ts",
+          "export * from './integrations/agent/runner-dispatch';\n",
+        ),
+        writeFixture(
+          sandbox.dir,
+          "src/value-namespace-barrel.ts",
+          "export * as runnerNamespace from './integrations/agent/runner-dispatch';\n",
+        ),
+        writeFixture(
+          sandbox.dir,
+          "src/type-only-barrel.ts",
+          [
+            "export type { executeRunner } from './integrations/agent/runner-dispatch';",
+            "export type { executeRunner as RenamedRunnerType } from './integrations/agent/runner-dispatch';",
+            "export { type executeRunner as InlineRunnerType } from './integrations/agent/runner-dispatch';",
+          ].join("\n"),
+        ),
+        writeFixture(
+          sandbox.dir,
+          "src/reviewer-positive.ts",
+          [
+            "const runnerModule = './integrations/agent/runner-dispatch';",
+            "import(runnerModule).then(({ executeRunner }) => executeRunner());",
+            "import(runnerModule).then(({ executeRunner: renamedRunner }) => renamedRunner());",
+            "import(runnerModule).then(function ({ executeRunner: functionRunner }) { functionRunner(); });",
+            "const [arrayLoad] = [require];",
+            "arrayLoad(runnerModule).executeRunner();",
+            "let assignedArrayLoad: typeof require;",
+            "[assignedArrayLoad] = [require];",
+            "assignedArrayLoad(runnerModule).executeRunner();",
+            "const [...restLoads] = [require];",
+            "restLoads[0]!(runnerModule).executeRunner();",
+            "(function (loader) { loader(runnerModule).executeRunner(); })(require);",
+            "((loader) => loader(runnerModule).executeRunner())(require);",
+            "(function (loader = require) { loader(runnerModule).executeRunner(); })();",
+            "((loader = require) => loader(runnerModule).executeRunner())();",
+            "(function ({ loader = require } = {}) { loader(runnerModule).executeRunner(); })();",
+            "(({ loader = require } = {}) => loader(runnerModule).executeRunner())();",
+            "Promise.resolve(require(runnerModule)).then(({ executeRunner: promisedRunner }) => promisedRunner());",
+            "require('./value-star-barrel').executeRunner();",
+            "require('./value-namespace-barrel').runnerNamespace.executeRunner();",
+            "const throughStar = require('./value-star-barrel');",
+            "throughStar.executeRunner();",
+            "import(runnerModule).then((namespace) => namespace).then(({ executeRunner: chainedRunner }) => chainedRunner());",
+            "import(runnerModule)",
+            "  .then((namespace) => namespace)",
+            "  .catch(() => undefined)",
+            "  .finally(() => undefined)",
+            "  .then(({ executeRunner: afterCatchFinally }) => afterCatchFinally());",
+            "const spreadNamespace = { ...require(runnerModule) };",
+            "spreadNamespace.executeRunner();",
+            "function callWith(loader: typeof require) { loader(runnerModule).executeRunner(); }",
+            "callWith(require);",
+            "function callWithRest(...loaders: (typeof require)[]) { loaders[0]!(runnerModule).executeRunner(); }",
+            "callWithRest(require);",
+            "import(runnerModule).then((namespace) => ({ ...namespace })).then(({ executeRunner: spreadChained }) => spreadChained());",
+          ].join("\n"),
+        ),
+        writeFixture(
+          sandbox.dir,
+          "src/reviewer-negative.ts",
+          [
+            "export {};",
+            "type RunnerType = typeof import('./type-only-barrel').executeRunner;",
+            "require('./type-only-barrel').executeRunner();",
+            "function localRequireArray(require: (_specifier: string) => { executeRunner(): void }) {",
+            "  const [loader] = [require];",
+            "  loader('./integrations/agent/runner-dispatch').executeRunner();",
+            "}",
+            "function localRequireDefault(",
+            "  require = (_specifier: string) => ({ executeRunner() {} }),",
+            ") {",
+            "  ((loader = require) => loader('./integrations/agent/runner-dispatch').executeRunner())();",
+            "}",
+            "const localLoader = (_specifier: string) => ({ executeRunner() {} });",
+            "const [control] = [localLoader];",
+            "control('./integrations/agent/runner-dispatch').executeRunner();",
+            "const Promise = { resolve: (value: unknown) => ({ then: (callback: (input: unknown) => unknown) => callback(value) }) };",
+            "Promise.resolve(localLoader('./integrations/agent/runner-dispatch')).then((namespace: any) => namespace.executeRunner());",
+            "void localRequireArray;",
+            "void localRequireDefault;",
+          ].join("\n"),
+        ),
       ];
       const references = analyzeExecutionBoundary({
         rootDir: sandbox.dir,
@@ -308,6 +393,15 @@ describe("RunnerSpec dispatch authority", () => {
       expect(dynamic.some((reference) => reference.text.includes("require.apply"))).toBe(true);
       expect(references.filter((reference) => reference.file === "src/dynamic-shadow.ts")).toEqual([]);
       expect(references.filter((reference) => reference.file === "src/node-module-nontarget.ts")).toEqual([]);
+      const reviewerPositive = references.filter((reference) => reference.file === "src/reviewer-positive.ts");
+      expect(reviewerPositive.map((reference) => reference.line)).toEqual([
+        2, 3, 4, 6, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 28, 30, 31, 33, 35,
+      ]);
+      expect(references.filter((reference) => reference.file === "src/value-star-barrel.ts")).toHaveLength(1);
+      expect(references.filter((reference) => reference.file === "src/value-namespace-barrel.ts")).toHaveLength(1);
+      expect(references.filter((reference) => reference.file === "src/barrel.ts")).toHaveLength(1);
+      expect(references.filter((reference) => reference.file === "src/type-only-barrel.ts")).toEqual([]);
+      expect(references.filter((reference) => reference.file === "src/reviewer-negative.ts")).toEqual([]);
     } finally {
       sandbox.cleanup();
     }

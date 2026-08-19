@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { renderMarkdownExecutionSource } from "../../src/core/adapter/execution-source";
 import type { AkmConfig } from "../../src/core/config/config";
 import { redactSensitiveText } from "../../src/core/redaction";
+import type { ExecutionJsonObject } from "../../src/execution/json";
 import {
   canonicalResolvedExecutionRequest,
   createInlineResolvedCommand,
@@ -14,7 +15,7 @@ import {
   CONVERSATION_FALLBACK_BEGIN,
   CONVERSATION_FALLBACK_END,
 } from "../../src/integrations/agent/conversation-fallback";
-import { resolveEngine } from "../../src/integrations/agent/engine-resolution";
+import { resolveEngine, resolveEngineTransportMaterial } from "../../src/integrations/agent/engine-resolution";
 import {
   dispatchLoweredExecutionRequest,
   listExecutionLowerers,
@@ -518,6 +519,457 @@ describe("optimistic lowering safety", () => {
     if (lowered.runner.kind !== "sdk") throw new Error("fixture must use SDK lowering");
     expect(lowered.runner.profile.model).toBe("provider/exact-primary-model");
     expect(lowered.runner.fallbackConnection?.model).toBe("fast");
+  });
+
+  test.each([
+    "direct",
+    "task",
+    "workflow",
+  ] as const)("keeps live and frozen SDK primary/fallback projection byte-exact for %s", (invocationKind) => {
+    const config = {
+      engines: {
+        fixture: {
+          kind: "agent",
+          platform: "opencode-sdk",
+          model: "provider/configured-primary",
+          llmEngine: "fallback",
+        },
+        fallback: {
+          kind: "llm",
+          provider: "openai-compatible",
+          endpoint: "https://fallback.invalid/v1/chat/completions",
+          model: "provider/configured-fallback",
+          temperature: 0.25,
+          maxTokens: 512,
+          supportsJsonSchema: false,
+          extraParams: { seed: 3, nested: { base: true } },
+          contextLength: 8_192,
+          enableThinking: false,
+          timeoutMs: 12_345,
+        },
+      },
+      defaults: { engine: "fixture", llmEngine: "fallback" },
+    } as unknown as AkmConfig;
+    const frozenRunner = resolveEngineTransportMaterial("fixture", config);
+    expect(frozenRunner.kind).toBe("sdk");
+
+    const cases: readonly {
+      readonly name: string;
+      readonly current: Record<string, unknown>;
+      readonly expectedProfileModel: string | undefined;
+      readonly expectedFallbackModel: string | undefined;
+      readonly expectedInference: ExecutionJsonObject | null;
+      readonly expectedTimeout: number | null;
+    }[] = [
+      {
+        name: "omitted model, inference, and timeout",
+        current: { tools: [] },
+        expectedProfileModel: "provider/configured-primary",
+        expectedFallbackModel: "provider/configured-fallback",
+        expectedInference: {
+          temperature: 0.25,
+          maxTokens: 512,
+          supportsJsonSchema: false,
+          extraParams: { seed: 3, nested: { base: true } },
+          contextLength: 8_192,
+          enableThinking: false,
+        },
+        expectedTimeout: 12_345,
+      },
+      {
+        name: "explicit primary model",
+        current: { model: "provider/operator-primary", tools: [] },
+        expectedProfileModel: "provider/operator-primary",
+        expectedFallbackModel: "provider/configured-fallback",
+        expectedInference: {
+          temperature: 0.25,
+          maxTokens: 512,
+          supportsJsonSchema: false,
+          extraParams: { seed: 3, nested: { base: true } },
+          contextLength: 8_192,
+          enableThinking: false,
+        },
+        expectedTimeout: 12_345,
+      },
+      {
+        name: "explicit null model",
+        current: { model: null, tools: [] },
+        expectedProfileModel: undefined,
+        expectedFallbackModel: undefined,
+        expectedInference: {
+          temperature: 0.25,
+          maxTokens: 512,
+          supportsJsonSchema: false,
+          extraParams: { seed: 3, nested: { base: true } },
+          contextLength: 8_192,
+          enableThinking: false,
+        },
+        expectedTimeout: 12_345,
+      },
+      {
+        name: "explicit inference object",
+        current: {
+          inference: { temperature: 0, extraParams: { nested: { invocation: true } } },
+          tools: [],
+        },
+        expectedProfileModel: "provider/configured-primary",
+        expectedFallbackModel: "provider/configured-fallback",
+        expectedInference: {
+          temperature: 0,
+          maxTokens: 512,
+          supportsJsonSchema: false,
+          extraParams: { seed: 3, nested: { base: true, invocation: true } },
+          contextLength: 8_192,
+          enableThinking: false,
+        },
+        expectedTimeout: 12_345,
+      },
+      {
+        name: "explicit null inference",
+        current: { inference: null, tools: [] },
+        expectedProfileModel: "provider/configured-primary",
+        expectedFallbackModel: "provider/configured-fallback",
+        expectedInference: null,
+        expectedTimeout: 12_345,
+      },
+      {
+        name: "explicit zero timeout",
+        current: { timeout: 0, tools: [] },
+        expectedProfileModel: "provider/configured-primary",
+        expectedFallbackModel: "provider/configured-fallback",
+        expectedInference: {
+          temperature: 0.25,
+          maxTokens: 512,
+          supportsJsonSchema: false,
+          extraParams: { seed: 3, nested: { base: true } },
+          contextLength: 8_192,
+          enableThinking: false,
+        },
+        expectedTimeout: 0,
+      },
+      {
+        name: "explicit null timeout",
+        current: { timeout: null, tools: [] },
+        expectedProfileModel: "provider/configured-primary",
+        expectedFallbackModel: "provider/configured-fallback",
+        expectedInference: {
+          temperature: 0.25,
+          maxTokens: 512,
+          supportsJsonSchema: false,
+          extraParams: { seed: 3, nested: { base: true } },
+          contextLength: 8_192,
+          enableThinking: false,
+        },
+        expectedTimeout: null,
+      },
+      {
+        name: "explicit finite timeout",
+        current: { timeout: 7_777, tools: [] },
+        expectedProfileModel: "provider/configured-primary",
+        expectedFallbackModel: "provider/configured-fallback",
+        expectedInference: {
+          temperature: 0.25,
+          maxTokens: 512,
+          supportsJsonSchema: false,
+          extraParams: { seed: 3, nested: { base: true } },
+          contextLength: 8_192,
+          enableThinking: false,
+        },
+        expectedTimeout: 7_777,
+      },
+    ];
+
+    for (const fixture of cases) {
+      const current = fixture.current as import("../../src/execution/source").UnresolvedExecutionDefaults;
+      const live = prepareInlineExecution({
+        content: `Exercise ${fixture.name}.`,
+        config,
+        invocationKind,
+        current,
+      });
+      const frozen = prepareInlineExecutionWithRunner({
+        content: `Exercise ${fixture.name}.`,
+        runner: frozenRunner,
+        invocationKind,
+        current,
+      });
+
+      expect(canonicalResolvedExecutionRequest(live.request)).toBe(canonicalResolvedExecutionRequest(frozen.request));
+      expect(live.request.notices).toEqual(frozen.request.notices);
+      expect(live.request.inference).toEqual(fixture.expectedInference);
+      expect(live.request.runtime.timeoutMs).toBe(fixture.expectedTimeout);
+
+      const liveLowered = lowerResolvedExecutionRequest(live.request, live.config);
+      const frozenLowered = lowerResolvedExecutionRequestWithRunner(frozen.request, frozen.runner);
+      expect(liveLowered).toEqual(frozenLowered);
+      expect(liveLowered.runner).toEqual(frozenLowered.runner);
+      expect(liveLowered.runner.kind).toBe("sdk");
+      if (liveLowered.runner.kind !== "sdk") throw new Error("fixture must lower to SDK");
+      expect(liveLowered.runner.profile.model).toBe(fixture.expectedProfileModel);
+      expect(liveLowered.runner.fallbackConnection?.model).toBe(fixture.expectedFallbackModel);
+      for (const key of [
+        "temperature",
+        "maxTokens",
+        "supportsJsonSchema",
+        "extraParams",
+        "contextLength",
+        "enableThinking",
+      ] as const) {
+        expect(liveLowered.runner.fallbackConnection?.[key]).toEqual(fixture.expectedInference?.[key]);
+      }
+      expect(liveLowered.runner.timeoutMs).toBe(fixture.expectedTimeout);
+      expect(liveLowered.runner.fallbackTimeoutMs).toBe(12_345);
+    }
+  });
+
+  test("keeps an SDK agent-owned timeout distinct from the fallback transport timeout", () => {
+    const config = {
+      engines: {
+        fixture: {
+          kind: "agent",
+          platform: "opencode-sdk",
+          model: "provider/primary",
+          llmEngine: "fallback",
+          timeoutMs: 6_789,
+        },
+        fallback: {
+          kind: "llm",
+          provider: "openai-compatible",
+          endpoint: "https://fallback.invalid/v1/chat/completions",
+          model: "provider/fallback",
+          timeoutMs: 12_345,
+        },
+      },
+      defaults: { engine: "fixture", llmEngine: "fallback" },
+    } as unknown as AkmConfig;
+    const runner = resolveEngineTransportMaterial("fixture", config);
+    const live = prepareInlineExecution({
+      content: "Keep timeout layers distinct.",
+      config,
+      invocationKind: "direct",
+      current: { tools: [] },
+    });
+    const frozen = prepareInlineExecutionWithRunner({
+      content: "Keep timeout layers distinct.",
+      runner,
+      invocationKind: "direct",
+      current: { tools: [] },
+    });
+    expect(live.request.runtime.timeoutMs).toBe(6_789);
+    expect(frozen.request.runtime.timeoutMs).toBe(6_789);
+    expect(canonicalResolvedExecutionRequest(live.request)).toBe(canonicalResolvedExecutionRequest(frozen.request));
+    expect(live.request.notices).toEqual(frozen.request.notices);
+    const liveLowered = lowerResolvedExecutionRequest(live.request, live.config);
+    const frozenLowered = lowerResolvedExecutionRequestWithRunner(frozen.request, frozen.runner);
+    expect(liveLowered).toEqual(frozenLowered);
+    expect(liveLowered.runner).toEqual(frozenLowered.runner);
+    expect(liveLowered.runner).toMatchObject({
+      kind: "sdk",
+      timeoutMs: 6_789,
+      fallbackTimeoutMs: 12_345,
+    });
+  });
+
+  test.each([
+    "direct",
+    "task",
+    "workflow",
+  ] as const)("keeps fallback-derived SDK projection byte-exact for %s", (invocationKind) => {
+    const config = {
+      engines: {
+        fixture: { kind: "agent", platform: "opencode-sdk", llmEngine: "fallback" },
+        fallback: {
+          kind: "llm",
+          provider: "openai-compatible",
+          endpoint: "https://fallback.invalid/v1/chat/completions",
+          model: "provider/configured-fallback",
+          temperature: 0.25,
+          maxTokens: 512,
+          supportsJsonSchema: false,
+          extraParams: { seed: 3, nested: { base: true } },
+          contextLength: 8_192,
+          enableThinking: false,
+          timeoutMs: 12_345,
+        },
+      },
+      defaults: { engine: "fixture", llmEngine: "fallback" },
+    } as unknown as AkmConfig;
+    const frozenRunner = resolveEngineTransportMaterial("fixture", config);
+    const baseInference: ExecutionJsonObject = {
+      temperature: 0.25,
+      maxTokens: 512,
+      supportsJsonSchema: false,
+      extraParams: { seed: 3, nested: { base: true } },
+      contextLength: 8_192,
+      enableThinking: false,
+    };
+    const cases: readonly {
+      readonly name: string;
+      readonly current: import("../../src/execution/source").UnresolvedExecutionDefaults;
+      readonly expectedModel: string | undefined;
+      readonly expectedInference: ExecutionJsonObject | null;
+      readonly expectedTimeout: number | null;
+    }[] = [
+      {
+        name: "omitted model, inference, and timeout",
+        current: { tools: [] },
+        expectedModel: "provider/configured-fallback",
+        expectedInference: baseInference,
+        expectedTimeout: 12_345,
+      },
+      {
+        name: "explicit model",
+        current: { model: "provider/operator-model", tools: [] },
+        expectedModel: "provider/operator-model",
+        expectedInference: baseInference,
+        expectedTimeout: 12_345,
+      },
+      {
+        name: "null model",
+        current: { model: null, tools: [] },
+        expectedModel: undefined,
+        expectedInference: baseInference,
+        expectedTimeout: 12_345,
+      },
+      {
+        name: "inference object",
+        current: {
+          inference: { temperature: 0, extraParams: { nested: { invocation: true } } },
+          tools: [],
+        },
+        expectedModel: "provider/configured-fallback",
+        expectedInference: {
+          ...baseInference,
+          temperature: 0,
+          extraParams: { seed: 3, nested: { base: true, invocation: true } },
+        },
+        expectedTimeout: 12_345,
+      },
+      {
+        name: "null inference",
+        current: { inference: null, tools: [] },
+        expectedModel: "provider/configured-fallback",
+        expectedInference: null,
+        expectedTimeout: 12_345,
+      },
+      {
+        name: "zero timeout",
+        current: { timeout: 0, tools: [] },
+        expectedModel: "provider/configured-fallback",
+        expectedInference: baseInference,
+        expectedTimeout: 0,
+      },
+      {
+        name: "null timeout",
+        current: { timeout: null, tools: [] },
+        expectedModel: "provider/configured-fallback",
+        expectedInference: baseInference,
+        expectedTimeout: null,
+      },
+      {
+        name: "finite timeout",
+        current: { timeout: 7_777, tools: [] },
+        expectedModel: "provider/configured-fallback",
+        expectedInference: baseInference,
+        expectedTimeout: 7_777,
+      },
+    ];
+
+    for (const fixture of cases) {
+      const content = `Exercise fallback-derived ${fixture.name}.`;
+      const live = prepareInlineExecution({ content, config, invocationKind, current: fixture.current });
+      const frozen = prepareInlineExecutionWithRunner({
+        content,
+        runner: frozenRunner,
+        invocationKind,
+        current: fixture.current,
+      });
+      expect(live.request.engine.settings).toMatchObject({ sdkFallbackModelFromRequest: true });
+      expect(canonicalResolvedExecutionRequest(live.request)).toBe(canonicalResolvedExecutionRequest(frozen.request));
+      expect(live.request.notices).toEqual(frozen.request.notices);
+      expect(live.request.inference).toEqual(fixture.expectedInference);
+      expect(live.request.runtime.timeoutMs).toBe(fixture.expectedTimeout);
+
+      const liveLowered = lowerResolvedExecutionRequest(live.request, live.config);
+      const frozenLowered = lowerResolvedExecutionRequestWithRunner(frozen.request, frozen.runner);
+      expect(liveLowered).toEqual(frozenLowered);
+      expect(liveLowered.runner.kind).toBe("sdk");
+      if (liveLowered.runner.kind !== "sdk") throw new Error("fixture must lower to SDK");
+      expect(liveLowered.runner.profile.model).toBe(fixture.expectedModel);
+      expect(liveLowered.runner.fallbackConnection?.model).toBe(fixture.expectedModel);
+      for (const key of [
+        "temperature",
+        "maxTokens",
+        "supportsJsonSchema",
+        "extraParams",
+        "contextLength",
+        "enableThinking",
+      ] as const) {
+        expect(liveLowered.runner.fallbackConnection?.[key]).toEqual(fixture.expectedInference?.[key]);
+      }
+      expect(liveLowered.runner.timeoutMs).toBe(fixture.expectedTimeout);
+      expect(liveLowered.runner.fallbackTimeoutMs).toBe(12_345);
+    }
+  });
+
+  test.each([
+    "direct",
+    "task",
+    "workflow",
+  ] as const)("keeps SDK preparation byte-exact without a primary model or fallback for %s", (invocationKind) => {
+    const config = {
+      engines: { fixture: { kind: "agent", platform: "opencode-sdk" } },
+      defaults: { engine: "fixture" },
+    } as unknown as AkmConfig;
+    const frozenRunner = resolveEngineTransportMaterial("fixture", config);
+    const cases: readonly {
+      readonly current: import("../../src/execution/source").UnresolvedExecutionDefaults;
+      readonly expectedModel?: string;
+      readonly expectedInference?: ExecutionJsonObject | null;
+      readonly expectedTimeout: number | null;
+    }[] = [
+      { current: { tools: [] }, expectedTimeout: null },
+      {
+        current: { model: "provider/operator-model", tools: [] },
+        expectedModel: "provider/operator-model",
+        expectedTimeout: null,
+      },
+      { current: { model: null, tools: [] }, expectedTimeout: null },
+      {
+        current: { inference: { temperature: 0 }, tools: [] },
+        expectedInference: { temperature: 0 },
+        expectedTimeout: null,
+      },
+      { current: { inference: null, tools: [] }, expectedInference: null, expectedTimeout: null },
+      { current: { timeout: 0, tools: [] }, expectedTimeout: 0 },
+      { current: { timeout: null, tools: [] }, expectedTimeout: null },
+      { current: { timeout: 7_777, tools: [] }, expectedTimeout: 7_777 },
+    ];
+
+    for (const [index, fixture] of cases.entries()) {
+      const content = `Exercise standalone SDK case ${index}.`;
+      const live = prepareInlineExecution({ content, config, invocationKind, current: fixture.current });
+      const frozen = prepareInlineExecutionWithRunner({
+        content,
+        runner: frozenRunner,
+        invocationKind,
+        current: fixture.current,
+      });
+      expect(canonicalResolvedExecutionRequest(live.request)).toBe(canonicalResolvedExecutionRequest(frozen.request));
+      expect(live.request.notices).toEqual(frozen.request.notices);
+      expect(live.request.inference).toEqual(fixture.expectedInference);
+      expect(Object.hasOwn(live.request.runtime, "timeoutMs")).toBe(true);
+      expect(live.request.runtime.timeoutMs).toBe(fixture.expectedTimeout);
+
+      const liveLowered = lowerResolvedExecutionRequest(live.request, live.config);
+      const frozenLowered = lowerResolvedExecutionRequestWithRunner(frozen.request, frozen.runner);
+      expect(liveLowered).toEqual(frozenLowered);
+      expect(liveLowered.runner.kind).toBe("sdk");
+      if (liveLowered.runner.kind !== "sdk") throw new Error("fixture must lower to SDK");
+      expect(liveLowered.runner.profile.model).toBe(fixture.expectedModel);
+      expect(liveLowered.runner.fallbackConnection).toBeUndefined();
+      expect(liveLowered.runner.timeoutMs).toBe(fixture.expectedTimeout);
+    }
   });
 
   test.each([

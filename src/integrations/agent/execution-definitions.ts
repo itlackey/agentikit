@@ -5,7 +5,9 @@
 import type { AkmConfig, EngineConfig } from "../../core/config/config-types";
 import { cloneExecutionJsonObject } from "../../execution/json";
 import type { UnresolvedExecutionDefaults } from "../../execution/source";
+import { DEFAULT_AGENT_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS } from "./config";
 import type { ExecutionEngineDefinition } from "./execution-cascade";
+import { OPENCODE_SDK_SERVER_BIN } from "./profiles";
 import type { RunnerSpec } from "./runner";
 
 /**
@@ -71,19 +73,45 @@ export function executionEngineDefinitionsFromConfig(
     const fallbackEngine = sdkFallback?.[1];
     const settings =
       engine.kind === "agent"
-        ? withoutUndefined({
-            bin: ownValue(engine, "bin"),
-            args: ownValue(engine, "args"),
-            workspace: ownValue(engine, "workspace"),
-            ...(usesSdkFallbackModel ? { [SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING]: true } : {}),
-          })
+        ? platform === "opencode-sdk"
+          ? {
+              bin: ownValue(engine, "bin") ?? OPENCODE_SDK_SERVER_BIN,
+              args: ownValue(engine, "args") ?? [],
+              ...(usesSdkFallbackModel ? { [SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING]: true } : {}),
+            }
+          : withoutUndefined({
+              bin: ownValue(engine, "bin"),
+              args: ownValue(engine, "args"),
+              workspace: ownValue(engine, "workspace"),
+            })
         : withoutUndefined({ endpoint: engine.endpoint, provider: ownValue(engine, "provider") });
     const engineModelAliases = engine.kind === "agent" ? ownValue(engine, "modelAliases") : undefined;
     const globalModelAliases = ownValue(config, "modelAliases");
+    // SDK fallback inference and timeout participate in the canonical
+    // request even when the agent engine owns a distinct primary model. The
+    // primary engine defaults are nearer and therefore replace only fields it
+    // actually owns (notably model/timeout); fallback model identity remains
+    // separate unless the SDK has no primary model at all.
+    const fallbackTimeout = fallbackEngine
+      ? own(fallbackEngine, "timeoutMs")
+        ? (fallbackEngine.timeoutMs ?? null)
+        : DEFAULT_LLM_TIMEOUT_MS
+      : undefined;
+    const inheritedDefaults = {
+      ...(fallbackEngine ? engineDefaults(fallbackEngine) : {}),
+      ...engineDefaults(engine),
+    };
     const defaults =
-      usesSdkFallbackModel && fallbackEngine
-        ? Object.freeze({ ...engineDefaults(fallbackEngine), ...engineDefaults(engine) })
-        : engineDefaults(engine);
+      engine.kind === "agent" && platform === "opencode-sdk"
+        ? Object.freeze({
+            ...inheritedDefaults,
+            timeout: own(engine, "timeoutMs")
+              ? (engine.timeoutMs ?? null)
+              : fallbackTimeout !== undefined
+                ? fallbackTimeout
+                : DEFAULT_AGENT_TIMEOUT_MS,
+          })
+        : Object.freeze(inheritedDefaults);
     const modelMapKey = usesSdkFallbackModel && fallbackName ? fallbackName : engine.kind === "agent" ? platform : name;
     const compatibilityPlatform =
       usesSdkFallbackModel && fallbackEngine ? (ownValue(fallbackEngine, "provider") ?? modelMapKey) : platform;

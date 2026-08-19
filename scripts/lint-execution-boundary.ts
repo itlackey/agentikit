@@ -377,6 +377,14 @@ function isTypeOnlyReference(node: ts.Node): boolean {
   return false;
 }
 
+function isExportSyntax(node: ts.Node): boolean {
+  for (let current: ts.Node | undefined = node; current; current = current.parent) {
+    if (ts.isExportDeclaration(current)) return true;
+    if (ts.isStatement(current) || ts.isSourceFile(current)) return false;
+  }
+  return false;
+}
+
 function isDeclarationName(node: ts.Node): boolean {
   const parent = node.parent;
   return (
@@ -656,6 +664,7 @@ function isRuntimeLoaderExpression(
   input: ts.Expression,
   checker: ts.TypeChecker,
   dynamicLoaders: ReadonlySet<ts.Symbol>,
+  dynamicLoaderArrays: ReadonlySet<ts.Symbol> = new Set(),
 ): boolean {
   const expression = unwrapExpression(input);
   if (ts.isIdentifier(expression)) {
@@ -665,6 +674,11 @@ function isRuntimeLoaderExpression(
     );
   }
   if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
+    if (ts.isElementAccessExpression(expression)) {
+      const array = unwrapExpression(expression.expression);
+      const symbol = ts.isIdentifier(array) ? checker.getSymbolAtLocation(array) : undefined;
+      if (symbol && dynamicLoaderArrays.has(symbol)) return true;
+    }
     const member = ts.isPropertyAccessExpression(expression)
       ? expression.name.text
       : ts.isStringLiteralLike(expression.argumentExpression)
@@ -675,7 +689,7 @@ function isRuntimeLoaderExpression(
   }
   if (ts.isCallExpression(expression)) {
     const passed = passThroughArgument(expression, checker);
-    if (passed && isRuntimeLoaderExpression(passed, checker, dynamicLoaders)) return true;
+    if (passed && isRuntimeLoaderExpression(passed, checker, dynamicLoaders, dynamicLoaderArrays)) return true;
     if (isCreateRequireCallee(expression.expression, checker)) return true;
     const callee = unwrapExpression(expression.expression);
     if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
@@ -684,7 +698,9 @@ function isRuntimeLoaderExpression(
         : ts.isStringLiteralLike(callee.argumentExpression)
           ? callee.argumentExpression.text
           : undefined;
-      return member === "bind" && isRuntimeLoaderExpression(callee.expression, checker, dynamicLoaders);
+      return (
+        member === "bind" && isRuntimeLoaderExpression(callee.expression, checker, dynamicLoaders, dynamicLoaderArrays)
+      );
     }
   }
   return false;
@@ -695,10 +711,80 @@ interface DynamicModuleLoad {
   readonly specifier: ts.Expression;
 }
 
+type DynamicNamespaceEntry = ExecutionBoundaryTarget | DynamicNamespace;
+type DynamicNamespace = ReadonlyMap<string, DynamicNamespaceEntry>;
+
+function isBoundaryTarget(input: DynamicNamespaceEntry): input is ExecutionBoundaryTarget {
+  return "operation" in input;
+}
+
+function typeOnlyExportDeclaration(declaration: ts.Declaration): boolean {
+  if (ts.isExportSpecifier(declaration)) {
+    return (
+      declaration.isTypeOnly ||
+      (ts.isExportDeclaration(declaration.parent.parent) && declaration.parent.parent.isTypeOnly)
+    );
+  }
+  if (ts.isNamespaceExport(declaration)) {
+    return ts.isExportDeclaration(declaration.parent) && declaration.parent.isTypeOnly;
+  }
+  return ts.isExportDeclaration(declaration) && declaration.isTypeOnly;
+}
+
+function hasRuntimeExport(symbol: ts.Symbol): boolean {
+  const exportDeclarations = (symbol.declarations ?? []).filter(
+    (declaration) =>
+      ts.isExportSpecifier(declaration) || ts.isNamespaceExport(declaration) || ts.isExportDeclaration(declaration),
+  );
+  return (
+    exportDeclarations.length === 0 || exportDeclarations.some((declaration) => !typeOnlyExportDeclaration(declaration))
+  );
+}
+
+function moduleNamespace(
+  moduleSymbol: ts.Symbol,
+  checker: ts.TypeChecker,
+  symbols: ReadonlyMap<ts.Symbol, ExecutionBoundaryTarget>,
+  seen: ReadonlySet<ts.Symbol> = new Set(),
+): DynamicNamespace {
+  const canonicalModule = canonicalSymbol(checker, moduleSymbol) ?? moduleSymbol;
+  if (seen.has(canonicalModule)) return new Map();
+  const nextSeen = new Set(seen);
+  nextSeen.add(canonicalModule);
+  const entries = new Map<string, DynamicNamespaceEntry>();
+  for (const exported of checker.getExportsOfModule(canonicalModule)) {
+    if (!hasRuntimeExport(exported)) continue;
+    const canonical = canonicalSymbol(checker, exported);
+    if (!canonical) continue;
+    const target = symbols.get(canonical);
+    if (target) {
+      entries.set(exported.name, target);
+      continue;
+    }
+    if ((canonical.flags & ts.SymbolFlags.Module) === 0) continue;
+    const nested = moduleNamespace(canonical, checker, symbols, nextSeen);
+    if (nested.size > 0) entries.set(exported.name, nested);
+  }
+  return entries;
+}
+
+function flattenedTargets(namespace: DynamicNamespace): readonly ExecutionBoundaryTarget[] {
+  const targets = new Map<string, ExecutionBoundaryTarget>();
+  const visit = (current: DynamicNamespace): void => {
+    for (const entry of current.values()) {
+      if (isBoundaryTarget(entry)) targets.set(`${entry.operation}:${entry.file}:${entry.exportName}`, entry);
+      else visit(entry);
+    }
+  };
+  visit(namespace);
+  return [...targets.values()];
+}
+
 function dynamicModuleLoad(
   input: ts.Expression,
   checker: ts.TypeChecker,
   dynamicLoaders: ReadonlySet<ts.Symbol>,
+  dynamicLoaderArrays: ReadonlySet<ts.Symbol> = new Set(),
 ): DynamicModuleLoad | undefined {
   const expression = unwrapExpression(input);
   if (!ts.isCallExpression(expression)) return undefined;
@@ -707,7 +793,7 @@ function dynamicModuleLoad(
     return first ? { call: expression, specifier: first } : undefined;
   }
   const callee = unwrapExpression(expression.expression);
-  if (isRuntimeLoaderExpression(callee, checker, dynamicLoaders)) {
+  if (isRuntimeLoaderExpression(callee, checker, dynamicLoaders, dynamicLoaderArrays)) {
     return first ? { call: expression, specifier: first } : undefined;
   }
   if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) return undefined;
@@ -716,7 +802,7 @@ function dynamicModuleLoad(
     : ts.isStringLiteralLike(callee.argumentExpression)
       ? callee.argumentExpression.text
       : undefined;
-  if (!isRuntimeLoaderExpression(callee.expression, checker, dynamicLoaders)) return undefined;
+  if (!isRuntimeLoaderExpression(callee.expression, checker, dynamicLoaders, dynamicLoaderArrays)) return undefined;
   if (member === "call") {
     const specifier = expression.arguments[1];
     return specifier ? { call: expression, specifier } : undefined;
@@ -728,22 +814,38 @@ function dynamicModuleLoad(
   return undefined;
 }
 
-function resolveDynamicTargetExports(
-  load: DynamicModuleLoad,
+function resolveModuleTargetExports(
+  moduleName: string,
+  source: ts.SourceFile,
+  program: ts.Program,
   checker: ts.TypeChecker,
   compilerOptions: ts.CompilerOptions,
-  targets: readonly ExecutionBoundaryTarget[],
-): ReadonlyMap<string, ExecutionBoundaryTarget> | undefined {
-  const moduleName = staticStringValue(load.specifier, checker);
-  if (moduleName === undefined) return undefined;
-  const source = load.call.getSourceFile();
+  symbols: ReadonlyMap<ts.Symbol, ExecutionBoundaryTarget>,
+): DynamicNamespace | undefined {
   const resolved = ts.resolveModuleName(moduleName, source.fileName, compilerOptions, ts.sys).resolvedModule;
   if (!resolved) return undefined;
-  const resolvedPath = posix(path.resolve(resolved.resolvedFileName).replace(/\.d\.ts$/, ".ts"));
-  const entries = targets
-    .filter((target) => resolvedPath.endsWith(`/${target.file}`))
-    .map((target) => [target.exportName, target] as const);
-  return entries.length > 0 ? new Map(entries) : undefined;
+  const resolvedPath = posix(path.resolve(resolved.resolvedFileName));
+  const moduleSource = program
+    .getSourceFiles()
+    .find((candidate) => posix(path.resolve(candidate.fileName)) === resolvedPath);
+  if (!moduleSource) return undefined;
+  const moduleSymbol = checker.getSymbolAtLocation(moduleSource);
+  if (!moduleSymbol) return undefined;
+  const namespace = moduleNamespace(moduleSymbol, checker, symbols);
+  return namespace.size > 0 ? namespace : undefined;
+}
+
+function resolveDynamicTargetExports(
+  load: DynamicModuleLoad,
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  compilerOptions: ts.CompilerOptions,
+  symbols: ReadonlyMap<ts.Symbol, ExecutionBoundaryTarget>,
+): DynamicNamespace | undefined {
+  const moduleName = staticStringValue(load.specifier, checker);
+  return moduleName === undefined
+    ? undefined
+    : resolveModuleTargetExports(moduleName, load.call.getSourceFile(), program, checker, compilerOptions, symbols);
 }
 
 function addReference(
@@ -782,7 +884,9 @@ export function analyzeExecutionBoundary(
     const relative = posix(path.relative(options.rootDir, source.fileName));
     if (!relative.startsWith("src/") || source.isDeclarationFile) continue;
     const dynamicLoaders = new Set<ts.Symbol>();
-    const dynamicNamespaces = new Map<ts.Symbol, ReadonlyMap<string, ExecutionBoundaryTarget>>();
+    const dynamicLoaderArrays = new Set<ts.Symbol>();
+    const dynamicNamespaces = new Map<ts.Symbol, DynamicNamespace>();
+    const dynamicObjectBindings = new Map<ts.ObjectBindingPattern, DynamicNamespace>();
 
     const staticMemberName = (node: ts.Node | undefined): string | undefined => {
       if (!node) return undefined;
@@ -806,17 +910,76 @@ export function analyzeExecutionBoundary(
     const namespaceForExpression = (
       input: ts.Expression,
       seenReturns: ReadonlySet<PassThroughFunction> = new Set(),
-    ): ReadonlyMap<string, ExecutionBoundaryTarget> | undefined => {
+    ): DynamicNamespace | undefined => {
       const expression = unwrapExpression(input);
       if (ts.isIdentifier(expression)) {
         const symbol = checker.getSymbolAtLocation(expression);
         return symbol ? dynamicNamespaces.get(symbol) : undefined;
       }
-      const load = dynamicModuleLoad(expression, checker, dynamicLoaders);
-      if (load) return resolveDynamicTargetExports(load, checker, options.compilerOptions, targets);
+      const load = dynamicModuleLoad(expression, checker, dynamicLoaders, dynamicLoaderArrays);
+      if (load) return resolveDynamicTargetExports(load, program, checker, options.compilerOptions, symbols);
+      if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
+        const namespace = namespaceForExpression(expression.expression, seenReturns);
+        const member = ts.isPropertyAccessExpression(expression)
+          ? expression.name.text
+          : staticMemberName(expression.argumentExpression);
+        const entry = member ? namespace?.get(member) : undefined;
+        return entry && !isBoundaryTarget(entry) ? entry : undefined;
+      }
+      if (ts.isObjectLiteralExpression(expression)) {
+        const entries = new Map<string, DynamicNamespaceEntry>();
+        for (const property of expression.properties) {
+          if (ts.isSpreadAssignment(property)) {
+            const spread = namespaceForExpression(property.expression, seenReturns);
+            if (spread) for (const [name, entry] of spread) entries.set(name, entry);
+            continue;
+          }
+          if (!ts.isPropertyAssignment(property)) continue;
+          const name = staticMemberName(property.name);
+          const nested = namespaceForExpression(property.initializer, seenReturns);
+          if (name && nested) entries.set(name, nested);
+        }
+        return entries.size > 0 ? entries : undefined;
+      }
       if (ts.isCallExpression(expression)) {
         const passed = passThroughArgument(expression, checker);
         if (passed) return namespaceForExpression(passed, seenReturns);
+        const callee = unwrapExpression(expression.expression);
+        if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
+          const member = ts.isPropertyAccessExpression(callee)
+            ? callee.name.text
+            : staticMemberName(callee.argumentExpression);
+          const base = unwrapExpression(callee.expression);
+          if (
+            member === "resolve" &&
+            ts.isIdentifier(base) &&
+            base.text === "Promise" &&
+            symbolIsOnlyAmbient(checker.getSymbolAtLocation(base))
+          ) {
+            const value = expression.arguments[0];
+            if (value) return namespaceForExpression(value, seenReturns);
+          }
+          if (member === "catch" || member === "finally") {
+            return namespaceForExpression(callee.expression, seenReturns);
+          }
+          if (member === "then") {
+            const namespace = namespaceForExpression(callee.expression, seenReturns);
+            const callback = expression.arguments[0];
+            if (namespace && !callback) return namespace;
+            if (namespace && callback) {
+              if (passThroughParameterIndex(callback, checker) === 0) return namespace;
+              for (const candidate of passThroughCandidates(callback, checker)) {
+                if (seenReturns.has(candidate)) continue;
+                const returned = returnedExpression(candidate);
+                if (!returned) continue;
+                const nextSeen = new Set(seenReturns);
+                nextSeen.add(candidate);
+                const projected = namespaceForExpression(returned, nextSeen);
+                if (projected) return projected;
+              }
+            }
+          }
+        }
         for (const candidate of passThroughCandidates(expression.expression, checker)) {
           if (candidate.parameters.length !== 0 || seenReturns.has(candidate)) continue;
           const returned = returnedExpression(candidate);
@@ -831,78 +994,132 @@ export function analyzeExecutionBoundary(
     };
 
     // Index CommonJS/ES dynamic loader aliases and namespace flow to a small
-    // fixed point. This covers declaration order, post-declaration assignment,
-    // createRequire/module.require, namespace aliases, and inline-IIFE params.
-    for (let pass = 0; pass < 16; pass += 1) {
+    // fixed point. Bindings are followed through declarations, assignments,
+    // default/rest parameters, ordinary callback calls, and Promise chains.
+    for (let pass = 0; pass < 24; pass += 1) {
       let changed = false;
-      const indexDynamicFlow = (node: ts.Node): void => {
-        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-          const symbol = checker.getSymbolAtLocation(node.name);
-          if (
-            symbol &&
-            isRuntimeLoaderExpression(node.initializer, checker, dynamicLoaders) &&
-            !dynamicLoaders.has(symbol)
-          ) {
-            dynamicLoaders.add(symbol);
-            changed = true;
-          }
-          const exports = namespaceForExpression(node.initializer);
-          if (symbol && exports && !dynamicNamespaces.has(symbol)) {
-            dynamicNamespaces.set(symbol, exports);
-            changed = true;
-          }
-        }
+      const addLoader = (identifier: ts.Identifier, expression: ts.Expression): void => {
+        const symbol = checker.getSymbolAtLocation(identifier);
         if (
-          ts.isBinaryExpression(node) &&
-          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-          ts.isIdentifier(unwrapExpression(node.left as ts.Expression))
+          symbol &&
+          isRuntimeLoaderExpression(expression, checker, dynamicLoaders, dynamicLoaderArrays) &&
+          !dynamicLoaders.has(symbol)
         ) {
-          const left = unwrapExpression(node.left as ts.Expression) as ts.Identifier;
-          const symbol = checker.getSymbolAtLocation(left);
-          if (symbol && isRuntimeLoaderExpression(node.right, checker, dynamicLoaders) && !dynamicLoaders.has(symbol)) {
-            dynamicLoaders.add(symbol);
-            changed = true;
-          }
-          const exports = namespaceForExpression(node.right);
-          if (symbol && exports && !dynamicNamespaces.has(symbol)) {
-            dynamicNamespaces.set(symbol, exports);
-            changed = true;
-          }
+          dynamicLoaders.add(symbol);
+          changed = true;
         }
-        if (ts.isCallExpression(node)) {
-          const callee = unwrapExpression(node.expression);
-          if (ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)) {
-            for (const [index, parameter] of callee.parameters.entries()) {
-              if (!ts.isIdentifier(parameter.name)) continue;
-              const argument = node.arguments[index];
-              if (!argument) continue;
-              const symbol = checker.getSymbolAtLocation(parameter.name);
-              if (!symbol) continue;
-              if (isRuntimeLoaderExpression(argument, checker, dynamicLoaders) && !dynamicLoaders.has(symbol)) {
-                dynamicLoaders.add(symbol);
-                changed = true;
-              }
-              const exports = namespaceForExpression(argument);
-              if (exports && !dynamicNamespaces.has(symbol)) {
-                dynamicNamespaces.set(symbol, exports);
+        const namespace = namespaceForExpression(expression);
+        if (symbol && namespace && !dynamicNamespaces.has(symbol)) {
+          dynamicNamespaces.set(symbol, namespace);
+          changed = true;
+        }
+      };
+      const addLoaderArray = (identifier: ts.Identifier, expressions: readonly ts.Expression[]): void => {
+        const symbol = checker.getSymbolAtLocation(identifier);
+        if (
+          symbol &&
+          expressions.some((expression) =>
+            isRuntimeLoaderExpression(expression, checker, dynamicLoaders, dynamicLoaderArrays),
+          ) &&
+          !dynamicLoaderArrays.has(symbol)
+        ) {
+          dynamicLoaderArrays.add(symbol);
+          changed = true;
+        }
+      };
+      const bindPattern = (pattern: ts.BindingName, expression: ts.Expression | undefined): void => {
+        if (ts.isIdentifier(pattern)) {
+          if (expression) addLoader(pattern, expression);
+          return;
+        }
+        if (ts.isObjectBindingPattern(pattern)) {
+          const namespace = expression ? namespaceForExpression(expression) : undefined;
+          if (namespace && !dynamicObjectBindings.has(pattern)) {
+            dynamicObjectBindings.set(pattern, namespace);
+            changed = true;
+          }
+          for (const element of pattern.elements) {
+            const exportedName = staticMemberName(element.propertyName ?? element.name);
+            const entry = exportedName ? namespace?.get(exportedName) : undefined;
+            if (entry && !isBoundaryTarget(entry) && ts.isIdentifier(element.name)) {
+              const symbol = checker.getSymbolAtLocation(element.name);
+              if (symbol && !dynamicNamespaces.has(symbol)) {
+                dynamicNamespaces.set(symbol, entry);
                 changed = true;
               }
             }
+            if (element.initializer) bindPattern(element.name, element.initializer);
           }
+          return;
+        }
+        const array = expression ? unwrapExpression(expression) : undefined;
+        const values = array && ts.isArrayLiteralExpression(array) ? array.elements : [];
+        for (const [index, element] of pattern.elements.entries()) {
+          if (!element || ts.isOmittedExpression(element)) continue;
+          const value = values[index];
+          const valueExpression = value && !ts.isOmittedExpression(value) ? value : undefined;
+          if (element.dotDotDotToken && ts.isIdentifier(element.name)) {
+            const rest = values
+              .slice(index)
+              .filter((entry): entry is ts.Expression => !ts.isOmittedExpression(entry) && !ts.isSpreadElement(entry));
+            addLoaderArray(element.name, rest);
+          } else {
+            bindPattern(
+              element.name,
+              valueExpression && !ts.isSpreadElement(valueExpression) ? valueExpression : undefined,
+            );
+          }
+          if (element.initializer) bindPattern(element.name, element.initializer);
+        }
+      };
+      const bindCall = (call: ts.CallExpression, candidate: PassThroughFunction): void => {
+        for (const [index, parameter] of candidate.parameters.entries()) {
+          if (parameter.dotDotDotToken) {
+            if (ts.isIdentifier(parameter.name)) addLoaderArray(parameter.name, call.arguments.slice(index));
+            continue;
+          }
+          bindPattern(parameter.name, call.arguments[index] ?? parameter.initializer);
+        }
+      };
+      const bindArrayAssignment = (left: ts.ArrayLiteralExpression, right: ts.Expression): void => {
+        const values = unwrapExpression(right);
+        if (!ts.isArrayLiteralExpression(values)) return;
+        for (const [index, target] of left.elements.entries()) {
+          if (ts.isOmittedExpression(target)) continue;
+          const value = values.elements[index];
+          if (!value || ts.isOmittedExpression(value) || ts.isSpreadElement(value)) continue;
+          if (ts.isSpreadElement(target) && ts.isIdentifier(target.expression)) {
+            const rest = values.elements
+              .slice(index)
+              .filter((entry): entry is ts.Expression => !ts.isOmittedExpression(entry) && !ts.isSpreadElement(entry));
+            addLoaderArray(target.expression, rest);
+          } else if (ts.isIdentifier(target)) {
+            addLoader(target, value);
+          }
+        }
+      };
+      const indexDynamicFlow = (node: ts.Node): void => {
+        if (ts.isVariableDeclaration(node) && node.initializer) bindPattern(node.name, node.initializer);
+        if (ts.isParameter(node) && node.initializer) bindPattern(node.name, node.initializer);
+        if (ts.isBindingElement(node) && node.initializer) bindPattern(node.name, node.initializer);
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+          const left = unwrapExpression(node.left as ts.Expression);
+          if (ts.isIdentifier(left)) addLoader(left, node.right);
+          if (ts.isArrayLiteralExpression(left)) bindArrayAssignment(left, node.right);
+        }
+        if (ts.isCallExpression(node)) {
+          for (const candidate of passThroughCandidates(node.expression, checker)) bindCall(node, candidate);
+          const callee = unwrapExpression(node.expression);
           if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
             const member = ts.isPropertyAccessExpression(callee)
               ? callee.name.text
               : staticMemberName(callee.argumentExpression);
-            const exports = member === "then" ? namespaceForExpression(callee.expression) : undefined;
-            const callback = node.arguments[0] ? unwrapExpression(node.arguments[0]) : undefined;
-            if (exports && callback && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))) {
-              const parameter = callback.parameters[0];
-              if (parameter && ts.isIdentifier(parameter.name)) {
-                const symbol = checker.getSymbolAtLocation(parameter.name);
-                if (symbol && !dynamicNamespaces.has(symbol)) {
-                  dynamicNamespaces.set(symbol, exports);
-                  changed = true;
-                }
+            const namespace = member === "then" ? namespaceForExpression(callee.expression) : undefined;
+            const callback = node.arguments[0];
+            if (namespace && callback) {
+              for (const candidate of passThroughCandidates(callback, checker)) {
+                const parameter = candidate.parameters[0];
+                if (parameter) bindPattern(parameter.name, callee.expression);
               }
             }
           }
@@ -915,13 +1132,13 @@ export function analyzeExecutionBoundary(
 
     const recordDynamicBinding = (
       pattern: ts.ObjectBindingPattern | ts.ObjectLiteralExpression,
-      exports: ReadonlyMap<string, ExecutionBoundaryTarget>,
+      exports: DynamicNamespace,
     ): void => {
       if (ts.isObjectBindingPattern(pattern)) {
         for (const element of pattern.elements) {
           const exportedName = staticMemberName(element.propertyName ?? element.name);
           const target = exportedName ? exports.get(exportedName) : undefined;
-          if (target) addReference(references, options.rootDir, source, element, target);
+          if (target && isBoundaryTarget(target)) addReference(references, options.rootDir, source, element, target);
         }
         return;
       }
@@ -929,12 +1146,16 @@ export function analyzeExecutionBoundary(
         if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) continue;
         const exportedName = staticMemberName(property.name);
         const target = exportedName ? exports.get(exportedName) : undefined;
-        if (target) addReference(references, options.rootDir, source, property, target);
+        if (target && isBoundaryTarget(target)) addReference(references, options.rootDir, source, property, target);
       }
     };
 
     const visit = (node: ts.Node): void => {
-      if ((ts.isIdentifier(node) || ts.isStringLiteralLike(node)) && !isTypeOnlyReference(node)) {
+      if (
+        (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) &&
+        !isTypeOnlyReference(node) &&
+        !isExportSyntax(node)
+      ) {
         if (!isDeclarationName(node) && !isNonValuePropertyName(node)) {
           const symbol = canonicalSymbol(checker, checker.getSymbolAtLocation(node));
           const target = symbol ? symbols.get(symbol) : undefined;
@@ -942,9 +1163,51 @@ export function analyzeExecutionBoundary(
         }
       }
 
+      if (ts.isExportDeclaration(node) && !node.isTypeOnly) {
+        const namespace =
+          node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)
+            ? resolveModuleTargetExports(
+                node.moduleSpecifier.text,
+                source,
+                program,
+                checker,
+                options.compilerOptions,
+                symbols,
+              )
+            : undefined;
+        if (!node.exportClause && namespace) {
+          for (const target of flattenedTargets(namespace)) {
+            addReference(references, options.rootDir, source, node, target);
+          }
+        } else if (node.exportClause && ts.isNamespaceExport(node.exportClause) && namespace) {
+          for (const target of flattenedTargets(namespace)) {
+            addReference(references, options.rootDir, source, node.exportClause, target);
+          }
+        } else if (node.exportClause && ts.isNamedExports(node.exportClause)) {
+          for (const element of node.exportClause.elements) {
+            if (element.isTypeOnly) continue;
+            const exportedName = element.propertyName?.text ?? element.name.text;
+            const entry = namespace?.get(exportedName);
+            if (entry) {
+              const targets = isBoundaryTarget(entry) ? [entry] : flattenedTargets(entry);
+              for (const target of targets) addReference(references, options.rootDir, source, element, target);
+              continue;
+            }
+            const symbol = canonicalSymbol(checker, checker.getSymbolAtLocation(element.name));
+            const target = symbol ? symbols.get(symbol) : undefined;
+            if (target) addReference(references, options.rootDir, source, element, target);
+          }
+        }
+      }
+
       if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer) {
         const exports = namespaceForExpression(node.initializer);
         if (exports) recordDynamicBinding(node.name, exports);
+      }
+
+      if (ts.isObjectBindingPattern(node)) {
+        const namespace = dynamicObjectBindings.get(node);
+        if (namespace) recordDynamicBinding(node, namespace);
       }
 
       if (ts.isCallExpression(node)) {
@@ -976,7 +1239,9 @@ export function analyzeExecutionBoundary(
         const target = member ? namespace?.get(member) : undefined;
         const memberSymbol = memberNode ? canonicalSymbol(checker, checker.getSymbolAtLocation(memberNode)) : undefined;
         const symbolTarget = memberSymbol ? symbols.get(memberSymbol) : undefined;
-        if (target && symbolTarget !== target) addReference(references, options.rootDir, source, node, target);
+        if (target && isBoundaryTarget(target) && symbolTarget !== target) {
+          addReference(references, options.rootDir, source, node, target);
+        }
       }
       ts.forEachChild(node, visit);
     };
