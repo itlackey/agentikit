@@ -15,19 +15,22 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { computeSafeChunkSize } from "../../../../src/commands/improve/consolidate/chunking";
 import { akmImprove } from "../../../../src/commands/improve/improve";
+import { upsertAssetSalience } from "../../../../src/commands/improve/salience";
 import type { AkmConfig } from "../../../../src/core/config/config";
 import { saveConfig } from "../../../../src/core/config/config";
 import { appendEvent } from "../../../../src/core/events";
-import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/improve-types";
+import { decodeImproveResult } from "../../../../src/core/improve-result";
+import type { AkmDistillResult, AkmReflectResult, ImproveEligibleRef } from "../../../../src/core/improve-types";
 import { getDbPath } from "../../../../src/core/paths";
-import { getStateDbPath } from "../../../../src/core/state-db";
+import { getStateDbPath, openStateDatabase } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { OpenCodeProvider } from "../../../../src/integrations/harnesses/opencode/session-log";
 import type { SessionLogHarness } from "../../../../src/integrations/session-logs/types";
 import { writeSkill } from "../../../_helpers/assets";
 import { withImproveAutonomy, withTestImproveLlm } from "../../../_helpers/improve-config";
-import { type Cleanup, withIsolatedAkmStorage, withMockedFetch } from "../../../_helpers/sandbox";
+import { type Cleanup, withEnv, withIsolatedAkmStorage, withMockedFetch } from "../../../_helpers/sandbox";
 
 const cleanups: Cleanup[] = [];
 
@@ -79,6 +82,15 @@ function writeMemory(stashDir: string, name: string): void {
   const filePath = path.join(stashDir, "memories", `${name}.md`);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `---\ndescription: ${name}\n---\n\nMemory ${name}.\n`, "utf8");
+}
+
+function seedReplayRank(ref: string, rankScore: number): void {
+  const db = openStateDatabase();
+  try {
+    upsertAssetSalience(db, `stash//${ref}`, { encoding: 0.5, outcome: 0, retrieval: 0, rankScore });
+  } finally {
+    db.close();
+  }
 }
 
 function snapshotTree(root: string): Map<string, string> {
@@ -359,6 +371,59 @@ describe("#800 effective dry-run planner", () => {
     expect(dry.plan?.effectiveRefs).toEqual(live.plan?.effectiveRefs);
   });
 
+  test("replay intersects the current skill plan and preserves the matching entry in dry and live envelopes", async () => {
+    const { stashDir } = isolatedStorage();
+    const config = plannerConfig();
+    config.improve = {
+      ...config.improve,
+      salience: { salienceThreshold: 1, replayBudget: 3 },
+    };
+    const skillRef = "skills/replay-match";
+    const skillPath = path.join(stashDir, "skills", "replay-match", "SKILL.md");
+    writeSkill(stashDir, "replay-match", "The only replay candidate in the current skill plan.");
+    writeMemory(stashDir, "out-of-scope");
+    saveConfig(config);
+    await akmIndex({ stashDir, full: true });
+    seedReplayRank("skills/stale", 0.99);
+    seedReplayRank("memories/out-of-scope", 0.95);
+    seedReplayRank(skillRef, 0.9);
+
+    const commonOptions = {
+      scope: "skill",
+      stashDir,
+      config,
+      ensureIndexFn: async () => false,
+      reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
+      reflectFn: async ({ ref }: { ref?: string }) =>
+        ({
+          schemaVersion: 2,
+          ok: false,
+          reason: "no_change",
+          error: "stable",
+          ref: ref ?? "",
+          engine: "test",
+          exitCode: 0,
+        }) satisfies AkmReflectResult,
+    };
+    const dry = await akmImprove({ ...commonOptions, dryRun: true });
+    const live = await akmImprove(commonOptions);
+    const expected = {
+      ref: skillRef,
+      reason: "scope-type",
+      filePath: skillPath,
+      itemRef: `stash//${skillRef}`,
+      eligibilitySource: "replay",
+    } satisfies ImproveEligibleRef;
+
+    expect(dry.plannedRefs).toEqual([expected]);
+    expect(live.plannedRefs).toEqual([expected]);
+    expect(dry.plan?.effectiveRefs).toEqual([{ ref: skillRef, lane: "replay", reason: "scope-type" }]);
+    expect(live.plan?.effectiveRefs).toEqual(dry.plan?.effectiveRefs);
+    for (const result of [dry, live]) {
+      expect(decodeImproveResult(JSON.stringify(result)).envelope.plannedRefs).toEqual([expected]);
+    }
+  });
+
   test("dry and live cleanup prune the same ref-scoped derived memory before the disk gate", async () => {
     const { stashDir } = isolatedStorage();
     const config = withImproveAutonomy(plannerConfig());
@@ -440,6 +505,41 @@ describe("#800 effective dry-run planner", () => {
     expect(result.plan?.stages.find((stage) => stage.name === "consolidation")).toMatchObject({
       wouldRun: true,
     });
+  });
+
+  test("consolidation preview reads frozen context length without materializing a required credential", async () => {
+    const { stashDir } = isolatedStorage();
+    const credentialName = "AKM_800_CONSOLIDATION_PLAN_KEY";
+    const config = plannerConfig({ consolidate: { enabled: true, minPoolSize: 2, maxChunkSize: 50 } });
+    config.engines = {
+      planner: {
+        kind: "llm",
+        endpoint: "https://example.test/v1/chat/completions",
+        model: "planner",
+        contextLength: 8_000,
+        apiKey: `$${credentialName}`,
+      },
+    };
+    config.defaults = { ...config.defaults, llmEngine: "planner" };
+    config.index = { enrichment: { enabled: false } };
+    for (let i = 0; i < 3; i++) writeMemory(stashDir, `credential-free-${i}`);
+    saveConfig(config);
+    await akmIndex({ stashDir, full: true });
+    let networkCalls = 0;
+
+    const result = await withEnv({ [credentialName]: undefined }, () =>
+      withMockedFetch(
+        () => akmImprove({ scope: "memory", stashDir, config, dryRun: true }),
+        async () => {
+          networkCalls += 1;
+          throw new Error("consolidation preview dispatched a network request");
+        },
+      ),
+    );
+
+    expect(networkCalls).toBe(0);
+    expect(result.plan?.consolidation.effective.chunkSize).toBe(computeSafeChunkSize(8_000, 500, 50));
+    expect(result.plan?.consolidation.wouldRun).toBe(true);
   });
 
   test("extract preview evaluates the same min-new-sessions gate without dispatch", async () => {

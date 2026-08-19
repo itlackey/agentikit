@@ -350,11 +350,8 @@ function planConsolidationPass(args: {
         readOnly: eventsCtx?.readOnly === true,
       })
     : { poolSize: 0, candidatePoolSize: 0, dedupPoolSize: 0, memories: [] };
-  const connection = resolvedPlan.processes.consolidate.runner
-    ? materializeLlmRunnerConnection(resolvedPlan.processes.consolidate.runner)
-    : undefined;
   const chunkSize = computeSafeChunkSize(
-    connection?.contextLength ?? DEFAULT_CONTEXT_LENGTH_TOKENS,
+    resolvedPlan.processes.consolidate.runner?.connection.contextLength ?? DEFAULT_CONTEXT_LENGTH_TOKENS,
     500,
     processConfig?.maxChunkSize,
   );
@@ -854,7 +851,7 @@ export async function runValidationAndRepairPass(args: {
   const repairedRefs = new Set<string>();
 
   // Schema repair pass: attempt to fix validation failures via LLM before skipping.
-  if (validationFailures.length > 0) {
+  if (repairValidationFailures && validationFailures.length > 0) {
     const validationRunner = resolvedPlan.processes.validation.runner;
     const llmCfg = validationRunner ? materializeLlmRunnerConnection(validationRunner) : undefined;
     if (llmCfg) {
@@ -3058,62 +3055,62 @@ function applyReplaySelection(args: {
         (replayDb) => {
           const alreadyInPool = new Set(mergedRefs.map((r) => r.ref));
           const storedRankScores = getAllRankScores(replayDb);
-          // Chunk-5 flip F5e — plan reverse map so a stored item_ref row re-keys
-          // back onto its filesystem-facing bare ref (the replay stub must match
-          // a planned entry for its filePath / disk check).
-          const itemRefByPlanned = buildItemRefByRef(plannedRefs);
-          const bareRefByItemRef = new Map<string, string>();
-          for (const [bareRef, itemRef] of itemRefByPlanned) if (itemRef) bareRefByItemRef.set(itemRef, bareRef);
-          const allRankScores = options.sourceName
-            ? (() => {
-                // Source-scope by the bundle prefix, then re-key item_ref rows
-                // onto the short conceptId used by the planned-ref pool.
-                const m = new Map<string, number>();
-                for (const [ref, score] of storedRankScores) {
-                  const boundary = ref.indexOf("//");
-                  const prefix = boundary >= 0 ? ref.slice(0, boundary) : undefined;
-                  const belongs = prefix === options.sourceName;
-                  if (!belongs) continue;
-                  m.set(bareRefByItemRef.get(ref) ?? bareImproveRef(ref), score);
-                }
-                return m;
-              })()
-            : storedRankScores;
-          // Candidate universe = every salience row NOT already in the pool, ordered by
-          // rank_score desc with a deterministic ref-string tie-break (mirrors the main
-          // sort). Converged refs (consecutive_no_ops >= dampener threshold) are fully
-          // EXCLUDED — a stronger skip than the dampener (which only halves order).
+          const plannedByRef = new Map(plannedRefs.map((planned) => [planned.ref, planned]));
+          const plannedByItemRef = new Map<string, ImproveEligibleRef>();
+          for (const planned of plannedRefs) {
+            if (planned.itemRef) plannedByItemRef.set(planned.itemRef, planned);
+          }
+          // Replay can only revisit an entry selected into THIS invocation's
+          // source/type plan. Match durable item_ref rows by exact provenance;
+          // legacy bare rows may match the current plan's concept ref. Folding
+          // both spellings onto the planned ref also prevents duplicate budget
+          // spend when old and current state rows coexist.
+          const allRankScores = new Map<string, number>();
+          for (const [stateRef, score] of storedRankScores) {
+            const boundary = stateRef.indexOf("//");
+            if (options.sourceName && (boundary < 0 || stateRef.slice(0, boundary) !== options.sourceName)) continue;
+            const planned =
+              plannedByItemRef.get(stateRef) ?? (boundary < 0 ? plannedByRef.get(bareImproveRef(stateRef)) : undefined);
+            if (!planned) continue;
+            const previous = allRankScores.get(planned.ref);
+            if (previous === undefined || score > previous) allRankScores.set(planned.ref, score);
+          }
+          // Candidate universe = every current-plan salience match NOT already in the
+          // pool, ordered by rank_score desc with a deterministic ref-string tie-break
+          // (mirrors the main sort). Converged refs (consecutive_no_ops >= dampener
+          // threshold) are fully EXCLUDED — a stronger skip than the dampener (which
+          // only halves order).
           let convergedSkipped = 0;
-          const candidates: Array<{ ref: string; rankScore: number }> = [];
+          const candidates: Array<{ planned: ImproveEligibleRef; rankScore: number }> = [];
           for (const [ref, rankScore] of allRankScores) {
             if (alreadyInPool.has(ref)) continue;
-            const noOps = readConsecutiveNoOpsForImproveRef(replayDb, ref, itemRefByPlanned.get(ref));
+            const planned = plannedByRef.get(ref);
+            if (!planned) continue;
+            const noOps = readConsecutiveNoOpsForImproveRef(replayDb, ref, planned.itemRef);
             if (noOps >= SALIENCE_NO_OP_DAMPEN_THRESHOLD) {
               convergedSkipped++;
               continue;
             }
-            candidates.push({ ref, rankScore });
+            candidates.push({ planned, rankScore });
           }
           candidates.sort((a, b) =>
-            b.rankScore !== a.rankScore ? b.rankScore - a.rankScore : a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0,
+            b.rankScore !== a.rankScore
+              ? b.rankScore - a.rankScore
+              : a.planned.ref < b.planned.ref
+                ? -1
+                : a.planned.ref > b.planned.ref
+                  ? 1
+                  : 0,
           );
           const candidatePool = candidates.length;
           const selected = candidates.slice(0, replayBudget);
           const newReplayRefs: ImproveEligibleRef[] = [];
-          for (const { ref } of selected) {
+          for (const { planned } of selected) {
+            const ref = planned.ref;
             replayRefSet.add(ref);
-            // Synthesise a stub (mirror the forgetting-safety stub). Resolve the
-            // backing file from the planned-ref pool so the downstream existsSync
-            // guard keeps the ref (a replay candidate from asset_salience whose file
-            // is gone correctly drops out). Only refs present in the indexed pool can
-            // be revisited — refs without a planned entry get no filePath and are
-            // dropped by the disk check, which is the desired behavior.
-            const planned = plannedRefs.find((p) => p.ref === ref);
             newReplayRefs.push({
-              ref,
-              reason: "scope-type",
+              ...planned,
               eligibilitySource: "replay",
-              ...(planned?.filePath ? { filePath: planned.filePath } : {}),
             });
             // Seed the salienceMap so the sort/effectiveScore can rank the replay ref.
             if (!salienceMap.has(ref)) {
