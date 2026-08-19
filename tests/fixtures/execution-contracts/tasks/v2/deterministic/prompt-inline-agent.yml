@@ -1,0 +1,7 @@
+version: 2
+schedule: "@daily"
+enabled: true
+prompt: Review the execution contract.
+engine: fixture-agent
+model: fixture-exact-model
+timeoutMs: 45000

@@ -1,0 +1,22 @@
+version: 2
+name: Contract review prompt
+description: Exercises every exactly preservable v2 prompt override
+when_to_use: Run during the execution-contract conformance pass
+tags: [contract, review]
+schedule: "15 4 * * 1"
+enabled: false
+prompt: |
+  Review the execution contract.
+  Return the literal marker contract-reviewed.
+engine: fixture-llm
+model: fixture-exact-model
+timeoutMs: 45000
+llm:
+  temperature: 0
+  maxTokens: 256
+  supportsJsonSchema: false
+  extraParams:
+    seed: 7
+  contextLength: 4096
+  enableThinking: false
+redact: [CONTRACT_FIXTURE_TOKEN]

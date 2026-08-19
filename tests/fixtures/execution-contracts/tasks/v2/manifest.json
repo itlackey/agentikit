@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "sourceSchemaVersion": 2,
+  "deterministic": [
+    {
+      "id": "prompt-inline-full",
+      "file": "deterministic/prompt-inline-full.yml",
+      "sourceKind": "prompt-inline",
+      "targetKind": "anonymous-command-content",
+      "preserves": [
+        "schedule",
+        "enabled",
+        "name",
+        "description",
+        "when_to_use",
+        "tags",
+        "engine",
+        "model",
+        "timeoutMs",
+        "llm",
+        "redact"
+      ]
+    },
+    {
+      "id": "prompt-command-ref",
+      "file": "deterministic/prompt-command-ref.yml",
+      "sourceKind": "prompt-command-ref",
+      "targetKind": "command-ref",
+      "preserves": ["schedule", "enabled", "engine", "model", "timeoutMs"]
+    },
+    {
+      "id": "prompt-inline-agent",
+      "file": "deterministic/prompt-inline-agent.yml",
+      "sourceKind": "prompt-inline",
+      "targetKind": "anonymous-command-content",
+      "preserves": ["schedule", "enabled", "engine", "model", "timeoutMs"]
+    },
+    {
+      "id": "command-string",
+      "file": "deterministic/command-string.yml",
+      "sourceKind": "command-string-safe-token-sequence",
+      "targetKind": "shell-run",
+      "preserves": ["schedule", "enabled", "timeoutMs", "redact"]
+    },
+    {
+      "id": "workflow-ref-full",
+      "file": "deterministic/workflow-ref-full.yml",
+      "sourceKind": "workflow-ref",
+      "targetKind": "workflow-ref",
+      "preserves": ["schedule", "enabled", "params", "timeoutMs", "maxSteps", "maxRetries", "redact"]
+    }
+  ],
+  "blocked": [
+    {
+      "id": "command-argv",
+      "file": "blocked/command-argv.yml",
+      "reasonCode": "argv-array-has-no-portable-shell-string"
+    },
+    {
+      "id": "command-shell-operators",
+      "file": "blocked/command-shell-operators.yml",
+      "reasonCode": "shell-operators-change-v2-literal-argv-semantics"
+    },
+    {
+      "id": "command-shell-quoting",
+      "file": "blocked/command-shell-quoting.yml",
+      "reasonCode": "shell-quoting-changes-v2-whitespace-split-semantics"
+    },
+    {
+      "id": "prompt-agent-ref",
+      "file": "blocked/prompt-agent-ref.yml",
+      "reasonCode": "agent-ref-has-persona-but-no-command-work"
+    },
+    {
+      "id": "prompt-non-command-ref",
+      "file": "blocked/prompt-non-command-ref.yml",
+      "reasonCode": "non-command-asset-has-no-v3-command-ref-equivalent"
+    },
+    {
+      "id": "prompt-relative-file",
+      "file": "blocked/prompt-relative-file.yml",
+      "reasonCode": "dynamic-file-read-cannot-be-inlined-without-changing-semantics"
+    }
+  ]
+}

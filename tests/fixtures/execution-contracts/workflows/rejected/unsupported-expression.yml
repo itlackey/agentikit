@@ -1,0 +1,9 @@
+name: Unsupported expression
+on:
+  workflow_dispatch:
+jobs:
+  contract:
+    runs-on: [self-hosted]
+    steps:
+      - id: review
+        run: printf ${{ github.sha }}

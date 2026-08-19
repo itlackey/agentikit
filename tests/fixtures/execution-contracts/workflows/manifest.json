@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "equivalent": {
+    "markdown": "equivalent/contract-review.md",
+    "githubYaml": "equivalent/contract-review.yml",
+    "expected": "equivalent/portable-projection.json",
+    "boundary": "Only token-safe run commands and a local self-hosted runner are used; no shell expansion is needed for equivalence."
+  },
+  "currentFreeze": "current/agent-unit.md",
+  "rejected": [
+    {
+      "id": "unsupported-service-trigger",
+      "file": "rejected/unsupported-service-trigger.yml",
+      "reasonCode": "unsupported-service-event"
+    },
+    {
+      "id": "unsupported-expression",
+      "file": "rejected/unsupported-expression.yml",
+      "reasonCode": "unsupported-github-expression"
+    },
+    {
+      "id": "unsupported-remote-action",
+      "file": "rejected/unsupported-remote-action.yml",
+      "reasonCode": "remote-action-acquisition-out-of-scope"
+    }
+  ]
+}

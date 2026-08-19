@@ -1,0 +1,10 @@
+name: Unsupported service trigger
+on:
+  push:
+    branches: [main]
+jobs:
+  contract:
+    runs-on: [self-hosted]
+    steps:
+      - id: review
+        run: printf contract-reviewed
