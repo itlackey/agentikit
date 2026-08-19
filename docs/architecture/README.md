@@ -22,6 +22,7 @@ Normative specifications and binding conventions.
 - [Ref Format](specs/ref.md) -- Wire format for asset references
 - [Format-Neutral Bundle Workspace Spec](specs/akm-format-neutral-bundle-workspace-spec.md) -- The format-neutral workspace model
 - [Agent, Command, Engine, and Model Resolution](specs/agent-command-engine-model-design.md) -- Approved target semantics for native agent/command bundles, configuration cascading, model maps, and dispatch
+- [0.9.2 Agent/Command/Task/Workflow Implementation Plan](../plans/0.9.2-agent-command-workflow-plan.md) -- Sequenced work packages, migration rules, support boundaries, and release evidence for the coherent execution MVP
 - [Fact Asset Type](specs/fact-asset-type.md) -- The `fact` asset type
 - [Bundle Conventions Code Spec](specs/stash-conventions-code-spec.md) -- Code-level bundle conventions
 - [Bundle Organization Conventions](specs/stash-organization-conventions.md) -- How a bundle is laid out

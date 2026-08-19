@@ -19,11 +19,15 @@ Related: [`workflow-format-unification.md`](./workflow-format-unification.md),
 > capability handling, or model aliases. In particular, this proposal's
 > `with:`/named/positional command-template grammar, primary-bundle tool-policy
 > ceiling, static engine-capability declarations, and built-in wildcard alias
-> recommendations are superseded. The exact task/workflow source syntax remains
-> undecided and MUST NOT be inferred from the superseded examples here. The
-> still-compatible task/workflow concepts — tasks as scheduling wrappers,
-> agents as selectors rather than targets, task composition in workflow steps,
-> live task resolution, and frozen workflow resolution — remain design input.
+> recommendations are superseded. The owner subsequently settled the 0.9.2
+> source-format direction in the
+> [0.9.2 implementation plan](../../plans/0.9.2-agent-command-workflow-plan.md):
+> task v3 is GitHub-step-shaped, AKM Markdown and GitHub-shaped YAML are peer
+> workflow formats, and both compile through one internal versioned IR. The
+> concrete schemas and examples below are therefore non-normative. The
+> still-compatible concepts — tasks as scheduling wrappers, agents as
+> selectors rather than targets, task composition in workflow steps, live task
+> resolution, and frozen workflow resolution — remain design input.
 
 ---
 
