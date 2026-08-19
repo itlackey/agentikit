@@ -489,6 +489,8 @@ function updateTransactionHook(
 interface PreparedUpdate {
   auditRoot: string;
   publishedAuditRoot?: string;
+  publishedAuditContainmentRoot?: string;
+  publishedAuditExpectedPhysicalRoot?: string;
   auditedContentGeneration?: string;
   approvedDangerousFindings?: string;
   publication?: DirectoryPublication;
@@ -670,18 +672,41 @@ async function contentGeneration(root: string): Promise<string> {
 async function verifyPublishedAudit(prepared: PreparedUpdate, id: string): Promise<void> {
   const liveRoot = prepared.publishedAuditRoot;
   if (!liveRoot) return;
-  const beforeAudit = await contentGeneration(liveRoot);
+  const resolveLiveAuditRoot = (): string => {
+    const physicalRoot = canonicalWritablePath(liveRoot, `published component root for "${id}"`);
+    const containmentRoot = prepared.publishedAuditContainmentRoot;
+    if (containmentRoot && !pathAtOrBelow(physicalRoot, containmentRoot)) {
+      throw new ConfigError(
+        `Published component root ${liveRoot} resolves outside its physical checkout at ${containmentRoot}.`,
+        "DANGEROUS_ENV_AUDIT_FAILED",
+      );
+    }
+    const expected = prepared.publishedAuditExpectedPhysicalRoot;
+    if (expected && path.resolve(physicalRoot) !== path.resolve(expected)) {
+      throw new ConfigError(
+        `Published component root ${liveRoot} resolves to ${physicalRoot}, not its audited staged target ${expected}.`,
+        "DANGEROUS_ENV_AUDIT_FAILED",
+      );
+    }
+    return physicalRoot;
+  };
+  const beforeRoot = resolveLiveAuditRoot();
+  const beforeAudit = await contentGeneration(beforeRoot);
   let findings: DangerousKeyFinding[];
   try {
-    findings = scanStashForDangerousKeys(liveRoot);
+    const scanRoot = resolveLiveAuditRoot();
+    if (scanRoot !== beforeRoot) throw new Error("configured component symlink changed during re-audit");
+    findings = scanStashForDangerousKeys(scanRoot);
   } catch (error) {
     throw new ConfigError(
       `Dangerous environment-key re-audit failed after materializing "${id}"; rolling the update back. ${error instanceof Error ? error.message : String(error)}`,
       "DANGEROUS_ENV_AUDIT_FAILED",
     );
   }
-  const afterAudit = await contentGeneration(liveRoot);
+  const afterRoot = resolveLiveAuditRoot();
+  const afterAudit = await contentGeneration(afterRoot);
   if (
+    afterRoot !== beforeRoot ||
     beforeAudit !== prepared.auditedContentGeneration ||
     afterAudit !== prepared.auditedContentGeneration ||
     dangerousFindingGeneration(findings) !== prepared.approvedDangerousFindings
@@ -724,6 +749,14 @@ function canonicalWritablePath(candidate: string, description: string): string {
   }
 }
 
+function containedWritablePath(candidate: string, physicalRepo: string, description: string): string {
+  const physicalCandidate = canonicalWritablePath(candidate, description);
+  if (!pathAtOrBelow(physicalCandidate, physicalRepo)) {
+    throw new ConfigError(`${description} ${candidate} resolves outside its physical checkout at ${physicalRepo}.`);
+  }
+  return physicalCandidate;
+}
+
 function prepareWritableManagedUpdate(managed: ManagedInstall, force: boolean): Promise<PreparedManagedUpdate> {
   const physicalLocalRoot = canonicalWritablePath(managed.localRoot, "managed content root");
   const topLevel = runGit(["-C", physicalLocalRoot, "rev-parse", "--show-toplevel"]);
@@ -739,31 +772,45 @@ function prepareWritableManagedUpdate(managed: ManagedInstall, force: boolean): 
       `Writable Git content root ${managed.localRoot} resolves outside its physical checkout at ${liveRepo}.`,
     );
   }
-  const physicalRequiredRoots = managed.requiredRoots.map((root) =>
-    canonicalWritablePath(root, `configured component root for "${managed.installId}"`),
-  );
-  for (const requiredRoot of physicalRequiredRoots) {
-    if (!pathAtOrBelow(requiredRoot, liveRepo)) {
+  // Keep the configured component path as a lexical identity relative to the
+  // content root. Resolving it to today's symlink target here would pin the old
+  // target and miss an upstream commit that retargets the symlink.
+  const lexicalLocalRoot = path.resolve(managed.localRoot);
+  const configuredLiveRoots = managed.requiredRoots.map((root) => {
+    const lexicalRoot = path.resolve(root);
+    if (!pathAtOrBelow(lexicalRoot, lexicalLocalRoot)) {
       throw new ConfigError(
-        `Configured writable Git component root ${requiredRoot} resolves outside its physical checkout at ${liveRepo}.`,
+        `Configured writable Git component root ${lexicalRoot} escapes content root ${lexicalLocalRoot}.`,
       );
     }
-  }
+    return path.resolve(physicalLocalRoot, path.relative(lexicalLocalRoot, lexicalRoot));
+  });
+  const physicalRequiredRoots = configuredLiveRoots.map((root) =>
+    containedWritablePath(root, liveRepo, `Configured component root for "${managed.installId}"`),
+  );
   const expectedOldHead = gitHead(liveRepo);
   const stagingParent = createStagingParent(path.dirname(liveRepo));
   const stagedRepo = path.join(stagingParent, path.basename(liveRepo));
   fs.cpSync(liveRepo, stagedRepo, { recursive: true, preserveTimestamps: true });
   const stagedContentRoot = remapStagedPath(physicalLocalRoot, liveRepo, stagedRepo);
-  const stagedRequiredRoots = physicalRequiredRoots.map((root) => remapStagedPath(root, liveRepo, stagedRepo));
+  const stagedPhysicalRequiredRoots = physicalRequiredRoots.map((root) => remapStagedPath(root, liveRepo, stagedRepo));
+  const stagedConfiguredRoots = configuredLiveRoots.map((root) => remapStagedPath(root, liveRepo, stagedRepo));
 
   return syncFromRef(managed.ref, {
     force,
     writable: true,
     writableRoot: stagedContentRoot,
-    ...(stagedRequiredRoots.length > 0 ? { writableRequiredRoots: stagedRequiredRoots } : {}),
+    ...(stagedPhysicalRequiredRoots.length > 0 ? { writableRequiredRoots: stagedPhysicalRequiredRoots } : {}),
   })
     .then((staged) => {
       const auditedTargetHead = gitHead(stagedRepo);
+      const physicalStagedRepo = canonicalWritablePath(stagedRepo, "staged managed Git checkout");
+      const auditedConfiguredRoots = stagedConfiguredRoots.map((root) =>
+        containedWritablePath(root, physicalStagedRepo, `Post-sync component root for "${managed.installId}"`),
+      );
+      const expectedPublishedRoots = auditedConfiguredRoots.map((root) =>
+        path.join(liveRepo, path.relative(physicalStagedRepo, root)),
+      );
       const synced: SourceLockData = {
         ...staged,
         resolvedRevision: auditedTargetHead ?? staged.resolvedRevision,
@@ -773,8 +820,10 @@ function prepareWritableManagedUpdate(managed: ManagedInstall, force: boolean): 
       };
       return {
         synced,
-        auditRoot: stagedRequiredRoots[0] ?? staged.contentDir,
-        publishedAuditRoot: physicalRequiredRoots[0] ?? synced.contentDir,
+        auditRoot: auditedConfiguredRoots[0] ?? staged.contentDir,
+        publishedAuditRoot: configuredLiveRoots[0] ?? synced.contentDir,
+        publishedAuditContainmentRoot: liveRepo,
+        publishedAuditExpectedPhysicalRoot: expectedPublishedRoots[0] ?? synced.contentDir,
         publication: writableGitPublication({ stagedRepo, liveRepo, expectedOldHead, auditedTargetHead }),
         cleanup: () => cleanupStagingParent(stagingParent),
       };
@@ -935,13 +984,13 @@ async function prepareGitPlainUpdate(
       writable,
       cacheRootDir: stagingParent,
     });
-    const auditRoot = resolveComponentAuditRoot(
+    const configuredStagedAuditRoot = resolveComponentAuditRoot(
       resolveGitContentRoot(staged.contentDir),
       componentRoot,
       gitSource.name ?? "git",
     );
     if (!pathAtOrBelow(staged.cacheDir, stagingParent)) {
-      if (pathAtOrBelow(auditRoot, livePaths.rootDir)) {
+      if (pathAtOrBelow(configuredStagedAuditRoot, livePaths.rootDir)) {
         throw new ConfigError(
           `Git provider for "${gitSource.name ?? gitSource.url}" wrote into the active cache instead of the update staging root; refusing to index it.`,
         );
@@ -950,13 +999,33 @@ async function prepareGitPlainUpdate(
       // Audit it, but do not move an unowned directory into the canonical
       // cache. Real providers honor cacheRootDir and use the promotion below.
       return {
-        auditRoot,
+        auditRoot: configuredStagedAuditRoot,
         cleanup: () => cleanupStagingParent(stagingParent),
       };
     }
+    let auditRoot = configuredStagedAuditRoot;
+    let publishedAuditRoot: string | undefined;
+    let publishedAuditContainmentRoot: string | undefined;
+    let publishedAuditExpectedPhysicalRoot: string | undefined;
+    if (writable) {
+      const physicalStagedRepo = canonicalWritablePath(stagedPaths.repoDir, "staged plain Git checkout");
+      auditRoot = containedWritablePath(
+        configuredStagedAuditRoot,
+        physicalStagedRepo,
+        `Post-sync component root for "${gitSource.name ?? "git"}"`,
+      );
+      publishedAuditRoot = remapStagedPath(configuredStagedAuditRoot, staged.cacheDir, livePaths.rootDir);
+      publishedAuditContainmentRoot = canonicalWritablePath(livePaths.repoDir, "plain Git checkout");
+      publishedAuditExpectedPhysicalRoot = path.join(
+        publishedAuditContainmentRoot,
+        path.relative(physicalStagedRepo, auditRoot),
+      );
+    }
     return {
       auditRoot,
-      ...(writable ? { publishedAuditRoot: remapStagedPath(auditRoot, staged.cacheDir, livePaths.rootDir) } : {}),
+      ...(publishedAuditRoot ? { publishedAuditRoot } : {}),
+      ...(publishedAuditContainmentRoot ? { publishedAuditContainmentRoot } : {}),
+      ...(publishedAuditExpectedPhysicalRoot ? { publishedAuditExpectedPhysicalRoot } : {}),
       publication: writable
         ? writableGitPublication({
             stagedRepo: stagedPaths.repoDir,

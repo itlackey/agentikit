@@ -1139,6 +1139,142 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
     expect(fs.readFileSync(path.join(physicalRepo, "env", "default.env"), "utf8")).toBe("API_TOKEN=safe\n");
   });
 
+  test("managed writable Git audits an upstream component symlink retarget instead of its old physical target", async () => {
+    const id = "managed-component-retarget-danger";
+    const liveRepo = managedCachePaths(id).contentDir;
+    initGitBundle(liveRepo, "managed component retarget base");
+    writeBundle(path.join(liveRepo, "safe"), "API_TOKEN=safe\n", "component-safe");
+    writeBundle(path.join(liveRepo, "danger"), "LD_PRELOAD=/tmp/retarget.so\n", "component-danger");
+    fs.symlinkSync("safe", path.join(liveRepo, "component"), "dir");
+    git(liveRepo, ["add", "-A"]);
+    git(liveRepo, ["commit", "-m", "track safe component link"]);
+    const initialHead = git(liveRepo, ["rev-parse", "HEAD"]);
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        [id]: {
+          git: `https://github.com/example/${id}.git`,
+          components: { main: { root: "component", adapter: "akm", writable: true } },
+        },
+      },
+    });
+    mergeLockEntriesSync([
+      {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        resolvedRevision: initialHead,
+        localRoot: liveRepo,
+      },
+    ]);
+    await akmIndex({ stashDir: storage.stashDir, hydrateSources: false });
+    const before = snapshotState();
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) => {
+      if (!options?.writableRoot) throw new Error("writable update did not provide a staged checkout");
+      fs.unlinkSync(path.join(options.writableRoot, "component"));
+      fs.symlinkSync("danger", path.join(options.writableRoot, "component"), "dir");
+      git(options.writableRoot, ["add", "-A"]);
+      git(options.writableRoot, ["commit", "-m", "retarget component to danger"]);
+      const auditedHead = git(options.writableRoot, ["rev-parse", "HEAD"]);
+      return {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        artifactUrl: `https://github.com/example/${id}.git`,
+        resolvedRevision: auditedHead,
+        contentDir: options.writableRoot,
+        cacheDir: options.writableRoot,
+        extractedDir: options.writableRoot,
+        syncedAt: "2026-08-19T00:00:00.000Z",
+        writable: true,
+      };
+    });
+
+    try {
+      await expect(withTTY(false, () => akmUpdate({ target: id, stashDir: storage.stashDir }))).rejects.toMatchObject({
+        code: "DANGEROUS_ENV_KEY",
+      });
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(git(liveRepo, ["rev-parse", "HEAD"])).toBe(initialHead);
+    expect(fs.readlinkSync(path.join(liveRepo, "component"))).toBe("safe");
+    expect(fs.readFileSync(getLockfilePath(), "utf8")).toBe(before.lock as string);
+    expect(indexedRows()).toEqual(before.rows);
+    expect(indexedSearchText()).toBe(before.text);
+  });
+
+  test("managed writable Git rejects an upstream component symlink retarget outside the checkout", async () => {
+    const id = "managed-component-retarget-outside";
+    const fixture = makeSandboxDir("akm-765-managed-retarget-outside-");
+    disposers.push(fixture.cleanup);
+    const liveRepo = path.join(fixture.dir, "repo");
+    const outside = path.join(fixture.dir, "outside");
+    initGitBundle(liveRepo, "managed outside retarget base");
+    writeBundle(path.join(liveRepo, "safe"), "API_TOKEN=safe\n", "component-safe");
+    writeBundle(outside, "API_TOKEN=outside\n", "component-outside");
+    fs.symlinkSync("safe", path.join(liveRepo, "component"), "dir");
+    git(liveRepo, ["add", "-A"]);
+    git(liveRepo, ["commit", "-m", "track contained component link"]);
+    const initialHead = git(liveRepo, ["rev-parse", "HEAD"]);
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        [id]: {
+          git: `https://github.com/example/${id}.git`,
+          components: { main: { root: "component", adapter: "akm", writable: true } },
+        },
+      },
+    });
+    mergeLockEntriesSync([
+      {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        resolvedRevision: initialHead,
+        localRoot: liveRepo,
+      },
+    ]);
+    await akmIndex({ stashDir: storage.stashDir, hydrateSources: false });
+    const before = snapshotState();
+    let published = false;
+    overrideSeam(_setUpdateTransactionHookForTests, (point) => {
+      if (point === "published") published = true;
+    });
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) => {
+      if (!options?.writableRoot) throw new Error("writable update did not provide a staged checkout");
+      fs.unlinkSync(path.join(options.writableRoot, "component"));
+      fs.symlinkSync(outside, path.join(options.writableRoot, "component"), "dir");
+      git(options.writableRoot, ["add", "-A"]);
+      git(options.writableRoot, ["commit", "-m", "retarget component outside checkout"]);
+      const auditedHead = git(options.writableRoot, ["rev-parse", "HEAD"]);
+      return {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        artifactUrl: `https://github.com/example/${id}.git`,
+        resolvedRevision: auditedHead,
+        contentDir: options.writableRoot,
+        cacheDir: options.writableRoot,
+        extractedDir: options.writableRoot,
+        syncedAt: "2026-08-19T00:00:00.000Z",
+        writable: true,
+      };
+    });
+
+    try {
+      await expect(akmUpdate({ target: id, stashDir: storage.stashDir })).rejects.toThrow(/outside|contain|escape/i);
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(published).toBe(false);
+    expect(git(liveRepo, ["rev-parse", "HEAD"])).toBe(initialHead);
+    expect(fs.readlinkSync(path.join(liveRepo, "component"))).toBe("safe");
+    expectState(before);
+  });
+
   test("a writable component symlink escape is rejected before the provider sees a root", async () => {
     const id = "managed-writable-component-escape";
     const fixture = makeSandboxDir("akm-765-managed-component-escape-");
@@ -1539,6 +1675,65 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
     expect(indexedRows()).toEqual(before.rows);
   });
 
+  test("plain writable Git rejects a post-sync component symlink escape before publication", async () => {
+    const url = "https://github.com/example/plain-component-escape";
+    const livePaths = gitProvider.getCachePaths(url);
+    const outside = makeBundle("akm-765-plain-component-outside-", "API_TOKEN=outside\n", "plain-outside");
+    initGitBundle(livePaths.repoDir, "plain component escape base");
+    writeBundle(path.join(livePaths.repoDir, "safe"), "API_TOKEN=safe\n", "plain-component-safe");
+    fs.symlinkSync("safe", path.join(livePaths.repoDir, "component"), "dir");
+    git(livePaths.repoDir, ["add", "-A"]);
+    git(livePaths.repoDir, ["commit", "-m", "track plain contained component"]);
+    fs.writeFileSync(livePaths.indexPath, "[]\n");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        "plain-component-escape": {
+          git: url,
+          components: { main: { root: "component", adapter: "akm", writable: true } },
+        },
+      },
+    });
+    await akmIndex({ stashDir: storage.stashDir, hydrateSources: false });
+    const before = snapshotState();
+    let published = false;
+    overrideSeam(_setUpdateTransactionHookForTests, (point) => {
+      if (point === "published") published = true;
+    });
+    const syncSpy = spyOn(gitProvider, "syncMirroredRepo").mockImplementation(async (_source, options) => {
+      const staged = gitProvider.getCachePaths(url, requiredStagingRoot(options));
+      fs.unlinkSync(path.join(staged.repoDir, "component"));
+      fs.symlinkSync(outside, path.join(staged.repoDir, "component"), "dir");
+      git(staged.repoDir, ["add", "-A"]);
+      git(staged.repoDir, ["commit", "-m", "retarget plain component outside checkout"]);
+      const auditedHead = git(staged.repoDir, ["rev-parse", "HEAD"]);
+      return {
+        id: url,
+        source: "git",
+        ref: url,
+        artifactUrl: url,
+        resolvedRevision: auditedHead,
+        contentDir: staged.repoDir,
+        cacheDir: staged.rootDir,
+        extractedDir: staged.repoDir,
+        syncedAt: "2026-08-19T00:00:00.000Z",
+        writable: true,
+      };
+    });
+
+    try {
+      await expect(akmUpdate({ target: "plain-component-escape", stashDir: storage.stashDir })).rejects.toThrow(
+        /outside|contain|escape/i,
+      );
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(published).toBe(false);
+    expect(fs.readlinkSync(path.join(livePaths.repoDir, "component"))).toBe("safe");
+    expectState(before);
+  });
+
   test("audit-relevant component config drift is fenced before publication", async () => {
     const id = "config-drift";
     const live = managedCachePaths(id);
@@ -1787,7 +1982,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
 
   for (const writable of [false, true]) {
     test(`plain ${writable ? "writable" : "read-only"} git audits its staged checkout without changing the active cache`, async () => {
-      const url = `https://github.com/example/plain-${writable ? "writable" : "readonly"}.git`;
+      const url = `https://github.com/example/plain-${writable ? "writable" : "readonly"}`;
       const livePaths = gitProvider.getCachePaths(url);
       writeBundle(livePaths.repoDir, "API_TOKEN=old\n", `plain-${writable}-old`);
       fs.writeFileSync(livePaths.indexPath, "[]\n");
@@ -1834,7 +2029,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
   }
 
   test("an all-blocked --all response never hydrates the blocked plain source a second time", async () => {
-    const url = "https://github.com/example/all-blocked.git";
+    const url = "https://github.com/example/all-blocked";
     const livePaths = gitProvider.getCachePaths(url);
     writeBundle(livePaths.repoDir, "API_TOKEN=old\n", "all-blocked-old");
     fs.writeFileSync(livePaths.indexPath, "[]\n");
