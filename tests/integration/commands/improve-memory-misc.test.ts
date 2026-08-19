@@ -4,12 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { akmImprove } from "../../../src/commands/improve/improve";
 import { type AkmConfig, type ImproveProfileConfig, saveConfig } from "../../../src/core/config/config";
+import { ConfigError } from "../../../src/core/errors";
 import { appendEvent, readEvents } from "../../../src/core/events";
 import type { AkmDistillResult, AkmReflectResult } from "../../../src/core/improve-types";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { writeMemory } from "../../_helpers/assets";
 import { makeProposal } from "../../_helpers/factories";
 import { withTestImproveLlm } from "../../_helpers/improve-config";
+import { withEnv } from "../../_helpers/sandbox";
 
 const tempDirs: string[] = [];
 const savedEnv = {
@@ -520,6 +522,43 @@ describe("M-1: contradiction-detection pass writes contradictedBy edges (#367)",
 // ── M-3 / #387 — schema-repair routes through proposal queue ─────────────────
 
 describe("M-3: schema-repair routes through proposal queue (#387)", () => {
+  test("runSchemaRepairPass preserves a missing symbolic credential as a hard config failure", async () => {
+    const { runSchemaRepairPass } = await import("../../../src/commands/sources/schema-repair");
+    const stashDir = makeTempDir("akm-m3-schema-credential-");
+    const memFile = path.join(stashDir, "memories", "credential.md");
+    fs.mkdirSync(path.dirname(memFile), { recursive: true });
+    fs.writeFileSync(memFile, "---\n---\nCredential-bound content.\n", "utf8");
+    configureStash(stashDir);
+    let chatCalls = 0;
+
+    const failure = withEnv({ AKM_SCHEMA_REPAIR_REQUIRED_KEY: undefined }, () =>
+      runSchemaRepairPass([{ ref: "memories/credential", reason: "missing description" }], {
+        startMs: Date.now(),
+        budgetMs: 30_000,
+        stashDir,
+        llmRunner: {
+          kind: "llm",
+          engine: "repair",
+          connection: { endpoint: "http://localhost/v1/chat", model: "test" },
+          credential: { names: ["AKM_SCHEMA_REPAIR_REQUIRED_KEY"], required: true },
+        },
+        findFilePath: async () => memFile,
+        isLessonCandidateFn: () => false,
+        chatFn: async () => {
+          chatCalls += 1;
+          return JSON.stringify({ description: "wrong" });
+        },
+      }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    await expect(failure).rejects.toMatchObject({ code: "INVALID_CONFIG_FILE" });
+    expect(chatCalls).toBe(0);
+    const { listProposals } = await import("../../../src/commands/proposal/repository");
+    expect(listProposals(stashDir)).toEqual([]);
+    expect(fs.readFileSync(memFile, "utf8")).toBe("---\n---\nCredential-bound content.\n");
+  });
+
   test("runSchemaRepairPass queues a proposal instead of writing directly to disk", async () => {
     const { runSchemaRepairPass } = await import("../../../src/commands/sources/schema-repair");
     const { listProposals } = await import("../../../src/commands/proposal/repository");

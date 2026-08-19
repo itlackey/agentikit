@@ -24,6 +24,10 @@ import { appendEvent, readEvents } from "../../../../src/core/events";
 import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
 import { _setWarnSinkForTests } from "../../../../src/core/warn";
 import { akmIndex } from "../../../../src/indexer/indexer";
+import {
+  CONVERSATION_FALLBACK_BEGIN,
+  CONVERSATION_FALLBACK_END,
+} from "../../../../src/integrations/agent/conversation-fallback";
 import { FALLBACK_ANNOUNCEMENT } from "../../../../src/integrations/agent/engine-fallback";
 import { durableItemRef } from "../../../_helpers/durable-ref";
 import { quietQualityGateConfig } from "../../../_helpers/factories";
@@ -149,6 +153,44 @@ afterEach(() => {
 // ── reflect ─────────────────────────────────────────────────────────────────
 
 describe("akm reflect", () => {
+  test("self-refine preserves direct conversation roles through the agent fallback lowerer", async () => {
+    const stash = makeStashDir();
+    const prompts: string[] = [];
+    const spawn: SpawnFn = (cmd) => {
+      prompts.push(cmd.at(-1) ?? "");
+      return fakeSpawn(VALID_LESSON_PAYLOAD, "", 0)(cmd, {});
+    };
+
+    const result = await akmReflect({
+      ref: "lessons/rg-over-grep",
+      stashDir: stash,
+      config: quietQualityGateConfig(),
+      maxRefineIters: 2,
+      assetContent:
+        "---\ndescription: Prefer ripgrep for repository search tasks\nwhen_to_use: When locating text across a source repository\n---\n\nPrefer grep.\n",
+      runAgentOptions: { spawn },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(prompts).toHaveLength(2);
+    const second = prompts[1] ?? "";
+    expect(second).toContain(CONVERSATION_FALLBACK_BEGIN);
+    expect(second).toContain(CONVERSATION_FALLBACK_END);
+    const json = second.slice(
+      second.indexOf("\n", second.indexOf(CONVERSATION_FALLBACK_BEGIN)) + 1,
+      second.indexOf(`\n${CONVERSATION_FALLBACK_END}`),
+    );
+    const conversation = JSON.parse(json) as Array<{ role: string; content: string }>;
+    expect(conversation.map(({ role }) => role)).toEqual(["user", "assistant"]);
+    expect(conversation[1]?.content).toBe(VALID_LESSON_PAYLOAD);
+    expect(second.slice(second.indexOf(CONVERSATION_FALLBACK_END))).toContain(
+      "Your previous proposal is shown above. Review it critically",
+    );
+    expect(result.notices).toContainEqual(
+      expect.objectContaining({ code: "conversation-prompt-composed", field: "conversation" }),
+    );
+  });
+
   test("loads a duplicate ref only from the selected source root", async () => {
     const selected = makeStashDir();
     const other = makeStashDir();

@@ -24,8 +24,10 @@ import systemPromptTemplate from "../assets/prompts/graph-extract-system.md" wit
 import userPromptTemplate from "../assets/prompts/graph-extract-user-prompt.md" with { type: "text" };
 import { toErrorMessage } from "../core/common";
 import type { AkmConfig } from "../core/config/config";
+import { ConfigError } from "../core/errors";
 import { parseEmbeddedJsonResponse } from "../core/parse";
 import { warn, warnVerbose } from "../core/warn";
+import type { LoweringNotice } from "../execution/resolved-request";
 import { type ChatMessage, isContextSizeError } from "./client";
 import { type TryLlmFeatureFallbackEvent, tryLlmFeature } from "./feature-gate";
 import { type CallStructuredRequest, callStructured, type StructuredLlmRunner } from "./structured-call";
@@ -113,6 +115,7 @@ export interface GraphRuntimeTelemetry {
 export interface GraphExtractionRuntimeOptions {
   batchState?: GraphBatchState;
   telemetry?: GraphRuntimeTelemetry;
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
 }
 
 const GENERIC_ENTITIES = new Set([
@@ -547,12 +550,14 @@ async function callGraphLlm(
   runner: StructuredLlmRunner,
   messages: ChatMessage[],
   request: CallStructuredRequest,
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void,
 ): Promise<string> {
   return callStructured<string>({
     feature: "graph_extraction",
     runner,
     messages,
     request,
+    onNotices,
     parse: (raw) => raw ?? "",
     onError: (_cls, error) => {
       throw error;
@@ -664,7 +669,9 @@ export async function extractGraphFromBodies(
   let batchContextError = false;
   let nonArrayResponse = false;
 
-  const batchResult = await tryLlmFeature(
+  const batchOutcome = await tryLlmFeature<
+    { kind: "value"; value: unknown[] | null } | { kind: "config-error"; error: ConfigError }
+  >(
     "graph_extraction",
     akmConfig,
     async () => {
@@ -681,8 +688,9 @@ export async function extractGraphFromBodies(
             signal,
             onRetryAttempt: () => bumpTelemetry(options.telemetry, "retryAttempts"),
           },
+          options.onNotices,
         );
-        if (!raw) return null;
+        if (!raw) return { kind: "value", value: null };
         // Array-preferring salvage (#635): the batch contract is a top-level
         // JSON array. A leading/example `{…}` object in the response must not
         // mask a valid `[…]` array as a false "non-array" failure.
@@ -699,6 +707,7 @@ export async function extractGraphFromBodies(
               { role: "user", content: userPrompt },
             ],
             { temperature: 0, timeoutMs: llmRunner.timeoutMs, signal },
+            options.onNotices,
           );
           parsed = retryRaw ? parseEmbeddedJsonResponse<unknown[]>(retryRaw, { expect: "array" }) : undefined;
         }
@@ -716,10 +725,11 @@ export async function extractGraphFromBodies(
               `even after a stricter retry; will fall back per-asset. ` +
               `promptChars=${userPrompt.length}${formatContextHint(llmRunner)}`,
           );
-          return null;
+          return { kind: "value", value: null };
         }
-        return parsed;
+        return { kind: "value", value: parsed };
       } catch (err) {
+        if (err instanceof ConfigError) return { kind: "config-error", error: err };
         const errMsg = toErrorMessage(err);
         if (isContextSizeError(errMsg)) {
           batchContextError = true;
@@ -734,15 +744,17 @@ export async function extractGraphFromBodies(
               `promptChars=${userPrompt.length}${formatContextHint(llmRunner)}: ${errMsg}`,
           );
         }
-        return null;
+        return { kind: "value", value: null };
       }
     },
-    null,
+    { kind: "value", value: null },
     {
       timeoutMs: llmRunner.timeoutMs,
       onFallback,
     },
   );
+  if (batchOutcome.kind === "config-error") throw batchOutcome.error;
+  const batchResult = batchOutcome.value;
 
   // Map successful batch results back to their original indices.
   if (batchResult !== null) {
@@ -889,6 +901,7 @@ export async function extractGraphFromBody(
       signal,
       onRetryAttempt: () => bumpTelemetry(options.telemetry, "retryAttempts"),
     },
+    onNotices: options.onNotices,
     parse: (raw) => {
       if (!raw) return empty();
       const parsed = parseEmbeddedJsonResponse<{ entities?: unknown; relations?: unknown }>(raw);

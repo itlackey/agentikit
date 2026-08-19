@@ -22,6 +22,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AkmConfig } from "../../src/core/config/config";
+import { ConfigError } from "../../src/core/errors";
 import type { LoweringNotice } from "../../src/execution/resolved-request";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
 import type { ChatCompletionConfig, ChatMessage } from "../../src/llm/client";
@@ -266,6 +267,33 @@ describe("callStructured contract", () => {
     expect(reasons).toEqual(["disabled"]);
   });
 
+  test("(9b) a disabled gate needs no runner, messages, preparation, or provider", async () => {
+    let chatRan = false;
+    const reasons: string[] = [];
+    const result = await callStructured<string>({
+      feature: "distill",
+      akmConfig: GATED,
+      enabled: false,
+      messages: [],
+      request: {
+        chat: async () => {
+          chatRan = true;
+          return "wrong";
+        },
+      },
+      parse: () => "PARSED",
+      onError: () => "ERR",
+      fallback: "FB",
+      onFallback: (evt) => {
+        reasons.push(evt.reason);
+      },
+    });
+
+    expect(result).toBe("FB");
+    expect(reasons).toEqual(["disabled"]);
+    expect(chatRan).toBe(false);
+  });
+
   test("(10) maxTokens and enableThinking reach the transport as exact resolved inference", async () => {
     let seenMaxTokens: number | undefined;
     let seenEnableThinking: boolean | undefined;
@@ -426,5 +454,51 @@ describe("callStructured contract", () => {
     expect(thrown).toBeInstanceOf(Error);
     expect(String(thrown)).not.toContain(secret);
     expect(String(thrown)).toContain("[REDACTED]");
+  });
+
+  test("(15) a missing required symbolic credential remains a hard config failure", async () => {
+    let chatRan = false;
+    let onErrorCalls = 0;
+    let onFallbackCalls = 0;
+    let thrown: unknown;
+
+    await withEnv({ AKM_STRUCTURED_REQUIRED_SECRET: undefined }, async () => {
+      try {
+        await callStructured<string>({
+          feature: "memory_inference",
+          akmConfig: GATED,
+          runner: runner(PROFILE, {
+            credential: { names: ["AKM_STRUCTURED_REQUIRED_SECRET"], required: true },
+          }),
+          messages: [{ role: "user", content: "must fail before provider dispatch" }],
+          request: {
+            chat: async () => {
+              chatRan = true;
+              return "wrong";
+            },
+          },
+          parse: (raw) => raw ?? "",
+          onError: () => {
+            onErrorCalls += 1;
+            return "SWALLOWED";
+          },
+          fallback: "FB",
+          onFallback: () => {
+            onFallbackCalls += 1;
+          },
+        });
+      } catch (error) {
+        thrown = error;
+      }
+    });
+
+    expect(thrown).toBeInstanceOf(ConfigError);
+    expect((thrown as ConfigError).code).toBe("INVALID_CONFIG_FILE");
+    expect((thrown as ConfigError).message).toBe(
+      "Required engine credential AKM_STRUCTURED_REQUIRED_SECRET is not set.",
+    );
+    expect(chatRan).toBe(false);
+    expect(onErrorCalls).toBe(0);
+    expect(onFallbackCalls).toBe(0);
   });
 });

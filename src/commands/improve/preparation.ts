@@ -21,7 +21,6 @@ import type {
 import { openStateDatabase, withStateDb } from "../../core/state-db";
 import { info, warn } from "../../core/warn";
 import { countUsageEventsByType } from "../../indexer/usage/usage-events";
-import { materializeLlmRunnerConnection } from "../../integrations/agent/runner";
 import { getAvailableHarnesses } from "../../integrations/session-logs";
 import { withLlmStage } from "../../llm/usage-telemetry";
 import {
@@ -502,9 +501,7 @@ export async function runConsolidationPass(args: {
           // Active profile for this improve run — lets consolidate's secondary
           // process-config reads honor `--profile <name>` instead of `default`.
           improveProfile,
-          llmConfig: resolvedPlan.processes.consolidate.runner
-            ? materializeLlmRunnerConnection(resolvedPlan.processes.consolidate.runner)
-            : null,
+          llmRunner: resolvedPlan.processes.consolidate.runner,
           autoTriggered: volumeTriggered,
           // Tie consolidate proposals back to this improve invocation so
           // accept-rate-per-run aggregation works. Mirrors reflect/propose/extract.
@@ -725,6 +722,7 @@ async function runSessionExtractPass(args: {
       runner: extractRunner,
       timeoutMs: extractRunner.timeoutMs === undefined ? 600_000 : extractRunner.timeoutMs,
       embeddingConfig: Object.freeze(structuredClone(extractConfig.embedding)),
+      ...(resolvedPlan.processes.extract.notices?.length ? { notices: resolvedPlan.processes.extract.notices } : {}),
     });
     const availableHarnesses = plan.availableHarnesses;
     if (plan.belowMinNewSessions) {
@@ -853,15 +851,14 @@ export async function runValidationAndRepairPass(args: {
   // Schema repair pass: attempt to fix validation failures via LLM before skipping.
   if (repairValidationFailures && validationFailures.length > 0) {
     const validationRunner = resolvedPlan.processes.validation.runner;
-    const llmCfg = validationRunner ? materializeLlmRunnerConnection(validationRunner) : undefined;
-    if (llmCfg) {
+    if (validationRunner) {
       const result = await withLlmStage(
         "validation",
         () =>
           schemaRepairFn(validationFailures, {
             startMs,
             budgetMs,
-            llmConfig: llmCfg,
+            llmRunner: validationRunner,
             // #591/#379 regression: options.stashDir is the raw, unresolved CLI
             // flag (only set when --stash-dir is passed explicitly — never true
             // for the scheduled tasks). primaryStashDir is the already-resolved

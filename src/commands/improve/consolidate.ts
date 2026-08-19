@@ -18,10 +18,10 @@ import { openStateDatabase } from "../../core/state-db";
 import { parseSinceToIsoLenient } from "../../core/time";
 import { warn, warnVerbose } from "../../core/warn";
 import { type ResolvedWriteTarget, resolveWriteTarget } from "../../core/write-source";
-import { getDefaultLlmConfig } from "../../integrations/agent/engine-resolution";
-import { materializeLlmRunnerConnection, resolveImproveProcessRunner } from "../../integrations/agent/runner";
+import type { LoweringNotice } from "../../execution/resolved-request";
+import type { RunnerSpec } from "../../integrations/agent/runner";
 import { cosineSimilarity, embedBatch, resolveEmbeddingModelId } from "../../llm/embedder";
-import { callStructured } from "../../llm/structured-call";
+import { callStructured, structuredLlmRunnerFromConnection } from "../../llm/structured-call";
 import type { Database } from "../../storage/database";
 import { getBodyEmbeddings, upsertBodyEmbeddings } from "../../storage/repositories/embeddings-repository";
 import {
@@ -36,6 +36,7 @@ import { isProposalSkipped, listProposals, type ProposalsContext, proposalConten
 import { hasSupersededStatus, validateProposalFrontmatter } from "../proposal/validators/proposal-quality-validators";
 import type { AntiCollapseConfig } from "./anti-collapse";
 import { cacheHash } from "./content-hash";
+import { resolveImproveLlmExecution } from "./execution";
 import { resolveImproveStrategy, resolveProcessEnabled } from "./improve-strategies";
 import { emitProposal } from "./proposal-envelope";
 import { createRunContext, type RunContext } from "./run-context";
@@ -74,6 +75,10 @@ export interface AkmConsolidateOptions {
   config?: AkmConfig;
   /** Pre-resolved connection supplied by the improve invocation plan. */
   llmConfig?: import("../../core/config/config").LlmConnectionConfig | null;
+  /** Preferred production path: exact symbolic runner frozen by the improve plan. */
+  llmRunner?: Extract<RunnerSpec, { kind: "llm" }> | null;
+  /** Internal diagnostics sink for resolved/lowered dispatches. */
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
   /** When true, indicates the run was triggered automatically by volume threshold rather than by the memory_consolidation feature flag. */
   autoTriggered?: boolean;
   /**
@@ -482,17 +487,17 @@ function promoteProvenanceXrefs(existing: unknown, sourceRef: string): string[] 
 // ── LLM resolution ──────────────────────────────────────────────────────────
 
 /**
- * Resolve the LLM connection for the consolidate pass.
+ * Resolve the symbolic LLM runner for the consolidate pass.
  *
  * Priority order (mirrors extract / reflect / distill — see
  * `resolveExtractRunConfig` in `src/commands/improve/extract.ts` and the
- * canonical `resolveImproveProcessRunner` pattern):
+ * canonical improve execution-cascade pattern):
  *
  *   1. `improve.strategies.<name>.processes.consolidate.engine`
- *      via {@link resolveImproveProcessRunner}. Lets the user pin
+ *      via the common execution planner. Lets the user pin
  *      a dedicated model (e.g. `ministral-3b`) for consolidation instead of
  *      whatever `defaults.llmEngine` happens to be.
- *   2. `getDefaultLlmConfig(config)` — the baseline default LLM engine.
+ *   2. the baseline default LLM engine.
  *
  * Regression guard (2026-05-26): before this resolver, `akmConsolidate`
  * called `getDefaultLlmConfig` directly and silently ignored a configured
@@ -501,10 +506,29 @@ function promoteProvenanceXrefs(existing: unknown, sourceRef: string): string[] 
  * silent 400s from LM Studio). The investigation lives at
  * `/tmp/akm-health-investigations/consolidation-no-op.md`.
  */
-function resolveConsolidateLlmConfig(config: AkmConfig, activeProfile?: ImproveProfileConfig) {
-  const runnerSpec = resolveImproveProcessRunner(activeProfile, "consolidate", config);
-  if (runnerSpec) return materializeLlmRunnerConnection(runnerSpec);
-  return getDefaultLlmConfig(config);
+function resolveConsolidateLlmRunner(
+  config: AkmConfig,
+  activeProfile?: ImproveProfileConfig,
+): ReturnType<typeof resolveImproveLlmExecution> {
+  return resolveImproveLlmExecution({
+    config,
+    profile: activeProfile,
+    process: getImproveProcessConfig("consolidate", activeProfile),
+    processName: "consolidate",
+  });
+}
+
+function consolidateRunnerFromOptions(
+  opts: AkmConsolidateOptions,
+  config: AkmConfig,
+): Extract<RunnerSpec, { kind: "llm" }> | undefined {
+  if (Object.hasOwn(opts, "llmRunner")) return opts.llmRunner ?? undefined;
+  if (Object.hasOwn(opts, "llmConfig")) {
+    return opts.llmConfig ? structuredLlmRunnerFromConnection(opts.llmConfig) : undefined;
+  }
+  const resolved = resolveConsolidateLlmRunner(config, opts.improveProfile);
+  if (resolved) opts.onNotices?.(resolved.notices);
+  return resolved?.runner;
 }
 
 /**
@@ -573,8 +597,24 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
   const config = opts.config ?? loadConfig();
   const writeTarget = resolveConsolidationWriteTarget(opts, config);
   opts = { ...opts, target: writeTarget.source.name, writeTarget };
-  opts = { ...opts, improveProfile: opts.improveProfile ?? resolveImproveStrategy(undefined, config).config };
+  const activeProfile = opts.improveProfile ?? resolveImproveStrategy(undefined, config).config;
+  opts = { ...opts, improveProfile: activeProfile };
   const stashDir = writeTarget.source.path;
+  const executionNotices = new Map<string, Readonly<LoweringNotice>>();
+  const externalOnNotices = opts.onNotices;
+  const collectNotices = (notices: readonly Readonly<LoweringNotice>[]): void => {
+    for (const notice of notices) executionNotices.set(JSON.stringify(notice), notice);
+    externalOnNotices?.(notices);
+  };
+  opts = { ...opts, onNotices: collectNotices };
+  const consolidateEnabled = resolveProcessEnabled("consolidate", activeProfile);
+  const frozenLlmRunner = consolidateEnabled ? consolidateRunnerFromOptions(opts, config) : undefined;
+  // Own the field even when no runner exists. Every downstream reader now
+  // observes this one symbolic snapshot instead of re-running config/model-map
+  // selection during the same invocation.
+  opts = { ...opts, llmRunner: frozenLlmRunner ?? null };
+  const withNotices = (result: ConsolidateResult): ConsolidateResult =>
+    executionNotices.size > 0 ? { ...result, notices: Object.freeze([...executionNotices.values()]) } : result;
 
   // WI-9.10: construct this run's RunContext from values already resolved
   // above (sourceRun, config, stashDir) — no second config load, no new db
@@ -589,18 +629,13 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
   // yet this stage, so this never duplicates real work, only the (pure,
   // side-effect-free) resolution logic if invoked. consolidate has no `chat`
   // seam (it drives the LLM directly via the HTTP client path, never through
-  // `chatCompletion`), so that field is left to its default.
+  // the engine-owned dispatch seam), so no transport default is installed.
   const runContext: RunContext = createRunContext({
     stashDir,
     config,
     eventsCtx: {},
     proposalsCtx: {},
-    getLlmConfig: (): import("../../core/config/config").LlmConnectionConfig | null => {
-      const resolved = Object.hasOwn(opts, "llmConfig")
-        ? (opts.llmConfig ?? undefined)
-        : resolveConsolidateLlmConfig(config, opts.improveProfile);
-      return resolved ?? null;
-    },
+    getLlmRunner: () => opts.llmRunner ?? null,
     sourceRun,
     dryRun: opts.dryRun ?? false,
     signal: opts.signal,
@@ -608,17 +643,19 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
 
   const warnings: string[] = [];
 
-  if (!resolveProcessEnabled("consolidate", opts.improveProfile ?? resolveImproveStrategy(undefined, config).config)) {
-    return makeConsolidateResult({
-      // Sourced from runContext (identical value to `opts.dryRun ?? false`)
-      // so the constructed RunContext has a genuine downstream reference —
-      // consolidate's own content-read sites are out of this stage's stated
-      // item-2 scope (reflect + distill only; see the WI-9.10c report).
-      dryRun: runContext.dryRun,
-      target: opts.target ?? stashDir,
-      durationMs: Date.now() - startMs,
-      warnings,
-    });
+  if (!consolidateEnabled) {
+    return withNotices(
+      makeConsolidateResult({
+        // Sourced from runContext (identical value to `opts.dryRun ?? false`)
+        // so the constructed RunContext has a genuine downstream reference —
+        // consolidate's own content-read sites are out of this stage's stated
+        // item-2 scope (reflect + distill only; see the WI-9.10c report).
+        dryRun: runContext.dryRun,
+        target: opts.target ?? stashDir,
+        durationMs: Date.now() - startMs,
+        warnings,
+      }),
+    );
   }
 
   // WS-3a: open one state.db handle shared by the body-embedding cache (dedup
@@ -633,7 +670,7 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
   }
 
   try {
-    return await akmConsolidateInner(opts, config, stashDir, startMs, warnings, sharedStateDb);
+    return withNotices(await akmConsolidateInner(opts, config, stashDir, startMs, warnings, sharedStateDb));
   } finally {
     sharedStateDb?.close();
   }
@@ -876,7 +913,7 @@ async function judgeConsolidationChunks(args: {
   chunks: MemoryEntry[][];
   opts: AkmConsolidateOptions;
   config: AkmConfig;
-  llmConfig: import("../../core/config/config").LlmConnectionConfig | undefined;
+  llmRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined;
   sourceName: string;
   bodyTruncation: number;
   pendingProposalBodyHashes: Set<string>;
@@ -888,7 +925,7 @@ async function judgeConsolidationChunks(args: {
     chunks,
     opts,
     config,
-    llmConfig,
+    llmRunner,
     sourceName,
     bodyTruncation,
     pendingProposalBodyHashes,
@@ -987,12 +1024,12 @@ async function judgeConsolidationChunks(args: {
     const callChunkLlm = async (fallbackError: string) => {
       // The gate runs with enabled:true (always open), so this guard is
       // exactly the envelope the gated fn used to return first thing.
-      if (!llmConfig) return { ok: false as const, error: "No LLM configured for consolidation" };
+      if (!llmRunner) return { ok: false as const, error: "No LLM configured for consolidation" };
       return callStructured<{ ok: true; content: string } | { ok: false; error: string }>({
         feature: "memory_consolidation",
         akmConfig: config,
         enabled: true,
-        config: llmConfig,
+        runner: llmRunner,
         messages: [
           { role: "system", content: CONSOLIDATE_SYSTEM_PROMPT },
           { role: "user", content: userPrompt },
@@ -1000,7 +1037,7 @@ async function judgeConsolidationChunks(args: {
         request: {
           responseSchema: CONSOLIDATE_PLAN_JSON_SCHEMA,
           enableThinking: false,
-          timeoutMs: llmConfig.timeoutMs,
+          timeoutMs: llmRunner.timeoutMs,
           signal: opts.signal,
         },
         parse: (raw) => ({ ok: true as const, content: raw ?? "" }),
@@ -1009,6 +1046,7 @@ async function judgeConsolidationChunks(args: {
         // reproduces that. The fallback fires only on wrapper timeout.
         onError: (_cls, e) => ({ ok: false as const, error: String(e) }),
         fallback: { ok: false as const, error: fallbackError },
+        ...(opts.onNotices ? { onNotices: opts.onNotices } : {}),
       });
     };
 
@@ -1102,11 +1140,8 @@ async function planConsolidation(
   // CLI. The agent CLI is for interactive agent sessions (reflect, propose);
   // structured JSON generation works better and faster via HTTP.
   //
-  // Improve supplies a frozen connection; standalone consolidate resolves its
-  // selected strategy/default engine here.
-  const llmConfig = Object.hasOwn(opts, "llmConfig")
-    ? (opts.llmConfig ?? undefined)
-    : resolveConsolidateLlmConfig(config, opts.improveProfile);
+  // The outer invocation freezes standalone and improve-owned selection once.
+  const llmRunner = opts.llmRunner ?? undefined;
 
   // Chunk sizing: derive a safe chunk size from the configured model context
   // window so that the full prompt (system prompt + chunk user prompt) never
@@ -1119,7 +1154,7 @@ async function planConsolidation(
   // keep it fixed and let computeSafeChunkSize vary the number of memories
   // per chunk instead.
   const bodyTruncation = 500;
-  const modelContextLength = llmConfig?.contextLength ?? DEFAULT_CONTEXT_LENGTH_TOKENS;
+  const modelContextLength = llmRunner?.connection.contextLength ?? DEFAULT_CONTEXT_LENGTH_TOKENS;
   const chunkSize = computeSafeChunkSize(modelContextLength, bodyTruncation, opts.maxChunkSize);
 
   // -- Phase A: plan generation -----------------------------------------------
@@ -1244,7 +1279,7 @@ async function planConsolidation(
     chunks,
     opts,
     config,
-    llmConfig,
+    llmRunner,
     sourceName,
     bodyTruncation,
     pendingProposalBodyHashes,
@@ -1337,9 +1372,7 @@ async function akmConsolidateInner(
     promotionFailures,
     warnings,
     pushSkipReason: accounting.pushSkipReason,
-    llmConfig: Object.hasOwn(opts, "llmConfig")
-      ? (opts.llmConfig ?? null)
-      : (resolveConsolidateLlmConfig(config, opts.improveProfile) ?? null),
+    llmRunner: opts.llmRunner ?? null,
   };
   for (const op of allOps) {
     if (op.op === "promote") await emitPromotionProposal(op, promoteContext);
@@ -1384,7 +1417,7 @@ export interface PromoteContext {
   promotionFailures: { count: number };
   warnings: string[];
   pushSkipReason: ConsolidateAccounting["pushSkipReason"];
-  llmConfig?: import("../../core/config/config").LlmConnectionConfig | null;
+  llmRunner?: Extract<RunnerSpec, { kind: "llm" }> | null;
 }
 
 /** Reject a promotion when its body already exists in knowledge or the queue. */
@@ -1596,7 +1629,7 @@ export async function emitPromotionProposal(op: ConsolidatePromoteOp, ctx: Promo
         source: "consolidate",
         sourceRun,
         // §23.6 fingerprint model-id term (WI-6.4).
-        ...(ctx.llmConfig?.model ? { modelId: ctx.llmConfig.model } : {}),
+        ...(ctx.llmRunner?.connection.model ? { modelId: ctx.llmRunner.connection.model } : {}),
         payload: {
           content: promotedAssetContent,
           frontmatter: { description, xrefs: [canonicalXref(op.ref)] },

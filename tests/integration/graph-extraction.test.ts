@@ -18,11 +18,13 @@ import os from "node:os";
 import path from "node:path";
 
 import type { AkmConfig } from "../../src/core/config/config";
+import { ConfigError } from "../../src/core/errors";
 import { loadStoredGraphSnapshot, replaceStoredGraph } from "../../src/indexer/db/graph-db";
 import { buildSearchText } from "../../src/indexer/search/search-fields";
 import type { SearchSource } from "../../src/indexer/search/search-source";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
+import { withEnv } from "../_helpers/sandbox";
 
 // ── Local LLM server ────────────────────────────────────────────────────────
 
@@ -383,6 +385,59 @@ describe("runGraphExtractionPass — disabled paths", () => {
 // ── runGraphExtractionPass — standalone index engine gating ────────────────
 
 describe("runGraphExtractionPass — standalone index engine gating", () => {
+  test("returns initial lowering notices from standalone symbolic selection", async () => {
+    writeFile("memories/m1.md", {}, "Body.");
+    extractor = () => ({ entities: ["E"], relations: [] });
+    const cfg = configWithLlm({
+      index: {
+        defaults: { engine: "index" },
+        graph: { enabled: true, llm: { effort: "high" } },
+      },
+    });
+
+    const result = await withGraphDb("standalone-selection-notices", (db) =>
+      runGraphExtractionPass({ config: cfg, sources: sources(), db }),
+    );
+
+    expect(result.notices).toEqual([
+      expect.objectContaining({
+        code: "untranslated-field",
+        adapter: "llm",
+        field: "inference.effort",
+      }),
+    ]);
+  });
+
+  test("missing required credential writes neither graph cache nor graph row", async () => {
+    writeFile("memories/m1.md", {}, "Body one.");
+    writeFile("knowledge/k1.md", {}, "Body two.");
+    const cfg = configWithLlm({
+      engines: {
+        index: {
+          kind: "llm",
+          ...SAMPLE_LLM,
+          apiKey: "$AKM_GRAPH_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "index" }, graph: { enabled: true, graphExtractionBatchSize: 2 } },
+    });
+
+    await withGraphDb("missing-required-credential", async (db) => {
+      const failure = withEnv({ AKM_GRAPH_REQUIRED_KEY: undefined }, () =>
+        runGraphExtractionPass({ config: cfg, sources: sources(), db }),
+      );
+      await expect(failure).rejects.toBeInstanceOf(ConfigError);
+      await expect(failure).rejects.toMatchObject({ code: "INVALID_CONFIG_FILE" });
+      expect(extractorCallCount).toBe(0);
+      const cacheCount = (db.prepare("SELECT COUNT(*) AS cnt FROM llm_enrichment_cache").get() as { cnt: number }).cnt;
+      const graphCount = (
+        db.prepare("SELECT COUNT(*) AS cnt FROM graph_files WHERE stash_root = ?").get(tmpStash) as { cnt: number }
+      ).cnt;
+      expect(cacheCount).toBe(0);
+      expect(graphCount).toBe(0);
+    });
+  });
+
   test("runs when the pass is enabled and its index engine resolves", async () => {
     writeFile("memories/m1.md", {}, "Body.");
     extractor = () => ({ entities: ["E"], relations: [] });

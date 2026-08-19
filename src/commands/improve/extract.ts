@@ -29,13 +29,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { assembleAsset } from "../../core/asset/asset-serialize";
 import { timestampForFilename } from "../../core/common";
-import type {
-  AkmConfig,
-  ImproveProcessConfig,
-  ImproveProfileConfig,
-  LlmConnectionConfig,
-  LlmProfileConfig,
-} from "../../core/config/config";
+import type { AkmConfig, ImproveProcessConfig, ImproveProfileConfig, LlmProfileConfig } from "../../core/config/config";
 import { getImproveProcessConfig, loadConfig } from "../../core/config/config";
 import { ConfigError, UsageError } from "../../core/errors";
 import { appendEvent, type EventsContext } from "../../core/events";
@@ -55,19 +49,15 @@ import { getStateDbPath, openStateDatabase, withStateDb } from "../../core/state
 import { repairTruncatedDescription } from "../../core/text-truncation";
 import { DURATION_UNITS, parseDuration } from "../../core/time";
 import { warn } from "../../core/warn";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { indexWrittenAssets } from "../../indexer/index-written-assets";
-import { resolveLlmEngineUse } from "../../integrations/agent/engine-resolution";
-import {
-  materializeLlmRunnerConnection,
-  type RunnerSpec,
-  resolveImproveProcessRunner,
-} from "../../integrations/agent/runner";
+import type { RunnerSpec } from "../../integrations/agent/runner";
 import { normalizeHarnessId } from "../../integrations/harnesses";
 import { getAvailableHarnesses } from "../../integrations/session-logs";
 import { preFilterSession } from "../../integrations/session-logs/pre-filter";
 import type { SessionData, SessionLogHarness, SessionRef, SessionSummary } from "../../integrations/session-logs/types";
 import type { ChatMessage } from "../../llm/client";
-import { callStructured } from "../../llm/structured-call";
+import { callStructured, structuredLlmRunnerFromConnection } from "../../llm/structured-call";
 import { sha256Hex } from "../../runtime";
 import type { Database } from "../../storage/database";
 import {
@@ -78,6 +68,7 @@ import {
   upsertExtractedSession,
 } from "../../storage/repositories/extract-sessions-repository";
 import { isProposalSkipped, type ProposalsContext } from "../proposal/repository";
+import { resolveImproveLlmExecution } from "./execution";
 import { buildExtractPrompt, EXTRACT_JSON_SCHEMA, type ExtractCandidate, parseExtractPayload } from "./extract-prompt";
 import { resolveImproveStrategy, resolveProcessEnabled } from "./improve-strategies";
 import { emitProposal } from "./proposal-envelope";
@@ -217,13 +208,15 @@ export interface AkmExtractOptions {
   config?: AkmConfig;
   /** Pre-resolved connection supplied by the improve invocation plan. */
   llmConfig?: LlmProfileConfig;
+  /** Preferred production path when no complete standalone plan is supplied. */
+  llmRunner?: ExtractLlmRunner;
   /** Complete standalone invocation plan, resolved once at the CLI boundary. */
   resolvedPlan?: ResolvedExtractPlan;
   /** Override the harness registry (test seam). */
   harnesses?: SessionLogHarness[];
   /**
    * Override the LLM chat function (test seam). When absent, `callStructured`
-   * dispatches to the real late-bound `chatCompletion` transport.
+   * dispatches through the shared lowered-execution transport.
    */
   chat?: (
     config: LlmProfileConfig,
@@ -293,6 +286,7 @@ export interface ResolvedExtractPlan {
   runner: Readonly<ExtractLlmRunner> | null;
   timeoutMs: number | null;
   embeddingConfig: Readonly<AkmConfig["embedding"]>;
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 type ExtractLlmRunner = Extract<RunnerSpec, { kind: "llm" }>;
@@ -322,30 +316,31 @@ export function resolveStandaloneExtractPlan(
     ...(selection.engine ? { engine: selection.engine } : {}),
     ...(Object.hasOwn(selection, "timeoutMs") ? { timeoutMs: selection.timeoutMs ?? null } : {}),
   };
-  const resolved = resolveLlmEngineUse(config, [selected.config, process, invocation], { optional: true });
+  const resolved = resolveImproveLlmExecution({
+    config,
+    profile: selected.config,
+    process,
+    current: invocation,
+    processName: "extract",
+  });
   if (!resolved) {
     throw new ConfigError(
       "No LLM engine configured for extract. Set defaults.llmEngine, pass --engine, or select an improve strategy with processes.extract.engine.",
       "LLM_NOT_CONFIGURED",
     );
   }
-  const runner: ExtractLlmRunner = {
-    kind: "llm",
-    engine: resolved.engine,
-    connection: resolved.connection,
-    ...(resolved.credential ? { credential: resolved.credential } : {}),
-    timeoutMs: resolved.timeoutMs,
-  };
+  const runner = resolved.runner;
   return Object.freeze({
     strategy: selected.name,
-    engine: resolved.engine,
+    engine: runner.engine as string,
     // `akm extract` is an explicit operation. The strategy supplies behavior,
     // but its improve-stage enablement gate does not disable this command.
     enabled: true,
     process,
     runner: cloneAndFreeze(runner),
-    timeoutMs: resolved.timeoutMs,
+    timeoutMs: Object.hasOwn(runner, "timeoutMs") ? (runner.timeoutMs ?? null) : 600_000,
     embeddingConfig: cloneAndFreeze(config.embedding),
+    ...(resolved.notices.length > 0 ? { notices: cloneAndFreeze(resolved.notices) } : {}),
   });
 }
 
@@ -641,7 +636,9 @@ interface ExtractSessionRunCtx {
   harness: SessionLogHarness;
   stashDir: string;
   config: AkmConfig;
-  getLlmConfig: () => LlmProfileConfig;
+  llmRunner: ExtractLlmRunner;
+  onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
+  getNotices: () => readonly Readonly<LoweringNotice>[];
   chat: AkmExtractOptions["chat"];
   ctx: ProposalsContext | undefined;
   /** R25: events carrier — event emits only; proposals keep `ctx`. */
@@ -686,54 +683,53 @@ interface ExtractSessionInput {
 }
 
 /**
- * The bounded per-session extraction LLM call. Resolves the connection with
- * the same fail-open contract the gated fn had (a `getLlmConfig()` throw —
- * `materializeLlmConnection` can raise ConfigError — takes the skipped path,
- * never propagates), then routes through `callStructured` under the
- * `session_extraction` gate. Returns the seam result plus the `llmRaw`
+ * The bounded per-session extraction LLM call. Routes the already-resolved
+ * symbolic runner through `callStructured` under the `session_extraction`
+ * gate. Invalid configuration escapes before session/proposal state is
+ * persisted. Returns the seam result plus the `llmRaw`
  * side-channel value that distinguishes fallback-took-over from a
  * genuinely-empty response.
  */
 async function runSessionExtractionLlmCall(args: {
   config: AkmConfig;
-  getLlmConfig: () => LlmProfileConfig;
+  llmRunner: ExtractLlmRunner;
   chat: AkmExtractOptions["chat"];
   prompt: string;
   timeoutMs: number | null;
   signal: AbortSignal | undefined;
+  onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
 }): Promise<{ llmResult: string; llmRaw: string }> {
-  const { config, getLlmConfig, chat, prompt, timeoutMs, signal } = args;
-  let extractLlm: LlmProfileConfig | undefined;
-  try {
-    extractLlm = getLlmConfig();
-  } catch {
-    extractLlm = undefined;
-  }
+  const { config, llmRunner, chat, prompt, timeoutMs, signal, onNotices } = args;
   let llmRaw = "";
-  const llmResult =
-    extractLlm === undefined
-      ? ""
-      : await callStructured<string>({
-          feature: "session_extraction",
-          akmConfig: config,
-          config: extractLlm,
-          messages: [{ role: "user", content: prompt }],
-          request: {
-            timeoutMs,
-            responseSchema: EXTRACT_JSON_SCHEMA,
-            ...(signal ? { signal } : {}),
-            ...(chat ? { chat } : {}),
-          },
-          parse: (raw) => {
-            llmRaw = raw ?? "";
-            return llmRaw;
-          },
-          // A transport throw takes the "" fallback with llmRaw left unset —
-          // the same skipped path the gated-fn throw produced before.
-          onError: () => "",
-          fallback: "",
-        });
+  const llmResult = await callStructured<string>({
+    feature: "session_extraction",
+    akmConfig: config,
+    runner: llmRunner,
+    messages: [{ role: "user", content: prompt }],
+    request: {
+      timeoutMs,
+      responseSchema: EXTRACT_JSON_SCHEMA,
+      ...(signal ? { signal } : {}),
+      ...(chat ? { chat } : {}),
+    },
+    onNotices,
+    parse: (raw) => {
+      llmRaw = raw ?? "";
+      return llmRaw;
+    },
+    // A transport throw takes the "" fallback with llmRaw left unset —
+    // the same skipped path the gated-fn throw produced before.
+    onError: () => "",
+    fallback: "",
+  });
   return { llmResult, llmRaw };
+}
+
+function extractNoticeFields(
+  getNotices: () => readonly Readonly<LoweringNotice>[],
+): Pick<ExtractedSessionResult, "notices"> {
+  const notices = getNotices();
+  return notices.length > 0 ? { notices } : {};
 }
 
 async function processSession(
@@ -744,7 +740,9 @@ async function processSession(
     harness,
     stashDir,
     config,
-    getLlmConfig,
+    llmRunner,
+    onNotices,
+    getNotices,
     chat,
     ctx,
     eventsCtx,
@@ -791,6 +789,7 @@ async function processSession(
         };
       }
     } catch (err) {
+      if (err instanceof ConfigError) throw err;
       warnings.push(`session asset write failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     return {};
@@ -798,11 +797,12 @@ async function processSession(
 
   const { llmResult, llmRaw } = await runSessionExtractionLlmCall({
     config,
-    getLlmConfig,
+    llmRunner,
     chat,
     prompt,
     timeoutMs,
     signal,
+    onNotices,
   });
 
   if (llmResult === "" && !llmRaw) {
@@ -821,6 +821,7 @@ async function processSession(
       skipped: true,
       skipReason: "llm_unavailable",
       contentHash,
+      ...extractNoticeFields(getNotices),
     };
   }
 
@@ -860,17 +861,13 @@ async function processSession(
       warnings,
       contentHash,
       ...sessionAsset,
+      ...extractNoticeFields(getNotices),
     };
   }
 
   // §23.6 fingerprint model-id term: the profile resolved for this session's
   // LLM call (best-effort — an unconfigured profile leaves the term empty).
-  let extractModelId: string | undefined;
-  try {
-    extractModelId = runCtx.getLlmConfig().model;
-  } catch {
-    extractModelId = undefined;
-  }
+  const extractModelId = llmRunner.connection.model;
   for (const candidate of payload.candidates) {
     const built = buildCandidateProposal(candidate, data.ref, sessionAsset.sessionAssetRef);
     if (dryRun) {
@@ -943,6 +940,7 @@ async function processSession(
     warnings,
     contentHash,
     ...sessionAsset,
+    ...extractNoticeFields(getNotices),
   };
 }
 
@@ -957,7 +955,9 @@ interface ExtractSessionLoopArgs {
   dryRun: boolean;
   stashDir: string;
   config: AkmConfig;
-  getLlmConfig: () => LlmProfileConfig;
+  llmRunner: ExtractLlmRunner;
+  onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
+  getNotices: () => readonly Readonly<LoweringNotice>[];
   chat: AkmExtractOptions["chat"];
   sourceRun: string;
   timeoutMs: number | null;
@@ -1000,7 +1000,9 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
     dryRun,
     stashDir,
     config,
-    getLlmConfig,
+    llmRunner,
+    onNotices,
+    getNotices,
     chat,
     sourceRun,
     timeoutMs,
@@ -1017,7 +1019,9 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
     harness,
     stashDir,
     config,
-    getLlmConfig,
+    llmRunner,
+    onNotices,
+    getNotices,
     chat,
     ctx: options.ctx,
     eventsCtx: options.eventsCtx,
@@ -1171,6 +1175,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
         }
       }
     } catch (err) {
+      if (err instanceof ConfigError) throw err;
       const msg = err instanceof Error ? err.message : String(err);
       warn(`[extract] session ${summary.sessionId} threw: ${msg}`);
       topLevelWarnings.push(`session ${summary.sessionId} threw: ${msg}`);
@@ -1183,6 +1188,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
         warnings: [msg],
         skipped: true,
         skipReason: "exception",
+        ...extractNoticeFields(getNotices),
       });
       skippedCount += 1;
     } finally {
@@ -1196,7 +1202,9 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
 /** Resolved run-scoped config for one `akmExtract` invocation. */
 interface ExtractRunConfig {
   timeoutMs: number | null;
-  getLlmConfig: () => LlmProfileConfig;
+  llmRunner: ExtractLlmRunner;
+  onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
+  getNotices: () => readonly Readonly<LoweringNotice>[];
   maxTotalChars: number | undefined;
   minContentChars: number;
   maxSessionsPerRun: number;
@@ -1217,13 +1225,34 @@ function resolveExtractRunConfig(
   extractProcess: Readonly<ImproveProcessConfig> | undefined,
   activeProfile: ImproveProfileConfig | undefined,
 ): ExtractRunConfig {
-  // Improve supplies its invocation-owned connection. Standalone extract
-  // resolves the selected process engine, then defaults.llmEngine.
-  const runnerSpec = options.resolvedPlan
-    ? options.resolvedPlan.runner
-    : resolveImproveProcessRunner(activeProfile, "extract", config);
-  const fixedLlmConfig = options.resolvedPlan ? undefined : options.llmConfig;
-  if (!runnerSpec && !fixedLlmConfig) {
+  const executionNotices = new Map<string, Readonly<LoweringNotice>>();
+  const onNotices = (notices: readonly Readonly<LoweringNotice>[]): void => {
+    for (const notice of notices) executionNotices.set(JSON.stringify(notice), notice);
+  };
+  const getNotices = (): readonly Readonly<LoweringNotice>[] => Object.freeze([...executionNotices.values()]);
+
+  // Improve supplies its invocation-owned symbolic runner. Standalone extract
+  // resolves the selected process engine through the shared execution planner.
+  // The connection-only branch is a non-secret compatibility seam for tests.
+  let llmRunner: ExtractLlmRunner | null | undefined;
+  if (options.resolvedPlan) {
+    llmRunner = options.resolvedPlan.runner;
+    onNotices(options.resolvedPlan.notices ?? []);
+  } else if (options.llmRunner) {
+    llmRunner = options.llmRunner;
+  } else if (options.llmConfig) {
+    llmRunner = structuredLlmRunnerFromConnection(options.llmConfig);
+  } else {
+    const resolved = resolveImproveLlmExecution({
+      config,
+      profile: activeProfile,
+      process: extractProcess,
+      processName: "extract",
+    });
+    llmRunner = resolved?.runner;
+    if (resolved) onNotices(resolved.notices);
+  }
+  if (!llmRunner) {
     throw new ConfigError(
       "No LLM engine configured for extract. Set defaults.llmEngine or improve.strategies.<name>.processes.extract.engine.",
       "LLM_NOT_CONFIGURED",
@@ -1234,13 +1263,11 @@ function resolveExtractRunConfig(
     ? options.resolvedPlan.timeoutMs
     : Object.hasOwn(options, "timeoutMs")
       ? (options.timeoutMs ?? null)
-      : runnerSpec?.timeoutMs !== undefined
-        ? runnerSpec.timeoutMs
-        : fixedLlmConfig && Object.hasOwn(fixedLlmConfig, "timeoutMs")
-          ? (fixedLlmConfig.timeoutMs ?? null)
+      : Object.hasOwn(llmRunner, "timeoutMs")
+        ? (llmRunner.timeoutMs ?? null)
+        : options.llmConfig && Object.hasOwn(options.llmConfig, "timeoutMs")
+          ? (options.llmConfig.timeoutMs ?? null)
           : 600_000;
-  const getLlmConfig = (): LlmProfileConfig =>
-    runnerSpec ? materializeLlmRunnerConnection(runnerSpec) : (fixedLlmConfig as LlmProfileConfig);
   // Pre-filter budget — process config can raise it for large-context models.
   const maxTotalChars = typeof extractProcess?.maxTotalChars === "number" ? extractProcess.maxTotalChars : undefined;
   // #595/#596 — minimum raw session size; sessions below it skip the LLM call
@@ -1276,34 +1303,26 @@ function resolveExtractRunConfig(
   // `undefined` on disablement / timeout / error so no asset is written.
   // Tests inject a fake.
   const defaultSessionSummaryGenerator: SessionSummaryGenerator = async (data) => {
-    // Same fail-open contract as the per-session call: a getLlmConfig()
-    // throw takes the "" fallback rather than propagating.
-    let summaryLlm: LlmProfileConfig | undefined;
-    try {
-      summaryLlm = getLlmConfig();
-    } catch {
-      summaryLlm = undefined;
-    }
     let raw = "";
-    if (summaryLlm !== undefined) {
-      await callStructured<string>({
-        feature: "session_extraction",
-        akmConfig: config,
-        config: summaryLlm,
-        messages: [{ role: "user", content: buildSessionSummaryPrompt(data) }],
-        request: {
-          timeoutMs,
-          responseSchema: SESSION_SUMMARY_JSON_SCHEMA,
-          ...(options.chat ? { chat: options.chat } : {}),
-        },
-        parse: (r) => {
-          raw = r ?? "";
-          return raw;
-        },
-        onError: () => "",
-        fallback: "",
-      });
-    }
+    await callStructured<string>({
+      feature: "session_extraction",
+      akmConfig: config,
+      runner: llmRunner,
+      messages: [{ role: "user", content: buildSessionSummaryPrompt(data) }],
+      request: {
+        timeoutMs,
+        responseSchema: SESSION_SUMMARY_JSON_SCHEMA,
+        ...(options.signal ? { signal: options.signal } : {}),
+        ...(options.chat ? { chat: options.chat } : {}),
+      },
+      onNotices,
+      parse: (r) => {
+        raw = r ?? "";
+        return raw;
+      },
+      onError: () => "",
+      fallback: "",
+    });
     return parseSessionSummary(raw);
   };
   const sessionIndexing = {
@@ -1314,7 +1333,9 @@ function resolveExtractRunConfig(
 
   return {
     timeoutMs,
-    getLlmConfig,
+    llmRunner,
+    onNotices,
+    getNotices,
     maxTotalChars,
     minContentChars,
     maxSessionsPerRun,
@@ -1384,19 +1405,8 @@ function discoverExtractCandidates(
 /**
  * WI-9.10: build one `akm extract` run's {@link RunContext} from values
  * `akmExtract` has already resolved by the time it calls this (config,
- * stashDir, dryRun, sourceRun, and `resolveExtractRunConfig`'s own
- * `getLlmConfig`) — no second config load, no new db handle.
- *
- * `RunContext.getLlmConfig` is typed `() => LlmConnectionConfig | null`, but
- * extract's own resolved `getLlmConfig` returns `LlmProfileConfig` (a
- * superset — `supportsJsonSchema` — of `LlmConnectionConfig`) and, per its
- * documented fail-open contract, MAY THROW (`materializeLlmConnection` can
- * raise ConfigError) rather than return null; every existing caller in this
- * file wraps it in try/catch for exactly that reason. The thin closure below
- * adapts at the boundary: it derives from the SAME already-resolved
- * runner/profile (this doesn't widen `RunContext.getLlmConfig`'s type), and —
- * matching the file's own fail-open contract — coalesces a throw to `null`
- * instead of propagating.
+ * stashDir, dryRun, sourceRun, and `resolveExtractRunConfig`'s symbolic runner)
+ * — no second config load, credential materialization, or new db handle.
  */
 function buildExtractRunContext(args: {
   options: AkmExtractOptions;
@@ -1404,16 +1414,9 @@ function buildExtractRunContext(args: {
   stashDir: string;
   dryRun: boolean;
   sourceRun: string;
-  getLlmConfig: () => LlmProfileConfig;
+  llmRunner: ExtractLlmRunner;
 }): RunContext {
-  const { options, config, stashDir, dryRun, sourceRun, getLlmConfig } = args;
-  const getRunContextLlmConfig = (): LlmConnectionConfig | null => {
-    try {
-      return getLlmConfig();
-    } catch {
-      return null;
-    }
-  };
+  const { options, config, stashDir, dryRun, sourceRun, llmRunner } = args;
   return createRunContext({
     stashDir,
     config,
@@ -1421,7 +1424,7 @@ function buildExtractRunContext(args: {
     // Not yet wired into any proposal call site this stage (mirrors
     // buildImproveRunContext's proposalsCtx comment in improve.ts).
     proposalsCtx: options.ctx ?? {},
-    getLlmConfig: getRunContextLlmConfig,
+    getLlmRunner: () => llmRunner,
     sourceRun,
     dryRun,
     signal: options.signal,
@@ -1478,7 +1481,9 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
 
   const {
     timeoutMs,
-    getLlmConfig,
+    llmRunner,
+    onNotices,
+    getNotices,
     maxTotalChars,
     minContentChars,
     maxSessionsPerRun,
@@ -1489,7 +1494,7 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
 
   // WI-9.10: construct this run's RunContext (extracted to
   // buildExtractRunContext to keep akmExtract under the fn-size bar — R31).
-  const ctx = buildExtractRunContext({ options, config, stashDir, dryRun, sourceRun, getLlmConfig });
+  const ctx = buildExtractRunContext({ options, config, stashDir, dryRun, sourceRun, llmRunner });
 
   const harness = resolveHarness(options.type, options.harnesses);
   if (!harness) {
@@ -1572,7 +1577,9 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
       dryRun,
       stashDir,
       config,
-      getLlmConfig,
+      llmRunner,
+      onNotices,
+      getNotices,
       chat: options.chat,
       sourceRun,
       timeoutMs,
@@ -1631,6 +1638,7 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
     sessions,
     warnings: topLevelWarnings,
     durationMs: Date.now() - startMs,
+    ...(getNotices().length > 0 ? { notices: getNotices() } : {}),
   };
 }
 

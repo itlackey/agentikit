@@ -16,6 +16,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import type { AkmConfig } from "../../src/core/config/config";
+import { ConfigError } from "../../src/core/errors";
 import * as graphDb from "../../src/indexer/db/graph-db";
 import { loadGraphFilesOnly, replaceStoredGraph } from "../../src/indexer/db/graph-db";
 import * as graphExtraction from "../../src/indexer/graph/graph-extraction";
@@ -24,7 +26,7 @@ import type { Database } from "../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
 import { computeBodyHash } from "../../src/storage/repositories/index-llm-cache-repository";
-import { makeStashDir, type SandboxedDir } from "../_helpers/sandbox";
+import { makeStashDir, type SandboxedDir, withEnv } from "../_helpers/sandbox";
 
 // ── Deferred (not-yet-exported) P3 symbols ───────────────────────────────────
 //
@@ -67,7 +69,7 @@ const extractGraphForSingleFile = (
       stashRoot: string,
       filePath: string,
       bodyHash?: string,
-      opts?: { llmOverride?: LlmOverride; signal?: AbortSignal },
+      opts?: { llmOverride?: LlmOverride; signal?: AbortSignal; config?: AkmConfig },
     ) => Promise<boolean>;
   }
 ).extractGraphForSingleFile;
@@ -197,6 +199,30 @@ describe("#624 P3 enqueueGraphExtraction / drainExtractionQueue (AC1)", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("#624 P3 extractGraphForSingleFile (AC2)", () => {
+  test("required symbolic credential failure leaves lazy extraction caches and graph rows empty", async () => {
+    const absPath = makeEligibleMemory("credential", "Alice works with Bob.");
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        graph: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_LAZY_GRAPH_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "graph" }, graph: { enabled: true, lazyGraphExtraction: true } },
+    };
+
+    const failure = withEnv({ AKM_LAZY_GRAPH_REQUIRED_KEY: undefined }, () =>
+      extractGraphForSingleFile(db, stash.dir, absPath, undefined, { config }),
+    );
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(graphFileRowExists(stash.dir, absPath)).toBe(false);
+    const cacheRows = (db.prepare("SELECT COUNT(*) AS n FROM llm_enrichment_cache").get() as { n: number }).n;
+    expect(cacheRows).toBe(0);
+  });
+
   test("extracts + stores one file's graph via the injected LLM seam", async () => {
     expect(typeof extractGraphForSingleFile).toBe("function");
     const absPath = makeEligibleMemory("target", "Alice works with Bob on Project X.");

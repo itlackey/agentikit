@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { cloneExecutionJsonObject } from "../execution/json";
 import type { AkmImproveResult } from "./improve-types";
 
 export type ImproveResultEnvelope = AkmImproveResult;
@@ -16,6 +17,7 @@ const COMMON_FIELDS = [
   "ok",
   "scope",
   "dryRun",
+  "notices",
   "skipped",
   "guidance",
   "memorySummary",
@@ -78,6 +80,31 @@ function requireCount(value: Record<string, unknown>, field: string, path: strin
   requireNumber(value, field, path);
   if (!Number.isSafeInteger(value[field]) || (value[field] as number) < 0) {
     fail(`${path}.${field} must be a non-negative integer`);
+  }
+}
+
+function validateLoweringNotices(value: unknown): void {
+  if (!Array.isArray(value)) fail("notices must be an array");
+  for (let index = 0; index < value.length; index += 1) {
+    const notice = value[index];
+    if (!isRecord(notice)) fail(`notices[${index}] must be an object`);
+    requireExactFields(notice, new Set(["code", "severity", "adapter", "field", "message", "details"]));
+    for (const field of ["code", "adapter", "message"] as const) {
+      if (typeof notice[field] !== "string") fail(`notices[${index}].${field} must be a string`);
+    }
+    if (notice.severity !== "info" && notice.severity !== "warning") {
+      fail(`notices[${index}].severity is invalid`);
+    }
+    if (notice.field !== undefined && notice.field !== null && typeof notice.field !== "string") {
+      fail(`notices[${index}].field must be a string or null`);
+    }
+    if (notice.details !== undefined && notice.details !== null) {
+      try {
+        cloneExecutionJsonObject(notice.details, `notices[${index}].details`);
+      } catch {
+        fail(`notices[${index}].details must be a JSON object or null`);
+      }
+    }
   }
 }
 
@@ -339,6 +366,7 @@ function validateCommon(value: Record<string, unknown>): void {
   if (typeof value.ok !== "boolean") fail("ok must be a boolean");
   if (typeof value.dryRun !== "boolean") fail("dryRun must be a boolean");
   if (!Array.isArray(value.plannedRefs)) fail("plannedRefs must be an array");
+  if (value.notices !== undefined) validateLoweringNotices(value.notices);
   const plannedRefNames = value.plannedRefs.map((entry, index) => {
     if (!isRecord(entry) || typeof entry.ref !== "string") fail(`plannedRefs[${index}].ref must be a string`);
     return entry.ref;

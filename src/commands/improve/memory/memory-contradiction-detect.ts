@@ -41,10 +41,11 @@ import contradictionJudgeTemplate from "../../../assets/prompts/contradiction-ju
 import { mutateFrontmatter, parseFrontmatter } from "../../../core/asset/frontmatter";
 import type { AkmConfig, ImproveProfileConfig, LlmConnectionConfig } from "../../../core/config/config";
 import { parseEmbeddedJsonResponse } from "../../../core/parse";
-import { getDefaultLlmConfig } from "../../../integrations/agent/engine-resolution";
-import { materializeLlmRunnerConnection, resolveImproveProcessRunner } from "../../../integrations/agent/runner";
-import { type ChatMessage, chatCompletion } from "../../../llm/client";
-import { callStructured } from "../../../llm/structured-call";
+import type { LoweringNotice } from "../../../execution/resolved-request";
+import type { RunnerSpec } from "../../../integrations/agent/runner";
+import type { ChatMessage, chatCompletion } from "../../../llm/client";
+import { callStructured, structuredLlmRunnerFromConnection } from "../../../llm/structured-call";
+import { resolveImproveLlmExecution } from "../execution";
 import { isDerivedMemory, memoryIdentityRef, resolveParentRef } from "./derived-ref";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -85,6 +86,8 @@ export interface ContradictionDetectionResult {
   edgesWritten: number;
   /** Warnings generated during detection (e.g. LLM failures, parse errors). */
   warnings: string[];
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 interface DerivedMemoryEntry {
@@ -191,14 +194,15 @@ function pickContradictionLoser(
  *
  * @param stashDir - Root stash directory.
  * @param config   - Loaded AKM config (used to access LLM settings).
- * @param chat     - Optional chat seam for testing (defaults to chatCompletion).
+ * @param chat     - Optional test-only chat seam.
  */
 export async function detectAndWriteContradictions(
   stashDir: string,
   config: AkmConfig,
-  chat: (llmConfig: LlmConnectionConfig, messages: ChatMessage[]) => Promise<string> = chatCompletion,
+  chat?: typeof chatCompletion,
   strategy?: ImproveProfileConfig,
   resolvedLlmConfig?: LlmConnectionConfig | null,
+  resolvedRunner?: Extract<RunnerSpec, { kind: "llm" }> | null,
 ): Promise<ContradictionDetectionResult> {
   const result: ContradictionDetectionResult = {
     familiesExamined: 0,
@@ -206,16 +210,25 @@ export async function detectAndWriteContradictions(
     edgesWritten: 0,
     warnings: [],
   };
+  const noticesByKey = new Map<string, Readonly<LoweringNotice>>();
+  const resolvedExecution =
+    resolvedRunner === undefined && resolvedLlmConfig === undefined
+      ? resolveImproveLlmExecution({
+          config,
+          profile: strategy,
+          process: strategy?.processes?.consolidate,
+          processName: "memory-contradiction-detection",
+        })
+      : null;
+  for (const notice of resolvedExecution?.notices ?? []) noticesByKey.set(JSON.stringify(notice), notice);
 
-  const contradictionLlm =
-    resolvedLlmConfig === null
+  const contradictionRunner =
+    resolvedRunner === null || resolvedLlmConfig === null
       ? undefined
-      : (resolvedLlmConfig ??
-        (() => {
-          const runner = resolveImproveProcessRunner(strategy, "consolidate", config);
-          return runner ? materializeLlmRunnerConnection(runner) : getDefaultLlmConfig(config);
-        })());
-  if (!contradictionLlm) return result;
+      : (resolvedRunner ??
+        (resolvedLlmConfig ? structuredLlmRunnerFromConnection(resolvedLlmConfig) : undefined) ??
+        resolvedExecution?.runner);
+  if (!contradictionRunner) return result;
 
   // Collect derived memories grouped by parent.
   const memoriesDir = path.join(stashDir, "memories");
@@ -292,12 +305,15 @@ export async function detectAndWriteContradictions(
           akmConfig: config,
           // Resolver-less key: the strategy decision IS the gate (default-off).
           enabled: strategy?.processes?.consolidate?.contradictionDetection?.enabled ?? false,
-          config: contradictionLlm,
+          runner: contradictionRunner,
           messages: [
             { role: "system", content: "Return only valid JSON. No prose." },
             { role: "user", content: prompt },
           ],
-          request: { chat },
+          ...(chat ? { request: { chat } } : {}),
+          onNotices: (notices) => {
+            for (const notice of notices) noticesByKey.set(JSON.stringify(notice), notice);
+          },
           parse: (raw) => raw ?? null,
           // A transport throw used to escape the gated fn into the gate's
           // catch and take the null fallback ("skip"); onError reproduces it.
@@ -348,5 +364,6 @@ export async function detectAndWriteContradictions(
     }
   }
 
-  return result;
+  const notices = Object.freeze([...noticesByKey.values()]);
+  return notices.length > 0 ? { ...result, notices } : result;
 }

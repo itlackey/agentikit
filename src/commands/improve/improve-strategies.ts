@@ -20,12 +20,10 @@ import {
   IMPROVE_PROCESS_ENGINE_CAPABILITIES,
 } from "../../core/config/engine-semantics";
 import { ConfigError } from "../../core/errors";
-import {
-  type RunnerSpec,
-  resolveImproveProcessRunner,
-  resolveTriageJudgmentRunner,
-} from "../../integrations/agent/runner";
+import type { LoweringNotice } from "../../execution/resolved-request";
+import type { RunnerSpec } from "../../integrations/agent/runner";
 import { applyAutonomyGate, type GatedLane } from "./autonomy-gate";
+import { resolveImproveExecution, resolveImproveLlmExecution } from "./execution";
 
 /** 0.9 public name for the improve preset configuration. */
 export type ImproveStrategyConfig = ImproveProfileConfig;
@@ -114,6 +112,7 @@ export interface ResolvedImproveProcess {
   enabled: boolean;
   config: Readonly<ImproveProcessConfig>;
   runner: ImproveLlmRunner | null;
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 /** Complete immutable process behavior for one improve invocation. */
@@ -121,6 +120,7 @@ export interface ResolvedImprovePlan {
   strategy: Readonly<SelectedStrategy>;
   processes: Readonly<Record<ImproveProcessName, ResolvedImproveProcess>>;
   triageJudgment: RunnerSpec | null;
+  triageJudgmentNotices?: readonly Readonly<LoweringNotice>[];
   /**
    * D8 — lanes the autonomy gate downgraded for this run. Empty when
    * `experimental.improveAutonomy` is set. The run reports each one so a gated
@@ -165,6 +165,7 @@ function buildImprovePlan(
     const processConfig = cloneAndFreeze(strategy.config.processes?.[processName] ?? {});
     const enabled = processConfig.enabled === true;
     let runner: ImproveLlmRunner | null = null;
+    let notices: readonly Readonly<LoweringNotice>[] = [];
     if (IMPROVE_PROCESS_ENGINE_CAPABILITIES[processName] !== "llm" || !enabled) {
       processes[processName] = Object.freeze({ enabled, config: processConfig, runner });
       continue;
@@ -172,7 +173,14 @@ function buildImprovePlan(
     // Validation itself is structural and always runs. Only its optional repair
     // step needs a model, so disabling repair must not create an LLM preflight.
     if (processName !== "validation" || options.repairValidationFailures !== false) {
-      runner = resolveImproveProcessRunner(strategy.config, processName, config);
+      const resolved = resolveImproveLlmExecution({
+        config,
+        profile: strategy.config,
+        process: processConfig,
+        processName,
+      });
+      runner = resolved?.runner ?? null;
+      notices = resolved?.notices ?? [];
     }
     if (!runner && !(processName === "validation" && options.repairValidationFailures === false)) {
       throw new ConfigError(
@@ -181,15 +189,34 @@ function buildImprovePlan(
       );
     }
     if (runner) runner = cloneAndFreeze(runner) as ImproveLlmRunner;
-    processes[processName] = Object.freeze({ enabled, config: processConfig, runner });
+    processes[processName] = Object.freeze({
+      enabled,
+      config: processConfig,
+      runner,
+      ...(notices.length > 0 ? { notices: cloneAndFreeze(notices) } : {}),
+    });
   }
 
   const triage = strategy.config.processes?.triage;
   const judgmentOptedIn = triage !== undefined && Object.hasOwn(triage, "judgment");
-  const triageJudgment =
+  const triageJudgmentResolution =
     processes.triage.enabled && judgmentOptedIn
-      ? resolveTriageJudgmentRunner(triage.judgment, config, triage, strategy.config)
+      ? resolveImproveExecution({
+          config,
+          profile: strategy.config,
+          process: triage,
+          current: triage.judgment,
+          processName: "triage-judgment",
+        })
       : null;
+  const triageJudgment = triageJudgmentResolution?.runner ?? null;
+  const effectiveJudgmentLlm = triage?.judgment?.llm ?? triage?.llm ?? strategy.config.llm;
+  if (triageJudgment && triageJudgment.kind !== "llm" && effectiveJudgmentLlm) {
+    throw new ConfigError(
+      `Triage judgment engine "${triageJudgment.engine ?? "unknown"}" is an agent engine and cannot receive llm overrides.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
   if (processes.triage.enabled && judgmentOptedIn && !triageJudgment) {
     throw new ConfigError(
       `Enabled improve triage judgment requires an engine. Set defaults.llmEngine or improve.strategies.${strategy.name}.processes.triage.judgment.engine.`,
@@ -210,5 +237,8 @@ function buildImprovePlan(
     strategy: frozenStrategy,
     processes: frozenProcesses,
     triageJudgment: triageJudgment ? cloneAndFreeze(triageJudgment) : null,
+    ...(triageJudgmentResolution?.notices.length
+      ? { triageJudgmentNotices: cloneAndFreeze(triageJudgmentResolution.notices) }
+      : {}),
   });
 }

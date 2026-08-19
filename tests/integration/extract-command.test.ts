@@ -18,8 +18,9 @@ import { isValidDescription } from "../../src/commands/proposal/validators/propo
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
 import { ImproveProcessConfigSchema, ImproveProfileConfigSchema } from "../../src/core/config/config-schema";
-import { UsageError } from "../../src/core/errors";
+import { ConfigError, UsageError } from "../../src/core/errors";
 import { readEvents } from "../../src/core/events";
+import { openStateDatabase } from "../../src/core/state-db";
 import { detectTruncatedDescription } from "../../src/core/text-truncation";
 import type {
   SessionData,
@@ -27,6 +28,7 @@ import type {
   SessionRef,
   SessionSummary,
 } from "../../src/integrations/session-logs/types";
+import { getExtractedSessionsMap } from "../../src/storage/repositories/extract-sessions-repository";
 import { durableItemRef } from "../_helpers/durable-ref";
 import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
@@ -645,7 +647,7 @@ describe("akmExtract — LLM call wiring", () => {
         return JSON.stringify({ candidates: [] });
       },
     });
-    expect(receivedSchema).toBe(EXTRACT_JSON_SCHEMA);
+    expect(receivedSchema).toEqual(EXTRACT_JSON_SCHEMA);
   });
 
   test("passes a prompt that mentions the session title + harness", async () => {
@@ -690,6 +692,44 @@ describe("minContentChars improve-process config schema", () => {
 // ── per-process engine + strategy config support ────────────────────────────
 
 describe("akmExtract — engine + strategy config resolution", () => {
+  test("missing required symbolic credential aborts without proposals, session assets, or session-state rows", async () => {
+    const stash = makeStashDir();
+    const session = fakeSession("credential", Date.now());
+    const config = configEnabled(stash);
+    const defaultEngine = config.engines?.default;
+    if (!defaultEngine || defaultEngine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    defaultEngine.apiKey = "$AKM_EXTRACT_REQUIRED_KEY";
+    let chatCalls = 0;
+    const stateDb = openStateDatabase();
+    try {
+      const failure = withEnv({ AKM_EXTRACT_REQUIRED_KEY: undefined }, () =>
+        akmExtract({
+          type: "claude-code",
+          sessionId: session.ref.sessionId,
+          stashDir: stash,
+          config,
+          harnesses: [makeFakeHarness([session])],
+          stateDb,
+          chat: async () => {
+            chatCalls += 1;
+            return JSON.stringify({ candidates: [] });
+          },
+        }),
+      );
+
+      await expect(failure).rejects.toBeInstanceOf(ConfigError);
+      await expect(failure).rejects.toMatchObject({ code: "INVALID_CONFIG_FILE" });
+      expect(chatCalls).toBe(0);
+      expect(listProposals(stash)).toEqual([]);
+      expect(fs.existsSync(path.join(stash, "sessions")) ? fs.readdirSync(path.join(stash, "sessions")) : []).toEqual(
+        [],
+      );
+      expect(getExtractedSessionsMap(stateDb, "claude-code", [session.ref.sessionId]).size).toBe(0);
+    } finally {
+      stateDb.close();
+    }
+  });
+
   function configWithStrategy(stashDir: string, processOverride: Record<string, unknown>): AkmConfig {
     return {
       configVersion: "0.9.0",
@@ -744,6 +784,15 @@ describe("akmExtract — engine + strategy config resolution", () => {
     expect(plan).toMatchObject({ strategy: "extract", enabled: true, timeoutMs: 600_000 });
     expect(plan.process.enabled).toBe(false);
     expect(plan.process.maxTotalChars).toBe(4321);
+  });
+
+  test("standalone planning preserves an explicit unbounded timeout", () => {
+    const stash = makeStashDir();
+    const config = configWithStrategy(stash, { timeoutMs: null });
+    const plan = resolveStandaloneExtractPlan(config, { strategy: "extract" });
+
+    expect(plan.timeoutMs).toBeNull();
+    expect(plan.runner?.timeoutMs).toBeNull();
   });
 
   test("an unset symbolic credential does not block dry-run planning with no dispatch", async () => {

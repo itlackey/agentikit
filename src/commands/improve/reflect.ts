@@ -12,7 +12,7 @@
  *      content. Pull recent feedback (`feedback` events for that ref) and
  *      lesson-lint findings to surface as schema hints.
  *   3. Build the prompt via {@link buildReflectPrompt}.
- *   4. Dispatch the selected named engine via {@link executeRunner}.
+ *   4. Prepare, authorize, lower, and dispatch the frozen engine selection.
  *   5. Parse the agent's stdout into a {@link AgentProposalPayload}.
  *   6. Insert into the proposal queue via {@link createProposal} with
  *      `source: "reflect"`.
@@ -40,6 +40,7 @@ import { parseEmbeddedJsonResponse } from "../../core/parse";
 import { redactSensitiveText } from "../../core/redaction";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
 import { warn } from "../../core/warn";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { lookup } from "../../indexer/indexer";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "../../integrations/agent";
 import { DEFAULT_LLM_TIMEOUT_MS } from "../../integrations/agent/config";
@@ -49,7 +50,12 @@ import {
   NO_ENGINE_REMEDY,
   withEngineFallback,
 } from "../../integrations/agent/engine-fallback";
-import { resolveEngine } from "../../integrations/agent/engine-resolution";
+import {
+  dispatchLoweredExecutionRequest,
+  lowerResolvedExecutionRequest,
+  lowerResolvedExecutionRequestWithRunner,
+} from "../../integrations/agent/execution-lowering";
+import { prepareInlineExecution, prepareInlineExecutionWithRunner } from "../../integrations/agent/inline-execution";
 import {
   buildReflectOutputRepairPrompt,
   buildReflectPrompt,
@@ -58,14 +64,8 @@ import {
   type ReflectLlmOutputMode,
   type RejectedProposalContext,
 } from "../../integrations/agent/prompts";
-import {
-  materializeLlmRunnerConnection,
-  type RunnerSpec,
-  resolveImproveProcessRunner,
-  runnerIsLlm,
-  runnerSupportsFileWrite,
-} from "../../integrations/agent/runner";
-import { collectDispatchSensitiveValues, executeRunner } from "../../integrations/agent/runner-dispatch";
+import { type RunnerSpec, runnerIsLlm, runnerSupportsFileWrite } from "../../integrations/agent/runner";
+import { collectDispatchSensitiveValues } from "../../integrations/agent/runner-dispatch";
 import { type ChatMessage, type chatCompletion, LlmCallError } from "../../llm/client";
 import { callStructured } from "../../llm/structured-call";
 import { baseFailureFields, enoentHintMessage, isEnoentFailure } from "../agent/agent-support";
@@ -82,11 +82,25 @@ import { checkReflectSize, isValidDescription } from "../proposal/validators/pro
 import { deriveLessonRef } from "./distill";
 import { runReflectQualityJudge } from "./distill/quality-gate";
 import { findAssetFilePath } from "./eligibility";
+import { resolveImproveLlmExecution } from "./execution";
 import { emitProposal } from "./proposal-envelope";
 import { classifyReflectChange } from "./reflect-noise";
 import { createRunContext, type RunContext, resolveRunStashDir } from "./run-context";
 import { MAX_REJECTED_PROPOSALS } from "./shared";
 import { durableImproveRef, improveStateReadRefs } from "./source-identity";
+
+function collectLoweringNotices(
+  target: Map<string, Readonly<LoweringNotice>>,
+  notices: readonly Readonly<LoweringNotice>[],
+): void {
+  for (const notice of notices) target.set(JSON.stringify(notice), notice);
+}
+
+function reflectNoticeFields(notices: Map<string, Readonly<LoweringNotice>>): {
+  notices?: readonly Readonly<LoweringNotice>[];
+} {
+  return notices.size > 0 ? { notices: Object.freeze([...notices.values()]) } : {};
+}
 
 export interface AkmReflectOptions {
   /**
@@ -810,7 +824,9 @@ export interface RunReflectViaLlmOptions {
   /** Reflect prompt text (built by {@link buildReflectPrompt}). */
   prompt: string | undefined;
   /** LLM connection config. `supportsJsonSchema` controls structured-output mode. */
-  connection: LlmProfileConfig;
+  connection?: LlmProfileConfig;
+  /** Preferred production path: exact symbolic runner selected before dispatch. */
+  runner?: Extract<RunnerSpec, { kind: "llm" }>;
   /** Hard timeout for the LLM request in ms. */
   timeoutMs?: number | null;
   /** Optional caller-driven cancellation signal. */
@@ -849,6 +865,8 @@ export interface RunReflectViaLlmOptions {
   targetRef?: string;
   /** Invocation-wide repair budget gate. Defaults to true for direct callers. */
   allowRepair?: boolean;
+  /** Stable lowering diagnostics sink shared across refine/repair attempts. */
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
 }
 
 interface ReflectLlmTelemetry {
@@ -981,12 +999,16 @@ function parseDirectReflectOutput(raw: string, mode: ReflectLlmOutputMode, targe
 export async function runReflectViaLlm(opts: RunReflectViaLlmOptions): Promise<AgentRunResult> {
   const start = Date.now();
   let repairAttempts = 0;
+  const connection = opts.runner?.connection ?? opts.connection;
+  if (!connection) throw new TypeError("runReflectViaLlm requires a resolved LLM runner or connection");
   const messages: ChatMessage[] = [{ role: "user", content: opts.prompt ?? "" }];
   const configuredTimeout = Object.hasOwn(opts, "timeoutMs")
     ? (opts.timeoutMs ?? null)
-    : Object.hasOwn(opts.connection, "timeoutMs")
-      ? (opts.connection.timeoutMs ?? null)
-      : DEFAULT_LLM_TIMEOUT_MS;
+    : opts.runner && Object.hasOwn(opts.runner, "timeoutMs")
+      ? (opts.runner.timeoutMs ?? null)
+      : Object.hasOwn(connection, "timeoutMs")
+        ? (connection.timeoutMs ?? null)
+        : DEFAULT_LLM_TIMEOUT_MS;
   const deadline = typeof configuredTimeout === "number" ? start + configuredTimeout : undefined;
 
   if (opts.priorDraft !== undefined && opts.iteration > 0) {
@@ -997,7 +1019,7 @@ export async function runReflectViaLlm(opts: RunReflectViaLlmOptions): Promise<A
   const call = async (callMessages: ChatMessage[], repairTimeoutMs?: number): Promise<string> =>
     callStructured<string>({
       feature: "reflect_proposal",
-      config: opts.connection,
+      ...(opts.runner ? { runner: opts.runner } : { config: connection }),
       messages: callMessages,
       request: {
         ...(repairTimeoutMs !== undefined
@@ -1013,6 +1035,7 @@ export async function runReflectViaLlm(opts: RunReflectViaLlmOptions): Promise<A
         enableThinking: false,
         ...(opts.chat ? { chat: opts.chat } : {}),
       },
+      ...(opts.onNotices ? { onNotices: opts.onNotices } : {}),
       parse: (raw) => raw ?? "",
       // Unreachable on the ungated path (errors propagate to the catch below).
       onError: () => "",
@@ -1086,6 +1109,7 @@ export async function runReflectViaLlm(opts: RunReflectViaLlmOptions): Promise<A
       parsed: { outputMode: opts.outputMode, repairAttempts, priorDraft: acceptedOutput },
     };
   } catch (err) {
+    if (err instanceof ConfigError) throw err;
     const reason: AgentFailureReason = opts.signal?.aborted
       ? "aborted"
       : err instanceof LlmCallError && err.code === "timeout"
@@ -1134,6 +1158,7 @@ async function finalizeReflectProposal(args: {
     ref?: string,
     extra?: Record<string, unknown>,
   ) => void;
+  onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
 }): Promise<AkmReflectResult> {
   const {
     assetContent,
@@ -1146,6 +1171,7 @@ async function finalizeReflectProposal(args: {
     feedback,
     stash,
     emitReflectFailed,
+    onNotices,
   } = args;
   let payload = args.payload;
   const outputTelemetry = reflectLlmTelemetry(result);
@@ -1250,9 +1276,10 @@ async function finalizeReflectProposal(args: {
       feedback,
       options.chat,
       {
-        ...(runnerIsLlm(runnerSpec) ? { llmConfig: materializeLlmRunnerConnection(runnerSpec) } : {}),
+        ...(runnerIsLlm(runnerSpec) ? { llmRunner: runnerSpec } : {}),
         ...(Object.hasOwn(options, "timeoutMs") ? { timeoutMs: options.timeoutMs } : {}),
         ...(options.signal ? { signal: options.signal } : {}),
+        onNotices,
       },
     );
     if (!judgeResult.pass) {
@@ -1519,11 +1546,13 @@ function resolveReflectRunner(options: AkmReflectOptions): {
   activeStrategy: import("../../core/config/config").ImproveProfileConfig | undefined;
   runnerSpec: RunnerSpec;
   engineName: string;
+  notices: readonly Readonly<LoweringNotice>[];
 } {
   const config = options.config ?? loadConfig();
   const activeStrategy =
     options.improveProfile ?? config.improve?.strategies?.[config.defaults?.improveStrategy ?? "default"];
   let runnerSpec: RunnerSpec;
+  let notices: readonly Readonly<LoweringNotice>[] = [];
   if (options.runner) {
     runnerSpec = options.runner;
   } else if (Object.hasOwn(options, "runner")) {
@@ -1533,17 +1562,31 @@ function resolveReflectRunner(options: AkmReflectOptions): {
       "Set defaults.llmEngine or improve.strategies.<name>.processes.reflect.engine.",
     );
   } else if (options.engine) {
-    runnerSpec = resolveEngine(options.engine, config);
+    const prepared = prepareInlineExecution({
+      content: "reflect engine selection",
+      config,
+      invocationKind: "direct",
+      current: { engine: options.engine },
+    });
+    const lowered = lowerResolvedExecutionRequest(prepared.request, prepared.config);
+    runnerSpec = lowered.runner;
+    notices = lowered.notices;
   } else if (options.improveProfile) {
-    const processRunner = resolveImproveProcessRunner(activeStrategy, "reflect", config);
-    if (!processRunner) {
+    const resolved = resolveImproveLlmExecution({
+      config,
+      profile: activeStrategy,
+      process: activeStrategy?.processes?.reflect,
+      processName: "reflect",
+    });
+    if (!resolved) {
       throw new ConfigError(
         "Reflect requires an LLM engine for the active improve strategy.",
         "LLM_NOT_CONFIGURED",
         "Set defaults.llmEngine or improve.strategies.<name>.processes.reflect.engine.",
       );
     }
-    runnerSpec = processRunner;
+    runnerSpec = resolved.runner;
+    notices = resolved.notices;
   } else {
     const { config: engineConfig, fallbackEngineName } = withEngineFallback(config);
     const defaultEngine = engineConfig.defaults?.engine;
@@ -1554,7 +1597,14 @@ function resolveReflectRunner(options: AkmReflectOptions): {
     if (!defaultEngine) {
       throw new ConfigError(`reflect ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "INVALID_CONFIG_FILE");
     }
-    runnerSpec = resolveEngine(defaultEngine, engineConfig);
+    const prepared = prepareInlineExecution({
+      content: "reflect engine selection",
+      config,
+      invocationKind: "direct",
+    });
+    const lowered = lowerResolvedExecutionRequest(prepared.request, prepared.config);
+    runnerSpec = lowered.runner;
+    notices = lowered.notices;
   }
   if (options.eventSource === "improve" && !runnerIsLlm(runnerSpec)) {
     throw new ConfigError(
@@ -1567,7 +1617,7 @@ function resolveReflectRunner(options: AkmReflectOptions): {
   if (!engineName) {
     throw new ConfigError("Reflect requires a named engine.", "INVALID_CONFIG_FILE");
   }
-  return { config, activeStrategy, runnerSpec, engineName };
+  return { config, activeStrategy, runnerSpec, engineName, notices };
 }
 
 /**
@@ -1659,6 +1709,7 @@ async function runReflectRefineIterations(args: {
   runnerSpec: RunnerSpec;
   agentEnv: Record<string, string>;
   draftPathsToCleanup: string[];
+  onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
 }): Promise<{ result: AgentRunResult; lastDraftPath: string | undefined }> {
   const {
     options,
@@ -1672,6 +1723,7 @@ async function runReflectRefineIterations(args: {
     runnerSpec,
     agentEnv,
     draftPathsToCleanup,
+    onNotices,
   } = args;
   const MAX_REFINE_ITERS = 3;
   const maxRefineIters = Math.min(Math.max(1, options.maxRefineIters ?? 1), MAX_REFINE_ITERS);
@@ -1726,36 +1778,58 @@ async function runReflectRefineIterations(args: {
     // JSON wrapper and frontmatter block that surround the body in the response.
     const maxTokensForLlm = maxOutputChars !== undefined ? Math.ceil((maxOutputChars + 500) / 3) : undefined;
 
-    // Every engine kind crosses the same dispatch seam. Injected spawn/timer
-    // functions remain ordinary run options for deterministic tests.
-    const runOptions: RunAgentOptions = {
-      stdio: "captured",
-      parseOutput: "text",
-      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-      ...(Object.keys(agentEnv).length > 0 ? { env: agentEnv } : {}),
-      ...(options.runAgentOptions ?? {}),
-    };
-    const iterResult = await executeRunner(runnerSpec, prompt ?? "", runOptions, {
-      llm: async (spec, _prompt, opts) =>
-        // LLM HTTP runners cannot honor the file-write contract, so they
-        // return structured JSON through stdout.
-        runReflectViaLlm({
-          prompt,
-          connection: spec.connection,
-          ...(Object.hasOwn(opts, "timeoutMs") ? { timeoutMs: opts.timeoutMs } : {}),
+    let iterResult: AgentRunResult;
+    if (runnerIsLlm(runnerSpec)) {
+      // LLM HTTP runners cannot honor the file-write contract, so they return
+      // structured output through stdout. callStructured owns preparation,
+      // lowering, credential materialization, and direct transport dispatch.
+      iterResult = await runReflectViaLlm({
+        prompt,
+        runner: runnerSpec,
+        ...(Object.hasOwn(options, "timeoutMs") ? { timeoutMs: options.timeoutMs } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+        priorDraft,
+        iteration: iter,
+        ...(runnerSpec.connection.supportsJsonSchema
+          ? { responseSchema: options.ref ? REFLECT_JSON_SCHEMA : REFLECT_UNSCOPED_JSON_SCHEMA }
+          : {}),
+        outputMode: runnerSpec.connection.supportsJsonSchema ? "json_schema" : "framed_markdown",
+        ...(options.ref ? { targetRef: options.ref } : {}),
+        allowRepair: repairAttempts === 0,
+        ...(options.chat ? { chat: options.chat } : {}),
+        ...(maxTokensForLlm !== undefined ? { maxTokens: maxTokensForLlm } : {}),
+        onNotices,
+      });
+    } else {
+      const conversationPriorDraft = priorDraft;
+      const hasConversation = conversationPriorDraft !== undefined && iter > 0;
+      const current = {
+        ...(Object.hasOwn(options, "timeoutMs") ? { timeout: options.timeoutMs } : {}),
+        ...(Object.keys(agentEnv).length > 0 ? { environment: agentEnv } : {}),
+      };
+      const prepared = prepareInlineExecutionWithRunner({
+        content: hasConversation ? REFLECT_CRITIQUE_PROMPT : (prompt ?? ""),
+        ...(hasConversation
+          ? {
+              conversation: [
+                { role: "user" as const, content: prompt ?? "" },
+                { role: "assistant" as const, content: conversationPriorDraft as string },
+              ],
+            }
+          : {}),
+        runner: runnerSpec,
+        invocationKind: "direct",
+        ...(Object.keys(current).length > 0 ? { current } : {}),
+      });
+      const lowered = lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
+      onNotices(lowered.notices);
+      iterResult = await dispatchLoweredExecutionRequest(lowered, {
+        runOptions: {
           ...(options.signal ? { signal: options.signal } : {}),
-          priorDraft,
-          iteration: iter,
-          ...(spec.connection.supportsJsonSchema
-            ? { responseSchema: options.ref ? REFLECT_JSON_SCHEMA : REFLECT_UNSCOPED_JSON_SCHEMA }
-            : {}),
-          outputMode: spec.connection.supportsJsonSchema ? "json_schema" : "framed_markdown",
-          ...(options.ref ? { targetRef: options.ref } : {}),
-          allowRepair: repairAttempts === 0,
-          chat: options.chat,
-          ...(maxTokensForLlm !== undefined ? { maxTokens: maxTokensForLlm } : {}),
-        }),
-    });
+          ...(options.runAgentOptions ?? {}),
+        },
+      });
+    }
 
     const iterTelemetry = reflectLlmTelemetry(iterResult);
     if (iterTelemetry) repairAttempts += iterTelemetry.repairAttempts;
@@ -1812,7 +1886,7 @@ function buildReflectRunContext(args: {
     // buildImproveRunContext's proposalsCtx comment in improve.ts).
     proposalsCtx: options.ctx ?? {},
     chat: options.chat,
-    getLlmConfig: () => (runnerIsLlm(runnerSpec) ? materializeLlmRunnerConnection(runnerSpec) : null),
+    getLlmRunner: () => (runnerIsLlm(runnerSpec) ? runnerSpec : null),
     sourceRun: `reflect-${Date.now()}`,
     dryRun: false,
     signal: options.signal,
@@ -1889,7 +1963,9 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
   // 3. Resolve exactly one named engine. Standalone reflect uses --engine or
   // defaults.engine; improve resolves its LLM-only strategy/process overlay.
   // An incompatible explicit engine is an error and never falls through.
-  const { config, activeStrategy, runnerSpec, engineName } = resolveReflectRunner(options);
+  const { config, activeStrategy, runnerSpec, engineName, notices: resolutionNotices } = resolveReflectRunner(options);
+  const executionNotices = new Map<string, Readonly<LoweringNotice>>();
+  collectLoweringNotices(executionNotices, resolutionNotices);
 
   // WI-9.10: RunContext, built only once config/runnerSpec exist so engine
   // resolution's existing error-priority ordering is undisturbed (see
@@ -1959,6 +2035,7 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
       runnerSpec,
       agentEnv,
       draftPathsToCleanup,
+      onNotices: (notices) => collectLoweringNotices(executionNotices, notices),
     });
     result = iterated.result;
     lastDraftPath = iterated.lastDraftPath;
@@ -1974,6 +2051,7 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
         return {
           ...failureEnvelope(finalResult, options.ref, engineName),
           error: enoentHintMessage(runnerIsLlm(runnerSpec) ? engineName : runnerSpec.profile.bin),
+          ...reflectNoticeFields(executionNotices),
         };
       }
       const envelope = failureEnvelope(finalResult, options.ref, engineName);
@@ -1986,7 +2064,7 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
           ...(reflectLlmTelemetry(finalResult) ?? {}),
         },
       );
-      return envelope;
+      return { ...envelope, ...reflectNoticeFields(executionNotices) };
     }
 
     // Re-alias to `result` for the downstream code that references it.
@@ -2000,7 +2078,9 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
       engineName,
       emitReflectFailed,
     });
-    if ("failure" in resolved) return resolved.failure;
+    if ("failure" in resolved) {
+      return { ...resolved.failure, ...reflectNoticeFields(executionNotices) };
+    }
     payload = resolved.payload;
   } finally {
     // Always remove tmp draft files — success, failure, or exception. Returns
@@ -2039,6 +2119,7 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
           exitCode: result.exitCode,
           stdout: result.stdout,
           ...(result.stderr ? { stderr: result.stderr } : {}),
+          ...reflectNoticeFields(executionNotices),
         };
       }
     } catch {
@@ -2047,7 +2128,7 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
     }
   }
 
-  return finalizeReflectProposal({
+  const finalized = await finalizeReflectProposal({
     payload,
     assetContent,
     result,
@@ -2059,5 +2140,7 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
     feedback,
     stash,
     emitReflectFailed,
+    onNotices: (notices) => collectLoweringNotices(executionNotices, notices),
   });
+  return { ...finalized, ...reflectNoticeFields(executionNotices) };
 }

@@ -21,10 +21,14 @@
 import fs from "node:fs";
 import { parseFrontmatter } from "../../../core/asset/frontmatter";
 import type { AkmConfig, ImproveProfileConfig, LlmConnectionConfig } from "../../../core/config/config";
+import { ConfigError } from "../../../core/errors";
 import { appendEvent, type EventsContext } from "../../../core/events";
 import type { AkmDistillResult } from "../../../core/improve-types";
 import { parseEmbeddedJsonResponse } from "../../../core/parse";
+import type { LoweringNotice } from "../../../execution/resolved-request";
+import type { RunnerSpec } from "../../../integrations/agent/runner";
 import type { ChatCompletionOptions, ChatMessage } from "../../../llm/client";
+import { callStructured, structuredLlmRunnerFromConnection } from "../../../llm/structured-call";
 import type { EligibilitySource } from "../../proposal/proposal-types";
 import { isProposalSkipped, type Proposal, type ProposalsContext } from "../../proposal/repository";
 import { assessMemoryKnowledgePromotionCandidate } from "../distill-promotion-policy";
@@ -52,9 +56,12 @@ export interface PromoteMemoryContext {
   filteredEvents: readonly { metadata?: Record<string, unknown> }[];
   config: AkmConfig;
   strategy?: ImproveProfileConfig;
+  /** Preferred production path: exact symbolic runner selected for distill. */
+  llmRunner?: Extract<RunnerSpec, { kind: "llm" }>;
+  /** Legacy non-secret connection seam retained for isolated tests. */
   llmConfig?: LlmConnectionConfig;
   signal?: AbortSignal;
-  chat: (config: LlmConnectionConfig, messages: ChatMessage[], options?: ChatCompletionOptions) => Promise<string>;
+  chat?: (config: LlmConnectionConfig, messages: ChatMessage[], options?: ChatCompletionOptions) => Promise<string>;
   stash: string;
   lookup: (ref: string) => Promise<string | null>;
   fetchSimilarLessonsFn: (query: string, n: number) => Promise<Array<{ ref: string; content: string }>>;
@@ -73,6 +80,7 @@ export interface PromoteMemoryContext {
   exclusionSetSize: number;
   filteredFeedbackCount: number;
   feedbackFullyFiltered: boolean;
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
 }
 
 /**
@@ -111,7 +119,9 @@ async function resolveKnowledgePromotionContent(
         })()
       : null;
 
-  if (existingKnowledgeContent && ctx.llmConfig) {
+  const runner = ctx.llmRunner ?? (ctx.llmConfig ? structuredLlmRunnerFromConnection(ctx.llmConfig) : undefined);
+
+  if (existingKnowledgeContent && runner) {
     // Existing content found: call LLM for contradiction-resolution merge.
     const mergePrompt = [
       "You are merging two versions of a knowledge document.",
@@ -131,14 +141,22 @@ async function resolveKnowledgePromotionContent(
     ].join("\n");
 
     try {
-      const mergeResponse = await ctx.chat(
-        ctx.llmConfig,
-        [
+      const mergeResponse = await callStructured<string>({
+        feature: "distill",
+        runner,
+        messages: [
           { role: "system", content: "Return only valid JSON. No prose." },
           { role: "user", content: mergePrompt },
         ],
-        ctx.signal ? { signal: ctx.signal } : undefined,
-      );
+        request: {
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
+          ...(ctx.chat ? { chat: ctx.chat } : {}),
+        },
+        parse: (raw) => raw ?? "",
+        onError: () => "",
+        fallback: "",
+        ...(ctx.onNotices ? { onNotices: ctx.onNotices } : {}),
+      });
       const mergeResult = parseEmbeddedJsonResponse<{
         action: "ADD" | "UPDATE" | "NOOP";
         content?: string;
@@ -178,7 +196,8 @@ async function resolveKnowledgePromotionContent(
           resolvedPromotionContent = mergeResult.content;
         }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof ConfigError) throw error;
       // LLM merge failed — fall through with the original promotion content.
       // The reviewer will see both versions in the proposal diff.
     }
@@ -257,8 +276,10 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
     const similarLessons = await fetchSimilarLessonsFn(resolvedPromotionContent.slice(0, 500), 3);
     const judgeResult = await runLessonQualityJudge(config, resolvedPromotionContent, assetContent ?? "", chat, {
       ...(similarLessons.length > 0 ? { similarLessons } : {}),
-      ...(ctx.llmConfig ? { llmConfig: ctx.llmConfig } : {}),
+      ...(ctx.llmRunner ? { llmRunner: ctx.llmRunner } : {}),
+      ...(!ctx.llmRunner && ctx.llmConfig ? { llmConfig: ctx.llmConfig } : {}),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
+      ...(ctx.onNotices ? { onNotices: ctx.onNotices } : {}),
     });
     if (!judgeResult.pass) {
       if (judgeResult.reviewNeeded) {
@@ -300,7 +321,9 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
       ref: promotion.knowledgeRef,
       source: "distill",
       // §23.6 fingerprint model-id term (WI-6.4).
-      ...(ctx.llmConfig?.model ? { modelId: ctx.llmConfig.model } : {}),
+      ...(ctx.llmRunner?.connection.model || ctx.llmConfig?.model
+        ? { modelId: ctx.llmRunner?.connection.model ?? ctx.llmConfig?.model }
+        : {}),
       ...(ctx.sourceRun !== undefined ? { sourceRun: ctx.sourceRun } : {}),
       payload: {
         content: resolvedPromotionContent,

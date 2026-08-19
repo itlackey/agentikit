@@ -24,6 +24,7 @@ import { toErrorMessage } from "../core/common";
 import type { AkmConfig } from "../core/config/config";
 import { parseEmbeddedJsonResponse } from "../core/parse";
 import { warn } from "../core/warn";
+import type { LoweringNotice } from "../execution/resolved-request";
 import type { TryLlmFeatureFallbackEvent } from "./feature-gate";
 import { callStructured, type StructuredLlmRunner } from "./structured-call";
 
@@ -107,6 +108,7 @@ export async function compressMemoryToDerivedMemory(
   onFallback?: (evt: TryLlmFeatureFallbackEvent) => void,
   telemetry?: MemoryInferTelemetry,
   onRetryAttempt?: () => void,
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void,
 ): Promise<DerivedMemoryDraft | undefined> {
   const trimmedBody = body.trim();
   if (!trimmedBody) return undefined;
@@ -135,6 +137,7 @@ export async function compressMemoryToDerivedMemory(
       responseSchema: DERIVED_MEMORY_JSON_SCHEMA as unknown as Record<string, unknown>,
       onRetryAttempt,
     },
+    onNotices,
     parse: (raw) => {
       if (!raw) return undefined;
       const parsed = parseEmbeddedJsonResponse<Record<string, unknown>>(raw);

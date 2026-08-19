@@ -5,10 +5,19 @@
 import type { AkmConfig, IndexPassConfig } from "../core/config/config";
 import { ConfigError } from "../core/errors";
 import { cloneExecutionJsonObject } from "../execution/json";
+import type { LoweringNotice } from "../execution/resolved-request";
 import type { UnresolvedExecutionDefaults } from "../execution/source";
 import { lowerResolvedExecutionRequest } from "../integrations/agent/execution-lowering";
 import { prepareInlineExecution } from "../integrations/agent/inline-execution";
 import type { StructuredLlmRunner } from "./structured-call";
+
+const NO_LOWERING_NOTICES: readonly Readonly<LoweringNotice>[] = Object.freeze([]);
+
+/** One frozen standalone-index selection, including its safe lowering diagnostics. */
+export interface ResolvedIndexPassExecution {
+  readonly runner: StructuredLlmRunner | undefined;
+  readonly notices: readonly Readonly<LoweringNotice>[];
+}
 
 function own(value: object | undefined, key: PropertyKey): boolean {
   return value !== undefined && Object.hasOwn(value, key);
@@ -31,13 +40,13 @@ function indexExecutionDefaults(layer: IndexPassConfig | undefined): UnresolvedE
  * Resolve standalone index passes from the index section only. Improve
  * strategies own improve-triggered calls and are intentionally not consulted.
  */
-export function resolveIndexPassRunner(passName: string, config: AkmConfig): StructuredLlmRunner | undefined {
+export function resolveIndexPassExecution(passName: string, config: AkmConfig): ResolvedIndexPassExecution {
   const pass = config.index?.[passName] as IndexPassConfig | undefined;
-  if (pass?.enabled === false) return undefined;
+  if (pass?.enabled === false) return Object.freeze({ runner: undefined, notices: NO_LOWERING_NOTICES });
   const defaults = config.index?.defaults as IndexPassConfig | undefined;
   const fallbackLlmEngine = config.defaults?.llmEngine;
   const selectedEngine = pass?.engine ?? defaults?.engine ?? fallbackLlmEngine;
-  if (!selectedEngine) return undefined;
+  if (!selectedEngine) return Object.freeze({ runner: undefined, notices: NO_LOWERING_NOTICES });
 
   const invocationDefaults = {
     ...indexExecutionDefaults(defaults),
@@ -57,5 +66,10 @@ export function resolveIndexPassRunner(passName: string, config: AkmConfig): Str
       "INVALID_CONFIG_FILE",
     );
   }
-  return lowered.runner;
+  return Object.freeze({ runner: lowered.runner, notices: lowered.notices });
+}
+
+/** Readiness-only compatibility projection. Dispatching callers retain the full frozen resolution. */
+export function resolveIndexPassRunner(passName: string, config: AkmConfig): StructuredLlmRunner | undefined {
+  return resolveIndexPassExecution(passName, config).runner;
 }

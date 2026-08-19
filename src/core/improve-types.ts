@@ -13,6 +13,7 @@ import type {
 } from "../commands/improve/memory/memory-improve";
 import type { EligibilitySource, Proposal } from "../commands/proposal/proposal-types";
 import type { DeadUrl } from "../commands/url-checker";
+import type { LoweringNotice } from "../execution/resolved-request";
 import type { GraphExtractionResult } from "../indexer/graph/graph-extraction";
 import type { MemoryInferenceResult } from "../indexer/passes/memory-inference";
 import type { AgentFailureReason } from "../integrations/agent/spawn";
@@ -301,6 +302,8 @@ export interface ConsolidateResult {
   planned?: ConsolidateOperation[];
   warnings: string[];
   durationMs: number;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
   /**
    * WS-5 perf telemetry (Part V). Always emitted when consolidation runs —
    * these are health VIEWS of the pipeline, not truth sources. Omitted on the
@@ -430,6 +433,8 @@ export interface AkmDistillResult {
    * Only present when at least one swap was applied.
    */
   descriptionSwapped?: number;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface ExtractedSessionResult {
@@ -462,6 +467,8 @@ export interface ExtractedSessionResult {
    * rows stay eligible for retry.
    */
   contentHash?: string;
+  /** Stable, secret-free execution-lowering diagnostics for this session. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface AkmExtractResult {
@@ -477,6 +484,8 @@ export interface AkmExtractResult {
   sessions: ExtractedSessionResult[];
   warnings: string[];
   durationMs: number;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface AkmReflectFailure {
@@ -489,6 +498,8 @@ export interface AkmReflectFailure {
   exitCode: number | null;
   stdout?: string;
   stderr?: string;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface AkmReflectSuccess {
@@ -498,6 +509,8 @@ export interface AkmReflectSuccess {
   ref: string;
   engine: string;
   durationMs: number;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export type AkmReflectResult = AkmReflectSuccess | AkmReflectFailure;
@@ -603,6 +616,8 @@ export interface AkmImproveResult {
     value?: string;
   };
   dryRun: boolean;
+  /** Deduplicated, secret-free execution-lowering diagnostics from this run. */
+  notices?: readonly Readonly<LoweringNotice>[];
   /**
    * Present when the run did no work because another improve held the whole-run
    * lock and `skipIfLocked` was set. The run exits 0; `reason` is `"lock-held"`.

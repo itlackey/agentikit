@@ -15,18 +15,21 @@ import path from "node:path";
 import { parseRefInput } from "../../../core/asset/resolve-ref";
 import { timestampForFilename } from "../../../core/common";
 import type { AkmConfig, LlmConnectionConfig } from "../../../core/config/config";
+import { ConfigError } from "../../../core/errors";
 import { appendEvent, type EventsContext } from "../../../core/events";
 import type { AkmDistillResult, DistillOutcome } from "../../../core/improve-types";
 import { parseEmbeddedJsonResponse } from "../../../core/parse";
 import { withStateDb } from "../../../core/state-db";
 import { recordWrittenPath } from "../../../core/write-provenance";
-import { getDefaultLlmConfig } from "../../../integrations/agent/engine-resolution";
+import type { LoweringNotice } from "../../../execution/resolved-request";
+import type { RunnerSpec } from "../../../integrations/agent/runner";
 import type { ChatCompletionOptions, ChatMessage } from "../../../llm/client";
 import type { LlmFeatureKey } from "../../../llm/feature-gate";
-import { callStructured } from "../../../llm/structured-call";
+import { callStructured, structuredLlmRunnerFromConnection } from "../../../llm/structured-call";
 import type { EligibilitySource } from "../../proposal/proposal-types";
 import { akmSearch } from "../../read/search";
 import { scoreEncodingSalience } from "../encoding-salience";
+import { resolveImproveLlmExecution } from "../execution";
 import { computeSalience, upsertAssetSalience } from "../salience";
 
 // ── D-4 / #390: Top-3 similar lessons retrieval ──────────────────────────────
@@ -191,9 +194,13 @@ type QualityJudgeChat = (
 
 export interface QualityJudgeOptions {
   similarLessons?: Array<{ ref: string; content: string }>;
+  /** Preferred production path: exact symbolic runner selected for this improve process. */
+  llmRunner?: Extract<RunnerSpec, { kind: "llm" }>;
+  /** Legacy non-secret connection seam retained for isolated tests. */
   llmConfig?: LlmConnectionConfig;
   timeoutMs?: number | null;
   signal?: AbortSignal;
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
 }
 
 async function runQualityJudge(
@@ -203,8 +210,15 @@ async function runQualityJudge(
   chat: QualityJudgeChat | undefined,
   options: QualityJudgeOptions = {},
 ): Promise<QualityJudgeResult> {
-  const llmConfig = options.llmConfig ?? getDefaultLlmConfig(config);
-  if (!llmConfig) {
+  const resolvedDefault =
+    !options.llmRunner && !options.llmConfig
+      ? resolveImproveLlmExecution({ config, processName: `${feature}-judge` })
+      : null;
+  if (resolvedDefault) options.onNotices?.(resolvedDefault.notices);
+  const runner =
+    options.llmRunner ??
+    (options.llmConfig ? structuredLlmRunnerFromConnection(options.llmConfig) : resolvedDefault?.runner);
+  if (!runner) {
     return { pass: false, score: -1, reason: "no LLM configured — cannot judge, failing closed" };
   }
   try {
@@ -213,7 +227,7 @@ async function runQualityJudge(
     // propagates into the fail-closed catch below. `feature` labels the call.
     const raw = await callStructured<string>({
       feature,
-      config: llmConfig,
+      runner,
       messages: [
         { role: "system", content: "Return only valid JSON. No prose." },
         { role: "user", content: prompt },
@@ -228,6 +242,7 @@ async function runQualityJudge(
       // Unreachable on the ungated path (errors propagate); fail closed anyway.
       onError: () => "",
       fallback: "",
+      ...(options.onNotices ? { onNotices: options.onNotices } : {}),
     });
     const parsed = parseEmbeddedJsonResponse<{ score: number; reason: string }>(raw);
     if (
@@ -249,7 +264,10 @@ async function runQualityJudge(
     if (score >= 3.5) return { pass: true, score, reason };
     if (score >= 2.5) return { pass: false, score, reason, reviewNeeded: true };
     return { pass: false, score, reason };
-  } catch {
+  } catch (error) {
+    // Invalid symbolic credentials are configuration failures, not a negative
+    // content verdict. Provider/runtime failures retain the fail-closed result.
+    if (error instanceof ConfigError) throw error;
     return { pass: false, score: -1, reason: "judge timeout/error — cannot judge, failing closed" };
   }
 }

@@ -19,7 +19,8 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { saveConfig } from "../../src/core/config/config";
-import { getDbPath } from "../../src/core/paths";
+import { ConfigError } from "../../src/core/errors";
+import { getConfigPath, getDbPath } from "../../src/core/paths";
 import { akmIndex } from "../../src/indexer/indexer";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { getAllEntries } from "../../src/storage/repositories/index-entries-repository";
@@ -29,17 +30,21 @@ import {
   sandboxStashDir,
   sandboxXdgCacheHome,
   sandboxXdgConfigHome,
+  withEnv,
 } from "../_helpers/sandbox";
 
 let stashDir = "";
 let cleanup: Cleanup = () => {};
 let llmCallCount = 0;
 let llmSucceeds = false;
+let llmModels: string[] = [];
 
 const llmServer = Bun.serve({
   port: 0,
-  fetch() {
+  async fetch(request) {
     llmCallCount++;
+    const payload = (await request.json()) as { model?: string };
+    if (typeof payload.model === "string") llmModels.push(payload.model);
     if (llmSucceeds) {
       return Response.json({
         choices: [
@@ -69,6 +74,7 @@ beforeEach(() => {
   cleanup = chain;
   llmCallCount = 0;
   llmSucceeds = false;
+  llmModels = [];
 });
 
 afterEach(() => {
@@ -127,6 +133,40 @@ test("failed enrichment does not mark the entry enriched or poison the cache", a
   }
 });
 
+test("missing required symbolic credential aborts indexing without provider or enrichment-cache writes", async () => {
+  const knowledgeDir = path.join(stashDir, "knowledge");
+  fs.mkdirSync(knowledgeDir, { recursive: true });
+  fs.writeFileSync(path.join(knowledgeDir, "thing.md"), "# Thing\n\nSome body prose about a thing.\n");
+
+  saveConfig({
+    semanticSearchMode: "off",
+    engines: {
+      index: {
+        kind: "llm",
+        endpoint: `http://localhost:${llmServer.port}/v1/chat/completions`,
+        model: "test-model",
+        apiKey: "$AKM_ENRICH_REQUIRED_KEY",
+      },
+    },
+    index: { defaults: { engine: "index" }, metadataEnhance: { enabled: true } },
+  });
+
+  const failure = withEnv({ AKM_ENRICH_REQUIRED_KEY: undefined }, () => akmIndex({ stashDir, full: true }));
+  await expect(failure).rejects.toBeInstanceOf(ConfigError);
+  await expect(failure).rejects.toMatchObject({ code: "INVALID_CONFIG_FILE" });
+  expect(llmCallCount).toBe(0);
+
+  const db = openIndexDatabase(getDbPath());
+  try {
+    const cacheCount = (db.prepare("SELECT COUNT(*) AS cnt FROM llm_enrichment_cache").get() as { cnt: number }).cnt;
+    expect(cacheCount).toBe(0);
+    const thing = getAllEntries(db).find((entry) => entry.entry.name === "thing");
+    expect(thing?.entry.quality).not.toBe("enriched");
+  } finally {
+    closeDatabase(db);
+  }
+});
+
 test("successful enrichment preserves the entry's indexed provenance", async () => {
   llmSucceeds = true;
   const knowledgeDir = path.join(stashDir, "knowledge");
@@ -171,4 +211,55 @@ test("successful enrichment preserves the entry's indexed provenance", async () 
   } finally {
     closeDatabase(db);
   }
+});
+
+test("index freezes enrichment selection once and returns its structured notices", async () => {
+  llmSucceeds = true;
+  const knowledgeDir = path.join(stashDir, "knowledge");
+  fs.mkdirSync(knowledgeDir, { recursive: true });
+  fs.writeFileSync(path.join(knowledgeDir, "thing.md"), "# Thing\n\nSome body prose about a thing.\n");
+  const modelsPath = path.join(path.dirname(getConfigPath()), "models.json");
+  const writeModels = (model: string): void => {
+    fs.writeFileSync(
+      modelsPath,
+      JSON.stringify({
+        version: 1,
+        aliases: { reasoning: { index: { model, inference: { effort: "high" } } } },
+      }),
+    );
+  };
+  writeModels("frozen-model");
+  saveConfig({
+    semanticSearchMode: "off",
+    engines: {
+      index: {
+        kind: "llm",
+        endpoint: `http://localhost:${llmServer.port}/v1/chat/completions`,
+        model: "reasoning",
+      },
+    },
+    index: { defaults: { engine: "index" }, metadataEnhance: { enabled: true } },
+  });
+
+  let mutatedAfterSummary = false;
+  const result = await akmIndex({
+    stashDir,
+    full: true,
+    onProgress: (event) => {
+      if (event.phase !== "summary" || mutatedAfterSummary) return;
+      mutatedAfterSummary = true;
+      writeModels("mutated-model");
+    },
+  });
+
+  expect(mutatedAfterSummary).toBe(true);
+  expect(llmModels).toEqual(["frozen-model"]);
+  expect(result.notices).toEqual([
+    expect.objectContaining({
+      code: "untranslated-field",
+      adapter: "llm",
+      field: "inference.effort",
+    }),
+  ]);
+  expect(JSON.stringify(result.notices)).not.toContain("mutated-model");
 });

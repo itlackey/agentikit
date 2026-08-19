@@ -20,6 +20,7 @@ import path from "node:path";
 
 import { akmConsolidate } from "../../../../src/commands/improve/consolidate";
 import type { AkmConfig } from "../../../../src/core/config/config";
+import type { LoweringNotice } from "../../../../src/execution/resolved-request";
 import { type Cleanup, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 
 let cleanup: Cleanup;
@@ -91,5 +92,50 @@ describe("akmConsolidate — all-hot chunk early-exit", () => {
     // The whole chunk went to the LLM path (no early-exit) and failed there.
     expect(result.judgedNoAction).toBe(0);
     expect(result.failedChunkMemories).toBe(3);
+  });
+
+  test("standalone selection is frozen once and reports its lowering notice once", async () => {
+    writeMemory("hot-a", { hot: true });
+    const config = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      defaults: { improveStrategy: "freeze-once", llmEngine: "planner" },
+      improve: {
+        strategies: {
+          "freeze-once": {
+            processes: {
+              consolidate: {
+                enabled: true,
+                llm: { unsupportedPlannerField: true },
+              },
+            },
+          },
+        },
+      },
+      engines: {
+        planner: {
+          kind: "llm",
+          endpoint: "https://example.test/v1/chat/completions",
+          model: "planner-model",
+        },
+      },
+    } as unknown as AkmConfig;
+    const reported: Readonly<LoweringNotice>[] = [];
+
+    const result = await akmConsolidate({
+      stashDir,
+      config,
+      onNotices: (notices) => reported.push(...notices),
+    });
+
+    expect(reported).toEqual([
+      expect.objectContaining({
+        code: "untranslated-field",
+        adapter: "llm",
+        field: "inference.unsupportedPlannerField",
+      }),
+    ]);
+    expect(result.notices).toEqual(reported);
+    expect(result.judgedNoAction).toBe(1);
   });
 });

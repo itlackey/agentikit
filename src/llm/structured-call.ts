@@ -37,6 +37,7 @@
  */
 
 import type { AkmConfig } from "../core/config/config";
+import { ConfigError } from "../core/errors";
 import type { LoweringNotice, ResolvedConversationMessage } from "../execution/resolved-request";
 import type { UnresolvedExecutionDefaults } from "../execution/source";
 import type { ToolAuthorizer } from "../integrations/agent/execution-cascade";
@@ -245,6 +246,19 @@ function dispatchFailure(result: Awaited<ReturnType<typeof dispatchLoweredExecut
 
 export async function callStructured<T>(opts: CallStructuredOptions<T>): Promise<T> {
   const { feature, akmConfig, enabled, messages, request, parse, onError, fallback, onFallback } = opts;
+
+  // A disabled feature owns a true no-work path: it does not need a runner,
+  // messages, authorization, lowering, or provider state. Some commands keep
+  // their runner optional precisely because a disabled feature must fall back
+  // before execution planning begins.
+  if (akmConfig !== undefined && !isLlmFeatureEnabled(akmConfig, feature, enabled)) {
+    return tryLlmFeature(feature, akmConfig, async () => fallback, fallback, {
+      ...(own(request, "timeoutMs") ? { timeoutMs: request?.timeoutMs } : {}),
+      ...(enabled !== undefined ? { enabled } : {}),
+      onFallback,
+    });
+  }
+
   const runner = opts.runner ?? (opts.config ? structuredLlmRunnerFromConnection(opts.config) : undefined);
   if (!runner) throw new TypeError("callStructured requires a resolved LLM runner");
   const terminal = requireTerminalUserMessage(messages);
@@ -278,36 +292,35 @@ export async function callStructured<T>(opts: CallStructuredOptions<T>): Promise
     return prepareInvocation()();
   }
 
-  // Preserve the feature gate's no-dispatch disabled path without preparing
-  // a request that cannot run. On an enabled path, preparation/lowering happen
-  // OUTSIDE tryLlmFeature so authorization and invalid-config failures remain
-  // hard failures instead of being mistaken for provider fallbacks.
-  if (!isLlmFeatureEnabled(akmConfig, feature, enabled)) {
-    return tryLlmFeature(feature, akmConfig, async () => fallback, fallback, {
-      ...(own(request, "timeoutMs") ? { timeoutMs: request?.timeoutMs } : {}),
-      ...(enabled !== undefined ? { enabled } : {}),
-      onFallback,
-    });
-  }
+  // On an enabled path, preparation/lowering happen OUTSIDE tryLlmFeature so
+  // authorization and invalid-config failures remain hard failures instead of
+  // being mistaken for provider fallbacks.
   const invoke = prepareInvocation();
 
   // GATED: run through `tryLlmFeature`. A throw inside is classified ONCE and
   // routed to `onError`; `tryLlmFeature` returns `fallback` on disablement/timeout.
-  return tryLlmFeature(
+  const outcome = await tryLlmFeature<{ kind: "value"; value: T } | { kind: "config-error"; error: ConfigError }>(
     feature,
     akmConfig,
     async () => {
       try {
-        return await invoke();
+        return { kind: "value", value: await invoke() };
       } catch (err) {
-        return onError(classifyLlmError(err), err);
+        // Credential materialization remains dispatch-owned, so a missing
+        // required symbolic credential can surface here. Preserve config
+        // failures as hard pre-provider errors instead of sending them through
+        // a leaf's provider/runtime fallback policy.
+        if (err instanceof ConfigError) return { kind: "config-error", error: err };
+        return { kind: "value", value: onError(classifyLlmError(err), err) };
       }
     },
-    fallback,
+    { kind: "value", value: fallback },
     {
       ...(own(request, "timeoutMs") ? { timeoutMs: request?.timeoutMs } : {}),
       ...(enabled !== undefined ? { enabled } : {}),
       onFallback,
     },
   );
+  if (outcome.kind === "config-error") throw outcome.error;
+  return outcome.value;
 }

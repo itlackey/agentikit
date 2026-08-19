@@ -13,6 +13,8 @@
  */
 
 import type { AkmConfig } from "../../core/config/config";
+import type { LoweringNotice } from "../../execution/resolved-request";
+import type { ResolvedIndexPassExecution } from "../../llm/index-passes";
 import type { Database } from "../../storage/database";
 import type { SearchSource } from "../search/search-source";
 import type { SemanticSearchReason, SemanticSearchRuntimeStatus } from "../search/semantic-status";
@@ -60,6 +62,10 @@ export interface IndexRunContext {
   db: Database;
   /** Resolved AKM configuration. */
   config: AkmConfig;
+  /** Frozen standalone metadata-enrichment selection for this invocation. */
+  enrichmentExecution: ResolvedIndexPassExecution;
+  /** Stable, deduped lowering diagnostics accumulated across enrichment calls. */
+  loweringNotices: Array<Readonly<LoweringNotice>>;
   /** All resolved stash source entries (primary + additional). */
   sources: SearchSource[];
   /** All source directory paths (derived from `sources`). */

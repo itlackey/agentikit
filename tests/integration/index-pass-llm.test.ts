@@ -5,8 +5,9 @@ import type { AkmConfig } from "../../src/core/config/config";
 import { loadUserConfig, resetConfigCache } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
 import { getConfigPath } from "../../src/core/paths";
+import type { LoweringNotice } from "../../src/execution/resolved-request";
 import { createEnrichmentDeadline } from "../../src/indexer/indexer";
-import { resolveIndexPassRunner } from "../../src/llm/index-passes";
+import { resolveIndexPassExecution, resolveIndexPassRunner } from "../../src/llm/index-passes";
 import { type Cleanup, sandboxXdgConfigHome } from "../_helpers/sandbox";
 
 // Tests for standalone index-pass engine resolution.
@@ -47,6 +48,40 @@ function resolvedConnection(passName: string, config: AkmConfig): Record<string,
 }
 
 describe("resolveIndexPassRunner", () => {
+  test("returns the symbolic runner with stable initial lowering notices", () => {
+    const modelMapPath = path.join(path.dirname(getConfigPath()), "models.json");
+    fs.writeFileSync(
+      modelMapPath,
+      JSON.stringify({
+        version: 1,
+        aliases: {
+          reasoning: {
+            index: { model: "exact-index-model", inference: { effort: "high" } },
+          },
+        },
+      }),
+    );
+    const config: AkmConfig = {
+      semanticSearchMode: "auto",
+      engines: { index: { kind: "llm", ...SAMPLE_LLM, model: "reasoning" } },
+      index: { defaults: { engine: "index" } },
+    };
+
+    const resolved = resolveIndexPassExecution("graph", config);
+
+    expect(resolved.runner?.connection.model).toBe("exact-index-model");
+    expect(resolved.runner?.connection).not.toHaveProperty("effort");
+    expect(resolved.notices).toEqual([
+      expect.objectContaining({
+        code: "untranslated-field",
+        severity: "warning",
+        adapter: "llm",
+        field: "inference.effort",
+      }) as LoweringNotice,
+    ]);
+    expect(Object.isFrozen(resolved.notices)).toBe(true);
+  });
+
   test("returns undefined when no index engine is configured", () => {
     const config: AkmConfig = { semanticSearchMode: "auto" };
     expect(resolveIndexPassRunner("enrichment", config)).toBeUndefined();

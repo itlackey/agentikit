@@ -10,8 +10,7 @@
  * call per asset. Results are recorded as `schema_repair_invoked` events.
  *
  * This module is extracted from `improve.ts` to make the repair logic
- * independently testable and to use the `tryLlmFeature` seam rather than raw
- * `chatCompletion`.
+ * independently testable and to use the shared structured execution seam.
  */
 
 import fs from "node:fs";
@@ -21,12 +20,16 @@ import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { parseRefInput } from "../../core/asset/resolve-ref";
 import { authoringRulesForType } from "../../core/authoring-rules";
 import type { LlmConnectionConfig } from "../../core/config/config";
+import { ConfigError } from "../../core/errors";
 import { appendEvent, readEvents } from "../../core/events";
 import { parseEmbeddedJsonResponse } from "../../core/parse";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
 import { info } from "../../core/warn";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
-import { chatCompletion } from "../../llm/client";
+import type { RunnerSpec } from "../../integrations/agent/runner";
+import type { ChatMessage, chatCompletion } from "../../llm/client";
+import { callStructured, structuredLlmRunnerFromConnection } from "../../llm/structured-call";
 import { createProposal, isProposalSkipped } from "../proposal/repository";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -41,7 +44,10 @@ export interface SchemaRepairFailure {
  *
  *   - `queued`  — LLM generated fields were written to the proposal queue.
  *   - `skipped` — Asset didn't need repair or was on cooldown.
- *   - `error`   — LLM call failed or JSON could not be parsed.
+ *   - `error`   — Provider/runtime call failed or JSON could not be parsed.
+ *
+ * Invalid configuration is not an outcome record: the original
+ * {@link ConfigError} escapes before proposal or event persistence.
  */
 export type SchemaRepairOutcome = "queued" | "skipped" | "error";
 
@@ -52,6 +58,8 @@ export interface SchemaRepairRecord {
   /** Proposal id when outcome is "queued". */
   proposalId?: string;
   error?: string;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface SchemaRepairOptions {
@@ -59,16 +67,18 @@ export interface SchemaRepairOptions {
   startMs: number;
   /** Budget deadline in ms since epoch. */
   budgetMs: number;
-  /** LLM config to use for repair calls. */
-  llmConfig: LlmConnectionConfig;
+  /** Legacy/test-only non-secret connection. Production passes llmRunner. */
+  llmConfig?: LlmConnectionConfig;
+  /** Pre-resolved symbolic LLM runner supplied by the improve plan. */
+  llmRunner?: Extract<RunnerSpec, { kind: "llm" }>;
   /** Stash directory for proposal-queue writes. Required: schema-repair never writes directly. */
   stashDir?: string;
   /** Override the asset file-path resolver (test seam). */
   findFilePath?: (ref: string, stashDir?: string) => Promise<string | null> | string | null;
   /** Whether a given ref is a lesson candidate (affects which fields to repair). */
   isLessonCandidateFn?: (ref: string) => boolean;
-  /** Override the LLM chat function (test seam). Defaults to {@link chatCompletion}. */
-  chatFn?: (llmConfig: LlmConnectionConfig, messages: Array<{ role: string; content: string }>) => Promise<string>;
+  /** Override the LLM chat function (test seam). Production leaves it absent. */
+  chatFn?: typeof chatCompletion;
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -91,7 +101,9 @@ const SCHEMA_REPAIR_WINDOW_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 /**
  * Run the schema-repair loop for a batch of validation failures.
  * Returns a list of per-asset outcome records and the set of refs whose live
- * files were repaired. Queued proposals never count as live repairs.
+ * files were repaired. Queued proposals never count as live repairs. Invalid
+ * symbolic credentials reject with {@link ConfigError} before any repair
+ * proposal or per-ref event is written.
  */
 export async function runSchemaRepairPass(
   failures: SchemaRepairFailure[],
@@ -103,12 +115,14 @@ export async function runSchemaRepairPass(
   const {
     startMs,
     budgetMs,
-    llmConfig,
     stashDir,
     findFilePath = defaultFindFilePath,
     isLessonCandidateFn = defaultIsLessonCandidate,
-    chatFn = chatCompletion,
+    chatFn,
   } = options;
+  const llmRunner =
+    options.llmRunner ?? (options.llmConfig ? structuredLlmRunnerFromConnection(options.llmConfig) : null);
+  if (!llmRunner) throw new Error("runSchemaRepairPass requires a resolved LLM runner");
 
   if (!stashDir) {
     throw new Error("runSchemaRepairPass requires stashDir so repairs route through the proposal queue");
@@ -155,6 +169,9 @@ export async function runSchemaRepairPass(
       continue;
     }
 
+    let loweringNotices: readonly Readonly<LoweringNotice>[] = [];
+    const noticeFields = (): { notices?: readonly Readonly<LoweringNotice>[] } =>
+      loweringNotices.length > 0 ? { notices: loweringNotices } : {};
     try {
       const raw = fs.readFileSync(filePath, "utf8");
       const fm = parseFrontmatter(raw);
@@ -164,7 +181,7 @@ export async function runSchemaRepairPass(
       if (isLessonCandidateFn(failure.ref) && !fm.data.when_to_use) missingFields.push("when_to_use");
 
       if (missingFields.length === 0) {
-        repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "skipped" });
+        repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "skipped", ...noticeFields() });
         continue;
       }
 
@@ -182,7 +199,7 @@ export async function runSchemaRepairPass(
       const assetType = parseRefInput(failure.ref).type;
       const authoringRules = authoringRulesForType(assetType);
       const authoringRulesSection = authoringRules ? `\n\n${authoringRules}` : "";
-      const llmResponse = await chatFn(llmConfig, [
+      const messages: ChatMessage[] = [
         {
           role: "system",
           content: `You generate concise asset frontmatter fields. Respond with a JSON object containing only the missing fields. No prose, no markdown fences.`,
@@ -191,7 +208,19 @@ export async function runSchemaRepairPass(
           role: "user",
           content: `Generate the missing frontmatter fields (${fieldList}) for this ${assetType} asset. Return ONLY valid JSON like {"description": "...", "when_to_use": "..."}${standardsSection}${authoringRulesSection}\n\n${bodyPreview}`,
         },
-      ]);
+      ];
+      const llmResponse = await callStructured<string>({
+        feature: "schema_repair",
+        runner: llmRunner,
+        messages,
+        ...(chatFn ? { request: { chat: chatFn } } : {}),
+        onNotices: (value) => {
+          loweringNotices = value;
+        },
+        parse: (rawResponse) => rawResponse ?? "",
+        onError: () => "",
+        fallback: "",
+      });
 
       const parsed = parseEmbeddedJsonResponse<Record<string, string>>(llmResponse.trim());
       if (!parsed) {
@@ -200,6 +229,7 @@ export async function runSchemaRepairPass(
           reason: failure.reason,
           outcome: "error",
           error: "LLM returned unparseable JSON for schema repair",
+          ...noticeFields(),
         });
         continue;
       }
@@ -220,7 +250,7 @@ export async function runSchemaRepairPass(
         ref: failure.ref,
         source: "schema-repair",
         // §23.6 fingerprint model-id term (WI-6.4).
-        modelId: llmConfig.model,
+        modelId: llmRunner.connection.model,
         payload: {
           content: newContent,
           ...(Object.keys(newFm).length > 0 ? { frontmatter: newFm } : {}),
@@ -229,7 +259,7 @@ export async function runSchemaRepairPass(
 
       if (isProposalSkipped(proposalResult)) {
         info(`[improve] schema-repair proposal skipped for ${failure.ref}: ${proposalResult.message}`);
-        repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "skipped" });
+        repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "skipped", ...noticeFields() });
         continue;
       }
 
@@ -237,21 +267,34 @@ export async function runSchemaRepairPass(
       appendEvent({
         eventType: "schema_repair_invoked",
         ref: failure.ref,
-        metadata: { outcome: "queued", reason: failure.reason, proposalId: proposalResult.id },
+        metadata: {
+          outcome: "queued",
+          reason: failure.reason,
+          proposalId: proposalResult.id,
+          ...noticeFields(),
+        },
       });
       repairs.push({
         ref: failure.ref,
         reason: failure.reason,
         outcome: "queued",
         proposalId: proposalResult.id,
+        ...noticeFields(),
       });
     } catch (e) {
+      if (e instanceof ConfigError) throw e;
       appendEvent({
         eventType: "schema_repair_invoked",
         ref: failure.ref,
-        metadata: { outcome: "error", reason: failure.reason, error: String(e) },
+        metadata: { outcome: "error", reason: failure.reason, error: String(e), ...noticeFields() },
       });
-      repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "error", error: String(e) });
+      repairs.push({
+        ref: failure.ref,
+        reason: failure.reason,
+        outcome: "error",
+        error: String(e),
+        ...noticeFields(),
+      });
     }
   }
 

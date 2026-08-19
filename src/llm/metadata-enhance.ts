@@ -12,6 +12,7 @@
 import metadataEnhanceSystemPrompt from "../assets/prompts/metadata-enhance-system.md" with { type: "text" };
 import type { AkmConfig } from "../core/config/config";
 import { parseJsonResponse } from "../core/parse";
+import type { LoweringNotice } from "../execution/resolved-request";
 import type { IndexDocument } from "../indexer/passes/metadata";
 import { callStructured, type StructuredLlmRunner } from "./structured-call";
 
@@ -53,6 +54,7 @@ export async function enhanceMetadata(
   fileContent?: string,
   signal?: AbortSignal,
   akmConfig?: AkmConfig,
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void,
 ): Promise<EnhanceMetadataOutcome> {
   const contextParts = [`Name: ${entry.name}`, `Type: ${entry.type}`];
   if (entry.description) contextParts.push(`Current description: ${entry.description}`);
@@ -88,6 +90,7 @@ Return ONLY the JSON object, no explanation.`;
       { role: "user", content: userPrompt },
     ],
     request: { signal, timeoutMs: runner.timeoutMs },
+    onNotices,
     parse: (raw) => {
       const parsed = raw ? parseJsonResponse<Record<string, unknown>>(raw) : undefined;
       const metadata: EnhancedMetadata = {};

@@ -31,7 +31,6 @@ import {
   runMemoryInferencePass,
 } from "../../indexer/passes/memory-inference";
 import { getWritableStashDirs, resolveSourceEntries } from "../../indexer/search/search-source";
-import { materializeLlmRunnerConnection } from "../../integrations/agent/runner";
 import { isProcessEnabled } from "../../llm/feature-gate";
 import { withLlmStage } from "../../llm/usage-telemetry";
 import type { Database } from "../../storage/database";
@@ -600,9 +599,7 @@ async function invokeDistillAndRecord(
         // Active profile so distill's per-process reads honor `--profile`.
         ...(improveProfile ? { improveProfile } : {}),
         config: options.config,
-        llmConfig: resolvedPlan.processes.distill.runner
-          ? materializeLlmRunnerConnection(resolvedPlan.processes.distill.runner)
-          : null,
+        llmRunner: resolvedPlan.processes.distill.runner,
         signal: budgetSignal,
         // R25: distill's event emits reuse the run's long-lived state.db handle.
         eventsCtx,
@@ -1134,9 +1131,7 @@ export async function runMemoryInferenceMaintenancePass(
             config,
             ...(resolvedPlan
               ? {
-                  llmConfig: resolvedPlan.processes.memoryInference.runner
-                    ? materializeLlmRunnerConnection(resolvedPlan.processes.memoryInference.runner)
-                    : null,
+                  llmRunner: resolvedPlan.processes.memoryInference.runner,
                 }
               : {}),
             sources,
@@ -1279,9 +1274,7 @@ export async function runGraphExtractionMaintenancePass(
             config,
             ...(resolvedPlan
               ? {
-                  llmConfig: resolvedPlan.processes.graphExtraction.runner
-                    ? materializeLlmRunnerConnection(resolvedPlan.processes.graphExtraction.runner)
-                    : null,
+                  llmRunner: resolvedPlan.processes.graphExtraction.runner,
                 }
               : {}),
             sources,

@@ -25,10 +25,13 @@ import path from "node:path";
 import { akmReflect, REFLECT_JSON_SCHEMA, runReflectViaLlm } from "../../../src/commands/improve/reflect";
 import { validateProposal } from "../../../src/commands/proposal/validators/proposals";
 import type { LlmProfileConfig } from "../../../src/core/config/config";
+import { ConfigError } from "../../../src/core/errors";
 import { readEvents } from "../../../src/core/events";
 import { parseAgentProposalPayload } from "../../../src/integrations/agent/prompts";
+import type { RunnerSpec } from "../../../src/integrations/agent/runner";
 import { _setChatCompletionForTests } from "../../../src/llm/client";
 import { quietQualityGateConfig } from "../../_helpers/factories";
+import { withEnv } from "../../_helpers/sandbox";
 import { overrideSeam } from "../../_helpers/seams";
 
 // ── chatCompletion spy (swap-and-restore seam) ──────────────────────────────
@@ -81,10 +84,12 @@ function fakeLlmConnection(): LlmProfileConfig {
 const EMPTY_FRAMED_PATCH_LINE = 'AKM_REFLECT_FRONTMATTER_PATCH: {"description":null,"when_to_use":null}';
 
 beforeEach(() => {
-  overrideSeam(_setChatCompletionForTests, async (_config, messages, options) => {
+  overrideSeam(_setChatCompletionForTests, async (config, messages, options) => {
     capturedCalls.push({
       responseSchema: options?.responseSchema,
-      enableThinking: options?.enableThinking,
+      // The resolved boundary canonicalizes inference onto the symbolic LLM
+      // connection before dispatch; the effective provider option is unchanged.
+      enableThinking: options?.enableThinking ?? config.enableThinking,
       messageCount: messages.length,
       prompt: messages[0]?.content ?? "",
     });
@@ -176,6 +181,27 @@ describe("REFLECT_JSON_SCHEMA — top-level shape", () => {
 // ── 2. Wiring ───────────────────────────────────────────────────────────────
 
 describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () => {
+  test("missing required symbolic credential remains a hard config failure", async () => {
+    const runner: Extract<RunnerSpec, { kind: "llm" }> = {
+      kind: "llm",
+      engine: "reflect",
+      connection: fakeLlmConnection(),
+      credential: { names: ["AKM_REFLECT_REQUIRED_KEY"], required: true },
+    };
+
+    const failure = withEnv({ AKM_REFLECT_REQUIRED_KEY: undefined }, () =>
+      runReflectViaLlm({
+        prompt: "test prompt",
+        runner,
+        iteration: 0,
+        outputMode: "json_schema",
+      }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(capturedCalls.length).toBe(0);
+  });
+
   test("when responseSchema is provided and no test-seam `chat` is set, chatCompletion receives the schema", async () => {
     stubReturn = JSON.stringify({
       ref: "lessons/wired",
@@ -194,7 +220,7 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
 
     expect(result.ok).toBe(true);
     expect(capturedCalls.length).toBe(1);
-    expect(capturedCalls[0]?.responseSchema).toBe(REFLECT_JSON_SCHEMA as Record<string, unknown>);
+    expect(capturedCalls[0]?.responseSchema).toEqual(REFLECT_JSON_SCHEMA as Record<string, unknown>);
     expect(capturedCalls[0]?.enableThinking).toBe(false);
   });
 
@@ -295,7 +321,7 @@ describe("akmReflect — passes REFLECT_JSON_SCHEMA when dispatching via the llm
     // quality-judge LLM calls may or may not pass a schema — we pin only the
     // reflect call here.
     expect(capturedCalls.length).toBeGreaterThanOrEqual(1);
-    expect(capturedCalls[0]?.responseSchema).toBe(REFLECT_JSON_SCHEMA as Record<string, unknown>);
+    expect(capturedCalls[0]?.responseSchema).toEqual(REFLECT_JSON_SCHEMA as Record<string, unknown>);
     expect(capturedCalls[0]?.prompt).not.toContain('JSON "ref" field');
     expect(capturedCalls[0]?.prompt).not.toContain('"frontmatter"');
     const completed = readEvents({ type: "reflect_completed" }).events.at(-1);
@@ -498,6 +524,7 @@ describe("akmReflect — direct LLM output recovery", () => {
       `AKM_REFLECT_CONFIDENCE: 0.8\nAKM_REFLECT_FRONTMATTER_PATCH: ${patch}\nAKM_REFLECT_CONTENT_BEGIN\n# Repaired patch\n\nThis frame includes required metadata.\nAKM_REFLECT_CONTENT_END`,
     ];
     let calls = 0;
+    const repairMessages: Array<Array<{ role: string; content: string }>> = [];
 
     const result = await akmReflect({
       ref: "lessons/required-framed-patch",
@@ -509,8 +536,9 @@ describe("akmReflect — direct LLM output recovery", () => {
         connection: { ...fakeLlmConnection(), supportsJsonSchema: false },
       },
       assetContent: "---\ntitle: Required framed patch\n---\n\n# Existing lesson\n\nMetadata is missing.\n",
-      chat: async () => {
+      chat: async (_config, messages) => {
         calls += 1;
+        repairMessages.push(messages.map((message) => ({ ...message })));
         return responses.shift() ?? "";
       },
     });
@@ -518,6 +546,11 @@ describe("akmReflect — direct LLM output recovery", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.error);
     expect(calls).toBe(2);
+    expect(repairMessages.map((messages) => messages.map(({ role }) => role))).toEqual([
+      ["user"],
+      ["user", "assistant", "user"],
+    ]);
+    expect(repairMessages[1]?.[1]?.content).toContain("AKM_REFLECT_CONTENT_BEGIN");
     expect(result.proposal.payload.frontmatter?.description).toBe(description);
     expect(result.proposal.payload.frontmatter?.when_to_use).toBe(whenToUse);
     expect(validateProposal(result.proposal)).toEqual({ ok: true, findings: [] });
@@ -555,8 +588,13 @@ describe("akmReflect — direct LLM output recovery", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.error);
     expect(calls).toHaveLength(2);
+    expect(calls[0]?.map(({ role }) => role)).toEqual(["user"]);
+    expect(calls[1]?.map(({ role }) => role)).toEqual(["user", "assistant", "user"]);
     expect(calls[1]?.[0]?.content).toContain(first);
     expect(calls[1]?.[1]?.content).toBe(first);
+    expect(calls[1]?.[2]?.content).toBe(
+      "Your previous proposal is shown above. Review it critically and provide an improved version that is more specific, actionable, and avoids any issues with the previous attempt. Return only the improved response using the output contract from the original prompt.",
+    );
     expect(calls[1]?.[0]?.content).not.toContain('{"ref":"lessons/framed-self-refine"');
   });
 
@@ -661,7 +699,7 @@ describe("akmReflect — direct LLM output recovery", () => {
     expect(result.proposal.ref).toEndWith("//lessons/native-repair");
     expect(calls).toHaveLength(2);
     expect(calls[1]?.messageCount).toBe(3);
-    expect(calls[1]?.schema).toBe(REFLECT_JSON_SCHEMA as Record<string, unknown>);
+    expect(calls[1]?.schema).toEqual(REFLECT_JSON_SCHEMA as Record<string, unknown>);
   });
 
   for (const supportsJsonSchema of [true, false]) {

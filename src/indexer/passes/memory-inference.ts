@@ -30,7 +30,8 @@
  *   NEVER deleted — the user keeps what was already produced.
  *
  * Locked v1 contract:
- *   - LLM access is exclusively via `resolveIndexPassRunner("memory", config)`.
+ *   - LLM access is exclusively via the frozen runner returned by
+ *     `resolveIndexPassExecution("memory", config)`.
  *   - All child memory writes go through `writeAssetToSource` in
  *     `src/core/write-source.ts`. The parent's frontmatter rewrite is an
  *     explicit narrow exception — see {@link markParentProcessed}.
@@ -44,15 +45,17 @@ import { parseFrontmatter, parseFrontmatterBlock } from "../../core/asset/frontm
 import { conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { todayIso } from "../../core/common";
 import { concurrentMap } from "../../core/concurrent";
-import type { LlmConnectionConfig, SourceConfigEntry } from "../../core/config/config";
+import type { SourceConfigEntry } from "../../core/config/config";
+import { ConfigError } from "../../core/errors";
 import { warn } from "../../core/warn";
 import { recordWrittenPath } from "../../core/write-provenance";
 import { type WriteTargetSource, writeAssetToSource } from "../../core/write-source";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { isProcessEnabled } from "../../llm/feature-gate";
-import { resolveIndexPassRunner } from "../../llm/index-passes";
+import { type ResolvedIndexPassExecution, resolveIndexPassExecution } from "../../llm/index-passes";
 import type { DerivedMemoryDraft, MemoryInferTelemetry } from "../../llm/memory-infer";
 import * as memoryInfer from "../../llm/memory-infer";
-import { type StructuredLlmRunner, structuredLlmRunnerFromConnection } from "../../llm/structured-call";
+import type { StructuredLlmRunner } from "../../llm/structured-call";
 import { withLlmCache } from "../db/llm-cache";
 import { walkMarkdownFiles } from "../walk/walker";
 import type { EnrichmentPassContext } from "./pass-context";
@@ -122,6 +125,8 @@ export interface MemoryInferenceResult {
    * a generic empty-result skip.
    */
   htmlErrorCount: number;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface MemoryInferencePassOptions {
@@ -139,18 +144,9 @@ export interface MemoryInferenceProgress {
 }
 
 /** Parameter object for {@link runMemoryInferencePass}. */
-export type MemoryInferencePassContext = Omit<
-  EnrichmentPassContext<MemoryInferenceProgress, MemoryInferencePassOptions>,
-  "llmConfig"
-> & {
+export type MemoryInferencePassContext = EnrichmentPassContext<MemoryInferenceProgress, MemoryInferencePassOptions> & {
   /** Preferred invocation-owned symbolic runner. Omit only for standalone index passes. */
   llmRunner?: StructuredLlmRunner | null;
-  /**
-   * Temporary isolated-branch compatibility for the improve caller owned by
-   * the parallel WP5 lane. Final integration removes this field once that
-   * caller passes `llmRunner` directly. Materialized credentials are rejected.
-   */
-  llmConfig?: LlmConnectionConfig | null;
 };
 
 interface MemoryRecord {
@@ -167,13 +163,14 @@ interface MemoryRecord {
   name: string;
 }
 
-function memoryRunnerForContext(
+function memoryExecutionForContext(
   ctx: MemoryInferencePassContext,
   config: MemoryInferencePassContext["config"],
-): StructuredLlmRunner | null | undefined {
-  if (Object.hasOwn(ctx, "llmRunner")) return ctx.llmRunner;
-  if (!Object.hasOwn(ctx, "llmConfig")) return resolveIndexPassRunner("memory", config);
-  return ctx.llmConfig ? structuredLlmRunnerFromConnection(ctx.llmConfig, "legacy-index-memory") : null;
+): ResolvedIndexPassExecution {
+  if (Object.hasOwn(ctx, "llmRunner")) {
+    return Object.freeze({ runner: ctx.llmRunner ?? undefined, notices: Object.freeze([]) });
+  }
+  return resolveIndexPassExecution("memory", config);
 }
 
 /**
@@ -184,8 +181,8 @@ function memoryRunnerForContext(
  *   1. **Feature gate** — the selected strategy's `processes.memoryInference.enabled`
  *      (defaults to `true`). When `false`, no network call may issue regardless
  *      of per-pass settings.
- *   2. **Per-pass gate** — `resolveIndexPassRunner("memory", config)` (which
- *      reads `index.memory.llm`). When `false`, the indexer simply skips
+ *   2. **Per-pass gate** — `resolveIndexPassExecution("memory", config)` reads
+ *      the index pass selection. Without a runner, the indexer simply skips
  *      this pass for the current run.
  *
  * Both must allow the call for the pass to run. Either set to `false`
@@ -193,7 +190,7 @@ function memoryRunnerForContext(
  */
 export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): Promise<MemoryInferenceResult> {
   const { config, sources, signal, db, reEnrich, onProgress, options = {} } = ctx;
-  const invocationOwnsRunner = Object.hasOwn(ctx, "llmRunner") || Object.hasOwn(ctx, "llmConfig");
+  const invocationOwnsRunner = Object.hasOwn(ctx, "llmRunner");
   const compressMemoryToDerivedMemory =
     options.compressMemoryToDerivedMemory ?? memoryInfer.compressMemoryToDerivedMemory;
   const result: MemoryInferenceResult = {
@@ -213,16 +210,26 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
   // HTML-error categorization (which is otherwise swallowed inside the feature
   // gate) bubbles up into the pass result.
   const inferTelemetry: MemoryInferTelemetry = {};
+  const noticesByKey = new Map<string, Readonly<LoweringNotice>>();
+  const onNotices = (notices: readonly Readonly<LoweringNotice>[]): void => {
+    for (const notice of notices) noticesByKey.set(JSON.stringify(notice), notice);
+  };
+  const completeResult = (): MemoryInferenceResult => {
+    if (noticesByKey.size > 0) result.notices = Object.freeze([...noticesByKey.values()]);
+    return result;
+  };
 
   // Gate 1 — feature gate via isProcessEnabled, which reads the 0.8.0 path
   // (selected strategy's processes.memoryInference.enabled). Defaults to
   // enabled when the key is absent.
-  if (!invocationOwnsRunner && !isProcessEnabled("index", "memory_inference", config)) return result;
+  if (!invocationOwnsRunner && !isProcessEnabled("index", "memory_inference", config)) return completeResult();
 
   // Gate 2 — per-pass opt-out (#208). Returns the resolved llm config or
   // `undefined` when the pass should not run.
-  const llmRunner = memoryRunnerForContext(ctx, config);
-  if (!llmRunner) return result;
+  const execution = memoryExecutionForContext(ctx, config);
+  onNotices(execution.notices);
+  const llmRunner = execution.runner;
+  if (!llmRunner) return completeResult();
   const featureConfig = invocationOwnsRunner
     ? { ...config, index: { ...config.index, memory: { ...config.index?.memory, enabled: true } } }
     : config;
@@ -231,18 +238,19 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
   // (git, npm, website) are deliberately untouched — writing inferred
   // children there would be clobbered by the next sync().
   const primary = sources[0];
-  if (!primary || (primary.adapterId ?? detectAdapterId(primary.path)) !== "akm") return result;
+  if (!primary || (primary.adapterId ?? detectAdapterId(primary.path)) !== "akm") return completeResult();
 
   const pending = collectPendingMemories(primary.path).filter(
     (record) => !options.candidateRefs || options.candidateRefs.has(record.ref),
   );
   result.considered = pending.length;
-  if (pending.length === 0) return result;
+  if (pending.length === 0) return completeResult();
 
   let processed = 0;
   const total = pending.length;
   onProgress?.({ processed, total, writtenFacts: 0, skippedNoFacts: 0 });
 
+  let configFailure: ConfigError | undefined;
   const perRecordResults = await concurrentMap(
     pending,
     async (record) => {
@@ -306,44 +314,55 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
       const onRetryAttempt = () => {
         retryAttempts += 1;
       };
-      const derived = db
-        ? await withLlmCache<DerivedMemoryDraft>(
-            db,
-            record.filePath,
-            record.body,
-            reEnrich ?? false,
-            () =>
-              compressMemoryToDerivedMemory(
-                llmRunner,
-                record.body,
-                signal,
-                featureConfig,
-                (evt) => {
-                  warn(`[akm] LLM fallback for ${evt.feature}: ${evt.reason}`);
+      let derived: DerivedMemoryDraft | undefined;
+      try {
+        derived = db
+          ? await withLlmCache<DerivedMemoryDraft>(
+              db,
+              record.filePath,
+              record.body,
+              reEnrich ?? false,
+              () =>
+                compressMemoryToDerivedMemory(
+                  llmRunner,
+                  record.body,
+                  signal,
+                  featureConfig,
+                  (evt) => {
+                    warn(`[akm] LLM fallback for ${evt.feature}: ${evt.reason}`);
+                  },
+                  inferTelemetry,
+                  onRetryAttempt,
+                  onNotices,
+                ),
+              validate,
+              undefined,
+              "memory-inference-v2",
+              {
+                onCacheHit: () => {
+                  fromCache = true;
                 },
-                inferTelemetry,
-                onRetryAttempt,
-              ),
-            validate,
-            undefined,
-            "memory-inference-v2",
-            {
-              onCacheHit: () => {
-                fromCache = true;
               },
-            },
-          )
-        : await compressMemoryToDerivedMemory(
-            llmRunner,
-            record.body,
-            signal,
-            config,
-            (evt) => {
-              warn(`[akm] LLM fallback for ${evt.feature}: ${evt.reason}`);
-            },
-            inferTelemetry,
-            onRetryAttempt,
-          );
+            )
+          : await compressMemoryToDerivedMemory(
+              llmRunner,
+              record.body,
+              signal,
+              config,
+              (evt) => {
+                warn(`[akm] LLM fallback for ${evt.feature}: ${evt.reason}`);
+              },
+              inferTelemetry,
+              onRetryAttempt,
+              onNotices,
+            );
+      } catch (err) {
+        if (err instanceof ConfigError) {
+          configFailure ??= err;
+          return undefined;
+        }
+        throw err;
+      }
 
       if (!derived) {
         return { skipped: true, fromCache, retryAttempts } as const;
@@ -383,6 +402,7 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
     // not forward `engines.<name>.concurrency`, so config cannot raise this.
     llmRunner.connection.concurrency ?? 1,
   );
+  if (configFailure) throw configFailure;
 
   for (let i = 0; i < perRecordResults.length; i++) {
     const res = perRecordResults[i];
@@ -443,8 +463,7 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
   }
 
   result.htmlErrorCount = inferTelemetry.htmlErrorCount ?? 0;
-
-  return result;
+  return completeResult();
 }
 
 // ── Pending detection ───────────────────────────────────────────────────────

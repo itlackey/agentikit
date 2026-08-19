@@ -31,6 +31,8 @@ import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../co
 import { appendEvent, readEvents } from "../../core/events";
 import { withStateDbTelemetry } from "../../core/state-db";
 import { presentationFor } from "../../core/type-presentation";
+import { warn } from "../../core/warn";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { hasGraphData } from "../../indexer/db/graph-db";
 import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
 import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction";
@@ -48,7 +50,7 @@ import {
   type MatchResult,
 } from "../../indexer/walk/file-context";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
-import { resolveIndexPassRunner } from "../../llm/index-passes";
+import { resolveIndexPassExecution } from "../../llm/index-passes";
 import { resolveSourcesForOrigin } from "../../registry/origin-resolve";
 import { resolveStorageLocations } from "../../storage/locations";
 import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
@@ -495,10 +497,10 @@ export async function showLocal(input: {
  * timeout-bounded: never throws, never hangs, never mutates the response.
  *
  * Preconditions (caller already checked the flag): a model must be configured
- * (model-available guard via {@link resolveIndexPassRunner}) and the asset must be
- * ungraphed ({@link hasGraphData}). Extraction races a 30s timeout so `show`
- * cannot block on a slow provider; any timeout/error/missing-model path is
- * swallowed and `show` returns its already-assembled response unchanged.
+ * (model-available guard via {@link resolveIndexPassExecution}) and the asset
+ * must be ungraphed ({@link hasGraphData}). Extraction races a 30s timeout so
+ * `show` cannot block on a slow provider; any timeout/error/missing-model path
+ * is swallowed and `show` returns its already-assembled response unchanged.
  */
 async function maybeExtractGraphInline(
   config: ReturnType<typeof loadConfig>,
@@ -506,8 +508,21 @@ async function maybeExtractGraphInline(
   assetPath: string,
 ): Promise<void> {
   try {
-    // Model-available guard — no provider configured ⇒ silent skip, no LLM call.
-    if (!resolveIndexPassRunner("graph", config)) return;
+    // Resolve readiness and the symbolic runner once. The inline dispatch must
+    // consume this same snapshot even if models.json changes while show runs.
+    const graphExecution = resolveIndexPassExecution("graph", config);
+    if (!graphExecution.runner) return;
+    const emittedNoticeKeys = new Set<string>();
+    const reportNotices = (notices: readonly Readonly<LoweringNotice>[]): void => {
+      for (const notice of notices) {
+        const key = JSON.stringify(notice);
+        if (emittedNoticeKeys.has(key)) continue;
+        emittedNoticeKeys.add(key);
+        const field = typeof notice.field === "string" ? ` field=${notice.field}` : "";
+        warn(`[akm] lazy graph extraction notice ${notice.code} adapter=${notice.adapter}${field}: ${notice.message}`);
+      }
+    };
+    reportNotices(graphExecution.notices);
 
     let alreadyGraphed = false;
     let bodyHash: string | undefined;
@@ -536,7 +551,14 @@ async function maybeExtractGraphInline(
       timer = setTimeout(resolve, 30_000);
     });
     try {
-      await Promise.race([extractGraphForSingleFile(db, sourceStashDir, assetPath, bodyHash, { config }), timeout]);
+      await Promise.race([
+        extractGraphForSingleFile(db, sourceStashDir, assetPath, bodyHash, {
+          config,
+          llmRunner: graphExecution.runner,
+          onNotices: reportNotices,
+        }),
+        timeout,
+      ]);
     } finally {
       if (timer) clearTimeout(timer);
       closeDatabase(db);

@@ -28,12 +28,12 @@ import { openStateDatabase } from "../../core/state-db";
 import { info, warn, warnVerbose } from "../../core/warn";
 import { beginWriteProvenance, relativeWrittenPath, type WriteProvenanceJournal } from "../../core/write-provenance";
 import { resolveWritable, resolveWriteTarget } from "../../core/write-source";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { ensureIndex } from "../../indexer/ensure-index";
 import { akmIndex } from "../../indexer/indexer";
 import { collectPendingMemories } from "../../indexer/passes/memory-inference";
 import { resolveEntryContentDir, resolveSourceEntries } from "../../indexer/search/search-source";
 import { collectEngineCredentialValues } from "../../integrations/agent/engine-resolution";
-import { materializeLlmRunnerConnection } from "../../integrations/agent/runner";
 import { installLlmUsagePersistence } from "../../llm/usage-persist";
 import {
   isGitBackedStash,
@@ -682,14 +682,9 @@ function buildImproveRunContext(run: ImproveRunSetup, eventsCtx: EventsContext):
     // Not yet wired into any proposal call site this stage — verb-level
     // RunContext adoption (reflect/distill/extract/consolidate) is later.
     proposalsCtx: { dbPath: run.resolvedStateDbPath },
-    // Representative connection for this run: reflect is the loop's primary
-    // LLM-driving process. Mirrors the existing
-    // `runner ? materializeLlmRunnerConnection(runner) : null` pattern
-    // already used for the consolidate process elsewhere (contradiction pass).
-    getLlmConfig: () => {
-      const runner = run.resolvedPlan.processes.reflect.runner;
-      return runner ? materializeLlmRunnerConnection(runner) : null;
-    },
+    // Representative symbolic runner for this run: reflect is the loop's
+    // primary model-driving process. Credentials remain unresolved here.
+    getLlmRunner: () => run.resolvedPlan.processes.reflect.runner,
     sourceRun: run.options.runId ?? `improve-${run.startMs}`,
     // Always false here: callers only reach this point past the dry-run
     // early return in akmImprove.
@@ -923,12 +918,14 @@ export function buildDryRunResult(
   const { selectedStrategy, scope } = run;
   const { guidance, memorySummary, memoryCleanupPlan, plannedRefs, strategyFilteredRefs } = collected;
   const effectiveRefs = preparation?.loopRefs ?? plannedRefs;
+  const notices = collectImproveNotices({ resolvedPlan: run.resolvedPlan });
   return {
     schemaVersion: 2,
     ok: true,
     strategy: selectedStrategy.name,
     scope,
     dryRun: true,
+    ...(notices.length > 0 ? { notices } : {}),
     ...(guidance ? { guidance } : {}),
     memorySummary,
     ...(memoryCleanupPlan ? { memoryCleanup: shapeMemoryCleanup(memoryCleanupPlan) } : {}),
@@ -1615,6 +1612,16 @@ function finalizeImproveResult(args: {
   // the unbounded row list never reaches result_json. Reflect skip counters
   // below still read `finalActions` (reflect skips are not folded).
   const { actions: persistedActions, aggregate: distillSkippedAggregate } = foldDistillSkipped(finalActions);
+  const notices = collectImproveNotices({
+    resolvedPlan: args.run.resolvedPlan,
+    actions: finalActions,
+    schemaRepairs: preparation.schemaRepairs,
+    consolidation,
+    extract: preparation.extract,
+    memoryInference,
+    graphExtraction,
+    triageDrain,
+  });
 
   const result: AkmImproveResult = {
     schemaVersion: 2,
@@ -1622,6 +1629,7 @@ function finalizeImproveResult(args: {
     strategy: selectedStrategy.name,
     scope,
     dryRun: false,
+    ...(notices.length > 0 ? { notices } : {}),
     ...(guidance ? { guidance } : {}),
     memorySummary,
     ...(memoryCleanupPlan
@@ -1719,6 +1727,45 @@ function finalizeImproveResult(args: {
       eventsCtx,
     );
   return result;
+}
+
+interface LoweringNoticeCarrier {
+  notices?: readonly Readonly<LoweringNotice>[];
+}
+
+function collectImproveNotices(args: {
+  resolvedPlan: ResolvedImprovePlan;
+  actions?: readonly ImproveActionResult[];
+  schemaRepairs?: readonly object[];
+  consolidation?: object;
+  extract?: readonly { sessions?: readonly object[] }[];
+  memoryInference?: object;
+  graphExtraction?: object;
+  triageDrain?: object;
+}): readonly Readonly<LoweringNotice>[] {
+  const byKey = new Map<string, Readonly<LoweringNotice>>();
+  const collect = (carrier: unknown): void => {
+    if (typeof carrier !== "object" || carrier === null) return;
+    const notices = (carrier as LoweringNoticeCarrier).notices;
+    if (!Array.isArray(notices)) return;
+    for (const notice of notices) byKey.set(JSON.stringify(notice), notice);
+  };
+
+  for (const process of Object.values(args.resolvedPlan.processes)) collect(process);
+  for (const notice of args.resolvedPlan.triageJudgmentNotices ?? []) {
+    byKey.set(JSON.stringify(notice), notice);
+  }
+  for (const action of args.actions ?? []) collect(action.result as LoweringNoticeCarrier);
+  for (const repair of args.schemaRepairs ?? []) collect(repair);
+  collect(args.consolidation);
+  for (const extract of args.extract ?? []) {
+    collect(extract);
+    for (const session of extract.sessions ?? []) collect(session);
+  }
+  collect(args.memoryInference);
+  collect(args.graphExtraction);
+  collect(args.triageDrain);
+  return Object.freeze([...byKey.values()]);
 }
 
 function emitImproveCompletedEvent(

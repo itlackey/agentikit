@@ -11,6 +11,8 @@ import { describe, expect, test } from "bun:test";
 
 import { buildReflectJudgePrompt, runLessonQualityJudge } from "../../../src/commands/improve/distill/quality-gate";
 import type { AkmConfig } from "../../../src/core/config/config";
+import { ConfigError } from "../../../src/core/errors";
+import { withEnv } from "../../_helpers/sandbox";
 
 function configWithLlm(): AkmConfig {
   return {
@@ -70,6 +72,31 @@ describe("runLessonQualityJudge — fail-CLOSED (07 P0-2)", () => {
     expect(result.score).toBe(-1);
   });
 
+  test("missing required symbolic credential remains a hard config failure", async () => {
+    const config = configWithLlm();
+    config.engines = {
+      default: {
+        ...config.engines?.default,
+        kind: "llm",
+        endpoint: "http://localhost:11434/v1/chat/completions",
+        model: "test-model",
+        apiKey: "$AKM_QUALITY_REQUIRED_KEY",
+      },
+    };
+    let chatCalls = 0;
+
+    const failure = withEnv({ AKM_QUALITY_REQUIRED_KEY: undefined }, () =>
+      runLessonQualityJudge(config, "some lesson body", "some source body", async () => {
+        chatCalls += 1;
+        return JSON.stringify({ score: 4, reason: "wrong" });
+      }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    await expect(failure).rejects.toMatchObject({ code: "INVALID_CONFIG_FILE" });
+    expect(chatCalls).toBe(0);
+  });
+
   test("real passing verdict still passes (score >= 3.5)", async () => {
     const result = await runLessonQualityJudge(configWithLlm(), "some lesson body", "some source body", async () =>
       JSON.stringify({ score: 4.5, reason: "adds new info" }),
@@ -84,8 +111,10 @@ describe("runLessonQualityJudge — fail-CLOSED (07 P0-2)", () => {
       configWithLlm(),
       "some lesson body",
       "some source body",
-      async (_config, _messages, options) => {
-        enableThinking = options?.enableThinking;
+      async (connection, _messages, options) => {
+        // Resolved execution canonicalizes inference onto the lowered
+        // connection; assert the same effective provider value.
+        enableThinking = options?.enableThinking ?? connection.enableThinking;
         return JSON.stringify({ score: 4.5, reason: "adds new info" });
       },
     );

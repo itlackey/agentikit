@@ -15,8 +15,8 @@
  *
  * Disabling — three preconditions must ALL hold for the pass to run:
  *   1. An LLM profile must be configured (no provider = no extraction). When
- *      absent, `resolveIndexPassRunner("graph", config)` returns `undefined`
- *      and the pass short-circuits.
+ *      absent, `resolveIndexPassExecution("graph", config).runner` is
+ *      `undefined` and the pass short-circuits.
  *   2. The selected strategy's `processes.graphExtraction.enabled !== false`
  *      — the feature-gate layer (historically v1 spec §14, since superseded by
  *      the 0.8.0 profile shape). Set to `false` to block the pass at the
@@ -29,7 +29,8 @@
  *   refreshing.
  *
  * Locked v1 contract:
- *   - LLM access is exclusively via `resolveIndexPassRunner("graph", config)`.
+ *   - LLM access is exclusively via the frozen runner returned by
+ *     `resolveIndexPassExecution("graph", config)`.
  *   - The graph rows are an indexer artifact, NOT a user-visible
  *     asset. It does not have an asset ref, does not appear in search
  *     hits, and is not addressable via `akm show`. The persisted artifact
@@ -45,20 +46,15 @@ import path from "node:path";
 import { stashDirFor } from "../../core/asset/asset-placement";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { concurrentMap } from "../../core/concurrent";
-import {
-  type AkmConfig,
-  getIndexPassConfig,
-  type LlmConnectionConfig,
-  loadConfig,
-  resolveBatchSize,
-} from "../../core/config/config";
-import { rethrowIfTestIsolationError } from "../../core/errors";
+import { type AkmConfig, getIndexPassConfig, loadConfig, resolveBatchSize } from "../../core/config/config";
+import { ConfigError, rethrowIfTestIsolationError } from "../../core/errors";
 import { warn, warnVerbose } from "../../core/warn";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { isProcessEnabled } from "../../llm/feature-gate";
 import type { GraphExtractionReason, GraphExtractionStatus, GraphRelation } from "../../llm/graph-extract";
 import * as graphExtract from "../../llm/graph-extract";
-import { resolveIndexPassRunner } from "../../llm/index-passes";
-import { type StructuredLlmRunner, structuredLlmRunnerFromConnection } from "../../llm/structured-call";
+import { type ResolvedIndexPassExecution, resolveIndexPassExecution } from "../../llm/index-passes";
+import type { StructuredLlmRunner } from "../../llm/structured-call";
 import type { Database } from "../../storage/database";
 import type { LlmCacheEntry } from "../../storage/repositories/index-entry-types";
 import {
@@ -95,6 +91,8 @@ export interface GraphExtractionResult {
   telemetry?: GraphExtractionTelemetry;
   /** Warnings surfaced by quality gates or low-coverage outcomes. */
   warnings?: string[];
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface GraphExtractionPassOptions {
@@ -122,18 +120,9 @@ export interface GraphExtractionProgress {
 }
 
 /** Parameter object for {@link runGraphExtractionPass}. */
-export type GraphExtractionPassContext = Omit<
-  EnrichmentPassContext<GraphExtractionProgress, GraphExtractionPassOptions>,
-  "llmConfig"
-> & {
+export type GraphExtractionPassContext = EnrichmentPassContext<GraphExtractionProgress, GraphExtractionPassOptions> & {
   /** Preferred invocation-owned symbolic runner. Omit only for standalone index passes. */
   llmRunner?: StructuredLlmRunner | null;
-  /**
-   * Temporary isolated-branch compatibility for the improve caller owned by
-   * the parallel WP5 lane. Final integration removes this field once that
-   * caller passes `llmRunner` directly. Materialized credentials are rejected.
-   */
-  llmConfig?: LlmConnectionConfig | null;
 };
 
 interface LoadedGraphFile {
@@ -141,13 +130,11 @@ interface LoadedGraphFile {
   telemetry?: GraphExtractionTelemetry;
 }
 
-function graphRunnerForContext(
-  ctx: GraphExtractionPassContext,
-  config: AkmConfig,
-): StructuredLlmRunner | null | undefined {
-  if (Object.hasOwn(ctx, "llmRunner")) return ctx.llmRunner;
-  if (!Object.hasOwn(ctx, "llmConfig")) return resolveIndexPassRunner("graph", config);
-  return ctx.llmConfig ? structuredLlmRunnerFromConnection(ctx.llmConfig, "legacy-index-graph") : null;
+function graphExecutionForContext(ctx: GraphExtractionPassContext, config: AkmConfig): ResolvedIndexPassExecution {
+  if (Object.hasOwn(ctx, "llmRunner")) {
+    return Object.freeze({ runner: ctx.llmRunner ?? undefined, notices: Object.freeze([]) });
+  }
+  return resolveIndexPassExecution("graph", config);
 }
 
 const EMPTY_QUALITY: GraphQualityTelemetry = {
@@ -392,8 +379,8 @@ function reuseGraphNode(
  * Three preconditions — ALL must hold for the pass to run:
  *
  *   1. **Provider configured** — an LLM profile must be selectable. Without a
- *      configured provider, `resolveIndexPassRunner("graph", config)` returns
- *      `undefined` (the pass cannot run because there is no model to call).
+ *      configured provider, `resolveIndexPassExecution("graph", config).runner`
+ *      is `undefined` (the pass cannot run because there is no model to call).
  *   2. **Feature gate** — the selected strategy's `processes.graphExtraction.enabled`
  *      (defaults to `true`). When `false`, no network call may issue regardless
  *      of per-pass settings.
@@ -410,34 +397,44 @@ function reuseGraphNode(
  */
 export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): Promise<GraphExtractionResult> {
   const { config, sources, signal, db, reEnrich, onProgress, options = {} } = ctx;
-  const invocationOwnsRunner = Object.hasOwn(ctx, "llmRunner") || Object.hasOwn(ctx, "llmConfig");
+  const invocationOwnsRunner = Object.hasOwn(ctx, "llmRunner");
   // Gate 1 — feature gate via isProcessEnabled, which reads the 0.8.0 path
   // (selected strategy's processes.graphExtraction.enabled). Defaults to
   // enabled when the key is absent.
   if (!invocationOwnsRunner && !isProcessEnabled("index", "graph_extraction", config)) return { ...EMPTY_RESULT };
 
-  // Gate 2 — per-pass opt-out (#208). Returns the resolved llm config or
-  // `undefined` when the pass should not run.
-  const llmRunner = graphRunnerForContext(ctx, config);
+  const noticesByKey = new Map<string, Readonly<LoweringNotice>>();
+  const onNotices = (notices: readonly Readonly<LoweringNotice>[]): void => {
+    for (const notice of notices) noticesByKey.set(JSON.stringify(notice), notice);
+  };
+  const emptyResult = (): GraphExtractionResult => ({
+    ...EMPTY_RESULT,
+    ...(noticesByKey.size > 0 ? { notices: Object.freeze([...noticesByKey.values()]) } : {}),
+  });
+
+  // Gate 2 — per-pass opt-out (#208). Retain the whole frozen resolution so
+  // selection-time lowering notices cannot be separated from the runner.
+  const execution = graphExecutionForContext(ctx, config);
+  onNotices(execution.notices);
+  const llmRunner = execution.runner;
   if (!llmRunner) {
     const reason =
       getIndexPassConfig(config.index, "graph")?.enabled === false
         ? "index.graph.enabled is false"
         : "no LLM engine is configured";
     warnVerbose(`graph extraction: skipped because ${reason}.`);
-    return { ...EMPTY_RESULT };
+    return emptyResult();
   }
   const featureConfig = invocationOwnsRunner
     ? { ...config, index: { ...config.index, graph: { ...config.index?.graph, enabled: true } } }
     : config;
-
   // The pass only writes to the primary (working) stash. Read-only caches
   // (git, npm, website) are deliberately untouched — the graph artifact for
   // those sources would be clobbered by the next sync().
   const primary = sources[0];
   if (!primary) {
     warnVerbose("graph extraction: skipped because no primary stash source is available.");
-    return { ...EMPTY_RESULT };
+    return emptyResult();
   }
 
   // #624-P3: drain the lazy-extraction queue BEFORE the ranked sweep, highest
@@ -453,6 +450,7 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
         config: featureConfig,
         signal,
         llmRunner,
+        onNotices,
       });
     }
   }
@@ -476,7 +474,7 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
       `graph extraction: skipped because no eligible files${scoped} were found under ${primary.path}. ` +
         `includeTypes=${includeTypes.join(",")}`,
     );
-    return { ...EMPTY_RESULT };
+    return emptyResult();
   }
 
   const previousGraph = loadGraphFile(primary.path, db);
@@ -557,6 +555,7 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
   };
 
   let extractionResults: Array<ExtractionRecord | undefined>;
+  let configFailure: ConfigError | undefined;
 
   if (batchSize <= 1) {
     // ── Original per-asset path (with incremental cache) ─────────────────
@@ -600,14 +599,23 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
 
         if (!cached) {
           telemetry.cacheMisses += 1;
-          const extraction = await graphExtract.extractGraphFromBody(
-            llmRunner,
-            candidate.body,
-            signal,
-            featureConfig,
-            onFallback,
-            { batchState, telemetry: runtimeTelemetry },
-          );
+          let extraction: Awaited<ReturnType<typeof graphExtract.extractGraphFromBody>>;
+          try {
+            extraction = await graphExtract.extractGraphFromBody(
+              llmRunner,
+              candidate.body,
+              signal,
+              featureConfig,
+              onFallback,
+              { batchState, telemetry: runtimeTelemetry, onNotices },
+            );
+          } catch (err) {
+            if (err instanceof ConfigError) {
+              configFailure ??= err;
+              return undefined;
+            }
+            throw err;
+          }
           cached = {
             entities: extraction.entities,
             relations: extraction.relations,
@@ -737,14 +745,23 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
 
         // extractGraphFromBodies always returns an array of the same length
         // as bodies (it falls back per-asset for any missing indices).
-        const batchExtractions = await graphExtract.extractGraphFromBodies(
-          llmRunner,
-          bodies,
-          signal,
-          featureConfig,
-          onFallback,
-          { batchState, telemetry: runtimeTelemetry },
-        );
+        let batchExtractions: Awaited<ReturnType<typeof graphExtract.extractGraphFromBodies>>;
+        try {
+          batchExtractions = await graphExtract.extractGraphFromBodies(
+            llmRunner,
+            bodies,
+            signal,
+            featureConfig,
+            onFallback,
+            { batchState, telemetry: runtimeTelemetry, onNotices },
+          );
+        } catch (err) {
+          if (err instanceof ConfigError) {
+            configFailure ??= err;
+            return;
+          }
+          throw err;
+        }
 
         // Map LLM results back to original positions and write cache entries.
         let llmIdx = 0;
@@ -789,6 +806,8 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
 
     extractionResults = rawResults;
   }
+
+  if (configFailure) throw configFailure;
 
   for (const result of extractionResults) {
     if (!result) continue;
@@ -864,6 +883,7 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
     quality,
     telemetry,
     warnings,
+    ...(noticesByKey.size > 0 ? { notices: Object.freeze([...noticesByKey.values()]) } : {}),
   };
 }
 
@@ -899,11 +919,11 @@ function inferGraphTypeForPath(stashRoot: string, absPath: string): string | und
  *
  * Re-reads the body from disk at call time (the queued body_hash is NOT trusted
  * blindly — the file may have been deleted or changed since enqueue) and skips
- * silently (returns `false`) when the file is gone or empty. Resolves the LLM
- * via {@link resolveIndexPassRunner} (model-available guard: returns `false` when
- * no provider is configured) UNLESS `opts.llmOverride` is supplied, in which
- * case the override is the extractor seam (used by tests and by callers that
- * already hold a resolved model).
+ * silently (returns `false`) when the file is gone or empty. Resolves a frozen
+ * LLM execution via {@link resolveIndexPassExecution} (model-available guard:
+ * returns `false` when no provider is configured) UNLESS a caller supplies
+ * `opts.llmRunner` or `opts.llmOverride`. Those seams let a command reuse an
+ * invocation-owned selection or provide a test extractor without re-resolving.
  *
  * Returns `true` when a graph row was written for the file, `false` on any
  * skip (missing file, empty body, unknown type, no model, or extraction error).
@@ -916,8 +936,7 @@ export async function extractGraphForSingleFile(
   opts?: {
     llmOverride?: SingleFileLlmOverride;
     llmRunner?: StructuredLlmRunner | null;
-    /** Temporary compatibility; prefer `llmRunner`. Materialized keys are rejected. */
-    llmConfig?: import("../../core/config/config").LlmConnectionConfig | null;
+    onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
     signal?: AbortSignal;
     config?: AkmConfig;
   },
@@ -948,20 +967,20 @@ export async function extractGraphForSingleFile(
       };
     } else {
       const config = opts?.config ?? loadConfig();
-      const invocationOwnsRunner = Object.hasOwn(opts ?? {}, "llmRunner") || Object.hasOwn(opts ?? {}, "llmConfig");
+      const invocationOwnsRunner = Object.hasOwn(opts ?? {}, "llmRunner");
       if (!invocationOwnsRunner && !isProcessEnabled("index", "graph_extraction", config)) return false;
-      const llmRunner = Object.hasOwn(opts ?? {}, "llmRunner")
-        ? opts?.llmRunner
-        : Object.hasOwn(opts ?? {}, "llmConfig")
-          ? opts?.llmConfig
-            ? structuredLlmRunnerFromConnection(opts.llmConfig, "legacy-index-graph-single")
-            : null
-          : resolveIndexPassRunner("graph", config);
+      const execution = Object.hasOwn(opts ?? {}, "llmRunner")
+        ? Object.freeze({ runner: opts?.llmRunner ?? undefined, notices: Object.freeze([]) })
+        : resolveIndexPassExecution("graph", config);
+      opts?.onNotices?.(execution.notices);
+      const llmRunner = execution.runner;
       if (!llmRunner) return false; // model-available guard
       const featureConfig = invocationOwnsRunner
         ? { ...config, index: { ...config.index, graph: { ...config.index?.graph, enabled: true } } }
         : config;
-      const result = await graphExtract.extractGraphFromBody(llmRunner, body, opts?.signal, featureConfig);
+      const result = await graphExtract.extractGraphFromBody(llmRunner, body, opts?.signal, featureConfig, undefined, {
+        ...(opts?.onNotices ? { onNotices: opts.onNotices } : {}),
+      });
       extraction = {
         entities: result.entities,
         relations: result.relations,
@@ -1024,6 +1043,7 @@ export async function extractGraphForSingleFile(
 
     return writeGraphFile(stashRoot, graph, db);
   } catch (err) {
+    if (err instanceof ConfigError) throw err;
     rethrowIfTestIsolationError(err);
     return false;
   }

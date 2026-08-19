@@ -281,7 +281,10 @@ describe("improve engine-plan boundaries", () => {
       expect((reflectOptions?.runner as { connection?: { model?: string } }).connection?.model).toBe("reflect-model");
       expect(reflectOptions?.llmConfig).toBeUndefined();
       expect(reflectOptions?.config).toBe(config);
-      expect((distillOptions?.llmConfig as { model?: string }).model).toBe("distill-model");
+      expect((distillOptions?.llmRunner as { connection?: { model?: string } }).connection?.model).toBe(
+        "distill-model",
+      );
+      expect(distillOptions?.llmConfig).toBeUndefined();
       expect(distillOptions?.config).toBe(config);
     } finally {
       stash.cleanup();

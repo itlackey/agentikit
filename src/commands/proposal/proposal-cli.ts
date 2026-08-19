@@ -20,10 +20,11 @@ import { parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, output } from "../../cli/shared";
 import { resolveStashDir } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
-import { UsageError } from "../../core/errors";
-import { resolveTriageJudgmentRunner } from "../../integrations/agent/runner";
+import { ConfigError, UsageError } from "../../core/errors";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { installLlmUsagePersistenceIfAbsent } from "../../llm/usage-persist";
 import { withLlmStage } from "../../llm/usage-telemetry";
+import { resolveImproveExecution } from "../improve/execution";
 import { extractCommand } from "../improve/extract-cli";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
 import { drainProposals } from "./drain";
@@ -38,6 +39,16 @@ import {
   bulkAdjudicateProposals,
 } from "./proposal";
 import { proposeCommand } from "./propose-cli";
+
+export function mergeProposalDrainNotices(
+  resolutionNotices: readonly Readonly<LoweringNotice>[] | undefined,
+  dispatchNotices: readonly Readonly<LoweringNotice>[] | undefined,
+): readonly Readonly<LoweringNotice>[] | undefined {
+  const byKey = new Map<string, Readonly<LoweringNotice>>();
+  for (const notice of resolutionNotices ?? []) byKey.set(JSON.stringify(notice), notice);
+  for (const notice of dispatchNotices ?? []) byKey.set(JSON.stringify(notice), notice);
+  return byKey.size > 0 ? Object.freeze([...byKey.values()]) : undefined;
+}
 
 /**
  * `--source` was renamed to `--generator` on `proposal accept`/`proposal
@@ -476,10 +487,24 @@ const proposalDrainCommand = defineJsonCommand({
     // no explicit engine selection. null when
     // nothing is configured → the engine leaves deferred items unresolved and
     // emits triage_deferred.
-    const judgment =
+    const judgmentResolution =
       args.judgment === true
-        ? resolveTriageJudgmentRunner(triageConfig?.judgment, cfg, triageConfig, selectedStrategy.config)
+        ? resolveImproveExecution({
+            config: cfg,
+            profile: selectedStrategy.config,
+            process: triageConfig,
+            current: triageConfig?.judgment,
+            processName: "proposal-triage-judgment",
+          })
         : null;
+    const judgment = judgmentResolution?.runner ?? null;
+    const effectiveJudgmentLlm = triageConfig?.judgment?.llm ?? triageConfig?.llm ?? selectedStrategy.config.llm;
+    if (judgment && judgment.kind !== "llm" && effectiveJudgmentLlm) {
+      throw new ConfigError(
+        `Triage judgment engine "${judgment.engine ?? "unknown"}" is an agent engine and cannot receive llm overrides.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
 
     // #576: persist + attribute per-call LLM usage for the standalone drain
     // path. `IfAbsent` keeps an enclosing `akm improve` sink in charge when
@@ -504,6 +529,9 @@ const proposalDrainCommand = defineJsonCommand({
       disposeDrainUsageSink();
     }
 
+    const dispatchNotices = (result as typeof result & { notices?: readonly Readonly<LoweringNotice>[] }).notices;
+    const notices = mergeProposalDrainNotices(judgmentResolution?.notices, dispatchNotices);
+
     output("proposal-drain", {
       schemaVersion: 1,
       ok: true,
@@ -513,6 +541,7 @@ const proposalDrainCommand = defineJsonCommand({
       strategy: selectedStrategy.name,
       judgmentEngine: judgment?.engine ?? null,
       judgmentKind: judgment?.kind ?? null,
+      ...(notices ? { notices } : {}),
       promoted: result.promoted,
       rejected: result.rejected,
       deferred: result.deferred,

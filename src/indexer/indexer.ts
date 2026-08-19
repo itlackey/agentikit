@@ -11,13 +11,15 @@ import type { BundleComponent } from "../core/adapter/types";
 import { isHttpUrl, toErrorMessage } from "../core/common";
 import { concurrentMap } from "../core/concurrent";
 import type { AkmConfig, LlmConnectionConfig } from "../core/config/config";
+import { ConfigError } from "../core/errors";
 import { isLoopbackEndpoint } from "../core/loopback";
 import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { SCRIPT_EXTENSIONS } from "../core/recognition-util";
 import { withStateDb } from "../core/state-db";
 import { isVerbose, warn, warnVerbose } from "../core/warn";
-import { resolveIndexPassRunner } from "../llm/index-passes";
+import type { LoweringNotice } from "../execution/resolved-request";
+import { type ResolvedIndexPassExecution, resolveIndexPassExecution } from "../llm/index-passes";
 import type { StructuredLlmRunner } from "../llm/structured-call";
 import { resolveSourcesForOrigin } from "../registry/origin-resolve";
 /**
@@ -137,6 +139,8 @@ export interface IndexResponse {
   directoriesScanned: number;
   directoriesSkipped: number;
   warnings?: string[];
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
   verification: IndexVerification;
   /** Timing counters in milliseconds */
   timing?: {
@@ -161,6 +165,19 @@ export interface IndexResponse {
    * (R-056). Keyed by bundle id, valued by the detected adapter id.
    */
   configUpdated?: { detectedAdapters: Record<string, string> };
+}
+
+function collectLoweringNotices(
+  target: Array<Readonly<LoweringNotice>>,
+  notices: readonly Readonly<LoweringNotice>[],
+): void {
+  const keys = new Set(target.map((notice) => JSON.stringify(notice)));
+  for (const notice of notices) {
+    const key = JSON.stringify(notice);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    target.push(notice);
+  }
 }
 
 export interface IndexProgressEvent {
@@ -371,10 +388,12 @@ async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
   throwIfAborted(signal);
 
   // LLM enrichment for directories that need it
-  await enhanceDirsWithLlm(db, config, dirsNeedingLlm, onProgress, signal);
+  await enhanceDirsWithLlm(db, config, ctx.enrichmentExecution, dirsNeedingLlm, onProgress, signal, (notices) =>
+    collectLoweringNotices(ctx.loweringNotices, notices),
+  );
   onProgress({
     phase: "llm",
-    message: resolveIndexPassRunner("enrichment", config)
+    message: ctx.enrichmentExecution.runner
       ? `LLM enhancement reviewed ${dirsNeedingLlm.length} ${dirsNeedingLlm.length === 1 ? "directory" : "directories"}.`
       : "LLM enhancement disabled.",
   });
@@ -827,6 +846,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       });
 
       const t0 = Date.now();
+      const enrichmentExecution = resolveIndexPassExecution("enrichment", config);
 
       // Open database — pass embedding dimension from config if available
       const dbPath = getDbPath();
@@ -848,6 +868,8 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
         const ctx: IndexRunContext = {
           db,
           config,
+          enrichmentExecution,
+          loweringNotices: [...enrichmentExecution.notices],
           sources: allSourceEntries,
           sourceDirs: allSourceDirs,
           full,
@@ -885,7 +907,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
             sourcesCount: allSourceDirs.length,
             semanticSearchMode: config.semanticSearchMode,
             embeddingProvider: getEmbeddingProvider(config.embedding),
-            llmEnabled: !!resolveIndexPassRunner("enrichment", config),
+            llmEnabled: !!enrichmentExecution.runner,
             vecAvailable: isVecAvailable(db),
           }),
         });
@@ -932,6 +954,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           directoriesScanned: ctx.scannedDirs,
           directoriesSkipped: ctx.skippedDirs,
           ...(ctx.walkWarnings.length > 0 ? { warnings: ctx.walkWarnings } : {}),
+          ...(ctx.loweringNotices.length > 0 ? { notices: Object.freeze([...ctx.loweringNotices]) } : {}),
           ...(Object.keys(persistedAdapters).length > 0
             ? { configUpdated: { detectedAdapters: persistedAdapters } }
             : {}),
@@ -1791,6 +1814,7 @@ function indexedProvenanceForFile(db: Database, filePath: string): EntryProvenan
 async function enhanceDirsWithLlm(
   db: Database,
   config: import("../core/config/config").AkmConfig,
+  execution: ResolvedIndexPassExecution,
   dirsNeedingLlm: Array<{
     dirPath: string;
     files: string[];
@@ -1799,12 +1823,11 @@ async function enhanceDirsWithLlm(
   }>,
   onProgress?: (event: IndexProgressEvent) => void,
   signal?: AbortSignal,
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void,
 ): Promise<void> {
-  // Resolve the per-pass symbolic runner via the common execution planner.
-  // Returns undefined when
-  // either no `akm.llm` is configured or the user opted this pass out via
-  // `index.enrichment.llm = false`. (#208)
-  const llmRunner = resolveIndexPassRunner("enrichment", config);
+  // The invocation owns one frozen symbolic selection. Summary reporting and
+  // every enrichment dispatch consume this same snapshot.
+  const llmRunner = execution.runner;
   if (!llmRunner || dirsNeedingLlm.length === 0) return;
 
   // Aggregate per-entry failures so a misconfigured LLM endpoint surfaces
@@ -1859,6 +1882,7 @@ async function enhanceDirsWithLlm(
   }
 
   let currentDirLabel: string | undefined;
+  let configFailure: ConfigError | undefined;
   let lastProgressAt = Date.now();
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   if (totalEntries > 0 && onProgress) {
@@ -1906,31 +1930,41 @@ async function enhanceDirsWithLlm(
         lastProgressAt = Date.now();
         const targetStash: StashFile = { entries: entriesToEnhance };
         const entryKeys = entriesToEnhance.map((e) => `${currentStashDir}:${e.type}:${e.name}`);
-        const enhanced = await enhanceStashWithLlm(
-          llmRunner,
-          targetStash,
-          files,
-          summary,
-          enrichSignal,
-          db,
-          entryKeys,
-          config,
-          (event) => {
-            completedEntries++;
-            lastProgressAt = Date.now();
-            onProgress?.({
-              phase: "llm",
-              message:
-                `Enhanced ${completedEntries}/${totalEntries} entr${totalEntries === 1 ? "y" : "ies"}; ` +
-                `${completedDirs}/${totalDirs} director${totalDirs === 1 ? "y" : "ies"} complete` +
-                (event.entryName ? `; current ${event.entryName}` : "") +
-                (currentDirLabel ? ` in ${currentDirLabel}` : "") +
-                (event.outcome === "cache-hit" ? " (cache hit)" : ""),
-              processed: completedEntries,
-              total: totalEntries,
-            });
-          },
-        );
+        let enhanced: StashFile;
+        try {
+          enhanced = await enhanceStashWithLlm(
+            llmRunner,
+            targetStash,
+            files,
+            summary,
+            enrichSignal,
+            db,
+            entryKeys,
+            config,
+            (event) => {
+              completedEntries++;
+              lastProgressAt = Date.now();
+              onProgress?.({
+                phase: "llm",
+                message:
+                  `Enhanced ${completedEntries}/${totalEntries} entr${totalEntries === 1 ? "y" : "ies"}; ` +
+                  `${completedDirs}/${totalDirs} director${totalDirs === 1 ? "y" : "ies"} complete` +
+                  (event.entryName ? `; current ${event.entryName}` : "") +
+                  (currentDirLabel ? ` in ${currentDirLabel}` : "") +
+                  (event.outcome === "cache-hit" ? " (cache hit)" : ""),
+                processed: completedEntries,
+                total: totalEntries,
+              });
+            },
+            onNotices,
+          );
+        } catch (err) {
+          if (err instanceof ConfigError) {
+            configFailure ??= err;
+            return undefined;
+          }
+          throw err;
+        }
 
         // Re-upsert the enhanced entries in a single transaction so a crash
         // cannot leave half the entries updated and the rest stale.
@@ -1970,6 +2004,7 @@ async function enhanceDirsWithLlm(
       // `resolveLlmEngineUse` does not forward `engines.<name>.concurrency`.
       getDefaultLlmConcurrency(llmRunner.connection),
     );
+    if (configFailure) throw configFailure;
   } finally {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
   }
@@ -2323,12 +2358,14 @@ async function enhanceStashWithLlm(
   entryKeys?: string[],
   akmConfig?: AkmConfig,
   onEntryDone?: (event: { entryName: string; outcome: "cache-hit" | "llm" | "failed" | "skipped" }) => void,
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void,
 ): Promise<StashFile> {
   const { enhanceMetadata } = await import("../llm/metadata-enhance");
   const { computeBodyHash, getLlmCacheEntry, upsertLlmCacheEntry } = await import(
     "../storage/repositories/index-llm-cache-repository"
   );
 
+  let configFailure: ConfigError | undefined;
   const results = await concurrentMap(
     stash.entries,
     async (entry, idx) => {
@@ -2377,7 +2414,7 @@ async function enhanceStashWithLlm(
           }
         }
 
-        const outcome = await enhanceMetadata(llmRunner, entry, fileContent, signal, akmConfig);
+        const outcome = await enhanceMetadata(llmRunner, entry, fileContent, signal, akmConfig, onNotices);
 
         if (outcome.status !== "enriched") {
           // Not a genuine LLM success: the gate was closed (`skipped`) or the
@@ -2429,6 +2466,10 @@ async function enhanceStashWithLlm(
         onEntryDone?.({ entryName: entry.name, outcome: "llm" });
         return updated;
       } catch (err) {
+        if (err instanceof ConfigError) {
+          configFailure ??= err;
+          return entry;
+        }
         const msg = toErrorMessage(err);
         // failureSamples is bounded to 3 items, so a linear scan is cheaper
         // than maintaining a parallel Set for membership checks (#177 review).
@@ -2443,6 +2484,7 @@ async function enhanceStashWithLlm(
     // override reaches this path (see getDefaultLlmConcurrency).
     getDefaultLlmConcurrency(llmRunner.connection),
   );
+  if (configFailure) throw configFailure;
 
   // concurrentMap returns Array<T | undefined>; filter out undefined slots
   // (which can only occur if the callback itself returned undefined, which

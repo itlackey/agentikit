@@ -18,7 +18,10 @@ import os from "node:os";
 import path from "node:path";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
+import { ConfigError } from "../../src/core/errors";
+import type { LoweringNotice } from "../../src/execution/resolved-request";
 import type { SearchSource } from "../../src/indexer/search/search-source";
+import { withEnv } from "../_helpers/sandbox";
 
 type Draft = {
   title: string;
@@ -324,6 +327,68 @@ describe("runMemoryInferencePass — progress", () => {
 // ── runMemoryInferencePass — enabled path ───────────────────────────────────
 
 describe("runMemoryInferencePass — enabled", () => {
+  test("required symbolic credential failure escapes the worker pool without writing derived state", async () => {
+    const parentPath = writeMemory("credential", {}, "Body.");
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_MEMORY_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+
+    const failure = withEnv({ AKM_MEMORY_REQUIRED_KEY: undefined }, () =>
+      runMemoryInferencePassImpl({ config, sources: sources() }),
+    );
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(fs.existsSync(path.join(tmpStash, "memories", "credential.derived.md"))).toBe(false);
+    expect(parseFrontmatter(fs.readFileSync(parentPath, "utf8")).data.inferenceProcessed).toBeUndefined();
+  });
+
+  test("merges standalone selection and per-call lowering notices in stable deduped order", async () => {
+    writeMemory("parent", {}, "Body.");
+    const perCallNotice: LoweringNotice = {
+      code: "untranslated-field",
+      severity: "warning",
+      adapter: "llm",
+      field: "outputSchema",
+      message: "The selected adapter cannot enforce the requested output schema.",
+    };
+    const cfg: AkmConfig = {
+      ...configWithLlm(),
+      index: {
+        defaults: { engine: "index" },
+        memory: { enabled: true, llm: { effort: "high" } },
+      },
+    };
+
+    const result = await runMemoryInferencePassImpl({
+      config: cfg,
+      sources: sources(),
+      options: {
+        compressMemoryToDerivedMemory: async (...args) => {
+          args[7]?.([perCallNotice, perCallNotice]);
+          return sampleDraft();
+        },
+      },
+    });
+
+    expect(result.notices).toEqual([
+      expect.objectContaining({
+        code: "untranslated-field",
+        adapter: "llm",
+        field: "inference.effort",
+      }),
+      perCallNotice,
+    ]);
+    expect(Object.isFrozen(result.notices)).toBe(true);
+  });
+
   test("does not infer or mutate memories owned by a non-AKM adapter", async () => {
     const parentPath = writeMemory("vendor", { description: "Vendor memory" }, "Do not rewrite this body.");
     let calls = 0;

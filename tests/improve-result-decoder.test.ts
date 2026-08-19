@@ -5,6 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { decodeImproveResult } from "../src/core/improve-result";
 import type { ImproveExecutionPlan } from "../src/core/improve-types";
+import type { LoweringNotice } from "../src/execution/resolved-request";
 
 const common = {
   ok: true,
@@ -81,9 +82,27 @@ describe("decodeImproveResult", () => {
   } satisfies ImproveExecutionPlan;
 
   test("decodes the v2 strategy envelope", () => {
-    const decoded = decodeImproveResult({ schemaVersion: 2, strategy: "thorough", ...common });
+    const notices: readonly Readonly<LoweringNotice>[] = [
+      {
+        code: "untranslated-field",
+        severity: "warning",
+        adapter: "fixture",
+        field: "outputSchema",
+        message: "The fixture adapter will attempt dispatch without native schema translation.",
+      },
+    ];
+    const decoded = decodeImproveResult({ schemaVersion: 2, strategy: "thorough", ...common, notices });
     expect(decoded.strategy).toBe("thorough");
     expect(decoded.envelope.strategy).toBe("thorough");
+    expect(decoded.envelope.notices).toEqual(notices);
+    expect(() =>
+      decodeImproveResult({
+        schemaVersion: 2,
+        strategy: "thorough",
+        ...common,
+        notices: [{ ...notices[0], providerBody: "must not be accepted" }],
+      }),
+    ).toThrow(/unknown field/);
   });
 
   test("strictly decodes the additive improve plan", () => {

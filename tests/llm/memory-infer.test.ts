@@ -108,6 +108,31 @@ afterEach(() => {
 // ── Branch coverage ──────────────────────────────────────────────────────────
 
 describe("compressMemoryToDerivedMemory — characterization", () => {
+  test("optimistic schema fallback reports a stable lowering notice", async () => {
+    chatResponder = () => validPayload();
+    const notices: Array<Record<string, unknown>> = [];
+    const runnerWithoutSchema = {
+      ...LLM_CONFIG,
+      connection: { ...LLM_CONFIG.connection, supportsJsonSchema: false },
+    };
+
+    const result = await compressMemoryToDerivedMemory(
+      runnerWithoutSchema,
+      "some memory body",
+      undefined,
+      ENABLED_CONFIG,
+      undefined,
+      undefined,
+      undefined,
+      (value) => notices.push(...value),
+    );
+
+    expect(result?.title).toBe("Derived title");
+    expect(notices).toContainEqual(
+      expect.objectContaining({ code: "untranslated-field", adapter: "llm", field: "outputSchema" }),
+    );
+  });
+
   test("valid payload -> exact DerivedMemoryDraft, no warn", async () => {
     chatResponder = () => validPayload();
 
