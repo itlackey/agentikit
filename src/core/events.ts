@@ -24,7 +24,8 @@
  * - `ts` is ISO-8601 (UTC, millisecond precision).
  */
 
-import type { Database } from "../storage/database";
+import fs from "node:fs";
+import { type Database, openDatabase } from "../storage/database";
 import { insertEvent, readStateEvents } from "../storage/repositories/events-repository";
 import { rethrowIfTestIsolationError } from "./errors";
 import type { EventEnvelope } from "./events-types";
@@ -195,6 +196,14 @@ export interface EventsContext {
    * NOTE: `dbPath` is ignored when `db` is provided.
    */
   db?: Database;
+  /**
+   * Read-only planning boundary. Event writes are suppressed and reads never
+   * create or migrate state.db. When `db` is absent, a missing file is an empty
+   * snapshot.
+   */
+  readOnly?: boolean;
+  /** The planner could not obtain a side-effect-free state snapshot (for example, held WAL state). */
+  readOnlySnapshotUnavailable?: boolean;
 }
 
 /**
@@ -231,6 +240,7 @@ function resolveNow(ctx?: EventsContext): () => number {
  * connection.
  */
 export function appendEvent(input: AppendEventInput, ctx?: EventsContext): void {
+  if (ctx?.readOnly) return;
   const now = resolveNow(ctx);
   const ts = new Date(now()).toISOString();
   const row = { eventType: input.eventType, ts, ref: input.ref, metadata: input.metadata };
@@ -331,11 +341,22 @@ const SAVE_SYNC_EVENT_TYPE_ALIASES = new Set(["save", "sync"]);
  * can persist between processes for monotonic resumption.
  */
 export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext): ReadEventsResult {
+  if (ctx?.readOnlySnapshotUnavailable) return { events: [], nextOffset: 0 };
   const dbPath = resolveDbPath(ctx);
 
   let db: import("../storage/database").Database | undefined;
+  let ownsDb = false;
   try {
-    db = openStateDatabase(dbPath);
+    if (ctx?.db) {
+      db = ctx.db;
+    } else if (ctx?.readOnly) {
+      if (!fs.existsSync(dbPath)) return { events: [], nextOffset: 0 };
+      db = openDatabase(dbPath, { readonly: true, create: false });
+      ownsDb = true;
+    } else {
+      db = openStateDatabase(dbPath);
+      ownsDb = true;
+    }
   } catch (err) {
     // Never mask the bun-test isolation guard as "no events".
     rethrowIfTestIsolationError(err);
@@ -363,13 +384,22 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
       (options.includeTags?.length ?? 0) > 0 ||
       options.runId !== undefined;
     const pushLimitToSql = options.limit !== undefined && !needsPostFilter;
-    const { events: rawEvents, nextId } = readStateEvents(db, {
-      sinceId: options.sinceOffset,
-      since: options.since,
-      type: typeIsAliased ? undefined : options.type,
-      ref: options.ref,
-      ...(pushLimitToSql ? { limit: options.limit } : {}),
-    });
+    let rawEvents: EventEnvelope[];
+    let nextId: number;
+    try {
+      ({ events: rawEvents, nextId } = readStateEvents(db, {
+        sinceId: options.sinceOffset,
+        since: options.since,
+        type: typeIsAliased ? undefined : options.type,
+        ref: options.ref,
+        ...(pushLimitToSql ? { limit: options.limit } : {}),
+      }));
+    } catch (error) {
+      if (ctx?.readOnly && error instanceof Error && /no such table:/i.test(error.message)) {
+        return { events: [], nextOffset: options.sinceOffset ?? 0 };
+      }
+      throw error;
+    }
 
     const filtered = rawEvents.filter((envelope) => {
       if (typeIsAliased && !SAVE_SYNC_EVENT_TYPE_ALIASES.has(envelope.eventType)) return false;
@@ -389,6 +419,6 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
 
     return { events, nextOffset: nextId };
   } finally {
-    db.close();
+    if (ownsDb) db.close();
   }
 }

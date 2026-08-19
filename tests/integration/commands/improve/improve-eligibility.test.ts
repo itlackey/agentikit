@@ -208,6 +208,10 @@ test("treats an index without an entries table as an empty candidate plan", asyn
     plannedRefs: [],
     memorySummary: { eligible: 0, derived: 0 },
     strategyFilteredRefs: [],
+    indexSnapshot: {
+      status: "incompatible",
+      reason: "index.db has no entries table; the selector uses an empty snapshot",
+    },
   });
 });
 

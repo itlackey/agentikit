@@ -9,8 +9,8 @@ import { conceptIdFromTypeName, parseRefInput, resolveRef } from "../../core/ass
 import type { AkmConfig, ImproveProfileConfig } from "../../core/config/config";
 import { loadConfig } from "../../core/config/config";
 import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
-import { readEvents } from "../../core/events";
-import type { ImproveEligibleRef } from "../../core/improve-types";
+import { type EventsContext, readEvents } from "../../core/events";
+import type { ImproveEligibleRef, ImproveIndexSnapshot } from "../../core/improve-types";
 import { isPathAbsent } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
 import { deriveInstallations } from "../../indexer/installations";
@@ -24,6 +24,7 @@ import {
 } from "../../storage/repositories/index-connection";
 import { getAllEntries } from "../../storage/repositories/index-entries-repository";
 import { getUtilityScoresByIds } from "../../storage/repositories/index-utility-repository";
+import { SqliteReadSnapshotUnavailableError } from "../../storage/sqlite-read-snapshot";
 import { isDistillRefusedInputType } from "./distill";
 import { isStrategyFilteredForAllPasses } from "./improve-strategies";
 import { parseMemoryRef } from "./memory/derived-ref";
@@ -45,8 +46,38 @@ import { improveStateReadRefs } from "./source-identity";
  * exit 0 depending only on which branch it took. Both arms now raise.
  */
 function openEligibilityDb(readOnly: boolean): Database | undefined {
-  if (readOnly) return openReadonlyExistingDatabase();
+  if (readOnly) return openReadonlyExistingDatabase(undefined, { isolatedSnapshot: true });
   return isPathAbsent(getDbPath()) ? undefined : openExistingDatabase();
+}
+
+function describeIndexSnapshot(readOnly: boolean, status: "ready" | "missing" | "incompatible"): ImproveIndexSnapshot {
+  if (status === "ready") {
+    return {
+      status,
+      reason: readOnly ? "loaded a non-mutating point-in-time copy of the existing index" : "loaded the prepared index",
+    };
+  }
+  if (status === "missing") {
+    return {
+      status,
+      reason: readOnly
+        ? "index.db is missing; dry-run uses an empty snapshot and does not create it"
+        : "index.db is missing after index preparation; the selector uses an empty snapshot",
+    };
+  }
+  return {
+    status,
+    reason: readOnly
+      ? "index.db has no entries table; dry-run uses an empty snapshot and does not migrate it"
+      : "index.db has no entries table; the selector uses an empty snapshot",
+  };
+}
+
+function describeUnavailableSnapshot(error: SqliteReadSnapshotUnavailableError): ImproveIndexSnapshot {
+  return {
+    status: "incompatible",
+    reason: `index.db cannot provide a stable non-mutating snapshot (${error.message}); dry-run uses an empty snapshot`,
+  };
 }
 
 export function resolveImproveScope(scope: string | undefined): { mode: "all" | "type" | "ref"; value?: string } {
@@ -121,6 +152,8 @@ export async function collectEligibleRefs(
    * strategy configuration was supplied.
    */
   strategyFilteredRefs: ImproveEligibleRef[];
+  /** Read-side index state observed by the selector. */
+  indexSnapshot?: ImproveIndexSnapshot;
 }> {
   return collectEligibleRefsFromIndex(scope, stashDir, improveProfile, false, config);
 }
@@ -149,8 +182,14 @@ async function collectEligibleRefsFromIndex(
     try {
       db = openEligibilityDb(readOnly);
       if (!db) {
-        return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+        return {
+          plannedRefs: [],
+          memorySummary: { eligible: 0, derived: 0 },
+          strategyFilteredRefs: [],
+          indexSnapshot: describeIndexSnapshot(readOnly, "missing"),
+        };
       }
+      const indexSnapshot = describeIndexSnapshot(readOnly, "ready");
       const entries = getAllEntries(db);
       const entriesByItemRef = new Map(
         entries.flatMap((entry) =>
@@ -168,7 +207,12 @@ async function collectEligibleRefsFromIndex(
       const indexed = entriesByItemRef.get(`${resolved.bundle}//${resolved.conceptId}`);
       if (!indexed?.bundleId || !indexed.conceptId || !fs.existsSync(indexed.filePath)) {
         if (await findAssetFilePath(scope.value, stashDir)) {
-          return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+          return {
+            plannedRefs: [],
+            memorySummary: { eligible: 0, derived: 0 },
+            strategyFilteredRefs: [],
+            indexSnapshot,
+          };
         }
         throw new NotFoundError(`Asset not found in the selected writable source: ${scope.value}`, "ASSET_NOT_FOUND");
       }
@@ -176,7 +220,7 @@ async function collectEligibleRefsFromIndex(
         !isEntryInScope(indexed.stashDir, indexed.filePath, stashDir) ||
         !isEntryInWritableSource(indexed.stashDir, indexed.filePath, writableDirs)
       ) {
-        return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+        return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [], indexSnapshot };
       }
       const itemRef = `${indexed.bundleId}//${indexed.conceptId}`;
       return {
@@ -186,10 +230,24 @@ async function collectEligibleRefsFromIndex(
           derived: indexed.entry.type === "memory" && indexed.entry.name.endsWith(".derived") ? 1 : 0,
         },
         strategyFilteredRefs: [],
+        indexSnapshot,
       };
     } catch (error) {
+      if (readOnly && error instanceof SqliteReadSnapshotUnavailableError) {
+        return {
+          plannedRefs: [],
+          memorySummary: { eligible: 0, derived: 0 },
+          strategyFilteredRefs: [],
+          indexSnapshot: describeUnavailableSnapshot(error),
+        };
+      }
       if (error instanceof Error && /no such table:\s*entries/i.test(error.message)) {
-        return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+        return {
+          plannedRefs: [],
+          memorySummary: { eligible: 0, derived: 0 },
+          strategyFilteredRefs: [],
+          indexSnapshot: describeIndexSnapshot(readOnly, "incompatible"),
+        };
       }
       throw error;
     } finally {
@@ -221,8 +279,14 @@ async function collectEligibleRefsFromIndex(
   try {
     db = openEligibilityDb(readOnly);
     if (!db) {
-      return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+      return {
+        plannedRefs: [],
+        memorySummary: { eligible: 0, derived: 0 },
+        strategyFilteredRefs: [],
+        indexSnapshot: describeIndexSnapshot(readOnly, "missing"),
+      };
     }
+    const indexSnapshot = describeIndexSnapshot(readOnly, "ready");
     const entries = getAllEntries(db, scope.mode === "type" ? scope.value : undefined).filter((indexed) => {
       // First apply the existing stashDir-scope filter (no-op when stashDir is unset).
       if (!isEntryInScope(indexed.stashDir, indexed.filePath, stashDir)) return false;
@@ -290,12 +354,26 @@ async function collectEligibleRefsFromIndex(
       plannedRefs: [...planned.values()],
       memorySummary: { eligible: memoryEligible, derived: memoryDerived },
       strategyFilteredRefs: [...strategyFiltered.values()],
+      indexSnapshot,
     };
   } catch (error) {
     // Empty-stash setup paths can open index.db before its schema exists.
     rethrowIfTestIsolationError(error);
+    if (readOnly && error instanceof SqliteReadSnapshotUnavailableError) {
+      return {
+        plannedRefs: [],
+        memorySummary: { eligible: 0, derived: 0 },
+        strategyFilteredRefs: [],
+        indexSnapshot: describeUnavailableSnapshot(error),
+      };
+    }
     if (error instanceof Error && /no such table:\s*entries/i.test(error.message)) {
-      return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+      return {
+        plannedRefs: [],
+        memorySummary: { eligible: 0, derived: 0 },
+        strategyFilteredRefs: [],
+        indexSnapshot: describeIndexSnapshot(readOnly, "incompatible"),
+      };
     }
     throw error;
   } finally {
@@ -437,6 +515,7 @@ export function buildLatestFeedbackTsMap(
   refs: ReadonlyArray<string>,
   sinceIso: string,
   itemRefByRef?: Map<string, string | undefined>,
+  eventsCtx?: EventsContext,
 ): Map<string, string> {
   const out = new Map<string, string>();
   if (refs.length === 0) return out;
@@ -444,7 +523,7 @@ export function buildLatestFeedbackTsMap(
   const refByDurableKey = new Map(
     refs.flatMap((ref) => improveStateReadRefs(ref, itemRefByRef?.get(ref)).map((key) => [key, ref])),
   );
-  const { events } = readEvents({ type: "feedback", since: sinceIso });
+  const { events } = readEvents({ type: "feedback", since: sinceIso }, eventsCtx);
   for (const e of events) {
     const ref = e.ref ? refByDurableKey.get(e.ref) : undefined;
     if (!ref) continue;
@@ -470,6 +549,7 @@ export function buildLatestProposalTsMap(
   refs: ReadonlyArray<string>,
   source: "reflect" | "distill",
   itemRefByRef?: Map<string, string | undefined>,
+  eventsCtx?: EventsContext,
 ): Map<string, string> {
   const out = new Map<string, string>();
   if (refs.length === 0) return out;
@@ -478,7 +558,7 @@ export function buildLatestProposalTsMap(
     refs.flatMap((ref) => improveStateReadRefs(ref, itemRefByRef?.get(ref)).map((key) => [key, ref])),
   );
   const eventType = source === "reflect" ? "reflect_invoked" : "distill_invoked";
-  const { events } = readEvents({ type: eventType });
+  const { events } = readEvents({ type: eventType }, eventsCtx);
   for (const e of events) {
     const ref = e.ref ? refByDurableKey.get(e.ref) : undefined;
     if (!ref) continue;
@@ -552,13 +632,14 @@ export function shouldAnalyzeMemoryCleanup(
   return parseRefInput(scope.value).type === "memory";
 }
 
-export function buildUtilityMap(refs: ImproveEligibleRef[]): Map<string, number> {
+export function buildUtilityMap(refs: ImproveEligibleRef[], readOnly = false): Map<string, number> {
   const map = new Map<string, number>();
   if (refs.length === 0) return map;
   const refSet = new Set(refs.map((r) => r.ref));
   let db: Database | undefined;
   try {
-    db = openExistingDatabase();
+    db = readOnly ? openReadonlyExistingDatabase(undefined, { isolatedSnapshot: true }) : openExistingDatabase();
+    if (!db) return map;
     const allDbEntries = getAllEntries(db);
     const idToRef = new Map<number, string>();
     for (const indexed of allDbEntries) {

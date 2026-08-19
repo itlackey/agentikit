@@ -95,9 +95,11 @@ export interface SessionLogHarness {
    * Enumerate available sessions for this harness, optionally filtered by
    * staleness (`sinceMs`) and overriding the default location. Cheap — does
    * not parse event content. Sessions whose file mtime is older than
-   * `sinceMs` (when provided) are omitted.
+   * `sinceMs` (when provided) are omitted. Planning callers set
+   * `isolatedSnapshot` so database-backed providers never attach SQLite to a
+   * live operator-owned WAL/SHM pair merely to count sessions.
    */
-  listSessions(input?: { sinceMs?: number; location?: string }): SessionSummary[];
+  listSessions(input?: { sinceMs?: number; location?: string; isolatedSnapshot?: boolean }): SessionSummary[];
   /**
    * Read a single session's full event stream + the inline `akm remember`/
    * `akm feedback` invocations the agent made during it. `ref.filePath` must

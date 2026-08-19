@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../../../storage/database";
+import { openSqliteReadSnapshot } from "../../../storage/sqlite-read-snapshot";
 import { extractInlineRefMentions } from "../../session-logs/inline-refs";
 import { AbstractSessionLogProvider } from "../../session-logs/provider-base";
 import type {
@@ -90,11 +91,11 @@ export class OpenCodeProvider extends AbstractSessionLogProvider implements Sess
     }
   }
 
-  listSessions(input: { sinceMs?: number; location?: string } = {}): SessionSummary[] {
+  listSessions(input: { sinceMs?: number; location?: string; isolatedSnapshot?: boolean } = {}): SessionSummary[] {
     const base = input.location ?? this.#baseDir;
     const sinceMs = input.sinceMs ?? 0;
     const dbPath = this.#dbPath(base);
-    if (fs.existsSync(dbPath)) return this.#listSessionsFromDb(dbPath, sinceMs);
+    if (fs.existsSync(dbPath)) return this.#listSessionsFromDb(dbPath, sinceMs, input.isolatedSnapshot ?? false);
     const sessionRoot = path.join(base, "storage", "session");
     if (!fs.existsSync(sessionRoot)) return [];
     return this.listSessionsFromFiles({
@@ -200,10 +201,14 @@ export class OpenCodeProvider extends AbstractSessionLogProvider implements Sess
    * Returns `[]` (never throws) when the DB is unreadable or lacks the expected
    * schema — callers treat a missing harness as "no sessions".
    */
-  #listSessionsFromDb(dbPath: string, sinceMs: number): SessionSummary[] {
+  #listSessionsFromDb(dbPath: string, sinceMs: number, isolatedSnapshot: boolean): SessionSummary[] {
     let db: ReturnType<typeof openDatabase>;
     try {
-      db = openDatabase(dbPath, { readonly: true, create: false });
+      const opened = isolatedSnapshot
+        ? openSqliteReadSnapshot(dbPath)
+        : openDatabase(dbPath, { readonly: true, create: false });
+      if (!opened) return [];
+      db = opened;
     } catch {
       return [];
     }
