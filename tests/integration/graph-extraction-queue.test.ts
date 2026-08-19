@@ -74,6 +74,12 @@ const extractGraphForSingleFile = (
   }
 ).extractGraphForSingleFile;
 
+const runGraphExtractionPass = (
+  graphExtraction as unknown as {
+    runGraphExtractionPass: typeof graphExtraction.runGraphExtractionPass;
+  }
+).runGraphExtractionPass;
+
 // ── Sandbox plumbing ─────────────────────────────────────────────────────────
 
 let stash: SandboxedDir;
@@ -191,6 +197,38 @@ describe("#624 P3 enqueueGraphExtraction / drainExtractionQueue (AC1)", () => {
     expect(drained.map((r) => r.filePath)).toEqual(["/a.md"]);
     // The other stash's row is untouched.
     expect(queueRowCount("/other/stash")).toBe(1);
+  });
+
+  test("required symbolic credential failure preserves queued work and creates no graph or cache rows", async () => {
+    const absPath = makeEligibleMemory("queued-credential", "Alice works with Bob.");
+    enqueueGraphExtraction(db, stash.dir, absPath, computeBodyHash("Alice works with Bob."), 10);
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        graph: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_GRAPH_PASS_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "graph" }, graph: { enabled: true, lazyGraphExtraction: true } },
+    };
+
+    const failure = withEnv({ AKM_GRAPH_PASS_REQUIRED_KEY: undefined }, () =>
+      runGraphExtractionPass({
+        config,
+        sources: [{ path: stash.dir }],
+        db,
+        options: { candidatePaths: new Set() },
+      }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(queueRowCount(stash.dir)).toBe(1);
+    expect(graphFileRowExists(stash.dir, absPath)).toBe(false);
+    const cacheRows = (db.prepare("SELECT COUNT(*) AS n FROM llm_enrichment_cache").get() as { n: number }).n;
+    expect(cacheRows).toBe(0);
   });
 });
 

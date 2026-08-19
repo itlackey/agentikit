@@ -54,7 +54,7 @@ import { isProcessEnabled } from "../../llm/feature-gate";
 import type { GraphExtractionReason, GraphExtractionStatus, GraphRelation } from "../../llm/graph-extract";
 import * as graphExtract from "../../llm/graph-extract";
 import { type ResolvedIndexPassExecution, resolveIndexPassExecution } from "../../llm/index-passes";
-import type { StructuredLlmRunner } from "../../llm/structured-call";
+import { preflightStructuredLlmRunner, type StructuredLlmRunner } from "../../llm/structured-call";
 import type { Database } from "../../storage/database";
 import type { LlmCacheEntry } from "../../storage/repositories/index-entry-types";
 import {
@@ -373,6 +373,165 @@ function reuseGraphNode(
   };
 }
 
+async function extractGraphBatches(args: {
+  eligible: EligibleFile[];
+  batchSize: number;
+  signal: AbortSignal | undefined;
+  db: Database | undefined;
+  reEnrich: boolean | undefined;
+  cacheVariant: string;
+  previousNodes: Map<string, GraphFileNode>;
+  canReusePreviousGraph: boolean;
+  telemetry: GraphExtractionTelemetry;
+  llmRunner: StructuredLlmRunner;
+  featureConfig: AkmConfig;
+  onFallback: (event: { feature: string; reason: string }) => void;
+  batchState: graphExtract.GraphBatchState;
+  runtimeTelemetry: graphExtract.GraphRuntimeTelemetry;
+  onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
+  reportProgress: (currentPath: string | undefined, result: ExtractionRecord | undefined) => void;
+}): Promise<{ results: Array<ExtractionRecord | undefined>; configFailure?: ConfigError }> {
+  const {
+    eligible,
+    batchSize,
+    signal,
+    db,
+    reEnrich,
+    cacheVariant,
+    previousNodes,
+    canReusePreviousGraph,
+    telemetry,
+    llmRunner,
+    featureConfig,
+    onFallback,
+    batchState,
+    runtimeTelemetry,
+    onNotices,
+    reportProgress,
+  } = args;
+  const results: Array<ExtractionRecord | undefined> = new Array(eligible.length).fill(undefined);
+  const chunkStarts: number[] = [];
+  for (let start = 0; start < eligible.length; start += batchSize) chunkStarts.push(start);
+  let configFailure: ConfigError | undefined;
+
+  await concurrentMap(
+    chunkStarts,
+    async (start) => {
+      if (signal?.aborted) return;
+      const chunk = eligible.slice(start, start + batchSize);
+      const reportChunkProgress = (): void => {
+        for (let j = 0; j < chunk.length; j++) {
+          const candidate = chunk[j];
+          if (candidate) reportProgress(candidate.absPath, results[start + j]);
+        }
+      };
+
+      const bodyHashes = chunk.map((candidate) => computeBodyHash(candidate.body));
+      const chunkCache: Map<string, LlmCacheEntry> =
+        db && !reEnrich
+          ? getLlmCacheEntriesByRefs(
+              db,
+              chunk.map((candidate) => candidate.absPath),
+              cacheVariant,
+            )
+          : new Map();
+      const needsLlm = chunk.map((candidate, index) => {
+        if (!db || reEnrich) return true;
+        const cached = chunkCache.get(candidate.absPath);
+        if (!cached || cached.bodyHash !== (bodyHashes[index] ?? "")) return true;
+        try {
+          const parsed = validateGraphCacheShape(JSON.parse(cached.resultJson));
+          if (!parsed) return true;
+          telemetry.cacheHits += 1;
+          results[start + index] = {
+            absPath: candidate.absPath,
+            type: candidate.type,
+            bodyHash: bodyHashes[index] ?? "",
+            entities: parsed.entities,
+            relations: parsed.relations,
+            ...(parsed.confidence !== undefined ? { confidence: parsed.confidence } : {}),
+            ...(parsed.status ? { status: parsed.status } : {}),
+            ...(parsed.reason ? { reason: parsed.reason } : {}),
+          };
+          return false;
+        } catch {
+          return true;
+        }
+      });
+
+      if (!(reEnrich ?? false) && canReusePreviousGraph) {
+        for (let index = 0; index < chunk.length; index++) {
+          if (!needsLlm[index]) continue;
+          const candidate = chunk[index];
+          if (!candidate) continue;
+          const bodyHash = bodyHashes[index] ?? "";
+          const reused = reuseGraphNode(previousNodes, candidate, bodyHash);
+          if (!reused) continue;
+          telemetry.cacheHits += 1;
+          results[start + index] = {
+            absPath: candidate.absPath,
+            type: candidate.type,
+            bodyHash,
+            entities: reused.entities,
+            relations: reused.relations,
+            ...(reused.confidence !== undefined ? { confidence: reused.confidence } : {}),
+            ...(reused.status ? { status: reused.status } : {}),
+            ...(reused.reason ? { reason: reused.reason } : {}),
+          };
+          if (db) upsertLlmCacheEntry(db, candidate.absPath, bodyHash, JSON.stringify(reused), cacheVariant);
+          needsLlm[index] = false;
+        }
+      }
+
+      const uncachedChunk = chunk.filter((_, index) => needsLlm[index]);
+      if (uncachedChunk.length === 0) {
+        reportChunkProgress();
+        return;
+      }
+      telemetry.cacheMisses += uncachedChunk.length;
+      let batchExtractions: Awaited<ReturnType<typeof graphExtract.extractGraphFromBodies>>;
+      try {
+        batchExtractions = await graphExtract.extractGraphFromBodies(
+          llmRunner,
+          uncachedChunk.map((candidate) => candidate.body),
+          signal,
+          featureConfig,
+          onFallback,
+          { batchState, telemetry: runtimeTelemetry, onNotices },
+        );
+      } catch (error) {
+        if (error instanceof ConfigError) {
+          configFailure ??= error;
+          return;
+        }
+        throw error;
+      }
+
+      let llmIndex = 0;
+      for (let index = 0; index < chunk.length; index++) {
+        if (!needsLlm[index]) continue;
+        const candidate = chunk[index];
+        const extraction = batchExtractions[llmIndex++];
+        if (!candidate || !extraction) continue;
+        const bodyHash = bodyHashes[index] ?? "";
+        const cacheShape: GraphCacheShape = {
+          entities: extraction.entities,
+          relations: extraction.relations,
+          ...(extraction.confidence !== undefined ? { confidence: extraction.confidence } : {}),
+          ...(extraction.status ? { status: extraction.status } : {}),
+          ...(extraction.reason ? { reason: extraction.reason } : {}),
+        };
+        if (db) upsertLlmCacheEntry(db, candidate.absPath, bodyHash, JSON.stringify(cacheShape), cacheVariant);
+        results[start + index] = { absPath: candidate.absPath, type: candidate.type, bodyHash, ...cacheShape };
+      }
+      reportChunkProgress();
+    },
+    llmRunner.connection.concurrency ?? 1,
+  );
+
+  return { results, ...(configFailure ? { configFailure } : {}) };
+}
+
 /**
  * Top-level entry point. Returns a no-op result when the pass is disabled.
  *
@@ -436,6 +595,12 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
     warnVerbose("graph extraction: skipped because no primary stash source is available.");
     return emptyResult();
   }
+
+  // Fail closed before the lazy queue is destructively drained or graph/cache
+  // state can be written. Feature and runner-selection gates above retain their
+  // true no-work behavior; provider/runtime failures remain owned by each real
+  // extraction call below.
+  await preflightStructuredLlmRunner(llmRunner);
 
   // #624-P3: drain the lazy-extraction queue BEFORE the ranked sweep, highest
   // priority first. Queued paths are extracted individually (per-file merge,
@@ -646,165 +811,26 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
       llmRunner.connection.concurrency ?? 1,
     );
   } else {
-    // ── Batched path (with incremental cache) ────────────────────────────
-    // Chunk eligible files into groups of `batchSize` and call
-    // `extractGraphFromBodies` once per chunk. Cache hits are resolved
-    // before chunking so they don't consume LLM tokens in the batch call.
-    const rawResults: ExtractionRecord[] = new Array(eligible.length).fill(undefined);
-
-    const chunkStarts: number[] = [];
-    for (let start = 0; start < eligible.length; start += batchSize) chunkStarts.push(start);
-
-    await concurrentMap(
-      chunkStarts,
-      async (start) => {
-        if (signal?.aborted) return;
-        const chunk = eligible.slice(start, start + batchSize);
-
-        const reportChunkProgress = (): void => {
-          for (let j = 0; j < chunk.length; j++) {
-            const candidate = chunk[j];
-            if (!candidate) continue;
-            reportProgress(candidate.absPath, rawResults[start + j]);
-          }
-        };
-
-        // Pre-resolve cache hits for this chunk; track which positions need LLM.
-        const bodyHashes: string[] = chunk.map((c) => computeBodyHash(c.body));
-        // Batch the cache lookup: one IN(...) query for the whole chunk instead
-        // of N individual SELECTs. The map covers every ref in this chunk that
-        // has any cached row; the per-position hash check happens below.
-        const chunkCache: Map<string, LlmCacheEntry> =
-          db && !reEnrich
-            ? getLlmCacheEntriesByRefs(
-                db,
-                chunk.map((c) => c.absPath),
-                cacheVariant,
-              )
-            : new Map();
-        const needsLlm: boolean[] = chunk.map((c, j) => {
-          if (!db || reEnrich) return true;
-          const cached = chunkCache.get(c.absPath);
-          // Hash mismatch → body changed, treat as cache miss.
-          if (!cached || cached.bodyHash !== (bodyHashes[j] ?? "")) return true;
-          try {
-            const parsed = validateGraphCacheShape(JSON.parse(cached.resultJson));
-            if (!parsed) return true;
-            telemetry.cacheHits += 1;
-            rawResults[start + j] = {
-              absPath: c.absPath,
-              type: c.type,
-              bodyHash: bodyHashes[j] ?? "",
-              entities: parsed.entities,
-              relations: parsed.relations,
-              ...(parsed.confidence !== undefined ? { confidence: parsed.confidence } : {}),
-              ...(parsed.status ? { status: parsed.status } : {}),
-              ...(parsed.reason ? { reason: parsed.reason } : {}),
-            };
-            return false;
-          } catch {
-            return true;
-          }
-        });
-
-        // Secondary incremental path: reuse previous graph nodes when the body hash
-        // still matches and DB cache is missing/stale/unavailable.
-        if (!(reEnrich ?? false) && canReusePreviousGraph) {
-          for (let j = 0; j < chunk.length; j++) {
-            if (!needsLlm[j]) continue;
-            const candidate = chunk[j];
-            if (!candidate) continue;
-            const reused = reuseGraphNode(previousNodes, candidate, bodyHashes[j] ?? "");
-            if (!reused) continue;
-            telemetry.cacheHits += 1;
-            rawResults[start + j] = {
-              absPath: candidate.absPath,
-              type: candidate.type,
-              bodyHash: bodyHashes[j] ?? "",
-              entities: reused.entities,
-              relations: reused.relations,
-              ...(reused.confidence !== undefined ? { confidence: reused.confidence } : {}),
-              ...(reused.status ? { status: reused.status } : {}),
-              ...(reused.reason ? { reason: reused.reason } : {}),
-            };
-            if (db) {
-              upsertLlmCacheEntry(db, candidate.absPath, bodyHashes[j] ?? "", JSON.stringify(reused), cacheVariant);
-            }
-            needsLlm[j] = false;
-          }
-        }
-
-        const uncachedChunk = chunk.filter((_, j) => needsLlm[j]);
-        if (uncachedChunk.length === 0) {
-          reportChunkProgress();
-          return;
-        }
-
-        const bodies = uncachedChunk.map((c) => c.body);
-        telemetry.cacheMisses += uncachedChunk.length;
-
-        // extractGraphFromBodies always returns an array of the same length
-        // as bodies (it falls back per-asset for any missing indices).
-        let batchExtractions: Awaited<ReturnType<typeof graphExtract.extractGraphFromBodies>>;
-        try {
-          batchExtractions = await graphExtract.extractGraphFromBodies(
-            llmRunner,
-            bodies,
-            signal,
-            featureConfig,
-            onFallback,
-            { batchState, telemetry: runtimeTelemetry, onNotices },
-          );
-        } catch (err) {
-          if (err instanceof ConfigError) {
-            configFailure ??= err;
-            return;
-          }
-          throw err;
-        }
-
-        // Map LLM results back to original positions and write cache entries.
-        let llmIdx = 0;
-        for (let j = 0; j < chunk.length; j++) {
-          if (!needsLlm[j]) continue;
-          const candidate = chunk[j];
-          const extraction = batchExtractions[llmIdx++];
-          if (!candidate || !extraction) continue;
-
-          if (db) {
-            upsertLlmCacheEntry(
-              db,
-              candidate.absPath,
-              bodyHashes[j] ?? "",
-              JSON.stringify({
-                entities: extraction.entities,
-                relations: extraction.relations,
-                ...(extraction.confidence !== undefined ? { confidence: extraction.confidence } : {}),
-                ...(extraction.status ? { status: extraction.status } : {}),
-                ...(extraction.reason ? { reason: extraction.reason } : {}),
-              }),
-              cacheVariant,
-            );
-          }
-
-          rawResults[start + j] = {
-            absPath: candidate.absPath,
-            type: candidate.type,
-            bodyHash: bodyHashes[j] ?? "",
-            entities: extraction.entities,
-            relations: extraction.relations,
-            ...(extraction.confidence !== undefined ? { confidence: extraction.confidence } : {}),
-            ...(extraction.status ? { status: extraction.status } : {}),
-            ...(extraction.reason ? { reason: extraction.reason } : {}),
-          };
-        }
-
-        reportChunkProgress();
-      },
-      llmRunner.connection.concurrency ?? 1,
-    );
-
-    extractionResults = rawResults;
+    const batch = await extractGraphBatches({
+      eligible,
+      batchSize,
+      signal,
+      db,
+      reEnrich,
+      cacheVariant,
+      previousNodes,
+      canReusePreviousGraph,
+      telemetry,
+      llmRunner,
+      featureConfig,
+      onFallback,
+      batchState,
+      runtimeTelemetry,
+      onNotices,
+      reportProgress,
+    });
+    extractionResults = batch.results;
+    configFailure ??= batch.configFailure;
   }
 
   if (configFailure) throw configFailure;

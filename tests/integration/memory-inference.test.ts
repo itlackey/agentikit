@@ -350,6 +350,47 @@ describe("runMemoryInferencePass — enabled", () => {
     expect(parseFrontmatter(fs.readFileSync(parentPath, "utf8")).data.inferenceProcessed).toBeUndefined();
   });
 
+  test("required symbolic credential failure leaves every earlier and later parent and derived asset unchanged", async () => {
+    const earlierParent = writeMemory("a-existing-child", { description: "earlier" }, "Earlier body.");
+    const failingParent = writeMemory("b-needs-model", { description: "middle" }, "Middle body.");
+    const laterParent = writeMemory("c-existing-child", { description: "later" }, "Later body.");
+    const earlierChild = writeMemory("a-existing-child.derived", { inferred: true }, "Earlier derived body.");
+    const laterChild = writeMemory("c-existing-child.derived", { inferred: true }, "Later derived body.");
+    const trackedPaths = [earlierParent, earlierChild, failingParent, laterParent, laterChild];
+    const before = new Map(trackedPaths.map((filePath) => [filePath, fs.readFileSync(filePath, "utf8")]));
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_MEMORY_BATCH_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+
+    const failure = withEnv({ AKM_MEMORY_BATCH_REQUIRED_KEY: undefined }, () =>
+      runMemoryInferencePassImpl({ config, sources: sources() }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(fs.readdirSync(path.join(tmpStash, "memories")).sort()).toEqual([
+      "a-existing-child.derived.md",
+      "a-existing-child.md",
+      "b-needs-model.md",
+      "c-existing-child.derived.md",
+      "c-existing-child.md",
+    ]);
+    for (const filePath of trackedPaths) {
+      const original = before.get(filePath);
+      if (original === undefined) throw new Error(`missing baseline snapshot for ${filePath}`);
+      expect(fs.readFileSync(filePath, "utf8"), filePath).toBe(original);
+      expect(parseFrontmatter(fs.readFileSync(filePath, "utf8")).data.inferenceProcessed).toBeUndefined();
+    }
+  });
+
   test("merges standalone selection and per-call lowering notices in stable deduped order", async () => {
     writeMemory("parent", {}, "Body.");
     const perCallNotice: LoweringNotice = {

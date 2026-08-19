@@ -57,7 +57,11 @@ import { getAvailableHarnesses } from "../../integrations/session-logs";
 import { preFilterSession } from "../../integrations/session-logs/pre-filter";
 import type { SessionData, SessionLogHarness, SessionRef, SessionSummary } from "../../integrations/session-logs/types";
 import type { ChatMessage } from "../../llm/client";
-import { callStructured, structuredLlmRunnerFromConnection } from "../../llm/structured-call";
+import {
+  callStructured,
+  preflightStructuredLlmRunner,
+  structuredLlmRunnerFromConnection,
+} from "../../llm/structured-call";
 import { sha256Hex } from "../../runtime";
 import type { Database } from "../../storage/database";
 import {
@@ -1536,6 +1540,11 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
   const candidates = discovery.candidates;
 
   const topLevelWarnings: string[] = [];
+
+  // A dry run never dispatches. For a real run, validate the already-resolved
+  // symbolic runner after feature/harness/discovery gates but before opening
+  // state.db or creating any tracking/session/proposal artifact.
+  if (!dryRun && candidates.length > 0) await preflightStructuredLlmRunner(llmRunner);
 
   // Open state.db once for the run and bulk-load seen-rows for the candidate
   // set so we can decide skip/process in O(1) per session. Tracking is opt-out

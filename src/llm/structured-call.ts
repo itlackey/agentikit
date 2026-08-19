@@ -244,6 +244,24 @@ function dispatchFailure(result: Awaited<ReturnType<typeof dispatchLoweredExecut
   return result.llmErrorCode ? new LlmCallError(message, result.llmErrorCode) : new Error(message);
 }
 
+/**
+ * Validate one already-selected symbolic LLM runner before an operation makes
+ * any durable mutation. Callers must apply their feature/authorization gates
+ * first. The no-op transport still crosses the canonical prepare -> lower ->
+ * dispatch boundary, so required credentials are materialized by the same
+ * authority as a real call without contacting the provider.
+ */
+export async function preflightStructuredLlmRunner(runner: StructuredLlmRunner): Promise<void> {
+  const prepared = prepareInlineExecutionWithRunner({
+    content: "Validate the selected LLM runner before operation dispatch.",
+    runner,
+    invocationKind: "direct",
+  });
+  const lowered = lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
+  const result = await dispatchLoweredExecutionRequest(lowered, { chat: async () => "" });
+  if (!result.ok) throw dispatchFailure(result);
+}
+
 export async function callStructured<T>(opts: CallStructuredOptions<T>): Promise<T> {
   const { feature, akmConfig, enabled, messages, request, parse, onError, fallback, onFallback } = opts;
 

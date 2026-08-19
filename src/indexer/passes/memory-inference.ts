@@ -55,7 +55,7 @@ import { isProcessEnabled } from "../../llm/feature-gate";
 import { type ResolvedIndexPassExecution, resolveIndexPassExecution } from "../../llm/index-passes";
 import type { DerivedMemoryDraft, MemoryInferTelemetry } from "../../llm/memory-infer";
 import * as memoryInfer from "../../llm/memory-infer";
-import type { StructuredLlmRunner } from "../../llm/structured-call";
+import { preflightStructuredLlmRunner, type StructuredLlmRunner } from "../../llm/structured-call";
 import { withLlmCache } from "../db/llm-cache";
 import { walkMarkdownFiles } from "../walk/walker";
 import type { EnrichmentPassContext } from "./pass-context";
@@ -173,6 +173,137 @@ function memoryExecutionForContext(
   return resolveIndexPassExecution("memory", config);
 }
 
+async function inferPendingMemoryRecord(
+  record: MemoryRecord,
+  ctx: {
+    config: MemoryInferencePassContext["config"];
+    featureConfig: MemoryInferencePassContext["config"];
+    signal?: AbortSignal;
+    db?: MemoryInferencePassContext["db"];
+    reEnrich?: boolean;
+    llmRunner: StructuredLlmRunner;
+    inferTelemetry: MemoryInferTelemetry;
+    compressMemoryToDerivedMemory: typeof memoryInfer.compressMemoryToDerivedMemory;
+    onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
+    onConfigFailure: (error: ConfigError) => void;
+  },
+) {
+  const {
+    config,
+    featureConfig,
+    signal,
+    db,
+    reEnrich,
+    llmRunner,
+    inferTelemetry,
+    compressMemoryToDerivedMemory,
+    onNotices,
+    onConfigFailure,
+  } = ctx;
+  if (signal?.aborted) return { aborted: true } as const;
+
+  // Existing children are complete, but the parent may be unmarked after a
+  // crash between the child write and parent update (or an external write).
+  if (fs.existsSync(derivedChildPath(record))) {
+    markParentProcessed(record);
+    return {
+      skipped: false,
+      splitParent: false,
+      written: 0,
+      fromCache: false,
+      retryAttempts: 0,
+      childExists: true,
+      precheck: true,
+    } as const;
+  }
+
+  const validate = (raw: unknown): DerivedMemoryDraft | undefined => {
+    if (!raw || typeof raw !== "object") return undefined;
+    const parsed = raw as Record<string, unknown>;
+    const title = typeof parsed.title === "string" ? parsed.title : "";
+    const description = typeof parsed.description === "string" ? parsed.description : "";
+    const content = typeof parsed.content === "string" ? parsed.content : "";
+    const tags = Array.isArray(parsed.tags) ? parsed.tags.filter((tag): tag is string => typeof tag === "string") : [];
+    const searchHints = Array.isArray(parsed.searchHints)
+      ? parsed.searchHints.filter((hint): hint is string => typeof hint === "string")
+      : [];
+    return title && description && content && tags.length > 0 && searchHints.length > 0
+      ? { title, description, tags, searchHints, content }
+      : undefined;
+  };
+
+  let fromCache = false;
+  let retryAttempts = 0;
+  const onRetryAttempt = () => {
+    retryAttempts += 1;
+  };
+  const infer = () =>
+    compressMemoryToDerivedMemory(
+      llmRunner,
+      record.body,
+      signal,
+      featureConfig,
+      (event) => warn(`[akm] LLM fallback for ${event.feature}: ${event.reason}`),
+      inferTelemetry,
+      onRetryAttempt,
+      onNotices,
+    );
+  let derived: DerivedMemoryDraft | undefined;
+  try {
+    derived = db
+      ? await withLlmCache<DerivedMemoryDraft>(
+          db,
+          record.filePath,
+          record.body,
+          reEnrich ?? false,
+          infer,
+          validate,
+          undefined,
+          "memory-inference-v2",
+          {
+            onCacheHit: () => {
+              fromCache = true;
+            },
+          },
+        )
+      : await compressMemoryToDerivedMemory(
+          llmRunner,
+          record.body,
+          signal,
+          config,
+          (event) => warn(`[akm] LLM fallback for ${event.feature}: ${event.reason}`),
+          inferTelemetry,
+          onRetryAttempt,
+          onNotices,
+        );
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      onConfigFailure(error);
+      return undefined;
+    }
+    throw error;
+  }
+
+  if (!derived) return { skipped: true, fromCache, retryAttempts } as const;
+  const writeOutcome = await writeDerivedMemory(record, derived);
+  if (writeOutcome.written > 0) {
+    markParentProcessed(record);
+    return { skipped: false, splitParent: true, written: writeOutcome.written, fromCache, retryAttempts } as const;
+  }
+  // A child that appeared mid-flight is complete and can safely mark its
+  // parent. A genuine write failure remains unmarked for a later retry.
+  if (writeOutcome.childExists) markParentProcessed(record);
+  return {
+    skipped: false,
+    splitParent: false,
+    written: 0,
+    fromCache,
+    retryAttempts,
+    childExists: true,
+    precheck: false,
+  } as const;
+}
+
 /**
  * Top-level entry point. Returns a no-op result when the pass is disabled.
  *
@@ -246,6 +377,11 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
   result.considered = pending.length;
   if (pending.length === 0) return completeResult();
 
+  // Validate the authorized symbolic runner once for the whole batch before
+  // an existing-child fast path can mark any parent processed. Real provider
+  // failures still flow through the per-record fail-soft policy below.
+  await preflightStructuredLlmRunner(llmRunner);
+
   let processed = 0;
   const total = pending.length;
   onProgress?.({ processed, total, writtenFacts: 0, skippedNoFacts: 0 });
@@ -253,151 +389,21 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
   let configFailure: ConfigError | undefined;
   const perRecordResults = await concurrentMap(
     pending,
-    async (record) => {
-      // Aborted BEFORE a fresh LLM call. Returned as a typed outcome so the
-      // for-loop below increments `skippedAborted` instead of silently
-      // dropping the record (which historically inflated freshAttempts and
-      // dragged the health-reported yield rate down — see investigation
-      // 2026-05-26).
-      if (signal?.aborted) return { aborted: true } as const;
-
-      // Pre-check (#588): when `<parent>.derived.md` is already on disk the
-      // inference is by definition complete — the parent only looks pending
-      // because `markParentProcessed` never ran (process killed between the
-      // child write and the mark) or the child was created externally (e.g.
-      // consolidation). Skip the LLM/cache call entirely and mark the parent
-      // so it never re-pends. Before this check, production measurements
-      // showed ~55% of the pass's LLM budget re-deriving such parents only to
-      // discover the existing child after the fact.
-      if (fs.existsSync(derivedChildPath(record))) {
-        markParentProcessed(record);
-        return {
-          skipped: false,
-          splitParent: false,
-          written: 0,
-          fromCache: false,
-          retryAttempts: 0,
-          childExists: true,
-          precheck: true,
-        } as const;
-      }
-
-      // Incremental cache: skip LLM call when body hash is unchanged and
-      // --re-enrich was not requested. The cache ref is the absolute file path.
-      const validate = (raw: unknown): DerivedMemoryDraft | undefined => {
-        if (!raw || typeof raw !== "object") return undefined;
-        const parsed = raw as Record<string, unknown>;
-        const title = typeof parsed.title === "string" ? parsed.title : "";
-        const description = typeof parsed.description === "string" ? parsed.description : "";
-        const content = typeof parsed.content === "string" ? parsed.content : "";
-        const tags = Array.isArray(parsed.tags) ? parsed.tags.filter((t): t is string => typeof t === "string") : [];
-        const searchHints = Array.isArray(parsed.searchHints)
-          ? parsed.searchHints.filter((h): h is string => typeof h === "string")
-          : [];
-        if (title && description && content && tags.length > 0 && searchHints.length > 0) {
-          return { title, description, tags, searchHints, content };
-        }
-        return undefined;
-      };
-
-      // Track whether THIS candidate's result came from the body-hash
-      // cache vs. a fresh LLM call. The cache short-circuits when the
-      // parent body has not changed since a prior derived write — surfacing
-      // the hit count separately so the operational yield rate
-      // (writtenFacts / freshAttempts) is interpretable as the cache warms.
-      let fromCache = false;
-      // Count single bounded retries for transient LLM failures on this
-      // candidate. Bumped via the `onRetryAttempt` callback threaded into
-      // `chatCompletion`; surfaced as `retryAttempts` telemetry, never as a
-      // failure for the same call.
-      let retryAttempts = 0;
-      const onRetryAttempt = () => {
-        retryAttempts += 1;
-      };
-      let derived: DerivedMemoryDraft | undefined;
-      try {
-        derived = db
-          ? await withLlmCache<DerivedMemoryDraft>(
-              db,
-              record.filePath,
-              record.body,
-              reEnrich ?? false,
-              () =>
-                compressMemoryToDerivedMemory(
-                  llmRunner,
-                  record.body,
-                  signal,
-                  featureConfig,
-                  (evt) => {
-                    warn(`[akm] LLM fallback for ${evt.feature}: ${evt.reason}`);
-                  },
-                  inferTelemetry,
-                  onRetryAttempt,
-                  onNotices,
-                ),
-              validate,
-              undefined,
-              "memory-inference-v2",
-              {
-                onCacheHit: () => {
-                  fromCache = true;
-                },
-              },
-            )
-          : await compressMemoryToDerivedMemory(
-              llmRunner,
-              record.body,
-              signal,
-              config,
-              (evt) => {
-                warn(`[akm] LLM fallback for ${evt.feature}: ${evt.reason}`);
-              },
-              inferTelemetry,
-              onRetryAttempt,
-              onNotices,
-            );
-      } catch (err) {
-        if (err instanceof ConfigError) {
-          configFailure ??= err;
-          return undefined;
-        }
-        throw err;
-      }
-
-      if (!derived) {
-        return { skipped: true, fromCache, retryAttempts } as const;
-      }
-      const writeOutcome = await writeDerivedMemory(record, derived);
-      if (writeOutcome.written > 0) {
-        markParentProcessed(record);
-        return { skipped: false, splitParent: true, written: writeOutcome.written, fromCache, retryAttempts } as const;
-      }
-      // LLM produced a valid derived draft but no file was written — either
-      // because `<parent>.derived.md` appeared on disk after the pre-check
-      // above (a rare mid-flight race) or `writeAssetToSource` threw.
-      // Categorise as `childExists` so the consumed attempt is accounted for
-      // in health metrics rather than vanishing into the freshAttempts
-      // denominator.
-      //
-      // When the child exists the inference is, by definition, complete — so
-      // mark the parent processed here too (#550), otherwise
-      // `isPendingMemory()` re-queues the same parent every run. A genuine
-      // write *failure* (`writeAssetToSource` threw) must NOT mark the parent
-      // — it should be retried next run — so we key off the explicit
-      // `childExists` outcome rather than the conflated `written === 0`.
-      if (writeOutcome.childExists) {
-        markParentProcessed(record);
-      }
-      return {
-        skipped: false,
-        splitParent: false,
-        written: 0,
-        fromCache,
-        retryAttempts,
-        childExists: true,
-        precheck: false,
-      } as const;
-    },
+    (record) =>
+      inferPendingMemoryRecord(record, {
+        config,
+        featureConfig,
+        signal,
+        db,
+        reEnrich,
+        llmRunner,
+        inferTelemetry,
+        compressMemoryToDerivedMemory,
+        onNotices,
+        onConfigFailure: (error) => {
+          configFailure ??= error;
+        },
+      }),
     // Caller-set connection concurrency or 1: `resolveLlmEngineUse` does
     // not forward `engines.<name>.concurrency`, so config cannot raise this.
     llmRunner.connection.concurrency ?? 1,

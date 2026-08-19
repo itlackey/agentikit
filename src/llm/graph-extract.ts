@@ -574,6 +574,27 @@ function parseBatchItem(raw: unknown): GraphExtraction {
   return parseGraphExtraction(raw);
 }
 
+function applySuccessfulBatchResults(
+  results: GraphExtraction[],
+  batchResult: unknown[],
+  nonEmptyBodies: string[],
+  nonEmptyIndices: number[],
+  batchState: GraphBatchState | undefined,
+): void {
+  if (batchState) batchState.nonArrayBatchFailures = 0;
+  if (batchResult.length > nonEmptyBodies.length) {
+    warn(
+      `graph extraction (batch): response had ${batchResult.length} items for ${nonEmptyBodies.length} assets; ` +
+        `ignoring ${batchResult.length - nonEmptyBodies.length} extra item(s).`,
+    );
+  }
+  for (let j = 0; j < nonEmptyBodies.length; j++) {
+    const originalIndex = nonEmptyIndices[j];
+    if (originalIndex === undefined) continue;
+    if (j < batchResult.length) results[originalIndex] = parseBatchItem(batchResult[j]);
+  }
+}
+
 /**
  * Extract entities and relations from multiple asset bodies in a single LLM
  * call (batched graph extraction).
@@ -758,21 +779,7 @@ export async function extractGraphFromBodies(
 
   // Map successful batch results back to their original indices.
   if (batchResult !== null) {
-    if (batchState) batchState.nonArrayBatchFailures = 0;
-    if (batchResult.length > nonEmptyBodies.length) {
-      warn(
-        `graph extraction (batch): response had ${batchResult.length} items for ${nonEmptyBodies.length} assets; ` +
-          `ignoring ${batchResult.length - nonEmptyBodies.length} extra item(s).`,
-      );
-    }
-    for (let j = 0; j < nonEmptyBodies.length; j++) {
-      const originalIndex = nonEmptyIndices[j];
-      if (originalIndex === undefined) continue;
-      if (j < batchResult.length) {
-        results[originalIndex] = parseBatchItem(batchResult[j]);
-      }
-      // j >= batchResult.length → partial failure; handled below.
-    }
+    applySuccessfulBatchResults(results, batchResult, nonEmptyBodies, nonEmptyIndices, batchState);
   }
 
   if (batchContextError && nonEmptyBodies.length > 1) {

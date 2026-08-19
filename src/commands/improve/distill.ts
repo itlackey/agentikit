@@ -768,6 +768,105 @@ function refuseDisallowedDistillInput(args: {
   };
 }
 
+async function prepareDistillExecution(args: {
+  options: AkmDistillOptions;
+  config: AkmConfig;
+  inputRef: string;
+  durableInputRef: string;
+  salienceWriteKey: string;
+}) {
+  const { options, config, inputRef, durableInputRef, salienceWriteKey } = args;
+  const stash = resolveRunStashDir(options.stashDir);
+  const chat = options.chat;
+  const executionNotices = new Map<string, Readonly<LoweringNotice>>();
+  const collectNotices = (notices: readonly Readonly<LoweringNotice>[]): void => {
+    for (const notice of notices) executionNotices.set(JSON.stringify(notice), notice);
+  };
+  const resolvedExecution =
+    !Object.hasOwn(options, "llmRunner") && !Object.hasOwn(options, "llmConfig")
+      ? resolveImproveLlmExecution({
+          config,
+          profile: options.improveProfile,
+          process: getImproveProcessConfig("distill", options.improveProfile),
+          processName: "distill",
+        })
+      : null;
+  if (resolvedExecution) collectNotices(resolvedExecution.notices);
+  const distillRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined = Object.hasOwn(options, "llmRunner")
+    ? (options.llmRunner ?? undefined)
+    : Object.hasOwn(options, "llmConfig")
+      ? options.llmConfig
+        ? structuredLlmRunnerFromConnection(options.llmConfig)
+        : undefined
+      : resolvedExecution?.runner;
+  const withNotices = (result: AkmDistillResult): AkmDistillResult =>
+    executionNotices.size > 0 ? { ...result, notices: Object.freeze([...executionNotices.values()]) } : result;
+  const lookup = options.lookupFn ?? ((ref: string) => defaultLookup(ref, stash));
+  const readEventsImpl =
+    options.readEventsFn ??
+    ((readOptions: Parameters<typeof readEvents>[0]) => readEvents(readOptions, { readOnly: true }));
+  const outcomeWeightEnabled = config.improve?.salience?.outcomeWeightEnabled !== false;
+  const fetchSimilarLessonsFn: NonNullable<AkmDistillOptions["fetchSimilarLessonsFn"]> =
+    options.fetchSimilarLessonsFn ?? ((query, n) => fetchTopSimilarLessons(query, n, options.stashDir));
+  const assetCtx = createRunContext({
+    stashDir: stash,
+    config,
+    eventsCtx: options.eventsCtx ?? {},
+    proposalsCtx: options.ctx ?? {},
+    chat,
+    getLlmRunner: () => distillRunner ?? null,
+    sourceRun: options.sourceRun ?? `distill-${Date.now()}`,
+    dryRun: false,
+    signal: options.signal,
+  }).withFreshAssetMemo();
+  const initialSalience = await loadAndScoreInputSalience({
+    inputRef,
+    durableInputRef,
+    salienceWriteKey,
+    stash,
+    config,
+    outcomeWeightEnabled,
+    lookup,
+    ctx: assetCtx,
+    persistSalience: false,
+  });
+  const assetState = { ...initialSalience };
+  const persistInputSalience = async (): Promise<void> => {
+    const scored = await loadAndScoreInputSalience({
+      inputRef,
+      durableInputRef,
+      salienceWriteKey,
+      stash,
+      config,
+      outcomeWeightEnabled,
+      lookup,
+      ctx: assetCtx,
+    });
+    assetState.assetContent = scored.assetContent ?? assetState.assetContent;
+    assetState.existingRefVocabulary = scored.existingRefVocabulary;
+  };
+  const feedbackState = readDistillFeedback({ readEventsImpl, options, durableInputRef });
+  const feedback = feedbackState.filteredEvents.slice(-20).map((event) => ({
+    ts: event.ts,
+    eventType: event.eventType,
+    ...(event.metadata !== undefined ? { metadata: event.metadata } : {}),
+  }));
+  return {
+    stash,
+    chat,
+    collectNotices,
+    distillRunner,
+    withNotices,
+    lookup,
+    outcomeWeightEnabled,
+    fetchSimilarLessonsFn,
+    assetState,
+    persistInputSalience,
+    feedback,
+    ...feedbackState,
+  };
+}
+
 export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistillResult> {
   const inputRef = options.ref.trim();
   if (!inputRef) {
@@ -811,90 +910,30 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
   const refused = refuseDisallowedDistillInput({ options, parsedInputRef, inputRef, durableInputRef, eligMeta });
   if (refused) return refused;
 
-  const stash = resolveRunStashDir(options.stashDir);
-  const chat = options.chat;
-  const executionNotices = new Map<string, Readonly<LoweringNotice>>();
-  const collectNotices = (notices: readonly Readonly<LoweringNotice>[]): void => {
-    for (const notice of notices) executionNotices.set(JSON.stringify(notice), notice);
-  };
-  const resolvedDistillExecution =
-    !Object.hasOwn(options, "llmRunner") && !Object.hasOwn(options, "llmConfig")
-      ? resolveImproveLlmExecution({
-          config,
-          profile: options.improveProfile,
-          process: getImproveProcessConfig("distill", options.improveProfile),
-          processName: "distill",
-        })
-      : null;
-  if (resolvedDistillExecution) collectNotices(resolvedDistillExecution.notices);
-  const distillRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined = Object.hasOwn(options, "llmRunner")
-    ? (options.llmRunner ?? undefined)
-    : Object.hasOwn(options, "llmConfig")
-      ? options.llmConfig
-        ? structuredLlmRunnerFromConnection(options.llmConfig)
-        : undefined
-      : resolvedDistillExecution?.runner;
-  const withNotices = (result: AkmDistillResult): AkmDistillResult =>
-    executionNotices.size > 0 ? { ...result, notices: Object.freeze([...executionNotices.values()]) } : result;
-  const lookup = options.lookupFn ?? ((ref: string) => defaultLookup(ref, stash));
-  const readEventsImpl =
-    options.readEventsFn ??
-    ((readOptions: Parameters<typeof readEvents>[0]) => readEvents(readOptions, { readOnly: true }));
-  // R1 opt-out must flow into every computeSalience call this command makes so
-  // distill-written rank_score rows use the same weights as preparation's.
-  const outcomeWeightEnabled = config.improve?.salience?.outcomeWeightEnabled !== false;
-  // D-4 / #390: similar-lessons retrieval seam (test-injectable).
-  const fetchSimilarLessonsFn =
-    options.fetchSimilarLessonsFn ?? ((query, n) => fetchTopSimilarLessons(query, n, options.stashDir));
-
-  const assetCtx = createRunContext({
-    stashDir: stash,
+  const prepared = await prepareDistillExecution({
+    options,
     config,
-    eventsCtx: options.eventsCtx ?? {},
-    proposalsCtx: options.ctx ?? {},
-    chat,
-    getLlmRunner: () => distillRunner ?? null,
-    sourceRun: options.sourceRun ?? `distill-${Date.now()}`,
-    dryRun: false,
-    signal: options.signal,
-  }).withFreshAssetMemo();
-
-  let { assetContent, existingRefVocabulary } = await loadAndScoreInputSalience({
     inputRef,
     durableInputRef,
     salienceWriteKey,
+  });
+  const {
     stash,
-    config,
-    outcomeWeightEnabled,
+    chat,
+    collectNotices,
+    distillRunner,
+    withNotices,
     lookup,
-    ctx: assetCtx,
-    persistSalience: false,
-  });
-  const persistInputSalience = async (): Promise<void> => {
-    const scored = await loadAndScoreInputSalience({
-      inputRef,
-      durableInputRef,
-      salienceWriteKey,
-      stash,
-      config,
-      outcomeWeightEnabled,
-      lookup,
-      ctx: assetCtx,
-    });
-    assetContent = scored.assetContent ?? assetContent;
-    existingRefVocabulary = scored.existingRefVocabulary;
-  };
-
-  const { filteredEvents, exclusionSet, filteredFeedbackCount, feedbackFullyFiltered } = readDistillFeedback({
-    readEventsImpl,
-    options,
-    durableInputRef,
-  });
-  const feedback = filteredEvents.slice(-20).map((e) => ({
-    ts: e.ts,
-    eventType: e.eventType,
-    ...(e.metadata !== undefined ? { metadata: e.metadata } : {}),
-  }));
+    outcomeWeightEnabled,
+    fetchSimilarLessonsFn,
+    assetState,
+    persistInputSalience,
+    feedback,
+    filteredEvents,
+    exclusionSet,
+    filteredFeedbackCount,
+    feedbackFullyFiltered,
+  } = prepared;
 
   // Memory→knowledge promotion branch (D-1/#369). When the target ref is a
   // reinforced memory, distill graduates it into a knowledge proposal instead
@@ -907,7 +946,7 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     inputRef,
     durableInputRef,
     ...(options.itemRef ? { itemRef: options.itemRef } : {}),
-    assetContent,
+    assetContent: assetState.assetContent,
     filteredEvents,
     config,
     strategy: options.improveProfile,
@@ -917,7 +956,7 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     stash,
     lookup,
     fetchSimilarLessonsFn,
-    existingRefVocabulary,
+    existingRefVocabulary: assetState.existingRefVocabulary,
     outcomeWeightEnabled,
     eligMeta,
     eligibilitySource: options.eligibilitySource,
@@ -942,7 +981,7 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     options,
     stash,
     inputRef,
-    assetContent,
+    assetContent: assetState.assetContent,
     feedback,
     effectiveProposalKind,
     effectiveLessonRef,
@@ -994,7 +1033,7 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     config,
     options,
     content,
-    assetContent,
+    assetContent: assetState.assetContent,
     chat,
     distillRunner,
     fetchSimilarLessonsFn,
@@ -1014,7 +1053,7 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
       content,
       options,
       distillRunner,
-      assetContent,
+      assetContent: assetState.assetContent,
       inputRef,
       durableInputRef,
       effectiveLessonRef,
@@ -1024,7 +1063,7 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
       filteredFeedbackCount,
       feedbackFullyFiltered,
       lessonJudgeConfidence,
-      existingRefVocabulary,
+      existingRefVocabulary: assetState.existingRefVocabulary,
       outcomeWeightEnabled,
       descriptionSwapped,
       eligMeta,

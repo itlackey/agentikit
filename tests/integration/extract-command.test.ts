@@ -20,7 +20,7 @@ import type { AkmConfig } from "../../src/core/config/config";
 import { ImproveProcessConfigSchema, ImproveProfileConfigSchema } from "../../src/core/config/config-schema";
 import { ConfigError, UsageError } from "../../src/core/errors";
 import { readEvents } from "../../src/core/events";
-import { openStateDatabase } from "../../src/core/state-db";
+import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { detectTruncatedDescription } from "../../src/core/text-truncation";
 import type {
   SessionData,
@@ -728,6 +728,37 @@ describe("akmExtract — engine + strategy config resolution", () => {
     } finally {
       stateDb.close();
     }
+  });
+
+  test("missing required symbolic credential does not create state.db, tracking, session, or proposal assets", async () => {
+    const stash = makeStashDir();
+    const session = fakeSession("credential-no-state", Date.now());
+    const config = configEnabled(stash);
+    const defaultEngine = config.engines?.default;
+    if (!defaultEngine || defaultEngine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    defaultEngine.apiKey = "$AKM_EXTRACT_NO_STATE_REQUIRED_KEY";
+    const stateDbPath = getStateDbPath();
+    const beforeTree = fs.readdirSync(stash, { recursive: true }).map(String).sort();
+    let chatCalls = 0;
+
+    const failure = withEnv({ AKM_EXTRACT_NO_STATE_REQUIRED_KEY: undefined }, () =>
+      akmExtract({
+        type: "claude-code",
+        sessionId: session.ref.sessionId,
+        stashDir: stash,
+        config,
+        harnesses: [makeFakeHarness([session])],
+        chat: async () => {
+          chatCalls += 1;
+          return JSON.stringify({ candidates: [] });
+        },
+      }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(chatCalls).toBe(0);
+    expect(fs.existsSync(stateDbPath)).toBe(false);
+    expect(fs.readdirSync(stash, { recursive: true }).map(String).sort()).toEqual(beforeTree);
   });
 
   function configWithStrategy(stashDir: string, processOverride: Record<string, unknown>): AkmConfig {
