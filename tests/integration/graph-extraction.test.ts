@@ -385,6 +385,44 @@ describe("runGraphExtractionPass — disabled paths", () => {
 // ── runGraphExtractionPass — standalone index engine gating ────────────────
 
 describe("runGraphExtractionPass — standalone index engine gating", () => {
+  test.each([
+    { name: "empty primary stash", withCacheSource: false },
+    { name: "cache-only secondary source", withCacheSource: true },
+  ])("does not materialize a required credential for an $name", async ({ withCacheSource }) => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-graph-no-work-cache-"));
+    try {
+      if (withCacheSource) {
+        fs.mkdirSync(path.join(cacheDir, "memories"), { recursive: true });
+        fs.writeFileSync(path.join(cacheDir, "memories", "cached.md"), "---\n---\n\nCache-only body.\n");
+      }
+      const cfg = configWithLlm({
+        engines: {
+          index: {
+            kind: "llm",
+            ...SAMPLE_LLM,
+            apiKey: "$AKM_GRAPH_NO_WORK_REQUIRED_KEY",
+          },
+        },
+        index: { defaults: { engine: "index" }, graph: { enabled: true } },
+      });
+
+      const result = await withEnv({ AKM_GRAPH_NO_WORK_REQUIRED_KEY: undefined }, () =>
+        withGraphDb("required-key-no-work", (db) =>
+          runGraphExtractionPass({
+            config: cfg,
+            sources: withCacheSource ? [{ path: tmpStash }, { path: cacheDir }] : sources(),
+            db,
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({ written: false, considered: 0, extracted: 0 });
+      expect(extractorCallCount).toBe(0);
+    } finally {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
   test("returns initial lowering notices from standalone symbolic selection", async () => {
     writeFile("memories/m1.md", {}, "Body.");
     extractor = () => ({ entities: ["E"], relations: [] });
@@ -435,6 +473,62 @@ describe("runGraphExtractionPass — standalone index engine gating", () => {
       ).cnt;
       expect(cacheCount).toBe(0);
       expect(graphCount).toBe(0);
+    });
+  });
+
+  test("an all-cache-hit sweep does not materialize a required credential", async () => {
+    writeFile("memories/cache-hit.md", {}, "Alice works with Bob.");
+    extractor = () => ({ entities: ["Alice", "Bob"], relations: [{ from: "Alice", to: "Bob" }] });
+    const cfg = configWithLlm({
+      index: { defaults: { engine: "index" }, graph: { enabled: true, graphExtractionBatchSize: 1 } },
+    });
+
+    await withGraphDb("prime-cache-hit", (db) => runGraphExtractionPass({ config: cfg, sources: sources(), db }));
+    expect(extractorCallCount).toBe(1);
+    const engine = cfg.engines?.index;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the index LLM engine");
+    engine.apiKey = "$AKM_GRAPH_CACHE_HIT_REQUIRED_KEY";
+
+    const result = await withEnv({ AKM_GRAPH_CACHE_HIT_REQUIRED_KEY: undefined }, () =>
+      withGraphDb("required-key-cache-hit", (db) => runGraphExtractionPass({ config: cfg, sources: sources(), db })),
+    );
+
+    expect(result).toMatchObject({ written: true, considered: 1, extracted: 1 });
+    expect(result.telemetry).toMatchObject({ cacheHits: 1, cacheMisses: 0 });
+    expect(extractorCallCount).toBe(1);
+  });
+
+  test("a cache-hit plus cache-miss batch fails before changing graph or cache state", async () => {
+    writeFile("memories/a-hit.md", {}, "Alice works with Bob.");
+    extractor = () => ({ entities: ["Alice", "Bob"], relations: [{ from: "Alice", to: "Bob" }] });
+    const cfg = configWithLlm({
+      index: { defaults: { engine: "index" }, graph: { enabled: true, graphExtractionBatchSize: 1 } },
+    });
+
+    await withGraphDb("prime-mixed-cache", (db) => runGraphExtractionPass({ config: cfg, sources: sources(), db }));
+    writeFile("memories/b-miss.md", {}, "Carol supports Service C.");
+    const engine = cfg.engines?.index;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the index LLM engine");
+    engine.apiKey = "$AKM_GRAPH_MIXED_REQUIRED_KEY";
+
+    await withGraphDb("required-key-mixed-cache", async (db) => {
+      const snapshot = () => ({
+        cache: db.prepare("SELECT * FROM llm_enrichment_cache ORDER BY asset_ref, cache_variant").all(),
+        files: db.prepare("SELECT * FROM graph_files ORDER BY stash_root, file_path").all(),
+        entities: db.prepare("SELECT * FROM graph_file_entities ORDER BY stash_root, file_path, entity_order").all(),
+        relations: db
+          .prepare("SELECT * FROM graph_file_relations ORDER BY stash_root, file_path, relation_order")
+          .all(),
+        meta: db.prepare("SELECT * FROM graph_meta ORDER BY stash_root").all(),
+      });
+      const before = snapshot();
+      const failure = withEnv({ AKM_GRAPH_MIXED_REQUIRED_KEY: undefined }, () =>
+        runGraphExtractionPass({ config: cfg, sources: sources(), db }),
+      );
+
+      await expect(failure).rejects.toBeInstanceOf(ConfigError);
+      expect(snapshot()).toEqual(before);
+      expect(extractorCallCount).toBe(1);
     });
   });
 

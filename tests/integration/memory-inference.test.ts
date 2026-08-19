@@ -21,6 +21,8 @@ import type { AkmConfig } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
 import type { LoweringNotice } from "../../src/execution/resolved-request";
 import type { SearchSource } from "../../src/indexer/search/search-source";
+import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
+import { computeBodyHash, upsertLlmCacheEntry } from "../../src/storage/repositories/index-llm-cache-repository";
 import { withEnv } from "../_helpers/sandbox";
 
 type Draft = {
@@ -327,6 +329,111 @@ describe("runMemoryInferencePass — progress", () => {
 // ── runMemoryInferencePass — enabled path ───────────────────────────────────
 
 describe("runMemoryInferencePass — enabled", () => {
+  test("all existing children self-heal their parents without materializing a required credential", async () => {
+    const first = writeMemory("existing-a", { description: "first" }, "First body.");
+    const second = writeMemory("existing-b", { description: "second" }, "Second body.");
+    writeMemory("existing-a.derived", { inferred: true }, "First derived body.");
+    writeMemory("existing-b.derived", { inferred: true }, "Second derived body.");
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_MEMORY_EXISTING_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+    let calls = 0;
+    compressor = () => {
+      calls += 1;
+      throw new Error("existing-child batch dispatched an LLM request");
+    };
+
+    const result = await withEnv({ AKM_MEMORY_EXISTING_REQUIRED_KEY: undefined }, () =>
+      runMemoryInferencePass({ config, sources: sources() }),
+    );
+
+    expect(result).toMatchObject({ considered: 2, skippedChildExists: 2, writtenFacts: 0 });
+    expect(calls).toBe(0);
+    for (const parent of [first, second]) {
+      expect(parseFrontmatter(fs.readFileSync(parent, "utf8")).data.inferenceProcessed).toBe(true);
+    }
+  });
+
+  test("an already-aborted batch does not materialize a required credential or mutate parents", async () => {
+    const parent = writeMemory("aborted-required", { description: "keep" }, "Body.");
+    const before = fs.readFileSync(parent, "utf8");
+    const controller = new AbortController();
+    controller.abort();
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_MEMORY_ABORTED_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+
+    const result = await withEnv({ AKM_MEMORY_ABORTED_REQUIRED_KEY: undefined }, () =>
+      runMemoryInferencePass({ config, sources: sources(), signal: controller.signal }),
+    );
+
+    expect(result).toMatchObject({ considered: 1, skippedAborted: 1, writtenFacts: 0 });
+    expect(fs.readFileSync(parent, "utf8")).toBe(before);
+    expect(fs.existsSync(path.join(tmpStash, "memories", "aborted-required.derived.md"))).toBe(false);
+  });
+
+  test("a validated cache-only batch writes derived state without materializing a required credential", async () => {
+    const parent = writeMemory("cached-required", { description: "parent" }, "Cached body.");
+    const record = collectPendingMemories(tmpStash)[0];
+    if (!record) throw new Error("test fixture did not collect the pending memory");
+    const db = openIndexDatabase(path.join(tmpStash, "index.db"));
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_MEMORY_CACHE_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+    upsertLlmCacheEntry(
+      db,
+      record.filePath,
+      computeBodyHash(record.body),
+      JSON.stringify(sampleDraft("Cached Derived")),
+      "memory-inference-v2",
+    );
+    let calls = 0;
+    compressor = () => {
+      calls += 1;
+      throw new Error("cache-only batch dispatched an LLM request");
+    };
+
+    try {
+      const result = await withEnv({ AKM_MEMORY_CACHE_REQUIRED_KEY: undefined }, () =>
+        runMemoryInferencePass({ config, sources: sources(), db }),
+      );
+
+      expect(result).toMatchObject({ considered: 1, cacheHits: 1, splitParents: 1, writtenFacts: 1 });
+      expect(calls).toBe(0);
+      expect(fs.existsSync(path.join(tmpStash, "memories", "cached-required.derived.md"))).toBe(true);
+      expect(parseFrontmatter(fs.readFileSync(parent, "utf8")).data.inferenceProcessed).toBe(true);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
   test("required symbolic credential failure escapes the worker pool without writing derived state", async () => {
     const parentPath = writeMemory("credential", {}, "Body.");
     const config: AkmConfig = {

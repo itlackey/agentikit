@@ -230,6 +230,45 @@ describe("#624 P3 enqueueGraphExtraction / drainExtractionQueue (AC1)", () => {
     const cacheRows = (db.prepare("SELECT COUNT(*) AS n FROM llm_enrichment_cache").get() as { n: number }).n;
     expect(cacheRows).toBe(0);
   });
+
+  test("a queued path already covered by the stored graph is acknowledged without materializing credentials", async () => {
+    const body = "Alice works with Bob on Project X.";
+    const absPath = makeEligibleMemory("queued-hit", body);
+    const extracted = await extractGraphForSingleFile(db, stash.dir, absPath, undefined, {
+      llmOverride: async () => ({
+        entities: ["Alice", "Bob", "Project X"],
+        relations: [{ from: "Alice", to: "Bob", type: "works_with" }],
+      }),
+    });
+    expect(extracted).toBe(true);
+    enqueueGraphExtraction(db, stash.dir, absPath, computeBodyHash(body), 10);
+    const graphBefore = loadGraphFilesOnly(stash.dir, db);
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        graph: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_GRAPH_QUEUE_HIT_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "graph" }, graph: { enabled: true, lazyGraphExtraction: true } },
+    };
+
+    const result = await withEnv({ AKM_GRAPH_QUEUE_HIT_REQUIRED_KEY: undefined }, () =>
+      runGraphExtractionPass({
+        config,
+        sources: [{ path: stash.dir }],
+        db,
+        options: { candidatePaths: new Set() },
+      }),
+    );
+
+    expect(result.written).toBe(false);
+    expect(queueRowCount(stash.dir)).toBe(0);
+    expect(loadGraphFilesOnly(stash.dir, db)).toEqual(graphBefore);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

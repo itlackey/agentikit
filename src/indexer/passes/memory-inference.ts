@@ -43,6 +43,7 @@ import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { assembleAsset } from "../../core/asset/asset-serialize";
 import { parseFrontmatter, parseFrontmatterBlock } from "../../core/asset/frontmatter";
 import { conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
+import { bestEffort } from "../../core/best-effort";
 import { todayIso } from "../../core/common";
 import { concurrentMap } from "../../core/concurrent";
 import type { SourceConfigEntry } from "../../core/config/config";
@@ -56,6 +57,7 @@ import { type ResolvedIndexPassExecution, resolveIndexPassExecution } from "../.
 import type { DerivedMemoryDraft, MemoryInferTelemetry } from "../../llm/memory-infer";
 import * as memoryInfer from "../../llm/memory-infer";
 import { preflightStructuredLlmRunner, type StructuredLlmRunner } from "../../llm/structured-call";
+import { computeBodyHash, getLlmCacheEntry } from "../../storage/repositories/index-llm-cache-repository";
 import { withLlmCache } from "../db/llm-cache";
 import { walkMarkdownFiles } from "../walk/walker";
 import type { EnrichmentPassContext } from "./pass-context";
@@ -163,6 +165,48 @@ interface MemoryRecord {
   name: string;
 }
 
+type MemoryInferencePlan =
+  | { kind: "aborted"; record: MemoryRecord }
+  | { kind: "existing-child"; record: MemoryRecord }
+  | { kind: "cache-hit"; record: MemoryRecord; derived: DerivedMemoryDraft }
+  | { kind: "model"; record: MemoryRecord };
+
+function validateDerivedMemoryDraft(raw: unknown): DerivedMemoryDraft | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const parsed = raw as Record<string, unknown>;
+  const title = typeof parsed.title === "string" ? parsed.title : "";
+  const description = typeof parsed.description === "string" ? parsed.description : "";
+  const content = typeof parsed.content === "string" ? parsed.content : "";
+  const tags = Array.isArray(parsed.tags) ? parsed.tags.filter((tag): tag is string => typeof tag === "string") : [];
+  const searchHints = Array.isArray(parsed.searchHints)
+    ? parsed.searchHints.filter((hint): hint is string => typeof hint === "string")
+    : [];
+  return title && description && content && tags.length > 0 && searchHints.length > 0
+    ? { title, description, tags, searchHints, content }
+    : undefined;
+}
+
+function planPendingMemoryRecord(
+  record: MemoryRecord,
+  ctx: Pick<MemoryInferencePassContext, "signal" | "db" | "reEnrich">,
+): MemoryInferencePlan {
+  if (ctx.signal?.aborted) return { kind: "aborted", record };
+  if (fs.existsSync(derivedChildPath(record))) return { kind: "existing-child", record };
+  if (ctx.db && !ctx.reEnrich) {
+    const cached = bestEffort(() => {
+      const entry = getLlmCacheEntry(
+        ctx.db as NonNullable<MemoryInferencePassContext["db"]>,
+        record.filePath,
+        computeBodyHash(record.body),
+        "memory-inference-v2",
+      );
+      return entry ? validateDerivedMemoryDraft(JSON.parse(entry.resultJson)) : undefined;
+    }, "memory inference cache read corrupt — fall through to recompute");
+    if (cached) return { kind: "cache-hit", record, derived: cached };
+  }
+  return { kind: "model", record };
+}
+
 function memoryExecutionForContext(
   ctx: MemoryInferencePassContext,
   config: MemoryInferencePassContext["config"],
@@ -174,7 +218,7 @@ function memoryExecutionForContext(
 }
 
 async function inferPendingMemoryRecord(
-  record: MemoryRecord,
+  plan: MemoryInferencePlan,
   ctx: {
     config: MemoryInferencePassContext["config"];
     featureConfig: MemoryInferencePassContext["config"];
@@ -188,6 +232,7 @@ async function inferPendingMemoryRecord(
     onConfigFailure: (error: ConfigError) => void;
   },
 ) {
+  const { record } = plan;
   const {
     config,
     featureConfig,
@@ -200,11 +245,11 @@ async function inferPendingMemoryRecord(
     onNotices,
     onConfigFailure,
   } = ctx;
-  if (signal?.aborted) return { aborted: true } as const;
+  if (signal?.aborted || plan.kind === "aborted") return { aborted: true } as const;
 
   // Existing children are complete, but the parent may be unmarked after a
   // crash between the child write and parent update (or an external write).
-  if (fs.existsSync(derivedChildPath(record))) {
+  if (plan.kind === "existing-child" || fs.existsSync(derivedChildPath(record))) {
     markParentProcessed(record);
     return {
       skipped: false,
@@ -217,22 +262,7 @@ async function inferPendingMemoryRecord(
     } as const;
   }
 
-  const validate = (raw: unknown): DerivedMemoryDraft | undefined => {
-    if (!raw || typeof raw !== "object") return undefined;
-    const parsed = raw as Record<string, unknown>;
-    const title = typeof parsed.title === "string" ? parsed.title : "";
-    const description = typeof parsed.description === "string" ? parsed.description : "";
-    const content = typeof parsed.content === "string" ? parsed.content : "";
-    const tags = Array.isArray(parsed.tags) ? parsed.tags.filter((tag): tag is string => typeof tag === "string") : [];
-    const searchHints = Array.isArray(parsed.searchHints)
-      ? parsed.searchHints.filter((hint): hint is string => typeof hint === "string")
-      : [];
-    return title && description && content && tags.length > 0 && searchHints.length > 0
-      ? { title, description, tags, searchHints, content }
-      : undefined;
-  };
-
-  let fromCache = false;
+  let fromCache = plan.kind === "cache-hit";
   let retryAttempts = 0;
   const onRetryAttempt = () => {
     retryAttempts += 1;
@@ -248,34 +278,36 @@ async function inferPendingMemoryRecord(
       onRetryAttempt,
       onNotices,
     );
-  let derived: DerivedMemoryDraft | undefined;
+  let derived: DerivedMemoryDraft | undefined = plan.kind === "cache-hit" ? plan.derived : undefined;
   try {
-    derived = db
-      ? await withLlmCache<DerivedMemoryDraft>(
-          db,
-          record.filePath,
-          record.body,
-          reEnrich ?? false,
-          infer,
-          validate,
-          undefined,
-          "memory-inference-v2",
-          {
-            onCacheHit: () => {
-              fromCache = true;
+    if (plan.kind === "model") {
+      derived = db
+        ? await withLlmCache<DerivedMemoryDraft>(
+            db,
+            record.filePath,
+            record.body,
+            reEnrich ?? false,
+            infer,
+            validateDerivedMemoryDraft,
+            undefined,
+            "memory-inference-v2",
+            {
+              onCacheHit: () => {
+                fromCache = true;
+              },
             },
-          },
-        )
-      : await compressMemoryToDerivedMemory(
-          llmRunner,
-          record.body,
-          signal,
-          config,
-          (event) => warn(`[akm] LLM fallback for ${event.feature}: ${event.reason}`),
-          inferTelemetry,
-          onRetryAttempt,
-          onNotices,
-        );
+          )
+        : await compressMemoryToDerivedMemory(
+            llmRunner,
+            record.body,
+            signal,
+            config,
+            (event) => warn(`[akm] LLM fallback for ${event.feature}: ${event.reason}`),
+            inferTelemetry,
+            onRetryAttempt,
+            onNotices,
+          );
+    }
   } catch (error) {
     if (error instanceof ConfigError) {
       onConfigFailure(error);
@@ -377,10 +409,12 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
   result.considered = pending.length;
   if (pending.length === 0) return completeResult();
 
-  // Validate the authorized symbolic runner once for the whole batch before
-  // an existing-child fast path can mark any parent processed. Real provider
-  // failures still flow through the per-record fail-soft policy below.
-  await preflightStructuredLlmRunner(llmRunner);
+  // Classify the whole batch without mutation. Required credentials are
+  // materialized only when at least one record will actually dispatch; this
+  // keeps aborted, existing-child, and validated-cache-only batches available
+  // offline while preserving all-or-nothing preflight for mixed batches.
+  const plans = pending.map((record) => planPendingMemoryRecord(record, { signal, db, reEnrich }));
+  if (plans.some((plan) => plan.kind === "model")) await preflightStructuredLlmRunner(llmRunner);
 
   let processed = 0;
   const total = pending.length;
@@ -388,9 +422,9 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
 
   let configFailure: ConfigError | undefined;
   const perRecordResults = await concurrentMap(
-    pending,
-    (record) =>
-      inferPendingMemoryRecord(record, {
+    plans,
+    (plan) =>
+      inferPendingMemoryRecord(plan, {
         config,
         featureConfig,
         signal,

@@ -826,6 +826,140 @@ describe("akmExtract — engine + strategy config resolution", () => {
     expect(snapshotTree(storage.root)).toEqual(storageTreeBefore);
   });
 
+  test.each([
+    {
+      reason: "too_short" as const,
+      key: "AKM_EXTRACT_TOO_SHORT_REQUIRED_KEY",
+      configure: (config: AkmConfig) => {
+        const process = config.improve?.strategies?.extract?.processes?.extract;
+        if (process) process.minContentChars = 100_000;
+      },
+      harness: (session: SessionData) => makeFakeHarness([session]),
+    },
+    {
+      reason: "triaged_out" as const,
+      key: "AKM_EXTRACT_TRIAGED_REQUIRED_KEY",
+      configure: (config: AkmConfig) => {
+        const process = config.improve?.strategies?.extract?.processes?.extract;
+        if (process) process.triage = { enabled: true, minScore: 10 };
+      },
+      harness: (session: SessionData) => makeFakeHarness([session]),
+    },
+    {
+      reason: "read_failed" as const,
+      key: "AKM_EXTRACT_READ_FAILED_REQUIRED_KEY",
+      configure: (_config: AkmConfig) => {},
+      harness: (session: SessionData): SessionLogHarness => ({
+        ...makeFakeHarness([session]),
+        readSession: () => {
+          throw new Error("fixture read failure");
+        },
+      }),
+    },
+  ])("missing required credential is not materialized for $reason", async ({ reason, key, configure, harness }) => {
+    const stash = storage.stashDir;
+    const session = fakeSession(`credential-${reason}`, Date.now());
+    const config = configEnabled(stash);
+    configure(config);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.apiKey = `$${key}`;
+    const before = snapshotTree(storage.root);
+    let chatCalls = 0;
+
+    const result = await withEnv({ [key]: undefined }, () =>
+      akmExtract({
+        type: "claude-code",
+        sessionId: session.ref.sessionId,
+        stashDir: stash,
+        config,
+        harnesses: [harness(session)],
+        chat: async () => {
+          chatCalls += 1;
+          throw new Error(`deterministic ${reason} gate dispatched an LLM request`);
+        },
+      }),
+    );
+
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0]).toMatchObject({ skipped: true, skipReason: reason });
+    expect(chatCalls).toBe(0);
+    expect(snapshotTree(storage.root)).toEqual(before);
+  });
+
+  test("missing required credential is not materialized for an unchanged already-extracted session", async () => {
+    const stash = storage.stashDir;
+    const session = fakeSession("credential-already-extracted", Date.now());
+    const config = configEnabled(stash);
+    await akmExtract({
+      type: "claude-code",
+      sessionId: session.ref.sessionId,
+      stashDir: stash,
+      config,
+      harnesses: [makeFakeHarness([session])],
+      chat: async () => JSON.stringify({ candidates: [] }),
+    });
+
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.apiKey = "$AKM_EXTRACT_ALREADY_REQUIRED_KEY";
+    const before = snapshotTree(storage.root);
+    let chatCalls = 0;
+
+    const result = await withEnv({ AKM_EXTRACT_ALREADY_REQUIRED_KEY: undefined }, () =>
+      akmExtract({
+        type: "claude-code",
+        sessionId: session.ref.sessionId,
+        stashDir: stash,
+        config,
+        harnesses: [makeFakeHarness([session])],
+        chat: async () => {
+          chatCalls += 1;
+          throw new Error("already-extracted gate dispatched an LLM request");
+        },
+      }),
+    );
+
+    expect(result.sessions[0]).toMatchObject({ skipped: true, skipReason: "already_extracted" });
+    expect(chatCalls).toBe(0);
+    expect(snapshotTree(storage.root)).toEqual(before);
+  });
+
+  test("a deterministic skip plus eligible session fails before any partial tracking, lock, or proposal mutation", async () => {
+    const stash = storage.stashDir;
+    const short = fakeSession("credential-mixed-short", Date.now());
+    const firstEvent = short.events[0];
+    if (!firstEvent) throw new Error("test fixture requires one session event");
+    short.events = [{ ...firstEvent, text: "tiny" }];
+    const eligible = fakeSession("credential-mixed-eligible", Date.now() - 1);
+    const config = configEnabled(stash);
+    const process = config.improve?.strategies?.extract?.processes?.extract;
+    if (process) process.minContentChars = 20;
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.apiKey = "$AKM_EXTRACT_MIXED_REQUIRED_KEY";
+    const before = snapshotTree(storage.root);
+    let chatCalls = 0;
+
+    const failure = withEnv({ AKM_EXTRACT_MIXED_REQUIRED_KEY: undefined }, () =>
+      akmExtract({
+        type: "claude-code",
+        since: "24h",
+        stashDir: stash,
+        config,
+        harnesses: [makeFakeHarness([short, eligible])],
+        chat: async () => {
+          chatCalls += 1;
+          return JSON.stringify({ candidates: [] });
+        },
+      }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(chatCalls).toBe(0);
+    expect(snapshotTree(storage.root)).toEqual(before);
+  });
+
   test("default discovery reads a held-WAL watermark without mutating state or materializing a no-work credential", async () => {
     const stash = storage.stashDir;
     const stateDbPath = getStateDbPath();

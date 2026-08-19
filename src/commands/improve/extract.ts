@@ -557,19 +557,7 @@ function runPreLlmSessionGates(args: {
   // `--force` overrides it to re-extract a previously-extracted session.
   const contentHash = hashSessionContent(data);
   if (!force && shouldSkipAlreadyExtractedSession(prior, contentHash)) {
-    return {
-      skip: {
-        sessionId: sessionRef.sessionId,
-        harness: harness.name,
-        candidateCount: 0,
-        proposalIds: [],
-        preFilter: { inputCount: 0, outputCount: 0, truncatedCount: 0 },
-        warnings: [`already extracted (content unchanged) at ${prior?.processed_at}; pass --force to re-process`],
-        skipped: true,
-        skipReason: "already_extracted",
-        contentHash,
-      },
-    };
+    return { skip: alreadyExtractedResult(harness.name, sessionRef.sessionId, prior, contentHash) };
   }
 
   const filtered = preFilterSession(data, {
@@ -636,6 +624,112 @@ function runPreLlmSessionGates(args: {
   return { data, filtered, contentHash };
 }
 
+type ExtractEligibleGate = Exclude<ReturnType<typeof runPreLlmSessionGates>, { skip: ExtractedSessionResult }>;
+
+type ExtractSessionPlan =
+  | { kind: "skip"; summary: SessionSummary; result: ExtractedSessionResult }
+  | { kind: "model"; summary: SessionSummary; gate: ExtractEligibleGate };
+
+function alreadyExtractedResult(
+  harness: string,
+  sessionId: string,
+  prior: ExtractedSessionRow | undefined,
+  contentHash: string,
+): ExtractedSessionResult {
+  return {
+    sessionId,
+    harness,
+    candidateCount: 0,
+    proposalIds: [],
+    preFilter: { inputCount: 0, outputCount: 0, truncatedCount: 0 },
+    warnings: [`already extracted (content unchanged) at ${prior?.processed_at}; pass --force to re-process`],
+    skipped: true,
+    skipReason: "already_extracted",
+    contentHash,
+  };
+}
+
+function lockedConcurrentResult(harness: string, summary: SessionSummary): ExtractedSessionResult {
+  return {
+    sessionId: summary.sessionId,
+    harness,
+    candidateCount: 0,
+    proposalIds: [],
+    preFilter: { inputCount: 0, outputCount: 0, truncatedCount: 0 },
+    warnings: ["concurrent extract holds this session's lock — skipped (handled by the other run)"],
+    skipped: true,
+    skipReason: "locked_concurrent",
+  };
+}
+
+function alreadyExtractedAfterLock(args: {
+  stateDb: Database | undefined;
+  harness: string;
+  summary: SessionSummary;
+  force: boolean;
+  contentHash: string;
+}): ExtractedSessionResult | undefined {
+  const { stateDb, harness, summary, force, contentHash } = args;
+  if (!stateDb || force) return undefined;
+  const prior = getExtractedSessionsMap(stateDb, harness, [summary.sessionId]).get(summary.sessionId);
+  return shouldSkipAlreadyExtractedSession(prior, contentHash)
+    ? alreadyExtractedResult(harness, summary.sessionId, prior, contentHash)
+    : undefined;
+}
+
+function planExtractSessions(args: {
+  candidates: SessionSummary[];
+  options: AkmExtractOptions;
+  harness: SessionLogHarness;
+  seenMap: Map<string, ExtractedSessionRow>;
+  maxTotalChars: number | undefined;
+  minContentChars: number;
+  maxSessionsPerRun: number;
+  triage: { enabled: boolean; minScore: number };
+  trackingEnabled: boolean;
+  dryRun: boolean;
+}): { plans: ExtractSessionPlan[]; deferred: number } {
+  const { candidates, options, harness, seenMap, maxSessionsPerRun, trackingEnabled, dryRun } = args;
+  const plans: ExtractSessionPlan[] = [];
+  let modelCount = 0;
+  for (let index = 0; index < candidates.length; index++) {
+    if (options.signal?.aborted) break;
+    if (!options.sessionId && !options.force && maxSessionsPerRun > 0 && modelCount >= maxSessionsPerRun) {
+      return { plans, deferred: candidates.length - index };
+    }
+    const summary = candidates[index];
+    if (!summary) continue;
+    if (trackingEnabled && !dryRun && !options.stateDb) {
+      const lockPath = getExtractSessionLockPath(
+        harness.name,
+        summary.sessionId,
+        options.stateDbPath ?? getStateDbPath(),
+      );
+      const probe = probeLock(lockPath, { staleAfterMs: EXTRACT_SESSION_LOCK_STALE_MS });
+      if (probe.state === "held" || probe.state === "inaccessible") {
+        plans.push({ kind: "skip", summary, result: lockedConcurrentResult(harness.name, summary) });
+        continue;
+      }
+    }
+    const gate = runPreLlmSessionGates({
+      harness,
+      sessionRef: summary,
+      prior: seenMap.get(summary.sessionId),
+      force: options.force === true,
+      maxTotalChars: args.maxTotalChars,
+      minContentChars: args.minContentChars,
+      triage: args.triage,
+    });
+    if ("skip" in gate) {
+      plans.push({ kind: "skip", summary, result: gate.skip });
+      continue;
+    }
+    plans.push({ kind: "model", summary, gate });
+    modelCount += 1;
+  }
+  return { plans, deferred: 0 };
+}
+
 /**
  * Run-scoped inputs shared by every {@link processSession} call — resolved once
  * per extract run by {@link runExtractSessionLoop}. WI-7.7 §2: the former
@@ -655,13 +749,6 @@ interface ExtractSessionRunCtx {
   sourceRun: string;
   dryRun: boolean;
   timeoutMs: number | null;
-  maxTotalChars: number | undefined;
-  minContentChars: number;
-  /**
-   * #626 — pre-LLM heuristic triage gate. Default-off (enabled:false) takes the
-   * exact pre-change path (no scorer call, no new skipReason).
-   */
-  triage: { enabled: boolean; minScore: number };
   sessionIndexing: {
     enabled: boolean;
     minDurationMinutes: number;
@@ -687,8 +774,7 @@ interface ExtractSessionRunCtx {
  */
 interface ExtractSessionInput {
   sessionRef: SessionRef;
-  prior: ExtractedSessionRow | undefined;
-  force: boolean;
+  gate: ExtractEligibleGate;
 }
 
 /**
@@ -758,17 +844,12 @@ async function processSession(
     sourceRun,
     dryRun,
     timeoutMs,
-    maxTotalChars,
-    minContentChars,
-    triage,
     sessionIndexing,
     signal,
     standardsContext,
   } = runCtx;
-  const { sessionRef, prior, force } = session;
+  const { sessionRef, gate } = session;
   const warnings: string[] = [];
-  const gate = runPreLlmSessionGates({ harness, sessionRef, prior, force, maxTotalChars, minContentChars, triage });
-  if ("skip" in gate) return gate.skip;
   const { data, filtered, contentHash } = gate;
 
   const prompt = buildExtractPrompt({
@@ -955,10 +1036,9 @@ async function processSession(
 
 /** Run-scoped inputs for {@link runExtractSessionLoop}. */
 interface ExtractSessionLoopArgs {
-  candidates: SessionSummary[];
+  plans: ExtractSessionPlan[];
   options: AkmExtractOptions;
   harness: SessionLogHarness;
-  seenMap: Map<string, ExtractedSessionRow>;
   stateDb: Database | undefined;
   trackingEnabled: boolean;
   dryRun: boolean;
@@ -970,9 +1050,6 @@ interface ExtractSessionLoopArgs {
   chat: AkmExtractOptions["chat"];
   sourceRun: string;
   timeoutMs: number | null;
-  maxTotalChars: number | undefined;
-  minContentChars: number;
-  maxSessionsPerRun: number;
   triage: { enabled: boolean; minScore: number };
   sessionIndexing: { enabled: boolean; minDurationMinutes: number; generate: SessionSummaryGenerator };
   extractStandardsContext: string;
@@ -991,6 +1068,78 @@ interface ExtractSessionLoopResult {
   allProposalIds: string[];
 }
 
+function recordExtractSessionOutcome(args: {
+  stateDb: Database | undefined;
+  trackingEnabled: boolean;
+  dryRun: boolean;
+  harness: string;
+  summary: SessionSummary;
+  result: ExtractedSessionResult;
+  sourceRun: string;
+}): void {
+  const { stateDb, trackingEnabled, dryRun, harness, summary, result, sourceRun } = args;
+  if (!trackingEnabled || !stateDb || dryRun || result.skipReason === "already_extracted") return;
+  try {
+    const outcome: ExtractedSessionRow["outcome"] = result.skipped
+      ? result.skipReason === "read_failed" || result.skipReason === "exception"
+        ? "failed"
+        : "skipped"
+      : result.candidateCount === 0
+        ? "no_candidates"
+        : "candidates_queued";
+    upsertExtractedSession(stateDb, {
+      harness,
+      sessionId: summary.sessionId,
+      processedAt: new Date().toISOString(),
+      sessionEndedAt: summary.endedAt ?? null,
+      outcome,
+      candidateCount: result.candidateCount,
+      proposalCount: result.proposalIds.length,
+      rationale: result.rationaleIfEmpty ?? null,
+      sourceRun,
+      contentHash:
+        result.skipReason === "llm_unavailable" || result.skipReason === "triaged_out"
+          ? null
+          : (result.contentHash ?? null),
+      metadata: {
+        preFilterInputCount: result.preFilter.inputCount,
+        preFilterOutputCount: result.preFilter.outputCount,
+        preFilterTruncatedCount: result.preFilter.truncatedCount,
+        ...(result.skipReason ? { skipReason: result.skipReason } : {}),
+        ...(result.sessionLogPath ? { logPath: result.sessionLogPath } : {}),
+        ...(result.sessionAssetRef ? { sessionAssetRef: result.sessionAssetRef } : {}),
+      },
+    });
+  } catch (err) {
+    warn(
+      `[extract] failed to record session ${summary.sessionId} in state.db: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function accountExtractSessionResult(
+  result: ExtractedSessionResult,
+  triageEnabled: boolean,
+  output: ExtractSessionLoopResult,
+): void {
+  output.sessions.push(result);
+  if (triageEnabled) {
+    const preempted =
+      result.skipReason === "read_failed" ||
+      result.skipReason === "too_short" ||
+      result.skipReason === "already_extracted" ||
+      result.skipReason === "locked_concurrent";
+    if (!preempted) {
+      output.triageEvaluated += 1;
+      if (result.skipReason === "triaged_out") output.triagedOut += 1;
+      else output.triagePassed += 1;
+    }
+  }
+  if (result.skipped) output.skippedCount += 1;
+  else output.processedCount += 1;
+  output.allProposalIds.push(...result.proposalIds);
+}
+
 /**
  * Iterate the discovered candidate sessions: enforce the per-run cap, take the
  * per-session cross-process lock, dispatch to {@link processSession}, aggregate
@@ -1000,10 +1149,9 @@ interface ExtractSessionLoopResult {
  */
 async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<ExtractSessionLoopResult> {
   const {
-    candidates,
+    plans,
     options,
     harness,
-    seenMap,
     stateDb,
     trackingEnabled,
     dryRun,
@@ -1015,9 +1163,6 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
     chat,
     sourceRun,
     timeoutMs,
-    maxTotalChars,
-    minContentChars,
-    maxSessionsPerRun,
     triage,
     sessionIndexing,
     extractStandardsContext,
@@ -1037,47 +1182,37 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
     sourceRun,
     dryRun,
     timeoutMs,
-    maxTotalChars,
-    minContentChars,
-    triage,
     sessionIndexing,
     signal: options.signal,
     standardsContext: extractStandardsContext,
   };
-  const sessions: ExtractedSessionResult[] = [];
-  let processedCount = 0;
-  let skippedCount = 0;
-  // #626 — per-run triage aggregation counters (counts-only telemetry, AC4).
-  let triageEvaluated = 0;
-  let triagePassed = 0;
-  let triagedOut = 0;
-  const allProposalIds: string[] = [];
+  const output: ExtractSessionLoopResult = {
+    sessions: [],
+    processedCount: 0,
+    skippedCount: 0,
+    triageEvaluated: 0,
+    triagePassed: 0,
+    triagedOut: 0,
+    allProposalIds: [],
+  };
 
-  for (const summary of candidates) {
+  for (const plan of plans) {
     if (options.signal?.aborted) break;
-    // #602 — the already-extracted skip moved INTO processSession (the content
-    // hash needs the session body, only available after readSession). The prior
-    // row + bypass flags are threaded through; an unchanged session returns
-    // skipReason 'already_extracted' WITHOUT any LLM call.
-    const prior = seenMap.get(summary.sessionId);
-
-    // Per-run cap on LLM-processed sessions (skip-tracked seen sessions above
-    // don't count). Single-session / --force modes bypass the cap (explicit
-    // intent). Overflow sessions are left unseen for the next run.
-    if (!options.sessionId && !options.force && maxSessionsPerRun > 0 && processedCount >= maxSessionsPerRun) {
-      topLevelWarnings.push(
-        `Reached maxSessionsPerRun=${maxSessionsPerRun}; ${candidates.length - processedCount - skippedCount} session(s) deferred to a later run.`,
-      );
-      break;
+    const { summary } = plan;
+    if (plan.kind === "skip") {
+      accountExtractSessionResult(plan.result, triage.enabled, output);
+      recordExtractSessionOutcome({
+        stateDb,
+        trackingEnabled,
+        dryRun,
+        harness: harness.name,
+        summary,
+        result: plan.result,
+        sourceRun,
+      });
+      continue;
     }
 
-    // Q5 — per-session lock so two concurrent extracts (e.g. a session-end hook
-    // firing `--session-id` while the hourly improve discovery pass runs) can't
-    // both LLM-process the SAME session. The holder records the outcome; a
-    // second run skips without any LLM call. Engaged only for real cross-process
-    // runs (those that open their own state.db): dry-run is read-only, an
-    // injected `stateDb` handle is an in-process/test scenario with no cross-
-    // process race, and skip-tracking-off opts out entirely.
     let sessionLockOwnership: LockOwnership | undefined;
     if (trackingEnabled && !dryRun && !options.stateDb) {
       const sessionLockPath = getExtractSessionLockPath(
@@ -1087,125 +1222,68 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
       );
       const sessionLock = acquireExtractSessionLock(sessionLockPath);
       if (!sessionLock.proceed) {
-        sessions.push({
-          sessionId: summary.sessionId,
-          harness: harness.name,
-          candidateCount: 0,
-          proposalIds: [],
-          preFilter: { inputCount: 0, outputCount: 0, truncatedCount: 0 },
-          warnings: ["concurrent extract holds this session's lock — skipped (handled by the other run)"],
-          skipped: true,
-          skipReason: "locked_concurrent",
-        });
-        skippedCount += 1;
+        accountExtractSessionResult(lockedConcurrentResult(harness.name, summary), triage.enabled, output);
         continue;
       }
       sessionLockOwnership = sessionLock.ownership;
     }
 
     try {
+      // Planning uses a read snapshot so a credential failure cannot create a
+      // live state DB or lock. Re-check under the acquired session lock to
+      // close the snapshot-to-lock race with another extractor that finished
+      // the same content while this run was preflighting.
+      const racedAlreadyExtracted = alreadyExtractedAfterLock({
+        stateDb: options.stateDb ? undefined : stateDb,
+        harness: harness.name,
+        summary,
+        force: options.force === true,
+        contentHash: plan.gate.contentHash,
+      });
+      if (racedAlreadyExtracted) {
+        accountExtractSessionResult(racedAlreadyExtracted, triage.enabled, output);
+        continue;
+      }
       const result = await processSession(sessionRunCtx, {
         sessionRef: summary,
-        prior,
-        force: options.force === true,
+        gate: plan.gate,
       });
-      sessions.push(result);
-      // #626 — triage aggregation. A session reached the triage gate only when it
-      // was NOT already preempted by an earlier skip (read_failed / too_short /
-      // already_extracted handled above the processSession call). When triage is
-      // enabled, processSession either triages-out (skipReason 'triaged_out') or
-      // proceeds past the gate — both count as "evaluated".
-      if (triage.enabled) {
-        const preemptedBeforeTriage =
-          result.skipReason === "read_failed" ||
-          result.skipReason === "too_short" ||
-          result.skipReason === "already_extracted";
-        if (!preemptedBeforeTriage) {
-          triageEvaluated += 1;
-          if (result.skipReason === "triaged_out") triagedOut += 1;
-          else triagePassed += 1;
-        }
-      }
-      if (result.skipped) skippedCount += 1;
-      else processedCount += 1;
-      allProposalIds.push(...result.proposalIds);
-
-      // Persist outcome so the next run skips this session unless its content
-      // changes. We only track non-dry-run paths — dry-run is for inspection
-      // and should never poison the seen-table. #602: an `already_extracted`
-      // skip is a no-op (the row already carries the matching hash), so don't
-      // re-write it — that keeps `processed_at` stable across unchanged runs.
-      if (trackingEnabled && stateDb && !dryRun && result.skipReason !== "already_extracted") {
-        try {
-          const outcome: ExtractedSessionRow["outcome"] = result.skipped
-            ? result.skipReason === "read_failed" || result.skipReason === "exception"
-              ? "failed"
-              : "skipped"
-            : result.candidateCount === 0
-              ? "no_candidates"
-              : "candidates_queued";
-          upsertExtractedSession(stateDb, {
-            harness: harness.name,
-            sessionId: summary.sessionId,
-            processedAt: new Date().toISOString(),
-            sessionEndedAt: summary.endedAt ?? null,
-            outcome,
-            candidateCount: result.candidateCount,
-            proposalCount: result.proposalIds.length,
-            rationale: result.rationaleIfEmpty ?? null,
-            sourceRun,
-            // #602 — persist the freshly computed content hash so the NEXT run
-            // can compare byte-for-byte. read_failed (before hash) → null, which
-            // keeps the row eligible for retry (matches failed-row semantics).
-            // R4 — llm_unavailable (LLM was down) and triaged_out (deferred by the
-            // triage gate) are transient outcomes: persist null so the null-hash
-            // retry re-processes them on a later run instead of pinning them as
-            // "seen" forever against the current byte content.
-            contentHash:
-              result.skipReason === "llm_unavailable" || result.skipReason === "triaged_out"
-                ? null
-                : (result.contentHash ?? null),
-            metadata: {
-              preFilterInputCount: result.preFilter.inputCount,
-              preFilterOutputCount: result.preFilter.outputCount,
-              preFilterTruncatedCount: result.preFilter.truncatedCount,
-              ...(result.skipReason ? { skipReason: result.skipReason } : {}),
-              // #561 — record the session's log_path for correlation across
-              // index rebuilds (the session asset frontmatter is the primary
-              // durable key; this is the state-db mirror of it).
-              ...(result.sessionLogPath ? { logPath: result.sessionLogPath } : {}),
-              ...(result.sessionAssetRef ? { sessionAssetRef: result.sessionAssetRef } : {}),
-            },
-          });
-        } catch (err) {
-          // Tracking failure must not abort the run — log + continue.
-          const msg = err instanceof Error ? err.message : String(err);
-          warn(`[extract] failed to record session ${summary.sessionId} in state.db: ${msg}`);
-        }
-      }
+      accountExtractSessionResult(result, triage.enabled, output);
+      recordExtractSessionOutcome({
+        stateDb,
+        trackingEnabled,
+        dryRun,
+        harness: harness.name,
+        summary,
+        result,
+        sourceRun,
+      });
     } catch (err) {
       if (err instanceof ConfigError) throw err;
       const msg = err instanceof Error ? err.message : String(err);
       warn(`[extract] session ${summary.sessionId} threw: ${msg}`);
       topLevelWarnings.push(`session ${summary.sessionId} threw: ${msg}`);
-      sessions.push({
-        sessionId: summary.sessionId,
-        harness: harness.name,
-        candidateCount: 0,
-        proposalIds: [],
-        preFilter: { inputCount: 0, outputCount: 0, truncatedCount: 0 },
-        warnings: [msg],
-        skipped: true,
-        skipReason: "exception",
-        ...extractNoticeFields(getNotices),
-      });
-      skippedCount += 1;
+      accountExtractSessionResult(
+        {
+          sessionId: summary.sessionId,
+          harness: harness.name,
+          candidateCount: 0,
+          proposalIds: [],
+          preFilter: { inputCount: 0, outputCount: 0, truncatedCount: 0 },
+          warnings: [msg],
+          skipped: true,
+          skipReason: "exception",
+          ...extractNoticeFields(getNotices),
+        },
+        triage.enabled,
+        output,
+      );
     } finally {
       if (sessionLockOwnership) releaseLock(sessionLockOwnership);
     }
   }
 
-  return { sessions, processedCount, skippedCount, triageEvaluated, triagePassed, triagedOut, allProposalIds };
+  return output;
 }
 
 /** Resolved run-scoped config for one `akmExtract` invocation. */
@@ -1440,6 +1518,80 @@ function buildExtractRunContext(args: {
   });
 }
 
+function loadExtractSeenMapReadOnly(args: {
+  options: AkmExtractOptions;
+  harness: string;
+  candidates: SessionSummary[];
+  trackingEnabled: boolean;
+  warnings: string[];
+}): Map<string, ExtractedSessionRow> {
+  const { options, harness, candidates, trackingEnabled, warnings } = args;
+  if (!trackingEnabled || candidates.length === 0) return new Map();
+  let snapshot: Database | undefined;
+  try {
+    if (!options.stateDb) snapshot = openSqliteReadSnapshot(options.stateDbPath ?? getStateDbPath());
+    const db = options.stateDb ?? snapshot;
+    return db
+      ? getExtractedSessionsMap(
+          db,
+          harness,
+          candidates.map((candidate) => candidate.sessionId),
+        )
+      : new Map();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    warn(`[extract] state.db snapshot unavailable, planning without skip-tracking: ${msg}`);
+    warnings.push(`state.db snapshot unavailable: ${msg}`);
+    return new Map();
+  } finally {
+    snapshot?.close();
+  }
+}
+
+function openExtractLiveStateDb(args: {
+  options: AkmExtractOptions;
+  trackingEnabled: boolean;
+  hasModelWork: boolean;
+  dryRun: boolean;
+  warnings: string[];
+}): Database | undefined {
+  const { options, trackingEnabled, hasModelWork, dryRun, warnings } = args;
+  if (!trackingEnabled) return undefined;
+  if (options.stateDb) return options.stateDb;
+  if (!hasModelWork || dryRun) return undefined;
+  try {
+    return openStateDatabase(options.stateDbPath);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    warn(`[extract] state.db unavailable, processing without skip-tracking: ${msg}`);
+    warnings.push(`state.db unavailable: ${msg}`);
+    return undefined;
+  }
+}
+
+function emitExtractTriageEvent(args: {
+  modelPlanCount: number;
+  triageEnabled: boolean;
+  result: ExtractSessionLoopResult;
+  sourceRun: string;
+  eventsCtx: EventsContext | undefined;
+}): void {
+  const { modelPlanCount, triageEnabled, result, sourceRun, eventsCtx } = args;
+  if (modelPlanCount === 0 || !triageEnabled || result.triageEvaluated === 0) return;
+  appendEvent(
+    {
+      eventType: "extract_triaged",
+      metadata: {
+        evaluated: result.triageEvaluated,
+        passed: result.triagePassed,
+        triagedOut: result.triagedOut,
+        sourceRun,
+      },
+    },
+    eventsCtx,
+  );
+}
+
 export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtractResult> {
   const startMs = Date.now();
   if (!options.type || options.type.trim() === "") {
@@ -1545,47 +1697,57 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
   const candidates = discovery.candidates;
 
   const topLevelWarnings: string[] = [];
-
-  // A dry run never dispatches. For a real run, validate the already-resolved
-  // symbolic runner after feature/harness/discovery gates but before opening
-  // state.db or creating any tracking/session/proposal artifact.
-  if (!dryRun && candidates.length > 0) await preflightStructuredLlmRunner(llmRunner);
-
-  // Open state.db once for the run and bulk-load seen-rows for the candidate
-  // set so we can decide skip/process in O(1) per session. Tracking is opt-out
-  // via options.skipTracking (used by tests + one-shot debug calls).
   const trackingEnabled = options.skipTracking !== true;
-  let stateDb: Database | undefined;
-  let seenMap = new Map<string, ExtractedSessionRow>();
-  if (trackingEnabled && candidates.length > 0) {
-    try {
-      stateDb = options.stateDb ?? openStateDatabase(options.stateDbPath);
-      seenMap = getExtractedSessionsMap(
-        stateDb,
-        harness.name,
-        candidates.map((c) => c.sessionId),
-      );
-    } catch (err) {
-      // state.db open is best-effort — log and proceed without skip-tracking
-      // so a transient sqlite error never blocks the actual extraction.
-      const msg = err instanceof Error ? err.message : String(err);
-      warn(`[extract] state.db unavailable, processing without skip-tracking: ${msg}`);
-      topLevelWarnings.push(`state.db unavailable: ${msg}`);
-      stateDb = undefined;
-    }
+  const seenMap = loadExtractSeenMapReadOnly({
+    options,
+    harness: harness.name,
+    candidates,
+    trackingEnabled,
+    warnings: topLevelWarnings,
+  });
+  const planned = planExtractSessions({
+    candidates,
+    options,
+    harness,
+    seenMap,
+    maxTotalChars,
+    minContentChars,
+    maxSessionsPerRun,
+    triage,
+    trackingEnabled,
+    dryRun,
+  });
+  if (planned.deferred > 0) {
+    topLevelWarnings.push(
+      `Reached maxSessionsPerRun=${maxSessionsPerRun}; ${planned.deferred} session(s) deferred to a later run.`,
+    );
   }
+  const modelPlanCount = planned.plans.filter((plan) => plan.kind === "model").length;
+
+  // Eligible dry-runs still dispatch to produce their candidate preview. Only
+  // deterministic no-work plans are credential-free. Materialize once after
+  // every read-only gate and before opening live state or acquiring a lock.
+  if (modelPlanCount > 0) await preflightStructuredLlmRunner(llmRunner);
+
+  const stateDb = openExtractLiveStateDb({
+    options,
+    trackingEnabled,
+    hasModelWork: modelPlanCount > 0,
+    dryRun,
+    warnings: topLevelWarnings,
+  });
 
   // Stash authoring standards (convention/meta fact bodies) for non-wiki
   // extract output. Resolved ONCE per run and threaded into each session's
   // prompt so facts are not re-read per session.
-  const extractStandardsContext = resolveExtractStandards(stashDir);
+  const extractStandardsContext = modelPlanCount > 0 ? resolveExtractStandards(stashDir) : "";
 
-  const { sessions, processedCount, skippedCount, triageEvaluated, triagePassed, triagedOut, allProposalIds } =
-    await runExtractSessionLoop({
-      candidates,
+  let loopResult: ExtractSessionLoopResult;
+  try {
+    loopResult = await runExtractSessionLoop({
+      plans: planned.plans,
       options,
       harness,
-      seenMap,
       stateDb,
       trackingEnabled,
       dryRun,
@@ -1597,42 +1759,29 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
       chat: options.chat,
       sourceRun,
       timeoutMs,
-      maxTotalChars,
-      minContentChars,
-      maxSessionsPerRun,
       triage,
       sessionIndexing,
       extractStandardsContext,
       topLevelWarnings,
     });
-
-  // Close the state.db connection we opened. Callers that injected stateDb
-  // via the test seam own its lifecycle.
-  if (stateDb && !options.stateDb) {
-    try {
-      stateDb.close();
-    } catch {
-      // best-effort close
+  } finally {
+    if (stateDb && !options.stateDb) {
+      try {
+        stateDb.close();
+      } catch {
+        // best-effort close
+      }
     }
   }
+  const { sessions, processedCount, skippedCount, allProposalIds } = loopResult;
 
-  // #626 — counts-only triage telemetry (AC4). Exactly ONE aggregated event per
-  // run, emitted only when the gate was enabled and actually evaluated at least
-  // one session. No per-session events (avoids the log-spam the issue warns of).
-  if (triage.enabled && triageEvaluated > 0) {
-    appendEvent(
-      {
-        eventType: "extract_triaged",
-        metadata: {
-          evaluated: triageEvaluated,
-          passed: triagePassed,
-          triagedOut,
-          sourceRun,
-        },
-      },
-      options.eventsCtx,
-    );
-  }
+  emitExtractTriageEvent({
+    modelPlanCount,
+    triageEnabled: triage.enabled,
+    result: loopResult,
+    sourceRun,
+    eventsCtx: options.eventsCtx,
+  });
 
   return {
     schemaVersion: 1,

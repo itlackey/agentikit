@@ -340,6 +340,50 @@ export function drainExtractionQueue(
   }
 }
 
+/** Read queued graph work without claiming or deleting it. */
+export function peekExtractionQueue(
+  db: Database,
+  stashRoot: string,
+  limit: number,
+): Array<{ filePath: string; bodyHash: string; priority: number }> {
+  try {
+    const rows = db
+      .prepare(
+        `SELECT file_path, body_hash, priority
+           FROM graph_extraction_queue
+           WHERE stash_root = ?
+           ORDER BY priority DESC, queued_at ASC
+           LIMIT ?`,
+      )
+      .all(stashRoot, limit) as Array<{ file_path: string; body_hash: string; priority: number }>;
+    return rows.map((row) => ({ filePath: row.file_path, bodyHash: row.body_hash, priority: row.priority }));
+  } catch (err) {
+    rethrowIfTestIsolationError(err);
+    return [];
+  }
+}
+
+/**
+ * Acknowledge the exact queued revision that was classified and handled.
+ * A concurrent re-enqueue with a new body hash therefore survives.
+ */
+export function acknowledgeExtractionQueueEntry(
+  db: Database,
+  stashRoot: string,
+  filePath: string,
+  bodyHash: string,
+): boolean {
+  try {
+    const result = db
+      .prepare("DELETE FROM graph_extraction_queue WHERE stash_root = ? AND file_path = ? AND body_hash = ?")
+      .run(stashRoot, filePath, bodyHash);
+    return result.changes > 0;
+  } catch (err) {
+    rethrowIfTestIsolationError(err);
+    return false;
+  }
+}
+
 /**
  * Scoped loader — graph_files rows without entities/relations. Used for
  * orphan detection and entity overview commands.
