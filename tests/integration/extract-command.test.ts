@@ -3,6 +3,7 @@
 // platform install needed.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,7 +29,10 @@ import type {
   SessionRef,
   SessionSummary,
 } from "../../src/integrations/session-logs/types";
-import { getExtractedSessionsMap } from "../../src/storage/repositories/extract-sessions-repository";
+import {
+  getExtractedSessionsMap,
+  upsertExtractedSession,
+} from "../../src/storage/repositories/extract-sessions-repository";
 import { durableItemRef } from "../_helpers/durable-ref";
 import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
@@ -47,6 +51,25 @@ function makeStashDir(): string {
     fs.mkdirSync(path.join(stash, dir), { recursive: true });
   }
   return stash;
+}
+function snapshotTree(root: string): Map<string, string> {
+  const snapshot = new Map<string, string>();
+  if (!fs.existsSync(root)) return snapshot;
+  const visit = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const absolute = path.join(dir, entry.name);
+      const relative = path.relative(root, absolute);
+      if (entry.isDirectory()) {
+        snapshot.set(`${relative}/`, "directory");
+        visit(absolute);
+      } else if (entry.isFile()) {
+        const bytes = fs.readFileSync(absolute);
+        snapshot.set(relative, `${bytes.length}:${createHash("sha256").update(bytes).digest("hex")}`);
+      }
+    }
+  };
+  visit(root);
+  return snapshot;
 }
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
@@ -761,6 +784,106 @@ describe("akmExtract — engine + strategy config resolution", () => {
     expect(fs.readdirSync(stash, { recursive: true }).map(String).sort()).toEqual(beforeTree);
   });
 
+  test("default discovery validates a required credential before creating any durable state", async () => {
+    const stash = storage.stashDir;
+    const session = fakeSession("credential-discovery-no-state", Date.now());
+    const config = configEnabled(stash);
+    const defaultEngine = config.engines?.default;
+    if (!defaultEngine || defaultEngine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    defaultEngine.apiKey = "$AKM_EXTRACT_DISCOVERY_REQUIRED_KEY";
+    const stateDbPath = getStateDbPath();
+    const dataTreeBefore = snapshotTree(storage.dataDir);
+    const storageTreeBefore = snapshotTree(storage.root);
+    let chatCalls = 0;
+
+    const failure = withEnv({ AKM_EXTRACT_DISCOVERY_REQUIRED_KEY: undefined }, () =>
+      akmExtract({
+        type: "claude-code",
+        stashDir: stash,
+        config,
+        harnesses: [makeFakeHarness([session])],
+        chat: async () => {
+          chatCalls += 1;
+          return JSON.stringify({ candidates: [] });
+        },
+      }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    await expect(failure).rejects.toMatchObject({
+      code: "INVALID_CONFIG_FILE",
+      message: "Required engine credential AKM_EXTRACT_DISCOVERY_REQUIRED_KEY is not set.",
+    });
+    expect(chatCalls).toBe(0);
+    expect(fs.existsSync(stateDbPath)).toBe(false);
+    expect(fs.existsSync(`${stateDbPath}-wal`)).toBe(false);
+    expect(fs.existsSync(`${stateDbPath}-shm`)).toBe(false);
+    expect(fs.existsSync(path.join(path.dirname(stateDbPath), "maintenance-activities"))).toBe(false);
+    expect(fs.existsSync(path.join(path.dirname(stateDbPath), ".maintenance.barrier.lock.operations.sensitive"))).toBe(
+      false,
+    );
+    expect(snapshotTree(storage.dataDir)).toEqual(dataTreeBefore);
+    expect(snapshotTree(storage.root)).toEqual(storageTreeBefore);
+  });
+
+  test("default discovery reads a held-WAL watermark without mutating state or materializing a no-work credential", async () => {
+    const stash = storage.stashDir;
+    const stateDbPath = getStateDbPath();
+    const stateDb = openStateDatabase(stateDbPath);
+    const watermark = Date.now() - 10 * 24 * 60 * 60 * 1000;
+    upsertExtractedSession(stateDb, {
+      harness: "claude-code",
+      sessionId: "prior-watermark",
+      processedAt: new Date(watermark).toISOString(),
+      outcome: "no_candidates",
+      candidateCount: 0,
+      proposalCount: 0,
+      contentHash: "prior-content",
+    });
+    expect(fs.existsSync(stateDbPath)).toBe(true);
+    expect(fs.existsSync(`${stateDbPath}-wal`)).toBe(true);
+    expect(fs.existsSync(`${stateDbPath}-shm`)).toBe(true);
+    const config = configEnabled(stash);
+    const defaultEngine = config.engines?.default;
+    if (!defaultEngine || defaultEngine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    defaultEngine.apiKey = "$AKM_EXTRACT_NO_WORK_REQUIRED_KEY";
+    const baseHarness = makeFakeHarness([]);
+    let observedSinceMs: number | undefined;
+    let chatCalls = 0;
+    const harness: SessionLogHarness = {
+      ...baseHarness,
+      listSessions: (input) => {
+        observedSinceMs = input?.sinceMs;
+        return [];
+      },
+    };
+    const storageTreeBefore = snapshotTree(storage.root);
+
+    try {
+      const result = await withEnv({ AKM_EXTRACT_NO_WORK_REQUIRED_KEY: undefined }, () =>
+        akmExtract({
+          type: "claude-code",
+          stashDir: stash,
+          stateDbPath,
+          config,
+          harnesses: [harness],
+          chat: async () => {
+            chatCalls += 1;
+            throw new Error("no-work discovery dispatched an LLM request");
+          },
+        }),
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.sessionsProcessed).toBe(0);
+      expect(observedSinceMs).toBe(watermark);
+      expect(chatCalls).toBe(0);
+      expect(snapshotTree(storage.root)).toEqual(storageTreeBefore);
+    } finally {
+      stateDb.close();
+    }
+  });
+
   function configWithStrategy(stashDir: string, processOverride: Record<string, unknown>): AkmConfig {
     return {
       configVersion: "0.9.0",
@@ -826,12 +949,15 @@ describe("akmExtract — engine + strategy config resolution", () => {
     expect(plan.runner?.timeoutMs).toBeNull();
   });
 
-  test("an unset symbolic credential does not block dry-run planning with no dispatch", async () => {
-    const stash = makeStashDir();
+  test("an unset symbolic credential does not block default-discovery dry-run planning with no dispatch or writes", async () => {
+    const stash = storage.stashDir;
     const config = configWithStrategy(stash, {});
     const engine = config.engines?.["extract-special"];
     if (engine?.kind !== "llm") throw new Error("fixture must use an LLM engine");
     engine.apiKey = "$EXTRACT_REQUIRED_API_KEY";
+    const stateDbPath = getStateDbPath();
+    const storageTreeBefore = snapshotTree(storage.root);
+    let chatCalls = 0;
 
     await withEnv({ EXTRACT_REQUIRED_API_KEY: undefined }, async () => {
       const plan = resolveStandaloneExtractPlan(config, { engine: "extract-special" });
@@ -845,10 +971,18 @@ describe("akmExtract — engine + strategy config resolution", () => {
         config,
         resolvedPlan: plan,
         harnesses: [makeFakeHarness([])],
-        skipTracking: true,
+        chat: async () => {
+          chatCalls += 1;
+          throw new Error("dry-run with no candidates dispatched an LLM request");
+        },
       });
       expect(result.ok).toBe(true);
       expect(result.sessionsProcessed).toBe(0);
+      expect(chatCalls).toBe(0);
+      expect(fs.existsSync(stateDbPath)).toBe(false);
+      expect(fs.existsSync(`${stateDbPath}-wal`)).toBe(false);
+      expect(fs.existsSync(`${stateDbPath}-shm`)).toBe(false);
+      expect(snapshotTree(storage.root)).toEqual(storageTreeBefore);
     });
   });
 

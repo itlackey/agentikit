@@ -45,7 +45,7 @@ import type { AkmExtractResult, ExtractedSessionResult } from "../../core/improv
 import { tryAcquireMaintenanceBarrier } from "../../core/maintenance-barrier";
 import { resolveStashStandards } from "../../core/standards/resolve-stash-standards";
 import { resolveTypeConventions, typeConventionRef } from "../../core/standards/resolve-type-conventions";
-import { getStateDbPath, openStateDatabase, withStateDb } from "../../core/state-db";
+import { getStateDbPath, openStateDatabase } from "../../core/state-db";
 import { repairTruncatedDescription } from "../../core/text-truncation";
 import { DURATION_UNITS, parseDuration } from "../../core/time";
 import { warn } from "../../core/warn";
@@ -71,6 +71,7 @@ import {
   shouldSkipAlreadyExtractedSession,
   upsertExtractedSession,
 } from "../../storage/repositories/extract-sessions-repository";
+import { openSqliteReadSnapshot } from "../../storage/sqlite-read-snapshot";
 import { isProposalSkipped, type ProposalsContext } from "../proposal/repository";
 import { resolveImproveLlmExecution } from "./execution";
 import { buildExtractPrompt, EXTRACT_JSON_SCHEMA, type ExtractCandidate, parseExtractPayload } from "./extract-prompt";
@@ -140,16 +141,20 @@ function resolveDefaultSinceMs(
 ): number {
   const floor = now - DEFAULT_SINCE_FLOOR_MS;
   if (opts.skipTracking) return floor;
+  let snapshot: Database | undefined;
   try {
-    return withStateDb(
-      (db) => {
-        const lastRun = getLastExtractRunAt(db, harnessName);
-        return lastRun != null ? Math.min(lastRun, floor) : floor;
-      },
-      { path: opts.stateDbPath, borrowed: opts.stateDb },
-    );
+    let db = opts.stateDb;
+    if (!db) {
+      snapshot = openSqliteReadSnapshot(opts.stateDbPath ?? getStateDbPath());
+      db = snapshot;
+    }
+    if (!db) return floor;
+    const lastRun = getLastExtractRunAt(db, harnessName);
+    return lastRun != null ? Math.min(lastRun, floor) : floor;
   } catch {
     return floor;
+  } finally {
+    snapshot?.close();
   }
 }
 
