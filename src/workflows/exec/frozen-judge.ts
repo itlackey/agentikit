@@ -98,12 +98,6 @@ export function frozenSummaryJudge(
   const engine = plan.execution?.engines[invocation.engine];
   if (!engine)
     throw new ConfigError(`Frozen gate engine "${invocation.engine}" is unavailable.`, "INVALID_CONFIG_FILE");
-  if (engine.kind === "agent" && !dispatcher) {
-    throw new ConfigError(
-      `Frozen agent gate engine "${invocation.engine}" has no unit dispatcher.`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
   const fallbackEngine =
     engine.kind === "agent" && engine.fallbackLlmEngine ? plan.execution.engines[engine.fallbackLlmEngine] : undefined;
   const fallback = fallbackEngine?.kind === "llm" ? fallbackEngine : undefined;

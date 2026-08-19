@@ -135,6 +135,7 @@ import { appendEvent } from "../../core/events";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
 import { runStructured } from "../../core/structured";
 import { warn } from "../../core/warn";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { insertEventStrict } from "../../storage/repositories/events-repository";
 import {
   type WorkflowRunUnitRow,
@@ -150,6 +151,7 @@ import { collectWorkflowDispatchSensitiveValues, redactUnitOutcome } from "./dis
 // The exec (shell) unit runner — a leaf that owns argv spawning, containment,
 // and the process-outcome → failure-reason mapping.
 import { runExecUnit } from "./exec-unit";
+import { mergeLoweringNotices } from "./lowering-notices";
 import { LIFETIME_UNIT_CAP, scheduleUnits, UnitCapExceededError } from "./scheduler";
 // Shared step semantics — the ONE implementation consumed by the engine
 // (this module + run-workflow.ts) on both the fresh-execution and the resume
@@ -249,6 +251,8 @@ export interface StepExecutionContext {
 export interface StepExecutionResult {
   ok: boolean;
   units: UnitOutcome[];
+  /** Safe live lowering diagnostics; never included in durable step/unit evidence. */
+  notices?: readonly Readonly<LoweringNotice>[];
   /** Step evidence for `completeWorkflowStep` (units, reducer output). */
   evidence: Record<string, unknown>;
   /** Deterministic machine summary for the step-completion gate. */
@@ -626,14 +630,20 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
     await Promise.allSettled(pendingWorktreeCleanups);
   }
 
+  // Capture live-only diagnostics BEFORE any hard reduction replaces the unit
+  // list with a failed-step envelope. Budget/cap, replay divergence, and
+  // journal-write failures must not erase notices already observed from real
+  // dispatches; durable row reuses naturally contribute none.
+  const notices = mergeLoweringNotices(...outcomes.map((outcome) => outcome?.notices));
+
   // Declared budget ceilings and the lifetime cap are hard backstops: a step
   // that hit one FAILS regardless of on_error policy (a capped run must never
   // quietly pass its gate). The budget message names WHICH ceiling tripped.
   if (budget.budgetMessage) {
-    return { ...failedStep(budget.used, budget.budgetMessage), tokensUsed: budget.tokens };
+    return { ...failedStep(budget.used, budget.budgetMessage, notices), tokensUsed: budget.tokens };
   }
   if (budget.capMessage) {
-    return { ...failedStep(budget.used, budget.capMessage), tokensUsed: budget.tokens };
+    return { ...failedStep(budget.used, budget.capMessage, notices), tokensUsed: budget.tokens };
   }
 
   const units = outcomes.map(
@@ -656,6 +666,7 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
       diverged
         .map((u) => u.error ?? `replay divergence: unit "${u.unitId}" was journaled with different inputs`)
         .join(" "),
+      notices,
     );
   }
 
@@ -671,6 +682,7 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
       ...failedStep(
         budget.used,
         unjournaled.map((u) => u.error ?? `unit "${u.unitId}" result could not be journaled`).join(" "),
+        notices,
       ),
       tokensUsed: budget.tokens,
     };
@@ -689,6 +701,7 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
 
   return {
     ...reduced,
+    ...(notices ? { notices } : {}),
     unitsDispatched: budget.used,
     tokensUsed: budget.tokens,
   };
@@ -1129,6 +1142,7 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
         `but its result could not be journaled: ${message(journalError)}`,
       ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}),
       ...(outcome.sessionId !== undefined ? { sessionId: outcome.sessionId } : {}),
+      ...(outcome.notices ? { notices: outcome.notices } : {}),
     };
   }
 
@@ -1167,7 +1181,7 @@ class UnitTransportError extends Error {
 async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispatcher): Promise<UnitOutcome> {
   let tokens = 0;
   let sawUsage = false;
-  const loweringNotices = new Map<string, NonNullable<UnitDispatchResult["notices"]>[number]>();
+  let loweringNotices: UnitDispatchResult["notices"];
   // Harness-native session id revealed by dispatch (P2). Captured across
   // structured-output retries (last one wins) so it survives into the
   // UnitOutcome and gets journaled on the unit row by finishUnit — the seam's
@@ -1180,12 +1194,7 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
       tokens +=
         (result.usage.inputTokens ?? 0) + (result.usage.outputTokens ?? 0) + (result.usage.reasoningTokens ?? 0);
     }
-    for (const notice of result.notices ?? []) {
-      loweringNotices.set(
-        JSON.stringify([notice.code, notice.severity, notice.adapter, notice.field, notice.message]),
-        notice,
-      );
-    }
+    loweringNotices = mergeLoweringNotices(loweringNotices, result.notices);
     // Capture before the ok-check: a failed attempt can still have configured
     // a session (e.g. codex `session_configured` then a tool crash).
     if (result.sessionId !== undefined) sessionId = result.sessionId;
@@ -1195,7 +1204,7 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
   const captured = (): Partial<UnitOutcome> => ({
     ...(sawUsage ? { tokens } : {}),
     ...(sessionId !== undefined ? { sessionId } : {}),
-    ...(loweringNotices.size > 0 ? { notices: [...loweringNotices.values()] } : {}),
+    ...(loweringNotices ? { notices: loweringNotices } : {}),
   });
 
   try {
@@ -1372,10 +1381,15 @@ function reuseCompletedUnit(unitId: string, row: WorkflowRunUnitRow, hasSchema: 
   return unitOutcomeFromRow(unitId, row, hasSchema);
 }
 
-function failedStep(dispatched: number, reason: string): StepExecutionResult {
+function failedStep(
+  dispatched: number,
+  reason: string,
+  notices?: readonly Readonly<LoweringNotice>[],
+): StepExecutionResult {
   return {
     ok: false,
     units: [],
+    ...(notices ? { notices } : {}),
     evidence: { error: reason },
     summary: reason,
     unitsDispatched: dispatched,

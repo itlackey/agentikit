@@ -6,15 +6,18 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { AkmConfig } from "../../../src/core/config/config";
 import { ConfigError, UsageError } from "../../../src/core/errors";
 import { readEvents } from "../../../src/core/events";
 import { openStateDatabase } from "../../../src/core/state-db";
+import { __setTestServer } from "../../../src/integrations/harnesses/opencode-sdk/sdk-runner";
 import {
   completeWorkflowStep,
   getNextWorkflowStep,
   getWorkflowStatus,
   type SummaryValidationFailure,
 } from "../../../src/workflows/runtime/runs";
+import { sandboxXdgConfigHome, withEnv } from "../../_helpers/sandbox";
 import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
 /**
@@ -66,6 +69,36 @@ function seedRun(dbPath: string): void {
   }
 }
 
+function replaceFrozenPlan(plan: ReturnType<typeof freezeWorkflow>): void {
+  const db = openStateDatabase(path.join(tmpDir, "state.db"));
+  try {
+    storeFrozenWorkflowPlan(db, RUN_ID, plan);
+  } finally {
+    db.close();
+  }
+}
+
+function manualJudgePlan(config: AkmConfig): ReturnType<typeof freezeWorkflow> {
+  return freezeWorkflow(
+    `---
+type: workflow
+steps:
+  - id: step-1
+---
+
+## step-1
+
+instructions
+
+### gate
+
+Thing is done, Tests pass
+`,
+    "workflows/manual-judge.md",
+    config,
+  );
+}
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-complete-summary-"));
   prevDataDir = process.env.AKM_DATA_DIR;
@@ -74,6 +107,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __setTestServer(null);
   if (prevDataDir === undefined) delete process.env.AKM_DATA_DIR;
   else process.env.AKM_DATA_DIR = prevDataDir;
   try {
@@ -84,6 +118,138 @@ afterEach(() => {
 });
 
 describe("completeWorkflowStep summary + validation gate (#506)", () => {
+  test("manual completion dispatches a frozen CLI judge with its exact model and never reads live config", async () => {
+    const argvPath = path.join(tmpDir, "judge-argv.bin");
+    const judgeBin = path.join(tmpDir, "frozen-codex-judge");
+    fs.writeFileSync(
+      judgeBin,
+      [
+        "#!/bin/sh",
+        `printf '%s\\0' "$@" > '${argvPath}'`,
+        `printf '%s\\n' '{"type":"item.completed","item":{"id":"item-1","type":"agent_message","text":"{\\"complete\\":true,\\"missing\\":[]}"}}'`,
+      ].join("\n"),
+      "utf8",
+    );
+    fs.chmodSync(judgeBin, 0o755);
+    replaceFrozenPlan(
+      manualJudgePlan({
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        engines: {
+          reviewer: { kind: "agent", platform: "codex", bin: judgeBin, model: "frozen/exact-judge-model" },
+        },
+        defaults: { engine: "reviewer" },
+        workflow: { judgeEngine: "reviewer" },
+      }),
+    );
+
+    const config = sandboxXdgConfigHome();
+    try {
+      // Any live-config lookup would fail before dispatch. The frozen plan is
+      // the sole manual-completion authority.
+      fs.writeFileSync(path.join(config.dir, "akm", "config.json"), "{ definitely invalid json", "utf8");
+      const result = await completeWorkflowStep({
+        runId: RUN_ID,
+        stepId: "step-1",
+        status: "completed",
+        summary: "Thing is done and all tests pass.",
+      });
+      expect("run" in result).toBe(true);
+      const argv = fs.readFileSync(argvPath).toString("utf8").split("\0").filter(Boolean);
+      expect(argv[argv.indexOf("--model") + 1]).toBe("frozen/exact-judge-model");
+    } finally {
+      config.cleanup();
+    }
+  });
+
+  test("manual completion redacts a frozen SDK fallback credential from corrective feedback", async () => {
+    const credentialName = "AKM_MANUAL_JUDGE_FALLBACK_KEY";
+    const secret = "sk-manual-sdk-fallback-must-not-leak";
+    replaceFrozenPlan(
+      manualJudgePlan({
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        engines: {
+          reviewer: { kind: "agent", platform: "opencode-sdk", llmEngine: "fallback" },
+          fallback: {
+            kind: "llm",
+            endpoint: "https://frozen.invalid/v1/chat/completions",
+            model: "frozen/fallback-model",
+            apiKey: `$${credentialName}`,
+          },
+        },
+        defaults: { engine: "reviewer", llmEngine: "fallback" },
+        workflow: { judgeEngine: "reviewer" },
+      }),
+    );
+    __setTestServer({
+      client: {
+        session: {
+          create: async () => ({ data: { id: "manual-judge-session" } }),
+          prompt: async () => ({
+            data: {
+              parts: [
+                {
+                  type: "text",
+                  text: `{"complete":false,"missing":["Tests pass"],"feedback":"provider echoed ${secret}"}`,
+                },
+              ],
+            },
+          }),
+          delete: async () => ({}),
+        },
+      },
+      server: { close() {} },
+    } as never);
+
+    await withEnv({ [credentialName]: secret }, async () => {
+      const result = (await completeWorkflowStep({
+        runId: RUN_ID,
+        stepId: "step-1",
+        status: "completed",
+        summary: "Thing is done.",
+      })) as SummaryValidationFailure;
+      expect(result.ok).toBe(false);
+      expect(result.feedback).toContain("[REDACTED]");
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect((await getWorkflowStatus(RUN_ID)).workflow.steps[0]?.status).toBe("pending");
+    });
+  });
+
+  test("manual completion cancellation reaches the frozen common SDK dispatcher", async () => {
+    replaceFrozenPlan(
+      manualJudgePlan({
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        engines: { reviewer: { kind: "agent", platform: "opencode-sdk" } },
+        defaults: { engine: "reviewer" },
+        workflow: { judgeEngine: "reviewer" },
+      }),
+    );
+    __setTestServer({
+      client: {
+        session: {
+          create: async () => ({ data: { id: "manual-cancel-session" } }),
+          prompt: async () => new Promise(() => {}),
+          delete: async () => ({}),
+        },
+      },
+      server: { close() {} },
+    } as never);
+    const controller = new AbortController();
+    const completing = completeWorkflowStep({
+      runId: RUN_ID,
+      stepId: "step-1",
+      status: "completed",
+      summary: "Thing is done.",
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(new Error("manual judge cancelled")), 10);
+
+    await expect(completing).rejects.toThrow(/abort|cancel/i);
+    expect((await getWorkflowStatus(RUN_ID)).workflow.steps[0]?.status).toBe("pending");
+  });
+
   test("requires a summary when completing a step", async () => {
     await expect(
       completeWorkflowStep({ runId: RUN_ID, stepId: "step-1", status: "completed", summaryJudge: null }),

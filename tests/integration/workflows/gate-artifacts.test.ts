@@ -378,9 +378,17 @@ describe("gate max_loops — evaluator-optimizer re-execution with feedback", ()
   test("reject-then-accept: loop 2 re-dispatches with the feedback in the prompt, because the input hash changed", async () => {
     seedRun({ steps: LOOPED_STEPS });
     const prompts: string[] = [];
+    const notice = {
+      code: "conversation-prompt-composed",
+      severity: "warning" as const,
+      adapter: "codex",
+      field: "conversation",
+      message: "conversation was composed safely",
+      details: { strategy: "system-prefix" },
+    };
     const dispatcher = async (req: UnitDispatchRequest): Promise<UnitDispatchResult> => {
       if (req.nodeId === "work") prompts.push(req.prompt);
-      return { ok: true, text: `did ${req.unitId}` };
+      return { ok: true, text: `did ${req.unitId}`, notices: [notice] };
     };
     let judgeCalls = 0;
     const judge: SummaryJudge = async () => {
@@ -411,6 +419,8 @@ describe("gate max_loops — evaluator-optimizer re-execution with feedback", ()
 
     // Both attempts are recorded in the executed report, in loop order.
     expect(result.executed.map((s) => s.stepId)).toEqual(["work", "work", "wrap-up"]);
+    expect(result.executed.every((step) => step.notices?.length === 1)).toBe(true);
+    expect(result.notices).toEqual([notice]);
 
     await withWorkflowRunsRepo((repo) => {
       const rows = repo.getUnitsForStep(RUN_ID, "work");
@@ -434,6 +444,8 @@ describe("gate max_loops — evaluator-optimizer re-execution with feedback", ()
         feedback: "Add the frobnicator analysis.",
       });
       expect(JSON.parse(byId.get("work.gate:l2")?.result_json ?? "null")).toEqual({ complete: true, missing: [] });
+      expect(rows.every((row) => !(row.result_json ?? "").includes("notices"))).toBe(true);
+      expect(repo.getStep(RUN_ID, "work")?.evidence_json).not.toContain("notices");
     });
   });
 

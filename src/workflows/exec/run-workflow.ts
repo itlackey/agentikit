@@ -67,6 +67,7 @@
 import { randomUUID } from "node:crypto";
 import { UsageError } from "../../core/errors";
 import { withMaintenanceStartBarrierAsync } from "../../core/maintenance-barrier";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { disposeDispatchResources } from "../../integrations/agent/runner-dispatch";
 import type { WorkflowRunStepState, WorkflowRunSummary } from "../../sources/types";
 import { withWorkflowRunsConnection, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
@@ -78,6 +79,7 @@ import { completeWorkflowStep, getNextWorkflowStep, resumeWorkflowRun, type Work
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
 import type { SummaryJudge } from "../validate-summary";
 import { frozenSummaryJudge } from "./frozen-judge";
+import { mergeLoweringNotices } from "./lowering-notices";
 import {
   defaultUnitDispatcher,
   executeStepPlan,
@@ -160,6 +162,8 @@ export interface ExecutedStepReport {
   unitCount: number;
   failedUnits: number;
   summary: string;
+  /** Safe diagnostics observed while this live step attempt lowered work. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface RunWorkflowResult {
@@ -186,6 +190,8 @@ export interface RunWorkflowResult {
   judgeFailure?: { stepId: string; message: string };
   /** Present when cooperative cancellation stopped before advancing the step. */
   aborted?: true;
+  /** Deduped safe diagnostics from work lowered during this invocation only. */
+  notices?: readonly Readonly<LoweringNotice>[];
   /**
    * Non-fatal notices from creating the run in THIS invocation — currently the
    * implicit engine fallback announcement. Absent when the run already existed,
@@ -221,7 +227,8 @@ export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<Run
     );
     executed.push(...result.executed);
     stepsProcessed += result.stepsProcessed;
-    const aggregate = { ...result, executed, stepsProcessed };
+    const notices = mergeLoweringNotices(...executed.map((step) => step.notices));
+    const aggregate = { ...result, executed, stepsProcessed, ...(notices ? { notices } : {}) };
     if (result.run.status !== "failed" || result.aborted || result.gateRejection || remainingRetries <= 0) {
       return aggregate;
     }
@@ -805,6 +812,7 @@ async function runStepGateLoop(
       unitCount: result.units.length,
       failedUnits: result.units.filter((u) => !u.ok).length,
       summary: result.summary,
+      ...(result.notices ? { notices: result.notices } : {}),
     });
 
     // Route evaluation + artifact-judged completion gate + gate-row
@@ -1095,10 +1103,12 @@ async function driveRun(
 
   // Re-read for the freshest run state (the loop may have exited on maxSteps).
   const finalState = await getNextWorkflowStep(next.run.id);
+  const notices = mergeLoweringNotices(...executed.map((step) => step.notices));
   return {
     run: finalState.run,
     executed,
     stepsProcessed,
+    ...(notices ? { notices } : {}),
     ...(finalState.run.status === "completed" ? { done: true as const } : {}),
     ...(gateRejection ? { gateRejection } : {}),
     ...(judgeFailure ? { judgeFailure } : {}),

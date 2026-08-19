@@ -120,13 +120,20 @@ describe("budget.max_units", () => {
     const frozen = JSON.parse(row?.plan_json ?? "") as WorkflowPlanGraph;
     expect(frozen.budget).toEqual({ maxUnits: 2 });
 
+    const notice = {
+      code: "untranslated-field",
+      severity: "warning" as const,
+      adapter: "codex",
+      field: "tools",
+      message: "tool selection was not translated",
+    };
     let dispatches = 0;
     const result = await runWorkflowSteps({
       target: started.run.id,
       summaryJudge: null,
       dispatcher: async (): Promise<UnitDispatchResult> => {
         dispatches++;
-        return { ok: true, text: "reviewed" };
+        return { ok: true, text: "reviewed", notices: [notice] };
       },
     });
 
@@ -135,6 +142,8 @@ describe("budget.max_units", () => {
     expect(result.executed[0]?.ok).toBe(false);
     expect(result.executed[0]?.summary).toContain("budget exceeded (max_units ceiling)");
     expect(result.executed[0]?.summary).toContain("max_units of 2");
+    expect(result.executed[0]?.notices).toEqual([notice]);
+    expect(result.notices).toEqual([notice]);
 
     // Only the dispatched attempts journaled — the refused unit wrote no row.
     const units = await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(started.run.id));

@@ -24,6 +24,7 @@ import {
 } from "../../../src/workflows/exec/native-executor";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { computeStepWorkList } from "../../../src/workflows/exec/step-work";
+import { computePlanHash } from "../../../src/workflows/ir/plan-hash";
 import type { FrozenAgentEngine, IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
 import { completeWorkflowStep, getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 import { makeSandboxDir, withEnv, withMockedFetch, writeSandboxConfig } from "../../_helpers/sandbox";
@@ -577,6 +578,7 @@ describe("executeStepPlan — structured output", () => {
       adapter: "codex",
       field: "conversation",
       message: "conversation was composed safely",
+      details: { strategy: "system-prefix" },
     };
     const schemaNotice = {
       code: "untranslated-field" as const,
@@ -608,7 +610,24 @@ describe("executeStepPlan — structured output", () => {
 
     expect(result.ok).toBe(true);
     expect(result.units[0]!.notices).toEqual([conversationNotice, schemaNotice]);
+    expect(result.notices).toEqual([conversationNotice, schemaNotice]);
     expect(JSON.stringify(result.evidence)).not.toContain("notices");
+
+    // The durable row intentionally carries no notice field. Rehydrating a
+    // completed unit therefore fabricates no live-only notice on resume.
+    const resumed = await executeStepPlan(stepPlan, {
+      runId: RUN_ID,
+      workflowRef: "workflows/demo",
+      params: {},
+      evidence: {},
+      dispatcher: async () => {
+        throw new Error("a completed journal row must not re-dispatch");
+      },
+    });
+    expect(resumed.ok).toBe(true);
+    expect(resumed.notices).toBeUndefined();
+    expect(resumed.units[0]!.notices).toBeUndefined();
+
     await completeWorkflowStep({
       runId: RUN_ID,
       stepId: "extract",
@@ -623,6 +642,9 @@ describe("executeStepPlan — structured output", () => {
       expect(unit?.result_json).not.toContain("notices");
       const step = repo.getStep(RUN_ID, "extract");
       expect(step?.evidence_json).not.toContain("notices");
+      const run = repo.getRunById(RUN_ID);
+      expect(run?.plan_json).not.toContain("notices");
+      expect(run?.plan_hash).toBe(computePlanHash(frozen));
     });
   });
 
@@ -1206,23 +1228,37 @@ Review the assigned item carefully.
 `;
 
   test("replay divergence: a journaled COMPLETED row with matching id but different input_hash fails the step hard — even under on_error: continue", async () => {
-    seedRun({ params: { files: ["a"] }, steps: [{ id: "review", title: "Review files" }] });
+    seedRun({ params: { files: ["a", "b"] }, steps: [{ id: "review", title: "Review files" }] });
     const stepPlan = plan(DIVERGENCE_WF).steps[0]!;
+    const liveNotice = {
+      code: "untranslated-field",
+      severity: "warning" as const,
+      adapter: "codex",
+      field: "tools",
+      message: "live sibling emitted a safe notice",
+    };
     let dispatches = 0;
+    let emitNotice = false;
     const dispatcher = async (req: UnitDispatchRequest): Promise<UnitDispatchResult> => {
       dispatches++;
-      return { ok: true, text: `did ${req.unitId}` };
+      return { ok: true, text: `did ${req.unitId}`, ...(emitNotice ? { notices: [liveNotice] } : {}) };
     };
 
     const first = await executeStepPlan(stepPlan, {
       runId: RUN_ID,
       workflowRef: "workflows/demo",
-      params: { files: ["a"], note: "v1" },
+      params: { files: ["a", "b"], note: "v1" },
       evidence: {},
       dispatcher,
     });
     expect(first.ok).toBe(true);
-    expect(dispatches).toBe(1);
+    expect(dispatches).toBe(2);
+
+    // Keep "a" as the tampered replay row, but remove "b" so the same
+    // scheduler batch also performs one live dispatch whose notice must not
+    // be discarded by the replay-divergence hard reduction.
+    mutateDb("DELETE FROM workflow_run_units WHERE run_id = ? AND unit_id <> ?", RUN_ID, "review.unit:ac8d8342bbb2");
+    emitNotice = true;
 
     // Same item ⇒ same content-derived unit id, but a different params blob
     // changes the unit preamble ⇒ different input hash. Under a frozen plan
@@ -1232,21 +1268,23 @@ Review the assigned item carefully.
     const second = await executeStepPlan(stepPlan, {
       runId: RUN_ID,
       workflowRef: "workflows/demo",
-      params: { files: ["a"], note: "v2-tampered" },
+      params: { files: ["a", "b"], note: "v2-tampered" },
       evidence: {},
       dispatcher,
     });
     expect(second.ok).toBe(false);
-    expect(dispatches).toBe(1); // no re-dispatch
+    expect(dispatches).toBe(3); // "a" never re-dispatches; missing "b" does
     expect(second.summary).toContain(
       'replay divergence: unit "review.unit:ac8d8342bbb2" was journaled with different inputs',
     );
+    expect(second.notices).toEqual([liveNotice]);
 
     // The journaled row is untouched — the divergent invocation wrote nothing.
     await withWorkflowRunsRepo((repo) => {
       const rows = repo.getUnitsForStep(RUN_ID, "review");
-      expect(rows).toHaveLength(1);
-      expect(rows[0]!.status).toBe("completed");
+      expect(rows).toHaveLength(2);
+      expect(rows.every((row) => row.status === "completed")).toBe(true);
+      expect(rows.every((row) => !(row.result_json ?? "").includes("notices"))).toBe(true);
     });
   });
 
@@ -1347,6 +1385,13 @@ describe("executeStepPlan — lifetime unit cap counts actual dispatches only (p
     const files = ["a", "b", "c", "d", "e"];
     seedRun({ params: { files }, steps: [{ id: "review", title: "Review files" }] });
     const stepPlan = plan(FAN_OUT_WF).steps[0]!;
+    const notice = {
+      code: "untranslated-field",
+      severity: "warning" as const,
+      adapter: "codex",
+      field: "tools",
+      message: "tool selection was not translated",
+    };
     let dispatches = 0;
     const result = await executeStepPlan(stepPlan, {
       runId: RUN_ID,
@@ -1357,13 +1402,15 @@ describe("executeStepPlan — lifetime unit cap counts actual dispatches only (p
       maxConcurrency: 1,
       dispatcher: async () => {
         dispatches++;
-        return { ok: true, text: "ok" };
+        return { ok: true, text: "ok", notices: [notice] };
       },
     });
     expect(dispatches).toBe(2); // only the budget that was left
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("lifetime unit cap");
     expect(result.unitsDispatched).toBe(LIFETIME_UNIT_CAP);
+    expect(result.notices).toEqual([notice]);
+    expect(JSON.stringify(result.evidence)).not.toContain("notices");
   });
 });
 
@@ -1525,17 +1572,26 @@ Do second.
       ],
     });
     const prompts: string[] = [];
+    const notice = {
+      code: "untranslated-field",
+      severity: "warning" as const,
+      adapter: "codex",
+      field: "tools",
+      message: "tool selection was not translated",
+    };
     const result = await runWorkflowSteps({
       target: RUN_ID,
       dispatcher: async (req) => {
         prompts.push(req.prompt);
-        return { ok: true, text: `did ${req.nodeId}` };
+        return { ok: true, text: `did ${req.nodeId}`, notices: [notice] };
       },
       loadPlan: usePlan(TWO_STEP_WF),
     });
 
     expect(result.executed.map((s) => s.stepId)).toEqual(["first", "second"]);
     expect(result.done).toBe(true);
+    expect(result.executed.map((step) => step.notices)).toEqual([[notice], [notice]]);
+    expect(result.notices).toEqual([notice]);
     // Params attach as structured JSON context to EVERY unit (spec §2.3),
     // never spliced into instructions.
     expect(prompts[1]).toContain('"flavor":"vanilla"');
@@ -2075,16 +2131,24 @@ Branch c2.
     // engine reuses the 5 completed rows and dispatches exactly one unit —
     // and the journal-seeded cap counts the reuses as zero new dispatches.
     const files = ["f0", "f1", "f2", "f3", "f4", "f5"];
+    const firstInvocationNotice = {
+      code: "conversation-prompt-composed",
+      severity: "warning" as const,
+      adapter: "codex",
+      field: "conversation",
+      message: "first invocation only",
+    };
     seedRun({ params: { files }, steps: [{ id: "review", title: "Review files" }] });
     const failing = await runWorkflowSteps({
       target: RUN_ID,
       dispatcher: async (req) =>
         req.prompt.includes('fan-out list:\n"f3"')
           ? { ok: false, text: "", failureReason: "timeout", error: "timed out" }
-          : { ok: true, text: "done" },
+          : { ok: true, text: "done", notices: [firstInvocationNotice] },
       loadPlan: usePlan(FAN_OUT_WF),
     });
     expect(failing.run.status).toBe("failed");
+    expect(failing.notices).toEqual([firstInvocationNotice]);
 
     const { resumeWorkflowRun } = await import("../../../src/workflows/runtime/runs");
     await resumeWorkflowRun(RUN_ID);
@@ -2100,6 +2164,11 @@ Branch c2.
     });
     expect(dispatches).toBe(1);
     expect(resumed.done).toBe(true);
+    // The five reused rows intentionally contain no durable notices, and the
+    // one live retry emitted none. Resume must not fabricate the prior call's
+    // live-only diagnostic from result_json/evidence_json.
+    expect(resumed.notices).toBeUndefined();
+    expect(resumed.executed[0]!.notices).toBeUndefined();
   });
 
   test("maxSteps bounds the loop", async () => {
@@ -2814,25 +2883,38 @@ describe("executeStepPlan — a dispatched unit's outcome is never silently disc
 describe("executeStepPlan — journal-write failures are reported accurately (never as 'not dispatched')", () => {
   test("a finish that cannot be journaled fails the step naming the unit and the journal failure", async () => {
     seedRun({ steps: [{ id: "fetch", title: "Fetch" }] });
-    const stepPlan = plan(SOLO_WF).steps[0]!;
-    const result = await executeStepPlan(stepPlan, {
-      runId: RUN_ID,
-      workflowRef: "workflows/demo",
-      params: {},
-      evidence: {},
+    const frozen = plan(SOLO_WF);
+    const notice = {
+      code: "conversation-prompt-composed",
+      severity: "warning" as const,
+      adapter: "codex",
+      field: "conversation",
+      message: "conversation was composed safely",
+    };
+    const result = await runWorkflowSteps({
+      target: RUN_ID,
+      loadPlan: useFrozenPlan(frozen),
+      summaryJudge: null,
       dispatcher: async () => {
         // The dispatch row vanishes while the unit is in flight (journal
         // tampered / row lost): the finish write throws, and the throw must
         // surface as a journal failure for a unit that DID dispatch — not be
         // swallowed by the scheduler into an "aborted / not dispatched" misreport.
         mutateDb("DELETE FROM workflow_run_units WHERE run_id = ? AND unit_id = ?", RUN_ID, "fetch:solo");
-        return { ok: true, text: "dispatched fine" };
+        return { ok: true, text: "dispatched fine", notices: [notice] };
       },
     });
-    expect(result.ok).toBe(false);
-    expect(result.summary).toContain('unit "fetch:solo"');
-    expect(result.summary).toContain("could not be journaled");
-    expect(result.summary).not.toContain("was not dispatched");
+    const report = result.executed[0]!;
+    expect(result.run.status).toBe("failed");
+    expect(report.ok).toBe(false);
+    expect(report.summary).toContain('unit "fetch:solo"');
+    expect(report.summary).toContain("could not be journaled");
+    expect(report.summary).not.toContain("was not dispatched");
+    expect(report.notices).toEqual([notice]);
+    expect(result.notices).toEqual([notice]);
+    await withWorkflowRunsRepo((repo) => {
+      expect(repo.getStep(RUN_ID, "fetch")?.evidence_json).not.toContain("notices");
+    });
   });
 
   const CONTINUE_SOLO_WF = `---
