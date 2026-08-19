@@ -30,6 +30,12 @@ const request: TestResolvedRequestInput = {
   },
   engine: { name: "fixture-agent", kind: "agent", platform: "opencode" },
   model: "provider/exact-model",
+  effort: "high",
+  schema: {
+    type: "object",
+    properties: { verdict: { type: "string" }, score: { type: "number" } },
+    required: ["verdict"],
+  },
   inference: { temperature: 0, extraParams: { seed: 7, response: { z: false, a: true } } },
   tools: { write: false, read: true },
   authorization: { status: "allowed", reason: "fixture policy" },
@@ -66,6 +72,12 @@ describe("test-only normalized resolved-request projection", () => {
       },
       engine: { name: "fixture-agent", kind: "agent", platform: "opencode" },
       model: "provider/exact-model",
+      effort: "high",
+      schema: {
+        properties: { score: { type: "number" }, verdict: { type: "string" } },
+        required: ["verdict"],
+        type: "object",
+      },
       inference: { extraParams: { response: { a: true, z: false }, seed: 7 }, temperature: 0 },
       tools: { read: true, write: false },
       authorization: { status: "allowed", reason: "fixture policy" },
@@ -87,6 +99,8 @@ describe("test-only normalized resolved-request projection", () => {
       persona: null,
       engine: { name: "fixture-llm", kind: "llm", platform: null },
       model: null,
+      effort: null,
+      schema: null,
       inference: {},
       tools: null,
       authorization: { status: "not-observed", reason: null },
@@ -100,6 +114,31 @@ describe("test-only normalized resolved-request projection", () => {
   test("canonical bytes ignore object insertion order but retain array order", () => {
     const reordered: TestResolvedRequestInput = {
       ...request,
+      command: {
+        ...request.command,
+        source: {
+          hash: "fixture-command-hash",
+          file: "commands/contract-review.md",
+          adapter: "akm",
+          bundle: "fixture",
+          ref: "fixture//commands/contract-review",
+        },
+      },
+      persona: {
+        ...request.persona!,
+        source: {
+          hash: "fixture-persona-hash",
+          file: "agents/contract-reviewer.md",
+          adapter: "akm",
+          bundle: "fixture",
+          ref: "fixture//agents/contract-reviewer",
+        },
+      },
+      schema: {
+        required: ["verdict"],
+        properties: { score: { type: "number" }, verdict: { type: "string" } },
+        type: "object",
+      },
       inference: { extraParams: { response: { a: true, z: false }, seed: 7 }, temperature: 0 },
       tools: { read: true, write: false },
       environment: { A_FIRST: "first", Z_LAST: "last" },
@@ -113,5 +152,13 @@ describe("test-only normalized resolved-request projection", () => {
     const twoNotices = canonicalResolvedRequestForTest({ ...request, notices: [{ first: true }, { second: true }] });
     const reversedTwo = canonicalResolvedRequestForTest({ ...request, notices: [{ second: true }, { first: true }] });
     expect(reversedTwo).not.toBe(twoNotices);
+
+    expect(canonicalResolvedRequestForTest({ ...request, effort: "low" })).not.toBe(canonical);
+    expect(
+      canonicalResolvedRequestForTest({
+        ...request,
+        schema: { ...request.schema, required: ["score"] },
+      }),
+    ).not.toBe(canonical);
   });
 });

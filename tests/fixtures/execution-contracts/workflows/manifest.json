@@ -7,6 +7,7 @@
     "boundary": "Only token-safe run commands and a local self-hosted runner are used; no shell expansion is needed for equivalence."
   },
   "currentFreeze": "current/agent-unit.md",
+  "currentFreezeWithSchema": "current/agent-unit-schema.md",
   "rejected": [
     {
       "id": "unsupported-service-trigger",

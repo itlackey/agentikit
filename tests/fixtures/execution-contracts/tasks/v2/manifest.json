@@ -19,35 +19,118 @@
         "timeoutMs",
         "llm",
         "redact"
-      ]
+      ],
+      "expectedParsed": {
+        "schedule": "15 4 * * 1",
+        "enabled": false,
+        "target": {
+          "kind": "prompt",
+          "source": {
+            "kind": "inline",
+            "text": "Review the execution contract.\nReturn the literal marker contract-reviewed."
+          },
+          "engine": "fixture-llm",
+          "model": "fixture-exact-model",
+          "timeoutMs": 45000,
+          "llm": {
+            "temperature": 0,
+            "maxTokens": 256,
+            "supportsJsonSchema": false,
+            "extraParams": {
+              "seed": 7
+            },
+            "contextLength": 4096,
+            "enableThinking": false
+          }
+        },
+        "name": "Contract review prompt",
+        "description": "Exercises every exactly preservable v2 prompt override",
+        "when_to_use": "Run during the execution-contract conformance pass",
+        "tags": ["contract", "review"],
+        "redact": ["CONTRACT_FIXTURE_TOKEN"]
+      }
     },
     {
       "id": "prompt-command-ref",
       "file": "deterministic/prompt-command-ref.yml",
       "sourceKind": "prompt-command-ref",
       "targetKind": "command-ref",
-      "preserves": ["schedule", "enabled", "engine", "model", "timeoutMs"]
+      "preserves": ["schedule", "enabled", "engine", "model", "timeoutMs"],
+      "expectedParsed": {
+        "schedule": "@daily",
+        "enabled": true,
+        "target": {
+          "kind": "prompt",
+          "source": {
+            "kind": "asset",
+            "ref": "commands/contract-review"
+          },
+          "engine": "fixture-agent",
+          "model": "fixture-exact-model",
+          "timeoutMs": 45000
+        }
+      }
     },
     {
       "id": "prompt-inline-agent",
       "file": "deterministic/prompt-inline-agent.yml",
       "sourceKind": "prompt-inline",
       "targetKind": "anonymous-command-content",
-      "preserves": ["schedule", "enabled", "engine", "model", "timeoutMs"]
+      "preserves": ["schedule", "enabled", "engine", "model", "timeoutMs"],
+      "expectedParsed": {
+        "schedule": "@daily",
+        "enabled": true,
+        "target": {
+          "kind": "prompt",
+          "source": {
+            "kind": "inline",
+            "text": "Review the execution contract."
+          },
+          "engine": "fixture-agent",
+          "model": "fixture-exact-model",
+          "timeoutMs": 45000
+        }
+      }
     },
     {
       "id": "command-string",
       "file": "deterministic/command-string.yml",
       "sourceKind": "command-string-safe-token-sequence",
       "targetKind": "shell-run",
-      "preserves": ["schedule", "enabled", "timeoutMs", "redact"]
+      "preserves": ["schedule", "enabled", "timeoutMs", "redact"],
+      "expectedParsed": {
+        "schedule": "@hourly",
+        "enabled": true,
+        "target": {
+          "kind": "command",
+          "cmd": ["akm", "index", "--full"]
+        },
+        "timeoutMs": 45000,
+        "redact": ["CONTRACT_FIXTURE_TOKEN"]
+      }
     },
     {
       "id": "workflow-ref-full",
       "file": "deterministic/workflow-ref-full.yml",
       "sourceKind": "workflow-ref",
       "targetKind": "workflow-ref",
-      "preserves": ["schedule", "enabled", "params", "timeoutMs", "maxSteps", "maxRetries", "redact"]
+      "preserves": ["schedule", "enabled", "params", "timeoutMs", "maxSteps", "maxRetries", "redact"],
+      "expectedParsed": {
+        "schedule": "0 6 * * *",
+        "enabled": true,
+        "target": {
+          "kind": "workflow",
+          "ref": "workflows/contract-review",
+          "params": {
+            "target": "packages/core",
+            "strict": true
+          },
+          "timeoutMs": 3600000,
+          "maxSteps": 8,
+          "maxRetries": 2
+        },
+        "redact": ["CONTRACT_FIXTURE_TOKEN"]
+      }
     }
   ],
   "blocked": [

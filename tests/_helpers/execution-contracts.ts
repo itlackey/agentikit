@@ -76,6 +76,8 @@ export interface TestResolvedRequestInput {
     platform?: string | null;
   };
   model?: string | null;
+  effort?: string | null;
+  schema?: Readonly<Record<string, unknown>> | null;
   inference?: Readonly<Record<string, unknown>>;
   tools?: unknown;
   authorization?: {
@@ -105,6 +107,8 @@ export interface TestNormalizedResolvedRequest {
     platform: string | null;
   };
   model: string | null;
+  effort: string | null;
+  schema: Record<string, unknown> | null;
   inference: Record<string, unknown>;
   tools: unknown | null;
   authorization: {
@@ -137,12 +141,12 @@ export function normalizeResolvedRequestForTest(input: TestResolvedRequestInput)
     command: {
       content: input.command.content,
       arguments: input.command.arguments ?? "",
-      source: input.command.source ?? null,
+      source: input.command.source ? (sortJson(input.command.source) as unknown as TestSourceIdentity) : null,
     },
     persona: input.persona
       ? {
           content: input.persona.content,
-          source: input.persona.source ?? null,
+          source: input.persona.source ? (sortJson(input.persona.source) as unknown as TestSourceIdentity) : null,
         }
       : null,
     engine: {
@@ -151,6 +155,8 @@ export function normalizeResolvedRequestForTest(input: TestResolvedRequestInput)
       platform: input.engine.platform ?? null,
     },
     model: input.model ?? null,
+    effort: input.effort ?? null,
+    schema: input.schema ? (sortJson(input.schema) as Record<string, unknown>) : null,
     inference: sortJson(input.inference ?? {}) as Record<string, unknown>,
     tools: input.tools === undefined ? null : sortJson(input.tools),
     authorization: {
@@ -202,6 +208,8 @@ export function projectCurrentRunnerRequestForTest(input: {
       platform,
     },
     model,
+    effort: dispatch?.effort ?? null,
+    schema: dispatch?.schema ?? null,
     tools: dispatch?.tools,
     timeoutMs: input.timeoutMs !== undefined ? input.timeoutMs : (runner.timeoutMs ?? null),
     workspace: input.workspace !== undefined ? input.workspace : (profile.workspace ?? null),
@@ -242,6 +250,8 @@ export function projectCurrentWorkflowUnitForTest(plan: WorkflowPlanGraph, stepI
       platform: engine.kind === "agent" ? engine.platform : null,
     },
     model: invocation.model,
+    effort: null,
+    schema: step.root.schema ?? null,
     inference,
     timeoutMs: invocation.timeoutMs,
     workspace: engine.kind === "agent" ? engine.workspace : null,

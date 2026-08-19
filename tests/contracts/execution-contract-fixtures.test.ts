@@ -9,6 +9,7 @@ import type { BundleAdapter } from "../../src/core/adapter/bundle-adapter";
 import type { BundleComponent } from "../../src/core/adapter/types";
 import { buildFileContext } from "../../src/indexer/walk/file-context";
 import { parseTaskDocument } from "../../src/tasks/parser";
+import type { TaskDocument } from "../../src/tasks/schema";
 import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
 import {
   assertFixtureBytesUnchanged,
@@ -30,6 +31,7 @@ interface TaskManifestEntry {
   sourceKind: string;
   targetKind: string;
   preserves: string[];
+  expectedParsed: Record<string, unknown>;
 }
 
 interface BlockedTaskManifestEntry {
@@ -39,6 +41,8 @@ interface BlockedTaskManifestEntry {
 }
 
 interface WorkflowManifest {
+  currentFreeze: string;
+  currentFreezeWithSchema: string;
   equivalent: {
     markdown: string;
     githubYaml: string;
@@ -82,6 +86,20 @@ function fixtureFiles(root: string, extensions: ReadonlySet<string>): string[] {
   return result.sort();
 }
 
+function taskContractProjection(task: TaskDocument): Record<string, unknown> {
+  return {
+    schedule: task.schedule,
+    enabled: task.enabled,
+    target: task.target,
+    ...(task.name !== undefined ? { name: task.name } : {}),
+    ...(task.description !== undefined ? { description: task.description } : {}),
+    ...(task.when_to_use !== undefined ? { when_to_use: task.when_to_use } : {}),
+    ...(task.tags !== undefined ? { tags: task.tags } : {}),
+    ...(task.timeoutMs !== undefined ? { timeoutMs: task.timeoutMs } : {}),
+    ...(task.redact !== undefined ? { redact: task.redact } : {}),
+  };
+}
+
 describe("execution-contract native fixtures", () => {
   test("AKM, Claude, and OpenCode each provide one discoverable agent and command without writes", () => {
     const manifest = readJson<{ schemaVersion: 1; files: NativeManifestEntry[] }>(
@@ -93,6 +111,9 @@ describe("execution-contract native fixtures", () => {
       opencode: opencodeAdapter,
     };
     const before = captureFixtureBytes(NATIVE_ROOT);
+    const rootBytes = Object.fromEntries(
+      Object.keys(adapters).map((adapter) => [adapter, captureFixtureBytes(path.join(NATIVE_ROOT, adapter))]),
+    ) as Record<NativeManifestEntry["adapter"], ReturnType<typeof captureFixtureBytes>>;
 
     expect(manifest.schemaVersion).toBe(1);
     expect(manifest.files.map(({ adapter, kind }) => `${adapter}:${kind}`).sort()).toEqual([
@@ -134,6 +155,9 @@ describe("execution-contract native fixtures", () => {
     }
 
     assertFixtureBytesUnchanged(NATIVE_ROOT, before);
+    for (const adapter of Object.keys(adapters) as NativeManifestEntry["adapter"][]) {
+      assertFixtureBytesUnchanged(path.join(NATIVE_ROOT, adapter), rootBytes[adapter]);
+    }
   });
 });
 
@@ -154,7 +178,66 @@ describe("task-v2 migration fixture catalog", () => {
     expect(catalogFiles).toEqual(fixtureFiles(TASK_ROOT, new Set([".yml"])));
     expect(new Set(manifest.blocked.map(({ reasonCode }) => reasonCode)).size).toBe(manifest.blocked.length);
 
-    for (const entry of [...manifest.deterministic, ...manifest.blocked]) {
+    expect(
+      Object.fromEntries(
+        manifest.deterministic.map(({ id, sourceKind, targetKind, preserves }) => [
+          id,
+          { sourceKind, targetKind, preserves },
+        ]),
+      ),
+    ).toEqual({
+      "prompt-inline-full": {
+        sourceKind: "prompt-inline",
+        targetKind: "anonymous-command-content",
+        preserves: [
+          "schedule",
+          "enabled",
+          "name",
+          "description",
+          "when_to_use",
+          "tags",
+          "engine",
+          "model",
+          "timeoutMs",
+          "llm",
+          "redact",
+        ],
+      },
+      "prompt-command-ref": {
+        sourceKind: "prompt-command-ref",
+        targetKind: "command-ref",
+        preserves: ["schedule", "enabled", "engine", "model", "timeoutMs"],
+      },
+      "prompt-inline-agent": {
+        sourceKind: "prompt-inline",
+        targetKind: "anonymous-command-content",
+        preserves: ["schedule", "enabled", "engine", "model", "timeoutMs"],
+      },
+      "command-string": {
+        sourceKind: "command-string-safe-token-sequence",
+        targetKind: "shell-run",
+        preserves: ["schedule", "enabled", "timeoutMs", "redact"],
+      },
+      "workflow-ref-full": {
+        sourceKind: "workflow-ref",
+        targetKind: "workflow-ref",
+        preserves: ["schedule", "enabled", "params", "timeoutMs", "maxSteps", "maxRetries", "redact"],
+      },
+    });
+
+    for (const entry of manifest.deterministic) {
+      const filePath = path.join(TASK_ROOT, entry.file);
+      const task = parseTaskDocument({
+        yaml: fs.readFileSync(filePath, "utf8"),
+        filePath,
+        id: entry.id,
+      });
+      expect(task.version, entry.file).toBe(2);
+      expect(task.source.path).toBe(filePath);
+      expect(taskContractProjection(task), entry.file).toEqual(entry.expectedParsed);
+    }
+
+    for (const entry of manifest.blocked) {
       const filePath = path.join(TASK_ROOT, entry.file);
       const task = parseTaskDocument({
         yaml: fs.readFileSync(filePath, "utf8"),
@@ -281,6 +364,8 @@ describe("workflow frontend fixtures", () => {
     const expected = readJson<PortableWorkflowProjection>(path.join(WORKFLOW_ROOT, manifest.equivalent.expected));
     const plan = freezeWorkflow(markdown, "workflows/contract-review.md");
 
+    expect(manifest.currentFreeze).toBe("current/agent-unit.md");
+    expect(manifest.currentFreezeWithSchema).toBe("current/agent-unit-schema.md");
     expect(manifest.equivalent.boundary).toContain("self-hosted");
     expect(markdownFixtureProjection(markdown, plan)).toEqual(expected);
     // This is a fixture-only projection for WP7. It does not claim the current
