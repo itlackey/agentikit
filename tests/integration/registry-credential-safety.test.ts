@@ -5,7 +5,7 @@ import { getConfigValue, listConfig } from "../../src/commands/config-cli";
 import { collectEgressAdvisory } from "../../src/commands/health/surfaces";
 import { resolveRegistries, searchRegistry } from "../../src/commands/read/registry-search";
 import { DEFAULT_CONFIG, loadConfig, saveConfig } from "../../src/core/config/config";
-import { formatRegistryError, formatRegistryUrl } from "../../src/core/registry-url";
+import { formatRegistryError, formatRegistryUrl, redactCredentialBearingUrls } from "../../src/core/registry-url";
 import { clearLogFile, setLogFile, warn } from "../../src/core/warn";
 import {
   formatInfoPlain,
@@ -26,6 +26,19 @@ import {
 const USERNAME = "registry-alice";
 const PASSWORD = "registry-swordfish";
 const CREDENTIAL_URL = `https://${USERNAME}:${PASSWORD}@registry.example.test/index.json`;
+const ADVERSARIAL_CREDENTIAL_URLS = [
+  `https://safe.example.test/?next=https://${USERNAME}:${PASSWORD}@errors.example.test/private`,
+  `https://safe.example.test/redirect/https://${USERNAME}:${PASSWORD}@errors.example.test/private`,
+  `https://${USERNAME}:\t${PASSWORD}@errors.example.test/private`,
+  `https://${USERNAME}:\r${PASSWORD}@errors.example.test/private`,
+  `https://${USERNAME}:\n${PASSWORD}@errors.example.test/private`,
+  `https://${USERNAME}: ${PASSWORD}@errors.example.test/private`,
+  `https://${USERNAME}:${PASSWORD}"@errors.example.test/private`,
+  `https://${USERNAME}:${PASSWORD}'@errors.example.test/private`,
+  `https://${USERNAME}:${PASSWORD}\`@errors.example.test/private`,
+  `https://${USERNAME}:${PASSWORD}<@errors.example.test/private`,
+  `https://${USERNAME}:${PASSWORD}>@errors.example.test/private`,
+] as const;
 
 function expectCredentialsAbsent(value: unknown): void {
   const serialized = typeof value === "string" ? value : JSON.stringify(value);
@@ -80,6 +93,8 @@ describe("registry credential-bearing URL mutation boundaries", () => {
       CREDENTIAL_URL,
       `https://${USERNAME}@registry.example.test/index.json`,
       `https://:${PASSWORD}@registry.example.test/index.json`,
+      ADVERSARIAL_CREDENTIAL_URLS[0],
+      ADVERSARIAL_CREDENTIAL_URLS[1],
     ];
     for (const url of credentialForms) {
       expect(() =>
@@ -218,8 +233,7 @@ describe("registry provider, search, warning, and log boundaries", () => {
     expectCredentialsAbsent(warnings);
   });
 
-  test("fetch error objects are sanitized before response warnings and log sinks", async () => {
-    const leakedErrorUrl = `https://${USERNAME}:${PASSWORD}@errors.example.test/private`;
+  test("fetch error objects sanitize nested, control, and punctuation userinfo before response and log sinks", async () => {
     const logPath = path.join(storage.root, "registry.log");
     setLogFile(logPath);
 
@@ -229,7 +243,7 @@ describe("registry provider, search, warning, and log boundaries", () => {
           registries: [{ url: "https://skills.example.test", name: "skills", provider: "skills-sh" }],
         }),
       () => {
-        throw new Error(`fetch failed for ${leakedErrorUrl}`);
+        throw new Error(`fetch failed:\n${ADVERSARIAL_CREDENTIAL_URLS.join("\n")}`);
       },
     );
     for (const warning of result.warnings) warn(warning);
@@ -295,6 +309,30 @@ describe("registry URLs are safe in plain, structured, and health projections", 
       formatRegistryUrl(`https://${USERNAME}:${PASSWORD}@registry.example.test/deep/index.json?channel=beta#latest`),
     ).toBe("https://registry.example.test/deep/index.json?channel=beta#latest");
     expectCredentialsAbsent(formatRegistryError(new Error(`request failed: ${CREDENTIAL_URL}?retry=1`)));
+  });
+
+  test("the error sanitizer scans nested URL starts and delimiter-heavy userinfo", () => {
+    for (const unsafe of ADVERSARIAL_CREDENTIAL_URLS) {
+      expectCredentialsAbsent(redactCredentialBearingUrls(`request failed for ${unsafe}`));
+      expectCredentialsAbsent(formatRegistryUrl(unsafe));
+    }
+
+    expect(
+      redactCredentialBearingUrls(
+        `outer https://safe.example.test/?next=https://${USERNAME}:${PASSWORD}@errors.example.test/private`,
+      ),
+    ).toBe("outer https://safe.example.test/?next=https://errors.example.test/private");
+    expect(
+      redactCredentialBearingUrls(
+        `outer https://safe.example.test/redirect/https://${USERNAME}:${PASSWORD}@errors.example.test/private`,
+      ),
+    ).toBe("outer https://safe.example.test/redirect/https://errors.example.test/private");
+  });
+
+  test("credential-free user:pass@ data in a path, query, or fragment remains unchanged", () => {
+    const ordinary =
+      "request https://safe.example.test/path/user:pass@notes?next=user:pass@data#fragment-user:pass@value";
+    expect(redactCredentialBearingUrls(ordinary)).toBe(ordinary);
   });
 
   test("registry and info text renderers redact registry userinfo", () => {

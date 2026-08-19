@@ -14,7 +14,7 @@ export const REGISTRY_CREDENTIALS_UNSUPPORTED =
   "Registry URLs must not include username or password credentials. Authenticated registries are not supported by the built-in static-index or skills-sh providers; configure a credential-free HTTPS endpoint.";
 
 const INVALID_REGISTRY_URL_LABEL = "(invalid registry URL)";
-const HTTP_URL_TOKEN = /https?:\/\/[^\s<>"'`]+/giu;
+const HTTP_URL_START = /https?:\/\//giu;
 
 /**
  * Detect URL userinfo without broadening this issue into general URL/network
@@ -23,12 +23,16 @@ const HTTP_URL_TOKEN = /https?:\/\/[^\s<>"'`]+/giu;
  * values that `URL` cannot parse so they cannot slip through the config gate.
  */
 export function hasRegistryUrlCredentials(raw: string): boolean {
+  return registryUrlStartOffsets(raw).some((start) => hasCredentialsAtUrlStart(raw.slice(start)));
+}
+
+function hasCredentialsAtUrlStart(raw: string): boolean {
   try {
     const parsed = new URL(raw);
     return parsed.username.length > 0 || parsed.password.length > 0;
   } catch {
     const authority = extractAuthority(raw);
-    return authority?.includes("@") ?? false;
+    return authority ? authority.value.includes("@") : false;
   }
 }
 
@@ -38,22 +42,19 @@ export function hasRegistryUrlCredentials(raw: string): boolean {
  * strings fail closed rather than being echoed into a diagnostic.
  */
 export function formatRegistryUrl(raw: string): string {
+  let validHttpUrl = false;
   try {
     const parsed = new URL(raw);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return INVALID_REGISTRY_URL_LABEL;
-    if (!parsed.username && !parsed.password) return raw;
-    parsed.username = "";
-    parsed.password = "";
-    return parsed.toString();
+    validHttpUrl = true;
   } catch {
-    const authority = extractAuthority(raw);
-    if (!authority) return INVALID_REGISTRY_URL_LABEL;
-    const at = authority.lastIndexOf("@");
-    if (at < 0) return INVALID_REGISTRY_URL_LABEL;
-    const authorityStart = raw.indexOf(authority);
-    if (authorityStart < 0) return INVALID_REGISTRY_URL_LABEL;
-    return `${raw.slice(0, authorityStart)}${authority.slice(at + 1)}${raw.slice(authorityStart + authority.length)}`;
+    // Invalid credential-bearing spellings still need a non-leaking fallback.
   }
+
+  const formatted = redactUrlStartsRightToLeft(raw);
+  if (validHttpUrl) return formatted;
+  if (registryUrlStartOffsets(raw)[0] === 0 && formatted !== raw) return formatted;
+  return INVALID_REGISTRY_URL_LABEL;
 }
 
 /** A consistent human label built on the safe URL formatter. */
@@ -77,9 +78,16 @@ export function registryEntryForOutput<T extends RegistryUrlDescriptor>(entry: T
  * string while leaving ordinary credential-free query/path text untouched.
  */
 export function redactCredentialBearingUrls(message: string): string {
-  return message.replace(HTTP_URL_TOKEN, (candidate) =>
-    hasRegistryUrlCredentials(candidate) ? formatRegistryUrl(candidate) : candidate,
-  );
+  let formatted = message;
+  const starts = registryUrlStartOffsets(message);
+  for (let i = starts.length - 1; i >= 0; i--) {
+    const start = starts[i];
+    if (start === undefined) continue;
+    const candidate = formatted.slice(start);
+    if (!hasCredentialsAtUrlStart(candidate)) continue;
+    formatted = `${formatted.slice(0, start)}${formatRegistryUrl(candidate)}`;
+  }
+  return formatted;
 }
 
 /** Fetch errors are untrusted: runtimes often include the request URL. */
@@ -87,7 +95,36 @@ export function formatRegistryError(error: unknown): string {
   return redactCredentialBearingUrls(toErrorMessage(error));
 }
 
-function extractAuthority(raw: string): string | undefined {
-  const match = /^https?:\/\/([^/?#]*)/iu.exec(raw);
-  return match?.[1];
+function redactUrlStartsRightToLeft(raw: string): string {
+  let formatted = raw;
+  const starts = registryUrlStartOffsets(raw);
+  for (let i = starts.length - 1; i >= 0; i--) {
+    const start = starts[i];
+    if (start === undefined) continue;
+    const candidate = formatted.slice(start);
+    if (!hasCredentialsAtUrlStart(candidate)) continue;
+    const authority = extractAuthority(candidate);
+    if (!authority) continue;
+    const at = authority.value.lastIndexOf("@");
+    if (at < 0) continue;
+    const safeCandidate = `${candidate.slice(0, authority.start)}${authority.value.slice(at + 1)}${candidate.slice(authority.end)}`;
+    formatted = `${formatted.slice(0, start)}${safeCandidate}`;
+  }
+  return formatted;
+}
+
+function registryUrlStartOffsets(raw: string): number[] {
+  return Array.from(raw.matchAll(HTTP_URL_START), (match) => match.index);
+}
+
+function extractAuthority(raw: string): { value: string; start: number; end: number } | undefined {
+  // WHATWG URL parsing tolerates/normalizes tabs, CR/LF, spaces, quotes,
+  // backticks, and angle punctuation in userinfo. Only actual authority
+  // delimiters end this scan; processing the last `@` removes all userinfo.
+  const match = /^https?:\/\/([^\\/?#]*)/iu.exec(raw);
+  if (!match) return undefined;
+  const value = match[1];
+  if (value === undefined) return undefined;
+  const start = match[0].length - value.length;
+  return { value, start, end: match[0].length };
 }
