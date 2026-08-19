@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { main } from "../src/cli";
-import { DEFAULT_MODEL_MAP_TEXT } from "../src/integrations/agent/model-map";
+import { readInstalledModelMapText } from "../src/integrations/agent/model-map";
 import { runCliCapture } from "./_helpers/cli";
 import { withEnv } from "./_helpers/sandbox";
 
@@ -26,7 +26,7 @@ describe("akm models copy-defaults", () => {
           shape: "models",
           schemaVersion: 1,
         });
-        expect(fs.readFileSync(target, "utf8")).toBe(DEFAULT_MODEL_MAP_TEXT);
+        expect(fs.readFileSync(target, "utf8")).toBe(readInstalledModelMapText());
 
         fs.writeFileSync(target, "operator bytes");
         const refused = await runCliCapture(["models", "copy-defaults"]);
@@ -40,7 +40,7 @@ describe("akm models copy-defaults", () => {
         const replaced = await runCliCapture(["models", "copy-defaults", "--overwrite"]);
         expect(replaced.code).toBe(0);
         expect(JSON.parse(replaced.stdout)).toMatchObject({ copied: true, overwritten: true, path: target });
-        expect(fs.readFileSync(target, "utf8")).toBe(DEFAULT_MODEL_MAP_TEXT);
+        expect(fs.readFileSync(target, "utf8")).toBe(readInstalledModelMapText());
       });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

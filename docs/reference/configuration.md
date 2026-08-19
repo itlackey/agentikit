@@ -164,12 +164,30 @@ akm models copy-defaults --overwrite  # explicit replacement confirmation
 ```
 
 The command validates the installed asset, creates the config directory, and
-writes atomically. It refuses an existing file without `--overwrite` and never
-replaces a symlink or other non-regular target. AKM does not auto-create or
-sync this file, and authoritative defaults never live in the cache. `akm
-health` reports `model-map-files` as passing when the optional user file is
-absent, warns with its path and JSON location when the user file is unreadable
-or invalid, and fails when the installed package asset is defective.
+writes a fully synced sibling before publication. Without `--overwrite`, a
+hard-link/no-replace operation makes publication atomic: a racing creator wins
+without losing its bytes. A filesystem that cannot provide that operation
+fails safely instead of falling back to a clobbering rename.
+
+With `--overwrite`, the portable guarantee is an atomic pathname replacement
+that never follows the target when it is a symlink. AKM verifies the observed
+regular-file identity again immediately before rename, but the portable
+filesystem APIs do not provide a conditional compare-and-swap rename. Another
+process can still change the directory entry after that check; AKM replaces
+the entry at the pathname without dereferencing it. Consequently,
+`overwritten: true` means overwrite was requested for an entry AKM observed,
+not that an inode identity was transactionally locked. Symlinks and other
+non-regular targets observed at either check are refused.
+
+AKM does not auto-create or sync this file, and authoritative defaults never
+live in the cache. npm/Node and normal Bun installs read the packaged
+`dist/assets/models.json` lazily, so `akm health` can report a missing or
+malformed package asset as a `model-map-files` failure. A standalone binary has
+the same authoritative bytes embedded at compile time and therefore has no
+external model-map asset that can later disappear; its health check validates
+the embedded copy, and release tests pin copied bytes to `src/assets/models.json`.
+The health check passes when the optional user file is absent and warns with
+its path and JSON location when the user file is unreadable or invalid.
 
 `defaults.engine` names an LLM or agent engine. `defaults.llmEngine` must name
 an LLM engine. There is no first-engine fallback: an unset `defaults.engine`

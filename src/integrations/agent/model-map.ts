@@ -2,6 +2,16 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { MAX_CONFIG_FILE_BYTES, readTextFileDescriptorWithLimit, writeFileAtomic } from "../../core/common";
+import { ENGINE_NAME_PATTERN_SOURCE } from "../../core/config/engine-semantics";
+import { ConfigError, UsageError } from "../../core/errors";
+import { getConfigDir } from "../../core/paths";
+import { cloneExecutionJsonObject, type ExecutionJsonObject, type ExecutionJsonValue } from "../../execution/json";
+
 /**
  * Installed and operator-owned model intent aliases (#802 / WP2).
  *
@@ -10,18 +20,13 @@
  * loader and expansion API independent lets direct, task, and workflow
  * callers adopt one implementation without hard-coding provider mappings.
  */
-import fs from "node:fs";
-import path from "node:path";
-import defaultModelMap from "../../assets/models.json" with { type: "json" };
-import { writeFileAtomic } from "../../core/common";
-import { ENGINE_NAME_PATTERN_SOURCE } from "../../core/config/engine-semantics";
-import { ConfigError, UsageError } from "../../core/errors";
-import { getConfigDir } from "../../core/paths";
-import { cloneExecutionJsonObject, type ExecutionJsonObject, type ExecutionJsonValue } from "../../execution/json";
 
 export const MODEL_MAP_VERSION = 1 as const;
-/** Canonical installed bytes, derived from the statically embedded JSON asset on every runtime. */
-export const DEFAULT_MODEL_MAP_TEXT = `${JSON.stringify(defaultModelMap, null, 2)}\n`;
+export const MODEL_MAP_MAX_BYTES = MAX_CONFIG_FILE_BYTES;
+export const MODEL_MAP_MAX_DEPTH = 64;
+export const MODEL_MAP_MAX_NODES = 100_000;
+
+let standaloneInstalledModelMapText: string | undefined;
 
 export interface ModelMapProfileLayer {
   readonly model?: string;
@@ -143,18 +148,70 @@ function parseProfileLayer(value: unknown, source: string, jsonPath: string): Mo
   return Object.freeze(out);
 }
 
+/**
+ * Bound nesting before JSON.parse or any recursive durable-JSON clone runs.
+ * Brackets inside strings are ignored, including escaped quote sequences.
+ */
+function assertJsonDepthBudget(text: string, source: string): void {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (const character of text) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "{" || character === "[") {
+      depth += 1;
+      if (depth > MODEL_MAP_MAX_DEPTH) {
+        invalid(source, "$", `JSON nesting exceeds the ${MODEL_MAP_MAX_DEPTH}-level limit`);
+      }
+    } else if (character === "}" || character === "]") {
+      depth -= 1;
+    }
+  }
+}
+
+/** Iterative node budget, deliberately completed before recursive inference cloning. */
+function assertJsonNodeBudget(value: unknown, source: string): void {
+  const pending: unknown[] = [value];
+  let count = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    count += 1;
+    if (count > MODEL_MAP_MAX_NODES) {
+      invalid(source, "$", `JSON value exceeds the ${MODEL_MAP_MAX_NODES}-node limit`);
+    }
+    if (current !== null && typeof current === "object") {
+      const children = Array.isArray(current) ? current : Object.values(current);
+      for (const child of children) pending.push(child);
+    }
+  }
+}
+
 /** Parse one installed or user layer. Partial structured profiles are valid at this stage. */
 export function parseModelMapLayer(text: string, source: string): ModelMapLayerV1 {
+  if (Buffer.byteLength(text, "utf8") > MODEL_MAP_MAX_BYTES) {
+    invalid(source, "$", `document exceeds the ${MODEL_MAP_MAX_BYTES}-byte limit`);
+  }
+  assertJsonDepthBudget(text, source);
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
-  } catch (error) {
-    invalid(source, "$", `invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  } catch {
+    invalid(source, "$", "invalid JSON syntax");
   }
+  assertJsonNodeBudget(parsed, source);
   const root = requireRecord(parsed, source, "$");
   assertOnlyKeys(root, ["version", "aliases"], source, "$");
   if (root.version !== MODEL_MAP_VERSION) {
-    invalid(source, "$.version", `expected ${MODEL_MAP_VERSION}, received ${JSON.stringify(root.version)}`);
+    invalid(source, "$.version", `expected version ${MODEL_MAP_VERSION}`);
   }
   if (!Object.hasOwn(root, "aliases")) invalid(source, "$.aliases", "required field is missing");
   const rawAliases = requireRecord(root.aliases, source, "$.aliases");
@@ -325,23 +382,110 @@ export interface LoadedModelMap {
   readonly userStatus: "absent" | "loaded";
 }
 
-/** Load the embedded installed authority plus the optional operator overlay. */
-export function loadModelMap(options: LoadModelMapOptions = {}): LoadedModelMap {
-  const installed = parseModelMapLayer(options.installedText ?? DEFAULT_MODEL_MAP_TEXT, "installed models.json");
-  const userPath = userModelMapPath(options.env);
-  let user: ModelMapLayerV1 | undefined;
-  let userText: string | undefined;
+function modelMapFileError(label: string, filePath: string, action: string): ConfigError {
+  return new ConfigError(
+    `${label} could not be ${action}: ${filePath}.`,
+    "INVALID_CONFIG_FILE",
+    `Ensure ${filePath} is a readable regular file owned by the expected user.`,
+  );
+}
+
+/**
+ * Read through a nonblocking, no-follow descriptor and enforce the config-size
+ * ceiling before parsing. `optional` recognizes only a true lstat ENOENT as
+ * absence; dangling links and every non-regular type are configuration errors.
+ */
+function readModelMapFile(filePath: string, label: string, optional: boolean): string | undefined {
+  let linkStat: fs.Stats;
   try {
-    userText = fs.readFileSync(userPath, "utf8");
+    linkStat = fs.lstatSync(filePath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+    if (optional && (error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+    throw modelMapFileError(label, filePath, optional ? "inspected" : "found");
+  }
+  if (!linkStat.isFile()) {
+    throw new ConfigError(
+      `Unable to read ${label.toLowerCase()} because it is not a readable regular file: ${filePath}.`,
+      "INVALID_CONFIG_FILE",
+      "Move the symlink or non-regular target aside, or replace it with a readable regular models.json file.",
+    );
+  }
+
+  const noFollow =
+    process.platform !== "win32" && typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+  const nonblock =
+    process.platform !== "win32" && typeof fs.constants.O_NONBLOCK === "number" ? fs.constants.O_NONBLOCK : 0;
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow | nonblock);
+    const openedStat = fs.fstatSync(fd);
+    if (!sameFileIdentity(linkStat, openedStat)) {
       throw new ConfigError(
-        `Unable to read user models.json at ${userPath}: ${error instanceof Error ? error.message : String(error)}`,
+        `${label} changed while it was being opened: ${filePath}.`,
         "INVALID_CONFIG_FILE",
-        "Ensure models.json is a readable regular file, or remove it to use AKM's installed defaults.",
+        "Retry after ensuring no other process is replacing models.json.",
       );
     }
+    const text = readTextFileDescriptorWithLimit(fd, MODEL_MAP_MAX_BYTES, label, filePath);
+    fs.closeSync(fd);
+    fd = undefined;
+    return text;
+  } catch (error) {
+    if (error instanceof ConfigError) throw error;
+    throw modelMapFileError(label, filePath, "read");
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // The actionable read error above remains authoritative.
+      }
+    }
   }
+}
+
+/** Resolve the one authoritative external-asset location for this runtime. */
+export function installedModelMapPaths(moduleUrl = import.meta.url): readonly string[] {
+  const modulePath = fileURLToPath(moduleUrl);
+  const moduleDirectory = path.dirname(modulePath);
+  const unbundledModule =
+    path.basename(moduleDirectory) === "agent" && path.basename(path.dirname(moduleDirectory)) === "integrations";
+  const assetPath = path.resolve(moduleDirectory, unbundledModule ? "../../assets/models.json" : "assets/models.json");
+  return Object.freeze([assetPath]);
+}
+
+/**
+ * Standalone bootstrap only. `scripts/akm-standalone.ts` derives these bytes
+ * from the authoritative JSON import that Bun embeds into the executable.
+ */
+export function registerStandaloneModelMapFallback(text: string): void {
+  standaloneInstalledModelMapText = text;
+}
+
+/** Load installed bytes lazily so health can report a missing/bad package asset. */
+export function readInstalledModelMapText(options: LoadModelMapOptions = {}): string {
+  if (options.installedText !== undefined) return options.installedText;
+  // Registration occurs only in the compiled standalone bootstrap. Once set,
+  // the embedded authority must win over any mutable file beside the binary.
+  if (standaloneInstalledModelMapText !== undefined) return standaloneInstalledModelMapText;
+  const candidates = installedModelMapPaths();
+  for (const candidate of candidates) {
+    const external = readModelMapFile(candidate, "Installed models.json", true);
+    if (external !== undefined) return external;
+  }
+  throw new ConfigError(
+    `Installed models.json is missing from this AKM installation (checked: ${candidates.join(", ")}).`,
+    "INVALID_CONFIG_FILE",
+    "Reinstall AKM so its dist/assets/models.json package asset is restored.",
+  );
+}
+
+/** Load the installed authority plus the optional operator overlay. */
+export function loadModelMap(options: LoadModelMapOptions = {}): LoadedModelMap {
+  const installed = parseModelMapLayer(readInstalledModelMapText(options), "installed models.json");
+  const userPath = userModelMapPath(options.env);
+  const userText = readModelMapFile(userPath, "User models.json", true);
+  let user: ModelMapLayerV1 | undefined;
   if (userText !== undefined) user = parseModelMapLayer(userText, `user models.json (${userPath})`);
   return Object.freeze({ map: mergeModelMapLayers(installed, user), userPath, userStatus: user ? "loaded" : "absent" });
 }
@@ -356,32 +500,136 @@ export interface CopyDefaultModelMapResult {
   readonly overwritten: boolean;
 }
 
+function targetExistsError(target: string, detail: string): UsageError {
+  return new UsageError(
+    `${detail}: ${target}`,
+    "RESOURCE_ALREADY_EXISTS",
+    "Move the existing target aside, then retry. Use --overwrite only for a stable regular file you intend to replace.",
+  );
+}
+
+function copyIoError(target: string, action: string): ConfigError {
+  return new ConfigError(
+    `Unable to ${action} user models.json at ${target}.`,
+    "INVALID_CONFIG_FILE",
+    "Check the configuration directory ownership and permissions, then retry.",
+  );
+}
+
+function inspectCopyTarget(target: string): fs.Stats | undefined {
+  try {
+    return fs.lstatSync(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+    throw copyIoError(target, "inspect");
+  }
+}
+
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+  if (!left.isFile() || !right.isFile()) return false;
+  if (left.dev !== 0 || left.ino !== 0 || right.dev !== 0 || right.ino !== 0) {
+    return left.dev === right.dev && left.ino === right.ino;
+  }
+  return left.mode === right.mode && left.size === right.size && left.mtimeMs === right.mtimeMs;
+}
+
+function syncCopyDirectory(directory: string): void {
+  if (process.platform === "win32") return;
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(directory, fs.constants.O_RDONLY);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code !== "EINVAL" && code !== "ENOTSUP") throw error;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // A preceding sync/open failure is more useful than a cleanup failure.
+      }
+    }
+  }
+}
+
+function stageDefaultModelMap(target: string, text: string): string {
+  const stage = `${target}.copy.${process.pid}.${randomBytes(8).toString("hex")}`;
+  try {
+    writeFileAtomic(stage, text, 0o600);
+    return stage;
+  } catch {
+    throw copyIoError(target, "write a staged copy of");
+  }
+}
+
 /** Explicitly copy validated installed bytes into the normal config directory. */
 export function copyDefaultModelMap(options: CopyDefaultModelMapOptions = {}): CopyDefaultModelMapResult {
-  const text = options.installedText ?? DEFAULT_MODEL_MAP_TEXT;
+  const text = readInstalledModelMapText(options);
   mergeModelMapLayers(parseModelMapLayer(text, "installed models.json"));
   const target = userModelMapPath(options.env);
-  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-  let existing: fs.Stats | undefined;
   try {
-    existing = fs.lstatSync(target);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  } catch {
+    throw copyIoError(target, "create the configuration directory for");
   }
+  const existing = inspectCopyTarget(target);
   if (existing && !existing.isFile()) {
-    throw new UsageError(
-      `Refusing to replace non-regular models.json target: ${target}`,
-      "RESOURCE_ALREADY_EXISTS",
-      "Move the symlink or non-regular target aside, then retry.",
-    );
+    throw targetExistsError(target, "Refusing to replace a non-regular models.json target");
   }
   if (existing && options.overwrite !== true) {
-    throw new UsageError(
-      `User models.json already exists at ${target}.`,
-      "RESOURCE_ALREADY_EXISTS",
-      "Re-run with --overwrite to confirm replacing the existing regular file.",
-    );
+    throw targetExistsError(target, "User models.json already exists");
   }
-  writeFileAtomic(target, text, 0o600);
+
+  const stage = stageDefaultModelMap(target, text);
+  let stagePresent = true;
+  try {
+    if (existing === undefined) {
+      try {
+        // Hard-link publication is an atomic no-replace operation: EEXIST
+        // means a racing creator won, and their bytes remain untouched.
+        fs.linkSync(stage, target);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "EEXIST") {
+          throw targetExistsError(target, "User models.json was created while defaults were being prepared");
+        }
+        throw copyIoError(target, "publish");
+      }
+      try {
+        fs.unlinkSync(stage);
+        stagePresent = false;
+      } catch {
+        throw copyIoError(target, "finalize publication of");
+      }
+    } else {
+      const current = inspectCopyTarget(target);
+      if (!current || !sameFileIdentity(existing, current)) {
+        throw targetExistsError(target, "User models.json changed while defaults were being prepared");
+      }
+      try {
+        // rename replaces the directory entry itself; it never follows a
+        // symlink inserted after the final identity check.
+        fs.renameSync(stage, target);
+        stagePresent = false;
+      } catch {
+        throw copyIoError(target, "replace");
+      }
+    }
+    try {
+      syncCopyDirectory(path.dirname(target));
+    } catch {
+      throw copyIoError(target, "durably publish");
+    }
+  } finally {
+    if (stagePresent) {
+      try {
+        fs.unlinkSync(stage);
+      } catch {
+        // Best-effort cleanup; the target was never published from this path.
+      }
+    }
+  }
   return { path: target, copied: true as const, overwritten: existing !== undefined };
 }

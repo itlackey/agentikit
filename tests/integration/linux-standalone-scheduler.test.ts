@@ -58,14 +58,14 @@ function generatedCronCommand(crontab: string, id: string): string {
 test.skipIf(!ENABLED)(
   "a standalone binary outside PATH installs and executes its generated cron command",
   () => {
-    const binary = path.resolve(process.env.AKM_STANDALONE_TEST_BIN ?? "");
+    const candidateBinary = path.resolve(process.env.AKM_STANDALONE_TEST_BIN ?? "");
     const candidateArch = process.env.AKM_CANDIDATE_ARCH;
     const candidateVersion = process.env.AKM_CANDIDATE_VERSION;
     expect(process.env.AKM_STANDALONE_TEST_BIN, "AKM_STANDALONE_TEST_BIN must name the compiled artifact").toBeTruthy();
     expect(candidateArch, "AKM_CANDIDATE_ARCH must name the compiled artifact architecture").toBeTruthy();
     expect(candidateVersion, "AKM_CANDIDATE_VERSION must name the compiled artifact version").toBeTruthy();
     expect(candidateArch === process.arch).toBe(true);
-    expect(fs.existsSync(binary)).toBe(true);
+    expect(fs.existsSync(candidateBinary)).toBe(true);
 
     const sandbox = makeSandboxDir("akm-linux-standalone-scheduler");
     const id = `akm-ci-linux-${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -77,11 +77,26 @@ test.skipIf(!ENABLED)(
     const cacheHome = path.join(sandbox.dir, "cache");
     const stateHome = path.join(sandbox.dir, "state");
     const stashDir = path.join(sandbox.dir, "stash");
+    const standaloneDir = path.join(sandbox.dir, "standalone");
+    const binary = path.join(standaloneDir, "akm");
     let taskAdded = false;
 
-    for (const dir of [fakeBin, home, path.join(configHome, "akm"), dataHome, cacheHome, stateHome, stashDir]) {
+    for (const dir of [
+      fakeBin,
+      home,
+      path.join(configHome, "akm"),
+      dataHome,
+      cacheHome,
+      stateHome,
+      stashDir,
+      path.join(standaloneDir, "assets"),
+    ]) {
       fs.mkdirSync(dir, { recursive: true });
     }
+    fs.copyFileSync(candidateBinary, binary);
+    fs.chmodSync(binary, 0o755);
+    const adjacentSentinel = "MUTABLE-ADJACENT-STANDALONE-MODEL-MAP-802";
+    fs.writeFileSync(path.join(standaloneDir, "assets", "models.json"), adjacentSentinel);
     fs.writeFileSync(
       path.join(fakeBin, "crontab"),
       [
@@ -125,7 +140,14 @@ test.skipIf(!ENABLED)(
 
       const copiedModels = run([binary, "models", "copy-defaults"], env);
       expectSuccess(copiedModels, "standalone models copy-defaults");
-      const modelDocument = JSON.parse(fs.readFileSync(path.join(configHome, "akm", "models.json"), "utf8")) as {
+      expect(copiedModels.stdout + copiedModels.stderr).not.toContain(adjacentSentinel);
+      const copiedModelText = fs.readFileSync(path.join(configHome, "akm", "models.json"), "utf8");
+      const authoritativeModelText = fs.readFileSync(
+        path.resolve(import.meta.dir, "../../src/assets/models.json"),
+        "utf8",
+      );
+      expect(copiedModelText).toBe(authoritativeModelText);
+      const modelDocument = JSON.parse(copiedModelText) as {
         version?: number;
         aliases?: Record<string, unknown>;
       };

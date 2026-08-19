@@ -7,6 +7,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { HEALTH_CHECKS, runModelMapProbe } from "../src/commands/health/checks";
+import { runCliCapture } from "./_helpers/cli";
+import { withEnv, withIsolatedAkmStorage } from "./_helpers/sandbox";
 
 describe("models.json health diagnostics", () => {
   test("treats an absent optional user file as healthy", () => {
@@ -53,6 +55,39 @@ describe("models.json health diagnostics", () => {
       expect(result.message).toMatch(/installed models\.json.*installation/i);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Bun CLI health never echoes invalid user JSON or version values", async () => {
+    const storage = withIsolatedAkmStorage();
+    const userMap = path.join(storage.configDir, "akm", "models.json");
+    fs.mkdirSync(path.dirname(userMap), { recursive: true });
+    try {
+      for (const [text, sentinel] of [
+        ["BUNJSONPARSESECRETSENTINEL802", "BUNJSONPARSESECRETSENTINEL802"],
+        [JSON.stringify({ version: "BUNVERSIONSECRETSENTINEL802", aliases: {} }), "BUNVERSIONSECRETSENTINEL802"],
+      ] as const) {
+        fs.writeFileSync(userMap, text, { mode: 0o600 });
+        const result = await withEnv(
+          {
+            AKM_BUNDLE_DIR: storage.stashDir,
+            XDG_CONFIG_HOME: storage.configDir,
+            XDG_DATA_HOME: storage.dataDir,
+            XDG_CACHE_HOME: storage.cacheDir,
+            XDG_STATE_HOME: storage.stateDir,
+          },
+          () => runCliCapture(["health"]),
+        );
+        expect(result.stdout + result.stderr).not.toContain(sentinel);
+        const output = JSON.parse(result.stdout) as {
+          hardChecks?: Array<{ name?: string; status?: string }>;
+        };
+        expect(output.hardChecks?.find((check) => check.name === "model-map-files")).toMatchObject({
+          status: "warn",
+        });
+      }
+    } finally {
+      storage.cleanup();
     }
   });
 

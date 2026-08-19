@@ -1401,10 +1401,14 @@ akm models copy-defaults
 akm models copy-defaults --overwrite
 ```
 
-`copy-defaults` validates the packaged version-1 `models.json`, then copies it
-to the normal AKM configuration directory. An existing regular file is left
-untouched unless `--overwrite` explicitly confirms replacement. Symlinks and
-other non-regular targets are always refused. See
+`copy-defaults` validates the packaged version-1 `models.json`, then stages and
+syncs it beside the normal AKM configuration target. Creation uses an atomic
+no-replace publish and fails safely on filesystems that cannot provide it.
+`--overwrite` performs an atomic pathname replacement after a best-effort
+regular-file identity recheck; it never dereferences a symlink, but portable
+filesystems do not offer a conditional rename that locks the previously
+observed inode. Symlinks and other non-regular targets observed during checks
+are refused. See
 [Model-map files](configuration.md#model-map-files) for schema, overlay, and
 resolution semantics.
 

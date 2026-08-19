@@ -6,15 +6,17 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { ConfigError } from "../../src/core/errors";
 import { getCommandBuilder } from "../../src/integrations/agent/builders";
 import {
   copyDefaultModelMap,
-  DEFAULT_MODEL_MAP_TEXT,
+  installedModelMapPaths,
   loadModelMap,
   MODEL_MAP_VERSION,
   mergeModelMapLayers,
   parseModelMapLayer,
+  readInstalledModelMapText,
   resolveModelMapAlias,
 } from "../../src/integrations/agent/model-map";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";
@@ -45,9 +47,17 @@ function profile(platform: "claude" | "opencode"): AgentProfile {
 }
 
 describe("versioned installed/user model-map contract", () => {
+  test("discovers the external asset from source/module and dist-root bundle layouts", () => {
+    expect(installedModelMapPaths()).toEqual([path.resolve(import.meta.dir, "../../src/assets/models.json")]);
+    const bundledEntry = pathToFileURL(path.join(path.parse(process.cwd()).root, "pkg", "dist", "cli-node.mjs"));
+    expect(installedModelMapPaths(bundledEntry.href)).toEqual([
+      path.join(path.parse(process.cwd()).root, "pkg", "dist", "assets", "models.json"),
+    ]);
+  });
+
   test("uses version 1 and pins only the approved starter intent aliases", () => {
     expect(MODEL_MAP_VERSION).toBe(1);
-    const defaults = parseModelMapLayer(DEFAULT_MODEL_MAP_TEXT, "installed models.json");
+    const defaults = parseModelMapLayer(readInstalledModelMapText(), "installed models.json");
     expect(defaults.version).toBe(1);
     expect(Object.keys(defaults.aliases).sort()).toEqual(["balanced", "fast", "reasoning"]);
     for (const alias of Object.values(defaults.aliases)) {
@@ -288,13 +298,13 @@ describe("versioned installed/user model-map contract", () => {
       );
       expect(fs.existsSync(target)).toBe(false);
       expect(copyDefaultModelMap({ env })).toEqual({ path: target, copied: true, overwritten: false });
-      expect(fs.readFileSync(target, "utf8")).toBe(DEFAULT_MODEL_MAP_TEXT);
+      expect(fs.readFileSync(target, "utf8")).toBe(readInstalledModelMapText());
       expect(fs.readdirSync(path.dirname(target)).sort()).toEqual(["models.json"]);
       fs.writeFileSync(target, "operator bytes");
       expect(() => copyDefaultModelMap({ env })).toThrow(/already exists/);
       expect(fs.readFileSync(target, "utf8")).toBe("operator bytes");
       expect(copyDefaultModelMap({ env, overwrite: true }).overwritten).toBe(true);
-      expect(fs.readFileSync(target, "utf8")).toBe(DEFAULT_MODEL_MAP_TEXT);
+      expect(fs.readFileSync(target, "utf8")).toBe(readInstalledModelMapText());
       fs.rmSync(target);
       fs.symlinkSync(path.join(root, "elsewhere"), target);
       expect(() => copyDefaultModelMap({ env, overwrite: true })).toThrow(/non-regular/);

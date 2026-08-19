@@ -11,11 +11,11 @@ import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
 import { resolveModel } from "../../integrations/agent/model-aliases";
 import {
-  DEFAULT_MODEL_MAP_TEXT,
   type LoadModelMapOptions,
   loadModelMap,
   mergeModelMapLayers,
   parseModelMapLayer,
+  readInstalledModelMapText,
   userModelMapPath,
 } from "../../integrations/agent/model-map";
 import type { RunnerSpec } from "../../integrations/agent/runner";
@@ -336,8 +336,9 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
  * is operator-fixable configuration (warn); absence is the normal state.
  */
 export function runModelMapProbe(options: LoadModelMapOptions = {}): HealthCheckResult {
-  const installedText = options.installedText ?? DEFAULT_MODEL_MAP_TEXT;
+  let installedText: string;
   try {
+    installedText = readInstalledModelMapText(options);
     mergeModelMapLayers(parseModelMapLayer(installedText, "installed models.json"));
   } catch (error) {
     return {
@@ -351,7 +352,7 @@ export function runModelMapProbe(options: LoadModelMapOptions = {}): HealthCheck
   }
 
   try {
-    const loaded = loadModelMap(options);
+    const loaded = loadModelMap({ ...options, installedText });
     return {
       name: "model-map-files",
       kind: "deterministic",
