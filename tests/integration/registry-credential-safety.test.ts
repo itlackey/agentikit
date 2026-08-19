@@ -5,7 +5,12 @@ import { getConfigValue, listConfig } from "../../src/commands/config-cli";
 import { collectEgressAdvisory } from "../../src/commands/health/surfaces";
 import { resolveRegistries, searchRegistry } from "../../src/commands/read/registry-search";
 import { DEFAULT_CONFIG, loadConfig, saveConfig } from "../../src/core/config/config";
-import { formatRegistryError, formatRegistryUrl, redactCredentialBearingUrls } from "../../src/core/registry-url";
+import {
+  formatRegistryError,
+  formatRegistryUrl,
+  hasRegistryUrlCredentials,
+  redactCredentialBearingUrls,
+} from "../../src/core/registry-url";
 import { clearLogFile, setLogFile, warn } from "../../src/core/warn";
 import {
   formatInfoPlain,
@@ -26,6 +31,50 @@ import {
 const USERNAME = "registry-alice";
 const PASSWORD = "registry-swordfish";
 const CREDENTIAL_URL = `https://${USERNAME}:${PASSWORD}@registry.example.test/index.json`;
+const EXACT_SCHEME_CONTROL_URL = "https:\t//audit-user:audit-pass@host.test/index.json";
+const EXACT_NESTED_SCHEME_CONTROL_URL = "https://safe.test/?next=h\tttps://nested-user:nested-pass@evil.test/x";
+const CONTROL_CHARACTERS = ["\t", "\r", "\n"] as const;
+const CANONICAL_SCHEMES = ["http://", "https://"] as const;
+const CONTROL_SCHEME_CREDENTIAL_URLS = [
+  EXACT_SCHEME_CONTROL_URL,
+  ...CONTROL_CHARACTERS.flatMap((control) =>
+    CANONICAL_SCHEMES.flatMap((canonicalScheme) =>
+      Array.from({ length: canonicalScheme.length - 1 }, (_, offset) => {
+        const insertion = offset + 1;
+        const scheme = `${canonicalScheme.slice(0, insertion)}${control}${canonicalScheme.slice(insertion)}`;
+        return `${scheme}${USERNAME}:${PASSWORD}@controls.example.test/index.json`;
+      }),
+    ),
+  ),
+] as const;
+const NESTED_CONTROL_SCHEME_CREDENTIAL_URLS = [
+  EXACT_NESTED_SCHEME_CONTROL_URL,
+  ...CONTROL_SCHEME_CREDENTIAL_URLS.map((url) => `https://safe.test/?next=${url}`),
+] as const;
+const SOFT_DELIMITER_USERNAME_URLS = [" ", '"', "'", "`", "<", ">"].map(
+  (delimiter) => `https://audit${delimiter}soft-user-secret@userinfo.example.test/index.json`,
+);
+const PASSWORD_DELIMITER_URLS = ["&", ";", ",", ")"].map(
+  (delimiter) => `https://delimiter-user:delimiter-pass${delimiter}tail@userinfo.example.test/index.json`,
+);
+const CONFIG_LOAD_CONTROL_URLS = CONTROL_CHARACTERS.flatMap((control) => {
+  const whole = `https:${control}//${USERNAME}:${PASSWORD}@load.example.test/index.json`;
+  return [whole, `https://safe.test/?next=${whole}`];
+});
+const SAFE_REDACTION_NEGATIVE_CONTROLS = [
+  "visit https://safe.test then email user@example.com",
+  "https://registry.test/?redirect=https://safe.test&email=user@example.com",
+  "https://registry.test/redirect/https://safe.test/path/user@example.com",
+  "https://registry.test/#redirect=https://safe.test&email=user@example.com",
+  "visit https://safe.test, then email user@example.com",
+  "https://registry.test/https://safe.test;owner=user@example.com",
+  "visit (https://safe.test) then email user@example.com",
+  "https://registry.test/?redirect=https://safe.test,email=user@example.com",
+  "https://registry.test/?redirect=https://safe.test;owner=user@example.com",
+  "https://registry.test/?redirect=(https://safe.test)&email=user@example.com",
+  "visit https://safe.test:bad then email user@example.com",
+  "visit https://safe.test:bad user@example.com",
+] as const;
 const ADVERSARIAL_CREDENTIAL_URLS = [
   `https://safe.example.test/?next=https://${USERNAME}:${PASSWORD}@errors.example.test/private`,
   `https://safe.example.test/redirect/https://${USERNAME}:${PASSWORD}@errors.example.test/private`,
@@ -42,8 +91,19 @@ const ADVERSARIAL_CREDENTIAL_URLS = [
 
 function expectCredentialsAbsent(value: unknown): void {
   const serialized = typeof value === "string" ? value : JSON.stringify(value);
-  expect(serialized).not.toContain(USERNAME);
-  expect(serialized).not.toContain(PASSWORD);
+  for (const marker of [
+    USERNAME,
+    PASSWORD,
+    "audit-user",
+    "audit-pass",
+    "nested-user",
+    "nested-pass",
+    "soft-user-secret",
+    "delimiter-user",
+    "delimiter-pass",
+  ]) {
+    expect(serialized).not.toContain(marker);
+  }
   expect(serialized).not.toContain(CREDENTIAL_URL);
 }
 
@@ -80,6 +140,25 @@ describe("registry credential-bearing URL mutation boundaries", () => {
     expect(fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "").not.toContain(PASSWORD);
   });
 
+  test("registry add and config set reject control-obfuscated schemes before persistence", async () => {
+    const configPath = path.join(storage.configDir, "akm", "config.json");
+    const add = await runCliCapture(["registry", "add", EXACT_SCHEME_CONTROL_URL, "--verbose", "--format=json"]);
+    const set = await runCliCapture([
+      "config",
+      "set",
+      "registries",
+      JSON.stringify([{ url: EXACT_NESTED_SCHEME_CONTROL_URL, name: "private" }]),
+      "--format=json",
+    ]);
+
+    for (const result of [add, set]) {
+      expect(result.code).not.toBe(0);
+      expectCredentialsAbsent(result.stdout);
+      expectCredentialsAbsent(result.stderr);
+    }
+    expectCredentialsAbsent(fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "");
+  });
+
   test("registry remove does not echo a credential-bearing target in its JSON error", async () => {
     const result = await runCliCapture(["registry", "remove", CREDENTIAL_URL, "--yes", "--format=json"]);
 
@@ -108,6 +187,17 @@ describe("registry credential-bearing URL mutation boundaries", () => {
     const configPath = path.join(storage.configDir, "akm", "config.json");
     expect(fs.existsSync(configPath)).toBe(false);
   });
+
+  test("the shared save boundary rejects controls in every scheme/separator gap, including nested URLs", () => {
+    for (const url of [...CONTROL_SCHEME_CREDENTIAL_URLS, ...NESTED_CONTROL_SCHEME_CREDENTIAL_URLS]) {
+      expect(() => saveConfig({ ...DEFAULT_CONFIG, registries: [{ url, name: "control-private" }] })).toThrow(
+        "credential",
+      );
+    }
+
+    const configPath = path.join(storage.configDir, "akm", "config.json");
+    expect(fs.existsSync(configPath)).toBe(false);
+  });
 });
 
 describe("already-persisted registry credentials fail closed", () => {
@@ -128,6 +218,18 @@ describe("already-persisted registry credentials fail closed", () => {
 
     for (const argv of invocations) {
       const result = await runCliCapture(argv);
+      expect(result.code).toBe(78);
+      expectCredentialsAbsent(result.stdout);
+      expectCredentialsAbsent(result.stderr);
+      expect(result.stderr.toLowerCase()).toContain("credential");
+    }
+  });
+
+  test("control-obfuscated whole and nested URLs fail config load without leaking", async () => {
+    for (const url of [EXACT_SCHEME_CONTROL_URL, EXACT_NESTED_SCHEME_CONTROL_URL, ...CONFIG_LOAD_CONTROL_URLS]) {
+      writeSandboxConfig({ registries: [{ url, name: "control-private", provider: "static-index" }] });
+      const result = await runCliCapture(["registry", "list", "--verbose", "--format=json"]);
+
       expect(result.code).toBe(78);
       expectCredentialsAbsent(result.stdout);
       expectCredentialsAbsent(result.stderr);
@@ -215,6 +317,36 @@ describe("registry provider, search, warning, and log boundaries", () => {
     }
   });
 
+  test("static-index and skills-sh never fetch control-obfuscated whole or nested URLs", async () => {
+    const requested: string[] = [];
+    const results = await withMockedFetch(
+      async () => {
+        const captured = [];
+        for (const providerType of ["static-index", "skills-sh"]) {
+          const factory = resolveRegistryProviderFactory(providerType);
+          if (!factory) throw new Error(`Built-in registry provider ${providerType} is not registered`);
+          for (const url of [...CONTROL_SCHEME_CREDENTIAL_URLS, EXACT_NESTED_SCHEME_CONTROL_URL]) {
+            captured.push(
+              await factory({ url, name: `${providerType}-control-private` }).search({ query: "needle", limit: 20 }),
+            );
+          }
+        }
+        return captured;
+      },
+      (url) => {
+        requested.push(url);
+        return new Response("{}");
+      },
+    );
+
+    expect(requested).toEqual([]);
+    for (const result of results) {
+      expect(result.hits).toEqual([]);
+      expect(result.warnings?.[0]?.toLowerCase()).toContain("credential");
+      expectCredentialsAbsent(result);
+    }
+  });
+
   test("AKM_REGISTRY_URL ignores userinfo without returning or warning with secrets", () => {
     const warnings: unknown[][] = [];
     const originalWarn = console.warn;
@@ -252,6 +384,31 @@ describe("registry provider, search, warning, and log boundaries", () => {
     expectCredentialsAbsent(fs.readFileSync(logPath, "utf8"));
   });
 
+  test("control-obfuscated schemes are removed from response warnings and file logs", async () => {
+    const logPath = path.join(storage.root, "registry-controls.log");
+    setLogFile(logPath);
+    const corpus = [
+      ...CONTROL_SCHEME_CREDENTIAL_URLS,
+      ...NESTED_CONTROL_SCHEME_CREDENTIAL_URLS,
+      ...SOFT_DELIMITER_USERNAME_URLS,
+      ...PASSWORD_DELIMITER_URLS,
+    ].join("\n");
+
+    const result = await withMockedFetch(
+      () =>
+        searchRegistry("needle", {
+          registries: [{ url: "https://skills.example.test", name: "skills", provider: "skills-sh" }],
+        }),
+      () => {
+        throw new Error(`control-obfuscated fetch failures:\n${corpus}`);
+      },
+    );
+    for (const warning of result.warnings) warn(warning);
+
+    expectCredentialsAbsent(result);
+    expectCredentialsAbsent(fs.readFileSync(logPath, "utf8"));
+  });
+
   test("normal and registry-only CLI search JSON never echo URLs from fetch errors", async () => {
     writeSandboxConfig({
       semanticSearchMode: "off",
@@ -277,8 +434,13 @@ describe("registry provider, search, warning, and log boundaries", () => {
 
   test("setup registry discovery refuses userinfo before its fetch boundary", async () => {
     const requested: string[] = [];
-    const stashes = await withMockedFetch(
-      () => loadSetupStashes(CREDENTIAL_URL),
+    const stashSets = await withMockedFetch(
+      () =>
+        Promise.all(
+          [CREDENTIAL_URL, EXACT_SCHEME_CONTROL_URL, EXACT_NESTED_SCHEME_CONTROL_URL].map((url) =>
+            loadSetupStashes(url),
+          ),
+        ),
       (url) => {
         requested.push(url);
         return new Response("{}");
@@ -286,8 +448,10 @@ describe("registry provider, search, warning, and log boundaries", () => {
     );
 
     expect(requested).toEqual([]);
-    expect(stashes.length).toBeGreaterThan(0);
-    expectCredentialsAbsent(stashes);
+    for (const stashes of stashSets) {
+      expect(stashes.length).toBeGreaterThan(0);
+      expectCredentialsAbsent(stashes);
+    }
   });
 });
 
@@ -329,10 +493,60 @@ describe("registry URLs are safe in plain, structured, and health projections", 
     ).toBe("outer https://safe.example.test/redirect/https://errors.example.test/private");
   });
 
+  test("configured and nested URLs with controls anywhere in the scheme fail closed", () => {
+    for (const unsafe of [...CONTROL_SCHEME_CREDENTIAL_URLS, ...NESTED_CONTROL_SCHEME_CREDENTIAL_URLS]) {
+      expect(hasRegistryUrlCredentials(unsafe)).toBe(true);
+      expectCredentialsAbsent(formatRegistryUrl(unsafe));
+      expectCredentialsAbsent(redactCredentialBearingUrls(`diagnostic: ${unsafe}`));
+    }
+  });
+
+  test.each(
+    SOFT_DELIMITER_USERNAME_URLS,
+  )("diagnostic redaction removes delimiter-heavy username-only userinfo: %s", (unsafe) => {
+    const diagnostic = `fetch failed for ${unsafe}`;
+    expect(hasRegistryUrlCredentials(diagnostic)).toBe(true);
+    expectCredentialsAbsent(redactCredentialBearingUrls(diagnostic));
+    expectCredentialsAbsent(formatRegistryError(new Error(diagnostic)));
+  });
+
+  test.each(PASSWORD_DELIMITER_URLS)("diagnostic redaction removes delimiter-heavy password userinfo: %s", (unsafe) => {
+    const diagnostic = `fetch failed for ${unsafe}`;
+    expect(hasRegistryUrlCredentials(diagnostic)).toBe(true);
+    expectCredentialsAbsent(redactCredentialBearingUrls(diagnostic));
+    expectCredentialsAbsent(formatRegistryError(new Error(diagnostic)));
+  });
+
+  test("control-obfuscated configured URLs stay secret across config, text, info, and health projections", () => {
+    for (const url of [EXACT_SCHEME_CONTROL_URL, EXACT_NESTED_SCHEME_CONTROL_URL]) {
+      const registries = [{ url, name: "control-private", provider: "static-index" }];
+      const config = { ...DEFAULT_CONFIG, registries };
+
+      expectCredentialsAbsent(getConfigValue(config, "registries"));
+      expectCredentialsAbsent(listConfig(config));
+      expectCredentialsAbsent(formatRegistryListPlain({ registries }));
+      expectCredentialsAbsent(formatRegistryRemovePlain({ removed: true, entry: registries[0] }));
+      expectCredentialsAbsent(formatInfoPlain({ version: "test", registries }));
+      expectCredentialsAbsent(collectEgressAdvisory({ registries }));
+    }
+  });
+
   test("credential-free user:pass@ data in a path, query, or fragment remains unchanged", () => {
     const ordinary =
       "request https://safe.example.test/path/user:pass@notes?next=user:pass@data#fragment-user:pass@value";
     expect(redactCredentialBearingUrls(ordinary)).toBe(ordinary);
+  });
+
+  test("safe URLs followed by email and delimiter text are preserved exactly", () => {
+    for (const ordinary of SAFE_REDACTION_NEGATIVE_CONTROLS) {
+      expect(hasRegistryUrlCredentials(ordinary)).toBe(false);
+      expect(redactCredentialBearingUrls(ordinary)).toBe(ordinary);
+    }
+
+    const configured = SAFE_REDACTION_NEGATIVE_CONTROLS.filter((value) => value.startsWith("https://registry.test"));
+    for (const ordinary of configured) {
+      expect(formatRegistryUrl(ordinary)).toBe(ordinary);
+    }
   });
 
   test("registry and info text renderers redact registry userinfo", () => {

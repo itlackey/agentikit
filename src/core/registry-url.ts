@@ -14,26 +14,31 @@ export const REGISTRY_CREDENTIALS_UNSUPPORTED =
   "Registry URLs must not include username or password credentials. Authenticated registries are not supported by the built-in static-index or skills-sh providers; configure a credential-free HTTPS endpoint.";
 
 const INVALID_REGISTRY_URL_LABEL = "(invalid registry URL)";
-const HTTP_URL_START = /https?:\/\//giu;
+const URL_START_WITH_CONTROLS = /h[\t\r\n]*t[\t\r\n]*t[\t\r\n]*p[\t\r\n]*(?:s[\t\r\n]*)?:[\t\r\n]*\/[\t\r\n]*\//giu;
+const AUTHORITY_STRUCTURAL_BOUNDARY = new Set(["\\", "/", "?", "#"]);
+const AUTHORITY_AMBIGUOUS_BOUNDARY = new Set(["&", ",", ";", ")"]);
+const AUTHORITY_SOFT_BOUNDARY = new Set(["\t", "\r", "\n", " ", '"', "'", "`", "<", ">"]);
+
+interface RegistryUrlStart {
+  start: number;
+  schemeEnd: number;
+}
+
+interface UserinfoSpan {
+  start: number;
+  end: number;
+}
 
 /**
  * Detect URL userinfo without broadening this issue into general URL/network
  * validation (the SSRF/redirect boundary is tracked separately in #767).
- * The authority fallback catches malformed-but-obviously-credential-bearing
- * values that `URL` cannot parse so they cannot slip through the config gate.
+ * Whole configured values use WHATWG parsing; a separate bounded scan catches
+ * nested or control-obfuscated URL starts without absorbing later diagnostics.
  */
 export function hasRegistryUrlCredentials(raw: string): boolean {
-  return registryUrlStartOffsets(raw).some((start) => hasCredentialsAtUrlStart(raw.slice(start)));
-}
-
-function hasCredentialsAtUrlStart(raw: string): boolean {
-  try {
-    const parsed = new URL(raw);
-    return parsed.username.length > 0 || parsed.password.length > 0;
-  } catch {
-    const authority = extractAuthority(raw);
-    return authority ? authority.value.includes("@") : false;
-  }
+  const parsed = parseWholeHttpUrl(raw);
+  if (parsed && (parsed.username.length > 0 || parsed.password.length > 0)) return true;
+  return registryUrlStarts(raw).some((start) => findUserinfoSpan(raw, start) !== undefined);
 }
 
 /**
@@ -42,18 +47,20 @@ function hasCredentialsAtUrlStart(raw: string): boolean {
  * strings fail closed rather than being echoed into a diagnostic.
  */
 export function formatRegistryUrl(raw: string): string {
-  let validHttpUrl = false;
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return INVALID_REGISTRY_URL_LABEL;
-    validHttpUrl = true;
-  } catch {
-    // Invalid credential-bearing spellings still need a non-leaking fallback.
+  const parsed = parseWholeHttpUrl(raw);
+  const formatted = redactDetectedUserinfo(raw);
+  if (parsed) {
+    if ((parsed.username || parsed.password) && formatted === raw) {
+      // Structural scanning is deliberately conservative at diagnostic token
+      // boundaries. A whole configured URL is unambiguous, so canonicalize as
+      // a final fail-closed fallback if WHATWG found userinfo that scanning did not.
+      parsed.username = "";
+      parsed.password = "";
+      return parsed.toString();
+    }
+    return formatted;
   }
-
-  const formatted = redactUrlStartsRightToLeft(raw);
-  if (validHttpUrl) return formatted;
-  if (registryUrlStartOffsets(raw)[0] === 0 && formatted !== raw) return formatted;
+  if (registryUrlStarts(raw)[0]?.start === 0 && formatted !== raw) return formatted;
   return INVALID_REGISTRY_URL_LABEL;
 }
 
@@ -78,16 +85,7 @@ export function registryEntryForOutput<T extends RegistryUrlDescriptor>(entry: T
  * string while leaving ordinary credential-free query/path text untouched.
  */
 export function redactCredentialBearingUrls(message: string): string {
-  let formatted = message;
-  const starts = registryUrlStartOffsets(message);
-  for (let i = starts.length - 1; i >= 0; i--) {
-    const start = starts[i];
-    if (start === undefined) continue;
-    const candidate = formatted.slice(start);
-    if (!hasCredentialsAtUrlStart(candidate)) continue;
-    formatted = `${formatted.slice(0, start)}${formatRegistryUrl(candidate)}`;
-  }
-  return formatted;
+  return redactDetectedUserinfo(message);
 }
 
 /** Fetch errors are untrusted: runtimes often include the request URL. */
@@ -95,36 +93,64 @@ export function formatRegistryError(error: unknown): string {
   return redactCredentialBearingUrls(toErrorMessage(error));
 }
 
-function redactUrlStartsRightToLeft(raw: string): string {
+function redactDetectedUserinfo(raw: string): string {
   let formatted = raw;
-  const starts = registryUrlStartOffsets(raw);
+  const starts = registryUrlStarts(raw);
   for (let i = starts.length - 1; i >= 0; i--) {
     const start = starts[i];
     if (start === undefined) continue;
-    const candidate = formatted.slice(start);
-    if (!hasCredentialsAtUrlStart(candidate)) continue;
-    const authority = extractAuthority(candidate);
-    if (!authority) continue;
-    const at = authority.value.lastIndexOf("@");
-    if (at < 0) continue;
-    const safeCandidate = `${candidate.slice(0, authority.start)}${authority.value.slice(at + 1)}${candidate.slice(authority.end)}`;
-    formatted = `${formatted.slice(0, start)}${safeCandidate}`;
+    const span = findUserinfoSpan(formatted, start);
+    if (!span) continue;
+    formatted = `${formatted.slice(0, span.start)}${formatted.slice(span.end)}`;
   }
   return formatted;
 }
 
-function registryUrlStartOffsets(raw: string): number[] {
-  return Array.from(raw.matchAll(HTTP_URL_START), (match) => match.index);
+function registryUrlStarts(raw: string): RegistryUrlStart[] {
+  return Array.from(raw.matchAll(URL_START_WITH_CONTROLS), (match) => ({
+    start: match.index,
+    schemeEnd: match.index + match[0].length,
+  }));
 }
 
-function extractAuthority(raw: string): { value: string; start: number; end: number } | undefined {
-  // WHATWG URL parsing tolerates/normalizes tabs, CR/LF, spaces, quotes,
-  // backticks, and angle punctuation in userinfo. Only actual authority
-  // delimiters end this scan; processing the last `@` removes all userinfo.
-  const match = /^https?:\/\/([^\\/?#]*)/iu.exec(raw);
-  if (!match) return undefined;
-  const value = match[1];
-  if (value === undefined) return undefined;
-  const start = match[0].length - value.length;
-  return { value, start, end: match[0].length };
+function findUserinfoSpan(raw: string, urlStart: RegistryUrlStart): UserinfoSpan | undefined {
+  const authorityStart = urlStart.schemeEnd;
+  let crossedAmbiguousBoundary = false;
+  for (let cursor = authorityStart; cursor < raw.length; cursor++) {
+    const char = raw[cursor];
+    if (char === undefined) return undefined;
+    if (char === "@") {
+      return cursor > authorityStart ? { start: authorityStart, end: cursor + 1 } : undefined;
+    }
+    if (AUTHORITY_STRUCTURAL_BOUNDARY.has(char)) return undefined;
+
+    const isSoftBoundary = AUTHORITY_SOFT_BOUNDARY.has(char);
+    const isAmbiguousBoundary = AUTHORITY_AMBIGUOUS_BOUNDARY.has(char);
+    if (!isSoftBoundary && !isAmbiguousBoundary) continue;
+    if (crossedAmbiguousBoundary) continue;
+
+    // These characters can be WHATWG userinfo, but also delimit diagnostic
+    // text or a nested URL. A host-shaped prefix wins as a token boundary.
+    // Otherwise soft punctuation can continue username-only userinfo, while
+    // &, comma, semicolon, and ) require an explicit username:password prefix.
+    const prefix = raw.slice(authorityStart, cursor);
+    if (looksLikeDiagnosticHostPrefix(prefix) || (isAmbiguousBoundary && !prefix.includes(":"))) return undefined;
+    crossedAmbiguousBoundary = true;
+  }
+  return undefined;
+}
+
+function looksLikeDiagnosticHostPrefix(raw: string): boolean {
+  if (raw.startsWith("[")) return true;
+  const hostname = raw.split(":", 1)[0]?.toLowerCase() ?? "";
+  return hostname === "localhost" || hostname.startsWith("xn--") || hostname.includes(".");
+}
+
+function parseWholeHttpUrl(raw: string): URL | undefined {
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
