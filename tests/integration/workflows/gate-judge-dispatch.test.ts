@@ -6,11 +6,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import path from "node:path";
 import type { AkmConfig } from "../../../src/core/config/config";
 import { openStateDatabase } from "../../../src/core/state-db";
+import { canonicalResolvedExecutionRequest } from "../../../src/execution/resolved-request";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import type { UnitDispatchRequest, UnitDispatchResult } from "../../../src/workflows/exec/native-executor";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
-import { computeStepWorkList, recoverGateFeedback } from "../../../src/workflows/exec/step-work";
+import { canonicalJson, computeStepWorkList, recoverGateFeedback } from "../../../src/workflows/exec/step-work";
+import { prepareFrozenWorkflowExecution } from "../../../src/workflows/exec/unit-dispatch";
 import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
+import { decodeWorkflowPlanV3 } from "../../../src/workflows/ir/schema";
 import { getWorkflowStatus, resumeWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { sandboxEnvDir } from "../../_helpers/sandbox";
 import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
@@ -406,6 +409,205 @@ describe("gate judge identity — the dispatch names the REAL run/step and gate 
     });
     expect(gateRequest).toBeDefined();
     expect(gateRequest?.env).toBeUndefined();
+  });
+});
+
+// ── Gate hash identity: optional v3 fields + transitive fallback ─────────────
+
+describe("gate judge journal hash — SDK transitive dispatch identity", () => {
+  type OptionalBoolean = "absent" | "false" | "true";
+  type OptionalTimeout = "absent" | "null" | number;
+
+  interface GateHashVariant {
+    label: string;
+    owner?: OptionalBoolean;
+    fallbackTimeout?: OptionalTimeout;
+    fallbackModel?: string;
+    temperature?: number;
+    credential?: { names: [string, ...string[]]; required: boolean };
+    invocationModel?: string | null;
+    modelPresent?: OptionalBoolean;
+  }
+
+  interface GateHashProbe {
+    label: string;
+    behavior: string;
+    inputHash: string;
+  }
+
+  function sdkGatePlan(variant: GateHashVariant): WorkflowPlanGraph {
+    const fallbackModel = variant.fallbackModel ?? "fallback/model";
+    const owner = variant.owner ?? "false";
+    const fallbackTimeout = variant.fallbackTimeout ?? "null";
+    const modelPresent = variant.modelPresent ?? "false";
+    const invocationModel = variant.invocationModel ?? "primary/model";
+    return decodeWorkflowPlanV3({
+      irVersion: 3,
+      title: "SDK gate hash probe",
+      execution: {
+        maxConcurrency: 1,
+        engines: {
+          sdk: {
+            name: "sdk",
+            kind: "agent",
+            runnerKind: "sdk",
+            platform: "opencode-sdk",
+            bin: "opencode",
+            args: [],
+            workspace: null,
+            envPassthrough: [],
+            commandBuilder: "opencode-sdk",
+            fallbackLlmEngine: "fallback",
+            ...(owner === "absent" ? {} : { sdkFallbackModelFromRequest: owner === "true" }),
+          },
+          fallback: {
+            name: "fallback",
+            kind: "llm",
+            endpoint: "https://example.test/v1/chat/completions",
+            model: fallbackModel,
+            concurrency: 1,
+            ...(fallbackTimeout === "absent" ? {} : { timeoutMs: fallbackTimeout === "null" ? null : fallbackTimeout }),
+            ...(variant.temperature === undefined ? {} : { temperature: variant.temperature }),
+            ...(variant.credential === undefined ? {} : { credential: variant.credential }),
+          },
+        },
+      },
+      steps: [
+        {
+          stepId: "work",
+          title: "Work",
+          sequenceIndex: 0,
+          root: {
+            kind: "unit",
+            id: "work",
+            instructions: "Do the work.",
+            templating: "verbatim",
+            invocation: {
+              engine: "sdk",
+              model: "primary/model",
+              modelPresent: false,
+              timeoutMs: 12_345,
+            },
+            onError: "fail",
+            isolation: "none",
+          },
+          gate: {
+            kind: "gate",
+            id: "work.gate",
+            stepId: "work",
+            criteria: ["the work is thorough"],
+            maxLoops: 1,
+            judge: {
+              engine: "sdk",
+              model: invocationModel,
+              timeoutMs: 12_345,
+              ...(modelPresent === "absent" ? {} : { modelPresent: modelPresent === "true" }),
+            },
+          },
+        },
+      ],
+    });
+  }
+
+  async function probeGateHash(variant: GateHashVariant, index: number): Promise<GateHashProbe> {
+    const runId = `88888888-8888-4888-8888-${String(index + 1).padStart(12, "0")}`;
+    const plan = sdkGatePlan(variant);
+    const db = openStateDatabase(path.join(tmpDir, "state.db"));
+    try {
+      seedWorkflowRun(db, {
+        runId,
+        workflowRef: "workflows/sdk-gate-hash-probe",
+        scopeKey: `dir:v1:sdk-gate-hash-probe-${index}`,
+        steps: [{ stepId: "work", completionJson: JSON.stringify(["the work is thorough"]) }],
+      });
+      storeFrozenWorkflowPlan(db, runId, plan);
+    } finally {
+      db.close();
+    }
+
+    let gateRequest: UnitDispatchRequest | undefined;
+    const result = await runWorkflowSteps({
+      target: runId,
+      loadPlan: async () => plan,
+      dispatcher: async (request): Promise<UnitDispatchResult> => {
+        if (isGateDispatch(request)) {
+          gateRequest = request;
+          return { ok: true, text: '{"complete": true, "missing": []}' };
+        }
+        return { ok: true, text: "the work is thorough" };
+      },
+    });
+    expect(result.done).toBe(true);
+    if (!gateRequest) throw new Error(`gate variant ${variant.label} did not dispatch`);
+    const lowered = prepareFrozenWorkflowExecution(gateRequest);
+    const row = await withWorkflowRunsRepo((repo) =>
+      repo.getUnitsForStep(runId, "work").find((unit) => unit.unit_id === "work.gate:l1"),
+    );
+    if (!row?.input_hash) throw new Error(`gate variant ${variant.label} did not journal an input hash`);
+    return {
+      label: variant.label,
+      behavior: canonicalJson({
+        request: canonicalResolvedExecutionRequest(lowered.request),
+        notices: lowered.notices,
+        runner: lowered.runner,
+      }),
+      inputHash: row.input_hash,
+    };
+  }
+
+  test("the covered v3 fields partition exactly with canonical request, notices, and lowered runner", async () => {
+    // Deliberately bounded to the three new optional fields and the missing
+    // transitive fallback. Older frozen snapshot bytes keep their established
+    // journal identity even when a later invocation layer shadows them.
+    const variants: GateHashVariant[] = [
+      {
+        label: "legacy-optionals",
+        owner: "absent",
+        fallbackTimeout: "absent",
+        invocationModel: "primary/model",
+        modelPresent: "absent",
+      },
+      { label: "current-equivalent", owner: "false", fallbackTimeout: "null" },
+      { label: "timeout-600000", fallbackTimeout: 600_000 },
+      { label: "timeout-700000", fallbackTimeout: 700_000 },
+      { label: "fallback-model", fallbackModel: "other/fallback" },
+      { label: "fallback-inference", temperature: 0.25 },
+      { label: "fallback-credential-a", credential: { names: ["FALLBACK_KEY_A"], required: false } },
+      { label: "fallback-credential-b", credential: { names: ["FALLBACK_KEY_B"], required: true } },
+      {
+        label: "owner-true-default",
+        owner: "true",
+        invocationModel: "fallback/model",
+        modelPresent: "absent",
+      },
+      {
+        label: "owner-true-shadowed",
+        owner: "true",
+        invocationModel: "operator/model",
+        modelPresent: "false",
+      },
+      {
+        label: "owner-true-explicit",
+        owner: "true",
+        invocationModel: "operator/model",
+        modelPresent: "true",
+      },
+      { label: "owner-true-cleared", owner: "true", invocationModel: null, modelPresent: "true" },
+    ];
+    const results: GateHashProbe[] = [];
+    for (const [index, variant] of variants.entries()) results.push(await probeGateHash(variant, index));
+
+    const partition = (key: "behavior" | "inputHash"): string[][] => {
+      const groups = new Map<string, string[]>();
+      for (const result of results) groups.set(result[key], [...(groups.get(result[key]) ?? []), result.label]);
+      return [...groups.values()]
+        .map((group) => group.sort())
+        .sort((left, right) => left.join("\u0000").localeCompare(right.join("\u0000")));
+    };
+
+    expect(results).toHaveLength(12);
+    expect(partition("behavior")).toHaveLength(10);
+    expect(partition("inputHash")).toEqual(partition("behavior"));
   });
 });
 

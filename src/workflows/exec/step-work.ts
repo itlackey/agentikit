@@ -627,8 +627,7 @@ function buildExecContextEnv(args: {
  * in-flight run is out of scope by design.
  */
 function computeUnitInputHash(ctx: StepWorkUnitContext, item: unknown): string {
-  const fallback = ctx.frozenEngine ? frozenFallbackSnapshot(ctx.frozenEngine, ctx.input.engines ?? {}) : undefined;
-  const dispatch = ctx.frozenEngine ? transitiveDispatchSnapshot(ctx.frozenEngine, fallback) : null;
+  const identity = frozenDispatchHashIdentity(ctx.frozenEngine, ctx.frozenInvocation, ctx.input.engines ?? {});
   return createHash("sha256")
     .update(
       canonicalJsonString({
@@ -637,11 +636,8 @@ function computeUnitInputHash(ctx: StepWorkUnitContext, item: unknown): string {
         item: ctx.isFanOut ? (item ?? null) : null,
         inputs: ctx.resolvedInputs,
         params: ctx.input.params,
-        dispatch,
-        invocation:
-          ctx.frozenInvocation && ctx.frozenEngine
-            ? invocationDispatchIdentity(ctx.frozenInvocation, ctx.frozenEngine, fallback)
-            : null,
+        dispatch: identity.dispatch,
+        invocation: identity.invocation,
         ...(ctx.frozenExec ? { exec: ctx.frozenExec } : {}),
         schema: ctx.template.schema ?? null,
         env: ctx.template.env ?? null,
@@ -756,6 +752,24 @@ function frozenFallbackSnapshot(
   return fallback;
 }
 
+/**
+ * Normalize the three optional v3 provenance fields for unit and gate hashes.
+ * Other legacy snapshot bytes intentionally retain their established journal
+ * identity even when a later invocation layer shadows them.
+ */
+function frozenDispatchHashIdentity(
+  engine: FrozenEngineSnapshot | null | undefined,
+  invocation: IrInvocation | null | undefined,
+  engines: Record<string, FrozenEngineSnapshot>,
+): { dispatch: unknown; invocation: unknown } {
+  if (!engine) return { dispatch: null, invocation: invocation ?? null };
+  const fallback = frozenFallbackSnapshot(engine, engines);
+  return {
+    dispatch: transitiveDispatchSnapshot(engine, fallback),
+    invocation: invocation ? invocationDispatchIdentity(invocation, engine, fallback) : null,
+  };
+}
+
 /** Keep new provenance fields additive for dispatches whose behavior they cannot change. */
 function primaryDispatchIdentity(engine: FrozenEngineSnapshot): unknown {
   if (engine.kind === "llm") {
@@ -790,12 +804,34 @@ function runnerDefaultModel(
   return undefined;
 }
 
+/** Canonicalize every spelling of the fallback-owned SDK's effective model. */
+function fallbackOwnedInvocationIdentity(
+  invocation: IrInvocation,
+  fallback: Extract<FrozenEngineSnapshot, { kind: "llm" }>,
+): unknown {
+  if (invocation.modelPresent === true && invocation.model === null) return invocation;
+  const effectiveModel =
+    Object.hasOwn(invocation, "modelPresent") && invocation.modelPresent !== true
+      ? fallback.model
+      : (invocation.model ?? fallback.model);
+  const { modelPresent: _modelPresence, ...legacy } = invocation;
+  return { ...legacy, model: effectiveModel };
+}
+
 /** Strip presence bytes exactly when legacy absence prepares the same model. */
 function invocationDispatchIdentity(
   invocation: IrInvocation,
   engine: FrozenEngineSnapshot,
   fallback: Extract<FrozenEngineSnapshot, { kind: "llm" }> | undefined,
 ): unknown {
+  if (
+    engine.kind === "agent" &&
+    engine.runnerKind === "sdk" &&
+    engine.sdkFallbackModelFromRequest === true &&
+    fallback
+  ) {
+    return fallbackOwnedInvocationIdentity(invocation, fallback);
+  }
   if (!Object.hasOwn(invocation, "modelPresent")) return invocation;
   const defaultModel = runnerDefaultModel(invocation, engine, fallback);
   const legacyModel = invocation.model !== null ? invocation.model : defaultModel;
@@ -1808,6 +1844,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   const summaryJudge: SummaryJudge | null = innerJudge
     ? async (prompt) => {
         if (gateInvocation) {
+          const identity = frozenDispatchHashIdentity(gateEngine, gateInvocation, input.engines ?? {});
           gateUnit = {
             runId,
             workflowRef,
@@ -1819,9 +1856,9 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
             inputHash: createHash("sha256")
               .update(
                 canonicalJsonString({
-                  hashVersion: 3,
-                  dispatch: gateEngine,
-                  invocation: gateInvocation,
+                  hashVersion: 4,
+                  dispatch: identity.dispatch,
+                  invocation: identity.invocation,
                   prompt,
                 }),
               )

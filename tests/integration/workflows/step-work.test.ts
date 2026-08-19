@@ -42,6 +42,7 @@ import type {
   IrUnitNode,
   WorkflowPlanGraph,
 } from "../../../src/workflows/ir/schema";
+import { decodeWorkflowPlanV3 } from "../../../src/workflows/ir/schema";
 import type { ExpressionScope } from "../../../src/workflows/program/expressions";
 import { getWorkflowStatus, type WorkflowNextResult } from "../../../src/workflows/runtime/runs";
 import type { SummaryJudge } from "../../../src/workflows/validate-summary";
@@ -367,6 +368,37 @@ describe("computeStepWorkList — optional v3 wire fields hash only prepared beh
     expectPartitions(fallback, [["absent", "null"], ["600000"], ["700000"]]);
   });
 
+  test("unit identity includes every dispatch-changing transitive SDK fallback setting", () => {
+    const variants: Array<{ label: string; fallback: FrozenLlm }> = [
+      { label: "base", fallback: llm("fallback", "null") },
+      { label: "timeout", fallback: llm("fallback", "600000") },
+      { label: "model", fallback: { ...llm("fallback", "null"), model: "other/fallback" } },
+      { label: "inference", fallback: { ...llm("fallback", "null"), temperature: 0.25 } },
+      {
+        label: "credential-a",
+        fallback: {
+          ...llm("fallback", "null"),
+          credential: { names: ["FALLBACK_KEY_A"], required: false },
+        },
+      },
+      {
+        label: "credential-b",
+        fallback: {
+          ...llm("fallback", "null"),
+          credential: { names: ["FALLBACK_KEY_B"], required: true },
+        },
+      },
+    ];
+    const results = variants.map(({ label, fallback }) => {
+      const engine = sdk("sdk", fallback.name, "false");
+      return probe(label, engine, invocation(engine.name, "primary/model", "false"), fallback);
+    });
+    expectPartitions(
+      results,
+      variants.map(({ label }) => [label]),
+    );
+  });
+
   test("SDK fallback ownership treats legacy absence as false and preserves true", () => {
     const fallback = llm("fallback");
     const ownerStates: OwnerState[] = ["absent", "false", "true"];
@@ -466,6 +498,95 @@ describe("computeStepWorkList — optional v3 wire fields hash only prepared beh
       expectPartitions(results, scenario.expected);
     });
   }
+
+  test("the complete decoder-accepted cross-product of the three optional v3 fields partitions exactly", () => {
+    const results: ProbeResult[] = [];
+    let legacyPlan: WorkflowPlanGraph | undefined;
+    const ownerStates: OwnerState[] = ["absent", "false", "true"];
+    const timeoutStates: TimeoutState[] = ["absent", "null", "600000", "700000"];
+    const models = ["fallback/model", "operator/model", null] as const;
+    const presenceStates: PresenceState[] = ["absent", "false", "true"];
+
+    for (const owner of ownerStates) {
+      for (const timeout of timeoutStates) {
+        for (const model of models) {
+          for (const presence of presenceStates) {
+            const fallback = llm("fallback", timeout);
+            const engine = sdk("sdk", fallback.name, owner);
+            const frozenInvocation = invocation(engine.name, model, presence);
+            const decoded = decodeWorkflowPlanV3({
+              irVersion: 3,
+              title: "SDK hash cross-product",
+              execution: { maxConcurrency: 1, engines: { sdk: engine, fallback } },
+              steps: [
+                {
+                  stepId: "hash-probe",
+                  title: "Hash probe",
+                  sequenceIndex: 0,
+                  root: {
+                    kind: "unit",
+                    id: "hash-probe",
+                    instructions: "Probe optional frozen fields.",
+                    templating: "verbatim",
+                    invocation: frozenInvocation,
+                    onError: "fail",
+                    isolation: "none",
+                  },
+                  gate: {
+                    kind: "gate",
+                    id: "hash-probe.gate",
+                    stepId: "hash-probe",
+                    criteria: [],
+                    maxLoops: 1,
+                    judge: null,
+                  },
+                },
+              ],
+            });
+            const root = decoded.steps[0]?.root;
+            const decodedEngine = decoded.execution.engines.sdk;
+            const decodedFallback = decoded.execution.engines.fallback;
+            if (
+              !root ||
+              root.kind !== "unit" ||
+              !root.invocation ||
+              decodedEngine?.kind !== "agent" ||
+              decodedFallback?.kind !== "llm"
+            ) {
+              throw new Error("decoded SDK cross-product fixture is incomplete");
+            }
+            if (owner === "absent" && timeout === "absent" && model === "fallback/model" && presence === "absent") {
+              legacyPlan = decoded;
+            }
+            results.push(
+              probe(
+                `${owner}/${timeout}/${model ?? "null"}/${presence}`,
+                decodedEngine,
+                root.invocation,
+                decodedFallback,
+              ),
+            );
+          }
+        }
+      }
+    }
+
+    const normalizedPartition = (key: "behavior" | "inputHash"): string[][] =>
+      partition(results, key)
+        .map((group) => [...group].sort())
+        .sort((left, right) => left.join("\u0000").localeCompare(right.join("\u0000")));
+
+    expect(results).toHaveLength(108);
+    expect(partition(results, "behavior")).toHaveLength(21);
+    expect(partition(results, "inputHash")).toHaveLength(21);
+    expect(normalizedPartition("inputHash")).toEqual(normalizedPartition("behavior"));
+
+    if (!legacyPlan) throw new Error("legacy SDK cross-product fixture was not visited");
+    const legacyBytes = canonicalPlanJson(legacyPlan);
+    const legacyRoundTrip = decodeWorkflowPlanV3(JSON.parse(legacyBytes));
+    expect(canonicalPlanJson(legacyRoundTrip)).toBe(legacyBytes);
+    expect(computePlanHash(legacyRoundTrip)).toBe(computePlanHash(legacyPlan));
+  });
 });
 
 describe("computeStepWorkList — the frozen timeout reaches dispatch VERBATIM (no engine-side backstop)", () => {
