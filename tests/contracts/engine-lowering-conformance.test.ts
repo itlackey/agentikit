@@ -457,4 +457,25 @@ describe("optimistic lowering safety", () => {
       env: {},
     });
   });
+
+  test("propagates the operational abort signal into direct LLM transport options", async () => {
+    const lowered = lowerResolvedExecutionRequest(
+      requestFor("fixture-llm", "llm", { tools: [], authorization: { status: "not-required" } }),
+      configFor("fixture-llm", "llm"),
+    );
+    const controller = new AbortController();
+    let captured: unknown;
+    await dispatchLoweredExecutionRequest(lowered, {
+      runOptions: { signal: controller.signal },
+      executeRunner: async (runner, prompt, options, seams) => {
+        if (runner.kind !== "llm" || !seams?.llm) throw new Error("fixture must expose the direct LLM seam");
+        return seams.llm(runner, prompt, options);
+      },
+      chat: async (_connection, _messages, options) => {
+        captured = options;
+        return "done";
+      },
+    });
+    expect(captured).toMatchObject({ timeoutMs: 0, signal: controller.signal });
+  });
 });

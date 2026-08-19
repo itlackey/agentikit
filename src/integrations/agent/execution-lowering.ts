@@ -599,10 +599,11 @@ export async function dispatchLoweredExecutionRequest(
     ...(options.runSdk ? { runSdk: options.runSdk } : {}),
     ...("messages" in lowered
       ? {
-          llm: async (spec) => {
+          llm: async (spec, _prompt, runOptions) => {
             const started = Date.now();
             const stdout = await (options.chat ?? chatCompletion)(spec.connection, [...lowered.messages], {
               ...lowered.chatOptions,
+              ...(runOptions.signal ? { signal: runOptions.signal } : {}),
             });
             return { ok: true, exitCode: 0, stdout, stderr: "", durationMs: Date.now() - started };
           },
