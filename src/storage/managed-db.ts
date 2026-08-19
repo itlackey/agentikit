@@ -70,9 +70,28 @@ export function openManagedDatabase(spec: ManagedDbSpec): Database {
     fs.mkdirSync(dir, { recursive: true });
   }
   const db = spec.create === false ? openDatabase(spec.path, { create: false }) : openDatabase(spec.path);
-  applyStandardPragmas(db, spec.pragmas ?? { dataDir: dir });
-  spec.init?.(db);
-  return db;
+  try {
+    applyStandardPragmas(db, spec.pragmas ?? { dataDir: dir });
+    spec.init?.(db);
+    return db;
+  } catch (error) {
+    // Initializers may open a transaction (source update does so before index
+    // schema work). Never strand that transaction/handle when later setup
+    // fails; closing rolls it back and releases its writer lock.
+    if (db.inTransaction) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // Closing remains the final rollback backstop.
+      }
+    }
+    try {
+      db.close();
+    } catch {
+      // Preserve the initializer failure, which identifies the real boundary.
+    }
+    throw error;
+  }
 }
 
 /**

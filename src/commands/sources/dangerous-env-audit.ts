@@ -13,10 +13,10 @@ import { scanEnvKeyNames } from "../env/env";
 import { isDangerousEnvKey } from "../lint/env-key-rules";
 
 export type DangerousKeyAuditDecision =
-  | { blocked: true; exitCode: number; code: "DANGEROUS_ENV_KEY"; error: string }
-  | { blocked: false };
+  | { blocked: true; exitCode: number; code: "DANGEROUS_ENV_KEY"; error: string; findings: DangerousKeyFinding[] }
+  | { blocked: false; findings: DangerousKeyFinding[] };
 
-interface DangerousKeyFinding {
+export interface DangerousKeyFinding {
   envRef: string;
   keyName: string;
   relPath: string;
@@ -87,6 +87,17 @@ function collectDangerousKeyFindings(
   return allFindings;
 }
 
+/** Scan only; callers that already obtained approval use this for a final materialization fence. */
+export function scanStashForDangerousKeys(installedStashRoot: string): DangerousKeyFinding[] {
+  const scanner =
+    scannerOverride ??
+    ((envPath: string, relPath: string) =>
+      scanEnvKeyNames(fs.readFileSync(envPath, "utf8"))
+        .filter(isDangerousEnvKey)
+        .map((key) => ({ file: relPath, detail: `Env key \`${key}\`` })));
+  return collectDangerousKeyFindings(installedStashRoot, scanner);
+}
+
 export async function auditStashForDangerousKeys(opts: {
   stashRoot: string;
   ref: string;
@@ -98,13 +109,7 @@ export async function auditStashForDangerousKeys(opts: {
 }): Promise<DangerousKeyAuditDecision> {
   let allFindings: DangerousKeyFinding[];
   try {
-    const scanner =
-      scannerOverride ??
-      ((envPath: string, relPath: string) =>
-        scanEnvKeyNames(fs.readFileSync(envPath, "utf8"))
-          .filter(isDangerousEnvKey)
-          .map((key) => ({ file: relPath, detail: `Env key \`${key}\`` })));
-    allFindings = collectDangerousKeyFindings(opts.stashRoot, scanner);
+    allFindings = scanStashForDangerousKeys(opts.stashRoot);
   } catch (error) {
     const rollbackWarning = await opts.rollback?.();
     throw new ConfigError(
@@ -117,7 +122,7 @@ export async function auditStashForDangerousKeys(opts: {
     findingsPresent: allFindings.length > 0,
     allowInsecure: opts.allowDangerousKeys,
   });
-  if (stance === "allow") return { blocked: false };
+  if (stance === "allow") return { blocked: false, findings: allFindings };
 
   if (stance === "warn-allow") {
     for (const finding of allFindings) {
@@ -125,7 +130,7 @@ export async function auditStashForDangerousKeys(opts: {
         `[dangerous-env-key] ${finding.relPath}: key \`${finding.keyName}\` in ${finding.envRef} can hijack process execution via \`akm env run\`. Proceeding because --allow-insecure was set.`,
       );
     }
-    return { blocked: false };
+    return { blocked: false, findings: allFindings };
   }
 
   const operationTitle = opts.operation === "install" ? "Install" : "Update";
@@ -145,7 +150,7 @@ export async function auditStashForDangerousKeys(opts: {
       for (const key of keys) warn(`  - ${sanitizeString(key)}: can hijack process execution via \`akm env run\``);
     }
     const confirmed = await p.confirm({ message: `${operationTitle} anyway?`, initialValue: false });
-    if (!p.isCancel(confirmed) && confirmed === true) return { blocked: false };
+    if (!p.isCancel(confirmed) && confirmed === true) return { blocked: false, findings: allFindings };
     error = `${operationTitle} aborted: stash contains dangerous env keys. Remove the keys or re-run with --allow-insecure to bypass.`;
   } else {
     const keyList = allFindings.map((finding) => `  - ${finding.keyName} (${finding.envRef})`).join("\n");
@@ -172,5 +177,5 @@ export async function auditStashForDangerousKeys(opts: {
       `The blocked ${opts.operation} could not be fully rolled back after content was ${operationPast}: ${rollbackWarning}`,
     );
   }
-  return { blocked: true, exitCode: 1, code: "DANGEROUS_ENV_KEY", error };
+  return { blocked: true, exitCode: 1, code: "DANGEROUS_ENV_KEY", error, findings: allFindings };
 }

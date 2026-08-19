@@ -23,12 +23,20 @@ import { SQLITE_BUSY_TIMEOUT_MS } from "../sqlite-pragmas";
 import { ensureSchema } from "./index-schema";
 import { loadVecExtension, warnIfVecMissing } from "./index-vec-repository";
 
-export function openIndexDatabase(dbPath?: string, options?: { embeddingDim?: number }): Database {
+export function openIndexDatabase(
+  dbPath?: string,
+  options?: { embeddingDim?: number; beforeSchema?: (db: Database) => void },
+): Database {
   return openManagedDatabase({
     path: dbPath ?? getDbPath(),
     init: (db) => {
       // Try to load sqlite-vec extension
       loadVecExtension(db);
+
+      // Source update uses this narrow lifecycle seam to ATTACH state.db and
+      // open its coordinator-owned outer transaction before ensureSchema or
+      // any indexer write can mutate the live generation.
+      options?.beforeSchema?.(db);
 
       // Dim resolution: explicit option wins; otherwise consult the on-disk
       // config so unparameterised opens (registry providers, graph helpers,

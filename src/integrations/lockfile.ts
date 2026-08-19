@@ -164,9 +164,16 @@ export interface LockfileUpdateSnapshot {
 
 function readLockfileSnapshotOrThrow(): LockfileUpdateSnapshot {
   const lockfilePath = getLockfilePath();
+  let fd: number | undefined;
   let raw: string;
+  let mode: number;
   try {
-    raw = fs.readFileSync(lockfilePath, "utf8");
+    // One descriptor owns both byte and metadata observation so a rename or
+    // chmod between separate path-based calls cannot synthesize a generation
+    // that never existed on disk.
+    fd = fs.openSync(lockfilePath, "r");
+    raw = fs.readFileSync(fd, "utf8");
+    mode = fs.fstatSync(fd).mode & 0o777;
   } catch (err) {
     rethrowIfTestIsolationError(err);
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -181,6 +188,8 @@ function readLockfileSnapshotOrThrow(): LockfileUpdateSnapshot {
     // we actually got.
     assertLockfilePathReadable(lockfilePath);
     return { entries: [], raw: null, mode: 0o600 };
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
   }
   let parsed: unknown;
   try {
@@ -213,7 +222,7 @@ function readLockfileSnapshotOrThrow(): LockfileUpdateSnapshot {
   return {
     entries: parsed.filter(isValidLockfileEntry),
     raw,
-    mode: fs.statSync(lockfilePath).mode & 0o777,
+    mode,
   };
 }
 
@@ -297,7 +306,11 @@ export async function publishLockfileUpdate(
   const release = await acquireLockSentinel();
   try {
     const current = readLockfileSnapshotOrThrow();
-    if (JSON.stringify(current.entries) !== JSON.stringify(expected.entries) || current.raw !== expected.raw) {
+    if (
+      JSON.stringify(current.entries) !== JSON.stringify(expected.entries) ||
+      current.raw !== expected.raw ||
+      current.mode !== expected.mode
+    ) {
       return null;
     }
     writeLockfileUnlocked(desired);
@@ -315,7 +328,11 @@ export async function compareAndSwapLockfileSnapshot(
   const release = await acquireLockSentinel();
   try {
     const current = readLockfileSnapshotOrThrow();
-    if (JSON.stringify(current.entries) !== JSON.stringify(expected.entries) || current.raw !== expected.raw) {
+    if (
+      JSON.stringify(current.entries) !== JSON.stringify(expected.entries) ||
+      current.raw !== expected.raw ||
+      current.mode !== expected.mode
+    ) {
       return false;
     }
     const lockfilePath = getLockfilePath();

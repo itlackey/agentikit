@@ -15,6 +15,7 @@
  * `akm bundle update`); a bundle with no lock is a plain filesystem/git/website source.
  */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isWithin, resolveStashDir } from "../../core/common";
@@ -23,7 +24,7 @@ import { acquireConfigReadFence, bundleComponentConfig, getSources, loadConfig }
 import { AkmError, ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { isPathAbsent } from "../../core/path-access";
 import { getDbPath, getRegistryCacheDir } from "../../core/paths";
-import { openStateDatabase } from "../../core/state-db";
+import { beginImmediateTransaction, getStateDbPath, openStateDatabase } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import { resolveGitContentRoot } from "../../core/write-source";
 import { withAssetMutationLease } from "../../indexer/index-writer-lock";
@@ -59,20 +60,21 @@ import type {
 } from "../../sources/types";
 import { getWebsiteCachePaths } from "../../sources/website-url";
 import type { Database } from "../../storage/database";
-import { closeDatabase, openReadonlyExistingDatabase } from "../../storage/repositories/index-connection";
+import {
+  closeDatabase,
+  openIndexDatabase,
+  openReadonlyExistingDatabase,
+} from "../../storage/repositories/index-connection";
 import { getAllEntries } from "../../storage/repositories/index-entries-repository";
-import { auditStashForDangerousKeys } from "./dangerous-env-audit";
+import { auditStashForDangerousKeys, type DangerousKeyFinding, scanStashForDangerousKeys } from "./dangerous-env-audit";
 import { removeInstalledRegistryEntry } from "./source-add";
 import { removeStash } from "./source-manage";
 import {
-  captureIndexSnapshot,
   cleanupStagingParent,
   createStagingParent,
   type DirectoryPublication,
-  discardIndexSnapshot,
   prepareDirectoryPublication,
   prepareWritableGitPublication,
-  restoreIndexSnapshot,
 } from "./update-transaction";
 
 /**
@@ -452,21 +454,43 @@ function buildUpdateResponse(
   };
 }
 
-export type UpdateTransactionPoint = "staged" | "audited" | "published" | "before-index" | "indexed";
+export type UpdateTransactionPoint =
+  | "staged"
+  | "audited"
+  | "fenced"
+  | "published"
+  | "before-index"
+  | "indexed"
+  | "before-commit";
 
-let updateTransactionHookForTests: ((point: UpdateTransactionPoint, id: string) => void) | undefined;
+export interface UpdateTransactionHookContext {
+  db?: Database;
+}
+
+let updateTransactionHookForTests:
+  | ((point: UpdateTransactionPoint, id: string, context?: UpdateTransactionHookContext) => void)
+  | undefined;
 
 /** TEST-ONLY. Inject faults at source-update transaction boundaries. */
-export function _setUpdateTransactionHookForTests(hook?: (point: UpdateTransactionPoint, id: string) => void): void {
+export function _setUpdateTransactionHookForTests(
+  hook?: (point: UpdateTransactionPoint, id: string, context?: UpdateTransactionHookContext) => void,
+): void {
   updateTransactionHookForTests = hook;
 }
 
-function updateTransactionHook(point: UpdateTransactionPoint, id: string): void {
-  updateTransactionHookForTests?.(point, id);
+function updateTransactionHook(
+  point: UpdateTransactionPoint,
+  id: string,
+  context?: UpdateTransactionHookContext,
+): void {
+  updateTransactionHookForTests?.(point, id, context);
 }
 
 interface PreparedUpdate {
   auditRoot: string;
+  publishedAuditRoot?: string;
+  auditedContentGeneration?: string;
+  approvedDangerousFindings?: string;
   publication?: DirectoryPublication;
   cleanup(): void;
 }
@@ -508,21 +532,84 @@ function writableGitPublication(opts: {
   });
 }
 
-function rollbackStateTransaction(db: Database): unknown {
-  if (!db.inTransaction) return undefined;
+const UPDATE_STATE_SCHEMA = "akm_update_state";
+
+interface UnifiedUpdateTransaction {
+  db: Database;
+  stateActivity: Database;
+  deferred: {
+    db: Database;
+    stateSchema: string;
+    afterCommit?: () => void;
+  };
+}
+
+function sqliteStringLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function openUnifiedUpdateTransaction(): UnifiedUpdateTransaction {
+  // Keep canonical state activity registered for the entire attached
+  // transaction so maintenance/migration cannot replace state.db underneath
+  // the borrowed index connection.
+  const stateActivity = openStateDatabase();
   try {
-    db.exec("ROLLBACK");
+    const statePath = getStateDbPath();
+    const db = openIndexDatabase(undefined, {
+      beforeSchema: (candidate) => {
+        candidate.exec(`ATTACH DATABASE ${sqliteStringLiteral(statePath)} AS "${UPDATE_STATE_SCHEMA}"`);
+        // openIndexDatabase invokes this before ensureSchema, so the outer
+        // transaction begins before the first update-owned index mutation.
+        beginImmediateTransaction(candidate);
+      },
+    });
+    return {
+      db,
+      stateActivity,
+      deferred: { db, stateSchema: UPDATE_STATE_SCHEMA },
+    };
+  } catch (error) {
+    stateActivity.close();
+    throw error;
+  }
+}
+
+function rollbackUnifiedUpdateTransaction(transaction: UnifiedUpdateTransaction): unknown {
+  if (!transaction.db.inTransaction) return undefined;
+  try {
+    transaction.db.exec("ROLLBACK");
     return undefined;
   } catch (error) {
     return error;
   }
 }
 
-function commitStateTransaction(db: Database): void {
-  if (!db.inTransaction) {
-    throw new Error("Source update index returned without an active deferred state transaction.");
+function commitUnifiedUpdateTransaction(transaction: UnifiedUpdateTransaction): void {
+  if (!transaction.db.inTransaction) {
+    throw new Error("Source update index returned without its active unified index/state transaction.");
   }
-  db.exec("COMMIT");
+  transaction.db.exec("COMMIT");
+}
+
+function closeUnifiedUpdateTransaction(transaction: UnifiedUpdateTransaction, committed: boolean): void {
+  let closeError = rollbackUnifiedUpdateTransaction(transaction);
+  try {
+    transaction.db.close();
+  } catch (error) {
+    closeError ??= error;
+  }
+  try {
+    transaction.stateActivity.close();
+  } catch (error) {
+    closeError ??= error;
+  }
+  if (closeError) {
+    warn(
+      committed
+        ? `[akm bundle update] committed, but closing its database handles failed: ${String(closeError)}`
+        : `[akm bundle update] rolled back, but closing its database handles failed: ${String(closeError)}`,
+    );
+  }
 }
 
 function pathAtOrBelow(candidate: string, root: string): boolean {
@@ -533,6 +620,77 @@ function pathAtOrBelow(candidate: string, root: string): boolean {
 function remapStagedPath(candidate: string, stagedRoot: string, liveRoot: string): string {
   if (!pathAtOrBelow(candidate, stagedRoot)) return candidate;
   return path.join(liveRoot, path.relative(stagedRoot, candidate));
+}
+
+function dangerousFindingGeneration(findings: readonly DangerousKeyFinding[]): string {
+  return JSON.stringify(
+    findings
+      .map(({ envRef, keyName, relPath }) => ({ envRef, keyName, relPath }))
+      .sort((left, right) =>
+        `${left.relPath}\0${left.envRef}\0${left.keyName}`.localeCompare(
+          `${right.relPath}\0${right.envRef}\0${right.keyName}`,
+        ),
+      ),
+  );
+}
+
+async function contentGeneration(root: string): Promise<string> {
+  const hash = createHash("sha256");
+  const resolvedRoot = path.resolve(root);
+  const walk = async (directory: string): Promise<void> => {
+    const entries = fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (entry.name === ".git") continue;
+      const absolute = path.join(directory, entry.name);
+      const relative = path.relative(resolvedRoot, absolute).replaceAll(path.sep, "/");
+      const before = fs.lstatSync(absolute);
+      if (before.isDirectory()) {
+        hash.update(`D\0${relative}\0${before.mode & 0o777}\0`);
+        await walk(absolute);
+      } else if (before.isSymbolicLink()) {
+        hash.update(`L\0${relative}\0${fs.readlinkSync(absolute)}\0`);
+      } else if (before.isFile()) {
+        hash.update(`F\0${relative}\0${before.mode & 0o777}\0${before.size}\0`);
+        for await (const chunk of fs.createReadStream(absolute)) hash.update(chunk as Buffer);
+        const after = fs.lstatSync(absolute);
+        if (after.ino !== before.ino || after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+          throw new ConfigError(`Source content changed while ${relative} was being audited; retry the update.`);
+        }
+        hash.update("\0");
+      } else {
+        throw new ConfigError(`Unsupported filesystem entry ${absolute}; refusing to audit an unstable source tree.`);
+      }
+    }
+  };
+  if (!fs.statSync(resolvedRoot).isDirectory()) throw new ConfigError(`Expected ${resolvedRoot} to be a directory.`);
+  await walk(resolvedRoot);
+  return hash.digest("hex");
+}
+
+async function verifyPublishedAudit(prepared: PreparedUpdate, id: string): Promise<void> {
+  const liveRoot = prepared.publishedAuditRoot;
+  if (!liveRoot) return;
+  const beforeAudit = await contentGeneration(liveRoot);
+  let findings: DangerousKeyFinding[];
+  try {
+    findings = scanStashForDangerousKeys(liveRoot);
+  } catch (error) {
+    throw new ConfigError(
+      `Dangerous environment-key re-audit failed after materializing "${id}"; rolling the update back. ${error instanceof Error ? error.message : String(error)}`,
+      "DANGEROUS_ENV_AUDIT_FAILED",
+    );
+  }
+  const afterAudit = await contentGeneration(liveRoot);
+  if (
+    beforeAudit !== prepared.auditedContentGeneration ||
+    afterAudit !== prepared.auditedContentGeneration ||
+    dangerousFindingGeneration(findings) !== prepared.approvedDangerousFindings
+  ) {
+    throw new ConfigError(
+      `Writable source "${id}" changed while its audited Git target was materialized; refusing to activate unaudited bytes.`,
+      "DANGEROUS_ENV_AUDIT_FAILED",
+    );
+  }
 }
 
 async function auditPreparedUpdate(
@@ -551,24 +709,52 @@ async function auditPreparedUpdate(
     renderBlockedError: false,
   });
   if (decision.blocked) throw new NotFoundError(decision.error, decision.code);
+  prepared.approvedDangerousFindings = dangerousFindingGeneration(decision.findings);
+  prepared.auditedContentGeneration = await contentGeneration(prepared.auditRoot);
   updateTransactionHook("audited", id);
 }
 
+function canonicalWritablePath(candidate: string, description: string): string {
+  try {
+    return fs.realpathSync(candidate);
+  } catch (error) {
+    throw new ConfigError(
+      `Cannot resolve ${description} at ${candidate}; refusing writable Git update. ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 function prepareWritableManagedUpdate(managed: ManagedInstall, force: boolean): Promise<PreparedManagedUpdate> {
-  const topLevel = runGit(["-C", managed.localRoot, "rev-parse", "--show-toplevel"]);
+  const physicalLocalRoot = canonicalWritablePath(managed.localRoot, "managed content root");
+  const topLevel = runGit(["-C", physicalLocalRoot, "rev-parse", "--show-toplevel"]);
   // Production writable installs are Git checkouts. Falling back to the
   // locked root keeps the provider seam testable; the real Git provider still
   // refuses a copied non-checkout before publication.
   const liveRepo =
     topLevel.status === 0 && topLevel.stdout.trim()
-      ? path.resolve(topLevel.stdout.trim())
-      : path.resolve(managed.localRoot);
+      ? canonicalWritablePath(topLevel.stdout.trim(), "managed Git top-level")
+      : physicalLocalRoot;
+  if (!pathAtOrBelow(physicalLocalRoot, liveRepo)) {
+    throw new ConfigError(
+      `Writable Git content root ${managed.localRoot} resolves outside its physical checkout at ${liveRepo}.`,
+    );
+  }
+  const physicalRequiredRoots = managed.requiredRoots.map((root) =>
+    canonicalWritablePath(root, `configured component root for "${managed.installId}"`),
+  );
+  for (const requiredRoot of physicalRequiredRoots) {
+    if (!pathAtOrBelow(requiredRoot, liveRepo)) {
+      throw new ConfigError(
+        `Configured writable Git component root ${requiredRoot} resolves outside its physical checkout at ${liveRepo}.`,
+      );
+    }
+  }
   const expectedOldHead = gitHead(liveRepo);
   const stagingParent = createStagingParent(path.dirname(liveRepo));
   const stagedRepo = path.join(stagingParent, path.basename(liveRepo));
   fs.cpSync(liveRepo, stagedRepo, { recursive: true, preserveTimestamps: true });
-  const stagedContentRoot = remapStagedPath(managed.localRoot, liveRepo, stagedRepo);
-  const stagedRequiredRoots = managed.requiredRoots.map((root) => remapStagedPath(root, liveRepo, stagedRepo));
+  const stagedContentRoot = remapStagedPath(physicalLocalRoot, liveRepo, stagedRepo);
+  const stagedRequiredRoots = physicalRequiredRoots.map((root) => remapStagedPath(root, liveRepo, stagedRepo));
 
   return syncFromRef(managed.ref, {
     force,
@@ -588,6 +774,7 @@ function prepareWritableManagedUpdate(managed: ManagedInstall, force: boolean): 
       return {
         synced,
         auditRoot: stagedRequiredRoots[0] ?? staged.contentDir,
+        publishedAuditRoot: physicalRequiredRoots[0] ?? synced.contentDir,
         publication: writableGitPublication({ stagedRepo, liveRepo, expectedOldHead, auditedTargetHead }),
         cleanup: () => cleanupStagingParent(stagingParent),
       };
@@ -666,62 +853,60 @@ async function publishPreparedPlainUpdate(
   try {
     await auditPreparedUpdate(prepared, id, ref, allowInsecure);
     return await withAssetMutationLease("source-update", async () => {
-      const indexSnapshot = captureIndexSnapshot();
-      let stateDb: Database | undefined;
+      let transaction: UnifiedUpdateTransaction | undefined;
       let releaseConfigFence: (() => void) | undefined;
       let contentPublished = false;
-      let indexAttempted = false;
+      let committed = false;
       try {
-        stateDb = openStateDatabase();
         const configFence = acquireConfigReadFence();
         releaseConfigFence = configFence.release;
         assertBundleAuditFence(configFence.config, id, expectedConfigGeneration);
+        updateTransactionHook("fenced", id);
         if (prepared.publication) {
           prepared.publication.publish();
           contentPublished = true;
         }
+        await verifyPublishedAudit(prepared, id);
         updateTransactionHook("published", id);
         updateTransactionHook("before-index", id);
-        indexAttempted = true;
+        transaction = openUnifiedUpdateTransaction();
         const index = await akmIndex({
           stashDir,
           ...(full ? { full: true } : {}),
           hydrateSources: false,
           persistDetectedAdapters: false,
-          deferredStateTransaction: { db: stateDb },
+          deferredUpdateTransaction: transaction.deferred,
         });
-        updateTransactionHook("indexed", id);
-        commitStateTransaction(stateDb);
+        updateTransactionHook("indexed", id, { db: transaction.db });
+        // Re-fence the exact published worktree after the potentially long
+        // index pass and immediately before the coordinator commit. This
+        // catches cooperating or observable external writes that land after
+        // the first post-materialization audit.
+        await verifyPublishedAudit(prepared, id);
+        updateTransactionHook("before-commit", id, { db: transaction.db });
+        commitUnifiedUpdateTransaction(transaction);
+        committed = true;
+        try {
+          transaction.deferred.afterCommit?.();
+        } catch (error) {
+          warn(`[akm bundle update] committed, but semantic status refresh failed: ${String(error)}`);
+        }
         prepared.publication?.commit();
         return index;
       } catch (error) {
-        let recoveryError = stateDb ? rollbackStateTransaction(stateDb) : undefined;
+        let recoveryError = transaction ? rollbackUnifiedUpdateTransaction(transaction) : undefined;
         try {
           if (contentPublished) prepared.publication?.rollback();
         } catch (rollbackError) {
           recoveryError ??= rollbackError;
         }
-        if (indexAttempted) {
-          try {
-            restoreIndexSnapshot(indexSnapshot);
-          } catch (restoreError) {
-            recoveryError ??= restoreError;
-          }
-        }
         if (recoveryError) throw recoveryError;
         throw error;
       } finally {
         try {
-          if (stateDb) {
-            rollbackStateTransaction(stateDb);
-            stateDb.close();
-          }
+          if (transaction) closeUnifiedUpdateTransaction(transaction, committed);
         } finally {
-          try {
-            discardIndexSnapshot(indexSnapshot);
-          } finally {
-            releaseConfigFence?.();
-          }
+          releaseConfigFence?.();
         }
       }
     });
@@ -771,6 +956,7 @@ async function prepareGitPlainUpdate(
     }
     return {
       auditRoot,
+      ...(writable ? { publishedAuditRoot: remapStagedPath(auditRoot, staged.cacheDir, livePaths.rootDir) } : {}),
       publication: writable
         ? writableGitPublication({
             stagedRepo: stagedPaths.repoDir,
@@ -981,47 +1167,59 @@ async function updateManagedInstall(
       };
       const desiredLocks = [...oldLocks.filter((entry) => entry.id !== desiredLock.id), desiredLock];
       const desiredLockGeneration = generationHash(desiredLocks);
-      const indexSnapshot = captureIndexSnapshot();
-      let stateDb: Database | undefined;
+      let transaction: UnifiedUpdateTransaction | undefined;
       let releaseConfigFence: (() => void) | undefined;
       let contentPublished = false;
       let lockPublished = false;
       let publishedLockSnapshot: ReturnType<typeof readLockfileForUpdate> | null | undefined;
-      let indexAttempted = false;
+      let committed = false;
       let index: Awaited<ReturnType<typeof akmIndex>>;
       try {
-        stateDb = openStateDatabase();
         const configFence = acquireConfigReadFence();
         releaseConfigFence = configFence.release;
         assertBundleAuditFence(configFence.config, managed.bundleKey, managed.auditConfigGeneration);
+        updateTransactionHook("fenced", managed.installId);
         if (prepared.publication) {
           prepared.publication.publish();
           contentPublished = true;
         }
+        await verifyPublishedAudit(prepared, managed.installId);
         publishedLockSnapshot = await publishLockfileUpdate(oldLockSnapshot, desiredLocks);
         if (!publishedLockSnapshot) throw concurrentGenerationError(managed);
         lockPublished = true;
         updateTransactionHook("published", managed.installId);
         updateTransactionHook("before-index", managed.installId);
-        indexAttempted = true;
+        transaction = openUnifiedUpdateTransaction();
         index = await akmIndex({
           stashDir,
           full: true,
           hydrateSources: false,
           persistDetectedAdapters: false,
-          deferredStateTransaction: { db: stateDb },
+          deferredUpdateTransaction: transaction.deferred,
         });
         const currentLockSnapshot = readLockfileForUpdate();
         if (
           generationHash(currentLockSnapshot.entries) !== desiredLockGeneration ||
-          currentLockSnapshot.raw !== publishedLockSnapshot.raw
+          currentLockSnapshot.raw !== publishedLockSnapshot.raw ||
+          currentLockSnapshot.mode !== publishedLockSnapshot.mode
         ) {
           throw concurrentGenerationError(managed);
         }
-        updateTransactionHook("indexed", managed.installId);
-        commitStateTransaction(stateDb);
+        updateTransactionHook("indexed", managed.installId, { db: transaction.db });
+        // Indexing can be long enough for a local writer to race the first
+        // post-materialization audit. Re-verify the exact bytes/findings at the
+        // final cross-store commit boundary while every AKM fence is held.
+        await verifyPublishedAudit(prepared, managed.installId);
+        updateTransactionHook("before-commit", managed.installId, { db: transaction.db });
+        commitUnifiedUpdateTransaction(transaction);
+        committed = true;
+        try {
+          transaction.deferred.afterCommit?.();
+        } catch (error) {
+          warn(`[akm bundle update] committed, but semantic status refresh failed: ${String(error)}`);
+        }
       } catch (error) {
-        let recoveryError = stateDb ? rollbackStateTransaction(stateDb) : undefined;
+        let recoveryError = transaction ? rollbackUnifiedUpdateTransaction(transaction) : undefined;
         let concurrentGeneration = false;
         let concurrentGenerationOwnsPublishedRoot = false;
         if (lockPublished) {
@@ -1049,13 +1247,6 @@ async function updateManagedInstall(
           } catch (rollbackError) {
             recoveryError ??= rollbackError;
           }
-          if (indexAttempted) {
-            try {
-              restoreIndexSnapshot(indexSnapshot);
-            } catch (restoreError) {
-              recoveryError ??= restoreError;
-            }
-          }
         }
 
         if (recoveryError) throw recoveryError;
@@ -1063,16 +1254,9 @@ async function updateManagedInstall(
         throw error;
       } finally {
         try {
-          if (stateDb) {
-            rollbackStateTransaction(stateDb);
-            stateDb.close();
-          }
+          if (transaction) closeUnifiedUpdateTransaction(transaction, committed);
         } finally {
-          try {
-            discardIndexSnapshot(indexSnapshot);
-          } finally {
-            releaseConfigFence?.();
-          }
+          releaseConfigFence?.();
         }
       }
 

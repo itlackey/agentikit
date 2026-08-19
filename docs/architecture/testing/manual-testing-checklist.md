@@ -1067,6 +1067,17 @@ test "$(sha256sum "$AKM_CONFIG_DIR/config.json")" = "$before_config"
       install safety; test suppression fixture separately.
 - [ ] **[LOCAL]** Declarative provider and later update receive equivalent audit.
 - [ ] **[LOCAL]** New dangerous key on update preserves previous complete source.
+- [ ] **[LOCAL]** A held WAL index reader observes only the prior generation
+      through a failed update; index/state main, WAL, and SHM inodes are not
+      replaced during compensation.
+- [ ] **[LOCAL]** Writable Git rejects physical-root/component symlink escapes,
+      a changed HEAD or dirty state at publication, and dangerous tracked,
+      untracked, ignored, filter-produced, or submodule materialization.
+- [ ] **[LOCAL]** Lock publication and rollback fence both exact raw bytes and
+      file mode; a concurrent chmod blocks publication without being reverted.
+- [ ] **[LOCAL]** A simulated durable index/state split is reported as
+      `index-state-generation`; after writers stop, `akm index --full` clears
+      the advisory and restores coherent searchable usage links.
 - [ ] **[LOCAL]** Corrupt/unreadable lock fails structurally; no managed/plain
       reinterpretation or split state.
 - [ ] **[LOCAL]** Failed add/update/remove compare config, lock, cache, index,

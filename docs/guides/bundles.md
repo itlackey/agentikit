@@ -118,6 +118,16 @@ For `--all`, blocked and failed bundles are reported separately and later
 bundles continue. A rejected or failed bundle keeps its prior bytes, lock/config
 state, and search-index generation.
 
+During publication AKM holds a SQLite writer transaction across the index and
+the update-owned state work. Existing readers keep seeing the prior generation,
+but other writers may wait for a full index pass. This provides process-fault
+rollback for handled errors, not atomic durability across the filesystem and
+two WAL database files during `SIGKILL`, power loss, or storage failure. After
+such a failure, stop writers, run `akm health`, rerun the targeted update if its
+checkout/lock is not the intended revision, and run
+`akm index --full`. The `index-state-generation` advisory detects mismatched
+durable usage links; it cannot detect every theoretical cross-file split.
+
 **Example: keep bundles fresh**
 
 ```sh

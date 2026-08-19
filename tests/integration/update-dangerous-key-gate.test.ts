@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { _setClackForTests } from "../../src/cli/clack";
+import { akmHealth } from "../../src/commands/health";
 import { _setDangerousKeyScannerForTests } from "../../src/commands/sources/dangerous-env-audit";
 import { _setUpdateTransactionHookForTests, akmUpdate } from "../../src/commands/sources/installed-stashes";
 import { loadConfig, saveConfig } from "../../src/core/config/config";
@@ -14,11 +15,17 @@ import { getConfigLockPath } from "../../src/core/config/config-io";
 import { getConfigPath, getDbPath, getLockfilePath, getRegistryCacheDir } from "../../src/core/paths";
 import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { akmIndex } from "../../src/indexer/indexer";
+import { _setSemanticStatusMutationForTests } from "../../src/indexer/search/semantic-status";
 import { mergeLockEntriesSync, readLockfile } from "../../src/integrations/lockfile";
 import * as gitProvider from "../../src/sources/providers/git";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
 import { getWebsiteCachePaths } from "../../src/sources/website-url";
-import { closeDatabase, openReadonlyExistingDatabase } from "../../src/storage/repositories/index-connection";
+import { openDatabase } from "../../src/storage/database";
+import {
+  closeDatabase,
+  openIndexDatabase,
+  openReadonlyExistingDatabase,
+} from "../../src/storage/repositories/index-connection";
 import { getAllEntries } from "../../src/storage/repositories/index-entries-repository";
 import {
   type IsolatedAkmStorage,
@@ -77,13 +84,25 @@ function indexedSearchText(): string {
   const db = openReadonlyExistingDatabase(getDbPath());
   if (!db) return "";
   try {
-    return getAllEntries(db)
-      .map((row) => row.searchText)
-      .sort()
-      .join("\n");
+    return indexedSearchTextFrom(db);
   } finally {
     closeDatabase(db);
   }
+}
+
+function indexedSearchTextFrom(db: Parameters<typeof getAllEntries>[0]): string {
+  return getAllEntries(db)
+    .map((row) => row.searchText)
+    .sort()
+    .join("\n");
+}
+
+function sqliteFileInodes(dbPath: string): Map<string, number> {
+  return new Map(
+    [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]
+      .filter((filePath) => fs.existsSync(filePath))
+      .map((filePath) => [filePath, fs.statSync(filePath).ino]),
+  );
 }
 
 function managedCachePaths(id: string): { cacheDir: string; contentDir: string } {
@@ -214,6 +233,17 @@ function commitGitMarker(repoDir: string, fileName: string, marker: string): str
   git(repoDir, ["add", "-A"]);
   git(repoDir, ["commit", "-m", marker]);
   return git(repoDir, ["rev-parse", "HEAD"]);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function installPostMergeWriter(repoDir: string, targetPath: string, contents: string): void {
+  const hookPath = path.join(repoDir, ".git", "hooks", "post-merge");
+  fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+  fs.writeFileSync(hookPath, `#!/bin/sh\nprintf %s ${shellQuote(contents)} > ${shellQuote(targetPath)}\n`);
+  fs.chmodSync(hookPath, 0o755);
 }
 
 function waitForFileSync(filePath: string, label: string): void {
@@ -512,6 +542,249 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
     expect(countUsageEvents(expiredRef)).toBe(1);
   });
 
+  test("a held index reader sees only the old committed generation throughout rollback on the same inode", async () => {
+    await configureCanonicalManagedBundle({
+      id: "index-reader-rollback",
+      env: "API_TOKEN=old\n",
+      marker: "index-reader-old",
+    });
+    const held = openReadonlyExistingDatabase(getDbPath());
+    if (!held) throw new Error("expected an existing index");
+    expect(held.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
+    const oldText = indexedSearchTextFrom(held);
+    const inodesBefore = sqliteFileInodes(getDbPath());
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) =>
+      stageManagedCandidate(requiredStagingRoot(options), {
+        id: "index-reader-rollback",
+        env: "API_TOKEN=new\n",
+        marker: "index-reader-failed-candidate",
+      }),
+    );
+    let heldDuring = "";
+    let competingWriterBlocked = false;
+    let attachedJournalModes: unknown[] = [];
+    overrideSeam(_setUpdateTransactionHookForTests, (point, _id, context) => {
+      if (point !== "indexed") return;
+      if (!context?.db) throw new Error("missing unified update transaction");
+      attachedJournalModes = [
+        context.db.prepare("PRAGMA main.journal_mode").get(),
+        context.db.prepare("PRAGMA akm_update_state.journal_mode").get(),
+      ];
+      heldDuring = indexedSearchTextFrom(held);
+      const competitor = openDatabase(getDbPath(), { create: false });
+      try {
+        competitor.exec("PRAGMA busy_timeout = 0");
+        competitor.prepare("UPDATE index_meta SET value = value WHERE key = 'builtAt'").run();
+      } catch (error) {
+        competingWriterBlocked = /locked|busy/i.test(error instanceof Error ? error.message : String(error));
+      } finally {
+        competitor.close();
+      }
+      throw new Error("rollback the uncommitted index generation");
+    });
+
+    try {
+      await expect(akmUpdate({ target: "index-reader-rollback", stashDir: storage.stashDir })).rejects.toThrow(
+        "rollback the uncommitted index generation",
+      );
+      expect(heldDuring).toBe(oldText);
+      expect(indexedSearchTextFrom(held)).toBe(oldText);
+      expect(indexedSearchText()).toBe(oldText);
+      expect(competingWriterBlocked).toBe(true);
+      expect(attachedJournalModes).toEqual([{ journal_mode: "wal" }, { journal_mode: "wal" }]);
+      for (const [filePath, inode] of inodesBefore) {
+        expect(fs.existsSync(filePath)).toBe(true);
+        expect(fs.statSync(filePath).ino).toBe(inode);
+      }
+    } finally {
+      held.close();
+      syncSpy.mockRestore();
+    }
+
+    const writerAfterRollback = openDatabase(getDbPath(), { create: false });
+    try {
+      writerAfterRollback.prepare("UPDATE index_meta SET value = value WHERE key = 'builtAt'").run();
+    } finally {
+      writerAfterRollback.close();
+    }
+  });
+
+  test("Bun SQLite nests index transactions as savepoints and close rolls an outer transaction back", async () => {
+    await configureCanonicalManagedBundle({
+      id: "index-savepoint-proof",
+      env: "API_TOKEN=old\n",
+      marker: "index-savepoint-old",
+    });
+    const initialReader = openReadonlyExistingDatabase(getDbPath());
+    if (!initialReader) throw new Error("expected an existing index for transaction proof");
+    const original = initialReader.prepare("SELECT value FROM index_meta WHERE key = 'builtAt'").get() as {
+      value: string;
+    };
+    initialReader.close();
+    const db = openDatabase(getDbPath(), { create: false });
+    db.exec("BEGIN IMMEDIATE");
+    db.transaction(() => {
+      db.exec("UPDATE index_meta SET value = 'nested-savepoint-value' WHERE key = 'builtAt'");
+    })();
+    expect(db.inTransaction).toBe(true);
+    db.close();
+
+    const reopened = openReadonlyExistingDatabase(getDbPath());
+    if (!reopened) throw new Error("expected an existing index after rollback-on-close");
+    try {
+      expect(reopened.prepare("SELECT value FROM index_meta WHERE key = 'builtAt'").get()).toEqual(original);
+    } finally {
+      reopened.close();
+    }
+
+    expect(() =>
+      openIndexDatabase(undefined, {
+        beforeSchema(candidate) {
+          candidate.exec("BEGIN IMMEDIATE");
+          candidate.prepare("UPDATE index_meta SET value = ? WHERE key = 'builtAt'").run("open-failed-value");
+          throw new Error("initializer failed after begin");
+        },
+      }),
+    ).toThrow("initializer failed after begin");
+    const writerAfterFailedOpen = openIndexDatabase();
+    try {
+      expect(writerAfterFailedOpen.prepare("SELECT value FROM index_meta WHERE key = 'builtAt'").get()).toEqual(
+        original,
+      );
+      writerAfterFailedOpen.prepare("UPDATE index_meta SET value = value WHERE key = 'builtAt'").run();
+    } finally {
+      writerAfterFailedOpen.close();
+    }
+  });
+
+  test("an actual deferred foreign-key COMMIT error rolls index and state back together", async () => {
+    const live = await configureCanonicalManagedBundle({
+      id: "cross-db-commit-error",
+      env: "API_TOKEN=old\n",
+      marker: "cross-db-commit-old",
+    });
+    const expiredRef = "cross-db-commit-error//knowledge/expired-state-transaction-probe";
+    insertExpiredUsageEvent(expiredRef);
+    const before = snapshotState();
+    const inodesBefore = sqliteFileInodes(getDbPath());
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) =>
+      stageManagedCandidate(requiredStagingRoot(options), {
+        id: "cross-db-commit-error",
+        env: "API_TOKEN=new\n",
+        marker: "cross-db-commit-new",
+      }),
+    );
+    overrideSeam(_setUpdateTransactionHookForTests, (point, _id, context) => {
+      if (point !== "before-commit") return;
+      if (!context?.db?.inTransaction) throw new Error("missing unified update transaction");
+      context.db.exec("PRAGMA defer_foreign_keys = ON");
+      context.db
+        .prepare(
+          "INSERT INTO utility_scores (entry_id, utility, show_count, search_count, select_rate) VALUES (?, 0, 0, 0, 0)",
+        )
+        .run(-765);
+    });
+
+    try {
+      await expect(akmUpdate({ target: "cross-db-commit-error", stashDir: storage.stashDir })).rejects.toThrow(
+        /foreign key|constraint/i,
+      );
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(path.join(live.contentDir, "env", "default.env"), "utf8")).toBe("API_TOKEN=old\n");
+    expectState(before);
+    expect(countUsageEvents(expiredRef)).toBe(1);
+    for (const [filePath, inode] of inodesBefore) expect(fs.statSync(filePath).ino).toBe(inode);
+  });
+
+  test("semantic-status publication is advisory and cannot roll back an already committed update", async () => {
+    const live = await configureCanonicalManagedBundle({
+      id: "semantic-status-advisory",
+      env: "API_TOKEN=old\n",
+      marker: "semantic-status-old",
+    });
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) =>
+      stageManagedCandidate(requiredStagingRoot(options), {
+        id: "semantic-status-advisory",
+        env: "API_TOKEN=new\n",
+        marker: "semantic-status-new",
+      }),
+    );
+    let attempted = false;
+    overrideSeam(_setSemanticStatusMutationForTests, () => {
+      attempted = true;
+      throw new Error("semantic status disk fault");
+    });
+
+    try {
+      await akmUpdate({ target: "semantic-status-advisory", stashDir: storage.stashDir });
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(attempted).toBe(true);
+    expect(fs.readFileSync(path.join(live.contentDir, "env", "default.env"), "utf8")).toBe("API_TOKEN=new\n");
+    expect(indexedSearchText()).toContain("semantic-status-new");
+    expect(indexedSearchText()).not.toContain("semantic-status-old");
+  });
+
+  test("health detects a durable split generation after restart and full index repairs it", async () => {
+    await configureCanonicalManagedBundle({
+      id: "split-generation",
+      env: "API_TOKEN=old\n",
+      marker: "split-generation-old",
+    });
+
+    const indexDb = openReadonlyExistingDatabase(getDbPath());
+    if (!indexDb) throw new Error("expected an index for the split-generation probe");
+    const entry = indexDb
+      .prepare("SELECT id, item_ref FROM entries WHERE item_ref = ?")
+      .get("split-generation//knowledge/revision") as { id: number; item_ref: string } | undefined;
+    indexDb.close();
+    if (!entry) throw new Error("expected the indexed split-generation entry");
+
+    // Simulate restart after only one side of a cross-database commit reached
+    // durable storage: the stable ref is from the current generation, while
+    // state.db retained its adjacent generation's numeric index id. Every
+    // handle is closed before health opens the files again.
+    const stateDb = openStateDatabase();
+    stateDb
+      .prepare(
+        "INSERT INTO usage_events (entry_id, entry_ref, event_type, source, created_at) " +
+          "VALUES (?, ?, 'search', 'user', datetime('now'))",
+      )
+      .run(entry.id + 765_000, entry.item_ref);
+    stateDb.close();
+
+    const splitHealth = akmHealth({ stashDir: storage.stashDir });
+    expect(splitHealth.advisories).toContainEqual(
+      expect.objectContaining({ name: "index-state-generation", status: "warn" }),
+    );
+
+    await akmIndex({ stashDir: storage.stashDir, full: true, hydrateSources: false });
+
+    const repairedHealth = akmHealth({ stashDir: storage.stashDir });
+    expect(repairedHealth.advisories.find((finding) => finding.name === "index-state-generation")).toBeUndefined();
+    const repairedIndex = openReadonlyExistingDatabase(getDbPath());
+    if (!repairedIndex) throw new Error("expected a repaired index");
+    const repairedEntry = repairedIndex.prepare("SELECT id FROM entries WHERE item_ref = ?").get(entry.item_ref) as
+      | { id: number }
+      | undefined;
+    repairedIndex.close();
+    if (!repairedEntry) throw new Error("expected the repaired split-generation entry");
+    const repairedState = openStateDatabase();
+    try {
+      expect(
+        repairedState.prepare("SELECT entry_id FROM usage_events WHERE entry_ref = ?").get(entry.item_ref),
+      ).toEqual({ entry_id: repairedEntry.id });
+    } finally {
+      repairedState.close();
+    }
+    expect(indexedSearchText()).toContain("split-generation-old");
+  });
+
   test("a concurrent lock generation cannot prevent content and index compensation", async () => {
     const live = await configureCanonicalManagedBundle({
       id: "lock-race",
@@ -803,6 +1076,240 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
     expect(indexedRows()).toEqual(before.rows);
   });
 
+  test("a symlinked managed writable root is staged by physical containment and never mutates live bytes before audit", async () => {
+    const id = "managed-writable-symlink";
+    const fixture = makeSandboxDir("akm-765-managed-symlink-");
+    disposers.push(fixture.cleanup);
+    const physicalRepo = path.join(fixture.dir, "physical-repo");
+    const linkedRepo = path.join(fixture.dir, "linked-repo");
+    const initialHead = initGitBundle(physicalRepo, "managed symlink old");
+    fs.symlinkSync(physicalRepo, linkedRepo, "dir");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        [id]: {
+          git: `https://github.com/example/${id}.git`,
+          components: { main: { root: ".", adapter: "akm", writable: true } },
+        },
+      },
+    });
+    mergeLockEntriesSync([
+      {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        resolvedRevision: initialHead,
+        localRoot: linkedRepo,
+      },
+    ]);
+    await akmIndex({ stashDir: storage.stashDir, hydrateSources: false });
+    let providerUsedLivePhysicalRoot = false;
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) => {
+      if (!options?.writableRoot) throw new Error("writable update did not provide a staged checkout");
+      const providerRoot = options.writableRoot;
+      providerUsedLivePhysicalRoot = fs.realpathSync(providerRoot) === fs.realpathSync(physicalRepo);
+      fs.writeFileSync(path.join(providerRoot, "env", "default.env"), "LD_PRELOAD=/tmp/symlink-escape.so\n");
+      git(providerRoot, ["add", "-A"]);
+      git(providerRoot, ["commit", "-m", "dangerous symlink candidate"]);
+      const auditedHead = git(providerRoot, ["rev-parse", "HEAD"]);
+      return {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        artifactUrl: `https://github.com/example/${id}.git`,
+        resolvedRevision: auditedHead,
+        contentDir: providerRoot,
+        cacheDir: providerRoot,
+        extractedDir: providerRoot,
+        syncedAt: "2026-08-19T00:00:00.000Z",
+        writable: true,
+      };
+    });
+
+    try {
+      await expect(withTTY(false, () => akmUpdate({ target: id, stashDir: storage.stashDir }))).rejects.toMatchObject({
+        code: "DANGEROUS_ENV_KEY",
+      });
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(providerUsedLivePhysicalRoot).toBe(false);
+    expect(git(physicalRepo, ["rev-parse", "HEAD"])).toBe(initialHead);
+    expect(fs.readFileSync(path.join(physicalRepo, "env", "default.env"), "utf8")).toBe("API_TOKEN=safe\n");
+  });
+
+  test("a writable component symlink escape is rejected before the provider sees a root", async () => {
+    const id = "managed-writable-component-escape";
+    const fixture = makeSandboxDir("akm-765-managed-component-escape-");
+    disposers.push(fixture.cleanup);
+    const physicalRepo = path.join(fixture.dir, "repo");
+    const escapedRoot = path.join(fixture.dir, "outside");
+    fs.mkdirSync(escapedRoot, { recursive: true });
+    writeBundle(escapedRoot, "API_TOKEN=outside\n", "outside");
+    const initialHead = initGitBundle(physicalRepo, "managed component escape old");
+    fs.symlinkSync(escapedRoot, path.join(physicalRepo, "escaped"), "dir");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        [id]: {
+          git: `https://github.com/example/${id}.git`,
+          components: { main: { root: "escaped", adapter: "akm", writable: true } },
+        },
+      },
+    });
+    mergeLockEntriesSync([
+      {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        resolvedRevision: initialHead,
+        localRoot: physicalRepo,
+      },
+    ]);
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async () => {
+      throw new Error("provider should not be called for an escaped writable root");
+    });
+    try {
+      await expect(akmUpdate({ target: id, stashDir: storage.stashDir })).rejects.toThrow(/symlink|outside|contain/i);
+      expect(syncSpy).not.toHaveBeenCalled();
+    } finally {
+      syncSpy.mockRestore();
+    }
+    expect(git(physicalRepo, ["rev-parse", "HEAD"])).toBe(initialHead);
+  });
+
+  for (const mutation of ["tracked", "untracked", "ignored"] as const) {
+    test(`writable Git compensates a dangerous ${mutation} post-fence mutation created during fast-forward`, async () => {
+      const id = `managed-post-fence-${mutation}`;
+      const liveRepo = managedCachePaths(id).contentDir;
+      initGitBundle(liveRepo, `${mutation} post-fence old`);
+      if (mutation === "ignored") {
+        fs.writeFileSync(path.join(liveRepo, ".gitignore"), "env/ignored.env\n");
+        git(liveRepo, ["add", ".gitignore"]);
+        git(liveRepo, ["commit", "-m", "ignore local env"]);
+      }
+      const initialHead = git(liveRepo, ["rev-parse", "HEAD"]);
+      saveConfig({
+        semanticSearchMode: "off",
+        bundles: {
+          [id]: {
+            git: `https://github.com/example/${id}.git`,
+            components: { main: { root: ".", adapter: "akm", writable: true } },
+          },
+        },
+      });
+      mergeLockEntriesSync([
+        {
+          id,
+          source: "git",
+          ref: `git:https://github.com/example/${id}.git`,
+          resolvedRevision: initialHead,
+          localRoot: liveRepo,
+        },
+      ]);
+      await akmIndex({ stashDir: storage.stashDir, hydrateSources: false });
+      const before = snapshotState();
+      const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) => {
+        if (!options?.writableRoot) throw new Error("writable update did not provide a staged checkout");
+        const auditedHead = commitGitMarker(options.writableRoot, "audited.txt", `${mutation} audited upstream`);
+        return {
+          id,
+          source: "git",
+          ref: `git:https://github.com/example/${id}.git`,
+          artifactUrl: `https://github.com/example/${id}.git`,
+          resolvedRevision: auditedHead,
+          contentDir: options.writableRoot,
+          cacheDir: options.writableRoot,
+          extractedDir: options.writableRoot,
+          syncedAt: "2026-08-19T00:00:00.000Z",
+          writable: true,
+        };
+      });
+      const mutatedPath =
+        mutation === "tracked"
+          ? path.join(liveRepo, "env", "default.env")
+          : path.join(liveRepo, "env", mutation === "ignored" ? "ignored.env" : "untracked.env");
+      overrideSeam(_setUpdateTransactionHookForTests, (point) => {
+        if (point === "audited") installPostMergeWriter(liveRepo, mutatedPath, "LD_PRELOAD=/tmp/post-fence.so\n");
+      });
+
+      try {
+        await expect(akmUpdate({ target: id, stashDir: storage.stashDir })).rejects.toThrow(
+          /dangerous|changed|audited|generation/i,
+        );
+      } finally {
+        syncSpy.mockRestore();
+      }
+
+      expect(git(liveRepo, ["rev-parse", "HEAD"])).toBe(initialHead);
+      expect(fs.readFileSync(path.join(liveRepo, "env", "default.env"), "utf8")).toBe("API_TOKEN=safe\n");
+      if (mutation !== "tracked") expect(fs.existsSync(mutatedPath)).toBe(false);
+      expect(fs.existsSync(path.join(liveRepo, "audited.txt"))).toBe(false);
+      expectState(before);
+    });
+  }
+
+  test("writable Git re-audits the exact worktree generation at the database commit boundary", async () => {
+    const id = "managed-commit-boundary-race";
+    const liveRepo = managedCachePaths(id).contentDir;
+    const initialHead = initGitBundle(liveRepo, "commit-boundary old");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        [id]: {
+          git: `https://github.com/example/${id}.git`,
+          components: { main: { root: ".", adapter: "akm", writable: true } },
+        },
+      },
+    });
+    mergeLockEntriesSync([
+      {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        resolvedRevision: initialHead,
+        localRoot: liveRepo,
+      },
+    ]);
+    await akmIndex({ stashDir: storage.stashDir, hydrateSources: false });
+    const before = snapshotState();
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) => {
+      if (!options?.writableRoot) throw new Error("writable update did not provide a staged checkout");
+      const auditedHead = commitGitMarker(options.writableRoot, "audited.txt", "commit-boundary audited upstream");
+      return {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        artifactUrl: `https://github.com/example/${id}.git`,
+        resolvedRevision: auditedHead,
+        contentDir: options.writableRoot,
+        cacheDir: options.writableRoot,
+        extractedDir: options.writableRoot,
+        syncedAt: "2026-08-19T00:00:00.000Z",
+        writable: true,
+      };
+    });
+    overrideSeam(_setUpdateTransactionHookForTests, (point) => {
+      if (point === "indexed") {
+        fs.writeFileSync(path.join(liveRepo, "env", "default.env"), "LD_PRELOAD=/tmp/commit-race.so\n");
+      }
+    });
+
+    try {
+      await expect(akmUpdate({ target: id, stashDir: storage.stashDir })).rejects.toThrow(
+        /dangerous|changed|audited|generation/i,
+      );
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(git(liveRepo, ["rev-parse", "HEAD"])).toBe(initialHead);
+    expect(fs.readFileSync(path.join(liveRepo, "env", "default.env"), "utf8")).toBe("API_TOKEN=safe\n");
+    expect(fs.existsSync(path.join(liveRepo, "audited.txt"))).toBe(false);
+    expectState(before);
+  });
+
   test("managed writable Git rejects a non-fast-forward audited target without touching the live branch", async () => {
     const id = "managed-writable-diverged";
     const liveRepo = managedCachePaths(id).contentDir;
@@ -860,6 +1367,124 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
     expect(fs.existsSync(path.join(liveRepo, "diverged.txt"))).toBe(false);
     expect(fs.readFileSync(getLockfilePath(), "utf8")).toBe(before.lock as string);
     expect(indexedRows()).toEqual(before.rows);
+  });
+
+  test("writable Git rejects an unauditable submodule target before changing the live checkout", async () => {
+    const id = "managed-writable-submodule";
+    const liveRepo = managedCachePaths(id).contentDir;
+    const initialHead = initGitBundle(liveRepo, "managed submodule old");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        [id]: {
+          git: `https://github.com/example/${id}.git`,
+          components: { main: { root: ".", adapter: "akm", writable: true } },
+        },
+      },
+    });
+    mergeLockEntriesSync([
+      {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        resolvedRevision: initialHead,
+        localRoot: liveRepo,
+      },
+    ]);
+    await akmIndex({ stashDir: storage.stashDir, hydrateSources: false });
+    const before = snapshotState();
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) => {
+      if (!options?.writableRoot) throw new Error("writable update did not provide a staged checkout");
+      git(options.writableRoot, ["update-index", "--add", "--cacheinfo", `160000,${initialHead},vendor/dependency`]);
+      git(options.writableRoot, ["commit", "-m", "add unaudited submodule"]);
+      const auditedHead = git(options.writableRoot, ["rev-parse", "HEAD"]);
+      return {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        artifactUrl: `https://github.com/example/${id}.git`,
+        resolvedRevision: auditedHead,
+        contentDir: options.writableRoot,
+        cacheDir: options.writableRoot,
+        extractedDir: options.writableRoot,
+        syncedAt: "2026-08-19T00:00:00.000Z",
+        writable: true,
+      };
+    });
+
+    try {
+      await expect(akmUpdate({ target: id, stashDir: storage.stashDir })).rejects.toThrow(/submodule|gitlink|audit/i);
+    } finally {
+      syncSpy.mockRestore();
+    }
+    expect(git(liveRepo, ["rev-parse", "HEAD"])).toBe(initialHead);
+    expectState(before);
+  });
+
+  test("writable Git detects a local smudge filter that changes audited bytes during materialization", async () => {
+    const id = "managed-writable-filter";
+    const liveRepo = managedCachePaths(id).contentDir;
+    const initialHead = initGitBundle(liveRepo, "managed filter old");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        [id]: {
+          git: `https://github.com/example/${id}.git`,
+          components: { main: { root: ".", adapter: "akm", writable: true } },
+        },
+      },
+    });
+    mergeLockEntriesSync([
+      {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        resolvedRevision: initialHead,
+        localRoot: liveRepo,
+      },
+    ]);
+    await akmIndex({ stashDir: storage.stashDir, hydrateSources: false });
+    const before = snapshotState();
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) => {
+      if (!options?.writableRoot) throw new Error("writable update did not provide a staged checkout");
+      fs.writeFileSync(path.join(options.writableRoot, ".gitattributes"), "filtered.txt filter=akm-danger\n");
+      fs.writeFileSync(path.join(options.writableRoot, "filtered.txt"), "audited filter payload\n");
+      git(options.writableRoot, ["add", "-A"]);
+      git(options.writableRoot, ["commit", "-m", "add filtered target"]);
+      const auditedHead = git(options.writableRoot, ["rev-parse", "HEAD"]);
+      return {
+        id,
+        source: "git",
+        ref: `git:https://github.com/example/${id}.git`,
+        artifactUrl: `https://github.com/example/${id}.git`,
+        resolvedRevision: auditedHead,
+        contentDir: options.writableRoot,
+        cacheDir: options.writableRoot,
+        extractedDir: options.writableRoot,
+        syncedAt: "2026-08-19T00:00:00.000Z",
+        writable: true,
+      };
+    });
+    const filterScript = path.join(storage.root, "dangerous-smudge.sh");
+    fs.writeFileSync(
+      filterScript,
+      `#!/bin/sh\nprintf %s 'LD_PRELOAD=/tmp/filter.so\n' > ${shellQuote(path.join(liveRepo, "env", "default.env"))}\ncat\n`,
+    );
+    fs.chmodSync(filterScript, 0o755);
+    overrideSeam(_setUpdateTransactionHookForTests, (point) => {
+      if (point === "audited") git(liveRepo, ["config", "filter.akm-danger.smudge", filterScript]);
+    });
+
+    try {
+      await expect(akmUpdate({ target: id, stashDir: storage.stashDir })).rejects.toThrow(
+        /filter|dangerous|changed|audited|generation/i,
+      );
+    } finally {
+      syncSpy.mockRestore();
+    }
+    expect(git(liveRepo, ["rev-parse", "HEAD"])).toBe(initialHead);
+    expect(fs.readFileSync(path.join(liveRepo, "env", "default.env"), "utf8")).toBe("API_TOKEN=safe\n");
+    expectState(before);
   });
 
   test("plain writable Git rejects a live commit made after audit instead of replacing the checkout", async () => {
@@ -1066,6 +1691,40 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
     expect(fs.readFileSync(getLockfilePath(), "utf8")).toBe(customRaw);
     expect(fs.statSync(getLockfilePath()).mode & 0o777).toBe(0o640);
     expect(fs.readFileSync(path.join(live.contentDir, "env", "default.env"), "utf8")).toBe("API_TOKEN=old\n");
+  });
+
+  test("a chmod-only lock generation is fenced before publication and never overwritten", async () => {
+    const live = await configureCanonicalManagedBundle({
+      id: "lock-mode-race",
+      env: "API_TOKEN=old\n",
+      marker: "lock-mode-old",
+    });
+    const lockBefore = fs.readFileSync(getLockfilePath(), "utf8");
+    fs.chmodSync(getLockfilePath(), 0o640);
+    const indexBefore = indexedRows();
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) =>
+      stageManagedCandidate(requiredStagingRoot(options), {
+        id: "lock-mode-race",
+        env: "API_TOKEN=new\n",
+        marker: "lock-mode-new",
+      }),
+    );
+    overrideSeam(_setUpdateTransactionHookForTests, (point) => {
+      if (point === "fenced") fs.chmodSync(getLockfilePath(), 0o600);
+    });
+
+    try {
+      await expect(akmUpdate({ target: "lock-mode-race", stashDir: storage.stashDir })).rejects.toThrow(
+        /changed concurrently/i,
+      );
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(getLockfilePath(), "utf8")).toBe(lockBefore);
+    expect(fs.statSync(getLockfilePath()).mode & 0o777).toBe(0o600);
+    expect(fs.readFileSync(path.join(live.contentDir, "env", "default.env"), "utf8")).toBe("API_TOKEN=old\n");
+    expect(indexedRows()).toEqual(indexBefore);
   });
 
   test("update --all continues per bundle and reports updated, blocked, and failed outcomes", async () => {

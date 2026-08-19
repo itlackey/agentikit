@@ -889,6 +889,38 @@ component root. Publisher lint suppressions do not bypass it. Rejection or an
 audit/publication/index failure preserves the prior active bytes, lock/config
 generation, and searchable index for that bundle.
 
+Writable Git updates resolve configured roots to their physical checkout,
+reject component symlinks that escape it, and re-audit the exact materialized
+worktree before activation. AKM holds its source/index writer lease through
+that check and commit, and rechecks after the index pass at the final database
+commit boundary. All AKM writers cooperate with this lease. A non-cooperating
+local process can still edit ordinary files because POSIX/Windows filesystems
+provide no mandatory recursive directory lock: writes observed by either
+generation check make the update fail and restore the pre-update checkout, but
+a write racing after the final filesystem read cannot be guaranteed detectable
+and a write during compensation can be overwritten. Do not edit a writable
+checkout from another process while its update is running.
+
+The index and its update-owned state maintenance share one deferred SQLite
+transaction. WAL readers continue to see the last committed generation while a
+full update index pass runs, and competing writers wait for that pass to commit
+or roll back. The semantic-status JSON file is a recomputable advisory: failure
+to refresh it after the database commit warns but does not undo a committed
+bundle update.
+
+This boundary guarantees rollback for handled process faults (throws and
+SQLite commit failures); it is not an abrupt-termination or cross-database
+power-loss guarantee. Both `index.db` and `state.db` remain in WAL mode, where
+SQLite does not guarantee an atomic commit across attached database files after
+`SIGKILL`, abrupt power loss, or storage failure. The durable outcome may
+therefore combine approved old/new source bytes and lock state with adjacent
+index/state generations. `akm health` reports `index-state-generation` when a
+durable usage link disagrees with the searchable index, but that advisory
+cannot identify every theoretical split. Stop concurrent writers, rerun the
+targeted bundle update if the checkout/lock is not the intended approved
+revision, then run `akm index --full` to rebuild the search index and relink
+durable usage state.
+
 Reports per-entry change flags: `changed.version`, `changed.revision`, and
 `changed.any`. With `--all`, each bundle is isolated: successful entries appear
 in `processed`/`plainSynced`; rejected entries report `status: "blocked"` and a

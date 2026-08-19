@@ -186,4 +186,6 @@ export interface RelinkUsageEventsOptions {
   sources?: readonly UsageEventRelinkSource[];
   /** Default root from the active index run. Bare durable refs are not relinked. */
   defaultStashDir?: string;
+  /** Attached state.db schema used by the source-update unified transaction. */
+  stateSchema?: string;
 }

@@ -15,7 +15,7 @@ import { isLoopbackEndpoint } from "../core/loopback";
 import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { SCRIPT_EXTENSIONS } from "../core/recognition-util";
-import { beginImmediateTransaction, withStateDb } from "../core/state-db";
+import { withStateDb } from "../core/state-db";
 import { isVerbose, warn, warnVerbose } from "../core/warn";
 import { resolveIndexPassLLM } from "../llm/index-passes";
 import { resolveSourcesForOrigin } from "../registry/origin-resolve";
@@ -169,6 +169,15 @@ export interface IndexProgressEvent {
   total?: number;
 }
 
+export interface DeferredUpdateIndexTransaction {
+  /** Canonical index.db handle already inside the coordinator-owned transaction. */
+  db: Database;
+  /** Attached schema name for the canonical state.db on the same connection. */
+  stateSchema: string;
+  /** Filesystem semantic-status publication deferred until the DB commit succeeds. */
+  afterCommit?: () => void;
+}
+
 interface IndexOptions {
   /**
    * The stash directory to index. Resolved once at each command boundary
@@ -206,12 +215,12 @@ interface IndexOptions {
    */
   persistDetectedAdapters?: boolean;
   /**
-   * Borrow the source-update coordinator's canonical state.db handle and leave
-   * its finalize mutations uncommitted for the coordinator to commit only
-   * after the remaining publication checks succeed. Internal lifecycle seam;
-   * ordinary index callers omit it.
+   * Borrow the source-update coordinator's canonical index.db handle. The
+   * handle already has state.db attached and one outer transaction spanning
+   * both schemas; indexer writes remain pending until the coordinator's final
+   * commit point. Internal lifecycle seam; ordinary callers omit it.
    */
-  deferredStateTransaction?: { db: Database; started?: boolean };
+  deferredUpdateTransaction?: DeferredUpdateIndexTransaction;
   /**
    * Whether this run was triggered implicitly by another command's inline
    * auto-index rather than by an explicit `akm index`.
@@ -396,7 +405,7 @@ async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
  */
 async function runFinalizePhase(
   ctx: IndexRunContext,
-  deferredStateTransaction?: { db: Database; started?: boolean },
+  deferredUpdateTransaction?: DeferredUpdateIndexTransaction,
 ): Promise<void> {
   const { db, config, sources, sourceDirs, isIncremental, stashDir, signal, onProgress } = ctx;
   ctx.timing.tFinalizeStart = Date.now();
@@ -419,26 +428,20 @@ async function runFinalizePhase(
   // Chunk-8 WI-8.3: usage_events lives in state.db now (index.db no longer holds
   // it), so these cross-DB passes take both handles — entries in `db` (index.db),
   // usage_events in the loaned state.db.
-  const mutateState = (stateDb: Database): void => {
+  const mutateState = (stateDb: Database, stateSchema?: string): void => {
     onProgress({ phase: "finalize", message: "Relinking usage events." });
-    relinkUsageEvents(db, stateDb, { sources, defaultStashDir: stashDir });
+    relinkUsageEvents(db, stateDb, { sources, defaultStashDir: stashDir, stateSchema });
     onProgress({ phase: "finalize", message: "Recomputing utility scores." });
-    recomputeUtilityScores(db, stateDb);
+    recomputeUtilityScores(db, stateDb, { stateSchema });
   };
-  if (deferredStateTransaction) {
-    const deferredStateDb = deferredStateTransaction.db;
-    // This is the first state.db mutation in the update path. BEGIN here—not
-    // during source staging or the index scan—so events committed before this
-    // boundary survive any later update rollback. The update coordinator owns
-    // the matching COMMIT/ROLLBACK and keeps this borrowed handle open.
-    beginImmediateTransaction(deferredStateDb);
-    deferredStateTransaction.started = true;
-    try {
-      mutateState(deferredStateDb);
-    } catch (error) {
-      if (deferredStateDb.inTransaction) deferredStateDb.exec("ROLLBACK");
-      throw error;
+  if (deferredUpdateTransaction) {
+    if (deferredUpdateTransaction.db !== db || !db.inTransaction) {
+      throw new Error("Source update index finalization requires its borrowed unified transaction.");
     }
+    // state.db is ATTACHed to this same index connection before the outer
+    // BEGIN IMMEDIATE. Index and state mutations therefore share one SQLite
+    // commit/rollback decision rather than an unsafe two-connection ordering.
+    mutateState(db, deferredUpdateTransaction.stateSchema);
   } else {
     withStateDb(mutateState);
   }
@@ -480,9 +483,11 @@ async function runFinalizePhase(
   onProgress({ phase: "finalize", message: "Verifying semantic search state." });
   const verification = verifyIndexState(db, config, semanticEntryCount, embeddingResult);
 
-  if (config.semanticSearchMode === "off") {
-    clearSemanticStatus();
-  } else {
+  const persistSemanticStatus = (): void => {
+    if (config.semanticSearchMode === "off") {
+      clearSemanticStatus();
+      return;
+    }
     writeSemanticStatus({
       status: verification.semanticStatus === "disabled" ? "pending" : verification.semanticStatus,
       ...(embeddingResult.reason ? { reason: embeddingResult.reason } : {}),
@@ -492,6 +497,11 @@ async function runFinalizePhase(
       entryCount: verification.entryCount,
       embeddingCount: verification.embeddingCount,
     });
+  };
+  if (deferredUpdateTransaction) {
+    deferredUpdateTransaction.afterCommit = persistSemanticStatus;
+  } else {
+    persistSemanticStatus();
   }
   onProgress({ phase: "verify", message: verification.message });
 
@@ -616,27 +626,15 @@ export function _setAkmIndexForTests(fake?: typeof akmIndexReal): void {
 export async function akmIndex(options: IndexOptions): Promise<IndexResponse> {
   try {
     const override = akmIndexOverride;
-    const response = override ? await override(options) : await akmIndexReal(options);
-    const deferred = options.deferredStateTransaction;
-    if (deferred && !deferred.started) {
-      if (!override) {
-        throw new Error("Index finalize returned without starting its required deferred state transaction.");
-      }
-      // Test overrides stand in for the whole indexer and therefore perform no
-      // real finalize state writes. Still open an empty deferred transaction so
-      // update tests exercise the same exactly-once commit/rollback protocol.
-      beginImmediateTransaction(deferred.db);
-      deferred.started = true;
-    }
-    return response;
+    return override ? await override(options) : await akmIndexReal(options);
   } catch (error) {
-    const stateDb = options.deferredStateTransaction?.db;
-    if (stateDb?.inTransaction) {
+    const updateDb = options.deferredUpdateTransaction?.db;
+    if (updateDb?.inTransaction) {
       try {
-        stateDb.exec("ROLLBACK");
+        updateDb.exec("ROLLBACK");
       } catch {
-        // Preserve the indexing error. The update coordinator will retry the
-        // rollback before closing its borrowed handle.
+        // Preserve the indexing error. The update coordinator will retry
+        // rollback before closing its borrowed unified handle.
       }
     }
     throw error;
@@ -794,7 +792,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       // Durable state must be runtime-compatible before source hydration,
       // adapter persistence, or index.db creation can mutate the installation.
       onProgress({ phase: "preflight", message: "Validating durable state." });
-      withStateDb(() => undefined, { borrowed: options.deferredStateTransaction?.db });
+      if (!options.deferredUpdateTransaction) withStateDb(() => undefined);
 
       // Ensure git stash caches are extracted before resolving stash dirs,
       // so their content directories exist on disk for the walker to discover.
@@ -832,7 +830,11 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       // Open database — pass embedding dimension from config if available
       const dbPath = getDbPath();
       const embeddingDim = config.embedding?.dimension;
-      const db = openIndexDatabase(dbPath, embeddingDim ? { embeddingDim } : undefined);
+      const borrowedUpdateDb = options.deferredUpdateTransaction?.db;
+      const db = borrowedUpdateDb ?? openIndexDatabase(dbPath, embeddingDim ? { embeddingDim } : undefined);
+      if (borrowedUpdateDb && !borrowedUpdateDb.inTransaction) {
+        throw new Error("Source update index requires an active borrowed index transaction.");
+      }
 
       try {
         // Determine incremental vs full mode
@@ -892,7 +894,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
         await runWalkPhase(ctx);
         applyRemovedSources(ctx);
         await runEmbeddingPhase(ctx);
-        await runFinalizePhase(ctx, options.deferredStateTransaction);
+        await runFinalizePhase(ctx, options.deferredUpdateTransaction);
         // ────────────────────────────────────────────────────────────────────────
 
         // runFinalizePhase always populates these before returning.
@@ -949,7 +951,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           ...(cleanResult !== undefined ? { clean: cleanResult } : {}),
         };
       } finally {
-        closeDatabase(db);
+        if (!borrowedUpdateDb) closeDatabase(db);
       }
     },
   );
@@ -2581,12 +2583,17 @@ const USAGE_EVENT_RETENTION_DAYS = 90;
  *
  * Called during `akm index` after FTS rebuild.
  */
-export function recomputeUtilityScores(db: Database, stateDb: Database): void {
+export function recomputeUtilityScores(db: Database, stateDb: Database, options?: { stateSchema?: string }): void {
   const EMA_DECAY = 0.7;
+  const stateSchema = options?.stateSchema;
+  if (stateSchema !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(stateSchema)) {
+    throw new Error("Invalid attached state schema name.");
+  }
+  const usageEvents = stateSchema === undefined ? "usage_events" : `"${stateSchema}".usage_events`;
 
   // Purge stale usage events (90-day retention). usage_events lives in state.db
   // (Chunk-8 WI-8.3); its table is created by state migration 020.
-  purgeOldUsageEvents(stateDb, USAGE_EVENT_RETENTION_DAYS);
+  purgeOldUsageEvents(stateDb, USAGE_EVENT_RETENTION_DAYS, { stateSchema });
 
   // Time-proportional decay: apply one round of EMA per elapsed day so
   // indexing frequency doesn't affect how fast scores decay.
@@ -2619,7 +2626,7 @@ export function recomputeUtilityScores(db: Database, stateDb: Database): void {
                  ELSE NULL
                END
              ) AS last_used_at
-      FROM usage_events u
+      FROM ${usageEvents} u
       WHERE u.entry_id IS NOT NULL
         AND u.source = 'user'
       GROUP BY u.entry_id
