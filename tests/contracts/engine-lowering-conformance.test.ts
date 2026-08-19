@@ -19,7 +19,10 @@ import {
   lowerResolvedExecutionRequest,
   lowerResolvedExecutionRequestWithRunner,
 } from "../../src/integrations/agent/execution-lowering";
-import { prepareInlineExecutionWithRunner } from "../../src/integrations/agent/inline-execution";
+import {
+  prepareInlineExecution,
+  prepareInlineExecutionWithRunner,
+} from "../../src/integrations/agent/inline-execution";
 import { PERSONA_FALLBACK_BEGIN, PERSONA_FALLBACK_END } from "../../src/integrations/agent/persona-fallback";
 import { HARNESS_REGISTRY } from "../../src/integrations/harnesses";
 
@@ -141,12 +144,18 @@ describe("resolved execution lowerer registry", () => {
   });
 
   test("direct LLM lowers exact transport values and reports untranslated tools optimistically", () => {
-    const lowered = lowerResolvedExecutionRequest(requestFor("fixture-llm", "llm"), configFor("fixture-llm", "llm"));
+    const lowered = lowerResolvedExecutionRequest(
+      requestFor("fixture-llm", "llm", {
+        inference: { effort: "high", temperature: 0, contextLength: 4096, supportsJsonSchema: true },
+      }),
+      configFor("fixture-llm", "llm"),
+    );
     expect(lowered.runner.kind).toBe("llm");
     if (lowered.runner.kind !== "llm") throw new Error("fixture must lower to LLM");
     if (!("messages" in lowered)) throw new Error("fixture must use the LLM lowerer");
     expect(lowered.runner.connection.model).toBe("provider/exact-model");
     expect(lowered.runner.connection.temperature).toBe(0);
+    expect(lowered.runner.connection.contextLength).toBe(4096);
     expect(lowered.messages).toEqual([
       { role: "system", content: "You are the exact persona.\n" },
       { role: "user", content: "Review the exact target." },
@@ -193,6 +202,30 @@ describe("resolved execution lowerer registry", () => {
 });
 
 describe("optimistic lowering safety", () => {
+  test("allows a nearer explicit engine when the installation has no default or usable fallback", () => {
+    const config = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        fixture: { kind: "agent", platform: "claude", model: "exact/model" },
+        "opencode-sdk": { kind: "agent", platform: "opencode-sdk", bin: "/definitely/missing/opencode" },
+      },
+    } as unknown as AkmConfig;
+    const prepared = prepareInlineExecution({
+      content: "Review it.",
+      config,
+      invocationKind: "direct",
+      current: { engine: "fixture" },
+    });
+    expect(prepared.request.engine.name).toBe("fixture");
+    expect(prepared.plan.provenance.engine).toEqual({
+      layer: "current-invocation",
+      kind: "current",
+      via: "explicit",
+    });
+    expect(prepared.fallbackEngineName).toBeUndefined();
+  });
+
   test("authorization denial happens before config access, lowerer selection, credentials, or dispatch", () => {
     const denied = requestFor("claude", "agent", {
       authorization: { status: "denied", reason: "fixture denial", policy: { id: "deny" } },
@@ -398,5 +431,30 @@ describe("optimistic lowering safety", () => {
       }),
     ).rejects.toThrow(/lowered execution request.*registry|provenance/i);
     expect(dispatched).toBe(false);
+  });
+
+  test("permits only operational runner overrides while resolved runtime fields remain authoritative", async () => {
+    const lowered = lowerResolvedExecutionRequest(requestFor("claude"), configFor("claude"));
+    let captured: unknown;
+    await dispatchLoweredExecutionRequest(lowered, {
+      runOptions: {
+        stdio: "interactive",
+        parseOutput: "json",
+        timeoutMs: 99_999,
+        cwd: "/must-not-win",
+        env: { MUST_NOT_WIN: "true" },
+      },
+      executeRunner: async (_runner, _prompt, options) => {
+        captured = options;
+        return { ok: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 };
+      },
+    });
+    expect(captured).toMatchObject({
+      stdio: "interactive",
+      parseOutput: "json",
+      timeoutMs: 0,
+      cwd: "/fixture/workspace",
+      env: {},
+    });
   });
 });

@@ -45,7 +45,7 @@ export interface PlanPreparedExecutionOptions {
   readonly command: ResolvedCommandContent;
   readonly conversation?: readonly Readonly<ResolvedConversationMessage>[];
   readonly persona?: ResolvedPersonaContent | null;
-  readonly installationEngine: string;
+  readonly installationEngine?: string;
   readonly agentLayer?: ResolvedExecutionLayer;
   readonly commandLayer: ResolvedExecutionLayer;
   readonly invocationDefaults?: UnresolvedExecutionDefaults;
@@ -74,7 +74,10 @@ export function planPreparedExecution(options: PlanPreparedExecutionOptions): Re
     ...(own(options, "conversation") ? { conversation: options.conversation } : {}),
     ...(own(options, "persona") ? { persona: options.persona } : {}),
     layers: {
-      installation: { id: "installation-defaults", values: { engine: options.installationEngine } },
+      installation: {
+        id: "installation-defaults",
+        values: options.installationEngine === undefined ? {} : { engine: options.installationEngine },
+      },
       ...(options.agentLayer ? { agent: options.agentLayer } : {}),
       command: options.commandLayer,
       ...(options.invocationDefaults
@@ -100,14 +103,11 @@ export function prepareResolvedExecution(options: PrepareResolvedExecutionOption
   const config = cloneExecutionJsonObject(fallback.config, "execution preparation resolved config") as AkmConfig;
   const defaults = own(config, "defaults") ? config.defaults : undefined;
   const installationEngine = defaults && own(defaults, "engine") ? defaults.engine : undefined;
-  if (!installationEngine) {
-    throw new TypeError("execution preparation requires a selected installation engine after fallback");
-  }
   const plan = planPreparedExecution({
     command: options.command,
     ...(own(options, "conversation") ? { conversation: options.conversation } : {}),
     ...(own(options, "persona") ? { persona: options.persona } : {}),
-    installationEngine,
+    ...(installationEngine === undefined ? {} : { installationEngine }),
     ...(options.agentLayer ? { agentLayer: options.agentLayer } : {}),
     commandLayer: options.commandLayer,
     ...(options.invocationDefaults ? { invocationDefaults: options.invocationDefaults } : {}),

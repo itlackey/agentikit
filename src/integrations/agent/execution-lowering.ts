@@ -364,6 +364,7 @@ const LLM_INFERENCE_CONNECTION_FIELDS = new Set([
   "maxTokens",
   "supportsJsonSchema",
   "extraParams",
+  "contextLength",
   "enableThinking",
 ]);
 
@@ -583,6 +584,7 @@ export async function dispatchLoweredExecutionRequest(
   const run = options.executeRunner ?? executeRunner;
   const operational = options.runOptions ?? {};
   const runOptions = sterileRecord({
+    ...lowered.options,
     ...(operational.stdio !== undefined ? { stdio: operational.stdio } : {}),
     ...(operational.parseOutput !== undefined ? { parseOutput: operational.parseOutput } : {}),
     ...(operational.signal !== undefined ? { signal: operational.signal } : {}),
@@ -591,7 +593,6 @@ export async function dispatchLoweredExecutionRequest(
     ...(operational.setTimeoutFn !== undefined ? { setTimeoutFn: operational.setTimeoutFn } : {}),
     ...(operational.clearTimeoutFn !== undefined ? { clearTimeoutFn: operational.clearTimeoutFn } : {}),
     ...(operational.onEvent !== undefined ? { onEvent: operational.onEvent } : {}),
-    ...lowered.options,
   });
   return run(lowered.runner, lowered.prompt, runOptions, {
     ...(options.runAgent ? { runAgent: options.runAgent } : {}),
