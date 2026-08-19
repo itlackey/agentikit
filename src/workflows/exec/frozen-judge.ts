@@ -14,10 +14,10 @@
  *     notes. So the judge outcome goes through the SAME scrub every unit outcome
  *     goes through: {@link collectWorkflowDispatchSensitiveValues} +
  *     {@link withDispatchRedaction} (exec/dispatch-redaction.ts). Nothing about
- *     a judge call reaches durable state before that scrub. BOTH branches below
- *     state it that way — the agent branch wrapping the injected dispatcher, the
- *     llm branch wrapping its own chatCompletion call — so a change to that one
- *     contract cannot reach only one of the two judge paths.
+ *     a judge call reaches durable state before that scrub. Agent and direct-LLM
+ *     judges share one prepared/lowered dispatch request; the manual completion
+ *     path uses the same config-free dispatcher without opening an executor
+ *     import cycle.
  *
  *  2. **Identity.** The dispatch request carries the REAL run/step and the gate's
  *     real node/unit ids — the same ids `journalGateEvaluationStart/Finish` write
@@ -31,15 +31,21 @@
  * nothing authored to thread — and a step's unit `env` is scoped to the WORK,
  * not to the verifier. Redaction is unaffected: the sensitive-value set below
  * still covers the judge engine's credential and unsafe passthrough values.
+ * Lowering notices are transitional in WP5: units expose a typed live result,
+ * while judges retain their public string contract and emit only the common
+ * lowerer's prompt/body-free notice projection through `warn()`. WP7 owns a
+ * versioned durable journal/IR representation.
  *
  * @module workflows/exec/frozen-judge
  */
 
 import { ConfigError } from "../../core/errors";
+import { warn } from "../../core/warn";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import type { IrInvocation, WorkflowPlanGraph } from "../ir/schema";
 import type { JudgeCallIdentity, SummaryJudge } from "../validate-summary";
 import { collectWorkflowDispatchSensitiveValues, withDispatchRedaction } from "./dispatch-redaction";
-import { materializeFrozenLlm, type UnitDispatcher } from "./unit-dispatch";
+import { dispatchFrozenWorkflowExecution, prepareFrozenWorkflowExecution, type UnitDispatcher } from "./unit-dispatch";
 
 /**
  * The run/step a judge belongs to, known when the judge is BUILT. Callers that
@@ -68,6 +74,18 @@ function dispatchIdentity(owner: JudgeOwner, identity: JudgeCallIdentity | undef
   return identity ?? { ...owner, unitId: gateNodeId(owner.stepId) };
 }
 
+function warnLoweringNotices(...groups: readonly (readonly Readonly<LoweringNotice>[] | undefined)[]): void {
+  const emitted = new Set<string>();
+  for (const notices of groups) {
+    for (const notice of notices ?? []) {
+      const key = JSON.stringify([notice.code, notice.severity, notice.adapter, notice.field, notice.message]);
+      if (emitted.has(key)) continue;
+      emitted.add(key);
+      warn(`Workflow judge lowering notice (${notice.code}; ${notice.adapter}; ${notice.field}): ${notice.message}`);
+    }
+  }
+}
+
 /** Build a gate judge from a v3 catalog entry without consulting live config. */
 export function frozenSummaryJudge(
   plan: WorkflowPlanGraph,
@@ -80,87 +98,19 @@ export function frozenSummaryJudge(
   const engine = plan.execution?.engines[invocation.engine];
   if (!engine)
     throw new ConfigError(`Frozen gate engine "${invocation.engine}" is unavailable.`, "INVALID_CONFIG_FILE");
-  if (engine.kind === "agent") {
-    if (!dispatcher) {
-      throw new ConfigError(
-        `Frozen agent gate engine "${invocation.engine}" has no unit dispatcher.`,
-        "INVALID_CONFIG_FILE",
-      );
-    }
-    const fallbackEngine = engine.fallbackLlmEngine ? plan.execution.engines[engine.fallbackLlmEngine] : undefined;
-    const fallback = fallbackEngine?.kind === "llm" ? fallbackEngine : undefined;
-    // Scrub at the seam: every outcome this judge's dispatcher returns — and
-    // every error it throws — is redacted BEFORE the verdict (or the failure
-    // message) can reach the gate row / the blocked step's notes. Identical
-    // contract to the llm branch below and to the unit path, including the
-    // failureReason downgrade when redaction altered it.
-    const dispatch = withDispatchRedaction(dispatcher);
-    return async ({ system, user }, identity) => {
-      const id = dispatchIdentity(owner, identity);
-      // Collected per dispatch, not once per judge: the engine PAIR is fixed at
-      // build time but its secrets are not — they are read from `process.env`,
-      // which the dispatch itself re-reads, so a build-time set would miss a
-      // credential set or rotated between the two reads. Same collector the unit
-      // path uses; see the module doc on why `env` is absent here but the
-      // credential/passthrough values are still collected.
-      const sensitiveValues = collectWorkflowDispatchSensitiveValues(
-        { engine, ...(fallback ? { fallbackEngine: fallback } : {}) },
-        undefined,
-      );
-      const outcome = await dispatch({
-        runId: id.runId,
-        stepId: id.stepId,
-        unitId: id.unitId,
-        nodeId: gateNodeId(id.stepId),
-        prompt: user,
-        systemPrompt: system,
-        engine,
-        ...(fallback ? { fallbackEngine: fallback } : {}),
-        invocation,
-        timeoutMs: invocation.timeoutMs,
-        ...(sensitiveValues.length > 0 ? { sensitiveValues } : {}),
-        ...(signal ? { signal } : {}),
-      });
-      if (!outcome.ok) {
-        throw new Error(outcome.error || `Verification engine "${invocation.engine}" failed.`);
-      }
-      return outcome.text ?? "";
-    };
-  }
-  // The llm judge's ONE call, shaped as a {@link UnitDispatcher} so this branch
-  // states its redaction through the SAME {@link withDispatchRedaction} contract
-  // the agent branch above uses — including the throw, which a transport error
-  // takes and which becomes the blocked step's notes (`judgeFailure` in
-  // step-work.ts).
-  //
-  // Inline chatCompletion rather than the injected unit dispatcher ON PURPOSE:
-  // the manual completion path (`runtime/runs.ts`) builds an llm judge with no
-  // dispatcher, and a static runs → native-executor edge would close an import
-  // cycle. The materialization itself is the shared {@link materializeFrozenLlm},
-  // so the two llm dispatch paths cannot drift.
-  const dispatch = withDispatchRedaction(async (request) => {
-    const { chatCompletion } = await import("../../llm/client");
-    const text = await chatCompletion(
-      materializeFrozenLlm(engine, invocation),
-      [
-        { role: "system", content: request.systemPrompt ?? "" },
-        { role: "user", content: request.prompt },
-      ],
-      {
-        timeoutMs: request.timeoutMs,
-        ...(signal ? { signal } : {}),
-      },
+  if (engine.kind === "agent" && !dispatcher) {
+    throw new ConfigError(
+      `Frozen agent gate engine "${invocation.engine}" has no unit dispatcher.`,
+      "INVALID_CONFIG_FILE",
     );
-    return { ok: true, text };
-  });
+  }
+  const fallbackEngine =
+    engine.kind === "agent" && engine.fallbackLlmEngine ? plan.execution.engines[engine.fallbackLlmEngine] : undefined;
+  const fallback = fallbackEngine?.kind === "llm" ? fallbackEngine : undefined;
+  const dispatch = withDispatchRedaction(dispatcher ?? dispatchFrozenWorkflowExecution);
   return async ({ system, user }, identity) => {
     const id = dispatchIdentity(owner, identity);
-    // An llm judge's only secret is its own credential, which
-    // `materializeFrozenLlm` resolves out of `process.env` inside the dispatch
-    // below — so the set is collected here, per dispatch, and cannot predate the
-    // value the call actually authenticates with.
-    const sensitiveValues = collectWorkflowDispatchSensitiveValues({ engine }, undefined);
-    const outcome = await dispatch({
+    const request = {
       runId: id.runId,
       stepId: id.stepId,
       unitId: id.unitId,
@@ -168,11 +118,29 @@ export function frozenSummaryJudge(
       prompt: user,
       systemPrompt: system,
       engine,
+      ...(fallback ? { fallbackEngine: fallback } : {}),
       invocation,
       timeoutMs: invocation.timeoutMs,
-      ...(sensitiveValues.length > 0 ? { sensitiveValues } : {}),
       ...(signal ? { signal } : {}),
+    };
+    // Lowering and authorization precede every live credential/passthrough
+    // sample. The injected dispatcher may be a test seam, but it receives the
+    // exact same already-validated request and redaction declaration.
+    const lowered = prepareFrozenWorkflowExecution(request);
+    const sensitiveValues = collectWorkflowDispatchSensitiveValues(
+      { engine, ...(fallback ? { fallbackEngine: fallback } : {}) },
+      undefined,
+    );
+    const outcome = await dispatch({
+      ...request,
+      ...(sensitiveValues.length > 0 ? { sensitiveValues } : {}),
     });
-    return outcome.text;
+    // Only the common lowerer's own sanitized notices are loggable here. An
+    // injected dispatcher is not trusted to supply prompt/body-free messages.
+    warnLoweringNotices(lowered.notices);
+    if (!outcome.ok) {
+      throw new Error(outcome.error || `Verification engine "${invocation.engine}" failed.`);
+    }
+    return outcome.text ?? "";
   };
 }

@@ -45,6 +45,7 @@ import unitPreambleTemplate from "../../assets/prompts/workflow-unit-preamble.md
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { type WorkflowRunUnitRow, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
 import { canonicalJson as canonicalJsonString } from "../ir/plan-hash";
 import type {
@@ -98,6 +99,8 @@ export interface UnitOutcome {
   failureReason?: string;
   error?: string;
   tokens?: number;
+  /** Live lowering diagnostics; intentionally excluded from durable result_json/evidence until WP7. */
+  notices?: readonly Readonly<LoweringNotice>[];
   /**
    * Harness-native session id revealed during dispatch (last one wins across
    * structured-output retries). Persisted on the unit row by `finishUnit`.

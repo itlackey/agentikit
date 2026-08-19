@@ -4,10 +4,12 @@
 
 import { describe, expect, test } from "bun:test";
 import { ConfigError } from "../../src/core/errors";
+import { _setWarnSinkForTests } from "../../src/core/warn";
 import { _setChatCompletionForTests, type ChatCompletionConfig, type ChatMessage } from "../../src/llm/client";
 import { frozenSummaryJudge } from "../../src/workflows/exec/frozen-judge";
 import type { UnitDispatchRequest } from "../../src/workflows/exec/native-executor";
 import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
+import { overrideSeam } from "../_helpers/seams";
 
 const OWNER = { runId: "11111111-1111-4111-8111-111111111111", stepId: "review" };
 
@@ -83,6 +85,35 @@ async function withEnv(name: string, value: string, fn: () => Promise<void>): Pr
 }
 
 describe("frozen workflow judge", () => {
+  test("emits each safe lowering notice once without changing the verdict", async () => {
+    const secretPrompt = "judge user containing sk-never-log-this";
+    const verdict = '{"complete":true,"missing":[]}';
+    const warned: string[] = [];
+    overrideSeam(_setWarnSinkForTests, (level, args) => {
+      if (level === "warn") warned.push(args.map(String).join(" "));
+    });
+    const untrustedNotice = {
+      code: "conversation-prompt-composed" as const,
+      severity: "warning" as const,
+      adapter: "codex",
+      field: "conversation",
+      message: `provider body echoed ${secretPrompt}`,
+    };
+    const judge = frozenSummaryJudge(
+      agentPlan(),
+      { engine: "reviewer", model: null, timeoutMs: null },
+      undefined,
+      async () => ({ ok: true, text: verdict, notices: [untrustedNotice] }),
+      OWNER,
+    );
+
+    expect(await judge?.({ system: "judge system", user: secretPrompt })).toBe(verdict);
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("conversation-prompt-composed");
+    expect(warned[0]).not.toContain(secretPrompt);
+    expect(warned[0]).not.toContain("sk-never-log-this");
+  });
+
   test("dispatches an agent judge from its frozen snapshot with separated prompts", async () => {
     const invocation = { engine: "reviewer", model: "exact-model", timeoutMs: 1234 };
     let request: UnitDispatchRequest | undefined;
@@ -351,7 +382,7 @@ describe("frozen llm judge redaction states the same contract as the agent branc
     });
   });
 
-  test("an error carrying no secret is rethrown as ITSELF, so callers keep branching on its type", async () => {
+  test("a non-secret transport error uses the uniform failed-result envelope without altering its message", async () => {
     const name = "WORKFLOW_JUDGE_LLM_KEY";
     const judge = frozenSummaryJudge(llmPlan([name]), invocation, undefined, undefined, OWNER);
     const thrown = new ConfigError("engine 'grader' is unavailable", "INVALID_CONFIG_FILE");
@@ -365,7 +396,9 @@ describe("frozen llm judge redaction states the same contract as the agent branc
             () => undefined,
             (err: unknown) => err,
           );
-          expect(caught).toBe(thrown);
+          expect(caught).toBeInstanceOf(Error);
+          expect(caught).not.toBe(thrown);
+          expect((caught as Error).message).toBe(thrown.message);
         },
       );
     });

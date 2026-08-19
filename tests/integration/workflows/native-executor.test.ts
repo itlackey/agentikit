@@ -17,7 +17,6 @@ import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow
 import {
   buildAgentDispatchRequest,
   executeStepPlan as executeFrozenStepPlan,
-  llmFailureReasonFor,
   type StepExecutionContext,
   type StepExecutionResult,
   type UnitDispatchRequest,
@@ -26,7 +25,6 @@ import {
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { computeStepWorkList } from "../../../src/workflows/exec/step-work";
 import type { FrozenAgentEngine, IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
-import { PROGRAM_RETRY_REASONS } from "../../../src/workflows/program/schema";
 import { completeWorkflowStep, getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 import { makeSandboxDir, withEnv, withMockedFetch, writeSandboxConfig } from "../../_helpers/sandbox";
 import { withSeam } from "../../_helpers/seams";
@@ -569,6 +567,63 @@ describe("executeStepPlan — structured output", () => {
     expect(feedbacks[0]).toBeUndefined();
     expect(feedbacks[1]).toContain("fact");
     expect(result.units[0]!.result).toEqual({ fact: "fixed" });
+  });
+
+  test("aggregates lowering notices across corrective retries without persisting them in result_json or evidence", async () => {
+    seedRun({ steps: [{ id: "extract", title: "Extract facts" }] });
+    const conversationNotice = {
+      code: "conversation-prompt-composed" as const,
+      severity: "warning" as const,
+      adapter: "codex",
+      field: "conversation",
+      message: "conversation was composed safely",
+    };
+    const schemaNotice = {
+      code: "untranslated-field" as const,
+      severity: "warning" as const,
+      adapter: "codex",
+      field: "outputSchema",
+      message: "schema was not translated",
+    };
+    let call = 0;
+    const frozen = plan(SCHEMA_WF);
+    useFrozenPlan(frozen);
+    const stepPlan = frozen.steps[0]!;
+    const result = await executeStepPlan(stepPlan, {
+      runId: RUN_ID,
+      workflowRef: "workflows/demo",
+      params: {},
+      evidence: {},
+      dispatcher: async () => {
+        call++;
+        return call === 1
+          ? { ok: true, text: '{"wrong":true}', notices: [conversationNotice] }
+          : {
+              ok: true,
+              text: '{"fact":"fixed"}',
+              notices: [conversationNotice, schemaNotice],
+            };
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.units[0]!.notices).toEqual([conversationNotice, schemaNotice]);
+    expect(JSON.stringify(result.evidence)).not.toContain("notices");
+    await completeWorkflowStep({
+      runId: RUN_ID,
+      stepId: "extract",
+      status: "completed",
+      evidence: result.evidence,
+      summary: result.summary,
+      summaryJudge: null,
+    });
+    await withWorkflowRunsRepo((repo) => {
+      const unit = repo.getUnitsForStep(RUN_ID, "extract")[0];
+      expect(unit?.result_json).toBe('{"fact":"fixed"}');
+      expect(unit?.result_json).not.toContain("notices");
+      const step = repo.getStep(RUN_ID, "extract");
+      expect(step?.evidence_json).not.toContain("notices");
+    });
   });
 
   test("persistent schema violation records a validation failure", async () => {
@@ -2068,32 +2123,7 @@ Branch c2.
   });
 });
 
-describe("defaultUnitDispatcher — llm failures map into the retry taxonomy (peer review)", () => {
-  test("llmFailureReasonFor maps every LlmCallErrorCode to a reason retry.on accepts", () => {
-    expect(llmFailureReasonFor("aborted")).toBe("aborted");
-    expect(llmFailureReasonFor("timeout")).toBe("timeout");
-    expect(llmFailureReasonFor("rate_limited")).toBe("llm_rate_limit");
-    expect(llmFailureReasonFor("parse_error")).toBe("parse_error");
-    expect(llmFailureReasonFor("provider_html_error")).toBe("parse_error");
-    expect(llmFailureReasonFor("network_error")).toBe("spawn_failed");
-    expect(llmFailureReasonFor("provider_error")).toBe("spawn_failed");
-    // Closed loop with the program parser: every mapped value is a reason the
-    // parser accepts in `retry.on` — an out-of-taxonomy value ("llm_error")
-    // would make the declared failure policy dead for the whole llm runner.
-    const codes = [
-      "aborted",
-      "timeout",
-      "rate_limited",
-      "parse_error",
-      "provider_html_error",
-      "network_error",
-      "provider_error",
-    ] as const;
-    for (const code of codes) {
-      expect(PROGRAM_RETRY_REASONS).toContain(llmFailureReasonFor(code));
-    }
-  });
-
+describe("defaultUnitDispatcher — llm failures preserve the retry taxonomy (peer review)", () => {
   const LLM_RETRY_WF = `---
 type: workflow
 defaults:
@@ -2222,12 +2252,13 @@ describe("buildAgentDispatchRequest — schema reaches the harness structured-ou
     expect("schema" in noSchema).toBe(false);
   });
 
-  test("model is threaded through raw so the builder resolves it per-harness", () => {
+  test("the frozen exact model reaches the harness without alias reinterpretation", () => {
     const req = buildAgentDispatchRequest(
       { ...schemaRequest(), invocation: { engine: "harness", model: "fast", timeoutMs: null } },
       "judge it",
     );
     expect(req.model).toBe("fast");
+    expect(req.modelIsExact).toBe(true);
   });
 
   test("codex → native --output-schema <file> (native-schema tier)", () => {

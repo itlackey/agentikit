@@ -124,9 +124,9 @@
  *
  * Layering (see the plan's *Reconciliation* section):
  *   - Dispatch goes through ONE injected {@link UnitDispatcher} seam. The
- *     default dispatcher composes the EXISTING substrate — `executeRunner`
- *     (agent/sdk) and `chatCompletion` (llm, lazily imported so the engine
- *     stays offline-capable until a workflow actually declares an llm unit).
+ *     default dispatcher adapts the frozen snapshot into the common resolved
+ *     request, lowers it through the registered harness/direct-LLM adapter,
+ *     and reaches transport only through the central lowered-dispatch seam.
  *   - This module NEVER writes step rows: advancing the gated spine is the
  *     engine loop's job (`run-workflow.ts`) via `completeWorkflowStep`.
  */
@@ -141,7 +141,7 @@ import {
   withWorkflowRunsConnection,
   withWorkflowRunsRepo,
 } from "../../storage/repositories/workflow-runs-repository";
-import type { FrozenEngineSnapshot, IrBudget, IrInvocation, IrStepPlan } from "../ir/schema";
+import type { FrozenEngineSnapshot, IrBudget, IrStepPlan } from "../ir/schema";
 import { WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
 // The ONE dispatch redaction contract, shared with the gate-judge path
 // (exec/frozen-judge.ts). Consumers import the leaf directly — this module is
@@ -166,7 +166,8 @@ import {
   unitOutcomeFromRow,
 } from "./step-work";
 import {
-  materializeFrozenLlm,
+  dispatchFrozenWorkflowExecution,
+  prepareFrozenWorkflowExecution,
   type UnitDispatcher,
   type UnitDispatchRequest,
   type UnitDispatchResult,
@@ -577,14 +578,6 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
     worktreeBase = base;
   }
 
-  // The values that must never survive into the journal. Collected once per
-  // step, not once per unit: the frozen engine and its SDK fallback are
-  // resolved from the step template and handed unchanged to every unit, and
-  // `env` is step-wide, so a fan-out was re-scanning process.env — and
-  // re-inspecting every passthrough value — once per unit, including for units
-  // that go on to reuse a journaled row and dispatch nothing at all.
-  const sensitiveValues = willDispatch && workUnits[0] ? collectWorkflowDispatchSensitiveValues(workUnits[0], env) : [];
-
   // Budget ceilings + lifetime-cap accounting, and the budget-chained abort
   // signal they trip. Extracted verbatim (behavior-identical) — see
   // {@link openDispatchBudget}.
@@ -616,7 +609,6 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
           signal,
           dispatcher,
           reuse: reuseDecisions[index]!,
-          sensitiveValues,
           pendingWorktreeCleanups,
           budget,
         }),
@@ -723,11 +715,6 @@ interface RunUnitInput {
    * gate that consumes the same array — never re-derived here.
    */
   reuse: UnitReuseDecision;
-  /**
-   * The step's sensitive values, collected once (step-constant — see the
-   * collection site in {@link executeStepPlanInConnection}).
-   */
-  sensitiveValues: string[];
   /** The step's worktree-removal barrier — see {@link JournaledAttemptInput}. */
   pendingWorktreeCleanups: Array<Promise<void>>;
   /** Shared lifetime-cap budget; consumed once per actual dispatch attempt. */
@@ -750,8 +737,6 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
   // unit id by computeStepWorkList: a retry re-dispatches the SAME input, the
   // `~r<n>` suffix is journal bookkeeping only.
   const { prompt, inputHash } = workUnit;
-  const sensitiveValues = input.sensitiveValues;
-
   const request: UnitDispatchRequest = {
     runId: ctx.runId,
     stepId: plan.stepId,
@@ -772,7 +757,6 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
     timeoutMs: workUnit.timeoutMs,
     ...(workUnit.schema ? { schema: workUnit.schema } : {}),
     ...(env ? { env } : {}),
-    ...(sensitiveValues.length > 0 ? { sensitiveValues } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   };
 
@@ -1010,7 +994,13 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
     metadata: { runId: ctx.runId, stepId: plan.stepId, unitId: attemptId },
   });
 
-  const outcome = redactUnitOutcome(await dispatchUnit(request, dispatcher), request.sensitiveValues ?? []);
+  const dispatched = await dispatchUnit(request, dispatcher);
+  // Credential and passthrough values are intentionally sampled only AFTER
+  // the default dispatcher has authorized/lowered the frozen request and
+  // materialized credentials at its terminal dispatch boundary. Custom test
+  // dispatchers receive the same post-dispatch journal scrub.
+  const sensitiveValues = collectWorkflowDispatchSensitiveValues(request, request.env);
+  const outcome = redactUnitOutcome(dispatched, sensitiveValues);
 
   const finishedAt = new Date().toISOString();
   // A dispatched unit's outcome is NEVER silently discarded. The single-driver
@@ -1177,6 +1167,7 @@ class UnitTransportError extends Error {
 async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispatcher): Promise<UnitOutcome> {
   let tokens = 0;
   let sawUsage = false;
+  const loweringNotices = new Map<string, NonNullable<UnitDispatchResult["notices"]>[number]>();
   // Harness-native session id revealed by dispatch (P2). Captured across
   // structured-output retries (last one wins) so it survives into the
   // UnitOutcome and gets journaled on the unit row by finishUnit — the seam's
@@ -1189,6 +1180,12 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
       tokens +=
         (result.usage.inputTokens ?? 0) + (result.usage.outputTokens ?? 0) + (result.usage.reasoningTokens ?? 0);
     }
+    for (const notice of result.notices ?? []) {
+      loweringNotices.set(
+        JSON.stringify([notice.code, notice.severity, notice.adapter, notice.field, notice.message]),
+        notice,
+      );
+    }
     // Capture before the ok-check: a failed attempt can still have configured
     // a session (e.g. codex `session_configured` then a tool crash).
     if (result.sessionId !== undefined) sessionId = result.sessionId;
@@ -1198,6 +1195,7 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
   const captured = (): Partial<UnitOutcome> => ({
     ...(sawUsage ? { tokens } : {}),
     ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(loweringNotices.size > 0 ? { notices: [...loweringNotices.values()] } : {}),
   });
 
   try {
@@ -1293,15 +1291,6 @@ async function resolveEnvBindings(refs: string[]): Promise<Record<string, string
 // ── Default dispatcher (production substrate) ───────────────────────────────
 
 /**
- * Dispatch through akm's existing execution substrate:
- *   llm   → `chatCompletion` on the profile/default LLM connection
- *   agent → `executeRunner` → `runAgent` (per-harness AgentCommandBuilder)
- *   sdk   → `executeRunner` → `runOpencodeSdk`
- *
- * Every v3 invocation names a frozen engine; no live profile/default fallback
- * is consulted during dispatch.
- */
-/**
  * Build the platform-agnostic {@link import("../../integrations/agent/builder-shared").AgentDispatchRequest}
  * for an agent (CLI) unit from the resolved dispatch request and its final
  * (feedback-augmented) prompt.
@@ -1317,24 +1306,25 @@ async function resolveEnvBindings(refs: string[]): Promise<Record<string, string
  * Without the schema the argv is byte-identical to the pre-fix plain-prompt
  * shape. The engine's post-hoc `runStructured` validation runs regardless — the
  * harness path constrains/hints, the engine still verifies (constrained output
- * is trusted but verified). The `model` is passed raw so the builder resolves
- * aliases per-harness. Only `prompt` (with any gate feedback already folded in),
- * `model`, and `schema` are engine-derived; `systemPrompt`/`tools`/`cwd` come
- * from the profile/asset, not the workflow unit.
+ * is trusted but verified). The frozen invocation's model is already exact, so
+ * the common lowerer marks it `modelIsExact` before any harness builder sees it.
  */
 export function buildAgentDispatchRequest(
   request: UnitDispatchRequest,
   prompt: string,
 ): import("../../integrations/agent/builder-shared").AgentDispatchRequest {
-  return {
-    prompt,
-    ...(request.systemPrompt ? { systemPrompt: request.systemPrompt } : {}),
-    ...(request.invocation?.model ? { model: request.invocation.model } : {}),
-    ...(request.invocation?.model ? { modelIsExact: true } : {}),
-    ...(request.schema ? { schema: request.schema } : {}),
-  };
+  const lowered = prepareFrozenWorkflowExecution(request, prompt);
+  if (!("dispatch" in lowered)) {
+    throw new TypeError("an agent dispatch request requires a frozen agent or sdk engine");
+  }
+  return lowered.dispatch;
 }
 
+/**
+ * Dispatch a frozen engine through the common prepare → lower → dispatch seam.
+ * No live profile/default/model map is consulted, and credentials remain
+ * symbolic until the final dispatch boundary.
+ */
 export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) => {
   // `exec` units are dispatched FIRST and separately: they name no engine, so
   // none of the engine-resolution below applies. `feedback` is deliberately
@@ -1366,213 +1356,8 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
       error: `unit "${request.unitId}" has neither a frozen engine snapshot nor an exec command to dispatch.`,
     };
   }
-  const engineRequest = request as UnitDispatchRequest & {
-    engine: FrozenEngineSnapshot;
-    invocation: IrInvocation;
-  };
-  const prompt = feedback ? `${request.prompt}\n\n${feedback}` : request.prompt;
-  const resolved = frozenUnitRunner(engineRequest);
-
-  // `env` bindings can only reach a child process. The agent (CLI) runner
-  // spawns one per call, and the sdk runner now injects them for real via the
-  // env-keyed opencode server registry (sdk-runner.ts module doc, open seam
-  // decision 1 resolved in R2) — but the llm runner has no child at all, so
-  // it still fails loudly: an audit event claiming an injection that never
-  // reached the unit would be a lie.
-  if (request.env && Object.keys(request.env).length > 0 && resolved.kind === "llm") {
-    return {
-      ok: false,
-      text: "",
-      failureReason: "env_unsupported",
-      error:
-        `unit "${request.unitId}" declares env bindings, which require a child process (agent or sdk runner) — ` +
-        `the "llm" runner cannot inject a per-unit child environment.`,
-    };
-  }
-
-  // Same shape for worktree isolation resolved onto llm through `inherit`:
-  // the executor already rejects an EXPLICIT llm+isolation pairing before
-  // dispatch, but an inherit unit only reveals its runner here.
-  if (request.cwd && resolved.kind === "llm") {
-    return {
-      ok: false,
-      text: "",
-      failureReason: "isolation_unsupported",
-      error:
-        `unit "${request.unitId}" declares isolation: worktree but resolved to the "llm" runner, ` +
-        `which has no working directory to isolate. Use the agent or sdk runner for isolated units.`,
-    };
-  }
-
-  if (resolved.kind === "llm") {
-    const { chatCompletion, LlmCallError } = await import("../../llm/client.js");
-    const connection = resolved.connection;
-    try {
-      const messages = request.systemPrompt
-        ? [
-            { role: "system" as const, content: request.systemPrompt },
-            { role: "user" as const, content: prompt },
-          ]
-        : [{ role: "user" as const, content: prompt }];
-      const text = await chatCompletion(connection, messages, {
-        timeoutMs: request.timeoutMs,
-        ...(request.signal ? { signal: request.signal } : {}),
-        // Native structured output where the connection supports it; the
-        // executor's subset validator still runs downstream either way.
-        ...(request.schema ? { responseSchema: request.schema } : {}),
-      });
-      return { ok: true, text };
-    } catch (err) {
-      // Map typed LlmCallError codes into the persisted AgentFailureReason
-      // taxonomy — the vocabulary `retry.on` is validated against (program
-      // schema PROGRAM_RETRY_REASONS) and the journal's failure_reason column
-      // speaks. A collapsed out-of-taxonomy value ("llm_error") made the
-      // declared failure policy dead for the entire llm runner.
-      const failureReason = err instanceof LlmCallError ? llmFailureReasonFor(err.code) : ("dispatch_error" as const);
-      return { ok: false, text: "", failureReason, error: message(err) };
-    }
-  }
-
-  const { executeRunner } = await import("../../integrations/agent/runner-dispatch.js");
-  const profile = request.invocation.model
-    ? { ...resolved.profile, model: request.invocation.model, modelIsExact: true }
-    : resolved.profile;
-  const result = await executeRunner(
-    resolved.kind === "sdk"
-      ? {
-          kind: "sdk",
-          profile,
-          ...(resolved.fallbackConnection ? { fallbackConnection: resolved.fallbackConnection } : {}),
-        }
-      : { kind: "agent", profile },
-    prompt,
-    {
-      stdio: "captured",
-      parseOutput: "text",
-      timeoutMs: request.timeoutMs,
-      ...(request.env ? { env: request.env } : {}),
-      // Worktree isolation: the unit's fresh checkout is the child's cwd —
-      // runAgent spawns there; the sdk runner scopes the session to it.
-      ...(request.cwd ? { cwd: request.cwd } : {}),
-      ...(request.signal ? { signal: request.signal } : {}),
-      // Route CLI dispatch through the platform AgentCommandBuilder so model
-      // aliases resolve per-harness (P0.5 model routing) AND the unit's output
-      // schema reaches the harness's structured-output path (see
-      // buildAgentDispatchRequest).
-      ...(resolved.kind === "agent" ? { dispatch: buildAgentDispatchRequest(request, prompt) } : {}),
-    },
-  );
-
-  // Harness result extraction (P2, plan §"The adapter contract" step 3):
-  // when the profile's harness declares a `resultExtractor`, normalize the
-  // raw stdout into the final answer (+ opportunistic session id) BEFORE the
-  // engine's schema validation / retry loop sees it. Only successful agent
-  // (CLI) runs are normalized — failures keep the raw stdout for diagnostics,
-  // and the default path is byte-identical when no extractor is registered.
-  let text = result.stdout;
-  let sessionId = result.sessionId;
-  if (resolved.kind === "agent" && result.ok) {
-    const extractor = await resolveHarnessExtractor(resolved.profile);
-    if (extractor) {
-      const extraction = extractor(result);
-      text = extraction.text;
-      if (extraction.sessionId !== undefined) sessionId = extraction.sessionId;
-    }
-  }
-
-  return {
-    ok: result.ok,
-    text,
-    ...(sessionId !== undefined ? { sessionId } : {}),
-    ...(result.reason ? { failureReason: result.reason } : {}),
-    ...(result.error ? { error: result.error } : {}),
-    ...(result.usage ? { usage: result.usage } : {}),
-  };
+  return dispatchFrozenWorkflowExecution(request, feedback);
 };
-
-/**
- * Map a typed {@link import("../../llm/client").LlmCallErrorCode} into the
- * persisted `AgentFailureReason` taxonomy (agent/spawn.ts) — the ONLY
- * vocabulary `retry.on` accepts and the journal's `failure_reason` column
- * carries. Exhaustive over the code union (typecheck fails on drift):
- *
- *   - `timeout`        → `timeout`         (wall-clock expiry)
- *   - `aborted`        → `aborted`         (caller/budget cancellation)
- *   - `rate_limited`   → `llm_rate_limit`  (HTTP 429 — the canonical transient)
- *   - `parse_error` / `provider_html_error`
- *                      → `parse_error`     (a response arrived but was not the
- *                                           promised JSON)
- *   - `network_error` / `provider_error`
- *                      → `spawn_failed`    (the backend could not be reached or
- *                                           could not do the work — the LLM
- *                                           analog of failing to start the
- *                                           child; retryable as a transient)
- */
-export function llmFailureReasonFor(
-  code: import("../../llm/client").LlmCallErrorCode,
-): import("../../integrations/agent/spawn").AgentFailureReason {
-  switch (code) {
-    case "aborted":
-      return "aborted";
-    case "timeout":
-      return "timeout";
-    case "rate_limited":
-      return "llm_rate_limit";
-    case "parse_error":
-    case "provider_html_error":
-      return "parse_error";
-    case "network_error":
-    case "provider_error":
-      return "spawn_failed";
-  }
-}
-
-/**
- * Resolve the harness `resultExtractor` from the canonical platform frozen
- * from the named engine. Unknown platforms pass raw stdout through unchanged.
- */
-async function resolveHarnessExtractor(
-  profile: import("../../integrations/agent/profiles").AgentProfile,
-): Promise<import("../../integrations/agent/builder-shared").AgentResultExtractor | undefined> {
-  const { getHarness } = await import("../../integrations/harnesses/index.js");
-  const harness = getHarness(profile.platform ?? profile.name);
-  return harness?.resultExtractor;
-}
-
-type ResolvedUnitRunner =
-  | { kind: "llm"; connection: import("../../core/config/config").LlmConnectionConfig }
-  | {
-      kind: "agent" | "sdk";
-      profile: import("../../integrations/agent/profiles").AgentProfile;
-      fallbackConnection?: import("../../core/config/config").LlmConnectionConfig;
-    };
-
-/** Reconstruct the existing RunnerSpec substrate from the frozen allowlist only. */
-function frozenUnitRunner(
-  request: UnitDispatchRequest & { engine: FrozenEngineSnapshot; invocation: IrInvocation },
-): ResolvedUnitRunner {
-  const snapshot = request.engine;
-  if (snapshot.kind === "llm") {
-    return { kind: "llm", connection: materializeFrozenLlm(snapshot, request.invocation) };
-  }
-  const profile = {
-    name: snapshot.name,
-    platform: snapshot.platform,
-    bin: snapshot.bin,
-    args: snapshot.args,
-    stdio: "captured" as const,
-    envPassthrough: snapshot.envPassthrough,
-    parseOutput: "text" as const,
-    ...(snapshot.workspace ? { workspace: snapshot.workspace } : {}),
-    ...(request.invocation?.model ? { model: request.invocation.model } : {}),
-    ...(request.invocation?.model ? { modelIsExact: true } : {}),
-  };
-  if (snapshot.runnerKind === "agent") return { kind: "agent", profile };
-  // The catalog is supplied transitively by the work-list only for hashing; the
-  // SDK runner receives a frozen fallback copied into the request by its caller.
-  const fallback = request.fallbackEngine ? materializeFrozenLlm(request.fallbackEngine, undefined) : undefined;
-  return { kind: "sdk", profile, ...(fallback ? { fallbackConnection: fallback } : {}) };
-}
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 
