@@ -15,10 +15,12 @@ import { cloneExecutionJsonObject, type ExecutionJsonObject, type ExecutionJsonV
 /**
  * Installed and operator-owned model intent aliases (#802 / WP2).
  *
- * This module deliberately does not replace the legacy dispatch call sites.
- * WP3 owns resolving the common cascade through this boundary. Keeping the
- * loader and expansion API independent lets direct, task, and workflow
- * callers adopt one implementation without hard-coding provider mappings.
+ * The common cascade consumes this loader/expansion API for current runtime
+ * execution callers. A recognized alias expands once into exact model and
+ * inference defaults at its selecting layer; engine lowerers consume that
+ * resolved request and never reinterpret the alias. The independent API also
+ * remains usable by WP6/WP7 source and freeze adapters without hard-coding
+ * provider mappings.
  */
 
 export const MODEL_MAP_VERSION = 1 as const;

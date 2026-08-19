@@ -3,30 +3,18 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * X3 — the ONE dispatch seam for the {@link RunnerSpec} tagged union.
+ * The low-level exhaustive dispatch seam for the {@link RunnerSpec} transport
+ * union (`llm | agent | sdk`). User/model work normally reaches this function
+ * only after `ResolvedExecutionRequestV1` preparation and engine-owned
+ * lowering; `dispatchLoweredExecutionRequest` supplies the direct-LLM handler.
+ * A prompt-free interactive native-agent launch is the narrow payload-free
+ * exception.
  *
- * The improve slice dispatches a `RunnerSpec` (`llm | agent | sdk`) in several
- * places (`reflect.ts`, `proposal/drain.ts`, …). Before this module each site
- * re-rolled the identical 3-arm switch and re-declared its own per-kind test
- * seams (`chat`, `runAgentFn`, `runSdkFn`). `executeRunner` collapses that into
- * one switch + one {@link RunnerSeams} object.
- *
- * Scoping (behavior-preserving):
- *   - The `agent` and `sdk` arms are byte-identical across call sites: invoke
- *     the profile runner (`runAgent` / `runOpencodeSdk`) with the per-call
- *     `RunAgentOptions` the caller passes. Those default runners live here so
- *     callers stop importing `runAgent` / `runOpencodeSdk` for dispatch. The
- *     `opts` (incl. any `timeoutMs`) is constructed by the caller and passed
- *     through unchanged, so each site keeps its exact option set.
- *   - The `llm` arm is irreducibly caller-specific (reflect wraps
- *     `runReflectViaLlm`, which returns reflect's iteration shape; drain wraps a
- *     plain `chatCompletion`). It is therefore a REQUIRED seam — there is no
- *     default `llm` handler — so neither caller's bespoke behavior is changed.
- *   - The `assertNever` exhaustiveness arm is kept so a 4th `RunnerSpec` kind is
- *     a compile error here instead of a silent runtime fall-through.
- *
- * The return type is {@link AgentRunResult} so a later `callStructured` layer
- * (X2) can wrap `executeRunner` without changing this contract.
+ * Agent and SDK arms use the shared profile runners. The LLM arm deliberately
+ * requires a handler because structured callers own their parse/fallback
+ * contract. The `assertNever` arm keeps a fourth transport kind from becoming
+ * an implicit fallthrough. Symbolic LLM and SDK-fallback credentials are
+ * materialized here, at the final call boundary, then scrubbed from the result.
  */
 
 import { assertNever } from "../../core/assert";

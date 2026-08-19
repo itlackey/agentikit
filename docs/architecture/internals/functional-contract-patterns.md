@@ -211,27 +211,38 @@ The purpose of these patterns is to remove concrete duplication and switchboard 
 
 ---
 
-## 3.9 Agent/LLM Runner Dispatch Contract
+## 3.9 Resolved-Request Lowering and Runner Dispatch Contract
 
-**[0.9.0 change]** The shipped seam is not a `AgentRunner` interface —
-it is a single dispatch function, `executeRunner()`
-(`src/integrations/agent/runner-dispatch.ts`), switching exhaustively
-(`assertNever`-checked) over the `RunnerSpec` tagged union
-(`llm | agent | sdk`, `src/integrations/agent/runner.ts`):
+The 0.9.2 engine boundary has two deliberately separate levels:
 
-1. the `agent` and `sdk` arms are byte-identical default runners
-   (`runAgent` / `runOpencodeSdk`) shared by every call site
-2. the `llm` arm is caller-specific by design — there is no default `llm`
-   handler, so each caller (reflect, drain, …) supplies its own
-3. higher-level command flows dispatch a frozen `RunnerSpec` rather than
-   branching on harness name
-4. `resolveEngine()` lowers a config-selected named engine into a
-   `RunnerSpec`; the OpenCode SDK runtime is an internal lowering of an
-   `opencode-sdk` agent engine, not a public engine kind
+1. `prepareResolvedExecution()` / `prepareInlineExecution()` adapt rendered
+   work into the common cascade and produce an authorized, branded
+   `ResolvedExecutionRequestV1` with an exact model and inference object.
+2. `lowerResolvedExecutionRequest()` selects an engine-owned lowerer. Agent
+   implementations are derived structurally from `HARNESS_REGISTRY`; direct
+   LLM is the remaining registered lowerer. This registry records executable
+   implementations, not predicted model/provider capabilities.
+3. Each lowerer owns its transport projection and reports stable translated
+   and untranslated field paths. Untranslated selected fields produce
+   structured, secret-free notices and do not prevent optimistic dispatch.
+4. `lowerResolvedExecutionRequestWithRunner()` performs the same projection
+   from already-frozen symbolic runner material without reading live config,
+   aliases, environment variables, credentials, or transports.
+5. `dispatchLoweredExecutionRequest()` is the only authority that accepts a
+   registered lowered request. It delegates to `executeRunner()`, the
+   exhaustive (`assertNever`-checked) low-level switch over `RunnerSpec`
+   (`llm | agent | sdk`).
+6. `executeRunner()` materializes symbolic LLM or SDK-fallback credentials only
+   for the final call and redacts their values from the result. Agent and SDK
+   use the common profile runners; direct LLM supplies the bounded chat handler
+   created by the lowerer.
 
-This keeps the common path simple (one switch, one seam) while keeping the
-irreducibly caller-specific `llm` arm a required parameter instead of a
-shared default.
+The lowerer boundary, rather than `RunnerSpec` alone, is the required seam for
+user/model work. A prompt-free interactive native-agent launch is the narrow
+exception because it carries no command, persona, model, tools, or other model
+payload to lower. Current task-v2 prompt and frozen-workflow adapters use this
+runtime seam; task v3 and the final durable workflow source/IR/resume
+representation remain separate WP6/WP7 work.
 
 ---
 
@@ -254,7 +265,9 @@ Rule:
 (`PathResolver`, `MatchContributor`, `MetadataContributor`,
 `LintContributor`, `ImproveContributor`, `IndexPostProcessor`,
 `AgentRunner`) and were aspirational, not a contract any code followed.
-Trimmed to the five that ship — see the [drift
+Trimmed to the five contributor contracts below. The engine-owned
+`AgentRequestLowerer` is the separate structural boundary documented in
+§3.9, not a revival of the removed generic `AgentRunner`. See the [drift
 register](../specs/0.9.0-docs-code-drift-register.md#q-16--functional-contract-patternsmd-4-aspiration-or-contract)
 if a removed entry needs reviving; add it back only alongside a real
 implementation.

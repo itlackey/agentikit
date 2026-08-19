@@ -31,10 +31,11 @@
  * nothing authored to thread — and a step's unit `env` is scoped to the WORK,
  * not to the verifier. Redaction is unaffected: the sensitive-value set below
  * still covers the judge engine's credential and unsafe passthrough values.
- * Lowering notices are transitional in WP5: units expose a typed live result,
+ * Lowering notices are live execution metadata: units expose a typed result,
  * while judges retain their public string contract and emit only the common
- * lowerer's prompt/body-free notice projection through `warn()`. WP7 owns a
- * versioned durable journal/IR representation.
+ * lowerer's prompt/body-free notice projection through `warn()`. Current
+ * result/evidence journal writers intentionally exclude these diagnostics;
+ * this boundary makes no claim about future persistence ownership.
  *
  * @module workflows/exec/frozen-judge
  */

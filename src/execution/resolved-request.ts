@@ -104,9 +104,12 @@ export interface ResolvedConversationMessage {
 }
 
 /**
- * One versioned dispatch/freeze boundary for direct, task, and workflow callers.
- * WP1 defines this contract; production caller cutover is explicitly owned by
- * WP3, WP4, and WP5 and is not claimed by the presence of this type.
+ * One versioned runtime dispatch boundary for direct, current task, and
+ * workflow adapters. WP3/WP4/WP5 callers now construct and consume this
+ * contract through the common cascade and engine lowerers. Canonical
+ * encoding/decoding is implemented, but task-v3 authoring and WP7's final
+ * source-to-frozen durable workflow IR/resume persistence remain separate
+ * work.
  */
 export interface ResolvedExecutionRequestV1 {
   readonly schemaVersion: typeof RESOLVED_EXECUTION_SCHEMA_VERSION;

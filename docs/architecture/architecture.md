@@ -359,30 +359,80 @@ scripts tell "akm threw unexpectedly" apart from an ordinary `NotFoundError`
 The approved target semantics that connect native agent and command assets to
 this engine boundary are specified in
 [Agent, Command, Engine, and Model Resolution](specs/agent-command-engine-model-design.md).
-That document distinguishes approved behavior from the parts not yet unified
-in 0.9.1; the remainder of this section describes the current implementation.
+The WP2/WP3 model-map and common-cascade path, WP4 command surface, and WP5
+runtime lowering convergence are implemented. WP6 task v3 and WP7's final
+source-to-frozen durable workflow IR/resume representation remain separate
+work; the current frozen workflow adapter described below does not claim that
+source-plan convergence.
 
 Public execution selection uses named `engines`, never profiles. An engine is
 either `kind: "llm"` (an OpenAI-compatible chat-completions connection) or
-`kind: "agent"` (a registered harness platform). `resolveEngine()` lowers the
-selected engine into the internal `RunnerSpec` tagged union; the SDK runtime is
-an internal lowering of an `opencode-sdk` agent engine, not a public engine kind.
-`resolveLlmEngineUse()` selects and overlays one LLM engine without materializing
-its symbolic credential until dispatch.
+`kind: "agent"` (a registered harness platform). The SDK runtime is an
+internal transport kind for an `opencode-sdk` agent engine, not a public engine
+kind.
 
-`executeRunner()` is the sole exhaustive switch over `RunnerSpec`. Callers pass
-their own LLM handler for the LLM arm; agent and SDK arms use the harness runner.
-There is no generic `callAi` adapter: LLM-only processes call the bounded
-`chatCompletion()` client with their frozen connection, while mixed runner
-surfaces dispatch a frozen `RunnerSpec` through `executeRunner()`.
-An explicit missing or incompatible engine is an error and never falls through to
-another configured engine. Workflow v3 plans freeze the configured workflow cap,
-exact models, symbolic credentials, selected LLM-engine concurrency, and effective
-timeout. Dispatch uses the minimum of map width, frozen workflow cap, frozen
-LLM-engine cap, and the current host's CPU-derived safety cap.
-Timeout authority lives on each frozen invocation, not in engine catalog entries;
-an SDK invocation still derives its default timeout from its fallback LLM engine
-when the SDK engine does not set one.
+Current non-interactive execution follows this common shape:
+
+```text
+adapter-rendered or anonymous work
+  -> prepareResolvedExecution / prepareInlineExecution
+  -> planExecutionCascade
+  -> authorized ResolvedExecutionRequestV1 with exact model/inference
+  -> lowerResolvedExecutionRequest
+  -> dispatchLoweredExecutionRequest
+  -> executeRunner -> agent CLI, OpenCode SDK, or direct LLM transport
+```
+
+The cascade applies installation -> selected engine -> selected agent ->
+selected command -> invocation defaults -> current invocation, preserving
+omitted, explicit `null`, zero, and empty values. A recognized model-map alias
+expands as defaults at the layer that selected it; explicit sibling and nearer
+fields then win. The request records the exact final model ID. Lowering calls
+`resolveEngineTransportMaterial()` only for symbolic transport/profile
+material and projects that request-owned exact model into it; aliases are not
+resolved again. Tool selection uses the same nearest-explicit rule, while
+operator authorization remains a separate pre-lowering decision.
+
+Agent lowerers are a structural implementation registry derived from
+`HARNESS_REGISTRY`: OpenCode, Claude, OpenCode SDK, Codex, Copilot, Pi, Gemini,
+Aider, Amazon Q, and OpenHands each register a lowerer, and direct LLM is the
+remaining lowering arm. This is not a model/provider capability matrix. Each
+lowerer translates what its transport actually implements, returns sorted
+translated/untranslated field paths, emits a stable structured notice for
+every selected field it does not translate, and still dispatches
+optimistically. A provider or harness rejection is a runtime failure; invalid
+configuration and authorization denial remain pre-dispatch failures.
+
+Lowering notices are fixed, secret-free records (`code`, `severity`,
+`adapter`, optional `field`, fixed `message`, and optional safe structured
+`details`). They never copy prompt content, environment values, credential
+values, or provider error bodies. Command, task, improve, proposal, index, and
+current workflow execution surfaces carry these records in live result or
+diagnostic output. Current workflow result/evidence journal writers
+deliberately exclude them; no future persistence ownership is implied here.
+
+LLM and SDK-fallback credentials remain symbolic descriptors in engine
+transport and frozen runner material; secret values never enter the resolved
+request. `executeRunner()` materializes the current value only at final
+dispatch and scrubs it from transport results. The
+`lowerResolvedExecutionRequestWithRunner()` entry point lowers an already
+frozen `RunnerSpec` without consulting live config, model maps, environment
+variables, credentials, or transports; current workflow units/judges and
+structured model-work adapters use that config-free path.
+
+`executeRunner()` remains the sole exhaustive low-level switch over the
+`RunnerSpec` transport union. It is below, not instead of, the resolved-request
+lowering boundary. The only public execution exemption is an explicitly
+prompt-free interactive `akm agent` launch, which has no user/model payload to
+resolve or lower. An explicit missing or incompatible engine is an error and
+never falls through to another configured engine.
+
+The existing task-v2 prompt arm and frozen workflow engine calls use this
+runtime boundary. Task-v3 authoring/migration remains WP6. WP7 still owns the
+final multi-format source compiler and durable common-request IR/resume
+convergence, including removal of its temporary legacy freeze resolver. AKM
+does not support full GitHub Actions semantics or arbitrary remote action
+execution.
 
 ### In-tree LLM helpers (`src/llm/`)
 
@@ -390,18 +440,23 @@ Every helper under `src/llm/` is a **bounded, single-shot, stateless** call.
 Concretely:
 
 - Each public export is either a pure function (`chatCompletion`,
-  `enhanceMetadata`, `splitMemoryIntoAtomicFacts`, `resolveIndexPassLLM`,
+  `enhanceMetadata`, `splitMemoryIntoAtomicFacts`,
+  `resolveIndexPassExecution`, `resolveIndexPassRunner`,
   `parseJsonResponse`, …) or a factory that returns a one-shot client tied to
-  the connection config the caller passes in.
+  the symbolic runner/config the caller passes in.
 - No module under `src/llm/` keeps session, conversation, or response state at
   module scope. The only module-level singleton is the local embedder
   pipeline in `src/llm/embedder.ts`, which is an expensive-to-build but
   stateless model handle (see the comment in that file). It exposes
   `resetLocalEmbedder()` so tests can construct a fresh pipeline.
-- Improve processes are selected through `improve.strategies` and resolve their
-  engine before dispatch. Index and other non-improve consumers use their own
-  documented engine-use sections. See `docs/reference/configuration.md` for canonical
-  paths.
+- `callStructured()` is the common bounded structured-LLM seam: it adapts an
+  already-resolved symbolic runner into an inline resolved request, lowers it,
+  and dispatches without re-reading aliases or credentials. Index callers use
+  `resolveIndexPassExecution()` to freeze the typed `{ runner, notices }`
+  selection once per invocation. `resolveIndexPassRunner()` is its readiness
+  projection, not a second dispatch seam. Improve processes are selected
+  through `improve.strategies`; see `docs/reference/configuration.md` for
+  canonical config paths.
 
 The seam is locked by `tests/architecture/llm-stateless-seam.test.ts`, which
 inspects the module shape of each `src/llm/*` entry — not the source text.
@@ -465,6 +520,11 @@ async execution context; unrelated work and child processes remain excluded.
 | `src/core/parse.ts` | shared JSON parsing: think/fence stripping, balanced-brace extraction |
 | `src/core/concurrent.ts` | bounded concurrency pool (`concurrentMap`, default 1 worker) |
 | `src/core/write-source.ts` | the single write helper (branches on `source.kind`) |
+| `src/execution/resolved-request.ts` | branded, versioned resolved execution request and strict canonical wire form |
+| `src/integrations/agent/execution-preparation.ts` | caller adapter into the common cascade/model-map resolver |
+| `src/integrations/agent/execution-lowering.ts` | optimistic engine lowering, structural lowerer inventory, and lowered dispatch authority |
+| `src/integrations/agent/request-lowering.ts` | shared factory used by harness-owned resolved-request lowerers |
+| `src/integrations/agent/inline-execution.ts` | anonymous-work adapters for live config and already-frozen runner material |
 | `src/sources/provider.ts` | minimal `SourceProvider` interface |
 | `src/sources/providers/` | filesystem / git / website / npm implementations |
 | `src/sources/resolve.ts` | filesystem path resolution for refs |
@@ -496,9 +556,10 @@ async execution context; unrelated work and child processes remain excluded.
 | `src/llm/embedder.ts` | local + remote embedder facade with cached pipeline |
 | `src/integrations/agent/spawn.ts` | agent CLI shell-out entry point (`runAgent`) |
 | `src/integrations/harnesses/opencode-sdk/sdk-runner.ts` | embedded SDK runner selected by an SDK `RunnerSpec` |
-| `src/integrations/agent/runner-dispatch.ts` | exhaustive `RunnerSpec` dispatch to LLM, spawn, or SDK |
+| `src/integrations/agent/runner-dispatch.ts` | low-level exhaustive `RunnerSpec` transport dispatch and dispatch-time credential redaction |
 | `src/integrations/agent/profiles.ts` | internal spawn descriptors used after agent-engine lowering |
-| `src/integrations/agent/engine-resolution.ts` | named engine resolution and `RunnerSpec` lowering |
+| `src/integrations/agent/engine-resolution.ts` | named engine and symbolic transport-material resolution; exact request model projection happens in execution lowering |
+| `src/llm/structured-call.ts` | bounded structured-LLM adapter through the common resolved/lowered execution seam |
 | `src/integrations/agent/detect.ts` | PATH-based agent CLI detection for `akm setup` |
 
 ---

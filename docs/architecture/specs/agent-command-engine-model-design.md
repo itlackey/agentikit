@@ -4,9 +4,11 @@
 
 **Decision date:** 2026-08-18
 
-**Implementation baseline:** AKM 0.9.1 implements parts of this design. AKM
-0.9.2 is the approved coherent-MVP target; see the
-[0.9.2 implementation plan](../../plans/0.9.2-agent-command-workflow-plan.md).
+**Implementation baseline:** The 0.9.2 line implements WP2 model maps, the WP3
+common cascade/authorization boundary, the WP4 command surface, and WP5
+runtime engine lowering convergence. Task v3 remains WP6, and the final
+source-to-frozen durable workflow IR/resume representation remains WP7; see
+the [0.9.2 implementation plan](../../plans/0.9.2-agent-command-workflow-plan.md).
 
 This specification defines how agent personas, command templates, execution
 engines, model mappings, tasks, and workflows interact. It is authoritative
@@ -300,6 +302,23 @@ When an engine has no native system-prompt channel, AKM MUST preserve the
 persona by deterministically composing a clearly delimited persona block into
 the user prompt. It SHOULD emit a lowering notice when it uses this fallback.
 
+The 0.9.2 implementation makes that adapter choice structural. Every registered
+harness contributes a concrete resolved-request lowerer through the harness
+registry, and direct LLM is the remaining registered lowerer. The registry is
+an inventory of implementations, not a table predicting model/provider
+capabilities. Lowerers receive the exact model and inference selected by the
+common cascade; they do not reinterpret aliases. They return stable translated
+and untranslated field paths plus structured notices whose fixed messages and
+metadata contain no prompt, environment value, credential value, or provider
+error body.
+
+LLM and SDK-fallback credentials stay as symbolic descriptors in engine
+transport and frozen runner material; secret values never enter the resolved
+request. Only final runner dispatch reads their current environment values. An
+already-frozen runner uses the config-free lowering entry point, which does not
+consult live config, aliases, environment variables, or credentials before
+dispatch.
+
 ## 8. Native agent selectors
 
 A qualified `agents/...` ref is portable and resolves through AKM. A bare
@@ -434,27 +453,44 @@ GitHub Action package begin in 0.9.3 or later.
 
 ## 13. Implementation status
 
-This document describes the approved design. The 0.9.2 WP4 command surface now
-implements canonical `akm command run`, adapter-rendered command/persona
-loading, strict one-pass `$ARGUMENTS`, and a delegating `akm agent --command`
-compatibility spelling. The remaining convergence work includes:
+This document describes both the approved design and the staged 0.9.2
+implementation boundary. The current line implements:
 
-- prompt tasks may send raw agent files, including frontmatter, as user text
-  instead of selecting a persona;
-- engine/model resolution is duplicated across direct dispatch, tasks, and
-  workflow freezing;
-- configured agent-engine models do not consistently reach every CLI spawn
-  path;
-- built-in model aliases are vendor-oriented and do not yet implement the
-  approved operator-owned starter-map design;
-- tool provenance and engine-kind gates do not yet follow the selection versus
-  authorization and optimistic-lowering rules above; and
-- workflow plans do not yet freeze command targets and persona snapshots under
-  this unified resolver.
+- the installed/operator `models.json` layers and exact alias/profile
+  expansion in the common far-to-near cascade;
+- selection-versus-authorization handling for tools before engine lowering;
+- canonical `akm command run`, adapter-rendered command/persona loading,
+  strict one-pass `$ARGUMENTS`, and the delegating non-interactive
+  `akm agent` compatibility surface;
+- an engine-owned optimistic lowerer for all ten registered harnesses plus
+  direct LLM, with exact selected models, translated/untranslated field
+  inventories, deterministic persona/conversation composition, and
+  secret-free structured notices;
+- runtime adapters for the existing task-v2 prompt arm, improve/proposal model
+  work, current frozen workflow units and judges, index passes, and shared
+  structured LLM calls; and
+- symbolic LLM and SDK-fallback credentials until dispatch, including a
+  config-free path that lowers already-frozen runner material without
+  re-reading live config or aliases.
+
+WP5 is therefore implemented as **runtime lowering convergence**. It does not
+claim the still-separate WP6 task-v3 source schema/migrator, nor WP7's final
+source-to-frozen durable workflow IR and resume-persistence convergence. The
+current workflow adapter lowers its already-frozen engine invocation at run
+time; that is not proof that the source plan froze a complete
+`ResolvedExecutionRequestV1`. Workflow lowering notices are currently live
+result/diagnostic metadata and are intentionally excluded from durable
+result/evidence journal data; this specification does not assign future notice
+persistence to WP7.
+
+GitHub-step-shaped task sources, GitHub-shaped workflow compilation, durable
+common-request freeze/resume, and their migrations remain WP6/WP7 work. Full
+GitHub Actions semantics, remote action acquisition, and the public GitHub
+Action package remain unsupported and out of scope.
 
 Implementation work MUST preserve current public behavior deliberately or
-document a migration. It MUST NOT describe one of these gaps as approved
-semantics merely because it exists in 0.9.1.
+document a migration. It MUST NOT describe a remaining WP6/WP7 gap as approved
+semantics merely because an older task or workflow runtime already exists.
 
 ## 14. Deferred decisions
 

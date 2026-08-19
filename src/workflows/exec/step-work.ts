@@ -99,7 +99,7 @@ export interface UnitOutcome {
   failureReason?: string;
   error?: string;
   tokens?: number;
-  /** Live lowering diagnostics; intentionally excluded from durable result_json/evidence until WP7. */
+  /** Live lowering diagnostics; the current contract intentionally excludes them from durable result_json/evidence. */
   notices?: readonly Readonly<LoweringNotice>[];
   /**
    * Harness-native session id revealed during dispatch (last one wins across
