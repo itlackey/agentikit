@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -15,18 +15,19 @@ import {
 } from "../../core/common";
 import type { SourceConfigEntry } from "../../core/config/config";
 import { ConfigError, UsageError } from "../../core/errors";
-import { getRegistryIndexCacheDir } from "../../core/paths";
 import { warn, warnVerbose } from "../../core/warn";
 import { withFreshnessCache } from "../freshness";
 import { sanitizeString } from "../providers/provider-utils";
+import {
+  getWebsiteCachePaths,
+  normalizeSiteUrl,
+  validateWebsiteInputUrl,
+  validateWebsiteUrl,
+  type WebsiteUrlValidationOptions,
+} from "../website-url";
 import { htmlToMarkdownAndLinks } from "./content-extract";
 import { escapeMarkdownStructure } from "./fetcher-util";
-import {
-  assertResolvedHostAllowed,
-  assertWebsiteRequestUrl,
-  type HostnameResolver,
-  isLoopbackWebsiteHostname,
-} from "./host-guard";
+import { assertResolvedHostAllowed, assertWebsiteRequestUrl } from "./host-guard";
 import { loadWikiSnapshotFetchers } from "./registry";
 import {
   createAllowAllRobotsPolicy,
@@ -128,14 +129,7 @@ export interface FetchSnapshotOptions {
   resolveSecret?: SecretResolveFn;
 }
 
-interface WebsiteValidationOptions {
-  allowPrivateHosts?: boolean;
-  /**
-   * Override the DNS resolver used by the resolve-then-validate SSRF guard.
-   * Defaults to a real `node:dns` lookup; tests inject a stub so no real DNS
-   * ever runs.
-   */
-  resolveHostname?: HostnameResolver;
+interface WebsiteValidationOptions extends WebsiteUrlValidationOptions {
   /**
    * When set, `fetchWebsitePage` re-checks the *final* (post-redirect) URL
    * against this policy and drops the page (warnVerbose, no error) when
@@ -156,19 +150,6 @@ interface WebsiteValidationOptions {
   signal?: AbortSignal;
 }
 
-export function shouldAllowPrivateWebsiteHostsForTests(): boolean {
-  return process.env.BUN_TEST === "1" || process.env.NODE_ENV === "test";
-}
-
-export function shouldAllowPrivateWebsiteUrlForTests(rawUrl: string): boolean {
-  if (!shouldAllowPrivateWebsiteHostsForTests()) return false;
-  try {
-    return isLoopbackWebsiteHostname(new URL(rawUrl).hostname.toLowerCase());
-  } catch {
-    return false;
-  }
-}
-
 function resolveFetcherStashDir(explicitStashDir?: string): string | null {
   if (explicitStashDir) return explicitStashDir;
   try {
@@ -176,20 +157,6 @@ function resolveFetcherStashDir(explicitStashDir?: string): string | null {
   } catch {
     return null;
   }
-}
-
-export function getWebsiteCachePaths(siteUrl: string): {
-  rootDir: string;
-  stashDir: string;
-  manifestPath: string;
-} {
-  const key = createHash("sha256").update(normalizeSiteUrl(siteUrl)).digest("hex").slice(0, 16);
-  const rootDir = path.join(getRegistryIndexCacheDir(), `website-${key}`);
-  return {
-    rootDir,
-    stashDir: path.join(rootDir, "stash"),
-    manifestPath: path.join(rootDir, "manifest.json"),
-  };
 }
 
 export async function ensureWebsiteMirror(
@@ -1230,51 +1197,6 @@ function buildMarkdownSnapshot(page: WebsitePage, slug: string, tags?: string[])
   ].join("\n");
 }
 
-export function validateWebsiteUrl(rawUrl: string, options?: WebsiteValidationOptions): string {
-  return validateWebsiteUrlWithError(rawUrl, ConfigError, options);
-}
-
-export function validateWebsiteInputUrl(rawUrl: string, options?: WebsiteValidationOptions): string {
-  return validateWebsiteUrlWithError(rawUrl, UsageError, options);
-}
-
-function validateWebsiteUrlWithError(
-  rawUrl: string,
-  ErrorType: typeof ConfigError | typeof UsageError,
-  options?: WebsiteValidationOptions,
-): string {
-  if (!rawUrl) {
-    throw new ErrorType("Website provider requires a URL");
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    throw new ErrorType(`Website URL is not valid: "${rawUrl}"`);
-  }
-
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new ErrorType(`Website URL must use http:// or https://, got "${parsed.protocol}" in "${rawUrl}"`);
-  }
-  if (parsed.username || parsed.password) {
-    throw new ErrorType("Website URL must not contain embedded credentials");
-  }
-  assertWebsiteRequestUrl(parsed.toString(), ErrorType, options);
-
-  parsed.hash = "";
-  return normalizeSiteUrl(parsed.toString());
-}
-
-function normalizeSiteUrl(rawUrl: string): string {
-  const parsed = new URL(rawUrl);
-  parsed.hash = "";
-  if (parsed.pathname !== "/" && parsed.pathname.endsWith("/")) {
-    parsed.pathname = parsed.pathname.replace(/\/+$/, "");
-  }
-  return parsed.toString();
-}
-
 function normalizeCrawlUrl(rawUrl: string): string | null {
   try {
     const parsed = new URL(rawUrl);
@@ -1430,5 +1352,13 @@ function safeCodePointToString(value: number): string | undefined {
   }
 }
 
+export {
+  getWebsiteCachePaths,
+  normalizeSiteUrl,
+  shouldAllowPrivateWebsiteHostsForTests,
+  shouldAllowPrivateWebsiteUrlForTests,
+  validateWebsiteInputUrl,
+  validateWebsiteUrl,
+} from "../website-url";
 // Re-exported for existing importers (the SSRF suite pins these entry points).
 export { assertResolvedHostAllowed, type HostnameResolver } from "./host-guard";

@@ -11,6 +11,7 @@ import { bundleComponentConfig, bundlesToSourceEntries, getSources, loadConfig }
 import { resolveGitContentRoot, resolveWritable } from "../../core/write-source";
 import { lockContentRootFor } from "../../integrations/lockfile";
 import { resolveSourceProviderFactory } from "../../sources/provider-factory";
+import { ensureWebsiteMirror } from "../../sources/snapshot-fetchers/website-ingest";
 // Eager side-effect imports so all built-in source providers self-register
 // before resolveEntryContentDir() runs.
 import "../../sources/providers/index";
@@ -380,7 +381,7 @@ export async function ensureSourceCaches(
     }
 
     try {
-      await provider.sync({ force, secrets: options?.secrets });
+      await provider.sync({ force, secrets: options?.secrets, ensureWebsiteMirror });
     } catch (err) {
       warn(
         `Warning: failed to refresh ${provider.kind} source "${provider.name}": ${err instanceof Error ? err.message : String(err)}`,
