@@ -356,6 +356,12 @@ scripts tell "akm threw unexpectedly" apart from an ordinary `NotFoundError`
 
 ## Engine Boundary
 
+The approved target semantics that connect native agent and command assets to
+this engine boundary are specified in
+[Agent, Command, Engine, and Model Resolution](specs/agent-command-engine-model-design.md).
+That document distinguishes approved behavior from the parts not yet unified
+in 0.9.1; the remainder of this section describes the current implementation.
+
 Public execution selection uses named `engines`, never profiles. An engine is
 either `kind: "llm"` (an OpenAI-compatible chat-completions connection) or
 `kind: "agent"` (a registered harness platform). `resolveEngine()` lowers the
