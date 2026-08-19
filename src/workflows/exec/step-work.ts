@@ -632,7 +632,7 @@ function computeUnitInputHash(ctx: StepWorkUnitContext, item: unknown): string {
         inputs: ctx.resolvedInputs,
         params: ctx.input.params,
         dispatch,
-        invocation: ctx.frozenInvocation ?? null,
+        invocation: ctx.frozenInvocation ? invocationDispatchIdentity(ctx.frozenInvocation) : null,
         ...(ctx.frozenExec ? { exec: ctx.frozenExec } : {}),
         schema: ctx.template.schema ?? null,
         env: ctx.template.env ?? null,
@@ -730,13 +730,33 @@ export function unitIdFor(nodeId: string, item: unknown, isFanOut: boolean): str
 function transitiveDispatchSnapshot(
   engine: FrozenEngineSnapshot,
   engines: Record<string, FrozenEngineSnapshot>,
-): FrozenEngineSnapshot | { engine: FrozenEngineSnapshot; fallback: FrozenEngineSnapshot } {
-  if (engine.kind !== "agent" || !engine.fallbackLlmEngine) return engine;
+): unknown {
+  if (engine.kind !== "agent" || !engine.fallbackLlmEngine) return primaryDispatchIdentity(engine);
   const fallback = engines[engine.fallbackLlmEngine];
   if (!fallback || fallback.kind !== "llm") {
     throw new UsageError(`Frozen agent engine "${engine.name}" has no valid LLM fallback snapshot.`);
   }
-  return { engine, fallback };
+  return { engine: primaryDispatchIdentity(engine), fallback };
+}
+
+/** Keep new provenance fields additive for dispatches whose behavior they cannot change. */
+function primaryDispatchIdentity(engine: FrozenEngineSnapshot): unknown {
+  if (engine.kind === "llm") {
+    const { timeoutMs: _fallbackOnlyTimeout, ...legacy } = engine;
+    return legacy;
+  }
+  if (engine.sdkFallbackModelFromRequest !== true) {
+    const { sdkFallbackModelFromRequest: _fallbackOwner, ...legacy } = engine;
+    return legacy;
+  }
+  return engine;
+}
+
+/** A false presence bit reproduces the pre-field invocation identity exactly. */
+function invocationDispatchIdentity(invocation: IrInvocation): unknown {
+  if (invocation.modelPresent === true) return invocation;
+  const { modelPresent: _modelPresence, ...legacy } = invocation;
+  return legacy;
 }
 
 // ── Step outputs + reducers + typed artifacts ────────────────────────────────

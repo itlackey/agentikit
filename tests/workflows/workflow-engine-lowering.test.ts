@@ -27,6 +27,7 @@ const ENGINE: FrozenLlmEngine = {
   provider: "openai-compatible",
   endpoint: "https://frozen.invalid/v1/chat/completions",
   model: "base/model",
+  timeoutMs: 600_000,
   temperature: 0.7,
   maxTokens: 512,
   supportsJsonSchema: false,

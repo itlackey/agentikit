@@ -109,21 +109,25 @@ export function compileResolveFreezeWorkflow(
     addSnapshot(config, name, engines);
     const model = exactModel(config, name, engine, layers);
     const timeoutMs = effectiveTimeout(config, engine, layers);
-    // Merge llm overrides REGARDLESS of engine kind so a non-llm engine with
-    // overrides anywhere in its layer stack (unit `llm:` or document
-    // `defaults.llm`) is detected instead of silently dropped. SDK engines'
-    // legitimate LLM *fallback* (`llmEngine`) is a separate mechanism — it
-    // never contributes to `layers`, so it cannot false-positive here.
+    // Merge llm overrides regardless of engine kind so an ordinary agent
+    // cannot silently drop them. An SDK is the intentional exception: its
+    // persisted invocation projects these fields onto fallback transport.
     const llm = mergedLlmOverrides(layers);
-    if (engine.kind !== "llm" && llm !== undefined) {
+    if (engine.kind === "agent" && engine.platform !== "opencode-sdk" && llm !== undefined) {
       throw new ConfigError(
-        `Workflow step "${stepId}" uses engine "${name}", which is an agent engine and cannot receive llm: ` +
-          `overrides — llm: tuning (from the step's unit or defaults.llm) applies only to engines of kind "llm". ` +
-          `Remove the llm: block or select an LLM engine for this step.`,
+        `Workflow step "${stepId}" uses engine "${name}", which is a non-SDK agent engine and cannot receive llm: ` +
+          `overrides — llm: tuning (from the step's unit or defaults.llm) requires an LLM or SDK engine. ` +
+          `Remove the llm: block or select an LLM/SDK engine for this step.`,
         "INVALID_CONFIG_FILE",
       );
     }
-    return { engine: name, model, timeoutMs, ...(llm ? { llm } : {}) };
+    return {
+      engine: name,
+      model,
+      modelPresent: layers.some((layer) => Object.hasOwn(layer, "model")),
+      timeoutMs,
+      ...(llm ? { llm } : {}),
+    };
   };
 
   /**
@@ -322,6 +326,7 @@ function addSnapshot(config: AkmConfig, name: string, target: Record<string, Fro
       kind: "llm",
       endpoint: engine.endpoint,
       model: exactModel(config, name, engine, []) as string,
+      timeoutMs: resolved.timeoutMs,
       concurrency: defaultLlmEngineConcurrency(engine.endpoint, engine.concurrency),
       ...(engine.provider ? { provider: engine.provider } : {}),
       ...(resolved.credential ? { credential: resolved.credential } : {}),
@@ -353,6 +358,7 @@ function addSnapshot(config: AkmConfig, name: string, target: Record<string, Fro
     envPassthrough: [...(builtin?.envPassthrough ?? [])],
     commandBuilder: engine.platform,
     fallbackLlmEngine: fallback,
+    sdkFallbackModelFromRequest: sdk && !Object.hasOwn(engine, "model") && fallback !== null,
   };
   target[name] = snapshot;
 }
@@ -370,6 +376,7 @@ function freezeGateJudge(config: AkmConfig, engines: Record<string, FrozenEngine
   return {
     engine: name,
     model: exactModel(config, name, engine, []),
+    modelPresent: false,
     timeoutMs: effectiveTimeout(config, engine, []),
   };
 }

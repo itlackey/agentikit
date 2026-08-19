@@ -3,16 +3,25 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
+import type { AkmConfig } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
 import { canonicalResolvedExecutionRequest } from "../../src/execution/resolved-request";
+import type { UnresolvedExecutionDefaults } from "../../src/execution/source";
 import { composeConversationFallbackPrompt } from "../../src/integrations/agent/conversation-fallback";
 import {
   dispatchLoweredExecutionRequest,
+  lowerResolvedExecutionRequest,
   lowerResolvedExecutionRequestWithRunner,
 } from "../../src/integrations/agent/execution-lowering";
-import { prepareInlineExecutionWithRunner } from "../../src/integrations/agent/inline-execution";
+import {
+  prepareInlineExecution,
+  prepareInlineExecutionWithRunner,
+} from "../../src/integrations/agent/inline-execution";
 import { prepareFrozenWorkflowExecution, type UnitDispatchRequest } from "../../src/workflows/exec/unit-dispatch";
-import type { FrozenAgentEngine, FrozenLlmEngine } from "../../src/workflows/ir/schema";
+import { canonicalPlanJson, computePlanHash } from "../../src/workflows/ir/plan-hash";
+import type { FrozenAgentEngine, FrozenLlmEngine, IrUnitNode } from "../../src/workflows/ir/schema";
+import { decodeWorkflowPlanV3 } from "../../src/workflows/ir/schema";
+import { freezeWorkflow, WORKFLOW_TEST_CONFIG, workflowDoc } from "../_helpers/workflow";
 
 const PRIMARY = "FROZEN_CRED_PRIMARY";
 const FALLBACK = "FROZEN_CRED_FALLBACK";
@@ -56,6 +65,7 @@ function llmSnapshot(credential?: { names: [string, ...string[]]; required: bool
     provider: "openai-compatible",
     endpoint: "https://example.test/v1/chat/completions",
     model: "base/model",
+    timeoutMs: 600_000,
     concurrency: 1,
     temperature: 0.7,
     maxTokens: 512,
@@ -90,6 +100,175 @@ function llmRequest(engine = llmSnapshot()): UnitDispatchRequest & { engine: Fro
 }
 
 describe("frozen workflow execution preparation", () => {
+  test.each([
+    ["fallback-derived", false, true, true],
+    ["engine-primary", true, true, false],
+    ["no-fallback", false, false, false],
+  ] as const)("keeps real direct/task and frozen-workflow SDK runners byte-exact for %s ownership", (_label, ownsPrimaryModel, hasFallback, fallbackOwnsRequestModel) => {
+    const config = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        sdk: {
+          kind: "agent",
+          platform: "opencode-sdk",
+          ...(hasFallback ? { llmEngine: "fallback" } : {}),
+          ...(ownsPrimaryModel ? { model: "provider/configured-primary" } : {}),
+        },
+        ...(hasFallback
+          ? {
+              fallback: {
+                kind: "llm" as const,
+                provider: "openai-compatible",
+                endpoint: "https://fallback.invalid/v1/chat/completions",
+                model: "provider/configured-fallback",
+                temperature: 0.25,
+                maxTokens: 512,
+                supportsJsonSchema: false,
+                extraParams: { seed: 3, nested: { base: true } },
+                contextLength: 8_192,
+                enableThinking: false,
+                timeoutMs: 12_345,
+              },
+            }
+          : {}),
+      },
+      defaults: { engine: "sdk", ...(hasFallback ? { llmEngine: "fallback" } : {}) },
+    } as unknown as AkmConfig;
+    const plan = freezeWorkflow(workflowDoc([]), "workflows/sdk-parity.md", config);
+    const root = plan.steps[0]?.root as IrUnitNode | undefined;
+    const engine = plan.execution.engines.sdk;
+    const fallbackEngine = plan.execution.engines.fallback;
+    if (
+      !root?.invocation ||
+      engine?.kind !== "agent" ||
+      (hasFallback && fallbackEngine?.kind !== "llm") ||
+      (!hasFallback && fallbackEngine !== undefined)
+    ) {
+      throw new Error("fixture must freeze the expected SDK invocation ownership");
+    }
+    expect(engine.sdkFallbackModelFromRequest).toBe(fallbackOwnsRequestModel);
+    expect(root.invocation.modelPresent).toBe(false);
+    if (fallbackEngine?.kind === "llm") expect(fallbackEngine.timeoutMs).toBe(12_345);
+
+    const modelCases = [
+      ["omitted", undefined],
+      ["string", "provider/operator-model"],
+      ["null", null],
+    ] as const;
+    const inferenceCases = [
+      ["omitted", undefined],
+      ["object", { temperature: 0, extraParams: { nested: { invocation: true } } }],
+    ] as const;
+    const timeoutCases = [
+      ["omitted", undefined],
+      ["zero", 0],
+      ["null", null],
+      ["value", 7_777],
+    ] as const;
+
+    for (const [modelName, model] of modelCases) {
+      for (const [inferenceName, inference] of inferenceCases) {
+        for (const [timeoutName, timeout] of timeoutCases) {
+          const current: Record<string, unknown> = {};
+          if (modelName !== "omitted") current.model = model;
+          if (inferenceName !== "omitted") current.inference = inference;
+          if (timeoutName !== "omitted") current.timeout = timeout;
+          const frozenModel = modelName === "omitted" ? root.invocation.model : model;
+          const frozenTimeout = timeoutName === "omitted" ? root.invocation.timeoutMs : timeout;
+          const invocation = {
+            ...root.invocation,
+            model: frozenModel,
+            modelPresent: modelName !== "omitted",
+            timeoutMs: frozenTimeout,
+            ...(inferenceName !== "omitted" ? { llm: inference } : {}),
+          };
+          const content = `${_label}:${modelName}:${inferenceName}:${timeoutName}`;
+          const frozen = prepareFrozenWorkflowExecution({
+            runId: "11111111-1111-4111-8111-111111111111",
+            stepId: "work",
+            unitId: "work:solo",
+            nodeId: "work",
+            prompt: content,
+            engine,
+            ...(fallbackEngine?.kind === "llm" ? { fallbackEngine } : {}),
+            invocation,
+            timeoutMs: frozenTimeout,
+          });
+
+          for (const invocationKind of ["direct", "task"] as const) {
+            const livePrepared = prepareInlineExecution({
+              content,
+              config,
+              invocationKind,
+              current: current as UnresolvedExecutionDefaults,
+            });
+            const live = lowerResolvedExecutionRequest(livePrepared.request, livePrepared.config);
+            expect(canonicalResolvedExecutionRequest(frozen.request)).toBe(
+              canonicalResolvedExecutionRequest(live.request),
+            );
+            expect(frozen.notices).toEqual(live.notices);
+            expect(frozen.runner).toEqual(live.runner);
+          }
+        }
+      }
+    }
+  });
+
+  test("decodes legacy v3 ownership bytes unchanged and preserves their marker-false dispatch", () => {
+    const config = {
+      ...WORKFLOW_TEST_CONFIG,
+      engines: {
+        sdk: { kind: "agent" as const, platform: "opencode-sdk", llmEngine: "fallback" },
+        fallback: {
+          kind: "llm" as const,
+          endpoint: "https://fallback.invalid/v1/chat/completions",
+          model: "provider/configured-fallback",
+          timeoutMs: 12_345,
+        },
+      },
+      defaults: { engine: "sdk", llmEngine: "fallback" },
+    };
+    const legacy = structuredClone(freezeWorkflow(workflowDoc([]), "workflows/legacy-sdk.md", config));
+    const legacySdk = legacy.execution.engines.sdk;
+    const legacyFallback = legacy.execution.engines.fallback;
+    if (legacySdk?.kind !== "agent" || legacyFallback?.kind !== "llm") throw new Error("fixture must be SDK");
+    delete legacySdk.sdkFallbackModelFromRequest;
+    delete legacyFallback.timeoutMs;
+    const legacyRoot = legacy.steps[0]?.root as IrUnitNode | undefined;
+    if (!legacyRoot?.invocation) throw new Error("fixture must have an invocation");
+    delete legacyRoot.invocation.modelPresent;
+    const bytes = canonicalPlanJson(legacy);
+    const hash = computePlanHash(legacy);
+
+    const decoded = decodeWorkflowPlanV3(JSON.parse(bytes));
+    expect(canonicalPlanJson(decoded)).toBe(bytes);
+    expect(computePlanHash(decoded)).toBe(hash);
+    const root = decoded.steps[0]?.root as IrUnitNode | undefined;
+    const engine = decoded.execution.engines.sdk;
+    const fallbackEngine = decoded.execution.engines.fallback;
+    if (!root?.invocation || engine?.kind !== "agent" || fallbackEngine?.kind !== "llm") {
+      throw new Error("decoded legacy fixture must remain dispatchable");
+    }
+    const lowered = prepareFrozenWorkflowExecution({
+      runId: "11111111-1111-4111-8111-111111111111",
+      stepId: "work",
+      unitId: "work:solo",
+      nodeId: "work",
+      prompt: "Legacy dispatch.",
+      engine,
+      fallbackEngine,
+      invocation: { ...root.invocation, model: "provider/operator-primary" },
+      timeoutMs: root.invocation.timeoutMs,
+    });
+    expect(lowered.runner).toMatchObject({
+      kind: "sdk",
+      profile: { model: "provider/operator-primary" },
+      fallbackConnection: { model: "provider/configured-fallback" },
+      fallbackTimeoutMs: null,
+    });
+  });
+
   test("preserves exact LLM model, inference, schema, runtime, system turn, and command without config", () => {
     const lowered = prepareFrozenWorkflowExecution(llmRequest());
 
@@ -133,6 +312,7 @@ describe("frozen workflow execution preparation", () => {
       envPassthrough: ["PATH"],
       commandBuilder: "codex",
       fallbackLlmEngine: null,
+      sdkFallbackModelFromRequest: false,
     };
     const request: UnitDispatchRequest = {
       runId: "11111111-1111-4111-8111-111111111111",
@@ -182,6 +362,7 @@ describe("frozen workflow execution preparation", () => {
       envPassthrough: [],
       commandBuilder: "opencode-sdk",
       fallbackLlmEngine: "fast",
+      sdkFallbackModelFromRequest: false,
     };
     const request: UnitDispatchRequest = {
       runId: "11111111-1111-4111-8111-111111111111",

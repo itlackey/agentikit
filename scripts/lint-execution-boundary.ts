@@ -664,7 +664,7 @@ function isRuntimeLoaderExpression(
   input: ts.Expression,
   checker: ts.TypeChecker,
   dynamicLoaders: ReadonlySet<ts.Symbol>,
-  dynamicLoaderArrays: ReadonlySet<ts.Symbol> = new Set(),
+  dynamicLoaderArrays: ReadonlyMap<ts.Symbol, ReadonlySet<number>> = new Map(),
 ): boolean {
   const expression = unwrapExpression(input);
   if (ts.isIdentifier(expression)) {
@@ -677,7 +677,16 @@ function isRuntimeLoaderExpression(
     if (ts.isElementAccessExpression(expression)) {
       const array = unwrapExpression(expression.expression);
       const symbol = ts.isIdentifier(array) ? checker.getSymbolAtLocation(array) : undefined;
-      if (symbol && dynamicLoaderArrays.has(symbol)) return true;
+      const loaderIndices = symbol ? dynamicLoaderArrays.get(symbol) : undefined;
+      if (loaderIndices) {
+        const argument = expression.argumentExpression;
+        const index = ts.isNumericLiteral(argument)
+          ? Number(argument.text)
+          : ts.isStringLiteralLike(argument) && /^\d+$/.test(argument.text)
+            ? Number(argument.text)
+            : undefined;
+        if (index === undefined ? loaderIndices.size > 0 : loaderIndices.has(index)) return true;
+      }
     }
     const member = ts.isPropertyAccessExpression(expression)
       ? expression.name.text
@@ -752,10 +761,34 @@ function moduleNamespace(
   const nextSeen = new Set(seen);
   nextSeen.add(canonicalModule);
   const entries = new Map<string, DynamicNamespaceEntry>();
+  const moduleSources = new Set((canonicalModule.declarations ?? []).map((declaration) => declaration.getSourceFile()));
+  const runtimeStarSymbols = new Set<ts.Symbol>();
+  for (const source of moduleSources) {
+    for (const statement of source.statements) {
+      if (
+        !ts.isExportDeclaration(statement) ||
+        statement.isTypeOnly ||
+        statement.exportClause ||
+        !statement.moduleSpecifier
+      ) {
+        continue;
+      }
+      const targetModule = canonicalSymbol(checker, checker.getSymbolAtLocation(statement.moduleSpecifier));
+      if (!targetModule) continue;
+      for (const starExport of checker.getExportsOfModule(targetModule)) {
+        const canonicalStarExport = canonicalSymbol(checker, starExport);
+        if (canonicalStarExport) runtimeStarSymbols.add(canonicalStarExport);
+      }
+    }
+  }
   for (const exported of checker.getExportsOfModule(canonicalModule)) {
     if (!hasRuntimeExport(exported)) continue;
     const canonical = canonicalSymbol(checker, exported);
     if (!canonical) continue;
+    const declaredHere = (exported.declarations ?? []).some((declaration) =>
+      moduleSources.has(declaration.getSourceFile()),
+    );
+    if (!declaredHere && !runtimeStarSymbols.has(canonical)) continue;
     const target = symbols.get(canonical);
     if (target) {
       entries.set(exported.name, target);
@@ -784,7 +817,8 @@ function dynamicModuleLoad(
   input: ts.Expression,
   checker: ts.TypeChecker,
   dynamicLoaders: ReadonlySet<ts.Symbol>,
-  dynamicLoaderArrays: ReadonlySet<ts.Symbol> = new Set(),
+  dynamicLoaderArrays: ReadonlyMap<ts.Symbol, ReadonlySet<number>> = new Map(),
+  seenWrappers: ReadonlySet<PassThroughFunction> = new Set(),
 ): DynamicModuleLoad | undefined {
   const expression = unwrapExpression(input);
   if (!ts.isCallExpression(expression)) return undefined;
@@ -795,6 +829,21 @@ function dynamicModuleLoad(
   const callee = unwrapExpression(expression.expression);
   if (isRuntimeLoaderExpression(callee, checker, dynamicLoaders, dynamicLoaderArrays)) {
     return first ? { call: expression, specifier: first } : undefined;
+  }
+  for (const candidate of passThroughCandidates(callee, checker)) {
+    if (seenWrappers.has(candidate)) continue;
+    const returned = returnedExpression(candidate);
+    if (!returned) continue;
+    const nextSeen = new Set(seenWrappers);
+    nextSeen.add(candidate);
+    const nested = dynamicModuleLoad(returned, checker, dynamicLoaders, dynamicLoaderArrays, nextSeen);
+    if (!nested) continue;
+    const index = parameterIndexForExpression(nested.specifier, candidate, checker);
+    const specifier =
+      index === undefined || index < 0
+        ? undefined
+        : (expression.arguments[index] ?? candidate.parameters[index]?.initializer);
+    if (specifier) return { call: expression, specifier };
   }
   if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) return undefined;
   const member = ts.isPropertyAccessExpression(callee)
@@ -884,7 +933,7 @@ export function analyzeExecutionBoundary(
     const relative = posix(path.relative(options.rootDir, source.fileName));
     if (!relative.startsWith("src/") || source.isDeclarationFile) continue;
     const dynamicLoaders = new Set<ts.Symbol>();
-    const dynamicLoaderArrays = new Set<ts.Symbol>();
+    const dynamicLoaderArrays = new Map<ts.Symbol, Set<number>>();
     const dynamicNamespaces = new Map<ts.Symbol, DynamicNamespace>();
     const dynamicObjectBindings = new Map<ts.ObjectBindingPattern, DynamicNamespace>();
 
@@ -1016,16 +1065,18 @@ export function analyzeExecutionBoundary(
       };
       const addLoaderArray = (identifier: ts.Identifier, expressions: readonly ts.Expression[]): void => {
         const symbol = checker.getSymbolAtLocation(identifier);
-        if (
-          symbol &&
-          expressions.some((expression) =>
-            isRuntimeLoaderExpression(expression, checker, dynamicLoaders, dynamicLoaderArrays),
-          ) &&
-          !dynamicLoaderArrays.has(symbol)
-        ) {
-          dynamicLoaderArrays.add(symbol);
-          changed = true;
+        if (!symbol) return;
+        const current = dynamicLoaderArrays.get(symbol) ?? new Set<number>();
+        for (const [index, expression] of expressions.entries()) {
+          if (
+            isRuntimeLoaderExpression(expression, checker, dynamicLoaders, dynamicLoaderArrays) &&
+            !current.has(index)
+          ) {
+            current.add(index);
+            changed = true;
+          }
         }
+        if (current.size > 0) dynamicLoaderArrays.set(symbol, current);
       };
       const bindPattern = (pattern: ts.BindingName, expression: ts.Expression | undefined): void => {
         if (ts.isIdentifier(pattern)) {
@@ -1139,6 +1190,9 @@ export function analyzeExecutionBoundary(
           const exportedName = staticMemberName(element.propertyName ?? element.name);
           const target = exportedName ? exports.get(exportedName) : undefined;
           if (target && isBoundaryTarget(target)) addReference(references, options.rootDir, source, element, target);
+          if (target && !isBoundaryTarget(target) && ts.isObjectBindingPattern(element.name)) {
+            recordDynamicBinding(element.name, target);
+          }
         }
         return;
       }

@@ -2284,6 +2284,7 @@ describe("buildAgentDispatchRequest — schema reaches the harness structured-ou
     envPassthrough: ["PATH"],
     commandBuilder: "codex",
     fallbackLlmEngine: null,
+    sdkFallbackModelFromRequest: false,
   };
 
   function schemaRequest(): UnitDispatchRequest {

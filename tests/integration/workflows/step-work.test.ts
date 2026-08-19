@@ -76,6 +76,7 @@ const FROZEN_ENGINES: Record<string, FrozenEngineSnapshot> = {
     envPassthrough: [],
     commandBuilder: "opencode-sdk",
     fallbackLlmEngine: "llm",
+    sdkFallbackModelFromRequest: true,
   },
   agent: {
     name: "agent",
@@ -88,12 +89,14 @@ const FROZEN_ENGINES: Record<string, FrozenEngineSnapshot> = {
     envPassthrough: [],
     commandBuilder: "opencode",
     fallbackLlmEngine: null,
+    sdkFallbackModelFromRequest: false,
   },
   llm: {
     name: "llm",
     kind: "llm",
     endpoint: "https://example.test/v1/chat/completions",
     model: "test-model",
+    timeoutMs: 600_000,
     concurrency: 1,
   },
 };

@@ -5,23 +5,22 @@
 /**
  * Bug 7 regression — the freeze-time llm-override guard used to be dead code:
  * `mergedLlmOverrides` was only computed for `kind: "llm"` engines, so the
- * "non-llm engine with llm overrides" branch could never fire and the
- * overrides were silently DROPPED for agent/sdk engines. The guard is now
- * live: llm overrides anywhere in a non-llm engine's layer stack (unit `llm:`
- * or document `defaults.llm`) throw a ConfigError naming the step and engine.
+ * "non-llm engine with llm overrides" branch could never fire. Ordinary
+ * process agents still reject them; SDK engines now preserve them as frozen
+ * fallback inference instead of dropping them.
  */
 
 import { describe, expect, test } from "bun:test";
 import { ConfigError } from "../../src/core/errors";
 import type { IrUnitNode } from "../../src/workflows/ir/schema";
-import { freezeWorkflow, workflowDoc } from "../_helpers/workflow";
+import { freezeWorkflow, WORKFLOW_TEST_CONFIG, workflowDoc } from "../_helpers/workflow";
 
 // WORKFLOW_TEST_CONFIG's default engine is `test-agent` (opencode-sdk, an
 // agent engine with the `test-llm` fallback) — exactly the shape whose llm
 // overrides used to vanish.
 
-describe("bug 7 — llm overrides on a non-llm engine throw at freeze", () => {
-  test("unit-level llm overrides on the (agent) default engine throw a ConfigError naming step and engine", () => {
+describe("bug 7 — llm overrides retain an explicit SDK/agent boundary", () => {
+  test("unit-level llm overrides freeze onto the SDK fallback invocation", () => {
     // Spelled out rather than built from `workflowDoc`: this is the one case
     // that asserts the step NAME, and the shared scaffold hard-codes it.
     const markdown = [
@@ -37,24 +36,32 @@ describe("bug 7 — llm overrides on a non-llm engine throw at freeze", () => {
       "Review.",
       "",
     ].join("\n");
-    let caught: unknown;
-    try {
-      freezeWorkflow(markdown);
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(ConfigError);
-    const message = (caught as ConfigError).message;
-    expect(message).toContain('step "review"');
-    expect(message).toContain('engine "test-agent"');
-    expect(message).toContain("llm:");
-    expect(message).toContain("Remove the llm: block or select an LLM engine");
+    const plan = freezeWorkflow(markdown);
+    const root = plan.steps[0]!.root as IrUnitNode;
+    expect(root.invocation).toMatchObject({
+      engine: "test-agent",
+      model: "test-model",
+      llm: { temperature: 0 },
+    });
+    expect(plan.execution.engines["test-agent"]).toMatchObject({
+      sdkFallbackModelFromRequest: true,
+    });
   });
 
-  test("document defaults.llm with an agent engine anywhere in the stack also throws", () => {
+  test("document defaults.llm on an ordinary agent still throws", () => {
     const markdown = workflowDoc([], undefined, ["defaults: { llm: { temperature: 0.2 } }"]);
-    expect(() => freezeWorkflow(markdown)).toThrow(ConfigError);
-    expect(() => freezeWorkflow(markdown)).toThrow(/agent engine and cannot receive llm/);
+    const config = {
+      ...WORKFLOW_TEST_CONFIG,
+      engines: {
+        ...WORKFLOW_TEST_CONFIG.engines,
+        "plain-agent": { kind: "agent" as const, platform: "codex" },
+      },
+      defaults: { engine: "plain-agent", llmEngine: "test-llm" },
+    };
+    expect(() => freezeWorkflow(markdown, "workflows/plain-agent.md", config)).toThrow(ConfigError);
+    expect(() => freezeWorkflow(markdown, "workflows/plain-agent.md", config)).toThrow(
+      /non-SDK agent engine and cannot receive llm/,
+    );
   });
 
   test("llm overrides on an actual LLM engine freeze into the invocation (no false positive)", () => {
@@ -75,5 +82,6 @@ describe("bug 7 — llm overrides on a non-llm engine throw at freeze", () => {
     expect(root.invocation!.llm).toBeUndefined();
     expect(root.invocation!.model).toBe("test-model"); // resolved via the test-llm fallback
     expect(plan.execution.engines["test-agent"]).toMatchObject({ kind: "agent", fallbackLlmEngine: "test-llm" });
+    expect(plan.execution.engines["test-llm"]).toMatchObject({ timeoutMs: 600_000 });
   });
 });

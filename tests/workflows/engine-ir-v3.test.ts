@@ -49,6 +49,7 @@ function frozenPlan(): WorkflowPlanGraph {
           kind: "llm",
           endpoint: "https://example.test/v1/chat/completions",
           model: "qwen",
+          timeoutMs: 600_000,
           credential: { names: ["FAST_API_KEY"], required: true },
           concurrency: 1,
         },
@@ -220,7 +221,7 @@ describe("workflow engine v3 contracts", () => {
       credential: { names: ["FAST_API_KEY"], required: true },
     });
     expect(frozen.plan.execution?.maxConcurrency).toBe(cpuDerivedUnitConcurrency());
-    expect(frozen.plan.execution?.engines.fast).not.toHaveProperty("timeoutMs");
+    expect(frozen.plan.execution?.engines.fast).toHaveProperty("timeoutMs", 600_000);
     expect(canonicalPlanJson(frozen.plan)).not.toContain(process.env.FAST_API_KEY ?? "unavailable-secret");
     expect(() => decodeWorkflowPlanV3(frozen.plan)).not.toThrow();
   });
@@ -418,7 +419,7 @@ describe("workflow engine v3 contracts", () => {
     // string (`gate.criteria`), replacing the pre-unification `gate: {
     // criteria: [approved] }`.
     const parsed = parseWorkflow(
-      "---\ntype: workflow\ndefaults: { engine: sdk }\nsteps:\n  - id: review\n---\n\n## review\n\nReview\n\n### gate\n\napproved\n",
+      "---\ntype: workflow\ndefaults: { engine: sdk, model: premium }\nsteps:\n  - id: review\n---\n\n## review\n\nReview\n\n### gate\n\napproved\n",
       SOURCE,
     );
     if (!parsed.ok) throw new Error("fixture must parse");
@@ -452,12 +453,22 @@ describe("workflow engine v3 contracts", () => {
     const root = frozen.plan.steps[0]?.root;
     expect(root?.kind).toBe("unit");
     if (!root || root.kind !== "unit") throw new Error("fixture root must be unit");
-    expect(root.invocation).toEqual({ engine: "sdk", model: "agent/exact", timeoutMs: 600_000 });
-    expect(frozen.plan.execution?.engines.fallback).toMatchObject({ kind: "llm", model: "fallback/exact" });
-    expect(frozen.plan.execution?.engines.fallback).not.toHaveProperty("timeoutMs");
+    expect(root.invocation).toEqual({
+      engine: "sdk",
+      model: "agent/exact",
+      modelPresent: true,
+      timeoutMs: 600_000,
+    });
+    expect(frozen.plan.execution?.engines.sdk).toMatchObject({ sdkFallbackModelFromRequest: false });
+    expect(frozen.plan.execution?.engines.fallback).toMatchObject({
+      kind: "llm",
+      model: "fallback/exact",
+      timeoutMs: 600_000,
+    });
     expect(frozen.plan.steps[0]?.gate.judge).toEqual({
       engine: "sdk",
       model: "agent/exact",
+      modelPresent: false,
       timeoutMs: 600_000,
     });
     expect(() => decodeWorkflowPlanV3(frozen.plan)).not.toThrow();
@@ -493,6 +504,8 @@ describe("workflow engine v3 contracts", () => {
     if (!root || root.kind !== "unit") throw new Error("fixture root must be unit");
 
     expect(root.invocation?.model).toBe("fallback/exact");
+    expect(frozen.plan.execution?.engines.sdk).toMatchObject({ sdkFallbackModelFromRequest: true });
+    expect(frozen.plan.execution?.engines.fallback).toMatchObject({ timeoutMs: 600_000 });
     const work = computeStepWorkList(frozen.plan.steps[0]!, {
       runId: "run-sdk-fallback",
       params: {},
@@ -572,6 +585,7 @@ describe("workflow engine v3 contracts", () => {
     expect(root.invocation).toEqual({
       engine: "direct",
       model: "qwen",
+      modelPresent: false,
       timeoutMs: null,
       llm: { temperature: 0.2, extraParams: { seed: 7 }, maxTokens: 77, enableThinking: true },
     });
@@ -650,6 +664,7 @@ describe("workflow engine v3 contracts", () => {
         kind: "llm",
         endpoint: "https://example.test/v1/chat/completions",
         model: "qwen",
+        timeoutMs: 600_000,
         concurrency: 1,
       };
       return {
@@ -672,6 +687,7 @@ describe("workflow engine v3 contracts", () => {
       kind: "llm",
       endpoint: "https://example.test/v1/chat/completions",
       model: "qwen",
+      timeoutMs: 600_000,
       concurrency: 1,
     };
     expect(() => decodeWorkflowPlanV3(engines)).toThrow("exceeds 64 entries");

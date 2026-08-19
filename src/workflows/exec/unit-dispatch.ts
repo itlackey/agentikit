@@ -127,8 +127,11 @@ function frozenRunner(
     stdio: "captured" as const,
     envPassthrough: engine.envPassthrough,
     parseOutput: "text" as const,
+    ...(engine.runnerKind === "sdk" ? { personaChannel: "native" as const } : {}),
     ...(engine.workspace !== null ? { workspace: engine.workspace } : {}),
-    ...(invocation.model !== null ? { model: invocation.model, modelIsExact: true } : {}),
+    ...(invocation.model !== null && (engine.runnerKind === "agent" || engine.sdkFallbackModelFromRequest !== true)
+      ? { model: invocation.model, modelIsExact: true }
+      : {}),
   };
   if (engine.runnerKind === "agent") {
     return { kind: "agent", engine: engine.name, profile, timeoutMs: invocation.timeoutMs };
@@ -147,7 +150,7 @@ function frozenRunner(
             timeoutMs: null,
           }),
           ...(fallback.credential ? { fallbackCredential: fallback.credential } : {}),
-          fallbackTimeoutMs: null,
+          fallbackTimeoutMs: fallback.timeoutMs ?? null,
         }
       : {}),
     timeoutMs: invocation.timeoutMs,
@@ -173,11 +176,22 @@ export function prepareFrozenWorkflowExecution(
     invocation: IrInvocation;
   };
   const runner = frozenRunner(engineRequest);
+  // New v3 plans persist source presence. Legacy v3 encoded absence as null
+  // and a selected model as a string, so keep that exact compatibility rule.
+  const projectsInvocationModel = Object.hasOwn(engineRequest.invocation, "modelPresent")
+    ? engineRequest.invocation.modelPresent === true
+    : engineRequest.invocation.model !== null;
   const current: import("../../execution/source").UnresolvedExecutionDefaults = {
     ...(request.schema !== undefined
       ? { outputSchema: request.schema as import("../../execution/json").ExecutionJsonObject }
       : {}),
     timeout: request.timeoutMs,
+    ...(projectsInvocationModel ? { model: engineRequest.invocation.model } : {}),
+    ...(Object.hasOwn(engineRequest.invocation, "llm")
+      ? {
+          inference: engineRequest.invocation.llm as unknown as import("../../execution/json").ExecutionJsonObject,
+        }
+      : {}),
     ...(request.cwd !== undefined ? { workspace: request.cwd } : {}),
     ...(request.env !== undefined ? { environment: request.env } : {}),
   };
@@ -189,6 +203,9 @@ export function prepareFrozenWorkflowExecution(
       ? { conversation: [{ role: "system" as const, content: request.systemPrompt }] }
       : {}),
     current,
+    ...(engineRequest.engine.kind === "agent"
+      ? { sdkFallbackModelFromRequest: engineRequest.engine.sdkFallbackModelFromRequest === true }
+      : {}),
   });
   return lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
 }

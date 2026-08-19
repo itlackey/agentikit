@@ -142,11 +142,19 @@ export interface RunnerExecutionEngineDefinition {
   readonly definition: ExecutionEngineDefinition;
 }
 
+export interface RunnerExecutionEngineDefinitionOptions {
+  /** Persisted ownership bit for config-free SDK preparation. */
+  readonly sdkFallbackModelFromRequest?: boolean;
+}
+
 /**
  * Project already-resolved, symbolic runner material into the common cascade
  * without consulting config, aliases, environment variables, or credentials.
  */
-export function executionEngineDefinitionFromRunner(input: RunnerSpec): RunnerExecutionEngineDefinition {
+export function executionEngineDefinitionFromRunner(
+  input: RunnerSpec,
+  options: RunnerExecutionEngineDefinitionOptions = {},
+): RunnerExecutionEngineDefinition {
   const snapshot = cloneExecutionJsonObject(input, "frozen execution runner") as unknown as RunnerSpec;
   const engineName = snapshot.engine ?? (snapshot.kind === "llm" ? "llm" : snapshot.profile.name);
   if (!engineName) throw new TypeError("frozen execution runner requires a stable engine name");
@@ -199,8 +207,12 @@ export function executionEngineDefinitionFromRunner(input: RunnerSpec): RunnerEx
   const platform = runner.profile.platform ?? runner.profile.name;
   if (!platform) throw new TypeError("frozen agent runner requires a stable platform");
   const fallbackConnection = runner.kind === "sdk" ? runner.fallbackConnection : undefined;
-  const usesSdkFallbackModel =
-    runner.kind === "sdk" && !own(runner.profile, "model") && fallbackConnection !== undefined;
+  const usesSdkFallbackModel = own(options, "sdkFallbackModelFromRequest")
+    ? options.sdkFallbackModelFromRequest === true
+    : runner.kind === "sdk" && !own(runner.profile, "model") && fallbackConnection !== undefined;
+  if (usesSdkFallbackModel && (runner.kind !== "sdk" || fallbackConnection === undefined)) {
+    throw new TypeError("frozen SDK fallback model ownership requires fallback transport material");
+  }
   const fallbackInference = fallbackConnection
     ? withoutUndefined({
         temperature: fallbackConnection.temperature,

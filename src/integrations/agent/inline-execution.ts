@@ -40,6 +40,8 @@ export interface PrepareInlineExecutionWithRunnerOptions {
   readonly current?: UnresolvedExecutionDefaults;
   readonly modelMap?: ResolvedModelMapV1;
   readonly authorizeTools?: ToolAuthorizer;
+  /** Persisted SDK model ownership; avoids inferring provenance from a nullable model value. */
+  readonly sdkFallbackModelFromRequest?: boolean;
 }
 
 export interface PreparedInlineExecution {
@@ -104,7 +106,12 @@ export function prepareInlineExecutionWithRunner(
     ...(own(options, "argumentInput") ? { argumentInput: options.argumentInput as string } : {}),
     content: options.content,
   });
-  const material = executionEngineDefinitionFromRunner(options.runner);
+  const material = executionEngineDefinitionFromRunner(
+    options.runner,
+    own(options, "sdkFallbackModelFromRequest")
+      ? { sdkFallbackModelFromRequest: options.sdkFallbackModelFromRequest === true }
+      : {},
+  );
   const engines = Object.create(null) as Record<string, typeof material.definition>;
   Object.defineProperty(engines, material.engineName, {
     value: material.definition,

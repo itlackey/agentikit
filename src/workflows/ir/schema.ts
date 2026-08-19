@@ -122,6 +122,8 @@ export interface FrozenLlmEngine {
   endpoint: string;
   /** Exact base model used by SDK fallbacks and inherited LLM invocations. */
   model: string;
+  /** Transport timeout frozen from the named LLM engine; absent only on legacy v3 plans. */
+  timeoutMs?: number | null;
   credential?: FrozenCredential;
   temperature?: number;
   maxTokens?: number;
@@ -143,6 +145,8 @@ export interface FrozenAgentEngine {
   envPassthrough: string[];
   commandBuilder: string;
   fallbackLlmEngine: string | null;
+  /** True only when this SDK's canonical model is fallback-owned; absent means legacy false. */
+  sdkFallbackModelFromRequest?: boolean;
 }
 
 export type FrozenEngineSnapshot = FrozenLlmEngine | FrozenAgentEngine;
@@ -151,6 +155,8 @@ export interface IrInvocation {
   engine: string;
   /** Exact model resolved at start, never an alias. */
   model: string | null;
+  /** Whether an authored layer explicitly supplied `model`; absent only on legacy v3 plans. */
+  modelPresent?: boolean;
   timeoutMs: number | null;
   llm?: LlmInvocationOverrides;
 }
@@ -322,7 +328,7 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
       const judge = engines[step.gate.judge.engine];
       if (!judge) fail(`gate ${step.gate.id} references an unavailable engine`);
       if (judge.kind === "llm" && step.gate.judge.model === null) fail(`LLM gate ${step.gate.id} has no exact model`);
-      if (judge.kind === "agent" && step.gate.judge.llm !== undefined)
+      if (judge.kind === "agent" && judge.runnerKind !== "sdk" && step.gate.judge.llm !== undefined)
         fail(`agent gate ${step.gate.id} cannot carry LLM invocation settings`);
     }
   }
@@ -352,6 +358,7 @@ function validateEngine(
         "provider",
         "endpoint",
         "model",
+        "timeoutMs",
         "credential",
         "temperature",
         "maxTokens",
@@ -368,6 +375,13 @@ function validateEngine(
       !engine.endpoint ||
       typeof engine.model !== "string" ||
       !engine.model ||
+      !(
+        engine.timeoutMs === undefined ||
+        engine.timeoutMs === null ||
+        (Number.isSafeInteger(engine.timeoutMs) &&
+          (engine.timeoutMs as number) >= 1 &&
+          (engine.timeoutMs as number) <= WORKFLOW_MAX_TIMEOUT_MS)
+      ) ||
       !Number.isInteger(engine.concurrency) ||
       (engine.concurrency as number) < 1 ||
       (engine.concurrency as number) > WORKFLOW_MAX_CONCURRENCY
@@ -416,6 +430,7 @@ function validateEngine(
       "envPassthrough",
       "commandBuilder",
       "fallbackLlmEngine",
+      "sdkFallbackModelFromRequest",
     ],
     `agent engine ${key}`,
   );
@@ -435,6 +450,7 @@ function validateEngine(
     new Set(engine.envPassthrough).size !== engine.envPassthrough.length ||
     typeof engine.commandBuilder !== "string" ||
     engine.commandBuilder !== engine.platform ||
+    (engine.sdkFallbackModelFromRequest !== undefined && typeof engine.sdkFallbackModelFromRequest !== "boolean") ||
     (engine.workspace !== null && !path.isAbsolute(engine.workspace)) ||
     !HARNESS_BY_ID.get(engine.platform)?.capabilities.agentDispatch
   )
@@ -443,6 +459,8 @@ function validateEngine(
     fail(`agent engine ${key} has incompatible platform and runnerKind`);
   if (engine.runnerKind === "agent" && engine.fallbackLlmEngine !== null)
     fail(`agent engine ${key} cannot have an SDK fallback`);
+  if (engine.sdkFallbackModelFromRequest && (engine.runnerKind !== "sdk" || engine.fallbackLlmEngine === null))
+    fail(`agent engine ${key} has an invalid SDK fallback model owner`);
   if (engine.fallbackLlmEngine !== null) {
     if (typeof engine.fallbackLlmEngine !== "string" || !engine.fallbackLlmEngine)
       fail(`agent engine ${key} has an invalid fallback`);
@@ -645,7 +663,10 @@ function validateInvocation(invocation: unknown, references: Set<string>, hooks:
   )
     fail("invocation is invalid");
   references.add(invocation.engine);
-  assertKeys(invocation, ["engine", "model", "timeoutMs", "llm"], "invocation");
+  assertKeys(invocation, ["engine", "model", "modelPresent", "timeoutMs", "llm"], "invocation");
+  if (invocation.modelPresent !== undefined && typeof invocation.modelPresent !== "boolean") {
+    fail("invocation.modelPresent must be boolean");
+  }
   validateLlmOverrides(invocation.llm, hooks);
 }
 
@@ -678,7 +699,7 @@ function assertUnitEngineCompatibility(node: IrExecNode, engines: Record<string,
   const engine = unit.invocation ? engines[unit.invocation.engine] : undefined;
   if (!engine) return;
   if (engine.kind === "llm" && unit.invocation?.model === null) fail(`LLM unit ${unit.id} has no exact model`);
-  if (engine.kind === "agent" && unit.invocation?.llm !== undefined)
+  if (engine.kind === "agent" && engine.runnerKind !== "sdk" && unit.invocation?.llm !== undefined)
     fail(`agent unit ${unit.id} cannot carry LLM invocation settings`);
   if (engine.kind === "llm" && ((unit.env?.length ?? 0) > 0 || unit.isolation === "worktree")) {
     fail(`LLM unit ${unit.id} cannot use env injection or worktree isolation`);

@@ -274,6 +274,11 @@ describe("RunnerSpec dispatch authority", () => {
         ),
         writeFixture(
           sandbox.dir,
+          "src/type-only-star-barrel.ts",
+          "export type * from './integrations/agent/runner-dispatch';\n",
+        ),
+        writeFixture(
+          sandbox.dir,
           "src/reviewer-positive.ts",
           [
             "const runnerModule = './integrations/agent/runner-dispatch';",
@@ -311,6 +316,9 @@ describe("RunnerSpec dispatch authority", () => {
             "function callWithRest(...loaders: (typeof require)[]) { loaders[0]!(runnerModule).executeRunner(); }",
             "callWithRest(require);",
             "import(runnerModule).then((namespace) => ({ ...namespace })).then(({ executeRunner: spreadChained }) => spreadChained());",
+            "const wrappedLoad = (specifier: string) => require(specifier);",
+            "wrappedLoad(runnerModule).executeRunner();",
+            "import('./value-namespace-barrel').then(({ runnerNamespace: { executeRunner: nestedRunner } }) => nestedRunner());",
           ].join("\n"),
         ),
         writeFixture(
@@ -320,6 +328,7 @@ describe("RunnerSpec dispatch authority", () => {
             "export {};",
             "type RunnerType = typeof import('./type-only-barrel').executeRunner;",
             "require('./type-only-barrel').executeRunner();",
+            "require('./type-only-star-barrel').executeRunner();",
             "function localRequireArray(require: (_specifier: string) => { executeRunner(): void }) {",
             "  const [loader] = [require];",
             "  loader('./integrations/agent/runner-dispatch').executeRunner();",
@@ -332,6 +341,10 @@ describe("RunnerSpec dispatch authority", () => {
             "const localLoader = (_specifier: string) => ({ executeRunner() {} });",
             "const [control] = [localLoader];",
             "control('./integrations/agent/runner-dispatch').executeRunner();",
+            "function mixedRest(...loaders: Array<typeof require | typeof localLoader>) {",
+            "  loaders[0]!('./integrations/agent/runner-dispatch').executeRunner();",
+            "}",
+            "mixedRest(localLoader, require);",
             "const Promise = { resolve: (value: unknown) => ({ then: (callback: (input: unknown) => unknown) => callback(value) }) };",
             "Promise.resolve(localLoader('./integrations/agent/runner-dispatch')).then((namespace: any) => namespace.executeRunner());",
             "void localRequireArray;",
@@ -395,12 +408,13 @@ describe("RunnerSpec dispatch authority", () => {
       expect(references.filter((reference) => reference.file === "src/node-module-nontarget.ts")).toEqual([]);
       const reviewerPositive = references.filter((reference) => reference.file === "src/reviewer-positive.ts");
       expect(reviewerPositive.map((reference) => reference.line)).toEqual([
-        2, 3, 4, 6, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 28, 30, 31, 33, 35,
+        2, 3, 4, 6, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 28, 30, 31, 33, 35, 37, 38,
       ]);
       expect(references.filter((reference) => reference.file === "src/value-star-barrel.ts")).toHaveLength(1);
       expect(references.filter((reference) => reference.file === "src/value-namespace-barrel.ts")).toHaveLength(1);
       expect(references.filter((reference) => reference.file === "src/barrel.ts")).toHaveLength(1);
       expect(references.filter((reference) => reference.file === "src/type-only-barrel.ts")).toEqual([]);
+      expect(references.filter((reference) => reference.file === "src/type-only-star-barrel.ts")).toEqual([]);
       expect(references.filter((reference) => reference.file === "src/reviewer-negative.ts")).toEqual([]);
     } finally {
       sandbox.cleanup();
