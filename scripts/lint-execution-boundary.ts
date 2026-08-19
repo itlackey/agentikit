@@ -286,56 +286,12 @@ const PERMANENT_EXECUTION_BOUNDARY_ALLOWLIST: readonly ExecutionBoundaryAllowRul
 ]);
 
 /**
- * Temporary exact debt inventory while the independently reviewed
- * improve/index lanes are integrated. This is not an
- * architectural exemption: every entry is exact-counted and must be deleted
- * with its named migration rather than generalized.
+ * The one remaining exact compatibility seam after WP5 runtime convergence.
+ * WP7 replaces the legacy workflow source-to-engine freeze resolver with the
+ * durable common-request compiler. This is not an architectural exemption:
+ * the single reference is exact-counted and must disappear with that cutover.
  */
 export const PENDING_EXECUTION_BOUNDARY_COUNTS = Object.freeze({
-  "src/commands/improve/consolidate.ts": {
-    "engine.default-llm-config": 1,
-    "engine.materialize-runner": 1,
-    "engine.resolve-improve-runner": 1,
-  },
-  "src/commands/improve/distill.ts": {
-    "engine.default-llm-config": 1,
-    "engine.materialize-runner": 1,
-    "engine.resolve-improve-runner": 1,
-    "llm.chat": 1,
-  },
-  "src/commands/improve/distill/quality-gate.ts": {
-    "engine.default-llm-config": 1,
-  },
-  "src/commands/improve/extract.ts": {
-    "engine.materialize-runner": 1,
-    "engine.resolve-improve-runner": 1,
-    "engine.resolve-llm": 1,
-  },
-  "src/commands/improve/improve-strategies.ts": {
-    "engine.resolve-improve-runner": 1,
-    "engine.resolve-triage": 1,
-  },
-  "src/commands/improve/improve.ts": { "engine.materialize-runner": 1 },
-  "src/commands/improve/loop-stages.ts": { "engine.materialize-runner": 3 },
-  "src/commands/improve/memory/memory-contradiction-detect.ts": {
-    "engine.default-llm-config": 1,
-    "engine.materialize-runner": 1,
-    "engine.resolve-improve-runner": 1,
-    "llm.chat": 1,
-  },
-  "src/commands/improve/preparation.ts": { "engine.materialize-runner": 2 },
-  "src/commands/improve/reflect.ts": {
-    "engine.materialize-runner": 2,
-    "engine.resolve": 2,
-    "engine.resolve-improve-runner": 1,
-    "runner.execute": 1,
-  },
-  "src/commands/improve/run-context.ts": { "llm.chat": 1 },
-  "src/commands/proposal/proposal-cli.ts": { "engine.resolve-triage": 1 },
-  "src/commands/remember.ts": { "engine.default-llm-config": 1, "llm.chat": 1 },
-  "src/commands/sources/schema-repair.ts": { "llm.chat": 1 },
-  "src/llm/graph-extract.ts": { "llm.chat": 2 },
-  "src/llm/index-passes.ts": { "engine.materialize-llm": 1, "engine.resolve-llm": 1 },
   "src/workflows/ir/freeze.ts": { "engine.resolve-llm": 1 },
 } as const);
 
@@ -346,7 +302,7 @@ const pendingRules: ExecutionBoundaryAllowRule[] = Object.entries(PENDING_EXECUT
       file,
       maxReferences,
       exact: true,
-      rationale: "temporary #809 parallel-lane debt; remove on consumer integration",
+      rationale: "temporary WP7 workflow-freeze compatibility seam; remove with durable common-request compilation",
     })),
 );
 
@@ -1383,7 +1339,7 @@ if (import.meta.main) {
       0,
     );
     console.log(
-      `lint-execution-boundary: OK — symbol-origin inventory matches exact authorities/exemptions (${pendingCount} temporary #809 reference(s) pinned)`,
+      `lint-execution-boundary: OK — symbol-origin inventory matches exact authorities/exemptions (${pendingCount} temporary WP7 compatibility reference(s) pinned)`,
     );
     process.exit(0);
   }
