@@ -5,6 +5,7 @@
 import { expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import Ajv from "ajv";
 import { EXECUTION_MAX_TIMEOUT_MS } from "../../src/execution/limits";
 import {
   classifyTaskV3Uses,
@@ -136,6 +137,72 @@ test("every published pattern is valid ECMAScript and representative uses refs a
   expect(workingDirectory.test("scripts/release")).toBe(true);
   expect(workingDirectory.test("scripts/release/")).toBe(false);
   expect(workingDirectory.test("\\absolute-on-windows")).toBe(false);
+});
+
+test("draft-07 validation follows the parser's exact uses-classification precedence", () => {
+  const schema = readTaskSchema();
+  const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
+  const executableRef = new RegExp(schema.definitions.akmExecutableRef?.pattern as string);
+  const githubActionRef = new RegExp(schema.definitions.githubActionRef?.pattern as string);
+  const cases = [
+    ["akm/command", { with: { content: "" } }, 0],
+    ["commands/review", {}, 1],
+    ["commands/review@v1", {}, 1],
+    ["commands/tools/review@v1", {}, 1],
+    ["workflows/release@v1", {}, 1],
+    ["scripts/check@v1", {}, 1],
+    ["team//commands/review@v1", {}, 1],
+    ["actions/checkout@v4", {}, 1],
+  ] as const;
+
+  for (const [uses, extra, expectedPatternMatches] of cases) {
+    expect(() => classifyTaskV3Uses(uses), uses).not.toThrow();
+    const patternMatches = Number(executableRef.test(uses)) + Number(githubActionRef.test(uses));
+    expect(patternMatches, `${uses} must select exactly its parser-precedence schema arm`).toBe(expectedPatternMatches);
+    expect(
+      validate({ version: 3, uses, ...extra, akm: { schedule: "@daily" } }),
+      `${uses}: ${JSON.stringify(validate.errors)}`,
+    ).toBe(true);
+  }
+});
+
+test("published schema declares the authoritative runtime-only resource constraints", () => {
+  const schema = readTaskSchema();
+  expect(schema["x-akm-runtimeConstraints"]).toEqual({
+    authoritativeParser: "src/tasks/source-v3.ts",
+    maxSourceUtf8Bytes: 1_048_576,
+    maxStringUtf8Bytes: TASK_V3_MAX_STRING_BYTES,
+    maxJsonDepth: 64,
+    maxJsonNodes: 10_000,
+    canonicalRefsRequireNfc: true,
+  });
+});
+
+test("published outputSchema grammar rejects keywords the runtime subset cannot enforce", () => {
+  const schema = readTaskSchema();
+  const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
+  const validTask = {
+    version: 3,
+    uses: "commands/review",
+    akm: {
+      schedule: "@daily",
+      outputSchema: {
+        type: "object",
+        properties: { result: { type: "string", minLength: 1 } },
+        required: ["result"],
+        additionalProperties: false,
+      },
+    },
+  };
+  const unsupported = structuredClone(validTask);
+  unsupported.akm.outputSchema.properties.result = { type: "string", pattern: "^ok$" } as never;
+
+  expect(validate(validTask), JSON.stringify(validate.errors)).toBe(true);
+  expect(() => parseTaskV3Yaml({ yaml: JSON.stringify(validTask), filePath: "valid.yml" })).not.toThrow();
+  expect(validate(unsupported), JSON.stringify(validate.errors)).toBe(false);
+  expect(() => parseTaskV3Yaml({ yaml: JSON.stringify(unsupported), filePath: "unsupported.yml" })).toThrow(
+    /pattern|unsupported/i,
+  );
 });
 
 test("the production parser consumes the same strict v3 spellings the schema publishes", () => {

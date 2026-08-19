@@ -3,6 +3,14 @@
   "$id": "https://itlackey.github.io/akm/schemas/akm-task.json",
   "title": "AKM Task v3",
   "description": "Strict task-v3 source document. Exactly one executable selector and exactly one scheduling source are required. GitHub action refs are recognized source syntax but are not executed by AKM 0.9.2.",
+  "x-akm-runtimeConstraints": {
+    "authoritativeParser": "src/tasks/source-v3.ts",
+    "maxSourceUtf8Bytes": 1048576,
+    "maxStringUtf8Bytes": 262144,
+    "maxJsonDepth": 64,
+    "maxJsonNodes": 10000,
+    "canonicalRefsRequireNfc": true
+  },
   "type": "object",
   "required": ["version"],
   "additionalProperties": false,
@@ -60,9 +68,9 @@
           ]
         },
         "outputSchema": {
-          "description": "A JSON Schema accepted by AKM's bounded execution-schema subset, or null.",
+          "description": "A JSON Schema accepted by AKM's bounded execution-schema subset, or null. Runtime byte, depth, and node limits are declared by x-akm-runtimeConstraints.",
           "oneOf": [
-            { "$ref": "#/definitions/jsonObject" },
+            { "$ref": "#/definitions/outputSchemaDefinition" },
             { "type": "null" }
           ]
         },
@@ -208,7 +216,103 @@
     "githubActionRef": {
       "type": "string",
       "maxLength": 262144,
-      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/(?!\\.{1,2}(?:/|@))[A-Za-z0-9_.-]+(?:/(?!\\.{1,2}(?:/|@))[A-Za-z0-9_.-]+)*@(?![./])(?!.*(?:@|\\.\\.|//|/\\.|\\.(?:/|$)|\\.lock(?:/|$)))[^\\s\\u0000-\\u0020\\u007f~^:?*\\[\\\\/](?:[^\\s\\u0000-\\u0020\\u007f~^:?*\\[\\\\@]*[^\\s\\u0000-\\u0020\\u007f~^:?*\\[\\\\/.@])?$"
+      "pattern": "^(?!(?:commands|workflows|scripts)/)[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/(?!\\.{1,2}(?:/|@))[A-Za-z0-9_.-]+(?:/(?!\\.{1,2}(?:/|@))[A-Za-z0-9_.-]+)*@(?![./])(?!.*(?:@|\\.\\.|//|/\\.|\\.(?:/|$)|\\.lock(?:/|$)))[^\\s\\u0000-\\u0020\\u007f~^:?*\\[\\\\/](?:[^\\s\\u0000-\\u0020\\u007f~^:?*\\[\\\\@]*[^\\s\\u0000-\\u0020\\u007f~^:?*\\[\\\\/.@])?$"
+    },
+    "outputSchemaDefinition": {
+      "type": "object",
+      "maxProperties": 256,
+      "properties": {
+        "type": {
+          "oneOf": [
+            { "$ref": "#/definitions/outputSchemaTypeName" },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1024,
+              "items": { "$ref": "#/definitions/outputSchemaTypeName" }
+            }
+          ]
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1024,
+          "items": {
+            "oneOf": [
+              { "type": "string", "maxLength": 262144 },
+              { "type": "number" },
+              { "type": "boolean" },
+              { "type": "null" }
+            ]
+          }
+        },
+        "properties": {
+          "type": "object",
+          "maxProperties": 256,
+          "propertyNames": { "maxLength": 262144 },
+          "additionalProperties": { "$ref": "#/definitions/outputSchemaDefinition" }
+        },
+        "required": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "type": "string", "maxLength": 262144 }
+        },
+        "items": { "$ref": "#/definitions/outputSchemaDefinition" },
+        "additionalProperties": { "type": "boolean" },
+        "minItems": { "type": "integer", "minimum": 0 },
+        "maxItems": { "type": "integer", "minimum": 0 },
+        "minLength": { "type": "integer", "minimum": 0 },
+        "maxLength": { "type": "integer", "minimum": 0 },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "allOf": { "$ref": "#/definitions/outputSchemaArray" },
+        "anyOf": { "$ref": "#/definitions/outputSchemaArray" },
+        "oneOf": { "$ref": "#/definitions/outputSchemaArray" },
+        "not": { "$ref": "#/definitions/outputSchemaDefinition" },
+        "$ref": false,
+        "$defs": false,
+        "definitions": false,
+        "$anchor": false,
+        "$dynamicRef": false,
+        "$dynamicAnchor": false,
+        "if": false,
+        "then": false,
+        "else": false,
+        "const": false,
+        "pattern": false,
+        "format": false,
+        "patternProperties": false,
+        "propertyNames": false,
+        "additionalItems": false,
+        "prefixItems": false,
+        "contains": false,
+        "minContains": false,
+        "maxContains": false,
+        "uniqueItems": false,
+        "multipleOf": false,
+        "exclusiveMinimum": false,
+        "exclusiveMaximum": false,
+        "minProperties": false,
+        "maxProperties": false,
+        "dependencies": false,
+        "dependentRequired": false,
+        "dependentSchemas": false,
+        "unevaluatedItems": false,
+        "unevaluatedProperties": false,
+        "contentEncoding": false,
+        "contentMediaType": false,
+        "contentSchema": false
+      },
+      "additionalProperties": { "$ref": "#/definitions/jsonValue" }
+    },
+    "outputSchemaArray": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": { "$ref": "#/definitions/outputSchemaDefinition" }
+    },
+    "outputSchemaTypeName": {
+      "enum": ["string", "number", "integer", "boolean", "object", "array", "null"]
     },
     "builtinCommandWith": {
       "type": "object",
@@ -241,6 +345,7 @@
     "jsonObject": {
       "type": "object",
       "maxProperties": 256,
+      "propertyNames": { "maxLength": 262144 },
       "additionalProperties": { "$ref": "#/definitions/jsonValue" }
     }
   }

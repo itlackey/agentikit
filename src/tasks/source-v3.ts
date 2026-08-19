@@ -283,6 +283,14 @@ function cloneBoundedJson(
   }
   const result = Object.create(null) as Record<string, ExecutionJsonValue>;
   for (const [key, child] of entries) {
+    if (!wellFormedUnicode(key)) sourceError(ctx, fieldPath, "contains a mapping key with malformed Unicode.");
+    if (utf8Bytes(key) > TASK_V3_MAX_STRING_BYTES) {
+      sourceError(
+        ctx,
+        fieldPath,
+        `contains a mapping key exceeding the ${TASK_V3_MAX_STRING_BYTES}-byte string limit.`,
+      );
+    }
     Object.defineProperty(result, key, {
       value: cloneBoundedJson(child, ctx, [...fieldPath, key], state, depth + 1, nextAncestors),
       enumerable: true,
@@ -658,6 +666,7 @@ export function classifyTaskV3Triggers(value: unknown, options: ClassifyTaskV3Tr
 function validateWorkingDirectory(value: string, ctx: ParseContext): void {
   if (
     value.trim().length === 0 ||
+    value.includes("\0") ||
     path.posix.isAbsolute(value.replaceAll("\\", "/")) ||
     /^[A-Za-z]:[\\/]/.test(value) ||
     value.startsWith("\\\\")
@@ -837,6 +846,16 @@ export function assertBoundedTaskYamlDocument(
         if (!pair) yamlAstError(options, node, "sparse YAML mappings are unsupported.");
         if (!isScalar(pair.key) || typeof pair.key.value !== "string") {
           yamlAstError(options, pair.key, "non-string YAML mapping keys are unsupported.");
+        }
+        if (!wellFormedUnicode(pair.key.value)) {
+          yamlAstError(options, pair.key, "YAML mapping key must contain well-formed Unicode.");
+        }
+        if (utf8Bytes(pair.key.value) > TASK_V3_MAX_STRING_BYTES) {
+          yamlAstError(
+            options,
+            pair.key,
+            `YAML mapping key exceeds the ${TASK_V3_MAX_STRING_BYTES}-byte string limit.`,
+          );
         }
         if (pair.key.value === "<<") yamlAstError(options, pair.key, "YAML merge keys are unsupported.");
         stack.push({ node: pair.value, depth: current.depth + 1 });

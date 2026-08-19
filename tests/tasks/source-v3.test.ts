@@ -14,6 +14,7 @@ import {
   TASK_V2_MIGRATION_HINT,
   TASK_V3_HOST_SHELLS,
   TASK_V3_MAX_SOURCE_BYTES,
+  TASK_V3_MAX_STRING_BYTES,
   taskV3SourceErrorDetail,
 } from "../../src/tasks/source-v3";
 
@@ -221,6 +222,7 @@ describe("strict task v3 source document", () => {
     [scheduled({ run: "echo x", shell: "bash -e {0}" }), "shell"],
     [scheduled({ run: "echo x", "working-directory": "/tmp" }), "working-directory"],
     [scheduled({ run: "echo x", "working-directory": "../escape" }), "working-directory"],
+    [scheduled({ run: "echo x", "working-directory": "safe\0tail" }), "working-directory"],
     [scheduled({ uses: "commands/x", on: { workflow_dispatch: null } }), "one scheduling source"],
     [{ version: 3, uses: "commands/x" }, "scheduling source"],
     [{ version: 3, uses: "commands/x", on: {} }, "on"],
@@ -382,6 +384,18 @@ describe("task v3 hostile input and resource bounds", () => {
         filePath: "/bundle/tasks/nodes.yml",
       }),
     ).toThrow(/node|10000/i);
+  });
+
+  test("bounds mapping-key strings before object publication and YAML expansion", () => {
+    const oversizedKey = "k".repeat(TASK_V3_MAX_STRING_BYTES + 1);
+    expect(() =>
+      parseTaskV3Document(scheduled({ uses: "commands/a", with: { [oversizedKey]: true } }), {
+        filePath: "/bundle/tasks/key-object.yml",
+      }),
+    ).toThrow(/key|string|262144|byte/i);
+
+    const yaml = JSON.stringify(scheduled({ uses: "commands/a", with: { [oversizedKey]: true } }));
+    expect(() => parseTaskV3Yaml({ yaml, filePath: "/bundle/tasks/key-yaml.yml" })).toThrow(/key|string|262144|byte/i);
   });
 
   test("source-located errors include the file and structural path", () => {
