@@ -21,91 +21,23 @@ function sourceFiles(root: string): string[] {
   });
 }
 
-function networkCapabilities(source: string, fileName = "probe.ts"): string[] {
-  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const taintedNames = new Set(["fetch"]);
-  const retryNamespaces = new Set<string>();
-  const findings = new Set<string>();
+type CapabilityOrigin =
+  | { kind: "namespace"; moduleName: string }
+  | { kind: "callable"; moduleName: string; method: string };
 
-  function isGlobalFetch(node: ts.Node): boolean {
-    return (
-      ((ts.isPropertyAccessExpression(node) && node.name.text === "fetch") ||
-        (ts.isElementAccessExpression(node) &&
-          ts.isStringLiteral(node.argumentExpression) &&
-          node.argumentExpression.text === "fetch")) &&
-      ts.isIdentifier(node.expression) &&
-      ["globalThis", "window", "Bun"].includes(node.expression.text)
-    );
-  }
-
-  function discoverAliases(node: ts.Node): void {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
-      const moduleName = node.moduleSpecifier.text;
-      if (moduleName.endsWith("/core/common") || moduleName.endsWith("/core/common.ts")) {
-        if (node.importClause?.namedBindings && ts.isNamespaceImport(node.importClause.namedBindings)) {
-          retryNamespaces.add(node.importClause.namedBindings.name.text);
-        }
-        for (const element of node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)
-          ? node.importClause.namedBindings.elements
-          : []) {
-          if (element.propertyName?.text === "fetchWithRetry" || element.name.text === "fetchWithRetry") {
-            taintedNames.add(element.name.text);
-            findings.add(`import:${moduleName}:${element.name.text}`);
-          }
-        }
-      }
-    }
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      if (
-        (ts.isIdentifier(node.initializer) && taintedNames.has(node.initializer.text)) ||
-        isGlobalFetch(node.initializer) ||
-        (ts.isPropertyAccessExpression(node.initializer) &&
-          ts.isIdentifier(node.initializer.expression) &&
-          retryNamespaces.has(node.initializer.expression.text) &&
-          node.initializer.name.text === "fetchWithRetry")
-      ) {
-        taintedNames.add(node.name.text);
-      }
-    }
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isObjectBindingPattern(node.name) &&
-      node.initializer &&
-      ts.isIdentifier(node.initializer) &&
-      ["globalThis", "window", "Bun"].includes(node.initializer.text)
-    ) {
-      for (const element of node.name.elements) {
-        const importedName = element.propertyName?.getText(sourceFile) ?? element.name.getText(sourceFile);
-        if (importedName === "fetch" && ts.isIdentifier(element.name)) taintedNames.add(element.name.text);
-      }
-    }
-    ts.forEachChild(node, discoverAliases);
-  }
-
-  discoverAliases(sourceFile);
-  function inspectCalls(node: ts.Node): void {
-    if (ts.isCallExpression(node)) {
-      if (ts.isIdentifier(node.expression) && taintedNames.has(node.expression.text)) {
-        findings.add(`call:${node.expression.text}`);
-      } else if (isGlobalFetch(node.expression)) {
-        findings.add(`call:${node.expression.getText(sourceFile)}`);
-      } else if (
-        ts.isPropertyAccessExpression(node.expression) &&
-        ts.isIdentifier(node.expression.expression) &&
-        retryNamespaces.has(node.expression.expression.text) &&
-        node.expression.name.text === "fetchWithRetry"
-      ) {
-        findings.add(`call:${node.expression.getText(sourceFile)}`);
-      }
-    }
-    ts.forEachChild(node, inspectCalls);
-  }
-  inspectCalls(sourceFile);
-  return [...findings].sort();
+interface CapabilityAnalysisSpec {
+  moduleMethods: (moduleName: string) => ReadonlySet<string> | undefined;
+  unboundCallables?: ReadonlyMap<string, { moduleName: string; method: string }>;
+  unboundNamespaces?: ReadonlyMap<string, string>;
+  importFinding?: (moduleName: string, importedName: string, localName: string) => string | undefined;
 }
 
-/** Find raw socket/request call sites even when imports and callables are aliased. */
-function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
+/**
+ * Resolve capability origins through symbols rather than identifier spellings.
+ * The analysis is intentionally flow-insensitive: once a binding can name a
+ * network capability, every call through that binding remains in the ratchet.
+ */
+function analyzeCapabilityCalls(source: string, fileName: string, spec: CapabilityAnalysisSpec): string[] {
   const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const compilerOptions: ts.CompilerOptions = {
     allowJs: true,
@@ -121,29 +53,9 @@ function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
   const checker = ts
     .createProgram({ rootNames: [fileName], options: compilerOptions, host: compilerHost })
     .getTypeChecker();
-  const moduleMethods = new Map<string, ReadonlySet<string>>([
-    ["http", new Set(["get", "request"])],
-    ["node:http", new Set(["get", "request"])],
-    ["https", new Set(["get", "request"])],
-    ["node:https", new Set(["get", "request"])],
-    ["http2", new Set(["connect"])],
-    ["node:http2", new Set(["connect"])],
-    ["net", new Set(["connect", "createConnection"])],
-    ["node:net", new Set(["connect", "createConnection"])],
-    ["tls", new Set(["connect"])],
-    ["node:tls", new Set(["connect"])],
-    ["node:undici", new Set(["connect", "fetch", "pipeline", "request", "stream"])],
-    ["undici", new Set(["connect", "fetch", "pipeline", "request", "stream"])],
-    ["bun", new Set(["connect", "udpSocket"])],
-  ]);
-  const namespaces = new Map<ts.Symbol, string>();
-  const callables = new Set<ts.Symbol>();
+  const symbolOrigins = new Map<ts.Symbol, Map<string, CapabilityOrigin>>();
   const findings = new Set<string>();
-  const declarations: ts.VariableDeclaration[] = [];
-  const directInvocations: Array<{
-    target: ts.ArrowFunction | ts.FunctionExpression;
-    args: ts.NodeArray<ts.Expression>;
-  }> = [];
+  const propagations: Array<() => boolean> = [];
 
   const unwrapExpression = (expression: ts.Expression): ts.Expression => {
     let value = expression;
@@ -171,176 +83,249 @@ function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
     }
   };
 
-  const importedModule = (initializer: ts.Expression | undefined): string | undefined => {
+  const originKey = (origin: CapabilityOrigin): string =>
+    origin.kind === "namespace" ? `namespace:${origin.moduleName}` : `callable:${origin.moduleName}:${origin.method}`;
+
+  const addOrigins = (identifier: ts.Identifier, origins: readonly CapabilityOrigin[]): boolean => {
+    const symbol = checker.getSymbolAtLocation(identifier);
+    if (!symbol || origins.length === 0) return false;
+    let current = symbolOrigins.get(symbol);
+    if (!current) {
+      current = new Map();
+      symbolOrigins.set(symbol, current);
+    }
+    let changed = false;
+    for (const origin of origins) {
+      const key = originKey(origin);
+      if (current.has(key)) continue;
+      current.set(key, origin);
+      changed = true;
+    }
+    return changed;
+  };
+
+  const isUnboundGlobal = (identifier: ts.Identifier): boolean => {
+    const symbol = checker.getSymbolAtLocation(identifier);
+    return !symbol || (symbol.declarations?.length ?? 0) === 0;
+  };
+
+  const staticPropertyName = (name: ts.PropertyName): string | undefined => {
+    if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) return name.text;
+    if (!ts.isComputedPropertyName(name)) return undefined;
+    const expression = unwrapExpression(name.expression);
+    return ts.isStringLiteralLike(expression) || ts.isNumericLiteral(expression) ? expression.text : undefined;
+  };
+
+  const elementPropertyName = (expression: ts.Expression | undefined): string | undefined => {
+    if (!expression) return undefined;
+    const value = unwrapExpression(expression);
+    return ts.isStringLiteralLike(value) || ts.isNumericLiteral(value) ? value.text : undefined;
+  };
+
+  const memberName = (expression: ts.Expression): string | undefined => {
+    const value = unwrapExpression(expression);
+    if (ts.isPropertyAccessExpression(value)) return value.name.text;
+    return ts.isElementAccessExpression(value) ? elementPropertyName(value.argumentExpression) : undefined;
+  };
+
+  const memberOwner = (expression: ts.Expression): ts.Expression | undefined => {
+    const value = unwrapExpression(expression);
+    return ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value) ? value.expression : undefined;
+  };
+
+  const loadedModule = (initializer: ts.Expression | undefined): string | undefined => {
     if (!initializer) return undefined;
     const value = unwrapExpression(initializer);
     if (!ts.isCallExpression(value) || value.arguments.length !== 1) return undefined;
     const argument = value.arguments[0];
     if (!argument || !ts.isStringLiteral(argument)) return undefined;
-    if (value.expression.kind === ts.SyntaxKind.ImportKeyword) return argument.text;
-    if (
-      ts.isIdentifier(value.expression) &&
-      value.expression.text === "require" &&
-      checker.getSymbolAtLocation(value.expression) === undefined
-    ) {
+    const callee = unwrapExpression(value.expression);
+    if (callee.kind === ts.SyntaxKind.ImportKeyword) return argument.text;
+    if (ts.isIdentifier(callee) && callee.text === "require" && isUnboundGlobal(callee)) {
       return argument.text;
     }
+    const owner = memberOwner(callee);
+    const unwrappedOwner = owner ? unwrapExpression(owner) : undefined;
     if (
-      ts.isPropertyAccessExpression(value.expression) &&
-      ts.isIdentifier(value.expression.expression) &&
-      value.expression.expression.text === "process" &&
-      checker.getSymbolAtLocation(value.expression.expression) === undefined &&
-      value.expression.name.text === "getBuiltinModule"
+      memberName(callee) === "getBuiltinModule" &&
+      unwrappedOwner &&
+      ts.isIdentifier(unwrappedOwner) &&
+      unwrappedOwner.text === "process" &&
+      isUnboundGlobal(unwrappedOwner)
     ) {
       return argument.text;
     }
     return undefined;
   };
 
-  sourceFile.forEachChild(function discover(node): void {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
-      const moduleName = node.moduleSpecifier.text;
-      const methods = moduleMethods.get(moduleName);
-      if (methods) {
-        const importClause = node.importClause;
-        if (importClause?.name) {
-          const symbol = checker.getSymbolAtLocation(importClause.name);
-          if (symbol) namespaces.set(symbol, moduleName);
-        }
-        if (importClause?.namedBindings && ts.isNamespaceImport(importClause.namedBindings)) {
-          const symbol = checker.getSymbolAtLocation(importClause.namedBindings.name);
-          if (symbol) namespaces.set(symbol, moduleName);
-        }
-        if (importClause?.namedBindings && ts.isNamedImports(importClause.namedBindings)) {
-          for (const element of importClause.namedBindings.elements) {
-            const imported = element.propertyName?.text ?? element.name.text;
-            const symbol = checker.getSymbolAtLocation(element.name);
-            if (methods.has(imported) && symbol) callables.add(symbol);
-          }
+  const projectMember = (origins: readonly CapabilityOrigin[], property: string): CapabilityOrigin[] =>
+    origins.flatMap((origin): CapabilityOrigin[] => {
+      if (origin.kind !== "namespace" || !spec.moduleMethods(origin.moduleName)?.has(property)) return [];
+      return [{ kind: "callable", moduleName: origin.moduleName, method: property }];
+    });
+
+  const resolveExpression = (expression: ts.Expression | undefined): CapabilityOrigin[] => {
+    if (!expression) return [];
+    const value = unwrapExpression(expression);
+    if (ts.isIdentifier(value)) {
+      const symbol = checker.getSymbolAtLocation(value);
+      const knownOrigins = symbol ? [...(symbolOrigins.get(symbol)?.values() ?? [])] : [];
+      if (knownOrigins.length > 0) return knownOrigins;
+      if (!isUnboundGlobal(value)) return [];
+      const callable = spec.unboundCallables?.get(value.text);
+      if (callable) return [{ kind: "callable", ...callable }];
+      const moduleName = spec.unboundNamespaces?.get(value.text);
+      return moduleName ? [{ kind: "namespace", moduleName }] : [];
+    }
+    const moduleName = loadedModule(value);
+    if (moduleName && spec.moduleMethods(moduleName)) return [{ kind: "namespace", moduleName }];
+    if (ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value)) {
+      const property = memberName(value);
+      return property ? projectMember(resolveExpression(value.expression), property) : [];
+    }
+    if (ts.isConditionalExpression(value)) {
+      return [...resolveExpression(value.whenTrue), ...resolveExpression(value.whenFalse)];
+    }
+    return [];
+  };
+
+  const bindPattern = (name: ts.BindingName, origins: readonly CapabilityOrigin[]): boolean => {
+    if (ts.isIdentifier(name)) return addOrigins(name, origins);
+    if (!ts.isObjectBindingPattern(name)) return false;
+    let changed = false;
+    for (const element of name.elements) {
+      if (element.dotDotDotToken) continue;
+      const property = element.propertyName
+        ? staticPropertyName(element.propertyName)
+        : ts.isIdentifier(element.name)
+          ? element.name.text
+          : undefined;
+      if (property && bindPattern(element.name, projectMember(origins, property))) changed = true;
+    }
+    return changed;
+  };
+
+  const bindAssignmentTarget = (target: ts.Expression, origins: readonly CapabilityOrigin[]): boolean => {
+    const value = unwrapExpression(target);
+    if (ts.isIdentifier(value)) return addOrigins(value, origins);
+    if (!ts.isObjectLiteralExpression(value)) return false;
+    let changed = false;
+    for (const property of value.properties) {
+      if (ts.isShorthandPropertyAssignment(property)) {
+        if (addOrigins(property.name, projectMember(origins, property.name.text))) changed = true;
+      } else if (ts.isPropertyAssignment(property)) {
+        const propertyName = staticPropertyName(property.name);
+        if (propertyName && bindAssignmentTarget(property.initializer, projectMember(origins, propertyName))) {
+          changed = true;
         }
       }
     }
-    if (ts.isVariableDeclaration(node)) declarations.push(node);
+    return changed;
+  };
+
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const moduleName = statement.moduleSpecifier.text;
+    const methods = spec.moduleMethods(moduleName);
+    if (!methods) continue;
+    const importClause = statement.importClause;
+    if (importClause?.name) addOrigins(importClause.name, [{ kind: "namespace", moduleName }]);
+    if (importClause?.namedBindings && ts.isNamespaceImport(importClause.namedBindings)) {
+      addOrigins(importClause.namedBindings.name, [{ kind: "namespace", moduleName }]);
+    }
+    if (importClause?.namedBindings && ts.isNamedImports(importClause.namedBindings)) {
+      for (const element of importClause.namedBindings.elements) {
+        const importedName = element.propertyName?.text ?? element.name.text;
+        if (!methods.has(importedName)) continue;
+        addOrigins(element.name, [{ kind: "callable", moduleName, method: importedName }]);
+        const finding = spec.importFinding?.(moduleName, importedName, element.name.text);
+        if (finding) findings.add(finding);
+      }
+    }
+  }
+
+  sourceFile.forEachChild(function discover(node): void {
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      propagations.push(() => bindPattern(node.name, resolveExpression(node.initializer)));
+    }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      propagations.push(() => bindAssignmentTarget(node.left, resolveExpression(node.right)));
+    }
     if (ts.isCallExpression(node)) {
       const target = unwrapExpression(node.expression);
       if (ts.isArrowFunction(target) || ts.isFunctionExpression(target)) {
-        directInvocations.push({ target, args: node.arguments });
+        propagations.push(() => {
+          let changed = false;
+          for (const [index, parameter] of target.parameters.entries()) {
+            const argument = node.arguments[index];
+            if (argument && bindPattern(parameter.name, resolveExpression(argument))) changed = true;
+          }
+          return changed;
+        });
       }
     }
     ts.forEachChild(node, discover);
   });
 
-  const namespaceModule = (expression: ts.Expression | undefined): string | undefined => {
-    if (!expression) return undefined;
-    const value = unwrapExpression(expression);
-    if (ts.isIdentifier(value)) {
-      if (value.text === "Bun" && checker.getSymbolAtLocation(value) === undefined) return "bun";
-      const symbol = checker.getSymbolAtLocation(value);
-      return symbol ? namespaces.get(symbol) : undefined;
-    }
-    return importedModule(value);
-  };
-
-  const propertyCapability = (expression: ts.Expression): string | undefined => {
-    const value = unwrapExpression(expression);
-    let owner: ts.Expression;
-    let method: string | undefined;
-    if (ts.isPropertyAccessExpression(value)) {
-      owner = value.expression;
-      method = value.name.text;
-    } else if (
-      ts.isElementAccessExpression(value) &&
-      value.argumentExpression &&
-      ts.isStringLiteral(value.argumentExpression)
-    ) {
-      owner = value.expression;
-      method = value.argumentExpression.text;
-    } else {
-      return undefined;
-    }
-    if (!method) return undefined;
-    owner = unwrapExpression(owner);
-    const moduleName = namespaceModule(owner);
-    return moduleName && moduleMethods.get(moduleName)?.has(method) ? expression.getText(sourceFile) : undefined;
-  };
-
-  const expressionIsCallable = (expression: ts.Expression | undefined): boolean => {
-    if (!expression) return false;
-    const value = unwrapExpression(expression);
-    if (ts.isIdentifier(value)) {
-      const symbol = checker.getSymbolAtLocation(value);
-      return symbol ? callables.has(symbol) : false;
-    }
-    if (propertyCapability(value)) return true;
-    if (ts.isConditionalExpression(value)) {
-      return expressionIsCallable(value.whenTrue) || expressionIsCallable(value.whenFalse);
-    }
-    return false;
-  };
-
   let changed = true;
   while (changed) {
     changed = false;
-    for (const { target, args } of directInvocations) {
-      for (const [index, parameter] of target.parameters.entries()) {
-        const argument = args[index];
-        const moduleName = namespaceModule(argument);
-        const symbol = ts.isIdentifier(parameter.name) ? checker.getSymbolAtLocation(parameter.name) : undefined;
-        if (moduleName && symbol && !namespaces.has(symbol)) {
-          namespaces.set(symbol, moduleName);
-          changed = true;
-        } else if (argument && symbol && expressionIsCallable(argument) && !callables.has(symbol)) {
-          callables.add(symbol);
-          changed = true;
-        }
-      }
-    }
-    for (const declaration of declarations) {
-      if (!declaration.initializer) continue;
-      const moduleName = namespaceModule(declaration.initializer);
-      if (ts.isIdentifier(declaration.name)) {
-        const symbol = checker.getSymbolAtLocation(declaration.name);
-        if (!symbol) continue;
-        if (moduleName && moduleMethods.has(moduleName)) {
-          if (!namespaces.has(symbol)) {
-            namespaces.set(symbol, moduleName);
-            changed = true;
-          }
-        } else if (expressionIsCallable(declaration.initializer) && !callables.has(symbol)) {
-          callables.add(symbol);
-          changed = true;
-        }
-        continue;
-      }
-      if (moduleName && ts.isObjectBindingPattern(declaration.name)) {
-        const methods = moduleMethods.get(moduleName);
-        for (const element of declaration.name.elements) {
-          const imported = element.propertyName?.getText(sourceFile) ?? element.name.getText(sourceFile);
-          const symbol = ts.isIdentifier(element.name) ? checker.getSymbolAtLocation(element.name) : undefined;
-          if (methods?.has(imported) && symbol && !callables.has(symbol)) {
-            callables.add(symbol);
-            changed = true;
-          }
-        }
-      }
-    }
+    for (const propagate of propagations) if (propagate()) changed = true;
   }
 
   function inspect(node: ts.Node): void {
-    if (ts.isCallExpression(node)) {
-      const symbol = ts.isIdentifier(node.expression) ? checker.getSymbolAtLocation(node.expression) : undefined;
-      if (symbol && callables.has(symbol)) {
-        findings.add(`call:${node.expression.getText(sourceFile)}`);
-      } else {
-        const capability = propertyCapability(node.expression);
-        if (capability) findings.add(`call:${capability}`);
-        else if (expressionIsCallable(node.expression)) findings.add(`call:${node.expression.getText(sourceFile)}`);
-      }
+    if (ts.isCallExpression(node) && resolveExpression(node.expression).some((origin) => origin.kind === "callable")) {
+      findings.add(`call:${node.expression.getText(sourceFile)}`);
     }
     ts.forEachChild(node, inspect);
   }
   inspect(sourceFile);
   return [...findings].sort();
+}
+
+const FETCH_METHODS = new Set(["fetch"]);
+const FETCH_WITH_RETRY_METHODS = new Set(["fetchWithRetry"]);
+const RAW_MODULE_METHODS = new Map<string, ReadonlySet<string>>([
+  ["http", new Set(["get", "request"])],
+  ["node:http", new Set(["get", "request"])],
+  ["https", new Set(["get", "request"])],
+  ["node:https", new Set(["get", "request"])],
+  ["http2", new Set(["connect"])],
+  ["node:http2", new Set(["connect"])],
+  ["net", new Set(["connect", "createConnection"])],
+  ["node:net", new Set(["connect", "createConnection"])],
+  ["tls", new Set(["connect"])],
+  ["node:tls", new Set(["connect"])],
+  ["node:undici", new Set(["connect", "fetch", "pipeline", "request", "stream"])],
+  ["undici", new Set(["connect", "fetch", "pipeline", "request", "stream"])],
+  ["bun", new Set(["connect", "udpSocket"])],
+]);
+
+function networkCapabilities(source: string, fileName = "probe.ts"): string[] {
+  return analyzeCapabilityCalls(source, fileName, {
+    moduleMethods: (moduleName) =>
+      moduleName === "web"
+        ? FETCH_METHODS
+        : moduleName.endsWith("/core/common") || moduleName.endsWith("/core/common.ts")
+          ? FETCH_WITH_RETRY_METHODS
+          : undefined,
+    unboundCallables: new Map([["fetch", { moduleName: "web", method: "fetch" }]]),
+    unboundNamespaces: new Map([
+      ["globalThis", "web"],
+      ["window", "web"],
+      ["Bun", "web"],
+    ]),
+    importFinding: (moduleName, importedName, localName) =>
+      importedName === "fetchWithRetry" ? `import:${moduleName}:${localName}` : undefined,
+  });
+}
+
+/** Find raw socket/request call sites even when imports and callables are aliased. */
+function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
+  return analyzeCapabilityCalls(source, fileName, {
+    moduleMethods: (moduleName) => RAW_MODULE_METHODS.get(moduleName),
+    unboundNamespaces: new Map([["Bun", "bun"]]),
+  });
 }
 
 function callSites(source: string, callee: string, fileName: string): Array<{ args: number; text: string }> {
@@ -494,6 +479,64 @@ describe("registry outbound request architecture", () => {
         }
       `),
     ).toEqual([]);
+  });
+
+  test.each([
+    {
+      fileName: "probe.js",
+      source: '(({ request }) => request({}))(require("node:https"));',
+      expected: ["call:request"],
+    },
+    {
+      fileName: "probe.mjs",
+      source: "(({ connect }) => connect({}))(Bun);",
+      expected: ["call:connect"],
+    },
+    {
+      fileName: "probe.cjs",
+      source: '(({ request: req }) => req({}))(process.getBuiltinModule("node:http"));',
+      expected: ["call:req"],
+    },
+    {
+      fileName: "probe.ts",
+      source: 'let h; h = require("node:http"); h.request({});',
+      expected: ["call:h.request"],
+    },
+    {
+      fileName: "probe.js",
+      source: 'let r; ({ request: r } = require("node:https")); r({});',
+      expected: ["call:r"],
+    },
+    {
+      fileName: "probe.mjs",
+      source: '(0, require)("node:http").request({});',
+      expected: ['call:(0, require)("node:http").request'],
+    },
+    {
+      fileName: "probe.cjs",
+      source: '(0, process.getBuiltinModule)("node:net").connect({});',
+      expected: ['call:(0, process.getBuiltinModule)("node:net").connect'],
+    },
+    {
+      fileName: "probe.ts",
+      source: 'const { ["request"]: r } = require("node:https"); r({});',
+      expected: ["call:r"],
+    },
+  ])("raw transport analysis catches $fileName evasion: $source", ({ fileName, source, expected }) => {
+    expect(rawHttpCapabilities(source, fileName)).toEqual([...expected]);
+  });
+
+  test.each([
+    { fileName: "probe.ts", source: "function local(fetch: () => void) { fetch(); }" },
+    { fileName: "probe.js", source: "const fetch = () => {}; fetch();" },
+    {
+      fileName: "probe.mjs",
+      source: "function local(globalThis: { fetch: () => void }) { globalThis.fetch(); }",
+    },
+    { fileName: "probe.cjs", source: "const window = { fetch() {} }; window.fetch();" },
+    { fileName: "probe.ts", source: "const Bun = { fetch() {} }; Bun.fetch();" },
+  ])("fetch analysis ignores lexically shadowed globals in $fileName: $source", ({ fileName, source }) => {
+    expect(networkCapabilities(source, fileName)).toEqual([]);
   });
 
   test("registry callers cannot bypass the reusable network boundary", () => {
