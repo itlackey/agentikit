@@ -1769,6 +1769,12 @@ These commands define the self-improvement and agent-dispatch surface.
 
 Dispatch a configured agent engine, optionally embodying a bundle agent asset.
 
+> **0.9.1 surface:** the syntax and behavior below document the released CLI.
+> The approved target makes `akm command run` the canonical command-asset
+> executor and retains `akm agent --command` only as an alias through the same
+> resolver. That unification is not implemented in 0.9.1; see
+> [Agent, Command, Engine, and Model Resolution](../architecture/specs/agent-command-engine-model-design.md).
+
 ```sh
 akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [--command <ref>] [--workflow <ref>] [--timeout-ms <ms>] [--cwd <path>]
 ```

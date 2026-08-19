@@ -32,6 +32,12 @@ import`, `proposal accept`, and similar) won't create or edit files in a
 bundle of that format. Reading, searching, and `akm lint` validation work
 against every format in the table above regardless of write support.
 
+For native tool formats such as `claude` and `opencode`, the adapter translates
+recognized native agents and commands into AKM's indexed/runtime representation
+when the bundle is read. AKM does not create a canonical copy, synchronize tool
+directories, or write translated assets back into those native bundles. The
+native files remain authoritative.
+
 ## Why this matters
 
 This table is the proof of the first pillar: **one library for every agent**.
@@ -46,5 +52,6 @@ formats are writable today and why.
 
 - [Asset Types](https://github.com/itlackey/akm/blob/main/docs/reference/asset-types.md) — the 14 native asset types AKM's own format recognizes
 - [Adapters](https://github.com/itlackey/akm/blob/main/docs/architecture/adapters.md) — how AKM picks a format, the write-path internals, and current caveats
+- [Agent, Command, Engine, and Model Resolution](../architecture/specs/agent-command-engine-model-design.md) — approved runtime semantics for translated native agents and commands
 - [Concepts](https://github.com/itlackey/akm/blob/main/docs/guides/concepts.md) — the retrieval loop these formats feed
 - [Wikis](https://github.com/itlackey/akm/blob/main/docs/guides/wikis.md) — the `llm-wiki` authoring workflow

@@ -1,7 +1,7 @@
 # AKM Format-Neutral Bundle Workspace Architecture Specification
 
 **Status:** Amended for implementation (reconciled)  
-**Specification version:** 0.3  
+**Specification version:** 0.5
 **Date:** 2026-07-14 (v0.2 amended 2026-07-13 after the maintainer reconciliation and the design/plan review pass; v0.3 amended 2026-07-14 after the final scope decisions)  
 **Target:** Next major AKM architecture  
 **Reference implementation reviewed:** [`itlackey/akm`](https://github.com/itlackey/akm) at [`ddc0a1b417efc820ad73d76bfcbef65c9f87b243`](https://github.com/itlackey/akm/commit/ddc0a1b417efc820ad73d76bfcbef65c9f87b243)  
@@ -9,7 +9,7 @@
 
 This specification supersedes the prior directions that treated OKF as an AKM asset type, made OKF the hidden universal AKM file schema, introduced a semantic-view registry, or preserved the current asset system behind a permanent legacy adapter.
 
-**Amendment record.** *(v0.2, 2026-07-13)* The maintainer reconciliation (DEV-1..DEV-7, §4) and the review pass applied in place: the ref grammar is `[<bundle>//]<concept-id>[#fragment]` (§7.8, §11); the normalized field is the open **`type`** (§14.1), which MAY drive presentation/ranking/filtering and MUST NOT drive execution, identity, or storage; adapter capabilities are optional methods on one interface (§12); nested component roots have a subtraction rule (§9.3); index persistence is a diff, not truncate-and-rewrite (§14.2). *(v0.3, 2026-07-14 — final scope decisions, deviation §4.3a–3c)* This document remains the **target architecture**; release staging is explicit where target and 0.9.0 diverge: the persisted Binding record, export digests, rebind-on-update, and the bind CLI are **Tier B, deferred indefinitely** (staging note at §18); the **entire memory lifecycle (§25) is deferred** behind the claim extractor + benchmark (staging note at §25); and the v0.2 trust-clamp additions (trusted labeling in the read path, action clamping, catch-all sensitive-content refusal) are **withdrawn** — new trust/approval machinery is rejected as false-confidence machinery; only protections that exist in code today survive the port (env/secret redaction, the origin-scoped dangerous-key rule). No section of this document is superseded by a banner elsewhere; this text is current. *(v0.4, 2026-07-21 — owner ruling)* The **`akm.bundle.yaml` package manifest is removed entirely** (it was never implemented and should never have been approved), and **sub-mount / multi-component registration is replaced by adapter-owned file processing**: a bundle maps to exactly **one component = one adapter**, and that component's adapter processes the files and subdirectories of its bundle as it sees fit — the core provides the walk and the persistence, the adapter's `recognize` claims or abstains per file. Consequences applied in place: §9.2 multi-component packages and §9.3 nested-root subtraction no longer apply to a single-adapter bundle; manifest-declared `exports:` are removed (exports with independent standing, if any, are unaffected); §14.2's scan flow is the core walk × `adapter.recognize` with per-directory incremental diff persist. Adapter dispatch is live in the indexer (unknown adapter id ⇒ component skipped with a warning).
+**Amendment record.** *(v0.2, 2026-07-13)* The maintainer reconciliation (DEV-1..DEV-7, §4) and the review pass applied in place: the ref grammar is `[<bundle>//]<concept-id>[#fragment]` (§7.8, §11); the normalized field is the open **`type`** (§14.1), which MAY drive presentation/ranking/filtering and MUST NOT drive execution, identity, or storage; adapter capabilities are optional methods on one interface (§12); nested component roots have a subtraction rule (§9.3); index persistence is a diff, not truncate-and-rewrite (§14.2). *(v0.3, 2026-07-14 — final scope decisions, deviation §4.3a–3c)* This document remains the **target architecture**; release staging is explicit where target and 0.9.0 diverge: the persisted Binding record, export digests, rebind-on-update, and the bind CLI are **Tier B, deferred indefinitely** (staging note at §18); the **entire memory lifecycle (§25) is deferred** behind the claim extractor + benchmark (staging note at §25); and the v0.2 trust-clamp additions (trusted labeling in the read path, action clamping, catch-all sensitive-content refusal) are **withdrawn** — new trust/approval machinery is rejected as false-confidence machinery; only protections that exist in code today survive the port (env/secret redaction, the origin-scoped dangerous-key rule). No section of this document is superseded by a banner elsewhere; this text is current. *(v0.4, 2026-07-21 — owner ruling)* The **`akm.bundle.yaml` package manifest is removed entirely** (it was never implemented and should never have been approved), and **sub-mount / multi-component registration is replaced by adapter-owned file processing**: a bundle maps to exactly **one component = one adapter**, and that component's adapter processes the files and subdirectories of its bundle as it sees fit — the core provides the walk and the persistence, the adapter's `recognize` claims or abstains per file. Consequences applied in place: §9.2 multi-component packages and §9.3 nested-root subtraction no longer apply to a single-adapter bundle; manifest-declared `exports:` are removed (exports with independent standing, if any, are unaffected); §14.2's scan flow is the core walk × `adapter.recognize` with per-directory incremental diff persist. Adapter dispatch is live in the indexer (unknown adapter id ⇒ component skipped with a warning). *(v0.5, 2026-08-18 — owner ruling)* Native agent-tool directories are bundles whose adapters translate native agents and commands at runtime; AKM does not synchronize, copy, or write those native assets. Agent/command/engine/model resolution, command execution, model maps, and tool-selection semantics are now governed by [Agent, Command, Engine, and Model Resolution](./agent-command-engine-model-design.md). Installed asset metadata participates in the normal nearest-wins cascade; machine/user authorization, not asset provenance, is the separate enforcement boundary. Sections 22, 28, and 29 are amended accordingly.
 
 ---
 
@@ -1132,6 +1132,12 @@ Claude agents, OpenCode agents, Agent Skills, commands, prompts, and scripts rem
 
 The core MUST NOT inject universal AKM metadata or OKF fields into native files when that would violate or distort their schema.
 
+Native tool directories are installed as bundles. Their adapters translate
+recognized native assets into AKM runtime/index representations while reading
+them. AKM MUST NOT synchronize native tool directories, create canonical
+copies of their agent/command assets, or write translated agents/commands back
+to the native bundle. The native file remains authoritative.
+
 ### 22.2 Runtime separation
 
 The architecture SHOULD separate:
@@ -1147,6 +1153,12 @@ A product such as Claude or OpenCode may implement all three, but they are disti
 ### 22.3 Execution authority
 
 An item carrying `type: script`, `type: skill`, or an executable export does not authorize execution. Execution requires an explicit invocation or enablement; runtime handlers never consult `type` for authority (§8.4).
+
+Once explicitly invoked, installed agent and command metadata participates in
+the ordinary resolution cascade. Asset provenance does not create a second
+precedence system for engine, model, or requested tools. Machine/user policy
+separately authorizes the resolved request. The complete semantic rules are in
+[Agent, Command, Engine, and Model Resolution](./agent-command-engine-model-design.md).
 
 This follows the useful distinction in [MCP](https://modelcontextprotocol.io/docs/learn/server-concepts) between passive resources and executable tools.
 
@@ -1654,14 +1666,14 @@ Runtime authority is granted through a binding or explicit approved invocation, 
 
 ### 28.2 Untrusted content
 
-Untrusted bundle content MAY be indexed as text, subject to size and sensitivity policy. It MUST NOT:
+Untrusted bundle content MAY be indexed as text, subject to size and sensitivity policy. Indexing alone MUST NOT activate schedules, inject environment or secret values, execute scripts, or write outside its component root.
 
-- grant tools;
-- change engine configuration;
-- activate schedules;
-- inject environment or secret values;
-- execute scripts;
-- write outside its component root.
+Agent and command assets may declare requested tools and engine/model defaults.
+Those declarations have no effect until explicit execution and then
+participate in the normal nearest-wins cascade. They MUST NOT override
+machine/user tool authorization, secret policy, budget policy, or execution
+activation. A denied tool request fails explicitly; AKM does not silently
+grant or silently reduce it.
 
 *(Two v0.2 clauses — untrusted presentation clamping and a catch-all sensitive-content refusal — were withdrawn in v0.3, deviation §4.3c. Catch-all adapters remain explicit-configuration-only and never auto-selected (§9.4): a user who mounts a root with `generic-files` indexes what they pointed it at, deliberately.)*
 
@@ -1717,6 +1729,7 @@ akm improve
 akm workflow ...
 akm task ...
 akm agent ...
+akm command run ...              // target canonical command executor; doclint:ignore — not yet implemented
 akm env ...
 akm secret ...
 ```

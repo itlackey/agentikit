@@ -95,6 +95,13 @@ the shared `llm` column for direct and fallback LLM engines, then `"*"`. The
 resolved exact model is used consistently by direct dispatch, SDK fallback,
 health evidence, and frozen workflow plans.
 
+> **Current versus target design:** 0.9.1 model aliases are string mappings and
+> the shipped built-ins are vendor-oriented. The approved target keeps exact
+> identifiers, adds a small operator-overridable starter vocabulary such as
+> `fast`/`balanced`/`reasoning`, and permits explicitly adopted structured
+> inference profiles. That target is not yet implemented; see
+> [Agent, Command, Engine, and Model Resolution](../architecture/specs/agent-command-engine-model-design.md).
+
 `defaults.engine` names an LLM or agent engine. `defaults.llmEngine` must name
 an LLM engine. There is no first-engine fallback: an unset `defaults.engine`
 never resolves to some arbitrary entry in `engines`. It resolves instead to a

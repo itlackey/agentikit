@@ -12,6 +12,19 @@ Related: [`workflow-format-unification.md`](./workflow-format-unification.md),
 [`okf-support.md`](./okf-support.md),
 [`docs/reference/workflows.md`](../../reference/workflows.md)
 
+> **2026-08-18 owner clarification:**
+> [Agent, Command, Engine, and Model Resolution](./agent-command-engine-model-design.md)
+> is authoritative wherever this proposal discusses agent personas, command
+> execution, command placeholders, engine/model cascading, tool policy,
+> capability handling, or model aliases. In particular, this proposal's
+> `with:`/named/positional command-template grammar, primary-bundle tool-policy
+> ceiling, static engine-capability declarations, and built-in wildcard alias
+> recommendations are superseded. The exact task/workflow source syntax remains
+> undecided and MUST NOT be inferred from the superseded examples here. The
+> still-compatible task/workflow concepts — tasks as scheduling wrappers,
+> agents as selectors rather than targets, task composition in workflow steps,
+> live task resolution, and frozen workflow resolution — remain design input.
+
 ---
 
 ## 1. Grounding — what tasks and workflows are in akm

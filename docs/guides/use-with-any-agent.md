@@ -72,6 +72,11 @@ A Claude Code `.claude` directory or an OpenCode `.opencode` directory is
 recognized and indexed automatically once added as a source — see
 [Bundle Types](../reference/bundle-types.md) for the full adapter list and
 which formats are read-only versus writable in the current release.
+The native directory remains the source of truth: AKM translates recognized
+assets while reading the bundle and does not synchronize, copy, or write them
+back. The approved target execution rules for these translated agents and
+commands are documented in
+[Agent, Command, Engine, and Model Resolution](../architecture/specs/agent-command-engine-model-design.md).
 
 ## AKM complements, rather than replaces
 

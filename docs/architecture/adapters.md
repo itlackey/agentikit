@@ -7,6 +7,13 @@ built-in adapters — one per format in
 [Supported Formats](../reference/supported-formats.md). This page is the
 write-path and internals reference; that page is the compatibility table.
 
+For read-only native tool bundles, recognition is runtime translation, not
+conversion: the adapter projects native files into AKM's index/runtime shapes
+while the source file remains authoritative. AKM does not synchronize native
+formats, maintain translated canonical copies, or write agent/command assets
+back through the Claude/OpenCode adapters. See
+[Agent, Command, Engine, and Model Resolution](specs/agent-command-engine-model-design.md).
+
 > **Stability note.** The adapter set, bundle-recognition rules, and the
 > `bundles` config shape are still evolving — see [STABILITY.md](../../STABILITY.md).
 
