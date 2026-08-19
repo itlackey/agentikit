@@ -44,6 +44,13 @@ function fixtureConfig(): AkmConfig {
   return {
     configVersion: "0.9.0",
     semanticSearchMode: "off",
+    defaultBundle: "stash",
+    bundles: {
+      stash: {
+        path: storage.stashDir,
+        components: { main: { root: ".", adapter: "akm" } },
+      },
+    },
     engines: {
       "fixture-agent": {
         kind: "agent",
@@ -404,8 +411,10 @@ describe("explicitly non-normative 0.9.1 observations", () => {
     assertFixtureBytesUnchanged(NATIVE_ROOT, fixtureBytes);
     assertFixtureBytesUnchanged(storage.stashDir, installedBytes);
   });
+});
 
-  test("direct --command dispatch currently reads raw bytes and fills only legacy {{N}} placeholders", async () => {
+describe("WP4 command compatibility boundary", () => {
+  test("direct --command delegates to adapter rendering and rejects unsupported native placeholders", async () => {
     const config = fixtureConfig();
     const source = path.join(NATIVE_ROOT, "akm/commands/contract-review.md");
     const fixtureBytes = captureFixtureBytes(NATIVE_ROOT);
@@ -414,24 +423,20 @@ describe("explicitly non-normative 0.9.1 observations", () => {
     const installedBytes = captureFixtureBytes(storage.stashDir);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const result = await akmAgentDispatch({
-      engine: "fixture-agent",
-      commandRef: "commands/contract-review",
-      args: ["fixture-target"],
-      agentConfig: config,
-    });
-    const currentPrompt = fs.readFileSync(source, "utf8").replaceAll("{{0}}", "fixture-target");
-
-    expect(result.ok).toBe(true);
-    expect(result.stdout).toBe(`${currentPrompt}\n`);
-    expect(result.stdout).toStartWith("---\n");
-    expect(result.stdout).toContain("$ARGUMENTS");
-    expect(result.stdout).toContain("$1");
-    expect(result.stdout).not.toContain("{{0}}");
+    await expect(
+      akmAgentDispatch({
+        engine: "fixture-agent",
+        commandRef: "commands/contract-review",
+        argumentInput: "fixture-target",
+        agentConfig: config,
+      }),
+    ).rejects.toThrow(/unsupported portable template construct/i);
     assertFixtureBytesUnchanged(NATIVE_ROOT, fixtureBytes);
     assertFixtureBytesUnchanged(storage.stashDir, installedBytes);
   });
+});
 
+describe("remaining explicitly non-normative execution observations", () => {
   test("task prompt assets currently become raw prompt text, not an agent persona", async () => {
     const config = fixtureConfig();
     writeSandboxConfig(config);

@@ -105,6 +105,7 @@ function buildPromptPayload(req: AgentDispatchRequest): string {
  */
 export const geminiBuilder: AgentCommandBuilder = {
   platform: GEMINI_PLATFORM,
+  personaChannel: "prompt",
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

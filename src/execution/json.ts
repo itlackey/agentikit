@@ -75,11 +75,16 @@ export function cloneExecutionJson(
   }
 
   const snapshot = snapshotStrictRecord(value, path);
-  const entries = Object.entries(snapshot).map(([key, child]) => [
-    key,
-    cloneExecutionJson(child, `${path}.${key}`, nextAncestors),
-  ]) as Array<[string, ExecutionJsonValue]>;
-  return Object.freeze(Object.fromEntries(entries));
+  const cloned = Object.create(null) as Record<string, ExecutionJsonValue>;
+  for (const [key, child] of Object.entries(snapshot)) {
+    Object.defineProperty(cloned, key, {
+      value: cloneExecutionJson(child, `${path}.${key}`, nextAncestors),
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+  }
+  return Object.freeze(cloned);
 }
 
 export function cloneExecutionJsonObject(value: unknown, path: string): ExecutionJsonObject {
@@ -94,9 +99,11 @@ export function cloneExecutionJsonObject(value: unknown, path: string): Executio
 export function sortExecutionJson(value: ExecutionJsonValue): ExecutionJsonValue {
   if (Array.isArray(value)) return value.map(sortExecutionJson);
   if (value === null || typeof value !== "object") return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([key, child]) => [key, sortExecutionJson(child)]),
-  );
+  const sorted = Object.create(null) as Record<string, ExecutionJsonValue>;
+  for (const [key, child] of Object.entries(value).sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0,
+  )) {
+    sorted[key] = sortExecutionJson(child);
+  }
+  return sorted;
 }

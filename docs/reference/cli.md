@@ -1831,15 +1831,39 @@ source <(akm completions)
 
 These commands define the self-improvement and agent-dispatch surface.
 
+### command run
+
+Resolve a stored command through its owning bundle adapter and execute one
+fresh session through the common engine/model cascade:
+
+```sh
+akm command run <command-ref> [--arguments <exact-text>] [--agent <selector>] [--engine <name>] [--model <id-or-alias>] [--timeout-ms <ms>] [--cwd <path>]
+```
+
+| Argument / Flag | Description |
+| --- | --- |
+| `<command-ref>` | Local indexed command ref, optionally bundle-qualified (for example `commands/review` or `team//commands/review`) |
+| `--arguments <exact-text>` | Exact string substituted for every literal `$ARGUMENTS`; it is not trimmed, tokenized, quoted, or recursively expanded |
+| `--agent <selector>` | Portable `agents/...` ref or a native harness selector |
+| `--engine <name>` | Current-invocation engine override |
+| `--model <id-or-alias>` | Current-invocation exact model or operator model-map alias |
+| `--timeout-ms <ms>` | Current-invocation timeout override |
+| `--cwd <path>` | Current-invocation workspace override |
+
+Commands and portable personas are rendered by their bundle adapter. Native
+frontmatter is never sent as prompt text and native files are never rewritten.
+The only portable template token is literal `$ARGUMENTS`. Positional, named,
+expression, legacy `{{...}}`, and other native-only constructs fail before
+authorization or dispatch; invoke those templates through their native tool.
+Omitting `--arguments` and passing an explicit empty string both substitute
+empty text, but remain distinct in the resolved request.
+
 ### agent
 
 Dispatch a configured agent engine, optionally embodying a bundle agent asset.
-
-> **0.9.1 surface:** the syntax and behavior below document the released CLI.
-> The approved target makes `akm command run` the canonical command-asset
-> executor and retains `akm agent --command` only as an alias through the same
-> resolver. That unification is not implemented in 0.9.1; see
-> [Agent, Command, Engine, and Model Resolution](../architecture/specs/agent-command-engine-model-design.md).
+`akm agent --command <ref>` is a compatibility spelling for the canonical
+`akm command run` path: it performs no separate file read, template filling,
+engine choice, or model resolution.
 
 ```sh
 akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [--command <ref>] [--workflow <ref>] [--timeout-ms <ms>] [--cwd <path>]
@@ -1851,7 +1875,8 @@ akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [-
 | `--engine <name>` | Agent engine to use; defaults to `defaults.engine` |
 | `--prompt <text>` | Task prompt to pass to the agent |
 | `--model <model>` | Model override. Accepts aliases (`opus`, `sonnet`, `haiku`) or exact platform model IDs. Overrides the model in the agent asset. Resolved per platform: `opencode/claude-opus-4-7` for opencode, `claude-opus-4-7` for claude. |
-| `--command <ref>` | Load prompt from a `commands/<name>` asset |
+| `--command <ref>` | Delegate a `commands/<name>` asset to the canonical command executor |
+| `--arguments <text>` | Exact portable `$ARGUMENTS` input; valid only with `--command` |
 | `--workflow <ref>` | Load prompt from a `workflows/<name>` asset |
 | `--timeout-ms <ms>` | Override the agent CLI timeout in milliseconds |
 | `--cwd <path>` | Working directory for the spawned agent (defaults to the current directory) |

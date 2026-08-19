@@ -101,6 +101,7 @@ function buildPromptPayload(req: AgentDispatchRequest): string {
  */
 export const copilotBuilder: AgentCommandBuilder = {
   platform: COPILOT_PLATFORM,
+  personaChannel: "prompt",
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

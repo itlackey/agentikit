@@ -111,6 +111,7 @@ function ensureSandboxFlags(base: readonly string[]): string[] {
  */
 export const codexBuilder: AgentCommandBuilder = {
   platform: "codex",
+  personaChannel: "prompt",
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

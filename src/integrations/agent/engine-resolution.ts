@@ -95,8 +95,16 @@ export interface ResolvedLlmUse {
   timeoutMs: number | null;
 }
 
-function hasOwn(value: object, key: string): boolean {
+function hasOwn(value: object, key: PropertyKey): boolean {
   return Object.hasOwn(value, key);
+}
+
+function ownValue<T extends object, K extends keyof T>(value: T, key: K): T[K] | undefined {
+  return hasOwn(value, key) ? value[key] : undefined;
+}
+
+function sterileRecord<T extends object>(value: T): T {
+  return Object.assign(Object.create(null), value) as T;
 }
 
 function envName(reference: string): string | undefined {
@@ -110,13 +118,18 @@ function selectedEngineName(
   llmOnly: boolean,
 ): string | undefined {
   for (let index = layers.length - 1; index >= 0; index--) {
-    if (layers[index]?.engine !== undefined) return layers[index]?.engine;
+    const layer = layers[index];
+    if (!layer) continue;
+    const engine = ownValue(layer, "engine");
+    if (engine !== undefined) return engine;
   }
-  return llmOnly ? config.defaults?.llmEngine : config.defaults?.engine;
+  const defaults = ownValue(config, "defaults");
+  return defaults ? ownValue(defaults, llmOnly ? "llmEngine" : "engine") : undefined;
 }
 
 function resolveEngineConfig(name: string, config: EngineResolutionConfig): EngineConfig {
-  const engine = config.engines?.[name];
+  const engines = ownValue(config, "engines");
+  const engine = engines && hasOwn(engines, name) ? engines[name] : undefined;
   if (!engine) {
     throw new ConfigError(`Engine "${name}" is not configured.`, "INVALID_CONFIG_FILE");
   }
@@ -128,14 +141,16 @@ function resolveCredential(
   engine: LlmEngineConfig,
   config: EngineResolutionConfig,
 ): CredentialDescriptor | undefined {
-  if (engine.apiKey !== undefined) {
-    const explicit = envName(engine.apiKey);
+  const apiKey = ownValue(engine, "apiKey");
+  if (apiKey !== undefined) {
+    const explicit = envName(apiKey);
     if (!explicit)
       throw new ConfigError(`Engine "${name}" has an invalid symbolic apiKey reference.`, "INVALID_CONFIG_FILE");
     return { names: [explicit], required: true };
   }
   const specific = `AKM_ENGINE_${name.toUpperCase().replaceAll("-", "_")}_API_KEY`;
-  return config.defaults?.llmEngine === name
+  const defaults = ownValue(config, "defaults");
+  return (defaults ? ownValue(defaults, "llmEngine") : undefined) === name
     ? { names: [specific, "AKM_LLM_API_KEY"], required: false }
     : { names: [specific], required: false };
 }
@@ -169,7 +184,7 @@ export function collectEngineCredentialValues(
   envSource: NodeJS.ProcessEnv = process.env,
 ): string[] {
   const values = new Set<string>();
-  for (const [name, engine] of Object.entries(config.engines ?? {})) {
+  for (const [name, engine] of Object.entries(ownValue(config, "engines") ?? {})) {
     if (engine.kind !== "llm") continue;
     for (const envVar of resolveCredential(name, engine, config)?.names ?? []) {
       const value = envSource[envVar]?.trim();
@@ -217,27 +232,29 @@ export function resolveLlmEngineUse(
   }
 
   let connection: Record<string, unknown> = {
-    provider: engine.provider,
-    endpoint: engine.endpoint,
-    model: engine.model,
-    temperature: engine.temperature,
-    maxTokens: engine.maxTokens,
-    supportsJsonSchema: engine.supportsJsonSchema,
-    extraParams: engine.extraParams,
-    contextLength: engine.contextLength,
-    enableThinking: engine.enableThinking,
+    provider: ownValue(engine, "provider"),
+    endpoint: ownValue(engine, "endpoint"),
+    model: ownValue(engine, "model"),
+    temperature: ownValue(engine, "temperature"),
+    maxTokens: ownValue(engine, "maxTokens"),
+    supportsJsonSchema: ownValue(engine, "supportsJsonSchema"),
+    extraParams: ownValue(engine, "extraParams"),
+    contextLength: ownValue(engine, "contextLength"),
+    enableThinking: ownValue(engine, "enableThinking"),
   };
   for (const layer of layers) {
-    if (layer.llm) connection = deepMergeConfig(connection, layer.llm as Record<string, unknown>);
-    if (layer.model !== undefined) connection.model = layer.model;
+    const llm = ownValue(layer, "llm");
+    const model = ownValue(layer, "model");
+    if (llm) connection = deepMergeConfig(connection, llm as Record<string, unknown>);
+    if (model !== undefined) connection.model = model;
   }
   for (const key of Object.keys(connection)) {
     if (connection[key] === undefined) delete connection[key];
   }
-  connection.model = resolveLlmModel(connection.model as string, name, config.modelAliases);
+  connection.model = resolveLlmModel(connection.model as string, name, ownValue(config, "modelAliases"));
   return {
     engine: name,
-    connection: connection as LlmConnectionConfig,
+    connection: sterileRecord(connection) as LlmConnectionConfig,
     credential: resolveCredential(name, engine, config),
     timeoutMs: effectiveTimeout(engine, layers, DEFAULT_LLM_TIMEOUT_MS),
   };
@@ -245,8 +262,9 @@ export function resolveLlmEngineUse(
 
 /** Read a resolved symbolic credential only at the runtime dispatch boundary. */
 export function materializeLlmConnection(resolved: ResolvedLlmUse): LlmConnectionConfig {
-  if (resolved.connection.extraParams !== undefined) {
-    const issue = validateExtraParams(resolved.connection.extraParams)[0];
+  const extraParams = ownValue(resolved.connection, "extraParams");
+  if (extraParams !== undefined) {
+    const issue = validateExtraParams(extraParams)[0];
     if (issue) {
       throw new ConfigError(
         formatExtraParamsIssue(`Engine "${resolved.engine}" extraParams`, issue),
@@ -255,11 +273,11 @@ export function materializeLlmConnection(resolved: ResolvedLlmUse): LlmConnectio
     }
   }
   const apiKey = resolveCredentialFromEnv(resolved.credential);
-  return {
+  return sterileRecord({
     ...resolved.connection,
     ...(apiKey ? { apiKey } : {}),
     timeoutMs: resolved.timeoutMs,
-  } as LlmConnectionConfig;
+  }) as LlmConnectionConfig;
 }
 
 function lowerAgentEngine(name: string, engine: AgentEngineConfig, config: EngineResolutionConfig): RunnerSpec {
@@ -273,25 +291,32 @@ function lowerAgentEngine(name: string, engine: AgentEngineConfig, config: Engin
   const platform = harness.id;
   const sdk = platform === "opencode-sdk";
   const builtin = getBuiltinAgentProfile(platform);
-  const profile: AgentProfile = {
+  const bin = ownValue(engine, "bin");
+  const args = ownValue(engine, "args");
+  const workspace = ownValue(engine, "workspace");
+  const model = ownValue(engine, "model");
+  const engineModelAliases = ownValue(engine, "modelAliases");
+  const globalModelAliases = ownValue(config, "modelAliases");
+  const profile = sterileRecord<AgentProfile>({
     name,
     platform,
-    bin: engine.bin ?? builtin?.bin ?? (sdk ? "opencode" : platform),
-    args: engine.args ?? builtin?.args ?? [],
+    personaChannel: sdk ? "native" : (harness.agentBuilder?.personaChannel ?? "prompt"),
+    bin: bin ?? builtin?.bin ?? (sdk ? "opencode" : platform),
+    args: args ?? builtin?.args ?? [],
     stdio: "captured",
     ...(builtin?.env ? { env: builtin.env } : {}),
     envPassthrough: builtin?.envPassthrough ?? [],
     parseOutput: "text",
-    ...(engine.workspace ? { workspace: path.resolve(engine.workspace) } : {}),
-    ...(engine.model
+    ...(workspace ? { workspace: path.resolve(workspace) } : {}),
+    ...(model
       ? {
-          model: resolveModel(engine.model, platform, engine.modelAliases, config.modelAliases),
+          model: resolveModel(model, platform, engineModelAliases, globalModelAliases),
           modelIsExact: true,
         }
       : {}),
-    ...(engine.modelAliases ? { modelAliases: engine.modelAliases } : {}),
-    ...(config.modelAliases ? { globalModelAliases: config.modelAliases } : {}),
-  };
+    ...(engineModelAliases ? { modelAliases: engineModelAliases } : {}),
+    ...(globalModelAliases ? { globalModelAliases } : {}),
+  });
   if (!sdk) {
     return {
       kind: "agent",
@@ -300,7 +325,8 @@ function lowerAgentEngine(name: string, engine: AgentEngineConfig, config: Engin
       timeoutMs: hasOwn(engine, "timeoutMs") ? (engine.timeoutMs ?? null) : DEFAULT_AGENT_TIMEOUT_MS,
     };
   }
-  const fallbackName = engine.llmEngine ?? config.defaults?.llmEngine;
+  const defaults = ownValue(config, "defaults");
+  const fallbackName = ownValue(engine, "llmEngine") ?? (defaults ? ownValue(defaults, "llmEngine") : undefined);
   const fallback = fallbackName
     ? resolveLlmEngineUse(config, [{ engine: fallbackName }], { optional: true })
     : undefined;
@@ -339,7 +365,8 @@ export function resolveEngine(name: string, config: EngineResolutionConfig): Run
 }
 
 export function resolveDefaultEngine(config: EngineResolutionConfig): RunnerSpec {
-  const name = config.defaults?.engine;
+  const defaults = ownValue(config, "defaults");
+  const name = defaults ? ownValue(defaults, "engine") : undefined;
   if (!name) throw new ConfigError("No default engine is configured.", "INVALID_CONFIG_FILE");
   return resolveEngine(name, config);
 }

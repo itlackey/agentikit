@@ -3,18 +3,6 @@
   "status": "non-normative-current-observation",
   "gaps": [
     {
-      "id": "direct-command-raw-file",
-      "seam": "akm agent --command",
-      "observation": "The indexed command file is read as raw UTF-8, including frontmatter.",
-      "targetWorkPackage": "WP4"
-    },
-    {
-      "id": "direct-command-legacy-placeholders",
-      "seam": "akm agent --command",
-      "observation": "Only {{N}} placeholders are filled; $ARGUMENTS and native positional placeholders remain untouched.",
-      "targetWorkPackage": "WP4"
-    },
-    {
       "id": "task-prompt-raw-assets",
       "seam": "task v2 prompt target",
       "observation": "Prompt assets and files are read as raw text and do not select an agent persona.",

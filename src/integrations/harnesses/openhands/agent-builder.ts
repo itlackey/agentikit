@@ -118,6 +118,7 @@ function buildTaskPayload(req: AgentDispatchRequest): string {
  */
 export const openhandsBuilder: AgentCommandBuilder = {
   platform: OPENHANDS_PLATFORM,
+  personaChannel: "prompt",
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

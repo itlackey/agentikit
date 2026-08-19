@@ -10,6 +10,84 @@ import { FALLBACK_ANNOUNCEMENT } from "../../src/integrations/agent/engine-fallb
 import { overrideSeam } from "../_helpers/seams";
 
 describe("akmAgentDispatch engine capability", () => {
+  test("delegates --command to the canonical invocation without normalizing exact arguments", async () => {
+    const calls: unknown[] = [];
+    const result = await akmAgentDispatch(
+      {
+        commandRef: "fixture//commands/review",
+        argumentInput: "  exact\n$ARGUMENTS  ",
+        agentRef: "fixture//agents/reviewer",
+        engine: "reviewer",
+        timeoutMs: 12_345,
+        cwd: "/tmp/project",
+        dispatch: { prompt: "", model: "balanced" },
+        agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
+      },
+      {
+        executeCommand: async (input) => {
+          calls.push(input);
+          return {
+            schemaVersion: 2,
+            ok: true,
+            shape: "agent-result",
+            engine: "reviewer",
+            exitCode: 0,
+            stdout: "done",
+            stderr: "",
+            durationMs: 1,
+          };
+        },
+      },
+    );
+
+    expect(result.stdout).toBe("done");
+    expect(calls).toEqual([
+      {
+        action: {
+          ref: "fixture//commands/review",
+          arguments: "  exact\n$ARGUMENTS  ",
+        },
+        config: { configVersion: "0.9.0", semanticSearchMode: "off" },
+        current: {
+          agent: "fixture//agents/reviewer",
+          engine: "reviewer",
+          model: "balanced",
+          timeout: 12_345,
+          workspace: "/tmp/project",
+        },
+      },
+    ]);
+  });
+
+  test("rejects legacy command argv and raw persona injection before delegation", async () => {
+    let calls = 0;
+    const executeCommand = async () => {
+      calls += 1;
+      throw new Error("must not delegate");
+    };
+    await expect(
+      akmAgentDispatch(
+        {
+          commandRef: "commands/review",
+          args: ["lost", "spacing"],
+          agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
+        },
+        { executeCommand },
+      ),
+    ).rejects.toThrow(/one exact string|argumentInput/i);
+    await expect(
+      akmAgentDispatch(
+        {
+          commandRef: "commands/review",
+          dispatch: { prompt: "", systemPrompt: "raw persona" },
+          agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
+        },
+        { executeCommand },
+      ),
+    ).rejects.toThrow(/agent ref|systemPrompt/i);
+    expect(calls).toBe(0);
+  });
+
   test("returns the exact v2 public result envelope", async () => {
     const result = await akmAgentDispatch({
       engine: "test-agent",

@@ -61,6 +61,10 @@ export const agentCommand = defineCommand({
     },
     engine: { type: "string", description: "Agent engine to use (default: defaults.engine)" },
     command: { type: "string", description: "Load prompt from a command asset" },
+    arguments: {
+      type: "string",
+      description: "Exact string substituted for each literal $ARGUMENTS in --command (no tokenization or trimming)",
+    },
     workflow: { type: "string", description: "Load prompt from a workflow asset" },
     model: {
       type: "string",
@@ -83,6 +87,45 @@ export const agentCommand = defineCommand({
       // Resolve agent asset ref → extract system prompt, model, and tool policy.
       const agentRef = getStringArg(args, "agent-ref");
 
+      const promptText = getStringArg(args, "prompt");
+      const commandRef = getStringArg(args, "command");
+      const workflowRef = getStringArg(args, "workflow");
+      const promptStdin = args["prompt-stdin"] === true;
+      const argumentInput = typeof args.arguments === "string" ? args.arguments : undefined;
+      if (argumentInput !== undefined && commandRef === undefined) {
+        throw new UsageError("--arguments requires --command <ref>.", "INVALID_FLAG_VALUE");
+      }
+      if (promptStdin && (promptText !== undefined || commandRef !== undefined || workflowRef !== undefined)) {
+        throw new UsageError(
+          "--prompt-stdin cannot be combined with --prompt, --command, or --workflow.",
+          "INVALID_FLAG_VALUE",
+        );
+      }
+      if (commandRef !== undefined && (promptText !== undefined || workflowRef !== undefined)) {
+        throw new UsageError("--command cannot be combined with --prompt or --workflow.", "INVALID_FLAG_VALUE");
+      }
+      const cwd = getStringArg(args, "cwd");
+
+      // Compatibility only: the command arm delegates before any `show` read,
+      // template substitution, model resolution, or engine selection occurs in
+      // this handler. The canonical command path owns all of those decisions.
+      if (commandRef !== undefined) {
+        const model = getStringArg(args, "model");
+        const result = await akmAgentDispatch({
+          engine: getStringArg(args, "engine"),
+          commandRef,
+          ...(argumentInput === undefined ? {} : { argumentInput }),
+          ...(agentRef === undefined ? {} : { agentRef }),
+          agentConfig,
+          ...(model === undefined ? {} : { dispatch: { prompt: "", model } }),
+          ...(cwd ? { cwd } : {}),
+          ...(timeoutMs !== undefined && Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
+        });
+        output("agent-result", result);
+        if (!result.ok) process.exitCode = EXIT_GENERAL;
+        return;
+      }
+
       let systemPrompt: string | undefined;
       let assetModel: string | undefined;
       let assetTools: import("../../sources/types.js").ShowResponse["toolPolicy"] | undefined;
@@ -104,18 +147,7 @@ export const agentCommand = defineCommand({
       // --model flag wins over the asset's modelHint.
       const model = getStringArg(args, "model") ?? assetModel;
 
-      const promptText = getStringArg(args, "prompt");
-      const commandRef = getStringArg(args, "command");
-      const workflowRef = getStringArg(args, "workflow");
-      const promptStdin = args["prompt-stdin"] === true;
-      if (promptStdin && (promptText !== undefined || commandRef !== undefined || workflowRef !== undefined)) {
-        throw new UsageError(
-          "--prompt-stdin cannot be combined with --prompt, --command, or --workflow.",
-          "INVALID_FLAG_VALUE",
-        );
-      }
       const stdinPrompt = promptStdin ? readPromptStdin() : undefined;
-      const cwd = getStringArg(args, "cwd");
 
       // Only build a dispatch request when there is something to dispatch — a
       // prompt, an agent asset, or a model override. When none of these are
