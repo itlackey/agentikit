@@ -18,7 +18,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { SecretResolver } from "../src/sources/provider";
 import { resolveSourceProviderFactory } from "../src/sources/provider-factory";
 import "../src/sources/providers/website";
-import { getWebsiteCachePaths } from "../src/sources/snapshot-fetchers/website-ingest";
+import { ensureWebsiteMirror, getWebsiteCachePaths } from "../src/sources/snapshot-fetchers/website-ingest";
 import { withMockedFetch } from "./_helpers/sandbox";
 
 const SECRET = "STORE_TOKEN_FROM_SYNC_PATH";
@@ -61,7 +61,7 @@ describe("SecretResolver reaches provider sync()", () => {
         // The website provider treats the URL as an x.com profile only if it
         // matches; use a real x.com URL so the X fetcher engages.
         const p = resolveSourceProviderFactory("website")?.(websiteEntry("https://x.com/jack"));
-        await p?.sync?.({ force: true, secrets: resolver });
+        await p?.sync?.({ force: true, secrets: resolver, ensureWebsiteMirror });
         const { stashDir } = getWebsiteCachePaths("https://x.com/jack");
         const fs = await import("node:fs");
         const path = await import("node:path");
@@ -107,7 +107,7 @@ describe("SecretResolver reaches provider sync()", () => {
     // sync() must not throw.
     await expect(
       withMockedFetch(
-        () => provider?.sync?.({ force: true }) ?? Promise.resolve(),
+        () => provider?.sync?.({ force: true, ensureWebsiteMirror }) ?? Promise.resolve(),
         async () => new Response("{}", { status: 404, headers: { "content-type": "application/json" } }),
       ),
     ).resolves.toBeUndefined();
