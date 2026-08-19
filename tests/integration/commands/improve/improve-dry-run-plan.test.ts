@@ -26,7 +26,7 @@ import { akmIndex } from "../../../../src/indexer/indexer";
 import { OpenCodeProvider } from "../../../../src/integrations/harnesses/opencode/session-log";
 import type { SessionLogHarness } from "../../../../src/integrations/session-logs/types";
 import { writeSkill } from "../../../_helpers/assets";
-import { withTestImproveLlm } from "../../../_helpers/improve-config";
+import { withImproveAutonomy, withTestImproveLlm } from "../../../_helpers/improve-config";
 import { type Cleanup, withIsolatedAkmStorage, withMockedFetch } from "../../../_helpers/sandbox";
 
 const cleanups: Cleanup[] = [];
@@ -357,6 +357,52 @@ describe("#800 effective dry-run planner", () => {
 
     expect(dry.plannedRefs).toEqual(live.plannedRefs);
     expect(dry.plan?.effectiveRefs).toEqual(live.plan?.effectiveRefs);
+  });
+
+  test("dry and live cleanup prune the same ref-scoped derived memory before the disk gate", async () => {
+    const { stashDir } = isolatedStorage();
+    const config = withImproveAutonomy(plannerConfig());
+    const derivedPath = path.join(stashDir, "memories", "deploy-copy.derived.md");
+    fs.mkdirSync(path.dirname(derivedPath), { recursive: true });
+    fs.writeFileSync(
+      derivedPath,
+      [
+        "---",
+        "description: Obsolete deployment copy",
+        "inferred: true",
+        "source: memories/deploy",
+        "obsolete: true",
+        "---",
+        "",
+        "Use the retired deployment path.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    saveConfig(config);
+    await akmIndex({ stashDir, full: true });
+
+    const scope = "memories/deploy-copy.derived";
+    const dry = await akmImprove({ scope, stashDir, config, dryRun: true });
+    const live = await akmImprove({ scope, stashDir, config });
+
+    expect(dry.plannedRefs).toEqual([]);
+    expect(live.plannedRefs).toEqual(dry.plannedRefs);
+    expect(live.plan?.effectiveRefs).toEqual(dry.plan?.effectiveRefs);
+    expect(dry.plan?.gates.find((gate) => gate.name === "cleanup")).toEqual({
+      name: "cleanup",
+      removed: 1,
+      reason: "would be archived by memory cleanup",
+    });
+    expect(live.plan?.gates.find((gate) => gate.name === "cleanup")).toEqual({
+      name: "cleanup",
+      removed: 1,
+      reason: "archived by memory cleanup",
+    });
+    expect(dry.plan?.gates.find((gate) => gate.name === "disk")?.removed).toBe(0);
+    expect(live.plan?.gates.find((gate) => gate.name === "disk")?.removed).toBe(0);
+    expect(live.memoryCleanup?.archived).toHaveLength(1);
+    expect(fs.existsSync(derivedPath)).toBe(false);
   });
 
   test("consolidation preview reports the real pool, gates, and chunk estimate without dispatch", async () => {

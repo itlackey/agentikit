@@ -69,7 +69,7 @@ import {
   projectAssetOutcome,
   updateAssetOutcome,
 } from "./outcome-loop";
-import { selectEffectiveImproveRefs } from "./planner";
+import { projectMemoryCleanup, selectEffectiveImproveRefs } from "./planner";
 import { DEFAULT_DUE_DAYS, DEFAULT_MAX_PER_RUN, selectProactiveMaintenanceRefs } from "./proactive-maintenance";
 import {
   buildRankChangeReport,
@@ -1026,15 +1026,26 @@ async function runPreparationPrelude(
     );
   }
 
+  const allowCleanupApply = isAutonomyLaneAllowed("memoryCleanup", options.config ?? loadConfig());
   const cleanup = planOnly
-    ? { postCleanupRefs: plannedRefs, pruneActions: [], warnings: [], appliedCleanup: undefined }
+    ? {
+        ...projectMemoryCleanup({
+          mode: "estimate",
+          plannedRefs,
+          candidateRefs: memoryCleanupPlan?.pruneCandidates.map((candidate) => candidate.ref) ?? [],
+          allowApply: allowCleanupApply,
+        }),
+        pruneActions: [],
+        warnings: [],
+        appliedCleanup: undefined,
+      }
     : await applyCleanupPass({
         primaryStashDir,
         memoryCleanupPlan,
         plannedRefs,
         reindexFn,
         budgetSignal,
-        allowApply: isAutonomyLaneAllowed("memoryCleanup", options.config ?? loadConfig()),
+        allowApply: allowCleanupApply,
       });
   actions.push(...cleanup.pruneActions);
   cleanupWarnings.push(...cleanup.warnings);
@@ -1057,6 +1068,7 @@ async function runPreparationPrelude(
     extractResults: extractPass.extractResults,
     appliedCleanup: cleanup.appliedCleanup,
     postCleanupRefs: cleanup.postCleanupRefs,
+    cleanupGate: cleanup.gate,
     ...validation,
   };
 }
@@ -1083,6 +1095,7 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
     extractResults,
     appliedCleanup,
     postCleanupRefs,
+    cleanupGate,
     validationFailures,
     validationFailureRefs,
     schemaRepairs,
@@ -1152,11 +1165,7 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
   });
 
   const planningGates: ImprovePlanGate[] = [
-    {
-      name: "cleanup",
-      removed: Math.max(0, plannedRefs.length - postCleanupRefs.length),
-      reason: "memory cleanup archive removals",
-    },
+    cleanupGate,
     {
       name: "validation",
       removed: validationFailureRefs.size,
@@ -1267,6 +1276,7 @@ async function applyCleanupPass(args: {
 }): Promise<{
   appliedCleanup?: Awaited<ReturnType<typeof applyMemoryCleanup>>;
   postCleanupRefs: ImproveEligibleRef[];
+  gate: ImprovePlanGate;
   pruneActions: ImproveActionResult[];
   warnings: string[];
 }> {
@@ -1283,9 +1293,12 @@ async function applyCleanupPass(args: {
     warnings.push(`applyMemoryCleanup failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const archivedRefs = appliedCleanup?.archived.map((record) => record.ref) ?? [];
-  const removed = new Set(archivedRefs);
-  const postCleanupRefs = archivedRefs.length === 0 ? plannedRefs : plannedRefs.filter((r) => !removed.has(r.ref));
+  const projection = projectMemoryCleanup({
+    mode: "execution",
+    plannedRefs,
+    archivedRefs: appliedCleanup?.archived.map((record) => record.ref) ?? [],
+    allowApply,
+  });
 
   // ── Phase 1: validation pass + schema repair (run on full postCleanupRefs) ──
   // Identifies refs whose on-disk asset has structural problems. Validation
@@ -1309,7 +1322,7 @@ async function applyCleanupPass(args: {
       }
     }
   }
-  return { appliedCleanup, postCleanupRefs, pruneActions, warnings };
+  return { appliedCleanup, ...projection, pruneActions, warnings };
 }
 
 /** Seed the per-originator rolling error windows from schema-repair errors. */

@@ -11,12 +11,67 @@
  * independently reconstructing "what would run".
  */
 
+import { conceptIdFromTypeName } from "../../core/asset/resolve-ref";
 import type { ImproveEligibleRef, ImproveExecutionPlan, ImprovePlanGate } from "../../core/improve-types";
+import { parseMemoryName } from "./memory/derived-ref";
 
 export interface EffectiveRefSelection {
   loopRefs: ImproveEligibleRef[];
   distillOnlyRefs: ImproveEligibleRef[];
   limitRemoved: number;
+}
+
+type MemoryCleanupProjectionInput =
+  | {
+      mode: "estimate";
+      plannedRefs: readonly ImproveEligibleRef[];
+      candidateRefs: readonly string[];
+      allowApply: boolean;
+    }
+  | {
+      mode: "execution";
+      plannedRefs: readonly ImproveEligibleRef[];
+      archivedRefs: readonly string[];
+      allowApply: boolean;
+    };
+
+export interface MemoryCleanupProjection {
+  postCleanupRefs: ImproveEligibleRef[];
+  gate: ImprovePlanGate;
+}
+
+function canonicalMemoryConceptRef(ref: string): string | undefined {
+  const name = parseMemoryName(ref);
+  return name === undefined ? undefined : conceptIdFromTypeName("memory", name);
+}
+
+/**
+ * Project the refs that survive memory cleanup from either the planned archive
+ * candidates (dry estimate) or the archives that actually succeeded (live
+ * execution). Cleanup records use the legacy `memory:<name>` identity channel,
+ * while improve candidates use canonical `memories/<name>` concept refs, so
+ * both sides are normalized before comparison.
+ */
+export function projectMemoryCleanup(input: MemoryCleanupProjectionInput): MemoryCleanupProjection {
+  const cleanupRefs = input.allowApply ? (input.mode === "estimate" ? input.candidateRefs : input.archivedRefs) : [];
+  const removed = new Set(cleanupRefs.map(canonicalMemoryConceptRef).filter((ref) => ref !== undefined));
+  const postCleanupRefs = input.plannedRefs.filter((entry) => {
+    const canonical = canonicalMemoryConceptRef(entry.ref);
+    return canonical === undefined || !removed.has(canonical);
+  });
+
+  return {
+    postCleanupRefs,
+    gate: {
+      name: "cleanup",
+      removed: input.plannedRefs.length - postCleanupRefs.length,
+      reason: !input.allowApply
+        ? "memory cleanup archive application is autonomy-gated"
+        : input.mode === "estimate"
+          ? "would be archived by memory cleanup"
+          : "archived by memory cleanup",
+    },
+  };
 }
 
 /**

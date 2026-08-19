@@ -3,7 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
-import { buildImproveExecutionPlan, selectEffectiveImproveRefs } from "../../../src/commands/improve/planner";
+import { memoryIdentityRef } from "../../../src/commands/improve/memory/derived-ref";
+import {
+  buildImproveExecutionPlan,
+  projectMemoryCleanup,
+  selectEffectiveImproveRefs,
+} from "../../../src/commands/improve/planner";
 import type { ImproveEligibleRef } from "../../../src/core/improve-types";
 
 function ref(name: string, eligibilitySource: ImproveEligibleRef["eligibilitySource"]): ImproveEligibleRef {
@@ -95,6 +100,57 @@ describe("selectEffectiveImproveRefs", () => {
       effective: 1,
       additiveReplayAllowance: 1,
       totalCeiling: 2,
+    });
+  });
+});
+
+describe("projectMemoryCleanup", () => {
+  test("normalizes legacy cleanup identities for both estimates and executions", () => {
+    const prunable = ref("deploy-copy.derived", "scope");
+    const retained = ref("keep", "scope");
+    const plannedRefs = [prunable, retained];
+
+    const estimate = projectMemoryCleanup({
+      mode: "estimate",
+      plannedRefs,
+      candidateRefs: [memoryIdentityRef("deploy-copy.derived")],
+      allowApply: true,
+    });
+    const execution = projectMemoryCleanup({
+      mode: "execution",
+      plannedRefs,
+      archivedRefs: [memoryIdentityRef("deploy-copy.derived")],
+      allowApply: true,
+    });
+
+    expect(estimate.postCleanupRefs).toEqual([retained]);
+    expect(execution.postCleanupRefs).toEqual(estimate.postCleanupRefs);
+    expect(estimate.gate).toEqual({
+      name: "cleanup",
+      removed: 1,
+      reason: "would be archived by memory cleanup",
+    });
+    expect(execution.gate).toEqual({
+      name: "cleanup",
+      removed: 1,
+      reason: "archived by memory cleanup",
+    });
+  });
+
+  test("retains planned refs when cleanup application is autonomy-gated", () => {
+    const plannedRefs = [ref("deploy-copy.derived", "scope")];
+    const projection = projectMemoryCleanup({
+      mode: "estimate",
+      plannedRefs,
+      candidateRefs: [memoryIdentityRef("deploy-copy.derived")],
+      allowApply: false,
+    });
+
+    expect(projection.postCleanupRefs).toEqual(plannedRefs);
+    expect(projection.gate).toEqual({
+      name: "cleanup",
+      removed: 0,
+      reason: "memory cleanup archive application is autonomy-gated",
     });
   });
 });
