@@ -46,6 +46,7 @@ import { openStateDatabase } from "../../src/core/state-db";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
 import type { StashFile } from "../../src/indexer/passes/metadata";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
+import { parseTaskV3Yaml } from "../../src/tasks/source-v3";
 import {
   buildOrphanBearingStateDb,
   LIVE_CONTRAST_REFS,
@@ -575,7 +576,10 @@ test("relative pre-cutover roots resolve against the apply cwd", async () => {
   expect(parseFrontmatter(fs.readFileSync(path.join(memoriesDir, "note.md"), "utf8")).data.description).toBe(
     "Resolved from the original migration cwd",
   );
-  expect(fs.readFileSync(taskPath, "utf8")).toContain("workflow: workflows/relative");
+  expect(parseTaskV3Yaml({ yaml: fs.readFileSync(taskPath, "utf8"), filePath: taskPath })).toMatchObject({
+    version: 3,
+    target: { kind: "uses", uses: { kind: "workflow", ref: "workflows/relative" } },
+  });
   expect(fs.existsSync(path.join(resumeCwd, relativeStash))).toBe(false);
 }, 30_000);
 

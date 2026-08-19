@@ -25,8 +25,23 @@ export interface TaskV2ToV3FileInput {
   readonly bytes: Buffer;
   readonly mode: number;
   readonly writable: boolean;
+  /** False when the inspected file or its publication directory has no write bit. */
+  readonly onDiskWritable?: boolean;
   /** Physical bundle/component root recorded by the filesystem inspector. */
   readonly containmentRoot?: string;
+  /** Physical identities captured by the filesystem inspector for drift fencing. */
+  readonly inspectionIdentity?: TaskV2ToV3InspectionIdentity;
+}
+
+export interface TaskV2ToV3FilesystemIdentity {
+  readonly realPath: string;
+  readonly device: string;
+  readonly inode: string;
+}
+
+export interface TaskV2ToV3InspectionIdentity {
+  readonly file: TaskV2ToV3FilesystemIdentity;
+  readonly root: TaskV2ToV3FilesystemIdentity;
 }
 
 interface TaskV2ToV3OutcomeBase {
@@ -35,7 +50,9 @@ interface TaskV2ToV3OutcomeBase {
   readonly beforeHash: string;
   readonly mode: number;
   readonly writable: boolean;
+  readonly onDiskWritable?: boolean;
   readonly containmentRoot?: string;
+  readonly inspectionIdentity?: TaskV2ToV3InspectionIdentity;
   readonly reason: string;
   readonly detail?: string;
 }
@@ -93,6 +110,15 @@ const V2_LLM_KEYS = new Set([
   "enableThinking",
 ]);
 const SAFE_V2_COMMAND_TOKEN = /^[A-Za-z0-9_./:=+,-]+$/;
+const SHELL_ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
+/**
+ * V2 executed argv directly, while v3 `run:` enters a host shell. An explicit
+ * path bypasses shell aliases/builtins; `akm` is the one bare executable whose
+ * v3 runtime resolution is contractually pinned to the current installation.
+ */
+function shellStableV2Executable(executable: string): boolean {
+  return executable === "akm" || executable.includes("/");
+}
 const KNOWN_PROMPT_REF_FAMILIES = new Set([
   "agents",
   "commands",
@@ -115,13 +141,21 @@ function hash(bytes: Uint8Array): string {
 }
 
 function base(input: TaskV2ToV3FileInput): Omit<TaskV2ToV3OutcomeBase, "reason"> {
+  const inspectionIdentity = input.inspectionIdentity
+    ? Object.freeze({
+        file: Object.freeze({ ...input.inspectionIdentity.file }),
+        root: Object.freeze({ ...input.inspectionIdentity.root }),
+      })
+    : undefined;
   return {
     filePath: input.filePath,
     before: Buffer.from(input.bytes),
     beforeHash: hash(input.bytes),
     mode: input.mode,
     writable: input.writable,
+    ...(input.onDiskWritable !== undefined ? { onDiskWritable: input.onDiskWritable } : {}),
     ...(input.containmentRoot ? { containmentRoot: input.containmentRoot } : {}),
+    ...(inspectionIdentity ? { inspectionIdentity } : {}),
   };
 }
 
@@ -352,6 +386,10 @@ function migratedObject(data: Record<string, unknown>): Record<string, unknown> 
     if (tokens.length === 0 || tokens.some((token) => !SAFE_V2_COMMAND_TOKEN.test(token))) {
       return "shell-operators-change-v2-literal-argv-semantics";
     }
+    const executable = tokens[0] as string;
+    if (SHELL_ASSIGNMENT_WORD.test(executable) || !shellStableV2Executable(executable)) {
+      return "shell-command-resolution-changes-v2-literal-argv-semantics";
+    }
     output.run = tokens.join(" ");
     addSharedNonPromptOverrides(data, akm);
   }
@@ -374,7 +412,11 @@ export function planTaskV2ToV3File(input: TaskV2ToV3FileInput): TaskV2ToV3FileOu
   }
   if (data.version === 3) {
     try {
-      parseTaskV3Yaml({ yaml: source, filePath: input.filePath });
+      parseTaskV3Yaml({
+        yaml: source,
+        filePath: input.filePath,
+        ...(input.containmentRoot ? { workspaceRoot: input.containmentRoot } : {}),
+      });
       return Object.freeze({ status: "skipped" as const, ...base(input), reason: "already-v3" as const });
     } catch (cause) {
       return blocked(input, "invalid-v3-task", cause instanceof Error ? cause.message : String(cause));
@@ -382,7 +424,13 @@ export function planTaskV2ToV3File(input: TaskV2ToV3FileInput): TaskV2ToV3FileOu
   }
   if (data.version !== 2)
     return blocked(input, "unsupported-task-version", `expected version 2 or 3, got ${String(data.version)}`);
-  if (!input.writable) return blocked(input, "read-only-source", "the owning source is not writable");
+  if (!input.writable || input.onDiskWritable === false) {
+    return blocked(
+      input,
+      "read-only-source",
+      !input.writable ? "the owning source is not writable" : "the source file or publication directory is read-only",
+    );
+  }
   try {
     parseTaskDocument({ yaml: source, filePath: input.filePath, id: path.basename(input.filePath, ".yml") });
   } catch (cause) {
@@ -397,7 +445,11 @@ export function planTaskV2ToV3File(input: TaskV2ToV3FileInput): TaskV2ToV3FileOu
   if (isReason(migrated)) return blocked(input, migrated);
   const after = Buffer.from(stringifyYaml(migrated), "utf8");
   try {
-    parseTaskV3Yaml({ yaml: after.toString("utf8"), filePath: input.filePath });
+    parseTaskV3Yaml({
+      yaml: after.toString("utf8"),
+      filePath: input.filePath,
+      ...(input.containmentRoot ? { workspaceRoot: input.containmentRoot } : {}),
+    });
   } catch (cause) {
     return blocked(input, "generated-v3-validation-failed", cause instanceof Error ? cause.message : String(cause));
   }
@@ -423,6 +475,8 @@ function generationFor(files: readonly TaskV2ToV3FileOutcome[]): string {
     digest.update(String(file.mode));
     digest.update("\0");
     digest.update(file.writable ? "writable" : "read-only");
+    digest.update("\0");
+    digest.update(file.onDiskWritable === false ? "disk-read-only" : "disk-writable-or-unspecified");
     digest.update("\0");
     if (file.containmentRoot) digest.update(file.containmentRoot);
     digest.update("\0");

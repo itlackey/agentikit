@@ -175,7 +175,21 @@ test("published schema declares the authoritative runtime-only resource constrai
     maxJsonDepth: 64,
     maxJsonNodes: 10_000,
     canonicalRefsRequireNfc: true,
+    workingDirectoryRequiresWorkspaceRoot: true,
   });
+
+  const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
+  const byteBounded = { version: 3, name: "😀".repeat(70_000), uses: "commands/review", akm: { schedule: "@daily" } };
+  expect(validate(byteBounded), JSON.stringify(validate.errors)).toBe(true);
+  expect(() => parseTaskV3Yaml({ yaml: JSON.stringify(byteBounded), filePath: "utf8-bytes.yml" })).toThrow(
+    /byte|string/i,
+  );
+
+  const noncanonicalRef = { version: 3, uses: "commands/cafe\u0301", akm: { schedule: "@daily" } };
+  expect(validate(noncanonicalRef), JSON.stringify(validate.errors)).toBe(true);
+  expect(() => parseTaskV3Yaml({ yaml: JSON.stringify(noncanonicalRef), filePath: "canonical-ref.yml" })).toThrow(
+    /canonical|ref|uses/i,
+  );
 });
 
 test("published outputSchema grammar rejects keywords the runtime subset cannot enforce", () => {

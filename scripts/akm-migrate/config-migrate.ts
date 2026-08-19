@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { EXIT_CODES } from "../../src/cli/shared";
 import { workflowStructureDiagnostics } from "../../src/core/adapter/adapters/akm-lint";
+import { detectAdapterId } from "../../src/core/adapter/detect-adapter";
 import { assetPathForName, stashDirFor } from "../../src/core/asset/asset-placement";
 import { parseBundleRef } from "../../src/core/asset/asset-ref";
 import { typeNameFromConceptId } from "../../src/core/asset/resolve-ref";
@@ -433,6 +434,19 @@ function inspectCurrentProposalRepair(artifacts: MigrationState): { count: numbe
   }
 }
 
+function taskComponentEntryExists(componentRoot: string): boolean {
+  try {
+    fs.lstatSync(componentRoot);
+    return true;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw new ConfigError(
+      `Task migration cannot inspect component root ${componentRoot}: ${cause instanceof Error ? cause.message : String(cause)}.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+}
+
 function taskV3RootsFromConfig(
   config: AkmConfig,
   pathResolutionBase: string,
@@ -444,7 +458,6 @@ function taskV3RootsFromConfig(
     const source = sources.get(root.bundleId);
     const bundle = config.bundles?.[root.bundleId];
     const component = bundleComponentConfig(bundle);
-    if (component?.adapter && component.adapter !== "akm" && component.adapter !== "akm-task") return [];
     const materializedRoot = path.resolve(root.path);
     const componentRoot = path.resolve(materializedRoot, component?.root ?? ".");
     const relative = path.relative(materializedRoot, componentRoot);
@@ -454,12 +467,30 @@ function taskV3RootsFromConfig(
         "INVALID_CONFIG_FILE",
       );
     }
+    const configuredAdapter = component?.adapter;
+    const adapter = configuredAdapter ?? detectAdapterId(componentRoot, "");
+    if (!configuredAdapter && adapter === "" && taskComponentEntryExists(componentRoot)) {
+      const topLevelTaskCandidates = fs
+        .readdirSync(componentRoot, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && path.extname(entry.name).toLowerCase() === ".yml")
+        .map((entry) => entry.name)
+        .sort();
+      if (topLevelTaskCandidates.length > 0) {
+        throw new ConfigError(
+          `Task migration cannot infer whether component ${root.bundleId} at ${componentRoot} owns top-level task file(s) ${topLevelTaskCandidates.join(
+            ", ",
+          )}; configure adapter "akm-task" for a flat task component or "akm" for a stash layout.`,
+          "INVALID_CONFIG_FILE",
+        );
+      }
+    }
+    if (adapter !== "akm" && adapter !== "akm-task") return [];
     return [
       {
         bundleId: root.bundleId,
         root: componentRoot,
         writable: component?.writable ?? (source !== undefined && resolveWritable(source)),
-        layout: component?.adapter === "akm-task" ? "akm-task" : "akm-stash",
+        layout: adapter === "akm-task" ? "akm-task" : "akm-stash",
       },
     ];
   });

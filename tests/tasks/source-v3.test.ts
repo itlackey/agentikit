@@ -184,6 +184,14 @@ describe("strict task v3 source document", () => {
     }
   });
 
+  test("requires a workspace root whenever working-directory needs physical containment", () => {
+    expect(() =>
+      parseTaskV3Document(scheduled({ run: "echo exact", "working-directory": "packages/core" }), {
+        filePath: "/bundle/tasks/run.yml",
+      }),
+    ).toThrow(/workspace root|physically|contain/i);
+  });
+
   test("parses GitHub-style schedule and manual triggers into deterministic internal bindings", () => {
     const parsed = parseTaskV3Document(
       {

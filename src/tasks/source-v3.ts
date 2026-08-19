@@ -122,7 +122,7 @@ export interface TaskV3SourceDocument {
 
 export interface ParseTaskV3DocumentOptions {
   readonly filePath: string;
-  /** Required by adapters when `working-directory` is authored so symlinks can be contained physically. */
+  /** Required when `working-directory` is authored so symlinks can be contained physically. */
   readonly workspaceRoot?: string;
   /** Internal line lookup supplied by the YAML adapter. */
   readonly lineAt?: (path: readonly (string | number)[]) => number | undefined;
@@ -677,7 +677,9 @@ function validateWorkingDirectory(value: string, ctx: ParseContext): void {
   if (segments.some((segment) => segment === ".." || segment.length === 0)) {
     sourceError(ctx, ["working-directory"], "must not contain empty or escaping path segments.");
   }
-  if (!ctx.workspaceRoot) return;
+  if (!ctx.workspaceRoot) {
+    sourceError(ctx, ["working-directory"], "requires a workspace root so physical containment can be verified.");
+  }
   let realRoot: string;
   let realCandidate: string;
   try {

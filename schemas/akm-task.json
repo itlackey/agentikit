@@ -9,7 +9,8 @@
     "maxStringUtf8Bytes": 262144,
     "maxJsonDepth": 64,
     "maxJsonNodes": 10000,
-    "canonicalRefsRequireNfc": true
+    "canonicalRefsRequireNfc": true,
+    "workingDirectoryRequiresWorkspaceRoot": true
   },
   "type": "object",
   "required": ["version"],

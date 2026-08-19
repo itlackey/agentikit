@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
@@ -130,6 +131,29 @@ describe("pure task v2 to v3 migration planner", () => {
     assertFixtureBytesUnchanged(ROOT, before);
   });
 
+  test.each([
+    "FOO=bar echo ok",
+    "if true",
+    ". profile",
+    "time echo ok",
+    "x=y",
+    "echo ok",
+    "custom-tool arg",
+  ])("blocks v2 command text whose literal argv would acquire shell semantics: %s", (command) => {
+    const outcome = planTaskV2ToV3File(
+      memoryInput(`version: 2\nschedule: '@daily'\ncommand: ${JSON.stringify(command)}\n`),
+    );
+    expect(outcome.status).toBe("blocked");
+    expect(outcome.reason).toMatch(/shell|argv|assignment|builtin|reserved/i);
+  });
+
+  test("keeps explicit executable paths in the provable argv-compatible command subset", () => {
+    const outcome = planTaskV2ToV3File(memoryInput("version: 2\nschedule: '@daily'\ncommand: ./tools/check --exact\n"));
+    expect(outcome.status).toBe("changed");
+    if (outcome.status !== "changed") throw new Error(outcome.detail ?? outcome.reason);
+    expect(parseYaml(outcome.after.toString("utf8"))).toMatchObject({ run: "./tools/check --exact" });
+  });
+
   test("classifies changed, skipped, and blocked files in stable path order with a deterministic generation", () => {
     const alreadyV3 = Buffer.from("version: 3\nuses: commands/review\nakm:\n  schedule: '@daily'\n");
     const files = [
@@ -200,13 +224,35 @@ describe("pure task v2 to v3 migration planner", () => {
     expect(deep.detail).toMatch(/depth|nesting/i);
   });
 
-  test("generation commits to mode/writability and duplicate file identities fail closed", () => {
+  test("validates an already-v3 working directory against its inspected component root", () => {
+    if (process.platform === "win32") return;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-v3-contained-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "akm-v3-outside-"));
+    fs.symlinkSync(outside, path.join(root, "escape"), "dir");
+    try {
+      const outcome = planTaskV2ToV3File(
+        memoryInput("version: 3\nrun: echo exact\nworking-directory: escape\nakm:\n  schedule: '@daily'\n", {
+          filePath: path.join(root, "task.yml"),
+          containmentRoot: root,
+        }),
+      );
+      expect(outcome).toMatchObject({ status: "blocked", reason: "invalid-v3-task" });
+      expect(outcome.detail).toMatch(/outside|contain|escape/i);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("generation commits to mode/configured and on-disk writability while duplicate paths fail closed", () => {
     const source = memoryInput("version: 2\nschedule: '@daily'\ncommand: akm index\n");
     const normal = planTaskV2ToV3Migration([source]);
     const differentMode = planTaskV2ToV3Migration([{ ...source, mode: 0o600 }]);
     const readOnly = planTaskV2ToV3Migration([{ ...source, writable: false }]);
+    const diskReadOnly = planTaskV2ToV3Migration([{ ...source, onDiskWritable: false }]);
     expect(differentMode.generation).not.toBe(normal.generation);
     expect(readOnly.generation).not.toBe(normal.generation);
+    expect(diskReadOnly.generation).not.toBe(normal.generation);
     expect(() => planTaskV2ToV3Migration([source, { ...source }])).toThrow(/duplicate|file path/i);
   });
 });

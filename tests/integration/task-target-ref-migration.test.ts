@@ -220,6 +220,132 @@ test("task-v3 migration honors the configured nested component root and componen
   expect(fs.readFileSync(outsideTask, "utf8")).toBe(v2);
 });
 
+test("task-v3 migration uses ordered adapter detection when a component adapter is omitted", async () => {
+  const bundleRoot = path.join(storage.root, "detected-component-bundle");
+  const componentRoot = path.join(bundleRoot, "catalog");
+  const currentTask = path.join(componentRoot, "current.yml");
+  const legacyTask = path.join(componentRoot, "legacy.yml");
+  fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
+  fs.writeFileSync(
+    getConfigPath(),
+    `${JSON.stringify({
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      bundles: {
+        detected: {
+          path: bundleRoot,
+          writable: true,
+          components: { main: { root: "catalog", writable: true } },
+        },
+      },
+      defaultBundle: "detected",
+    })}\n`,
+    { mode: 0o600 },
+  );
+  openStateDatabase().close();
+  fs.mkdirSync(componentRoot, { recursive: true });
+  fs.writeFileSync(currentTask, "version: 3\nuses: commands/current\nakm:\n  schedule: '@daily'\n");
+  const legacy = "version: 2\nschedule: '@daily'\ncommand: akm index\n";
+  fs.writeFileSync(legacyTask, legacy);
+
+  const status = await runCliCapture(["migrate", "status"]);
+  expect(status.code, status.stderr).toBe(0);
+  const statusPlan = JSON.parse(status.stdout) as {
+    taskV3Migration: { changed: number; skipped: number; blocked: number; files: Array<{ filePath: string }> };
+  };
+  expect(statusPlan.taskV3Migration).toMatchObject({ changed: 1, skipped: 1, blocked: 0 });
+  expect(statusPlan.taskV3Migration.files.map((file) => file.filePath)).toEqual([currentTask, legacyTask]);
+
+  const applied = await runCliCapture(["migrate", "apply"]);
+  expect(applied.code, applied.stderr).toBe(0);
+  expect(parseTaskV3Yaml({ yaml: fs.readFileSync(legacyTask, "utf8"), filePath: legacyTask }).version).toBe(3);
+});
+
+test("an ordered non-task adapter owner wins over an incidental top-level v2-shaped YAML file", async () => {
+  const componentRoot = path.join(storage.root, "detected-okf-component");
+  const incidentalYaml = path.join(componentRoot, "incidental.yml");
+  fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
+  fs.writeFileSync(
+    getConfigPath(),
+    `${JSON.stringify({
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      bundles: {
+        docs: {
+          path: componentRoot,
+          writable: true,
+          components: { main: { root: ".", writable: true } },
+        },
+      },
+      defaultBundle: "docs",
+    })}\n`,
+    { mode: 0o600 },
+  );
+  openStateDatabase().close();
+  fs.mkdirSync(componentRoot, { recursive: true });
+  fs.writeFileSync(path.join(componentRoot, "index.md"), "# Portable OKF bundle\n");
+  const before = "version: 2\nschedule: '@daily'\ncommand: akm index\n";
+  fs.writeFileSync(incidentalYaml, before);
+
+  const status = await runCliCapture(["migrate", "status"]);
+  expect(status.code, status.stderr).toBe(0);
+  const statusPlan = JSON.parse(status.stdout) as {
+    taskV3Migration: {
+      schemaVersion: number;
+      generation: string;
+      changed: number;
+      skipped: number;
+      blocked: number;
+      files: unknown[];
+    };
+  };
+  expect(statusPlan.taskV3Migration).toEqual({
+    schemaVersion: 1,
+    generation: expect.any(String),
+    changed: 0,
+    skipped: 0,
+    blocked: 0,
+    files: [],
+  });
+
+  const applied = await runCliCapture(["migrate", "apply"]);
+  expect(applied.code, applied.stderr).toBe(0);
+  expect(fs.readFileSync(incidentalYaml, "utf8")).toBe(before);
+});
+
+test("task-v3 migration fails closed when an omitted adapter leaves a flat v2 task root ambiguous", async () => {
+  const componentRoot = path.join(storage.root, "ambiguous-flat-component");
+  const legacyTask = path.join(componentRoot, "legacy.yml");
+  fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
+  fs.writeFileSync(
+    getConfigPath(),
+    `${JSON.stringify({
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      bundles: {
+        ambiguous: {
+          path: componentRoot,
+          writable: true,
+          components: { main: { root: ".", writable: true } },
+        },
+      },
+      defaultBundle: "ambiguous",
+    })}\n`,
+    { mode: 0o600 },
+  );
+  openStateDatabase().close();
+  fs.mkdirSync(componentRoot, { recursive: true });
+  const before = "version: 2\nschedule: '@daily'\ncommand: akm index\n";
+  fs.writeFileSync(legacyTask, before);
+
+  const status = await runCliCapture(["migrate", "status"]);
+  expect(status.code).toBe(1);
+  const plan = JSON.parse(status.stdout) as { status: string; blockers: string[] };
+  expect(plan.status).toBe("blocked");
+  expect(plan.blockers.join(" ")).toMatch(/cannot infer|adapter.*akm-task|flat task component/i);
+  expect(fs.readFileSync(legacyTask, "utf8")).toBe(before);
+});
+
 test("read-only v2 tasks are classified as blocked in status/dry-run and never written", async () => {
   fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
   fs.writeFileSync(
