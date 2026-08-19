@@ -389,14 +389,18 @@ describe("optimistic lowering safety", () => {
       expect(JSON.stringify(lowered.notices)).not.toContain("wp5-super-secret");
 
       let calls = 0;
-      await expect(
-        dispatchLoweredExecutionRequest(lowered, {
-          chat: async () => {
-            calls += 1;
-            throw new Error("provider rejected fixture option");
-          },
-        }),
-      ).rejects.toThrow(/provider rejected fixture option/);
+      const result = await dispatchLoweredExecutionRequest(lowered, {
+        chat: async () => {
+          calls += 1;
+          throw new Error("provider rejected fixture option with wp5-super-secret");
+        },
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        reason: "spawn_failed",
+        error: "provider rejected fixture option with [REDACTED]",
+      });
+      expect(JSON.stringify(result)).not.toContain("wp5-super-secret");
       expect(calls).toBe(1);
     } finally {
       delete process.env.AKM_WP5_FIXTURE_KEY;

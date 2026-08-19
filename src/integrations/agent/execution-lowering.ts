@@ -646,11 +646,25 @@ export async function dispatchLoweredExecutionRequest(
       ? {
           llm: async (spec, _prompt, runOptions) => {
             const started = Date.now();
-            const stdout = await (strictOptions.chat ?? chatCompletion)(spec.connection, [...lowered.messages], {
-              ...lowered.chatOptions,
-              ...(runOptions.signal ? { signal: runOptions.signal } : {}),
-            });
-            return { ok: true, exitCode: 0, stdout, stderr: "", durationMs: Date.now() - started };
+            try {
+              const stdout = await (strictOptions.chat ?? chatCompletion)(spec.connection, [...lowered.messages], {
+                ...lowered.chatOptions,
+                ...(runOptions.signal ? { signal: runOptions.signal } : {}),
+              });
+              return { ok: true, exitCode: 0, stdout, stderr: "", durationMs: Date.now() - started };
+            } catch (error) {
+              // Return through executeRunner so its credential-aware redactor
+              // handles provider bodies before any caller can persist them.
+              return {
+                ok: false,
+                exitCode: null,
+                stdout: "",
+                stderr: "",
+                durationMs: Date.now() - started,
+                error: error instanceof Error ? error.message : String(error),
+                reason: "spawn_failed",
+              };
+            }
           },
         }
       : {}),
