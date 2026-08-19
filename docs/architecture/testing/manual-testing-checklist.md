@@ -2797,7 +2797,8 @@ Current known failing gates must be fixed or explicitly waived with expiry:
 | Ambient test-mode SSRF bypass and secondary URL sinks | `FAIL` until guarded |
 | Git/direct-write symlink escape | `FAIL` until contained |
 | Archive expanded-resource/type/link budgets | `FAIL` until bounded |
-| Registry option/credential/control-data rendering | `FAIL` until redacted |
+| Registry option/control-data rendering | `FAIL` until redacted |
+| Registry URL credential persistence and rendering | `PASS` — fixed in 0.9.2 (#811) |
 | Suppressible/add-only dangerous-key audit and event ordering | `FAIL` until pre-publication |
 | Source lifecycle rollback across config/lock/root/index/events | `FAIL` until atomic/recoverable |
 | OpenCode local-listener authentication/documentation | `FAIL` until authenticated |
@@ -3271,13 +3272,15 @@ remaining gaps carry approved waivers with the expiries recorded below.
     refused ref, because it is an append-only audit log of ATTEMPTS and an
     operator investigating a blocked install needs it on record.
 - [ ] **Security:** Git/direct-write symlink containment, authenticated OpenCode
-      listener, registry credential/control-data redaction, archive expansion
-      budgets, universal redirect/SSRF policy, and unsuppressible update audit.
+      listener, registry control-data redaction, archive expansion budgets,
+      universal redirect/SSRF policy, and unsuppressible update audit.
   - Partial: symlink containment (walker escape cases tested; not exercised
-    through a real git-repo walk), registry redaction (response-shape limits
-    tested; embedded-credential echo in error paths not), redirect/SSRF
-    policy (website fetcher has the policy; registry fetch does not apply the
-    same private-IP guard).
+    through a real git-repo walk), registry control-data redaction
+    (response-shape limits tested), redirect/SSRF policy (website fetcher has
+    the policy; registry fetch does not apply the same private-IP guard).
+    Registry URL credentials are closed by #811: mutation paths reject them,
+    persisted legacy values fail closed, providers refuse to fetch them, and
+    CLI/result/warning/error projections redact their userinfo.
   - Open: authenticated OpenCode listener (localhost listener carries no
     per-process credential), archive expansion budgets (download size capped;
     expansion ratio/member budgets untested), unsuppressible update audit
@@ -3286,7 +3289,9 @@ remaining gaps carry approved waivers with the expiries recorded below.
     [#764](https://github.com/itlackey/akm/issues/764) (archive expansion budgets),
     [#765](https://github.com/itlackey/akm/issues/765) (update audit),
     [#766](https://github.com/itlackey/akm/issues/766) (git symlink containment),
-    [#767](https://github.com/itlackey/akm/issues/767) (registry SSRF + credential echo).
+    [#767](https://github.com/itlackey/akm/issues/767) (registry SSRF),
+    [#811](https://github.com/itlackey/akm/issues/811) (registry URL credentials,
+    closed in 0.9.2).
   - issue: local-attack-surface and hostile-upstream hardening gaps, all
     pre-existing (none regressed in 0.9.0). impact: requires a local
     co-resident attacker, a malicious registry/source, or a compromised

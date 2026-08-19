@@ -18,11 +18,12 @@ import { resolveStashDir } from "../core/common";
 import { type AkmConfig, DEFAULT_CONFIG, loadConfig, mutateConfig } from "../core/config/config";
 import { configGet, configSet, configUnset, unknownKeyHint } from "../core/config/config-walker";
 import { getCacheDir, getConfigPath, getDbPath, getDefaultStashDir } from "../core/paths";
+import { formatRegistryUrl } from "../core/registry-url";
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
 export function getConfigValue(config: AkmConfig, key: string): unknown {
-  return redactConfigValue(configGet(config as unknown as Record<string, unknown>, key));
+  return redactConfigValue(configGet(config as unknown as Record<string, unknown>, key), key.split("."));
 }
 
 export function setConfigValue(config: AkmConfig, key: string, rawValue: string): AkmConfig {
@@ -39,8 +40,9 @@ export function listConfig(config: AkmConfig): Record<string, unknown> {
   return redactConfigValue({ ...DEFAULT_CONFIG, ...config }) as Record<string, unknown>;
 }
 
-function redactConfigValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactConfigValue);
+function redactConfigValue(value: unknown, path: string[] = []): unknown {
+  if (typeof value === "string" && isRegistryUrlPath(path)) return formatRegistryUrl(value);
+  if (Array.isArray(value)) return value.map((child, index) => redactConfigValue(child, [...path, String(index)]));
   if (!value || typeof value !== "object") return value;
   const result: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
@@ -48,10 +50,14 @@ function redactConfigValue(value: unknown): unknown {
       key !== "apiKey" ||
       (typeof child === "string" && /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(child))
     ) {
-      result[key] = redactConfigValue(child);
+      result[key] = redactConfigValue(child, [...path, key]);
     }
   }
   return result;
+}
+
+function isRegistryUrlPath(path: string[]): boolean {
+  return path[0] === "registries" && path.at(-1) === "url";
 }
 
 export { unknownKeyHint };

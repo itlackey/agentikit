@@ -291,6 +291,10 @@ Each entry is `{ url, name?, enabled?, provider?, options? }`; `provider`
 defaults to `"static-index"`. See [Registries](https://github.com/itlackey/akm/blob/main/docs/reference/registry.md) for the full
 field reference and provider list.
 
+Registry `url` values must not contain username/password userinfo. The built-in
+providers do not currently support authenticated registry requests; `options`
+does not add an authentication mechanism. Use a credential-free HTTPS endpoint.
+
 ## Output defaults
 
 `output.format` (one of `json`\|`yaml`\|`text`\|`jsonl`\|`md`\|`html`,
