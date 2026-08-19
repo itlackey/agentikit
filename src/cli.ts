@@ -92,6 +92,7 @@ import {
 } from "./cli/shared";
 import { assertKnownFlags, closestMatch, type FlagScanCommand } from "./cli/unknown-flags";
 import { agentCommand, lintCommand } from "./commands/agent/contribute-cli";
+import { commandCommand } from "./commands/command/command-cli";
 import { generateBashCompletions, installBashCompletions } from "./commands/completions";
 import { configCommand } from "./commands/config-cli";
 import { envCommand } from "./commands/env/env-cli";
@@ -498,6 +499,7 @@ const commands = {
   feedback: feedbackCommand,
   log: logCommand,
   agent: agentCommand,
+  command: commandCommand,
   lint: lintCommand,
   improve: improveCommand,
   proposal: proposalCommand,
@@ -804,7 +806,7 @@ const HELP_SECTIONS: ReadonlyArray<{
     title: "ASSETS",
     commands: ["import", "clone", "bundle", "env", "secret", "sync", "proposal"],
   },
-  { title: "AUTOMATION", commands: ["improve", "agent", "workflow", "task"] },
+  { title: "AUTOMATION", commands: ["improve", "agent", "command", "workflow", "task"] },
   {
     title: "SYSTEM",
     commands: [

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `akm agent [--engine <name>] [--prompt <text>] [--command <ref>] [--workflow <ref>] [args...]`
+ * `akm agent [--engine <name>] [--prompt <text>] [--command <ref>] [--workflow <ref>]`
  *
  * Dispatch an agent by named engine, optionally injecting a prompt from
  * inline text, a stash command: asset, or a stash workflow: asset.
@@ -11,8 +11,8 @@
  * When none of --prompt, --command, or --workflow are given, the agent is
  * launched interactively (no injected prompt).
  *
- * Template placeholders (`{{0}}`, `{{1}}`, ...) in the loaded asset body are
- * filled from the extra positional args in order.
+ * The command arm is a compatibility delegate to the canonical command
+ * invocation path. Workflow loading remains on the legacy path until WP7.
  */
 
 import fs from "node:fs";
@@ -20,6 +20,7 @@ import { parseRefInput } from "../../core/asset/resolve-ref";
 import type { AkmConfig } from "../../core/config/config";
 import { NotFoundError, UsageError } from "../../core/errors";
 import { warn } from "../../core/warn";
+import type { UnresolvedExecutionDefaults } from "../../execution/source";
 import type { AgentDispatchRequest } from "../../integrations/agent/builder-shared";
 import {
   fallbackAnnouncement,
@@ -30,11 +31,16 @@ import {
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
 import { executeRunner } from "../../integrations/agent/runner-dispatch";
 import type { AgentRunResult } from "../../integrations/agent/spawn";
+import { executeCommandInvocation, type PrepareCommandInvocationOptions } from "../command/command-execution";
 
 export interface AkmAgentDispatchOptions {
   engine?: string;
   prompt?: string;
   commandRef?: string;
+  /** Exact, non-tokenized string substituted for the portable `$ARGUMENTS` token. */
+  argumentInput?: string;
+  /** Portable agent ref or native selector used by the canonical command path. */
+  agentRef?: string;
   workflowRef?: string;
   args?: string[];
   agentConfig?: AkmConfig;
@@ -53,6 +59,10 @@ export interface AkmAgentDispatchOptions {
   dispatch?: AgentDispatchRequest;
 }
 
+export interface AkmAgentDispatchSeams {
+  readonly executeCommand?: (options: PrepareCommandInvocationOptions) => Promise<AkmAgentDispatchResult>;
+}
+
 export interface AkmAgentDispatchResult {
   schemaVersion: 2;
   ok: boolean;
@@ -69,7 +79,7 @@ export interface AkmAgentDispatchResult {
    * fallback (`integrations/agent/engine-fallback.ts`), surfaced here so JSON
    * consumers see it alongside the stderr `warn()`.
    */
-  warnings?: string[];
+  warnings?: readonly string[];
 }
 
 /**
@@ -118,9 +128,53 @@ async function resolveAssetBody(ref: string): Promise<string> {
   }
 }
 
-export async function akmAgentDispatch(options: AkmAgentDispatchOptions): Promise<AkmAgentDispatchResult> {
+export async function akmAgentDispatch(
+  options: AkmAgentDispatchOptions,
+  seams: AkmAgentDispatchSeams = {},
+): Promise<AkmAgentDispatchResult> {
   if (!options.agentConfig)
     throw new UsageError("agent requires a valid config with an agent engine.", "MISSING_REQUIRED_ARGUMENT");
+
+  if (options.commandRef) {
+    if (options.prompt !== undefined || options.workflowRef !== undefined) {
+      throw new UsageError("--command cannot be combined with --prompt or --workflow.", "INVALID_FLAG_VALUE");
+    }
+    if (options.args?.length) {
+      throw new UsageError(
+        "Command arguments must be supplied as one exact string, not a positional argv array.",
+        "INVALID_FLAG_VALUE",
+        "Use --arguments <text> or the argumentInput API field.",
+      );
+    }
+    if (options.dispatch?.systemPrompt !== undefined) {
+      throw new UsageError(
+        "A command persona must be selected by agent ref; raw systemPrompt injection is not portable.",
+        "INVALID_FLAG_VALUE",
+      );
+    }
+    const current: Record<string, unknown> = {};
+    if (options.agentRef !== undefined) current.agent = options.agentRef;
+    if (options.engine !== undefined) current.engine = options.engine;
+    if (options.dispatch?.model !== undefined) current.model = options.dispatch.model;
+    if (options.dispatch?.tools !== undefined) current.tools = options.dispatch.tools;
+    if (options.dispatch?.effort !== undefined) current.inference = { effort: options.dispatch.effort };
+    if (options.dispatch?.schema !== undefined) current.outputSchema = options.dispatch.schema;
+    if (options.timeoutMs !== undefined) current.timeout = options.timeoutMs;
+    if (options.cwd !== undefined) current.workspace = options.cwd;
+    const action = {
+      ref: options.commandRef,
+      ...(options.argumentInput === undefined ? {} : { arguments: options.argumentInput }),
+    };
+    const execute = seams.executeCommand ?? executeCommandInvocation;
+    const result = await execute({
+      action,
+      config: options.agentConfig,
+      current: current as UnresolvedExecutionDefaults,
+    });
+    for (const message of result.warnings ?? []) warn(message);
+    return result;
+  }
+
   // Same implicit opencode-sdk fallback the workflow and task surfaces apply,
   // so an engine-less install is usable everywhere or nowhere — not a mix.
   const { config: agentConfig, fallbackEngineName } = withEngineFallback(options.agentConfig);
@@ -143,10 +197,7 @@ export async function akmAgentDispatch(options: AkmAgentDispatchOptions): Promis
   // Resolve the prompt text from whichever source was provided.
   let prompt: string | undefined;
 
-  if (options.commandRef) {
-    const body = await resolveAssetBody(options.commandRef);
-    prompt = options.args?.length ? fillPlaceholders(body, options.args) : body;
-  } else if (options.workflowRef) {
+  if (options.workflowRef) {
     const body = await resolveAssetBody(options.workflowRef);
     prompt = options.args?.length ? fillPlaceholders(body, options.args) : body;
   } else if (options.prompt !== undefined) {
@@ -164,7 +215,7 @@ export async function akmAgentDispatch(options: AkmAgentDispatchOptions): Promis
   const runOptions = {
     stdio,
     parseOutput: "text" as const,
-    ...(options.args?.length && !options.commandRef && !options.workflowRef ? { args: options.args } : {}),
+    ...(options.args?.length && !options.workflowRef ? { args: options.args } : {}),
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     ...(options.cwd ? { cwd: options.cwd } : {}),
     ...(dispatchRequest !== undefined ? { dispatch: dispatchRequest } : {}),

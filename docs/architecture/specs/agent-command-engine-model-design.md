@@ -434,14 +434,11 @@ GitHub Action package begin in 0.9.3 or later.
 
 ## 13. Implementation status
 
-This document describes the approved design, not a claim that 0.9.1 already
-implements it. Important 0.9.1 gaps include:
+This document describes the approved design. The 0.9.2 WP4 command surface now
+implements canonical `akm command run`, adapter-rendered command/persona
+loading, strict one-pass `$ARGUMENTS`, and a delegating `akm agent --command`
+compatibility spelling. The remaining convergence work includes:
 
-- there is no canonical `akm command run` surface;
-- `akm agent --command` reads raw file bytes instead of adapter-rendered command
-  content and does not apply command metadata;
-- command filling implements a different placeholder grammar from the one
-  displayed by `show`;
 - prompt tasks may send raw agent files, including frontmatter, as user text
   instead of selecting a persona;
 - engine/model resolution is duplicated across direct dispatch, tasks, and
