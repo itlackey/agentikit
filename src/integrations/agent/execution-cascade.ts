@@ -25,6 +25,7 @@ import {
   cloneResolvedPersonaContent,
   createResolvedExecutionRequest,
   type ResolvedCommandContent,
+  type ResolvedConversationMessage,
   type ResolvedEngineSelection,
   type ResolvedExecutionRequestV1,
   type ResolvedPersonaContent,
@@ -95,6 +96,8 @@ export type ToolAuthorizer = (input: Readonly<ToolAuthorizationInput>) => ToolAu
 
 export interface PlanExecutionCascadeInput {
   readonly command: ResolvedCommandContent;
+  /** Code-owned ordered turns before the terminal user command. */
+  readonly conversation?: readonly Readonly<ResolvedConversationMessage>[];
   readonly persona?: ResolvedPersonaContent | null;
   readonly layers: ExecutionCascadeLayersInput;
   readonly engines: Readonly<Record<string, ExecutionEngineDefinition>>;
@@ -634,7 +637,7 @@ export function planExecutionCascade(raw: PlanExecutionCascadeInput): ResolvedEx
   const input = record(raw, "execution cascade input");
   only(
     input,
-    ["command", "persona", "layers", "engines", "modelMap", "invocationKind", "authorizeTools"],
+    ["command", "conversation", "persona", "layers", "engines", "modelMap", "invocationKind", "authorizeTools"],
     "execution cascade input",
   );
   const command = cloneResolvedCommandContent(
@@ -773,6 +776,7 @@ export function planExecutionCascade(raw: PlanExecutionCascadeInput): ResolvedEx
     runtime,
     notices,
   };
+  if (own(input, "conversation")) requestInput.conversation = input.conversation;
   if (selectedAgent.present) requestInput.agent = resolvedAgent;
   if (requestPersonaPresent) requestInput.persona = persona;
   if (selectedModel.present) requestInput.model = modelResolution.resolved;
@@ -782,7 +786,8 @@ export function planExecutionCascade(raw: PlanExecutionCascadeInput): ResolvedEx
 
   // Validate every dispatch-significant value and source provenance before a
   // policy callback can observe the request or any caller can dispatch it.
-  createResolvedExecutionRequest(requestInput as never);
+  const provisionalRequest = createResolvedExecutionRequest(requestInput as never);
+  if (own(provisionalRequest, "conversation")) requestInput.conversation = provisionalRequest.conversation;
 
   const authorizationInput = requiresAuthorization
     ? {

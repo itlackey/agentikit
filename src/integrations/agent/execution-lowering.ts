@@ -16,7 +16,7 @@ import type { ChatCompletionOptions, ChatMessage } from "../../llm/client";
 import { chatCompletion } from "../../llm/client";
 import { HARNESS_REGISTRY } from "../harnesses";
 import type { AgentDispatchRequest, AgentRequestLowerer } from "./builder-shared";
-import { resolveEngine } from "./engine-resolution";
+import { resolveEngineTransportMaterial } from "./engine-resolution";
 import type { RunnerSpec } from "./runner";
 import { executeRunner, type RunnerSeams } from "./runner-dispatch";
 import type { AgentRunResult, RunAgentOptions } from "./spawn";
@@ -154,12 +154,12 @@ function validateCredential(value: unknown, path: string): void {
   if (typeof record.required !== "boolean") throw new TypeError(`${path}.required must be a boolean`);
 }
 
-function validateConnection(value: unknown, path: string): void {
+function validateConnection(value: unknown, path: string, requireModel = true): void {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     throw new TypeError(`${path} must be an object`);
   const record = value as Record<string, unknown>;
   requireStringField(record, "endpoint", path);
-  requireStringField(record, "model", path);
+  if (requireModel || own(record, "model")) requireStringField(record, "model", path);
   if (own(record, "apiKey")) {
     throw new TypeError(`${path}.apiKey must remain a symbolic credential and cannot be frozen as secret material`);
   }
@@ -222,14 +222,14 @@ function validateProfile(value: unknown, path: string): void {
 }
 
 /** Strictly detach and deep-freeze non-secret runner material before lowering. */
-function snapshotRunnerSpec(input: RunnerSpec): RunnerSpec {
+function snapshotRunnerSpec(input: RunnerSpec, options: { allowMissingLlmModel?: boolean } = {}): RunnerSpec {
   const cloned = cloneExecutionJsonObject(input, "execution runner material") as unknown as Record<string, unknown>;
   const kind = cloned.kind;
   validateOptionalString(cloned, "engine", "execution runner material");
   if (own(cloned, "timeoutMs")) validateTimeout(cloned.timeoutMs, "execution runner material.timeoutMs");
   if (kind === "llm") {
     assertKeys(cloned, ["kind", "engine", "connection", "credential", "timeoutMs"], "execution runner material");
-    validateConnection(cloned.connection, "execution runner material.connection");
+    validateConnection(cloned.connection, "execution runner material.connection", !options.allowMissingLlmModel);
     if (own(cloned, "credential")) validateCredential(cloned.credential, "execution runner material.credential");
   } else if (kind === "agent") {
     assertKeys(cloned, ["kind", "engine", "profile", "timeoutMs"], "execution runner material");
@@ -401,7 +401,10 @@ function projectLlmRunner(
   };
   delete projected.timeoutMs;
   if (own(request.runtime, "timeoutMs")) projected.timeoutMs = request.runtime.timeoutMs;
-  return snapshotRunnerSpec(projected as unknown as RunnerSpec) as Extract<RunnerSpec, { kind: "llm" }>;
+  return snapshotRunnerSpec(projected as unknown as RunnerSpec, { allowMissingLlmModel: true }) as Extract<
+    RunnerSpec,
+    { kind: "llm" }
+  >;
 }
 
 function lowerAgent(
@@ -543,7 +546,7 @@ export function lowerResolvedExecutionRequest(
 ): LoweredExecutionRequest {
   const request = requireAuthorizedRequest(input);
   const frozenConfig = snapshotConfig(config);
-  const base = snapshotRunnerSpec(resolveEngine(request.engine.name, frozenConfig));
+  const base = snapshotRunnerSpec(resolveEngineTransportMaterial(request.engine.name, frozenConfig));
   requireRunnerShape(request, base);
   return base.kind === "llm" ? lowerLlm(request, base) : lowerAgent(request, base);
 }

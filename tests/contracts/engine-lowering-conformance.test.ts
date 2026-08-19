@@ -19,6 +19,7 @@ import {
   lowerResolvedExecutionRequest,
   lowerResolvedExecutionRequestWithRunner,
 } from "../../src/integrations/agent/execution-lowering";
+import { prepareInlineExecutionWithRunner } from "../../src/integrations/agent/inline-execution";
 import { PERSONA_FALLBACK_BEGIN, PERSONA_FALLBACK_END } from "../../src/integrations/agent/persona-fallback";
 import { HARNESS_REGISTRY } from "../../src/integrations/harnesses";
 
@@ -238,6 +239,52 @@ describe("optimistic lowering safety", () => {
     expect(Object.isFrozen(lowered.runner.credential)).toBe(true);
     connection.providerOptions.nested.retained = false;
     expect(lowered.runner.connection.providerOptions).toEqual({ nested: { retained: true } });
+  });
+
+  test("prepares an authorized conversation request from config-free frozen runner material", () => {
+    const runner = {
+      kind: "llm" as const,
+      engine: "frozen-judge",
+      connection: {
+        endpoint: "https://frozen.invalid/v1/chat/completions",
+        model: "balanced",
+        temperature: 0,
+      },
+      credential: { names: ["AKM_FROZEN_JUDGE_KEY"] as [string], required: false },
+      timeoutMs: 0,
+    };
+    const conversation = [
+      { role: "system" as const, content: "Judge against the code-owned rubric." },
+      { role: "assistant" as const, content: "Prior candidate." },
+    ];
+    const prepared = prepareInlineExecutionWithRunner({
+      content: "Repair it.",
+      conversation,
+      runner,
+      invocationKind: "direct",
+    });
+    expect(prepared.request.model).toEqual({
+      input: "balanced",
+      interpretation: "exact",
+      resolved: "balanced",
+    });
+    expect(prepared.request.conversation).toEqual(conversation);
+    const lowered = lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
+    if (!("messages" in lowered)) throw new Error("fixture must use direct LLM lowering");
+    expect(lowered.messages).toEqual([...conversation, { role: "user", content: "Repair it." }]);
+  });
+
+  test("does not rerun legacy model aliases while resolving live transport material", () => {
+    const config = configFor("claude") as AkmConfig & {
+      engines: { fixture: { model: string; modelAliases: Record<string, unknown> } };
+    };
+    config.engines.fixture.model = "legacy-alias";
+    config.engines.fixture.modelAliases = { "legacy-alias": { mustNotBeReadAsAModel: true } };
+    const request = requestFor("claude", "agent", { model: null });
+    const lowered = lowerResolvedExecutionRequest(request, config);
+    if (lowered.runner.kind === "llm") throw new Error("fixture must use an agent runner");
+    expect(lowered.runner.profile).not.toHaveProperty("model");
+    expect(lowered.runner.profile).not.toHaveProperty("modelAliases");
   });
 
   test("frozen-runner lowering validates authorization before touching hostile runner material", () => {

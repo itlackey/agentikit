@@ -205,6 +205,37 @@ function effectiveTimeout(
   return hasOwn(engine, "timeoutMs") ? (engine.timeoutMs ?? null) : fallback;
 }
 
+function rawLlmConnection(engine: LlmEngineConfig): Record<string, unknown> {
+  const connection: Record<string, unknown> = {
+    provider: ownValue(engine, "provider"),
+    endpoint: ownValue(engine, "endpoint"),
+    model: ownValue(engine, "model"),
+    temperature: ownValue(engine, "temperature"),
+    maxTokens: ownValue(engine, "maxTokens"),
+    supportsJsonSchema: ownValue(engine, "supportsJsonSchema"),
+    extraParams: ownValue(engine, "extraParams"),
+    contextLength: ownValue(engine, "contextLength"),
+    enableThinking: ownValue(engine, "enableThinking"),
+  };
+  for (const key of Object.keys(connection)) {
+    if (connection[key] === undefined) delete connection[key];
+  }
+  return connection;
+}
+
+function resolveLlmTransportMaterial(name: string, config: EngineResolutionConfig): ResolvedLlmUse {
+  const engine = resolveEngineConfig(name, config);
+  if (engine.kind !== "llm") {
+    throw new ConfigError(`Engine "${name}" is not an LLM engine.`, "INVALID_CONFIG_FILE");
+  }
+  return {
+    engine: name,
+    connection: sterileRecord(rawLlmConnection(engine)) as LlmConnectionConfig,
+    credential: resolveCredential(name, engine, config),
+    timeoutMs: effectiveTimeout(engine, [], DEFAULT_LLM_TIMEOUT_MS),
+  };
+}
+
 /** Resolve one selected LLM engine and overlays without materializing credentials. */
 export function resolveLlmEngineUse(
   config: EngineResolutionConfig,
@@ -231,17 +262,7 @@ export function resolveLlmEngineUse(
     throw new ConfigError(`Engine "${name}" is not an LLM engine.`, "INVALID_CONFIG_FILE");
   }
 
-  let connection: Record<string, unknown> = {
-    provider: ownValue(engine, "provider"),
-    endpoint: ownValue(engine, "endpoint"),
-    model: ownValue(engine, "model"),
-    temperature: ownValue(engine, "temperature"),
-    maxTokens: ownValue(engine, "maxTokens"),
-    supportsJsonSchema: ownValue(engine, "supportsJsonSchema"),
-    extraParams: ownValue(engine, "extraParams"),
-    contextLength: ownValue(engine, "contextLength"),
-    enableThinking: ownValue(engine, "enableThinking"),
-  };
+  let connection = rawLlmConnection(engine);
   for (const layer of layers) {
     const llm = ownValue(layer, "llm");
     const model = ownValue(layer, "model");
@@ -280,7 +301,12 @@ export function materializeLlmConnection(resolved: ResolvedLlmUse): LlmConnectio
   }) as LlmConnectionConfig;
 }
 
-function lowerAgentEngine(name: string, engine: AgentEngineConfig, config: EngineResolutionConfig): RunnerSpec {
+function lowerAgentEngine(
+  name: string,
+  engine: AgentEngineConfig,
+  config: EngineResolutionConfig,
+  resolveAliases = true,
+): RunnerSpec {
   const harness = getHarness(engine.platform);
   if (!harness?.capabilities.agentDispatch) {
     throw new ConfigError(
@@ -310,12 +336,12 @@ function lowerAgentEngine(name: string, engine: AgentEngineConfig, config: Engin
     ...(workspace ? { workspace: path.resolve(workspace) } : {}),
     ...(model
       ? {
-          model: resolveModel(model, platform, engineModelAliases, globalModelAliases),
+          model: resolveAliases ? resolveModel(model, platform, engineModelAliases, globalModelAliases) : model,
           modelIsExact: true,
         }
       : {}),
-    ...(engineModelAliases ? { modelAliases: engineModelAliases } : {}),
-    ...(globalModelAliases ? { globalModelAliases } : {}),
+    ...(resolveAliases && engineModelAliases ? { modelAliases: engineModelAliases } : {}),
+    ...(resolveAliases && globalModelAliases ? { globalModelAliases } : {}),
   });
   if (!sdk) {
     return {
@@ -328,7 +354,9 @@ function lowerAgentEngine(name: string, engine: AgentEngineConfig, config: Engin
   const defaults = ownValue(config, "defaults");
   const fallbackName = ownValue(engine, "llmEngine") ?? (defaults ? ownValue(defaults, "llmEngine") : undefined);
   const fallback = fallbackName
-    ? resolveLlmEngineUse(config, [{ engine: fallbackName }], { optional: true })
+    ? resolveAliases
+      ? resolveLlmEngineUse(config, [{ engine: fallbackName }], { optional: true })
+      : resolveLlmTransportMaterial(fallbackName, config)
     : undefined;
   return {
     kind: "sdk",
@@ -362,6 +390,27 @@ export function resolveEngine(name: string, config: EngineResolutionConfig): Run
     };
   }
   return lowerAgentEngine(name, engine, config);
+}
+
+/**
+ * Resolve only transport/profile/credential material for an already-resolved
+ * execution request. Unlike {@link resolveEngine}, this never interprets a
+ * configured model alias; the engine lowerer projects the request's exact
+ * model afterward (or preserves an explicit null/omission).
+ */
+export function resolveEngineTransportMaterial(name: string, config: EngineResolutionConfig): RunnerSpec {
+  const engine = resolveEngineConfig(name, config);
+  if (engine.kind === "llm") {
+    const resolved = resolveLlmTransportMaterial(name, config);
+    return {
+      kind: "llm",
+      engine: name,
+      connection: resolved.connection,
+      ...(resolved.credential ? { credential: resolved.credential } : {}),
+      timeoutMs: resolved.timeoutMs,
+    };
+  }
+  return lowerAgentEngine(name, engine, config, false);
 }
 
 export function resolveDefaultEngine(config: EngineResolutionConfig): RunnerSpec {
