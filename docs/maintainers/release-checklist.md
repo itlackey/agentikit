@@ -24,8 +24,9 @@ recorded SHA:
 
 ```sh
 candidate_sha="$(git rev-parse HEAD)"
+candidate_short_sha="$(git rev-parse --short=12 HEAD)"
 candidate_version="$(node -p 'require("./package.json").version')"
-candidate_tag="gated-ci/candidate-${candidate_version}-${candidate_sha:0:12}"
+candidate_tag="gated-ci/candidate-${candidate_version}-${candidate_short_sha}"
 git tag "$candidate_tag" "$candidate_sha"
 git push origin "refs/tags/$candidate_tag"
 ```
