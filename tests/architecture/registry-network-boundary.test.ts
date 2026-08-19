@@ -23,7 +23,11 @@ function sourceFiles(root: string): string[] {
 
 type CapabilityOrigin =
   | { kind: "namespace"; moduleName: string }
-  | { kind: "callable"; moduleName: string; method: string };
+  | { kind: "callable"; moduleName: string; method: string }
+  | { kind: "module-loader" }
+  | { kind: "module-loader-owner"; method: "getBuiltinModule" | "require" }
+  | { kind: "module-loader-factory" }
+  | { kind: "identity-forwarder"; parameterIndex: number };
 
 interface CapabilityAnalysisSpec {
   moduleMethods: (moduleName: string) => ReadonlySet<string> | undefined;
@@ -83,8 +87,13 @@ function analyzeCapabilityCalls(source: string, fileName: string, spec: Capabili
     }
   };
 
-  const originKey = (origin: CapabilityOrigin): string =>
-    origin.kind === "namespace" ? `namespace:${origin.moduleName}` : `callable:${origin.moduleName}:${origin.method}`;
+  const originKey = (origin: CapabilityOrigin): string => {
+    if (origin.kind === "namespace") return `namespace:${origin.moduleName}`;
+    if (origin.kind === "callable") return `callable:${origin.moduleName}:${origin.method}`;
+    if (origin.kind === "module-loader-owner") return `module-loader-owner:${origin.method}`;
+    if (origin.kind === "identity-forwarder") return `identity-forwarder:${origin.parameterIndex}`;
+    return origin.kind;
+  };
 
   const addOrigins = (identifier: ts.Identifier, origins: readonly CapabilityOrigin[]): boolean => {
     const symbol = checker.getSymbolAtLocation(identifier);
@@ -104,22 +113,67 @@ function analyzeCapabilityCalls(source: string, fileName: string, spec: Capabili
     return changed;
   };
 
-  const isUnboundGlobal = (identifier: ts.Identifier): boolean => {
+  const isRuntimeGlobal = (identifier: ts.Identifier): boolean => {
     const symbol = checker.getSymbolAtLocation(identifier);
-    return !symbol || (symbol.declarations?.length ?? 0) === 0;
+    return (
+      !symbol ||
+      (symbol.declarations ?? []).every(
+        (declaration) =>
+          declaration.getSourceFile().isDeclarationFile ||
+          (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Ambient) !== 0,
+      )
+    );
   };
+
+  function staticStringValue(expression: ts.Expression | undefined, seen = new Set<ts.Symbol>()): string | undefined {
+    if (!expression) return undefined;
+    const value = unwrapExpression(expression);
+    if (ts.isStringLiteralLike(value)) return value.text;
+    if (ts.isIdentifier(value)) {
+      const symbol = checker.getSymbolAtLocation(value);
+      if (!symbol || seen.has(symbol)) return undefined;
+      seen.add(symbol);
+      for (const declaration of symbol.declarations ?? []) {
+        if (!ts.isVariableDeclaration(declaration) || !declaration.initializer) continue;
+        const resolved = staticStringValue(declaration.initializer, seen);
+        if (resolved !== undefined) {
+          seen.delete(symbol);
+          return resolved;
+        }
+      }
+      seen.delete(symbol);
+      return undefined;
+    }
+    if (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const left = staticStringValue(value.left, seen);
+      const right = staticStringValue(value.right, seen);
+      return left === undefined || right === undefined ? undefined : left + right;
+    }
+    if (ts.isTemplateExpression(value)) {
+      let resolved = value.head.text;
+      for (const span of value.templateSpans) {
+        const substitution = staticStringValue(span.expression, seen);
+        if (substitution === undefined) return undefined;
+        resolved += substitution + span.literal.text;
+      }
+      return resolved;
+    }
+    if (ts.isConditionalExpression(value)) {
+      const whenTrue = staticStringValue(value.whenTrue, seen);
+      const whenFalse = staticStringValue(value.whenFalse, seen);
+      return whenTrue !== undefined && whenTrue === whenFalse ? whenTrue : undefined;
+    }
+    return undefined;
+  }
 
   const staticPropertyName = (name: ts.PropertyName): string | undefined => {
     if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) return name.text;
     if (!ts.isComputedPropertyName(name)) return undefined;
-    const expression = unwrapExpression(name.expression);
-    return ts.isStringLiteralLike(expression) || ts.isNumericLiteral(expression) ? expression.text : undefined;
+    return staticStringValue(name.expression);
   };
 
   const elementPropertyName = (expression: ts.Expression | undefined): string | undefined => {
-    if (!expression) return undefined;
-    const value = unwrapExpression(expression);
-    return ts.isStringLiteralLike(value) || ts.isNumericLiteral(value) ? value.text : undefined;
+    return staticStringValue(expression);
   };
 
   const memberName = (expression: ts.Expression): string | undefined => {
@@ -133,36 +187,52 @@ function analyzeCapabilityCalls(source: string, fileName: string, spec: Capabili
     return ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value) ? value.expression : undefined;
   };
 
-  const loadedModule = (initializer: ts.Expression | undefined): string | undefined => {
-    if (!initializer) return undefined;
-    const value = unwrapExpression(initializer);
-    if (!ts.isCallExpression(value) || value.arguments.length !== 1) return undefined;
-    const argument = value.arguments[0];
-    if (!argument || !ts.isStringLiteral(argument)) return undefined;
-    const callee = unwrapExpression(value.expression);
-    if (callee.kind === ts.SyntaxKind.ImportKeyword) return argument.text;
-    if (ts.isIdentifier(callee) && callee.text === "require" && isUnboundGlobal(callee)) {
-      return argument.text;
-    }
-    const owner = memberOwner(callee);
-    const unwrappedOwner = owner ? unwrapExpression(owner) : undefined;
-    if (
-      memberName(callee) === "getBuiltinModule" &&
-      unwrappedOwner &&
-      ts.isIdentifier(unwrappedOwner) &&
-      unwrappedOwner.text === "process" &&
-      isUnboundGlobal(unwrappedOwner)
-    ) {
-      return argument.text;
-    }
-    return undefined;
-  };
-
   const projectMember = (origins: readonly CapabilityOrigin[], property: string): CapabilityOrigin[] =>
     origins.flatMap((origin): CapabilityOrigin[] => {
-      if (origin.kind !== "namespace" || !spec.moduleMethods(origin.moduleName)?.has(property)) return [];
-      return [{ kind: "callable", moduleName: origin.moduleName, method: property }];
+      if (origin.kind === "module-loader-owner" && property === origin.method) {
+        return [{ kind: "module-loader" }];
+      }
+      if (
+        origin.kind === "namespace" &&
+        (origin.moduleName === "module" || origin.moduleName === "node:module") &&
+        property === "createRequire"
+      ) {
+        return [{ kind: "module-loader-factory" }];
+      }
+      if (origin.kind === "namespace" && spec.moduleMethods(origin.moduleName)?.has(property)) {
+        return [{ kind: "callable", moduleName: origin.moduleName, method: property }];
+      }
+      return [];
     });
+
+  const moduleOrigins = (moduleName: string): CapabilityOrigin[] => {
+    if (moduleName === "process" || moduleName === "node:process") {
+      return [{ kind: "module-loader-owner", method: "getBuiltinModule" }];
+    }
+    if (moduleName === "module" || moduleName === "node:module" || spec.moduleMethods(moduleName)) {
+      return [{ kind: "namespace", moduleName }];
+    }
+    return [];
+  };
+
+  const identityForwarder = (
+    target: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration,
+  ): CapabilityOrigin[] => {
+    let returned: ts.Expression | undefined;
+    if (ts.isArrowFunction(target) && !ts.isBlock(target.body)) {
+      returned = target.body;
+    } else if (target.body && ts.isBlock(target.body)) {
+      returned = target.body.statements.find(ts.isReturnStatement)?.expression;
+    }
+    if (!returned) return [];
+    const value = unwrapExpression(returned);
+    if (!ts.isIdentifier(value)) return [];
+    const returnedSymbol = checker.getSymbolAtLocation(value);
+    const parameterIndex = target.parameters.findIndex(
+      (parameter) => ts.isIdentifier(parameter.name) && checker.getSymbolAtLocation(parameter.name) === returnedSymbol,
+    );
+    return parameterIndex < 0 ? [] : [{ kind: "identity-forwarder", parameterIndex }];
+  };
 
   const resolveExpression = (expression: ts.Expression | undefined): CapabilityOrigin[] => {
     if (!expression) return [];
@@ -171,14 +241,50 @@ function analyzeCapabilityCalls(source: string, fileName: string, spec: Capabili
       const symbol = checker.getSymbolAtLocation(value);
       const knownOrigins = symbol ? [...(symbolOrigins.get(symbol)?.values() ?? [])] : [];
       if (knownOrigins.length > 0) return knownOrigins;
-      if (!isUnboundGlobal(value)) return [];
+      if (!isRuntimeGlobal(value)) return [];
+      if (value.text === "require") return [{ kind: "module-loader" }];
+      if (value.text === "process") return [{ kind: "module-loader-owner", method: "getBuiltinModule" }];
+      if (value.text === "module") return [{ kind: "module-loader-owner", method: "require" }];
       const callable = spec.unboundCallables?.get(value.text);
       if (callable) return [{ kind: "callable", ...callable }];
       const moduleName = spec.unboundNamespaces?.get(value.text);
       return moduleName ? [{ kind: "namespace", moduleName }] : [];
     }
-    const moduleName = loadedModule(value);
-    if (moduleName && spec.moduleMethods(moduleName)) return [{ kind: "namespace", moduleName }];
+    if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) return identityForwarder(value);
+    if (ts.isCallExpression(value)) {
+      const callee = unwrapExpression(value.expression);
+      if (callee.kind === ts.SyntaxKind.ImportKeyword) {
+        const imported = staticStringValue(value.arguments[0]);
+        return imported === undefined ? [] : moduleOrigins(imported);
+      }
+      const property = memberName(callee);
+      const owner = memberOwner(callee);
+      if (property === "bind" && owner) return resolveExpression(owner);
+
+      let invocationOrigins = resolveExpression(value.expression);
+      let invocationArgs: readonly ts.Expression[] = value.arguments;
+      if (property === "call" && owner) {
+        invocationOrigins = resolveExpression(owner);
+        invocationArgs = value.arguments.slice(1);
+      } else if (property === "apply" && owner) {
+        invocationOrigins = resolveExpression(owner);
+        const args = value.arguments[1];
+        invocationArgs =
+          args && ts.isArrayLiteralExpression(unwrapExpression(args))
+            ? [...(unwrapExpression(args) as ts.ArrayLiteralExpression).elements]
+            : [];
+      }
+
+      return invocationOrigins.flatMap((origin): CapabilityOrigin[] => {
+        if (origin.kind === "module-loader") {
+          const moduleName = staticStringValue(invocationArgs[0]);
+          return moduleName === undefined ? [] : moduleOrigins(moduleName);
+        }
+        if (origin.kind === "module-loader-factory") return [{ kind: "module-loader" }];
+        if (origin.kind === "identity-forwarder") return resolveExpression(invocationArgs[origin.parameterIndex]);
+        return [];
+      });
+    }
     if (ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value)) {
       const property = memberName(value);
       return property ? projectMember(resolveExpression(value.expression), property) : [];
@@ -224,27 +330,41 @@ function analyzeCapabilityCalls(source: string, fileName: string, spec: Capabili
   };
 
   for (const statement of sourceFile.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    const moduleName = statement.moduleSpecifier.text;
-    const methods = spec.moduleMethods(moduleName);
-    if (!methods) continue;
-    const importClause = statement.importClause;
-    if (importClause?.name) addOrigins(importClause.name, [{ kind: "namespace", moduleName }]);
-    if (importClause?.namedBindings && ts.isNamespaceImport(importClause.namedBindings)) {
-      addOrigins(importClause.namedBindings.name, [{ kind: "namespace", moduleName }]);
-    }
-    if (importClause?.namedBindings && ts.isNamedImports(importClause.namedBindings)) {
-      for (const element of importClause.namedBindings.elements) {
-        const importedName = element.propertyName?.text ?? element.name.text;
-        if (!methods.has(importedName)) continue;
-        addOrigins(element.name, [{ kind: "callable", moduleName, method: importedName }]);
-        const finding = spec.importFinding?.(moduleName, importedName, element.name.text);
-        if (finding) findings.add(finding);
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+      const moduleName = statement.moduleSpecifier.text;
+      const origins = moduleOrigins(moduleName);
+      if (origins.length === 0) continue;
+      const importClause = statement.importClause;
+      if (importClause?.name) addOrigins(importClause.name, origins);
+      if (importClause?.namedBindings && ts.isNamespaceImport(importClause.namedBindings)) {
+        addOrigins(importClause.namedBindings.name, origins);
       }
+      if (importClause?.namedBindings && ts.isNamedImports(importClause.namedBindings)) {
+        for (const element of importClause.namedBindings.elements) {
+          const importedName = element.propertyName?.text ?? element.name.text;
+          const importedOrigins = projectMember(origins, importedName);
+          if (importedOrigins.length === 0) continue;
+          addOrigins(element.name, importedOrigins);
+          const finding = spec.importFinding?.(moduleName, importedName, element.name.text);
+          if (finding) findings.add(finding);
+        }
+      }
+      continue;
+    }
+    if (
+      ts.isImportEqualsDeclaration(statement) &&
+      ts.isExternalModuleReference(statement.moduleReference) &&
+      statement.moduleReference.expression &&
+      ts.isStringLiteral(statement.moduleReference.expression)
+    ) {
+      addOrigins(statement.name, moduleOrigins(statement.moduleReference.expression.text));
     }
   }
 
   sourceFile.forEachChild(function discover(node): void {
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      addOrigins(node.name, identityForwarder(node));
+    }
     if (ts.isVariableDeclaration(node) && node.initializer) {
       propagations.push(() => bindPattern(node.name, resolveExpression(node.initializer)));
     }
@@ -274,8 +394,17 @@ function analyzeCapabilityCalls(source: string, fileName: string, spec: Capabili
   }
 
   function inspect(node: ts.Node): void {
-    if (ts.isCallExpression(node) && resolveExpression(node.expression).some((origin) => origin.kind === "callable")) {
-      findings.add(`call:${node.expression.getText(sourceFile)}`);
+    if (ts.isCallExpression(node)) {
+      const callee = unwrapExpression(node.expression);
+      const property = memberName(callee);
+      const owner = memberOwner(callee);
+      const invokedOrigins =
+        (property === "call" || property === "apply") && owner
+          ? resolveExpression(owner)
+          : resolveExpression(node.expression);
+      if (invokedOrigins.some((origin) => origin.kind === "callable")) {
+        findings.add(`call:${node.expression.getText(sourceFile)}`);
+      }
     }
     ts.forEachChild(node, inspect);
   }
@@ -527,6 +656,99 @@ describe("registry outbound request architecture", () => {
   });
 
   test.each([
+    {
+      name: "aliased require loader",
+      source: 'const load = require; load("node:https").request({});',
+      expected: ['call:load("node:https").request'],
+    },
+    {
+      name: "aliased process owner",
+      source: 'const p = process; p.getBuiltinModule("node:net").connect({});',
+      expected: ['call:p.getBuiltinModule("node:net").connect'],
+    },
+    {
+      name: "aliased process.getBuiltinModule loader",
+      source: 'const load = process.getBuiltinModule; load("node:net").connect({});',
+      expected: ['call:load("node:net").connect'],
+    },
+    {
+      name: "identity-wrapped module namespace",
+      source: 'const identity = (value: unknown) => value; identity(require("node:https")).request({});',
+      expected: ['call:identity(require("node:https")).request'],
+    },
+    {
+      name: "ambient require declaration",
+      source: 'declare const require: (name: string) => unknown; require("node:https").request({});',
+      expected: ['call:require("node:https").request'],
+    },
+    {
+      name: "ambient process declaration",
+      source:
+        'declare const process: { getBuiltinModule(name: string): unknown }; process.getBuiltinModule("node:net").connect({});',
+      expected: ['call:process.getBuiltinModule("node:net").connect'],
+    },
+    {
+      name: "ambient Bun declaration",
+      source: "declare const Bun: { connect(options: object): unknown }; Bun.connect({});",
+      expected: ["call:Bun.connect"],
+    },
+    {
+      name: "bound loader and bound raw callable",
+      source:
+        'const load = require.bind(null); const h = load("node:https"); const request = h.request.bind(h); request({});',
+      expected: ["call:request"],
+    },
+    {
+      name: "imported process loader",
+      source: 'import processModule from "node:process"; processModule.getBuiltinModule("node:net").connect({});',
+      expected: ['call:processModule.getBuiltinModule("node:net").connect'],
+    },
+    {
+      name: "createRequire loader factory",
+      source:
+        'import { createRequire } from "node:module"; const load = createRequire(import.meta.url); load("node:https").request({});',
+      expected: ['call:load("node:https").request'],
+    },
+    {
+      name: "TypeScript import-equals loader",
+      source: 'import https = require("node:https"); https.request({});',
+      expected: ["call:https.request"],
+    },
+    {
+      name: "CommonJS module.require loader",
+      source: 'module.require("node:https").request({});',
+      expected: ['call:module.require("node:https").request'],
+    },
+    {
+      name: "Function.call-wrapped loader",
+      source: 'require.call(null, "node:https").request({});',
+      expected: ['call:require.call(null, "node:https").request'],
+    },
+    {
+      name: "constant-folded loader and computed method",
+      source:
+        'const prefix = "node:"; const transport = prefix + "https"; const method = `request`; require(transport)[method]({});',
+      expected: ["call:require(transport)[method]"],
+    },
+  ])("raw transport analysis follows runtime loader/global origin: $name", ({ source, expected }) => {
+    expect(rawHttpCapabilities(source, "probe.ts")).toEqual([...expected]);
+  });
+
+  test("raw transport analysis keeps aliased lexical loader shadows local", () => {
+    expect(
+      rawHttpCapabilities(`
+        const require = (_name: string) => ({ request(_options: object) {} });
+        const load = require;
+        load("node:https").request({});
+        const process = { getBuiltinModule: (_name: string) => ({ connect(_options: object) {} }) };
+        const owner = process;
+        const builtin = owner.getBuiltinModule;
+        builtin("node:net").connect({});
+      `),
+    ).toEqual([]);
+  });
+
+  test.each([
     { fileName: "probe.ts", source: "function local(fetch: () => void) { fetch(); }" },
     { fileName: "probe.js", source: "const fetch = () => {}; fetch();" },
     {
@@ -537,6 +759,21 @@ describe("registry outbound request architecture", () => {
     { fileName: "probe.ts", source: "const Bun = { fetch() {} }; Bun.fetch();" },
   ])("fetch analysis ignores lexically shadowed globals in $fileName: $source", ({ fileName, source }) => {
     expect(networkCapabilities(source, fileName)).toEqual([]);
+  });
+
+  test.each([
+    {
+      name: "ambient fetch declaration",
+      source: 'declare const fetch: (url: string) => unknown; fetch("https://example.test");',
+      expected: ["call:fetch"],
+    },
+    {
+      name: "identity-wrapped global fetch",
+      source: 'const identity = (value: unknown) => value; identity(globalThis.fetch)("https://example.test");',
+      expected: ["call:identity(globalThis.fetch)"],
+    },
+  ])("fetch analysis follows runtime global origin: $name", ({ source, expected }) => {
+    expect(networkCapabilities(source, "probe.ts")).toEqual([...expected]);
   });
 
   test("registry callers cannot bypass the reusable network boundary", () => {
