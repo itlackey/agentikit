@@ -68,11 +68,6 @@ export const EXECUTION_BOUNDARY_TARGETS: readonly ExecutionBoundaryTarget[] = Ob
   { operation: "runner.builder", file: "src/integrations/agent/builders.ts", exportName: "getCommandBuilder" },
   { operation: "llm.chat", file: "src/llm/client.ts", exportName: "chatCompletion" },
   {
-    operation: "llm.structured",
-    file: "src/llm/structured-call.ts",
-    exportName: "callStructured",
-  },
-  {
     operation: "engine.resolve",
     file: "src/integrations/agent/engine-resolution.ts",
     exportName: "resolveEngine",
@@ -288,19 +283,11 @@ const PERMANENT_EXECUTION_BOUNDARY_ALLOWLIST: readonly ExecutionBoundaryAllowRul
     exact: true,
     rationale: "validation-only compatibility seam; WP6 removes it with task-v3 migration",
   },
-  {
-    operation: "engine.materialize-credential",
-    file: "src/workflows/exec/unit-dispatch.ts",
-    enclosing: "materializeFrozenLlm",
-    maxReferences: 1,
-    exact: true,
-    rationale: "frozen workflow credential materialization at dispatch, never freeze/resume",
-  },
 ]);
 
 /**
  * Temporary exact debt inventory while the independently reviewed
- * proposal/workflow/improve/shared-LLM lanes are integrated. This is not an
+ * improve/index lanes are integrated. This is not an
  * architectural exemption: every entry is exact-counted and must be deleted
  * with its named migration rather than generalized.
  */
@@ -309,24 +296,20 @@ export const PENDING_EXECUTION_BOUNDARY_COUNTS = Object.freeze({
     "engine.default-llm-config": 1,
     "engine.materialize-runner": 1,
     "engine.resolve-improve-runner": 1,
-    "llm.structured": 1,
   },
   "src/commands/improve/distill.ts": {
     "engine.default-llm-config": 1,
     "engine.materialize-runner": 1,
     "engine.resolve-improve-runner": 1,
     "llm.chat": 1,
-    "llm.structured": 1,
   },
   "src/commands/improve/distill/quality-gate.ts": {
     "engine.default-llm-config": 1,
-    "llm.structured": 1,
   },
   "src/commands/improve/extract.ts": {
     "engine.materialize-runner": 1,
     "engine.resolve-improve-runner": 1,
     "engine.resolve-llm": 1,
-    "llm.structured": 2,
   },
   "src/commands/improve/improve-strategies.ts": {
     "engine.resolve-improve-runner": 1,
@@ -339,29 +322,20 @@ export const PENDING_EXECUTION_BOUNDARY_COUNTS = Object.freeze({
     "engine.materialize-runner": 1,
     "engine.resolve-improve-runner": 1,
     "llm.chat": 1,
-    "llm.structured": 1,
   },
   "src/commands/improve/preparation.ts": { "engine.materialize-runner": 2 },
   "src/commands/improve/reflect.ts": {
     "engine.materialize-runner": 2,
     "engine.resolve": 2,
     "engine.resolve-improve-runner": 1,
-    "llm.structured": 1,
     "runner.execute": 1,
   },
   "src/commands/improve/run-context.ts": { "llm.chat": 1 },
-  "src/commands/proposal/drain.ts": { "llm.chat": 1, "runner.execute": 1 },
   "src/commands/proposal/proposal-cli.ts": { "engine.resolve-triage": 1 },
-  "src/commands/proposal/propose.ts": { "engine.resolve": 1, "llm.chat": 1, "runner.execute": 1 },
   "src/commands/remember.ts": { "engine.default-llm-config": 1, "llm.chat": 1 },
   "src/commands/sources/schema-repair.ts": { "llm.chat": 1 },
-  "src/llm/graph-extract.ts": { "llm.chat": 2, "llm.structured": 1 },
+  "src/llm/graph-extract.ts": { "llm.chat": 2 },
   "src/llm/index-passes.ts": { "engine.materialize-llm": 1, "engine.resolve-llm": 1 },
-  "src/llm/memory-infer.ts": { "llm.structured": 1 },
-  "src/llm/metadata-enhance.ts": { "llm.structured": 1 },
-  "src/llm/structured-call.ts": { "llm.chat": 1 },
-  "src/workflows/exec/frozen-judge.ts": { "llm.chat": 1 },
-  "src/workflows/exec/native-executor.ts": { "llm.chat": 1, "runner.execute": 1 },
   "src/workflows/ir/freeze.ts": { "engine.resolve-llm": 1 },
 } as const);
 
