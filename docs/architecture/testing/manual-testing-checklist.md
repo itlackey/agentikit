@@ -2925,7 +2925,8 @@ AKM_DOCKER_TESTS=1 bun test tests/integration/docker-install.test.ts
       artifact, installer, self-upgrade, ARM, macOS, or Windows.
 - [ ] **[RELEASE]** Cross-compile five exact standalone names; run each on native
       OS/architecture, verify embedded version, and prove local semantic model is
-      unavailable because transformers are intentionally externalized.
+      unavailable because standalone binaries do not include the package's
+      optional local embedding runtime.
 - [ ] **[RELEASE]** `checksums.txt` covers exactly five binaries and both
       installers. The npm tarball is compared separately because it is generated
       later.

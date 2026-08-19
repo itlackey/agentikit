@@ -14,14 +14,29 @@ import { chmodSync } from "node:fs";
 //      globally-installed npm users can run them without
 //      `../src/...` import paths breaking (#469). Bun and Node must never run
 //      each other's target because their runtime dependencies differ.
+//   4. Mirror audited third-party runtime assets under src/vendor/ →
+//      dist/vendor/. Every vendored package must carry its upstream license
+//      and provenance beside the copied bytes.
 import { mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
+import { materializeVendoredTransformers } from "./vendor-transformers";
 
 const assetGlob = new Bun.Glob("src/assets/**/*");
 for await (const src of assetGlob.scan(".")) {
   const dest = src.replace(/^src\/assets\//, "dist/assets/");
   await mkdir(dirname(dest), { recursive: true });
   await Bun.write(dest, Bun.file(src));
+}
+
+const vendorGlob = new Bun.Glob("src/vendor/**/*");
+for await (const src of vendorGlob.scan(".")) {
+  const dest = src.replace(/^src\/vendor\//, "dist/vendor/");
+  await mkdir(dirname(dest), { recursive: true });
+  if (src === "src/vendor/huggingface-transformers/transformers.node.mjs") {
+    await Bun.write(dest, materializeVendoredTransformers(await Bun.file(src).text()));
+  } else {
+    await Bun.write(dest, Bun.file(src));
+  }
 }
 
 // Module-local YAML templates may be imported `with { type: "text" }` and
@@ -36,7 +51,7 @@ for await (const src of yamlTemplateGlob.scan(".")) {
   await Bun.write(dest, Bun.file(src));
 }
 
-// 4. Copy the published launchers plus the core CLI's Node-runtime entry
+// 5. Copy the published launchers plus the core CLI's Node-runtime entry
 //    wrapper and text-import loader hook into dist/. Both launchers prefer Bun
 //    and fall back to Node.
 const runtimeFiles = [

@@ -156,7 +156,12 @@ export function classifySemanticFailure(message: string): SemanticSearchReason {
   if (lower.includes("404") || lower.includes("model not found") || lower.includes("bad request")) {
     return "remote-model";
   }
-  if (lower.includes("transformers") || lower.includes("missing-package")) {
+  if (
+    lower.includes("transformers") ||
+    lower.includes("missing-package") ||
+    lower.includes("optional local embedding runtime") ||
+    lower.includes("local embedding runtime is unavailable")
+  ) {
     return "missing-package";
   }
   if (lower.includes("download")) {

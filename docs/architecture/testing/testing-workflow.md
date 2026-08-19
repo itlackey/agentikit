@@ -156,6 +156,15 @@ sets the same path and restores it from a model/source-identified Actions
 cache. Candidate tags and manual runs are restore-only; only the scheduled
 default-branch run may save a cache entry.
 
+The same gate packs AKM, performs normal npm installs in clean external and
+global prefixes plus a rooted `bun add` consumer install, audits the installed
+consumer trees, verifies the vendored runtime and packaged WASM hashes, and
+runs real offline semantic index/search round-trips through the npm-installed
+Node launcher and Bun-installed launcher. `--omit=optional` is covered
+separately: Bun must remain usable with semantic status `blocked`, while Node
+must fail storage-backed commands with the documented actionable
+`better-sqlite3` error because that flag omits the Node database driver too.
+
 ### What to test explicitly
 
 - config stays `off` only when the user disables semantic search intentionally

@@ -14,7 +14,7 @@ export type EmbeddingVector = number[];
 
 /**
  * Common embedder interface implemented by both the local
- * (@huggingface/transformers) and remote (OpenAI-compatible) embedders.
+ * (AKM's vendored Transformers.js runtime) and remote (OpenAI-compatible) embedders.
  *
  * Both methods are required: query paths use `embed()`, indexer paths use
  * `embedBatch()` for throughput.
@@ -33,7 +33,7 @@ export type EmbeddingCheckResult =
  *
  * Lives next to {@link EmbeddingVector} so importers (notably `db.ts`)
  * can pull just the math without dragging in the embedder facade and its
- * transitive `@huggingface/transformers` import chain.
+ * transitive Transformers.js runtime import chain.
  *
  * Returns 0 when the vectors have different dimensions — silently
  * computing on a truncated view would produce meaningless scores.

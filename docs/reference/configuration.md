@@ -284,6 +284,14 @@ embedding-based search. `"auto"` lets AKM set up embeddings (which downloads
 a local model unless you point `embedding` at a remote provider) and falls
 back to keyword-only FTS if the embedding runtime is unavailable; `"off"`
 disables semantic search outright and search is always keyword-only FTS.
+The npm/Bun package owns its local Transformers.js/ONNX Web dependencies as
+optionals. If the package was installed with `--omit=optional`, reinstall it
+without that flag or configure a remote `embedding.endpoint`; setup does not
+mutate a global installation to add runtime packages.
+Under Bun, an omitted local embedding runtime degrades to keyword search with
+semantic status `blocked`. Under Node.js, `--omit=optional` also removes the
+optional `better-sqlite3` database driver, so storage-backed commands require a
+normal reinstall or execution under Bun before they can reach that status.
 The default is `"off"` so a bare or headless install (`akm bundle create`, `--yes`,
 `--config`) never silently downloads the local embedding model on first
 index.

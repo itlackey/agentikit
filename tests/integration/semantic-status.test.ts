@@ -365,6 +365,10 @@ describe("classifySemanticFailure", () => {
     expect(classifySemanticFailure("Error: missing-package detected")).toBe("missing-package");
   });
 
+  test("package-owned local runtime unavailable → missing-package", () => {
+    expect(classifySemanticFailure("AKM's optional local embedding runtime is unavailable")).toBe("missing-package");
+  });
+
   // Model download
   test("download keyword without model keyword → local-model-download", () => {
     expect(classifySemanticFailure("Failed to download file from HuggingFace")).toBe("local-model-download");

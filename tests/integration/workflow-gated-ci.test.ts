@@ -101,12 +101,15 @@ describe("gated CI workflow", () => {
     expect(job.env).toMatchObject({
       AKM_SEMANTIC_TESTS: "1",
       HF_HOME: "${{ github.workspace }}/.ci-cache/huggingface",
+      NODE_USE_ENV_PROXY: "1",
     });
+    const setupNode = job.steps?.find((step) => step.uses === "actions/setup-node@v4");
+    expect(setupNode?.with).toMatchObject({ "node-version": "24" });
     const restore = getStep(job, "Restore HuggingFace model cache");
     expect(restore.uses).toBe("actions/cache/restore@v5");
     expect(restore.with).toMatchObject({
       path: "${{ github.workspace }}/.ci-cache/huggingface",
-      key: "akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'bun.lock') }}-v2",
+      key: "akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'src/vendor/huggingface-transformers/transformers.node.mjs', 'package.json', 'bun.lock') }}-v3",
     });
 
     const save = getStep(job, "Save HuggingFace model cache from trusted schedule");
@@ -115,10 +118,12 @@ describe("gated CI workflow", () => {
     expect(save.if).toContain("github.ref_name == github.event.repository.default_branch");
     expect(save.with).toMatchObject({
       path: "${{ github.workspace }}/.ci-cache/huggingface",
-      key: "akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'bun.lock') }}-v2",
+      key: "akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'src/vendor/huggingface-transformers/transformers.node.mjs', 'package.json', 'bun.lock') }}-v3",
     });
     expect(JSON.stringify(job)).not.toContain('"uses":"actions/cache@v5"');
     expect(JSON.stringify(job)).toContain("tests/integration/semantic-search-e2e.test.ts");
+    expect(JSON.stringify(job)).toContain("tests/integration/semantic-package-install-e2e.test.ts");
+    expect(JSON.stringify(job)).toContain("--timeout=900000");
 
     const semanticTest = fs.readFileSync(
       path.join(root, "tests", "integration", "semantic-search-e2e.test.ts"),
@@ -126,6 +131,19 @@ describe("gated CI workflow", () => {
     );
     expect(semanticTest).toContain('path.resolve(import.meta.dir, "../..", ".ci-cache", "huggingface")');
     expect(semanticTest).not.toContain('path.join(process.env.HOME ?? "/tmp", ".cache", "huggingface")');
+    const packageTest = fs.readFileSync(
+      path.join(root, "tests", "integration", "semantic-package-install-e2e.test.ts"),
+      "utf8",
+    );
+    expect(packageTest).toContain('"--foreground-scripts"');
+    expect(packageTest).toContain('"--prefix"');
+    expect(packageTest).toContain("const bunInstall = run(");
+    expect(packageTest).toContain('"--trust"');
+    expect(packageTest).toContain("ort-wasm-simd-threaded.wasm");
+    expect(packageTest).toContain("expect(nodeResult.status).toBe(70)");
+    expect(packageTest).toContain('nodeResult.stderr).toContain("better-sqlite3")');
+    expect(packageTest).toContain('NODE_USE_ENV_PROXY: "1"');
+    expect(packageTest).toContain("npm lifecycle scripts disabled");
     expect(fs.readFileSync(path.join(root, ".gitignore"), "utf8")).toContain(".ci-cache/");
   });
 

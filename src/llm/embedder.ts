@@ -64,7 +64,7 @@ export function _setEmbedderForTests(fakes?: EmbedderOverridesForTests): void {
 }
 
 /**
- * Check whether the @huggingface/transformers package is importable.
+ * Check whether AKM's vendored Transformers asset and optional runtime are available.
  * Delegating wrapper around `./embedders/local`'s probe so tests can swap it
  * via {@link _setEmbedderForTests}.
  */
@@ -75,7 +75,7 @@ export function isTransformersAvailable(): boolean {
 
 // ── Singleton local embedder ────────────────────────────────────────────────
 // `_localEmbedder` is an intentional module-level singleton but constructed
-// lazily on first use. The underlying @huggingface/transformers pipeline is
+// lazily on first use. The underlying Transformers.js pipeline is
 // expensive to initialise (model download + WASM compilation) and is safe to
 // share across calls because it is stateless once created. Deferring
 // construction to first call keeps the module side-effect-free at import time,
@@ -103,7 +103,7 @@ export function resetLocalEmbedder(): void {
 /**
  * Generate an embedding for the given text.
  * If embeddingConfig has a remote endpoint, uses the configured OpenAI-compatible endpoint.
- * Otherwise falls back to local @huggingface/transformers using the model from
+ * Otherwise falls back to local Transformers.js using the model from
  * `embeddingConfig.localModel` or `DEFAULT_LOCAL_MODEL`.
  *
  * Results are cached in an LRU cache (max ~100 entries) keyed by query text
@@ -204,7 +204,7 @@ export async function embedBatch(
 
 // `cosineSimilarity` was moved to `./embedders/types.ts` so importers
 // (notably `db.ts`) can pull the math function without dragging in this
-// facade and its `@huggingface/transformers` import chain. Re-export
+// facade and its Transformers.js import chain. Re-export
 // preserves the existing public API.
 export { cosineSimilarity } from "./embedders/types";
 
@@ -260,7 +260,7 @@ export async function checkEmbeddingAvailability(
     return {
       available: false,
       reason: "missing-package",
-      message: "@huggingface/transformers is not installed.",
+      message: "AKM's optional local embedding runtime is unavailable.",
     };
   }
   try {

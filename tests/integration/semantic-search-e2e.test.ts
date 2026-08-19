@@ -1,5 +1,5 @@
 /**
- * End-to-end semantic search test that uses real @huggingface/transformers
+ * End-to-end semantic search test that uses AKM's real vendored Transformers.js runtime
  * embeddings and verifies vector search produces meaningful results.
  *
  * Gated behind AKM_SEMANTIC_TESTS=1 because first run downloads the model.
@@ -270,7 +270,7 @@ function restoreEnv(): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Gated tests — require real @huggingface/transformers and ONNX runtime
+// Gated tests — require the real vendored Transformers.js and packaged ONNX runtime
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe.skipIf(!SEMANTIC_TESTS)("Semantic search end-to-end (real embeddings)", () => {

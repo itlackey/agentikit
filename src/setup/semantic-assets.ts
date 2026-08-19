@@ -3,9 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Semantic-search asset preparation for the setup wizard. Isolates the one
- * `bun add @huggingface/transformers` subprocess and the sqlite-vec probe so
- * the rest of setup stays free of subprocess/DB I/O.
+ * Semantic-search asset preparation for the setup wizard. Local runtime
+ * dependencies are package-owned optional dependencies; setup never mutates
+ * the installed CLI. This module only prepares the model and probes sqlite-vec.
  */
 
 import fs from "node:fs";
@@ -14,9 +14,7 @@ import path from "node:path";
 import * as p from "../cli/clack";
 import { isHttpUrl } from "../core/common";
 import type { AkmConfig, EmbeddingConnectionConfig } from "../core/config/config";
-import { runManagedSubprocess } from "../core/subprocess";
 import { checkEmbeddingAvailability, DEFAULT_LOCAL_MODEL, isTransformersAvailable } from "../llm/embedder";
-import { getDirname } from "../runtime";
 import { closeDatabase, openIndexDatabase } from "../storage/repositories/index-connection";
 import { isVecAvailable } from "../storage/repositories/index-vec-repository";
 
@@ -52,34 +50,16 @@ export async function prepareSemanticSearchAssets(
 ): Promise<{ ok: true } | { ok: false; message: string; reason: string }> {
   const remote = isRemoteEmbeddingConfig(config.embedding);
 
-  // For local embeddings, ensure the required package is installed first.
+  // For local embeddings, fail closed when the package was installed with
+  // optional dependencies omitted. Mutating a global/package-manager install
+  // from setup creates an untracked dependency tree and is never safe.
   if (!remote) {
     if (!isTransformersAvailable()) {
-      const spin = p.spinner();
-      spin.start("Installing @huggingface/transformers...");
-      try {
-        const pkgRoot = path.resolve(getDirname(import.meta.url), "../..");
-        // Bounded (10 min) so a stalled `bun add` can't hang setup forever.
-        const result = await runManagedSubprocess(["bun", "add", "@huggingface/transformers"], {
-          capture: true,
-          cwd: pkgRoot,
-          timeoutMs: 10 * 60_000,
-        });
-        if (result.spawnError) throw result.spawnError;
-        if (result.exitCode !== 0) {
-          throw new Error(result.stderr || `exit code ${result.exitCode}`);
-        }
-        spin.stop("@huggingface/transformers installed.");
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        spin.stop("Could not install @huggingface/transformers.");
-        p.log.warn(
-          `Automatic install failed: ${msg}\n` +
-            "Install it manually with: bun add @huggingface/transformers\n" +
-            "Then re-run `akm setup` or `akm index --full --verbose`.",
-        );
-        return { ok: false, reason: "missing-package", message: `Automatic install failed: ${msg}` };
-      }
+      const message =
+        "AKM's optional local embedding runtime is unavailable. Reinstall akm-cli without `--omit=optional`, " +
+        "then re-run `akm setup` or `akm index --full --verbose`.";
+      p.log.warn(message);
+      return { ok: false, reason: "missing-package", message };
     }
   }
 
@@ -100,10 +80,10 @@ export async function prepareSemanticSearchAssets(
       return { ok: false, reason: "remote-network", message: "The remote embedding endpoint is not reachable." };
     } else if (result.reason === "missing-package") {
       p.log.warn(
-        "@huggingface/transformers is not installed. Install it with: bun add @huggingface/transformers\n" +
-          "Then re-run `akm setup` or `akm index --full --verbose`.",
+        "AKM's optional local embedding runtime is unavailable. Reinstall akm-cli without `--omit=optional`, " +
+          "then re-run `akm setup` or `akm index --full --verbose`.",
       );
-      return { ok: false, reason: "missing-package", message: "@huggingface/transformers is not installed." };
+      return { ok: false, reason: "missing-package", message: "The local embedding runtime is unavailable." };
     } else {
       p.log.warn(
         `The local embedding model could not be downloaded: ${result.message}\n` +

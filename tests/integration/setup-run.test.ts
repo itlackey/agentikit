@@ -407,16 +407,14 @@ describe("runSetupWizard", () => {
     expect(readSavedConfig().semanticSearchMode).toBe("auto");
   });
 
-  test("warns specifically when transformers package is missing during setup prep", async () => {
+  test("warns specifically when the package-owned local runtime is missing during setup prep", async () => {
     installSetupSeams();
-    // transformersAvailable stays true so the wizard skips the `bun add`
-    // auto-install attempt (the install path is environment-dependent and
-    // makes the test flaky). The faked checkEmbeddingAvailability still
-    // reports missing-package, which exercises the "warn and report" path.
+    // The faked availability result exercises the warn-and-report path. Setup
+    // must never mutate the package installation to add dependencies.
     setupState.checkEmbeddingResult = {
       available: false,
       reason: "missing-package",
-      message: "@huggingface/transformers is not installed.",
+      message: "AKM's optional local embedding runtime is unavailable.",
     };
 
     promptState.selects.push("default", "none", "done", "json", "brief", "skip", "none");
@@ -425,9 +423,7 @@ describe("runSetupWizard", () => {
 
     await runSetupWizard();
 
-    expect(promptState.logs.some((entry) => entry.includes("Install it with: bun add @huggingface/transformers"))).toBe(
-      true,
-    );
+    expect(promptState.logs.some((entry) => entry.includes("Reinstall akm-cli without `--omit=optional`"))).toBe(true);
     expect(readSavedConfig().semanticSearchMode).toBe("auto");
   });
 

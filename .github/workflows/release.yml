@@ -76,7 +76,6 @@ jobs:
             bun build ./scripts/akm-standalone.ts \
               --compile \
               --target="$target" \
-              --external @huggingface/transformers \
               --outfile "artifacts/$output" \
               --define "AKM_VERSION='$CANDIDATE_VERSION'"
           done <<'EOF'
