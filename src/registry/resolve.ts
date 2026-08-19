@@ -7,9 +7,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { fetchWithRetry, jsonWithByteCap } from "../core/common";
+import { jsonWithByteCap } from "../core/common";
 import { NotFoundError, UsageError } from "../core/errors";
 import { asRecord, asString, GITHUB_API_BASE, githubHeaders } from "../integrations/github";
+import { cancelRegistryResponse, fetchRegistryResponse, type RegistryNetworkPolicy } from "./network";
 import { isExactSemver, isSemverRange, maxSatisfying } from "./semver";
 import type {
   InstallKind,
@@ -91,7 +92,16 @@ export function parseRegistryRef(rawRef: string): ParsedRegistryRef {
 }
 
 /** Inverse of {@link parseRegistryRef}: build the install ref for a source kind. */
-export function buildInstallRef(source: InstallKind, ref: string): string {
+export function buildInstallRef(
+  source: InstallKind,
+  ref: string,
+  provenance: "operator" | "registry" = "operator",
+): string {
+  if (source === "git" && provenance === "registry") {
+    throw new UsageError(
+      "Registry-provided git transport refs are not installable. Add a trusted git URL directly if you intend to use it.",
+    );
+  }
   switch (source) {
     case "npm":
       return `npm:${ref}`;
@@ -353,11 +363,12 @@ export function trustedNpmTarballHosts(): Set<string> {
 }
 
 /**
- * Validate that an npm tarball URL points at a trusted registry host. A
- * compromised mirror could otherwise return an attacker-controlled
- * `dist.tarball` field, redirecting installs to a third-party host.
+ * Validate that an npm tarball URL starts at the exact metadata registry
+ * origin. A compromised mirror must not change scheme or port (or nominate a
+ * different host) in `dist.tarball`; later public redirects remain subject to
+ * the outbound boundary's hop-by-hop policy.
  */
-export function validateNpmTarballUrl(tarballUrl: string, packageRef: string): void {
+export function validateNpmTarballUrl(tarballUrl: string, packageRef: string, registryOrigin?: string): void {
   let url: URL;
   try {
     url = new URL(tarballUrl);
@@ -369,14 +380,26 @@ export function validateNpmTarballUrl(tarballUrl: string, packageRef: string): v
       `npm package ${packageRef} returned a tarball with disallowed scheme "${url.protocol}".`,
     );
   }
-  const trusted = trustedNpmTarballHosts();
-  const host = url.hostname.toLowerCase();
-  if (!trusted.has(host)) {
-    const allowed = Array.from(trusted).join(", ");
+  const expectedOrigin = registryOrigin ?? new URL(npmMetadataRegistry().baseUrl).origin;
+  if (url.origin !== expectedOrigin) {
     throw new UntrustedNpmTarballError(
-      `npm package ${packageRef} returned a tarball URL on untrusted host "${host}" (allowed: ${allowed}).`,
+      `npm package ${packageRef} returned a tarball URL on untrusted origin "${url.origin}" (expected: ${expectedOrigin}).`,
     );
   }
+}
+
+/** Network policy for a tarball URL that already passed {@link validateNpmTarballUrl}. */
+export function npmArtifactNetworkPolicy(
+  artifact: Pick<ResolvedRegistryArtifact, "registryOrigin" | "allowPrivateRegistryOrigin">,
+): Extract<RegistryNetworkPolicy, { kind: "npm-api" }> {
+  if (!artifact.registryOrigin) {
+    throw new UsageError("npm artifact network policy requires the registry origin that authorized its metadata.");
+  }
+  return {
+    kind: "npm-api",
+    registryOrigin: new URL(artifact.registryOrigin).origin,
+    allowPrivateRegistryOrigin: artifact.allowPrivateRegistryOrigin === true,
+  };
 }
 
 /**
@@ -392,24 +415,33 @@ export function validateNpmTarballUrl(tarballUrl: string, packageRef: string): v
  * default wholesale (like npm's own `--registry` flag) rather than being
  * merged with it.
  */
-function npmMetadataRegistryBase(): string {
+function npmMetadataRegistry(): { baseUrl: string; allowPrivateRegistryOrigin: boolean } {
   const override = process.env.AKM_NPM_REGISTRY?.trim();
   if (override) {
     try {
       const url = new URL(override);
       const base = `${url.origin}${url.pathname === "/" ? "" : url.pathname}`;
-      return base.replace(/\/+$/, "");
+      return { baseUrl: base.replace(/\/+$/, ""), allowPrivateRegistryOrigin: true };
     } catch {
       // Ignore unparseable overrides; fall back to the public registry.
     }
   }
-  return `https://${DEFAULT_NPM_REGISTRY_HOST}`;
+  return { baseUrl: `https://${DEFAULT_NPM_REGISTRY_HOST}`, allowPrivateRegistryOrigin: false };
 }
 
 async function resolveNpmArtifact(parsed: ParsedNpmRef): Promise<ResolvedRegistryArtifact> {
   const encodedName = encodeURIComponent(parsed.packageName);
-  const registryBase = npmMetadataRegistryBase();
-  const metadata = await fetchJson<Record<string, unknown>>(`${registryBase}/${encodedName}`);
+  const npmRegistry = npmMetadataRegistry();
+  const npmPolicy: RegistryNetworkPolicy = {
+    kind: "npm-api",
+    registryOrigin: new URL(npmRegistry.baseUrl).origin,
+    allowPrivateRegistryOrigin: npmRegistry.allowPrivateRegistryOrigin,
+  };
+  const metadata = await fetchJson<Record<string, unknown>>(
+    `${npmRegistry.baseUrl}/${encodedName}`,
+    undefined,
+    npmPolicy,
+  );
 
   const versions = asRecord(metadata.versions);
   const distTags = asRecord(metadata["dist-tags"]);
@@ -441,7 +473,7 @@ async function resolveNpmArtifact(parsed: ParsedNpmRef): Promise<ResolvedRegistr
   if (!tarballUrl) {
     throw new Error(`npm package ${parsed.packageName}@${resolvedVersion} does not expose a tarball URL.`);
   }
-  validateNpmTarballUrl(tarballUrl, `${parsed.packageName}@${resolvedVersion}`);
+  validateNpmTarballUrl(tarballUrl, `${parsed.packageName}@${resolvedVersion}`, npmPolicy.registryOrigin);
 
   const resolvedRevision = asString(dist.shasum) ?? asString(dist.integrity);
 
@@ -452,6 +484,8 @@ async function resolveNpmArtifact(parsed: ParsedNpmRef): Promise<ResolvedRegistr
     artifactUrl: tarballUrl,
     resolvedVersion,
     resolvedRevision,
+    registryOrigin: npmPolicy.registryOrigin,
+    allowPrivateRegistryOrigin: npmPolicy.allowPrivateRegistryOrigin,
   };
 }
 
@@ -479,6 +513,7 @@ async function resolveGithubArtifact(parsed: ParsedGithubRef): Promise<ResolvedR
     const commit = await tryFetchJson<Record<string, unknown>>(
       `${repoBase}/commits/${encodeURIComponent(parsed.requestedRef)}`,
       headers,
+      GITHUB_API_POLICY,
     );
     const resolvedRevision = asString(commit?.sha) ?? parsed.requestedRef;
     return {
@@ -491,7 +526,11 @@ async function resolveGithubArtifact(parsed: ParsedGithubRef): Promise<ResolvedR
     };
   }
 
-  const latestRelease = await tryFetchJson<Record<string, unknown>>(`${repoBase}/releases/latest`, headers);
+  const latestRelease = await tryFetchJson<Record<string, unknown>>(
+    `${repoBase}/releases/latest`,
+    headers,
+    GITHUB_API_POLICY,
+  );
   if (latestRelease) {
     const tarballUrl = asString(latestRelease.tarball_url);
     if (tarballUrl) {
@@ -506,7 +545,7 @@ async function resolveGithubArtifact(parsed: ParsedGithubRef): Promise<ResolvedR
     }
   }
 
-  const repoMeta = await fetchJson<Record<string, unknown>>(repoBase, headers);
+  const repoMeta = await fetchJson<Record<string, unknown>>(repoBase, headers, GITHUB_API_POLICY);
   const defaultBranch = asString(repoMeta.default_branch);
   if (!defaultBranch) {
     throw new Error(`Unable to resolve default branch for ${parsed.owner}/${parsed.repo}.`);
@@ -515,6 +554,7 @@ async function resolveGithubArtifact(parsed: ParsedGithubRef): Promise<ResolvedR
   const commit = await tryFetchJson<Record<string, unknown>>(
     `${repoBase}/commits/${encodeURIComponent(defaultBranch)}`,
     headers,
+    GITHUB_API_POLICY,
   );
 
   return {
@@ -681,16 +721,26 @@ function readGitValue(repoRoot: string, ...args: string[]): string | undefined {
 // tens of MB of JSON is a DoS surface, not a feature.
 const REGISTRY_JSON_BYTE_CAP = 10 * 1024 * 1024;
 
-async function fetchJson<T>(url: string, headers?: HeadersInit): Promise<T> {
-  const response = await fetchWithRetry(url, { headers });
+const GITHUB_API_POLICY: RegistryNetworkPolicy = { kind: "github-api" };
+
+async function fetchJson<T>(url: string, headers: HeadersInit | undefined, policy: RegistryNetworkPolicy): Promise<T> {
+  const response = await fetchRegistryResponse(url, { headers }, { policy, timeoutMs: 30_000 });
   if (!response.ok) {
+    await cancelRegistryResponse(response);
     throw new Error(`Request failed (${response.status}) for ${url}`);
   }
-  return jsonWithByteCap<T>(response, REGISTRY_JSON_BYTE_CAP);
+  return jsonWithByteCap<T>(response, REGISTRY_JSON_BYTE_CAP, { bodyTimeoutMs: 30_000 });
 }
 
-async function tryFetchJson<T>(url: string, headers?: HeadersInit): Promise<T | null> {
-  const response = await fetchWithRetry(url, { headers });
-  if (!response.ok) return null;
-  return jsonWithByteCap<T>(response, REGISTRY_JSON_BYTE_CAP);
+async function tryFetchJson<T>(
+  url: string,
+  headers: HeadersInit | undefined,
+  policy: RegistryNetworkPolicy,
+): Promise<T | null> {
+  const response = await fetchRegistryResponse(url, { headers }, { policy, timeoutMs: 30_000 });
+  if (!response.ok) {
+    await cancelRegistryResponse(response);
+    return null;
+  }
+  return jsonWithByteCap<T>(response, REGISTRY_JSON_BYTE_CAP, { bodyTimeoutMs: 30_000 });
 }

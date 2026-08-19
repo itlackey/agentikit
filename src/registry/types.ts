@@ -45,6 +45,10 @@ export interface ResolvedRegistryArtifact {
   artifactUrl: string;
   resolvedVersion?: string;
   resolvedRevision?: string;
+  /** npm registry origin that authorized the metadata response. */
+  registryOrigin?: string;
+  /** Whether that exact npm origin was explicitly configured for private-network compatibility. */
+  allowPrivateRegistryOrigin?: boolean;
 }
 
 export interface InstalledBundle {

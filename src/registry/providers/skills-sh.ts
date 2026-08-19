@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fetchWithRetry } from "../../core/common";
+import { jsonWithByteCap } from "../../core/common";
 import type { RegistryConfigEntry } from "../../core/config/config";
 import {
   formatRegistryCredentialWarning,
@@ -13,6 +13,7 @@ import {
 import { md5Hex } from "../../runtime";
 import { fetchCachedJson } from "../../storage/repositories/registry-cache";
 import { registerRegistryProvider } from "../factory";
+import { allowPrivateRegistryFixtureForTests, cancelRegistryResponse, fetchRegistryResponse } from "../network";
 import type { RegistryAssetSearchHit, RegistrySearchHit } from "../types";
 import type { RegistryProvider, RegistryProviderResult, RegistryProviderSearchOptions } from "./types";
 
@@ -84,11 +85,17 @@ class SkillsShProvider implements RegistryProvider {
         }
       },
       fetchFresh: async () => {
-        const response = await fetchWithRetry(url, undefined, { timeout: 10_000, retries: 1 });
+        const response = await fetchRegistryResponse(url, undefined, {
+          policy: { kind: "public-registry" },
+          timeoutMs: 10_000,
+          retries: 1,
+          allowPrivateHostsForTesting: allowPrivateRegistryFixtureForTests(url),
+        });
         if (!response.ok) {
+          await cancelRegistryResponse(response);
           throw new Error(`HTTP ${response.status}`);
         }
-        const data = (await response.json()) as unknown;
+        const data = await jsonWithByteCap<unknown>(response, 10 * 1024 * 1024, { bodyTimeoutMs: 10_000 });
         const entries = parseSkillsResponse(data);
         return { value: entries, cacheJson: JSON.stringify(entries) };
       },

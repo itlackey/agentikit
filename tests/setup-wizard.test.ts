@@ -56,6 +56,7 @@ const MOCK_SETUP_STASHES = [
     name: "itlackey/akm-stash",
     description: "official onboarding stash",
     url: "https://github.com/itlackey/akm-stash",
+    installType: "git" as const,
     source: "fallback" as const,
     defaultSelected: true,
   },
@@ -64,6 +65,7 @@ const MOCK_SETUP_STASHES = [
     name: "andrewyng/context-hub",
     description: "optional community prompt and context stash",
     url: "https://github.com/andrewyng/context-hub",
+    installType: "git" as const,
     source: "fallback" as const,
     defaultSelected: false,
   },
@@ -189,6 +191,25 @@ describe("stepAddSources – recommended GitHub repos", () => {
     ]);
   });
 
+  test("persists a typed npm registry recommendation as npm instead of Git", async () => {
+    overrideSeam(_setLoadSetupStashesForTests, async () => [
+      {
+        id: "npm:safe",
+        name: "safe-package",
+        description: "typed registry package",
+        url: "npm:safe-package",
+        installType: "npm",
+        source: "registry",
+        defaultSelected: true,
+      },
+    ]);
+    q.multiselects.push(["npm:safe-package"]);
+
+    const result = await stepAddSources({ bundles: {} } as never, { promptForAdditional: false });
+
+    expect(result).toEqual([{ type: "npm", path: "npm:safe-package", name: "safe-package" }]);
+  });
+
   test("allows an existing recommended source to be unchecked and removed", async () => {
     const cfg = {
       bundles: { "itlackey-akm-stash": { git: "https://github.com/itlackey/akm-stash" } },
@@ -216,6 +237,42 @@ describe("stepAddSources – recommended GitHub repos", () => {
     const hub = result.find((s) => s.url === ctxHubUrl);
     expect(hub).toBeDefined();
     expect(hub?.type).toBe("git");
+  });
+
+  test.each([
+    {
+      label: "live .git recommendation and historical existing URL",
+      existingUrl: "https://github.com/itlackey/akm-stash",
+      recommendedUrl: "https://github.com/itlackey/akm-stash.git",
+    },
+    {
+      label: "fallback no-.git recommendation and suffixed existing URL",
+      existingUrl: "https://github.com/itlackey/akm-stash.git",
+      recommendedUrl: "https://github.com/itlackey/akm-stash",
+    },
+  ])("treats $label as the same source", async ({ existingUrl, recommendedUrl }) => {
+    const canonicalUrl = "https://github.com/itlackey/akm-stash";
+    overrideSeam(_setLoadSetupStashesForTests, async () => [
+      {
+        id: "itlackey/akm-stash",
+        name: "itlackey/akm-stash",
+        description: "official onboarding stash",
+        url: recommendedUrl,
+        installType: "git",
+        source: "registry",
+        defaultSelected: true,
+      },
+    ]);
+    const cfg = {
+      bundles: { "itlackey-akm-stash": { git: existingUrl } },
+    };
+
+    q.multiselects.push([`git:${existingUrl}`], [canonicalUrl]);
+    q.selects.push("done");
+
+    const result = await stepAddSources(cfg as never);
+    expect(q.multiselectConfigs[1]?.initialValues).toEqual([canonicalUrl]);
+    expect(result).toEqual([{ type: "git", url: existingUrl, name: "itlackey-akm-stash" }]);
   });
 
   test("shows existing configured sources as a toggle list before recommendations", async () => {
