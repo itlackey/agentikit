@@ -1166,6 +1166,17 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
     persist: !planOnly,
   });
 
+  // Gate counts are an exclusive, sequential accounting of the raw pool.
+  // Replay, proactive maintenance, high-salience, and forgetting-safety are
+  // legitimate signal-gate fallback lanes, so a ref admitted by any of them
+  // was not removed by the signal gate. Derive this count from the actual
+  // pre-disk survivor set instead of the earlier lane-rescue snapshot; the
+  // latter is intentionally assembled before replay and is also broader than
+  // the effective pool when --require-feedback-signal suppresses fallbacks.
+  const postValidationCount = postCleanupRefs.length - validationFailureRefs.size;
+  const preDiskSurvivorCount = filtered.actionableRefs.length + filtered.missingDiskCount;
+  const signalRemoved = Math.max(0, postValidationCount - preDiskSurvivorCount);
+
   const planningGates: ImprovePlanGate[] = [
     cleanupGate,
     {
@@ -1175,7 +1186,7 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
     },
     {
       name: "signal",
-      removed: gathered.fullySkippedCount + Math.max(0, gathered.noFeedbackPoolCount - gathered.rescuedNoFeedbackCount),
+      removed: signalRemoved,
       reason: "no fresh signal and no fallback lane selected the ref",
     },
     {
@@ -1417,8 +1428,6 @@ interface GatheredCandidates {
   proactiveRefs: ImproveEligibleRef[];
   proactiveMaintenanceSummary?: { selected: number; dueTotal: number; neverReflected: number; selectedRefs: string[] };
   proactivePlan?: ImproveExecutionPlan["proactive"];
-  noFeedbackPoolCount: number;
-  rescuedNoFeedbackCount: number;
   highSalienceRefs: ImproveEligibleRef[];
   signalAndRetrievalRefs: ImproveEligibleRef[];
   mergedRefs: ImproveEligibleRef[];
@@ -1606,8 +1615,6 @@ function gatherCandidates(args: {
     proactiveRefs,
     proactiveMaintenanceSummary,
     proactivePlan: proactive.proactivePlan,
-    noFeedbackPoolCount: noFeedbackPool.length,
-    rescuedNoFeedbackCount: rescuedSet.size,
     highSalienceRefs,
     signalAndRetrievalRefs,
     mergedRefs,

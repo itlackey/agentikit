@@ -26,14 +26,21 @@ describe("decodeImproveResult", () => {
     mode: "estimate",
     dispatch: false,
     snapshot: { status: "ready", reason: "loaded the existing index read-only" },
-    candidates: { rawInScope: 2, selected: 1, effective: 1 },
+    candidates: { rawInScope: 2, selected: 2, effective: 1 },
     limits: {
       configured: { cli: 1, reflect: 25 },
       effective: 1,
       additiveReplayAllowance: 0,
       totalCeiling: 1,
     },
-    gates: [{ name: "limit", removed: 1, reason: "deferred" }],
+    gates: [
+      { name: "profile", removed: 0, reason: "profile" },
+      { name: "cleanup", removed: 0, reason: "cleanup" },
+      { name: "validation", removed: 0, reason: "validation" },
+      { name: "signal", removed: 0, reason: "signal" },
+      { name: "disk", removed: 0, reason: "disk" },
+      { name: "limit", removed: 1, reason: "deferred" },
+    ],
     effectiveRefs: [{ ref: "skills/a", lane: "proactive", reason: "scope-type" }],
     proactive: {
       configured: { dueDays: 30, maxPerRun: 10 },
@@ -119,7 +126,7 @@ describe("decodeImproveResult", () => {
         ...envelope,
         plan: { ...plan, candidates: { ...plan.candidates, effective: 2 } },
       }),
-    ).toThrow(/selected cannot be less than.*effective|effectiveRefs.length/);
+    ).toThrow(/limit removal.*selected.*effective|effectiveRefs.length/);
   });
 
   test("rejects contradictory modes, counts, ordered refs, and replay caps", () => {
@@ -139,6 +146,37 @@ describe("decodeImproveResult", () => {
       {
         value: { ...envelope, plan: { ...plan, candidates: { rawInScope: 0, selected: 1, effective: 1 } } },
         message: /rawInScope cannot be less than.*selected/,
+      },
+      {
+        value: {
+          ...envelope,
+          plan: {
+            ...plan,
+            gates: plan.gates.map((gate) => (gate.name === "signal" ? { ...gate, removed: 1 } : gate)),
+          },
+        },
+        message: /pre-limit gate removals.*rawInScope.*selected/,
+      },
+      {
+        value: {
+          ...envelope,
+          plan: {
+            ...plan,
+            candidates: { ...plan.candidates, selected: 1 },
+            gates: plan.gates.map((gate) => (gate.name === "signal" ? { ...gate, removed: 1 } : gate)),
+          },
+        },
+        message: /limit removal.*selected.*effective/,
+      },
+      {
+        value: {
+          ...envelope,
+          plan: {
+            ...plan,
+            gates: plan.gates.filter((gate) => gate.name !== "disk"),
+          },
+        },
+        message: /exactly one.*disk/,
       },
       {
         value: { ...envelope, plannedRefs: [{ ...plannedRef, ref: "skills/other" }] },
@@ -181,6 +219,7 @@ describe("decodeImproveResult", () => {
             candidates: { rawInScope: 2, selected: 2, effective: 2 },
             effectiveRefs: [plan.effectiveRefs[0], { ...plan.effectiveRefs[0], ref: "skills/b" }],
             limits: { ...plan.limits, additiveReplayAllowance: 1, totalCeiling: 2 },
+            gates: plan.gates.map((gate) => (gate.name === "limit" ? { ...gate, removed: 0 } : gate)),
           },
         },
         message: /ordinary refs cannot exceed.*limits.effective/,

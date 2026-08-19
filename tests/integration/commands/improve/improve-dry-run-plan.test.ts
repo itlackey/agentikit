@@ -315,6 +315,7 @@ describe("#800 effective dry-run planner", () => {
     expect(result.plan?.effectiveRefs).toHaveLength(2);
     expect(result.plan?.effectiveRefs.every((entry) => entry.lane === "proactive")).toBe(true);
     expect(result.plan?.gates.some((gate) => gate.name === "limit" && gate.removed === 1)).toBe(true);
+    expect(decodeImproveResult(JSON.stringify(result)).envelope.plannedRefs).toEqual(result.plannedRefs);
   });
 
   test("proactive dry-run reports due population, selected refs, and differs from default", async () => {
@@ -421,8 +422,50 @@ describe("#800 effective dry-run planner", () => {
     expect(dry.plan?.effectiveRefs).toEqual([{ ref: skillRef, lane: "replay", reason: "scope-type" }]);
     expect(live.plan?.effectiveRefs).toEqual(dry.plan?.effectiveRefs);
     for (const result of [dry, live]) {
+      expect(result.plan?.candidates).toEqual({ rawInScope: 1, selected: 1, effective: 1 });
+      expect(Object.fromEntries(result.plan?.gates.map((gate) => [gate.name, gate.removed]) ?? [])).toEqual({
+        profile: 0,
+        cleanup: 0,
+        validation: 0,
+        signal: 0,
+        disk: 0,
+        limit: 0,
+      });
       expect(decodeImproveResult(JSON.stringify(result)).envelope.plannedRefs).toEqual([expected]);
     }
+  });
+
+  test("feedback-only mode counts proactive fallback refs as signal-gated in dry and live plans", async () => {
+    const { stashDir } = isolatedStorage();
+    const config = plannerConfig({ proactive: { enabled: true, dueDays: 0, maxPerRun: 1 } });
+    await indexSkills(stashDir, 1, config);
+    const reflectFn = mock(async ({ ref }: { ref?: string }) => okReflect(ref ?? ""));
+    const commonOptions = {
+      scope: "skill",
+      stashDir,
+      config,
+      requireFeedbackSignal: true,
+      ensureIndexFn: async () => false,
+      reflectFn,
+    };
+
+    const dry = await akmImprove({ ...commonOptions, dryRun: true });
+    const live = await akmImprove(commonOptions);
+
+    for (const result of [dry, live]) {
+      expect(result.plannedRefs).toEqual([]);
+      expect(result.plan?.candidates).toEqual({ rawInScope: 1, selected: 0, effective: 0 });
+      expect(Object.fromEntries(result.plan?.gates.map((gate) => [gate.name, gate.removed]) ?? [])).toEqual({
+        profile: 0,
+        cleanup: 0,
+        validation: 0,
+        signal: 1,
+        disk: 0,
+        limit: 0,
+      });
+      expect(decodeImproveResult(JSON.stringify(result)).envelope.plannedRefs).toEqual([]);
+    }
+    expect(reflectFn).not.toHaveBeenCalled();
   });
 
   test("replay cannot re-admit a ref removed by structural validation", async () => {

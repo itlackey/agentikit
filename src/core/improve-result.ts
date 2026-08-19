@@ -237,12 +237,30 @@ function validateImprovePlan(value: unknown, dryRun: boolean, plannedRefNames: r
 
   const gateNames = new Set(["profile", "cleanup", "validation", "signal", "disk", "limit"]);
   if (!Array.isArray(value.gates)) fail("plan.gates must be an array");
+  const gateRemovedByName = new Map<string, number>();
   for (const gate of value.gates) {
     if (!isRecord(gate)) fail("plan.gates entries must be objects");
     requireExactFields(gate, new Set(["name", "removed", "reason"]));
     if (typeof gate.name !== "string" || !gateNames.has(gate.name)) fail("plan.gates.name is invalid");
     requireCount(gate, "removed", "plan.gates entry");
     if (typeof gate.reason !== "string") fail("plan.gates.reason must be a string");
+    if (gateRemovedByName.has(gate.name)) fail(`plan.gates must contain exactly one ${gate.name} gate`);
+    gateRemovedByName.set(gate.name, gate.removed as number);
+  }
+  for (const gateName of gateNames) {
+    if (!gateRemovedByName.has(gateName)) fail(`plan.gates must contain exactly one ${gateName} gate`);
+  }
+  const preLimitRemoved = [...gateRemovedByName]
+    .filter(([gateName]) => gateName !== "limit")
+    .reduce((total, [, removed]) => total + removed, 0);
+  if (preLimitRemoved !== (value.candidates.rawInScope as number) - (value.candidates.selected as number)) {
+    fail("plan pre-limit gate removals must equal plan.candidates.rawInScope - plan.candidates.selected");
+  }
+  if (
+    gateRemovedByName.get("limit") !==
+    (value.candidates.selected as number) - (value.candidates.effective as number)
+  ) {
+    fail("plan limit removal must equal plan.candidates.selected - plan.candidates.effective");
   }
 
   const lanes = new Set([
