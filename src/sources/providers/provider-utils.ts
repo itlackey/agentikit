@@ -7,8 +7,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { getAdapters } from "../../core/adapter/registry";
 import { stashDirNames } from "../../core/asset/asset-placement";
-import { fetchWithRetry } from "../../core/common";
 import type { SourceSpec } from "../../core/config/config";
+import { fetchRegistryResponse, type RegistryNetworkPolicy } from "../../registry/network";
 import { writeResponseToFileCapped } from "../../runtime";
 import { copyIncludedPaths, findNearestIncludeConfig } from "../include";
 
@@ -119,8 +119,12 @@ export function applyAkmIncludeConfig(
 }
 
 /** Stream a remote archive to disk via the runtime boundary's response writer. */
-export async function downloadArchive(url: string, destination: string): Promise<void> {
-  const response = await fetchWithRetry(url, undefined, { timeout: 120_000 });
+export async function downloadArchive(
+  url: string,
+  destination: string,
+  networkPolicy: RegistryNetworkPolicy,
+): Promise<void> {
+  const response = await fetchRegistryResponse(url, undefined, { policy: networkPolicy, timeoutMs: 120_000 });
   if (!response.ok) {
     throw new Error(`Failed to download archive (${response.status}) from ${url}`);
   }

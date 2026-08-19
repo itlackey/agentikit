@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fetchWithRetry, jsonWithByteCap } from "../../core/common";
+import { jsonWithByteCap } from "../../core/common";
 import type { RegistryConfigEntry } from "../../core/config/config";
 import {
   formatRegistryCredentialWarning,
@@ -13,6 +13,7 @@ import {
 import { asString } from "../../integrations/github";
 import { fetchCachedJson } from "../../storage/repositories/registry-cache";
 import { registerRegistryProvider } from "../factory";
+import { allowPrivateRegistryFixtureForTests, fetchRegistryResponse } from "../network";
 import { buildInstallRef } from "../resolve";
 import type { InstallKind, RegistryAssetEntry, RegistryAssetSearchHit, RegistrySearchHit } from "../types";
 import type { RegistryProvider, RegistryProviderResult, RegistryProviderSearchOptions } from "./types";
@@ -106,7 +107,11 @@ async function loadIndex(entry: RegistryConfigEntry): Promise<RegistryIndex | nu
     // cache row lets JSON.parse throw out of the load.
     parseCache: (json) => parseRegistryIndex(JSON.parse(json) as unknown) ?? undefined,
     fetchFresh: async () => {
-      const response = await fetchWithRetry(entry.url, undefined, { timeout: 10_000 });
+      const response = await fetchRegistryResponse(entry.url, undefined, {
+        policy: { kind: "public-registry" },
+        timeoutMs: 10_000,
+        allowPrivateHostsForTesting: allowPrivateRegistryFixtureForTests(entry.url),
+      });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }

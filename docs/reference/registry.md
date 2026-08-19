@@ -87,6 +87,17 @@ authenticated registry requests, including through `options`; publish the
 index/API at a credential-free HTTPS endpoint or place an authenticated proxy
 in front of it. AKM does not translate URL credentials into request headers.
 
+Registry HTTP requests must also resolve to public network addresses. AKM
+rejects loopback, private, link-local, metadata, and reserved destinations on
+the initial URL and every redirect hop. This intentionally means a
+`static-index` or `skills-sh` registry hosted only on localhost or an intranet
+is no longer reachable in 0.9.2; publish it at a publicly routable HTTPS
+endpoint. The only private-network compatibility exception is an npm mirror
+explicitly selected with `AKM_NPM_REGISTRY`; metadata and tarball requests may
+reach that configured mirror, but not link-local or cloud-metadata addresses.
+See [Registry network boundary](../architecture/internals/registry-network-boundary.md)
+for the complete policy and DNS guarantee.
+
 ## Searching Registries
 
 Search registries alongside or instead of the local bundle:

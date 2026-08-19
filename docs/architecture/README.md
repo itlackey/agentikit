@@ -45,6 +45,7 @@ Current-truth subsystem references.
 - [Classification](internals/classification.md) -- Matcher and renderer behavior
 - [Improve Workflow](internals/improve-workflow.md) -- `akm improve` command surface and pipeline reference
 - [Health Advisories](internals/health-advisories.md) -- `akm health` advisory-to-action map for operators
+- [Registry Network Boundary](internals/registry-network-boundary.md) -- Outbound registry request inventory, destination policy, redirects, and DNS guarantees
 - [Functional Contract Patterns](internals/functional-contract-patterns.md) -- Quick reference for contributor pipelines and small process contracts
 - [Fresh-Host Rebuild Runbook](internals/fresh-host-rebuild-runbook.md) -- Rebuild an akm install on a new machine
 

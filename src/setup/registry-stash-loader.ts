@@ -14,6 +14,7 @@
  */
 
 import { hasRegistryUrlCredentials } from "../core/registry-url";
+import { allowPrivateRegistryFixtureForTests, fetchRegistryResponse } from "../registry/network";
 
 // ── Default selections ──────────────────────────────────────────────────────
 
@@ -98,10 +99,16 @@ export async function loadSetupStashes(registryUrl: string, timeoutMs = 4000): P
 
 async function loadSetupStashesReal(registryUrl: string, timeoutMs = 4000): Promise<SetupBundleEntry[]> {
   try {
-    const response = await fetch(registryUrl, {
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { Accept: "application/json" },
-    });
+    const response = await fetchRegistryResponse(
+      registryUrl,
+      { headers: { Accept: "application/json" } },
+      {
+        policy: { kind: "public-registry" },
+        timeoutMs,
+        retries: 0,
+        allowPrivateHostsForTesting: allowPrivateRegistryFixtureForTests(registryUrl),
+      },
+    );
     if (!response.ok) return FALLBACK_STASHES;
 
     const raw = (await response.json()) as { stashes?: unknown[] };

@@ -49,6 +49,7 @@ import { resetConfigCache } from "../src/core/config/config";
 import { clearLogFile, resetVerbose, setQuiet } from "../src/core/warn";
 import { resetGraphBoostCache } from "../src/indexer/graph/graph-boost";
 import { clearEmbeddingCache, resetLocalEmbedder } from "../src/llm/embedder";
+import { _setRegistryNetworkOverridesForTests } from "../src/registry/network";
 import { resetAllSeams } from "./_helpers/seams";
 
 /**
@@ -297,6 +298,10 @@ function healSandboxEnv(): void {
 /** Reset every known module-level singleton in production code. */
 function resetSingletons(): void {
   resetAllSeams();
+  _setRegistryNetworkOverridesForTests({
+    allowLoopbackFixtures: true,
+    resolveHostname: async () => ["93.184.216.34"],
+  });
   resetConfigCache();
   clearEmbeddingCache();
   resetLocalEmbedder();

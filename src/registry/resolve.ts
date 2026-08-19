@@ -7,9 +7,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { fetchWithRetry, jsonWithByteCap } from "../core/common";
+import { jsonWithByteCap } from "../core/common";
 import { NotFoundError, UsageError } from "../core/errors";
 import { asRecord, asString, GITHUB_API_BASE, githubHeaders } from "../integrations/github";
+import { fetchRegistryResponse, type RegistryNetworkPolicy } from "./network";
 import { isExactSemver, isSemverRange, maxSatisfying } from "./semver";
 import type {
   InstallKind,
@@ -379,6 +380,25 @@ export function validateNpmTarballUrl(tarballUrl: string, packageRef: string): v
   }
 }
 
+/** Network policy for a tarball URL that already passed {@link validateNpmTarballUrl}. */
+export function npmArtifactNetworkPolicy(tarballUrl: string): RegistryNetworkPolicy {
+  const tarball = new URL(tarballUrl);
+  const override = process.env.AKM_NPM_REGISTRY?.trim();
+  let explicitlyConfiguredHost = false;
+  if (override) {
+    try {
+      explicitlyConfiguredHost = new URL(override).hostname.toLowerCase() === tarball.hostname.toLowerCase();
+    } catch {
+      // Invalid overrides are ignored consistently with trustedNpmTarballHosts().
+    }
+  }
+  return {
+    kind: "npm-api",
+    registryOrigin: tarball.origin,
+    allowPrivateRegistryOrigin: explicitlyConfiguredHost,
+  };
+}
+
 /**
  * Resolve the npm registry base URL used to fetch package METADATA.
  *
@@ -392,24 +412,33 @@ export function validateNpmTarballUrl(tarballUrl: string, packageRef: string): v
  * default wholesale (like npm's own `--registry` flag) rather than being
  * merged with it.
  */
-function npmMetadataRegistryBase(): string {
+function npmMetadataRegistry(): { baseUrl: string; allowPrivateRegistryOrigin: boolean } {
   const override = process.env.AKM_NPM_REGISTRY?.trim();
   if (override) {
     try {
       const url = new URL(override);
       const base = `${url.origin}${url.pathname === "/" ? "" : url.pathname}`;
-      return base.replace(/\/+$/, "");
+      return { baseUrl: base.replace(/\/+$/, ""), allowPrivateRegistryOrigin: true };
     } catch {
       // Ignore unparseable overrides; fall back to the public registry.
     }
   }
-  return `https://${DEFAULT_NPM_REGISTRY_HOST}`;
+  return { baseUrl: `https://${DEFAULT_NPM_REGISTRY_HOST}`, allowPrivateRegistryOrigin: false };
 }
 
 async function resolveNpmArtifact(parsed: ParsedNpmRef): Promise<ResolvedRegistryArtifact> {
   const encodedName = encodeURIComponent(parsed.packageName);
-  const registryBase = npmMetadataRegistryBase();
-  const metadata = await fetchJson<Record<string, unknown>>(`${registryBase}/${encodedName}`);
+  const npmRegistry = npmMetadataRegistry();
+  const npmPolicy: RegistryNetworkPolicy = {
+    kind: "npm-api",
+    registryOrigin: new URL(npmRegistry.baseUrl).origin,
+    allowPrivateRegistryOrigin: npmRegistry.allowPrivateRegistryOrigin,
+  };
+  const metadata = await fetchJson<Record<string, unknown>>(
+    `${npmRegistry.baseUrl}/${encodedName}`,
+    undefined,
+    npmPolicy,
+  );
 
   const versions = asRecord(metadata.versions);
   const distTags = asRecord(metadata["dist-tags"]);
@@ -479,6 +508,7 @@ async function resolveGithubArtifact(parsed: ParsedGithubRef): Promise<ResolvedR
     const commit = await tryFetchJson<Record<string, unknown>>(
       `${repoBase}/commits/${encodeURIComponent(parsed.requestedRef)}`,
       headers,
+      GITHUB_API_POLICY,
     );
     const resolvedRevision = asString(commit?.sha) ?? parsed.requestedRef;
     return {
@@ -491,7 +521,11 @@ async function resolveGithubArtifact(parsed: ParsedGithubRef): Promise<ResolvedR
     };
   }
 
-  const latestRelease = await tryFetchJson<Record<string, unknown>>(`${repoBase}/releases/latest`, headers);
+  const latestRelease = await tryFetchJson<Record<string, unknown>>(
+    `${repoBase}/releases/latest`,
+    headers,
+    GITHUB_API_POLICY,
+  );
   if (latestRelease) {
     const tarballUrl = asString(latestRelease.tarball_url);
     if (tarballUrl) {
@@ -506,7 +540,7 @@ async function resolveGithubArtifact(parsed: ParsedGithubRef): Promise<ResolvedR
     }
   }
 
-  const repoMeta = await fetchJson<Record<string, unknown>>(repoBase, headers);
+  const repoMeta = await fetchJson<Record<string, unknown>>(repoBase, headers, GITHUB_API_POLICY);
   const defaultBranch = asString(repoMeta.default_branch);
   if (!defaultBranch) {
     throw new Error(`Unable to resolve default branch for ${parsed.owner}/${parsed.repo}.`);
@@ -515,6 +549,7 @@ async function resolveGithubArtifact(parsed: ParsedGithubRef): Promise<ResolvedR
   const commit = await tryFetchJson<Record<string, unknown>>(
     `${repoBase}/commits/${encodeURIComponent(defaultBranch)}`,
     headers,
+    GITHUB_API_POLICY,
   );
 
   return {
@@ -681,16 +716,22 @@ function readGitValue(repoRoot: string, ...args: string[]): string | undefined {
 // tens of MB of JSON is a DoS surface, not a feature.
 const REGISTRY_JSON_BYTE_CAP = 10 * 1024 * 1024;
 
-async function fetchJson<T>(url: string, headers?: HeadersInit): Promise<T> {
-  const response = await fetchWithRetry(url, { headers });
+const GITHUB_API_POLICY: RegistryNetworkPolicy = { kind: "github-api" };
+
+async function fetchJson<T>(url: string, headers: HeadersInit | undefined, policy: RegistryNetworkPolicy): Promise<T> {
+  const response = await fetchRegistryResponse(url, { headers }, { policy, timeoutMs: 30_000 });
   if (!response.ok) {
     throw new Error(`Request failed (${response.status}) for ${url}`);
   }
   return jsonWithByteCap<T>(response, REGISTRY_JSON_BYTE_CAP);
 }
 
-async function tryFetchJson<T>(url: string, headers?: HeadersInit): Promise<T | null> {
-  const response = await fetchWithRetry(url, { headers });
+async function tryFetchJson<T>(
+  url: string,
+  headers: HeadersInit | undefined,
+  policy: RegistryNetworkPolicy,
+): Promise<T | null> {
+  const response = await fetchRegistryResponse(url, { headers }, { policy, timeoutMs: 30_000 });
   if (!response.ok) return null;
   return jsonWithByteCap<T>(response, REGISTRY_JSON_BYTE_CAP);
 }

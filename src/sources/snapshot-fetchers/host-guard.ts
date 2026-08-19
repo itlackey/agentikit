@@ -2,9 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { lookup as dnsLookup } from "node:dns/promises";
-import { isIP } from "node:net";
 import { fetchWithRetry, readBodyWithByteCap } from "../../core/common";
+import {
+  bareHostname,
+  classifyNetworkAddress,
+  classifyNetworkHostname,
+  type HostnameResolver,
+  resolveHostnameAddresses,
+} from "../../core/network-policy";
 
 /**
  * SSRF host guards and the guarded fetch used by every outbound request the
@@ -24,7 +29,7 @@ export interface HostGuardOptions {
 }
 
 /** Resolve a hostname to its A/AAAA address strings. Injectable for tests. */
-export type HostnameResolver = (hostname: string) => Promise<string[]>;
+export type { HostnameResolver } from "../../core/network-policy";
 
 export interface GuardedResponse {
   response: Response;
@@ -57,11 +62,6 @@ export function assertWebsiteRequestUrl(
   }
 }
 
-async function defaultResolveHostname(hostname: string): Promise<string[]> {
-  const records = await dnsLookup(hostname, { all: true });
-  return records.map((record) => record.address);
-}
-
 /**
  * Resolve-then-validate SSRF guard against DNS rebinding / private-range
  * bypasses. {@link assertWebsiteRequestUrl} only rejects IP-literal and
@@ -81,18 +81,16 @@ async function defaultResolveHostname(hostname: string): Promise<string[]> {
  */
 export async function assertResolvedHostAllowed(hostname: string, options?: HostGuardOptions): Promise<void> {
   if (options?.allowPrivateHosts === true) return;
-  const bare = stripIpv6Brackets(hostname.toLowerCase());
-  const literalVersion = isIP(bare);
-  if (literalVersion !== 0) {
-    const forbidden = literalVersion === 4 ? isForbiddenIpv4(bare) : isForbiddenIpv6(bare);
-    if (forbidden) throw new Error(`Refusing to fetch non-public website host: ${hostname}`);
+  const bare = bareHostname(hostname.toLowerCase());
+  const literalClass = classifyNetworkAddress(bare);
+  if (literalClass !== "invalid") {
+    if (literalClass !== "public") throw new Error(`Refusing to fetch non-public website host: ${hostname}`);
     return;
   }
 
-  const resolve = options?.resolveHostname ?? defaultResolveHostname;
   let addresses: string[];
   try {
-    addresses = await resolve(bare);
+    addresses = await resolveHostnameAddresses(bare, options?.resolveHostname);
   } catch {
     throw new Error(`Refusing to fetch ${hostname}: DNS resolution failed`);
   }
@@ -100,136 +98,19 @@ export async function assertResolvedHostAllowed(hostname: string, options?: Host
     throw new Error(`Refusing to fetch ${hostname}: hostname resolved to no addresses`);
   }
   for (const address of addresses) {
-    const version = isIP(address);
-    const forbidden =
-      version === 4 ? isForbiddenIpv4(address) : version === 6 ? isForbiddenIpv6(stripIpv6Brackets(address)) : true;
-    if (forbidden) {
+    if (classifyNetworkAddress(address) !== "public") {
       throw new Error(`Refusing to fetch ${hostname}: resolves to non-public or unparseable address ${address}`);
     }
   }
 }
 
-// WHATWG URL.hostname wraps IPv6 literals in brackets (e.g. "[::1]"), but
-// node:net's isIP() only recognizes the bare address form and returns 0 for
-// anything bracketed — silently skipping all IPv6 forbidden-host checks
-// below for every hostname parsed off a URL. Strip the brackets before any
-// isIP()/isForbiddenIpv6() call so those checks actually run.
-function stripIpv6Brackets(hostname: string): string {
-  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-}
-
 function isForbiddenWebsiteHostname(hostname: string, options?: HostGuardOptions): boolean {
   if (options?.allowPrivateHosts === true) return false;
-  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "metadata.google.internal") {
-    return true;
-  }
-
-  const bareHostname = stripIpv6Brackets(hostname);
-  const ipVersion = isIP(bareHostname);
-  if (ipVersion === 4) return isForbiddenIpv4(bareHostname);
-  if (ipVersion === 6) return isForbiddenIpv6(bareHostname);
-  return false;
+  return classifyNetworkHostname(hostname) !== "public";
 }
 
 export function isLoopbackWebsiteHostname(hostname: string): boolean {
-  if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
-  const bareHostname = stripIpv6Brackets(hostname);
-  const ipVersion = isIP(bareHostname);
-  if (ipVersion === 4) return bareHostname.startsWith("127.");
-  if (ipVersion === 6) return bareHostname === "::1";
-  return false;
-}
-
-function isForbiddenIpv4(hostname: string): boolean {
-  const parts = hostname.split(".").map((part) => Number.parseInt(part, 10));
-  const [a = -1, b = -1, c = -1, d = -1] = parts;
-  if (parts.length !== 4 || [a, b, c, d].some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return true;
-  }
-  return (
-    a === 0 ||
-    a === 10 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    a === 127 ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 0 && c === 0 && d !== 9 && d !== 10) ||
-    (a === 192 && b === 0 && c === 2) ||
-    (a === 192 && b === 168) ||
-    (a === 192 && b === 88 && c === 99) ||
-    (a === 198 && (b === 18 || b === 19)) ||
-    (a === 198 && b === 51 && c === 100) ||
-    (a === 203 && b === 0 && c === 113) ||
-    a >= 224
-  );
-}
-
-function parseIpv6Words(hostname: string): number[] | null {
-  let normalized: string;
-  try {
-    normalized = stripIpv6Brackets(new URL(`http://[${stripIpv6Brackets(hostname)}]/`).hostname).toLowerCase();
-  } catch {
-    return null;
-  }
-  const halves = normalized.split("::");
-  if (halves.length > 2) return null;
-  const left = halves[0] ? halves[0].split(":") : [];
-  const right = halves[1] ? halves[1].split(":") : [];
-  const missing = 8 - left.length - right.length;
-  if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) return null;
-  const parts = halves.length === 2 ? [...left, ...Array<string>(missing).fill("0"), ...right] : left;
-  if (parts.length !== 8 || parts.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return null;
-  return parts.map((part) => Number.parseInt(part, 16));
-}
-
-function ipv6Value(hostname: string): bigint | null {
-  const words = parseIpv6Words(hostname);
-  if (!words) return null;
-  return words.reduce((value, word) => (value << 16n) | BigInt(word), 0n);
-}
-
-const FORBIDDEN_IPV6_RANGES = [
-  ["64:ff9b:1::", 48],
-  ["100::", 64],
-  ["2001::", 32],
-  ["2001:2::", 48],
-  ["2001:10::", 28],
-  ["2001:20::", 28],
-  ["2001:db8::", 32],
-  ["3fff::", 20],
-  ["5f00::", 16],
-  ["fc00::", 7],
-  ["fe80::", 10],
-  ["fec0::", 10],
-  ["ff00::", 8],
-] as const;
-
-function embeddedIpv4Address(words: number[]): string | null {
-  const firstSixZero = words.slice(0, 6).every((word) => word === 0);
-  const mapped = words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff;
-  const translated = words.slice(0, 4).every((word) => word === 0) && words[4] === 0xffff && words[5] === 0;
-  const wellKnownNat64 = words[0] === 0x64 && words[1] === 0xff9b && words.slice(2, 6).every((word) => word === 0);
-  if (words[0] === 0x2002) return ipv4FromHextets(words[1] ?? 0, words[2] ?? 0);
-  if (!firstSixZero && !mapped && !translated && !wellKnownNat64) return null;
-  return ipv4FromHextets(words[6] ?? 0, words[7] ?? 0);
-}
-
-function ipv4FromHextets(high: number, low: number): string {
-  return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
-}
-
-function isForbiddenIpv6(hostname: string): boolean {
-  const words = parseIpv6Words(hostname);
-  const value = ipv6Value(hostname);
-  if (!words || value === null) return true;
-  const embeddedIpv4 = embeddedIpv4Address(words);
-  if (embeddedIpv4) return isForbiddenIpv4(embeddedIpv4);
-  return FORBIDDEN_IPV6_RANGES.some(([prefix, bits]) => {
-    const prefixValue = ipv6Value(prefix);
-    if (prefixValue === null) return true;
-    const shift = BigInt(128 - bits);
-    return value >> shift === prefixValue >> shift;
-  });
+  return classifyNetworkHostname(hostname) === "loopback";
 }
 
 function redirectInit(init: RequestInit, currentUrl: string, nextUrl: string): RequestInit {
