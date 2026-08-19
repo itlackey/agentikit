@@ -21,13 +21,16 @@
  *   - `AKM_MIGRATE_ENTRY=1` (set by `runMigrationTool` when it re-execs this
  *     same binary): run the migrator's `main` over our args, exactly like the
  *     `scripts/akm-migrate.ts` subprocess would.
- *   - otherwise: run the CLI. `AKM_STANDALONE_ENTRY=1` opts into cli.ts's
- *     startup block, the same pattern `dist/cli-node.mjs` uses with
- *     `AKM_NODE_ENTRY` — cli.ts is imported, so its `import.meta.main` is
- *     false.
+ *   - otherwise: register the compiled model-map authority, then run the CLI.
+ *     `AKM_STANDALONE_ENTRY=1` opts into cli.ts's startup block, the same
+ *     pattern `dist/cli-node.mjs` uses with `AKM_NODE_ENTRY` — cli.ts is
+ *     imported, so its `import.meta.main` is false.
+ *
+ * The authoritative models.json import is structured build input. Bun embeds
+ * that object into the executable; its canonical serialized bytes outrank any
+ * mutable adjacent asset once registered by the normal CLI branch.
  */
-
-export {}; // top-level await requires module context; this entry has only dynamic imports
+import embeddedDefaultModelMap from "../src/assets/models.json" with { type: "json" };
 
 if (process.env.AKM_MIGRATE_ENTRY === "1") {
   // Consume the marker so commands the migrator itself shells out to never
@@ -37,6 +40,8 @@ if (process.env.AKM_MIGRATE_ENTRY === "1") {
   const { main } = await import("./akm-migrate");
   await runWithJsonErrors(() => main(process.argv.slice(2)));
 } else {
+  const { registerStandaloneModelMapFallback } = await import("../src/integrations/agent/model-map");
+  registerStandaloneModelMapFallback(`${JSON.stringify(embeddedDefaultModelMap, null, 2)}\n`);
   process.env.AKM_STANDALONE_ENTRY = "1";
   await import("../src/cli");
 }

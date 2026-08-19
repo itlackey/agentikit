@@ -284,7 +284,7 @@ Primary result fields:
 | Field | Description |
 | --- | --- |
 | `status` | Overall health verdict: `pass`, `warn`, or `fail` |
-| `hardChecks` | Deterministic checks such as `state-db-schema`, `state-db-round-trip`, `task-log-backing`, `active-runs`, and `default-engine` |
+| `hardChecks` | Deterministic checks such as `state-db-schema`, `state-db-round-trip`, `task-log-backing`, `active-runs`, `default-engine`, and `model-map-files` |
 | `advisories` | Non-fatal warnings including `semantic-search-runtime`, `session-extraction` (akmExtract pipeline health), and `session-log-failures` (informational keyword matches, never triggers warn) |
 | `metrics` | Aggregate task/runtime metrics: `taskFailRate`, `agentFailureRate`, `stuckActiveRuns`, `logBackingRate`, `probeRoundTripMs` |
 | `improve` | Recent improve-loop counts derived from `improve_invoked`, `improve_skipped`, and `improve_completed` events |
@@ -1433,6 +1433,28 @@ and CI scripts.
 > schema checks already reject an invalid config) were also removed.
 
 See [configuration.md](configuration.md) for details.
+
+### models
+
+Manage the installed and operator-owned model intent map. Bare `akm models`
+is a usage error; use the explicit copy operation when you want an editable
+full map.
+
+```sh
+akm models copy-defaults
+akm models copy-defaults --overwrite
+```
+
+`copy-defaults` validates the packaged version-1 `models.json`, then stages and
+syncs it beside the normal AKM configuration target. Creation uses an atomic
+no-replace publish and fails safely on filesystems that cannot provide it.
+`--overwrite` performs an atomic pathname replacement after a best-effort
+regular-file identity recheck; it never dereferences a symlink, but portable
+filesystems do not offer a conditional rename that locks the previously
+observed inode. Symlinks and other non-regular targets observed during checks
+are refused. See
+[Model-map files](configuration.md#model-map-files) for schema, overlay, and
+resolution semantics.
 
 ### help
 

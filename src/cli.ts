@@ -103,6 +103,7 @@ import type { WindowSpec } from "./commands/health/types";
 import { parseWindowSpec } from "./commands/health/windows";
 import { improveCommand } from "./commands/improve/improve-cli";
 import { migrateCommand } from "./commands/migrate-cli";
+import { modelsCommand } from "./commands/models-cli";
 import { logCommand } from "./commands/observability-cli";
 import { proposalCommand } from "./commands/proposal/proposal-cli";
 import { rememberCommand } from "./commands/read/remember-cli";
@@ -504,6 +505,7 @@ const commands = {
   env: envCommand,
   secret: secretCommand,
   task: taskCommand,
+  models: modelsCommand,
   hints: hintsCommand,
 };
 
@@ -811,6 +813,7 @@ const HELP_SECTIONS: ReadonlyArray<{
       "lint",
       "health",
       "config",
+      "models",
       "registry",
       "info",
       "log",
