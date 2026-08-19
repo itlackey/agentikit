@@ -89,6 +89,7 @@ import {
   extractPackageMetadata,
 } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
+import { compileGithubWorkflowSource } from "../../../workflows/source-ir/compile";
 import {
   assetPathForName,
   deriveCanonicalAssetNameFromStashRoot,
@@ -269,6 +270,10 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   if (akmStashAbstains(c.root, file.absPath)) return null;
   const match = recognizeMatch(file);
   if (match === null) return null;
+  if (match.type === "workflow" && file.ext === ".yml") {
+    const compiled = compileGithubWorkflowSource(file.content(), { path: file.relPath, workspaceRoot: c.root });
+    if (!compiled.ok) return null;
+  }
 
   // Canonical name = the winning type's per-type canonical name (§5.1).
   // Invalid placements are not projected onto a different identity.
@@ -421,6 +426,24 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
     const overlay = buildOverlayContext(c.root, change.path, raw);
     const match = recognizeMatch(overlay);
     const type = match?.type;
+
+    // A complete GitHub-shaped `on` + `jobs` document is workflow-owned. It
+    // never flows through task-v2 parsing or Markdown base/frontmatter checks.
+    if (type === "workflow" && overlay.ext === ".yml") {
+      const compiled = compileGithubWorkflowSource(raw, { path: change.path, workspaceRoot: c.root });
+      if (!compiled.ok) {
+        diagnostics.push(
+          ...compiled.errors.map((error) => ({
+            file: change.path,
+            issue: "invalid-workflow-structure",
+            detail: error.message,
+            fixed: false as const,
+            line: error.line,
+          })),
+        );
+      }
+      continue;
+    }
 
     // Task parsing belongs to perTypeValidateChecks' canonical v3 parser. Base
     // checks need only a frontmatter-free placeholder here.

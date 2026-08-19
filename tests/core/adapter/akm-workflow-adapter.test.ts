@@ -51,8 +51,8 @@ const ctx: ValidateContext = {
 describe("akm-workflow adapter — metadata", () => {
   test("id / version / extensions", () => {
     expect(akmWorkflowAdapter.id).toBe("akm-workflow");
-    expect(akmWorkflowAdapter.version).toBe("0.9.0");
-    expect(akmWorkflowAdapter.extensions).toEqual([".md"]);
+    expect(akmWorkflowAdapter.version).toBe("0.9.2");
+    expect(akmWorkflowAdapter.extensions).toEqual([".md", ".yml"]);
   });
 
   test("a non-workflow markdown (README) abstains", () => {

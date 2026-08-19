@@ -5,13 +5,9 @@
 /**
  * The `akm-workflow` adapter — akm 0.9.0 format-family work item (#46).
  *
- * A native akm workflow bundle (spec §6/§7). One format now (workflow-format-
- * unification): `.md` files, orchestration graph in frontmatter, per-step
- * prose in the body. Recognition is frontmatter `type: workflow`, or — since
- * this adapter's whole domain IS workflows — simply residing under this
- * bundle's root; no content sniffing. conceptId strips the `.md` extension. A
- * plain `.md` that opts out via an explicit non-workflow `type:` frontmatter
- * key is abstained on.
+ * A native akm workflow bundle. AKM Markdown and the strict local GitHub-shaped
+ * `.yml` subset are peer source formats. Both compile through the source IR;
+ * neither source is rewritten or projected onto the other.
  *
  * ── validate (spec §6 workflow row) ──
  *
@@ -28,6 +24,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
+import { compileGithubWorkflowSource, looksLikeGithubWorkflowSource } from "../../../workflows/source-ir/compile";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
@@ -37,8 +34,8 @@ import { hashContent, nonEmptyString, type ParsedForValidate, readTags, runBaseV
 
 /** A native workflow bundle is single-component; its one component is `main`. */
 const COMPONENT_ID = "main";
-/** One recognized workflow extension now (workflow-format-unification): `.md`. */
-const WORKFLOW_EXTS = new Set([".md"]);
+/** The two authoritative workflow source formats. `.yaml` is deliberately not accepted. */
+const WORKFLOW_EXTS = new Set([".md", ".yml"]);
 /** Upper bound on the bounded `content` FTS field (mirrors okf-adapter). */
 const MAX_CONTENT_CHARS = 100_000;
 
@@ -48,7 +45,7 @@ function toPosix(p: string): string {
 
 /** Strip the recognized workflow extension from a component-root-relative path → conceptId. */
 function conceptIdOf(relPath: string): string {
-  return toPosix(relPath).replace(/\.md$/i, "");
+  return toPosix(relPath).replace(/\.(?:md|yml)$/i, "");
 }
 
 /** `README.md` (case-insensitive) is documentation, never the typed asset — mirrors the akm matcher stack's D-R6 reserved-file exclusion (`TYPED_DIR_DOC_FILES`). */
@@ -73,14 +70,19 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   if (!WORKFLOW_EXTS.has(file.ext)) return null;
   if (isReservedDocFile(file.fileName)) return null;
   const raw = file.content();
-  if (!isWorkflowFile(raw)) return null;
+  if (file.ext === ".md" && !isWorkflowFile(raw)) return null;
+  if (file.ext === ".yml" && !looksLikeGithubWorkflowSource(raw)) return null;
 
   const conceptId = conceptIdOf(file.relPath);
   const name = conceptId.split("/").pop() ?? conceptId;
+  if (file.ext === ".yml") {
+    const compiled = compileGithubWorkflowSource(raw, { path: file.relPath, workspaceRoot: c.root });
+    if (!compiled.ok) return null;
+  }
   const parsed = parseFrontmatter(raw);
-  const description = nonEmptyString(parsed.data.description);
-  const body = parsed.content;
-  const tags = readTags(parsed.data.tags);
+  const description = file.ext === ".md" ? nonEmptyString(parsed.data.description) : undefined;
+  const body = file.ext === ".md" ? parsed.content : raw;
+  const tags = file.ext === ".md" ? readTags(parsed.data.tags) : undefined;
 
   const doc: IndexDocument = {
     ref: `${c.id}//${conceptId}`,
@@ -106,9 +108,25 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
     const raw = change.after ?? (await ctx.readFile(change.path));
     if (typeof raw !== "string") continue;
     const ext = path.extname(change.path).toLowerCase();
-    if (!WORKFLOW_EXTS.has(ext) || isReservedDocFile(path.basename(change.path)) || !isWorkflowFile(raw)) continue;
+    if (!WORKFLOW_EXTS.has(ext) || isReservedDocFile(path.basename(change.path))) continue;
 
     const relPath = toPosix(change.path);
+    if (ext === ".yml") {
+      const compiled = compileGithubWorkflowSource(raw, { path: relPath, workspaceRoot: c.root });
+      if (!compiled.ok) {
+        diagnostics.push(
+          ...compiled.errors.map((error) => ({
+            file: relPath,
+            issue: "invalid-workflow-structure",
+            detail: error.message,
+            fixed: false as const,
+            line: error.line,
+          })),
+        );
+      }
+      continue;
+    }
+    if (!isWorkflowFile(raw)) continue;
     const p = parseFrontmatter(raw);
     const parsed: ParsedForValidate = { data: p.data, content: p.content, frontmatter: p.frontmatter };
     diagnostics.push(...(await runBaseValidateChecks(relPath, parsed, c.root, ctx)));
@@ -149,23 +167,24 @@ function hasTopLevelWorkflowFile(root: string, entries: fs.Dirent[]): boolean {
     } catch {
       continue;
     }
-    if (parseFrontmatter(raw).data.type === "workflow") return true;
+    if (ext === ".yml" && looksLikeGithubWorkflowSource(raw)) return true;
+    if (ext === ".md" && parseFrontmatter(raw).data.type === "workflow") return true;
   }
   return false;
 }
 
 export const akmWorkflowAdapter: BundleAdapter = {
   id: "akm-workflow",
-  version: "0.9.0",
-  extensions: [".md"],
+  version: "0.9.2",
+  extensions: [".md", ".yml"],
 
   recognize,
   validate,
 
-  /** Markdown placement; an explicit `.md` conceptId short-circuits to that extension. */
+  /** Markdown remains the default; an explicit `.md`/`.yml` suffix is preserved. */
   placeNew(c: BundleComponent, conceptId: string): string {
     const posix = toPosix(conceptId);
-    if (/\.md$/i.test(posix)) return path.join(c.root, posix);
+    if (/\.(?:md|yml)$/i.test(posix)) return path.join(c.root, posix);
     return path.join(c.root, `${posix}.md`);
   },
 

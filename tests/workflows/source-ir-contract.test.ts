@@ -1,0 +1,551 @@
+import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  canonicalPortableWorkflowSourceBytes,
+  compileGithubWorkflowSource,
+  compileMarkdownWorkflowSource,
+} from "../../src/workflows/source-ir/compile";
+import { decodeWorkflowSourceIrV1, type WorkflowSourceIrV1 } from "../../src/workflows/source-ir/schema";
+
+const FIXTURES = path.join(import.meta.dir, "../fixtures/execution-contracts/workflows");
+
+function readFixture(relative: string): string {
+  return fs.readFileSync(path.join(FIXTURES, relative), "utf8");
+}
+
+function github(yaml: string, filePath = "workflows/contract.yml") {
+  return compileGithubWorkflowSource(yaml, { path: filePath });
+}
+
+function expectGithubError(yaml: string, code: string, line?: number): void {
+  const result = github(yaml);
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(
+    result.errors.some((error) => error.code === code),
+    JSON.stringify(result.errors),
+  ).toBe(true);
+  if (line !== undefined) expect(result.errors.find((error) => error.code === code)?.line).toBe(line);
+}
+
+const VALID_HEADER = `name: Local contract
+on:
+  workflow_dispatch:
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:`;
+
+describe("workflow source IR portable contract", () => {
+  test("equivalent Markdown and GitHub YAML compile to byte-equivalent canonical portable IR", () => {
+    const markdown = compileMarkdownWorkflowSource(readFixture("equivalent/contract-review.md"), {
+      path: "workflows/contract-review.md",
+    });
+    const yaml = compileGithubWorkflowSource(readFixture("equivalent/contract-review.yml"), {
+      path: "workflows/contract-review.yml",
+    });
+
+    expect(markdown.ok).toBe(true);
+    expect(yaml.ok).toBe(true);
+    if (!markdown.ok || !yaml.ok) return;
+
+    expect(markdown.ir.sourceIrVersion).toBe(1);
+    expect(yaml.ir.sourceIrVersion).toBe(1);
+    expect(markdown.ir.source.path).toBe("workflows/contract-review.md");
+    expect(yaml.ir.source.path).toBe("workflows/contract-review.yml");
+    expect(Object.keys(markdown.ir.extensions ?? {})).toEqual(["akm.dev/workflow-markdown"]);
+    expect(Object.keys(yaml.ir.jobs[0]?.extensions ?? {})).toEqual(["github.com/actions-workflow"]);
+    expect(canonicalPortableWorkflowSourceBytes(markdown.ir)).toEqual(canonicalPortableWorkflowSourceBytes(yaml.ir));
+    expect(JSON.parse(canonicalPortableWorkflowSourceBytes(markdown.ir))).toEqual(
+      JSON.parse(readFixture("equivalent/portable-projection.json")),
+    );
+  });
+
+  test("preserves a Markdown agent unit through the owner-keyed extension while using the built-in command action", () => {
+    const result = compileMarkdownWorkflowSource(readFixture("current/agent-unit.md"), {
+      path: "workflows/agent-unit.md",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ir.jobs[0]?.steps[0]).toMatchObject({
+      id: "review",
+      uses: "akm/command",
+      with: { content: "Review the execution contract." },
+      extensions: {
+        "akm.dev/workflow-markdown": {
+          sequenceIndex: 0,
+          unit: { engine: "fixture-agent", model: "fixture-exact-model", timeoutMs: 45_000 },
+        },
+      },
+    });
+  });
+
+  test("normalizes a multi-job graph into deterministic dependency order", () => {
+    const a = github(`name: Graph
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch: {}
+jobs:
+  report:
+    needs: [test, build]
+    runs-on: [self-hosted]
+    steps:
+      - id: report
+        uses: commands/report
+        with: { arguments: weekly }
+  test:
+    needs: build
+    runs-on: [self-hosted]
+    steps:
+      - id: test
+        run: bun test
+  build:
+    runs-on: [self-hosted]
+    steps:
+      - id: build
+        uses: scripts/build.sh
+`);
+    const b = github(`name: Graph
+on:
+  workflow_dispatch:
+  schedule: [{ cron: "0 8 * * 1" }]
+jobs:
+  build:
+    steps: [{ id: build, uses: scripts/build.sh }]
+    runs-on: [self-hosted]
+  report:
+    runs-on: [self-hosted]
+    steps: [{ id: report, uses: commands/report, with: { arguments: weekly } }]
+    needs: [build, test]
+  test:
+    steps: [{ id: test, run: bun test }]
+    runs-on: [self-hosted]
+    needs: build
+`);
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(a.ir.jobs.map((job) => job.id)).toEqual(["build", "test", "report"]);
+    expect(a.ir.jobs[2]?.needs).toEqual(["build", "test"]);
+    expect(a.ir.triggers.map(({ kind }) => kind)).toEqual(["schedule", "workflow_dispatch"]);
+    expect(canonicalPortableWorkflowSourceBytes(a.ir)).toEqual(canonicalPortableWorkflowSourceBytes(b.ir));
+  });
+
+  test("uses locale-independent code-point ordering for ready jobs and mapping keys", () => {
+    const result = github(`name: Ordering
+on: { workflow_dispatch: null }
+jobs:
+  a:
+    runs-on: [self-hosted]
+    steps:
+      - id: lower
+        uses: commands/lower
+        with: { a: second, Z: first }
+  B:
+    runs-on: [self-hosted]
+    steps: [{ id: upper, run: echo upper }]
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ir.jobs.map(({ id }) => id)).toEqual(["B", "a"]);
+    expect(canonicalPortableWorkflowSourceBytes(result.ir)).toContain('"with":{"Z":"first","a":"second"}');
+  });
+
+  test("rejects missing and cyclic job dependencies before an IR is returned", () => {
+    expectGithubError(
+      `${VALID_HEADER}
+      - id: ok
+        run: echo ok
+    needs: absent
+`,
+      "missing-job-dependency",
+    );
+    expectGithubError(
+      `name: Cycle
+on: { workflow_dispatch: null }
+jobs:
+  a:
+    needs: b
+    runs-on: [self-hosted]
+    steps: [{ id: a, run: echo a }]
+  b:
+    needs: a
+    runs-on: [self-hosted]
+    steps: [{ id: b, run: echo b }]
+`,
+      "job-dependency-cycle",
+    );
+  });
+});
+
+describe("strict bounded GitHub-shaped YAML", () => {
+  test.each([
+    ["duplicate-key", `name: A\nname: B\non: { workflow_dispatch: null }\njobs: {}`],
+    ["yaml-anchor", `name: A\non: &events { workflow_dispatch: null }\njobs: {}`],
+    ["yaml-alias", `name: A\non: &events { workflow_dispatch: null }\njobs: *events`],
+    ["yaml-custom-tag", `name: !contract A\non: { workflow_dispatch: null }\njobs: {}`],
+    ["mapping-root-required", `- name\n- on\n- jobs`],
+    ["unsafe-key", `name: A\non: { workflow_dispatch: null }\njobs:\n  constructor: {}`],
+    ["unknown-key", `name: A\non: { workflow_dispatch: null }\njobs: {}\npermissions: read-all`],
+  ])("rejects %s", (code, yaml) => expectGithubError(yaml, code));
+
+  test("rejects excessive source bytes, YAML depth, and collection size", () => {
+    expectGithubError(
+      `${VALID_HEADER}\n      - id: huge\n        run: echo ${"x".repeat(1_048_576)}\n`,
+      "source-size-limit",
+    );
+    const nested = `${VALID_HEADER}\n      - id: deep\n        uses: commands/deep\n        with:\n          value: ${"[".repeat(40)}x${"]".repeat(40)}\n`;
+    expectGithubError(nested, "yaml-depth-limit");
+    const steps = Array.from({ length: 257 }, (_, index) => `      - id: s${index}\n        run: echo s${index}`).join(
+      "\n",
+    );
+    expectGithubError(`${VALID_HEADER}\n${steps}\n`, "step-count-limit");
+  });
+
+  test("accepts only local schedule/manual triggers and no workflow_dispatch inputs", () => {
+    const valid = github(`name: Timed
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+    - cron: "30 9 * * 2"
+  workflow_dispatch: null
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps: [{ id: ok, run: echo ok }]
+`);
+    expect(valid.ok).toBe(true);
+    if (valid.ok) {
+      expect(valid.ir.triggers.map((trigger) => trigger.kind)).toEqual(["schedule", "schedule", "workflow_dispatch"]);
+      expect(valid.ir.triggers[1]).toMatchObject({ cron: "30 9 * * 2", ordinal: 1 });
+    }
+    expectGithubError(`name: Push\non:\n  push: { branches: [main] }\njobs: {}`, "unsupported-service-event", 3);
+    expectGithubError(
+      `name: Inputs\non:\n  workflow_dispatch:\n    inputs:\n      name: { required: true }\njobs: {}`,
+      "workflow-dispatch-inputs-unsupported",
+      4,
+    );
+  });
+
+  test("exposes the immutable WP6 trigger classifier as an injected pure boundary", () => {
+    let classified: unknown;
+    const result = compileGithubWorkflowSource(
+      `name: Bound
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch: {}
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps: [{ id: ok, run: echo ok }]
+`,
+      {
+        path: "workflows/bound.yml",
+        classifyTriggers: (value, options) => {
+          classified = value;
+          expect(options.filePath).toBe("workflows/bound.yml");
+          expect(options.lineAt?.(["on", "schedule", 0, "cron"])).toBe(4);
+          expect(options.lineAt?.(["on", "workflow_dispatch"])).toBe(5);
+          return {
+            manual: true,
+            schedules: [{ cron: "0 8 * * 1", source: "on.schedule[0].cron", ordinal: 0 }],
+          };
+        },
+      },
+    );
+    expect(result.ok).toBe(true);
+    expect(classified).toEqual({
+      on: { schedule: [{ cron: "0 8 * * 1" }], workflow_dispatch: {} },
+    });
+  });
+
+  test("requires exactly the local self-hosted runner", () => {
+    expectGithubError(
+      `${VALID_HEADER.replace("[self-hosted]", "ubuntu-latest")}\n      - id: ok\n        run: echo ok\n`,
+      "unsupported-runner",
+    );
+    expectGithubError(
+      `${VALID_HEADER.replace("[self-hosted]", "[self-hosted, linux]")}\n      - id: ok\n        run: echo ok\n`,
+      "unsupported-runner",
+    );
+  });
+
+  test.each([
+    ["job strategy", "strategy: { matrix: { node: [20, 22] } }", "unknown-key"],
+    ["job container", "container: node:22", "unknown-key"],
+    ["job services", "services: { db: { image: postgres } }", "unknown-key"],
+  ])("rejects unsupported %s semantics", (_label, field, code) => {
+    expectGithubError(
+      `name: Unsupported
+on: { workflow_dispatch: null }
+jobs:
+  main:
+    runs-on: [self-hosted]
+    ${field}
+    steps: [{ id: ok, run: echo ok }]
+`,
+      code,
+    );
+  });
+
+  test("rejects step conditionals and duplicate step ids", () => {
+    expectGithubError(
+      `${VALID_HEADER}\n      - id: conditional\n        if: success()\n        run: echo ok\n`,
+      "unknown-key",
+    );
+    expectGithubError(
+      `${VALID_HEADER}\n      - id: repeated\n        run: echo one\n      - id: repeated\n        run: echo two\n`,
+      "duplicate-step-id",
+    );
+  });
+
+  test("accepts owner-pinned local uses forms and rejects remote, guessed, local-action, Docker, agent, and task forms", () => {
+    for (const uses of [
+      "akm/command",
+      "commands/review",
+      "team//commands/review",
+      "workflows/child",
+      "scripts/build.sh",
+    ]) {
+      const withBlock = uses === "akm/command" ? "\n        with: { content: Review this }" : "";
+      const result = github(`${VALID_HEADER}\n      - id: local\n        uses: ${uses}${withBlock}\n`);
+      expect(result.ok, uses).toBe(true);
+    }
+    for (const [uses, code] of [
+      ["actions/checkout@v4", "remote-action-acquisition-out-of-scope"],
+      ["./actions/review", "local-action-path-unsupported"],
+      ["docker://alpine:latest", "docker-action-unsupported"],
+      ["agents/reviewer", "non-executable-asset-ref"],
+      ["tasks/review", "non-executable-asset-ref"],
+      ["akm:commands/review", "unsupported-uses-target"],
+      ["bad.bundle//commands/review", "unsupported-uses-target"],
+      ["commands/review#fragment", "unsupported-uses-target"],
+      ["actions/checkout@bad:ref", "unsupported-uses-target"],
+      ["review", "unsupported-uses-target"],
+    ] as const) {
+      expectGithubError(`${VALID_HEADER}\n      - id: rejected\n        uses: ${uses}\n`, code);
+    }
+  });
+
+  test("preserves the built-in command action's exact empty content and arguments contract", () => {
+    const result = github(`${VALID_HEADER}
+      - id: inline
+        uses: akm/command
+        with:
+          content: ""
+          arguments: ""
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ir.jobs[0]?.steps[0]?.with).toEqual({ content: "", arguments: "" });
+  });
+
+  test("exposes the immutable WP6 uses classifier as an injected pure boundary", () => {
+    let classified: string | undefined;
+    const result = compileGithubWorkflowSource(`${VALID_HEADER}\n      - id: local\n        uses: commands/review\n`, {
+      path: "workflows/classified.yml",
+      classifyUses: (value) => {
+        classified = value;
+        return { kind: "command", ref: value };
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(classified).toBe("commands/review");
+  });
+
+  test("accepts token-safe local run with the closed shell table and contained working directories", () => {
+    for (const shell of ["bash", "sh", "zsh", "pwsh", "powershell", "cmd"]) {
+      const result = github(
+        `${VALID_HEADER}\n      - id: local\n        run: bun run check --filter=unit\n        shell: ${shell}\n        working-directory: packages/cli\n`,
+      );
+      expect(result.ok, shell).toBe(true);
+    }
+    for (const [run, code] of [
+      ["echo ok && curl example.com", "unsafe-run-syntax"],
+      ["echo $HOME", "unsafe-run-syntax"],
+      ["echo %PATH%", "unsafe-run-syntax"],
+      ["echo $" + "{{ github.sha }}", "unsupported-github-expression"],
+    ] as const) {
+      expectGithubError(`${VALID_HEADER}\n      - id: unsafe\n        run: ${run}\n`, code);
+    }
+    expectGithubError(
+      `${VALID_HEADER}\n      - id: multiline\n        run: |\n          echo ok\n`,
+      "unsafe-run-syntax",
+    );
+    expectGithubError(
+      `${VALID_HEADER}\n      - id: shell\n        run: echo ok\n        shell: fish\n`,
+      "unsupported-shell",
+    );
+    expectGithubError(
+      `${VALID_HEADER}\n      - id: cwd\n        run: echo ok\n        working-directory: ../outside\n`,
+      "working-directory-escape",
+    );
+    expectGithubError(
+      `${VALID_HEADER}\n      - id: cwd\n        run: echo ok\n        working-directory: packages//cli\n`,
+      "working-directory-escape",
+    );
+  });
+
+  test("rejects a working-directory symlink that physically escapes its workspace", () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "akm-source-ir-"));
+    const workspace = path.join(sandbox, "workspace");
+    const outside = path.join(sandbox, "outside");
+    fs.mkdirSync(workspace);
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(workspace, "escape"), "dir");
+    try {
+      const result = compileGithubWorkflowSource(
+        `${VALID_HEADER}\n      - id: cwd\n        run: echo ok\n        working-directory: escape\n`,
+        { path: "workflows/escape.yml", workspaceRoot: workspace },
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.errors.some((error) => error.code === "working-directory-escape")).toBe(true);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("strict source IR decoder", () => {
+  const valid: WorkflowSourceIrV1 = {
+    sourceIrVersion: 1,
+    name: "Decoded",
+    triggers: [{ kind: "workflow_dispatch", source: { path: "x.yml", start: 2, end: 2 } }],
+    jobs: [
+      {
+        id: "main",
+        needs: [],
+        steps: [{ id: "ok", run: "echo ok", source: { path: "x.yml", start: 8, end: 9 } }],
+        source: { path: "x.yml", start: 5, end: 9 },
+      },
+    ],
+    source: { path: "x.yml", start: 1, end: 9 },
+  };
+
+  test("round-trips the canonical plain-data representation", () => {
+    const input = structuredClone(valid);
+    const decoded = decodeWorkflowSourceIrV1(input);
+    expect(decoded).toEqual(valid);
+    expect(decoded).not.toBe(input);
+    input.name = "mutated after decode";
+    expect(decoded.name).toBe("Decoded");
+  });
+
+  test("rejects accessors, non-plain prototypes, sparse arrays, unsafe keys, and unknown keys", () => {
+    const accessor = structuredClone(valid) as unknown as Record<string, unknown>;
+    Object.defineProperty(accessor, "name", { enumerable: true, get: () => "pwned" });
+    expect(() => decodeWorkflowSourceIrV1(accessor)).toThrow(/accessor/i);
+
+    const prototyped = Object.assign(Object.create({ inherited: true }) as Record<string, unknown>, valid);
+    expect(() => decodeWorkflowSourceIrV1(prototyped)).toThrow(/plain object/i);
+
+    const sparse = structuredClone(valid);
+    sparse.jobs.length = 2;
+    expect(() => decodeWorkflowSourceIrV1(sparse)).toThrow(/sparse/i);
+
+    const unsafe = JSON.parse(JSON.stringify(valid)) as Record<string, unknown>;
+    Object.defineProperty(unsafe, "__proto__", { enumerable: true, value: {} });
+    expect(() => decodeWorkflowSourceIrV1(unsafe)).toThrow(/unsafe key/i);
+
+    expect(() => decodeWorkflowSourceIrV1({ ...structuredClone(valid), mystery: true })).toThrow(/unknown key/i);
+  });
+
+  test("never invokes array accessors and rejects extra or non-enumerable properties", () => {
+    const accessorArray = structuredClone(valid);
+    let getterInvoked = false;
+    Object.defineProperty(accessorArray.jobs, "0", {
+      enumerable: true,
+      get: () => {
+        getterInvoked = true;
+        return valid.jobs[0];
+      },
+    });
+    expect(() => decodeWorkflowSourceIrV1(accessorArray)).toThrow(/accessor/i);
+    expect(getterInvoked).toBe(false);
+
+    const extendedArray = structuredClone(valid) as unknown as { jobs: unknown[] };
+    Object.defineProperty(extendedArray.jobs, "extra", { enumerable: true, value: true });
+    expect(() => decodeWorkflowSourceIrV1(extendedArray)).toThrow(/unexpected array property/i);
+
+    const hidden = structuredClone(valid) as unknown as Record<string, unknown>;
+    Object.defineProperty(hidden, "mystery", { enumerable: false, value: true });
+    expect(() => decodeWorkflowSourceIrV1(hidden)).toThrow(/non-enumerable/i);
+  });
+
+  test("does not invoke inherited serialization hooks while snapshotting", () => {
+    const original = Object.getOwnPropertyDescriptor(Object.prototype, "toJSON");
+    let invoked = false;
+    let decoded: WorkflowSourceIrV1 | undefined;
+    let failure: unknown;
+    Object.defineProperty(Object.prototype, "toJSON", {
+      configurable: true,
+      value() {
+        invoked = true;
+        throw new Error("inherited serialization hook ran");
+      },
+    });
+    try {
+      decoded = decodeWorkflowSourceIrV1(structuredClone(valid));
+    } catch (cause) {
+      failure = cause;
+    } finally {
+      if (original) Object.defineProperty(Object.prototype, "toJSON", original);
+      else Reflect.deleteProperty(Object.prototype, "toJSON");
+    }
+    expect(failure).toBeUndefined();
+    expect(invoked).toBe(false);
+    expect(decoded).toEqual(valid);
+  });
+
+  test("rejects proxies, invalid extension owners, unsupported versions, and ill-formed Unicode", () => {
+    expect(() => decodeWorkflowSourceIrV1(new Proxy(structuredClone(valid), {}))).toThrow(/proxy/i);
+    expect(() =>
+      decodeWorkflowSourceIrV1({ ...structuredClone(valid), extensions: { markdown: { safe: true } } }),
+    ).toThrow(/invalid owner/i);
+    expect(() => decodeWorkflowSourceIrV1({ ...structuredClone(valid), sourceIrVersion: 2 })).toThrow(
+      /sourceIrVersion must be 1/,
+    );
+    expect(() => decodeWorkflowSourceIrV1({ ...structuredClone(valid), name: "bad\ud800" })).toThrow(
+      /well-formed Unicode/i,
+    );
+  });
+
+  test("rejects noncanonical trigger, needs, and ready-job ordering", () => {
+    const triggers = structuredClone(valid);
+    triggers.triggers = [
+      { kind: "workflow_dispatch", source: { path: "x.yml", start: 2, end: 2 } },
+      { kind: "schedule", cron: "0 8 * * 1", ordinal: 0, source: { path: "x.yml", start: 3, end: 3 } },
+    ];
+    expect(() => decodeWorkflowSourceIrV1(triggers)).toThrow(/canonical schedule-then-manual order/i);
+
+    const jobs = structuredClone(valid);
+    const baseJob = jobs.jobs[0];
+    const baseStep = baseJob?.steps[0];
+    if (!baseJob || !baseStep) throw new Error("source IR fixture must contain a baseline job and step");
+    jobs.jobs = [
+      { id: "a", needs: [], steps: baseJob.steps, source: baseJob.source },
+      { id: "B", needs: [], steps: [{ ...baseStep, id: "upper" }], source: baseJob.source },
+    ];
+    expect(() => decodeWorkflowSourceIrV1(jobs)).toThrow(/canonical dependency-topological order/i);
+
+    const needs = structuredClone(valid);
+    const needsBaseJob = needs.jobs[0];
+    const needsBaseStep = needsBaseJob?.steps[0];
+    if (!needsBaseJob || !needsBaseStep) throw new Error("source IR fixture must contain a baseline job and step");
+    needs.jobs = [
+      { id: "B", needs: [], steps: needsBaseJob.steps, source: needsBaseJob.source },
+      { id: "a", needs: [], steps: [{ ...needsBaseStep, id: "lower" }], source: needsBaseJob.source },
+      {
+        id: "child",
+        needs: ["a", "B"],
+        steps: [{ ...needsBaseStep, id: "child" }],
+        source: needsBaseJob.source,
+      },
+    ];
+    expect(() => decodeWorkflowSourceIrV1(needs)).toThrow(/needs are not in canonical order/i);
+  });
+});
