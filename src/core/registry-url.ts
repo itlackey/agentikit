@@ -14,14 +14,17 @@ export const REGISTRY_CREDENTIALS_UNSUPPORTED =
   "Registry URLs must not include username or password credentials. Authenticated registries are not supported by the built-in static-index or skills-sh providers; configure a credential-free HTTPS endpoint.";
 
 const INVALID_REGISTRY_URL_LABEL = "(invalid registry URL)";
-const URL_START_WITH_CONTROLS = /h[\t\r\n]*t[\t\r\n]*t[\t\r\n]*p[\t\r\n]*(?:s[\t\r\n]*)?:[\t\r\n]*\/[\t\r\n]*\//giu;
+const HTTP_SCHEME_START = /h[\t\r\n]*t[\t\r\n]*t[\t\r\n]*p[\t\r\n]*(?:s[\t\r\n]*)?:/giu;
+const AUTHORITY_PREFIX_SEPARATOR = new Set(["\t", "\r", "\n", "\\", "/"]);
 const AUTHORITY_STRUCTURAL_BOUNDARY = new Set(["\\", "/", "?", "#"]);
 const AUTHORITY_AMBIGUOUS_BOUNDARY = new Set(["&", ",", ";", ")"]);
 const AUTHORITY_SOFT_BOUNDARY = new Set(["\t", "\r", "\n", " ", '"', "'", "`", "<", ">"]);
 
+type RegistryUrlScanMode = "strict" | "diagnostic";
+
 interface RegistryUrlStart {
   start: number;
-  schemeEnd: number;
+  authorityStart: number;
 }
 
 interface UserinfoSpan {
@@ -32,13 +35,14 @@ interface UserinfoSpan {
 /**
  * Detect URL userinfo without broadening this issue into general URL/network
  * validation (the SSRF/redirect boundary is tracked separately in #767).
- * Whole configured values use WHATWG parsing; a separate bounded scan catches
- * nested or control-obfuscated URL starts without absorbing later diagnostics.
+ * Whole configured values use WHATWG parsing; strict bounded scanning catches
+ * nested, control-obfuscated, and special-scheme URL starts. Free-text error
+ * sanitization uses the separate conservative mode below.
  */
 export function hasRegistryUrlCredentials(raw: string): boolean {
   const parsed = parseWholeHttpUrl(raw);
   if (parsed && (parsed.username.length > 0 || parsed.password.length > 0)) return true;
-  return registryUrlStarts(raw).some((start) => findUserinfoSpan(raw, start) !== undefined);
+  return registryUrlStarts(raw).some((start) => findUserinfoSpan(raw, start, "strict") !== undefined);
 }
 
 /**
@@ -48,18 +52,18 @@ export function hasRegistryUrlCredentials(raw: string): boolean {
  */
 export function formatRegistryUrl(raw: string): string {
   const parsed = parseWholeHttpUrl(raw);
-  const formatted = redactDetectedUserinfo(raw);
   if (parsed) {
-    if ((parsed.username || parsed.password) && formatted === raw) {
-      // Structural scanning is deliberately conservative at diagnostic token
-      // boundaries. A whole configured URL is unambiguous, so canonicalize as
-      // a final fail-closed fallback if WHATWG found userinfo that scanning did not.
+    if (parsed.username || parsed.password) {
+      // A whole configured value is unambiguous. Always clear WHATWG userinfo
+      // structurally; textual deletion can otherwise stop at the first of
+      // several `@` characters and leave the real credential behind.
       parsed.username = "";
       parsed.password = "";
-      return parsed.toString();
+      return redactDetectedUserinfo(parsed.toString(), "strict");
     }
-    return formatted;
+    return redactDetectedUserinfo(raw, "strict");
   }
+  const formatted = redactDetectedUserinfo(raw, "strict");
   if (registryUrlStarts(raw)[0]?.start === 0 && formatted !== raw) return formatted;
   return INVALID_REGISTRY_URL_LABEL;
 }
@@ -85,7 +89,7 @@ export function registryEntryForOutput<T extends RegistryUrlDescriptor>(entry: T
  * string while leaving ordinary credential-free query/path text untouched.
  */
 export function redactCredentialBearingUrls(message: string): string {
-  return redactDetectedUserinfo(message);
+  return redactDetectedUserinfo(message, "diagnostic");
 }
 
 /** Fetch errors are untrusted: runtimes often include the request URL. */
@@ -93,13 +97,13 @@ export function formatRegistryError(error: unknown): string {
   return redactCredentialBearingUrls(toErrorMessage(error));
 }
 
-function redactDetectedUserinfo(raw: string): string {
+function redactDetectedUserinfo(raw: string, mode: RegistryUrlScanMode): string {
   let formatted = raw;
   const starts = registryUrlStarts(raw);
   for (let i = starts.length - 1; i >= 0; i--) {
     const start = starts[i];
     if (start === undefined) continue;
-    const span = findUserinfoSpan(formatted, start);
+    const span = findUserinfoSpan(formatted, start, mode);
     if (!span) continue;
     formatted = `${formatted.slice(0, span.start)}${formatted.slice(span.end)}`;
   }
@@ -107,37 +111,61 @@ function redactDetectedUserinfo(raw: string): string {
 }
 
 function registryUrlStarts(raw: string): RegistryUrlStart[] {
-  return Array.from(raw.matchAll(URL_START_WITH_CONTROLS), (match) => ({
-    start: match.index,
-    schemeEnd: match.index + match[0].length,
-  }));
+  return Array.from(raw.matchAll(HTTP_SCHEME_START), (match) => {
+    let authorityStart = match.index + match[0].length;
+    while (authorityStart < raw.length && AUTHORITY_PREFIX_SEPARATOR.has(raw[authorityStart] ?? "")) {
+      authorityStart++;
+    }
+    return { start: match.index, authorityStart };
+  });
 }
 
-function findUserinfoSpan(raw: string, urlStart: RegistryUrlStart): UserinfoSpan | undefined {
-  const authorityStart = urlStart.schemeEnd;
+function findUserinfoSpan(
+  raw: string,
+  urlStart: RegistryUrlStart,
+  mode: RegistryUrlScanMode,
+): UserinfoSpan | undefined {
+  const { authorityStart } = urlStart;
   let crossedAmbiguousBoundary = false;
+  let lastAt = -1;
   for (let cursor = authorityStart; cursor < raw.length; cursor++) {
     const char = raw[cursor];
     if (char === undefined) return undefined;
     if (char === "@") {
-      return cursor > authorityStart ? { start: authorityStart, end: cursor + 1 } : undefined;
+      if (cursor > authorityStart) lastAt = cursor;
+      continue;
     }
-    if (AUTHORITY_STRUCTURAL_BOUNDARY.has(char)) return undefined;
+    if (AUTHORITY_STRUCTURAL_BOUNDARY.has(char)) return userinfoSpan(authorityStart, lastAt);
 
     const isSoftBoundary = AUTHORITY_SOFT_BOUNDARY.has(char);
     const isAmbiguousBoundary = AUTHORITY_AMBIGUOUS_BOUNDARY.has(char);
     if (!isSoftBoundary && !isAmbiguousBoundary) continue;
+    if (mode === "diagnostic" && cursor === authorityStart && isSoftBoundary) return undefined;
+    if (lastAt >= 0 && mode === "diagnostic") {
+      const apparentHost = raw.slice(lastAt + 1, cursor);
+      if (looksLikeDiagnosticHostPrefix(apparentHost)) return userinfoSpan(authorityStart, lastAt);
+    }
     if (crossedAmbiguousBoundary) continue;
 
-    // These characters can be WHATWG userinfo, but also delimit diagnostic
-    // text or a nested URL. A host-shaped prefix wins as a token boundary.
-    // Otherwise soft punctuation can continue username-only userinfo, while
-    // &, comma, semicolon, and ) require an explicit username:password prefix.
     const prefix = raw.slice(authorityStart, cursor);
-    if (looksLikeDiagnosticHostPrefix(prefix) || (isAmbiguousBoundary && !prefix.includes(":"))) return undefined;
+    // Strict configured/provider handling crosses soft delimiters even after a
+    // host-shaped username: WHATWG accepts those values as nested userinfo.
+    // Conservative free-text handling stops at an apparent host so a later
+    // ordinary email is not consumed. Ambiguous query/list punctuation still
+    // requires an explicit username:password prefix in either mode.
+    if (
+      (mode === "diagnostic" && looksLikeDiagnosticHostPrefix(prefix)) ||
+      (isAmbiguousBoundary && !prefix.includes(":"))
+    ) {
+      return userinfoSpan(authorityStart, lastAt);
+    }
     crossedAmbiguousBoundary = true;
   }
-  return undefined;
+  return userinfoSpan(authorityStart, lastAt);
+}
+
+function userinfoSpan(authorityStart: number, lastAt: number): UserinfoSpan | undefined {
+  return lastAt > authorityStart ? { start: authorityStart, end: lastAt + 1 } : undefined;
 }
 
 function looksLikeDiagnosticHostPrefix(raw: string): boolean {

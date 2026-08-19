@@ -2798,7 +2798,7 @@ Current known failing gates must be fixed or explicitly waived with expiry:
 | Git/direct-write symlink escape | `FAIL` until contained |
 | Archive expanded-resource/type/link budgets | `FAIL` until bounded |
 | Registry option/control-data rendering | `FAIL` until redacted |
-| Registry URL credential persistence and rendering | `PASS` — fixed in 0.9.2 (#811) |
+| Registry URL credential persistence and rendering | `FAIL` until #811 passes independent security review |
 | Suppressible/add-only dangerous-key audit and event ordering | `FAIL` until pre-publication |
 | Source lifecycle rollback across config/lock/root/index/events | `FAIL` until atomic/recoverable |
 | OpenCode local-listener authentication/documentation | `FAIL` until authenticated |
@@ -3278,9 +3278,9 @@ remaining gaps carry approved waivers with the expiries recorded below.
     through a real git-repo walk), registry control-data redaction
     (response-shape limits tested), redirect/SSRF policy (website fetcher has
     the policy; registry fetch does not apply the same private-IP guard).
-    Registry URL credentials are closed by #811: mutation paths reject them,
-    persisted legacy values fail closed, providers refuse to fetch them, and
-    CLI/result/warning/error projections redact their userinfo.
+    Registry URL credential handling is implemented under #811, but remains an
+    open release gate until strict configured-value rejection and conservative
+    diagnostic redaction pass independent adversarial review.
   - Open: authenticated OpenCode listener (localhost listener carries no
     per-process credential), archive expansion budgets (download size capped;
     expansion ratio/member budgets untested), unsuppressible update audit
@@ -3291,7 +3291,7 @@ remaining gaps carry approved waivers with the expiries recorded below.
     [#766](https://github.com/itlackey/akm/issues/766) (git symlink containment),
     [#767](https://github.com/itlackey/akm/issues/767) (registry SSRF),
     [#811](https://github.com/itlackey/akm/issues/811) (registry URL credentials,
-    closed in 0.9.2).
+    targeted for 0.9.2; acceptance pending).
   - issue: local-attack-surface and hostile-upstream hardening gaps, all
     pre-existing (none regressed in 0.9.0). impact: requires a local
     co-resident attacker, a malicious registry/source, or a compromised
