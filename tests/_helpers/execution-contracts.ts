@@ -1,0 +1,273 @@
+/**
+ * Test-only support for the 0.9.2 execution-contract characterization suite.
+ *
+ * Nothing in `src/` imports this module. The normalized request below is a
+ * comparison projection, not the production resolved-request type planned by
+ * WP1. It intentionally removes entry-point envelopes, timestamps, and other
+ * transport details while retaining dispatch-significant values.
+ */
+
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import type { AgentDispatchRequest } from "../../src/integrations/agent/builder-shared";
+import { resolveDispatchModel } from "../../src/integrations/agent/builder-shared";
+import type { AgentProfile } from "../../src/integrations/agent/profiles";
+import type { RunnerSpec } from "../../src/integrations/agent/runner";
+import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
+
+export const EXECUTION_CONTRACT_FIXTURES = path.join(import.meta.dir, "../fixtures/execution-contracts");
+
+/** Base64 retains exact bytes (including BOMs, CRLFs, and final-newline state). */
+export type FixtureByteSnapshot = Readonly<Record<string, string>>;
+
+function walkFiles(root: string, dir = root): string[] {
+  const files: string[] = [];
+  for (const entry of fs
+    .readdirSync(dir, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name))) {
+    const absolute = path.join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...walkFiles(root, absolute));
+    else if (entry.isFile()) files.push(path.relative(root, absolute).replaceAll("\\", "/"));
+  }
+  return files;
+}
+
+/** Capture every regular file below `root` without decoding it as text. */
+export function captureFixtureBytes(root: string): FixtureByteSnapshot {
+  return Object.fromEntries(
+    walkFiles(root).map((relative) => [relative, fs.readFileSync(path.join(root, relative)).toString("base64")]),
+  );
+}
+
+/** Throw a path-specific diagnostic if a supposedly read-only fixture changed. */
+export function assertFixtureBytesUnchanged(root: string, before: FixtureByteSnapshot): void {
+  const after = captureFixtureBytes(root);
+  const paths = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+  const changed = paths.filter((relative) => before[relative] !== after[relative]);
+  if (changed.length > 0) throw new Error(`fixture bytes changed: ${changed.join(", ")}`);
+}
+
+export function sha256Utf8(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+export interface TestSourceIdentity {
+  ref: string;
+  bundle: string;
+  adapter: string;
+  file: string;
+  hash: string;
+}
+
+export interface TestResolvedRequestInput {
+  command: {
+    content: string;
+    arguments?: string;
+    source?: TestSourceIdentity | null;
+  };
+  persona?: {
+    content: string;
+    source?: TestSourceIdentity | null;
+  } | null;
+  engine: {
+    name: string;
+    kind: "agent" | "sdk" | "llm";
+    platform?: string | null;
+  };
+  model?: string | null;
+  effort?: string | null;
+  schema?: Readonly<Record<string, unknown>> | null;
+  inference?: Readonly<Record<string, unknown>>;
+  tools?: unknown;
+  authorization?: {
+    status: "allowed" | "denied" | "not-observed";
+    reason?: string | null;
+  };
+  timeoutMs: number | null;
+  workspace?: string | null;
+  environment?: Readonly<Record<string, string>>;
+  notices?: readonly unknown[];
+}
+
+export interface TestNormalizedResolvedRequest {
+  schemaVersion: 1;
+  command: {
+    content: string;
+    arguments: string;
+    source: TestSourceIdentity | null;
+  };
+  persona: {
+    content: string;
+    source: TestSourceIdentity | null;
+  } | null;
+  engine: {
+    name: string;
+    kind: "agent" | "sdk" | "llm";
+    platform: string | null;
+  };
+  model: string | null;
+  effort: string | null;
+  schema: Record<string, unknown> | null;
+  inference: Record<string, unknown>;
+  tools: unknown | null;
+  authorization: {
+    status: "allowed" | "denied" | "not-observed";
+    reason: string | null;
+  };
+  timeoutMs: number | null;
+  workspace: string | null;
+  environment: Record<string, string>;
+  notices: unknown[];
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, sortJson(child)]),
+  );
+}
+
+/**
+ * Remove entry-point-specific envelopes and fill resolved optional values with
+ * one canonical spelling. Array order is retained; object keys are sorted.
+ */
+export function normalizeResolvedRequestForTest(input: TestResolvedRequestInput): TestNormalizedResolvedRequest {
+  return {
+    schemaVersion: 1,
+    command: {
+      content: input.command.content,
+      arguments: input.command.arguments ?? "",
+      source: input.command.source ? (sortJson(input.command.source) as unknown as TestSourceIdentity) : null,
+    },
+    persona: input.persona
+      ? {
+          content: input.persona.content,
+          source: input.persona.source ? (sortJson(input.persona.source) as unknown as TestSourceIdentity) : null,
+        }
+      : null,
+    engine: {
+      name: input.engine.name,
+      kind: input.engine.kind,
+      platform: input.engine.platform ?? null,
+    },
+    model: input.model ?? null,
+    effort: input.effort ?? null,
+    schema: input.schema ? (sortJson(input.schema) as Record<string, unknown>) : null,
+    inference: sortJson(input.inference ?? {}) as Record<string, unknown>,
+    tools: input.tools === undefined ? null : sortJson(input.tools),
+    authorization: {
+      status: input.authorization?.status ?? "not-observed",
+      reason: input.authorization?.reason ?? null,
+    },
+    timeoutMs: input.timeoutMs,
+    workspace: input.workspace ?? null,
+    environment: sortJson(input.environment ?? {}) as Record<string, string>,
+    notices: sortJson(input.notices ?? []) as unknown[],
+  };
+}
+
+/** Stable bytes used by cross-entry-point equivalence assertions. */
+export function canonicalResolvedRequestForTest(input: TestResolvedRequestInput): string {
+  return `${JSON.stringify(normalizeResolvedRequestForTest(input))}\n`;
+}
+
+/** Project the current agent/sdk runner seam into the test-only shape. */
+export function projectCurrentRunnerRequestForTest(input: {
+  runner: Extract<RunnerSpec, { kind: "agent" | "sdk" }>;
+  prompt: string;
+  dispatch?: AgentDispatchRequest;
+  timeoutMs?: number | null;
+  workspace?: string | null;
+  commandSource?: TestSourceIdentity | null;
+  personaSource?: TestSourceIdentity | null;
+  environment?: Readonly<Record<string, string>>;
+}): TestResolvedRequestInput {
+  const { runner, dispatch } = input;
+  const profile = runner.profile;
+  const platform = profile.platform ?? profile.name;
+  const requestModel = dispatch ? resolveDispatchModel(dispatch, profile, platform) : undefined;
+  const model = requestModel ?? profile.model ?? null;
+  return {
+    command: {
+      content: input.prompt,
+      source: input.commandSource ?? null,
+    },
+    persona: dispatch?.systemPrompt
+      ? {
+          content: dispatch.systemPrompt,
+          source: input.personaSource ?? null,
+        }
+      : null,
+    engine: {
+      name: runner.engine ?? profile.name,
+      kind: runner.kind,
+      platform,
+    },
+    model,
+    effort: dispatch?.effort ?? null,
+    schema: dispatch?.schema ?? null,
+    tools: dispatch?.tools,
+    timeoutMs: input.timeoutMs !== undefined ? input.timeoutMs : (runner.timeoutMs ?? null),
+    workspace: input.workspace !== undefined ? input.workspace : (profile.workspace ?? null),
+    environment: input.environment,
+  };
+}
+
+/** Project one current frozen agent/LLM workflow unit into the same test shape. */
+export function projectCurrentWorkflowUnitForTest(plan: WorkflowPlanGraph, stepId: string): TestResolvedRequestInput {
+  const step = plan.steps.find((candidate) => candidate.stepId === stepId);
+  if (!step?.root || step.root.kind !== "unit" || !step.root.invocation) {
+    throw new Error(`workflow step ${stepId} is not an engine unit`);
+  }
+  const invocation = step.root.invocation;
+  const engine = plan.execution.engines[invocation.engine];
+  if (!engine) throw new Error(`workflow step ${stepId} references missing engine ${invocation.engine}`);
+  const inference =
+    engine.kind === "llm"
+      ? {
+          ...(engine.temperature !== undefined ? { temperature: engine.temperature } : {}),
+          ...(engine.maxTokens !== undefined ? { maxTokens: engine.maxTokens } : {}),
+          ...(engine.supportsJsonSchema !== undefined ? { supportsJsonSchema: engine.supportsJsonSchema } : {}),
+          ...(engine.extraParams ? { extraParams: engine.extraParams } : {}),
+          ...(engine.contextLength !== undefined ? { contextLength: engine.contextLength } : {}),
+          ...(engine.enableThinking !== undefined ? { enableThinking: engine.enableThinking } : {}),
+          ...(invocation.llm ?? {}),
+        }
+      : {};
+  return {
+    // Current workflow source spans identify authored locations, but are not
+    // resolved asset identities and carry no adapter/hash. Do not manufacture
+    // provenance that WP1 still needs to define.
+    command: { content: step.root.instructions, source: null },
+    persona: null,
+    engine: {
+      name: engine.name,
+      kind: engine.kind === "llm" ? "llm" : engine.runnerKind,
+      platform: engine.kind === "agent" ? engine.platform : null,
+    },
+    model: invocation.model,
+    effort: null,
+    schema: step.root.schema ?? null,
+    inference,
+    timeoutMs: invocation.timeoutMs,
+    workspace: engine.kind === "agent" ? engine.workspace : null,
+  };
+}
+
+/** Stable JSON helper for lowering snapshots and fixture catalogs. */
+export function canonicalJsonForTest(value: unknown): string {
+  return `${JSON.stringify(sortJson(value), null, 2)}\n`;
+}
+
+/** Narrow helper used when a captured runner callback supplies only a profile. */
+export function runnerFromCapturedProfile(
+  engine: string,
+  profile: AgentProfile,
+  timeoutMs: number | null,
+): Extract<RunnerSpec, { kind: "agent" }> {
+  return { kind: "agent", engine, profile, timeoutMs };
+}

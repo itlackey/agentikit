@@ -1,0 +1,6 @@
+version: 2
+schedule: "@hourly"
+enabled: true
+command: akm index --full
+timeoutMs: 45000
+redact: [CONTRACT_FIXTURE_TOKEN]

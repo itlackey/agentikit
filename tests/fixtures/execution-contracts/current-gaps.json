@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "status": "non-normative-current-observation",
+  "gaps": [
+    {
+      "id": "direct-command-raw-file",
+      "seam": "akm agent --command",
+      "observation": "The indexed command file is read as raw UTF-8, including frontmatter.",
+      "targetWorkPackage": "WP4"
+    },
+    {
+      "id": "direct-command-legacy-placeholders",
+      "seam": "akm agent --command",
+      "observation": "Only {{N}} placeholders are filled; $ARGUMENTS and native positional placeholders remain untouched.",
+      "targetWorkPackage": "WP4"
+    },
+    {
+      "id": "task-prompt-raw-assets",
+      "seam": "task v2 prompt target",
+      "observation": "Prompt assets and files are read as raw text and do not select an agent persona.",
+      "targetWorkPackage": "WP6"
+    },
+    {
+      "id": "task-command-string-tokenization",
+      "seam": "task v2 command target",
+      "observation": "String commands are split on whitespace without shell parsing, so quoting and shell operators cannot be migrated mechanically.",
+      "targetWorkPackage": "WP6"
+    },
+    {
+      "id": "legacy-model-alias-registry",
+      "seam": "model alias resolution",
+      "observation": "Vendor-oriented built-in aliases and pass-through for known aliases missing a platform mapping remain active.",
+      "targetWorkPackage": "WP2"
+    },
+    {
+      "id": "github-yaml-not-runtime-input",
+      "seam": "workflow source loading",
+      "observation": "Only the AKM Markdown workflow frontend is executable; GitHub-shaped YAML has no runtime adapter.",
+      "targetWorkPackage": "WP7"
+    }
+  ]
+}

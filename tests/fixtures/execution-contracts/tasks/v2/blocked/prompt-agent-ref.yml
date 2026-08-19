@@ -1,0 +1,4 @@
+version: 2
+schedule: "@daily"
+enabled: true
+prompt: agents/contract-reviewer

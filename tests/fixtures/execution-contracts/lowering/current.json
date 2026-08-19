@@ -1,0 +1,228 @@
+{
+  "schemaVersion": 1,
+  "status": "non-normative-current-observation",
+  "note": "Characterizes 0.9.1 lowering surfaces for migration comparison; it does not define the 0.9.2 execution contract.",
+  "registeredHarnessIds": [
+    "opencode",
+    "claude",
+    "opencode-sdk",
+    "codex",
+    "copilot",
+    "pi",
+    "gemini",
+    "aider",
+    "amazonq",
+    "openhands"
+  ],
+  "cli": {
+    "opencode": {
+      "argv": [
+        "opencode",
+        "run",
+        "--system-prompt",
+        "You are a read-only contract reviewer.",
+        "--model",
+        "fixture/exact-model",
+        "--",
+        "Review the execution contract."
+      ],
+      "env": null,
+      "stdin": null
+    },
+    "claude": {
+      "argv": [
+        "claude",
+        "--system-prompt",
+        "You are a read-only contract reviewer.",
+        "--model",
+        "fixture/exact-model",
+        "--allowedTools",
+        "Read,Grep",
+        "--print",
+        "--",
+        "Review the execution contract."
+      ],
+      "env": null,
+      "stdin": null
+    },
+    "codex": {
+      "argv": [
+        "codex",
+        "exec",
+        "--sandbox",
+        "workspace-write",
+        "--model",
+        "fixture/exact-model",
+        "--json",
+        "--",
+        "You are a read-only contract reviewer.\n\nReview the execution contract."
+      ],
+      "env": null,
+      "stdin": null
+    },
+    "copilot": {
+      "argv": [
+        "copilot",
+        "--model",
+        "fixture/exact-model",
+        "--allow-tool",
+        "Read",
+        "--allow-tool",
+        "Grep",
+        "-p",
+        "You are a read-only contract reviewer.\n\nReview the execution contract."
+      ],
+      "env": null,
+      "stdin": null
+    },
+    "pi": {
+      "argv": [
+        "pi",
+        "--system-prompt",
+        "You are a read-only contract reviewer.",
+        "--model",
+        "fixture/exact-model",
+        "-p",
+        "--",
+        "Review the execution contract."
+      ],
+      "env": null,
+      "stdin": null
+    },
+    "gemini": {
+      "argv": [
+        "gemini",
+        "--model",
+        "fixture/exact-model",
+        "--allowed-tools",
+        "Read",
+        "--allowed-tools",
+        "Grep",
+        "-p",
+        "You are a read-only contract reviewer.\n\nReview the execution contract."
+      ],
+      "env": null,
+      "stdin": null
+    },
+    "aider": {
+      "argv": [
+        "aider",
+        "--no-auto-commits",
+        "--model",
+        "fixture/exact-model",
+        "--yes-always",
+        "--no-pretty",
+        "--message=You are a read-only contract reviewer.\n\nReview the execution contract."
+      ],
+      "env": null,
+      "stdin": null
+    },
+    "amazonq": {
+      "argv": [
+        "q",
+        "chat",
+        "--no-interactive",
+        "--trust-tools=Read,Grep",
+        "--model",
+        "fixture/exact-model",
+        "--",
+        "You are a read-only contract reviewer.\n\nReview the execution contract."
+      ],
+      "env": null,
+      "stdin": null
+    },
+    "openhands": {
+      "argv": [
+        "openhands",
+        "--headless",
+        "--json",
+        "--task=You are a read-only contract reviewer.\n\nReview the execution contract."
+      ],
+      "env": {
+        "LLM_MODEL": "fixture/exact-model"
+      },
+      "stdin": null
+    }
+  },
+  "opencodeSdk": {
+    "config": {
+      "model": "akm-custom/fixture/exact-model",
+      "provider": {
+        "akm-custom": {
+          "npm": "@ai-sdk/openai-compatible",
+          "options": {
+            "baseURL": "https://fixture.invalid/v1"
+          }
+        }
+      }
+    },
+    "request": {
+      "create": {
+        "body": {
+          "title": "akm"
+        },
+        "query": {
+          "directory": "/fixture/workspace"
+        }
+      },
+      "prompt": {
+        "path": {
+          "id": "fixture-session"
+        },
+        "body": {
+          "parts": [
+            {
+              "type": "text",
+              "text": "Review the execution contract."
+            }
+          ],
+          "system": "You are a read-only contract reviewer.",
+          "tools": {
+            "Read": true,
+            "Grep": true
+          }
+        },
+        "query": {
+          "directory": "/fixture/workspace"
+        }
+      },
+      "delete": {
+        "path": {
+          "id": "fixture-session"
+        },
+        "query": {
+          "directory": "/fixture/workspace"
+        }
+      }
+    },
+    "result": {
+      "ok": true,
+      "exitCode": 0,
+      "stdout": "fixture-response",
+      "stderr": "",
+      "sessionId": "fixture-session"
+    }
+  },
+  "directLlm": {
+    "engine": "fixture-llm",
+    "connection": {
+      "provider": "openai-compatible",
+      "endpoint": "https://fixture.invalid/v1/chat/completions",
+      "model": "fixture/exact-model",
+      "temperature": 0.25,
+      "maxTokens": 4096,
+      "supportsJsonSchema": true,
+      "extraParams": {
+        "beta": "two",
+        "alpha": 1
+      },
+      "contextLength": 8192,
+      "enableThinking": false
+    },
+    "credential": {
+      "names": ["AKM_ENGINE_FIXTURE_LLM_API_KEY", "AKM_LLM_API_KEY"],
+      "required": false
+    },
+    "timeoutMs": 12345
+  }
+}

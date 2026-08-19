@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    {
+      "adapter": "akm",
+      "kind": "agent",
+      "path": "akm/agents/contract-reviewer.md",
+      "conceptId": "agents/contract-reviewer"
+    },
+    {
+      "adapter": "akm",
+      "kind": "command",
+      "path": "akm/commands/contract-review.md",
+      "conceptId": "commands/contract-review"
+    },
+    {
+      "adapter": "claude",
+      "kind": "agent",
+      "path": "claude/agents/contract-reviewer.md",
+      "conceptId": "agents/contract-reviewer"
+    },
+    {
+      "adapter": "claude",
+      "kind": "command",
+      "path": "claude/commands/contract-review.md",
+      "conceptId": "commands/contract-review"
+    },
+    {
+      "adapter": "opencode",
+      "kind": "agent",
+      "path": "opencode/agents/contract-reviewer.md",
+      "conceptId": "agents/contract-reviewer"
+    },
+    {
+      "adapter": "opencode",
+      "kind": "command",
+      "path": "opencode/commands/contract-review.md",
+      "conceptId": "commands/contract-review"
+    }
+  ]
+}
