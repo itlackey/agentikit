@@ -23,6 +23,7 @@
  * breaks the cycle.
  */
 
+import { createAgentRequestLowerer } from "../../agent/request-lowering";
 import { caps } from "../shared";
 import { BaseHarness } from "../types";
 
@@ -42,6 +43,16 @@ export class OpencodeSdkHarness extends BaseHarness {
   // `session.prompt` returns structured SDK events/messages; akm extracts the
   // final message then validates against the node schema ⇒ native-json tier.
   readonly structuredOutput = "native-json" as const;
+  readonly executionLowerer = {
+    platform: "opencode-sdk",
+    personaChannel: "native" as const,
+    lower: createAgentRequestLowerer({
+      adapter: "opencode-sdk",
+      personaChannel: "native",
+      tools: "sdk",
+      outputSchema: false,
+    }),
+  };
   // No flag-shaped resume: session reuse is programmatic — the SDK session id is
   // stored opportunistically on the unit row and passed back to
   // `session.prompt`, not replayed via a CLI flag.

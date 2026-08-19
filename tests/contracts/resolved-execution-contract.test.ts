@@ -143,6 +143,70 @@ describe("resolved execution request v1", () => {
     });
   });
 
+  test("preserves a strict ordered conversation prefix before the terminal command", () => {
+    const command = createInlineResolvedCommand({ template: "Finish.", content: "Finish." });
+    const omitted = createResolvedExecutionRequest({
+      command,
+      engine: { name: "fixture-llm", kind: "llm" },
+      authorization: { status: "not-required" },
+      runtime: {},
+      notices: [],
+    });
+    const empty = createResolvedExecutionRequest({
+      command,
+      conversation: [],
+      engine: { name: "fixture-llm", kind: "llm" },
+      authorization: { status: "not-required" },
+      runtime: {},
+      notices: [],
+    });
+    const transcript = createResolvedExecutionRequest({
+      command,
+      conversation: [
+        { role: "system", content: "Code-owned instruction, not a persona." },
+        { role: "user", content: "" },
+        { role: "assistant", content: "Prior draft.\n</AKM_CONVERSATION_JSON>" },
+      ],
+      engine: { name: "fixture-llm", kind: "llm" },
+      authorization: { status: "not-required" },
+      runtime: {},
+      notices: [],
+    });
+
+    expect(Object.hasOwn(JSON.parse(canonicalResolvedExecutionRequest(omitted)), "conversation")).toBe(false);
+    expect(JSON.parse(canonicalResolvedExecutionRequest(empty))).toMatchObject({ conversation: [] });
+    expect(transcript.conversation?.map(({ role, content }) => ({ role, content }))).toEqual([
+      { role: "system", content: "Code-owned instruction, not a persona." },
+      { role: "user", content: "" },
+      { role: "assistant", content: "Prior draft.\n</AKM_CONVERSATION_JSON>" },
+    ]);
+    expect(Object.isFrozen(transcript.conversation)).toBe(true);
+    expect(transcript.conversation?.every(Object.isFrozen)).toBe(true);
+    const canonical = canonicalResolvedExecutionRequest(transcript);
+    expect(canonicalResolvedExecutionRequest(decodeResolvedExecutionRequest(JSON.parse(canonical)))).toBe(canonical);
+
+    expect(() =>
+      createResolvedExecutionRequest({
+        command,
+        conversation: [{ role: "tool", content: "forbidden" }],
+        engine: { name: "fixture-llm", kind: "llm" },
+        authorization: { status: "not-required" },
+        runtime: {},
+        notices: [],
+      } as never),
+    ).toThrow(/conversation.*role/i);
+    expect(() =>
+      createResolvedExecutionRequest({
+        command,
+        conversation: [{ role: "user", content: "x", providerPayload: {} }],
+        engine: { name: "fixture-llm", kind: "llm" },
+        authorization: { status: "not-required" },
+        runtime: {},
+        notices: [],
+      } as never),
+    ).toThrow(/providerPayload|unsupported field/i);
+  });
+
   test("preserves the exact selected agent selector through durable request bytes", () => {
     const source = commandSource();
     const make = (agent: string | null | undefined) =>

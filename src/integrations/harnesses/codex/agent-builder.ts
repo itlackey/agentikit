@@ -58,6 +58,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AgentCommandBuilder, assertNotFlag, resolveDispatchModel } from "../../agent/builder-shared";
+import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /**
  * Write a node's JSON Schema to a fresh temp file for `--output-schema`.
@@ -112,6 +113,12 @@ function ensureSandboxFlags(base: readonly string[]): string[] {
 export const codexBuilder: AgentCommandBuilder = {
   platform: "codex",
   personaChannel: "prompt",
+  lower: createAgentRequestLowerer({
+    adapter: "codex",
+    personaChannel: "prompt",
+    tools: "none",
+    outputSchema: true,
+  }),
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

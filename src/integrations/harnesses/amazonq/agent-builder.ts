@@ -70,6 +70,7 @@ import {
   assertNotFlag,
   resolveDispatchModel,
 } from "../../agent/builder-shared";
+import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /** Canonical harness/platform id used for model-alias resolution. */
 export const AMAZONQ_PLATFORM = "amazonq";
@@ -120,6 +121,12 @@ function buildPromptPayload(req: AgentDispatchRequest): string {
 export const amazonqBuilder: AgentCommandBuilder = {
   platform: AMAZONQ_PLATFORM,
   personaChannel: "prompt",
+  lower: createAgentRequestLowerer({
+    adapter: AMAZONQ_PLATFORM,
+    personaChannel: "prompt",
+    tools: "flat",
+    outputSchema: true,
+  }),
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

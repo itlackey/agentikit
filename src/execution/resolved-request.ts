@@ -93,6 +93,17 @@ export interface LoweringNotice {
 }
 
 /**
+ * One code-owned conversation turn that precedes the terminal user command.
+ * This is deliberately not persona content: a system turn here belongs to the
+ * calling algorithm, while a persona remains a selected, provenance-branded
+ * asset. Provider-specific message payloads are outside this common contract.
+ */
+export interface ResolvedConversationMessage {
+  readonly role: "system" | "user" | "assistant";
+  readonly content: string;
+}
+
+/**
  * One versioned dispatch/freeze boundary for direct, task, and workflow callers.
  * WP1 defines this contract; production caller cutover is explicitly owned by
  * WP3, WP4, and WP5 and is not claimed by the presence of this type.
@@ -100,6 +111,8 @@ export interface LoweringNotice {
 export interface ResolvedExecutionRequestV1 {
   readonly schemaVersion: typeof RESOLVED_EXECUTION_SCHEMA_VERSION;
   readonly command: ResolvedCommandContent;
+  /** Ordered turns before the required terminal `{role:"user", command.content}` turn. */
+  readonly conversation?: readonly Readonly<ResolvedConversationMessage>[];
   /** Exact selected agent ref or native harness selector; null explicitly clears selection. */
   readonly agent?: string | null;
   readonly persona?: ResolvedPersonaContent | null;
@@ -393,6 +406,25 @@ function cloneNotice(input: LoweringNotice, index: number): Readonly<LoweringNot
   return Object.freeze(out) as unknown as Readonly<LoweringNotice>;
 }
 
+function cloneConversation(input: unknown, path = "conversation"): readonly Readonly<ResolvedConversationMessage>[] {
+  const cloned = cloneExecutionJson(input, path);
+  if (!Array.isArray(cloned)) throw new TypeError(`${path} must be an array`);
+  return Object.freeze(
+    cloned.map((message, index) => {
+      const messagePath = `${path}[${index}]`;
+      const record = requireObject(message, messagePath);
+      assertOnlyKeys(record, ["role", "content"], messagePath);
+      const role = requireOwn(record, "role", messagePath);
+      const content = requireOwn(record, "content", messagePath);
+      if (role !== "system" && role !== "user" && role !== "assistant") {
+        throw new TypeError(`${messagePath}.role must be system, user, or assistant`);
+      }
+      if (typeof content !== "string") throw new TypeError(`${messagePath}.content must be a string`);
+      return Object.freeze({ role, content });
+    }),
+  );
+}
+
 function cloneResolvedCommandLeaf(input: ResolvedCommandContent): ResolvedCommandContent {
   if (!isResolvedCommand(input)) throw new TypeError("command must be constructed by the execution boundary");
   const allowedSymbols = new Set([resolvedCommandBrand]);
@@ -479,6 +511,7 @@ export function createResolvedExecutionRequest(input: ResolvedExecutionRequestIn
     record,
     [
       "command",
+      "conversation",
       "agent",
       "persona",
       "engine",
@@ -509,6 +542,7 @@ export function createResolvedExecutionRequest(input: ResolvedExecutionRequestIn
     runtime: cloneRuntime(runtime as unknown as ResolvedRuntimeSettings),
     notices: Object.freeze(clonedNotices.map((notice, index) => cloneNotice(notice as LoweringNotice, index))),
   };
+  if (Object.hasOwn(record, "conversation")) out.conversation = cloneConversation(record.conversation);
   if (Object.hasOwn(record, "agent")) {
     if (record.agent === undefined) throw new TypeError("agent must be omitted, null, or a selected agent string");
     out.agent = cloneAgentSelector(record.agent, "agent");
@@ -663,6 +697,7 @@ export function decodeResolvedExecutionRequest(value: unknown): ResolvedExecutio
     [
       "schemaVersion",
       "command",
+      "conversation",
       "agent",
       "persona",
       "engine",
@@ -690,6 +725,9 @@ export function decodeResolvedExecutionRequest(value: unknown): ResolvedExecutio
     runtime: decodeRuntime(requireOwn(input, "runtime", "resolved execution request")),
     notices: clonedNotices.map(decodeNotice),
   };
+  if (Object.hasOwn(input, "conversation")) {
+    request.conversation = cloneConversation(input.conversation, "resolved execution request.conversation");
+  }
   if (Object.hasOwn(input, "agent")) {
     request.agent = cloneAgentSelector(input.agent, "resolved execution request.agent");
   }
@@ -778,6 +816,10 @@ function projectNotice(notice: Readonly<LoweringNotice>): Record<string, unknown
   return out;
 }
 
+function projectConversationMessage(message: Readonly<ResolvedConversationMessage>): Record<string, unknown> {
+  return { role: message.role, content: message.content };
+}
+
 function projectResolvedExecutionWire(request: ResolvedExecutionRequestV1): Record<string, unknown> {
   const out: Record<string, unknown> = {
     schemaVersion: RESOLVED_EXECUTION_SCHEMA_VERSION,
@@ -787,6 +829,12 @@ function projectResolvedExecutionWire(request: ResolvedExecutionRequestV1): Reco
     runtime: projectRuntime(request.runtime),
     notices: request.notices.map(projectNotice),
   };
+  if (Object.hasOwn(request, "conversation")) {
+    if (request.conversation === undefined) {
+      throw new TypeError("constructed request conversation cannot be undefined");
+    }
+    out.conversation = request.conversation.map(projectConversationMessage);
+  }
   if (Object.hasOwn(request, "agent")) {
     if (request.agent === undefined) throw new TypeError("constructed request agent cannot be undefined");
     out.agent = request.agent;

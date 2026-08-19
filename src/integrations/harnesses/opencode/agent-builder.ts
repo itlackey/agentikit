@@ -17,6 +17,7 @@
  */
 
 import { type AgentCommandBuilder, assertNotFlag, resolveDispatchModel } from "../../agent/builder-shared";
+import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /**
  * OpenCode builder.
@@ -28,6 +29,12 @@ import { type AgentCommandBuilder, assertNotFlag, resolveDispatchModel } from ".
 export const opencodeBuilder: AgentCommandBuilder = {
   platform: "opencode",
   personaChannel: "native",
+  lower: createAgentRequestLowerer({
+    adapter: "opencode",
+    personaChannel: "native",
+    tools: "none",
+    outputSchema: false,
+  }),
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

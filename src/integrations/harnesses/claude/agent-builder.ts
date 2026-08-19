@@ -43,6 +43,7 @@ import {
   normalizeTools,
   resolveDispatchModel,
 } from "../../agent/builder-shared";
+import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /**
  * Assemble the positional prompt: the task prompt and — when a schema is
@@ -68,6 +69,12 @@ function buildPromptPayload(req: AgentDispatchRequest): string {
 export const claudeBuilder: AgentCommandBuilder = {
   platform: "claude",
   personaChannel: "native",
+  lower: createAgentRequestLowerer({
+    adapter: "claude",
+    personaChannel: "native",
+    tools: "all",
+    outputSchema: true,
+  }),
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

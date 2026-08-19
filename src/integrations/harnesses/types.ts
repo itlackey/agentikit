@@ -23,7 +23,7 @@
  * implementations are migrated under each harness in #563/#564.
  */
 
-import type { AgentCommandBuilder, AgentResultExtractor } from "../agent/builder-shared";
+import type { AgentCommandBuilder, AgentRequestLowerer, AgentResultExtractor } from "../agent/builder-shared";
 import type { SessionLogHarness } from "../session-logs/types";
 import type { HarnessCapabilities } from "./shared";
 
@@ -106,6 +106,9 @@ interface AkmHarnessCommon {
    * wrong-flag-shape default (see `getCommandBuilder`).
    */
   readonly agentBuilder?: AgentCommandBuilder;
+
+  /** Resolved-request lowering for non-argv transports such as OpenCode SDK. */
+  readonly executionLowerer?: AgentRequestLowerer;
 
   /**
    * Workflow-engine execution pattern (plan §"Capability matrix"). Optional
@@ -263,6 +266,7 @@ export abstract class BaseHarness implements AkmHarnessCommon {
   readonly runtimeId?: string;
   readonly setupDetectionDir?: string;
   readonly agentBuilder?: AgentCommandBuilder;
+  readonly executionLowerer?: AgentRequestLowerer;
   readonly pattern?: HarnessExecutionPattern;
   readonly structuredOutput?: HarnessStructuredOutput;
   readonly identityEnv?: readonly string[];

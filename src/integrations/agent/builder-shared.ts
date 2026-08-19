@@ -16,6 +16,8 @@
  */
 
 import { UsageError } from "../../core/errors";
+import type { ExecutionJsonObject } from "../../execution/json";
+import type { LoweringNotice, ResolvedExecutionRequestV1 } from "../../execution/resolved-request";
 import type { ShowResponse } from "../../sources/types";
 import { resolveModel } from "./model-aliases";
 import type { AgentProfile } from "./profiles";
@@ -46,6 +48,8 @@ export interface AgentDispatchRequest {
    * workflow engine's IR `effort` field; no builder consumes it yet).
    */
   effort?: string;
+  /** Exact resolved inference object. Builders consume only fields their lowerer records as translated. */
+  inference?: ExecutionJsonObject | null;
   /**
    * JSON Schema the unit's output must validate against. Reserved for the
    * workflow engine's structured-output normalization: harnesses with native
@@ -53,6 +57,15 @@ export interface AgentDispatchRequest {
    * get it injected into the prompt. No builder consumes it yet.
    */
   schema?: Record<string, unknown>;
+}
+
+/** Pure harness-owned projection produced before argv/SDK dispatch. */
+export interface LoweredAgentDispatch {
+  readonly prompt: string;
+  readonly dispatch: Readonly<AgentDispatchRequest>;
+  readonly translatedFields: readonly string[];
+  readonly untranslatedFields: readonly string[];
+  readonly notices: readonly Readonly<LoweringNotice>[];
 }
 
 /** Resolve a raw dispatch model once, while preserving frozen/lowered models verbatim. */
@@ -114,12 +127,32 @@ export interface AgentResultExtraction {
  */
 export type AgentResultExtractor = (result: import("./spawn").AgentRunResult) => AgentResultExtraction;
 
+/** Harness-owned resolved-request projection, shared by CLI and SDK engines. */
+export interface AgentRequestLowerer {
+  /** Canonical harness platform identifier. */
+  readonly platform: string;
+  /** Whether this transport has a distinct native persona/system channel. */
+  readonly personaChannel: "native" | "prompt";
+  /**
+   * Optimistically lower one branded common request into this harness's own
+   * dispatch shape. This implementation, rather than a central capability
+   * matrix, is authoritative for which selected fields are translated.
+   */
+  lower(profile: AgentProfile, request: ResolvedExecutionRequestV1): LoweredAgentDispatch;
+}
+
 /** Strategy for building the argv for one agent CLI platform. */
 export interface AgentCommandBuilder {
   /** Canonical harness platform identifier. */
   readonly platform: string;
   /** Whether this transport has a distinct native persona/system channel. */
   readonly personaChannel: "native" | "prompt";
+  /**
+   * Production builders register this structural lowerer. It remains optional
+   * on the low-level builder test seam, whose tiny fake builders never cross
+   * the resolved execution boundary.
+   */
+  readonly lower?: AgentRequestLowerer["lower"];
   /**
    * Build the concrete command for this platform.
    * Receives the fully-resolved profile (with user overrides merged in) and

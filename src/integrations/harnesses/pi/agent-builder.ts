@@ -58,6 +58,7 @@ import {
   assertNotFlag,
   resolveDispatchModel,
 } from "../../agent/builder-shared";
+import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /** Canonical harness/platform id used for model-alias resolution. */
 export const PI_PLATFORM = "pi";
@@ -85,6 +86,12 @@ function buildPromptPayload(req: AgentDispatchRequest): string {
 export const piBuilder: AgentCommandBuilder = {
   platform: PI_PLATFORM,
   personaChannel: "native",
+  lower: createAgentRequestLowerer({
+    adapter: PI_PLATFORM,
+    personaChannel: "native",
+    tools: "none",
+    outputSchema: true,
+  }),
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");
