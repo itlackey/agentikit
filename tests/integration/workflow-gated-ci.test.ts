@@ -33,7 +33,9 @@ interface GatedWorkflow {
   jobs?: Record<string, WorkflowJob>;
   on?: {
     pull_request?: unknown;
-    push?: unknown;
+    push?: {
+      tags?: string[];
+    };
     schedule?: Array<{ cron?: string }>;
     workflow_dispatch?: {
       inputs?: Record<string, { options?: string[]; required?: boolean; type?: string }>;
@@ -61,9 +63,9 @@ function getStep(job: WorkflowJob, name: string): WorkflowStep {
 }
 
 describe("gated CI workflow", () => {
-  test("is weekly and manually dispatchable without adding heavyweight push or pull-request work", () => {
+  test("supports weekly, manual, and narrowly tagged candidates without ordinary push or PR work", () => {
     expect(source, "Missing .github/workflows/gated-ci.yml").not.toBe("");
-    expect(workflow.on?.push).toBeUndefined();
+    expect(workflow.on?.push?.tags).toEqual(["gated-ci/candidate-*"]);
     expect(workflow.on?.pull_request).toBeUndefined();
     expect(workflow.on?.schedule).toEqual([{ cron: "23 5 * * 1" }]);
 
@@ -75,6 +77,17 @@ describe("gated CI workflow", () => {
       options: ["all", "semantic", "docker", "native-scheduler"],
     });
     expect(workflow["run-name"]).toContain("inputs.candidate_sha");
+    expect(workflow["run-name"]).toContain("release-candidate");
+
+    const resolver = getStep(getJob("resolve-candidate"), "Resolve and validate the candidate commit");
+    expect(resolver.env).toMatchObject({
+      EVENT_REF: "${{ github.ref }}",
+      EVENT_SHA: "${{ github.sha }}",
+    });
+    expect(resolver.run).toContain('if [ "${EVENT_SHA,,}" != "${actual_sha,,}" ]');
+    for (const id of ["semantic-search", "docker-install", "native-scheduler"]) {
+      expect(getJob(id).if).toContain("github.event_name == 'push'");
+    }
   });
 
   test("keeps stable visible names for the three gated surfaces", () => {
@@ -83,18 +96,28 @@ describe("gated CI workflow", () => {
     expect(getJob("native-scheduler").name).toBe("Gated / Native Scheduler / ${{ matrix.platform }}");
   });
 
-  test("runs real semantic search with a stable HuggingFace cache outside sandbox HOME", () => {
+  test("restores a model-identified cache for candidates but saves only from trusted schedules", () => {
     const job = getJob("semantic-search");
     expect(job.env).toMatchObject({
       AKM_SEMANTIC_TESTS: "1",
       HF_HOME: "${{ github.workspace }}/.ci-cache/huggingface",
     });
-    const cache = getStep(job, "Cache HuggingFace models");
-    expect(cache.uses).toBe("actions/cache@v5");
-    expect(cache.with).toMatchObject({
+    const restore = getStep(job, "Restore HuggingFace model cache");
+    expect(restore.uses).toBe("actions/cache/restore@v5");
+    expect(restore.with).toMatchObject({
       path: "${{ github.workspace }}/.ci-cache/huggingface",
-      key: "akm-huggingface-${{ runner.os }}-${{ hashFiles('bun.lock') }}-v1",
+      key: "akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'bun.lock') }}-v2",
     });
+
+    const save = getStep(job, "Save HuggingFace model cache from trusted schedule");
+    expect(save.uses).toBe("actions/cache/save@v5");
+    expect(save.if).toContain("github.event_name == 'schedule'");
+    expect(save.if).toContain("github.ref_name == github.event.repository.default_branch");
+    expect(save.with).toMatchObject({
+      path: "${{ github.workspace }}/.ci-cache/huggingface",
+      key: "akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'bun.lock') }}-v2",
+    });
+    expect(JSON.stringify(job)).not.toContain('"uses":"actions/cache@v5"');
     expect(JSON.stringify(job)).toContain("tests/integration/semantic-search-e2e.test.ts");
 
     const semanticTest = fs.readFileSync(
@@ -110,7 +133,10 @@ describe("gated CI workflow", () => {
     const job = getJob("docker-install");
     expect(job.env).toMatchObject({ AKM_DOCKER_TESTS: "1", DOCKER_BUILDKIT: "1" });
     expect(job.if).toContain("github.event_name == 'schedule'");
+    expect(job.if).toContain("github.event_name == 'push'");
     expect(job.if).toContain("inputs.gated_suite == 'docker'");
+    const preflight = getStep(job, "Verify Docker daemon");
+    expect(preflight.run).toContain("docker info");
     expect(JSON.stringify(job)).toContain("tests/integration/docker-install.test.ts");
   });
 
@@ -135,6 +161,8 @@ describe("gated CI workflow", () => {
     expect(evidence.needs).toEqual(["resolve-candidate", "semantic-search", "docker-install", "native-scheduler"]);
     expect(evidence.if).toContain("always()");
     expect(evidence.if).toContain("inputs.gated_suite == 'all'");
+    expect(evidence.if).toContain("github.event_name == 'push'");
+    expect(evidence.if).toContain("refs/tags/gated-ci/candidate-");
     const serialized = JSON.stringify(evidence);
     expect(serialized).toContain("inputs.candidate_sha");
     expect(serialized).toContain("github.run_id");
@@ -149,10 +177,20 @@ describe("gated CI workflow", () => {
     const checklist = fs.existsSync(checklistPath) ? fs.readFileSync(checklistPath, "utf8") : "";
     expect(checklist).toContain("Gated / Release Candidate Evidence");
     expect(checklist).toContain("full 40-character release-candidate SHA");
-    expect(checklist).toContain("weekly run is drift detection, not release evidence");
+    expect(checklist).toContain("gated-ci/candidate-");
+    expect(checklist).toContain("tag target is the exact candidate commit");
+    expect(checklist).toContain("restore-only");
+    expect(checklist).toMatch(/weekly run is\s+drift detection, not release evidence/);
     expect(checklist).toContain("actions/runs/");
 
     const releaseCheck = fs.readFileSync(path.join(root, "tests", "release-check.sh"), "utf8");
     expect(releaseCheck).toContain("tests/integration/workflow-gated-ci.test.ts");
+  });
+
+  test("keeps the retired review ledger internally consistent after closing INFRA", () => {
+    const review = fs.readFileSync(path.join(root, "tests", "TESTS_REVIEW.md"), "utf8");
+    expect(review).toContain("grouped into five themed clusters");
+    expect(review).not.toContain("| INFRA | INFRA-04, INFRA-07 |");
+    expect(review.match(/^\| [A-Z]+-\d+ \| \*\*still open\*\*/gm)).toHaveLength(12);
   });
 });
