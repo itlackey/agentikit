@@ -25,6 +25,7 @@ import {
 } from "../../src/integrations/agent/inline-execution";
 import { PERSONA_FALLBACK_BEGIN, PERSONA_FALLBACK_END } from "../../src/integrations/agent/persona-fallback";
 import { HARNESS_REGISTRY } from "../../src/integrations/harnesses";
+import { LlmCallError, type LlmCallErrorCode } from "../../src/llm/client";
 
 const CLI_HARNESSES = HARNESS_REGISTRY.filter((harness) => harness.agentBuilder).map((harness) => harness.id);
 
@@ -405,6 +406,35 @@ describe("optimistic lowering safety", () => {
     } finally {
       delete process.env.AKM_WP5_FIXTURE_KEY;
     }
+  });
+
+  test.each([
+    ["aborted", "aborted"],
+    ["timeout", "timeout"],
+    ["rate_limited", "llm_rate_limit"],
+    ["parse_error", "parse_error"],
+    ["provider_html_error", "parse_error"],
+    ["network_error", "spawn_failed"],
+    ["provider_error", "spawn_failed"],
+  ] as const)("preserves direct LLM %s failure taxonomy as %s", async (code, reason) => {
+    const lowered = lowerResolvedExecutionRequestWithRunner(
+      requestFor("openai-compatible", "llm", { tools: [], authorization: { status: "not-required" } }),
+      {
+        kind: "llm",
+        engine: "fixture",
+        connection: {
+          provider: "openai-compatible",
+          endpoint: "https://fixture.invalid/v1/chat/completions",
+          model: "provider/exact-model",
+        },
+      },
+    );
+    const result = await dispatchLoweredExecutionRequest(lowered, {
+      chat: async () => {
+        throw new LlmCallError(`typed ${code} failure`, code satisfies LlmCallErrorCode);
+      },
+    });
+    expect(result).toMatchObject({ ok: false, reason, error: `typed ${code} failure` });
   });
 
   test("persona fallback is byte-exact and applied once across durable resume", () => {

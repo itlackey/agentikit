@@ -13,14 +13,13 @@ import {
   type ResolvedExecutionRequestV1,
 } from "../../execution/resolved-request";
 import type { ToolSelection } from "../../execution/source";
-import type { ChatCompletionOptions, ChatMessage } from "../../llm/client";
-import { chatCompletion } from "../../llm/client";
+import { type ChatCompletionOptions, type ChatMessage, chatCompletion, LlmCallError } from "../../llm/client";
 import { HARNESS_REGISTRY } from "../harnesses";
 import type { AgentDispatchRequest, AgentRequestLowerer } from "./builder-shared";
 import { resolveEngineTransportMaterial } from "./engine-resolution";
 import type { RunnerSpec } from "./runner";
 import { executeRunner, type RunnerSeams } from "./runner-dispatch";
-import type { AgentRunResult, RunAgentOptions } from "./spawn";
+import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "./spawn";
 
 export const EXECUTION_LOWERING_SCHEMA_VERSION = 1 as const;
 
@@ -309,6 +308,24 @@ function requireRunnerShape(request: ResolvedExecutionRequestV1, runner: RunnerS
       `Resolved engine ${JSON.stringify(request.engine.name)} changed provider/harness platform before lowering.`,
       "INVALID_CONFIG_FILE",
     );
+  }
+}
+
+function directLlmFailureReason(error: unknown): AgentFailureReason {
+  if (!(error instanceof LlmCallError)) return "spawn_failed";
+  switch (error.code) {
+    case "aborted":
+      return "aborted";
+    case "timeout":
+      return "timeout";
+    case "rate_limited":
+      return "llm_rate_limit";
+    case "parse_error":
+    case "provider_html_error":
+      return "parse_error";
+    case "network_error":
+    case "provider_error":
+      return "spawn_failed";
   }
 }
 
@@ -662,7 +679,7 @@ export async function dispatchLoweredExecutionRequest(
                 stderr: "",
                 durationMs: Date.now() - started,
                 error: error instanceof Error ? error.message : String(error),
-                reason: "spawn_failed",
+                reason: directLlmFailureReason(error),
               };
             }
           },
