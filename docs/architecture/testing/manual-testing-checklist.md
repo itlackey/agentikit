@@ -1067,6 +1067,17 @@ test "$(sha256sum "$AKM_CONFIG_DIR/config.json")" = "$before_config"
       install safety; test suppression fixture separately.
 - [ ] **[LOCAL]** Declarative provider and later update receive equivalent audit.
 - [ ] **[LOCAL]** New dangerous key on update preserves previous complete source.
+- [ ] **[LOCAL]** A held WAL index reader observes only the prior generation
+      through a failed update; index/state main, WAL, and SHM inodes are not
+      replaced during compensation.
+- [ ] **[LOCAL]** Writable Git rejects physical-root/component symlink escapes,
+      a changed HEAD or dirty state at publication, and dangerous tracked,
+      untracked, ignored, filter-produced, or submodule materialization.
+- [ ] **[LOCAL]** Lock publication and rollback fence both exact raw bytes and
+      file mode; a concurrent chmod blocks publication without being reverted.
+- [ ] **[LOCAL]** A simulated durable index/state split is reported as
+      `index-state-generation`; after writers stop, `akm index --full` clears
+      the advisory and restores coherent searchable usage links.
 - [ ] **[LOCAL]** Corrupt/unreadable lock fails structurally; no managed/plain
       reinterpretation or split state.
 - [ ] **[LOCAL]** Failed add/update/remove compare config, lock, cache, index,
@@ -3272,8 +3283,8 @@ remaining gaps carry approved waivers with the expiries recorded below.
     refused ref, because it is an append-only audit log of ATTEMPTS and an
     operator investigating a blocked install needs it on record.
 - [ ] **Security:** Git/direct-write symlink containment, authenticated OpenCode
-      listener, registry control-data redaction, archive expansion budgets,
-      universal redirect/SSRF policy, and unsuppressible update audit.
+      listener, registry credential/control-data redaction, archive expansion
+      budgets, universal redirect/SSRF policy, and unsuppressible update audit.
   - Partial: symlink containment (walker escape cases tested; not exercised
     through a real git-repo walk), registry control-data redaction
     (response-shape limits tested), redirect/SSRF policy (website fetcher has
@@ -3284,11 +3295,12 @@ remaining gaps carry approved waivers with the expiries recorded below.
     covers 102 cases with 36,895 assertions.
   - Open: authenticated OpenCode listener (localhost listener carries no
     per-process credential), archive expansion budgets (download size capped;
-    expansion ratio/member budgets untested), unsuppressible update audit
-    (dangerous-key scan runs on add, not re-verified on bundle update).
+    expansion ratio/member budgets untested).
+  - Closed in #765: the unsuppressible update audit stages and re-verifies every
+    refreshed bundle before publication; keep the rejection, approval, and
+    rollback cases above in the release matrix.
   - Tracking: [#763](https://github.com/itlackey/akm/issues/763) (listener credential),
     [#764](https://github.com/itlackey/akm/issues/764) (archive expansion budgets),
-    [#765](https://github.com/itlackey/akm/issues/765) (update audit),
     [#766](https://github.com/itlackey/akm/issues/766) (git symlink containment),
     [#767](https://github.com/itlackey/akm/issues/767) (registry SSRF),
     [#811](https://github.com/itlackey/akm/issues/811) (registry URL credentials,

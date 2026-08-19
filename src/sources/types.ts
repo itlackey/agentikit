@@ -352,6 +352,10 @@ export interface UpdatePlainSyncedItem {
 export interface UpdateSkippedItem {
   id: string;
   kind: SourceKind;
+  /** Machine-readable per-bundle outcome for update --all. */
+  status?: "blocked" | "failed" | "skipped";
+  /** Stable AkmError code when the bundle was blocked or failed. */
+  code?: string;
   reason: string;
 }
 

@@ -23,7 +23,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { akmUpdate } from "../../src/commands/sources/installed-stashes";
+import { _setUpdateTransactionHookForTests, akmUpdate } from "../../src/commands/sources/installed-stashes";
 import { loadConfig, saveConfig } from "../../src/core/config/config";
 import { probeIndexWriterLease } from "../../src/indexer/index-writer-lock";
 import { _setAkmIndexForTests } from "../../src/indexer/indexer";
@@ -398,7 +398,7 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
     expect(bundle?.npm).toBe("left-pad");
   });
 
-  test("reindex failure keeps the published lock generation and retains both roots", async () => {
+  test("reindex failure restores the prior lock generation and retains both roots", async () => {
     const oldRoot = createTmpDir("akm-update-compensate-old-");
     const newRoot = createTmpDir("akm-update-compensate-new-");
     fs.writeFileSync(path.join(oldRoot, "marker.txt"), "old content");
@@ -439,13 +439,13 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
     }
 
     expect(indexCalls).toBe(1);
-    expect(readLockfile().find((e) => e.id === "left-pad")?.localRoot).toBe(newRoot);
+    expect(readLockfile().find((e) => e.id === "left-pad")?.localRoot).toBe(oldRoot);
     expect(loadConfig().bundles?.["left-pad"]?.npm).toBe("left-pad");
     expect(fs.existsSync(oldRoot)).toBe(true);
     expect(fs.existsSync(newRoot)).toBe(true);
   });
 
-  test("fault after lock publication leaves desired config unchanged and retains both roots", async () => {
+  test("fault after lock publication restores the prior lock and leaves desired config unchanged", async () => {
     const oldRoot = createTmpDir("akm-update-lock-only-old-");
     const newRoot = createTmpDir("akm-update-lock-only-new-");
     fs.writeFileSync(path.join(oldRoot, "marker.txt"), "old content");
@@ -488,7 +488,7 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
     }
 
     expect(loadConfig()).toEqual(oldConfig);
-    expect(readLockfile().find((entry) => entry.id === "left-pad")?.localRoot).toBe(newRoot);
+    expect(readLockfile().find((entry) => entry.id === "left-pad")?.localRoot).toBe(oldRoot);
     expect(fs.existsSync(oldRoot)).toBe(true);
     expect(fs.existsSync(newRoot)).toBe(true);
   });
@@ -535,7 +535,7 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
     expect(fs.existsSync(newRoot)).toBe(true);
   });
 
-  test("concurrent third generation returns degraded without compensation or deletion", async () => {
+  test("concurrent config mutation is preserved while a failed update restores its prior lock", async () => {
     const oldRoot = createTmpDir("akm-update-concurrent-old-");
     const newRoot = createTmpDir("akm-update-concurrent-new-");
     fs.writeFileSync(path.join(oldRoot, "marker.txt"), "old content");
@@ -553,12 +553,15 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
       syncedAt: new Date().toISOString(),
       writable: false,
     });
-    overrideSeam(_setAkmIndexForTests, async () => {
+    overrideSeam(_setUpdateTransactionHookForTests, (point) => {
+      if (point !== "audited") return;
       const concurrent = loadConfig();
       saveConfig({
         ...concurrent,
-        bundles: { ...concurrent.bundles, "left-pad": { npm: "third-generation" } },
+        bundles: { ...concurrent.bundles, concurrent: { path: oldRoot } },
       });
+    });
+    overrideSeam(_setAkmIndexForTests, async () => {
       throw new Error("publish index failed");
     });
 
@@ -568,13 +571,14 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
       syncSpy.mockRestore();
     }
 
-    expect(loadConfig().bundles?.["left-pad"]?.npm).toBe("third-generation");
-    expect(readLockfile().find((e) => e.id === "left-pad")?.localRoot).toBe(newRoot);
+    expect(loadConfig().bundles?.concurrent?.path).toBe(oldRoot);
+    expect(loadConfig().bundles?.["left-pad"]?.npm).toBe("left-pad");
+    expect(readLockfile().find((e) => e.id === "left-pad")?.localRoot).toBe(oldRoot);
     expect(fs.existsSync(oldRoot)).toBe(true);
     expect(fs.existsSync(newRoot)).toBe(true);
   });
 
-  test("failed reindex keeps the published lock and retains both roots", async () => {
+  test("failed reindex restores the prior lock and retains both roots", async () => {
     const oldRoot = createTmpDir("akm-update-degraded-old-");
     const newRoot = createTmpDir("akm-update-degraded-new-");
     fs.writeFileSync(path.join(oldRoot, "marker.txt"), "old content");
@@ -602,7 +606,7 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
       syncSpy.mockRestore();
     }
 
-    expect(readLockfile().find((e) => e.id === "left-pad")?.localRoot).toBe(newRoot);
+    expect(readLockfile().find((e) => e.id === "left-pad")?.localRoot).toBe(oldRoot);
     expect(fs.existsSync(oldRoot)).toBe(true);
     expect(fs.existsSync(newRoot)).toBe(true);
   });

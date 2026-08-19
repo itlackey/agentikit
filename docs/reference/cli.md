@@ -864,24 +864,68 @@ akm bundle remove my-provider --yes        # Skip the confirmation prompt
 
 ### bundle update
 
-Update one or all managed sources to the latest available version. Local and
-remote sources are not updatable — akm explains why if you target one.
+Update one remote bundle, or refresh every configured bundle with `--all`.
+Git, npm, and website candidates are staged and audited before they replace the
+active generation; filesystem bundles are reported as skipped because they
+already reflect local files in place.
 
 ```sh
 akm bundle update npm:@scope/pkg
 akm bundle update --all
 akm bundle update --all --force   # Force fresh download even if version is unchanged
 akm bundle update --all --yes     # Skip confirmation when an update needs to delete a moved install dir
+akm bundle update npm:@scope/pkg --allow-insecure  # Explicitly approve reviewed dangerous env keys
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--all` | Update all managed sources |
 | `--force` | Delete cached extraction before re-downloading |
+| `--allow-insecure` | Permit a staged update containing dangerous environment keys after warning. Without it, an interactive terminal prompts with a default of No; non-interactive use fails closed. This is independent of `--yes`. |
 | `-y`, `--yes` | Skip the confirmation prompt for the rare branch where the resolved content location moved and the previous install directory must be deleted. No effect on a normal refresh, which deletes nothing. |
 
-Reports per-entry change flags: `changed.version`, `changed.revision`,
-`changed.any`.
+The audit examines key names in `.env`-suffixed files under the staged
+component root. Publisher lint suppressions do not bypass it. Rejection or an
+audit/publication/index failure preserves the prior active bytes, lock/config
+generation, and searchable index for that bundle.
+
+Writable Git updates resolve configured roots to their physical checkout,
+reject component symlinks that escape it, and re-audit the exact materialized
+worktree before activation. AKM holds its source/index writer lease through
+that check and commit, and rechecks after the index pass at the final database
+commit boundary. All AKM writers cooperate with this lease. A non-cooperating
+local process can still edit ordinary files because POSIX/Windows filesystems
+provide no mandatory recursive directory lock: writes observed by either
+generation check make the update fail and restore the pre-update checkout, but
+a write racing after the final filesystem read cannot be guaranteed detectable
+and a write during compensation can be overwritten. Do not edit a writable
+checkout from another process while its update is running.
+
+The index and its update-owned state maintenance share one deferred SQLite
+transaction. WAL readers continue to see the last committed generation while a
+full update index pass runs, and competing writers wait for that pass to commit
+or roll back. The semantic-status JSON file is a recomputable advisory: failure
+to refresh it after the database commit warns but does not undo a committed
+bundle update.
+
+This boundary guarantees rollback for handled process faults (throws and
+SQLite commit failures); it is not an abrupt-termination or cross-database
+power-loss guarantee. Both `index.db` and `state.db` remain in WAL mode, where
+SQLite does not guarantee an atomic commit across attached database files after
+`SIGKILL`, abrupt power loss, or storage failure. The durable outcome may
+therefore combine approved old/new source bytes and lock state with adjacent
+index/state generations. `akm health` reports `index-state-generation` when a
+durable usage link disagrees with the searchable index, but that advisory
+cannot identify every theoretical split. Stop concurrent writers, rerun the
+targeted bundle update if the checkout/lock is not the intended approved
+revision, then run `akm index --full` to rebuild the search index and relink
+durable usage state.
+
+Reports per-entry change flags: `changed.version`, `changed.revision`, and
+`changed.any`. With `--all`, each bundle is isolated: successful entries appear
+in `processed`/`plainSynced`; rejected entries report `status: "blocked"` and a
+security code; provider or transaction errors report `status: "failed"`. The
+command continues with later bundles without half-publishing a blocked one.
 
 ### upgrade
 

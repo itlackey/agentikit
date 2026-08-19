@@ -38,6 +38,13 @@ export interface SemanticSearchStatus {
   embeddingCount?: number;
 }
 
+let semanticStatusMutationForTests: ((operation: "write" | "clear") => void) | undefined;
+
+/** TEST-ONLY. Inject a semantic-status filesystem publication fault. */
+export function _setSemanticStatusMutationForTests(mutation?: (operation: "write" | "clear") => void): void {
+  semanticStatusMutationForTests = mutation;
+}
+
 export function deriveSemanticProviderFingerprint(embedding?: EmbeddingConnectionConfig): string {
   if (isDeterministicEmbedEnabled()) {
     return `deterministic:${DETERMINISTIC_EMBED_MODEL_ID}`;
@@ -80,12 +87,14 @@ export function readSemanticStatus(): SemanticSearchStatus | undefined {
 }
 
 export function writeSemanticStatus(status: SemanticSearchStatus): void {
+  semanticStatusMutationForTests?.("write");
   const dir = getCacheDir();
   fs.mkdirSync(dir, { recursive: true });
   writeFileAtomic(getSemanticStatusPath(), `${JSON.stringify(status, null, 2)}\n`);
 }
 
 export function clearSemanticStatus(): void {
+  semanticStatusMutationForTests?.("clear");
   try {
     fs.unlinkSync(getSemanticStatusPath());
   } catch {

@@ -41,6 +41,7 @@ export type ConfigErrorCode =
   | "INIT_TMP_STASH_REFUSED"
   | "SETUP_TMP_STASH_REFUSED"
   | "UNKNOWN_IMPROVE_STRATEGY"
+  | "DANGEROUS_ENV_AUDIT_FAILED"
   // Refused stashDir that would clobber a sensitive system path or the user's
   // home directory (#473). Triggered by `akm bundle create`/`akm setup` when the
   // explicit `--dir` argument resolves to e.g. `/`, `$HOME`, `~/.config`,
@@ -95,6 +96,7 @@ export type NotFoundErrorCode =
   | "SOURCE_NOT_FOUND"
   | "WORKFLOW_NOT_FOUND"
   | "PROPOSAL_NOT_FOUND"
+  | "DANGEROUS_ENV_KEY"
   | "FILE_NOT_FOUND";
 
 /**

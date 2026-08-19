@@ -251,6 +251,46 @@ function sleepSyncMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/**
+ * Open, but deliberately do not finish, an immediate transaction.
+ *
+ * This is the split-phase counterpart to {@link withImmediateTransaction} for
+ * the source-update coordinator: index finalization must mutate state.db in a
+ * transaction that remains pending until content, lockfile, and index
+ * publication have all succeeded. The caller that asked for this split phase
+ * owns the matching COMMIT/ROLLBACK.
+ */
+export function beginImmediateTransaction(db: Database): void {
+  if (db.inTransaction) {
+    throw new Error("beginImmediateTransaction requires a connection with no active transaction");
+  }
+  let lastBeginErr: unknown;
+  for (let attempt = 1; attempt <= WITH_IMMEDIATE_TX_MAX_ATTEMPTS; attempt++) {
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      if (!db.inTransaction) {
+        throw new Error("BEGIN IMMEDIATE did not open a transaction (phantom contention state)");
+      }
+      return;
+    } catch (err) {
+      lastBeginErr = err;
+      if (isRetryableBeginError(err) && attempt < WITH_IMMEDIATE_TX_MAX_ATTEMPTS) {
+        if (db.inTransaction) {
+          try {
+            db.exec("ROLLBACK");
+          } catch {
+            // Transaction already gone — safe to retry BEGIN.
+          }
+        }
+        sleepSyncMs(2 ** (attempt - 1));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastBeginErr;
+}
+
 export function withImmediateTransaction<T>(db: Database, fn: () => T): T {
   // Re-entrancy guard (issue #686): if a transaction is already open on this
   // connection (e.g. a nested withImmediateTransaction call inside an outer
@@ -262,63 +302,31 @@ export function withImmediateTransaction<T>(db: Database, fn: () => T): T {
   if (db.inTransaction) {
     return fn();
   }
-  let lastBeginErr: unknown;
-  for (let attempt = 1; attempt <= WITH_IMMEDIATE_TX_MAX_ATTEMPTS; attempt++) {
-    try {
-      db.exec("BEGIN IMMEDIATE");
-      // bun:sqlite can return from BEGIN IMMEDIATE under writer contention WITHOUT
-      // actually opening a transaction (no throw). That phantom state otherwise
-      // surfaces as "cannot commit - no transaction is active" at COMMIT — AFTER
-      // fn() has already run in autocommit, so its writes escaped the intended
-      // serialization (the concurrent proposal-queue race). Detect it here, before
-      // fn(), and route it through the same retry path as a contended BEGIN.
-      if (!db.inTransaction) {
-        throw new Error("BEGIN IMMEDIATE did not open a transaction (phantom contention state)");
-      }
-    } catch (err) {
-      lastBeginErr = err;
-      if (isRetryableBeginError(err) && attempt < WITH_IMMEDIATE_TX_MAX_ATTEMPTS) {
-        // Only roll back a transaction we can see — never blind-ROLLBACK, since
-        // that could destroy a transaction this frame does not own.
-        if (db.inTransaction) {
-          try {
-            db.exec("ROLLBACK");
-          } catch {
-            // Transaction already gone — fine.
-          }
-        }
-        sleepSyncMs(2 ** (attempt - 1));
-        continue;
-      }
-      throw err;
+  beginImmediateTransaction(db);
+  try {
+    const result = fn();
+    if (!db.inTransaction) {
+      // The transaction we opened vanished while fn() ran (e.g. an
+      // auto-rollback or a stray ROLLBACK inside fn). fn's writes may have
+      // escaped serialization, so retrying is unsafe — fail loudly instead of
+      // letting COMMIT throw the opaque "cannot commit - no transaction is
+      // active" SQLiteError.
+      throw new Error(
+        "withImmediateTransaction invariant violated: transaction opened by BEGIN IMMEDIATE was no longer active after the transaction body ran; refusing to COMMIT (writes may have escaped serialization)",
+      );
     }
-    try {
-      const result = fn();
-      if (!db.inTransaction) {
-        // The transaction we opened vanished while fn() ran (e.g. an
-        // auto-rollback or a stray ROLLBACK inside fn). fn's writes may have
-        // escaped serialization, so retrying is unsafe — fail loudly instead of
-        // letting COMMIT throw the opaque "cannot commit - no transaction is
-        // active" SQLiteError.
-        throw new Error(
-          "withImmediateTransaction invariant violated: transaction opened by BEGIN IMMEDIATE was no longer active after the transaction body ran; refusing to COMMIT (writes may have escaped serialization)",
-        );
+    db.exec("COMMIT");
+    return result;
+  } catch (err) {
+    if (db.inTransaction) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // Ignore rollback failures so the original error is preserved.
       }
-      db.exec("COMMIT");
-      return result;
-    } catch (err) {
-      if (db.inTransaction) {
-        try {
-          db.exec("ROLLBACK");
-        } catch {
-          // Ignore rollback failures so the original error is preserved.
-        }
-      }
-      throw err; // a real error inside the transaction body — never retried.
     }
+    throw err;
   }
-  // Exhausted retries on transient begin failures.
-  throw lastBeginErr;
 }
 
 // ── schema introspection ─────────────────────────────────────────────────────

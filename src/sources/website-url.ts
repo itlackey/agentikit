@@ -46,9 +46,9 @@ export function shouldAllowPrivateWebsiteUrlForTests(rawUrl: string): boolean {
   }
 }
 
-export function getWebsiteCachePaths(siteUrl: string): WebsiteCachePaths {
+export function getWebsiteCachePaths(siteUrl: string, cacheRootOverride?: string): WebsiteCachePaths {
   const key = createHash("sha256").update(normalizeSiteUrl(siteUrl)).digest("hex").slice(0, 16);
-  const rootDir = path.join(getRegistryIndexCacheDir(), `website-${key}`);
+  const rootDir = path.join(cacheRootOverride ?? getRegistryIndexCacheDir(), `website-${key}`);
   return {
     rootDir,
     stashDir: path.join(rootDir, "stash"),

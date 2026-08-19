@@ -153,13 +153,32 @@ function assertLockfilePathReadable(target: string): void {
  * per-entry validation are still tolerated (filtered out), matching
  * `readLockfile`'s existing shape-tolerant behavior.
  */
-function readLockfileOrThrow(): LockfileEntry[] {
+export interface LockfileUpdateSnapshot {
+  /** Strictly parsed generation used for compare-and-swap checks. */
+  entries: LockfileEntry[];
+  /** Exact original bytes, or null when the lockfile did not exist. */
+  raw: string | null;
+  /** Original permission bits when the lockfile existed. */
+  mode: number;
+}
+
+function readLockfileSnapshotOrThrow(): LockfileUpdateSnapshot {
   const lockfilePath = getLockfilePath();
+  let fd: number | undefined;
   let raw: string;
+  let mode: number;
   try {
-    raw = fs.readFileSync(lockfilePath, "utf8");
+    // One descriptor owns both byte and metadata observation so a rename or
+    // chmod between separate path-based calls cannot synthesize a generation
+    // that never existed on disk.
+    fd = fs.openSync(lockfilePath, "r");
+    raw = fs.readFileSync(fd, "utf8");
+    mode = fs.fstatSync(fd).mode & 0o777;
   } catch (err) {
     rethrowIfTestIsolationError(err);
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { entries: [], raw: null, mode: 0o600 };
+    }
     // "Missing file" is the only failure with nothing to preserve. An
     // UNREADABLE lockfile has everything to preserve and we cannot see it —
     // degrading it to `[]` here is precisely the destructive overwrite this
@@ -168,7 +187,9 @@ function readLockfileOrThrow(): LockfileEntry[] {
     // happy path costs no extra syscall and the answer describes the failure
     // we actually got.
     assertLockfilePathReadable(lockfilePath);
-    return [];
+    return { entries: [], raw: null, mode: 0o600 };
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
   }
   let parsed: unknown;
   try {
@@ -198,7 +219,25 @@ function readLockfileOrThrow(): LockfileEntry[] {
       "INVALID_CONFIG_FILE",
     );
   }
-  return parsed.filter(isValidLockfileEntry);
+  return {
+    entries: parsed.filter(isValidLockfileEntry),
+    raw,
+    mode,
+  };
+}
+
+function readLockfileOrThrow(): LockfileEntry[] {
+  return readLockfileSnapshotOrThrow().entries;
+}
+
+/**
+ * Read the exact lock generation that a source-lifecycle transaction may
+ * replace. Unlike {@link readLockfile}, this refuses corrupt, malformed, or
+ * unreadable state so an update can never treat state it could not snapshot as
+ * an empty generation.
+ */
+export function readLockfileForUpdate(): LockfileUpdateSnapshot {
+  return readLockfileSnapshotOrThrow();
 }
 
 /**
@@ -248,6 +287,61 @@ export async function compareAndSwapLockfile(expected: LockfileEntry[], desired:
     const current = readLockfileOrThrow();
     if (JSON.stringify(current) !== JSON.stringify(expected)) return false;
     writeLockfileUnlocked(desired);
+    return true;
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Publish an update from one exact raw + parsed lockfile generation and return
+ * the exact bytes that were written. Formatting-only concurrent edits are a
+ * generation change here: rollback must never overwrite bytes it did not
+ * publish merely because they parse to an equivalent array.
+ */
+export async function publishLockfileUpdate(
+  expected: LockfileUpdateSnapshot,
+  desired: LockfileEntry[],
+): Promise<LockfileUpdateSnapshot | null> {
+  const release = await acquireLockSentinel();
+  try {
+    const current = readLockfileSnapshotOrThrow();
+    if (
+      JSON.stringify(current.entries) !== JSON.stringify(expected.entries) ||
+      current.raw !== expected.raw ||
+      current.mode !== expected.mode
+    ) {
+      return null;
+    }
+    writeLockfileUnlocked(desired);
+    return readLockfileSnapshotOrThrow();
+  } finally {
+    release();
+  }
+}
+
+/** Restore an exact raw snapshot after verifying the exact generation we published. */
+export async function compareAndSwapLockfileSnapshot(
+  expected: LockfileUpdateSnapshot,
+  desired: LockfileUpdateSnapshot,
+): Promise<boolean> {
+  const release = await acquireLockSentinel();
+  try {
+    const current = readLockfileSnapshotOrThrow();
+    if (
+      JSON.stringify(current.entries) !== JSON.stringify(expected.entries) ||
+      current.raw !== expected.raw ||
+      current.mode !== expected.mode
+    ) {
+      return false;
+    }
+    const lockfilePath = getLockfilePath();
+    if (desired.raw === null) {
+      fs.rmSync(lockfilePath, { force: true });
+    } else {
+      fs.mkdirSync(path.dirname(lockfilePath), { recursive: true });
+      writeFileAtomic(lockfilePath, desired.raw, desired.mode);
+    }
     return true;
   } finally {
     release();

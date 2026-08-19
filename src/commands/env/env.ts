@@ -57,13 +57,14 @@ import { sensitiveMarkerPath } from "./marker-path";
 const ASSIGN_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
 
 /** Scan lines and return KEY names in file order, without duplicates. */
-function scanKeys(text: string): string[] {
+export function scanEnvKeyNames(text: string): string[] {
   const keys: string[] = [];
   const seen = new Set<string>();
   for (const line of text.split(/\r?\n/)) {
     const m = line.match(ASSIGN_RE);
     if (!m) continue;
-    const key = m[1]!;
+    const key = m[1];
+    if (!key) continue;
     if (seen.has(key)) continue;
     seen.add(key);
     keys.push(key);
@@ -83,7 +84,7 @@ function scanKeys(text: string): string[] {
 export function listKeys(envPath: string): { keys: string[] } {
   if (!fs.existsSync(envPath)) return { keys: [] };
   const text = fs.readFileSync(envPath, "utf8");
-  return { keys: scanKeys(text) };
+  return { keys: scanEnvKeyNames(text) };
 }
 
 /**
