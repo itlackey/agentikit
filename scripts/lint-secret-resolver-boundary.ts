@@ -21,7 +21,9 @@
  * What is flagged:
  *   - an `ensureSourceCaches(` call whose argument object does not contain
  *     `materialize: false` AND does not contain `secrets`; or
- *   - a direct `ensureWebsiteMirror(` call without `resolveSecret`.
+ *   - a direct `ensureWebsiteMirror(` call without `resolveSecret`; or
+ *   - a provider `.sync(` call that supplies `ensureWebsiteMirror` without
+ *     also supplying `secrets`.
  *
  * What is NOT flagged: read-only callers (`materialize: false`), and the
  * function's own definition / re-export / dynamic-import destructuring lines.
@@ -198,6 +200,24 @@ for (const file of collectTs(srcDir)) {
     violations.push(
       `${rel}:${lineOf(code, at)}  ensureWebsiteMirror(...) materializes but does not pass \`resolveSecret\` — ` +
         "inject the store-backed resolver at this composition boundary or refresh through SourceProvider.sync(...).",
+    );
+  }
+
+  // A website refresh may also be composed directly through the provider
+  // seam. Key the rule to the mirror capability rather than a filename or
+  // variable name: git/npm sync calls legitimately have no secret resolver,
+  // while any sync call carrying ensureWebsiteMirror is necessarily the
+  // website composition and must carry the resolver beside it.
+  const providerSyncPattern = /\.sync\s*(?:\?\.)?\s*\(/g;
+  for (const match of code.matchAll(providerSyncPattern)) {
+    const at = match.index ?? 0;
+    const openParen = at + match[0].length - 1;
+    const call = readCallArgs(code, openParen);
+    if (!call || !/\bensureWebsiteMirror\b/.test(call.args) || /\bsecrets\b/.test(call.args)) continue;
+
+    violations.push(
+      `${rel}:${lineOf(code, at)}  provider.sync(...) supplies \`ensureWebsiteMirror\` without \`secrets\` — ` +
+        "inject a SecretResolver alongside the website mirror capability.",
     );
   }
 }
