@@ -2,8 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { toErrorMessage } from "../../core/common";
 import { DEFAULT_CONFIG, type RegistryConfigEntry } from "../../core/config/config";
+import {
+  formatRegistryCredentialWarning,
+  formatRegistryError,
+  formatRegistryLabel,
+  hasRegistryUrlCredentials,
+  redactCredentialBearingUrls,
+} from "../../core/registry-url";
 import { warn } from "../../core/warn";
 import { resolveRegistryProviderFactory } from "../../registry/factory";
 import type { RegistryAssetSearchHit, RegistrySearchHit, RegistrySearchResponse } from "../../registry/types";
@@ -33,8 +39,12 @@ export async function searchRegistry(query: string, options?: RegistrySearchOpti
   const limit = clampLimit(options?.limit);
   // resolveRegistries() already filters by enabled; explicit registries are filtered here
   const raw = options?.registries ?? resolveRegistries();
-  const entries = options?.registries ? raw.filter((r) => r.enabled !== false) : raw;
   const warnings: string[] = [];
+  const entries = (options?.registries ? raw.filter((r) => r.enabled !== false) : raw).filter((entry) => {
+    if (!hasRegistryUrlCredentials(entry.url)) return true;
+    warnings.push(formatRegistryCredentialWarning(entry));
+    return false;
+  });
 
   // Resolve and search all providers concurrently
   const results = await Promise.allSettled(
@@ -55,13 +65,13 @@ export async function searchRegistry(query: string, options?: RegistrySearchOpti
   for (let i = 0; i < results.length; i++) {
     const result = results[i]!;
     if (result.status === "rejected") {
-      warnings.push(toErrorMessage(result.reason));
+      warnings.push(`Registry ${formatRegistryLabel(entries[i]!)}: ${formatRegistryError(result.reason)}`);
       continue;
     }
     const value = result.value;
     if (!value) continue;
 
-    const registryLabel = entries[i]!.name ? `"${entries[i]!.name}"` : entries[i]!.url;
+    const registryLabel = formatRegistryLabel(entries[i]!);
     let dropped = 0;
 
     const validHits: RegistrySearchHit[] = [];
@@ -96,7 +106,7 @@ export async function searchRegistry(query: string, options?: RegistrySearchOpti
     if (dropped > 0) {
       warnings.push(`Registry ${registryLabel} returned ${dropped} incomplete hit(s); dropped from response.`);
     }
-    if (value.warnings) warnings.push(...value.warnings);
+    if (value.warnings) warnings.push(...value.warnings.map(redactCredentialBearingUrls));
   }
 
   // Sort merged hits by normalized score descending, apply limit
@@ -147,7 +157,7 @@ export function resolveRegistries(configRegistries?: RegistryConfigEntry[]): Reg
         provider = trimmed.slice(0, colonColonIdx).trim();
         url = trimmed.slice(colonColonIdx + 2).trim();
         if (!provider) {
-          warn(`[akm] Ignoring AKM_REGISTRY_URL entry: empty provider type before "::" in "${trimmed}"`);
+          warn('[akm] Ignoring AKM_REGISTRY_URL entry: empty provider type before "::".');
           continue;
         }
       } else {
@@ -155,7 +165,11 @@ export function resolveRegistries(configRegistries?: RegistryConfigEntry[]): Reg
       }
 
       if (!url.startsWith("http://") && !url.startsWith("https://")) {
-        warn(`[akm] Ignoring AKM_REGISTRY_URL entry: must start with http:// or https://, got "${url}"`);
+        warn("[akm] Ignoring AKM_REGISTRY_URL entry: URL must start with http:// or https://.");
+        continue;
+      }
+      if (hasRegistryUrlCredentials(url)) {
+        warn(`[akm] ${formatRegistryCredentialWarning({ url })}`);
         continue;
       }
       entries.push(provider ? { url, provider } : { url });
@@ -164,7 +178,12 @@ export function resolveRegistries(configRegistries?: RegistryConfigEntry[]): Reg
   }
 
   const registries = configRegistries ?? DEFAULT_CONFIG.registries ?? [];
-  return registries.filter((r) => r.enabled !== false);
+  return registries.filter((entry) => {
+    if (entry.enabled === false) return false;
+    if (!hasRegistryUrlCredentials(entry.url)) return true;
+    warn(`[akm] ${formatRegistryCredentialWarning(entry)}`);
+    return false;
+  });
 }
 
 // ── Provider resolution ─────────────────────────────────────────────────────
@@ -173,7 +192,7 @@ function createProvider(entry: RegistryConfigEntry, warnings: string[]) {
   const providerType = entry.provider ?? "static-index";
   const factory = resolveRegistryProviderFactory(providerType);
   if (!factory) {
-    const label = entry.name ? `${entry.name} (${entry.url})` : entry.url;
+    const label = formatRegistryLabel(entry);
     warnings.push(`Registry ${label}: unknown provider type "${providerType}"`);
     return null;
   }

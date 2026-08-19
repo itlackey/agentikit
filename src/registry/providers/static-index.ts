@@ -2,8 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fetchWithRetry, jsonWithByteCap, toErrorMessage } from "../../core/common";
+import { fetchWithRetry, jsonWithByteCap } from "../../core/common";
 import type { RegistryConfigEntry } from "../../core/config/config";
+import {
+  formatRegistryCredentialWarning,
+  formatRegistryError,
+  formatRegistryLabel,
+  hasRegistryUrlCredentials,
+} from "../../core/registry-url";
 import { asString } from "../../integrations/github";
 import { fetchCachedJson } from "../../storage/repositories/registry-cache";
 import { registerRegistryProvider } from "../factory";
@@ -50,6 +56,9 @@ class StaticIndexProvider implements RegistryProvider {
   }
 
   async search(options: RegistryProviderSearchOptions): Promise<RegistryProviderResult> {
+    if (hasRegistryUrlCredentials(this.config.url)) {
+      return { hits: [], warnings: [formatRegistryCredentialWarning(this.config)] };
+    }
     const warnings: string[] = [];
     const bundles = await this.loadBundles(warnings);
 
@@ -77,8 +86,7 @@ class StaticIndexProvider implements RegistryProvider {
         }
       }
     } catch (err) {
-      const label = this.config.name ? `${this.config.name} (${this.config.url})` : this.config.url;
-      warnings.push(`Registry ${label}: ${toErrorMessage(err)}`);
+      warnings.push(`Registry ${formatRegistryLabel(this.config)}: ${formatRegistryError(err)}`);
     }
     return bundles;
   }

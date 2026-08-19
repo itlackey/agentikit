@@ -16,6 +16,7 @@
  * same file.
  */
 
+import { formatRegistryUrl } from "../../core/registry-url";
 import type { IndexResponse } from "../../indexer/indexer";
 import type { DetailLevel } from "../context";
 
@@ -65,7 +66,8 @@ export function formatInfoPlain(r: Record<string, unknown>): string {
       const name = typeof reg.name === "string" ? `${reg.name}: ` : "";
       const provider = typeof reg.provider === "string" ? ` (${reg.provider})` : "";
       const disabled = reg.enabled === false ? " [disabled]" : "";
-      lines.push(`  ${name}${String(reg.url ?? "?")}${provider}${disabled}`);
+      const url = typeof reg.url === "string" ? formatRegistryUrl(reg.url) : "?";
+      lines.push(`  ${name}${url}${provider}${disabled}`);
     }
   }
   const sourceProviders = Array.isArray(r.sourceProviders)
@@ -111,7 +113,9 @@ export function formatConfigPlain(r: Record<string, unknown>): string {
       } else if (typeof v === "object") {
         walk(v as Record<string, unknown>, path);
       } else {
-        lines.push(`${path}=${String(v)}`);
+        const rendered =
+          typeof v === "string" && /^registries\.\d+\.url$/u.test(path) ? formatRegistryUrl(v) : String(v);
+        lines.push(`${path}=${rendered}`);
       }
     }
   };
@@ -161,7 +165,7 @@ export function formatRegistryListPlain(r: Record<string, unknown>): string {
   }
   const lines: string[] = [];
   for (const reg of registries) {
-    const url = String(reg.url ?? "?");
+    const url = typeof reg.url === "string" ? formatRegistryUrl(reg.url) : "?";
     const name = typeof reg.name === "string" ? reg.name : "";
     const provider = typeof reg.provider === "string" ? ` (${reg.provider})` : "";
     const enabled = reg.enabled === false ? " [disabled]" : "";
@@ -184,7 +188,7 @@ export function formatRegistryRemovePlain(r: Record<string, unknown>): string {
     return typeof r.message === "string" ? r.message : "No matching registry found.";
   }
   const entry = r.entry as Record<string, unknown> | undefined;
-  const url = entry ? String(entry.url ?? entry.name ?? "?") : "?";
+  const url = entry ? (typeof entry.url === "string" ? formatRegistryUrl(entry.url) : String(entry.name ?? "?")) : "?";
   return `Removed registry ${url}`;
 }
 

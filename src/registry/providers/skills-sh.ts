@@ -4,6 +4,12 @@
 
 import { fetchWithRetry } from "../../core/common";
 import type { RegistryConfigEntry } from "../../core/config/config";
+import {
+  formatRegistryCredentialWarning,
+  formatRegistryError,
+  formatRegistryLabel,
+  hasRegistryUrlCredentials,
+} from "../../core/registry-url";
 import { md5Hex } from "../../runtime";
 import { fetchCachedJson } from "../../storage/repositories/registry-cache";
 import { registerRegistryProvider } from "../factory";
@@ -35,6 +41,9 @@ class SkillsShProvider implements RegistryProvider {
   }
 
   async search(options: RegistryProviderSearchOptions): Promise<RegistryProviderResult> {
+    if (hasRegistryUrlCredentials(this.config.url)) {
+      return { hits: [], warnings: [formatRegistryCredentialWarning(this.config)] };
+    }
     try {
       const entries = await this.fetchSkills(options.query, options.limit);
       const limited = entries.slice(0, options.limit);
@@ -45,9 +54,10 @@ class SkillsShProvider implements RegistryProvider {
       }
       return { hits, assetHits };
     } catch (err) {
-      const label = this.config.name ?? "skills.sh";
-      const message = err instanceof Error ? err.message : String(err);
-      return { hits: [], warnings: [`Registry ${label}: ${message}`] };
+      return {
+        hits: [],
+        warnings: [`Registry ${formatRegistryLabel(this.config)}: ${formatRegistryError(err)}`],
+      };
     }
   }
 

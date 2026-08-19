@@ -13,6 +13,8 @@
  * DEFAULT_SELECTED_STASH_IDS below. No other change required.
  */
 
+import { hasRegistryUrlCredentials } from "../core/registry-url";
+
 // ── Default selections ──────────────────────────────────────────────────────
 
 /**
@@ -89,6 +91,7 @@ export function _setLoadSetupStashesForTests(fake?: typeof loadSetupStashesReal)
  * @param timeoutMs    Fetch timeout in ms (default: 4000).
  */
 export async function loadSetupStashes(registryUrl: string, timeoutMs = 4000): Promise<SetupBundleEntry[]> {
+  if (hasRegistryUrlCredentials(registryUrl)) return FALLBACK_STASHES;
   if (loadSetupStashesOverride) return loadSetupStashesOverride(registryUrl, timeoutMs);
   return loadSetupStashesReal(registryUrl, timeoutMs);
 }

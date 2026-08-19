@@ -19,6 +19,7 @@
 import { MAX_CONFIG_FILE_BYTES, readTextFileWithLimit } from "../../core/common";
 import { CURRENT_CONFIG_VERSION } from "../../core/config/config-schema";
 import { compareConfigVersion } from "../../core/config/config-version";
+import { formatRegistryUrl } from "../../core/registry-url";
 import type { HealthCheckResult } from "./types";
 
 /**
@@ -84,7 +85,7 @@ export function collectEgressAdvisory(config: EgressConfigView | undefined): Hea
 
   for (const reg of config.registries ?? []) {
     if (reg.enabled === false || !reg.url) continue;
-    endpoints.push(`registry ${reg.name ?? "(unnamed)"}: ${reg.url}`);
+    endpoints.push(`registry ${reg.name ?? "(unnamed)"}: ${formatRegistryUrl(reg.url)}`);
   }
   for (const [key, bundle] of Object.entries(config.bundles ?? {})) {
     if (!bundle) continue;

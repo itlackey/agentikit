@@ -9,6 +9,7 @@
  */
 import { z } from "zod";
 import { isBundleSlug } from "../../asset/asset-ref";
+import { hasRegistryUrlCredentials, REGISTRY_CREDENTIALS_UNSUPPORTED } from "../../registry-url";
 import { httpUrl, nonEmptyString, positiveInt } from "./primitives";
 
 // ── Sources / registries / installed ────────────────────────────────────────
@@ -55,7 +56,11 @@ export const SourceConfigEntrySchema = z
 
 export const RegistryConfigEntrySchema = z
   .object({
-    url: httpUrl,
+    url: httpUrl.superRefine((value, ctx) => {
+      if (hasRegistryUrlCredentials(value)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: REGISTRY_CREDENTIALS_UNSUPPORTED });
+      }
+    }),
     name: z.string().min(1).optional(),
     enabled: z.boolean().optional(),
     provider: z.string().min(1).optional(),
