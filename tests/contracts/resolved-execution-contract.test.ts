@@ -69,6 +69,7 @@ function personaSource() {
 function commonRequest(command: ReturnType<typeof createResolvedCommand>): ResolvedExecutionRequestV1 {
   return createResolvedExecutionRequest({
     command,
+    agent: "fixture//agents/reviewer",
     persona: createResolvedPersona(personaSource()),
     engine: { name: "fixture-agent", kind: "agent", platform: "opencode" },
     model: { input: "balanced", interpretation: "alias", resolved: "provider/exact-model" },
@@ -125,6 +126,7 @@ describe("resolved execution request v1", () => {
     const explicitJson = JSON.parse(canonicalResolvedExecutionRequest(explicit)) as Record<string, unknown>;
 
     expect(Object.hasOwn(minimalJson, "persona")).toBe(false);
+    expect(Object.hasOwn(minimalJson, "agent")).toBe(false);
     expect(Object.hasOwn(minimalJson, "model")).toBe(false);
     expect(Object.hasOwn(minimalJson, "inference")).toBe(false);
     expect(Object.hasOwn(minimalJson, "tools")).toBe(false);
@@ -133,11 +135,92 @@ describe("resolved execution request v1", () => {
     expect(explicitJson).toMatchObject({
       schemaVersion: 1,
       command: { argumentInput: "" },
+      agent: "fixture//agents/reviewer",
       inference: { temperature: 0, enableThinking: false, extraParams: {} },
       outputSchema: null,
       tools: [],
       runtime: { timeoutMs: 0, workspace: "", environment: {} },
     });
+  });
+
+  test("preserves the exact selected agent selector through durable request bytes", () => {
+    const source = commandSource();
+    const make = (agent: string | null | undefined) =>
+      createResolvedExecutionRequest({
+        command: createResolvedCommand({ source, content: source.content }),
+        ...(agent === undefined ? {} : { agent }),
+        persona:
+          agent === undefined || agent === "fixture//agents/reviewer" ? createResolvedPersona(personaSource()) : null,
+        engine: { name: "fixture-agent", kind: "agent" },
+        authorization: { status: "not-required" },
+        runtime: {},
+        notices: [],
+      });
+    const omitted = make(undefined);
+    const cleared = make(null);
+    const native = make("native-reviewer");
+    const other = make("different-native-reviewer");
+
+    expect(Object.hasOwn(omitted, "agent")).toBe(false);
+    expect(decodeResolvedExecutionRequest(JSON.parse(canonicalResolvedExecutionRequest(cleared))).agent).toBeNull();
+    expect(decodeResolvedExecutionRequest(JSON.parse(canonicalResolvedExecutionRequest(native))).agent).toBe(
+      "native-reviewer",
+    );
+    expect(canonicalResolvedExecutionRequest(native)).not.toBe(canonicalResolvedExecutionRequest(other));
+  });
+
+  test("rejects durable agent selector and persona states the common planner cannot emit", () => {
+    const source = commandSource();
+    const command = createResolvedCommand({ source, content: source.content });
+    const reviewer = createResolvedPersona(personaSource());
+    const base = {
+      command,
+      engine: { name: "fixture-agent", kind: "agent" } as const,
+      authorization: { status: "not-required" } as const,
+      runtime: {},
+      notices: [],
+    };
+
+    expect(() => createResolvedExecutionRequest({ ...base, agent: "native\nselector", persona: null })).toThrow(
+      /stable|control|selector/i,
+    );
+    expect(() => createResolvedExecutionRequest({ ...base, agent: null, persona: reviewer })).toThrow(/agent|persona/i);
+    expect(() => createResolvedExecutionRequest({ ...base, agent: null })).toThrow(/agent|persona/i);
+    expect(() => createResolvedExecutionRequest({ ...base, agent: "native-reviewer", persona: reviewer })).toThrow(
+      /agent|persona/i,
+    );
+    expect(() => createResolvedExecutionRequest({ ...base, agent: "native-reviewer" })).toThrow(/agent|persona/i);
+    expect(() =>
+      createResolvedExecutionRequest({ ...base, agent: "fixture//agents/other", persona: reviewer }),
+    ).toThrow(/agent|persona/i);
+    expect(() => createResolvedExecutionRequest({ ...base, agent: "fixture//agents/reviewer", persona: null })).toThrow(
+      /agent|persona/i,
+    );
+
+    expect(createResolvedExecutionRequest({ ...base, persona: reviewer }).persona?.source.ref).toBe(
+      "fixture//agents/reviewer",
+    );
+    expect(createResolvedExecutionRequest({ ...base, agent: null, persona: null }).agent).toBeNull();
+    expect(createResolvedExecutionRequest({ ...base, agent: "native-reviewer", persona: null }).persona).toBeNull();
+
+    const validWire = JSON.parse(
+      canonicalResolvedExecutionRequest(
+        createResolvedExecutionRequest({
+          ...base,
+          agent: "fixture//agents/reviewer",
+          persona: reviewer,
+        }),
+      ),
+    ) as Record<string, unknown>;
+    for (const invalid of [
+      { ...validWire, agent: "native\nselector", persona: null },
+      { ...validWire, agent: null },
+      { ...validWire, agent: "native-reviewer" },
+      { ...validWire, agent: "fixture//agents/other" },
+      { ...validWire, persona: null },
+    ]) {
+      expect(() => decodeResolvedExecutionRequest(invalid)).toThrow(/agent|persona|stable|control|selector/i);
+    }
   });
 
   test("construction and durable decode fixtures are equivalent without claiming caller cutover", () => {

@@ -170,6 +170,32 @@ function requireCanonicalString(value: unknown, path: string): string {
   return value;
 }
 
+/**
+ * Validate a selector/layer identifier that may cross the durable execution
+ * boundary. Keep this shared with the cascade planner so resume cannot admit a
+ * selector the live planner would reject.
+ */
+export function requireStableExecutionSelector(value: unknown, path: string): string {
+  let selector: string;
+  try {
+    selector = requireCanonicalString(value, path);
+  } catch (cause) {
+    throw new TypeError(`${path} must be a non-empty stable NFC identifier`, { cause });
+  }
+  if (selector.length > 512 || selector.trim() !== selector) {
+    throw new TypeError(`${path} must be a non-empty stable NFC identifier`);
+  }
+  return selector;
+}
+
+export function isPortableExecutionAgentSelector(value: string): boolean {
+  return /^(?:[^/]+\/\/)?agents\/[^/]/.test(value);
+}
+
+export function executionPersonaMatchesSelector(selector: string, personaRef: string): boolean {
+  return selector.includes("//") ? selector === personaRef : personaRef.endsWith(`//${selector}`);
+}
+
 function hasUnsafeIdentityCharacter(value: string): boolean {
   for (const character of value) {
     if (CONTROL_OR_LINE_SEPARATOR_PATTERN.test(character)) return true;
@@ -249,8 +275,11 @@ export function decodeExecutionSourceIdentity(
   return Object.freeze(validateCanonicalIdentity(requireRecord(value, path), path));
 }
 
-function cloneDefaults(input: UnresolvedExecutionDefaults): Readonly<UnresolvedExecutionDefaults> {
-  const record = requireRecord(input, "execution source defaults");
+export function cloneUnresolvedExecutionDefaults(
+  input: UnresolvedExecutionDefaults,
+  path = "execution source defaults",
+): Readonly<UnresolvedExecutionDefaults> {
+  const record = requireRecord(input, path);
   assertOnlyKeys(
     record,
     [
@@ -265,38 +294,35 @@ function cloneDefaults(input: UnresolvedExecutionDefaults): Readonly<UnresolvedE
       "environment",
       "runtime",
     ],
-    "execution source defaults",
+    path,
   );
-  const json = { ...cloneExecutionJsonObject(record, "execution source defaults") } as Record<
-    string,
-    ExecutionJsonValue
-  >;
+  const json = { ...cloneExecutionJsonObject(record, path) } as Record<string, ExecutionJsonValue>;
   for (const key of ["agent", "engine", "model", "workspace"] as const) {
     const value = json[key];
     if (value !== undefined && value !== null && typeof value !== "string") {
-      throw new TypeError(`execution source defaults.${key} must be a string or null`);
+      throw new TypeError(`${path}.${key} must be a string or null`);
     }
   }
   const timeout = json.timeout;
   if (timeout !== undefined && timeout !== null && typeof timeout !== "string" && typeof timeout !== "number") {
-    throw new TypeError("execution source defaults.timeout must be a string, number, or null");
+    throw new TypeError(`${path}.timeout must be a string, number, or null`);
   }
   for (const key of ["inference", "outputSchema", "runtime"] as const) {
     const value = json[key];
     if (value !== undefined && value !== null && (Array.isArray(value) || typeof value !== "object")) {
-      throw new TypeError(`execution source defaults.${key} must be an object or null`);
+      throw new TypeError(`${path}.${key} must be an object or null`);
     }
   }
   const environment = json.environment;
   if (environment !== undefined && environment !== null) {
     if (Array.isArray(environment) || typeof environment !== "object") {
-      throw new TypeError("execution source defaults.environment must be an object or null");
+      throw new TypeError(`${path}.environment must be an object or null`);
     }
     if (Object.values(environment).some((value) => typeof value !== "string")) {
-      throw new TypeError("execution source defaults.environment values must be strings");
+      throw new TypeError(`${path}.environment values must be strings`);
     }
   }
-  if (Object.hasOwn(json, "tools")) json.tools = cloneToolSelection(json.tools, "execution source defaults.tools");
+  if (Object.hasOwn(json, "tools")) json.tools = cloneToolSelection(json.tools, `${path}.tools`);
   return Object.freeze(json as unknown as UnresolvedExecutionDefaults);
 }
 
@@ -350,7 +376,7 @@ export function createAdapterRenderedExecutionSource(
     schemaVersion: EXECUTION_SOURCE_SCHEMA_VERSION,
     kind,
     content,
-    defaults: cloneDefaults(defaults as UnresolvedExecutionDefaults),
+    defaults: cloneUnresolvedExecutionDefaults(defaults as UnresolvedExecutionDefaults),
     identity: createExecutionSourceIdentity(record.identity as ExecutionSourceIdentity),
   };
   if (Object.hasOwn(record, "extensions")) {

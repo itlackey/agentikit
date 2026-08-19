@@ -42,6 +42,7 @@ export type ConfigErrorCode =
   | "SETUP_TMP_STASH_REFUSED"
   | "UNKNOWN_IMPROVE_STRATEGY"
   | "DANGEROUS_ENV_AUDIT_FAILED"
+  | "EXECUTION_NOT_AUTHORIZED"
   // Refused stashDir that would clobber a sensitive system path or the user's
   // home directory (#473). Triggered by `akm bundle create`/`akm setup` when the
   // explicit `--dir` argument resolves to e.g. `/`, `$HOME`, `~/.config`,
@@ -121,6 +122,7 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
     "Choose a path inside your home directory (e.g. ~/akm) or another empty workspace. The bundle directory cannot be the filesystem root, your home directory itself, or a sensitive system path like /etc, /var, ~/.config, or ~/.ssh.",
   UNKNOWN_IMPROVE_STRATEGY:
     "Pass one of the listed strategy names to `--strategy`, or define it under `improve.strategies`. Names are case-sensitive.",
+  EXECUTION_NOT_AUTHORIZED: "Change the selected tools or update the machine/user execution policy, then retry.",
 };
 
 /** Default hint for each UsageError code. */
