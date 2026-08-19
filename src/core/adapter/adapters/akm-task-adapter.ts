@@ -3,12 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * The `akm-task` adapter — akm 0.9.0 format-family work item (#46).
+ * The `akm-task` adapter for strict task-v3 `.yml` sources.
  *
  * A native akm task-YAML bundle (spec §6/§7). A `.yml` file derives
  * `type: task`; conceptId strips the `.yml` extension. Tasks are AKM-native
  * YAML, NOT OKF markdown concepts. Recognition does NOT gate on validity — an
- * invalid task (e.g. two targets) is still RECOGNIZED; the `invalid-task-yaml`
+ * invalid task (e.g. `uses` plus `run`) is still RECOGNIZED; the `invalid-task-yaml`
  * violation surfaces only in `validate`.
  *
  * `.yaml` is the one extension `validate` inspects but `recognize` refuses: it
@@ -17,13 +17,11 @@
  *
  * ── validate (spec §6 task validation column) ──
  *
- * A task must declare `version: 2`, a `schedule`, and EXACTLY ONE target
- * (`prompt` XOR `workflow` XOR `command`). `enabled` is OPTIONAL — the parser
- * defaults it to `true`, so an omitted field means an ACTIVE task — but must
- * be a boolean when present. The akm adapter's `TaskLinter` port checks
- * "at least one" target; the native task family here is STRICTER — declaring
- * two targets is `invalid-task-yaml`. So this adapter owns a purpose-built
- * one-target check rather than reusing that port.
+ * Validation enters the canonical task-v3 source parser. That parser owns the
+ * closed key sets, executable-selector XOR, scheduling-source XOR, hostile
+ * YAML policy, trigger classification, built-in action validation, bounds,
+ * and physical `working-directory` containment. The adapter only translates a
+ * parser failure into the format-family diagnostic shape.
  *
  * Conformance oracle (authored, DO NOT modify): fixture
  * `tests/fixtures/bundles/akm-task/` + goldens
@@ -33,15 +31,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
-import {
-  isPresentTarget,
-  parseTaskYaml,
-  TASK_EXTENSION,
-  TASK_NEAR_MISS_EXTENSION,
-  taskExtensionDetail,
-  taskFieldProblems,
-  taskYamlParseDetail,
-} from "../../../tasks/schema";
+import { TASK_EXTENSION, TASK_NEAR_MISS_EXTENSION, taskExtensionDetail } from "../../../tasks/schema";
+import { parseTaskV3Yaml, taskV3SourceErrorDetail } from "../../../tasks/source-v3";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
@@ -51,8 +42,6 @@ import { hashContent } from "./shared";
 const COMPONENT_ID = "main";
 /** The task YAML extension (spec §6 task row). */
 const TASK_EXT = TASK_EXTENSION;
-/** The mutually-exclusive task target keys (exactly one required). */
-const TARGET_KEYS = ["prompt", "workflow", "command"] as const;
 /** Upper bound on the bounded `content` FTS field (mirrors okf-adapter). */
 const MAX_CONTENT_CHARS = 100_000;
 
@@ -80,26 +69,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   };
 }
 
-/**
- * The native `invalid-task-yaml` check: the shared field rules
- * ({@link taskFieldProblems} — see its doc for the lint-vs-parser
- * reconciliation story) plus this adapter's stricter EXACTLY-ONE-target rule.
- */
-function taskDiagnostics(relPath: string, data: Record<string, unknown>): Diagnostic[] {
-  if (Object.keys(data).length === 0) return [];
-  const problems = taskFieldProblems(data);
-  // Shared presence rule (src/tasks/schema.ts): an empty string or empty array
-  // is not a target, matching the runtime parser.
-  const targets = TARGET_KEYS.filter((k) => isPresentTarget(data[k]));
-  if (targets.length === 0) problems.push("exactly one target (prompt, workflow, or command)");
-  else if (targets.length > 1) problems.push(`exactly one target — declares ${targets.length} (${targets.join(", ")})`);
-  if (problems.length === 0) return [];
-  return [
-    { file: relPath, issue: "invalid-task-yaml", detail: `task field errors: ${problems.join("; ")}`, fixed: false },
-  ];
-}
-
-async function validate(_c: BundleComponent, changes: FileChange[], ctx: ValidateContext): Promise<Diagnostic[]> {
+async function validate(c: BundleComponent, changes: FileChange[], ctx: ValidateContext): Promise<Diagnostic[]> {
   const diagnostics: Diagnostic[] = [];
   for (const change of changes) {
     if (change.op === "delete") continue;
@@ -118,28 +88,25 @@ async function validate(_c: BundleComponent, changes: FileChange[], ctx: Validat
         detail: taskExtensionDetail(relPath),
         fixed: false,
       });
+      continue;
     }
-    const parsed = parseTaskYaml(raw);
-    if (!parsed.ok) {
-      // Distinguish "unparseable" from "empty": `taskDiagnostics` returns []
-      // for an empty mapping, so collapsing a parse failure onto `{}` made a
-      // broken task file lint clean.
+    try {
+      parseTaskV3Yaml({ yaml: raw, filePath: relPath, workspaceRoot: c.root });
+    } catch (cause) {
       diagnostics.push({
         file: relPath,
         issue: "invalid-task-yaml",
-        detail: taskYamlParseDetail(parsed.error),
+        detail: taskV3SourceErrorDetail(cause),
         fixed: false,
       });
-      continue;
     }
-    diagnostics.push(...taskDiagnostics(relPath, parsed.data));
   }
   return diagnostics;
 }
 
 export const akmTaskAdapter: BundleAdapter = {
   id: "akm-task",
-  version: "0.9.0",
+  version: "0.9.2",
   // `.yaml` is listed as a COLLECTION hint only — `recognize` still gates on
   // `.yml`, so a `.yaml` file is never indexed as a task. Listing it is what
   // routes the near-miss file into `validate`, where it is reported instead of
@@ -161,9 +128,9 @@ export const akmTaskAdapter: BundleAdapter = {
   },
 
   /**
-   * Install-time probe (§1.2): a root holding a top-level `.yml` file that
-   * parses as a task (a `schedule` key). The task-shape probe keeps it disjoint
-   * from non-task YAML.
+   * Install-time probe (§1.2): a root holding a top-level, valid task-v3
+   * `.yml` file. The full parser keeps this disjoint from unrelated YAML and
+   * prevents probe semantics from drifting from validation semantics.
    */
   looksLikeRoot(root: string): boolean {
     let entries: fs.Dirent[];
@@ -180,8 +147,12 @@ export const akmTaskAdapter: BundleAdapter = {
       } catch {
         continue;
       }
-      const { data } = parseTaskYaml(raw);
-      if (typeof data.schedule === "string" && data.schedule.trim() !== "") return true;
+      try {
+        parseTaskV3Yaml({ yaml: raw, filePath: entry.name, workspaceRoot: root });
+        return true;
+      } catch {
+        // Continue probing the remaining top-level .yml files.
+      }
     }
     return false;
   },

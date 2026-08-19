@@ -54,7 +54,7 @@
 
 import path from "node:path";
 import { isDangerousEnvKey } from "../../../commands/lint/env-key-rules";
-import { isPresentTarget, taskFieldProblems } from "../../../tasks/schema";
+import { parseTaskV3Yaml, taskV3SourceErrorDetail } from "../../../tasks/source-v3";
 import { compileWorkflowPlan } from "../../../workflows/ir/compile";
 import { parseWorkflow } from "../../../workflows/parser";
 import { conceptIdForStashFile } from "../../asset/resolve-ref";
@@ -250,6 +250,8 @@ export interface PerTypeCheckArgs {
   /** File extension incl. dot, lower-cased (`.md`, `.yaml`, …). */
   ext: string;
   ctx: ValidateContext;
+  /** Materialized component root used for physical working-directory containment. */
+  workspaceRoot?: string;
 }
 
 /**
@@ -258,7 +260,7 @@ export interface PerTypeCheckArgs {
  * routes through `ctx`.
  */
 export async function perTypeValidateChecks(args: PerTypeCheckArgs): Promise<Diagnostic[]> {
-  const { type, relPath, raw, data, frontmatter, body, ext, ctx } = args;
+  const { type, relPath, raw, data, frontmatter, body, ext, ctx, workspaceRoot } = args;
   switch (type) {
     case "command":
       return nameOrTypeDiagnostics(relPath, data, frontmatter, ["command"]);
@@ -267,7 +269,7 @@ export async function perTypeValidateChecks(args: PerTypeCheckArgs): Promise<Dia
     case "fact":
       return factDiagnostics(relPath, data);
     case "task":
-      return taskDiagnostics(relPath, data);
+      return taskDiagnostics(relPath, raw, workspaceRoot);
     case "workflow":
       // Unified workflows are markdown-only; other extensions are not a lint path.
       return ext === ".md" ? workflowDiagnostics(relPath, raw, body) : [];
@@ -309,31 +311,28 @@ export function factDiagnostics(relPath: string, data: Record<string, unknown>):
 }
 
 /**
- * TaskLinter extra check (`task-linter.ts:25-58`). `data` is the parsed YAML.
- * Field rules come from the shared {@link taskFieldProblems} (see its doc for
- * the lint-vs-parser reconciliation story); this sweep additionally requires
- * at least one target.
+ * Task validation has one semantic owner: the strict task-v3 source parser.
+ * Keeping raw YAML at this boundary preserves duplicate-key, alias/tag,
+ * source-location, descriptor, resource-bound, and migration-hint behavior.
  */
-export function taskDiagnostics(relPath: string, data: Record<string, unknown>): Diagnostic[] {
-  if (data === null || Object.keys(data).length === 0) return [];
-  const missing = taskFieldProblems(data);
-  // Presence, matching the runtime parser's rule (src/tasks/parser.ts): an
-  // empty string is NOT a target there, so a `workflow: ""` that linted clean
-  // here failed at run time with MISSING_REQUIRED_ARGUMENT — a file the linter
-  // called valid but that could never run.
-  const hasTarget = (["prompt", "workflow", "command"] as const).some((key) => isPresentTarget(data[key]));
-  if (!hasTarget) missing.push("prompt, workflow, or command");
-  if (missing.length > 0) {
+export function taskDiagnostics(relPath: string, raw: string, workspaceRoot?: string): Diagnostic[] {
+  try {
+    parseTaskV3Yaml({
+      filePath: relPath,
+      yaml: raw,
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+    });
+    return [];
+  } catch (cause) {
     return [
       {
         file: relPath,
         issue: "invalid-task-yaml",
-        detail: `missing required fields: ${missing.join(", ")}`,
+        detail: taskV3SourceErrorDetail(cause),
         fixed: false,
       },
     ];
   }
-  return [];
 }
 
 /**

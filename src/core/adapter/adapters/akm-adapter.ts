@@ -89,7 +89,6 @@ import {
   extractPackageMetadata,
 } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
-import { parseTaskYaml, taskYamlParseDetail } from "../../../tasks/schema";
 import {
   assetPathForName,
   deriveCanonicalAssetNameFromStashRoot,
@@ -404,10 +403,9 @@ function buildOverlayContext(root: string, relPathInput: string, raw: string): F
  *
  * Per change (non-delete, readable): the `type` is recovered by running the
  * SAME sync matcher arbitration ({@link recognizeMatch}) over an OVERLAY
- * FileContext ({@link buildOverlayContext}) — no live-FS read. `task` files are
- * parsed as pure YAML (mirroring `lint/index.ts`'s `subdir === "tasks"` branch)
- * so the TaskLinter's field checks see real data and `missing-updated` never
- * fires (frontmatter is `null`); everything else parses via `parseFrontmatter`.
+ * FileContext ({@link buildOverlayContext}) — no live-FS read. `task` files
+ * keep raw YAML for the canonical task-v3 parser and use no frontmatter;
+ * everything else parses via `parseFrontmatter`.
  * Base checks (shared) then the per-type extra checks run; a `skills/` directory
  * pass reproduces `SkillLinter.lintDirectory` across the change set.
  */
@@ -424,23 +422,11 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
     const match = recognizeMatch(overlay);
     const type = match?.type;
 
-    // Parse strategy per `lint/index.ts`: `task` → pure YAML (frontmatter null),
-    // everything else → `parseFrontmatter`.
+    // Task parsing belongs to perTypeValidateChecks' canonical v3 parser. Base
+    // checks need only a frontmatter-free placeholder here.
     let parsed: ParsedForValidate;
     if (type === "task") {
-      const task = parseTaskYaml(raw);
-      // A parse failure is its OWN finding: every task rule short-circuits on
-      // an empty mapping, so collapsing "unparseable" onto `{}` made a broken
-      // task file validate clean (issue #760). Mirrors the CLI sweep.
-      if (!task.ok) {
-        diagnostics.push({
-          file: change.path,
-          issue: "invalid-task-yaml",
-          detail: taskYamlParseDetail(task.error),
-          fixed: false,
-        });
-      }
-      parsed = { data: task.data, content: raw, frontmatter: null };
+      parsed = { data: {}, content: raw, frontmatter: null };
     } else {
       const p = parseFrontmatter(raw);
       parsed = { data: p.data, content: p.content, frontmatter: p.frontmatter };
@@ -457,6 +443,7 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
         body: parsed.content,
         ext: overlay.ext,
         ctx,
+        workspaceRoot: c.root,
       })),
     );
     diagnostics.push(...(await skillDirectoryDiagnostics(change.path, seenSkillDirs, ctx)));

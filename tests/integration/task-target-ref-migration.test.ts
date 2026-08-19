@@ -6,10 +6,12 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { planTaskTargetRefMigration } from "../../scripts/akm-migrate/migrate/legacy/task-target-ref-migration";
+import { taskMigrationBackupPath } from "../../scripts/akm-migrate/migrate/task-v2-to-v3-files";
 import { getMigrationApplyJournalPath, inspectMigrationState } from "../../scripts/akm-migrate/migration-backup";
 import type { AkmConfig } from "../../src/core/config/config";
 import { getConfigPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
+import { parseTaskV3Yaml } from "../../src/tasks/source-v3";
 import { openStateDbAtCeiling, PRE_CUTOVER_STATE_CEILING } from "../_fixtures/migration/seed-rows";
 import { runCliCapture } from "../_helpers/cli";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
@@ -59,18 +61,44 @@ function seedMigration(
   return { prepared, taskPath };
 }
 
-test("migrate apply emits strict v2 for a persisted 0.8 task and leaves current task bytes unchanged", async () => {
+function trailingJson(stdout: string): unknown {
+  const marker = stdout.lastIndexOf("\n{");
+  return JSON.parse(stdout.slice(marker < 0 ? 0 : marker + 1));
+}
+
+test("migrate apply previews and emits strict v3 for persisted v1 and v2 tasks", async () => {
   const { prepared, taskPath } = seedMigration("workflow:upgrade-noop");
   const currentTaskPath = path.join(storage.stashDir, "tasks", "manual-current.yml");
   const currentTask = 'version: 2\nschedule: "@daily"\nworkflow: workflows/upgrade-noop\nenabled: true\n';
   fs.writeFileSync(currentTaskPath, currentTask);
 
+  const preview = await runCliCapture(["migrate", "apply", "--dry-run", "--config", prepared]);
+  expect(preview.code, preview.stderr).toBe(0);
+  const previewPlan = JSON.parse(preview.stdout) as {
+    taskV3Migration: { generation: string; changed: number; blocked: number; files: Array<{ status: string }> };
+  };
+  expect(previewPlan.taskV3Migration).toMatchObject({ changed: 2, blocked: 0 });
+  expect(previewPlan.taskV3Migration.files.map((file) => file.status)).toEqual(["changed", "changed"]);
+  expect(fs.readFileSync(taskPath, "utf8")).not.toContain("version:");
+  expect(fs.readFileSync(currentTaskPath, "utf8")).toBe(currentTask);
+
   const applied = await runCliCapture(["migrate", "apply", "--config", prepared]);
   expect(applied.code, applied.stderr).toBe(0);
-  expect(fs.readFileSync(taskPath, "utf8")).toContain("workflow: workflows/upgrade-noop");
-  expect(fs.readFileSync(taskPath, "utf8")).toContain("version: 2");
-  expect(fs.readFileSync(taskPath, "utf8")).not.toContain("workflow: workflow:upgrade-noop");
-  expect(fs.readFileSync(currentTaskPath, "utf8")).toBe(currentTask);
+  const appliedPlan = trailingJson(applied.stdout) as {
+    backupPath: string;
+    taskV3Migration: { generation: string; changed: number; blocked: number };
+  };
+  expect(appliedPlan.taskV3Migration).toMatchObject({
+    generation: previewPlan.taskV3Migration.generation,
+    changed: 2,
+    blocked: 0,
+  });
+  const migratedV1 = parseTaskV3Yaml({ yaml: fs.readFileSync(taskPath, "utf8"), filePath: taskPath });
+  const migratedV2 = parseTaskV3Yaml({ yaml: fs.readFileSync(currentTaskPath, "utf8"), filePath: currentTaskPath });
+  expect(migratedV1.target).toMatchObject({ kind: "uses", uses: { kind: "workflow", ref: "workflows/upgrade-noop" } });
+  expect(migratedV1.target.kind === "uses" ? migratedV1.target.with : undefined).toEqual({ source: "published" });
+  expect(migratedV2.target).toMatchObject({ kind: "uses", uses: { kind: "workflow", ref: "workflows/upgrade-noop" } });
+  expect(fs.readFileSync(taskMigrationBackupPath(appliedPlan.backupPath, currentTaskPath), "utf8")).toBe(currentTask);
 });
 
 test("a stale persisted workflow target is rewritten without blocking core migration", async () => {
@@ -78,7 +106,10 @@ test("a stale persisted workflow target is rewritten without blocking core migra
 
   const applied = await runCliCapture(["migrate", "apply", "--config", prepared]);
   expect(applied.code, applied.stderr).toBe(0);
-  expect(fs.readFileSync(taskPath, "utf8")).toContain("workflow: workflows/missing");
+  expect(parseTaskV3Yaml({ yaml: fs.readFileSync(taskPath, "utf8"), filePath: taskPath }).target).toMatchObject({
+    kind: "uses",
+    uses: { kind: "workflow", ref: "workflows/missing" },
+  });
   expect(inspectMigrationState().state.status).toBe("current");
   expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
 });
@@ -127,17 +158,102 @@ test("migrate status and apply repair a legacy task after core artifacts are alr
 
   const status = await runCliCapture(["migrate", "status"]);
   expect(status.code, status.stderr).toBe(0);
-  expect(JSON.parse(status.stdout)).toMatchObject({ status: "ready" });
+  expect(JSON.parse(status.stdout)).toMatchObject({
+    status: "ready",
+    taskV3Migration: { changed: 1, skipped: 0, blocked: 0 },
+  });
   expect(fs.readFileSync(taskPath, "utf8")).toContain("workflow: workflow:upgrade-noop");
 
   const applied = await runCliCapture(["migrate", "apply"]);
   expect(applied.code, applied.stderr).toBe(0);
-  expect(fs.readFileSync(taskPath, "utf8")).toContain("workflow: workflows/upgrade-noop");
+  expect(parseTaskV3Yaml({ yaml: fs.readFileSync(taskPath, "utf8"), filePath: taskPath }).target).toMatchObject({
+    kind: "uses",
+    uses: { kind: "workflow", ref: "workflows/upgrade-noop" },
+  });
   expect(inspectMigrationState()).toMatchObject({
     config: { status: "current" },
     state: { status: "current" },
     workflow: { status: "missing" },
   });
+});
+
+test("task-v3 migration honors the configured nested component root and component writability", async () => {
+  const bundleRoot = path.join(storage.root, "component-bundle");
+  const componentRoot = path.join(bundleRoot, "catalog");
+  const nestedTask = path.join(componentRoot, "tasks", "nested.yml");
+  const outsideTask = path.join(bundleRoot, "tasks", "outside-component.yml");
+  fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
+  fs.writeFileSync(
+    getConfigPath(),
+    `${JSON.stringify({
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      bundles: {
+        stash: {
+          path: bundleRoot,
+          writable: false,
+          components: { main: { root: "catalog", adapter: "akm", writable: true } },
+        },
+      },
+      defaultBundle: "stash",
+    })}\n`,
+    { mode: 0o600 },
+  );
+  openStateDatabase().close();
+  fs.mkdirSync(path.dirname(nestedTask), { recursive: true });
+  fs.mkdirSync(path.dirname(outsideTask), { recursive: true });
+  const v2 = "version: 2\nschedule: '@daily'\ncommand: akm index\n";
+  fs.writeFileSync(nestedTask, v2);
+  fs.writeFileSync(outsideTask, v2);
+
+  const status = await runCliCapture(["migrate", "status"]);
+  expect(status.code, status.stderr).toBe(0);
+  const statusPlan = JSON.parse(status.stdout) as {
+    taskV3Migration: { changed: number; blocked: number; files: Array<{ filePath: string }> };
+  };
+  expect(statusPlan.taskV3Migration).toMatchObject({ changed: 1, blocked: 0 });
+  expect(statusPlan.taskV3Migration.files.map((file) => file.filePath)).toEqual([nestedTask]);
+
+  const applied = await runCliCapture(["migrate", "apply"]);
+  expect(applied.code, applied.stderr).toBe(0);
+  expect(parseTaskV3Yaml({ yaml: fs.readFileSync(nestedTask, "utf8"), filePath: nestedTask }).version).toBe(3);
+  expect(fs.readFileSync(outsideTask, "utf8")).toBe(v2);
+});
+
+test("read-only v2 tasks are classified as blocked in status/dry-run and never written", async () => {
+  fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
+  fs.writeFileSync(
+    getConfigPath(),
+    `${JSON.stringify({
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      bundles: { frozen: { path: storage.stashDir, writable: false } },
+      defaultBundle: "frozen",
+    })}\n`,
+    { mode: 0o600 },
+  );
+  openStateDatabase().close();
+  const taskPath = path.join(storage.stashDir, "tasks", "frozen.yml");
+  fs.mkdirSync(path.dirname(taskPath), { recursive: true });
+  const before = "version: 2\nschedule: '@daily'\ncommand: akm index\n";
+  fs.writeFileSync(taskPath, before);
+
+  const status = await runCliCapture(["migrate", "status"]);
+  const preview = await runCliCapture(["migrate", "apply", "--dry-run"]);
+  expect(status.code, status.stderr).toBe(1);
+  expect(preview.code, preview.stderr).toBe(1);
+  const statusPlan = JSON.parse(status.stdout) as {
+    status: string;
+    taskV3Migration: { generation: string; blocked: number; files: Array<{ status: string; reason: string }> };
+  };
+  const previewPlan = JSON.parse(preview.stdout) as typeof statusPlan;
+  expect(statusPlan).toMatchObject({
+    status: "blocked",
+    taskV3Migration: { blocked: 1, files: [{ status: "blocked", reason: "read-only-source" }] },
+  });
+  expect(previewPlan.taskV3Migration.generation).toBe(statusPlan.taskV3Migration.generation);
+  expect(fs.readFileSync(taskPath, "utf8")).toBe(before);
+  expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
 });
 
 test("a v1 task in a READ-ONLY bundle is surfaced in the plan, instead of being silently skipped", () => {

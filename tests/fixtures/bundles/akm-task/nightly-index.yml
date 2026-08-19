@@ -1,4 +1,7 @@
-version: 2
-schedule: "@daily"
-enabled: false
-prompt: "Re-index the knowledge base and report new or changed items."
+version: 3
+uses: akm/command
+with:
+  content: "Re-index the knowledge base and report new or changed items."
+akm:
+  schedule: "@daily"
+  enabled: false

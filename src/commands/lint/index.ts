@@ -28,13 +28,7 @@ import { UsageError } from "../../core/errors";
 import type { FileChange } from "../../core/file-change";
 import { warn } from "../../core/warn";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
-import {
-  parseTaskYaml,
-  TASK_EXTENSION,
-  TASK_NEAR_MISS_EXTENSION,
-  taskExtensionDetail,
-  taskYamlParseDetail,
-} from "../../tasks/schema";
+import { TASK_EXTENSION, TASK_NEAR_MISS_EXTENSION, taskExtensionDetail } from "../../tasks/schema";
 import { runBaseChecks } from "./base-linter";
 import { checkEnvForDangerousKeys } from "./env-key-rules";
 import { isAdvisoryLintIssue, type LintContext, type LintIssue, type LintIssueType } from "./types";
@@ -511,7 +505,7 @@ export function lintAssetFile(ctx: LintContext, subdir: string): LintIssue[] {
       issues.push(...(factDiagnostics(ctx.relPath, ctx.data) as LintIssue[]));
       break;
     case "tasks":
-      issues.push(...(taskDiagnostics(ctx.relPath, ctx.data) as LintIssue[]));
+      issues.push(...(taskDiagnostics(ctx.relPath, ctx.raw, ctx.stashRoot) as LintIssue[]));
       break;
     case "memories":
       appendMemoryStubIssue(ctx, issues);
@@ -600,21 +594,9 @@ function lintAkmSweep(
       const fileIssues: LintIssue[] = [];
 
       if (subdir === "tasks") {
-        // Task files are pure YAML — parseFrontmatter returns empty data for them.
-        const parsed = parseTaskYaml(raw);
-        data = parsed.data;
-        if (!parsed.ok) {
-          // A parse failure used to fall through as `data = {}`, and every task
-          // rule short-circuits on an empty mapping — so an unparseable task
-          // file reported a CLEAN scan. Report the parse failure itself
-          // (issue #760).
-          fileIssues.push({
-            file: relPath,
-            issue: "invalid-task-yaml",
-            detail: taskYamlParseDetail(parsed.error),
-            fixed: false,
-          });
-        }
+        // Task files are pure YAML. The canonical task-v3 parser runs once in
+        // taskDiagnostics below; base checks need no parsed frontmatter data.
+        data = {};
         if (isNearMissTaskFileName(relPath)) {
           fileIssues.push({
             file: relPath,

@@ -56,10 +56,10 @@
  */
 
 import fs from "node:fs";
-import { parse as parseYaml } from "yaml";
 import { listKeys } from "../../../commands/env/env";
 import type { IndexDocument } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
+import { parseTaskV3Yaml } from "../../../tasks/source-v3";
 import { parseWorkflow } from "../../../workflows/parser";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { TocHeading } from "../../asset/markdown";
@@ -245,15 +245,18 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
     case "task-yaml": {
       out.tags = Array.from(new Set([...(out.tags ?? []), "task", "scheduled"]));
       try {
-        const doc = parseYaml(file.content());
-        const data = doc && typeof doc === "object" && !Array.isArray(doc) ? (doc as Record<string, unknown>) : {};
+        const task = parseTaskV3Yaml({ yaml: file.content(), filePath: file.absPath, workspaceRoot: file.stashRoot });
         const hints = new Set<string>();
-        const schedule = nonEmptyString(data.schedule);
-        if (schedule) hints.add(`schedule:${schedule}`);
-        const workflow = nonEmptyString(data.workflow);
-        if (workflow) hints.add(`workflow:${workflow}`);
-        const prompt = nonEmptyString(data.prompt);
-        if (prompt) hints.add(`prompt:${prompt}`);
+        for (const binding of task.triggers.schedules) hints.add(`schedule:${binding.cron}`);
+        if (task.target.kind === "uses") {
+          if (task.target.uses.kind === "workflow") hints.add(`workflow:${task.target.uses.ref}`);
+          else if (task.target.uses.kind === "command") hints.add(`prompt:${task.target.uses.ref}`);
+          else if (task.target.command?.kind === "inline") hints.add(`prompt:${task.target.command.content}`);
+          else if (task.target.command?.kind === "stored") hints.add(`prompt:${task.target.command.ref}`);
+          else hints.add(`uses:${task.target.uses.ref}`);
+        } else {
+          hints.add(`run:${task.target.run}`);
+        }
         finalizeHints(out, hints);
       } catch {
         // Non-fatal: skip metadata extraction on parse error

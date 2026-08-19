@@ -3,15 +3,18 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Task asset schema. A task pairs a cron-style schedule with exactly one of:
+ * Legacy task-v2 runtime projection. A task pairs a cron-style schedule with
+ * exactly one of:
  *
  *   • a workflow target  — executed via `runWorkflowSteps()`
  *   • a prompt target    — invoked via `runAgent()` against the configured
  *                          agent harness (e.g. `opencode run`)
  *   • a command target   — invoked directly via `Bun.spawn()`, no AI agent
  *
- * Tasks are stored as pure YAML files at `<stash>/tasks/<id>.yml`. Multi-line
- * inline prompts use a YAML block scalar (`prompt: |`).
+ * Tasks are stored as pure YAML files at `<stash>/tasks/<id>.yml`. This module
+ * remains the temporary runner/backend seam while those consumers are moved
+ * to the canonical task-v3 source contract in `source-v3.ts`. New source
+ * validation and the published JSON schema must not use this v2 projection.
  */
 
 import { parse as parseYaml } from "yaml";
@@ -36,32 +39,21 @@ export const TASK_NEAR_MISS_EXTENSION = ".yaml";
  * (2^31-1, ~24.8 days). A larger delay overflows and fires almost immediately,
  * which would silently abort a run seconds after it started instead of hours
  * later. One definition with the workflow bound (`WORKFLOW_MAX_TIMEOUT_MS`) —
- * it is a platform fact, not a per-surface policy. Mirrored as `maximum` on
- * `timeoutMs` in `schemas/akm-task.json`.
+ * it is a platform fact, not a per-surface policy.
  */
 export const TASK_MAX_TIMEOUT_MS = WORKFLOW_MAX_TIMEOUT_MS;
 
 /**
  * Most names a task's `redact:` list may carry. Shares its bound with exec
  * units' `pass_env:` — both are "name the one or two the defaults miss", not a
- * way to declare the whole environment secret. Mirrored as `maxItems` on
- * `redact` in `schemas/akm-task.json`.
+ * way to declare the whole environment secret.
  */
 export const TASK_MAX_REDACT_NAMES = WORKFLOW_MAX_EXEC_PASS_ENV;
 
 /**
- * Lint-level shape problems for a parsed task YAML mapping: the field rules
- * `src/tasks/parser.ts` enforces at load time, phrased as diagnostics. The ONE
- * definition shared by both task linters (`core/adapter/adapters/akm-lint.ts`
- * and `akm-task-adapter.ts`) so lint and runtime cannot disagree — they
- * previously did, in both directions: lint demanded `enabled` (which the
- * parser defaults to `true`, so a runnable task was flagged) and never checked
- * `version` (which the parser hard-requires as `2`, so a lint-clean task died
- * at runtime with TASK_SCHEMA_VERSION_UNSUPPORTED). `schemas/akm-task.json`
- * agrees with the parser: `required: [version, schedule]`, `version:
- * {const: 2}`, `enabled` optional but boolean. Target-arity rules stay with
- * each caller (they legitimately differ: at-least-one vs exactly-one), but
- * what COUNTS as a target is shared — see {@link isPresentTarget}.
+ * Legacy lint-shape helpers retained for the v2 runtime projection. Production
+ * task source validation now goes through `source-v3.ts`; these helpers must
+ * not become a second v3 grammar. They can be removed with the runtime slice.
  */
 /**
  * Whether a task-target field counts as declared.
