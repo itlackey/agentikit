@@ -211,6 +211,27 @@ const STRICT_INVALID_UTF8_CREDENTIAL_URLS = INVALID_UTF8_OCTETS.flatMap((octets)
   `https://registry.test/?next=${octets}${R6_ENCODED_CREDENTIAL_URL}`,
   `https://registry.test/#https://${octets}UTF8USER%3AUTF8PASS%40evil.test/x`,
 ]);
+const R7_ENCODED_CREDENTIAL_URL = "https%3A%2F%2FLEAKUSER%3ALEAKPASS%40evil.test%2Fx";
+const STRICT_FALLBACK_CREDENTIAL_URLS = [
+  `https://safe.test:bad,${R7_ENCODED_CREDENTIAL_URL}`,
+  `https://safe.test:99999,${R7_ENCODED_CREDENTIAL_URL}`,
+  `arbitrary prefix,${R7_ENCODED_CREDENTIAL_URL}`,
+  `ftp://safe.test/catalog?next=${R7_ENCODED_CREDENTIAL_URL}`,
+] as const;
+const SAFE_FALLBACK_URLS = [
+  "https://safe.test:bad,https%3A%2F%2Fnested-safe.test%2Fx",
+  "https://safe.test:99999,https%3A%2F%2Fnested-safe.test%2Fx",
+  "arbitrary prefix,https%3A%2F%2Fnested-safe.test%2Fx",
+  "ftp://safe.test/catalog?next=https%3A%2F%2Fnested-safe.test%2Fx",
+] as const;
+const FALLBACK_CANDIDATE_128_SAFE_URL = `arbitrary prefix,${Array.from(
+  { length: 128 },
+  (_, index) => `https://fallback-safe-${index}.test/x`,
+).join(",")}`;
+const FALLBACK_CANDIDATE_129_EXHAUSTION_URL = `${FALLBACK_CANDIDATE_128_SAFE_URL},https://fallback-safe-128.test/x`;
+const FALLBACK_BYTE_PREFIX = "arbitrary prefix https://fallback-byte-safe.test/";
+const FALLBACK_BYTE_65536_SAFE_URL = `${FALLBACK_BYTE_PREFIX}${"a".repeat(65_536 - FALLBACK_BYTE_PREFIX.length)}`;
+const FALLBACK_BYTE_65537_EXHAUSTION_URL = `${FALLBACK_BYTE_65536_SAFE_URL}a`;
 const STRICT_CANDIDATE_128_SAFE_URL = `https://registry.test/#${Array.from(
   { length: 128 },
   (_, index) => `https://safe-${index}.test/x`,
@@ -319,6 +340,8 @@ function expectCredentialsAbsent(value: unknown): void {
     "R6TOPPASS",
     "UTF8USER",
     "UTF8PASS",
+    "LEAKUSER",
+    "LEAKPASS",
   ]) {
     expect(serialized).not.toContain(marker);
   }
@@ -849,6 +872,42 @@ describe("registry provider, search, warning, and log boundaries", () => {
     }
   });
 
+  test("both providers reject encoded credentials in unparseable and non-HTTP whole values before fetch", async () => {
+    const logPath = path.join(storage.root, "registry-r7-fallback.log");
+    setLogFile(logPath);
+    const requested: string[] = [];
+    const results = await withMockedFetch(
+      async () => {
+        const captured = [];
+        for (const providerType of ["static-index", "skills-sh"]) {
+          const factory = resolveRegistryProviderFactory(providerType);
+          if (!factory) throw new Error(`Built-in registry provider ${providerType} is not registered`);
+          for (const url of STRICT_FALLBACK_CREDENTIAL_URLS) {
+            captured.push(
+              await factory({ url, name: `${providerType}-r7-private` }).search({ query: "needle", limit: 20 }),
+            );
+          }
+        }
+        return captured;
+      },
+      (url) => {
+        requested.push(url);
+        throw new Error(`fetch failed for ${url}`);
+      },
+    );
+    for (const result of results) {
+      for (const warning of result.warnings ?? []) warn(warning);
+    }
+
+    expect(requested).toEqual([]);
+    for (const result of results) {
+      expect(result.hits).toEqual([]);
+      expect(result.warnings?.[0]?.toLowerCase()).toContain("credential");
+      expectCredentialsAbsent(result);
+    }
+    expectCredentialsAbsent(fs.readFileSync(logPath, "utf8"));
+  });
+
   test("both providers accept ordinary invalid UTF-8 octets without throwing", async () => {
     for (const providerType of ["static-index", "skills-sh"]) {
       const factory = resolveRegistryProviderFactory(providerType);
@@ -1123,6 +1182,21 @@ describe("registry URLs are safe in plain, structured, and health projections", 
       expect(hasRegistryUrlCredentials(url)).toBe(true);
       expectCredentialsAbsent(formatRegistryUrl(url));
     }
+  });
+
+  test("strict fallback uses the bounded walker for unparseable and non-HTTP whole values", () => {
+    for (const url of STRICT_FALLBACK_CREDENTIAL_URLS) {
+      expect(hasRegistryUrlCredentials(url)).toBe(true);
+      expectCredentialsAbsent(formatRegistryUrl(url));
+    }
+    for (const url of SAFE_FALLBACK_URLS) {
+      expect(hasRegistryUrlCredentials(url)).toBe(false);
+    }
+
+    expect(hasRegistryUrlCredentials(FALLBACK_CANDIDATE_128_SAFE_URL)).toBe(false);
+    expect(hasRegistryUrlCredentials(FALLBACK_CANDIDATE_129_EXHAUSTION_URL)).toBe(true);
+    expect(hasRegistryUrlCredentials(FALLBACK_BYTE_65536_SAFE_URL)).toBe(false);
+    expect(hasRegistryUrlCredentials(FALLBACK_BYTE_65537_EXHAUSTION_URL)).toBe(true);
   });
 
   test("invalid UTF-8 octets are non-throwing, exact when ordinary, and fail closed with credential evidence", () => {

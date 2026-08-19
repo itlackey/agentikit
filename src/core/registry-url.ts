@@ -137,13 +137,13 @@ export function formatRegistryError(error: unknown): string {
  * while keeping arbitrary diagnostic tokenization deliberately conservative.
  */
 function inspectStrictRegistryUrl(raw: string): StrictInspection {
+  const state: StrictWalkState = { candidates: 0, decodedBytes: 0 };
   const parsed = parseWholeHttpUrl(raw);
   if (!parsed) {
-    const unsafe = registryUrlStarts(raw).some((start) => findStrictComponentUserinfoSpan(raw, start) !== undefined);
-    return unsafe ? { unsafe: true, reason: "credentials" } : { unsafe: false };
+    inspectStrictComponent(raw, state, 0);
+    return state.reason ? { unsafe: true, reason: state.reason } : { unsafe: false };
   }
 
-  const state: StrictWalkState = { candidates: 0, decodedBytes: 0 };
   inspectParsedStrictUrl(parsed, state, 0);
   return state.reason ? { unsafe: true, reason: state.reason } : { unsafe: false };
 }
