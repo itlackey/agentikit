@@ -8,7 +8,7 @@
  * Centralizes the scaffold replicated across ~20 in-tree LLM call sites:
  *
  *   tryLlmFeature(feature, akmConfig, …)
- *     -> chatCompletion(config, messages, requestOptions)
+ *     -> resolved request -> engine lowering -> direct LLM dispatch
  *     -> classify(error) into one of EXACTLY three buckets
  *          (context_limit | html | other)
  *     -> parse(raw) / onError(cls, err)
@@ -16,7 +16,7 @@
  *
  * What this seam OWNS (the dedup):
  *   - the `tryLlmFeature` wrap (gated path) and the gated-vs-ungated branch
- *   - the single `chatCompletion` call + request-option marshalling
+ *   - the single resolved/lowered dispatch + request-option marshalling
  *   - the try/catch and the ONE classify ladder, computed ONCE via the
  *     EXISTING `isContextSizeError` + `LlmCallError.code === "provider_html_error"`
  *
@@ -37,20 +37,53 @@
  */
 
 import type { AkmConfig } from "../core/config/config";
+import type { LoweringNotice, ResolvedConversationMessage } from "../execution/resolved-request";
+import type { UnresolvedExecutionDefaults } from "../execution/source";
+import type { ToolAuthorizer } from "../integrations/agent/execution-cascade";
 import {
-  type ChatCompletionConfig,
-  type ChatMessage,
-  chatCompletion,
-  isContextSizeError,
-  LlmCallError,
-} from "./client";
-import { type LlmFeatureKey, type TryLlmFeatureFallbackEvent, tryLlmFeature } from "./feature-gate";
+  dispatchLoweredExecutionRequest,
+  lowerResolvedExecutionRequestWithRunner,
+} from "../integrations/agent/execution-lowering";
+import { prepareInlineExecutionWithRunner } from "../integrations/agent/inline-execution";
+import type { RunnerSpec } from "../integrations/agent/runner";
+import { type ChatCompletionConfig, type ChatMessage, isContextSizeError, LlmCallError } from "./client";
+import {
+  isLlmFeatureEnabled,
+  type LlmFeatureKey,
+  type TryLlmFeatureFallbackEvent,
+  tryLlmFeature,
+} from "./feature-gate";
 
 /**
  * The three — and only three — error classes the centralized ladder produces.
  * Matches exactly what `classifyLlmError` returns; no speculative 4th variant.
  */
 export type LlmErrorClass = "context_limit" | "html" | "other";
+
+export type StructuredLlmRunner = Extract<RunnerSpec, { kind: "llm" }>;
+
+/**
+ * Compatibility adapter for callers that already own a non-secret connection
+ * object. Production config paths should retain the credential descriptor and
+ * pass a {@link StructuredLlmRunner}; a materialized API key cannot safely be
+ * moved back across the authorization boundary.
+ */
+export function structuredLlmRunnerFromConnection(
+  config: ChatCompletionConfig,
+  engine = config.provider ?? "inline-llm",
+): StructuredLlmRunner {
+  if (config.apiKey !== undefined) {
+    throw new TypeError("callStructured requires symbolic runner credentials, not a materialized apiKey");
+  }
+  const connection = { ...config };
+  delete connection.timeoutMs;
+  return {
+    kind: "llm",
+    engine,
+    connection,
+    ...(Object.hasOwn(config, "timeoutMs") ? { timeoutMs: config.timeoutMs ?? null } : {}),
+  };
+}
 
 /**
  * Classify a thrown LLM error into one of the three buckets. This is the single
@@ -65,10 +98,10 @@ export function classifyLlmError(err: unknown): LlmErrorClass {
 }
 
 /**
- * Per-call request shape. Mirrors the subset of {@link ChatCompletionOptions}
- * the structured callers actually use, plus an injectable `chat` seam so tests
- * can replace the transport without a network call. When `chat` is omitted the
- * real {@link chatCompletion} is used.
+ * Per-call request shape. Mirrors the subset of direct-LLM options the
+ * structured callers actually use, plus an injectable `chat` seam so tests can
+ * replace the transport without a network call. Production transport selection
+ * stays inside the engine-owned lowered dispatch seam.
  *
  * KEY-PRESENCE SEMANTICS (`timeoutMs`): both the feature-gate wrapper and the
  * transport are tri-state — an ABSENT `timeoutMs` key means "use the default"
@@ -89,8 +122,7 @@ export interface CallStructuredRequest {
   enableThinking?: boolean;
   onRetryAttempt?: () => void;
   /**
-   * Transport override. Defaults to {@link chatCompletion}. Tests inject a fake
-   * so no real request is made; production callers leave it unset.
+   * Transport override for tests. Production callers leave it unset.
    */
   chat?: (
     config: ChatCompletionConfig,
@@ -124,8 +156,22 @@ export interface CallStructuredOptions<T> {
    * omitting it hard-disables the feature. Ignored on the ungated path.
    */
   enabled?: boolean;
-  /** LLM connection config forwarded to `chatCompletion`. */
-  config: ChatCompletionConfig;
+  /**
+   * Already-resolved symbolic runner. Production callers use this path so
+   * authorization precedes credential lookup and aliases are never re-run.
+   */
+  runner?: StructuredLlmRunner;
+  /**
+   * Legacy/test-only non-secret connection adapter. Omit in production and
+   * pass `runner` instead.
+   */
+  config?: ChatCompletionConfig;
+  /** Additional exact invocation fields (notably tools) for the current call. */
+  current?: UnresolvedExecutionDefaults;
+  /** Operator tool-policy seam; evaluated during preparation before lowering. */
+  authorizeTools?: ToolAuthorizer;
+  /** Receives the stable, secret-free notices emitted by the selected lowerer. */
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
   /** The chat messages to send. */
   messages: ChatMessage[];
   /** Per-call request options (temperature/timeout/signal/schema/retry/chat). */
@@ -147,31 +193,103 @@ export interface CallStructuredOptions<T> {
   onFallback?: (event: TryLlmFeatureFallbackEvent) => void;
 }
 
-export async function callStructured<T>(opts: CallStructuredOptions<T>): Promise<T> {
-  const { feature, akmConfig, enabled, config, messages, request, parse, onError, fallback, onFallback } = opts;
+function own(value: object | undefined, key: PropertyKey): boolean {
+  return value !== undefined && Object.hasOwn(value, key);
+}
 
-  const chat = request?.chat ?? chatCompletion;
-  // Forward each option key ONLY when present on `request` — see the
-  // key-presence semantics note on CallStructuredRequest: for `timeoutMs`,
-  // present-but-undefined means "explicitly disabled" while absent means
-  // "use the default", both in the feature-gate wrapper and the transport.
-  const has = (key: string): boolean => request !== undefined && Object.hasOwn(request, key);
-  const chatOptions = {
-    ...(has("temperature") ? { temperature: request?.temperature } : {}),
-    ...(has("timeoutMs") ? { timeoutMs: request?.timeoutMs } : {}),
-    ...(has("signal") ? { signal: request?.signal } : {}),
-    ...(has("responseSchema") ? { responseSchema: request?.responseSchema } : {}),
-    ...(has("maxTokens") ? { maxTokens: request?.maxTokens } : {}),
-    ...(has("enableThinking") ? { enableThinking: request?.enableThinking } : {}),
-    ...(has("onRetryAttempt") ? { onRetryAttempt: request?.onRetryAttempt } : {}),
+/** @internal Exact request-to-cascade projection, exported for presence-semantics contracts. */
+export function resolveStructuredCurrent(
+  current: UnresolvedExecutionDefaults | undefined,
+  request: CallStructuredRequest | undefined,
+): UnresolvedExecutionDefaults | undefined {
+  const out: Record<string, unknown> = current ? { ...current } : {};
+  const requestHasInference =
+    own(request, "temperature") || own(request, "maxTokens") || own(request, "enableThinking");
+  const baseInference =
+    current?.inference && typeof current.inference === "object" && !Array.isArray(current.inference)
+      ? { ...current.inference }
+      : {};
+  const inference: Record<string, unknown> = { ...baseInference };
+  if (own(request, "temperature") && request?.temperature !== undefined) inference.temperature = request.temperature;
+  if (own(request, "maxTokens") && request?.maxTokens !== undefined) inference.maxTokens = request.maxTokens;
+  if (own(request, "enableThinking") && request?.enableThinking !== undefined) {
+    inference.enableThinking = request.enableThinking;
+  }
+  if (Object.keys(inference).length > 0 || requestHasInference) out.inference = inference;
+  else if (current?.inference === null) out.inference = null;
+  if (own(request, "responseSchema") && request?.responseSchema !== undefined) {
+    out.outputSchema = request.responseSchema;
+  }
+  if (own(request, "timeoutMs")) out.timeout = request?.timeoutMs ?? null;
+  return Object.keys(out).length > 0 ? (out as UnresolvedExecutionDefaults) : undefined;
+}
+
+function requireTerminalUserMessage(messages: readonly ChatMessage[]): {
+  content: string;
+  conversation: readonly Readonly<ResolvedConversationMessage>[];
+} {
+  const terminal = messages.at(-1);
+  if (!terminal || terminal.role !== "user") {
+    throw new TypeError("callStructured messages must end with the terminal user command");
+  }
+  return {
+    content: terminal.content,
+    conversation: messages.slice(0, -1).map((message) => ({ role: message.role, content: message.content })),
+  };
+}
+
+function dispatchFailure(result: Awaited<ReturnType<typeof dispatchLoweredExecutionRequest>>): Error {
+  const message = result.error ?? result.stderr ?? result.reason ?? "LLM dispatch failed";
+  return result.llmErrorCode ? new LlmCallError(message, result.llmErrorCode) : new Error(message);
+}
+
+export async function callStructured<T>(opts: CallStructuredOptions<T>): Promise<T> {
+  const { feature, akmConfig, enabled, messages, request, parse, onError, fallback, onFallback } = opts;
+  const runner = opts.runner ?? (opts.config ? structuredLlmRunnerFromConnection(opts.config) : undefined);
+  if (!runner) throw new TypeError("callStructured requires a resolved LLM runner");
+  const terminal = requireTerminalUserMessage(messages);
+
+  const prepareInvocation = (): (() => Promise<T>) => {
+    const current = resolveStructuredCurrent(opts.current, request);
+    const prepared = prepareInlineExecutionWithRunner({
+      content: terminal.content,
+      conversation: terminal.conversation,
+      runner,
+      invocationKind: "direct",
+      ...(current ? { current } : {}),
+      ...(opts.authorizeTools ? { authorizeTools: opts.authorizeTools } : {}),
+    });
+    const lowered = lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
+    opts.onNotices?.(lowered.notices);
+    return async () => {
+      const result = await dispatchLoweredExecutionRequest(lowered, {
+        ...(request?.chat ? { chat: request.chat } : {}),
+        ...(request?.onRetryAttempt ? { onRetryAttempt: request.onRetryAttempt } : {}),
+        ...(own(request, "signal") ? { runOptions: { signal: request?.signal } } : {}),
+      });
+      if (!result.ok) throw dispatchFailure(result);
+      return parse(result.stdout);
+    };
   };
 
   // UNGATED: run the chat+parse directly. Errors propagate — no `onError`
   // funnel — matching the pre-gate behaviour of direct callers.
   if (akmConfig === undefined) {
-    const raw = await chat(config, messages, chatOptions);
-    return parse(raw);
+    return prepareInvocation()();
   }
+
+  // Preserve the feature gate's no-dispatch disabled path without preparing
+  // a request that cannot run. On an enabled path, preparation/lowering happen
+  // OUTSIDE tryLlmFeature so authorization and invalid-config failures remain
+  // hard failures instead of being mistaken for provider fallbacks.
+  if (!isLlmFeatureEnabled(akmConfig, feature, enabled)) {
+    return tryLlmFeature(feature, akmConfig, async () => fallback, fallback, {
+      ...(own(request, "timeoutMs") ? { timeoutMs: request?.timeoutMs } : {}),
+      ...(enabled !== undefined ? { enabled } : {}),
+      onFallback,
+    });
+  }
+  const invoke = prepareInvocation();
 
   // GATED: run through `tryLlmFeature`. A throw inside is classified ONCE and
   // routed to `onError`; `tryLlmFeature` returns `fallback` on disablement/timeout.
@@ -180,15 +298,14 @@ export async function callStructured<T>(opts: CallStructuredOptions<T>): Promise
     akmConfig,
     async () => {
       try {
-        const raw = await chat(config, messages, chatOptions);
-        return parse(raw);
+        return await invoke();
       } catch (err) {
         return onError(classifyLlmError(err), err);
       }
     },
     fallback,
     {
-      ...(has("timeoutMs") ? { timeoutMs: request?.timeoutMs } : {}),
+      ...(own(request, "timeoutMs") ? { timeoutMs: request?.timeoutMs } : {}),
       ...(enabled !== undefined ? { enabled } : {}),
       onFallback,
     },

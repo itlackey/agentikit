@@ -22,9 +22,12 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AkmConfig } from "../../src/core/config/config";
+import type { LoweringNotice } from "../../src/execution/resolved-request";
+import type { RunnerSpec } from "../../src/integrations/agent/runner";
 import type { ChatCompletionConfig, ChatMessage } from "../../src/llm/client";
 import { LlmCallError } from "../../src/llm/client";
-import { callStructured, type LlmErrorClass } from "../../src/llm/structured-call";
+import { callStructured, type LlmErrorClass, resolveStructuredCurrent } from "../../src/llm/structured-call";
+import { withEnv } from "../_helpers/sandbox";
 
 // Minimal LLM profile config. `chatCompletion` is replaced by the injected
 // fake, so transport fields are irrelevant.
@@ -39,7 +42,20 @@ const MESSAGES: ChatMessage[] = [
 // (FEATURE_LOCATION default is `?? true`). Used as the GATED akmConfig.
 const GATED: AkmConfig = {} as AkmConfig;
 
+function runner(
+  connection: ChatCompletionConfig = PROFILE,
+  extra: Partial<Extract<RunnerSpec, { kind: "llm" }>> = {},
+): Extract<RunnerSpec, { kind: "llm" }> {
+  return { kind: "llm", engine: "structured-test", connection, ...extra };
+}
+
 describe("callStructured contract", () => {
+  test("(0) explicit null inference survives unless request inference intentionally overlays it", () => {
+    expect(resolveStructuredCurrent({ inference: null }, undefined)).toEqual({ inference: null });
+    expect(resolveStructuredCurrent({ inference: null }, { temperature: 0.25 })).toEqual({
+      inference: { temperature: 0.25 },
+    });
+  });
   test("(1) gated success -> parse runs on raw, returns T", async () => {
     let parsedRaw: string | undefined = "UNSET";
     const result = await callStructured<{ ok: boolean; raw?: string }>({
@@ -118,7 +134,9 @@ describe("callStructured contract", () => {
       parse: () => "PARSED",
       onError: (cls, err) => {
         seen = cls;
-        expect(err).toBe(htmlErr);
+        expect(err).toBeInstanceOf(LlmCallError);
+        expect((err as LlmCallError).code).toBe("provider_html_error");
+        expect((err as Error).message).toBe(htmlErr.message);
         return "HTML";
       },
       fallback: "FB",
@@ -248,7 +266,7 @@ describe("callStructured contract", () => {
     expect(reasons).toEqual(["disabled"]);
   });
 
-  test("(10) maxTokens and enableThinking are forwarded into the chat call options", async () => {
+  test("(10) maxTokens and enableThinking reach the transport as exact resolved inference", async () => {
     let seenMaxTokens: number | undefined;
     let seenEnableThinking: boolean | undefined;
     await callStructured<string>({
@@ -259,9 +277,9 @@ describe("callStructured contract", () => {
       request: {
         maxTokens: 1234,
         enableThinking: false,
-        chat: async (_config, _messages, options) => {
-          seenMaxTokens = options?.maxTokens;
-          seenEnableThinking = options?.enableThinking;
+        chat: async (config) => {
+          seenMaxTokens = config.maxTokens;
+          seenEnableThinking = config.enableThinking;
           return "ok";
         },
       },
@@ -313,6 +331,100 @@ describe("callStructured contract", () => {
       fallback: "FB",
     });
     expect(presentCaseOptions !== undefined && Object.hasOwn(presentCaseOptions, "timeoutMs")).toBe(true);
-    expect(presentCaseOptions?.timeoutMs).toBeUndefined();
+    // The canonical request normalizes present-but-undefined to explicit null;
+    // both spellings retain the historical "disable timeout" semantics.
+    expect(presentCaseOptions?.timeoutMs).toBeNull();
+  });
+
+  test("(12) unsupported schema lowers optimistically, emits a structured notice, and preserves messages", async () => {
+    const seenMessages: ChatMessage[][] = [];
+    let seenOptions: Record<string, unknown> | undefined;
+    let notices: readonly Readonly<LoweringNotice>[] = [];
+    const result = await callStructured<string>({
+      feature: "memory_inference",
+      akmConfig: GATED,
+      runner: runner({ ...PROFILE, supportsJsonSchema: false }),
+      messages: MESSAGES,
+      request: {
+        responseSchema: { type: "object" },
+        chat: async (_config, messages, options) => {
+          seenMessages.push(messages.map((message) => ({ ...message })));
+          seenOptions = options as Record<string, unknown> | undefined;
+          return "ok";
+        },
+      },
+      onNotices: (value) => {
+        notices = value;
+      },
+      parse: (raw) => raw ?? "",
+      onError: () => "ERR",
+      fallback: "FB",
+    });
+
+    expect(result).toBe("ok");
+    expect(seenMessages).toEqual([MESSAGES]);
+    expect(seenOptions && Object.hasOwn(seenOptions, "responseSchema")).toBe(false);
+    expect(notices).toEqual([
+      expect.objectContaining({
+        code: "untranslated-field",
+        adapter: "llm",
+        field: "outputSchema",
+      }),
+    ]);
+  });
+
+  test("(13) tool denial stops before credential materialization and provider dispatch", async () => {
+    let chatRan = false;
+    await withEnv({ AKM_STRUCTURED_DENIED_SECRET: undefined }, async () => {
+      const attempt = callStructured<string>({
+        feature: "memory_inference",
+        akmConfig: GATED,
+        runner: runner(PROFILE, {
+          credential: { names: ["AKM_STRUCTURED_DENIED_SECRET"], required: true },
+        }),
+        current: { tools: ["shell"] },
+        authorizeTools: () => ({ status: "denied", policy: "fixture-denial" }),
+        messages: [{ role: "user", content: "must not dispatch" }],
+        request: {
+          chat: async () => {
+            chatRan = true;
+            return "wrong";
+          },
+        },
+        parse: (raw) => raw ?? "",
+        onError: () => "ERR",
+        fallback: "FB",
+      });
+      await expect(attempt).rejects.toThrow(/fixture-denial|not authorized/i);
+    });
+    expect(chatRan).toBe(false);
+  });
+
+  test("(14) a provider failure is credential-redacted before ungated propagation", async () => {
+    const secret = "structured-secret-sentinel";
+    let thrown: unknown;
+    await withEnv({ AKM_STRUCTURED_SECRET: secret }, async () => {
+      try {
+        await callStructured<string>({
+          feature: "metadata_enhance",
+          runner: runner(PROFILE, { credential: { names: ["AKM_STRUCTURED_SECRET"], required: true } }),
+          messages: [{ role: "user", content: "redact failures" }],
+          request: {
+            chat: async () => {
+              throw new LlmCallError(`provider echoed ${secret}`, "provider_error");
+            },
+          },
+          parse: (raw) => raw ?? "",
+          onError: () => "SWALLOWED",
+          fallback: "FB",
+        });
+      } catch (error) {
+        thrown = error;
+      }
+    });
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(String(thrown)).not.toContain(secret);
+    expect(String(thrown)).toContain("[REDACTED]");
   });
 });
