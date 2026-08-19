@@ -19,6 +19,7 @@ interface UnsupportedTemplateConstruct {
 
 const UNSUPPORTED_TEMPLATE_CONSTRUCTS: readonly UnsupportedTemplateConstruct[] = Object.freeze([
   { label: "$ARGUMENTS[N]", pattern: /\$ARGUMENTS\s*\[/u },
+  { label: "```! ... ```", pattern: /(?:^|\r?\n)[\t ]*```!/u },
   { label: "!`...`", pattern: /!`/u },
   { label: "@file", pattern: /(?<![A-Za-z0-9._%+-])@(?:\.{0,2}\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*/u },
   { label: "$" + "{...}", pattern: /\$\{/u },

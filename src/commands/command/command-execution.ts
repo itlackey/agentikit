@@ -88,8 +88,16 @@ export interface DispatchPreparedCommandOptions {
   readonly chat?: typeof chatCompletion;
 }
 
-function own(value: object, key: string): boolean {
+function own(value: object, key: PropertyKey): boolean {
   return Object.hasOwn(value, key);
+}
+
+function ownValue<T extends object, K extends keyof T>(value: T, key: K): T[K] | undefined {
+  return own(value, key) ? value[key] : undefined;
+}
+
+function sterileRecord<T extends object>(value: T): T {
+  return Object.assign(Object.create(null), value) as T;
 }
 
 function withoutUndefined<T extends Record<string, unknown>>(value: T): Record<string, unknown> {
@@ -103,12 +111,12 @@ function engineDefaults(engine: EngineConfig): UnresolvedExecutionDefaults {
   if (engine.kind === "agent" && own(engine, "workspace")) defaults.workspace = engine.workspace;
   if (engine.kind === "llm") {
     const inference = withoutUndefined({
-      temperature: engine.temperature,
-      maxTokens: engine.maxTokens,
-      supportsJsonSchema: engine.supportsJsonSchema,
-      extraParams: engine.extraParams,
-      contextLength: engine.contextLength,
-      enableThinking: engine.enableThinking,
+      temperature: ownValue(engine, "temperature"),
+      maxTokens: ownValue(engine, "maxTokens"),
+      supportsJsonSchema: ownValue(engine, "supportsJsonSchema"),
+      extraParams: ownValue(engine, "extraParams"),
+      contextLength: ownValue(engine, "contextLength"),
+      enableThinking: ownValue(engine, "enableThinking"),
     });
     if (Object.keys(inference).length > 0) defaults.inference = inference;
   }
@@ -120,12 +128,18 @@ export function executionEngineDefinitionsFromConfig(
   config: AkmConfig,
 ): Readonly<Record<string, ExecutionEngineDefinition>> {
   const definitions: Record<string, ExecutionEngineDefinition> = Object.create(null);
-  for (const [name, engine] of Object.entries(config.engines ?? {})) {
-    const platform = engine.kind === "agent" ? engine.platform : (engine.provider ?? name);
+  for (const [name, engine] of Object.entries(ownValue(config, "engines") ?? {})) {
+    const platform = engine.kind === "agent" ? engine.platform : (ownValue(engine, "provider") ?? name);
     const settings =
       engine.kind === "agent"
-        ? withoutUndefined({ bin: engine.bin, args: engine.args, workspace: engine.workspace })
-        : withoutUndefined({ endpoint: engine.endpoint, provider: engine.provider });
+        ? withoutUndefined({
+            bin: ownValue(engine, "bin"),
+            args: ownValue(engine, "args"),
+            workspace: ownValue(engine, "workspace"),
+          })
+        : withoutUndefined({ endpoint: engine.endpoint, provider: ownValue(engine, "provider") });
+    const engineModelAliases = engine.kind === "agent" ? ownValue(engine, "modelAliases") : undefined;
+    const globalModelAliases = ownValue(config, "modelAliases");
     definitions[name] = Object.freeze({
       selection: Object.freeze({
         name,
@@ -138,8 +152,8 @@ export function executionEngineDefinitionsFromConfig(
       defaults: engineDefaults(engine),
       modelMapKey: engine.kind === "agent" ? engine.platform : name,
       modelCompatibility: Object.freeze({
-        ...(engine.kind === "agent" && engine.modelAliases ? { engineAliases: engine.modelAliases } : {}),
-        ...(config.modelAliases ? { globalAliases: config.modelAliases } : {}),
+        ...(engineModelAliases ? { engineAliases: engineModelAliases } : {}),
+        ...(globalModelAliases ? { globalAliases: globalModelAliases } : {}),
         fallbackEngines: engine.kind === "llm" ? [platform, "llm"] : [],
       }),
     });
@@ -234,7 +248,9 @@ export async function prepareCommandInvocation(
   const fallback = withEngineFallback(inputConfig);
   const resolvedConfig = snapshotCommandConfig(fallback.config, "resolved command config");
   const installationValues: Record<string, unknown> = {};
-  if (resolvedConfig.defaults?.engine) installationValues.engine = resolvedConfig.defaults.engine;
+  const resolvedDefaults = ownValue(resolvedConfig, "defaults");
+  const defaultEngine = resolvedDefaults ? ownValue(resolvedDefaults, "engine") : undefined;
+  if (defaultEngine) installationValues.engine = defaultEngine;
   const plan = planExecutionCascade({
     command,
     ...(persona !== undefined ? { persona } : {}),
@@ -266,8 +282,10 @@ export async function prepareCommandInvocation(
 function lowerRunner(request: ResolvedExecutionRequestV1, config: AkmConfig): RunnerSpec {
   const runner = resolveEngine(request.engine.name, config);
   const timeoutMs = own(request.runtime, "timeoutMs") ? request.runtime.timeoutMs : runner.timeoutMs;
+  const model = ownValue(request, "model");
+  const workspace = ownValue(request.runtime, "workspace");
   if (runner.kind === "llm") {
-    const connection: Record<string, unknown> = { ...runner.connection };
+    const connection = sterileRecord<Record<string, unknown>>({ ...runner.connection });
     // These fields participated in the common cascade. Remove the raw engine
     // copy first so explicit null really clears it instead of allowing
     // resolveEngine() to reintroduce a farther configured default.
@@ -282,7 +300,8 @@ function lowerRunner(request: ResolvedExecutionRequestV1, config: AkmConfig): Ru
     ]) {
       delete connection[key];
     }
-    if (request.inference) {
+    const inference = ownValue(request, "inference");
+    if (inference) {
       for (const key of [
         "temperature",
         "maxTokens",
@@ -291,21 +310,21 @@ function lowerRunner(request: ResolvedExecutionRequestV1, config: AkmConfig): Ru
         "contextLength",
         "enableThinking",
       ] as const) {
-        if (own(request.inference, key)) connection[key] = request.inference[key];
+        if (own(inference, key)) connection[key] = inference[key];
       }
     }
     // Model selection and transport identity are separate from inference.
     // Applying the resolved model last also prevents arbitrary inference data
     // from redirecting a request or changing its selected model.
-    if (request.model) connection.model = request.model.resolved;
+    if (model) connection.model = model.resolved;
     return { ...runner, connection, ...(timeoutMs !== undefined ? { timeoutMs } : {}) } as RunnerSpec;
   }
-  const profile = { ...runner.profile };
+  const profile = sterileRecord({ ...runner.profile });
   delete profile.model;
   delete profile.modelIsExact;
   delete profile.workspace;
-  if (request.model) Object.assign(profile, { model: request.model.resolved, modelIsExact: true });
-  if (typeof request.runtime.workspace === "string") profile.workspace = request.runtime.workspace;
+  if (model) Object.assign(profile, { model: model.resolved, modelIsExact: true });
+  if (typeof workspace === "string") profile.workspace = workspace;
   return { ...runner, profile, ...(timeoutMs !== undefined ? { timeoutMs } : {}) } as RunnerSpec;
 }
 
@@ -314,16 +333,18 @@ function dispatchRequest(
   prompt: string,
   systemPrompt: string | undefined,
 ): AgentDispatchRequest {
-  const effort =
-    request.inference && typeof request.inference.effort === "string" ? request.inference.effort : undefined;
-  return {
+  const inference = ownValue(request, "inference");
+  const model = ownValue(request, "model");
+  const outputSchema = ownValue(request, "outputSchema");
+  const effort = inference && typeof inference.effort === "string" ? inference.effort : undefined;
+  return sterileRecord({
     prompt,
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),
-    ...(request.model ? { model: request.model.resolved, modelIsExact: true } : {}),
+    ...(model ? { model: model.resolved, modelIsExact: true } : {}),
     ...(own(request, "tools") ? { tools: request.tools as AgentDispatchRequest["tools"] } : {}),
     ...(effort ? { effort } : {}),
-    ...(request.outputSchema ? { schema: request.outputSchema as Record<string, unknown> } : {}),
-  };
+    ...(outputSchema ? { schema: outputSchema as Record<string, unknown> } : {}),
+  });
 }
 
 interface LoweredCommandDispatch {
@@ -333,7 +354,8 @@ interface LoweredCommandDispatch {
 }
 
 function lowerCommandDispatch(request: ResolvedExecutionRequestV1, runner: RunnerSpec): LoweredCommandDispatch {
-  const persona = request.persona?.content;
+  const selectedPersona = ownValue(request, "persona");
+  const persona = selectedPersona?.content;
   if (persona !== undefined && runner.kind !== "llm" && runner.profile.personaChannel !== "native") {
     const adapter = runner.profile.platform ?? runner.profile.name;
     const composed = composePersonaFallbackPrompt(persona, request.command.content, adapter);
@@ -383,13 +405,15 @@ export async function dispatchPreparedCommandInvocation(
   if (!selectedEngine) {
     throw new ConfigError(`command ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "INVALID_CONFIG_FILE");
   }
-  const runnerOptions: RunAgentOptions = {
+  const workspace = ownValue(request.runtime, "workspace");
+  const persona = ownValue(request, "persona");
+  const runnerOptions = sterileRecord<RunAgentOptions>({
     stdio: "captured",
     parseOutput: "text",
     ...(own(request.runtime, "timeoutMs") ? { timeoutMs: request.runtime.timeoutMs } : {}),
-    ...(typeof request.runtime.workspace === "string" ? { cwd: request.runtime.workspace } : {}),
+    ...(typeof workspace === "string" ? { cwd: workspace } : {}),
     dispatch: lowered.request,
-  };
+  });
   const run = options.executeRunner ?? executeRunner;
   const result = await run(runner, lowered.prompt, runnerOptions, {
     llm: async (spec, prompt, runOptions) => {
@@ -398,7 +422,7 @@ export async function dispatchPreparedCommandInvocation(
         const stdout = await (options.chat ?? chatCompletion)(
           spec.connection,
           [
-            ...(request.persona ? [{ role: "system" as const, content: request.persona.content }] : []),
+            ...(persona ? [{ role: "system" as const, content: persona.content }] : []),
             { role: "user" as const, content: prompt },
           ],
           ...(own(runOptions, "timeoutMs") ? [{ timeoutMs: runOptions.timeoutMs }] : []),

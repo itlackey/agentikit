@@ -51,6 +51,7 @@ describe("portable command arguments", () => {
   test.each([
     "Email reviewer@example.com before proceeding.",
     "Important! `code` is illustrative prose.",
+    "Mention the literal ```! marker inline without opening a block.",
     "Use this ordinary fenced example:\n```sh\ngit status\n```",
   ])("preserves credential-free prose that only resembles native constructs", (template) => {
     expect(applyPortableCommandArguments(template, undefined, "inline").content).toBe(template);
@@ -65,7 +66,7 @@ describe("portable command arguments", () => {
     ["legacy", "Review {{0}}"],
     ["native expression", "Review ${{ inputs.target }}"],
     ["native shell interpolation", "Review !`git status`"],
-    ["native fenced shell interpolation", "Review !```sh\ngit status\n```"],
+    ["native fenced shell interpolation", "Review\n```!\ngit status\n```"],
     ["native file interpolation", "Review @secrets.env"],
   ])("rejects %s constructs before substitution", (_label, template) => {
     expect(() => validatePortableCommandTemplate(template, "fixture//commands/unsafe")).toThrow(

@@ -466,6 +466,136 @@ describe("common command invocation preparation", () => {
     });
   });
 
+  test("ignores inherited LLM transport fields injected after preparation", async () => {
+    const llmConfig: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      defaults: { engine: "direct" },
+      engines: {
+        direct: {
+          kind: "llm",
+          endpoint: "https://safe.invalid/v1/chat/completions",
+          model: "safe-model",
+        },
+      },
+    };
+    const llmPrepared = await prepareCommandInvocation({
+      action: { content: "Review." },
+      config: llmConfig,
+      modelMap,
+    });
+    let capturedLlm: RunnerSpec | undefined;
+    let observedLlm: Record<string, unknown> | undefined;
+    Object.defineProperties(Object.prototype, {
+      provider: { configurable: true, value: "attacker-provider", writable: true },
+      apiKey: { configurable: true, value: "$ATTACKER_KEY", writable: true },
+    });
+    try {
+      await dispatchPreparedCommandInvocation(llmPrepared, {
+        executeRunner: async (runner) => {
+          capturedLlm = runner;
+          if (runner.kind !== "llm") throw new Error("expected LLM runner");
+          observedLlm = {
+            provider: runner.connection.provider,
+            providerOwn: Object.hasOwn(runner.connection, "provider"),
+            credentialNames: runner.credential?.names,
+          };
+          return { ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 0 };
+        },
+      });
+    } finally {
+      Reflect.deleteProperty(Object.prototype, "provider");
+      Reflect.deleteProperty(Object.prototype, "apiKey");
+    }
+
+    expect(capturedLlm).toMatchObject({
+      kind: "llm",
+      connection: {
+        endpoint: "https://safe.invalid/v1/chat/completions",
+        model: "safe-model",
+      },
+      credential: {
+        names: ["AKM_ENGINE_DIRECT_API_KEY"],
+        required: false,
+      },
+    });
+    expect(observedLlm).toEqual({
+      provider: undefined,
+      providerOwn: false,
+      credentialNames: ["AKM_ENGINE_DIRECT_API_KEY"],
+    });
+    expect((capturedLlm as Extract<RunnerSpec, { kind: "llm" }>).connection).not.toHaveProperty("provider");
+    expect(Object.getPrototypeOf((capturedLlm as Extract<RunnerSpec, { kind: "llm" }>).connection)).toBeNull();
+    expect(Object.getPrototypeOf(llmPrepared.config)).toBeNull();
+    expect(Object.getPrototypeOf(llmPrepared.config.engines)).toBeNull();
+    expect(Object.getPrototypeOf(llmPrepared.config.engines?.direct)).toBeNull();
+  });
+
+  test("ignores inherited agent transport fields injected after preparation", async () => {
+    const agentConfig: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      defaults: { engine: "reviewer" },
+      engines: { reviewer: { kind: "agent", platform: "claude" } },
+    };
+    const agentPrepared = await prepareCommandInvocation({
+      action: { content: "Review." },
+      config: agentConfig,
+      modelMap,
+    });
+    let capturedAgent: RunnerSpec | undefined;
+    let capturedAgentOptions: Record<string, unknown> | undefined;
+    let observedAgent: Record<string, unknown> | undefined;
+    Object.defineProperties(Object.prototype, {
+      bin: { configurable: true, value: "/attacker/bin", writable: true },
+      args: { configurable: true, value: ["--attacker"], writable: true },
+      workspace: { configurable: true, value: "/attacker/workspace", writable: true },
+      model: { configurable: true, value: "attacker-model", writable: true },
+    });
+    try {
+      await dispatchPreparedCommandInvocation(agentPrepared, {
+        executeRunner: async (runner, _prompt, options) => {
+          capturedAgent = runner;
+          capturedAgentOptions = options as unknown as Record<string, unknown>;
+          if (runner.kind !== "agent") throw new Error("expected agent runner");
+          observedAgent = {
+            bin: runner.profile.bin,
+            args: runner.profile.args,
+            workspace: runner.profile.workspace,
+            model: runner.profile.model,
+            cwd: options.cwd,
+          };
+          return { ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 0 };
+        },
+      });
+    } finally {
+      Reflect.deleteProperty(Object.prototype, "bin");
+      Reflect.deleteProperty(Object.prototype, "args");
+      Reflect.deleteProperty(Object.prototype, "workspace");
+      Reflect.deleteProperty(Object.prototype, "model");
+    }
+
+    expect(capturedAgent).toMatchObject({
+      kind: "agent",
+      profile: { platform: "claude", bin: "claude", args: [] },
+    });
+    expect(observedAgent).toEqual({
+      bin: "claude",
+      args: [],
+      workspace: undefined,
+      model: undefined,
+      cwd: undefined,
+    });
+    const capturedProfile = (capturedAgent as Extract<RunnerSpec, { kind: "agent" }>).profile;
+    expect(capturedProfile).not.toHaveProperty("workspace");
+    expect(capturedProfile).not.toHaveProperty("model");
+    expect(capturedProfile).not.toHaveProperty("modelIsExact");
+    expect(capturedAgentOptions).not.toHaveProperty("cwd");
+    expect(Object.getPrototypeOf(capturedProfile)).toBeNull();
+    expect(Object.getPrototypeOf(capturedAgentOptions)).toBeNull();
+    expect(Object.getPrototypeOf(agentPrepared.config.engines?.reviewer)).toBeNull();
+  });
+
   test("routes personas through native channels or the deterministic prompt fallback exactly once", async () => {
     const command = rendered("command", "fixture//commands/persona-route", "Review this.", {
       agent: "agents/reviewer",
