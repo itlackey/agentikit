@@ -4,6 +4,7 @@
 
 import { cloneExecutionJson, cloneExecutionJsonObject, type ExecutionJsonObject, sortExecutionJson } from "./json";
 import { EXECUTION_MAX_TIMEOUT_MS } from "./limits";
+import { assertSnapshotKeys, requireSnapshotField, type StrictRecordSnapshot, snapshotStrictRecord } from "./record";
 import {
   type AdapterOwnedExtensions,
   type AdapterRenderedCommandSource,
@@ -21,6 +22,9 @@ export const RESOLVED_EXECUTION_SCHEMA_VERSION = 1 as const;
 
 const resolvedCommandBrand: unique symbol = Symbol("akm.resolved-command");
 const resolvedPersonaBrand: unique symbol = Symbol("akm.resolved-persona");
+const resolvedCommandInstances = new WeakSet<object>();
+const resolvedPersonaInstances = new WeakSet<object>();
+const resolvedRequestInstances = new WeakSet<object>();
 
 export interface ResolvedCommandContent {
   /** Adapter-rendered or anonymous content before portable argument substitution. */
@@ -106,16 +110,18 @@ export interface ResolvedExecutionRequestV1 {
   readonly extensions?: AdapterOwnedExtensions;
 }
 
-function defineBrand<T extends object>(value: T, brand: symbol): T {
+function defineBrand<T extends object>(value: T, brand: symbol, instances: WeakSet<object>): T {
   Object.defineProperty(value, brand, { value: true, enumerable: false });
-  return Object.freeze(value);
+  const frozen = Object.freeze(value);
+  instances.add(frozen);
+  return frozen;
 }
 
 function cloneIdentity(value: ExecutionSourceIdentity): Readonly<ExecutionSourceIdentity> {
   return decodeExecutionSourceIdentity(value);
 }
 
-function copyArgumentInput(input: { readonly argumentInput?: string }, output: Record<string, unknown>): void {
+function copyArgumentInput(input: StrictRecordSnapshot, output: Record<string, unknown>): void {
   if (!Object.hasOwn(input, "argumentInput")) return;
   if (typeof input.argumentInput !== "string") {
     throw new TypeError("command argumentInput must be omitted or a string");
@@ -144,8 +150,8 @@ export function createResolvedCommand(input: {
       ? { extensions: cloneAdapterExtensions(source.extensions, "resolved command extensions") }
       : {}),
   };
-  copyArgumentInput(input, out);
-  return defineBrand(out, resolvedCommandBrand) as unknown as ResolvedCommandContent;
+  copyArgumentInput(record, out);
+  return defineBrand(out, resolvedCommandBrand, resolvedCommandInstances) as unknown as ResolvedCommandContent;
 }
 
 export function createInlineResolvedCommand(input: {
@@ -161,8 +167,8 @@ export function createInlineResolvedCommand(input: {
     throw new TypeError("inline command template and content must be strings");
   }
   const out: Record<string, unknown> = { template, content, source: null };
-  copyArgumentInput(input, out);
-  return defineBrand(out, resolvedCommandBrand) as unknown as ResolvedCommandContent;
+  copyArgumentInput(record, out);
+  return defineBrand(out, resolvedCommandBrand, resolvedCommandInstances) as unknown as ResolvedCommandContent;
 }
 
 export function createResolvedPersona(source: AdapterRenderedPersonaSource): ResolvedPersonaContent {
@@ -176,13 +182,18 @@ export function createResolvedPersona(source: AdapterRenderedPersonaSource): Res
       ? { extensions: cloneAdapterExtensions(source.extensions, "resolved persona extensions") }
       : {}),
   };
-  return defineBrand(out, resolvedPersonaBrand) as unknown as ResolvedPersonaContent;
+  return defineBrand(out, resolvedPersonaBrand, resolvedPersonaInstances) as unknown as ResolvedPersonaContent;
 }
 
-function hasOwnFrozenBrand(value: unknown, brand: symbol): value is Record<PropertyKey, unknown> {
+function hasOwnFrozenBrand(
+  value: unknown,
+  brand: symbol,
+  instances: WeakSet<object>,
+): value is Record<PropertyKey, unknown> {
   if (
     typeof value !== "object" ||
     value === null ||
+    !instances.has(value) ||
     Object.getPrototypeOf(value) !== Object.prototype ||
     !Object.isFrozen(value) ||
     !Object.hasOwn(value, brand)
@@ -199,11 +210,37 @@ function hasOwnFrozenBrand(value: unknown, brand: symbol): value is Record<Prope
 }
 
 function isResolvedCommand(value: unknown): value is ResolvedCommandContent {
-  return hasOwnFrozenBrand(value, resolvedCommandBrand);
+  if (!hasOwnFrozenBrand(value, resolvedCommandBrand, resolvedCommandInstances)) return false;
+  try {
+    const allowedSymbols = new Set([resolvedCommandBrand]);
+    const record = requireObject(value, "command", allowedSymbols);
+    assertOnlyKeys(record, ["template", "argumentInput", "content", "source", "extensions"], "command", allowedSymbols);
+    const template = requireOwn(record, "template", "command");
+    const content = requireOwn(record, "content", "command");
+    const source = requireOwn(record, "source", "command");
+    if (typeof template !== "string" || typeof content !== "string") return false;
+    if (Object.hasOwn(record, "argumentInput") && typeof record.argumentInput !== "string") return false;
+    if (source !== null) decodeExecutionSourceIdentity(source, "command.source");
+    if (Object.hasOwn(record, "extensions")) cloneAdapterExtensions(record.extensions, "command.extensions");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isResolvedPersona(value: unknown): value is ResolvedPersonaContent {
-  return hasOwnFrozenBrand(value, resolvedPersonaBrand);
+  if (!hasOwnFrozenBrand(value, resolvedPersonaBrand, resolvedPersonaInstances)) return false;
+  try {
+    const allowedSymbols = new Set([resolvedPersonaBrand]);
+    const record = requireObject(value, "persona", allowedSymbols);
+    assertOnlyKeys(record, ["content", "source", "extensions"], "persona", allowedSymbols);
+    if (typeof requireOwn(record, "content", "persona") !== "string") return false;
+    decodeExecutionSourceIdentity(requireOwn(record, "source", "persona"), "persona.source");
+    if (Object.hasOwn(record, "extensions")) cloneAdapterExtensions(record.extensions, "persona.extensions");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function requireString(value: unknown, path: string): string {
@@ -214,14 +251,13 @@ function requireString(value: unknown, path: string): string {
 function cloneEngine(input: ResolvedEngineSelection): Readonly<ResolvedEngineSelection> {
   const record = requireObject(input, "engine");
   assertOnlyKeys(record, ["name", "kind", "platform", "settings", "extensions"], "engine");
-  requireOwn(record, "name", "engine");
-  requireOwn(record, "kind", "engine");
-  requireString(input.name, "engine.name");
-  if (!(["agent", "sdk", "llm"] as const).includes(input.kind)) throw new TypeError("engine.kind is invalid");
-  const out: Record<string, unknown> = { name: input.name, kind: input.kind };
+  const name = requireString(requireOwn(record, "name", "engine"), "engine.name");
+  const kind = requireOwn(record, "kind", "engine");
+  if (!(kind === "agent" || kind === "sdk" || kind === "llm")) throw new TypeError("engine.kind is invalid");
+  const out: Record<string, unknown> = { name, kind };
   for (const key of ["platform", "settings", "extensions"] as const) {
-    if (!Object.hasOwn(input, key)) continue;
-    const value = input[key];
+    if (!Object.hasOwn(record, key)) continue;
+    const value = record[key];
     if (value === undefined) throw new TypeError(`engine.${key} must be omitted rather than undefined`);
     if (key === "platform") {
       if (value !== null && typeof value !== "string") throw new TypeError("engine.platform must be a string or null");
@@ -238,25 +274,25 @@ function cloneEngine(input: ResolvedEngineSelection): Readonly<ResolvedEngineSel
 function cloneModel(input: ResolvedModelSelection): Readonly<ResolvedModelSelection> {
   const record = requireObject(input, "model");
   assertOnlyKeys(record, ["input", "interpretation", "resolved", "extensions"], "model");
-  for (const key of ["input", "interpretation", "resolved"] as const) requireOwn(record, key, "model");
-  requireString(input.input, "model.input");
-  requireString(input.resolved, "model.resolved");
-  if (input.interpretation !== "alias" && input.interpretation !== "exact") {
+  const modelInput = requireString(requireOwn(record, "input", "model"), "model.input");
+  const interpretation = requireOwn(record, "interpretation", "model");
+  const resolved = requireString(requireOwn(record, "resolved", "model"), "model.resolved");
+  if (interpretation !== "alias" && interpretation !== "exact") {
     throw new TypeError("model.interpretation is invalid");
   }
-  if (input.interpretation === "exact" && input.input !== input.resolved) {
+  if (interpretation === "exact" && modelInput !== resolved) {
     throw new TypeError("model.input must match model.resolved when interpretation is exact");
   }
   const out: Record<string, unknown> = {
-    input: input.input,
-    interpretation: input.interpretation,
-    resolved: input.resolved,
+    input: modelInput,
+    interpretation,
+    resolved,
   };
-  if (Object.hasOwn(input, "extensions")) {
-    if (input.extensions === null || input.extensions === undefined) {
+  if (Object.hasOwn(record, "extensions")) {
+    if (record.extensions === null || record.extensions === undefined) {
       throw new TypeError("model.extensions must be omitted or an adapter-owned extension object");
     }
-    out.extensions = cloneAdapterExtensions(input.extensions, "model.extensions");
+    out.extensions = cloneAdapterExtensions(record.extensions, "model.extensions");
   }
   return Object.freeze(out) as unknown as Readonly<ResolvedModelSelection>;
 }
@@ -264,19 +300,19 @@ function cloneModel(input: ResolvedModelSelection): Readonly<ResolvedModelSelect
 function cloneAuthorization(input: ToolAuthorizationResult): Readonly<ToolAuthorizationResult> {
   const record = requireObject(input, "authorization");
   assertOnlyKeys(record, ["status", "reason", "policy"], "authorization");
-  requireOwn(record, "status", "authorization");
-  if (!(["allowed", "denied", "not-required"] as const).includes(input.status)) {
+  const status = requireOwn(record, "status", "authorization");
+  if (!(status === "allowed" || status === "denied" || status === "not-required")) {
     throw new TypeError("authorization.status is invalid");
   }
-  const out: Record<string, unknown> = { status: input.status };
-  if (Object.hasOwn(input, "reason")) {
-    if (input.reason !== null && typeof input.reason !== "string") {
+  const out: Record<string, unknown> = { status };
+  if (Object.hasOwn(record, "reason")) {
+    if (record.reason !== null && typeof record.reason !== "string") {
       throw new TypeError("authorization.reason must be a string or null");
     }
-    out.reason = input.reason;
+    out.reason = record.reason;
   }
-  if (Object.hasOwn(input, "policy")) {
-    out.policy = input.policy === null ? null : cloneExecutionJsonObject(input.policy, "authorization.policy");
+  if (Object.hasOwn(record, "policy")) {
+    out.policy = record.policy === null ? null : cloneExecutionJsonObject(record.policy, "authorization.policy");
   }
   return Object.freeze(out) as unknown as Readonly<ToolAuthorizationResult>;
 }
@@ -285,39 +321,40 @@ function cloneRuntime(input: ResolvedRuntimeSettings): Readonly<ResolvedRuntimeS
   const record = requireObject(input, "runtime");
   assertOnlyKeys(record, ["timeoutMs", "workspace", "environment", "settings", "extensions"], "runtime");
   const out: Record<string, unknown> = {};
-  if (Object.hasOwn(input, "timeoutMs")) {
+  if (Object.hasOwn(record, "timeoutMs")) {
+    const timeoutMs = record.timeoutMs;
     if (
-      input.timeoutMs !== null &&
-      (typeof input.timeoutMs !== "number" ||
-        !Number.isInteger(input.timeoutMs) ||
-        input.timeoutMs < 0 ||
-        input.timeoutMs > EXECUTION_MAX_TIMEOUT_MS)
+      timeoutMs !== null &&
+      (typeof timeoutMs !== "number" ||
+        !Number.isInteger(timeoutMs) ||
+        timeoutMs < 0 ||
+        timeoutMs > EXECUTION_MAX_TIMEOUT_MS)
     ) {
       throw new TypeError(`runtime.timeoutMs must be null or an integer from 0 through ${EXECUTION_MAX_TIMEOUT_MS}`);
     }
-    out.timeoutMs = input.timeoutMs;
+    out.timeoutMs = timeoutMs;
   }
-  if (Object.hasOwn(input, "workspace")) {
-    if (input.workspace !== null && typeof input.workspace !== "string") {
+  if (Object.hasOwn(record, "workspace")) {
+    if (record.workspace !== null && typeof record.workspace !== "string") {
       throw new TypeError("runtime.workspace must be a string or null");
     }
-    out.workspace = input.workspace;
+    out.workspace = record.workspace;
   }
-  if (Object.hasOwn(input, "environment")) {
-    if (input.environment === null) out.environment = null;
+  if (Object.hasOwn(record, "environment")) {
+    if (record.environment === null) out.environment = null;
     else {
-      const environment = cloneExecutionJsonObject(input.environment, "runtime.environment");
+      const environment = cloneExecutionJsonObject(record.environment, "runtime.environment");
       if (Object.values(environment).some((value) => typeof value !== "string")) {
         throw new TypeError("runtime.environment values must be strings");
       }
       out.environment = environment;
     }
   }
-  if (Object.hasOwn(input, "settings")) {
-    out.settings = input.settings === null ? null : cloneExecutionJsonObject(input.settings, "runtime.settings");
+  if (Object.hasOwn(record, "settings")) {
+    out.settings = record.settings === null ? null : cloneExecutionJsonObject(record.settings, "runtime.settings");
   }
-  if (Object.hasOwn(input, "extensions")) {
-    out.extensions = cloneAdapterExtensions(input.extensions, "runtime.extensions");
+  if (Object.hasOwn(record, "extensions")) {
+    out.extensions = cloneAdapterExtensions(record.extensions, "runtime.extensions");
   }
   return Object.freeze(out) as unknown as Readonly<ResolvedRuntimeSettings>;
 }
@@ -326,37 +363,36 @@ function cloneNotice(input: LoweringNotice, index: number): Readonly<LoweringNot
   const path = `notices[${index}]`;
   const record = requireObject(input, path);
   assertOnlyKeys(record, ["code", "severity", "adapter", "field", "message", "details"], path);
-  for (const key of ["code", "severity", "adapter", "message"] as const) requireOwn(record, key, path);
-  requireString(input.code, `notices[${index}].code`);
-  requireString(input.adapter, `notices[${index}].adapter`);
-  requireString(input.message, `notices[${index}].message`);
-  if (input.severity !== "info" && input.severity !== "warning") {
+  const code = requireString(requireOwn(record, "code", path), `${path}.code`);
+  const severity = requireOwn(record, "severity", path);
+  const adapter = requireString(requireOwn(record, "adapter", path), `${path}.adapter`);
+  const message = requireString(requireOwn(record, "message", path), `${path}.message`);
+  if (severity !== "info" && severity !== "warning") {
     throw new TypeError(`notices[${index}].severity is invalid`);
   }
   const out: Record<string, unknown> = {
-    code: input.code,
-    severity: input.severity,
-    adapter: input.adapter,
-    message: input.message,
+    code,
+    severity,
+    adapter,
+    message,
   };
-  if (Object.hasOwn(input, "field")) {
-    if (input.field !== null && typeof input.field !== "string") {
+  if (Object.hasOwn(record, "field")) {
+    if (record.field !== null && typeof record.field !== "string") {
       throw new TypeError(`notices[${index}].field must be a string or null`);
     }
-    out.field = input.field;
+    out.field = record.field;
   }
-  if (Object.hasOwn(input, "details")) {
-    out.details = input.details === null ? null : cloneExecutionJsonObject(input.details, `notices[${index}].details`);
+  if (Object.hasOwn(record, "details")) {
+    out.details = record.details === null ? null : cloneExecutionJsonObject(record.details, `${path}.details`);
   }
   return Object.freeze(out) as unknown as Readonly<LoweringNotice>;
 }
 
 function cloneResolvedCommandLeaf(input: ResolvedCommandContent): ResolvedCommandContent {
   if (!isResolvedCommand(input)) throw new TypeError("command must be constructed by the execution boundary");
-  const record = input as unknown as Record<PropertyKey, unknown>;
-  assertOnlyKeys(record, ["template", "argumentInput", "content", "source", "extensions"], "command", [
-    resolvedCommandBrand,
-  ]);
+  const allowedSymbols = new Set([resolvedCommandBrand]);
+  const record = requireObject(input, "command", allowedSymbols);
+  assertOnlyKeys(record, ["template", "argumentInput", "content", "source", "extensions"], "command", allowedSymbols);
   const template = requireOwn(record, "template", "command");
   const content = requireOwn(record, "content", "command");
   const source = requireOwn(record, "source", "command");
@@ -368,27 +404,28 @@ function cloneResolvedCommandLeaf(input: ResolvedCommandContent): ResolvedComman
     content,
     source: source === null ? null : decodeExecutionSourceIdentity(source, "command.source"),
   };
-  copyArgumentInput(input, out);
-  if (Object.hasOwn(input, "extensions")) {
-    out.extensions = cloneAdapterExtensions(input.extensions, "command.extensions");
+  copyArgumentInput(record, out);
+  if (Object.hasOwn(record, "extensions")) {
+    out.extensions = cloneAdapterExtensions(record.extensions, "command.extensions");
   }
-  return defineBrand(out, resolvedCommandBrand) as unknown as ResolvedCommandContent;
+  return defineBrand(out, resolvedCommandBrand, resolvedCommandInstances) as unknown as ResolvedCommandContent;
 }
 
 function cloneResolvedPersonaLeaf(input: ResolvedPersonaContent): ResolvedPersonaContent {
   if (!isResolvedPersona(input)) throw new TypeError("persona must be constructed by the execution boundary");
-  const record = input as unknown as Record<PropertyKey, unknown>;
-  assertOnlyKeys(record, ["content", "source", "extensions"], "persona", [resolvedPersonaBrand]);
+  const allowedSymbols = new Set([resolvedPersonaBrand]);
+  const record = requireObject(input, "persona", allowedSymbols);
+  assertOnlyKeys(record, ["content", "source", "extensions"], "persona", allowedSymbols);
   const content = requireOwn(record, "content", "persona");
   if (typeof content !== "string") throw new TypeError("persona.content must be a string");
   const out: Record<string, unknown> = {
     content,
     source: decodeExecutionSourceIdentity(requireOwn(record, "source", "persona"), "persona.source"),
   };
-  if (Object.hasOwn(input, "extensions")) {
-    out.extensions = cloneAdapterExtensions(input.extensions, "persona.extensions");
+  if (Object.hasOwn(record, "extensions")) {
+    out.extensions = cloneAdapterExtensions(record.extensions, "persona.extensions");
   }
-  return defineBrand(out, resolvedPersonaBrand) as unknown as ResolvedPersonaContent;
+  return defineBrand(out, resolvedPersonaBrand, resolvedPersonaInstances) as unknown as ResolvedPersonaContent;
 }
 
 export type ResolvedExecutionRequestInput = Omit<ResolvedExecutionRequestV1, "schemaVersion">;
@@ -429,24 +466,24 @@ export function createResolvedExecutionRequest(input: ResolvedExecutionRequestIn
     runtime: cloneRuntime(runtime as unknown as ResolvedRuntimeSettings),
     notices: Object.freeze(clonedNotices.map((notice, index) => cloneNotice(notice as LoweringNotice, index))),
   };
-  if (Object.hasOwn(input, "persona")) {
-    if (input.persona !== null && !isResolvedPersona(input.persona)) {
+  if (Object.hasOwn(record, "persona")) {
+    if (record.persona !== null && !isResolvedPersona(record.persona)) {
       throw new TypeError("persona must be null or constructed by the execution boundary");
     }
-    out.persona = input.persona === null ? null : cloneResolvedPersonaLeaf(input.persona);
+    out.persona = record.persona === null ? null : cloneResolvedPersonaLeaf(record.persona);
   }
-  if (Object.hasOwn(input, "model")) {
-    if (input.model === undefined) throw new TypeError("model must be omitted, null, or a model selection");
-    out.model = input.model === null ? null : cloneModel(input.model);
+  if (Object.hasOwn(record, "model")) {
+    if (record.model === undefined) throw new TypeError("model must be omitted, null, or a model selection");
+    out.model = record.model === null ? null : cloneModel(record.model as ResolvedModelSelection);
   }
-  if (Object.hasOwn(input, "inference")) {
-    out.inference = input.inference === null ? null : cloneExecutionJsonObject(input.inference, "inference");
+  if (Object.hasOwn(record, "inference")) {
+    out.inference = record.inference === null ? null : cloneExecutionJsonObject(record.inference, "inference");
   }
-  if (Object.hasOwn(input, "outputSchema")) {
+  if (Object.hasOwn(record, "outputSchema")) {
     out.outputSchema =
-      input.outputSchema === null ? null : cloneExecutionJsonObject(input.outputSchema, "outputSchema");
+      record.outputSchema === null ? null : cloneExecutionJsonObject(record.outputSchema, "outputSchema");
   }
-  if (Object.hasOwn(input, "tools")) out.tools = cloneToolSelection(input.tools, "tools");
+  if (Object.hasOwn(record, "tools")) out.tools = cloneToolSelection(record.tools, "tools");
   const toolsRequireAuthorization = toolSelectionRequiresAuthorization(out.tools, Object.hasOwn(out, "tools"));
   const authorizationStatus = (out.authorization as ToolAuthorizationResult).status;
   if (toolsRequireAuthorization && authorizationStatus === "not-required") {
@@ -455,10 +492,12 @@ export function createResolvedExecutionRequest(input: ResolvedExecutionRequestIn
   if (!toolsRequireAuthorization && authorizationStatus !== "not-required") {
     throw new TypeError("empty or omitted tool selection requires authorization.status not-required");
   }
-  if (Object.hasOwn(input, "extensions")) {
-    out.extensions = cloneAdapterExtensions(input.extensions, "request.extensions");
+  if (Object.hasOwn(record, "extensions")) {
+    out.extensions = cloneAdapterExtensions(record.extensions, "request.extensions");
   }
-  return Object.freeze(out) as unknown as ResolvedExecutionRequestV1;
+  const frozen = Object.freeze(out) as unknown as ResolvedExecutionRequestV1;
+  resolvedRequestInstances.add(frozen);
+  return frozen;
 }
 
 function toolSelectionRequiresAuthorization(value: unknown, present: boolean): boolean {
@@ -471,37 +510,25 @@ function toolSelectionRequiresAuthorization(value: unknown, present: boolean): b
   return typeof value === "object" && value !== null && Object.keys(value).length > 0;
 }
 
-function requireObject(value: unknown, path: string): Record<PropertyKey, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${path} must be an object`);
-  }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    throw new TypeError(`${path} must use a plain or null prototype`);
-  }
-  return value as Record<PropertyKey, unknown>;
+function requireObject(
+  value: unknown,
+  path: string,
+  allowedSymbols: ReadonlySet<symbol> = new Set(),
+): StrictRecordSnapshot {
+  return snapshotStrictRecord(value, path, { allowedSymbols });
 }
 
 function assertOnlyKeys(
-  value: Record<PropertyKey, unknown>,
+  value: StrictRecordSnapshot,
   allowed: readonly string[],
   path: string,
-  allowedSymbols: readonly symbol[] = [],
+  allowedSymbols: ReadonlySet<symbol> = new Set(),
 ): void {
-  const allowedSet = new Set(allowed);
-  const allowedSymbolSet = new Set(allowedSymbols);
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key === "symbol") {
-      if (!allowedSymbolSet.has(key)) throw new TypeError(`${path} contains unsupported field: ${String(key)}`);
-      continue;
-    }
-    if (!allowedSet.has(key)) throw new TypeError(`${path} contains unsupported field: ${key}`);
-  }
+  assertSnapshotKeys(value, allowed, path, allowedSymbols);
 }
 
-function requireOwn(value: Record<PropertyKey, unknown>, key: string, path: string): unknown {
-  if (!Object.hasOwn(value, key)) throw new TypeError(`${path}.${key} is required`);
-  return value[key];
+function requireOwn(value: StrictRecordSnapshot, key: string, path: string): unknown {
+  return requireSnapshotField(value, key, path);
 }
 
 function decodeExtensions(value: unknown, path: string): AdapterOwnedExtensions {
@@ -527,7 +554,7 @@ function decodeResolvedCommand(value: unknown): ResolvedCommandContent {
     out.argumentInput = input.argumentInput;
   }
   if (Object.hasOwn(input, "extensions")) out.extensions = decodeExtensions(input.extensions, "command.extensions");
-  return defineBrand(out, resolvedCommandBrand) as unknown as ResolvedCommandContent;
+  return defineBrand(out, resolvedCommandBrand, resolvedCommandInstances) as unknown as ResolvedCommandContent;
 }
 
 function decodeResolvedPersona(value: unknown): ResolvedPersonaContent {
@@ -538,7 +565,7 @@ function decodeResolvedPersona(value: unknown): ResolvedPersonaContent {
   const source = decodeExecutionSourceIdentity(requireOwn(input, "source", "persona"), "persona.source");
   const out: Record<string, unknown> = { content, source };
   if (Object.hasOwn(input, "extensions")) out.extensions = decodeExtensions(input.extensions, "persona.extensions");
-  return defineBrand(out, resolvedPersonaBrand) as unknown as ResolvedPersonaContent;
+  return defineBrand(out, resolvedPersonaBrand, resolvedPersonaInstances) as unknown as ResolvedPersonaContent;
 }
 
 function decodeEngine(value: unknown): Readonly<ResolvedEngineSelection> {
@@ -625,11 +652,117 @@ export function decodeResolvedExecutionRequest(value: unknown): ResolvedExecutio
   return createResolvedExecutionRequest(request as unknown as ResolvedExecutionRequestInput);
 }
 
+function projectIdentity(identity: Readonly<ExecutionSourceIdentity>): Record<string, unknown> {
+  return {
+    ref: identity.ref,
+    bundle: identity.bundle,
+    adapter: identity.adapter,
+    file: identity.file,
+    hash: identity.hash,
+  };
+}
+
+function projectCommand(command: ResolvedCommandContent): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    template: command.template,
+    content: command.content,
+    source: command.source === null ? null : projectIdentity(command.source),
+  };
+  if (Object.hasOwn(command, "argumentInput")) out.argumentInput = command.argumentInput;
+  if (Object.hasOwn(command, "extensions")) out.extensions = command.extensions;
+  return out;
+}
+
+function projectPersona(persona: ResolvedPersonaContent): Record<string, unknown> {
+  const out: Record<string, unknown> = { content: persona.content, source: projectIdentity(persona.source) };
+  if (Object.hasOwn(persona, "extensions")) out.extensions = persona.extensions;
+  return out;
+}
+
+function projectEngine(engine: Readonly<ResolvedEngineSelection>): Record<string, unknown> {
+  const out: Record<string, unknown> = { name: engine.name, kind: engine.kind };
+  for (const key of ["platform", "settings", "extensions"] as const) {
+    if (Object.hasOwn(engine, key)) out[key] = engine[key];
+  }
+  return out;
+}
+
+function projectModel(model: Readonly<ResolvedModelSelection>): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    input: model.input,
+    interpretation: model.interpretation,
+    resolved: model.resolved,
+  };
+  if (Object.hasOwn(model, "extensions")) out.extensions = model.extensions;
+  return out;
+}
+
+function projectAuthorization(authorization: Readonly<ToolAuthorizationResult>): Record<string, unknown> {
+  const out: Record<string, unknown> = { status: authorization.status };
+  for (const key of ["reason", "policy"] as const) {
+    if (Object.hasOwn(authorization, key)) out[key] = authorization[key];
+  }
+  return out;
+}
+
+function projectRuntime(runtime: Readonly<ResolvedRuntimeSettings>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of ["timeoutMs", "workspace", "environment", "settings", "extensions"] as const) {
+    if (Object.hasOwn(runtime, key)) out[key] = runtime[key];
+  }
+  return out;
+}
+
+function projectNotice(notice: Readonly<LoweringNotice>): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    code: notice.code,
+    severity: notice.severity,
+    adapter: notice.adapter,
+    message: notice.message,
+  };
+  for (const key of ["field", "details"] as const) {
+    if (Object.hasOwn(notice, key)) out[key] = notice[key];
+  }
+  return out;
+}
+
+function projectResolvedExecutionWire(request: ResolvedExecutionRequestV1): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    schemaVersion: RESOLVED_EXECUTION_SCHEMA_VERSION,
+    command: projectCommand(request.command),
+    engine: projectEngine(request.engine),
+    authorization: projectAuthorization(request.authorization),
+    runtime: projectRuntime(request.runtime),
+    notices: request.notices.map(projectNotice),
+  };
+  if (Object.hasOwn(request, "persona")) {
+    if (request.persona === undefined) throw new TypeError("constructed request persona cannot be undefined");
+    out.persona = request.persona === null ? null : projectPersona(request.persona);
+  }
+  if (Object.hasOwn(request, "model")) {
+    if (request.model === undefined) throw new TypeError("constructed request model cannot be undefined");
+    out.model = request.model === null ? null : projectModel(request.model);
+  }
+  for (const key of ["inference", "outputSchema", "tools", "extensions"] as const) {
+    if (Object.hasOwn(request, key)) out[key] = request[key];
+  }
+  return out;
+}
+
+function encodeResolvedExecutionWire(request: ResolvedExecutionRequestV1): string {
+  const json = cloneExecutionJson(projectResolvedExecutionWire(request), "resolved execution request wire DTO");
+  return `${JSON.stringify(sortExecutionJson(json))}\n`;
+}
+
 /** Stable bytes for freeze hashes and entrypoint-equivalence projections. */
 export function canonicalResolvedExecutionRequest(request: ResolvedExecutionRequestV1): string {
-  if (request.schemaVersion !== RESOLVED_EXECUTION_SCHEMA_VERSION) {
-    throw new TypeError(`unsupported resolved execution schemaVersion: ${String(request.schemaVersion)}`);
+  if (typeof request !== "object" || request === null || !resolvedRequestInstances.has(request)) {
+    throw new TypeError("resolved execution request must be constructed by the execution boundary");
   }
-  const json = cloneExecutionJson(request, "resolved execution request");
-  return `${JSON.stringify(sortExecutionJson(json))}\n`;
+  const canonical = encodeResolvedExecutionWire(request);
+  const decoded = decodeResolvedExecutionRequest(JSON.parse(canonical));
+  if (encodeResolvedExecutionWire(decoded) !== canonical) {
+    throw new TypeError("resolved execution request failed canonical decode/re-encode validation");
+  }
+  return canonical;
 }

@@ -283,6 +283,26 @@ describe("resolved execution request v1", () => {
     const safe = createAdapterExtensions("claude", { argumentHint: "<target>" });
     expect(Object.getPrototypeOf(safe)).toBeNull();
     expect(Object.isFrozen(safe)).toBe(true);
+
+    let entryReads = 0;
+    const accessorEntry: unknown[] = [];
+    Object.defineProperty(accessorEntry, "0", {
+      enumerable: true,
+      get: () => {
+        entryReads += 1;
+        return "claude";
+      },
+    });
+    Object.defineProperty(accessorEntry, "1", {
+      enumerable: true,
+      get: () => {
+        entryReads += 1;
+        return { argumentHint: "<target>" };
+      },
+    });
+    accessorEntry.length = 2;
+    expect(() => createAdapterExtensions(accessorEntry as never)).toThrow(/extension entry|array|data propert/i);
+    expect(entryReads).toBe(0);
   });
 
   test("uses locale-independent canonical key order and rejects invalid optional model extensions", () => {
@@ -346,6 +366,68 @@ describe("resolved execution request v1", () => {
     expect(() => createResolvedExecutionRequest({ ...base, command: overridden })).toThrow(/execution boundary/i);
   });
 
+  test("does not treat reflected construction symbols as execution provenance", () => {
+    const source = commandSource();
+    const command = createResolvedCommand({ source, content: source.content });
+    const persona = createResolvedPersona(personaSource());
+    const [commandBrand] = Object.getOwnPropertySymbols(command);
+    const [personaBrand] = Object.getOwnPropertySymbols(persona);
+    if (!commandBrand || !personaBrand) throw new Error("execution leaf brands are missing");
+
+    const forgedCommand = {
+      template: command.template,
+      content: "---\nraw: leaked\n---\nDo the wrong work.",
+      source: command.source,
+    };
+    Object.defineProperty(forgedCommand, commandBrand, { value: true, enumerable: false });
+    Object.freeze(forgedCommand);
+
+    const forgedPersona = {
+      content: "---\nfrontmatter: leaked\n---\nWrong persona.",
+      source: persona.source,
+    };
+    Object.defineProperty(forgedPersona, personaBrand, { value: true, enumerable: false });
+    Object.freeze(forgedPersona);
+
+    const base = {
+      command,
+      engine: { name: "fixture-llm", kind: "llm" as const },
+      authorization: { status: "not-required" as const },
+      runtime: {},
+      notices: [],
+    };
+    expect(() => createResolvedExecutionRequest({ ...base, command: forgedCommand as never })).toThrow(
+      /execution boundary/i,
+    );
+    expect(() => createResolvedExecutionRequest({ ...base, persona: forgedPersona as never })).toThrow(
+      /execution boundary/i,
+    );
+  });
+
+  test("rejects accessor-backed structured inputs before reading changing values", () => {
+    const source = commandSource();
+    let nameReads = 0;
+    const engine = { kind: "llm" } as Record<string, unknown>;
+    Object.defineProperty(engine, "name", {
+      enumerable: true,
+      get: () => {
+        nameReads += 1;
+        return nameReads === 1 ? "fixture-llm" : "mutated-engine";
+      },
+    });
+
+    expect(() =>
+      createResolvedExecutionRequest({
+        command: createResolvedCommand({ source, content: source.content }),
+        engine: engine as never,
+        authorization: { status: "not-required" },
+        runtime: {},
+        notices: [],
+      }),
+    ).toThrow(/engine\.name|accessor|data propert/i);
+    expect(nameReads).toBe(0);
+  });
+
   test("clones caller-owned nested records before they can be mutated", () => {
     const source = commandSource();
     const engineSettings = { endpoint: "before" };
@@ -386,8 +468,13 @@ describe("resolved execution request v1", () => {
       { ref: "fixture//commands/re\u0301view" },
       { ref: "fixture//commands/review#fragment" },
       { bundle: "other" },
+      { file: "C:/commands/review.md" },
       { file: "commands/\u0000review.md" },
       { file: "commands/\u001freview.md" },
+      { file: "commands/\u2028review.md" },
+      { ref: "fixture//commands/\u202Ereview" },
+      { file: "commands/\uFEFFreview.md" },
+      { ref: "fix\uD800ture//commands/review", bundle: "fix\uD800ture" },
       { adapter: "bad adapter" },
       { adapter: "Bad-Adapter" },
       { adapter: "bad.adapter" },
@@ -426,6 +513,41 @@ describe("resolved execution request v1", () => {
       Object.assign(hostile.command.source, patch);
       expect(() => decodeResolvedExecutionRequest(hostile)).toThrow();
     }
+
+    expect(
+      decodeExecutionSourceIdentity({
+        ...valid,
+        ref: "fixture//commands/レビュー",
+        file: "commands/レビュー.md",
+      }),
+    ).toMatchObject({ ref: "fixture//commands/レビュー", file: "commands/レビュー.md" });
+    expect(
+      decodeExecutionSourceIdentity({
+        ...valid,
+        ref: "fixture//commands/👩‍💻",
+        file: "commands/نامه‌نگاری.md",
+      }),
+    ).toMatchObject({ ref: "fixture//commands/👩‍💻", file: "commands/نامه‌نگاری.md" });
+  });
+
+  test("canonical encoding accepts only provenance-validated requests", () => {
+    const source = commandSource();
+    const request = createResolvedExecutionRequest({
+      command: createResolvedCommand({ source, content: source.content }),
+      engine: { name: "fixture-llm", kind: "llm" },
+      authorization: { status: "not-required" },
+      runtime: {},
+      notices: [],
+    });
+    const canonical = canonicalResolvedExecutionRequest(request);
+    const decoded = decodeResolvedExecutionRequest(JSON.parse(canonical));
+    expect(canonicalResolvedExecutionRequest(decoded)).toBe(canonical);
+
+    const unknown = { ...request, capabilities: { tools: true } };
+    expect(() => canonicalResolvedExecutionRequest(unknown as never)).toThrow(/constructed|provenance|boundary/i);
+    expect(() => canonicalResolvedExecutionRequest(JSON.parse(canonical) as never)).toThrow(
+      /constructed|provenance|boundary/i,
+    );
   });
 
   test("rejects unknown constructor fields, mismatched exact models, and unsafe timeouts", () => {

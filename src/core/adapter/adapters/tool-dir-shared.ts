@@ -262,10 +262,16 @@ function nativeExecutionExtensions(
   data: Readonly<Record<string, unknown>>,
 ): AdapterOwnedExtensions | undefined {
   const values: Record<string, string> = {};
-  if (layout.adapterId === "claude" && cls.type === "command" && typeof data["argument-hint"] === "string") {
+  if (layout.adapterId === "claude" && cls.type === "command" && Object.hasOwn(data, "argument-hint")) {
+    if (typeof data["argument-hint"] !== "string") {
+      throw new TypeError("frontmatter.argument-hint must be a string");
+    }
     values.argumentHint = data["argument-hint"];
   }
-  if (layout.adapterId === "opencode" && typeof data.mode === "string") values.mode = data.mode;
+  if (layout.adapterId === "opencode" && Object.hasOwn(data, "mode")) {
+    if (typeof data.mode !== "string") throw new TypeError("frontmatter.mode must be a string");
+    values.mode = data.mode;
+  }
   return Object.keys(values).length > 0 ? createAdapterExtensions(layout.adapterId, values) : undefined;
 }
 

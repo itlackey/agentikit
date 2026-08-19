@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { snapshotStrictRecord } from "./record";
+
 /** JSON-safe values carried across the frozen execution boundary. */
 export type ExecutionJsonPrimitive = string | number | boolean | null;
 export interface ExecutionJsonObject {
@@ -41,27 +43,39 @@ export function cloneExecutionJson(
   if (Array.isArray(value)) {
     if (Object.getPrototypeOf(value) !== Array.prototype) fail(path, "array must use the standard Array prototype");
     const ownKeys = Reflect.ownKeys(value);
-    if (ownKeys.length !== value.length + 1) {
+    const lengthDescriptor = Reflect.getOwnPropertyDescriptor(value, "length");
+    if (
+      !lengthDescriptor ||
+      !("value" in lengthDescriptor) ||
+      typeof lengthDescriptor.value !== "number" ||
+      !Number.isInteger(lengthDescriptor.value) ||
+      lengthDescriptor.value < 0
+    ) {
+      fail(path, "array length must be a stable nonnegative integer data property");
+    }
+    const length = lengthDescriptor.value;
+    if (ownKeys.length !== length + 1) {
       fail(path, "array must be dense and contain no non-index properties");
     }
     for (const key of ownKeys) {
       if (key === "length") continue;
-      if (typeof key !== "string" || !/^(?:0|[1-9]\d*)$/.test(key) || Number(key) >= value.length) {
+      if (typeof key !== "string" || !/^(?:0|[1-9]\d*)$/.test(key) || Number(key) >= length) {
         fail(path, "array must contain only canonical index properties");
       }
     }
     const cloned: ExecutionJsonValue[] = [];
-    for (let index = 0; index < value.length; index++) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-      if (!descriptor || !("value" in descriptor)) fail(path, "array must be dense data properties");
+    for (let index = 0; index < length; index++) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+        fail(path, "array must be dense enumerable data properties");
+      }
       cloned.push(cloneExecutionJson(descriptor.value, `${path}[${index}]`, nextAncestors));
     }
     return Object.freeze(cloned);
   }
 
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) fail(path, "must contain only plain objects");
-  const entries = Object.entries(value).map(([key, child]) => [
+  const snapshot = snapshotStrictRecord(value, path);
+  const entries = Object.entries(snapshot).map(([key, child]) => [
     key,
     cloneExecutionJson(child, `${path}.${key}`, nextAncestors),
   ]) as Array<[string, ExecutionJsonValue]>;

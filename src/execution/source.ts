@@ -9,13 +9,16 @@ import {
   type ExecutionJsonObject,
   type ExecutionJsonValue,
 } from "./json";
+import { assertSnapshotKeys, type StrictRecordSnapshot, snapshotStrictRecord } from "./record";
 
 export const EXECUTION_SOURCE_SCHEMA_VERSION = 1 as const;
 
 /** Current internal adapter identifiers are lowercase kebab-case registry keys. */
 export const EXECUTION_ADAPTER_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
-const CONTROL_CHARACTER_PATTERN = /\p{Cc}/u;
+const CONTROL_OR_LINE_SEPARATOR_PATTERN = /[\p{Cc}\p{Zl}\p{Zp}]/u;
+const FORMAT_CHARACTER_PATTERN = /\p{Cf}/u;
+const WINDOWS_DRIVE_PREFIX_PATTERN = /^[A-Za-z]:/;
 const RESERVED_EXTENSION_OWNERS = new Set(["__proto__", "constructor", "prototype", "tostring"]);
 
 /** Exact identity of the authoritative native file from which content was rendered. */
@@ -56,6 +59,7 @@ export interface UnresolvedExecutionDefaults {
 }
 
 const renderedSourceBrand: unique symbol = Symbol("akm.adapter-rendered-execution-source");
+const renderedSourceInstances = new WeakSet<object>();
 
 interface AdapterRenderedExecutionSourceBase {
   readonly schemaVersion: typeof EXECUTION_SOURCE_SCHEMA_VERSION;
@@ -77,24 +81,12 @@ export interface AdapterRenderedPersonaSource extends AdapterRenderedExecutionSo
 
 export type AdapterRenderedExecutionSource = AdapterRenderedCommandSource | AdapterRenderedPersonaSource;
 
-function requireRecord(value: unknown, path: string): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${path} must be an object`);
-  }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    throw new TypeError(`${path} must use a plain or null prototype`);
-  }
-  return value as Record<string, unknown>;
+function requireRecord(value: unknown, path: string): StrictRecordSnapshot {
+  return snapshotStrictRecord(value, path);
 }
 
-function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], path: string): void {
-  const allowedSet = new Set(allowed);
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string" || !allowedSet.has(key)) {
-      throw new TypeError(`${path} contains unsupported field: ${String(key)}`);
-    }
-  }
+function assertOnlyKeys(value: StrictRecordSnapshot, allowed: readonly string[], path: string): void {
+  assertSnapshotKeys(value, allowed, path);
 }
 
 function validateExtensionOwner(owner: string): void {
@@ -114,6 +106,20 @@ function frozenNullPrototypeMap<T>(entries: readonly (readonly [string, T])[]): 
 
 type ExtensionEntry = readonly [owner: string, values: ExecutionJsonObject];
 
+function cloneExtensionEntry(value: unknown, index: number): ExtensionEntry {
+  const path = `extension entry ${index}`;
+  const cloned = cloneExecutionJson(value, path);
+  if (!Array.isArray(cloned) || cloned.length !== 2) {
+    throw new TypeError(`${path} must be a two-element [owner, values] array`);
+  }
+  const [owner, values] = cloned;
+  if (typeof owner !== "string") throw new TypeError(`${path} owner must be a string`);
+  if (values === null || Array.isArray(values) || typeof values !== "object") {
+    throw new TypeError(`${path} values must be a JSON object`);
+  }
+  return [owner, values];
+}
+
 export function createAdapterExtensions(owner: string, values: ExecutionJsonObject): AdapterOwnedExtensions;
 export function createAdapterExtensions(
   first: ExtensionEntry,
@@ -124,13 +130,14 @@ export function createAdapterExtensions(
   second?: ExecutionJsonObject | ExtensionEntry,
   ...rest: readonly ExtensionEntry[]
 ): AdapterOwnedExtensions {
-  const entries: readonly ExtensionEntry[] =
+  const rawEntries: readonly unknown[] =
     typeof first === "string"
       ? [[first, second as ExecutionJsonObject]]
       : [first, ...(second === undefined ? [] : [second as ExtensionEntry]), ...rest];
   const seen = new Set<string>();
   const cloned: Array<readonly [string, ExecutionJsonObject]> = [];
-  for (const [owner, values] of entries) {
+  for (const [index, rawEntry] of rawEntries.entries()) {
+    const [owner, values] = cloneExtensionEntry(rawEntry, index);
     validateExtensionOwner(owner);
     if (seen.has(owner)) throw new TypeError(`duplicate extension owner: ${owner}`);
     seen.add(owner);
@@ -141,28 +148,53 @@ export function createAdapterExtensions(
 
 export function cloneAdapterExtensions(value: unknown, path: string): AdapterOwnedExtensions {
   const record = requireRecord(value, path);
-  const entries: ExtensionEntry[] = [];
-  for (const key of Reflect.ownKeys(record)) {
-    if (typeof key !== "string") throw new TypeError(`${path} contains unsupported extension owner: ${String(key)}`);
-    const descriptor = Object.getOwnPropertyDescriptor(record, key);
-    if (!descriptor?.enumerable || !("value" in descriptor)) {
-      throw new TypeError(`${path}.${key} must be an enumerable data property`);
-    }
-    entries.push([key, cloneExecutionJsonObject(descriptor.value, `${path}.${key}`)]);
-  }
+  const entries = Object.entries(record).map(
+    ([owner, fields]) => [owner, cloneExecutionJsonObject(fields, `${path}.${owner}`)] as const,
+  );
   const [first, ...rest] = entries;
   return first ? createAdapterExtensions(first, ...rest) : frozenNullPrototypeMap([]);
 }
 
 function requireCanonicalString(value: unknown, path: string): string {
-  if (typeof value !== "string" || value.length === 0 || value.normalize("NFC") !== value) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    !isWellFormedUnicode(value) ||
+    value.normalize("NFC") !== value
+  ) {
     throw new TypeError(`${path} must be a non-empty NFC string`);
   }
-  if (CONTROL_CHARACTER_PATTERN.test(value)) throw new TypeError(`${path} must not contain control characters`);
+  if (hasUnsafeIdentityCharacter(value)) {
+    throw new TypeError(`${path} must not contain Unicode control or dangerous format characters`);
+  }
   return value;
 }
 
-function validateCanonicalIdentity(input: Record<string, unknown>, path: string): ExecutionSourceIdentity {
+function hasUnsafeIdentityCharacter(value: string): boolean {
+  for (const character of value) {
+    if (CONTROL_OR_LINE_SEPARATOR_PATTERN.test(character)) return true;
+    // Join controls are meaningful in emoji and several writing systems. All
+    // other format controls are rejected because they can conceal identity.
+    if (FORMAT_CHARACTER_PATTERN.test(character) && character !== "\u200C" && character !== "\u200D") return true;
+  }
+  return false;
+}
+
+function isWellFormedUnicode(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function validateCanonicalIdentity(input: StrictRecordSnapshot, path: string): ExecutionSourceIdentity {
   assertOnlyKeys(input, ["ref", "bundle", "adapter", "file", "hash"], path);
   const ref = requireCanonicalString(input.ref, `${path}.ref`);
   const bundle = requireCanonicalString(input.bundle, `${path}.bundle`);
@@ -191,6 +223,7 @@ function validateCanonicalIdentity(input: Record<string, unknown>, path: string)
   const segments = file.split("/");
   if (
     file.startsWith("/") ||
+    WINDOWS_DRIVE_PREFIX_PATTERN.test(file) ||
     file.includes("\\") ||
     segments.some((segment) => !segment || segment === "." || segment === "..")
   ) {
@@ -305,28 +338,33 @@ export function createAdapterRenderedExecutionSource(
     ["kind", "content", "identity", "defaults", "extensions"],
     "adapter-rendered execution source",
   );
-  if (input.kind !== "command" && input.kind !== "persona") throw new TypeError("execution source kind is invalid");
-  if (typeof input.content !== "string") throw new TypeError("execution source content must be a string");
-  const defaults = Object.hasOwn(input, "defaults") ? input.defaults : {};
+  const kind = record.kind;
+  const content = record.content;
+  if (kind !== "command" && kind !== "persona") throw new TypeError("execution source kind is invalid");
+  if (typeof content !== "string") throw new TypeError("execution source content must be a string");
+  const defaults = Object.hasOwn(record, "defaults") ? record.defaults : {};
   if (defaults === undefined) {
     throw new TypeError("execution source defaults must be omitted or be an object");
   }
   const source: Record<PropertyKey, unknown> = {
     schemaVersion: EXECUTION_SOURCE_SCHEMA_VERSION,
-    kind: input.kind,
-    content: input.content,
-    defaults: cloneDefaults(defaults),
-    identity: createExecutionSourceIdentity(input.identity),
+    kind,
+    content,
+    defaults: cloneDefaults(defaults as UnresolvedExecutionDefaults),
+    identity: createExecutionSourceIdentity(record.identity as ExecutionSourceIdentity),
   };
-  if (Object.hasOwn(input, "extensions")) {
-    source.extensions = cloneAdapterExtensions(input.extensions, "execution source extensions");
+  if (Object.hasOwn(record, "extensions")) {
+    source.extensions = cloneAdapterExtensions(record.extensions, "execution source extensions");
   }
   Object.defineProperty(source, renderedSourceBrand, { value: true, enumerable: false });
-  return Object.freeze(source) as unknown as AdapterRenderedExecutionSource;
+  const frozen = Object.freeze(source) as unknown as AdapterRenderedExecutionSource;
+  renderedSourceInstances.add(frozen);
+  return frozen;
 }
 
 function isAdapterRenderedSource(value: unknown, kind: "command" | "persona"): boolean {
   if (typeof value !== "object" || value === null) return false;
+  if (!renderedSourceInstances.has(value)) return false;
   if (Object.getPrototypeOf(value) !== Object.prototype || !Object.isFrozen(value)) return false;
   if (!Object.hasOwn(value, renderedSourceBrand)) return false;
   const required = new Set(["schemaVersion", "kind", "content", "defaults", "identity"]);
