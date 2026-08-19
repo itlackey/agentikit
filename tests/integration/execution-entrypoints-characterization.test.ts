@@ -181,48 +181,15 @@ describe("current execution entry points projected onto one test-only request sh
     });
   });
 
-  test("direct agent --workflow reaches the real asset-resolution and runner boundary", async () => {
-    writeSandboxConfig(fixtureConfig());
-    const workflowSource = path.join(WORKFLOW_ROOT, "current/agent-unit.md");
-    const installedWorkflow = path.join(storage.stashDir, "workflows/current-agent-unit.md");
-    installFixture(workflowSource, installedWorkflow);
-    const sourceBytes = captureFixtureBytes(WORKFLOW_ROOT);
-    const installedBytes = captureFixtureBytes(storage.stashDir);
-    await akmIndex({ stashDir: storage.stashDir, full: true });
-
-    const capture = await captureDirectAgentDispatch({
-      engine: "fixture-agent",
-      workflowRef: "workflows/current-agent-unit",
-      args: ["consumed-by-workflow-template-only"],
-      dispatch: {
-        prompt: "replaced by the resolved workflow body",
-        effort: "high",
-        schema: { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"] },
-      },
-    });
-
-    expect(capture.result).toMatchObject({ ok: true, engine: "fixture-agent" });
-    expect(capture.prompt).toBe(fs.readFileSync(installedWorkflow, "utf8"));
-    expect(capture.options.dispatch?.prompt).toBe(capture.prompt);
-    expect(capture.options.args).toBeUndefined();
-    expect(
-      projectCurrentRunnerRequestForTest({
-        runner: capture.runner,
-        prompt: capture.prompt,
-        dispatch: capture.options.dispatch,
-        timeoutMs: capture.options.timeoutMs,
-        workspace: capture.options.cwd,
-        environment: capture.options.env,
+  test("direct agent --workflow refuses to flatten workflow IR into anonymous prompt content", async () => {
+    await expect(
+      akmAgentDispatch({
+        engine: "fixture-agent",
+        workflowRef: "workflows/current-agent-unit",
+        args: ["must-not-be-substituted"],
+        agentConfig: fixtureConfig(),
       }),
-    ).toMatchObject({
-      command: { content: fs.readFileSync(workflowSource, "utf8") },
-      engine: { name: "fixture-agent", kind: "agent", platform: "aider" },
-      model: "fixture-default-model",
-      effort: "high",
-      schema: { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"] },
-    });
-    assertFixtureBytesUnchanged(WORKFLOW_ROOT, sourceBytes);
-    assertFixtureBytesUnchanged(storage.stashDir, installedBytes);
+    ).rejects.toThrow(/akm workflow run|cannot be flattened/i);
   });
 
   test("task command, workflow, and direct-LLM targets reach their production injection seams", async () => {
@@ -375,8 +342,8 @@ describe("current execution entry points projected onto one test-only request sh
   });
 });
 
-describe("explicitly non-normative 0.9.1 observations", () => {
-  test("direct agent assets currently supply the CLI system prompt, model hint, and tool policy", async () => {
+describe("WP3 authorization boundary", () => {
+  test("an agent asset cannot authorize its own nonempty tool selection", async () => {
     const base = fixtureConfig();
     const config: AkmConfig = {
       ...base,
@@ -399,15 +366,13 @@ describe("explicitly non-normative 0.9.1 observations", () => {
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
     const cli = await runCliCapture(["agent", "agents/contract-reviewer", "--prompt", PROMPT, "--format=json", "-q"]);
-    expect(cli.code).toBe(0);
-    const result = JSON.parse(cli.stdout) as { ok: boolean; stdout: string };
-    expect(result.ok).toBe(true);
-    expect(result.stdout).toContain("--system-prompt");
-    expect(result.stdout).toContain("Review the requested change without modifying files.");
-    expect(result.stdout).toContain("--model fixture-balanced");
-    expect(result.stdout).toContain("--allowedTools read,grep");
-    expect(result.stdout).toContain(PROMPT);
-    expect(result.stdout).not.toContain("type: agent");
+    expect(cli.code).toBe(78);
+    expect(cli.stdout).toBe("");
+    expect(JSON.parse(cli.stderr)).toMatchObject({
+      ok: false,
+      code: "EXECUTION_NOT_AUTHORIZED",
+      hint: expect.stringMatching(/policy|selected tools/i),
+    });
     assertFixtureBytesUnchanged(NATIVE_ROOT, fixtureBytes);
     assertFixtureBytesUnchanged(storage.stashDir, installedBytes);
   });

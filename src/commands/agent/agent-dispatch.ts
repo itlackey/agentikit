@@ -6,20 +6,20 @@
  * `akm agent [--engine <name>] [--prompt <text>] [--command <ref>] [--workflow <ref>]`
  *
  * Dispatch an agent by named engine, optionally injecting a prompt from
- * inline text, a stash command: asset, or a stash workflow: asset.
+ * inline text or a stash command asset. Legacy workflow flattening is rejected
+ * with a migration hint to the workflow runtime.
  *
- * When none of --prompt, --command, or --workflow are given, the agent is
- * launched interactively (no injected prompt).
+ * When no prompt, command, agent selector, model, or workflow is given, the
+ * native agent is launched interactively with no dispatch payload.
  *
- * The command arm is a compatibility delegate to the canonical command
- * invocation path. Workflow loading remains on the legacy path until WP7.
+ * Every noninteractive arm is a compatibility delegate to the canonical
+ * command invocation path.
  */
 
-import fs from "node:fs";
-import { parseRefInput } from "../../core/asset/resolve-ref";
 import type { AkmConfig } from "../../core/config/config";
-import { NotFoundError, UsageError } from "../../core/errors";
+import { UsageError } from "../../core/errors";
 import { warn } from "../../core/warn";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import type { UnresolvedExecutionDefaults } from "../../execution/source";
 import type { AgentDispatchRequest } from "../../integrations/agent/builder-shared";
 import {
@@ -41,20 +41,19 @@ export interface AkmAgentDispatchOptions {
   argumentInput?: string;
   /** Portable agent ref or native selector used by the canonical command path. */
   agentRef?: string;
+  /** @deprecated Workflows must run through `akm workflow run`. */
   workflowRef?: string;
   args?: string[];
   agentConfig?: AkmConfig;
   timeoutMs?: number;
   /**
-   * Working directory for the spawned agent CLI. Not honoured by the
-   * opencode-sdk path (the SDK server is process-wide; see the plan's open
-   * seam decision on per-call cwd).
+   * Working directory resolved into the canonical execution runtime. The SDK
+   * forwards it as its per-session directory query.
    */
   cwd?: string;
   /**
-   * When present, the platform-specific AgentCommandBuilder uses these fields
-   * to construct the argv (system prompt, model alias, tool policy). When
-   * absent, uses positional-prompt dispatch.
+   * Compatibility input projected into the common cascade. Raw system prompts
+   * and native argv are rejected; builders receive only the lowered result.
    */
   dispatch?: AgentDispatchRequest;
 }
@@ -80,52 +79,59 @@ export interface AkmAgentDispatchResult {
    * consumers see it alongside the stderr `warn()`.
    */
   warnings?: readonly string[];
+  /** Secret-free optimistic-lowering diagnostics from the selected engine adapter. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 /**
- * Fill `{{0}}`, `{{1}}`, ... placeholders in `template` with the
- * corresponding entries in `args`. Any placeholder index that exceeds the
- * args array is left as-is.
+ * Workflows have their own authoring, freeze, and resume boundary. Treating a
+ * workflow file as an anonymous prompt would discard that contract and let a
+ * second placeholder grammar escape the workflow runtime.
  */
-function fillPlaceholders(template: string, args: string[]): string {
-  return template.replace(/\{\{(\d+)\}\}/g, (match, idx) => {
-    const i = Number.parseInt(idx, 10);
-    return i < args.length ? args[i]! : match;
-  });
+function rejectLegacyWorkflowRef(workflowRef: string | undefined): void {
+  if (workflowRef === undefined) return;
+  throw new UsageError(
+    "--workflow cannot be flattened into agent prompt content; run it through `akm workflow run`.",
+    "INVALID_FLAG_VALUE",
+  );
 }
 
-/**
- * Resolve the body of an asset by ref string. The ref must parse as a
- * valid asset ref (e.g. `command:my-cmd`, `workflow:my-flow`). The file
- * must exist on disk (the index provides the file path).
- *
- * Throws `NotFoundError` when the ref cannot be resolved.
- */
-async function resolveAssetBody(ref: string): Promise<string> {
-  let parsed: ReturnType<typeof parseRefInput>;
-  try {
-    parsed = parseRefInput(ref);
-  } catch (err) {
+function canonicalCurrent(options: AkmAgentDispatchOptions): UnresolvedExecutionDefaults {
+  const current: Record<string, unknown> = {};
+  if (options.agentRef !== undefined) current.agent = options.agentRef;
+  if (options.engine !== undefined) current.engine = options.engine;
+  if (options.dispatch?.model !== undefined) current.model = options.dispatch.model;
+  if (Object.hasOwn(options.dispatch ?? {}, "inference")) current.inference = options.dispatch?.inference;
+  else if (options.dispatch?.effort !== undefined) current.inference = { effort: options.dispatch.effort };
+  if (options.dispatch?.schema !== undefined) current.outputSchema = options.dispatch.schema;
+  if (options.dispatch?.tools !== undefined) current.tools = options.dispatch.tools;
+  if (options.timeoutMs !== undefined) current.timeout = options.timeoutMs;
+  if (options.cwd !== undefined) current.workspace = options.cwd;
+  return current as UnresolvedExecutionDefaults;
+}
+
+function rejectRawPersona(options: AkmAgentDispatchOptions): void {
+  if (options.dispatch?.systemPrompt !== undefined) {
     throw new UsageError(
-      `Invalid asset ref "${ref}": ${err instanceof Error ? err.message : String(err)}`,
+      "An agent persona must be selected by agent ref; raw systemPrompt injection is not portable.",
       "INVALID_FLAG_VALUE",
     );
   }
+}
 
-  // Lazy import to avoid pulling the full indexer at startup.
-  const { lookup } = await import("../../indexer/indexer.js");
-  const entry = await lookup(parsed);
-  if (!entry) {
-    throw new NotFoundError(`Asset "${ref}" not found in the index. Run \`akm index\` to rebuild the index.`);
-  }
-
-  try {
-    return fs.readFileSync(entry.filePath, "utf8");
-  } catch (err) {
-    throw new NotFoundError(
-      `Asset "${ref}" is indexed but the file could not be read (${entry.filePath}): ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
+async function delegateCanonicalCommand(
+  options: AkmAgentDispatchOptions,
+  seams: AkmAgentDispatchSeams,
+  action: { readonly ref: string; readonly arguments?: string } | { readonly content: string },
+): Promise<AkmAgentDispatchResult> {
+  const execute = seams.executeCommand ?? executeCommandInvocation;
+  const result = await execute({
+    action,
+    config: options.agentConfig as AkmConfig,
+    current: canonicalCurrent(options),
+  });
+  for (const message of result.warnings ?? []) warn(message);
+  return result;
 }
 
 export async function akmAgentDispatch(
@@ -134,6 +140,8 @@ export async function akmAgentDispatch(
 ): Promise<AkmAgentDispatchResult> {
   if (!options.agentConfig)
     throw new UsageError("agent requires a valid config with an agent engine.", "MISSING_REQUIRED_ARGUMENT");
+
+  rejectLegacyWorkflowRef(options.workflowRef);
 
   if (options.commandRef) {
     if (options.prompt !== undefined || options.workflowRef !== undefined) {
@@ -146,33 +154,36 @@ export async function akmAgentDispatch(
         "Use --arguments <text> or the argumentInput API field.",
       );
     }
-    if (options.dispatch?.systemPrompt !== undefined) {
-      throw new UsageError(
-        "A command persona must be selected by agent ref; raw systemPrompt injection is not portable.",
-        "INVALID_FLAG_VALUE",
-      );
-    }
-    const current: Record<string, unknown> = {};
-    if (options.agentRef !== undefined) current.agent = options.agentRef;
-    if (options.engine !== undefined) current.engine = options.engine;
-    if (options.dispatch?.model !== undefined) current.model = options.dispatch.model;
-    if (options.dispatch?.tools !== undefined) current.tools = options.dispatch.tools;
-    if (options.dispatch?.effort !== undefined) current.inference = { effort: options.dispatch.effort };
-    if (options.dispatch?.schema !== undefined) current.outputSchema = options.dispatch.schema;
-    if (options.timeoutMs !== undefined) current.timeout = options.timeoutMs;
-    if (options.cwd !== undefined) current.workspace = options.cwd;
+    rejectRawPersona(options);
     const action = {
       ref: options.commandRef,
       ...(options.argumentInput === undefined ? {} : { arguments: options.argumentInput }),
     };
-    const execute = seams.executeCommand ?? executeCommandInvocation;
-    const result = await execute({
-      action,
-      config: options.agentConfig,
-      current: current as UnresolvedExecutionDefaults,
-    });
-    for (const message of result.warnings ?? []) warn(message);
-    return result;
+    return delegateCanonicalCommand(options, seams, action);
+  }
+
+  const hasResolvedSelection = options.agentRef !== undefined || options.dispatch !== undefined;
+  if (options.prompt !== undefined || hasResolvedSelection) {
+    rejectRawPersona(options);
+    if (options.prompt === undefined) {
+      throw new UsageError(
+        "Agent persona/model/tool/schema/inference selection requires an explicit task from --prompt, --prompt-stdin, or --command; it cannot fabricate an empty command. Omit those selections for a prompt-free interactive launch.",
+        "MISSING_REQUIRED_ARGUMENT",
+      );
+    }
+    if (options.args?.length) {
+      throw new UsageError(
+        "Native argv cannot accompany resolved prompt work; include the values in resolved command content instead.",
+        "INVALID_FLAG_VALUE",
+      );
+    }
+    return delegateCanonicalCommand(options, seams, { content: options.prompt });
+  }
+  if (options.args?.length) {
+    throw new UsageError(
+      "Native argv is outside the no-work interactive agent launch; select resolved command content instead.",
+      "INVALID_FLAG_VALUE",
+    );
   }
 
   // Same implicit opencode-sdk fallback the workflow and task surfaces apply,
@@ -194,33 +205,17 @@ export async function akmAgentDispatch(
   }
   const profile = runner.profile;
 
-  // Resolve the prompt text from whichever source was provided.
-  let prompt: string | undefined;
-
-  if (options.workflowRef) {
-    const body = await resolveAssetBody(options.workflowRef);
-    prompt = options.args?.length ? fillPlaceholders(body, options.args) : body;
-  } else if (options.prompt !== undefined) {
-    prompt = options.prompt;
-  }
-  // When prompt is undefined, the agent is launched interactively.
-
-  const stdio = prompt === undefined && runner.kind !== "sdk" ? ("interactive" as const) : profile.stdio;
-  // Build the final dispatch request: merge the caller-supplied dispatch with
-  // the resolved prompt so the builder has all context in one place.
-  const dispatchRequest: AgentDispatchRequest | undefined = options.dispatch
-    ? { ...options.dispatch, prompt: prompt ?? options.dispatch.prompt }
-    : undefined;
-
+  // This is the sole intentional low-level exemption: an interactive native
+  // launch contains no prompt/model/tool work and therefore has no resolved
+  // execution request or platform dispatch payload to lower.
+  const stdio = runner.kind !== "sdk" ? ("interactive" as const) : profile.stdio;
   const runOptions = {
     stdio,
     parseOutput: "text" as const,
-    ...(options.args?.length && !options.workflowRef ? { args: options.args } : {}),
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     ...(options.cwd ? { cwd: options.cwd } : {}),
-    ...(dispatchRequest !== undefined ? { dispatch: dispatchRequest } : {}),
   };
-  const result: AgentRunResult = await executeRunner(runner, prompt ?? "", runOptions);
+  const result: AgentRunResult = await executeRunner(runner, "", runOptions);
 
   return {
     schemaVersion: 2 as const,

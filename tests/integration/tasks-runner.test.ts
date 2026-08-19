@@ -935,6 +935,13 @@ describe("runTask — prompt target", () => {
     expect(result.status).toBe("completed");
     expect(result.target).toEqual({ kind: "prompt", engine: "fast" });
     expect(seen).toEqual({ model: "qwen3-small", prompt: "answer briefly" });
+    expect(result.notices?.map((notice) => [notice.code, notice.field])).toEqual([
+      ["untranslated-field", "runtime.workspace"],
+      ["untranslated-field", "runtime.environment"],
+    ]);
+    const log = fs.readFileSync(result.log, "utf8");
+    expect(log).toContain("lowering_notice=untranslated-field adapter=llm field=runtime.workspace");
+    expect(log).toContain("lowering_notice=untranslated-field adapter=llm field=runtime.environment");
   });
 
   test("dispatches to runAgent (mocked) and writes captured stdout to the log", async () => {

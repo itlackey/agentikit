@@ -13,8 +13,11 @@ import { canonicalResolvedExecutionRequest } from "../../src/execution/resolved-
 import { type AdapterRenderedExecutionSource, createAdapterRenderedExecutionSource } from "../../src/execution/source";
 import type { AgentDispatchRequest } from "../../src/integrations/agent/builder-shared";
 import { getCommandBuilder } from "../../src/integrations/agent/builders";
+import { lowerResolvedExecutionRequest } from "../../src/integrations/agent/execution-lowering";
+import { prepareInlineExecution } from "../../src/integrations/agent/inline-execution";
 import { mergeModelMapLayers, parseModelMapLayer } from "../../src/integrations/agent/model-map";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
+import { withEnv } from "../_helpers/sandbox";
 
 const config: AkmConfig = {
   configVersion: "0.9.0",
@@ -154,6 +157,39 @@ describe("common command invocation preparation", () => {
     );
     expect(stored.request.command.source?.ref).toBe("fixture//commands/plain");
     expect(inline.request.command.source).toBeNull();
+  });
+
+  test("direct and task adapters produce byte-identical anonymous requests and equivalent lowering", async () => {
+    const current = {
+      engine: "reviewer",
+      model: "reasoning",
+      inference: { temperature: 0 },
+      timeout: 0,
+      workspace: "",
+      environment: {},
+    } as const;
+    const direct = await prepareCommandInvocation({
+      action: { content: "Review this exactly." },
+      config,
+      modelMap,
+      current,
+    });
+    const task = prepareInlineExecution({
+      content: "Review this exactly.",
+      config,
+      modelMap,
+      invocationKind: "task",
+      current,
+    });
+
+    expect(canonicalResolvedExecutionRequest(task.request)).toBe(canonicalResolvedExecutionRequest(direct.request));
+    const withoutRequest = (lowered: ReturnType<typeof lowerResolvedExecutionRequest>) => {
+      const { request: _request, ...projection } = lowered;
+      return JSON.parse(JSON.stringify(projection));
+    };
+    expect(withoutRequest(lowerResolvedExecutionRequest(task.request, task.config))).toEqual(
+      withoutRequest(lowerResolvedExecutionRequest(direct.request, direct.config)),
+    );
   });
 
   test("native selectors stay native and do not trigger portable persona resolution", async () => {
@@ -386,6 +422,41 @@ describe("common command invocation preparation", () => {
     });
     expect(connection).not.toHaveProperty("apiKey");
     expect(connection).not.toHaveProperty("timeoutMs");
+  });
+
+  test("redacts a materialized credential echoed by a direct LLM provider failure", async () => {
+    const secret = "provider-command-secret-987654";
+    const configured: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      defaults: { engine: "direct" },
+      engines: {
+        direct: {
+          kind: "llm",
+          provider: "openai-compatible",
+          endpoint: "https://fixture.invalid/v1/chat/completions",
+          model: "configured-model",
+          apiKey: "$COMMAND_FAILURE_KEY",
+        },
+      },
+    };
+    const prepared = await prepareCommandInvocation({
+      action: { content: "Trigger the provider failure." },
+      config: configured,
+      modelMap,
+    });
+
+    const result = await withEnv({ COMMAND_FAILURE_KEY: secret }, () =>
+      dispatchPreparedCommandInvocation(prepared, {
+        chat: async (connection) => {
+          expect(connection.apiKey).toBe(secret);
+          throw new Error(`provider echoed ${secret}`);
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: "spawn_failed", error: "provider echoed [REDACTED]" });
+    expect(JSON.stringify(result)).not.toContain(secret);
   });
 
   test("freezes transport configuration at preparation before caller mutation", async () => {

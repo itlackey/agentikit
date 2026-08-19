@@ -20,7 +20,7 @@
  *                     under a whole-run timeout (issue 11): an unattended run
  *                     gets the same abort path `akm workflow run --timeout`
  *                     gives an interactive one.
- *        • prompt   → `executeRunner(engine, prompt, { stdio: "captured" })`
+ *        • prompt   → common cascade → resolved lowerer → captured runner
  *   5. Capture stdout / stderr as structured rows in logs.db (task_logs) and,
  *      transitionally, as a flat text tail at `<cacheDir>/tasks/logs/<id>/<ts>.log`
  *      (per the #579 logs audit).
@@ -52,18 +52,22 @@ import { getTaskLogDir } from "../core/paths";
 import { redactCredentialPatterns, redactSensitiveText } from "../core/redaction";
 import { withStateDb } from "../core/state-db";
 import { runManagedSubprocess, type SpawnFn } from "../core/subprocess";
+import { cloneExecutionJsonObject } from "../execution/json";
+import type { LoweringNotice } from "../execution/resolved-request";
+import type { UnresolvedExecutionDefaults } from "../execution/source";
 import type { AgentRunResult, RunAgentOptions } from "../integrations/agent";
 import {
   fallbackAnnouncement,
   NO_ENGINE_MESSAGE_SUFFIX,
   NO_ENGINE_REMEDY,
-  withEngineFallback,
 } from "../integrations/agent/engine-fallback";
-import { resolveEngine, resolveLlmEngineUse } from "../integrations/agent/engine-resolution";
-import { resolveModel } from "../integrations/agent/model-aliases";
-import type { RunnerSpec } from "../integrations/agent/runner";
-import { executeRunner, type RunnerSeams } from "../integrations/agent/runner-dispatch";
-import { chatCompletion } from "../llm/client";
+import {
+  type DispatchLoweredExecutionOptions,
+  dispatchLoweredExecutionRequest,
+  lowerResolvedExecutionRequest,
+} from "../integrations/agent/execution-lowering";
+import { prepareInlineExecution } from "../integrations/agent/inline-execution";
+import type { chatCompletion } from "../llm/client";
 import { resolveAssetPath } from "../sources/resolve";
 import type { WorkflowRunStatus, WorkflowRunSummary } from "../sources/types";
 import {
@@ -108,6 +112,8 @@ export interface TaskRunResult {
     | { kind: "unknown" };
   /** Workflow run id (for workflow targets) or agent reason/error (for prompt targets). */
   detail?: { runId?: string; reason?: string; error?: string; exitCode?: number | null };
+  /** Secret-free optimistic-lowering diagnostics for prompt targets. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface RunTaskOptions {
@@ -118,7 +124,7 @@ export interface RunTaskOptions {
    */
   stashDir: string;
   /** Override the agent runner (tests). Defaults to {@link runAgent}. */
-  runAgentImpl?: RunnerSeams["runAgent"];
+  runAgentImpl?: DispatchLoweredExecutionOptions["runAgent"];
   /**
    * Override the workflow orchestrator (tests). Defaults to
    * {@link runWorkflowSteps}.
@@ -247,7 +253,7 @@ export async function runTask(id: string, options: RunTaskOptions): Promise<Task
       now,
       runAgentImpl,
       agentOptions: options.agentOptions,
-      chatCompletionImpl: options.chatCompletionImpl ?? chatCompletion,
+      ...(options.chatCompletionImpl ? { chatCompletionImpl: options.chatCompletionImpl } : {}),
       historyReserved: attempt.historyReserved,
     });
   } catch (failure) {
@@ -606,8 +612,8 @@ async function runPromptTask(input: {
   logPath: string;
   startedAt: Date;
   now: () => Date;
-  runAgentImpl?: RunnerSeams["runAgent"];
-  chatCompletionImpl: typeof chatCompletion;
+  runAgentImpl?: DispatchLoweredExecutionOptions["runAgent"];
+  chatCompletionImpl?: typeof chatCompletion;
   agentOptions?: Partial<RunAgentOptions>;
   historyReserved: boolean;
 }): Promise<TaskRunResult> {
@@ -617,86 +623,56 @@ async function runPromptTask(input: {
 
   // Same implicit opencode-sdk fallback the workflow freeze boundary applies,
   // so a scheduled prompt task on an engine-less install behaves identically.
-  const { config, fallbackEngineName } = withEngineFallback(loadConfig());
-  const engineName = promptTarget.engine ?? config.defaults?.engine;
-  // `promptTarget.engine` outranks `defaults.engine`, so the fallback is only
-  // reportable when it is the engine actually selected.
-  const engineAnnouncement = fallbackAnnouncement(fallbackEngineName, engineName);
+  const promptText = await resolvePromptText(task, stashDir);
+  const inputConfig = loadConfig();
+  const environment = { AKM_EVENT_SOURCE: "task", ...scheduledTaskContextEnv(), ...agentOptions?.env };
+  const selectedAgentTimeout = agentOptions?.timeoutMs;
+  const current = {
+    ...(promptTarget.engine !== undefined ? { engine: promptTarget.engine } : {}),
+    ...(promptTarget.model !== undefined ? { model: promptTarget.model } : {}),
+    ...(promptTarget.llm !== undefined
+      ? { inference: cloneExecutionJsonObject(promptTarget.llm, "task target llm") }
+      : {}),
+    ...(promptTarget.timeoutMs !== undefined ? { timeout: promptTarget.timeoutMs } : {}),
+    workspace: agentOptions?.cwd ?? stashDir,
+    environment,
+    ...(Object.hasOwn(agentOptions ?? {}, "timeoutMs") && selectedAgentTimeout !== undefined
+      ? { timeout: selectedAgentTimeout }
+      : {}),
+  } satisfies UnresolvedExecutionDefaults;
+  let prepared = prepareInlineExecution({
+    content: promptText,
+    config: inputConfig,
+    invocationKind: "task",
+    current,
+  });
+  // Unattended agent transports keep the scheduler's bounded default; direct
+  // LLM engines retain their own configured/default timeout.
+  if (prepared.request.engine.kind !== "llm" && !Object.hasOwn(current, "timeout")) {
+    const boundedCurrent = {
+      ...current,
+      timeout: DEFAULT_SCHEDULED_TASK_TIMEOUT_MS,
+    } satisfies UnresolvedExecutionDefaults;
+    prepared = prepareInlineExecution({
+      content: promptText,
+      config: inputConfig,
+      invocationKind: "task",
+      current: boundedCurrent,
+    });
+  }
+  const engineName = prepared.request.engine.name;
+  const engineAnnouncement = fallbackAnnouncement(prepared.fallbackEngineName, engineName);
   if (!engineName)
     throw new NotFoundError(`Task "${task.id}" ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "ASSET_NOT_FOUND");
-  let runner: RunnerSpec = resolveEngine(engineName, config);
-  if (runner.kind === "llm") {
-    const resolved = resolveLlmEngineUse(config, [
-      {
-        engine: engineName,
-        ...(promptTarget.model !== undefined ? { model: promptTarget.model } : {}),
-        ...(promptTarget.timeoutMs !== undefined ? { timeoutMs: promptTarget.timeoutMs } : {}),
-        ...(promptTarget.llm !== undefined ? { llm: promptTarget.llm } : {}),
-      },
-    ]);
-    runner = {
-      kind: "llm",
-      engine: resolved.engine,
-      connection: resolved.connection,
-      ...(resolved.credential ? { credential: resolved.credential } : {}),
-      timeoutMs: resolved.timeoutMs,
-    };
-  } else {
-    if (promptTarget.llm !== undefined) {
-      throw new NotFoundError(
-        `Task "${task.id}" uses llm overrides with non-LLM engine "${engineName}".`,
-        "ASSET_NOT_FOUND",
-      );
-    }
-    const requestedModel = promptTarget.model;
-    const platform = runner.profile.platform;
-    if (!platform) throw new Error(`Engine "${engineName}" resolved without a platform.`);
-    const model = requestedModel
-      ? resolveModel(requestedModel, platform, runner.profile.modelAliases, runner.profile.globalModelAliases)
-      : runner.profile.model;
-    runner = {
-      ...runner,
-      profile: { ...runner.profile, ...(model ? { model, modelIsExact: true } : {}) },
-      // Unset → the unattended default (DEFAULT_AGENT_TIMEOUT_MS is null, which
-      // let a prompting or wedged agent CLI hang the schedule); `null` → the
-      // explicit no-timeout opt-out.
-      timeoutMs: promptTarget.timeoutMs !== undefined ? promptTarget.timeoutMs : DEFAULT_SCHEDULED_TASK_TIMEOUT_MS,
-    };
-  }
-  const promptText = await resolvePromptText(task, stashDir);
-
-  const result = await executeRunner(
-    runner,
-    promptText,
-    {
-      stdio: "captured",
-      cwd: stashDir,
-      ...agentOptions,
-      // Stamp task-runner provenance for any akm invocation the agent makes
-      // (DRIFT-6: agent-task traffic must not be recorded as user demand).
-      // Caller-supplied env still wins on conflicts.
-      //
-      // The agent child env is built from an allowlist, not inherited, so the
-      // scheduler's AKM_* directory context was dropped here — an agent's `akm`
-      // sub-commands then targeted the DEFAULT stash and DB rather than the
-      // ones the scheduled run was configured for. The command arm keeps this
-      // context because it inherits process.env; forward it explicitly.
-      env: { AKM_EVENT_SOURCE: "task", ...scheduledTaskContextEnv(), ...agentOptions?.env },
-    },
-    {
-      ...(input.runAgentImpl ? { runAgent: input.runAgentImpl } : {}),
-      llm: async (spec, prompt, options) => {
-        const started = Date.now();
-        const stdout = await input.chatCompletionImpl(spec.connection, [{ role: "user", content: prompt }], {
-          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-        });
-        return { ok: true, exitCode: 0, stdout, stderr: "", durationMs: Date.now() - started };
-      },
-    },
-  );
+  const lowered = lowerResolvedExecutionRequest(prepared.request, prepared.config);
+  const result = await dispatchLoweredExecutionRequest(lowered, {
+    ...(input.runAgentImpl ? { runAgent: input.runAgentImpl } : {}),
+    ...(input.chatCompletionImpl ? { chat: input.chatCompletionImpl } : {}),
+    ...(agentOptions ? { runOptions: agentOptions } : {}),
+  });
 
   const finishedAt = finishAttempt(startedAt, now());
-  const log = renderPromptLog({ task, engineName, result, engineAnnouncement });
+  const log = renderPromptLog({ task, engineName, result, engineAnnouncement, notices: lowered.notices });
   persistRunLog({
     taskId: task.id,
     startedAtIso: startedAt.toISOString(),
@@ -719,6 +695,7 @@ async function runPromptTask(input: {
     detail: result.ok
       ? { exitCode: result.exitCode }
       : { reason: result.reason, error: result.error, exitCode: result.exitCode },
+    ...(lowered.notices.length > 0 ? { notices: lowered.notices } : {}),
   };
   appendHistory(out, input.historyReserved);
   return out;
@@ -756,6 +733,7 @@ function renderPromptLog(input: {
   engineName: string;
   result: AgentRunResult;
   engineAnnouncement?: string;
+  notices?: readonly Readonly<LoweringNotice>[];
 }): RunLogContent {
   const lines: string[] = [];
   const dbLines: TaskLogLineInput[] = [];
@@ -766,6 +744,11 @@ function renderPromptLog(input: {
   if (input.engineAnnouncement) {
     lines.push(input.engineAnnouncement);
     dbLines.push({ level: "warn", line: input.engineAnnouncement });
+  }
+  for (const notice of input.notices ?? []) {
+    const line = `lowering_notice=${notice.code} adapter=${notice.adapter} field=${notice.field ?? ""} message=${notice.message}`;
+    lines.push(line);
+    dbLines.push({ level: notice.severity === "warning" ? "warn" : "info", line });
   }
   if (!input.result.ok) {
     const failure = `reason=${input.result.reason ?? ""} error=${input.result.error ?? ""}`;

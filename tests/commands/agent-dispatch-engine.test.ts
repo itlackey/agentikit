@@ -3,11 +3,27 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
+import { renderUsage } from "citty";
 import { akmAgentDispatch } from "../../src/commands/agent/agent-dispatch";
-import { UsageError } from "../../src/core/errors";
+import { agentCommand } from "../../src/commands/agent/contribute-cli";
+import type { AkmConfig } from "../../src/core/config/config-types";
 import { _setWarnSinkForTests } from "../../src/core/warn";
 import { FALLBACK_ANNOUNCEMENT } from "../../src/integrations/agent/engine-fallback";
 import { overrideSeam } from "../_helpers/seams";
+
+describe("akm agent CLI help", () => {
+  test("marks --workflow retired and does not present asset tool requests as authorization", async () => {
+    const usage = await renderUsage(agentCommand as Parameters<typeof renderUsage>[0]);
+
+    expect(usage).toContain("--workflow");
+    expect(usage).toContain("always rejected");
+    expect(usage).toContain("akm workflow run");
+    expect(usage).toContain("separate operator authorization");
+    expect(usage).toContain("rejected by the current CLI");
+    expect(usage).not.toContain("provides the system prompt, model, and tool policy");
+    expect(usage).not.toContain("Load prompt from a workflow asset");
+  });
+});
 
 describe("akmAgentDispatch engine capability", () => {
   test("delegates --command to the canonical invocation without normalizing exact arguments", async () => {
@@ -88,6 +104,130 @@ describe("akmAgentDispatch engine capability", () => {
     expect(calls).toBe(0);
   });
 
+  test("delegates noninteractive prompt/persona work through the same canonical invocation", async () => {
+    const calls: unknown[] = [];
+    const result = await akmAgentDispatch(
+      {
+        prompt: "Review exactly this.",
+        agentRef: "fixture//agents/reviewer",
+        engine: "reviewer",
+        timeoutMs: 0,
+        cwd: "",
+        dispatch: {
+          prompt: "must be replaced by resolved prompt",
+          model: "balanced",
+          inference: { effort: "high", temperature: 0 },
+          tools: [],
+          schema: { type: "object" },
+        },
+        agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
+      },
+      {
+        executeCommand: async (input) => {
+          calls.push(input);
+          return {
+            schemaVersion: 2,
+            ok: true,
+            shape: "agent-result",
+            engine: "reviewer",
+            exitCode: 0,
+            stdout: "done",
+            stderr: "",
+            durationMs: 1,
+            notices: [],
+          };
+        },
+      },
+    );
+
+    expect(result.stdout).toBe("done");
+    expect(calls).toEqual([
+      {
+        action: { content: "Review exactly this." },
+        config: { configVersion: "0.9.0", semanticSearchMode: "off" },
+        current: {
+          agent: "fixture//agents/reviewer",
+          engine: "reviewer",
+          model: "balanced",
+          inference: { effort: "high", temperature: 0 },
+          outputSchema: { type: "object" },
+          tools: [],
+          timeout: 0,
+          workspace: "",
+        },
+      },
+    ]);
+  });
+
+  test("rejects raw prompt persona injection and native argv on resolved work", async () => {
+    let calls = 0;
+    const executeCommand = async () => {
+      calls += 1;
+      throw new Error("must not delegate");
+    };
+    await expect(
+      akmAgentDispatch(
+        {
+          prompt: "x",
+          dispatch: { prompt: "x", systemPrompt: "raw persona" },
+          agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
+        },
+        { executeCommand },
+      ),
+    ).rejects.toThrow(/agent ref|systemPrompt/i);
+    await expect(
+      akmAgentDispatch(
+        {
+          prompt: "x",
+          args: ["--native-re-resolution"],
+          agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
+        },
+        { executeCommand },
+      ),
+    ).rejects.toThrow(/native argv|resolved command content|arguments/i);
+    expect(calls).toBe(0);
+  });
+
+  test("rejects persona or model metadata without explicit work instead of fabricating an empty command", async () => {
+    let calls = 0;
+    const executeCommand = async () => {
+      calls += 1;
+      throw new Error("must not delegate");
+    };
+    const agentConfig = { configVersion: "0.9.0", semanticSearchMode: "off" } as const;
+
+    await expect(
+      akmAgentDispatch({ agentRef: "fixture//agents/reviewer", agentConfig }, { executeCommand }),
+    ).rejects.toThrow(/--prompt|--command|explicit task/i);
+    await expect(
+      akmAgentDispatch(
+        { dispatch: { prompt: "legacy raw content", model: "balanced" }, agentConfig },
+        { executeCommand },
+      ),
+    ).rejects.toThrow(/--prompt|--command|explicit task/i);
+    expect(calls).toBe(0);
+  });
+
+  test("rejects legacy workflow flattening before resolution or command dispatch", async () => {
+    let calls = 0;
+    await expect(
+      akmAgentDispatch(
+        {
+          workflowRef: "workflows/review",
+          args: ["must-not-be-substituted"],
+          agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
+        },
+        {
+          executeCommand: async () => {
+            calls += 1;
+            throw new Error("must not delegate");
+          },
+        },
+      ),
+    ).rejects.toThrow(/akm workflow run|cannot be flattened/i);
+    expect(calls).toBe(0);
+  });
+
   test("returns the exact v2 public result envelope", async () => {
     const result = await akmAgentDispatch({
       engine: "test-agent",
@@ -113,25 +253,40 @@ describe("akmAgentDispatch engine capability", () => {
     });
   });
 
-  test("rejects an LLM engine instead of falling back to an agent profile", async () => {
-    await expect(
-      akmAgentDispatch({
-        engine: "fast",
-        prompt: "hello",
-        agentConfig: {
-          configVersion: "0.9.0",
-          semanticSearchMode: "auto",
-          engines: {
-            fast: {
-              kind: "llm",
-              endpoint: "https://example.test/v1/chat/completions",
-              model: "test",
-            },
-          },
-          defaults: { engine: "fast" },
+  test("delegates direct LLM prompt work instead of applying an agent-only capability gate", async () => {
+    const calls: unknown[] = [];
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "auto" as const,
+      engines: {
+        fast: {
+          kind: "llm" as const,
+          endpoint: "https://example.test/v1/chat/completions",
+          model: "test",
         },
-      }),
-    ).rejects.toBeInstanceOf(UsageError);
+      },
+      defaults: { engine: "fast" },
+    };
+    const result = await akmAgentDispatch(
+      { engine: "fast", prompt: "hello", agentConfig: config },
+      {
+        executeCommand: async (input) => {
+          calls.push(input);
+          return {
+            schemaVersion: 2,
+            ok: true,
+            shape: "agent-result",
+            engine: "fast",
+            exitCode: 0,
+            stdout: "llm output",
+            stderr: "",
+            durationMs: 1,
+          };
+        },
+      },
+    );
+    expect(result.stdout).toBe("llm output");
+    expect(calls).toEqual([{ action: { content: "hello" }, config, current: { engine: "fast" } }]);
   });
 
   test("returns one structured envelope for a normal runner failure", async () => {

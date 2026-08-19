@@ -1860,7 +1860,9 @@ empty text, but remain distinct in the resolved request.
 
 ### agent
 
-Dispatch a configured agent engine, optionally embodying a bundle agent asset.
+Dispatch a configured agent engine, optionally selecting a bundle agent persona
+and model defaults. A nonempty tool request from that asset is not
+authorization: the current CLI rejects it at the execution boundary.
 `akm agent --command <ref>` is a compatibility spelling for the canonical
 `akm command run` path: it performs no separate file read, template filling,
 engine choice, or model resolution.
@@ -1871,25 +1873,32 @@ akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [-
 
 | Argument / Flag | Description |
 | --- | --- |
-| `<agent-ref>` | Optional agent asset ref (e.g. `agents/code-reviewer`). Loads system prompt, model, and tool policy from the bundle asset. |
+| `<agent-ref>` | Optional agent asset ref (e.g. `agents/code-reviewer`). Resolves persona and model defaults; a nonempty tool request still requires separate operator authorization. |
 | `--engine <name>` | Agent engine to use; defaults to `defaults.engine` |
 | `--prompt <text>` | Task prompt to pass to the agent |
 | `--model <model>` | Model override. Accepts aliases (`opus`, `sonnet`, `haiku`) or exact platform model IDs. Overrides the model in the agent asset. Resolved per platform: `opencode/claude-opus-4-7` for opencode, `claude-opus-4-7` for claude. |
 | `--command <ref>` | Delegate a `commands/<name>` asset to the canonical command executor |
 | `--arguments <text>` | Exact portable `$ARGUMENTS` input; valid only with `--command` |
-| `--workflow <ref>` | Load prompt from a `workflows/<name>` asset |
+| `--workflow <ref>` | Retired compatibility flag; always rejected. Use `akm workflow run <ref>` instead. |
 | `--timeout-ms <ms>` | Override the agent CLI timeout in milliseconds |
 | `--cwd <path>` | Working directory for the spawned agent (defaults to the current directory) |
 
-When `<agent-ref>` is provided, akm loads the bundle agent asset and extracts
-its system prompt, `modelHint`, and `toolPolicy`. The `--model` flag wins
-over any model specified in the asset.
+When `<agent-ref>` is provided, akm resolves the bundle agent's persona,
+`modelHint`, and requested `toolPolicy`. The `--model` flag wins over any model
+specified in the asset. The requested tool policy never grants access by
+itself: authorization runs before lowering, credentials, or provider dispatch.
+The current CLI has no built-in allow-all authorizer, so a nonempty request is
+rejected rather than silently weakened.
+Selecting a persona or model without `--prompt`, `--prompt-stdin`, or
+`--command` is also rejected; akm never fabricates an empty command. The
+prompt-free interactive exemption applies only when no persona/model/tool/schema
+or inference payload was selected.
 
 **Platform-specific dispatch:** akm uses a platform builder to construct the
 CLI argv for each engine's harness platform. `platform: "opencode"` engines emit:
 `opencode run [--system-prompt "..."] [--model opencode/claude-opus-4-7] "<prompt>"`.
 `platform: "claude"` engines emit:
-`claude [--system-prompt "..."] [--model claude-opus-4-7] [--allowedTools ...] --print "<prompt>"`.
+`claude [--system-prompt "..."] [--model claude-opus-4-7] --print -- "<prompt>"`.
 Agent engines may set `bin`, `args`, `workspace`, `model`, `timeoutMs`, and
 `modelAliases` in config.
 
