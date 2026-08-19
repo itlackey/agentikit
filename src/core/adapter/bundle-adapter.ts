@@ -37,6 +37,10 @@
  *   validate .......................... REQUIRED
  *   placeNew / directoryList / looksLikeRoot ... optional
  *
+ * 0.9.2 adds one independent optional runtime facet,
+ * `renderExecutionSource`, for the approved agent/command design. It does not
+ * change the 0.9.0 indexing, validation, placement, or authoring contract.
+ *
  * The spec's optional authoring (§12.2) / export (§12.3) / memory (§12.4)
  * facet methods are Tier-B ("no 0.9.0 adapter implements these") and their
  * parameter types are shapeless in every doc — they are DEFERRED to their
@@ -57,6 +61,7 @@
  * `drainDirDocuments` × `adapter.recognize` is the core scan engine).
  */
 
+import type { AdapterRenderedExecutionSource } from "../../execution/source";
 // D1-3: type-only import of FileContext from the indexer layer. Erased at
 // build time (no runtime edge); verified to add no import-cycle
 // participant (`bun scripts/lint-import-cycles.ts` — ratchet stays 28,
@@ -99,6 +104,12 @@ export interface BundleAdapter {
   // existence (normative §12.1). Cross-component ref existence is a CORE
   // base check, not an adapter concern.
   validate(c: BundleComponent, changes: FileChange[], ctx: ValidateContext): Promise<Diagnostic[]>;
+
+  // OPTIONAL — runtime translation for executable agent assets. The adapter
+  // receives the authoritative native file and returns only a branded,
+  // frontmatter-free command/persona source. Core resolution never reads raw
+  // native bytes into a prompt after this boundary.
+  renderExecutionSource?(c: BundleComponent, file: FileContext): AdapterRenderedExecutionSource | null;
 
   // OPTIONAL — placement / discovery
   /** Replaces the per-type stash-subdir + name-to-path placement primitives. */
