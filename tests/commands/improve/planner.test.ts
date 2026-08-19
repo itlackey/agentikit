@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
-import { selectEffectiveImproveRefs } from "../../../src/commands/improve/planner";
+import { buildImproveExecutionPlan, selectEffectiveImproveRefs } from "../../../src/commands/improve/planner";
 import type { ImproveEligibleRef } from "../../../src/core/improve-types";
 
 function ref(name: string, eligibilitySource: ImproveEligibleRef["eligibilitySource"]): ImproveEligibleRef {
@@ -52,5 +52,49 @@ describe("selectEffectiveImproveRefs", () => {
 
     expect(selection.loopRefs.map((entry) => entry.ref)).toEqual(["memories/ordinary-a"]);
     expect(selection.limitRemoved).toBe(2);
+  });
+
+  test("reports the additive replay allowance separately from the ordinary and total ceilings", () => {
+    const ordinary = ref("ordinary", "proactive");
+    const replay = ref("replay", "replay");
+    const plan = buildImproveExecutionPlan({
+      dryRun: true,
+      snapshot: { status: "ready", reason: "test snapshot" },
+      rawInScope: 2,
+      selectedRefs: [ordinary, replay],
+      effectiveRefs: [ordinary, replay],
+      distillOnlyRefs: new Set(),
+      configuredLimits: { cli: 1 },
+      effectiveLimit: 1,
+      replayBudget: 1,
+      gates: [],
+      consolidation: {
+        configured: {},
+        effective: { enabled: false, minPoolSize: 2, chunkSize: 2 },
+        poolSize: 0,
+        candidatePoolSize: 0,
+        gates: {
+          profile: { passed: false, reason: "disabled" },
+          minimumPool: { passed: false, reason: "disabled" },
+          delta: { passed: false, reason: "disabled" },
+        },
+        wouldRun: false,
+        reason: "disabled",
+        estimatedChunks: 0,
+      },
+      stageConfig: {
+        extract: { enabled: false, reason: "disabled" },
+        graphExtraction: { enabled: false, reason: "disabled" },
+        memoryInference: { enabled: false, reason: "disabled" },
+      },
+      triage: { enabled: false, configuredMode: "queue", mode: "queue", maxAcceptsPerRun: 0 },
+    });
+
+    expect(plan.limits).toEqual({
+      configured: { cli: 1 },
+      effective: 1,
+      additiveReplayAllowance: 1,
+      totalCeiling: 2,
+    });
   });
 });

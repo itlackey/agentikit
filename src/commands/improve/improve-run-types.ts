@@ -228,6 +228,8 @@ export interface ImprovePreparationResult {
   /** Read-only selector data projected into the public dry/live plan. */
   planning: {
     gates: ImprovePlanGate[];
+    /** Configured replay slots appended beyond the ordinary effective limit. */
+    replayBudget: number;
     proactive?: ImproveExecutionPlan["proactive"];
     consolidation: ImproveExecutionPlan["consolidation"];
     extract: { wouldRun: boolean; reason: string };

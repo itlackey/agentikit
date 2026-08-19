@@ -44,6 +44,7 @@ import {
 import { openDatabase } from "../../storage/database";
 import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
 import { getEntryCount } from "../../storage/repositories/index-entries-repository";
+import { openSqliteReadSnapshot, SqliteReadSnapshotUnavailableError } from "../../storage/sqlite-read-snapshot";
 import { type DrainResult, drainProposals } from "../proposal/drain";
 import { resolveDrainPolicy } from "../proposal/drain-policies";
 import type { EligibilitySource } from "../proposal/proposal-types";
@@ -875,13 +876,19 @@ async function runDryPlanningStage(args: {
 }): Promise<AkmImproveResult> {
   const { run, collected, resolvedStateDbPath, budgetMs, initialCleanupWarnings, signal } = args;
   let stateDb: import("../../storage/database").Database | undefined;
+  let stateSnapshotUnavailable = false;
   try {
-    if (fs.existsSync(resolvedStateDbPath)) {
-      stateDb = openDatabase(resolvedStateDbPath, { readonly: true, create: false });
+    try {
+      stateDb = openSqliteReadSnapshot(resolvedStateDbPath);
+      stateSnapshotUnavailable = !stateDb;
+    } catch (error) {
+      if (!(error instanceof SqliteReadSnapshotUnavailableError)) throw error;
+      stateSnapshotUnavailable = true;
     }
     const eventsCtx: EventsContext = {
       ...(stateDb ? { db: stateDb } : { dbPath: resolvedStateDbPath }),
       readOnly: true,
+      ...(stateSnapshotUnavailable ? { readOnlySnapshotUnavailable: true } : {}),
     };
     const preparation = await run.runImprovePreparationStageImpl({
       scope: run.scope,
@@ -1011,6 +1018,7 @@ function buildResultExecutionPlan(
     distillOnlyRefs: distillOnlySet,
     configuredLimits,
     effectiveLimit,
+    replayBudget: preparation.planning.replayBudget,
     gates: [profileGate, ...preparation.planning.gates],
     ...(proactive ? { proactive } : {}),
     consolidation,

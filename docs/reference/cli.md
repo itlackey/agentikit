@@ -1940,7 +1940,7 @@ akm improve --sync --no-push           # commit only, skip the push after it
 | `--task` | Optional extra guidance for this improvement pass |
 | `--dry-run` | Show the schema-v2 result on stdout without creating config, data, state, cache, bundle, log, or result artifacts. Dry-run results are never persisted, including on errors or signals. |
 | `--bundle` | Select the proposal/write target; when the ref scope is bundle-qualified, it must name the same bundle |
-| `--limit <n>` | Maximum number of assets to process (highest utility first) |
+| `--limit <n>` | Base cap for ordinary assets (highest utility first); configured replay slots are additive |
 | `--timeout-ms <ms>` | Wall-clock budget for the run (default: `7200000` = 2 hours) |
 | `--require-feedback-signal` | Only process assets with recent feedback signals |
 | `--strategy <name>` | Override the active improve strategy (a built-in or entry under `improve.strategies`) |
@@ -1988,10 +1988,16 @@ ref in the requested scope. The `plan` object preserves both views: raw scope
 size and per-gate removals, configured and effective caps, final ranked refs
 and their selection lanes, proactive and consolidation statistics, stage
 decisions, triage mode/caps, and `snapshot.status`/`snapshot.reason` for the
-read-side index boundary. A missing or incompatible index is an explicit empty
-snapshot and is not created or migrated. `plan.mode` is `estimate` and
-`plan.dispatch` is `false`; live JSON results use the same projection with
-`mode: "execution"`.
+read-side index boundary. `limits.effective` is the ordinary-ref base cap;
+`limits.additiveReplayAllowance` is the separate replay budget, and
+`limits.totalCeiling` is their finite sum (omitted when the base run is
+unbounded). A missing or incompatible index is an explicit empty snapshot and
+is not created or migrated. `plan.mode` is `estimate` and `plan.dispatch` is
+`false`; live JSON results use the same projection with `mode: "execution"`.
+The dry result is a best-effort observation assembled during that invocation,
+not an atomic cross-store snapshot or a reservation. Live execution re-inspects
+mutable inputs, so a later run can differ after index, state, filesystem,
+clock, or session-log changes.
 
 When reinforced facts need promotion, `knowledge` is the higher-authority
 destination than `memory`. The deterministic search ranking also prefers

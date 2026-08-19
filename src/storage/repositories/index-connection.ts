@@ -20,6 +20,7 @@ import type { Database } from "../database";
 import { openDatabase } from "../database";
 import { openManagedDatabase } from "../managed-db";
 import { SQLITE_BUSY_TIMEOUT_MS } from "../sqlite-pragmas";
+import { openSqliteReadSnapshot } from "../sqlite-read-snapshot";
 import { ensureSchema } from "./index-schema";
 import { loadVecExtension, warnIfVecMissing } from "./index-vec-repository";
 
@@ -119,16 +120,24 @@ export function assertIndexPathReadable(resolvedPath: string): void {
 }
 
 /**
- * Open an existing index for queries without creating directories, a database
- * file, journals, or running write-capable pragmas/schema initialization.
+ * Open an existing index for queries without changing the source database or
+ * running schema initialization. The default path attaches read-only to the
+ * source. `isolatedSnapshot` instead opens a disposable main/WAL copy so even
+ * SQLite's read-lock bookkeeping cannot touch the source SHM file.
  */
-export function openReadonlyExistingDatabase(dbPath?: string): Database | undefined {
+export function openReadonlyExistingDatabase(
+  dbPath?: string,
+  options?: { isolatedSnapshot?: boolean },
+): Database | undefined {
   const resolvedPath = dbPath ?? getDbPath();
   // `undefined` means "no index" — reserve it for a genuinely absent one, and
   // let an unreadable index raise instead of masquerading as absent (#791).
   assertIndexPathReadable(resolvedPath);
   if (classifyPathAccess(resolvedPath).access === "absent") return undefined;
-  const db = openDatabase(resolvedPath, { readonly: true, create: false });
+  const db = options?.isolatedSnapshot
+    ? openSqliteReadSnapshot(resolvedPath)
+    : openDatabase(resolvedPath, { readonly: true, create: false });
+  if (!db) return undefined;
   // This opener bypasses openManagedDatabase/applyStandardPragmas by design (no
   // journal or schema work on a read-only handle), but that also left
   // busy_timeout at SQLite's default of 0. In WAL that is harmless — readers

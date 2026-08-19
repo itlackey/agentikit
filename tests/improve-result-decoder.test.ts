@@ -15,13 +15,24 @@ const common = {
   actions: [],
 };
 
+const plannedRef = {
+  ref: "skills/a",
+  filePath: "/tmp/skills/a/SKILL.md",
+  eligibilitySource: "proactive",
+};
+
 describe("decodeImproveResult", () => {
   const plan = {
     mode: "estimate",
     dispatch: false,
     snapshot: { status: "ready", reason: "loaded the existing index read-only" },
     candidates: { rawInScope: 2, selected: 1, effective: 1 },
-    limits: { configured: { cli: 1, reflect: 25 }, effective: 1 },
+    limits: {
+      configured: { cli: 1, reflect: 25 },
+      effective: 1,
+      additiveReplayAllowance: 0,
+      totalCeiling: 1,
+    },
     gates: [{ name: "limit", removed: 1, reason: "deferred" }],
     effectiveRefs: [{ ref: "skills/a", lane: "proactive", reason: "scope-type" }],
     proactive: {
@@ -69,48 +80,116 @@ describe("decodeImproveResult", () => {
   });
 
   test("strictly decodes the additive improve plan", () => {
-    const decoded = decodeImproveResult({ schemaVersion: 2, strategy: "default", ...common, plan });
+    const envelope = {
+      schemaVersion: 2,
+      strategy: "default",
+      ...common,
+      dryRun: true,
+      plannedRefs: [plannedRef],
+      plan,
+    };
+    const decoded = decodeImproveResult(envelope);
     expect(decoded.envelope.plan).toEqual(plan);
     expect(() =>
       decodeImproveResult({
-        schemaVersion: 2,
-        strategy: "default",
-        ...common,
+        ...envelope,
         plan: { ...plan, candidates: { ...plan.candidates, invented: 1 } },
       }),
     ).toThrow(/unknown field/);
     expect(() =>
       decodeImproveResult({
-        schemaVersion: 2,
-        strategy: "default",
-        ...common,
+        ...envelope,
         plan: { ...plan, effectiveRefs: [{ ...plan.effectiveRefs[0], lane: "invented" }] },
       }),
     ).toThrow(/lane/);
     expect(() =>
       decodeImproveResult({
-        schemaVersion: 2,
-        strategy: "default",
-        ...common,
+        ...envelope,
         plan: { ...plan, snapshot: { status: "invented", reason: "not real" } },
       }),
     ).toThrow(/snapshot.status/);
     expect(() =>
       decodeImproveResult({
-        schemaVersion: 2,
-        strategy: "default",
-        ...common,
+        ...envelope,
         plan: { ...plan, dispatch: true },
       }),
     ).toThrow(/dispatch/);
     expect(() =>
       decodeImproveResult({
-        schemaVersion: 2,
-        strategy: "default",
-        ...common,
+        ...envelope,
         plan: { ...plan, candidates: { ...plan.candidates, effective: 2 } },
       }),
-    ).toThrow(/effectiveRefs.length/);
+    ).toThrow(/selected cannot be less than.*effective|effectiveRefs.length/);
+  });
+
+  test("rejects contradictory modes, counts, ordered refs, and replay caps", () => {
+    const envelope = {
+      schemaVersion: 2,
+      strategy: "default",
+      ...common,
+      dryRun: true,
+      plannedRefs: [plannedRef],
+      plan,
+    };
+    const contradictions = [
+      {
+        value: { ...envelope, dryRun: false },
+        message: /dryRun=false.*execution mode/,
+      },
+      {
+        value: { ...envelope, plan: { ...plan, candidates: { rawInScope: 0, selected: 1, effective: 1 } } },
+        message: /rawInScope cannot be less than.*selected/,
+      },
+      {
+        value: { ...envelope, plannedRefs: [{ ...plannedRef, ref: "skills/other" }] },
+        message: /plannedRefs.*same refs in the same order/,
+      },
+      {
+        value: {
+          ...envelope,
+          plan: { ...plan, limits: { ...plan.limits, effective: -1, totalCeiling: -1 } },
+        },
+        message: /limits.effective must be a non-negative integer/,
+      },
+      {
+        value: {
+          ...envelope,
+          plan: {
+            ...plan,
+            limits: { ...plan.limits, additiveReplayAllowance: 1, totalCeiling: 3 },
+          },
+        },
+        message: /totalCeiling must equal.*effective.*additiveReplayAllowance/,
+      },
+      {
+        value: {
+          ...envelope,
+          plannedRefs: [{ ...plannedRef, eligibilitySource: "replay" }],
+          plan: {
+            ...plan,
+            effectiveRefs: [{ ...plan.effectiveRefs[0], lane: "replay" }],
+          },
+        },
+        message: /replay refs cannot exceed.*additiveReplayAllowance/,
+      },
+      {
+        value: {
+          ...envelope,
+          plannedRefs: [plannedRef, { ...plannedRef, ref: "skills/b" }],
+          plan: {
+            ...plan,
+            candidates: { rawInScope: 2, selected: 2, effective: 2 },
+            effectiveRefs: [plan.effectiveRefs[0], { ...plan.effectiveRefs[0], ref: "skills/b" }],
+            limits: { ...plan.limits, additiveReplayAllowance: 1, totalCeiling: 2 },
+          },
+        },
+        message: /ordinary refs cannot exceed.*limits.effective/,
+      },
+    ];
+
+    for (const contradiction of contradictions) {
+      expect(() => decodeImproveResult(contradiction.value)).toThrow(contradiction.message);
+    }
   });
 
   test("rejects complete and interrupted v1 envelopes", () => {

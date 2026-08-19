@@ -21,6 +21,7 @@ import { saveConfig } from "../../../../src/core/config/config";
 import { appendEvent } from "../../../../src/core/events";
 import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/improve-types";
 import { getDbPath } from "../../../../src/core/paths";
+import { getStateDbPath } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import type { SessionLogHarness } from "../../../../src/integrations/session-logs/types";
 import { writeSkill } from "../../../_helpers/assets";
@@ -179,6 +180,103 @@ describe("#800 effective dry-run planner", () => {
     expect(snapshotTree(storage.root)).toEqual(before);
   });
 
+  test("held WAL index planning fails closed without changing main, WAL, or SHM bytes", async () => {
+    const storage = isolatedStorage();
+    const config = plannerConfig();
+    writeSkill(storage.stashDir, "unindexed", "This asset intentionally has no current index row.");
+    saveConfig(config);
+    const dbPath = getDbPath();
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const legacyDb = new Database(dbPath);
+    try {
+      legacyDb.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0");
+      legacyDb.exec("CREATE TABLE legacy_entries (id INTEGER PRIMARY KEY, value TEXT)");
+      legacyDb.exec("INSERT INTO legacy_entries(value) VALUES ('preserve-held-wal')");
+      expect(fs.existsSync(`${dbPath}-wal`)).toBe(true);
+      expect(fs.existsSync(`${dbPath}-shm`)).toBe(true);
+      const before = snapshotTree(storage.root);
+
+      const result = await akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true });
+
+      expect(result.plan?.snapshot.status).toBe("incompatible");
+      expect(result.plan?.snapshot.reason).toMatch(/no entries table.*empty snapshot/i);
+      expect(snapshotTree(storage.root)).toEqual(before);
+    } finally {
+      legacyDb.close();
+    }
+  });
+
+  test("held WAL current index stays byte-identical across every dry planning read", async () => {
+    const storage = isolatedStorage();
+    const config = plannerConfig({ proactive: { enabled: true, dueDays: 0, maxPerRun: 1 } });
+    await indexSkills(storage.stashDir, 2, config);
+    const dbPath = getDbPath();
+    const writer = new Database(dbPath);
+    try {
+      writer.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0");
+      writer.exec("CREATE TABLE held_probe (id INTEGER PRIMARY KEY, value TEXT)");
+      writer.exec("INSERT INTO held_probe(value) VALUES ('preserve-current-index')");
+      expect(fs.existsSync(`${dbPath}-wal`)).toBe(true);
+      expect(fs.existsSync(`${dbPath}-shm`)).toBe(true);
+      const before = snapshotTree(storage.root);
+
+      const result = await akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true });
+
+      expect(result.plan?.snapshot.status).toBe("ready");
+      expect(result.plan?.candidates.rawInScope).toBe(2);
+      expect(result.plannedRefs).toHaveLength(1);
+      expect(snapshotTree(storage.root)).toEqual(before);
+    } finally {
+      writer.close();
+    }
+  });
+
+  test("held WAL legacy state is treated as empty without changing main, WAL, or SHM bytes", async () => {
+    const storage = isolatedStorage();
+    const config = plannerConfig({ proactive: { enabled: true, dueDays: 0, maxPerRun: 1 } });
+    await indexSkills(storage.stashDir, 1, config);
+    const statePath = getStateDbPath();
+    for (const suffix of ["", "-wal", "-shm"] as const) fs.rmSync(`${statePath}${suffix}`, { force: true });
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    const legacyState = new Database(statePath);
+    try {
+      legacyState.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0");
+      legacyState.exec("CREATE TABLE old_only (id INTEGER PRIMARY KEY, value TEXT)");
+      legacyState.exec("INSERT INTO old_only(value) VALUES ('preserve-held-state')");
+      expect(fs.existsSync(`${statePath}-wal`)).toBe(true);
+      expect(fs.existsSync(`${statePath}-shm`)).toBe(true);
+      const before = snapshotTree(storage.root);
+
+      const result = await akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true });
+
+      expect(result.ok).toBe(true);
+      expect(result.dryRun).toBe(true);
+      expect(snapshotTree(storage.root)).toEqual(before);
+    } finally {
+      legacyState.close();
+    }
+  });
+
+  test("clean legacy state with no events table is read-compatible and remains byte-identical", async () => {
+    const storage = isolatedStorage();
+    const config = plannerConfig();
+    await indexSkills(storage.stashDir, 1, config);
+    const statePath = getStateDbPath();
+    for (const suffix of ["", "-wal", "-shm"] as const) fs.rmSync(`${statePath}${suffix}`, { force: true });
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    const legacyState = new Database(statePath);
+    legacyState.exec("CREATE TABLE old_only (id INTEGER PRIMARY KEY, value TEXT)");
+    legacyState.exec("INSERT INTO old_only(value) VALUES ('preserve-legacy-state')");
+    legacyState.close();
+    const before = snapshotTree(storage.root);
+
+    const result = await akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true });
+
+    expect(result.ok).toBe(true);
+    expect(result.dryRun).toBe(true);
+    expect(snapshotTree(storage.root)).toEqual(before);
+  });
+
   test("reports raw candidates separately from the post-selector, post-limit refs", async () => {
     const { stashDir } = isolatedStorage();
     const config = plannerConfig({ proactive: { enabled: true, dueDays: 0, maxPerRun: 3 } });
@@ -197,6 +295,8 @@ describe("#800 effective dry-run planner", () => {
       limits: {
         configured: { cli: 2, reflect: 4 },
         effective: 2,
+        additiveReplayAllowance: 0,
+        totalCeiling: 2,
       },
     });
     expect(result.plan?.effectiveRefs).toHaveLength(2);
@@ -237,7 +337,7 @@ describe("#800 effective dry-run planner", () => {
     });
   });
 
-  test("dry and live execution expose identical effective refs from the same snapshot", async () => {
+  test("dry and live execution expose identical effective refs when observed inputs are unchanged", async () => {
     const { stashDir } = isolatedStorage();
     const config = plannerConfig({ proactive: { enabled: true, dueDays: 0, maxPerRun: 4 } });
     await indexSkills(stashDir, 6, config);

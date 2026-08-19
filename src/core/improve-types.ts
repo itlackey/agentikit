@@ -77,8 +77,12 @@ export interface ImproveExecutionPlan {
   limits: {
     /** Authored values, kept separate so precedence is visible. */
     configured: { cli?: number; profile?: number; reflect?: number };
-    /** Single cap resolved from CLI -> reflect process -> profile. */
+    /** Base cap for ordinary (non-replay) refs, resolved from CLI -> reflect process -> profile. */
     effective?: number;
+    /** Separately configured replay refs that may be appended beyond the base cap. */
+    additiveReplayAllowance: number;
+    /** Finite maximum dispatch count when a base cap exists; base cap + replay allowance. */
+    totalCeiling?: number;
   };
   gates: ImprovePlanGate[];
   effectiveRefs: Array<{ ref: string; lane: ImprovePlanLane; reason: ImproveEligibleRef["reason"] }>;

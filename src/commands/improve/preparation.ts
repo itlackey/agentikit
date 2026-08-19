@@ -1201,6 +1201,7 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
     ...(gathered.proactiveMaintenanceSummary ? { proactiveMaintenance: gathered.proactiveMaintenanceSummary } : {}),
     planning: {
       gates: planningGates,
+      replayBudget: filtered.replayBudget,
       ...(gathered.proactivePlan ? { proactive: gathered.proactivePlan } : {}),
       consolidation: consolidationPass.plan,
       extract: { wouldRun: extractPlan.wouldRun, reason: extractPlan.reason },
@@ -1832,7 +1833,9 @@ function fetchRetrievalSignals(args: {
   let lastUseMsForProactive = new Map<string, number>();
   let dbForRetrieval: import("../../storage/database").Database | undefined;
   try {
-    dbForRetrieval = persist ? openExistingDatabase() : openReadonlyExistingDatabase();
+    dbForRetrieval = persist
+      ? openExistingDatabase()
+      : openReadonlyExistingDatabase(undefined, { isolatedSnapshot: true });
     if (!dbForRetrieval) return { retrievalCounts, lastUseMsForProactive };
     // usage_events lives in state.db (Chunk-8 WI-8.3); entries stay in index.db,
     // so the retrieval-count reads take both handles.
@@ -2147,10 +2150,12 @@ function scoreSalience(args: {
   // lightweight open is used here to avoid holding the connection longer than needed.
   let lastUseMsByRef = new Map<string, number>();
   // Health and outcome reporting consume the utility projection.
-  const utilityMap = buildUtilityMap(mergedRefs);
+  const utilityMap = buildUtilityMap(mergedRefs, !persist);
   let dbForSalience: import("../../storage/database").Database | undefined;
   try {
-    dbForSalience = persist ? openExistingDatabase() : openReadonlyExistingDatabase();
+    dbForSalience = persist
+      ? openExistingDatabase()
+      : openReadonlyExistingDatabase(undefined, { isolatedSnapshot: true });
     if (dbForSalience) {
       lastUseMsByRef = getLastUseMsByRef(
         dbForSalience,
@@ -2850,6 +2855,7 @@ async function filterEligibility(args: {
   coverageGaps: string[];
   limitRemoved: number;
   missingDiskCount: number;
+  replayBudget: number;
 }> {
   const { scope, options, plannedRefs, eventsCtx, salienceMap, eligibilitySourceByRef, distillOnlyRefs, persist } =
     args;
@@ -2925,7 +2931,9 @@ async function filterEligibility(args: {
   // Phase 0: surface coverage gaps from zero-result search queries
   let coverageGaps: string[] = [];
   try {
-    const dbForGaps = persist ? openExistingDatabase() : openReadonlyExistingDatabase();
+    const dbForGaps = persist
+      ? openExistingDatabase()
+      : openReadonlyExistingDatabase(undefined, { isolatedSnapshot: true });
     if (dbForGaps) {
       try {
         coverageGaps = getZeroResultSearches(dbForGaps);
@@ -2997,6 +3005,7 @@ async function filterEligibility(args: {
     coverageGaps,
     limitRemoved: selection.limitRemoved,
     missingDiskCount: assetMissingOnDisk.length,
+    replayBudget,
   };
 }
 

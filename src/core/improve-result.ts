@@ -76,7 +76,7 @@ function requireNumber(value: Record<string, unknown>, field: string, path: stri
 
 function requireCount(value: Record<string, unknown>, field: string, path: string): void {
   requireNumber(value, field, path);
-  if (!Number.isInteger(value[field]) || (value[field] as number) < 0) {
+  if (!Number.isSafeInteger(value[field]) || (value[field] as number) < 0) {
     fail(`${path}.${field} must be a non-negative integer`);
   }
 }
@@ -165,7 +165,7 @@ function validateProactivePlan(value: unknown): void {
   }
 }
 
-function validateImprovePlan(value: unknown): void {
+function validateImprovePlan(value: unknown, dryRun: boolean, plannedRefNames: readonly string[]): void {
   if (!isRecord(value)) fail("plan must be an object");
   requireExactFields(
     value,
@@ -188,6 +188,12 @@ function validateImprovePlan(value: unknown): void {
   if ((value.mode === "estimate" && value.dispatch) || (value.mode === "execution" && !value.dispatch)) {
     fail("plan.dispatch must be false for estimate mode and true for execution mode");
   }
+  if (dryRun && (value.mode !== "estimate" || value.dispatch !== false)) {
+    fail("dryRun=true requires estimate mode with dispatch=false");
+  }
+  if (!dryRun && (value.mode !== "execution" || value.dispatch !== true)) {
+    fail("dryRun=false requires execution mode with dispatch=true");
+  }
   if (!isRecord(value.snapshot)) fail("plan.snapshot must be an object");
   requireExactFields(value.snapshot, new Set(["status", "reason"]));
   if (
@@ -202,17 +208,31 @@ function validateImprovePlan(value: unknown): void {
   for (const field of ["rawInScope", "selected", "effective"] as const) {
     requireCount(value.candidates, field, "plan.candidates");
   }
+  if ((value.candidates.rawInScope as number) < (value.candidates.selected as number)) {
+    fail("plan.candidates.rawInScope cannot be less than plan.candidates.selected");
+  }
+  if ((value.candidates.selected as number) < (value.candidates.effective as number)) {
+    fail("plan.candidates.selected cannot be less than plan.candidates.effective");
+  }
   if (!isRecord(value.limits)) fail("plan.limits must be an object");
-  requireExactFields(value.limits, new Set(["configured", "effective"]));
+  requireExactFields(value.limits, new Set(["configured", "effective", "additiveReplayAllowance", "totalCeiling"]));
   if (!isRecord(value.limits.configured)) fail("plan.limits.configured must be an object");
   requireExactFields(value.limits.configured, new Set(["cli", "profile", "reflect"]));
   for (const field of ["cli", "profile", "reflect"] as const) {
-    if (value.limits.configured[field] !== undefined && typeof value.limits.configured[field] !== "number") {
-      fail(`plan.limits.configured.${field} must be a number`);
-    }
+    if (value.limits.configured[field] !== undefined)
+      requireCount(value.limits.configured, field, "plan.limits.configured");
   }
-  if (value.limits.effective !== undefined && typeof value.limits.effective !== "number") {
-    fail("plan.limits.effective must be a number");
+  if (value.limits.effective !== undefined) requireCount(value.limits, "effective", "plan.limits");
+  requireCount(value.limits, "additiveReplayAllowance", "plan.limits");
+  if (value.limits.totalCeiling !== undefined) requireCount(value.limits, "totalCeiling", "plan.limits");
+  if (value.limits.effective === undefined && value.limits.totalCeiling !== undefined) {
+    fail("plan.limits.totalCeiling must be omitted when plan.limits.effective is unbounded");
+  }
+  if (
+    value.limits.effective !== undefined &&
+    value.limits.totalCeiling !== (value.limits.effective as number) + (value.limits.additiveReplayAllowance as number)
+  ) {
+    fail("plan.limits.totalCeiling must equal plan.limits.effective + plan.limits.additiveReplayAllowance");
   }
 
   const gateNames = new Set(["profile", "cleanup", "validation", "signal", "disk", "limit"]);
@@ -247,8 +267,28 @@ function validateImprovePlan(value: unknown): void {
   if (value.candidates.effective !== value.effectiveRefs.length) {
     fail("plan.candidates.effective must equal plan.effectiveRefs.length");
   }
-  if ((value.candidates.effective as number) > (value.candidates.selected as number)) {
-    fail("plan.candidates.effective cannot exceed plan.candidates.selected");
+  const effectiveRefNames = value.effectiveRefs.map((entry) => (entry as Record<string, unknown>).ref as string);
+  if (new Set(effectiveRefNames).size !== effectiveRefNames.length) {
+    fail("plan.effectiveRefs must not contain duplicate refs");
+  }
+  if (
+    plannedRefNames.length !== effectiveRefNames.length ||
+    plannedRefNames.some((ref, index) => ref !== effectiveRefNames[index])
+  ) {
+    fail("plannedRefs must contain the same refs in the same order as plan.effectiveRefs");
+  }
+  const replayCount = value.effectiveRefs.filter(
+    (entry) => (entry as Record<string, unknown>).lane === "replay",
+  ).length;
+  const ordinaryCount = value.effectiveRefs.length - replayCount;
+  if (replayCount > (value.limits.additiveReplayAllowance as number)) {
+    fail("plan replay refs cannot exceed plan.limits.additiveReplayAllowance");
+  }
+  if (value.limits.effective !== undefined && ordinaryCount > (value.limits.effective as number)) {
+    fail("plan ordinary refs cannot exceed plan.limits.effective");
+  }
+  if (value.limits.totalCeiling !== undefined && value.effectiveRefs.length > (value.limits.totalCeiling as number)) {
+    fail("plan.effectiveRefs cannot exceed plan.limits.totalCeiling");
   }
   if (value.proactive !== undefined) validateProactivePlan(value.proactive);
   validateConsolidationPlan(value.consolidation);
@@ -281,7 +321,11 @@ function validateCommon(value: Record<string, unknown>): void {
   if (typeof value.ok !== "boolean") fail("ok must be a boolean");
   if (typeof value.dryRun !== "boolean") fail("dryRun must be a boolean");
   if (!Array.isArray(value.plannedRefs)) fail("plannedRefs must be an array");
-  if (value.plan !== undefined) validateImprovePlan(value.plan);
+  const plannedRefNames = value.plannedRefs.map((entry, index) => {
+    if (!isRecord(entry) || typeof entry.ref !== "string") fail(`plannedRefs[${index}].ref must be a string`);
+    return entry.ref;
+  });
+  if (value.plan !== undefined) validateImprovePlan(value.plan, value.dryRun, plannedRefNames);
   if (!isRecord(value.scope)) fail("scope must be an object");
   requireExactFields(value.scope, new Set(["mode", "value"]));
   if (value.scope.mode !== "all" && value.scope.mode !== "type" && value.scope.mode !== "ref") {

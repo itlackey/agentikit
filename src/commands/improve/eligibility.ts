@@ -24,6 +24,7 @@ import {
 } from "../../storage/repositories/index-connection";
 import { getAllEntries } from "../../storage/repositories/index-entries-repository";
 import { getUtilityScoresByIds } from "../../storage/repositories/index-utility-repository";
+import { SqliteReadSnapshotUnavailableError } from "../../storage/sqlite-read-snapshot";
 import { isDistillRefusedInputType } from "./distill";
 import { isStrategyFilteredForAllPasses } from "./improve-strategies";
 import { parseMemoryRef } from "./memory/derived-ref";
@@ -45,7 +46,7 @@ import { improveStateReadRefs } from "./source-identity";
  * exit 0 depending only on which branch it took. Both arms now raise.
  */
 function openEligibilityDb(readOnly: boolean): Database | undefined {
-  if (readOnly) return openReadonlyExistingDatabase();
+  if (readOnly) return openReadonlyExistingDatabase(undefined, { isolatedSnapshot: true });
   return isPathAbsent(getDbPath()) ? undefined : openExistingDatabase();
 }
 
@@ -53,7 +54,7 @@ function describeIndexSnapshot(readOnly: boolean, status: "ready" | "missing" | 
   if (status === "ready") {
     return {
       status,
-      reason: readOnly ? "loaded the existing index read-only" : "loaded the prepared index",
+      reason: readOnly ? "loaded a non-mutating point-in-time copy of the existing index" : "loaded the prepared index",
     };
   }
   if (status === "missing") {
@@ -69,6 +70,13 @@ function describeIndexSnapshot(readOnly: boolean, status: "ready" | "missing" | 
     reason: readOnly
       ? "index.db has no entries table; dry-run uses an empty snapshot and does not migrate it"
       : "index.db has no entries table; the selector uses an empty snapshot",
+  };
+}
+
+function describeUnavailableSnapshot(error: SqliteReadSnapshotUnavailableError): ImproveIndexSnapshot {
+  return {
+    status: "incompatible",
+    reason: `index.db cannot provide a stable non-mutating snapshot (${error.message}); dry-run uses an empty snapshot`,
   };
 }
 
@@ -225,6 +233,14 @@ async function collectEligibleRefsFromIndex(
         indexSnapshot,
       };
     } catch (error) {
+      if (readOnly && error instanceof SqliteReadSnapshotUnavailableError) {
+        return {
+          plannedRefs: [],
+          memorySummary: { eligible: 0, derived: 0 },
+          strategyFilteredRefs: [],
+          indexSnapshot: describeUnavailableSnapshot(error),
+        };
+      }
       if (error instanceof Error && /no such table:\s*entries/i.test(error.message)) {
         return {
           plannedRefs: [],
@@ -343,6 +359,14 @@ async function collectEligibleRefsFromIndex(
   } catch (error) {
     // Empty-stash setup paths can open index.db before its schema exists.
     rethrowIfTestIsolationError(error);
+    if (readOnly && error instanceof SqliteReadSnapshotUnavailableError) {
+      return {
+        plannedRefs: [],
+        memorySummary: { eligible: 0, derived: 0 },
+        strategyFilteredRefs: [],
+        indexSnapshot: describeUnavailableSnapshot(error),
+      };
+    }
     if (error instanceof Error && /no such table:\s*entries/i.test(error.message)) {
       return {
         plannedRefs: [],
@@ -608,13 +632,14 @@ export function shouldAnalyzeMemoryCleanup(
   return parseRefInput(scope.value).type === "memory";
 }
 
-export function buildUtilityMap(refs: ImproveEligibleRef[]): Map<string, number> {
+export function buildUtilityMap(refs: ImproveEligibleRef[], readOnly = false): Map<string, number> {
   const map = new Map<string, number>();
   if (refs.length === 0) return map;
   const refSet = new Set(refs.map((r) => r.ref));
   let db: Database | undefined;
   try {
-    db = openExistingDatabase();
+    db = readOnly ? openReadonlyExistingDatabase(undefined, { isolatedSnapshot: true }) : openExistingDatabase();
+    if (!db) return map;
     const allDbEntries = getAllEntries(db);
     const idToRef = new Map<number, string>();
     for (const indexed of allDbEntries) {

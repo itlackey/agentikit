@@ -202,6 +202,8 @@ export interface EventsContext {
    * snapshot.
    */
   readOnly?: boolean;
+  /** The planner could not obtain a side-effect-free state snapshot (for example, held WAL state). */
+  readOnlySnapshotUnavailable?: boolean;
 }
 
 /**
@@ -339,6 +341,7 @@ const SAVE_SYNC_EVENT_TYPE_ALIASES = new Set(["save", "sync"]);
  * can persist between processes for monotonic resumption.
  */
 export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext): ReadEventsResult {
+  if (ctx?.readOnlySnapshotUnavailable) return { events: [], nextOffset: 0 };
   const dbPath = resolveDbPath(ctx);
 
   let db: import("../storage/database").Database | undefined;
@@ -381,13 +384,22 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
       (options.includeTags?.length ?? 0) > 0 ||
       options.runId !== undefined;
     const pushLimitToSql = options.limit !== undefined && !needsPostFilter;
-    const { events: rawEvents, nextId } = readStateEvents(db, {
-      sinceId: options.sinceOffset,
-      since: options.since,
-      type: typeIsAliased ? undefined : options.type,
-      ref: options.ref,
-      ...(pushLimitToSql ? { limit: options.limit } : {}),
-    });
+    let rawEvents: EventEnvelope[];
+    let nextId: number;
+    try {
+      ({ events: rawEvents, nextId } = readStateEvents(db, {
+        sinceId: options.sinceOffset,
+        since: options.since,
+        type: typeIsAliased ? undefined : options.type,
+        ref: options.ref,
+        ...(pushLimitToSql ? { limit: options.limit } : {}),
+      }));
+    } catch (error) {
+      if (ctx?.readOnly && error instanceof Error && /no such table:/i.test(error.message)) {
+        return { events: [], nextOffset: options.sinceOffset ?? 0 };
+      }
+      throw error;
+    }
 
     const filtered = rawEvents.filter((envelope) => {
       if (typeIsAliased && !SAVE_SYNC_EVENT_TYPE_ALIASES.has(envelope.eventType)) return false;

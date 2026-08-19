@@ -55,6 +55,7 @@ export interface ImprovePlanProjectionInput {
   distillOnlyRefs: ReadonlySet<string>;
   configuredLimits: { cli?: number; profile?: number; reflect?: number };
   effectiveLimit?: number;
+  replayBudget: number;
   gates: readonly ImprovePlanGate[];
   proactive?: ImproveExecutionPlan["proactive"];
   consolidation: ImproveExecutionPlan["consolidation"];
@@ -66,7 +67,7 @@ export interface ImprovePlanProjectionInput {
   triage: ImproveExecutionPlan["triage"];
 }
 
-/** Build the stable public plan DTO from a single selector snapshot. */
+/** Build the stable public plan DTO from one invocation's selector observation. */
 export function buildImproveExecutionPlan(input: ImprovePlanProjectionInput): ImproveExecutionPlan {
   const effectiveRefs = input.effectiveRefs.map((entry) => ({
     ref: entry.ref,
@@ -85,6 +86,8 @@ export function buildImproveExecutionPlan(input: ImprovePlanProjectionInput): Im
     limits: {
       configured: { ...input.configuredLimits },
       ...(input.effectiveLimit !== undefined ? { effective: input.effectiveLimit } : {}),
+      additiveReplayAllowance: input.replayBudget,
+      ...(input.effectiveLimit !== undefined ? { totalCeiling: input.effectiveLimit + input.replayBudget } : {}),
     },
     gates: input.gates.map((gate) => ({ ...gate })),
     effectiveRefs,

@@ -1740,7 +1740,7 @@ export function narrowToIncrementalCandidates(
   const keep = new Set<string>(changed.map((m) => m.name));
   let db: ReturnType<typeof openExistingDatabase> | undefined;
   try {
-    db = readOnly ? openReadonlyExistingDatabase() : openExistingDatabase();
+    db = readOnly ? openReadonlyExistingDatabase(undefined, { isolatedSnapshot: true }) : openExistingDatabase();
     if (!db) return memories;
     for (const m of changed) {
       const id = findEntryIdByRef(db, conceptIdFromTypeName("memory", m.name));
@@ -1777,7 +1777,7 @@ function loadMemoriesForSource(
   let memories: MemoryEntry[] = [];
   let db: ReturnType<typeof openExistingDatabase> | undefined;
   try {
-    db = readOnly ? openReadonlyExistingDatabase() : openExistingDatabase();
+    db = readOnly ? openReadonlyExistingDatabase(undefined, { isolatedSnapshot: true }) : openExistingDatabase();
     if (!db) throw new Error("index unavailable");
     const entries: DbIndexedEntry[] = getAllEntries(db, "memory");
     memories = entries
