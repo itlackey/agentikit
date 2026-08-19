@@ -103,6 +103,122 @@ const SAFE_SPECIAL_DIAGNOSTIC_URLS = [
   "fetch https:safe.test user@example.com",
   "fetch https: safe.test user@example.com",
 ];
+const STRICT_LITERAL_DELIMITER_URLS = ["&", ",", ";", ")"].map(
+  (delimiter) => `https://registry.test/proxy/https://plain${delimiter}R4SECRET@evil.test/x`,
+);
+
+function wrapNestedQuery(value: string): string {
+  return `https://registry.test/?${new URLSearchParams({ next: value }).toString()}`;
+}
+
+function wrapNestedQueryTimes(value: string, count: number): string {
+  let nested = value;
+  for (let depth = 0; depth < count; depth++) nested = wrapNestedQuery(nested);
+  return nested;
+}
+
+function encodeURIComponentTimes(value: string, count: number): string {
+  let encoded = value;
+  for (let depth = 0; depth < count; depth++) encoded = encodeURIComponent(encoded);
+  return encoded;
+}
+
+function fixtureAt(values: readonly string[], index: number): string {
+  const value = values[index];
+  if (value === undefined) throw new Error(`Missing registry credential fixture at index ${index}`);
+  return value;
+}
+
+const ENCODED_NESTED_CREDENTIALS = [
+  "https://R4USER:R4PASS@evil.test/x",
+  "https://decoy@R4REPEATED@evil.test/x",
+  "https://R4USER:R4PASS@[::1]/x",
+  "h\tttps://R4USER:R4PASS@evil.test/x",
+  `https:${BACKSLASH}${BACKSLASH}R4USER:R4PASS@evil.test/x`,
+];
+const STRICT_ISOLATED_EQUALS_CREDENTIALS = [
+  "https://plain&email=R5SECRET@evil.test/x",
+  "https://plain,email=R5SECRET@evil.test/x",
+  "https://plain;email=R5SECRET@evil.test/x",
+  "https://plain)email=R5SECRET@evil.test/x",
+  "https://plain&first=value;second=R5SECRET@evil.test/x",
+];
+const STRICT_ENCODED_URLS = [
+  ...ENCODED_NESTED_CREDENTIALS.flatMap((nested) => [
+    wrapNestedQuery(nested),
+    wrapNestedQuery(encodeURIComponent(nested)),
+    wrapNestedQuery(encodeURIComponent(encodeURIComponent(nested))),
+  ]),
+  "https://registry.test/#next=https://R4USER%3AR4PASS%40evil.test/x",
+  "https://registry.test/#next=https%3A%2F%2FR4USER%253AR4PASS%2540evil.test%2Fx",
+  "https://registry.test/proxy/https%3A%2F%2FR4USER%3AR4PASS%40evil.test%2Fx",
+  `https://registry.test/?${new URLSearchParams([["https://R5KEY:R5KEYPASS@evil.test/x", "value"]]).toString()}`,
+  ...STRICT_ISOLATED_EQUALS_CREDENTIALS.flatMap((nested) => [
+    wrapNestedQuery(nested),
+    wrapNestedQuery(encodeURIComponent(nested)),
+  ]),
+];
+const STRICT_RECURSIVE_URL = wrapNestedQueryTimes("https://recursive-user:RECURSIVESECRET@evil.test/x", 10);
+const STRICT_MALFORMED_PERCENT_URL = "https://registry.test/?next=h%ZZttps%3A%2F%2FR4USER%3AR4PASS%40evil.test%2Fx";
+const STRICT_TRAILING_MALFORMED_PERCENT_URL =
+  "https://registry.test/?next=https%3A%2F%2FR4USER%3AR4PASS%40evil.test%2Fx%ZZ";
+const STRICT_COUNT_EXHAUSTION_URL = `https://registry.test/#${[
+  ...Array.from({ length: 140 }, (_, index) => `https://safe-${index}.test/x`),
+  encodeURIComponent("https://count-user:COUNTSECRET@evil.test/x"),
+].join(",")}`;
+const STRICT_BYTE_EXHAUSTION_URL = wrapNestedQuery(
+  `${"a".repeat(70_000)}${encodeURIComponent("https://byte-user:BYTESECRET@evil.test/x")}`,
+);
+const STRICT_LIMIT_AND_MALFORMED_URLS = [
+  STRICT_RECURSIVE_URL,
+  STRICT_MALFORMED_PERCENT_URL,
+  STRICT_TRAILING_MALFORMED_PERCENT_URL,
+  STRICT_COUNT_EXHAUSTION_URL,
+  STRICT_BYTE_EXHAUSTION_URL,
+];
+const STRICT_DEPTH_8_SAFE_URL = wrapNestedQueryTimes("https://depth-safe.test/x", 8);
+const STRICT_DEPTH_9_EXHAUSTION_URL = wrapNestedQueryTimes("https://depth-safe.test/x", 9);
+const STRICT_DEPTH_8_CREDENTIAL_URL = wrapNestedQueryTimes("https://depth-user:DEPTHSECRET@evil.test/x", 8);
+const STRICT_AUTHORITY_DECODE_8_URL = `https://registry.test/#next=https://ENCODEUSER${encodeURIComponentTimes(":ENCODEPASS@", 8)}evil.test/x`;
+const STRICT_AUTHORITY_DECODE_9_URL = `https://registry.test/#next=https://ENCODEUSER${encodeURIComponentTimes(":ENCODEPASS@", 9)}evil.test/x`;
+const STRICT_MIXED_DEPTH_8_SAFE_URL = wrapNestedQueryTimes(encodeURIComponentTimes("https://mixed-safe.test/x", 4), 4);
+const STRICT_MIXED_DEPTH_8_CREDENTIAL_URL = wrapNestedQueryTimes(
+  encodeURIComponentTimes("https://mixed-user:MIXEDSECRET@evil.test/x", 4),
+  4,
+);
+const STRICT_MIXED_DEPTH_9_EXHAUSTION_URL = wrapNestedQueryTimes(
+  encodeURIComponentTimes("https://mixed-safe.test/x", 5),
+  4,
+);
+const STRICT_CANDIDATE_128_SAFE_URL = `https://registry.test/#${Array.from(
+  { length: 128 },
+  (_, index) => `https://safe-${index}.test/x`,
+).join(",")}`;
+const STRICT_CANDIDATE_129_EXHAUSTION_URL = `https://registry.test/#${Array.from(
+  { length: 129 },
+  (_, index) => `https://safe-${index}.test/x`,
+).join(",")}`;
+const STRICT_BYTE_PREFIX = "https://byte-safe.test/";
+const STRICT_BYTE_65536_SAFE_URL = `https://registry.test/#${STRICT_BYTE_PREFIX}${"a".repeat(
+  65_536 - STRICT_BYTE_PREFIX.length,
+)}`;
+const STRICT_BYTE_65537_EXHAUSTION_URL = `${STRICT_BYTE_65536_SAFE_URL}a`;
+const SAFE_NON_URL_65537_URL = `https://registry.test/#${"a".repeat(65_537)}`;
+const SAFE_STRICT_COMPONENT_URLS = [
+  "https://registry.test/proxy/user:pass@notes/path",
+  `https://registry.test/?${new URLSearchParams([
+    ["next", "https://safe-one.test/x"],
+    ["email", "user@example.com"],
+    ["next", "https://safe-two.test/x"],
+  ]).toString()}`,
+  "https://registry.test/#owner=user@example.com;next=https://safe.test/x",
+  wrapNestedQuery("https://safe.test/x"),
+  wrapNestedQuery(encodeURIComponent("https://safe.test/x")),
+  `https://registry.test/?${new URLSearchParams([
+    ["https://safe-key.test/x", "value"],
+    ["user@example.com", "value"],
+  ]).toString()}`,
+];
 const CONFIG_LOAD_CONTROL_URLS = CONTROL_CHARACTERS.flatMap((control) => {
   const whole = `https:${control}//${USERNAME}:${PASSWORD}@load.example.test/index.json`;
   return [whole, `https://safe.test/?next=${whole}`];
@@ -162,6 +278,20 @@ function expectCredentialsAbsent(value: unknown): void {
     "r3-pass",
     "special-user",
     "special-pass",
+    "R4SECRET",
+    "R4USER",
+    "R4PASS",
+    "R4REPEATED",
+    "RECURSIVESECRET",
+    "COUNTSECRET",
+    "BYTESECRET",
+    "DEPTHSECRET",
+    "ENCODEUSER",
+    "ENCODEPASS",
+    "R5SECRET",
+    "MIXEDSECRET",
+    "R5KEY",
+    "R5KEYPASS",
   ]) {
     expect(serialized).not.toContain(marker);
   }
@@ -252,6 +382,38 @@ describe("registry credential-bearing URL mutation boundaries", () => {
     expectCredentialsAbsent(fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "");
   });
 
+  test("registry add rejects literal username-only delimiter userinfo in a nested path", async () => {
+    const configPath = path.join(storage.configDir, "akm", "config.json");
+    const result = await runCliCapture([
+      "registry",
+      "add",
+      fixtureAt(STRICT_LITERAL_DELIMITER_URLS, 0),
+      "--verbose",
+      "--format=json",
+    ]);
+
+    expect(result.code).not.toBe(0);
+    expectCredentialsAbsent(result.stdout);
+    expectCredentialsAbsent(result.stderr);
+    expectCredentialsAbsent(fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "");
+  });
+
+  test("config set rejects a percent-encoded nested credential URL", async () => {
+    const configPath = path.join(storage.configDir, "akm", "config.json");
+    const result = await runCliCapture([
+      "config",
+      "set",
+      "registries",
+      JSON.stringify([{ url: fixtureAt(STRICT_ENCODED_URLS, 0), name: "private" }]),
+      "--format=json",
+    ]);
+
+    expect(result.code).not.toBe(0);
+    expectCredentialsAbsent(result.stdout);
+    expectCredentialsAbsent(result.stderr);
+    expectCredentialsAbsent(fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "");
+  });
+
   test("registry remove does not echo a credential-bearing target in its JSON error", async () => {
     const result = await runCliCapture(["registry", "remove", CREDENTIAL_URL, "--yes", "--format=json"]);
 
@@ -302,6 +464,46 @@ describe("registry credential-bearing URL mutation boundaries", () => {
     const configPath = path.join(storage.configDir, "akm", "config.json");
     expect(fs.existsSync(configPath)).toBe(false);
   });
+
+  test("the shared save boundary rejects literal delimiter and encoded nested credentials", () => {
+    for (const url of [...STRICT_LITERAL_DELIMITER_URLS, ...STRICT_ENCODED_URLS]) {
+      expect(() => saveConfig({ ...DEFAULT_CONFIG, registries: [{ url, name: "recursive-private" }] })).toThrow(
+        "credential",
+      );
+    }
+
+    const configPath = path.join(storage.configDir, "akm", "config.json");
+    expect(fs.existsSync(configPath)).toBe(false);
+  });
+
+  test("the shared save boundary fails closed on recursive, malformed, and exhausted strict inspection", () => {
+    for (const url of STRICT_LIMIT_AND_MALFORMED_URLS) {
+      expect(() => saveConfig({ ...DEFAULT_CONFIG, registries: [{ url, name: "bounded-private" }] })).toThrow(
+        "credential",
+      );
+    }
+
+    const configPath = path.join(storage.configDir, "akm", "config.json");
+    expect(fs.existsSync(configPath)).toBe(false);
+  });
+
+  test("add, set, save, and load preserve safe strict component controls", async () => {
+    const add = await runCliCapture(["registry", "add", fixtureAt(SAFE_STRICT_COMPONENT_URLS, 0), "--format=json"]);
+    expect(add.code).toBe(0);
+    const set = await runCliCapture([
+      "config",
+      "set",
+      "registries",
+      JSON.stringify([{ url: fixtureAt(SAFE_STRICT_COMPONENT_URLS, 1), name: "safe-components" }]),
+      "--format=json",
+    ]);
+    expect(set.code).toBe(0);
+
+    for (const url of SAFE_STRICT_COMPONENT_URLS) {
+      saveConfig({ ...DEFAULT_CONFIG, registries: [{ url, name: "safe-components" }] });
+      expect(loadConfig().registries?.[0]?.url).toBe(url);
+    }
+  });
 });
 
 describe("already-persisted registry credentials fail closed", () => {
@@ -344,6 +546,24 @@ describe("already-persisted registry credentials fail closed", () => {
   test("persisted strict nested host-shaped usernames fail config load without leaking", async () => {
     for (const url of STRICT_NESTED_USERINFO_URLS) {
       writeSandboxConfig({ registries: [{ url, name: "strict-private", provider: "static-index" }] });
+      const result = await runCliCapture(["registry", "list", "--verbose", "--format=json"]);
+
+      expect(result.code).toBe(78);
+      expectCredentialsAbsent(result.stdout);
+      expectCredentialsAbsent(result.stderr);
+      expect(result.stderr.toLowerCase()).toContain("credential");
+    }
+  });
+
+  test("persisted literal, encoded, recursive, and malformed strict credentials fail load without leaking", async () => {
+    const representatives = [
+      fixtureAt(STRICT_LITERAL_DELIMITER_URLS, 1),
+      fixtureAt(STRICT_ENCODED_URLS, 1),
+      STRICT_RECURSIVE_URL,
+      STRICT_MALFORMED_PERCENT_URL,
+    ];
+    for (const url of representatives) {
+      writeSandboxConfig({ registries: [{ url, name: "recursive-private", provider: "static-index" }] });
       const result = await runCliCapture(["registry", "list", "--verbose", "--format=json"]);
 
       expect(result.code).toBe(78);
@@ -490,6 +710,64 @@ describe("registry provider, search, warning, and log boundaries", () => {
       expect(result.hits).toEqual([]);
       expect(result.warnings?.[0]?.toLowerCase()).toContain("credential");
       expectCredentialsAbsent(result);
+    }
+  });
+
+  test("both providers refuse literal, encoded, recursive, malformed, and bounded strict credentials", async () => {
+    const requested: string[] = [];
+    const unsafeUrls = [...STRICT_LITERAL_DELIMITER_URLS, ...STRICT_ENCODED_URLS, ...STRICT_LIMIT_AND_MALFORMED_URLS];
+    const results = await withMockedFetch(
+      async () => {
+        const captured = [];
+        for (const providerType of ["static-index", "skills-sh"]) {
+          const factory = resolveRegistryProviderFactory(providerType);
+          if (!factory) throw new Error(`Built-in registry provider ${providerType} is not registered`);
+          for (const url of unsafeUrls) {
+            captured.push(
+              await factory({ url, name: `${providerType}-recursive-private` }).search({
+                query: "needle",
+                limit: 20,
+              }),
+            );
+          }
+        }
+        return captured;
+      },
+      (url) => {
+        requested.push(url);
+        return new Response("{}");
+      },
+    );
+
+    expect(requested.length).toBe(0);
+    for (const result of results) {
+      expect(result.hits).toEqual([]);
+      expect(result.warnings?.[0]?.toLowerCase()).toContain("credential");
+      expectCredentialsAbsent(result);
+    }
+  });
+
+  test("both providers preserve safe query arrays, paths, fragments, and encoded nested URLs", async () => {
+    for (const providerType of ["static-index", "skills-sh"]) {
+      const factory = resolveRegistryProviderFactory(providerType);
+      if (!factory) throw new Error(`Built-in registry provider ${providerType} is not registered`);
+      for (const url of SAFE_STRICT_COMPONENT_URLS) {
+        const requested: string[] = [];
+        const result = await withMockedFetch(
+          () => factory({ url, name: `${providerType}-safe-components` }).search({ query: "needle", limit: 20 }),
+          (requestedUrl) => {
+            requested.push(requestedUrl);
+            return new Response(
+              providerType === "static-index"
+                ? JSON.stringify({ version: 3, updatedAt: "2026-01-01T00:00:00Z", stashes: [] })
+                : JSON.stringify({ skills: [] }),
+            );
+          },
+        );
+
+        expect(requested.length).toBe(1);
+        expect(result.warnings ?? []).toEqual([]);
+      }
     }
   });
 
@@ -665,6 +943,81 @@ describe("registry URLs are safe in plain, structured, and health projections", 
     }
   });
 
+  test("strict recursive detection rejects literal delimiter and encoded credentials with safe formatting", () => {
+    for (const url of [...STRICT_LITERAL_DELIMITER_URLS, ...STRICT_ENCODED_URLS]) {
+      expect(hasRegistryUrlCredentials(url)).toBe(true);
+      expectCredentialsAbsent(formatRegistryUrl(url));
+    }
+  });
+
+  test("strict recursive detection fails closed on malformed decoding and every inspection budget", () => {
+    for (const url of STRICT_LIMIT_AND_MALFORMED_URLS) {
+      expect(hasRegistryUrlCredentials(url)).toBe(true);
+      const formatted = formatRegistryUrl(url);
+      expect(
+        ["RECURSIVESECRET", "R4USER", "R4PASS", "COUNTSECRET", "BYTESECRET"].some((marker) =>
+          formatted.includes(marker),
+        ),
+      ).toBe(false);
+    }
+  });
+
+  test("strict recursion accepts depth 8, detects credentials there, and fails closed at depth 9", () => {
+    expect(hasRegistryUrlCredentials(STRICT_DEPTH_8_SAFE_URL)).toBe(false);
+    expect(formatRegistryUrl(STRICT_DEPTH_8_SAFE_URL)).toBe(STRICT_DEPTH_8_SAFE_URL);
+
+    expect(hasRegistryUrlCredentials(STRICT_DEPTH_8_CREDENTIAL_URL)).toBe(true);
+    expectCredentialsAbsent(formatRegistryUrl(STRICT_DEPTH_8_CREDENTIAL_URL));
+
+    expect(hasRegistryUrlCredentials(STRICT_DEPTH_9_EXHAUSTION_URL)).toBe(true);
+    expect(formatRegistryUrl(STRICT_DEPTH_9_EXHAUSTION_URL)).toBe("(invalid registry URL)");
+  });
+
+  test("strict authority decoding catches credentials at layer 8 and fails closed at layer 9", () => {
+    expect(hasRegistryUrlCredentials(STRICT_AUTHORITY_DECODE_8_URL)).toBe(true);
+    expectCredentialsAbsent(formatRegistryUrl(STRICT_AUTHORITY_DECODE_8_URL));
+
+    expect(hasRegistryUrlCredentials(STRICT_AUTHORITY_DECODE_9_URL)).toBe(true);
+    expect(formatRegistryUrl(STRICT_AUTHORITY_DECODE_9_URL)).toBe("(invalid registry URL)");
+  });
+
+  test("strict depth is cumulative across recursive URLs and percent-decoding steps", () => {
+    expect(hasRegistryUrlCredentials(STRICT_MIXED_DEPTH_8_SAFE_URL)).toBe(false);
+    expect(formatRegistryUrl(STRICT_MIXED_DEPTH_8_SAFE_URL)).toBe(STRICT_MIXED_DEPTH_8_SAFE_URL);
+
+    expect(hasRegistryUrlCredentials(STRICT_MIXED_DEPTH_8_CREDENTIAL_URL)).toBe(true);
+    expectCredentialsAbsent(formatRegistryUrl(STRICT_MIXED_DEPTH_8_CREDENTIAL_URL));
+
+    expect(hasRegistryUrlCredentials(STRICT_MIXED_DEPTH_9_EXHAUSTION_URL)).toBe(true);
+    expect(formatRegistryUrl(STRICT_MIXED_DEPTH_9_EXHAUSTION_URL)).toBe("(invalid registry URL)");
+  });
+
+  test("strict candidate budget accepts 128 candidates and fails closed on candidate 129", () => {
+    expect(hasRegistryUrlCredentials(STRICT_CANDIDATE_128_SAFE_URL)).toBe(false);
+    expect(formatRegistryUrl(STRICT_CANDIDATE_128_SAFE_URL)).toBe(STRICT_CANDIDATE_128_SAFE_URL);
+
+    expect(hasRegistryUrlCredentials(STRICT_CANDIDATE_129_EXHAUSTION_URL)).toBe(true);
+    expect(formatRegistryUrl(STRICT_CANDIDATE_129_EXHAUSTION_URL)).toBe("(invalid registry URL)");
+  });
+
+  test("strict decoded-byte budget accepts 65536 bytes and fails closed on URL-like byte 65537", () => {
+    expect(hasRegistryUrlCredentials(STRICT_BYTE_65536_SAFE_URL)).toBe(false);
+    expect(formatRegistryUrl(STRICT_BYTE_65536_SAFE_URL)).toBe(STRICT_BYTE_65536_SAFE_URL);
+
+    expect(hasRegistryUrlCredentials(STRICT_BYTE_65537_EXHAUSTION_URL)).toBe(true);
+    expect(formatRegistryUrl(STRICT_BYTE_65537_EXHAUSTION_URL)).toBe("(invalid registry URL)");
+
+    expect(hasRegistryUrlCredentials(SAFE_NON_URL_65537_URL)).toBe(false);
+    expect(formatRegistryUrl(SAFE_NON_URL_65537_URL)).toBe(SAFE_NON_URL_65537_URL);
+  });
+
+  test("strict recursive inspection preserves safe query arrays, paths, fragments, and encoded nested URLs", () => {
+    for (const url of SAFE_STRICT_COMPONENT_URLS) {
+      expect(hasRegistryUrlCredentials(url)).toBe(false);
+      expect(formatRegistryUrl(url)).toBe(url);
+    }
+  });
+
   test("whole formatter structurally clears all top-level userinfo before sanitizing nested URLs", () => {
     for (const [unsafe, expected] of TOP_LEVEL_STRUCTURAL_URLS) {
       expect(formatRegistryUrl(unsafe)).toBe(expected);
@@ -763,6 +1116,46 @@ describe("registry URLs are safe in plain, structured, and health projections", 
     expect(persisted.code).toBe(78);
     expectCredentialsAbsent(persisted.stdout);
     expectCredentialsAbsent(persisted.stderr);
+    expect(requested).toEqual([]);
+    expectCredentialsAbsent(fs.readFileSync(logPath, "utf8"));
+  });
+
+  test("encoded and literal recursive credentials stay secret across output, JSON, remove, health, info, and logs", async () => {
+    const logPath = path.join(storage.root, "registry-r4.log");
+    setLogFile(logPath);
+    const requested: string[] = [];
+    const representatives = [
+      fixtureAt(STRICT_LITERAL_DELIMITER_URLS, 2),
+      fixtureAt(STRICT_ENCODED_URLS, 2),
+      STRICT_RECURSIVE_URL,
+    ];
+
+    for (const url of representatives) {
+      const registries = [{ url, name: "r4-private", provider: "static-index" }];
+      const config = { ...DEFAULT_CONFIG, registries };
+      expectCredentialsAbsent(getConfigValue(config, "registries"));
+      expectCredentialsAbsent(listConfig(config));
+      expectCredentialsAbsent(formatRegistryListPlain({ registries }));
+      expectCredentialsAbsent(formatRegistryRemovePlain({ removed: true, entry: registries[0] }));
+      expectCredentialsAbsent(formatInfoPlain({ version: "test", registries }));
+      expectCredentialsAbsent(collectEgressAdvisory({ registries }));
+
+      const result = await withMockedFetch(
+        () => searchRegistry("needle", { registries }),
+        (requestedUrl) => {
+          requested.push(requestedUrl);
+          return new Response("{}");
+        },
+      );
+      for (const warning of result.warnings) warn(warning);
+      expectCredentialsAbsent(result);
+
+      const remove = await runCliCapture(["registry", "remove", url, "--yes", "--format=json"]);
+      expect(remove.code).toBe(1);
+      expectCredentialsAbsent(remove.stdout);
+      expectCredentialsAbsent(remove.stderr);
+    }
+
     expect(requested).toEqual([]);
     expectCredentialsAbsent(fs.readFileSync(logPath, "utf8"));
   });

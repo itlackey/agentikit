@@ -19,6 +19,11 @@ const AUTHORITY_PREFIX_SEPARATOR = new Set(["\t", "\r", "\n", "\\", "/"]);
 const AUTHORITY_STRUCTURAL_BOUNDARY = new Set(["\\", "/", "?", "#"]);
 const AUTHORITY_AMBIGUOUS_BOUNDARY = new Set(["&", ",", ";", ")"]);
 const AUTHORITY_SOFT_BOUNDARY = new Set(["\t", "\r", "\n", " ", '"', "'", "`", "<", ">"]);
+const STRICT_MAX_DEPTH = 8;
+const STRICT_MAX_CANDIDATES = 128;
+const STRICT_MAX_DECODED_BYTES = 65_536;
+const MALFORMED_PERCENT_ENCODING = /%(?![0-9a-f]{2})/iu;
+const HTTP_SCHEME_EVIDENCE = /h[\t\r\n]*t[\t\r\n]*t[\t\r\n]*p[\t\r\n]*(?:s[\t\r\n]*)?:/iu;
 
 type RegistryUrlScanMode = "strict" | "diagnostic";
 
@@ -32,6 +37,19 @@ interface UserinfoSpan {
   end: number;
 }
 
+type StrictInspectionReason = "credentials" | "malformed-encoding" | "inspection-limit";
+
+interface StrictInspection {
+  unsafe: boolean;
+  reason?: StrictInspectionReason;
+}
+
+interface StrictWalkState {
+  candidates: number;
+  decodedBytes: number;
+  reason?: StrictInspectionReason;
+}
+
 /**
  * Detect URL userinfo without broadening this issue into general URL/network
  * validation (the SSRF/redirect boundary is tracked separately in #767).
@@ -40,9 +58,7 @@ interface UserinfoSpan {
  * sanitization uses the separate conservative mode below.
  */
 export function hasRegistryUrlCredentials(raw: string): boolean {
-  const parsed = parseWholeHttpUrl(raw);
-  if (parsed && (parsed.username.length > 0 || parsed.password.length > 0)) return true;
-  return registryUrlStarts(raw).some((start) => findUserinfoSpan(raw, start, "strict") !== undefined);
+  return inspectStrictRegistryUrl(raw).unsafe;
 }
 
 /**
@@ -52,19 +68,33 @@ export function hasRegistryUrlCredentials(raw: string): boolean {
  */
 export function formatRegistryUrl(raw: string): string {
   const parsed = parseWholeHttpUrl(raw);
+  const inspection = inspectStrictRegistryUrl(raw);
   if (parsed) {
+    if (!inspection.unsafe) return raw;
+
+    let candidate = raw;
     if (parsed.username || parsed.password) {
       // A whole configured value is unambiguous. Always clear WHATWG userinfo
       // structurally; textual deletion can otherwise stop at the first of
       // several `@` characters and leave the real credential behind.
       parsed.username = "";
       parsed.password = "";
-      return redactDetectedUserinfo(parsed.toString(), "strict");
+      candidate = parsed.toString();
     }
-    return redactDetectedUserinfo(raw, "strict");
+
+    candidate = redactDetectedUserinfo(candidate, "strict");
+    return inspectStrictRegistryUrl(candidate).unsafe ? INVALID_REGISTRY_URL_LABEL : candidate;
   }
+
   const formatted = redactDetectedUserinfo(raw, "strict");
-  if (registryUrlStarts(raw)[0]?.start === 0 && formatted !== raw) return formatted;
+  if (
+    inspection.unsafe &&
+    registryUrlStarts(raw)[0]?.start === 0 &&
+    formatted !== raw &&
+    !inspectStrictRegistryUrl(formatted).unsafe
+  ) {
+    return formatted;
+  }
   return INVALID_REGISTRY_URL_LABEL;
 }
 
@@ -95,6 +125,269 @@ export function redactCredentialBearingUrls(message: string): string {
 /** Fetch errors are untrusted: runtimes often include the request URL. */
 export function formatRegistryError(error: unknown): string {
   return redactCredentialBearingUrls(toErrorMessage(error));
+}
+
+/**
+ * Configured/provider registry values are not prose. Inspect their URL
+ * structure recursively so encoded nested URLs cannot bypass validation,
+ * while keeping arbitrary diagnostic tokenization deliberately conservative.
+ */
+function inspectStrictRegistryUrl(raw: string): StrictInspection {
+  const parsed = parseWholeHttpUrl(raw);
+  if (!parsed) {
+    const unsafe = registryUrlStarts(raw).some((start) => findStrictComponentUserinfoSpan(raw, start) !== undefined);
+    return unsafe ? { unsafe: true, reason: "credentials" } : { unsafe: false };
+  }
+
+  const state: StrictWalkState = { candidates: 0, decodedBytes: 0 };
+  inspectParsedStrictUrl(parsed, state, 0);
+  return state.reason ? { unsafe: true, reason: state.reason } : { unsafe: false };
+}
+
+function inspectParsedStrictUrl(parsed: URL, state: StrictWalkState, depth: number): void {
+  if (state.reason) return;
+  if (parsed.username || parsed.password) {
+    state.reason = "credentials";
+    return;
+  }
+
+  inspectAuthoredStrictComponent(parsed.pathname, state, depth, false);
+  if (state.reason) return;
+
+  // Inspect each authored query key/value independently. This mirrors
+  // URLSearchParams' first decoding layer while retaining whether a delimiter
+  // was structural (`&`) or encoded data (`%26`) inside one value.
+  const rawQuery = parsed.search.startsWith("?") ? parsed.search.slice(1) : parsed.search;
+  for (const pair of rawQuery.split("&")) {
+    const equals = pair.indexOf("=");
+    const rawKey = equals >= 0 ? pair.slice(0, equals) : pair;
+    const rawValue = equals >= 0 ? pair.slice(equals + 1) : "";
+    inspectMalformedQueryPart(rawKey, state);
+    inspectMalformedQueryPart(rawValue, state);
+    inspectAuthoredStrictComponent(rawKey, state, depth, true);
+    inspectAuthoredStrictComponent(rawValue, state, depth, true);
+    if (state.reason) return;
+  }
+
+  const fragment = parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash;
+  inspectAuthoredStrictComponent(fragment, state, depth, false);
+}
+
+function inspectAuthoredStrictComponent(
+  raw: string,
+  state: StrictWalkState,
+  depth: number,
+  queryEncoded: boolean,
+): void {
+  for (const authoredPart of splitAuthoredFieldComponents(raw)) {
+    const component = queryEncoded ? decodeQueryComponent(authoredPart) : authoredPart;
+    inspectStrictComponent(component, state, depth);
+    if (state.reason) return;
+  }
+}
+
+function inspectStrictComponent(raw: string, state: StrictWalkState, depth: number): void {
+  if (state.reason || raw.length === 0) return;
+
+  let decoded = raw;
+  let currentDepth = depth;
+  while (true) {
+    if (MALFORMED_PERCENT_ENCODING.test(decoded)) {
+      if (hasCredentialLikeUrlEvidence(decoded)) state.reason = "malformed-encoding";
+      return;
+    }
+
+    const starts = registryUrlStarts(decoded);
+    if (starts.length > 0) {
+      inspectStrictUrlCandidates(decoded, starts, state, currentDepth);
+      return;
+    }
+
+    if (!decoded.includes("%")) return;
+    if (currentDepth >= STRICT_MAX_DEPTH) {
+      if (looksLikeStrictUrlComponent(decoded)) state.reason = "inspection-limit";
+      return;
+    }
+
+    const next = decodeURIComponent(decoded);
+    if (next === decoded) return;
+    decoded = next;
+    currentDepth++;
+  }
+}
+
+function inspectStrictUrlCandidates(
+  decoded: string,
+  starts: RegistryUrlStart[],
+  state: StrictWalkState,
+  depth: number,
+): void {
+  const bytes = new TextEncoder().encode(decoded).byteLength;
+  if (bytes > STRICT_MAX_DECODED_BYTES - state.decodedBytes) {
+    state.reason = "inspection-limit";
+    return;
+  }
+  state.decodedBytes += bytes;
+
+  if (starts.length > STRICT_MAX_CANDIDATES - state.candidates) {
+    state.reason = "inspection-limit";
+    return;
+  }
+  state.candidates += starts.length;
+
+  for (const start of starts) {
+    if (findStrictComponentUserinfoSpan(decoded, start)) {
+      state.reason = "credentials";
+      return;
+    }
+  }
+
+  for (let index = 0; index < starts.length; index++) {
+    const start = starts[index];
+    if (!start) continue;
+
+    const nextStart = starts[index + 1]?.start ?? decoded.length;
+    const candidate = trimStrictCandidateSuffix(decoded.slice(start.start, nextStart));
+    const candidateDepth = inspectDecodedCandidateUserinfo(candidate, state, depth);
+    if (state.reason) return;
+
+    if (candidateDepth >= STRICT_MAX_DEPTH) {
+      state.reason = "inspection-limit";
+      return;
+    }
+
+    const parsed = parseWholeHttpUrl(candidate);
+    if (!parsed) continue;
+
+    // A later query/list email can make WHATWG interpret surrounding prose as
+    // userinfo. Trust that interpretation only when the component-bounded
+    // authority scan above found the same userinfo.
+    if (parsed.username || parsed.password) continue;
+    inspectParsedStrictUrl(parsed, state, candidateDepth + 1);
+    if (state.reason) return;
+  }
+}
+
+function inspectDecodedCandidateUserinfo(raw: string, state: StrictWalkState, depth: number): number {
+  let decoded = strictAuthoritySlice(raw);
+  let currentDepth = depth;
+  while (true) {
+    if (registryUrlStarts(decoded).some((start) => findStrictComponentUserinfoSpan(decoded, start))) {
+      state.reason = "credentials";
+      return currentDepth;
+    }
+    if (!decoded.includes("%")) return currentDepth;
+    if (MALFORMED_PERCENT_ENCODING.test(decoded)) {
+      if (hasCredentialLikeUrlEvidence(decoded)) state.reason = "malformed-encoding";
+      return currentDepth;
+    }
+    if (currentDepth >= STRICT_MAX_DEPTH) {
+      state.reason = "inspection-limit";
+      return currentDepth;
+    }
+
+    const next = decodeURIComponent(decoded);
+    if (next === decoded) return currentDepth;
+    decoded = strictAuthoritySlice(next);
+    currentDepth++;
+  }
+}
+
+function strictAuthoritySlice(raw: string): string {
+  const start = registryUrlStarts(raw)[0];
+  if (!start) return raw;
+  let end = raw.length;
+  for (let cursor = start.authorityStart; cursor < raw.length; cursor++) {
+    const char = raw[cursor];
+    if (char && AUTHORITY_STRUCTURAL_BOUNDARY.has(char)) {
+      end = cursor;
+      break;
+    }
+  }
+  return raw.slice(start.start, end);
+}
+
+function inspectMalformedQueryPart(raw: string, state: StrictWalkState): void {
+  if (!state.reason && MALFORMED_PERCENT_ENCODING.test(raw) && hasCredentialLikeUrlEvidence(raw)) {
+    state.reason = "malformed-encoding";
+  }
+}
+
+function decodeQueryComponent(raw: string): string {
+  if (MALFORMED_PERCENT_ENCODING.test(raw)) return raw.replaceAll("+", " ");
+  return decodeURIComponent(raw.replaceAll("+", " "));
+}
+
+function splitAuthoredFieldComponents(raw: string): string[] {
+  const parts: string[] = [];
+  let partStart = 0;
+  for (let cursor = 0; cursor < raw.length; cursor++) {
+    const delimiter = raw[cursor];
+    if (!delimiter || !AUTHORITY_AMBIGUOUS_BOUNDARY.has(delimiter)) continue;
+    if (!/^[a-z0-9_.-]+=/iu.test(raw.slice(cursor + 1))) continue;
+
+    const prefix = raw.slice(partStart, cursor);
+    const starts = registryUrlStarts(prefix);
+    const lastStart = starts.at(-1);
+    if (!lastStart) continue;
+    const candidate = trimStrictCandidateSuffix(prefix.slice(lastStart.start));
+    const parsed = parseWholeHttpUrl(candidate);
+    if (!parsed || parsed.username || parsed.password || !looksLikeDiagnosticHostPrefix(parsed.hostname)) continue;
+
+    parts.push(raw.slice(partStart, cursor));
+    partStart = cursor + 1;
+  }
+  parts.push(raw.slice(partStart));
+  return parts;
+}
+
+function findStrictComponentUserinfoSpan(raw: string, urlStart: RegistryUrlStart): UserinfoSpan | undefined {
+  const conventional = findUserinfoSpan(raw, urlStart, "strict");
+  if (conventional) return conventional;
+
+  const { authorityStart } = urlStart;
+  let lastAt = -1;
+  for (let cursor = authorityStart; cursor < raw.length; cursor++) {
+    const char = raw[cursor];
+    if (char === undefined || AUTHORITY_STRUCTURAL_BOUNDARY.has(char)) break;
+    if (char === "@" && cursor > authorityStart) lastAt = cursor;
+  }
+  if (lastAt <= authorityStart) return undefined;
+
+  const prefix = raw.slice(authorityStart, lastAt);
+  const ambiguousBoundary = Array.from(prefix).findIndex((char) => AUTHORITY_AMBIGUOUS_BOUNDARY.has(char));
+  if (ambiguousBoundary < 0) return undefined;
+  return { start: authorityStart, end: lastAt + 1 };
+}
+
+function trimStrictCandidateSuffix(raw: string): string {
+  return raw.replace(/[\t\r\n ]+$/u, "").replace(/[,&;]+$/u, "");
+}
+
+function hasCredentialLikeUrlEvidence(raw: string): boolean {
+  const evidence = decodePercentForEvidence(raw);
+  return HTTP_SCHEME_EVIDENCE.test(stripMalformedPercentForEvidence(evidence)) && evidence.includes("@");
+}
+
+function looksLikeStrictUrlComponent(raw: string): boolean {
+  const evidence = decodePercentForEvidence(raw);
+  return HTTP_SCHEME_EVIDENCE.test(stripMalformedPercentForEvidence(evidence));
+}
+
+function decodePercentForEvidence(raw: string): string {
+  let decoded = raw;
+  for (let layer = 0; layer <= STRICT_MAX_DEPTH; layer++) {
+    const next = decoded.replace(/%([0-9a-f]{2})/giu, (_match, hex: string) =>
+      String.fromCharCode(Number.parseInt(hex, 16)),
+    );
+    if (next === decoded) break;
+    decoded = next;
+  }
+  return decoded;
+}
+
+function stripMalformedPercentForEvidence(raw: string): string {
+  return raw.replace(/%[^%]{0,2}/gu, "");
 }
 
 function redactDetectedUserinfo(raw: string, mode: RegistryUrlScanMode): string {
