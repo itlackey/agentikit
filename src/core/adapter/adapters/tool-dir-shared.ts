@@ -55,13 +55,12 @@ import {
   type AdapterOwnedExtensions,
   type AdapterRenderedExecutionSource,
   createAdapterExtensions,
-  executionDefaultsFromFrontmatter,
-  renderMarkdownExecutionSource,
 } from "../../../execution/source";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
+import { executionDefaultsFromFrontmatter, renderMarkdownExecutionSource } from "../execution-source";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
 import { skillDirectoryDiagnostics } from "./akm-lint";
 import { hashContent, nonEmptyString, readTags, runBaseValidateChecks } from "./shared";
@@ -260,7 +259,7 @@ export async function validateToolDir(
 function nativeExecutionExtensions(
   layout: ToolDirLayout,
   cls: ToolDirClassification,
-  data: Record<string, unknown>,
+  data: Readonly<Record<string, unknown>>,
 ): AdapterOwnedExtensions | undefined {
   const values: Record<string, string> = {};
   if (layout.adapterId === "claude" && cls.type === "command" && typeof data["argument-hint"] === "string") {
@@ -279,8 +278,6 @@ export function renderToolDirExecutionSource(
   const cls = classify(file.relPath, layout);
   if (cls?.type !== "command" && cls?.type !== "agent") return null;
   const raw = file.content();
-  const data = parseFrontmatter(raw).data;
-  const extensions = nativeExecutionExtensions(layout, cls, data);
   return renderMarkdownExecutionSource({
     kind: cls.type === "command" ? "command" : "persona",
     raw,
@@ -290,11 +287,12 @@ export function renderToolDirExecutionSource(
       adapter: layout.adapterId,
       file: file.relPath,
     },
-    defaults: executionDefaultsFromFrontmatter(data, {
-      kind: cls.type === "command" ? "command" : "persona",
-      toolsKeys: layout.adapterId === "claude" && cls.type === "command" ? ["allowed-tools", "tools"] : ["tools"],
-    }),
-    ...(extensions ? { extensions } : {}),
+    defaults: (data) =>
+      executionDefaultsFromFrontmatter(data, {
+        kind: cls.type === "command" ? "command" : "persona",
+        toolsKeys: layout.adapterId === "claude" && cls.type === "command" ? ["allowed-tools", "tools"] : ["tools"],
+      }),
+    extensions: (data) => nativeExecutionExtensions(layout, cls, data),
   });
 }
 

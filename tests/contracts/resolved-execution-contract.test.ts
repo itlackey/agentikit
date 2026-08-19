@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { renderMarkdownExecutionSource } from "../../src/core/adapter/execution-source";
+import { BUILTIN_ADAPTERS } from "../../src/core/adapter/registry";
+import { EXECUTION_MAX_TIMEOUT_MS } from "../../src/execution/limits";
 import {
   canonicalResolvedExecutionRequest,
   createInlineResolvedCommand,
@@ -9,8 +12,13 @@ import {
   type ResolvedEngineSelection,
   type ResolvedExecutionRequestV1,
 } from "../../src/execution/resolved-request";
-import { createAdapterExtensions, renderMarkdownExecutionSource } from "../../src/execution/source";
+import {
+  createAdapterExtensions,
+  decodeExecutionSourceIdentity,
+  type ExecutionSourceIdentity,
+} from "../../src/execution/source";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
+import { WORKFLOW_MAX_TIMEOUT_MS } from "../../src/workflows/resource-limits";
 import {
   canonicalResolvedRequestForTest,
   projectResolvedExecutionRequestForTest,
@@ -67,7 +75,7 @@ function commonRequest(command: ReturnType<typeof createResolvedCommand>): Resol
     inference: { temperature: 0, enableThinking: false, extraParams: {} },
     outputSchema: null,
     tools: [],
-    authorization: { status: "allowed", reason: "fixture policy", policy: {} },
+    authorization: { status: "not-required", reason: "no tools selected", policy: {} },
     runtime: { timeoutMs: 0, workspace: "", environment: {} },
     notices: [
       {
@@ -132,28 +140,23 @@ describe("resolved execution request v1", () => {
     });
   });
 
-  test("direct, task, and workflow entrypoint adapters construct identical contract bytes", () => {
+  test("construction and durable decode fixtures are equivalent without claiming caller cutover", () => {
     const source = commandSource();
-    const build = (): ResolvedExecutionRequestV1 =>
-      commonRequest(
-        createResolvedCommand({
-          source,
-          argumentInput: "packages/core",
-          content: "Review packages/core exactly once.\n",
-        }),
-      );
+    const constructed = commonRequest(
+      createResolvedCommand({
+        source,
+        argumentInput: "packages/core",
+        content: "Review packages/core exactly once.\n",
+      }),
+    );
+    const durableFixture = JSON.parse(canonicalResolvedExecutionRequest(constructed));
+    const decoded = decodeResolvedExecutionRequest(durableFixture);
 
-    const fromDirect = build();
-    const fromTask = build();
-    const fromWorkflowFreeze = build();
-    expect(canonicalResolvedExecutionRequest(fromTask)).toBe(canonicalResolvedExecutionRequest(fromDirect));
-    expect(canonicalResolvedExecutionRequest(fromWorkflowFreeze)).toBe(canonicalResolvedExecutionRequest(fromDirect));
-    expect(canonicalResolvedRequestForTest(projectResolvedExecutionRequestForTest(fromTask))).toBe(
-      canonicalResolvedRequestForTest(projectResolvedExecutionRequestForTest(fromDirect)),
+    expect(canonicalResolvedExecutionRequest(decoded)).toBe(canonicalResolvedExecutionRequest(constructed));
+    expect(canonicalResolvedRequestForTest(projectResolvedExecutionRequestForTest(decoded))).toBe(
+      canonicalResolvedRequestForTest(projectResolvedExecutionRequestForTest(constructed)),
     );
-    expect(canonicalResolvedRequestForTest(projectResolvedExecutionRequestForTest(fromWorkflowFreeze))).toBe(
-      canonicalResolvedRequestForTest(projectResolvedExecutionRequestForTest(fromDirect)),
-    );
+    // Production direct/task/workflow cutover remains owned by WP3/WP4/WP5.
   });
 
   test("strictly rehydrates the same durable bytes for workflow resume", () => {
@@ -196,6 +199,14 @@ describe("resolved execution request v1", () => {
     expect(() => decodeResolvedExecutionRequest(unknownTopLevel)).toThrow(
       /resolved execution request contains unsupported field: capabilities/i,
     );
+
+    const sparseNotices = JSON.parse(canonical) as { notices: unknown[] };
+    delete sparseNotices.notices[0];
+    expect(() => decodeResolvedExecutionRequest(sparseNotices)).toThrow(/notices.*array|dense|sparse/i);
+
+    const decoratedNotices = JSON.parse(canonical) as { notices: unknown[] & { raw?: string } };
+    decoratedNotices.notices.raw = "native bytes";
+    expect(() => decodeResolvedExecutionRequest(decoratedNotices)).toThrow(/notices.*array|propert/i);
   });
 
   test("covers every runner transport kind without embedding a capability matrix", () => {
@@ -225,7 +236,7 @@ describe("resolved execution request v1", () => {
       engine: { name: "fixture-llm", kind: "llm" },
       model: null,
       tools: null,
-      authorization: { status: "allowed" },
+      authorization: { status: "not-required" },
       runtime: { timeoutMs: null, workspace: null, environment: null },
       notices: [],
     });
@@ -237,7 +248,7 @@ describe("resolved execution request v1", () => {
     expect(request.tools).toBeNull();
   });
 
-  test("permits not-required authorization only when the selected tool set is semantically empty", () => {
+  test("enforces exact tool-selection and authorization-state pairing", () => {
     const source = commandSource();
     const base = {
       command: createResolvedCommand({ source, content: source.content }),
@@ -248,9 +259,17 @@ describe("resolved execution request v1", () => {
     };
     for (const tools of [null, "", [], {}] as const) {
       expect(() => createResolvedExecutionRequest({ ...base, tools })).not.toThrow();
+      for (const status of ["allowed", "denied"] as const) {
+        expect(() => createResolvedExecutionRequest({ ...base, tools, authorization: { status } })).toThrow(
+          /empty|no tools|not-required/i,
+        );
+      }
     }
     for (const tools of ["read", ["read"], { read: true }] as const) {
       expect(() => createResolvedExecutionRequest({ ...base, tools })).toThrow(/not-required.*no tools are selected/i);
+      for (const status of ["allowed", "denied"] as const) {
+        expect(() => createResolvedExecutionRequest({ ...base, tools, authorization: { status } })).not.toThrow();
+      }
     }
   });
 
@@ -258,7 +277,12 @@ describe("resolved execution request v1", () => {
     expect(() =>
       createAdapterExtensions(["claude", { argumentHint: "<target>" }], ["claude", { another: true }]),
     ).toThrow(/duplicate extension owner.*claude/i);
-    expect(() => createAdapterExtensions("__proto__", { polluted: true })).toThrow(/canonical adapter identifier/i);
+    for (const owner of ["__proto__", "constructor", "Constructor", "prototype", "PROTOTYPE", "toString", "TOSTRING"]) {
+      expect(() => createAdapterExtensions(owner, { polluted: true })).toThrow(/canonical|reserved/i);
+    }
+    const safe = createAdapterExtensions("claude", { argumentHint: "<target>" });
+    expect(Object.getPrototypeOf(safe)).toBeNull();
+    expect(Object.isFrozen(safe)).toBe(true);
   });
 
   test("uses locale-independent canonical key order and rejects invalid optional model extensions", () => {
@@ -283,5 +307,208 @@ describe("resolved execution request v1", () => {
     };
     invalidWire.model.extensions = null;
     expect(() => decodeResolvedExecutionRequest(invalidWire)).toThrow(/model\.extensions/i);
+  });
+
+  test("requires own frozen brands and clones command/persona leaves into each request", () => {
+    const source = commandSource();
+    const command = createResolvedCommand({ source, content: source.content });
+    const persona = createResolvedPersona(personaSource());
+    const request = createResolvedExecutionRequest({
+      command,
+      persona,
+      engine: { name: "fixture-llm", kind: "llm" },
+      authorization: { status: "not-required" },
+      runtime: {},
+      notices: [],
+    });
+
+    expect(request.command).not.toBe(command);
+    expect(request.persona).not.toBe(persona);
+    expect(Object.isFrozen(request.command)).toBe(true);
+    expect(Object.isFrozen(request.persona)).toBe(true);
+    expect(Object.getPrototypeOf(request.command)).toBe(Object.prototype);
+    expect(Reflect.set(command as unknown as Record<string, unknown>, "content", "mutated")).toBe(false);
+    expect(request.command.content).toBe(source.content);
+
+    const inherited = Object.create(command) as typeof command;
+    const overridden = Object.create(command, {
+      content: { value: "---\nfrontmatter: leaked\n---\nWrong.", enumerable: true },
+      raw: { value: "native bytes", enumerable: true },
+      frontmatter: { value: { model: "attacker/model" }, enumerable: true },
+    }) as typeof command;
+    const base = {
+      engine: { name: "fixture-llm", kind: "llm" as const },
+      authorization: { status: "not-required" as const },
+      runtime: {},
+      notices: [],
+    };
+    expect(() => createResolvedExecutionRequest({ ...base, command: inherited })).toThrow(/execution boundary/i);
+    expect(() => createResolvedExecutionRequest({ ...base, command: overridden })).toThrow(/execution boundary/i);
+  });
+
+  test("clones caller-owned nested records before they can be mutated", () => {
+    const source = commandSource();
+    const engineSettings = { endpoint: "before" };
+    const runtimeEnvironment = { MODE: "before" };
+    const engine = { name: "fixture-llm", kind: "llm" as const, settings: engineSettings };
+    const runtime = { environment: runtimeEnvironment };
+    const request = createResolvedExecutionRequest({
+      command: createResolvedCommand({ source, content: source.content }),
+      engine,
+      authorization: { status: "not-required" },
+      runtime,
+      notices: [],
+    });
+
+    engine.name = "mutated";
+    engineSettings.endpoint = "after";
+    runtimeEnvironment.MODE = "after";
+    expect(request.engine).toEqual({ name: "fixture-llm", kind: "llm", settings: { endpoint: "before" } });
+    expect(request.runtime.environment).toEqual({ MODE: "before" });
+  });
+
+  test("validates canonical identity in both adapter construction and durable decoding", () => {
+    const valid: ExecutionSourceIdentity = {
+      ref: "fixture//commands/review",
+      bundle: "fixture",
+      adapter: "akm",
+      file: "commands/review.md",
+      hash: "a".repeat(64),
+    };
+    for (const adapter of BUILTIN_ADAPTERS) {
+      expect(decodeExecutionSourceIdentity({ ...valid, adapter: adapter.id }).adapter).toBe(adapter.id);
+    }
+
+    const invalid: Array<Partial<ExecutionSourceIdentity>> = [
+      { ref: "fixture//../secrets/x" },
+      { ref: "fixture//commands//review" },
+      { ref: "fixture//commands/review " },
+      { ref: "fixture//commands/re\u0301view" },
+      { ref: "fixture//commands/review#fragment" },
+      { bundle: "other" },
+      { file: "commands/\u0000review.md" },
+      { file: "commands/\u001freview.md" },
+      { adapter: "bad adapter" },
+      { adapter: "Bad-Adapter" },
+      { adapter: "bad.adapter" },
+      { adapter: "bad_adapter" },
+    ];
+    for (const patch of invalid) {
+      expect(() => decodeExecutionSourceIdentity({ ...valid, ...patch })).toThrow();
+      expect(() =>
+        renderMarkdownExecutionSource({
+          kind: "command",
+          raw: "---\nmodel: provider/exact\n---\nReview.\n",
+          identity: {
+            ref: patch.ref ?? valid.ref,
+            bundle: patch.bundle ?? valid.bundle,
+            adapter: patch.adapter ?? valid.adapter,
+            file: patch.file ?? valid.file,
+          },
+        }),
+      ).toThrow();
+    }
+
+    const source = commandSource();
+    const canonical = JSON.parse(
+      canonicalResolvedExecutionRequest(
+        createResolvedExecutionRequest({
+          command: createResolvedCommand({ source, content: source.content }),
+          engine: { name: "fixture-llm", kind: "llm" },
+          authorization: { status: "not-required" },
+          runtime: {},
+          notices: [],
+        }),
+      ),
+    ) as { command: { source: ExecutionSourceIdentity } };
+    for (const patch of invalid) {
+      const hostile = structuredClone(canonical);
+      Object.assign(hostile.command.source, patch);
+      expect(() => decodeResolvedExecutionRequest(hostile)).toThrow();
+    }
+  });
+
+  test("rejects unknown constructor fields, mismatched exact models, and unsafe timeouts", () => {
+    const source = commandSource();
+    const base = {
+      command: createResolvedCommand({ source, content: source.content }),
+      engine: { name: "fixture-llm", kind: "llm" as const },
+      authorization: { status: "not-required" as const },
+      runtime: {},
+      notices: [],
+    };
+    expect(() => createResolvedExecutionRequest({ ...base, capabilities: {} } as never)).toThrow(/capabilities/i);
+    expect(() =>
+      createResolvedExecutionRequest({
+        ...base,
+        engine: { name: "fixture-llm", kind: "llm", capabilities: { tools: true } },
+      } as never),
+    ).toThrow(/capabilities/i);
+    expect(() => createResolvedCommand({ source, content: source.content, raw: COMMAND_RAW } as never)).toThrow(/raw/i);
+    expect(() =>
+      createInlineResolvedCommand({ template: "Inline.", content: "Inline.", frontmatter: {} } as never),
+    ).toThrow(/frontmatter/i);
+    expect(() => createResolvedExecutionRequest({ ...base, runtime: { cwd: "/tmp" } } as never)).toThrow(/cwd/i);
+    expect(() =>
+      createResolvedExecutionRequest({ ...base, authorization: { status: "not-required", extra: true } } as never),
+    ).toThrow(/extra/i);
+    expect(() =>
+      createResolvedExecutionRequest({
+        ...base,
+        notices: [{ code: "X", severity: "info", adapter: "akm", message: "x", extra: true }],
+      } as never),
+    ).toThrow(/extra/i);
+    expect(() =>
+      createResolvedExecutionRequest({
+        ...base,
+        model: { input: "provider/one", interpretation: "exact", resolved: "provider/two" },
+      }),
+    ).toThrow(/exact.*match|input.*resolved/i);
+    expect(() =>
+      createResolvedExecutionRequest({
+        ...base,
+        model: { input: "provider/one", interpretation: "exact", resolved: "provider/one", extra: true },
+      } as never),
+    ).toThrow(/model.*extra|extra/i);
+
+    for (const timeoutMs of [-1, 1.5, WORKFLOW_MAX_TIMEOUT_MS + 1]) {
+      expect(() => createResolvedExecutionRequest({ ...base, runtime: { timeoutMs } })).toThrow(/timeoutMs/i);
+    }
+    for (const timeoutMs of [0, WORKFLOW_MAX_TIMEOUT_MS]) {
+      expect(createResolvedExecutionRequest({ ...base, runtime: { timeoutMs } }).runtime.timeoutMs).toBe(timeoutMs);
+    }
+    expect(EXECUTION_MAX_TIMEOUT_MS).toBe(WORKFLOW_MAX_TIMEOUT_MS);
+  });
+
+  test("every resolved-request constructor form canonicalizes and strictly decodes byte-identically", () => {
+    const source = commandSource();
+    const cases = [
+      createResolvedExecutionRequest({
+        command: createResolvedCommand({ source, content: source.content }),
+        engine: { name: "fixture-llm", kind: "llm" },
+        authorization: { status: "not-required" },
+        runtime: {},
+        notices: [],
+      }),
+      commonRequest(createResolvedCommand({ source, argumentInput: "", content: "Review  exactly once.\n" })),
+      createResolvedExecutionRequest({
+        command: createInlineResolvedCommand({ template: "Inline.", content: "Inline." }),
+        persona: null,
+        engine: { name: "fixture-agent", kind: "agent", settings: {} },
+        model: null,
+        inference: null,
+        outputSchema: null,
+        tools: null,
+        authorization: { status: "not-required" },
+        runtime: { timeoutMs: 0, workspace: "", environment: {}, settings: {} },
+        notices: [],
+        extensions: createAdapterExtensions("akm", {}),
+      }),
+    ];
+
+    for (const request of cases) {
+      const canonical = canonicalResolvedExecutionRequest(request);
+      expect(canonicalResolvedExecutionRequest(decodeResolvedExecutionRequest(JSON.parse(canonical)))).toBe(canonical);
+    }
   });
 });

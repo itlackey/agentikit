@@ -39,7 +39,24 @@ export function cloneExecutionJson(
   const nextAncestors = new Set(ancestors);
   nextAncestors.add(value);
   if (Array.isArray(value)) {
-    return Object.freeze(value.map((child, index) => cloneExecutionJson(child, `${path}[${index}]`, nextAncestors)));
+    if (Object.getPrototypeOf(value) !== Array.prototype) fail(path, "array must use the standard Array prototype");
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.length !== value.length + 1) {
+      fail(path, "array must be dense and contain no non-index properties");
+    }
+    for (const key of ownKeys) {
+      if (key === "length") continue;
+      if (typeof key !== "string" || !/^(?:0|[1-9]\d*)$/.test(key) || Number(key) >= value.length) {
+        fail(path, "array must contain only canonical index properties");
+      }
+    }
+    const cloned: ExecutionJsonValue[] = [];
+    for (let index = 0; index < value.length; index++) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor || !("value" in descriptor)) fail(path, "array must be dense data properties");
+      cloned.push(cloneExecutionJson(descriptor.value, `${path}[${index}]`, nextAncestors));
+    }
+    return Object.freeze(cloned);
   }
 
   const prototype = Object.getPrototypeOf(value);

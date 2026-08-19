@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { EXECUTION_MAX_TIMEOUT_MS } from "../execution/limits";
+
 export const WORKFLOW_MAX_PLAN_BYTES = 2 * 1024 * 1024;
 export const WORKFLOW_MAX_SOURCE_BYTES = 1024 * 1024;
 export const WORKFLOW_MAX_STEPS = 256;
@@ -36,7 +38,7 @@ export const WORKFLOW_MAX_GATE_LOOPS = 100;
 /** Max retry attempts per unit. */
 export const WORKFLOW_MAX_RETRIES = 100;
 /** Max timeout in milliseconds (setTimeout's 32-bit signed ceiling: 2^31-1, ~24.8 days). */
-export const WORKFLOW_MAX_TIMEOUT_MS = 2 ** 31 - 1;
+export const WORKFLOW_MAX_TIMEOUT_MS = EXECUTION_MAX_TIMEOUT_MS;
 /** Engine names: lowercase dash-separated runs of letters/digits, starting with a letter. */
 export const WORKFLOW_ENGINE_NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 export const WORKFLOW_MAX_ENGINE_NAME_LENGTH = 63;

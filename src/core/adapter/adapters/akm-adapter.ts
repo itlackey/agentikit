@@ -82,11 +82,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import {
-  type AdapterRenderedExecutionSource,
-  executionDefaultsFromFrontmatter,
-  renderMarkdownExecutionSource,
-} from "../../../execution/source";
+import type { AdapterRenderedExecutionSource } from "../../../execution/source";
 import {
   applyPostContributorFields,
   applyPreContributorFields,
@@ -104,6 +100,7 @@ import {
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
+import { executionDefaultsFromFrontmatter, renderMarkdownExecutionSource } from "../execution-source";
 import { recognizeMatch } from "../recognize-match";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
 import { perTypeValidateChecks, skillDirectoryDiagnostics } from "./akm-lint";
@@ -336,7 +333,6 @@ function renderExecutionSource(c: BundleComponent, file: FileContext): AdapterRe
   if (document?.type !== "command" && document?.type !== "agent") return null;
   if (!document.ref) return null;
   const raw = file.content();
-  const data = parseFrontmatter(raw).data;
   return renderMarkdownExecutionSource({
     kind: document.type === "command" ? "command" : "persona",
     raw,
@@ -346,11 +342,12 @@ function renderExecutionSource(c: BundleComponent, file: FileContext): AdapterRe
       adapter: "akm",
       file: file.relPath,
     },
-    defaults: executionDefaultsFromFrontmatter(data, {
-      kind: document.type === "command" ? "command" : "persona",
-      allowTopLevelEngine: true,
-      toolsKeys: ["tools"],
-    }),
+    defaults: (data) =>
+      executionDefaultsFromFrontmatter(data, {
+        kind: document.type === "command" ? "command" : "persona",
+        allowTopLevelEngine: true,
+        toolsKeys: ["tools"],
+      }),
   });
 }
 

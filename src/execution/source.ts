@@ -2,8 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { createHash } from "node:crypto";
-import { parseFrontmatter } from "../core/asset/frontmatter";
+import { bundleRefToString, isBundleSlug, parseBundleRef } from "../core/asset/asset-ref";
 import {
   cloneExecutionJson,
   cloneExecutionJsonObject,
@@ -12,6 +11,12 @@ import {
 } from "./json";
 
 export const EXECUTION_SOURCE_SCHEMA_VERSION = 1 as const;
+
+/** Current internal adapter identifiers are lowercase kebab-case registry keys. */
+export const EXECUTION_ADAPTER_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
+const CONTROL_CHARACTER_PATTERN = /\p{Cc}/u;
+const RESERVED_EXTENSION_OWNERS = new Set(["__proto__", "constructor", "prototype", "tostring"]);
 
 /** Exact identity of the authoritative native file from which content was rendered. */
 export interface ExecutionSourceIdentity {
@@ -27,7 +32,8 @@ export interface ExecutionSourceIdentity {
 
 /**
  * Extensions are keyed by their owning adapter, not merged into common fields.
- * Construction rejects duplicate owners so one adapter cannot shadow another.
+ * Construction rejects duplicate/reserved owners and returns a frozen
+ * null-prototype owner map so object-prototype names cannot collide.
  */
 export type AdapterOwnedExtensions = Readonly<Record<string, ExecutionJsonObject>>;
 
@@ -71,6 +77,41 @@ export interface AdapterRenderedPersonaSource extends AdapterRenderedExecutionSo
 
 export type AdapterRenderedExecutionSource = AdapterRenderedCommandSource | AdapterRenderedPersonaSource;
 
+function requireRecord(value: unknown, path: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`${path} must be an object`);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(`${path} must use a plain or null prototype`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], path: string): void {
+  const allowedSet = new Set(allowed);
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string" || !allowedSet.has(key)) {
+      throw new TypeError(`${path} contains unsupported field: ${String(key)}`);
+    }
+  }
+}
+
+function validateExtensionOwner(owner: string): void {
+  const normalized = owner.toLowerCase();
+  if (!EXECUTION_ADAPTER_ID_PATTERN.test(owner) || RESERVED_EXTENSION_OWNERS.has(normalized)) {
+    throw new TypeError(`extension owner must be a canonical, non-reserved adapter identifier: ${owner}`);
+  }
+}
+
+function frozenNullPrototypeMap<T>(entries: readonly (readonly [string, T])[]): Readonly<Record<string, T>> {
+  const out = Object.create(null) as Record<string, T>;
+  for (const [key, value] of entries) {
+    Object.defineProperty(out, key, { value, enumerable: true, configurable: false, writable: false });
+  }
+  return Object.freeze(out);
+}
+
 type ExtensionEntry = readonly [owner: string, values: ExecutionJsonObject];
 
 export function createAdapterExtensions(owner: string, values: ExecutionJsonObject): AdapterOwnedExtensions;
@@ -88,46 +129,83 @@ export function createAdapterExtensions(
       ? [[first, second as ExecutionJsonObject]]
       : [first, ...(second === undefined ? [] : [second as ExtensionEntry]), ...rest];
   const seen = new Set<string>();
-  const cloned: Array<[string, ExecutionJsonObject]> = [];
+  const cloned: Array<readonly [string, ExecutionJsonObject]> = [];
   for (const [owner, values] of entries) {
-    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(owner)) {
-      throw new TypeError("extension owner must be a canonical adapter identifier");
-    }
+    validateExtensionOwner(owner);
     if (seen.has(owner)) throw new TypeError(`duplicate extension owner: ${owner}`);
     seen.add(owner);
     cloned.push([owner, cloneExecutionJsonObject(values, `extensions.${owner}`)]);
   }
-  return Object.freeze(Object.fromEntries(cloned));
+  return frozenNullPrototypeMap(cloned);
 }
 
-function cloneExtensions(value: AdapterOwnedExtensions, path: string): AdapterOwnedExtensions {
-  const entries = Object.entries(value).map(
-    ([owner, values]) => [owner, cloneExecutionJsonObject(values, `${path}.${owner}`)] as const,
-  );
+export function cloneAdapterExtensions(value: unknown, path: string): AdapterOwnedExtensions {
+  const record = requireRecord(value, path);
+  const entries: ExtensionEntry[] = [];
+  for (const key of Reflect.ownKeys(record)) {
+    if (typeof key !== "string") throw new TypeError(`${path} contains unsupported extension owner: ${String(key)}`);
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (!descriptor?.enumerable || !("value" in descriptor)) {
+      throw new TypeError(`${path}.${key} must be an enumerable data property`);
+    }
+    entries.push([key, cloneExecutionJsonObject(descriptor.value, `${path}.${key}`)]);
+  }
   const [first, ...rest] = entries;
-  return first ? createAdapterExtensions(first, ...rest) : Object.freeze({});
+  return first ? createAdapterExtensions(first, ...rest) : frozenNullPrototypeMap([]);
 }
 
-function assertCanonicalIdentity(input: Omit<ExecutionSourceIdentity, "hash">): void {
-  if (!input.bundle || input.bundle.trim() !== input.bundle) {
-    throw new TypeError("execution source bundle must be a non-empty canonical string");
+function requireCanonicalString(value: unknown, path: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.normalize("NFC") !== value) {
+    throw new TypeError(`${path} must be a non-empty NFC string`);
   }
-  if (!input.adapter || input.adapter.trim() !== input.adapter) {
-    throw new TypeError("execution source adapter must be a non-empty canonical string");
+  if (CONTROL_CHARACTER_PATTERN.test(value)) throw new TypeError(`${path} must not contain control characters`);
+  return value;
+}
+
+function validateCanonicalIdentity(input: Record<string, unknown>, path: string): ExecutionSourceIdentity {
+  assertOnlyKeys(input, ["ref", "bundle", "adapter", "file", "hash"], path);
+  const ref = requireCanonicalString(input.ref, `${path}.ref`);
+  const bundle = requireCanonicalString(input.bundle, `${path}.bundle`);
+  const adapter = requireCanonicalString(input.adapter, `${path}.adapter`);
+  const file = requireCanonicalString(input.file, `${path}.file`);
+  const hash = requireCanonicalString(input.hash, `${path}.hash`);
+
+  let parsed: ReturnType<typeof parseBundleRef>;
+  try {
+    parsed = parseBundleRef(ref);
+  } catch (cause) {
+    throw new TypeError(`${path}.ref is not a canonical bundle ref`, { cause });
   }
-  if (!input.ref.startsWith(`${input.bundle}//`) || input.ref.length <= input.bundle.length + 2) {
-    throw new TypeError(`execution source ref must be fully qualified by bundle "${input.bundle}"`);
-  }
-  if (input.ref.includes("#")) throw new TypeError("execution source ref must not contain a fragment");
-  const segments = input.file.split("/");
   if (
-    !input.file ||
-    input.file.startsWith("/") ||
-    input.file.includes("\\") ||
+    parsed.bundle === undefined ||
+    parsed.bundle !== bundle ||
+    parsed.fragment !== undefined ||
+    !isBundleSlug(bundle) ||
+    bundleRefToString(parsed) !== ref
+  ) {
+    throw new TypeError(`${path}.ref must round-trip as the same fully-qualified bundle ref without a fragment`);
+  }
+  if (!EXECUTION_ADAPTER_ID_PATTERN.test(adapter)) {
+    throw new TypeError(`${path}.adapter must use the current lowercase kebab-case adapter identifier grammar`);
+  }
+  const segments = file.split("/");
+  if (
+    file.startsWith("/") ||
+    file.includes("\\") ||
     segments.some((segment) => !segment || segment === "." || segment === "..")
   ) {
-    throw new TypeError("execution source file must be a normalized relative POSIX path");
+    throw new TypeError(`${path}.file must be a normalized relative POSIX path`);
   }
+  if (!/^[a-f0-9]{64}$/.test(hash)) throw new TypeError(`${path}.hash must be a SHA-256 hex digest`);
+
+  return { ref, bundle, adapter, file, hash };
+}
+
+/** Validate, clone, and freeze an identity produced by an adapter renderer. */
+export function createExecutionSourceIdentity(input: ExecutionSourceIdentity): Readonly<ExecutionSourceIdentity> {
+  return Object.freeze(
+    validateCanonicalIdentity(requireRecord(input, "execution source identity"), "execution source identity"),
+  );
 }
 
 /** Validate and freeze a source identity read back from a frozen request. */
@@ -135,50 +213,31 @@ export function decodeExecutionSourceIdentity(
   value: unknown,
   path = "execution source identity",
 ): Readonly<ExecutionSourceIdentity> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${path} must be an object`);
-  }
-  const input = value as Record<string, unknown>;
-  const allowed = new Set(["ref", "bundle", "adapter", "file", "hash"]);
-  for (const key of Object.keys(input)) {
-    if (!allowed.has(key)) throw new TypeError(`${path} contains unsupported field: ${key}`);
-  }
-  for (const key of allowed) {
-    if (!Object.hasOwn(input, key) || typeof input[key] !== "string") {
-      throw new TypeError(`${path}.${key} must be a string`);
-    }
-  }
-  const identity = input as unknown as ExecutionSourceIdentity;
-  assertCanonicalIdentity(identity);
-  if (!/^[a-f0-9]{64}$/.test(identity.hash)) throw new TypeError(`${path}.hash must be a SHA-256 hex digest`);
-  return Object.freeze({
-    ref: identity.ref,
-    bundle: identity.bundle,
-    adapter: identity.adapter,
-    file: identity.file,
-    hash: identity.hash,
-  });
+  return Object.freeze(validateCanonicalIdentity(requireRecord(value, path), path));
 }
 
 function cloneDefaults(input: UnresolvedExecutionDefaults): Readonly<UnresolvedExecutionDefaults> {
-  const allowed = new Set([
-    "agent",
-    "engine",
-    "model",
-    "inference",
-    "outputSchema",
-    "tools",
-    "timeout",
-    "workspace",
-    "environment",
-    "runtime",
-  ]);
-  for (const key of Object.keys(input)) {
-    if (!allowed.has(key)) throw new TypeError(`execution source defaults contain unsupported field: ${key}`);
-  }
-  const json = {
-    ...cloneExecutionJsonObject(input, "execution source defaults"),
-  } as Record<string, ExecutionJsonValue>;
+  const record = requireRecord(input, "execution source defaults");
+  assertOnlyKeys(
+    record,
+    [
+      "agent",
+      "engine",
+      "model",
+      "inference",
+      "outputSchema",
+      "tools",
+      "timeout",
+      "workspace",
+      "environment",
+      "runtime",
+    ],
+    "execution source defaults",
+  );
+  const json = { ...cloneExecutionJsonObject(record, "execution source defaults") } as Record<
+    string,
+    ExecutionJsonValue
+  >;
   for (const key of ["agent", "engine", "model", "workspace"] as const) {
     const value = json[key];
     if (value !== undefined && value !== null && typeof value !== "string") {
@@ -200,10 +259,8 @@ function cloneDefaults(input: UnresolvedExecutionDefaults): Readonly<UnresolvedE
     if (Array.isArray(environment) || typeof environment !== "object") {
       throw new TypeError("execution source defaults.environment must be an object or null");
     }
-    for (const value of Object.values(environment)) {
-      if (typeof value !== "string") {
-        throw new TypeError("execution source defaults.environment values must be strings");
-      }
+    if (Object.values(environment).some((value) => typeof value !== "string")) {
+      throw new TypeError("execution source defaults.environment values must be strings");
     }
   }
   if (Object.hasOwn(json, "tools")) json.tools = cloneToolSelection(json.tools, "execution source defaults.tools");
@@ -212,160 +269,117 @@ function cloneDefaults(input: UnresolvedExecutionDefaults): Readonly<UnresolvedE
 
 export function cloneToolSelection(value: unknown, path = "tools"): ToolSelection {
   if (value === null || typeof value === "string") return value;
-  if (Array.isArray(value)) {
-    if (value.some((tool) => typeof tool !== "string")) throw new TypeError(`${path} array values must be strings`);
-    return Object.freeze([...value]) as readonly string[];
+  const cloned = cloneExecutionJson(value, path);
+  if (Array.isArray(cloned)) {
+    if (cloned.some((tool) => typeof tool !== "string")) throw new TypeError(`${path} array values must be strings`);
+    return cloned as readonly string[];
   }
-  return cloneExecutionJsonObject(value, path);
+  return cloneExecutionJsonObject(cloned, path);
 }
 
-export interface RenderMarkdownExecutionSourceInput {
+export interface CreateAdapterRenderedExecutionSourceInput {
   readonly kind: "command" | "persona";
-  /** Authoritative native file text. It is hashed, then frontmatter is removed. */
-  readonly raw: string;
-  readonly identity: Omit<ExecutionSourceIdentity, "hash">;
+  /** Body-only content after the owning adapter has removed native metadata. */
+  readonly content: string;
+  readonly identity: ExecutionSourceIdentity;
   readonly defaults?: UnresolvedExecutionDefaults;
   readonly extensions?: AdapterOwnedExtensions;
 }
 
-/**
- * The only constructor for stored command/persona sources.
- *
- * Callers provide authoritative native bytes, never a preselected prompt.
- * This function strips frontmatter and exposes only the adapter-rendered body.
- * The raw bytes and parsed frontmatter are intentionally absent
- * from the returned type and enumerable object.
- */
-export function renderMarkdownExecutionSource(
-  input: RenderMarkdownExecutionSourceInput & { readonly kind: "command" },
+/** Brand a fully adapter-rendered, body-only source after strict validation. */
+export function createAdapterRenderedExecutionSource(
+  input: CreateAdapterRenderedExecutionSourceInput & { readonly kind: "command" },
 ): AdapterRenderedCommandSource;
-export function renderMarkdownExecutionSource(
-  input: RenderMarkdownExecutionSourceInput & { readonly kind: "persona" },
+export function createAdapterRenderedExecutionSource(
+  input: CreateAdapterRenderedExecutionSourceInput & { readonly kind: "persona" },
 ): AdapterRenderedPersonaSource;
-export function renderMarkdownExecutionSource(
-  input: RenderMarkdownExecutionSourceInput,
+export function createAdapterRenderedExecutionSource(
+  input: CreateAdapterRenderedExecutionSourceInput,
 ): AdapterRenderedExecutionSource;
-export function renderMarkdownExecutionSource(
-  input: RenderMarkdownExecutionSourceInput,
+export function createAdapterRenderedExecutionSource(
+  input: CreateAdapterRenderedExecutionSourceInput,
 ): AdapterRenderedExecutionSource {
-  if (typeof input.raw !== "string") throw new TypeError("execution source raw content must be a string");
-  assertCanonicalIdentity(input.identity);
-  const parsed = parseFrontmatter(input.raw);
-  if (/^\uFEFF?---(?:\r?\n|\r|$)/.test(input.raw) && parsed.frontmatter === null) {
-    throw new TypeError("execution source frontmatter must have a well-formed closing fence");
+  const record = requireRecord(input, "adapter-rendered execution source");
+  assertOnlyKeys(
+    record,
+    ["kind", "content", "identity", "defaults", "extensions"],
+    "adapter-rendered execution source",
+  );
+  if (input.kind !== "command" && input.kind !== "persona") throw new TypeError("execution source kind is invalid");
+  if (typeof input.content !== "string") throw new TypeError("execution source content must be a string");
+  const defaults = Object.hasOwn(input, "defaults") ? input.defaults : {};
+  if (defaults === undefined) {
+    throw new TypeError("execution source defaults must be omitted or be an object");
   }
-  const identity = Object.freeze({
-    ref: input.identity.ref,
-    bundle: input.identity.bundle,
-    adapter: input.identity.adapter,
-    file: input.identity.file,
-    hash: createHash("sha256").update(input.raw, "utf8").digest("hex"),
-  });
   const source: Record<PropertyKey, unknown> = {
     schemaVersion: EXECUTION_SOURCE_SCHEMA_VERSION,
     kind: input.kind,
-    content: parsed.content,
-    defaults: cloneDefaults(input.defaults ?? {}),
-    identity,
-    ...(Object.hasOwn(input, "extensions")
-      ? { extensions: cloneExtensions(input.extensions as AdapterOwnedExtensions, "execution source extensions") }
-      : {}),
+    content: input.content,
+    defaults: cloneDefaults(defaults),
+    identity: createExecutionSourceIdentity(input.identity),
   };
+  if (Object.hasOwn(input, "extensions")) {
+    source.extensions = cloneAdapterExtensions(input.extensions, "execution source extensions");
+  }
   Object.defineProperty(source, renderedSourceBrand, { value: true, enumerable: false });
   return Object.freeze(source) as unknown as AdapterRenderedExecutionSource;
 }
 
+function isAdapterRenderedSource(value: unknown, kind: "command" | "persona"): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  if (Object.getPrototypeOf(value) !== Object.prototype || !Object.isFrozen(value)) return false;
+  if (!Object.hasOwn(value, renderedSourceBrand)) return false;
+  const required = new Set(["schemaVersion", "kind", "content", "defaults", "identity"]);
+  const optional = new Set(["extensions"]);
+  for (const key of Reflect.ownKeys(value)) {
+    if (key === renderedSourceBrand) continue;
+    if (typeof key !== "string" || (!required.delete(key) && !optional.has(key))) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) return false;
+  }
+  if (required.size > 0) return false;
+  const brand = Object.getOwnPropertyDescriptor(value, renderedSourceBrand);
+  const source = value as Record<string, unknown>;
+  if (
+    brand?.value !== true ||
+    brand.enumerable !== false ||
+    brand.configurable !== false ||
+    brand.writable !== false ||
+    source.schemaVersion !== EXECUTION_SOURCE_SCHEMA_VERSION ||
+    source.kind !== kind ||
+    typeof source.content !== "string" ||
+    typeof source.defaults !== "object" ||
+    source.defaults === null ||
+    !Object.isFrozen(source.defaults) ||
+    typeof source.identity !== "object" ||
+    source.identity === null ||
+    Object.getPrototypeOf(source.identity) !== Object.prototype ||
+    !Object.isFrozen(source.identity)
+  ) {
+    return false;
+  }
+  if (Object.hasOwn(source, "extensions")) {
+    if (
+      typeof source.extensions !== "object" ||
+      source.extensions === null ||
+      Object.getPrototypeOf(source.extensions) !== null ||
+      !Object.isFrozen(source.extensions)
+    ) {
+      return false;
+    }
+  }
+  try {
+    decodeExecutionSourceIdentity(source.identity);
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 export function isAdapterRenderedCommandSource(value: unknown): value is AdapterRenderedCommandSource {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as Record<PropertyKey, unknown>)[renderedSourceBrand] === true &&
-    (value as { kind?: unknown }).kind === "command"
-  );
+  return isAdapterRenderedSource(value, "command");
 }
 
 export function isAdapterRenderedPersonaSource(value: unknown): value is AdapterRenderedPersonaSource {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as Record<PropertyKey, unknown>)[renderedSourceBrand] === true &&
-    (value as { kind?: unknown }).kind === "persona"
-  );
-}
-
-function own(data: Record<string, unknown>, key: string): boolean {
-  return Object.hasOwn(data, key);
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function stringOrNull(value: unknown): string | null | undefined {
-  return value === null || typeof value === "string" ? value : undefined;
-}
-
-/** Adapter helper for the common frontmatter fields fixed by the 0.9.2 design. */
-export function executionDefaultsFromFrontmatter(
-  data: Record<string, unknown>,
-  options: {
-    readonly kind: "command" | "persona";
-    readonly allowTopLevelEngine?: boolean;
-    readonly toolsKeys?: readonly string[];
-  },
-): UnresolvedExecutionDefaults {
-  const namespace = record(data.akm) ?? {};
-  const out: Record<string, unknown> = {};
-  if (options.kind === "command" && own(data, "agent")) {
-    const agent = stringOrNull(data.agent);
-    if (agent !== undefined) out.agent = agent;
-  }
-  const engineOwner = options.allowTopLevelEngine && own(data, "engine") ? data : namespace;
-  if (own(engineOwner, "engine")) {
-    const engine = stringOrNull(engineOwner.engine);
-    if (engine !== undefined) out.engine = engine;
-  }
-  if (own(data, "model")) {
-    const model = stringOrNull(data.model);
-    if (model !== undefined) out.model = model;
-  }
-  for (const key of options.toolsKeys ?? ["tools"]) {
-    if (!own(data, key)) continue;
-    out.tools = cloneExecutionJson(data[key], `frontmatter.${key}`);
-    break;
-  }
-
-  const inference: Record<string, ExecutionJsonValue> = {};
-  const namespacedInference = record(namespace.inference);
-  if (namespacedInference)
-    Object.assign(inference, cloneExecutionJsonObject(namespacedInference, "frontmatter.akm.inference"));
-  for (const key of ["temperature", "effort"] as const) {
-    if (own(data, key)) inference[key] = cloneExecutionJson(data[key], `frontmatter.${key}`);
-  }
-  if (Object.keys(inference).length > 0) out.inference = inference;
-
-  const schemaOwner = own(data, "schema") ? data : namespace;
-  if (own(schemaOwner, "schema")) {
-    const schema = schemaOwner.schema;
-    out.outputSchema = schema === null ? null : cloneExecutionJsonObject(schema, "frontmatter.schema");
-  }
-  const timeoutKey = own(namespace, "timeoutMs") ? "timeoutMs" : own(namespace, "timeout") ? "timeout" : undefined;
-  const topLevelTimeoutKey = options.allowTopLevelEngine
-    ? own(data, "timeoutMs")
-      ? "timeoutMs"
-      : own(data, "timeout")
-        ? "timeout"
-        : undefined
-    : undefined;
-  const selectedTimeoutKey = topLevelTimeoutKey ?? timeoutKey;
-  const timeoutOwner = topLevelTimeoutKey ? data : namespace;
-  if (selectedTimeoutKey) out.timeout = cloneExecutionJson(timeoutOwner[selectedTimeoutKey], "frontmatter.timeout");
-
-  for (const key of ["workspace", "environment", "runtime"] as const) {
-    const owner = options.allowTopLevelEngine && own(data, key) ? data : namespace;
-    if (own(owner, key)) out[key] = cloneExecutionJson(owner[key], `frontmatter.${key}`);
-  }
-  return cloneDefaults(out as UnresolvedExecutionDefaults);
+  return isAdapterRenderedSource(value, "persona");
 }

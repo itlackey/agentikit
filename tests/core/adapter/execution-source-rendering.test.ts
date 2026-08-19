@@ -5,9 +5,12 @@ import { akmAdapter } from "../../../src/core/adapter/adapters/akm-adapter";
 import { claudeAdapter } from "../../../src/core/adapter/adapters/claude-adapter";
 import { opencodeAdapter } from "../../../src/core/adapter/adapters/opencode-adapter";
 import type { BundleAdapter } from "../../../src/core/adapter/bundle-adapter";
+import {
+  executionDefaultsFromFrontmatter,
+  renderMarkdownExecutionSource,
+} from "../../../src/core/adapter/execution-source";
 import type { BundleComponent } from "../../../src/core/adapter/types";
 import { createResolvedCommand } from "../../../src/execution/resolved-request";
-import { renderMarkdownExecutionSource } from "../../../src/execution/source";
 import { buildFileContext } from "../../../src/indexer/walk/file-context";
 import {
   assertFixtureBytesUnchanged,
@@ -144,5 +147,151 @@ describe("adapter-rendered execution sources", () => {
         },
       }),
     ).toThrow(/frontmatter/i);
+  });
+
+  test("requires an own brand, exact prototype, and frozen source object", () => {
+    const valid = renderCase("akm", "command");
+    const inherited = Object.create(valid) as typeof valid;
+    const overridden = Object.create(valid, {
+      content: { value: "---\nraw: leaked\n---\nDo the wrong work.", enumerable: true },
+      raw: { value: "native bytes", enumerable: true },
+      frontmatter: { value: { model: "attacker/model" }, enumerable: true },
+    }) as typeof valid;
+
+    expect(() => createResolvedCommand({ source: inherited as never, content: inherited.content })).toThrow(
+      /adapter-rendered command source/i,
+    );
+    expect(() => createResolvedCommand({ source: overridden as never, content: overridden.content })).toThrow(
+      /adapter-rendered command source/i,
+    );
+    expect(Object.isFrozen(valid)).toBe(true);
+    expect(Object.getPrototypeOf(valid)).toBe(Object.prototype);
+
+    const strictRaw = "---\nmodel: provider/exact\n---\nDo work.\n";
+    expect(() =>
+      renderMarkdownExecutionSource({
+        kind: "command",
+        raw: strictRaw,
+        identity: {
+          ref: "fixture//commands/strict-keys",
+          bundle: "fixture",
+          adapter: "akm",
+          file: "commands/strict-keys.md",
+          extra: true,
+        },
+      } as never),
+    ).toThrow(/identity.*extra|extra/i);
+    expect(() =>
+      renderMarkdownExecutionSource({
+        kind: "command",
+        raw: strictRaw,
+        identity: {
+          ref: "fixture//commands/strict-keys",
+          bundle: "fixture",
+          adapter: "akm",
+          file: "commands/strict-keys.md",
+        },
+        extra: true,
+      } as never),
+    ).toThrow(/source.*extra|extra/i);
+  });
+
+  test("strict execution frontmatter handles BOM/CRLF and hashes the exact original text", () => {
+    const raw = "\uFEFF---\r\nmodel: provider/exact\r\ntemperature: 0\r\n---\r\nDo work.\r\n";
+    const source = renderMarkdownExecutionSource({
+      kind: "command",
+      raw,
+      identity: {
+        ref: "fixture//commands/crlf",
+        bundle: "fixture",
+        adapter: "akm",
+        file: "commands/crlf.md",
+      },
+      defaults: (data) => ({ model: data.model as string, inference: { temperature: data.temperature as number } }),
+    });
+
+    expect(source.content).toBe("Do work.\r\n");
+    expect(source.identity.hash).toBe(sha256Utf8(raw));
+    expect(source.defaults).toEqual({ model: "provider/exact", inference: { temperature: 0 } });
+  });
+
+  test("clones renderer identity and defaults before caller mutation", () => {
+    const identity = {
+      ref: "fixture//commands/cloned",
+      bundle: "fixture",
+      adapter: "akm",
+      file: "commands/cloned.md",
+    };
+    const defaults = { model: "provider/before", inference: { temperature: 0 } };
+    const source = renderMarkdownExecutionSource({
+      kind: "command",
+      raw: "Do work.\n",
+      identity,
+      defaults,
+    });
+
+    identity.file = "commands/mutated.md";
+    defaults.model = "provider/after";
+    defaults.inference.temperature = 1;
+    expect(source.identity.file).toBe("commands/cloned.md");
+    expect(source.defaults).toEqual({ model: "provider/before", inference: { temperature: 0 } });
+  });
+
+  test("strict execution frontmatter preserves body-only files and rejects malformed fenced metadata", () => {
+    const renderRaw = (raw: string) =>
+      renderMarkdownExecutionSource({
+        kind: "command",
+        raw,
+        identity: {
+          ref: "fixture//commands/strict",
+          bundle: "fixture",
+          adapter: "akm",
+          file: "commands/strict.md",
+        },
+      });
+
+    expect(renderRaw("Do work without metadata.\n").content).toBe("Do work without metadata.\n");
+    expect(() => renderRaw("---\nmodel: one\nDo work.\n")).toThrow(/unterminated.*frontmatter/i);
+    expect(() => renderRaw("---\nmodel: [one,\n---\nDo work.\n")).toThrow(/invalid.*YAML|YAML.*error/i);
+    expect(() => renderRaw("---\n- model\n- one\n---\nDo work.\n")).toThrow(/mapping/i);
+    expect(() => renderRaw("---\nmodel: one\nmodel: two\n---\nDo work.\n")).toThrow(/duplicate|YAML/i);
+    expect(() => renderRaw("---\nmodel: &chosen one\nengine: *chosen\n---\nDo work.\n")).toThrow(/anchor|alias/i);
+    expect(() => renderRaw("---\nmodel: !engine one\n---\nDo work.\n")).toThrow(/tag/i);
+  });
+
+  test("does not merge untrusted inference keys through a mutable plain-object prototype", () => {
+    const source = renderMarkdownExecutionSource({
+      kind: "persona",
+      raw: `---
+akm:
+  inference:
+    __proto__:
+      polluted: true
+    constructor:
+      prototype:
+        polluted: true
+temperature: 0
+---
+Review safely.
+`,
+      identity: {
+        ref: "fixture//agents/safe-inference",
+        bundle: "fixture",
+        adapter: "akm",
+        file: "agents/safe-inference.md",
+      },
+      defaults: (data) =>
+        executionDefaultsFromFrontmatter(data, {
+          kind: "persona",
+          allowTopLevelEngine: true,
+        }),
+    });
+
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+    const inference = source.defaults.inference;
+    expect(inference?.temperature).toBe(0);
+    expect(Object.hasOwn(inference ?? {}, "__proto__")).toBe(true);
+    expect(inference?.["__proto__"]).toEqual({ polluted: true });
+    expect(inference?.["constructor"]).toEqual({ prototype: { polluted: true } });
   });
 });
