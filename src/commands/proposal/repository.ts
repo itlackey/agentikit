@@ -91,7 +91,7 @@ import { withAssetMutationLease } from "../../indexer/index-writer-lock";
 import { indexWrittenAssets } from "../../indexer/index-written-assets";
 import { deriveInstallations } from "../../indexer/installations";
 import { resolveSourceEntries } from "../../indexer/search/search-source";
-import { type Database, openDatabase } from "../../storage/database";
+import type { Database } from "../../storage/database";
 import { insertEventOnce } from "../../storage/repositories/events-repository";
 import {
   getStateProposal,
@@ -100,6 +100,7 @@ import {
   listStateProposals,
   upsertProposal,
 } from "../../storage/repositories/proposals-repository";
+import { openSqliteReadSnapshot } from "../../storage/sqlite-read-snapshot";
 import { pkgVersion } from "../../version";
 import { runBaseChecks } from "../lint/base-linter";
 import type { LintIssue, LintIssueType } from "../lint/types";
@@ -928,7 +929,8 @@ export function listProposalsReadOnly(
 
   let db: Database | undefined;
   try {
-    db = openDatabase(dbPath, { readonly: true, create: false });
+    db = openSqliteReadSnapshot(dbPath);
+    if (!db) return [];
     if (!options.includeArchive && options.status !== undefined && options.status !== "pending") return [];
     const status = options.includeArchive ? options.status : "pending";
     const wantRef = options.ref !== undefined ? filterRefIdentity(options.ref) : undefined;

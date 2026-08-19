@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,10 +21,13 @@ import {
   type Proposal,
 } from "../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../src/core/config/config";
+import { ConfigError } from "../../src/core/errors";
 import type { EventsContext } from "../../src/core/events";
+import { getStateDbPath } from "../../src/core/state-db";
 import type { AgentRunResult } from "../../src/integrations/agent";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
 import { makeConfig } from "../_helpers/factories";
+import { withEnv } from "../_helpers/sandbox";
 
 // ── Test setup ────────────────────────────────────────────────────────────
 //
@@ -46,6 +50,24 @@ function makeStashDir(): string {
     fs.mkdirSync(path.join(stash, dir), { recursive: true });
   }
   return stash;
+}
+
+function snapshotTree(root: string): Record<string, string> {
+  const snapshot: Record<string, string> = {};
+  const visit = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      const relativePath = path.relative(root, fullPath).split(path.sep).join("/");
+      if (entry.isDirectory()) {
+        snapshot[`${relativePath}/`] = "directory";
+        visit(fullPath);
+      } else {
+        snapshot[relativePath] = createHash("sha256").update(fs.readFileSync(fullPath)).digest("hex");
+      }
+    }
+  };
+  visit(root);
+  return snapshot;
 }
 
 function eventsCtx(): EventsContext {
@@ -442,6 +464,55 @@ function agentResult(stdout: string): AgentRunResult {
 }
 
 describe("drainProposals — judgment tier (llm mode)", () => {
+  test("an unused judgment credential is not materialized when deterministic policy leaves no deferred work", async () => {
+    const stash = makeStashDir();
+    const accepted = seed(stash, "lessons/deterministic-only", "extract", VALID_LESSON);
+    const runner: RunnerSpec = {
+      ...FAKE_LLM_RUNNER,
+      credential: { names: ["AKM_UNUSED_DRAIN_REQUIRED_KEY"], required: true },
+    };
+    const chat = mock(async () => {
+      throw new Error("deterministic-only drain reached judgment provider");
+    });
+
+    const result = await withEnv({ AKM_UNUSED_DRAIN_REQUIRED_KEY: undefined }, () =>
+      drainProposals(baseOpts(stash, { judgment: runner }), fakeAccept(), fakeReject(), { chat }),
+    );
+
+    expect(result.promoted).toEqual([accepted.id]);
+    expect(result.deferred).toEqual([]);
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  test("missing required judgment credential propagates before proposal or event mutation", async () => {
+    const stash = makeStashDir();
+    seed(stash, "lessons/credential-boundary", "consolidate", BIG_LESSON);
+    const before = snapshotTree(stash);
+    const stateDir = path.dirname(getStateDbPath());
+    const stateBefore = snapshotTree(stateDir);
+    const eventContext = eventsCtx();
+    const runner: RunnerSpec = {
+      ...FAKE_LLM_RUNNER,
+      credential: { names: ["AKM_DRAIN_REQUIRED_KEY"], required: true },
+    };
+    const chat = mock(async () => {
+      throw new Error("required-credential judgment reached provider");
+    });
+
+    await withEnv({ AKM_DRAIN_REQUIRED_KEY: undefined }, async () => {
+      await expect(
+        drainProposals(baseOpts(stash, { judgment: runner, eventsCtx: eventContext }), fakeAccept(), fakeReject(), {
+          chat,
+        }),
+      ).rejects.toBeInstanceOf(ConfigError);
+    });
+
+    expect(chat).not.toHaveBeenCalled();
+    expect(snapshotTree(stash)).toEqual(before);
+    expect(snapshotTree(stateDir)).toEqual(stateBefore);
+    expect(fs.existsSync(eventContext.dbPath ?? "")).toBe(false);
+  });
+
   test("engine accepts a deferred item when the llm verdict is accept", async () => {
     const stash = makeStashDir();
     const deferred = seed(stash, "lessons/big", "consolidate", BIG_LESSON);

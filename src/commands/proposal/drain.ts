@@ -43,11 +43,13 @@ import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement"
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { parseRefInput } from "../../core/asset/resolve-ref";
 import type { AkmConfig } from "../../core/config/config";
+import { ConfigError } from "../../core/errors";
 import type { EventsContext } from "../../core/events";
 import { appendEvent } from "../../core/events";
 import { escapeJsonStringControls, stripCodeFences, stripThinkBlocks } from "../../core/parse";
 import { info, warn } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
+import type { AgentRunResult } from "../../integrations/agent";
 import {
   type DispatchLoweredExecutionOptions,
   dispatchLoweredExecutionRequest,
@@ -58,6 +60,7 @@ import type { RunnerSpec } from "../../integrations/agent/runner";
 import { akmProposalAccept, akmProposalReject, type ProposalRejectResult } from "./proposal";
 import {
   listProposals,
+  listProposalsReadOnly,
   type Proposal,
   type ProposalGateDecision,
   preflightProposalPromotion,
@@ -430,6 +433,7 @@ async function dispatchJudgment(
   try {
     result = await dispatchLoweredExecutionRequest(lowered, dispatchOptions);
   } catch (error) {
+    if (error instanceof ConfigError) throw error;
     return {
       verdict: null,
       notices: lowered.notices,
@@ -444,6 +448,28 @@ async function dispatchJudgment(
     };
   }
   return { verdict: parseJudgmentVerdict(result.stdout), notices: lowered.notices };
+}
+
+/** Validate symbolic judgment credentials without contacting a provider. */
+async function preflightJudgmentRunner(runner: RunnerSpec): Promise<void> {
+  const prepared = prepareInlineExecutionWithRunner({
+    content: "Validate the selected proposal judgment runner before mutation.",
+    runner,
+    invocationKind: "direct",
+  });
+  const lowered = lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
+  const success = async (): Promise<AgentRunResult> => ({
+    ok: true,
+    exitCode: 0,
+    stdout: "",
+    stderr: "",
+    durationMs: 0,
+  });
+  await dispatchLoweredExecutionRequest(lowered, {
+    chat: async () => "",
+    runAgent: success,
+    runSdk: success,
+  });
 }
 
 interface JudgmentTierInput {
@@ -511,6 +537,7 @@ async function runJudgmentTier(input: JudgmentTierInput): Promise<{
     try {
       dispatch = await dispatchJudgment(input.runner, prompt, input.seams);
     } catch (err) {
+      if (err instanceof ConfigError) throw err;
       warn(`[triage] judgment dispatch failed for ${item.id}: ${err instanceof Error ? err.message : String(err)}`);
       stillDeferred.push(item);
       continue;
@@ -627,6 +654,89 @@ async function runJudgmentTier(input: JudgmentTierInput): Promise<{
 // Engine
 // ---------------------------------------------------------------------------
 
+interface DrainClassification {
+  pending: Proposal[];
+  acceptIds: string[];
+  acceptGateReasons: Map<string, "policy-accept" | "judgment-accept">;
+  rejectTargets: Array<{ id: string; reason: string }>;
+  deferred: DrainResult["deferred"];
+  deferredGateDecisions: Array<{ id: string; decision: Omit<ProposalGateDecision, "decidedAt"> }>;
+  gateLabel: string;
+  needsJudge: Set<string>;
+}
+
+/** Classify the queue without mutating proposal, event, or promotion state. */
+function classifyPendingProposals(opts: DrainOptions): DrainClassification {
+  const exclude = opts.excludeIds ?? new Set<string>();
+  // A configured judgment runner must be credential-validated before any live
+  // state connection or migration. Its classification pass therefore reads an
+  // isolated SQLite snapshot; deterministic-only drains retain the historical
+  // live/migrating queue read.
+  const pending = (opts.judgment ? listProposalsReadOnly : listProposals)(opts.stashDir, {
+    status: "pending",
+  }).filter((proposal) => !exclude.has(proposal.id));
+  const acceptIds: string[] = [];
+  const acceptGateReasons = new Map<string, "policy-accept" | "judgment-accept">();
+  const rejectTargets: Array<{ id: string; reason: string }> = [];
+  const deferred: DrainResult["deferred"] = [];
+  const deferredGateDecisions: DrainClassification["deferredGateDecisions"] = [];
+  const gateLabel = `triage:${opts.policy.name}`;
+  const needsJudge = new Set<string>();
+
+  for (const proposal of pending) {
+    // An authoritative rejection from another gate stays pending and is never
+    // silently overwritten by this triage policy.
+    if (proposal.gateDecision?.outcome === "auto-rejected" && !proposal.gateDecision.gate?.startsWith("triage:")) {
+      continue;
+    }
+    if (
+      proposal.gateDecision?.outcome === "staged" &&
+      proposal.gateDecision.gate === gateLabel &&
+      proposal.gateDecision.contentHash === judgedContentHash(proposal)
+    ) {
+      acceptIds.push(proposal.id);
+      acceptGateReasons.set(proposal.id, "judgment-accept");
+      continue;
+    }
+
+    const decision = classifyProposal(proposal, opts.policy, opts.maxDiffLines);
+    if (decision === null) continue;
+    if (decision.verdict === "defer") {
+      deferredGateDecisions.push({
+        id: proposal.id,
+        decision: {
+          outcome: "deferred",
+          reason: decision.gate.reason,
+          ...(decision.gate.measured !== undefined ? { measured: decision.gate.measured } : {}),
+          ...(decision.gate.thresholds ? { thresholds: decision.gate.thresholds } : {}),
+          gate: gateLabel,
+        },
+      });
+      if (!decision.gate.thresholds) needsJudge.add(proposal.id);
+    }
+
+    if (decision.verdict === "accept") {
+      acceptIds.push(proposal.id);
+      acceptGateReasons.set(proposal.id, "policy-accept");
+    } else if (decision.verdict === "reject") {
+      rejectTargets.push({ id: proposal.id, reason: decision.reason });
+    } else {
+      deferred.push({ id: proposal.id, reason: decision.reason });
+    }
+  }
+
+  return {
+    pending,
+    acceptIds,
+    acceptGateReasons,
+    rejectTargets,
+    deferred,
+    deferredGateDecisions,
+    gateLabel,
+    needsJudge,
+  };
+}
+
 /**
  * Drain the standing pending backlog under a deterministic policy.
  *
@@ -640,71 +750,23 @@ export async function drainProposals(
   rejectFn: RejectFn = akmProposalReject,
   judgmentSeams: JudgmentSeams = {},
 ): Promise<DrainResult> {
-  const result: DrainResult = { promoted: [], rejected: [], deferred: [], skippedByCap: [], staged: [] };
+  const classification = classifyPendingProposals(opts);
+  const { pending, acceptIds, acceptGateReasons, rejectTargets, deferredGateDecisions, gateLabel, needsJudge } =
+    classification;
+  const result: DrainResult = {
+    promoted: [],
+    rejected: [],
+    deferred: classification.deferred,
+    skippedByCap: [],
+    staged: [],
+  };
 
-  const exclude = opts.excludeIds ?? new Set<string>();
-  const pending = listProposals(opts.stashDir, { status: "pending" }).filter((p) => !exclude.has(p.id));
-
-  // First, classify every proposal deterministically.
-  const acceptIds: string[] = [];
-  const acceptGateReasons = new Map<string, "policy-accept" | "judgment-accept">();
-  const rejectTargets: Array<{ id: string; reason: string }> = [];
-  const gateLabel = `triage:${opts.policy.name}`;
-  // Items deferred purely because they need a judge (no threshold-based reason)
-  // — these are re-stamped `no-judge-configured` when no runner resolves them.
-  const needsJudge = new Set<string>();
-
-  for (const proposal of pending) {
-    // Do NOT reclassify a proposal that was already conclusively stamped
-    // `auto-rejected` by a prior gate run (e.g. the improve confidence gate).
-    // Overwriting an authoritative rejection with `auto-accepted` would corrupt
-    // the audit trail and silently promote content the gate explicitly rejected.
-    // Such proposals remain pending until the TTL expires them — the queue is
-    // audited-autonomous; no manual-review rung exists (06-M3).
-    if (proposal.gateDecision?.outcome === "auto-rejected" && !proposal.gateDecision.gate?.startsWith("triage:")) {
-      continue;
-    }
-
-    if (
-      proposal.gateDecision?.outcome === "staged" &&
-      proposal.gateDecision.gate === gateLabel &&
-      proposal.gateDecision.contentHash === judgedContentHash(proposal)
-    ) {
-      acceptIds.push(proposal.id);
-      acceptGateReasons.set(proposal.id, "judgment-accept");
-      continue;
-    }
-
-    const decision = classifyProposal(proposal, opts.policy, opts.maxDiffLines);
-    if (decision === null) continue;
-    // #577: stamp the gate's verdict onto the proposal so `akm proposal show`
-    // can explain WHY it landed here. A dry-run performs zero writes, so it
-    // records nothing.
-    if (decision.verdict === "defer") {
-      stampGateDecision(opts, proposal.id, {
-        outcome: "deferred",
-        reason: decision.gate.reason,
-        ...(decision.gate.measured !== undefined ? { measured: decision.gate.measured } : {}),
-        ...(decision.gate.thresholds ? { thresholds: decision.gate.thresholds } : {}),
-        gate: gateLabel,
-      });
-    }
-    // A defer with no threshold (mid-band / possible-dup from the defer list) is
-    // pending only because it needs adjudication — re-stampable to
-    // `no-judge-configured`. A band-based defer keeps its specific reason.
-    if (decision.verdict === "defer" && !decision.gate.thresholds) {
-      needsJudge.add(proposal.id);
-    }
-
-    if (decision.verdict === "accept") {
-      acceptIds.push(proposal.id);
-      acceptGateReasons.set(proposal.id, "policy-accept");
-    } else if (decision.verdict === "reject") {
-      rejectTargets.push({ id: proposal.id, reason: decision.reason });
-    } else {
-      result.deferred.push({ id: proposal.id, reason: decision.reason });
-    }
-  }
+  // A configured judgment runner makes every deferred item dispatch-eligible.
+  // Validate its symbolic credentials before applying any deterministic gate,
+  // reject, promote, or event mutation. Provider/runtime failures remain the
+  // judgment tier's fail-soft responsibility after this configuration fence.
+  if (opts.judgment && result.deferred.length > 0) await preflightJudgmentRunner(opts.judgment);
+  for (const { id, decision } of deferredGateDecisions) stampGateDecision(opts, id, decision);
 
   // --- Reject empties (independent of the accept ceiling / applyMode) ---
   for (const target of rejectTargets) {

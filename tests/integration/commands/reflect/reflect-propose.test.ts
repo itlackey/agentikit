@@ -134,9 +134,11 @@ const VALID_SKILL_PAYLOAD = JSON.stringify({
 });
 
 let cleanup: Cleanup = () => {};
+let xdgDataDir = "";
 
 beforeEach(() => {
   const dataResult = sandboxXdgDataHome();
+  xdgDataDir = dataResult.dir;
   const cacheResult = sandboxXdgCacheHome(dataResult.cleanup);
   const cfgResult = sandboxXdgConfigHome(cacheResult.cleanup);
   cleanup = cfgResult.cleanup;
@@ -505,6 +507,47 @@ describe("akm reflect", () => {
 // ── propose ────────────────────────────────────────────────────────────────
 
 describe("akm propose", () => {
+  test("missing required credential leaves proposal and event state untouched", async () => {
+    const stash = makeStashDir();
+    const config = quietQualityGateConfig();
+    config.engines = {
+      required: {
+        kind: "llm",
+        endpoint: "https://example.invalid/v1/chat/completions",
+        model: "never-dispatched",
+        apiKey: "$AKM_PROPOSE_REQUIRED_KEY",
+      },
+    };
+    config.defaults = { ...config.defaults, engine: "required" };
+    let spawnCalls = 0;
+
+    await withEnv({ AKM_PROPOSE_REQUIRED_KEY: undefined }, async () => {
+      await expect(
+        akmPropose({
+          type: "skill",
+          name: "credential-boundary",
+          task: "Author a skill without mutating state before dispatch",
+          stashDir: stash,
+          agentConfig: config,
+          runAgentOptions: {
+            spawn: () => {
+              spawnCalls += 1;
+              throw new Error("required-credential proposal reached transport");
+            },
+          },
+        }),
+      ).rejects.toMatchObject({
+        name: "ConfigError",
+        code: "INVALID_CONFIG_FILE",
+        message: "Required engine credential AKM_PROPOSE_REQUIRED_KEY is not set.",
+      });
+    });
+
+    expect(spawnCalls).toBe(0);
+    expect(fs.readdirSync(xdgDataDir, { recursive: true })).toEqual([]);
+    expect(fs.existsSync(path.join(stash, "proposals"))).toBe(false);
+  });
+
   test("redacts an echoed engine environment credential before proposal persistence", async () => {
     const sentinel = "PROPOSE-ECHO-SENTINEL";
     const stash = makeStashDir();

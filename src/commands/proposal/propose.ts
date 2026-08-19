@@ -114,11 +114,32 @@ interface ProposalDispatchResult {
   interactive: boolean;
 }
 
+/** Materialize required credentials through the real runner boundary, without provider I/O. */
+async function preflightProposalDispatch(
+  lowered: Parameters<typeof dispatchLoweredExecutionRequest>[0],
+  runOptions: RunAgentOptions,
+): Promise<void> {
+  const success = async (): Promise<AgentRunResult> => ({
+    ok: true,
+    exitCode: 0,
+    stdout: "",
+    stderr: "",
+    durationMs: 0,
+  });
+  await dispatchLoweredExecutionRequest(lowered, {
+    runOptions,
+    chat: async () => "",
+    runAgent: success,
+    runSdk: success,
+  });
+}
+
 /** Resolve, lower, and dispatch the already-rendered legacy proposal prompt. */
 async function dispatchProposalPrompt(
   prompt: string,
   config: AkmConfig,
   options: AkmProposeOptions,
+  onDispatchReady: () => void,
 ): Promise<ProposalDispatchResult> {
   const current = {
     ...(options.engine !== undefined ? { engine: options.engine } : {}),
@@ -141,7 +162,12 @@ async function dispatchProposalPrompt(
     parseOutput: "text",
     ...(options.runAgentOptions ?? {}),
   };
+  await preflightProposalDispatch(lowered, runOptions);
   const sensitiveValues = collectDispatchSensitiveValues(lowered.runner, runOptions);
+  // Materialize/validate every required symbolic credential before the entry
+  // event opens durable state. Provider/runtime failures still occur after the
+  // event, preserving the command-attempt observability contract.
+  onDispatchReady();
   const result = await dispatchLoweredExecutionRequest(lowered, { runOptions });
   return {
     result,
@@ -207,7 +233,6 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
   // exactly once below through the shared execution cascade.
   const config = options.agentConfig ?? (await import("../../core/config/config.js")).loadConfig();
   const target = resolveProposalQueueTarget(stash, config);
-  emitProposeInvoked(target.source, options);
 
   // 2. Build terminal user content.
   // Synthesize a temp draft path so opencode can write the asset content
@@ -237,7 +262,9 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
   // 3. Preserve the fully-authored legacy prompt as the terminal user content;
   // no synthetic persona, conversation turn, schema, or tool selection is
   // introduced while it crosses the shared resolved/lowered boundary.
-  const dispatch = await dispatchProposalPrompt(prompt, config, options);
+  const dispatch = await dispatchProposalPrompt(prompt, config, options, () =>
+    emitProposeInvoked(target.source, options),
+  );
   const { result, engineName, notices, sensitiveValues } = dispatch;
 
   if (!result.ok) {
