@@ -21,6 +21,7 @@ import { ConfigError } from "../../src/core/errors";
 import { mergeLockEntriesSync, readLockfile } from "../../src/integrations/lockfile";
 import * as gitProvider from "../../src/sources/providers/git";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
+import { withEnv, withMockedFetch } from "../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
 
@@ -371,6 +372,57 @@ describe("issue #19: akm bundle update website sources", () => {
     } finally {
       server.stop(true);
     }
+  });
+
+  test("website source update authenticates X requests with the stored bearer token", async () => {
+    const secret = "STORE_ONLY_X_TOKEN";
+    fs.mkdirSync(path.join(stashDir, "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(stashDir, "secrets", "x-bearer-token"), `${secret}\n`, { mode: 0o600 });
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: { "x-site": { website: { url: "https://x.com/jack" } } },
+    });
+
+    const apiRequests: string[] = [];
+    const authenticatedApiRequests: string[] = [];
+    const result = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => akmUpdate({ target: "x-site", stashDir }),
+        async (url, init) => {
+          if (url.startsWith("https://api.x.com/2/")) {
+            apiRequests.push(url);
+            if (new Headers(init?.headers).get("authorization") === `Bearer ${secret}`) {
+              authenticatedApiRequests.push(url);
+            }
+            if (url.includes("/users/by/username/")) {
+              return new Response(JSON.stringify({ data: { id: "1" } }), {
+                headers: { "content-type": "application/json" },
+              });
+            }
+            return new Response(
+              JSON.stringify({
+                data: [{ id: "9", text: "materialized through bundle update", created_at: "2025-04-01T10:00:00Z" }],
+              }),
+              { headers: { "content-type": "application/json" } },
+            );
+          }
+
+          // Before the regression fix the direct update path omitted the
+          // store resolver, fell through to the generic website crawler, and
+          // still reported success. Keep that fallback successful so the
+          // assertion below specifically proves authentication, not merely
+          // whether the update happened to throw.
+          return new Response(
+            "<html><head><title>Public fallback</title></head><body><h1>Public fallback</h1></body></html>",
+            { headers: { "content-type": "text/html; charset=utf-8" } },
+          );
+        },
+      ),
+    );
+
+    expect(result.plainSynced).toEqual([{ id: "x-site", kind: "website", ref: "https://x.com/jack" }]);
+    expect(apiRequests).toHaveLength(2);
+    expect(authenticatedApiRequests).toEqual(apiRequests);
   });
 
   test("git source update refreshes configured git mirrors instead of treating them as local paths", async () => {

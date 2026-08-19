@@ -70,7 +70,12 @@ export interface SyncOptions {
    * variables only — the documented, backward-compatible default.
    */
   secrets?: SecretResolver;
-  /** Website mirror implementation supplied by the source-sync composition. */
+  /**
+   * Website mirror implementation supplied by the source-sync composition.
+   * Required when invoking a website provider's `sync()`; omitted for other
+   * provider kinds. Website sync fails with a `ConfigError` when it is absent
+   * so a missing composition binding cannot silently report a refresh.
+   */
   ensureWebsiteMirror?: EnsureWebsiteMirror;
 }
 

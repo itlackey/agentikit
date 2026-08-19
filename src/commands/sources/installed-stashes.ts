@@ -33,10 +33,9 @@ import type { InstalledBundle, InstallKind } from "../../registry/types";
 import { sha256Hex } from "../../runtime";
 import { parseGitRepoUrl, syncMirroredRepo } from "../../sources/providers/git";
 import { syncFromRef } from "../../sources/providers/sync-from-ref";
-import {
-  ensureWebsiteMirror,
-  shouldAllowPrivateWebsiteUrlForTests,
-} from "../../sources/snapshot-fetchers/website-ingest";
+import { createWebsiteProvider } from "../../sources/providers/website";
+import { storeSecretResolver } from "../../sources/snapshot-fetchers/secret-seam";
+import { ensureWebsiteMirror } from "../../sources/snapshot-fetchers/website-ingest";
 import type {
   RemoveResponse,
   SourceComponent,
@@ -375,10 +374,11 @@ async function syncWebsitePlainSource(
   websiteSource: ReturnType<typeof getSources>[number],
 ): Promise<UpdatePlainSyncedItem> {
   // TODO: full incremental re-crawl with delta tracking (#19)
-  await ensureWebsiteMirror(websiteSource, {
-    requireStashDir: true,
+  const provider = createWebsiteProvider(websiteSource);
+  await provider.sync({
     force: true,
-    ...(shouldAllowPrivateWebsiteUrlForTests(websiteSource.url ?? "") ? { allowPrivateHosts: true } : {}),
+    secrets: storeSecretResolver,
+    ensureWebsiteMirror,
   });
   return { id: websiteSource.name ?? websiteSource.url ?? "", kind: "website", ref: websiteSource.url ?? "" };
 }

@@ -2,13 +2,19 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import type { SourceConfigEntry } from "../../core/config/config";
 import { ConfigError } from "../../core/errors";
-import type { SyncOptions } from "../provider";
+import type { SourceProvider, SyncOptions } from "../provider";
 import { registerSourceProvider } from "../provider-factory";
 import { getWebsiteCachePaths, shouldAllowPrivateWebsiteUrlForTests, validateWebsiteUrl } from "../website-url";
 
+export interface WebsiteSourceProvider extends SourceProvider {
+  readonly kind: "website";
+  sync(options?: SyncOptions): Promise<void>;
+}
+
 /** Website source provider — URL-derived path plus an injected mirror refresh. */
-registerSourceProvider("website", (config) => {
+export function createWebsiteProvider(config: SourceConfigEntry): WebsiteSourceProvider {
   const allowPrivateHosts = shouldAllowPrivateWebsiteUrlForTests(config.url ?? "");
   const url = validateWebsiteUrl(config.url ?? "", { allowPrivateHosts });
   const name = config.name ?? "website";
@@ -35,4 +41,6 @@ registerSourceProvider("website", (config) => {
       });
     },
   };
-});
+}
+
+registerSourceProvider("website", createWebsiteProvider);

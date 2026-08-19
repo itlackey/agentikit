@@ -3,12 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * P4 — the SecretResolver capability reaches the provider sync() / bundle-update
- * path, closing the gap where a website source's X fetcher previously saw only
- * X_BEARER_TOKEN and never the secret store.
+ * P4 — unit coverage for the SecretResolver capability on provider sync(). The
+ * real `akm bundle update` composition is covered separately in
+ * tests/integration/source-qa-fixes.test.ts with a stored bearer-token file.
  *
- * The website provider factory registers itself on import; we drive its
- * `sync()` with a stub SecretResolver and assert the stub is consulted for
+ * The website provider factory registers itself on import; this test drives
+ * `sync()` directly with a stub SecretResolver and asserts it is consulted for
  * `secrets/x-bearer-token`, and that the resolved value never surfaces in the
  * produced snapshot (containment — graft (a), verified rather than enforced via
  * a global redaction registry, which would reintroduce the mutable ambient

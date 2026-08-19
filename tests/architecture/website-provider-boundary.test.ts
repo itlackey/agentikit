@@ -111,4 +111,17 @@ describe("website provider import boundary", () => {
       staticMirrorSpy.mockRestore();
     }
   });
+
+  test("sync fails explicitly when its mirror capability was not composed", async () => {
+    const config = {
+      type: "website",
+      name: "docs",
+      url: "http://127.0.0.1:9/docs",
+    } as never;
+    const provider = resolveSourceProviderFactory("website")?.(config);
+
+    await expect(provider?.sync?.({ force: true })).rejects.toThrow(
+      "Website provider sync requires an injected ensureWebsiteMirror capability",
+    );
+  });
 });
