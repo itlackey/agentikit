@@ -1142,10 +1142,15 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
     persist: !planOnly,
   });
 
+  // Replay is additive to the signal lanes, but it must not bypass selectors
+  // that have already removed a ref. Use the exact surviving objects so a
+  // replay admission preserves the index-resolved file/item provenance while
+  // excluding cleanup-pruned and structurally-invalid candidates.
+  const replayEligibleRefs = postCleanupRefs.filter((candidate) => !validationFailureRefs.has(candidate.ref));
   const filtered = await filterEligibility({
     scope,
     options,
-    plannedRefs,
+    replayEligibleRefs,
     eventsCtx,
     mergedRefs: scored.mergedRefs,
     salienceMap: scored.salienceMap,
@@ -2843,7 +2848,7 @@ export function applyForgettingSafety(args: {
 async function filterEligibility(args: {
   scope: ImproveScope;
   options: AkmImproveOptions;
-  plannedRefs: ImproveEligibleRef[];
+  replayEligibleRefs: ImproveEligibleRef[];
   eventsCtx?: EventsContext;
   mergedRefs: ImproveEligibleRef[];
   salienceMap: Map<string, ReturnType<typeof computeSalience>>;
@@ -2867,15 +2872,23 @@ async function filterEligibility(args: {
   missingDiskCount: number;
   replayBudget: number;
 }> {
-  const { scope, options, plannedRefs, eventsCtx, salienceMap, eligibilitySourceByRef, distillOnlyRefs, persist } =
-    args;
+  const {
+    scope,
+    options,
+    replayEligibleRefs,
+    eventsCtx,
+    salienceMap,
+    eligibilitySourceByRef,
+    distillOnlyRefs,
+    persist,
+  } = args;
   const { fullySkippedCount, preCooldownCount, signalAndRetrievalRefs, signalFiltered } = args.summary;
   const validationFailureRefs = args.validationFailureRefs;
 
   const replay = applyReplaySelection({
     scope,
     options,
-    plannedRefs,
+    plannedRefs: replayEligibleRefs,
     eventsCtx,
     mergedRefs: args.mergedRefs,
     salienceMap,

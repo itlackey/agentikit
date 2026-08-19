@@ -376,7 +376,8 @@ describe("#800 effective dry-run planner", () => {
     const config = plannerConfig();
     config.improve = {
       ...config.improve,
-      salience: { salienceThreshold: 1, replayBudget: 3 },
+      // Higher-ranked stale and wrong-type rows must not consume this sole slot.
+      salience: { salienceThreshold: 1, replayBudget: 1 },
     };
     const skillRef = "skills/replay-match";
     const skillPath = path.join(stashDir, "skills", "replay-match", "SKILL.md");
@@ -422,6 +423,95 @@ describe("#800 effective dry-run planner", () => {
     for (const result of [dry, live]) {
       expect(decodeImproveResult(JSON.stringify(result)).envelope.plannedRefs).toEqual([expected]);
     }
+  });
+
+  test("replay cannot re-admit a ref removed by structural validation", async () => {
+    const { stashDir } = isolatedStorage();
+    const config = plannerConfig();
+    config.improve = {
+      ...config.improve,
+      salience: { salienceThreshold: 1, replayBudget: 1 },
+    };
+    const lessonPath = path.join(stashDir, "lessons", "broken.md");
+    fs.mkdirSync(path.dirname(lessonPath), { recursive: true });
+    fs.writeFileSync(lessonPath, "---\nwhen_to_use: Testing replay validation\n---\n\nBody.\n", "utf8");
+    saveConfig(config);
+    await akmIndex({ stashDir, full: true });
+    seedReplayRank("lessons/broken", 0.99);
+    const reflectFn = mock(async ({ ref }: { ref?: string }) => okReflect(ref ?? ""));
+    const commonOptions = {
+      scope: "lesson",
+      stashDir,
+      config,
+      ensureIndexFn: async () => false,
+      reflectFn,
+    };
+
+    const dry = await akmImprove({ ...commonOptions, dryRun: true });
+    const live = await akmImprove(commonOptions);
+
+    for (const result of [dry, live]) {
+      expect(result.plannedRefs).toEqual([]);
+      expect(result.plan?.candidates).toEqual({ rawInScope: 1, selected: 0, effective: 0 });
+      expect(result.plan?.gates.find((gate) => gate.name === "validation")).toEqual({
+        name: "validation",
+        removed: 1,
+        reason: "structural validation failures",
+      });
+      expect(decodeImproveResult(JSON.stringify(result)).envelope.plannedRefs).toEqual([]);
+    }
+    expect(reflectFn).not.toHaveBeenCalled();
+  });
+
+  test("replay cannot re-admit a cleanup-pruned noncanonical derived memory in dry or live plans", async () => {
+    const { stashDir } = isolatedStorage();
+    const config = withImproveAutonomy(plannerConfig());
+    config.improve = {
+      ...config.improve,
+      salience: { salienceThreshold: 1, replayBudget: 1 },
+    };
+    const memoryPath = path.join(stashDir, "memories", "obsolete-copy.md");
+    fs.mkdirSync(path.dirname(memoryPath), { recursive: true });
+    fs.writeFileSync(
+      memoryPath,
+      [
+        "---",
+        "description: Obsolete noncanonical derived memory",
+        "inferred: true",
+        "source: memories/original",
+        "obsolete: true",
+        "---",
+        "",
+        "Old body.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    saveConfig(config);
+    await akmIndex({ stashDir, full: true });
+    seedReplayRank("memories/obsolete-copy", 0.99);
+    const reflectFn = mock(async ({ ref }: { ref?: string }) => okReflect(ref ?? ""));
+    const commonOptions = {
+      scope: "memory",
+      stashDir,
+      config,
+      ensureIndexFn: async () => false,
+      reflectFn,
+    };
+
+    const dry = await akmImprove({ ...commonOptions, dryRun: true });
+    const live = await akmImprove(commonOptions);
+
+    for (const result of [dry, live]) {
+      expect(result.plannedRefs).toEqual([]);
+      expect(result.plan?.candidates).toEqual({ rawInScope: 1, selected: 0, effective: 0 });
+      expect(result.plan?.gates.find((gate) => gate.name === "cleanup")?.removed).toBe(1);
+      expect(result.plan?.gates.find((gate) => gate.name === "disk")?.removed).toBe(0);
+      expect(decodeImproveResult(JSON.stringify(result)).envelope.plannedRefs).toEqual([]);
+    }
+    expect(dry.plan?.gates.find((gate) => gate.name === "cleanup")?.reason).toBe("would be archived by memory cleanup");
+    expect(live.plan?.gates.find((gate) => gate.name === "cleanup")?.reason).toBe("archived by memory cleanup");
+    expect(reflectFn).not.toHaveBeenCalled();
   });
 
   test("dry and live cleanup prune the same ref-scoped derived memory before the disk gate", async () => {
