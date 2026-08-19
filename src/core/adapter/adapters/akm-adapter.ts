@@ -83,6 +83,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
+  type AdapterRenderedExecutionSource,
+  executionDefaultsFromFrontmatter,
+  renderMarkdownExecutionSource,
+} from "../../../execution/source";
+import {
   applyPostContributorFields,
   applyPreContributorFields,
   extractPackageMetadata,
@@ -325,6 +330,30 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   );
 }
 
+/** Render AKM-native command/agent Markdown into the shared execution source. */
+function renderExecutionSource(c: BundleComponent, file: FileContext): AdapterRenderedExecutionSource | null {
+  const document = recognize(c, file);
+  if (document?.type !== "command" && document?.type !== "agent") return null;
+  if (!document.ref) return null;
+  const raw = file.content();
+  const data = parseFrontmatter(raw).data;
+  return renderMarkdownExecutionSource({
+    kind: document.type === "command" ? "command" : "persona",
+    raw,
+    identity: {
+      ref: document.ref,
+      bundle: c.id,
+      adapter: "akm",
+      file: file.relPath,
+    },
+    defaults: executionDefaultsFromFrontmatter(data, {
+      kind: document.type === "command" ? "command" : "persona",
+      allowTopLevelEngine: true,
+      toolsKeys: ["tools"],
+    }),
+  });
+}
+
 /**
  * A read-only {@link FileContext} backed by an OVERLAY string (a pending
  * change's content) instead of the live filesystem — the `validate` contract
@@ -472,6 +501,7 @@ export const akmAdapter: BundleAdapter = {
   ],
 
   recognize,
+  renderExecutionSource,
   validate,
 
   /**

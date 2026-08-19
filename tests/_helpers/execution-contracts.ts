@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { ResolvedExecutionRequestV1 } from "../../src/execution/resolved-request";
 import type { AgentDispatchRequest } from "../../src/integrations/agent/builder-shared";
 import { resolveDispatchModel } from "../../src/integrations/agent/builder-shared";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";
@@ -81,7 +82,7 @@ export interface TestResolvedRequestInput {
   inference?: Readonly<Record<string, unknown>>;
   tools?: unknown;
   authorization?: {
-    status: "allowed" | "denied" | "not-observed";
+    status: "allowed" | "denied" | "not-observed" | "not-required";
     reason?: string | null;
   };
   timeoutMs: number | null;
@@ -112,7 +113,7 @@ export interface TestNormalizedResolvedRequest {
   inference: Record<string, unknown>;
   tools: unknown | null;
   authorization: {
-    status: "allowed" | "denied" | "not-observed";
+    status: "allowed" | "denied" | "not-observed" | "not-required";
     reason: string | null;
   };
   timeoutMs: number | null;
@@ -173,6 +174,34 @@ export function normalizeResolvedRequestForTest(input: TestResolvedRequestInput)
 /** Stable bytes used by cross-entry-point equivalence assertions. */
 export function canonicalResolvedRequestForTest(input: TestResolvedRequestInput): string {
   return `${JSON.stringify(normalizeResolvedRequestForTest(input))}\n`;
+}
+
+/** Project the production WP1 request without branching on its engine kind. */
+export function projectResolvedExecutionRequestForTest(request: ResolvedExecutionRequestV1): TestResolvedRequestInput {
+  const effort = request.inference?.effort;
+  return {
+    command: {
+      content: request.command.content,
+      ...(Object.hasOwn(request.command, "argumentInput") ? { arguments: request.command.argumentInput } : {}),
+      source: request.command.source ? { ...request.command.source } : null,
+    },
+    persona: request.persona ? { content: request.persona.content, source: { ...request.persona.source } } : null,
+    engine: {
+      name: request.engine.name,
+      kind: request.engine.kind,
+      ...(Object.hasOwn(request.engine, "platform") ? { platform: request.engine.platform } : {}),
+    },
+    model: request.model?.resolved ?? null,
+    effort: typeof effort === "string" ? effort : null,
+    schema: request.outputSchema as Readonly<Record<string, unknown>> | null | undefined,
+    inference: request.inference as Readonly<Record<string, unknown>> | undefined,
+    ...(Object.hasOwn(request, "tools") ? { tools: request.tools } : {}),
+    authorization: request.authorization,
+    timeoutMs: request.runtime.timeoutMs ?? null,
+    workspace: request.runtime.workspace,
+    environment: request.runtime.environment ?? undefined,
+    notices: request.notices,
+  };
 }
 
 /** Project the current agent/sdk runner seam into the test-only shape. */

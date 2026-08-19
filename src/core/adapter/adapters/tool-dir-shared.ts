@@ -51,6 +51,13 @@
  */
 
 import path from "node:path";
+import {
+  type AdapterOwnedExtensions,
+  type AdapterRenderedExecutionSource,
+  createAdapterExtensions,
+  executionDefaultsFromFrontmatter,
+  renderMarkdownExecutionSource,
+} from "../../../execution/source";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { FileChange } from "../../file-change";
@@ -250,6 +257,47 @@ export async function validateToolDir(
   return diagnostics;
 }
 
+function nativeExecutionExtensions(
+  layout: ToolDirLayout,
+  cls: ToolDirClassification,
+  data: Record<string, unknown>,
+): AdapterOwnedExtensions | undefined {
+  const values: Record<string, string> = {};
+  if (layout.adapterId === "claude" && cls.type === "command" && typeof data["argument-hint"] === "string") {
+    values.argumentHint = data["argument-hint"];
+  }
+  if (layout.adapterId === "opencode" && typeof data.mode === "string") values.mode = data.mode;
+  return Object.keys(values).length > 0 ? createAdapterExtensions(layout.adapterId, values) : undefined;
+}
+
+/** Translate a native Claude/OpenCode command or agent without exposing raw frontmatter. */
+export function renderToolDirExecutionSource(
+  layout: ToolDirLayout,
+  c: BundleComponent,
+  file: FileContext,
+): AdapterRenderedExecutionSource | null {
+  const cls = classify(file.relPath, layout);
+  if (cls?.type !== "command" && cls?.type !== "agent") return null;
+  const raw = file.content();
+  const data = parseFrontmatter(raw).data;
+  const extensions = nativeExecutionExtensions(layout, cls, data);
+  return renderMarkdownExecutionSource({
+    kind: cls.type === "command" ? "command" : "persona",
+    raw,
+    identity: {
+      ref: `${c.id}//${cls.conceptId}`,
+      bundle: c.id,
+      adapter: layout.adapterId,
+      file: file.relPath,
+    },
+    defaults: executionDefaultsFromFrontmatter(data, {
+      kind: cls.type === "command" ? "command" : "persona",
+      toolsKeys: layout.adapterId === "claude" && cls.type === "command" ? ["allowed-tools", "tools"] : ["tools"],
+    }),
+    ...(extensions ? { extensions } : {}),
+  });
+}
+
 /** Build the concrete `BundleAdapter` from a layout + a `looksLikeRoot` probe (claude/opencode share everything else). */
 export function makeToolDirAdapter(layout: ToolDirLayout, looksLikeRoot: (root: string) => boolean): BundleAdapter {
   return {
@@ -257,6 +305,7 @@ export function makeToolDirAdapter(layout: ToolDirLayout, looksLikeRoot: (root: 
     version: "0.9.0",
     extensions: [".md"],
     recognize: (c, file) => recognizeToolDir(layout, c, file),
+    renderExecutionSource: (c, file) => renderToolDirExecutionSource(layout, c, file),
     validate: (c, changes, ctx) => validateToolDir(layout, c, changes, ctx),
     placeNew: (c, conceptId) => placeNewToolDir(layout, c, conceptId),
     directoryList: () => [CANONICAL_COMMAND_DIR, CANONICAL_AGENT_DIR, CANONICAL_SKILL_DIR],
