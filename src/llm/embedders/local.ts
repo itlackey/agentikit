@@ -68,10 +68,15 @@ function isBatchTensor(v: unknown): v is TransformerBatchTensor {
 // Inert in production; only tests install fakes, via tests/_helpers/seams.ts
 // (which restores them automatically). See docs/architecture/specs/di-seams-plan.md.
 
-export type TransformersLoader = () => Promise<{ pipeline: unknown }>;
+interface TransformersModule {
+  env?: { cacheDir?: string | null };
+  pipeline: unknown;
+}
+
+export type TransformersLoader = () => Promise<TransformersModule>;
 
 const realTransformersLoader: TransformersLoader = () =>
-  import("@huggingface/transformers") as Promise<{ pipeline: unknown }>;
+  import("@huggingface/transformers") as Promise<TransformersModule>;
 
 let transformersLoader: TransformersLoader = realTransformersLoader;
 
@@ -235,6 +240,13 @@ export class LocalEmbedder implements Embedder {
         let pipeline: unknown;
         try {
           const mod = await transformersLoader();
+          // Transformers.js 4.x defaults its filesystem cache underneath the
+          // installed package and no longer derives it from HF_HOME. Point the
+          // public runtime setting at our stable cache explicitly so package
+          // reinstalls and test-sandbox HOME rotation do not re-download the
+          // model. Keep env optional for loader fakes and older compatible
+          // module shapes.
+          if (mod.env) mod.env.cacheDir = process.env.HF_HOME;
           pipeline = mod.pipeline;
         } catch (importError) {
           const msg = importError instanceof Error ? importError.message : String(importError);

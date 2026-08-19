@@ -29,8 +29,8 @@ itself. Its only subsequent edit was one mechanical `AKM_STASH_DIR` →
 | | Count |
 | --- | --- |
 | Findings total | **67** |
-| Fixed | **49** |
-| Still open | **14** |
+| Fixed | **51** |
+| Still open | **12** |
 | Superseded by decision | **4** |
 
 Disposition rules used:
@@ -44,7 +44,7 @@ Disposition rules used:
 
 ## Where the live items now live
 
-The still-open findings are grouped into six themed clusters — one per theme,
+The still-open findings are grouped into five themed clusters — one per theme,
 not one per finding — so live work is visible in the tracker rather than
 buried here. Nothing below should be worked from this file.
 
@@ -55,7 +55,6 @@ buried here. Nothing below should be worked from this file.
 | VALUE | VALUE-16, plus the VALUE-02 and VALUE-17 residuals below | assertions weaker than the test names promise |
 | RUNTIME | RUNTIME-07 (residual) | one remaining scheduler-sensitive suite |
 | ISOLATION | ISOLATION-04, ISOLATION-05 | process-global state with no reset seam |
-| INFRA | INFRA-04, INFRA-07 | gated coverage never runs in CI, and its model cache is not retained |
 
 Two derived items came out of the fixes themselves rather than the original
 findings, and belong with the clusters above:
@@ -160,10 +159,10 @@ findings, and belong with the clusters above:
 | INFRA-01 | fixed | `tests/docker/smoke-test.sh:222-223` uses `akm show scripts/deploy/deploy-app.sh`; no `script:` grammar remains in the file; `7af9e8e3` |
 | INFRA-02 | fixed | `tests/docker/run-docker-tests.sh:134-147` exits 1 when zero variants ran; no `|| true` remains in `tests/docker/smoke-test.sh`; `7af9e8e3` |
 | INFRA-03 | superseded | `Dockerfile.alpine-binary` was deleted rather than wired in — the binary targets glibc and Alpine is musl. Recorded at `docs/architecture/testing/testing-workflow.md:179-183,283-285`; `7af9e8e3` |
-| INFRA-04 | **still open** (reduced) | The `slow-gated-tests` job at `.github/workflows/ci.yml:53-64` closes the property-gate half. CI is still `check` + `slow-gated-tests` + `node-smoke` only: no semantic (`AKM_SEMANTIC_TESTS`), no Docker (`AKM_DOCKER_TESTS`), and `tests/integration/native-scheduler.test.ts:16-23` still requires disposable macOS/Windows runners that no workflow provides |
+| INFRA-04 | fixed | `.github/workflows/gated-ci.yml` supplies stable semantic, Docker, and native-scheduler jobs. They run weekly for drift detection, by exact-SHA manual dispatch, or from the exact commit targeted by a narrow release-candidate tag; the scheduler matrix covers Linux cron, macOS launchd, and Windows Task Scheduler. Contract: `tests/integration/workflow-gated-ci.test.ts`; #784 |
 | INFRA-05 | fixed | `tests/release-check.sh:105-114` runs verify-only `bun run lint` (the same command CI gates on) instead of a mutating `biome check --write`; `026cfb91` |
 | INFRA-06 | fixed | `scripts/test-integration.sh:43-45` promises logs are kept on failure and `:90-92` now delivers — the unconditional in-loop delete is gone, matching the unit runner; `026cfb91` |
-| INFRA-07 | **still open** (reduced) | The doc-path half is fixed (see ORG-09) and `HF_HOME` is now restored (ISOLATION-03). Still open: `tests/integration/semantic-search-e2e.test.ts:291-295` derives `HF_HOME` from `process.env.HOME`, which `tests/_preload.ts:101` points at a per-process sandbox root under `os.tmpdir()` — so unless the caller supplies `HF_HOME`, downloaded models are still not retained between runs |
+| INFRA-07 | fixed | `tests/integration/semantic-search-e2e.test.ts` defaults `HF_HOME` to ignored, repo-local `.ci-cache/huggingface`, outside the preload's disposable `HOME`; CI restores a model/source-identified cache for every gated run, but saves it only from a trusted scheduled default-branch run. The test still restores `HF_HOME` exactly; #784 |
 | INFRA-08 | fixed | Same change as RUNTIME-11 — one 120s policy across `scripts/test-unit.sh:68`, `scripts/test-integration.sh:57`, and every `tests/release-check.sh` step |
 
 ## Confidence

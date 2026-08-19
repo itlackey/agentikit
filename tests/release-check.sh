@@ -101,6 +101,7 @@ validate_workflow_syntax() {
 # Suite" step) which meant the same test could be given three different
 # deadlines depending on which entry point ran it.
 run_step "Workflow Syntax" validate_workflow_syntax
+run_step "Gated CI Contract" bun test --timeout=120000 tests/integration/workflow-gated-ci.test.ts
 run_step "Workflow Release Contract" bun test --timeout=120000 tests/integration/workflow-release.test.ts
 # Verify-only: must match what CI runs via `bun run lint`, not a write pass.
 # `bun run lint` is `bunx biome check src/ tests/ scripts/` (no --write) plus

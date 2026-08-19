@@ -1,0 +1,361 @@
+name: Gated CI
+run-name: Gated CI / ${{ github.event_name == 'schedule' && 'weekly' || github.event_name == 'push' && 'release-candidate' || inputs.gated_suite }} / ${{ inputs.candidate_sha || github.sha }}
+
+# These suites exercise real embeddings, container installs, and host-native
+# schedulers. They are intentionally absent from ordinary push/PR CI: the
+# weekly run detects drift, workflow_dispatch lets a maintainer validate an
+# exact commit after this workflow reaches the default branch, and the narrow
+# tag trigger validates a candidate that contains this workflow before merge.
+on:
+  push:
+    tags:
+      - "gated-ci/candidate-*"
+  schedule:
+    # Avoid the top of the hour, when scheduled Actions traffic is highest.
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: "Full 40-character commit SHA to validate"
+        required: true
+        type: string
+      gated_suite:
+        description: "Gated suite to run (use all for release evidence)"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - semantic
+          - docker
+          - native-scheduler
+
+concurrency:
+  group: gated-ci-${{ inputs.candidate_sha || github.sha }}-${{ inputs.gated_suite || github.event_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-candidate:
+    name: Gated / Resolve Candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.candidate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.candidate_sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - id: candidate
+        name: Resolve and validate the candidate commit
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          REQUESTED_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [[ ! "$REQUESTED_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "candidate_sha must be a full 40-character commit SHA" >&2
+              exit 2
+            fi
+            if [ "${REQUESTED_SHA,,}" != "${actual_sha,,}" ]; then
+              echo "Checked out $actual_sha, not requested candidate $REQUESTED_SHA" >&2
+              exit 1
+            fi
+          elif [ "$EVENT_NAME" = "push" ]; then
+            if [[ ! "$EVENT_REF" =~ ^refs/tags/gated-ci/candidate- ]]; then
+              echo "Candidate pushes must use refs/tags/gated-ci/candidate-*" >&2
+              exit 2
+            fi
+            if [ "${EVENT_SHA,,}" != "${actual_sha,,}" ]; then
+              echo "Checked out $actual_sha, not tagged candidate $EVENT_SHA" >&2
+              exit 1
+            fi
+          fi
+          echo "sha=$actual_sha" >> "$GITHUB_OUTPUT"
+
+  semantic-search:
+    name: Gated / Semantic Search
+    needs: resolve-candidate
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'push' ||
+      inputs.gated_suite == 'all' ||
+      inputs.gated_suite == 'semantic'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      AKM_SEMANTIC_TESTS: "1"
+      # tests/_preload.ts replaces HOME with a disposable per-process sandbox.
+      # Pin HF_HOME to the checked-out workspace so actions/cache can restore it
+      # across runs without weakening the test-isolation harness.
+      HF_HOME: ${{ github.workspace }}/.ci-cache/huggingface
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve-candidate.outputs.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Restore HuggingFace model cache
+        id: hf-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ github.workspace }}/.ci-cache/huggingface
+          key: akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'bun.lock') }}-v2
+          restore-keys: |
+            akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-
+      - name: Run semantic search end to end with real embeddings
+        run: bun test --timeout=120000 tests/integration/semantic-search-e2e.test.ts
+      - name: Save HuggingFace model cache from trusted schedule
+        if: >-
+          success() &&
+          steps.hf-cache.outputs.cache-hit != 'true' &&
+          github.event_name == 'schedule' &&
+          github.ref_name == github.event.repository.default_branch
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ github.workspace }}/.ci-cache/huggingface
+          key: akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'bun.lock') }}-v2
+
+  docker-install:
+    name: Gated / Docker Install
+    needs: resolve-candidate
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'push' ||
+      inputs.gated_suite == 'all' ||
+      inputs.gated_suite == 'docker'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      AKM_DOCKER_TESTS: "1"
+      DOCKER_BUILDKIT: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve-candidate.outputs.sha }}
+          persist-credentials: false
+      - name: Verify Docker daemon
+        run: docker info
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Run the complete Docker install matrix
+        run: bun test --timeout=600000 tests/integration/docker-install.test.ts
+
+  native-scheduler:
+    name: Gated / Native Scheduler / ${{ matrix.platform }}
+    needs: resolve-candidate
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'push' ||
+      inputs.gated_suite == 'all' ||
+      inputs.gated_suite == 'native-scheduler'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux
+            runner: ubuntu-24.04
+            runtime_platform: linux
+          - platform: macOS
+            runner: macos-15
+            runtime_platform: darwin
+          - platform: Windows
+            runner: windows-2022
+            runtime_platform: win32
+    env:
+      AKM_NATIVE_TASK_ID: akm-ci-${{ matrix.runtime_platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+      AKM_NATIVE_NODE_TASK_ID: akm-ci-node-${{ matrix.runtime_platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve-candidate.outputs.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: bun install --frozen-lockfile
+
+      - name: Build and test the Linux cron candidate
+        if: matrix.runtime_platform == 'linux'
+        shell: bash
+        run: |
+          candidate_version="$(node -p "require('./package.json').version")"
+          candidate_arch="$(node -p 'process.arch')"
+          binary="$RUNNER_TEMP/akm-linux-$GITHUB_RUN_ID"
+          bun build ./scripts/akm-standalone.ts \
+            --compile \
+            --external @huggingface/transformers \
+            --outfile "$binary" \
+            --define "AKM_VERSION='$candidate_version'"
+          chmod +x "$binary"
+          env \
+            AKM_STANDALONE_SCHEDULER_TESTS=1 \
+            AKM_STANDALONE_TEST_BIN="$binary" \
+            AKM_CANDIDATE_ARCH="$candidate_arch" \
+            AKM_CANDIDATE_VERSION="$candidate_version" \
+            bun test --timeout=180000 tests/integration/linux-standalone-scheduler.test.ts
+
+      - name: Build and test the macOS launchd candidate
+        if: matrix.runtime_platform == 'darwin'
+        shell: bash
+        run: |
+          candidate_version="$(node -p "require('./package.json').version")"
+          candidate_arch="$(node -p 'process.arch')"
+          binary="$RUNNER_TEMP/akm-darwin-$GITHUB_RUN_ID"
+          gate_dir="$RUNNER_TEMP/akm-native-darwin-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          bun build ./scripts/akm-standalone.ts \
+            --compile \
+            --external @huggingface/transformers \
+            --outfile "$binary" \
+            --define "AKM_VERSION='$candidate_version'"
+          chmod +x "$binary"
+          env \
+            AKM_NATIVE_SCHEDULER_TESTS=1 \
+            AKM_NATIVE_TEST_BIN="$binary" \
+            AKM_CANDIDATE_ARCH="$candidate_arch" \
+            AKM_CANDIDATE_VERSION="$candidate_version" \
+            AKM_NATIVE_HOME="$HOME" \
+            AKM_NATIVE_GATE_DIR="$gate_dir" \
+            bun test --timeout=180000 tests/integration/native-scheduler.test.ts
+
+      - name: Clean up the macOS launchd candidate
+        if: always() && matrix.runtime_platform == 'darwin'
+        shell: bash
+        run: |
+          label="com.akm.task.$AKM_NATIVE_TASK_ID"
+          launchctl bootout "gui/$(id -u)/$label" || true
+          launchctl enable "gui/$(id -u)/$label" || true
+          rm -f "$HOME/Library/LaunchAgents/$label.plist"
+          rm -rf "$RUNNER_TEMP/akm-native-darwin-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+      - name: Build and test the Windows Task Scheduler candidates
+        if: matrix.runtime_platform == 'win32'
+        shell: pwsh
+        run: |
+          $candidateVersion = node -p "require('./package.json').version"
+          if ($LASTEXITCODE -ne 0) { throw "Could not read candidate version" }
+          $binary = Join-Path $env:RUNNER_TEMP "akm-windows-$env:GITHUB_RUN_ID.exe"
+          bun build ./scripts/akm-standalone.ts `
+            --compile `
+            --external '@huggingface/transformers' `
+            --outfile $binary `
+            --define "AKM_VERSION='$candidateVersion'"
+          if ($LASTEXITCODE -ne 0) { throw "Standalone candidate build failed" }
+
+          bun run build
+          if ($LASTEXITCODE -ne 0) { throw "Package candidate build failed" }
+          $packageDir = Join-Path $env:RUNNER_TEMP "akm candidate package $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+          npm pack --ignore-scripts --pack-destination $packageDir
+          if ($LASTEXITCODE -ne 0) { throw "Package candidate pack failed" }
+          $tarballs = @(Get-ChildItem -LiteralPath $packageDir -Filter "*.tgz")
+          if ($tarballs.Count -ne 1) { throw "Expected exactly one package candidate" }
+
+          $installDir = Join-Path $env:RUNNER_TEMP "akm packed npm $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT"
+          $npmCache = Join-Path $installDir "npm cache"
+          New-Item -ItemType Directory -Path $installDir, $npmCache -Force | Out-Null
+          $savedHome = $env:HOME
+          Remove-Item Env:HOME -ErrorAction SilentlyContinue
+          try {
+            $env:npm_config_cache = $npmCache
+            npm install --prefix $installDir --no-audit --no-fund $tarballs[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw "npm candidate install failed" }
+          } finally {
+            if ($null -ne $savedHome) { $env:HOME = $savedHome }
+          }
+
+          $packedBin = Join-Path $installDir "node_modules\.bin\akm.cmd"
+          if (-not (Test-Path -LiteralPath $packedBin)) { throw "Missing packed launcher: $packedBin" }
+          $env:AKM_NATIVE_SCHEDULER_TESTS = "1"
+          $env:AKM_NATIVE_TEST_BIN = $binary
+          $env:AKM_CANDIDATE_ARCH = node -p "process.arch"
+          $env:AKM_CANDIDATE_VERSION = $candidateVersion
+          $env:AKM_NATIVE_HOME = $env:USERPROFILE
+          $env:AKM_NATIVE_GATE_DIR = Join-Path $env:RUNNER_TEMP "akm native win32 $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT"
+          $env:AKM_NATIVE_NODE_BIN = (Get-Command node).Source
+          $env:AKM_NATIVE_NODE_GATE_DIR = Join-Path $env:RUNNER_TEMP "akm native node win32 $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT"
+          $env:AKM_NATIVE_PACKED_BIN = $packedBin
+          bun test --timeout=240000 tests/integration/native-scheduler.test.ts
+          if ($LASTEXITCODE -ne 0) { throw "Native scheduler gate failed" }
+
+      - name: Clean up the Windows Task Scheduler candidates
+        if: always() && matrix.runtime_platform == 'win32'
+        shell: pwsh
+        run: |
+          foreach ($taskName in @($env:AKM_NATIVE_TASK_ID, $env:AKM_NATIVE_NODE_TASK_ID)) {
+            $task = Get-ScheduledTask -TaskPath "\akm\" -TaskName $taskName -ErrorAction SilentlyContinue
+            if ($null -ne $task) {
+              Stop-ScheduledTask -InputObject $task -ErrorAction SilentlyContinue
+              Unregister-ScheduledTask -InputObject $task -Confirm:$false -ErrorAction SilentlyContinue
+            }
+          }
+          foreach ($path in @(
+            (Join-Path $env:RUNNER_TEMP "akm native win32 $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT"),
+            (Join-Path $env:RUNNER_TEMP "akm native node win32 $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT"),
+            (Join-Path $env:RUNNER_TEMP "akm packed npm $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT"),
+            (Join-Path $env:RUNNER_TEMP "akm candidate package $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT")
+          )) {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+  release-candidate-evidence:
+    name: Gated / Release Candidate Evidence
+    needs: [resolve-candidate, semantic-search, docker-install, native-scheduler]
+    if: >-
+      always() &&
+      ((github.event_name == 'workflow_dispatch' && inputs.gated_suite == 'all') ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/gated-ci/candidate-')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Record release-candidate evidence
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.resolve-candidate.outputs.sha }}
+          REQUESTED_SHA: ${{ inputs.candidate_sha || github.sha }}
+          CANDIDATE_REF: ${{ github.ref }}
+          RESOLVE_RESULT: ${{ needs.resolve-candidate.result }}
+          SEMANTIC_RESULT: ${{ needs.semantic-search.result }}
+          DOCKER_RESULT: ${{ needs.docker-install.result }}
+          NATIVE_RESULT: ${{ needs.native-scheduler.result }}
+          RUN_ID: ${{ github.run_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          run_url="https://github.com/$REPOSITORY/actions/runs/$RUN_ID"
+          {
+            echo "## Gated release-candidate evidence"
+            echo
+            echo "- Requested candidate SHA: \`$REQUESTED_SHA\`"
+            echo "- Resolved candidate SHA: \`${CANDIDATE_SHA:-unresolved}\`"
+            echo "- Candidate trigger ref: \`$CANDIDATE_REF\`"
+            echo "- Workflow run: $run_url"
+            echo "- Semantic search: \`$SEMANTIC_RESULT\`"
+            echo "- Docker install: \`$DOCKER_RESULT\`"
+            echo "- Native schedulers (Linux/macOS/Windows): \`$NATIVE_RESULT\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$RESOLVE_RESULT" != "success" ] || \
+             [ "$SEMANTIC_RESULT" != "success" ] || \
+             [ "$DOCKER_RESULT" != "success" ] || \
+             [ "$NATIVE_RESULT" != "success" ]; then
+            echo "One or more release-candidate gates did not succeed; see $run_url" >&2
+            exit 1
+          fi
