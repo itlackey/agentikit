@@ -1,0 +1,404 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+/**
+ * #800 — `improve --dry-run` reports the effective execution plan.
+ *
+ * These tests deliberately exercise the public `akmImprove` boundary. A dry
+ * run must use the same selectors as a live run, while stopping before every
+ * lock, journal, database writer, proposal writer, asset writer, and LLM seam.
+ */
+
+import { Database } from "bun:sqlite";
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { akmImprove } from "../../../../src/commands/improve/improve";
+import type { AkmConfig } from "../../../../src/core/config/config";
+import { saveConfig } from "../../../../src/core/config/config";
+import { appendEvent } from "../../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/improve-types";
+import { getDbPath } from "../../../../src/core/paths";
+import { akmIndex } from "../../../../src/indexer/indexer";
+import type { SessionLogHarness } from "../../../../src/integrations/session-logs/types";
+import { writeSkill } from "../../../_helpers/assets";
+import { withTestImproveLlm } from "../../../_helpers/improve-config";
+import { type Cleanup, withIsolatedAkmStorage, withMockedFetch } from "../../../_helpers/sandbox";
+
+const cleanups: Cleanup[] = [];
+
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0)) cleanup();
+});
+
+function isolatedStorage(): ReturnType<typeof withIsolatedAkmStorage> {
+  const storage = withIsolatedAkmStorage();
+  cleanups.push(storage.cleanup);
+  return storage;
+}
+
+function plannerConfig(args?: {
+  proactive?: Record<string, unknown>;
+  consolidate?: Record<string, unknown>;
+  extract?: Record<string, unknown>;
+  triage?: Record<string, unknown>;
+}): AkmConfig {
+  return withTestImproveLlm({
+    semanticSearchMode: "off",
+    improve: {
+      strategies: {
+        default: {
+          processes: {
+            reflect: { enabled: true, limit: 4 },
+            distill: { enabled: false },
+            consolidate: { enabled: false, ...(args?.consolidate ?? {}) },
+            memoryInference: { enabled: false },
+            graphExtraction: { enabled: false },
+            extract: { enabled: false, ...(args?.extract ?? {}) },
+            validation: { enabled: false },
+            triage: { enabled: false, applyMode: "queue", ...(args?.triage ?? {}) },
+            proactiveMaintenance: { enabled: false, ...(args?.proactive ?? {}) },
+          },
+        },
+      },
+    },
+  } as AkmConfig);
+}
+
+async function indexSkills(stashDir: string, count: number, config: AkmConfig): Promise<void> {
+  for (let i = 0; i < count; i++) writeSkill(stashDir, `skill-${i}`, `Skill ${i} body.`);
+  saveConfig(config);
+  await akmIndex({ stashDir, full: true });
+}
+
+function writeMemory(stashDir: string, name: string): void {
+  const filePath = path.join(stashDir, "memories", `${name}.md`);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `---\ndescription: ${name}\n---\n\nMemory ${name}.\n`, "utf8");
+}
+
+function snapshotTree(root: string): Map<string, string> {
+  const result = new Map<string, string>();
+  if (!fs.existsSync(root)) return result;
+  const visit = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const absolute = path.join(dir, entry.name);
+      const relative = path.relative(root, absolute);
+      if (entry.isDirectory()) {
+        result.set(`${relative}/`, "directory");
+        visit(absolute);
+      } else if (entry.isFile()) {
+        const bytes = fs.readFileSync(absolute);
+        result.set(relative, `${bytes.length}:${createHash("sha256").update(bytes).digest("hex")}`);
+      }
+    }
+  };
+  visit(root);
+  return result;
+}
+
+const okReflect = (ref: string): AkmReflectResult => ({
+  schemaVersion: 2,
+  ok: true,
+  proposal: {
+    id: `p-${ref.replace(/[^a-z0-9]/gi, "-")}`,
+    ref,
+    status: "pending",
+    source: "reflect",
+    createdAt: "2026-08-19T00:00:00.000Z",
+    updatedAt: "2026-08-19T00:00:00.000Z",
+    payload: { content: "# proposal" },
+    changes: [{ path: "", after: "# proposal", op: "update" }],
+  },
+  ref,
+  engine: "test",
+  durationMs: 1,
+});
+
+const okDistill = (ref: string): AkmDistillResult => ({
+  schemaVersion: 1,
+  ok: true,
+  outcome: "queued",
+  inputRef: ref,
+  proposalRef: `lessons/${ref.replaceAll("/", "-")}`,
+});
+
+describe("#800 effective dry-run planner", () => {
+  test("missing index produces an explicit empty read-only snapshot without creating storage", async () => {
+    const storage = isolatedStorage();
+    const config = plannerConfig();
+    writeSkill(storage.stashDir, "unindexed", "This asset intentionally has no index row.");
+    saveConfig(config);
+    const before = snapshotTree(storage.root);
+    const ensureIndexFn = mock(async () => {
+      throw new Error("dry-run invoked index creation");
+    });
+
+    const result = await akmImprove({
+      scope: "skill",
+      stashDir: storage.stashDir,
+      config,
+      dryRun: true,
+      ensureIndexFn,
+    });
+
+    expect(result.plan?.snapshot).toEqual({
+      status: "missing",
+      reason: "index.db is missing; dry-run uses an empty snapshot and does not create it",
+    });
+    expect(result.plan?.candidates).toEqual({ rawInScope: 0, selected: 0, effective: 0 });
+    expect(result.plannedRefs).toEqual([]);
+    expect(ensureIndexFn).not.toHaveBeenCalled();
+    expect(fs.existsSync(getDbPath())).toBe(false);
+    expect(snapshotTree(storage.root)).toEqual(before);
+  });
+
+  test("legacy index schema produces an explicit empty snapshot without migration", async () => {
+    const storage = isolatedStorage();
+    const config = plannerConfig();
+    writeSkill(storage.stashDir, "unindexed", "This asset intentionally has no current index row.");
+    saveConfig(config);
+    const dbPath = getDbPath();
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const legacyDb = new Database(dbPath);
+    legacyDb.exec("CREATE TABLE legacy_entries (id INTEGER PRIMARY KEY, value TEXT)");
+    legacyDb.exec("INSERT INTO legacy_entries(value) VALUES ('preserve-me')");
+    legacyDb.close();
+    const before = snapshotTree(storage.root);
+
+    const result = await akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true });
+
+    expect(result.plan?.snapshot).toEqual({
+      status: "incompatible",
+      reason: "index.db has no entries table; dry-run uses an empty snapshot and does not migrate it",
+    });
+    expect(result.plan?.candidates).toEqual({ rawInScope: 0, selected: 0, effective: 0 });
+    expect(result.plannedRefs).toEqual([]);
+    expect(snapshotTree(storage.root)).toEqual(before);
+  });
+
+  test("reports raw candidates separately from the post-selector, post-limit refs", async () => {
+    const { stashDir } = isolatedStorage();
+    const config = plannerConfig({ proactive: { enabled: true, dueDays: 0, maxPerRun: 3 } });
+    await indexSkills(stashDir, 5, config);
+
+    const result = await akmImprove({ scope: "skill", stashDir, config, dryRun: true, limit: 2 });
+
+    expect(result.plannedRefs).toHaveLength(2);
+    expect(result.plan).toMatchObject({
+      mode: "estimate",
+      dispatch: false,
+      candidates: {
+        rawInScope: 5,
+        effective: 2,
+      },
+      limits: {
+        configured: { cli: 2, reflect: 4 },
+        effective: 2,
+      },
+    });
+    expect(result.plan?.effectiveRefs).toHaveLength(2);
+    expect(result.plan?.effectiveRefs.every((entry) => entry.lane === "proactive")).toBe(true);
+    expect(result.plan?.gates.some((gate) => gate.name === "limit" && gate.removed === 1)).toBe(true);
+  });
+
+  test("proactive dry-run reports due population, selected refs, and differs from default", async () => {
+    const { stashDir } = isolatedStorage();
+    const proactiveConfig = plannerConfig({ proactive: { enabled: true, dueDays: 0, maxPerRun: 2 } });
+    await indexSkills(stashDir, 4, proactiveConfig);
+
+    const baseline = await akmImprove({
+      scope: "skill",
+      stashDir,
+      config: plannerConfig(),
+      dryRun: true,
+    });
+    const proactive = await akmImprove({ scope: "skill", stashDir, config: proactiveConfig, dryRun: true });
+
+    expect(baseline.plan?.candidates.rawInScope).toBe(4);
+    expect(baseline.plannedRefs).toEqual([]);
+    expect(proactive.plan?.candidates.rawInScope).toBe(4);
+    expect(proactive.plannedRefs).toHaveLength(2);
+    expect(proactive.proactiveMaintenance).toEqual({
+      dueTotal: 4,
+      neverReflected: 4,
+      selected: 2,
+      selectedRefs: proactive.plannedRefs.map((entry) => entry.ref),
+    });
+    expect(proactive.plan?.proactive).toMatchObject({
+      configured: { dueDays: 0, maxPerRun: 2 },
+      effective: { dueDays: 0, maxPerRun: 2 },
+      candidatePool: 4,
+      dueTotal: 4,
+      neverReflected: 4,
+      selected: 2,
+    });
+  });
+
+  test("dry and live execution expose identical effective refs from the same snapshot", async () => {
+    const { stashDir } = isolatedStorage();
+    const config = plannerConfig({ proactive: { enabled: true, dueDays: 0, maxPerRun: 4 } });
+    await indexSkills(stashDir, 6, config);
+
+    const dry = await akmImprove({ scope: "skill", stashDir, config, dryRun: true, limit: 3 });
+    const live = await akmImprove({
+      scope: "skill",
+      stashDir,
+      config,
+      limit: 3,
+      ensureIndexFn: async () => false,
+      reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
+      reflectFn: async ({ ref }) => okReflect(ref ?? ""),
+      distillFn: async ({ ref }) => okDistill(ref ?? ""),
+    });
+
+    expect(dry.plannedRefs).toEqual(live.plannedRefs);
+    expect(dry.plan?.effectiveRefs).toEqual(live.plan?.effectiveRefs);
+  });
+
+  test("consolidation preview reports the real pool, gates, and chunk estimate without dispatch", async () => {
+    const { stashDir } = isolatedStorage();
+    const config = plannerConfig({
+      consolidate: { enabled: true, minPoolSize: 3, limit: 4, maxChunkSize: 2 },
+    });
+    for (let i = 0; i < 5; i++) writeMemory(stashDir, `memory-${i}`);
+    saveConfig(config);
+    await akmIndex({ stashDir, full: true });
+
+    let modelCalls = 0;
+    const result = await withMockedFetch(
+      () => akmImprove({ scope: "memory", stashDir, config, dryRun: true }),
+      async () => {
+        modelCalls += 1;
+        throw new Error("dry-run dispatched an LLM request");
+      },
+    );
+
+    expect(modelCalls).toBe(0);
+    expect(result.plan?.consolidation).toMatchObject({
+      configured: { enabled: true, minPoolSize: 3, limit: 4, maxChunkSize: 2 },
+      effective: { enabled: true, minPoolSize: 3, limit: 4, chunkSize: 2 },
+      poolSize: 5,
+      candidatePoolSize: 4,
+      gates: {
+        profile: { passed: true },
+        minimumPool: { passed: true },
+        delta: { passed: true },
+      },
+      wouldRun: true,
+      estimatedChunks: 2,
+    });
+    expect(result.plan?.stages.find((stage) => stage.name === "consolidation")).toMatchObject({
+      wouldRun: true,
+    });
+  });
+
+  test("extract preview evaluates the same min-new-sessions gate without dispatch", async () => {
+    const { stashDir } = isolatedStorage();
+    const config = plannerConfig({ extract: { enabled: true, minNewSessions: 3 } });
+    await indexSkills(stashDir, 1, config);
+    let readCalls = 0;
+    const harness: SessionLogHarness = {
+      name: "fake",
+      isAvailable: () => true,
+      listSessions: () => [
+        {
+          harness: "fake",
+          sessionId: "new-session",
+          filePath: "/dev/null/new-session",
+          endedAt: Date.now(),
+        },
+      ],
+      readEvents: () => [],
+      readSession: () => {
+        readCalls += 1;
+        throw new Error("dry-run dispatched extraction");
+      },
+    };
+    const dataRoot = process.env.AKM_DATA_DIR ?? path.join(stashDir, ".missing-data");
+    const beforeData = snapshotTree(dataRoot);
+
+    const result = await akmImprove({
+      scope: "skill",
+      stashDir,
+      config,
+      dryRun: true,
+      extractHarnesses: [harness],
+    });
+
+    expect(readCalls).toBe(0);
+    expect(snapshotTree(dataRoot)).toEqual(beforeData);
+    expect(result.plan?.stages.find((stage) => stage.name === "extract")).toEqual({
+      name: "extract",
+      wouldRun: false,
+      reason: "1 new sessions is below minNewSessions 3",
+    });
+  });
+
+  test("dry planning with existing state performs no writes, locks, events, proposals, assets, or LLM calls", async () => {
+    const storage = isolatedStorage();
+    const { stashDir } = storage;
+    const config = plannerConfig({
+      proactive: { enabled: true, dueDays: 0, maxPerRun: 2 },
+      triage: { enabled: true, applyMode: "promote", maxAcceptsPerRun: 7, maxDiffLines: 20 },
+    });
+    await indexSkills(stashDir, 3, config);
+    appendEvent({ eventType: "feedback", ref: "skills/skill-0", metadata: { signal: "positive" } });
+
+    const roots = {
+      stash: stashDir,
+      config: path.dirname(process.env.AKM_CONFIG_DIR ?? path.join(stashDir, ".missing-config")),
+      data: process.env.AKM_DATA_DIR ?? path.join(stashDir, ".missing-data"),
+      state: process.env.AKM_STATE_DIR ?? path.join(stashDir, ".missing-state"),
+      cache: process.env.AKM_CACHE_DIR ?? path.join(stashDir, ".missing-cache"),
+    };
+    const before = Object.fromEntries(Object.entries(roots).map(([name, root]) => [name, snapshotTree(root)]));
+    const reflectFn = mock(async () => {
+      throw new Error("dry-run invoked reflect");
+    });
+    const drainProposalsFn = mock(async () => {
+      throw new Error("dry-run invoked proposal triage");
+    });
+    let modelCalls = 0;
+
+    const result = await withMockedFetch(
+      () =>
+        akmImprove({
+          scope: "skill",
+          stashDir,
+          config,
+          dryRun: true,
+          reflectFn,
+          drainProposalsFn,
+          ensureIndexFn: mock(async () => {
+            throw new Error("dry-run invoked index writer");
+          }),
+        }),
+      async () => {
+        modelCalls += 1;
+        throw new Error("dry-run dispatched an LLM request");
+      },
+    );
+
+    expect(result.plan).toMatchObject({
+      mode: "estimate",
+      dispatch: false,
+      triage: {
+        enabled: true,
+        configuredMode: "promote",
+        mode: "queue",
+        maxAcceptsPerRun: 7,
+        maxDiffLines: 20,
+      },
+    });
+    expect(reflectFn).not.toHaveBeenCalled();
+    expect(drainProposalsFn).not.toHaveBeenCalled();
+    expect(modelCalls).toBe(0);
+    expect(fs.existsSync(path.join(stashDir, ".akm", "improve.lock"))).toBe(false);
+    for (const [name, root] of Object.entries(roots)) {
+      expect(snapshotTree(root), `${name} changed during dry planning`).toEqual(before[name]!);
+    }
+  });
+});

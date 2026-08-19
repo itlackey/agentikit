@@ -80,6 +80,19 @@ Selection defaults to assets with recent feedback signals first, with a
 retrieval-count fallback for high-traffic assets that have no feedback yet.
 Full flag reference: [CLI Reference — improve](../reference/cli.md#improve).
 
+`--dry-run` is an execution-plan preview, not a raw scope listing. Its
+`plannedRefs` are the final ranked refs after validation, signal, disk, and
+limit gates. The accompanying `plan` keeps the pre-gate `rawInScope` count,
+per-gate removal counts and reasons, configured versus effective limits, and
+the selection lane for each final ref. `plan.snapshot` explains whether the
+existing index was readable; a missing or incompatible index produces an
+explicit empty snapshot without creating or migrating it. The plan also reports proactive-maintenance
+due statistics, consolidation pool gates and chunk estimate, extract/graph/
+memory-inference stage decisions, and proposal-triage mode and caps. The plan
+has `mode: "estimate"` and `dispatch: false`; producing it does not acquire the
+improve lock, invoke an LLM, create state, or write proposals, events, assets,
+cache files, or result records.
+
 **Example: auto-generate lessons from usage patterns**
 
 ```sh

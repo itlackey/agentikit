@@ -178,6 +178,43 @@ export interface OutcomeUpdateResult {
   isNewRow: boolean;
 }
 
+export interface OutcomeProjection extends OutcomeUpdateResult {
+  expectedRetrievalRate: number;
+}
+
+/**
+ * Project the next outcome values without touching storage. Dry planning and
+ * the live writer both call this function, so rank inputs cannot drift merely
+ * because one caller persists the projection and the other does not.
+ */
+export function projectAssetOutcome(
+  existing: AssetOutcomeRow | undefined,
+  inputs: OutcomeUpdateInputs,
+): OutcomeProjection {
+  const valence = inputs.valence ?? 0;
+  const isNewRow = existing === undefined;
+
+  let outcomeScore: number;
+  let expectedRetrievalRate: number;
+
+  if (isNewRow) {
+    const seedScore = Math.min(WARM_START_CAP, Math.max(0, inputs.utilityScore ?? 0));
+    outcomeScore = seedScore;
+    expectedRetrievalRate = 0;
+  } else {
+    const retrievalDelta = Math.max(0, inputs.currentRetrievalCount - existing.retrieval_count);
+    const expectedDelta = existing.expected_retrieval_rate;
+    const predictionError = retrievalDelta - expectedDelta;
+    expectedRetrievalRate =
+      OUTCOME_EMA_ALPHA * retrievalDelta + (1 - OUTCOME_EMA_ALPHA) * existing.expected_retrieval_rate;
+    const rawUpdate = predictionError + valence;
+    const newScore = OUTCOME_EMA_ALPHA * rawUpdate + (1 - OUTCOME_EMA_ALPHA) * existing.outcome_score;
+    outcomeScore = Math.min(OUTCOME_SCORE_MAX, Math.max(OUTCOME_SCORE_MIN, newScore));
+  }
+
+  return { outcomeScore, expectedRetrievalRate, isNewRow };
+}
+
 /**
  * Upsert one asset's outcome row.
  *
@@ -189,57 +226,8 @@ export interface OutcomeUpdateResult {
  */
 export function updateAssetOutcome(db: Database, inputs: OutcomeUpdateInputs): OutcomeUpdateResult {
   const now = inputs.now ?? Date.now();
-  const valence = inputs.valence ?? 0;
-
-  // Fetch existing row (or undefined for first insert).
   const existing = getAssetOutcome(db, inputs.ref);
-  const isNewRow = existing === undefined;
-
-  let outcomeScore: number;
-  let expectedRetrievalRate: number;
-
-  if (isNewRow) {
-    // ── Warm-start ─────────────────────────────────────────────────────────
-    // Seed from utility EMA, clipped to [0, WARM_START_CAP].
-    // The warm-start is a non-negative seed; the first real differential update
-    // will adjust it up or down from there.
-    const seedScore = Math.min(WARM_START_CAP, Math.max(0, inputs.utilityScore ?? 0));
-    outcomeScore = seedScore;
-    // Seed expected_retrieval_rate = 0 (no delta history yet).
-    // Seeding with currentRetrievalCount would produce a large spurious negative
-    // prediction error on the first real cycle (delta ≪ cumulative count).
-    expectedRetrievalRate = 0;
-  } else {
-    // ── Differential update ────────────────────────────────────────────────
-    //
-    // retrieval_delta = current − stored (non-negative — we never go backwards)
-    const retrievalDelta = Math.max(0, inputs.currentRetrievalCount - existing.retrieval_count);
-
-    // Differential prediction-error term:
-    // outcome = (retrieval_delta − expected_delta) + valence
-    //
-    // Prediction error is computed against the PRIOR stored EMA (before folding
-    // in this cycle's observation), so the current delta cannot leak into its own
-    // expectation. Negative values are intentional — they signal below-average cycles.
-    const expectedDelta = existing.expected_retrieval_rate;
-    const predictionError = retrievalDelta - expectedDelta;
-
-    // Advance the EMA over the OBSERVED delta (not the cumulative count).
-    // expected' = α × delta + (1−α) × prior_expected
-    expectedRetrievalRate =
-      OUTCOME_EMA_ALPHA * retrievalDelta + (1 - OUTCOME_EMA_ALPHA) * existing.expected_retrieval_rate;
-
-    // Running sum (EMA approach): new score = α × update + (1−α) × old
-    // so the score tracks the moving signal, not the cumulative sum.
-    const rawUpdate = predictionError + valence;
-    const newScore = OUTCOME_EMA_ALPHA * rawUpdate + (1 - OUTCOME_EMA_ALPHA) * existing.outcome_score;
-
-    // Clip to [OUTCOME_SCORE_MIN, OUTCOME_SCORE_MAX] — the ceiling is the RPE
-    // saturation analog (G2): without it, long-lived popular assets accumulate
-    // unbounded positive mass and would dominate rank_score when outcome weight
-    // is enabled.
-    outcomeScore = Math.min(OUTCOME_SCORE_MAX, Math.max(OUTCOME_SCORE_MIN, newScore));
-  }
+  const projection = projectAssetOutcome(existing, inputs);
 
   // Upsert the row. See `upsertAssetOutcome` in
   // storage/repositories/outcome-repository.ts (#672 part 2) for the SQL text
@@ -249,14 +237,14 @@ export function updateAssetOutcome(db: Database, inputs: OutcomeUpdateInputs): O
     ref: inputs.ref,
     lastRetrievedAt: inputs.lastRetrievedAt,
     retrievalCount: inputs.currentRetrievalCount,
-    expectedRetrievalRate,
+    expectedRetrievalRate: projection.expectedRetrievalRate,
     negativeFeedbackCount: inputs.negativeFeedbackCount,
     acceptedChangeCount: inputs.acceptedChangeCount,
-    outcomeScore,
+    outcomeScore: projection.outcomeScore,
     updatedAt: now,
   });
 
-  return { outcomeScore, isNewRow };
+  return { outcomeScore: projection.outcomeScore, isNewRow: projection.isNewRow };
 }
 
 // ── Reader ────────────────────────────────────────────────────────────────────

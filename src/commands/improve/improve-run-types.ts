@@ -50,6 +50,8 @@ import type {
   ConsolidateResult,
   ImproveActionResult,
   ImproveEligibleRef,
+  ImproveExecutionPlan,
+  ImprovePlanGate,
 } from "../../core/improve-types";
 import type { ResolvedWriteTarget } from "../../core/write-source";
 import type { EnsureIndexOptions } from "../../indexer/ensure-index";
@@ -222,7 +224,14 @@ export interface ImprovePreparationResult {
    * Layer 2 proactive-maintenance selector outcome, when the process ran.
    * Undefined when the process is disabled or the run is ref-scoped.
    */
-  proactiveMaintenance?: { selected: number; dueTotal: number; neverReflected: number };
+  proactiveMaintenance?: { selected: number; dueTotal: number; neverReflected: number; selectedRefs: string[] };
+  /** Read-only selector data projected into the public dry/live plan. */
+  planning: {
+    gates: ImprovePlanGate[];
+    proactive?: ImproveExecutionPlan["proactive"];
+    consolidation: ImproveExecutionPlan["consolidation"];
+    extract: { wouldRun: boolean; reason: string };
+  };
 }
 
 export interface ImproveLoopResult {
@@ -269,6 +278,8 @@ export interface ConsolidationPassResult {
   consolidation: ConsolidateResult;
   /** True iff consolidation actually processed memories this run (drives graph reindex). */
   consolidationRan: boolean;
+  /** Pre-dispatch gate/pool/chunk projection shared with dry-run. */
+  plan: ImproveExecutionPlan["consolidation"];
 }
 
 /**

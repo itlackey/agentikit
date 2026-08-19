@@ -115,6 +115,29 @@ is why, for example, `proactiveMaintenance` stays off in `default` and
 `reflect-distill`, but a preset that doesn't mention it at all still inherits
 that "off" rather than defaulting to on.
 
+### Dry-run planning boundary
+
+Dry and live improve runs collect the same snapshot and call the same pure
+selectors for signal-delta eligibility, proactive maintenance, salience
+ranking, replay, disk presence, and the final cap. The public schema-v2 result
+projects that snapshot as `plan`: raw in-scope count, each gate's removals,
+configured and effective limits, final ranked refs with lane attribution,
+proactive due statistics, consolidation pool/delta/minimum gates and chunk
+estimate, maintenance-stage decisions, triage mode/caps, and the read-side
+index snapshot status. `plannedRefs` means the effective post-limit work set
+in both modes.
+
+The dry path stops at that projection boundary. It may read indexed assets,
+the filesystem, and an existing `state.db`, but opens state read-only and does
+not create it when absent. It does not acquire the improve lock or write the
+index, state, events, proposals, assets, cache, sync journal, or persisted run
+result, and it never dispatches an LLM. Consolidation pool inspection and the
+extract `minNewSessions` gate are shared zero-LLM inspectors; live execution
+consumes their decisions instead of independently rebuilding them. A missing
+index or one without the current `entries` table yields an explicit empty
+`plan.snapshot` (`missing` or `incompatible`) rather than creating or migrating
+the database.
+
 ### The autonomy gate
 
 `akm improve` runs by default and is review-first: reflect, distill, extract

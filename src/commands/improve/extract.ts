@@ -1650,6 +1650,11 @@ export interface CountNewExtractCandidatesOptions {
   stateDbPath?: string;
   /** Active improve profile, so the discovery window honors `--profile`. */
   improveProfile?: ImproveProfileConfig;
+  /**
+   * Planning-only mode. Never creates state.db; when no borrowed handle is
+   * available, every in-window session is conservatively treated as new.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -1688,9 +1693,18 @@ export function countNewExtractCandidates(_config: AkmConfig, options: CountNewE
         resolveDefaultSinceMs(harness.name, Date.now(), {
           ...(options.stateDb ? { stateDb: options.stateDb } : {}),
           ...(options.stateDbPath ? { stateDbPath: options.stateDbPath } : {}),
+          ...(options.readOnly && !options.stateDb ? { skipTracking: true } : {}),
         });
       const candidates = harness.listSessions({ sinceMs });
       if (candidates.length === 0) continue;
+
+      // A dry planner with no pre-existing state database has no seen-session
+      // ledger by definition. Count the discovered sessions directly instead
+      // of creating state.db merely to prove that it is empty.
+      if (options.readOnly && !stateDb) {
+        total += candidates.length;
+        continue;
+      }
 
       let seenMap = new Map<string, ExtractedSessionRow>();
       try {

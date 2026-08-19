@@ -24,7 +24,8 @@
  * - `ts` is ISO-8601 (UTC, millisecond precision).
  */
 
-import type { Database } from "../storage/database";
+import fs from "node:fs";
+import { type Database, openDatabase } from "../storage/database";
 import { insertEvent, readStateEvents } from "../storage/repositories/events-repository";
 import { rethrowIfTestIsolationError } from "./errors";
 import type { EventEnvelope } from "./events-types";
@@ -195,6 +196,12 @@ export interface EventsContext {
    * NOTE: `dbPath` is ignored when `db` is provided.
    */
   db?: Database;
+  /**
+   * Read-only planning boundary. Event writes are suppressed and reads never
+   * create or migrate state.db. When `db` is absent, a missing file is an empty
+   * snapshot.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -231,6 +238,7 @@ function resolveNow(ctx?: EventsContext): () => number {
  * connection.
  */
 export function appendEvent(input: AppendEventInput, ctx?: EventsContext): void {
+  if (ctx?.readOnly) return;
   const now = resolveNow(ctx);
   const ts = new Date(now()).toISOString();
   const row = { eventType: input.eventType, ts, ref: input.ref, metadata: input.metadata };
@@ -334,8 +342,18 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
   const dbPath = resolveDbPath(ctx);
 
   let db: import("../storage/database").Database | undefined;
+  let ownsDb = false;
   try {
-    db = openStateDatabase(dbPath);
+    if (ctx?.db) {
+      db = ctx.db;
+    } else if (ctx?.readOnly) {
+      if (!fs.existsSync(dbPath)) return { events: [], nextOffset: 0 };
+      db = openDatabase(dbPath, { readonly: true, create: false });
+      ownsDb = true;
+    } else {
+      db = openStateDatabase(dbPath);
+      ownsDb = true;
+    }
   } catch (err) {
     // Never mask the bun-test isolation guard as "no events".
     rethrowIfTestIsolationError(err);
@@ -389,6 +407,6 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
 
     return { events, nextOffset: nextId };
   } finally {
-    db.close();
+    if (ownsDb) db.close();
   }
 }

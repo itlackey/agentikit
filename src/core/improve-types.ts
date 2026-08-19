@@ -44,6 +44,89 @@ export interface ImproveEligibleRef {
   eligibilitySource?: EligibilitySource;
 }
 
+/** Operator-facing lane reported by the improve execution planner. */
+export type ImprovePlanLane = EligibilitySource | "distill-only";
+
+export interface ImprovePlanGate {
+  name: "profile" | "cleanup" | "validation" | "signal" | "disk" | "limit";
+  removed: number;
+  reason: string;
+}
+
+/** Read-side index boundary used to build an improve plan. */
+export interface ImproveIndexSnapshot {
+  status: "ready" | "missing" | "incompatible" | "unknown";
+  reason: string;
+}
+
+export interface ImproveExecutionPlan {
+  /** A plan is an estimate until the live loop dispatches it. */
+  mode: "estimate" | "execution";
+  /** Always false for dry-run; true only on a live result. */
+  dispatch: boolean;
+  /** Whether the existing index could be queried without creating or migrating it. */
+  snapshot: ImproveIndexSnapshot;
+  candidates: {
+    /** Every in-scope ref before profile/process gates. */
+    rawInScope: number;
+    /** Refs surviving selectors and disk checks, before the global limit. */
+    selected: number;
+    /** Final ranked refs the improve loop is allowed to dispatch. */
+    effective: number;
+  };
+  limits: {
+    /** Authored values, kept separate so precedence is visible. */
+    configured: { cli?: number; profile?: number; reflect?: number };
+    /** Single cap resolved from CLI -> reflect process -> profile. */
+    effective?: number;
+  };
+  gates: ImprovePlanGate[];
+  effectiveRefs: Array<{ ref: string; lane: ImprovePlanLane; reason: ImproveEligibleRef["reason"] }>;
+  proactive?: {
+    configured: { dueDays?: number; maxPerRun?: number; limit?: number };
+    effective: { dueDays: number; maxPerRun: number };
+    candidatePool: number;
+    dueTotal: number;
+    neverReflected: number;
+    selected: number;
+    selectedRefs: string[];
+  };
+  consolidation: {
+    configured: {
+      enabled?: boolean;
+      minPoolSize?: number;
+      limit?: number;
+      maxChunkSize?: number;
+      incrementalSince?: string;
+    };
+    effective: { enabled: boolean; minPoolSize: number; limit?: number; chunkSize: number };
+    poolSize: number;
+    candidatePoolSize: number;
+    gates: {
+      profile: { passed: boolean; reason: string };
+      minimumPool: { passed: boolean; reason: string };
+      delta: { passed: boolean; reason: string };
+    };
+    wouldRun: boolean;
+    reason: string;
+    estimatedChunks: number;
+  };
+  stages: Array<{
+    name: "consolidation" | "extract" | "graph-extraction" | "memory-inference";
+    wouldRun: boolean;
+    reason: string;
+  }>;
+  triage: {
+    enabled: boolean;
+    /** Authored mode before autonomy/config resolution. */
+    configuredMode: "queue" | "promote";
+    /** Effective mode the live pre-pass will execute. */
+    mode: "queue" | "promote";
+    maxAcceptsPerRun: number;
+    maxDiffLines?: number;
+  };
+}
+
 /**
  * The mode discriminator on every {@link ImproveActionResult}. Named so the two
  * audit-counter switches (`computeImproveRunMetrics` in `state-db.ts` and
@@ -528,6 +611,8 @@ export interface AkmImproveResult {
   };
   memoryCleanup?: ImproveMemoryCleanupResult;
   plannedRefs: ImproveEligibleRef[];
+  /** Effective planner projection shared by dry-run preview and live execution. */
+  plan?: ImproveExecutionPlan;
   /**
    * Refs the planner considered but excluded because every per-ref pass on
    * the active profile (reflect + distill) would refuse them. Additive
@@ -636,7 +721,7 @@ export interface AkmImproveResult {
    * `maxPerRun`); `dueTotal` is the full due pool before the bound;
    * `neverReflected` is the subset of the due pool never previously reflected.
    */
-  proactiveMaintenance?: { selected: number; dueTotal: number; neverReflected: number };
+  proactiveMaintenance?: { selected: number; dueTotal: number; neverReflected: number; selectedRefs: string[] };
   /**
    * R5 — the collapse/churn detector's cycle snapshot (mirrors one
    * improve_cycle_metrics row), present when this run qualified (consolidate

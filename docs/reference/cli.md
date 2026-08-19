@@ -1983,6 +1983,16 @@ Selection behavior defaults to recent feedback signals first, with a
 zero-feedback retrieval fallback for high-traffic refs. Use
 `--require-feedback-signal` to disable retrieval fallback for the run.
 
+For dry runs, `plannedRefs` is the effective post-limit work set, not every
+ref in the requested scope. The `plan` object preserves both views: raw scope
+size and per-gate removals, configured and effective caps, final ranked refs
+and their selection lanes, proactive and consolidation statistics, stage
+decisions, triage mode/caps, and `snapshot.status`/`snapshot.reason` for the
+read-side index boundary. A missing or incompatible index is an explicit empty
+snapshot and is not created or migrated. `plan.mode` is `estimate` and
+`plan.dispatch` is `false`; live JSON results use the same projection with
+`mode: "execution"`.
+
 When reinforced facts need promotion, `knowledge` is the higher-authority
 destination than `memory`. The deterministic search ranking also prefers
 `knowledge` over `memory` hits, including inferred `.derived` memories, when

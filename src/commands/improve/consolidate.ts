@@ -24,7 +24,11 @@ import { cosineSimilarity, embedBatch, resolveEmbeddingModelId } from "../../llm
 import { callStructured } from "../../llm/structured-call";
 import type { Database } from "../../storage/database";
 import { getBodyEmbeddings, upsertBodyEmbeddings } from "../../storage/repositories/embeddings-repository";
-import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
+import {
+  closeDatabase,
+  openExistingDatabase,
+  openReadonlyExistingDatabase,
+} from "../../storage/repositories/index-connection";
 import { findEntryIdByRef, getAllEntries, getEntryById } from "../../storage/repositories/index-entries-repository";
 import type { DbIndexedEntry } from "../../storage/repositories/index-entry-types";
 import { getNeighborsByEntryId } from "../../storage/repositories/index-vec-repository";
@@ -716,6 +720,73 @@ type NarrowPoolResult =
       dedupPoolSize: number;
     };
 
+export interface ConsolidationPoolSnapshot {
+  /** Eligible on-disk memories before incremental narrowing and the limit. */
+  poolSize: number;
+  /** Pool after incremental narrowing and the configured limit. */
+  candidatePoolSize: number;
+  /** Pool after incremental narrowing but before the configured limit. */
+  dedupPoolSize: number;
+  memories: MemoryEntry[];
+}
+
+/**
+ * Read and narrow the exact pool the live pass consumes, without embedding,
+ * LLM, proposal, event, or asset writes. Used by both preview and execution.
+ */
+export function inspectConsolidationPool(
+  opts: AkmConsolidateOptions,
+  stashDir: string,
+  warnings: string[],
+  access?: { readOnly?: boolean },
+): ConsolidationPoolSnapshot {
+  const readOnly = access?.readOnly === true;
+  let memories = loadMemoriesForSource(opts.writeTarget?.source.path, stashDir, warnings, readOnly);
+  const staleCount = memories.filter((memory) => !fs.existsSync(memory.filePath)).length;
+  if (staleCount > 0) {
+    warnings.push(
+      `Pre-flight: filtered ${staleCount} stale DB entr${staleCount === 1 ? "y" : "ies"} (file absent on disk) from memory pool before chunking.`,
+    );
+  }
+  memories = memories.filter((memory) => fs.existsSync(memory.filePath));
+  const poolSize = memories.length;
+
+  if (opts.incrementalSince && memories.length > 0) {
+    memories = narrowToIncrementalCandidates(
+      memories,
+      opts.incrementalSince,
+      warnings,
+      opts.neighborsPerChanged,
+      readOnly,
+    );
+  }
+  const dedupPoolSize = memories.length;
+
+  if (opts.limit === undefined && memories.length > 150) {
+    warnings.push(
+      `Consolidation: pool has ${memories.length} memories and no limit is set. Consider adding a limit to your consolidate config to prevent timeouts on slow LLM endpoints.`,
+    );
+  }
+
+  if (opts.limit !== undefined && memories.length > opts.limit) {
+    const mtimeOf = (memory: MemoryEntry): number => {
+      try {
+        return fs.statSync(memory.filePath).mtimeMs;
+      } catch {
+        return 0;
+      }
+    };
+    const mtimeCache = new Map(memories.map((memory) => [memory.filePath, mtimeOf(memory)]));
+    memories = [...memories].sort((a, b) => (mtimeCache.get(a.filePath) ?? 0) - (mtimeCache.get(b.filePath) ?? 0));
+    warnings.push(
+      `Consolidation: pool capped at ${opts.limit} of ${memories.length} memories (limit option, oldest-modified first).`,
+    );
+    memories = memories.slice(0, opts.limit);
+  }
+
+  return { poolSize, candidatePoolSize: memories.length, dedupPoolSize, memories };
+}
+
 /**
  * Pass 1 — narrow the memory pool before any LLM work: drop stale DB entries,
  * apply incremental-since narrowing, and cap to `opts.limit` (oldest-modified
@@ -729,20 +800,8 @@ async function narrowConsolidationPool(
   startMs: number,
   warnings: string[],
 ): Promise<NarrowPoolResult> {
-  let memories = loadMemoriesForSource(opts.writeTarget?.source.path, stashDir, warnings);
-
-  // Pre-flight: filter out stale DB entries whose files no longer exist on
-  // disk. Without this, memories deleted by a prior run (but not yet
-  // reindexed) appear in chunk prompts, causing the LLM to generate plans
-  // against ghost refs and wasting tokens. Filtering here ensures the chunk
-  // pool and memoryByRef are authoritative against the actual filesystem state.
-  const staleCount = memories.filter((m) => !fs.existsSync(m.filePath)).length;
-  if (staleCount > 0) {
-    warnings.push(
-      `Pre-flight: filtered ${staleCount} stale DB entr${staleCount === 1 ? "y" : "ies"} (file absent on disk) from memory pool before chunking.`,
-    );
-  }
-  memories = memories.filter((m) => fs.existsSync(m.filePath));
+  const snapshot = inspectConsolidationPool(opts, stashDir, warnings);
+  const memories = snapshot.memories;
 
   // (The former WS-3b Step 0a homeostatic demotion pass was removed — R4:
   // it was default-off and self-undoing (the next salience recompute
@@ -761,57 +820,7 @@ async function narrowConsolidationPool(
     };
   }
 
-  if (opts.incrementalSince) {
-    memories = narrowToIncrementalCandidates(memories, opts.incrementalSince, warnings, opts.neighborsPerChanged);
-    if (memories.length === 0) {
-      return {
-        done: true,
-        result: makeConsolidateResult({
-          dryRun: opts.dryRun ?? false,
-          target: opts.target ?? stashDir,
-          warnings,
-          durationMs: Date.now() - startMs,
-        }),
-      };
-    }
-  }
-
-  // WS-5 perf telemetry: `dedupPoolSize` = memories entering the LLM pool
-  // (after incremental narrowing, before the limit cap). `llmPoolSize` =
-  // memories actually sent to the LLM. `embedMs/cacheHits/cacheMisses` =
-  // accumulated from clusterMemoriesBySimilarity.
-  const dedupPoolSize = memories.length;
-
-  if (opts.limit === undefined && memories.length > 150) {
-    warnings.push(
-      `Consolidation: pool has ${memories.length} memories and no limit is set. Consider adding a limit to your consolidate config to prevent timeouts on slow LLM endpoints.`,
-    );
-  }
-
-  if (opts.limit !== undefined && memories.length > opts.limit) {
-    // Order oldest-modified-first before capping so the limit selects the
-    // stalest memories rather than a fixed head of the (rowid-ordered) DB
-    // query. Consolidation rewrites surviving files, bumping their mtime, so
-    // processed memories drift to the back of the queue and the cap rotates
-    // across the whole corpus over successive runs instead of revisiting the
-    // same slice every time. Fail-open to 0 (front of queue) when a file can
-    // no longer be stat'd.
-    const mtimeOf = (m: MemoryEntry): number => {
-      try {
-        return fs.statSync(m.filePath).mtimeMs;
-      } catch {
-        return 0;
-      }
-    };
-    const mtimeCache = new Map<string, number>(memories.map((m) => [m.filePath, mtimeOf(m)]));
-    memories = [...memories].sort((a, b) => (mtimeCache.get(a.filePath) ?? 0) - (mtimeCache.get(b.filePath) ?? 0));
-    warnings.push(
-      `Consolidation: pool capped at ${opts.limit} of ${memories.length} memories (limit option, oldest-modified first).`,
-    );
-    memories = memories.slice(0, opts.limit);
-  }
-
-  return { done: false, memories, dedupPoolSize };
+  return { done: false, memories, dedupPoolSize: snapshot.dedupPoolSize };
 }
 
 /**
@@ -1711,6 +1720,7 @@ export function narrowToIncrementalCandidates(
   since: string,
   warnings: string[],
   neighborsPerChanged = 5,
+  readOnly = false,
 ): MemoryEntry[] {
   // Lenient by design: garbage `since` passes through unchanged and the ISO
   // string comparison below then selects nothing (see core/time.ts doc).
@@ -1730,7 +1740,8 @@ export function narrowToIncrementalCandidates(
   const keep = new Set<string>(changed.map((m) => m.name));
   let db: ReturnType<typeof openExistingDatabase> | undefined;
   try {
-    db = openExistingDatabase();
+    db = readOnly ? openReadonlyExistingDatabase() : openExistingDatabase();
+    if (!db) return memories;
     for (const m of changed) {
       const id = findEntryIdByRef(db, conceptIdFromTypeName("memory", m.name));
       if (id === undefined) continue;
@@ -1756,12 +1767,18 @@ export function narrowToIncrementalCandidates(
   return candidates;
 }
 
-function loadMemoriesForSource(source: string | undefined, stashDir: string, warnings: string[]): MemoryEntry[] {
+function loadMemoriesForSource(
+  source: string | undefined,
+  stashDir: string,
+  warnings: string[],
+  readOnly: boolean,
+): MemoryEntry[] {
   // Load from DB first
   let memories: MemoryEntry[] = [];
   let db: ReturnType<typeof openExistingDatabase> | undefined;
   try {
-    db = openExistingDatabase();
+    db = readOnly ? openReadonlyExistingDatabase() : openExistingDatabase();
+    if (!db) throw new Error("index unavailable");
     const entries: DbIndexedEntry[] = getAllEntries(db, "memory");
     memories = entries
       .filter((e) => {

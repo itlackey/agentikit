@@ -97,6 +97,11 @@ describe("#591: planned refs carry a pre-resolved filePath", () => {
     const alphaPath = writeLesson(stash, "alpha");
     const betaPath = writeLesson(stash, "beta");
     await indexStash(stash);
+    // `plannedRefs` is the effective post-selector work set. Give both assets
+    // fresh signal so this test reaches the filePath fast path it owns.
+    for (const ref of ["lessons/alpha", "lessons/beta"]) {
+      appendEvent({ eventType: "feedback", ref: durableRef(ref), metadata: { signal: "positive" } });
+    }
 
     const result = await akmImprove({ stashDir: stash, dryRun: true });
 

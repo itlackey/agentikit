@@ -17,6 +17,7 @@ import type {
   ConsolidateResult,
   ImproveActionResult,
   ImproveEligibleRef,
+  ImproveIndexSnapshot,
   ImproveMemoryCleanupResult,
 } from "../../core/improve-types";
 import { classifyImproveAction, foldDistillSkipped } from "../../core/improve-types";
@@ -29,6 +30,7 @@ import { beginWriteProvenance, relativeWrittenPath, type WriteProvenanceJournal 
 import { resolveWritable, resolveWriteTarget } from "../../core/write-source";
 import { ensureIndex } from "../../indexer/ensure-index";
 import { akmIndex } from "../../indexer/indexer";
+import { collectPendingMemories } from "../../indexer/passes/memory-inference";
 import { resolveEntryContentDir, resolveSourceEntries } from "../../indexer/search/search-source";
 import { collectEngineCredentialValues } from "../../integrations/agent/engine-resolution";
 import { materializeLlmRunnerConnection } from "../../integrations/agent/runner";
@@ -39,6 +41,7 @@ import {
   resolveWritableOverride,
   saveGitStash,
 } from "../../sources/providers/git";
+import { openDatabase } from "../../storage/database";
 import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
 import { getEntryCount } from "../../storage/repositories/index-entries-repository";
 import { type DrainResult, drainProposals } from "../proposal/drain";
@@ -65,11 +68,12 @@ import type {
   ImprovePreparationResult,
   ImproveScope,
 } from "./improve-run-types";
-import { type ResolvedImprovePlan, resolveImprovePlan } from "./improve-strategies";
+import { type ResolvedImprovePlan, resolveImprovePlan, resolveImproveStrategy } from "./improve-strategies";
 import { improveLockPath, MIN_IMPROVE_LOCK_STALE_MS, releaseImproveLock, tryAcquireImproveLock } from "./locks";
 // The cycle loop / post-loop / maintenance stages live in ./loop-stages.
 import { runImproveLoopStage, runImprovePostLoopStage } from "./loop-stages";
 import { analyzeMemoryCleanup, type MemoryCleanupPlan } from "./memory/memory-improve";
+import { buildImproveExecutionPlan } from "./planner";
 // The pre-loop preparation pipeline lives in ./preparation.
 import { runImprovePreparationStage } from "./preparation";
 import { DEFAULT_DUE_DAYS, filterProactiveDue } from "./proactive-maintenance";
@@ -209,12 +213,10 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
   const runJournal = createRunWriteJournal();
 
   const preEnsureCleanupWarnings: string[] = [];
-  // Assigned by runIndexAndCollect() (closure) so TS cannot prove definite
-  // assignment — seed with empty values; the runIndexAndCollect() call below
-  // always overwrites them before any read.
   let plannedRefs: Awaited<ReturnType<typeof collectEligibleRefs>>["plannedRefs"] = [];
   let memorySummary: Awaited<ReturnType<typeof collectEligibleRefs>>["memorySummary"] = { eligible: 0, derived: 0 };
   let strategyFilteredRefs: Awaited<ReturnType<typeof collectEligibleRefs>>["strategyFilteredRefs"] = [];
+  let indexSnapshot: ImproveIndexSnapshot | undefined;
   let memoryCleanupPlan: ReturnType<typeof analyzeMemoryCleanup> | undefined;
   let autonomyGatedDirectLanes: AutonomyLane[] = [];
   let guidance: string | undefined;
@@ -285,13 +287,21 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
     plannedRefs = collected.plannedRefs;
     memorySummary = collected.memorySummary;
     strategyFilteredRefs = collected.strategyFilteredRefs;
+    indexSnapshot = collected.indexSnapshot;
     memoryCleanupPlan = collected.memoryCleanupPlan;
     autonomyGatedDirectLanes = collected.autonomyGatedDirectLanes;
     guidance = collected.guidance;
     preEnsureCleanupWarnings.push(...collected.warnings);
 
     if (options.dryRun) {
-      const result = buildDryRunResult(setup, collected);
+      const result = await runDryPlanningStage({
+        run: setup,
+        collected,
+        resolvedStateDbPath,
+        budgetMs,
+        initialCleanupWarnings: preEnsureCleanupWarnings,
+        signal: budgetAbortController.signal,
+      });
       clearBudgetTimer();
       return result;
     }
@@ -310,15 +320,9 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
   }
 
   try {
-    try {
-      eventsDb = openStateDatabase(resolvedStateDbPath);
-      eventsCtx = { db: eventsDb };
-    } catch (err) {
-      rethrowIfTestIsolationError(err);
-      // If we cannot open state.db up-front, fall back to per-call opens — but
-      // still pinned to the boundary-resolved path, never a live env re-read.
-      eventsCtx = { dbPath: resolvedStateDbPath };
-    }
+    const openedEvents = openImproveEventsContext(resolvedStateDbPath);
+    eventsDb = openedEvents.db;
+    eventsCtx = openedEvents.ctx;
 
     // WI-9.10: construct the run's RunContext here — the first point after
     // run-setup where config/stashDir/eventsCtx/proposalsCtx/sourceRun/dryRun
@@ -345,6 +349,8 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
       memorySummary,
       memoryCleanupPlan,
       strategyFilteredRefs,
+      rawPlannedRefs: plannedRefs,
+      indexSnapshot,
       triageDrain,
       eventsCtx,
     });
@@ -406,6 +412,20 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
     } catch {
       // ignore — DB may already be closed
     }
+  }
+}
+
+/** Open the run-owned state handle while preserving the boundary-pinned fallback. */
+function openImproveEventsContext(dbPath: string): {
+  db?: import("../../storage/database").Database;
+  ctx: EventsContext;
+} {
+  try {
+    const db = openStateDatabase(dbPath);
+    return { db, ctx: { db } };
+  } catch (err) {
+    rethrowIfTestIsolationError(err);
+    return { ctx: { dbPath } };
   }
 }
 
@@ -515,6 +535,7 @@ function resolveImproveRunSetup(options: AkmImproveOptions) {
   // Resolve the improve profile for this run. Profile drives type filtering,
   // process gating, and the default limit value.
   const _earlyConfig = options.config ?? loadConfig();
+  const configuredImproveProfile = resolveImproveStrategy(options.strategy, _earlyConfig).config;
   const resolvedPlan =
     options.resolvedPlan ??
     resolveImprovePlan(options.strategy, _earlyConfig, {
@@ -523,6 +544,14 @@ function resolveImproveRunSetup(options: AkmImproveOptions) {
   const selectedStrategy = resolvedPlan.strategy;
   const improveSensitiveValues = collectEngineCredentialValues(_earlyConfig);
   const improveProfile = selectedStrategy.config;
+  const configuredLimits = {
+    ...(options.limit !== undefined ? { cli: options.limit } : {}),
+    ...(configuredImproveProfile.limit !== undefined ? { profile: configuredImproveProfile.limit } : {}),
+    ...(configuredImproveProfile.processes?.reflect?.limit !== undefined
+      ? { reflect: configuredImproveProfile.processes.reflect.limit }
+      : {}),
+  };
+  const effectiveLimit = options.limit ?? improveProfile?.processes?.reflect?.limit ?? improveProfile.limit;
   const scopedRef = scope.mode === "ref" && scope.value ? parseRefInput(scope.value) : undefined;
   const readSource = options.dryRun
     ? options.writeTarget
@@ -567,7 +596,7 @@ function resolveImproveRunSetup(options: AkmImproveOptions) {
     },
     // Profile-level limit, then process-level reflect.limit as fallback.
     // CLI --limit takes precedence over both.
-    limit: options.limit ?? improveProfile?.processes?.reflect?.limit ?? improveProfile.limit,
+    limit: effectiveLimit,
   };
   let primaryStashDir: string | undefined;
   try {
@@ -612,6 +641,9 @@ function resolveImproveRunSetup(options: AkmImproveOptions) {
     selectedStrategy,
     improveSensitiveValues,
     improveProfile,
+    configuredImproveProfile,
+    configuredLimits,
+    effectiveLimit,
     writeTarget,
     options,
     primaryStashDir,
@@ -695,6 +727,7 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
   plannedRefs: Awaited<ReturnType<typeof collectEligibleRefs>>["plannedRefs"];
   memorySummary: Awaited<ReturnType<typeof collectEligibleRefs>>["memorySummary"];
   strategyFilteredRefs: NonNullable<Awaited<ReturnType<typeof collectEligibleRefs>>["strategyFilteredRefs"]>;
+  indexSnapshot?: ImproveIndexSnapshot;
   memoryCleanupPlan?: ReturnType<typeof analyzeMemoryCleanup>;
   /**
    * Direct lanes that were eligible to run but denied by the autonomy gate.
@@ -712,6 +745,7 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
   let plannedRefs: Awaited<ReturnType<typeof collectEligibleRefs>>["plannedRefs"] = [];
   let memorySummary: Awaited<ReturnType<typeof collectEligibleRefs>>["memorySummary"] = { eligible: 0, derived: 0 };
   let strategyFilteredRefs: Awaited<ReturnType<typeof collectEligibleRefs>>["strategyFilteredRefs"] = [];
+  let indexSnapshot: ImproveIndexSnapshot | undefined;
   // #339 fix: ensureIndex MUST run BEFORE collectEligibleRefs. The eligible-ref
   // query reads the `entries` table; if a DB version upgrade just dropped that
   // table (or the index is otherwise empty), the prior run order silently
@@ -772,6 +806,7 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
     plannedRefs,
     memorySummary,
     strategyFilteredRefs = [],
+    indexSnapshot,
   } = await collectEligibleRefsImpl(scope, options.stashDir, improveProfile, _earlyConfig));
   const cleanupParentRef = memoryCleanupParentRef(scope, options.stashDir);
 
@@ -801,6 +836,7 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
     plannedRefs,
     memorySummary,
     strategyFilteredRefs: strategyFilteredRefs ?? [],
+    indexSnapshot,
     memoryCleanupPlan,
     autonomyGatedDirectLanes,
     guidance,
@@ -828,13 +864,58 @@ export function buildLockSkippedResult(
   };
 }
 
+/** Evaluate the real selectors on read-only state, stopping before every writer boundary. */
+async function runDryPlanningStage(args: {
+  run: ImproveRunSetup;
+  collected: Awaited<ReturnType<typeof indexAndCollect>>;
+  resolvedStateDbPath: string;
+  budgetMs: number;
+  initialCleanupWarnings: string[];
+  signal: AbortSignal;
+}): Promise<AkmImproveResult> {
+  const { run, collected, resolvedStateDbPath, budgetMs, initialCleanupWarnings, signal } = args;
+  let stateDb: import("../../storage/database").Database | undefined;
+  try {
+    if (fs.existsSync(resolvedStateDbPath)) {
+      stateDb = openDatabase(resolvedStateDbPath, { readonly: true, create: false });
+    }
+    const eventsCtx: EventsContext = {
+      ...(stateDb ? { db: stateDb } : { dbPath: resolvedStateDbPath }),
+      readOnly: true,
+    };
+    const preparation = await run.runImprovePreparationStageImpl({
+      scope: run.scope,
+      options: run.options,
+      plannedRefs: collected.plannedRefs,
+      memoryCleanupPlan: collected.memoryCleanupPlan,
+      primaryStashDir: run.primaryStashDir,
+      memorySummary: collected.memorySummary,
+      reindexFn: run.reindexFn,
+      startMs: run.startMs,
+      budgetMs,
+      eventsCtx,
+      initialCleanupWarnings,
+      improveProfile: run.improveProfile,
+      resolvedPlan: run.resolvedPlan,
+      strategyName: run.selectedStrategy.name,
+      budgetSignal: signal,
+      planOnly: true,
+    });
+    return buildDryRunResult(run, collected, preparation);
+  } finally {
+    stateDb?.close();
+  }
+}
+
 /** The P3 dry-run envelope (plan-only early return). Exported for unit tests. */
 export function buildDryRunResult(
   run: ImproveRunSetup,
   collected: Awaited<ReturnType<typeof indexAndCollect>>,
+  preparation?: ImprovePreparationResult,
 ): AkmImproveResult {
   const { selectedStrategy, scope } = run;
   const { guidance, memorySummary, memoryCleanupPlan, plannedRefs, strategyFilteredRefs } = collected;
+  const effectiveRefs = preparation?.loopRefs ?? plannedRefs;
   return {
     schemaVersion: 2,
     ok: true,
@@ -844,9 +925,127 @@ export function buildDryRunResult(
     ...(guidance ? { guidance } : {}),
     memorySummary,
     ...(memoryCleanupPlan ? { memoryCleanup: shapeMemoryCleanup(memoryCleanupPlan) } : {}),
-    plannedRefs,
+    plannedRefs: effectiveRefs,
+    ...(preparation?.planning
+      ? {
+          plan: buildResultExecutionPlan(
+            run,
+            preparation,
+            plannedRefs,
+            strategyFilteredRefs,
+            collected.indexSnapshot,
+            true,
+          ),
+        }
+      : {}),
     ...(strategyFilteredRefs.length > 0 ? { strategyFilteredRefs } : {}),
+    ...(preparation?.proactiveMaintenance ? { proactiveMaintenance: preparation.proactiveMaintenance } : {}),
   };
+}
+
+/** One public plan projection for the dry and live result assemblers. */
+function buildResultExecutionPlan(
+  run: ImproveRunSetup,
+  preparation: ImprovePreparationResult,
+  rawProfileEligibleRefs: readonly ImproveEligibleRef[],
+  strategyFilteredRefs: readonly ImproveEligibleRef[],
+  indexSnapshot: ImproveIndexSnapshot | undefined,
+  dryRun: boolean,
+) {
+  const { improveProfile, configuredImproveProfile, resolvedPlan, configuredLimits, effectiveLimit, scope } = run;
+  const triageConfig = improveProfile.processes?.triage;
+  const configuredTriage = configuredImproveProfile.processes?.triage;
+  const configuredProactive = configuredImproveProfile.processes?.proactiveMaintenance;
+  const configuredConsolidation = configuredImproveProfile.processes?.consolidate;
+  const triageEnabled = scope.mode !== "ref" && resolvedPlan.processes.triage.enabled;
+  const distillOnlySet = new Set(preparation.distillOnlyRefs.map((entry) => entry.ref));
+  const inferenceMinPending = improveProfile.processes?.memoryInference?.minPendingCount;
+  const pendingMemories =
+    run.primaryStashDir && inferenceMinPending !== undefined && inferenceMinPending > 0
+      ? collectPendingMemories(run.primaryStashDir).length
+      : undefined;
+  const memoryInferenceEnabled =
+    resolvedPlan.processes.memoryInference.enabled &&
+    !(pendingMemories !== undefined && inferenceMinPending !== undefined && pendingMemories < inferenceMinPending);
+  const graphExtractionEnabled = resolvedPlan.processes.graphExtraction.enabled && run.primaryStashDir !== undefined;
+  const profileGate = {
+    name: "profile" as const,
+    removed: strategyFilteredRefs.length,
+    reason: "all enabled per-ref processes refuse the asset type",
+  };
+  const proactive = preparation.planning.proactive
+    ? {
+        ...preparation.planning.proactive,
+        configured: {
+          ...(configuredProactive?.dueDays !== undefined ? { dueDays: configuredProactive.dueDays } : {}),
+          ...(configuredProactive?.maxPerRun !== undefined ? { maxPerRun: configuredProactive.maxPerRun } : {}),
+          ...(configuredProactive?.limit !== undefined ? { limit: configuredProactive.limit } : {}),
+        },
+      }
+    : undefined;
+  const consolidation = {
+    ...preparation.planning.consolidation,
+    configured: {
+      ...(configuredConsolidation?.enabled !== undefined ? { enabled: configuredConsolidation.enabled } : {}),
+      ...(configuredConsolidation?.minPoolSize !== undefined
+        ? { minPoolSize: configuredConsolidation.minPoolSize }
+        : {}),
+      ...(configuredConsolidation?.limit !== undefined ? { limit: configuredConsolidation.limit } : {}),
+      ...(configuredConsolidation?.maxChunkSize !== undefined
+        ? { maxChunkSize: configuredConsolidation.maxChunkSize }
+        : {}),
+      ...(configuredConsolidation?.incrementalSince !== undefined
+        ? { incrementalSince: configuredConsolidation.incrementalSince }
+        : {}),
+    },
+  };
+  return buildImproveExecutionPlan({
+    dryRun,
+    snapshot: indexSnapshot ?? {
+      status: "unknown",
+      reason: "the injected selector did not report an index snapshot status",
+    },
+    rawInScope: rawProfileEligibleRefs.length + strategyFilteredRefs.length,
+    selectedRefs: preparation.actionableRefs,
+    effectiveRefs: preparation.loopRefs,
+    distillOnlyRefs: distillOnlySet,
+    configuredLimits,
+    effectiveLimit,
+    gates: [profileGate, ...preparation.planning.gates],
+    ...(proactive ? { proactive } : {}),
+    consolidation,
+    stageConfig: {
+      extract: {
+        enabled: preparation.planning.extract.wouldRun,
+        reason: preparation.planning.extract.reason,
+      },
+      graphExtraction: {
+        enabled: graphExtractionEnabled,
+        reason: !resolvedPlan.processes.graphExtraction.enabled
+          ? "disabled"
+          : graphExtractionEnabled
+            ? improveProfile.processes?.graphExtraction?.fullScan === true
+              ? "enabled for a full-corpus scan"
+              : "enabled for refs touched by this run"
+            : "enabled but no primary source is available",
+      },
+      memoryInference: {
+        enabled: memoryInferenceEnabled,
+        reason: !resolvedPlan.processes.memoryInference.enabled
+          ? "disabled"
+          : !memoryInferenceEnabled
+            ? `${pendingMemories ?? 0} pending memories is below minPendingCount ${inferenceMinPending}`
+            : "enabled; the pass discovers pending memories independently of selected refs",
+      },
+    },
+    triage: {
+      enabled: triageEnabled,
+      configuredMode: configuredTriage?.applyMode ?? "queue",
+      mode: triageConfig?.applyMode ?? "queue",
+      maxAcceptsPerRun: configuredTriage?.maxAcceptsPerRun ?? 25,
+      ...(configuredTriage?.maxDiffLines !== undefined ? { maxDiffLines: configuredTriage.maxDiffLines } : {}),
+    },
+  });
 }
 
 /** The triage drain pre-pass (non-fatal; single-ref scope never drains). */
@@ -1371,10 +1570,21 @@ function finalizeImproveResult(args: {
   memorySummary: { eligible: number; derived: number };
   memoryCleanupPlan?: ReturnType<typeof analyzeMemoryCleanup>;
   strategyFilteredRefs: NonNullable<Awaited<ReturnType<typeof collectEligibleRefs>>["strategyFilteredRefs"]>;
+  rawPlannedRefs: Awaited<ReturnType<typeof collectEligibleRefs>>["plannedRefs"];
+  indexSnapshot?: ImproveIndexSnapshot;
   triageDrain?: DrainResult;
   eventsCtx: EventsContext;
 }): AkmImproveResult {
-  const { guidance, memorySummary, memoryCleanupPlan, strategyFilteredRefs, triageDrain, eventsCtx } = args;
+  const {
+    guidance,
+    memorySummary,
+    memoryCleanupPlan,
+    strategyFilteredRefs,
+    rawPlannedRefs,
+    indexSnapshot,
+    triageDrain,
+    eventsCtx,
+  } = args;
   const { selectedStrategy, scope, options, primaryStashDir, startMs } = args.run;
   const {
     preparation,
@@ -1427,7 +1637,19 @@ function finalizeImproveResult(args: {
           },
         }
       : {}),
-    plannedRefs: preparation.actionableRefs,
+    plannedRefs: preparation.loopRefs,
+    ...(preparation.planning
+      ? {
+          plan: buildResultExecutionPlan(
+            args.run,
+            preparation,
+            rawPlannedRefs,
+            strategyFilteredRefs,
+            indexSnapshot,
+            false,
+          ),
+        }
+      : {}),
     ...(strategyFilteredRefs.length > 0 ? { strategyFilteredRefs } : {}),
     actions: persistedActions,
     ...(distillSkippedAggregate ? { distillSkipped: distillSkippedAggregate } : {}),
