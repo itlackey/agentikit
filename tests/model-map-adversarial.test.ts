@@ -221,6 +221,59 @@ describe("models copy-defaults atomic publication", () => {
     }
   });
 
+  test("does not report failure when one-time stage cleanup fails after no-replace publication", () => {
+    const sandbox = makeRoot("models-link-cleanup");
+    const originalUnlink = fs.unlinkSync.bind(fs);
+    const unlink = spyOn(fs, "unlinkSync");
+    let cleanupFailureInjected = false;
+    try {
+      unlink.mockImplementation(((candidate: fs.PathLike) => {
+        if (!cleanupFailureInjected && String(candidate).startsWith(`${sandbox.target}.copy.`)) {
+          cleanupFailureInjected = true;
+          throw errno("EACCES");
+        }
+        return originalUnlink(candidate);
+      }) as typeof fs.unlinkSync);
+
+      expect(copyDefaultModelMap({ env: sandbox.env })).toEqual({
+        path: sandbox.target,
+        copied: true,
+        overwritten: false,
+      });
+      expect(cleanupFailureInjected).toBe(true);
+      expect(fs.readFileSync(sandbox.target, "utf8")).toBe(readInstalledModelMapText());
+      expect(fs.readdirSync(sandbox.root)).toEqual(["models.json"]);
+    } finally {
+      unlink.mockRestore();
+      fs.rmSync(sandbox.root, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "reports that a directory-fsync failure may follow successful publication",
+    () => {
+      const sandbox = makeRoot("models-directory-fsync");
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const fsync = spyOn(fs, "fsyncSync");
+      let fsyncCalls = 0;
+      try {
+        fsync.mockImplementation(((fd: number) => {
+          fsyncCalls += 1;
+          if (fsyncCalls === 2) throw errno("EIO");
+          return originalFsync(fd);
+        }) as typeof fs.fsyncSync);
+
+        const error = expectConfigError(() => copyDefaultModelMap({ env: sandbox.env }));
+        expect(error.message).toMatch(/durably publish/i);
+        expect(error.hint()).toMatch(/may already exist.*inspect.*before retrying/i);
+        expect(fs.readFileSync(sandbox.target, "utf8")).toBe(readInstalledModelMapText());
+      } finally {
+        fsync.mockRestore();
+        fs.rmSync(sandbox.root, { recursive: true, force: true });
+      }
+    },
+  );
+
   test("wraps expected mkdir, inspect, and publish failures as stable config errors", () => {
     const mkdirSandbox = makeRoot("models-mkdir-error");
     const originalLstat = fs.lstatSync.bind(fs);

@@ -508,11 +508,11 @@ function targetExistsError(target: string, detail: string): UsageError {
   );
 }
 
-function copyIoError(target: string, action: string): ConfigError {
+function copyIoError(target: string, action: string, hint?: string): ConfigError {
   return new ConfigError(
     `Unable to ${action} user models.json at ${target}.`,
     "INVALID_CONFIG_FILE",
-    "Check the configuration directory ownership and permissions, then retry.",
+    hint ?? "Check the configuration directory ownership and permissions, then retry.",
   );
 }
 
@@ -601,7 +601,9 @@ export function copyDefaultModelMap(options: CopyDefaultModelMapOptions = {}): C
         fs.unlinkSync(stage);
         stagePresent = false;
       } catch {
-        throw copyIoError(target, "finalize publication of");
+        // The target was already published atomically. Cleanup is best-effort
+        // from this point forward; `finally` retries without turning a
+        // successful copy into a false failure.
       }
     } else {
       const current = inspectCopyTarget(target);
@@ -617,11 +619,6 @@ export function copyDefaultModelMap(options: CopyDefaultModelMapOptions = {}): C
         throw copyIoError(target, "replace");
       }
     }
-    try {
-      syncCopyDirectory(path.dirname(target));
-    } catch {
-      throw copyIoError(target, "durably publish");
-    }
   } finally {
     if (stagePresent) {
       try {
@@ -630,6 +627,15 @@ export function copyDefaultModelMap(options: CopyDefaultModelMapOptions = {}): C
         // Best-effort cleanup; the target was never published from this path.
       }
     }
+  }
+  try {
+    syncCopyDirectory(path.dirname(target));
+  } catch {
+    throw copyIoError(
+      target,
+      "durably publish",
+      `The target may already exist at ${target}; inspect it before retrying because directory durability could not be confirmed.`,
+    );
   }
   return { path: target, copied: true as const, overwritten: existing !== undefined };
 }
