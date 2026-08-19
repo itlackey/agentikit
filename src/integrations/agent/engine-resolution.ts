@@ -276,6 +276,7 @@ function lowerAgentEngine(name: string, engine: AgentEngineConfig, config: Engin
   const profile: AgentProfile = {
     name,
     platform,
+    personaChannel: sdk ? "native" : (harness.agentBuilder?.personaChannel ?? "prompt"),
     bin: engine.bin ?? builtin?.bin ?? (sdk ? "opencode" : platform),
     args: engine.args ?? builtin?.args ?? [],
     stdio: "captured",

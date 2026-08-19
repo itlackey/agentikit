@@ -18,6 +18,9 @@ interface UnsupportedTemplateConstruct {
 }
 
 const UNSUPPORTED_TEMPLATE_CONSTRUCTS: readonly UnsupportedTemplateConstruct[] = Object.freeze([
+  { label: "$ARGUMENTS[N]", pattern: /\$ARGUMENTS\s*\[/u },
+  { label: "!`...`", pattern: /!`/u },
+  { label: "@file", pattern: /(?<![A-Za-z0-9._%+-])@(?:\.{0,2}\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*/u },
   { label: "$" + "{...}", pattern: /\$\{/u },
   { label: "$(...)", pattern: /\$\(/u },
   { label: "$N", pattern: /\$\d/u },
@@ -43,10 +46,15 @@ export function validatePortableCommandTemplate(template: string, source: string
   if (typeof template !== "string") throw new TypeError("command template must be a string");
   if (typeof source !== "string" || source.length === 0) throw new TypeError("command source must be a string");
 
+  // Check native extensions of the portable spelling before masking the one
+  // supported token. AKM never interprets indexed native placeholders.
+  const indexedArguments = UNSUPPORTED_TEMPLATE_CONSTRUCTS[0];
+  if (indexedArguments?.pattern.test(template)) throw unsupportedTemplate(source, indexedArguments.label);
+
   // Mask only the exact portable token. Everything else remains visible to the
   // unsupported-construct detectors, including `$ARGUMENTS_SUFFIX`.
   const portableMasked = template.replace(/\$ARGUMENTS(?![A-Za-z0-9_])/gu, "");
-  for (const construct of UNSUPPORTED_TEMPLATE_CONSTRUCTS) {
+  for (const construct of UNSUPPORTED_TEMPLATE_CONSTRUCTS.slice(1)) {
     if (construct.pattern.test(portableMasked)) throw unsupportedTemplate(source, construct.label);
   }
 }

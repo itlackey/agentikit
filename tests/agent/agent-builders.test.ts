@@ -322,6 +322,7 @@ describe("getCommandBuilder — platform routing", () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const myBuilder: AgentCommandBuilder = {
       platform: "my-platform",
+      personaChannel: "prompt",
       build(_profile, req) {
         return { argv: ["my-cli", req.prompt] };
       },
@@ -335,6 +336,7 @@ describe("getCommandBuilder — platform routing", () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const myBuilder: AgentCommandBuilder = {
       platform: "my-platform",
+      personaChannel: "prompt",
       build(_profile, req) {
         return { argv: ["my-cli", req.prompt] };
       },

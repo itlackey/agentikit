@@ -11,7 +11,10 @@ import {
 import type { AkmConfig } from "../../src/core/config/config-types";
 import { canonicalResolvedExecutionRequest } from "../../src/execution/resolved-request";
 import { type AdapterRenderedExecutionSource, createAdapterRenderedExecutionSource } from "../../src/execution/source";
+import type { AgentDispatchRequest } from "../../src/integrations/agent/builder-shared";
+import { getCommandBuilder } from "../../src/integrations/agent/builders";
 import { mergeModelMapLayers, parseModelMapLayer } from "../../src/integrations/agent/model-map";
+import type { RunnerSpec } from "../../src/integrations/agent/runner";
 
 const config: AkmConfig = {
   configVersion: "0.9.0",
@@ -383,5 +386,137 @@ describe("common command invocation preparation", () => {
     });
     expect(connection).not.toHaveProperty("apiKey");
     expect(connection).not.toHaveProperty("timeoutMs");
+  });
+
+  test("freezes transport configuration at preparation before caller mutation", async () => {
+    const llmConfig: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      defaults: { engine: "direct" },
+      engines: {
+        direct: {
+          kind: "llm",
+          provider: "openai-compatible",
+          endpoint: "https://safe.invalid/v1/chat/completions",
+          model: "safe-model",
+          apiKey: "$SAFE_COMMAND_KEY",
+        },
+      },
+    };
+    const command = rendered("command", "fixture//commands/frozen-llm", "Review this.");
+    const prepared = await prepareCommandInvocation({
+      action: { ref: "fixture//commands/frozen-llm" },
+      config: llmConfig,
+      modelMap,
+      sourceLoader: loaderFor(command).loader,
+    });
+    Object.assign(llmConfig.engines?.direct ?? {}, {
+      provider: "attacker",
+      endpoint: "https://attacker.invalid/v1/chat/completions",
+      apiKey: "$ATTACKER_KEY",
+    });
+
+    let captured: unknown;
+    await dispatchPreparedCommandInvocation(prepared, {
+      executeRunner: async (runner) => {
+        captured = runner;
+        return { ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 0 };
+      },
+    });
+    expect(captured).toMatchObject({
+      kind: "llm",
+      connection: {
+        provider: "openai-compatible",
+        endpoint: "https://safe.invalid/v1/chat/completions",
+      },
+      credential: { names: ["SAFE_COMMAND_KEY"], required: true },
+    });
+    expect(Object.isFrozen(prepared.config)).toBe(true);
+    expect(Object.isFrozen(prepared.config.engines?.direct)).toBe(true);
+
+    const agentConfig: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      defaults: { engine: "reviewer" },
+      engines: {
+        reviewer: { kind: "agent", platform: "claude", bin: "/safe/claude", args: ["--safe"] },
+      },
+    };
+    const preparedAgent = await prepareCommandInvocation({
+      action: { ref: "fixture//commands/frozen-agent" },
+      config: agentConfig,
+      modelMap,
+      sourceLoader: loaderFor(rendered("command", "fixture//commands/frozen-agent", "Review.")).loader,
+    });
+    Object.assign(agentConfig.engines?.reviewer ?? {}, {
+      platform: "aider",
+      bin: "/attacker/aider",
+      args: ["--attacker"],
+    });
+    let capturedAgent: unknown;
+    await dispatchPreparedCommandInvocation(preparedAgent, {
+      executeRunner: async (runner) => {
+        capturedAgent = runner;
+        return { ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 0 };
+      },
+    });
+    expect(capturedAgent).toMatchObject({
+      kind: "agent",
+      profile: { platform: "claude", bin: "/safe/claude", args: ["--safe"] },
+    });
+  });
+
+  test("routes personas through native channels or the deterministic prompt fallback exactly once", async () => {
+    const command = rendered("command", "fixture//commands/persona-route", "Review this.", {
+      agent: "agents/reviewer",
+    });
+    const persona = rendered("persona", "fixture//agents/reviewer", "You are exact.");
+
+    const runFor = async (platform: "aider" | "claude") => {
+      const configured: AkmConfig = {
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        defaults: { engine: "reviewer" },
+        engines: { reviewer: { kind: "agent", platform, bin: "/bin/true" } },
+      };
+      const prepared = await prepareCommandInvocation({
+        action: { ref: "fixture//commands/persona-route" },
+        config: configured,
+        modelMap,
+        sourceLoader: loaderFor(command, persona).loader,
+      });
+      let capture: { prompt?: string; dispatch?: Record<string, unknown>; runner?: RunnerSpec } = {};
+      const result = await dispatchPreparedCommandInvocation(prepared, {
+        executeRunner: async (runner, prompt, options) => {
+          capture = { prompt, dispatch: options.dispatch as unknown as Record<string, unknown>, runner };
+          return { ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 0 };
+        },
+      });
+      return { capture, result };
+    };
+
+    const fallback = await runFor("aider");
+    expect(fallback.capture.prompt).toBe("<AKM_PERSONA>\nYou are exact.\n</AKM_PERSONA>\n\nReview this.");
+    expect(fallback.capture.dispatch).toMatchObject({ prompt: fallback.capture.prompt });
+    expect(fallback.capture.dispatch).not.toHaveProperty("systemPrompt");
+    expect(fallback.result.notices).toEqual([
+      expect.objectContaining({ code: "persona-prompt-composed", adapter: "aider", field: "persona" }),
+    ]);
+    if (fallback.capture.runner?.kind !== "agent" || !fallback.capture.dispatch) {
+      throw new Error("expected captured Aider agent dispatch");
+    }
+    const aiderCommand = getCommandBuilder("aider").build(
+      fallback.capture.runner.profile,
+      fallback.capture.dispatch as unknown as AgentDispatchRequest,
+    );
+    expect(aiderCommand.argv.join("\n")).toContain(
+      "--message=<AKM_PERSONA>\nYou are exact.\n</AKM_PERSONA>\n\nReview this.",
+    );
+    expect(aiderCommand.argv.join("\n").match(/<AKM_PERSONA>/g)).toHaveLength(1);
+
+    const native = await runFor("claude");
+    expect(native.capture.prompt).toBe("Review this.");
+    expect(native.capture.dispatch).toMatchObject({ prompt: "Review this.", systemPrompt: "You are exact." });
+    expect(native.result.notices).toBeUndefined();
   });
 });

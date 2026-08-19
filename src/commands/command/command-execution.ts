@@ -9,6 +9,7 @@ import {
   createInlineResolvedCommand,
   createResolvedCommand,
   createResolvedPersona,
+  type LoweringNotice,
   type ResolvedCommandContent,
   type ResolvedExecutionRequestV1,
 } from "../../execution/resolved-request";
@@ -35,6 +36,7 @@ import {
   type ToolAuthorizer,
 } from "../../integrations/agent/execution-cascade";
 import { loadModelMap, type ResolvedModelMapV1 } from "../../integrations/agent/model-map";
+import { composePersonaFallbackPrompt } from "../../integrations/agent/persona-fallback";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { executeRunner } from "../../integrations/agent/runner-dispatch";
 import type { AgentRunResult, RunAgentOptions } from "../../integrations/agent/spawn";
@@ -78,6 +80,7 @@ export interface CommandDispatchResult {
   readonly error?: string;
   readonly reason?: string;
   readonly warnings?: readonly string[];
+  readonly notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface DispatchPreparedCommandOptions {
@@ -178,16 +181,21 @@ function qualifyCommandSelectedPersona(selector: string, command: AdapterRendere
   return `${command.identity.bundle}//${selector}`;
 }
 
+function snapshotCommandConfig(config: AkmConfig, path = "command config"): AkmConfig {
+  return cloneExecutionJsonObject(config, path) as unknown as AkmConfig;
+}
+
 export async function prepareCommandInvocation(
   options: PrepareCommandInvocationOptions,
 ): Promise<PreparedCommandInvocation> {
+  const inputConfig = snapshotCommandConfig(options.config, "command input config");
   const action = parseBuiltinCommandAction(options.action);
   const sourceLoader = options.sourceLoader ?? defaultSourceLoader;
   let renderedCommand: AdapterRenderedCommandSource | undefined;
   let commandDefaults: UnresolvedExecutionDefaults = Object.freeze({});
   let command: ResolvedCommandContent;
   if (action.kind === "stored") {
-    const rendered = await sourceLoader(action.ref, "command", { config: options.config });
+    const rendered = await sourceLoader(action.ref, "command", { config: inputConfig });
     if (rendered.kind !== "command") throw new TypeError("command source loader returned a non-command source");
     renderedCommand = rendered;
     commandDefaults = rendered.defaults;
@@ -217,15 +225,16 @@ export async function prepareCommandInvocation(
       selectedAgent.source === "command"
         ? qualifyCommandSelectedPersona(selectedAgent.value, renderedCommand)
         : selectedAgent.value;
-    const rendered = await sourceLoader(lookupRef, "persona", { config: options.config });
+    const rendered = await sourceLoader(lookupRef, "persona", { config: inputConfig });
     if (rendered.kind !== "persona") throw new TypeError("persona source loader returned a non-persona source");
     renderedPersona = rendered;
   }
   const persona = renderedPersona ? createResolvedPersona(renderedPersona) : selectedAgent.present ? null : undefined;
 
-  const fallback = withEngineFallback(options.config);
+  const fallback = withEngineFallback(inputConfig);
+  const resolvedConfig = snapshotCommandConfig(fallback.config, "resolved command config");
   const installationValues: Record<string, unknown> = {};
-  if (fallback.config.defaults?.engine) installationValues.engine = fallback.config.defaults.engine;
+  if (resolvedConfig.defaults?.engine) installationValues.engine = resolvedConfig.defaults.engine;
   const plan = planExecutionCascade({
     command,
     ...(persona !== undefined ? { persona } : {}),
@@ -241,7 +250,7 @@ export async function prepareCommandInvocation(
         : {}),
       ...(options.current ? { current: { id: "current-invocation", values: options.current } } : {}),
     },
-    engines: executionEngineDefinitionsFromConfig(fallback.config),
+    engines: executionEngineDefinitionsFromConfig(resolvedConfig),
     modelMap: options.modelMap ?? loadModelMap().map,
     invocationKind: "direct",
     ...(options.authorizeTools ? { authorizeTools: options.authorizeTools } : {}),
@@ -249,7 +258,7 @@ export async function prepareCommandInvocation(
   return Object.freeze({
     plan,
     request: plan.request,
-    config: fallback.config,
+    config: resolvedConfig,
     ...(fallback.fallbackEngineName ? { fallbackEngineName: fallback.fallbackEngineName } : {}),
   });
 }
@@ -300,12 +309,16 @@ function lowerRunner(request: ResolvedExecutionRequestV1, config: AkmConfig): Ru
   return { ...runner, profile, ...(timeoutMs !== undefined ? { timeoutMs } : {}) } as RunnerSpec;
 }
 
-function dispatchRequest(request: ResolvedExecutionRequestV1): AgentDispatchRequest {
+function dispatchRequest(
+  request: ResolvedExecutionRequestV1,
+  prompt: string,
+  systemPrompt: string | undefined,
+): AgentDispatchRequest {
   const effort =
     request.inference && typeof request.inference.effort === "string" ? request.inference.effort : undefined;
   return {
-    prompt: request.command.content,
-    ...(request.persona ? { systemPrompt: request.persona.content } : {}),
+    prompt,
+    ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     ...(request.model ? { model: request.model.resolved, modelIsExact: true } : {}),
     ...(own(request, "tools") ? { tools: request.tools as AgentDispatchRequest["tools"] } : {}),
     ...(effort ? { effort } : {}),
@@ -313,7 +326,36 @@ function dispatchRequest(request: ResolvedExecutionRequestV1): AgentDispatchRequ
   };
 }
 
-function resultEnvelope(result: AgentRunResult, engine: string, warnings: readonly string[]): CommandDispatchResult {
+interface LoweredCommandDispatch {
+  readonly prompt: string;
+  readonly request: AgentDispatchRequest;
+  readonly notices: readonly Readonly<LoweringNotice>[];
+}
+
+function lowerCommandDispatch(request: ResolvedExecutionRequestV1, runner: RunnerSpec): LoweredCommandDispatch {
+  const persona = request.persona?.content;
+  if (persona !== undefined && runner.kind !== "llm" && runner.profile.personaChannel !== "native") {
+    const adapter = runner.profile.platform ?? runner.profile.name;
+    const composed = composePersonaFallbackPrompt(persona, request.command.content, adapter);
+    return Object.freeze({
+      prompt: composed.prompt,
+      request: Object.freeze(dispatchRequest(request, composed.prompt, undefined)),
+      notices: composed.notices,
+    });
+  }
+  return Object.freeze({
+    prompt: request.command.content,
+    request: Object.freeze(dispatchRequest(request, request.command.content, persona)),
+    notices: Object.freeze([]),
+  });
+}
+
+function resultEnvelope(
+  result: AgentRunResult,
+  engine: string,
+  warnings: readonly string[],
+  notices: readonly Readonly<LoweringNotice>[],
+): CommandDispatchResult {
   return {
     schemaVersion: 2,
     ok: result.ok,
@@ -326,6 +368,7 @@ function resultEnvelope(result: AgentRunResult, engine: string, warnings: readon
     ...(result.error !== undefined ? { error: result.error } : {}),
     ...(result.reason !== undefined ? { reason: result.reason } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
+    ...(notices.length > 0 ? { notices } : {}),
   };
 }
 
@@ -335,6 +378,7 @@ export async function dispatchPreparedCommandInvocation(
 ): Promise<CommandDispatchResult> {
   const request = requireAuthorizedExecutionPlan(prepared.plan);
   const runner = lowerRunner(request, prepared.config);
+  const lowered = lowerCommandDispatch(request, runner);
   const selectedEngine = request.engine.name;
   if (!selectedEngine) {
     throw new ConfigError(`command ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "INVALID_CONFIG_FILE");
@@ -344,10 +388,10 @@ export async function dispatchPreparedCommandInvocation(
     parseOutput: "text",
     ...(own(request.runtime, "timeoutMs") ? { timeoutMs: request.runtime.timeoutMs } : {}),
     ...(typeof request.runtime.workspace === "string" ? { cwd: request.runtime.workspace } : {}),
-    dispatch: dispatchRequest(request),
+    dispatch: lowered.request,
   };
   const run = options.executeRunner ?? executeRunner;
-  const result = await run(runner, request.command.content, runnerOptions, {
+  const result = await run(runner, lowered.prompt, runnerOptions, {
     llm: async (spec, prompt, runOptions) => {
       const started = Date.now();
       try {
@@ -374,7 +418,7 @@ export async function dispatchPreparedCommandInvocation(
     },
   });
   const announcement = fallbackAnnouncement(prepared.fallbackEngineName, selectedEngine);
-  return resultEnvelope(result, selectedEngine, announcement ? [announcement] : []);
+  return resultEnvelope(result, selectedEngine, announcement ? [announcement] : [], lowered.notices);
 }
 
 export async function executeCommandInvocation(

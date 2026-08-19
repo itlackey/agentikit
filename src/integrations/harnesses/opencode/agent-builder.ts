@@ -27,6 +27,7 @@ import { type AgentCommandBuilder, assertNotFlag, resolveDispatchModel } from ".
  */
 export const opencodeBuilder: AgentCommandBuilder = {
   platform: "opencode",
+  personaChannel: "native",
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

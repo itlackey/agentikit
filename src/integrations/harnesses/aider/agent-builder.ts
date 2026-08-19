@@ -105,6 +105,7 @@ function buildMessagePayload(req: AgentDispatchRequest): string {
  */
 export const aiderBuilder: AgentCommandBuilder = {
   platform: AIDER_PLATFORM,
+  personaChannel: "prompt",
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

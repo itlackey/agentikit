@@ -49,12 +49,24 @@ describe("portable command arguments", () => {
   });
 
   test.each([
+    "Email reviewer@example.com before proceeding.",
+    "Important! `code` is illustrative prose.",
+    "Use this ordinary fenced example:\n```sh\ngit status\n```",
+  ])("preserves credential-free prose that only resembles native constructs", (template) => {
+    expect(applyPortableCommandArguments(template, undefined, "inline").content).toBe(template);
+  });
+
+  test.each([
     ["positional", "Review $1 and $0"],
+    ["indexed portable placeholder", "Review $ARGUMENTS[0]"],
     ["named", "Review $TARGET"],
     ["portable-prefix named", "Review $ARGUMENTS_SUFFIX"],
     ["expression", "Review ${TARGET}"],
     ["legacy", "Review {{0}}"],
     ["native expression", "Review ${{ inputs.target }}"],
+    ["native shell interpolation", "Review !`git status`"],
+    ["native fenced shell interpolation", "Review !```sh\ngit status\n```"],
+    ["native file interpolation", "Review @secrets.env"],
   ])("rejects %s constructs before substitution", (_label, template) => {
     expect(() => validatePortableCommandTemplate(template, "fixture//commands/unsafe")).toThrow(
       /fixture\/\/commands\/unsafe.*unsupported.*template/i,

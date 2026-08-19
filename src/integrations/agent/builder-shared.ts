@@ -118,6 +118,8 @@ export type AgentResultExtractor = (result: import("./spawn").AgentRunResult) =>
 export interface AgentCommandBuilder {
   /** Canonical harness platform identifier. */
   readonly platform: string;
+  /** Whether this transport has a distinct native persona/system channel. */
+  readonly personaChannel: "native" | "prompt";
   /**
    * Build the concrete command for this platform.
    * Receives the fully-resolved profile (with user overrides merged in) and

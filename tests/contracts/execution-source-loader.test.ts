@@ -193,6 +193,53 @@ describe("adapter-owned execution source loading", () => {
     ).rejects.toThrow(/stale|missing|not.*read/i);
   });
 
+  test("rejects configured component roots that lexically or physically escape their materialized source", async () => {
+    const container = tempRoot("component-containment");
+    const sourceRoot = path.join(container, "source");
+    const outsideRoot = path.join(container, "outside");
+    const outsideFile = path.join(outsideRoot, "commands", "escaped.md");
+    fs.mkdirSync(path.dirname(outsideFile), { recursive: true });
+    fs.mkdirSync(sourceRoot, { recursive: true });
+    fs.writeFileSync(outsideFile, "# Escaped command\n");
+    const entry = entryFor(outsideRoot, outsideFile, "akm", "commands/escaped", "command");
+
+    await expect(
+      loadAdapterExecutionSource("fixture//commands/escaped", "command", {
+        config: {
+          configVersion: "0.9.0",
+          semanticSearchMode: "off",
+          defaultBundle: "fixture",
+          bundles: {
+            fixture: {
+              path: sourceRoot,
+              components: { main: { root: "../outside", adapter: "akm" } },
+            },
+          },
+        },
+        lookup: lookupFor(entry),
+      }),
+    ).rejects.toThrow(/component root.*outside|escape|contain/i);
+
+    const symlink = path.join(sourceRoot, "linked-component");
+    fs.symlinkSync(outsideRoot, symlink, "dir");
+    await expect(
+      loadAdapterExecutionSource("fixture//commands/escaped", "command", {
+        config: {
+          configVersion: "0.9.0",
+          semanticSearchMode: "off",
+          defaultBundle: "fixture",
+          bundles: {
+            fixture: {
+              path: sourceRoot,
+              components: { main: { root: "linked-component", adapter: "akm" } },
+            },
+          },
+        },
+        lookup: lookupFor(entry),
+      }),
+    ).rejects.toThrow(/component root.*outside|escape|contain/i);
+  });
+
   test("rejects fragments and missing indexed refs before any renderer runs", async () => {
     const fixture = installFixture("akm", "command");
     const config = fixtureConfig(fixture.root, "akm");

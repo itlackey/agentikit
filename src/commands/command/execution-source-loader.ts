@@ -69,6 +69,11 @@ function realRegularFile(value: string, label: string): string {
   return real;
 }
 
+function isLexicallyWithin(candidate: string, root: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
 function componentForEntry(entry: IndexEntry, config: AkmConfig, realRoot: string): BundleComponent {
   const configured = config.bundles?.[entry.bundleId];
   if (!configured) {
@@ -96,7 +101,16 @@ function componentForEntry(entry: IndexEntry, config: AkmConfig, realRoot: strin
       "Restore or update the bundle, then run `akm index --full` before dispatching this asset.",
     );
   }
+  const lexicalSourceRoot = path.resolve(configuredContentRoot);
   const lexicalConfiguredRoot = path.resolve(configuredContentRoot, component?.root ?? ".");
+  if (!isLexicallyWithin(lexicalConfiguredRoot, lexicalSourceRoot)) {
+    throw new ConfigError(
+      `Configured component root for ${JSON.stringify(entry.itemRef)} resolves outside its materialized bundle source.`,
+      "INVALID_CONFIG_FILE",
+      "Keep component roots inside their owning bundle source, then run `akm index --full`.",
+    );
+  }
+  const configuredSourceRoot = realDirectory(lexicalSourceRoot, `Configured source root for ${entry.bundleId}`);
   let configuredRoot: string;
   try {
     configuredRoot = realDirectory(lexicalConfiguredRoot, `Configured component root for ${entry.bundleId}`);
@@ -105,6 +119,13 @@ function componentForEntry(entry: IndexEntry, config: AkmConfig, realRoot: strin
       `Configured ${JSON.stringify(configuredSource.type)} source for ${JSON.stringify(entry.itemRef)} is not materialized at its current component root.`,
       "INVALID_CONFIG_FILE",
       "Restore or update the bundle, then run `akm index --full` before dispatching this asset.",
+    );
+  }
+  if (!isWithin(configuredRoot, configuredSourceRoot)) {
+    throw new ConfigError(
+      `Configured component root for ${JSON.stringify(entry.itemRef)} resolves outside its materialized bundle source.`,
+      "INVALID_CONFIG_FILE",
+      "Remove the escaping symlink or component path, then run `akm index --full`.",
     );
   }
   if (configuredRoot !== realRoot) {

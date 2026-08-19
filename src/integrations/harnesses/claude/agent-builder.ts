@@ -67,6 +67,7 @@ function buildPromptPayload(req: AgentDispatchRequest): string {
  */
 export const claudeBuilder: AgentCommandBuilder = {
   platform: "claude",
+  personaChannel: "native",
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

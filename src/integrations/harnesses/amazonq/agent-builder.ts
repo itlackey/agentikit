@@ -119,6 +119,7 @@ function buildPromptPayload(req: AgentDispatchRequest): string {
  */
 export const amazonqBuilder: AgentCommandBuilder = {
   platform: AMAZONQ_PLATFORM,
+  personaChannel: "prompt",
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

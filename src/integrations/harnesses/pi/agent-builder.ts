@@ -84,6 +84,7 @@ function buildPromptPayload(req: AgentDispatchRequest): string {
  */
 export const piBuilder: AgentCommandBuilder = {
   platform: PI_PLATFORM,
+  personaChannel: "native",
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");
