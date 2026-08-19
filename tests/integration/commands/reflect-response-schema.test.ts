@@ -27,6 +27,7 @@ import { validateProposal } from "../../../src/commands/proposal/validators/prop
 import type { LlmProfileConfig } from "../../../src/core/config/config";
 import { ConfigError } from "../../../src/core/errors";
 import { readEvents } from "../../../src/core/events";
+import { getStateDbPath } from "../../../src/core/state-db";
 import { parseAgentProposalPayload } from "../../../src/integrations/agent/prompts";
 import type { RunnerSpec } from "../../../src/integrations/agent/runner";
 import { _setChatCompletionForTests } from "../../../src/llm/client";
@@ -200,6 +201,39 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
 
     await expect(failure).rejects.toBeInstanceOf(ConfigError);
     expect(capturedCalls.length).toBe(0);
+  });
+
+  test("full reflect command leaves assets, proposals, and state untouched when a required credential is missing", async () => {
+    const stash = makeStashDir();
+    const sourcePath = path.join(stash, "memories", "credential-boundary.md");
+    const original = "---\ndescription: Credential boundary\n---\n\nOriginal memory body.\n";
+    fs.writeFileSync(sourcePath, original, "utf8");
+    const eventDbPath = path.join(makeTempDir("akm-reflect-required-credential-state-"), "state.db");
+    const defaultStateDbPath = getStateDbPath();
+    const runner: Extract<RunnerSpec, { kind: "llm" }> = {
+      kind: "llm",
+      engine: "reflect",
+      connection: fakeLlmConnection(),
+      credential: { names: ["AKM_REFLECT_REQUIRED_KEY"], required: true },
+    };
+
+    await withEnv({ AKM_REFLECT_REQUIRED_KEY: undefined }, async () => {
+      await expect(
+        akmReflect({
+          ref: "memories/credential-boundary",
+          assetContent: original,
+          stashDir: stash,
+          config: quietQualityGateConfig(),
+          runner,
+          eventsCtx: { dbPath: eventDbPath },
+        }),
+      ).rejects.toBeInstanceOf(ConfigError);
+    });
+
+    expect(capturedCalls).toHaveLength(0);
+    expect(fs.readFileSync(sourcePath, "utf8")).toBe(original);
+    expect(fs.existsSync(eventDbPath)).toBe(false);
+    expect(fs.existsSync(defaultStateDbPath)).toBe(false);
   });
 
   test("when responseSchema is provided and no test-seam `chat` is set, chatCompletion receives the schema", async () => {

@@ -210,6 +210,8 @@ export async function detectAndWriteContradictions(
     edgesWritten: 0,
     warnings: [],
   };
+  if (!(strategy?.processes?.consolidate?.contradictionDetection?.enabled ?? false)) return result;
+
   const noticesByKey = new Map<string, Readonly<LoweringNotice>>();
   const resolvedExecution =
     resolvedRunner === undefined && resolvedLlmConfig === undefined
@@ -304,7 +306,7 @@ export async function detectAndWriteContradictions(
           feature: "memory_contradiction_detection",
           akmConfig: config,
           // Resolver-less key: the strategy decision IS the gate (default-off).
-          enabled: strategy?.processes?.consolidate?.contradictionDetection?.enabled ?? false,
+          enabled: true,
           runner: contradictionRunner,
           messages: [
             { role: "system", content: "Return only valid JSON. No prose." },

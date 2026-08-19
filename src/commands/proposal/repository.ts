@@ -71,7 +71,7 @@ import {
   txnNamespaceDir,
 } from "../../core/fs-txn";
 import { canonicalBundleIdForTarget, resolveBundleWriteTarget } from "../../core/mutation-target";
-import { withImmediateTransaction, withStateDb } from "../../core/state-db";
+import { getStateDbPath, withImmediateTransaction, withStateDb } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import { recordWrittenPath } from "../../core/write-provenance";
 import {
@@ -91,7 +91,7 @@ import { withAssetMutationLease } from "../../indexer/index-writer-lock";
 import { indexWrittenAssets } from "../../indexer/index-written-assets";
 import { deriveInstallations } from "../../indexer/installations";
 import { resolveSourceEntries } from "../../indexer/search/search-source";
-import type { Database } from "../../storage/database";
+import { type Database, openDatabase } from "../../storage/database";
 import { insertEventOnce } from "../../storage/repositories/events-repository";
 import {
   getStateProposal,
@@ -908,6 +908,47 @@ export function listProposals(
       }
     });
   });
+}
+
+/**
+ * Read proposal context without creating or migrating state.db.
+ *
+ * Prompt-building consumers call this before their first model dispatch. A
+ * missing proposal store is therefore an empty snapshot, not a reason to
+ * create durable state before a required symbolic credential is validated at
+ * the dispatch boundary.
+ */
+export function listProposalsReadOnly(
+  stashDir: string,
+  options: { includeArchive?: boolean; status?: ProposalStatus; ref?: string; type?: string } = {},
+  ctx?: ProposalsContext,
+): Proposal[] {
+  const dbPath = ctx?.dbPath ?? getStateDbPath();
+  if (!fs.existsSync(dbPath)) return [];
+
+  let db: Database | undefined;
+  try {
+    db = openDatabase(dbPath, { readonly: true, create: false });
+    if (!options.includeArchive && options.status !== undefined && options.status !== "pending") return [];
+    const status = options.includeArchive ? options.status : "pending";
+    const wantRef = options.ref !== undefined ? filterRefIdentity(options.ref) : undefined;
+    return listStateProposals(db, {
+      stashDir,
+      ...(status !== undefined ? { status } : {}),
+    }).filter((proposal) => {
+      if (wantRef !== undefined && !proposalMatchesRef(proposal.ref, wantRef)) return false;
+      if (!options.type) return true;
+      try {
+        return parseRefInput(proposal.ref).type === options.type;
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return [];
+  } finally {
+    db?.close();
+  }
 }
 
 /**

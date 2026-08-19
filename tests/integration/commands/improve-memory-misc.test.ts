@@ -364,6 +364,27 @@ describe("M-1: contradiction-detection pass writes contradictedBy edges (#367)",
     expect(result.edgesWritten).toBe(0);
   });
 
+  test("disabled contradiction detection returns before execution planning", async () => {
+    const { detectAndWriteContradictions } = await import(
+      "../../../src/commands/improve/memory/memory-contradiction-detect"
+    );
+    const stashDir = makeTempDir("akm-m1-disabled-before-planning-");
+    const disabledStrategy: ImproveProfileConfig = {
+      processes: { consolidate: { contradictionDetection: { enabled: false } } },
+    };
+    const incompatibleConfig: AkmConfig = {
+      semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      engines: { "claude-agent": { kind: "agent", platform: "claude" } },
+      defaults: { llmEngine: "claude-agent" },
+    };
+
+    const result = await detectAndWriteContradictions(stashDir, incompatibleConfig, undefined, disabledStrategy);
+
+    expect(result).toEqual({ familiesExamined: 0, pairsChecked: 0, edgesWritten: 0, warnings: [] });
+  });
+
   test("detectAndWriteContradictions writes ONE directed contradictedBy edge when LLM judges true", async () => {
     const { detectAndWriteContradictions } = await import(
       "../../../src/commands/improve/memory/memory-contradiction-detect"

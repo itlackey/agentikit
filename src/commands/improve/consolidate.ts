@@ -32,7 +32,13 @@ import {
 import { findEntryIdByRef, getAllEntries, getEntryById } from "../../storage/repositories/index-entries-repository";
 import type { DbIndexedEntry } from "../../storage/repositories/index-entry-types";
 import { getNeighborsByEntryId } from "../../storage/repositories/index-vec-repository";
-import { isProposalSkipped, listProposals, type ProposalsContext, proposalContent } from "../proposal/repository";
+import {
+  isProposalSkipped,
+  listProposals,
+  listProposalsReadOnly,
+  type ProposalsContext,
+  proposalContent,
+} from "../proposal/repository";
 import { hasSupersededStatus, validateProposalFrontmatter } from "../proposal/validators/proposal-quality-validators";
 import type { AntiCollapseConfig } from "./anti-collapse";
 import { cacheHash } from "./content-hash";
@@ -407,7 +413,9 @@ async function clusterMemoriesBySimilarity(
 function loadPendingConsolidateProposalHashes(stashDir: string): Set<string> {
   const hashes = new Set<string>();
   try {
-    const pending = listProposals(stashDir, { status: "pending" }).filter((p) => p.source === "consolidate");
+    const pending = listProposalsReadOnly(stashDir, { status: "pending" }).filter(
+      (proposal) => proposal.source === "consolidate",
+    );
     for (const p of pending) {
       try {
         hashes.add(cacheHash(proposalContent(p)));
@@ -663,10 +671,12 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
   // receive this handle; it is closed in the `finally` block below.
   // Fail-open: any open error leaves it `undefined` and all cache paths skip.
   let sharedStateDb: Database | undefined;
-  try {
-    sharedStateDb = openStateDatabase();
-  } catch {
-    // State DB unavailable → skip the embedding cache for this run.
+  if (config.embedding) {
+    try {
+      sharedStateDb = openStateDatabase();
+    } catch {
+      // State DB unavailable → skip the embedding cache for this run.
+    }
   }
 
   try {

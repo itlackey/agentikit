@@ -23,10 +23,12 @@ import {
 } from "../../src/commands/proposal/validators/proposal-quality-validators";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
+import { ConfigError } from "../../src/core/errors";
 import { readEvents } from "../../src/core/events";
-import { openStateDatabase } from "../../src/core/state-db";
+import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
 import { LlmFeatureTimeoutError } from "../../src/llm/feature-gate";
+import { withEnv } from "../_helpers/sandbox";
 
 // ── Test scaffolding ────────────────────────────────────────────────────────
 
@@ -417,6 +419,40 @@ describe("akmDistill — feature gate", () => {
 // ── Acceptance: LLM throws ──────────────────────────────────────────────────
 
 describe("akmDistill — LLM error paths", () => {
+  test("missing required credential leaves source salience, proposals, and state untouched", async () => {
+    const stash = makeStashDir();
+    const inputPath = path.join(stash, "skills", "credential-boundary.md");
+    const original = "---\ndescription: Deploy safely\n---\n\nUse the checklist.\n";
+    fs.writeFileSync(inputPath, original, "utf8");
+    const config = configEnabled(stash);
+    config.engines = {
+      ...config.engines,
+      default: {
+        kind: "llm",
+        endpoint: "http://127.0.0.1:1/v1/chat/completions",
+        model: "never-dispatched",
+        apiKey: "$AKM_DISTILL_REQUIRED_KEY",
+      },
+    };
+    const stateDbPath = getStateDbPath();
+
+    await withEnv({ AKM_DISTILL_REQUIRED_KEY: undefined }, async () => {
+      await expect(
+        akmDistill({
+          ref: "skills/credential-boundary",
+          config,
+          stashDir: stash,
+          lookupFn: async () => inputPath,
+          readEventsFn: emptyEvents,
+          fetchSimilarLessonsFn: async () => [],
+        }),
+      ).rejects.toBeInstanceOf(ConfigError);
+    });
+
+    expect(fs.readFileSync(inputPath, "utf8")).toBe(original);
+    expect(fs.existsSync(stateDbPath)).toBe(false);
+  });
+
   test("chat throws → llm_failed outcome, no proposal, event emitted", async () => {
     const stash = makeStashDir();
     const result = await akmDistill({

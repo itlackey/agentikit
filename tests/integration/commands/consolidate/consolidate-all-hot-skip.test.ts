@@ -20,8 +20,10 @@ import path from "node:path";
 
 import { akmConsolidate } from "../../../../src/commands/improve/consolidate";
 import type { AkmConfig } from "../../../../src/core/config/config";
+import { ConfigError } from "../../../../src/core/errors";
+import { getStateDbPath } from "../../../../src/core/state-db";
 import type { LoweringNotice } from "../../../../src/execution/resolved-request";
-import { type Cleanup, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
+import { type Cleanup, withEnv, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 
 let cleanup: Cleanup;
 let stashDir: string;
@@ -54,6 +56,34 @@ const CONFIG = {
 } as unknown as AkmConfig;
 
 describe("akmConsolidate — all-hot chunk early-exit", () => {
+  test("missing required credential does not eagerly create consolidation state", async () => {
+    writeMemory("cold-a", { hot: false });
+    const config = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+      engines: {
+        planner: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_CONSOLIDATE_REQUIRED_KEY",
+        },
+      },
+      defaults: { llmEngine: "planner", improveStrategy: "default" },
+      improve: { strategies: { default: { processes: { consolidate: { enabled: true } } } } },
+    } as AkmConfig;
+    const stateDbPath = getStateDbPath();
+
+    await withEnv({ AKM_CONSOLIDATE_REQUIRED_KEY: undefined }, async () => {
+      await expect(akmConsolidate({ stashDir, config })).rejects.toBeInstanceOf(ConfigError);
+    });
+
+    expect(fs.existsSync(stateDbPath)).toBe(false);
+  });
+
   test("an all-hot chunk skips the LLM and buckets every memory as judgedNoAction", async () => {
     writeMemory("hot-a", { hot: true });
     writeMemory("hot-b", { hot: true });

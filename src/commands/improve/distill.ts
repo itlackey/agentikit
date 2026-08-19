@@ -72,12 +72,13 @@ import { resolveAssetPath } from "../../indexer/walk/path-resolver";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import type { ChatMessage, chatCompletion } from "../../llm/client";
 import { callStructured, structuredLlmRunnerFromConnection } from "../../llm/structured-call";
-import { closeDatabase, openIndexDatabase } from "../../storage/repositories/index-connection";
+import { closeDatabase, openReadonlyExistingDatabase } from "../../storage/repositories/index-connection";
 import { getAllEntries } from "../../storage/repositories/index-entries-repository";
 import type { EligibilitySource } from "../proposal/proposal-types";
 import {
   isProposalSkipped,
   listProposals,
+  listProposalsReadOnly,
   type Proposal,
   type ProposalsContext,
   proposalContent,
@@ -624,8 +625,10 @@ async function loadAndScoreInputSalience(args: {
    * path (none exists yet in this invocation) would see the stamped bytes.
    */
   ctx: RunContext;
+  /** Delay durable salience writes until credential-bearing dispatch returns. */
+  persistSalience?: boolean;
 }): Promise<{ assetContent: string | null; existingRefVocabulary: Set<string> }> {
-  const { inputRef, durableInputRef, salienceWriteKey, stash, config, outcomeWeightEnabled, lookup, ctx } = args;
+  const { inputRef, durableInputRef, salienceWriteKey, stash, outcomeWeightEnabled, lookup, ctx } = args;
   // Best-effort load: when the asset is not yet indexed we still proceed —
   // the LLM is asked to distil from "available signal" (feedback alone).
   let assetContent: string | null = null;
@@ -651,19 +654,20 @@ async function loadAndScoreInputSalience(args: {
   // reuses it when scoring the distilled OUTPUT at proposal creation (G4).
   let existingRefVocabulary = new Set<string>();
   try {
-    const embCfg = config?.embedding;
-    const indexDb = openIndexDatabase(getDbPath(), embCfg?.dimension ? { embeddingDim: embCfg.dimension } : undefined);
-    try {
-      const allRefs = getAllEntries(indexDb).map((e) => e.entryKey);
-      existingRefVocabulary = buildRefVocabulary(allRefs);
-    } finally {
-      closeDatabase(indexDb);
+    const indexDb = openReadonlyExistingDatabase(getDbPath(), { isolatedSnapshot: true });
+    if (indexDb) {
+      try {
+        const allRefs = getAllEntries(indexDb).map((e) => e.entryKey);
+        existingRefVocabulary = buildRefVocabulary(allRefs);
+      } finally {
+        closeDatabase(indexDb);
+      }
     }
   } catch {
     // Index not available — novelty defaults to type-floor.
   }
 
-  if (assetContent && assetFilePath) {
+  if (args.persistSalience !== false && assetContent && assetFilePath) {
     try {
       const parsedRef = parseRefInput(inputRef);
       // G4: predictionError decays with revision count — the prior hardcoded
@@ -833,7 +837,9 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
   const withNotices = (result: AkmDistillResult): AkmDistillResult =>
     executionNotices.size > 0 ? { ...result, notices: Object.freeze([...executionNotices.values()]) } : result;
   const lookup = options.lookupFn ?? ((ref: string) => defaultLookup(ref, stash));
-  const readEventsImpl = options.readEventsFn ?? readEvents;
+  const readEventsImpl =
+    options.readEventsFn ??
+    ((readOptions: Parameters<typeof readEvents>[0]) => readEvents(readOptions, { readOnly: true }));
   // R1 opt-out must flow into every computeSalience call this command makes so
   // distill-written rank_score rows use the same weights as preparation's.
   const outcomeWeightEnabled = config.improve?.salience?.outcomeWeightEnabled !== false;
@@ -853,7 +859,7 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     signal: options.signal,
   }).withFreshAssetMemo();
 
-  const { assetContent, existingRefVocabulary } = await loadAndScoreInputSalience({
+  let { assetContent, existingRefVocabulary } = await loadAndScoreInputSalience({
     inputRef,
     durableInputRef,
     salienceWriteKey,
@@ -862,7 +868,22 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     outcomeWeightEnabled,
     lookup,
     ctx: assetCtx,
+    persistSalience: false,
   });
+  const persistInputSalience = async (): Promise<void> => {
+    const scored = await loadAndScoreInputSalience({
+      inputRef,
+      durableInputRef,
+      salienceWriteKey,
+      stash,
+      config,
+      outcomeWeightEnabled,
+      lookup,
+      ctx: assetCtx,
+    });
+    assetContent = scored.assetContent ?? assetContent;
+    existingRefVocabulary = scored.existingRefVocabulary;
+  };
 
   const { filteredEvents, exclusionSet, filteredFeedbackCount, feedbackFullyFiltered } = readDistillFeedback({
     readEventsImpl,
@@ -908,7 +929,10 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     feedbackFullyFiltered,
     onNotices: collectNotices,
   });
-  if (promotionResult) return withNotices(promotionResult);
+  if (promotionResult) {
+    await persistInputSalience();
+    return withNotices(promotionResult);
+  }
 
   const effectiveProposalKind = targetKind === "knowledge" ? "knowledge" : "lesson";
   const effectiveLessonRef =
@@ -933,6 +957,7 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     effectiveProposalKind,
     onNotices: collectNotices,
   });
+  await persistInputSalience();
 
   if (raw === null || raw.trim() === "") {
     return withNotices(
@@ -1621,7 +1646,11 @@ async function buildDistillMessages(args: {
   } = args;
   // Inject last 1–3 rejected proposals for this ref as Reflexion-style
   // verbal-RL context so the LLM avoids regenerating refused proposals.
-  const rejectedForRef = listProposals(stash, { ref: inputRef, status: "rejected", includeArchive: true })
+  const rejectedForRef = listProposalsReadOnly(
+    stash,
+    { ref: inputRef, status: "rejected", includeArchive: true },
+    options.ctx,
+  )
     .sort((a, b) => new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime())
     .slice(0, MAX_REJECTED_PROPOSALS)
     .map((p) => ({

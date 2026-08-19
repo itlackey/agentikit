@@ -73,7 +73,7 @@ import type { EligibilitySource } from "../proposal/proposal-types";
 import {
   type CreateProposalInput,
   isProposalSkipped,
-  listProposals,
+  listProposalsReadOnly,
   type Proposal,
   type ProposalsContext,
   proposalContent,
@@ -217,9 +217,13 @@ const MAX_GLOBAL_FEEDBACK_LINES = 20;
  * all assets so `akm reflect` can operate in a general "review recent
  * signals" mode. Best-effort — a missing or empty events stream returns `[]`.
  */
-function readRecentFeedback(ref?: string): string[] {
+function readOnlyEventsContext(ctx?: EventsContext): EventsContext {
+  return ctx?.db ? ctx : { ...(ctx ?? {}), readOnly: true };
+}
+
+function readRecentFeedback(ref?: string, eventsCtx?: EventsContext): string[] {
   try {
-    const events = readEvents({ type: "feedback", ...(ref ? { ref } : {}) }).events;
+    const events = readEvents({ type: "feedback", ...(ref ? { ref } : {}) }, readOnlyEventsContext(eventsCtx)).events;
     const lines: string[] = [];
     const limit = ref ? MAX_FEEDBACK_LINES : MAX_GLOBAL_FEEDBACK_LINES;
     for (const event of events.slice(-limit)) {
@@ -281,10 +285,14 @@ const PROTECTED_FRONTMATTER_FIELDS: ReadonlySet<string> = new Set(["name", "ref"
  * into the reflect prompt so the agent avoids re-proposing already-refused
  * content (arXiv:2303.11366).
  */
-function readRejectedProposals(stash: string, ref?: string): RejectedProposalContext[] {
+function readRejectedProposals(
+  stash: string,
+  ref?: string,
+  proposalsCtx?: ProposalsContext,
+): RejectedProposalContext[] {
   if (!ref) return [];
   try {
-    return listProposals(stash, { ref, status: "rejected", includeArchive: true })
+    return listProposalsReadOnly(stash, { ref, status: "rejected", includeArchive: true }, proposalsCtx)
       .sort((a, b) => new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime())
       .slice(0, MAX_REJECTED_PROPOSALS)
       .map((p) => ({
@@ -378,7 +386,7 @@ async function readRelatedLessons(
   try {
     // Match events using the candidate's single durable state key.
     const distillInvokedKeys = new Set(improveStateReadRefs(ref, itemRef));
-    const feedbackEvents = readEvents({ type: "distill_invoked" }).events.filter(
+    const feedbackEvents = readEvents({ type: "distill_invoked" }, readOnlyEventsContext(ctx.eventsCtx)).events.filter(
       (event) => event.ref !== undefined && distillInvokedKeys.has(event.ref),
     );
     for (const event of feedbackEvents) {
@@ -431,7 +439,7 @@ async function readRelatedLessons(
   // ref itself, indicating a human or external system rated the skill.
   let hasIndependentFeedback = false;
   try {
-    const feedbackEventsForSkill = readEvents({ type: "feedback", ref }).events;
+    const feedbackEventsForSkill = readEvents({ type: "feedback", ref }, readOnlyEventsContext(ctx.eventsCtx)).events;
     hasIndependentFeedback = feedbackEventsForSkill.length > 0;
   } catch {
     // Best effort — if we can't check, allow all lessons through.
@@ -1894,10 +1902,9 @@ function buildReflectRunContext(args: {
 }
 
 /**
- * Emit `reflect_invoked` at command entry, then build the `reflect_completed`
- * failure emitter every failure path in `akmReflect` uses (Fix #3 /
- * observability 0.8.0). Extracted verbatim (fn-size decomposition, R31) — see
- * the original inline comments preserved below for the "why".
+ * Build idempotent `reflect_invoked` / `reflect_completed` emitters. Invocation
+ * is delayed until canonical dispatch validates symbolic credentials, while
+ * deterministic pre-dispatch failures still close an invoke/complete pair.
  *
  * Fix #3 (observability 0.8.0): every failure path below MUST emit
  * `reflect_completed` so observers can close the invoke/complete loop. The
@@ -1909,28 +1916,33 @@ function buildReflectRunContext(args: {
  * "ref_mismatch" / "enoent" / "draft_missing" subtypes for cases the agent
  * surface conflates as "parse_error". Sub-reasons land in `subreason`.
  */
-function emitReflectInvokedAndBuildFailureEmitter(
-  options: AkmReflectOptions,
-): (reason: AgentFailureReason, subreason: string, ref?: string, extra?: Record<string, unknown>) => void {
-  // Always emit `reflect_invoked` at command entry — observers see the
-  // attempt regardless of downstream success/failure.
-  appendEvent(
-    {
-      eventType: "reflect_invoked",
-      // Key on item_ref when planning supplied one, otherwise the conceptId.
-      ...(options.ref ? { ref: options.itemRef ?? durableImproveRef(options.ref) } : {}),
-      metadata: {
-        ...(options.task ? { task: options.task } : {}),
-        ...(options.engine ? { engine: options.engine } : {}),
-        // Attribution tagging: stamp the eligibility lane so reflect_invoked can be
-        // sliced by lane downstream. See EligibilitySource.
-        ...(options.eligibilitySource ? { eligibilitySource: options.eligibilitySource } : {}),
+function buildReflectEventEmitters(options: AkmReflectOptions): {
+  emitInvoked: () => void;
+  emitFailed: (reason: AgentFailureReason, subreason: string, ref?: string, extra?: Record<string, unknown>) => void;
+} {
+  let invoked = false;
+  const emitInvoked = (): void => {
+    if (invoked) return;
+    appendEvent(
+      {
+        eventType: "reflect_invoked",
+        // Key on item_ref when planning supplied one, otherwise the conceptId.
+        ...(options.ref ? { ref: options.itemRef ?? durableImproveRef(options.ref) } : {}),
+        metadata: {
+          ...(options.task ? { task: options.task } : {}),
+          ...(options.engine ? { engine: options.engine } : {}),
+          // Attribution tagging: stamp the eligibility lane so reflect_invoked can be
+          // sliced by lane downstream. See EligibilitySource.
+          ...(options.eligibilitySource ? { eligibilitySource: options.eligibilitySource } : {}),
+        },
       },
-    },
-    options.eventsCtx,
-  );
+      options.eventsCtx,
+    );
+    invoked = true;
+  };
 
-  return (reason, subreason, ref, extra): void => {
+  const emitFailed = (reason: AgentFailureReason, subreason: string, ref?: string, extra?: Record<string, unknown>) => {
+    emitInvoked();
     appendEvent(
       {
         eventType: "reflect_completed",
@@ -1946,14 +1958,17 @@ function emitReflectInvokedAndBuildFailureEmitter(
       options.eventsCtx,
     );
   };
+
+  return { emitInvoked, emitFailed };
 }
 
 export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmReflectResult> {
   const stash = resolveRunStashDir(options.stashDir);
 
-  // 1. Emit reflect_invoked + build the reflect_completed failure emitter
-  // every failure path below uses.
-  const emitReflectFailed = emitReflectInvokedAndBuildFailureEmitter(options);
+  // Build lazy event emitters. The invocation row is committed only after the
+  // canonical dispatch has validated symbolic credentials; deterministic
+  // pre-dispatch skips still emit it through emitReflectFailed.
+  const { emitInvoked: emitReflectInvoked, emitFailed: emitReflectFailed } = buildReflectEventEmitters(options);
 
   // 2. Resolve target asset content (if a ref is supplied).
   const sourceResolved = await resolveReflectSource(options, stash, emitReflectFailed);
@@ -1978,13 +1993,16 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
   // 4. Build the shared prompt inputs — feedback, hints, lessons, rejected
   // proposals. These are stable across refinement iterations; only the
   // `priorDraft` field changes per-iteration (R-1 / #372).
-  const feedback = readRecentFeedback(options.ref ? (options.itemRef ?? durableImproveRef(options.ref)) : undefined);
+  const feedback = readRecentFeedback(
+    options.ref ? (options.itemRef ?? durableImproveRef(options.ref)) : undefined,
+    options.eventsCtx,
+  );
   const schemaHints = buildSchemaHints(parsedRef?.type ?? "", assetContent);
   const relatedLessons =
     options.ref && parsedRef ? await readRelatedLessons(assetCtx, stash, options.ref, parsedRef, options.itemRef) : [];
   // Reflexion-style verbal-RL: inject rejected proposals so the agent avoids
   // reproducing proposals that have already been reviewed and refused.
-  const rejectedProposals = readRejectedProposals(stash, options.ref);
+  const rejectedProposals = readRejectedProposals(stash, options.ref, options.ctx);
   // Standards "rulebook" for this target — stash convention/meta facts; empty
   // when none fire.
   const standardsContext = resolveStandardsContext(options.ref, stash);
@@ -2037,6 +2055,7 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
       draftPathsToCleanup,
       onNotices: (notices) => collectLoweringNotices(executionNotices, notices),
     });
+    emitReflectInvoked();
     result = iterated.result;
     lastDraftPath = iterated.lastDraftPath;
 
@@ -2082,6 +2101,9 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
       return { ...resolved.failure, ...reflectNoticeFields(executionNotices) };
     }
     payload = resolved.payload;
+  } catch (error) {
+    if (!(error instanceof ConfigError)) emitReflectInvoked();
+    throw error;
   } finally {
     // Always remove tmp draft files — success, failure, or exception. Returns
     // inside the try above trigger this block before the function exits. Code
