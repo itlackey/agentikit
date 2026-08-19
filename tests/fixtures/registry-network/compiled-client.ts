@@ -8,10 +8,17 @@ import { requestRegistryAddressPinned } from "../../../src/registry/pinned-trans
 
 const [rawUrl, address, caPath, expectation] = process.argv.slice(2);
 if (!rawUrl || !address || !caPath || !expectation) {
-  throw new Error("Usage: compiled-client <url> <address> <ca-path|-> <success|failure|certificate-failure>");
+  throw new Error(
+    "Usage: compiled-client <url> <address> <ca-path|-> <success|bodyless-success|failure|certificate-failure>",
+  );
 }
 
 let resolverCalled = false;
+const unhandledRejections: string[] = [];
+const onUnhandledRejection = (reason: unknown): void => {
+  unhandledRejections.push(reason instanceof Error ? reason.message : String(reason));
+};
+if (expectation === "bodyless-success") process.on("unhandledRejection", onUnhandledRejection);
 try {
   if (expectation === "failure") {
     await fetchRegistryResponse(rawUrl, undefined, {
@@ -36,8 +43,13 @@ try {
   );
   const body = await response.text();
   if (expectation === "certificate-failure") throw new Error("Expected TLS certificate identity verification to fail");
-  process.stdout.write(`${JSON.stringify({ ok: true, status: response.status, body })}\n`);
+  if (expectation === "bodyless-success") {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    process.off("unhandledRejection", onUnhandledRejection);
+  }
+  process.stdout.write(`${JSON.stringify({ ok: true, status: response.status, body, unhandledRejections })}\n`);
 } catch (error) {
+  process.off("unhandledRejection", onUnhandledRejection);
   const candidate = error as { code?: unknown; message?: unknown; name?: unknown };
   if (expectation !== "failure" && expectation !== "certificate-failure") throw error;
   process.stdout.write(

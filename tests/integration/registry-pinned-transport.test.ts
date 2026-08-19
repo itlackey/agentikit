@@ -278,6 +278,52 @@ describe("registry pinned production transport", () => {
     }
   });
 
+  test("terminates a never-ending 205 body and reaps the Bun helper without an unhandled pump error", async () => {
+    let peerClosed = false;
+    const server = http.createServer((request, response) => {
+      request.socket.once("close", () => {
+        peerClosed = true;
+      });
+      response.writeHead(205, { "Content-Type": "text/plain", "Transfer-Encoding": "chunked" });
+      response.write("a body forbidden by the response status");
+    });
+    const port = await listen(server);
+    let helperDirectory: string | undefined;
+    let helperPid: number | undefined;
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+    try {
+      const response = await fetchRegistryResponse(`http://registry.test:${port}/bodyless`, undefined, {
+        ...productionOptions("registry.test"),
+        requestPinnedForTesting: (url, address, init, timeoutMs) =>
+          requestRegistryAddressPinned(url, address, init, timeoutMs, {
+            onHelperSpawn(details) {
+              helperDirectory = details.directory;
+              helperPid = details.pid;
+            },
+          }),
+      });
+      expect(response.status).toBe(205);
+      expect(response.body).toBeNull();
+      expect(await response.text()).toBe("");
+      await waitFor(() => peerClosed, "bodyless registry response did not terminate its upstream socket");
+      const directory = required(helperDirectory, "bodyless registry helper did not start");
+      await waitFor(() => !fs.existsSync(directory), "bodyless registry helper was not cleaned up");
+      const pid = helperPid;
+      if (pid !== undefined && process.platform !== "win32") {
+        expect(() => process.kill(pid, 0)).toThrow();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(unhandledRejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+      await close(server);
+    }
+  });
+
   test("pins TLS to the address while verifying the original hostname and sending it as SNI/Host", async () => {
     const observer = await nodeTlsObserver();
     const trustedTransport = (url: URL, address: string, init: RequestInit | undefined, timeoutMs: number) =>
@@ -565,6 +611,44 @@ describe("registry pinned production transport", () => {
         expect(certificateFailure.message).toMatch(/not valid for 'other\.test'|hostname/i);
       } finally {
         await observer.close();
+      }
+
+      let peerClosedWithoutSafetyRelease = false;
+      let safetyReleased = false;
+      let safetyTimer: ReturnType<typeof setTimeout> | undefined;
+      const bodylessServer = http.createServer((request, response) => {
+        request.socket.once("close", () => {
+          if (!safetyReleased) peerClosedWithoutSafetyRelease = true;
+        });
+        response.writeHead(205, { "Content-Type": "text/plain", "Transfer-Encoding": "chunked" });
+        response.write("a body forbidden by the response status");
+        safetyTimer = setTimeout(() => {
+          safetyReleased = true;
+          response.destroy();
+        }, 750);
+      });
+      const bodylessPort = await listen(bodylessServer);
+      try {
+        const nodeBodyless = JSON.parse(
+          await runProcess([
+            nodeExecutablePath(),
+            nodeBundle,
+            `http://registry.test:${bodylessPort}/bodyless`,
+            "127.0.0.1",
+            "-",
+            "bodyless-success",
+          ]),
+        ) as { body: string; ok: boolean; status: number; unhandledRejections: string[] };
+        expect(nodeBodyless).toEqual({
+          body: "",
+          ok: true,
+          status: 205,
+          unhandledRejections: [],
+        });
+        expect(peerClosedWithoutSafetyRelease).toBe(true);
+      } finally {
+        if (safetyTimer) clearTimeout(safetyTimer);
+        await close(bodylessServer);
       }
 
       const emptyPath = path.join(root, "empty-path");

@@ -120,24 +120,42 @@ function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
     ["node:tls", new Set(["connect"])],
     ["node:undici", new Set(["connect", "fetch", "pipeline", "request", "stream"])],
     ["undici", new Set(["connect", "fetch", "pipeline", "request", "stream"])],
+    ["bun", new Set(["connect", "udpSocket"])],
   ]);
-  const namespaces = new Map<string, string>();
+  const namespaces = new Map<string, string>([["Bun", "bun"]]);
   const callables = new Set<string>();
   const findings = new Set<string>();
   const declarations: ts.VariableDeclaration[] = [];
 
+  const unwrapExpression = (expression: ts.Expression): ts.Expression => {
+    let value = expression;
+    while (true) {
+      if (
+        ts.isAwaitExpression(value) ||
+        ts.isAsExpression(value) ||
+        ts.isTypeAssertionExpression(value) ||
+        ts.isParenthesizedExpression(value) ||
+        ts.isNonNullExpression(value) ||
+        ts.isSatisfiesExpression(value)
+      ) {
+        value = value.expression;
+        continue;
+      }
+      if (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+        value = value.right;
+        continue;
+      }
+      if (ts.isCommaListExpression(value) && value.elements.length > 0) {
+        value = value.elements[value.elements.length - 1] as ts.Expression;
+        continue;
+      }
+      return value;
+    }
+  };
+
   const importedModule = (initializer: ts.Expression | undefined): string | undefined => {
     if (!initializer) return undefined;
-    let value = initializer;
-    while (
-      ts.isAwaitExpression(value) ||
-      ts.isAsExpression(value) ||
-      ts.isTypeAssertionExpression(value) ||
-      ts.isParenthesizedExpression(value) ||
-      ts.isNonNullExpression(value)
-    ) {
-      value = value.expression;
-    }
+    const value = unwrapExpression(initializer);
     if (!ts.isCallExpression(value) || value.arguments.length !== 1) return undefined;
     const argument = value.arguments[0];
     if (!argument || !ts.isStringLiteral(argument)) return undefined;
@@ -197,35 +215,35 @@ function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
   }
 
   const propertyCapability = (expression: ts.Expression): string | undefined => {
+    const value = unwrapExpression(expression);
     let owner: ts.Expression;
     let method: string | undefined;
-    if (ts.isPropertyAccessExpression(expression)) {
-      owner = expression.expression;
-      method = expression.name.text;
+    if (ts.isPropertyAccessExpression(value)) {
+      owner = value.expression;
+      method = value.name.text;
     } else if (
-      ts.isElementAccessExpression(expression) &&
-      expression.argumentExpression &&
-      ts.isStringLiteral(expression.argumentExpression)
+      ts.isElementAccessExpression(value) &&
+      value.argumentExpression &&
+      ts.isStringLiteral(value.argumentExpression)
     ) {
-      owner = expression.expression;
-      method = expression.argumentExpression.text;
+      owner = value.expression;
+      method = value.argumentExpression.text;
     } else {
       return undefined;
     }
     if (!method) return undefined;
+    owner = unwrapExpression(owner);
     const moduleName = ts.isIdentifier(owner) ? namespaces.get(owner.text) : importedModule(owner);
-    return moduleName && moduleMethods.get(moduleName)?.has(method)
-      ? `${owner.getText(sourceFile)}.${method}`
-      : undefined;
+    return moduleName && moduleMethods.get(moduleName)?.has(method) ? expression.getText(sourceFile) : undefined;
   };
 
   const expressionIsCallable = (expression: ts.Expression | undefined): boolean => {
     if (!expression) return false;
-    if (ts.isIdentifier(expression)) return callables.has(expression.text);
-    if (propertyCapability(expression)) return true;
-    if (ts.isParenthesizedExpression(expression)) return expressionIsCallable(expression.expression);
-    if (ts.isConditionalExpression(expression)) {
-      return expressionIsCallable(expression.whenTrue) || expressionIsCallable(expression.whenFalse);
+    const value = unwrapExpression(expression);
+    if (ts.isIdentifier(value)) return callables.has(value.text);
+    if (propertyCapability(value)) return true;
+    if (ts.isConditionalExpression(value)) {
+      return expressionIsCallable(value.whenTrue) || expressionIsCallable(value.whenFalse);
     }
     return false;
   };
@@ -328,8 +346,11 @@ describe("registry outbound request architecture", () => {
         const { request: bareRequest } = require("http");
         const bareTls = process.getBuiltinModule("tls");
         require("node:https").request({});
+        (0, require("node:https").request)({});
         (await import("node:https")).request({});
         process.getBuiltinModule("node:net").connect({});
+        Bun.connect({ hostname: "example.test", port: 443, socket: {} });
+        Bun.udpSocket({ socket: {} });
         alias({});
         dynamic.request({});
         http2.connect("https://example.test");
@@ -340,7 +361,10 @@ describe("registry outbound request architecture", () => {
         bareTls.connect({});
       `),
     ).toEqual([
+      'call:(0, require("node:https").request)',
       'call:(await import("node:https")).request',
+      "call:Bun.connect",
+      "call:Bun.udpSocket",
       "call:alias",
       "call:bareHttps.request",
       "call:bareRequest",
@@ -359,7 +383,10 @@ describe("registry outbound request architecture", () => {
     expect(
       rawHttpCapabilities(fs.readFileSync(directExpressionFixture as string, "utf8"), directExpressionFixture),
     ).toEqual([
+      'call:(0, require("node:https").request)',
       'call:(await import("node:https")).request',
+      "call:Bun.connect",
+      "call:Bun.udpSocket",
       'call:process.getBuiltinModule("node:net").connect',
       'call:require("node:https").request',
     ]);

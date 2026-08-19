@@ -489,6 +489,10 @@ async function pumpHelperFrames(
       const prelude = parseHelperPrelude(payload);
       sawPrelude = true;
       callbacks.onPrelude(prelude);
+      // A HEAD or null-body status cancels the transport synchronously from
+      // the prelude callback. Do not consume any body frames already buffered
+      // behind that prelude or wait for a helper that has been terminated.
+      if (rawBody.destroyed) return;
       continue;
     }
     if (type === FRAME_BODY) {
@@ -743,8 +747,12 @@ function responseFromRaw(
 ): Response {
   const headers = responseHeaders(metadata.rawHeaders);
   const { status, statusText } = metadata;
-  if (method === "HEAD" || status === 204 || status === 205 || status === 304) {
-    raw.resume();
+  if (responseMustNotHaveBody(method, status)) {
+    // Draining is unsafe here: a hostile peer can attach an endless chunked
+    // body to a null-body status and retain the pinned socket/helper forever.
+    // Terminate the underlying transport before exposing the bodyless response.
+    onCancel();
+    if (!raw.destroyed) raw.destroy();
     return new Response(null, { status, statusText, headers });
   }
 
@@ -763,6 +771,13 @@ function responseFromRaw(
   decoded.once("close", onCancel);
   const body = Readable.toWeb(decoded) as unknown as ReadableStream<Uint8Array>;
   return new Response(body, { status, statusText, headers });
+}
+
+/** Fetch null-body cases accepted by the helper's final-response protocol. */
+function responseMustNotHaveBody(method: string, status: number): boolean {
+  // Interim 1xx responses never enter this function: node:http reports them
+  // separately and the helper protocol accepts final statuses from 200 onward.
+  return method === "HEAD" || status === 204 || status === 205 || status === 304;
 }
 
 function responseHeaders(rawHeaders: string[]): Headers {
