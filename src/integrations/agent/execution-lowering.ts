@@ -4,8 +4,9 @@
 
 import type { AkmConfig, LlmConnectionConfig } from "../../core/config/config-types";
 import { ConfigError } from "../../core/errors";
-import { cloneExecutionJsonObject, type ExecutionJsonObject } from "../../execution/json";
+import { cloneExecutionJsonObject } from "../../execution/json";
 import { EXECUTION_MAX_TIMEOUT_MS } from "../../execution/limits";
+import { assertSnapshotKeys, snapshotStrictRecord } from "../../execution/record";
 import {
   canonicalResolvedExecutionRequest,
   type LoweringNotice,
@@ -284,6 +285,12 @@ export function listExecutionLowerers(): readonly string[] {
 }
 
 function requireRunnerShape(request: ResolvedExecutionRequestV1, runner: RunnerSpec): void {
+  if (!own(runner, "engine") || runner.engine !== request.engine.name) {
+    throw new ConfigError(
+      `Resolved engine ${JSON.stringify(request.engine.name)} changed engine identity before lowering.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
   if (request.engine.kind !== runner.kind) {
     throw new ConfigError(
       `Resolved engine ${JSON.stringify(request.engine.name)} changed transport kind before lowering.`,
@@ -291,9 +298,15 @@ function requireRunnerShape(request: ResolvedExecutionRequestV1, runner: RunnerS
     );
   }
   const platform = own(request.engine, "platform") ? request.engine.platform : undefined;
-  if (runner.kind !== "llm" && platform !== runner.profile.platform) {
+  const runnerPlatform =
+    runner.kind === "llm"
+      ? (runner.connection.provider ?? runner.engine)
+      : (runner.profile.platform ?? runner.profile.name);
+  // A legacy request may omit platform, but whenever freeze/planning selected
+  // one it is an identity binding rather than a capability hint.
+  if (typeof platform === "string" && platform !== runnerPlatform) {
     throw new ConfigError(
-      `Resolved engine ${JSON.stringify(request.engine.name)} changed harness platform before lowering.`,
+      `Resolved engine ${JSON.stringify(request.engine.name)} changed provider/harness platform before lowering.`,
       "INVALID_CONFIG_FILE",
     );
   }
@@ -581,8 +594,40 @@ export async function dispatchLoweredExecutionRequest(
     throw new TypeError("lowered execution request must be produced by the engine lowerer registry");
   }
   canonicalResolvedExecutionRequest(lowered.request);
-  const run = options.executeRunner ?? executeRunner;
-  const operational = options.runOptions ?? {};
+  const optionSnapshot = snapshotStrictRecord(options, "lowered execution dispatch options");
+  assertSnapshotKeys(
+    optionSnapshot,
+    ["executeRunner", "chat", "runAgent", "runSdk", "runOptions"],
+    "lowered execution dispatch options",
+  );
+  const strictOptions = optionSnapshot as unknown as DispatchLoweredExecutionOptions;
+  const run = strictOptions.executeRunner ?? executeRunner;
+  const operationalSnapshot = snapshotStrictRecord(
+    strictOptions.runOptions ?? {},
+    "lowered execution operational options",
+  );
+  assertSnapshotKeys(
+    operationalSnapshot,
+    [
+      "stdio",
+      "timeoutMs",
+      "parseOutput",
+      "env",
+      "cwd",
+      "args",
+      "stdin",
+      "signal",
+      "envSource",
+      "spawn",
+      "setTimeoutFn",
+      "clearTimeoutFn",
+      "onEvent",
+      "dispatch",
+      "builderRegistry",
+    ],
+    "lowered execution operational options",
+  );
+  const operational = operationalSnapshot as unknown as Partial<RunAgentOptions>;
   const runOptions = sterileRecord({
     ...lowered.options,
     ...(operational.stdio !== undefined ? { stdio: operational.stdio } : {}),
@@ -595,13 +640,13 @@ export async function dispatchLoweredExecutionRequest(
     ...(operational.onEvent !== undefined ? { onEvent: operational.onEvent } : {}),
   });
   return run(lowered.runner, lowered.prompt, runOptions, {
-    ...(options.runAgent ? { runAgent: options.runAgent } : {}),
-    ...(options.runSdk ? { runSdk: options.runSdk } : {}),
+    ...(strictOptions.runAgent ? { runAgent: strictOptions.runAgent } : {}),
+    ...(strictOptions.runSdk ? { runSdk: strictOptions.runSdk } : {}),
     ...("messages" in lowered
       ? {
           llm: async (spec, _prompt, runOptions) => {
             const started = Date.now();
-            const stdout = await (options.chat ?? chatCompletion)(spec.connection, [...lowered.messages], {
+            const stdout = await (strictOptions.chat ?? chatCompletion)(spec.connection, [...lowered.messages], {
               ...lowered.chatOptions,
               ...(runOptions.signal ? { signal: runOptions.signal } : {}),
             });

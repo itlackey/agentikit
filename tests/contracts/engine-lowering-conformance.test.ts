@@ -80,7 +80,7 @@ function requestFor(
     }),
     agent: "fixture//agents/reviewer",
     persona: persona(),
-    engine: { name: "fixture", kind, platform },
+    engine: { name: "fixture", kind, platform: kind === "llm" ? "openai-compatible" : platform },
     model: { input: "balanced", interpretation: "alias", resolved: "provider/exact-model" },
     inference: { effort: "high", temperature: 0, extraParams: {}, supportsJsonSchema: true },
     outputSchema: { type: "object", properties: {}, additionalProperties: false },
@@ -248,6 +248,7 @@ describe("optimistic lowering safety", () => {
       authorization: { status: "not-required" },
     });
     const connection = {
+      provider: "openai-compatible",
       endpoint: "https://frozen.invalid/v1/chat/completions",
       model: "frozen/base-must-not-win",
       supportsJsonSchema: true,
@@ -305,6 +306,16 @@ describe("optimistic lowering safety", () => {
     const lowered = lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
     if (!("messages" in lowered)) throw new Error("fixture must use direct LLM lowering");
     expect(lowered.messages).toEqual([...conversation, { role: "user", content: "Repair it." }]);
+
+    const { engine: _legacyOmission, ...legacyRunner } = runner;
+    const legacy = prepareInlineExecutionWithRunner({
+      content: "Legacy frozen work.",
+      runner: legacyRunner,
+      invocationKind: "workflow",
+    });
+    expect(legacy.request.engine.name).toBe("llm");
+    expect(legacy.runner.engine).toBe("llm");
+    expect(() => lowerResolvedExecutionRequestWithRunner(legacy.request, legacy.runner)).not.toThrow();
   });
 
   test("does not rerun legacy model aliases while resolving live transport material", () => {
@@ -336,6 +347,33 @@ describe("optimistic lowering safety", () => {
       /runner must stay untouched/,
     );
     expect(touched).toBe(false);
+  });
+
+  test("binds config-free lowering to the resolved engine name and LLM provider", () => {
+    const request = requestFor("openai-compatible", "llm", {
+      tools: [],
+      authorization: { status: "not-required" },
+    });
+    const base = {
+      kind: "llm" as const,
+      engine: "fixture",
+      connection: {
+        provider: "openai-compatible",
+        endpoint: "https://frozen.invalid/v1/chat/completions",
+        model: "frozen/base",
+      },
+    };
+    expect(() => lowerResolvedExecutionRequestWithRunner(request, { ...base, engine: "different-engine" })).toThrow(
+      /engine.*name|identity|different-engine/i,
+    );
+    expect(() =>
+      lowerResolvedExecutionRequestWithRunner(request, {
+        ...base,
+        connection: { ...base.connection, provider: "different-provider" },
+      }),
+    ).toThrow(/provider|platform/i);
+    const { engine: _engine, ...unbound } = base;
+    expect(() => lowerResolvedExecutionRequestWithRunner(request, unbound)).toThrow(/engine.*name|identity|bound/i);
   });
 
   test("unsupported fields produce deterministic secret-free notices and runtime rejection still dispatches", async () => {
@@ -396,6 +434,12 @@ describe("optimistic lowering safety", () => {
     });
     const omittedLowered = lowerResolvedExecutionRequest(omitted, configFor("claude"));
     const explicitLowered = lowerResolvedExecutionRequest(explicit, configFor("claude"));
+    expect(omittedLowered.translatedFields).not.toContain("runtime.timeoutMs");
+    expect(omittedLowered.translatedFields).not.toContain("runtime.workspace");
+    expect(omittedLowered.translatedFields).not.toContain("runtime.environment");
+    expect(explicitLowered.translatedFields).toEqual(
+      expect.arrayContaining(["runtime.timeoutMs", "runtime.workspace", "runtime.environment"]),
+    );
     expect(Object.hasOwn(omittedLowered.request, "model")).toBe(false);
     expect(Object.hasOwn(explicitLowered.request, "model")).toBe(true);
     expect(explicitLowered.request.model).toBeNull();
@@ -477,5 +521,19 @@ describe("optimistic lowering safety", () => {
       },
     });
     expect(captured).toMatchObject({ timeoutMs: 0, signal: controller.signal });
+  });
+
+  test("rejects accessor-backed operational options without invoking them", async () => {
+    const lowered = lowerResolvedExecutionRequest(requestFor("claude"), configFor("claude"));
+    let touched = false;
+    const runOptions = Object.defineProperty({}, "stdio", {
+      enumerable: true,
+      get() {
+        touched = true;
+        throw new Error("operational accessor ran");
+      },
+    });
+    await expect(dispatchLoweredExecutionRequest(lowered, { runOptions })).rejects.toThrow(/accessor|data property/i);
+    expect(touched).toBe(false);
   });
 });

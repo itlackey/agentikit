@@ -88,9 +88,18 @@ export interface RunnerExecutionEngineDefinition {
  * without consulting config, aliases, environment variables, or credentials.
  */
 export function executionEngineDefinitionFromRunner(input: RunnerSpec): RunnerExecutionEngineDefinition {
-  const runner = cloneExecutionJsonObject(input, "frozen execution runner") as unknown as RunnerSpec;
-  const engineName = runner.engine ?? (runner.kind === "llm" ? "llm" : runner.profile.name);
+  const snapshot = cloneExecutionJsonObject(input, "frozen execution runner") as unknown as RunnerSpec;
+  const engineName = snapshot.engine ?? (snapshot.kind === "llm" ? "llm" : snapshot.profile.name);
   if (!engineName) throw new TypeError("frozen execution runner requires a stable engine name");
+  // This sanctioned preparation seam normalizes legacy runner material that
+  // omitted `engine`; the lowerer itself rejects unbound runner/request pairs.
+  const runner =
+    typeof snapshot.engine === "string"
+      ? snapshot
+      : (cloneExecutionJsonObject(
+          { ...snapshot, engine: engineName },
+          "bound frozen execution runner",
+        ) as unknown as RunnerSpec);
   if (runner.kind === "llm") {
     const inference = withoutUndefined({
       temperature: ownValue(runner.connection, "temperature"),
@@ -107,7 +116,7 @@ export function executionEngineDefinitionFromRunner(input: RunnerSpec): RunnerEx
         selection: Object.freeze({
           name: engineName,
           kind: "llm" as const,
-          ...(runner.connection.provider ? { platform: runner.connection.provider } : {}),
+          platform: runner.connection.provider ?? engineName,
           settings: cloneExecutionJsonObject(
             withoutUndefined({
               endpoint: runner.connection.endpoint,

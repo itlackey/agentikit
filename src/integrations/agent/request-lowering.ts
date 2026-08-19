@@ -91,13 +91,10 @@ export function createAgentRequestLowerer(
 ): (profile: AgentProfile, request: ResolvedExecutionRequestV1) => LoweredAgentDispatch {
   const supportedInference = new Set(options.inference ?? []);
   return (_profile, request) => {
-    const translated = new Set<string>([
-      "command.content",
-      "engine",
-      "runtime.timeoutMs",
-      "runtime.workspace",
-      "runtime.environment",
-    ]);
+    const translated = new Set<string>(["command.content", "engine"]);
+    for (const field of ["timeoutMs", "workspace", "environment"] as const) {
+      if (own(request.runtime, field)) translated.add(`runtime.${field}`);
+    }
     const untranslated = new Set<string>();
     const notices: Readonly<LoweringNotice>[] = [];
     const reject = (field: string): void => {
