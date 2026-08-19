@@ -8,13 +8,6 @@ import { ConfigError } from "./errors";
 import { classifyPathAccess, describeInaccessiblePath } from "./path-access";
 import { getConfigPath, getDataDir } from "./paths";
 
-let afterPendingCheckHook: (() => void) | undefined;
-
-/** TEST-ONLY: run once after a clear pending-operation check. */
-export function _setAfterPendingOperationCheckHookForTests(hook?: () => void): void {
-  afterPendingCheckHook = hook;
-}
-
 function installationId(): string {
   return crypto
     .createHash("sha256")
@@ -84,7 +77,4 @@ export function assertNoPendingMigrationOperation(): void {
       );
     }
   }
-  const hook = afterPendingCheckHook;
-  afterPendingCheckHook = undefined;
-  hook?.();
 }

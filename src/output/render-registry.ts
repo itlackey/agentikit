@@ -32,12 +32,6 @@ import type { DetailLevel } from "./context";
  */
 export type DocumentRendererHandler = (result: unknown, detail: DetailLevel) => string | null;
 
-/** A single renderer registration: a command name plus its handler. */
-export interface DocumentRendererEntry {
-  command: string;
-  handler: DocumentRendererHandler;
-}
-
 const MD_RENDERER_REGISTRY = createCommandRegistry<DocumentRendererHandler>();
 const HTML_RENDERER_REGISTRY = createCommandRegistry<DocumentRendererHandler>();
 
@@ -46,19 +40,9 @@ export function registerMdRenderer(command: string, handler: DocumentRendererHan
   MD_RENDERER_REGISTRY.register(command, handler);
 }
 
-/** Register a batch of Markdown renderers in iteration order. */
-export function registerMdRenderers(entries: Iterable<DocumentRendererEntry>): void {
-  MD_RENDERER_REGISTRY.registerAll(entries);
-}
-
 /** Look up a registered Markdown renderer, or `undefined` when unregistered. */
 export function getMdRendererHandler(command: string): DocumentRendererHandler | undefined {
   return MD_RENDERER_REGISTRY.get(command);
-}
-
-/** Remove a previously-registered Markdown renderer. Test-only utility. */
-export function deregisterMdRenderer(command: string): void {
-  MD_RENDERER_REGISTRY.deregister(command);
 }
 
 /** Register an HTML renderer for a command name. */
@@ -66,17 +50,7 @@ export function registerHtmlRenderer(command: string, handler: DocumentRendererH
   HTML_RENDERER_REGISTRY.register(command, handler);
 }
 
-/** Register a batch of HTML renderers in iteration order. */
-export function registerHtmlRenderers(entries: Iterable<DocumentRendererEntry>): void {
-  HTML_RENDERER_REGISTRY.registerAll(entries);
-}
-
 /** Look up a registered HTML renderer, or `undefined` when unregistered. */
 export function getHtmlRendererHandler(command: string): DocumentRendererHandler | undefined {
   return HTML_RENDERER_REGISTRY.get(command);
-}
-
-/** Remove a previously-registered HTML renderer. Test-only utility. */
-export function deregisterHtmlRenderer(command: string): void {
-  HTML_RENDERER_REGISTRY.deregister(command);
 }

@@ -126,11 +126,3 @@ export function parseSinceToIsoLenient(since: string): string {
   if (ms === null) return since;
   return new Date(Date.now() - ms).toISOString();
 }
-
-/**
- * Convert an ISO-8601 timestamp string to the SQLite datetime format
- * `"YYYY-MM-DD HH:MM:SS"` used by `datetime('now')`.
- */
-export function isoToSqlite(iso: string): string {
-  return iso.replace("T", " ").replace(/\.\d+Z$/, "");
-}

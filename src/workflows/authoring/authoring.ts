@@ -207,26 +207,6 @@ export function formatWorkflowErrors(path: string, errors: WorkflowError[]): str
 }
 
 /**
- * Validate a workflow filesystem path.
- *
- * Returns the parse result plus the source-relative path used. Throws
- * `UsageError` only when the target cannot be located on disk; parse
- * failures are returned as `{ ok: false, errors }` so callers can
- * format them however they like.
- */
-export function validateWorkflowSource(target: string): {
-  path: string;
-  parse: ReturnType<typeof parseWorkflow>;
-} {
-  const resolved = path.resolve(target);
-  if (!fs.existsSync(resolved)) {
-    throw new UsageError(`Workflow file not found: "${target}".`);
-  }
-  const content = fs.readFileSync(resolved, "utf8");
-  return { path: target, parse: parseWorkflow(content, { path: target }) };
-}
-
-/**
  * Every file under `typeRoot` whose canonical workflow name equals
  * `normalizedName`. Extension matching is case-INSENSITIVE, so `foo.MD` and
  * `foo.md` both match — the case-variant collision the create path must refuse
