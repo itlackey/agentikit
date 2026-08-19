@@ -196,6 +196,8 @@ describe("applyForgettingSafety — WS-1 step-7 protective injection", () => {
       pendingForgettingRefs: [],
       scope: { mode: "all" },
       mergedRefs: merged,
+      eligibleRefs: merged,
+      allowFallbacks: true,
       eligibilitySourceByRef: new Map(),
       highSalienceRefs: [],
       proactiveRefs: [],
@@ -210,6 +212,8 @@ describe("applyForgettingSafety — WS-1 step-7 protective injection", () => {
       pendingForgettingRefs: ["memories/dropped"],
       scope: { mode: "ref", value: "memories/a" },
       mergedRefs: merged,
+      eligibleRefs: [ref("memories/dropped")],
+      allowFallbacks: true,
       eligibilitySourceByRef: new Map(),
       highSalienceRefs: [],
       proactiveRefs: [],
@@ -219,13 +223,19 @@ describe("applyForgettingSafety — WS-1 step-7 protective injection", () => {
     expect(out.map((r) => r.ref)).toEqual(["memories/a"]);
   });
 
-  test("new forgetting candidates are injected as labelled stubs and deduped", () => {
+  test("current-plan forgetting candidates reuse exact provenance-bearing objects and are deduped", () => {
     const inPool = ref("memories/already-in-pool");
+    const eligible = ref("memories/dropped", {
+      itemRef: "stash//memories/dropped",
+      filePath: "/tmp/current-plan/memories/dropped.md",
+    });
     const lanes = new Map<string, EligibilitySource>();
     const out = applyForgettingSafety({
-      pendingForgettingRefs: ["memories/dropped", "memories/already-in-pool"],
+      pendingForgettingRefs: ["stash//memories/dropped", "memories/already-in-pool"],
       scope: { mode: "all" },
       mergedRefs: [inPool],
+      eligibleRefs: [inPool, eligible],
+      allowFallbacks: true,
       eligibilitySourceByRef: lanes,
       highSalienceRefs: [],
       proactiveRefs: [],
@@ -233,10 +243,60 @@ describe("applyForgettingSafety — WS-1 step-7 protective injection", () => {
     });
 
     expect(out.map((r) => r.ref)).toEqual(["memories/already-in-pool", "memories/dropped"]);
-    const stub = out.find((r) => r.ref === "memories/dropped");
-    expect(stub?.eligibilitySource).toBe("forgetting-safety");
+    const admitted = out.find((r) => r.ref === "memories/dropped");
+    expect(admitted).toBe(eligible);
+    expect(admitted).toMatchObject({
+      itemRef: "stash//memories/dropped",
+      filePath: "/tmp/current-plan/memories/dropped.md",
+      eligibilitySource: "forgetting-safety",
+    });
     // The pre-existing pool object is the SAME object (stamps travel by reference).
     expect(out[0]).toBe(inPool);
+  });
+
+  test("out-of-scope, stale, cleanup-removed, and validation-removed state cannot synthesize candidates", () => {
+    const merged = [ref("skills/current")];
+    const out = applyForgettingSafety({
+      pendingForgettingRefs: [
+        "stash//memories/out-of-scope",
+        "stash//skills/stale",
+        "stash//skills/cleanup-removed",
+        "stash//lessons/validation-removed",
+      ],
+      scope: { mode: "type", value: "skill" },
+      mergedRefs: merged,
+      // This is the exact post-cleanup/post-validation invocation plan.
+      eligibleRefs: merged,
+      allowFallbacks: true,
+      eligibilitySourceByRef: new Map(),
+      highSalienceRefs: [],
+      proactiveRefs: [],
+      signalFiltered: [],
+    });
+
+    expect(out).toBe(merged);
+    expect(out.map((entry) => entry.ref)).toEqual(["skills/current"]);
+  });
+
+  test("feedback-only mode suppresses forgetting fallback even for a current-plan candidate", () => {
+    const merged = [ref("skills/fresh", { eligibilitySource: "signal-delta" })];
+    const quiet = ref("skills/quiet", { itemRef: "stash//skills/quiet" });
+    const lanes = new Map<string, EligibilitySource>([["skills/fresh", "signal-delta"]]);
+    const out = applyForgettingSafety({
+      pendingForgettingRefs: ["stash//skills/quiet"],
+      scope: { mode: "type", value: "skill" },
+      mergedRefs: merged,
+      eligibleRefs: [merged[0]!, quiet],
+      allowFallbacks: false,
+      eligibilitySourceByRef: lanes,
+      highSalienceRefs: [],
+      proactiveRefs: [],
+      signalFiltered: merged,
+    });
+
+    expect(out).toBe(merged);
+    expect(out.map((entry) => entry.ref)).toEqual(["skills/fresh"]);
+    expect(lanes.has("skills/quiet")).toBe(false);
   });
 
   test("lane precedence: signal-delta > forgetting-safety > proactive/high-salience", () => {
@@ -250,6 +310,8 @@ describe("applyForgettingSafety — WS-1 step-7 protective injection", () => {
       pendingForgettingRefs: ["memories/dropped-but-proactive", "memories/dropped-but-fresh"],
       scope: { mode: "all" },
       mergedRefs: [dropped, fresh],
+      eligibleRefs: [dropped, fresh],
+      allowFallbacks: true,
       eligibilitySourceByRef: lanes,
       highSalienceRefs: [],
       proactiveRefs: [dropped],

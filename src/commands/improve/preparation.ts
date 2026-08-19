@@ -1127,6 +1127,12 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
   });
   actions.push(...gathered.actions);
 
+  // Shared admission boundary for every synthetic fallback lane. Cleanup and
+  // structural validation are exclusive selectors: no later rank/replay state
+  // may re-create a candidate they removed. Keep the exact surviving objects
+  // so any admitted fallback preserves its index-resolved file/item provenance.
+  const fallbackEligibleRefs = postCleanupRefs.filter((candidate) => !validationFailureRefs.has(candidate.ref));
+
   const scored = scoreSalience({
     scope,
     options,
@@ -1139,6 +1145,7 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
     signalFiltered: gathered.signalFiltered,
     proactiveRefs: gathered.proactiveRefs,
     highSalienceRefs: gathered.highSalienceRefs,
+    forgettingEligibleRefs: fallbackEligibleRefs,
     persist: !planOnly,
   });
 
@@ -1146,11 +1153,10 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
   // that have already removed a ref. Use the exact surviving objects so a
   // replay admission preserves the index-resolved file/item provenance while
   // excluding cleanup-pruned and structurally-invalid candidates.
-  const replayEligibleRefs = postCleanupRefs.filter((candidate) => !validationFailureRefs.has(candidate.ref));
   const filtered = await filterEligibility({
     scope,
     options,
-    replayEligibleRefs,
+    replayEligibleRefs: fallbackEligibleRefs,
     eventsCtx,
     mergedRefs: scored.mergedRefs,
     salienceMap: scored.salienceMap,
@@ -1507,30 +1513,38 @@ function gatherCandidates(args: {
     persist,
   });
 
-  const proactive = selectProactiveMaintenanceLane({
-    scope,
-    improveProfile,
-    resolvedPlan,
-    eventsCtx,
-    noFeedbackCandidates,
-    lastReflectProposalTs,
-    lastDistillProposalTs,
-    retrievalCounts,
-    lastUseMsForProactive,
-    persist,
-  });
+  // `--require-feedback-signal` is a hard policy boundary, not merely a final
+  // list filter. Do not run or report fallback selectors that the invocation
+  // explicitly disabled (and do not emit their live selection events).
+  const allowFallbacks = options.requireFeedbackSignal !== true;
+  const proactive = allowFallbacks
+    ? selectProactiveMaintenanceLane({
+        scope,
+        improveProfile,
+        resolvedPlan,
+        eventsCtx,
+        noFeedbackCandidates,
+        lastReflectProposalTs,
+        lastDistillProposalTs,
+        retrievalCounts,
+        lastUseMsForProactive,
+        persist,
+      })
+    : { proactiveRefs: [] };
   const proactiveRefs = proactive.proactiveRefs;
   const proactiveMaintenanceSummary = proactive.proactiveMaintenanceSummary;
 
-  const highSalienceRefs = selectHighSalienceLane({
-    options,
-    improveProfile,
-    eventsCtx,
-    noFeedbackCandidates,
-    proactiveRefs,
-    lastReflectProposalTs,
-    persist,
-  });
+  const highSalienceRefs = allowFallbacks
+    ? selectHighSalienceLane({
+        options,
+        improveProfile,
+        eventsCtx,
+        noFeedbackCandidates,
+        proactiveRefs,
+        lastReflectProposalTs,
+        persist,
+      })
+    : [];
 
   // Record an in-memory skip action for every zero-feedback ref that the
   // partition loop deferred to the proactive/high-salience fallbacks but those
@@ -2134,6 +2148,8 @@ function scoreSalience(args: {
   signalFiltered: ImproveEligibleRef[];
   proactiveRefs: ImproveEligibleRef[];
   highSalienceRefs: ImproveEligibleRef[];
+  /** Exact post-cleanup/post-validation objects eligible for rank fallback. */
+  forgettingEligibleRefs: ImproveEligibleRef[];
   persist: boolean;
 }): {
   mergedRefs: ImproveEligibleRef[];
@@ -2153,6 +2169,7 @@ function scoreSalience(args: {
     signalFiltered,
     proactiveRefs,
     highSalienceRefs,
+    forgettingEligibleRefs,
     persist,
   } = args;
   const mergedRefs = args.mergedRefs;
@@ -2231,6 +2248,8 @@ function scoreSalience(args: {
     pendingForgettingRefs,
     scope,
     mergedRefs,
+    eligibleRefs: forgettingEligibleRefs,
+    allowFallbacks: options.requireFeedbackSignal !== true,
     eligibilitySourceByRef,
     highSalienceRefs,
     proactiveRefs,
@@ -2733,8 +2752,9 @@ function persistSalienceAndReportRanks(args: {
             // this try block, bypassing cooldown/signal-delta gating.
             // Chunk-5 flip F5e — map an in-pool candidate's write-key spelling
             // back to its bare `r.ref` so applyForgettingSafety re-stamps the
-            // existing pool ref; a genuinely stash-wide (out-of-pool) candidate
-            // keeps its stored spelling and is synthesised as a fresh stub.
+            // existing pool ref. Other stored spellings stay qualified here;
+            // the downstream admission boundary resolves them only when they
+            // match an exact current-plan item_ref.
             pendingForgettingRefs = report.forgettingCandidates.map((e) => refByWriteKey.get(e.ref) ?? e.ref);
           }
           if (persist) {
@@ -2783,35 +2803,55 @@ export function applyForgettingSafety(args: {
   pendingForgettingRefs: string[];
   scope: ImproveScope;
   mergedRefs: ImproveEligibleRef[];
+  /** Exact post-cleanup/post-validation invocation plan. */
+  eligibleRefs: ImproveEligibleRef[];
+  /** False for `--require-feedback-signal`. */
+  allowFallbacks: boolean;
   eligibilitySourceByRef: Map<string, EligibilitySource>;
   highSalienceRefs: ImproveEligibleRef[];
   proactiveRefs: ImproveEligibleRef[];
   signalFiltered: ImproveEligibleRef[];
 }): ImproveEligibleRef[] {
-  const { pendingForgettingRefs, scope, eligibilitySourceByRef, highSalienceRefs, proactiveRefs, signalFiltered } =
-    args;
+  const {
+    pendingForgettingRefs,
+    scope,
+    eligibleRefs,
+    allowFallbacks,
+    eligibilitySourceByRef,
+    highSalienceRefs,
+    proactiveRefs,
+    signalFiltered,
+  } = args;
   let mergedRefs = args.mergedRefs;
   // ── Protective consolidation pass (plan §WS-1 step 7) ─────────────────────
   // Forgetting candidates detected in scenario B are force-injected into
   // mergedRefs here, BEFORE the effectiveScore sort, bypassing cooldown and
-  // signal-delta gating. Any ref already present in mergedRefs keeps its
-  // existing eligibilitySource (stronger reactive signals win); refs not yet in
-  // the pool are synthesised as minimal ImproveEligibleRef stubs and labelled
-  // 'forgetting-safety' so S5/WS-5 can slice by lane. The dedupeRefs call
-  // ensures no ref can enter the loop twice.
-  if (pendingForgettingRefs.length > 0 && scope.mode !== "ref") {
+  // signal-delta gating. The lane may only reuse exact objects from this
+  // invocation's post-cleanup/post-validation plan. Stale, out-of-scope, and
+  // differently-qualified durable state must never synthesize executable work.
+  if (pendingForgettingRefs.length > 0 && scope.mode !== "ref" && allowFallbacks) {
     const existingRefSet = new Set(mergedRefs.map((r) => r.ref));
+    const eligibleByRef = new Map(eligibleRefs.map((candidate) => [candidate.ref, candidate]));
+    const eligibleByItemRef = new Map<string, ImproveEligibleRef>();
+    for (const candidate of eligibleRefs) {
+      if (candidate.itemRef) eligibleByItemRef.set(candidate.itemRef, candidate);
+    }
     const newForgettingRefs: ImproveEligibleRef[] = [];
-    for (const ref of pendingForgettingRefs) {
-      if (!existingRefSet.has(ref)) {
-        // Ref not already in the candidate pool — synthesise a stub so it
-        // participates in the reflect/distill loop with proper attribution.
-        newForgettingRefs.push({ ref, reason: "scope-type", eligibilitySource: "forgetting-safety" });
+    const forgettingRefSet = new Set<string>();
+    for (const stateRef of pendingForgettingRefs) {
+      const boundary = stateRef.indexOf("//");
+      const candidate =
+        eligibleByItemRef.get(stateRef) ?? (boundary < 0 ? eligibleByRef.get(bareImproveRef(stateRef)) : undefined);
+      if (!candidate || forgettingRefSet.has(candidate.ref)) continue;
+      forgettingRefSet.add(candidate.ref);
+      if (!existingRefSet.has(candidate.ref)) {
+        newForgettingRefs.push(candidate);
+        existingRefSet.add(candidate.ref);
       }
       // Always stamp the lane in the attribution map (overwrites weaker lanes;
       // stronger reactive signals — scope/signal-delta/proactive — are written
       // after this block so they take precedence).
-      eligibilitySourceByRef.set(ref, "forgetting-safety");
+      eligibilitySourceByRef.set(candidate.ref, "forgetting-safety");
     }
     if (newForgettingRefs.length > 0) {
       mergedRefs = dedupeRefs([...mergedRefs, ...newForgettingRefs]);
@@ -2833,7 +2873,7 @@ export function applyForgettingSafety(args: {
     // set() calls above for proactive/high-salience overwrite the earlier
     // forgetting-safety stamp — so we re-apply forgetting-safety now for those
     // refs that are both forgetting candidates AND in another fallback lane.
-    for (const ref of pendingForgettingRefs) {
+    for (const ref of forgettingRefSet) {
       eligibilitySourceByRef.set(ref, "forgetting-safety");
     }
     // signal-delta is the strongest reactive signal and overrides forgetting-safety.
