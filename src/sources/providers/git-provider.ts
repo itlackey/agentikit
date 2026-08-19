@@ -77,13 +77,16 @@ registerSourceProvider("git", (config) => new GitSourceProvider(config));
 
 // ── Cache management ────────────────────────────────────────────────────────
 
-export function getCachePaths(repoUrl: string): {
+export function getCachePaths(
+  repoUrl: string,
+  cacheRootOverride?: string,
+): {
   rootDir: string;
   repoDir: string;
   indexPath: string;
 } {
   const key = createHash("sha256").update(repoUrl).digest("hex").slice(0, 16);
-  const cacheRoot = getRegistryIndexCacheDir();
+  const cacheRoot = cacheRootOverride ?? getRegistryIndexCacheDir();
   const rootDir = path.join(cacheRoot, `git-${key}`);
 
   return {
@@ -132,7 +135,7 @@ export async function syncMirroredRepo(config: SourceConfigEntry, options?: Sync
     throw new ConfigError("git stash entry requires a URL when no install ref is supplied");
   }
   const repo = parseGitRepoUrl(config.url);
-  const cachePaths = getCachePaths(repo.canonicalUrl);
+  const cachePaths = getCachePaths(repo.canonicalUrl, options?.cacheRootDir);
   await ensureGitMirror(repo, cachePaths, {
     requireRepoDir: true,
     writable: options?.writable ?? config.writable === true,

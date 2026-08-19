@@ -202,6 +202,16 @@ function readLockfileOrThrow(): LockfileEntry[] {
 }
 
 /**
+ * Read the exact lock generation that a source-lifecycle transaction may
+ * replace. Unlike {@link readLockfile}, this refuses corrupt, malformed, or
+ * unreadable state so an update can never treat state it could not snapshot as
+ * an empty generation.
+ */
+export function readLockfileForUpdate(): LockfileEntry[] {
+  return readLockfileOrThrow();
+}
+
+/**
  * The materialized content root recorded in the lock for a managed (git/npm)
  * bundle — spec §10.2 desired/resolved split, where the desired config carries
  * only the source LOCATOR and the resolved `localRoot` lives here.

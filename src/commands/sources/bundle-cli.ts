@@ -133,6 +133,12 @@ const updateCommand = defineJsonCommand({
     target: { type: "positional", description: "Bundle to update (id or ref)", required: false },
     all: { type: "boolean", description: "Update all installed entries", default: false },
     force: { type: "boolean", description: "Force fresh download even if version is unchanged", default: false },
+    "allow-insecure": {
+      type: "boolean",
+      description:
+        "Allow an update containing dangerous env keys (e.g. LD_PRELOAD, PATH). Use only after explicitly reviewing the staged bundle.",
+      default: false,
+    },
     // F1/R-058: gates ONLY the rare branch where the resolved content
     // directory moves and the previous `localRoot` is deleted — a normal
     // refresh (the overwhelming majority of updates) deletes nothing and
@@ -146,13 +152,20 @@ const updateCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
-    const result = await akmUpdate({ target: args.target, all: args.all, force: args.force, yes: args.yes });
+    const result = await akmUpdate({
+      target: args.target,
+      all: args.all,
+      force: args.force,
+      yes: args.yes,
+      allowInsecure: args["allow-insecure"],
+    });
     appendEvent({
       eventType: "update",
       metadata: {
         target: args.target ?? null,
         all: args.all === true,
         force: args.force === true,
+        allowInsecure: args["allow-insecure"] === true,
         processed: Array.isArray((result as { processed?: unknown[] }).processed)
           ? (result as { processed: unknown[] }).processed.length
           : 0,

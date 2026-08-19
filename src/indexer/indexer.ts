@@ -200,6 +200,12 @@ interface IndexOptions {
    */
   hydrateSources?: boolean;
   /**
+   * Whether adapter auto-detection may persist into config.json. Source-update
+   * transactions disable this so a failed publication can restore lock/content/
+   * index without also having to compensate an unrelated config write.
+   */
+  persistDetectedAdapters?: boolean;
+  /**
    * Whether this run was triggered implicitly by another command's inline
    * auto-index rather than by an explicit `akm index`.
    *
@@ -638,7 +644,7 @@ function detectAndPersistBundleAdapters(
   allSourceEntries: SearchSource[],
   config: AkmConfig,
   mutateConfig: typeof import("../core/config/config.js").mutateConfig,
-  opts: { announce: boolean },
+  opts: { announce: boolean; persist: boolean },
 ): { config: AkmConfig; persistedAdapters: Record<string, string> } {
   const detectedByBundle = new Map<string, string>();
   for (const source of allSourceEntries) {
@@ -650,7 +656,7 @@ function detectAndPersistBundleAdapters(
   }
 
   const persistedAdapters: Record<string, string> = {};
-  if (detectedByBundle.size === 0) return { config, persistedAdapters };
+  if (detectedByBundle.size === 0 || !opts.persist) return { config, persistedAdapters };
 
   const nextConfig = mutateConfig(
     (current) => {
@@ -759,6 +765,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       const allSourceEntries = resolveSourceEntries(stashDir, config);
       const detected = detectAndPersistBundleAdapters(allSourceEntries, config, mutateConfig, {
         announce: options.implicit !== true,
+        persist: options.persistDetectedAdapters !== false,
       });
       config = detected.config;
       const persistedAdapters = detected.persistedAdapters;

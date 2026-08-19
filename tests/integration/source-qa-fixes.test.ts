@@ -339,39 +339,30 @@ describe("issue #12: updatable field absent from SourceEntry", () => {
 
 describe("issue #19: akm bundle update website sources", () => {
   test("website source update does not throw TARGET_NOT_UPDATABLE", async () => {
-    // Use a local HTTP server to serve minimal HTML for the crawl
-    const server = Bun.serve({
-      port: 0,
-      fetch(_req: Request) {
-        return new Response(
-          "<html><head><title>Test</title></head><body><h1>Test</h1><p>hello world</p></body></html>",
-          { headers: { "Content-Type": "text/html; charset=utf-8" } },
-        );
-      },
+    const siteUrl = "http://127.0.0.1:45679/test-site";
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: { "test-site": { website: { url: siteUrl } } },
     });
-    const siteUrl = `http://127.0.0.1:${server.port}`;
 
-    try {
-      saveConfig({
-        semanticSearchMode: "off",
-        bundles: { "test-site": { website: { url: siteUrl } } },
-      });
-
-      // Should not throw TARGET_NOT_UPDATABLE
-      const result = await akmUpdate({ target: "test-site", stashDir });
-      // Returns an UpdateResponse with processed[] (empty for website sources
-      // — a website re-crawl has no UpdateResultItem shape, no version/lock to
-      // diff). R-015-adjacent: this success must still be reported somewhere,
-      // via `plainSynced`, instead of `processed: []` rendering as the same
-      // "nothing to update" text a true no-op would (pinned in
-      // output-text-add-update-formatters.test.ts).
-      expect(result).toBeDefined();
-      expect(result.schemaVersion).toBe(1);
-      expect(result.processed).toEqual([]);
-      expect(result.plainSynced).toEqual([{ id: "test-site", kind: "website", ref: siteUrl }]);
-    } finally {
-      server.stop(true);
-    }
+    // Should not throw TARGET_NOT_UPDATABLE
+    const result = await withMockedFetch(
+      () => akmUpdate({ target: "test-site", stashDir }),
+      () =>
+        new Response("<html><head><title>Test</title></head><body><h1>Test</h1><p>hello world</p></body></html>", {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        }),
+    );
+    // Returns an UpdateResponse with processed[] (empty for website sources
+    // — a website re-crawl has no UpdateResultItem shape, no version/lock to
+    // diff). R-015-adjacent: this success must still be reported somewhere,
+    // via `plainSynced`, instead of `processed: []` rendering as the same
+    // "nothing to update" text a true no-op would (pinned in
+    // output-text-add-update-formatters.test.ts).
+    expect(result).toBeDefined();
+    expect(result.schemaVersion).toBe(1);
+    expect(result.processed).toEqual([]);
+    expect(result.plainSynced).toEqual([{ id: "test-site", kind: "website", ref: siteUrl }]);
   });
 
   test("website source update authenticates X requests with the stored bearer token", async () => {
@@ -450,16 +441,14 @@ describe("issue #19: akm bundle update website sources", () => {
     // `plainSynced` rather than vanishing into an empty `processed: []` that
     // renders identically to a true no-op.
     expect(result.plainSynced).toEqual([{ id: "test-git", kind: "git", ref: "https://github.com/example/repo" }]);
-    // updateGitSource must refresh via syncMirroredRepo (not treat the URL as a
-    // local path), passing force + the resolved writable flag. The subsequent
-    // re-index also refreshes every cache-backed source through the provider
-    // seam (ensureSourceCaches → provider.sync()), so this spy legitimately
-    // sees more than one call; the meaningful assertion is the direct call's
-    // arguments below.
-    expect(syncSpy).toHaveBeenCalledWith(expect.objectContaining({ name: "test-git" }), {
-      force: true,
-      writable: false,
-    });
+    // updateGitSource refreshes once into an isolated cache root. The indexer
+    // is deliberately told not to hydrate again, otherwise a second fetch
+    // could bypass the audit boundary.
+    expect(syncSpy).toHaveBeenCalledTimes(1);
+    expect(syncSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "test-git" }),
+      expect.objectContaining({ force: true, writable: false, cacheRootDir: expect.any(String) }),
+    );
     syncSpy.mockRestore();
   });
 });
@@ -522,12 +511,19 @@ describe("update preserves entry.source for writable installed entries", () => {
     let result: Awaited<ReturnType<typeof akmUpdate>>;
     try {
       result = await akmUpdate({ target: "github:dimm-city/agent-stash", stashDir });
-      expect(syncSpy).toHaveBeenCalledWith("github:dimm-city/agent-stash", {
-        force: false,
-        writable: true,
-        writableRoot: stashRoot,
-        writableRequiredRoots: [stashRoot],
-      });
+      expect(syncSpy).toHaveBeenCalledTimes(1);
+      const updateOptions = syncSpy.mock.calls[0]?.[1];
+      expect(updateOptions).toEqual(
+        expect.objectContaining({
+          force: false,
+          writable: true,
+          writableRoot: expect.stringContaining(".akm-update-stage-"),
+        }),
+      );
+      expect(updateOptions?.writableRoot).not.toBe(stashRoot);
+      const stagedWritableRoot = updateOptions?.writableRoot;
+      if (!stagedWritableRoot) throw new Error("update did not pass a staged writable root");
+      expect(updateOptions?.writableRequiredRoots).toEqual([stagedWritableRoot]);
     } finally {
       syncSpy.mockRestore();
       mirrorSpy.mockRestore();
@@ -654,19 +650,11 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
     }
   });
 
-  test("accounts for every configured source: syncs git+npm, reports website+filesystem as skipped", async () => {
+  test("accounts for every configured source: syncs git+website+npm and reports filesystem as skipped", async () => {
     const fsDir = createTmpDir("akm-r015-fs-");
     makeStashDir(fsDir);
 
-    const server = Bun.serve({
-      port: 0,
-      fetch(_req: Request) {
-        return new Response("<html><head><title>T</title></head><body><h1>T</h1><p>hi</p></body></html>", {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        });
-      },
-    });
-    const siteUrl = `http://127.0.0.1:${server.port}`;
+    const siteUrl = "http://127.0.0.1:45680/docs-site";
 
     saveConfig({
       semanticSearchMode: "off",
@@ -705,11 +693,16 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
 
     let result: Awaited<ReturnType<typeof akmUpdate>>;
     try {
-      result = await akmUpdate({ all: true, stashDir });
+      result = await withMockedFetch(
+        () => akmUpdate({ all: true, stashDir }),
+        () =>
+          new Response("<html><head><title>T</title></head><body><h1>T</h1><p>hi</p></body></html>", {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+          }),
+      );
     } finally {
       gitSyncSpy.mockRestore();
       npmSyncSpy.mockRestore();
-      server.stop(true);
     }
 
     // Before R-015: `selectManagedTargets` returned `installs` (empty, since
@@ -723,19 +716,17 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
       kind: "git",
       ref: "https://github.com/example/mirror-git.git",
     });
+    expect(result.plainSynced).toContainEqual({ id: "docs-site", kind: "website", ref: siteUrl });
     // npm: promoted to a managed (lock-backed) install on first sync, so it
     // is reported via `processed` like any other managed update.
     expect(result.processed).toHaveLength(1);
     expect(result.processed[0]?.id).toBe("left-pad");
     expect(result.processed[0]?.installed.resolvedVersion).toBe("1.3.0");
-    // website + filesystem: no --all sync path exists for either, so both
-    // must be visibly reported as skipped (with the SAME explanatory wording
-    // the single-target path already used) rather than silently omitted.
+    // Filesystem is the only intentional skip: it reflects local bytes in
+    // place. Website now uses the same staged/audited transaction as an
+    // explicit website update.
     const skippedIds = (result.skipped ?? []).map((s) => s.id).sort();
-    expect(skippedIds).toEqual(["docs-site", "local-fs"]);
-    const websiteSkip = result.skipped?.find((s) => s.id === "docs-site");
-    expect(websiteSkip?.kind).toBe("website");
-    expect(websiteSkip?.reason).toContain("not yet implemented for --all");
+    expect(skippedIds).toEqual(["local-fs"]);
     const fsSkip = result.skipped?.find((s) => s.id === "local-fs");
     expect(fsSkip?.kind).toBe("filesystem");
     expect(fsSkip?.reason).toContain("akm index");
