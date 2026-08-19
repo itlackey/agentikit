@@ -1125,7 +1125,6 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
     snapshot,
     persist: !planOnly,
   });
-  actions.push(...gathered.actions);
 
   // Shared admission boundary for every synthetic fallback lane. Cleanup and
   // structural validation are exclusive selectors: no later rank/replay state
@@ -1164,11 +1163,19 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
     distillOnlyRefs: gathered.distillOnlyRefs,
     validationFailureRefs,
     summary: {
-      fullySkippedCount: gathered.fullySkippedCount,
-      preCooldownCount: gathered.preCooldownCount,
       signalAndRetrievalRefs: gathered.signalAndRetrievalRefs,
       signalFiltered: gathered.signalFiltered,
     },
+    persist: !planOnly,
+  });
+
+  const preDiskRefSet = new Set(filtered.preDiskRefs.map((candidate) => candidate.ref));
+  const terminalSignalSkippedRefs = fallbackEligibleRefs.filter((candidate) => !preDiskRefSet.has(candidate.ref));
+  recordSignalSkipObservability({
+    actions,
+    terminalSignalSkippedRefs,
+    distillCooledRefs: gathered.distillCooledRefs,
+    eventsCtx,
     persist: !planOnly,
   });
 
@@ -1179,9 +1186,15 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
   // pre-disk survivor set instead of the earlier lane-rescue snapshot; the
   // latter is intentionally assembled before replay and is also broader than
   // the effective pool when --require-feedback-signal suppresses fallbacks.
-  const postValidationCount = postCleanupRefs.length - validationFailureRefs.size;
-  const preDiskSurvivorCount = filtered.actionableRefs.length + filtered.missingDiskCount;
-  const signalRemoved = Math.max(0, postValidationCount - preDiskSurvivorCount);
+  const signalRemoved = terminalSignalSkippedRefs.length;
+
+  const totalReflectBlocked = terminalSignalSkippedRefs.length + gathered.distillOnlyRefs.length;
+  if (totalReflectBlocked > 0) {
+    info(
+      `[improve] ${totalReflectBlocked} of ${gathered.preCooldownCount} indexed refs blocked by reflect signal-delta ` +
+        `(${terminalSignalSkippedRefs.length} fully skipped, ${gathered.distillOnlyRefs.length} routed to distill-only)`,
+    );
+  }
 
   const planningGates: ImprovePlanGate[] = [
     cleanupGate,
@@ -1421,12 +1434,9 @@ export function buildSnapshotManifest(args: {
 
 /** Everything the candidate-gather pass hands the salience/eligibility passes. */
 interface GatheredCandidates {
-  /** Partition + declined-rescue skip actions, in emission order. */
-  actions: ImproveActionResult[];
   distillCooledRefs: Set<string>;
   preCooldownCount: number;
   distillOnlyRefs: ImproveEligibleRef[];
-  fullySkippedCount: number;
   feedbackSummary: Map<string, { hasSignal: boolean; positive: number; negative: number }>;
   signalFiltered: ImproveEligibleRef[];
   signalBearingSet: Set<string>;
@@ -1463,23 +1473,20 @@ function gatherCandidates(args: {
   const partition = partitionBySignalDelta({
     scope,
     options,
-    eventsCtx,
     postCleanupRefs,
     validationFailureRefs: args.validationFailureRefs,
     snapshot: args.snapshot,
-    persist,
   });
-  const actions = [...partition.actions];
-  const { distillCooledRefs, preCooldownCount, eligibleRefs, distillOnlyRefs, noFeedbackPool, fullySkippedCount } =
-    partition;
+  const { distillCooledRefs, preCooldownCount, eligibleRefs, distillOnlyRefs, noFeedbackPool } = partition;
 
   // ── Phase 4: signal/feedback/utility/sort on the reduced set ──────────────
   // Everything from here works on (eligibleRefs ∪ distillOnlyRefs) plus the
   // deferred noFeedbackPool that may be rescued by the proactive-maintenance
   // (Layer 2) or high-salience (Layer 3) fallbacks below. The fully-skipped
-  // bucket has already been routed and its aggregated event emitted; we
-  // deliberately avoid spending DB/CPU on refs that the signal-delta gate
-  // rejected with feedback already on record.
+  // bucket is retained as partition metadata only; terminal skip observability
+  // is delayed until every fallback lane has finalized. We deliberately avoid
+  // spending DB/CPU on refs that the signal-delta gate rejected with feedback
+  // already on record.
   const processableRefs: ImproveEligibleRef[] = [...eligibleRefs, ...distillOnlyRefs];
 
   const feedbackSummary = buildFeedbackSummaryMap({
@@ -1546,24 +1553,6 @@ function gatherCandidates(args: {
       })
     : [];
 
-  // Record an in-memory skip action for every zero-feedback ref that the
-  // partition loop deferred to the proactive/high-salience fallbacks but those
-  // lanes then declined (not due, below threshold, or a prior reflect proposal
-  // already on record). These never make it into mergedRefs, so without this
-  // they would silently vanish from the run summary. No DB event is written
-  // here — these refs carry no signal at all, so there is nothing for the skip
-  // histogram to aggregate; the action log alone preserves the per-ref audit
-  // trail (mirrors the fully-skipped action above).
-  const rescuedSet = new Set([...proactiveRefs, ...highSalienceRefs].map((r) => r.ref));
-  for (const r of noFeedbackPool) {
-    if (rescuedSet.has(r.ref)) continue;
-    actions.push({
-      ref: r.ref,
-      mode: "distill-skipped",
-      result: { ok: true, reason: "no new signal since last proposal" },
-    });
-  }
-
   // If the user explicitly scoped to a single ref, always act on it —
   // skip the signal/retrieval filter entirely. The filter exists to avoid
   // noisy "improve everything" runs; it should not gate an intentional
@@ -1617,11 +1606,9 @@ function gatherCandidates(args: {
   }
 
   return {
-    actions,
     distillCooledRefs,
     preCooldownCount,
     distillOnlyRefs,
-    fullySkippedCount,
     feedbackSummary,
     signalFiltered,
     signalBearingSet,
@@ -1644,13 +1631,10 @@ function gatherCandidates(args: {
 export function partitionBySignalDelta(args: {
   scope: ImproveScope;
   options: AkmImproveOptions;
-  eventsCtx?: EventsContext;
   postCleanupRefs: ImproveEligibleRef[];
   validationFailureRefs: Set<string>;
   snapshot: SignalDeltaSnapshot;
-  persist?: boolean;
 }): {
-  actions: ImproveActionResult[];
   distillCooledRefs: Set<string>;
   preCooldownCount: number;
   eligibleRefs: ImproveEligibleRef[];
@@ -1658,9 +1642,8 @@ export function partitionBySignalDelta(args: {
   noFeedbackPool: ImproveEligibleRef[];
   fullySkippedCount: number;
 } {
-  const { scope, options, eventsCtx, postCleanupRefs, validationFailureRefs, persist = true } = args;
+  const { scope, options, postCleanupRefs, validationFailureRefs } = args;
   const { latestFeedbackTs, lastReflectProposalTs, lastDistillProposalTs } = args.snapshot;
-  const actions: ImproveActionResult[] = [];
   // Refs the distill signal-delta gate rejected at planning time. The main
   // loop reads this to skip distill for these refs without re-checking
   // eligibility per iteration.
@@ -1681,8 +1664,8 @@ export function partitionBySignalDelta(args: {
   //                         below so never-rated assets can still be improved.
   //                         Only refs those lanes decline are fully skipped.
   //   fullySkippedCount   — has stale feedback but no signal delta → genuine
-  //                         skip (counted, aggregated event emitted post-loop),
-  //                         excluded from sort.
+  //                         skip candidate, excluded from sort. Final skip
+  //                         observability is emitted only after fallbacks.
   const eligibleRefs: ImproveEligibleRef[] = [];
   const distillOnlyRefs: ImproveEligibleRef[] = [];
   // Zero-(recent-)feedback refs deferred to the proactive/high-salience fallbacks.
@@ -1706,21 +1689,10 @@ export function partitionBySignalDelta(args: {
 
     if (reflectOk) {
       if (!distillOk && isDistillCandidate) {
-        // Reflect passes the gate, distill does not — emit the synthetic
-        // distill-skipped action and event up-front so the in-loop guard
-        // does not have to re-derive eligibility.
+        // Reflect passes the gate, distill does not. Record only partition
+        // metadata here; observability is emitted after every fallback selector
+        // has finalized the invocation's terminal skipped set.
         distillCooledRefs.add(r.ref);
-        actions.push({ ref: r.ref, mode: "distill-skipped", result: { ok: true, reason: "distill signal-delta" } });
-        if (persist) {
-          appendEvent(
-            {
-              eventType: "improve_skipped",
-              ref: r.ref,
-              metadata: { reason: "distill_no_new_signal" },
-            },
-            eventsCtx,
-          );
-        }
       } else if (!distillOk) {
         // Not a distill candidate AND distill gate doesn't pass — just mark
         // distillCooled so the loop's distill section is a no-op.
@@ -1738,41 +1710,14 @@ export function partitionBySignalDelta(args: {
       noFeedbackPool.push(r);
     } else {
       // Has feedback on record but no signal delta since the last proposal —
-      // genuinely fully skipped. Counted here; a single aggregated
-      // improve_skipped event is emitted after the loop (mirrors
-      // strategy_filtered_all_passes) instead of one event per ref.
+      // genuinely a fully-skipped candidate. Count it as partition metadata;
+      // final observability waits until replay and every other fallback lane
+      // has had a chance to rescue it.
       fullySkippedCount++;
-      actions.push({
-        ref: r.ref,
-        mode: "distill-skipped",
-        result: { ok: true, reason: "no new signal since last proposal" },
-      });
     }
   }
 
-  // Emit ONE aggregated skip event for the fully-skipped bucket rather than one
-  // improve_skipped event per ref (#592 pattern, mirrors
-  // strategy_filtered_all_passes above). The per-ref loop previously produced
-  // ~11K state.db writes per run on a large stash, the dominant contributor to
-  // 900 s timeouts. The in-memory `actions` log keeps the per-ref detail for the
-  // run summary; no downstream consumer needs a per-ref DB audit trail (health's
-  // skip histogram reads the `no_new_signal` counter from the count field).
-  if (persist && fullySkippedCount > 0) {
-    appendEvent(
-      {
-        eventType: "improve_skipped",
-        ref: undefined,
-        metadata: {
-          reason: "no_new_signal",
-          count: fullySkippedCount,
-        },
-      },
-      eventsCtx,
-    );
-  }
-
   return {
-    actions,
     distillCooledRefs,
     preCooldownCount,
     eligibleRefs,
@@ -1780,6 +1725,59 @@ export function partitionBySignalDelta(args: {
     noFeedbackPool,
     fullySkippedCount,
   };
+}
+
+/**
+ * Emit signal-delta skip observability only after every fallback lane has
+ * finalized the pre-disk survivor set. This prevents replay, proactive,
+ * high-salience, or forgetting-safety winners from also being recorded as
+ * terminally skipped work.
+ */
+function recordSignalSkipObservability(args: {
+  actions: ImproveActionResult[];
+  terminalSignalSkippedRefs: readonly ImproveEligibleRef[];
+  distillCooledRefs: ReadonlySet<string>;
+  eventsCtx?: EventsContext;
+  persist: boolean;
+}): void {
+  const { actions, terminalSignalSkippedRefs, distillCooledRefs, eventsCtx, persist } = args;
+  for (const ref of distillCooledRefs) {
+    actions.push({ ref, mode: "distill-skipped", result: { ok: true, reason: "distill signal-delta" } });
+    if (persist) {
+      appendEvent(
+        {
+          eventType: "improve_skipped",
+          ref,
+          metadata: { reason: "distill_no_new_signal" },
+        },
+        eventsCtx,
+      );
+    }
+  }
+
+  for (const candidate of terminalSignalSkippedRefs) {
+    actions.push({
+      ref: candidate.ref,
+      mode: "distill-skipped",
+      result: { ok: true, reason: "no new signal since last proposal" },
+    });
+  }
+
+  // One aggregate row preserves health accounting without restoring the old
+  // O(n) event-write path. The count now exactly matches the signal gate.
+  if (persist && terminalSignalSkippedRefs.length > 0) {
+    appendEvent(
+      {
+        eventType: "improve_skipped",
+        ref: undefined,
+        metadata: {
+          reason: "no_new_signal",
+          count: terminalSignalSkippedRefs.length,
+        },
+      },
+      eventsCtx,
+    );
+  }
 }
 
 /** Bulk per-ref feedback summary in a SINGLE readEvents pass (candidate-gather). */
@@ -2904,8 +2902,6 @@ async function filterEligibility(args: {
   validationFailureRefs: Set<string>;
   /** Pass-2 tallies consumed only by the end-of-stage summary info emits. */
   summary: {
-    fullySkippedCount: number;
-    preCooldownCount: number;
     signalAndRetrievalRefs: ImproveEligibleRef[];
     signalFiltered: ImproveEligibleRef[];
   };
@@ -2918,6 +2914,7 @@ async function filterEligibility(args: {
   limitRemoved: number;
   missingDiskCount: number;
   replayBudget: number;
+  preDiskRefs: ImproveEligibleRef[];
 }> {
   const {
     scope,
@@ -2929,7 +2926,7 @@ async function filterEligibility(args: {
     distillOnlyRefs,
     persist,
   } = args;
-  const { fullySkippedCount, preCooldownCount, signalAndRetrievalRefs, signalFiltered } = args.summary;
+  const { signalAndRetrievalRefs, signalFiltered } = args.summary;
   const validationFailureRefs = args.validationFailureRefs;
 
   const replay = applyReplaySelection({
@@ -3044,13 +3041,6 @@ async function filterEligibility(args: {
   const loopRefs = selection.loopRefs;
   const distillOnlyRefsResult = selection.distillOnlyRefs;
 
-  const totalReflectBlocked = fullySkippedCount + distillOnlyRefs.length;
-  if (totalReflectBlocked > 0) {
-    info(
-      `[improve] ${totalReflectBlocked} of ${preCooldownCount} indexed refs blocked by reflect signal-delta ` +
-        `(${fullySkippedCount} fully skipped, ${distillOnlyRefs.length} routed to distill-only)`,
-    );
-  }
   if (signalAndRetrievalRefs.length > 0) {
     info(
       `[improve] ${signalAndRetrievalRefs.length} refs with usage signals (${signalFiltered.length} feedback${replayRefSet.size > 0 ? `, ${replayRefSet.size} replay` : ""})`,
@@ -3076,6 +3066,7 @@ async function filterEligibility(args: {
     limitRemoved: selection.limitRemoved,
     missingDiskCount: assetMissingOnDisk.length,
     replayBudget,
+    preDiskRefs: sorted,
   };
 }
 

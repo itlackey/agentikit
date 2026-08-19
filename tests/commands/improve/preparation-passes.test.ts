@@ -80,7 +80,7 @@ describe("partitionBySignalDelta — the four buckets", () => {
     expect(out.preCooldownCount).toBe(1);
   });
 
-  test("reflect passes but distill cooled → eligible + distillCooled + synthetic skip action", () => {
+  test("reflect passes but distill cooled → pure partition metadata only", () => {
     const stash = freshStash();
     // Feedback at T2; reflect proposal older (T1) → reflect passes; distill
     // proposal newer (T2) → distill gate fails. memory: ref is a distill candidate.
@@ -98,9 +98,7 @@ describe("partitionBySignalDelta — the four buckets", () => {
 
     expect(out.eligibleRefs.map((r) => r.ref)).toEqual(["memories/cooled"]);
     expect([...out.distillCooledRefs]).toEqual(["memories/cooled"]);
-    expect(out.actions).toEqual([
-      { ref: "memories/cooled", mode: "distill-skipped", result: { ok: true, reason: "distill signal-delta" } },
-    ]);
+    expect("actions" in out).toBe(false);
   });
 
   test("reflect cooled but distill passes on a distill candidate → distillOnlyRefs", () => {
@@ -132,10 +130,10 @@ describe("partitionBySignalDelta — the four buckets", () => {
 
     expect(out.noFeedbackPool.map((r) => r.ref)).toEqual(["memories/never-rated"]);
     expect(out.fullySkippedCount).toBe(0);
-    expect(out.actions).toEqual([]);
+    expect("actions" in out).toBe(false);
   });
 
-  test("stale feedback with no delta since the last proposals → fully skipped with action", () => {
+  test("stale feedback with no delta since the last proposals → pure fully-skipped metadata", () => {
     const stash = freshStash();
     const out = partitionBySignalDelta({
       scope: { mode: "all" },
@@ -150,13 +148,7 @@ describe("partitionBySignalDelta — the four buckets", () => {
     });
 
     expect(out.fullySkippedCount).toBe(1);
-    expect(out.actions).toEqual([
-      {
-        ref: "memories/stale",
-        mode: "distill-skipped",
-        result: { ok: true, reason: "no new signal since last proposal" },
-      },
-    ]);
+    expect("actions" in out).toBe(false);
   });
 
   test("O-2 (#365): explicit --scope <ref> bypasses every gate", () => {

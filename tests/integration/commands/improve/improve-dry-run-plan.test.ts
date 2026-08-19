@@ -25,6 +25,7 @@ import { decodeImproveResult } from "../../../../src/core/improve-result";
 import type { AkmDistillResult, AkmReflectResult, ImproveEligibleRef } from "../../../../src/core/improve-types";
 import { getDbPath } from "../../../../src/core/paths";
 import { getStateDbPath, openStateDatabase } from "../../../../src/core/state-db";
+import { _setWarnSinkForTests } from "../../../../src/core/warn";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { OpenCodeProvider } from "../../../../src/integrations/harnesses/opencode/session-log";
 import type { SessionLogHarness } from "../../../../src/integrations/session-logs/types";
@@ -35,6 +36,7 @@ import { type Cleanup, withEnv, withIsolatedAkmStorage, withMockedFetch } from "
 const cleanups: Cleanup[] = [];
 
 afterEach(() => {
+  _setWarnSinkForTests();
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
@@ -397,6 +399,47 @@ describe("#800 effective dry-run planner", () => {
 
     expect(dry.plannedRefs).toEqual(live.plannedRefs);
     expect(dry.plan?.effectiveRefs).toEqual(live.plan?.effectiveRefs);
+    const terminalSignalSkips = live.distillSkipped?.byReason["no new signal since last proposal"] ?? 0;
+    expect(live.plan?.gates.find((gate) => gate.name === "signal")?.removed).toBe(terminalSignalSkips);
+    const effectiveRefs = new Set(live.plannedRefs.map((entry) => entry.ref));
+    expect(
+      live.distillSkipped?.samples.some(
+        (sample) => effectiveRefs.has(sample.ref) && sample.reason === "no new signal since last proposal",
+      ) ?? false,
+    ).toBe(false);
+    const noSignalEvents = readEvents({ type: "improve_skipped" }).events.filter(
+      (event) => event.metadata?.reason === "no_new_signal",
+    );
+    expect(noSignalEvents).toHaveLength(1);
+    expect(noSignalEvents[0]?.metadata?.count).toBe(terminalSignalSkips);
+  });
+
+  test("live high-salience fallback is not double-reported as a terminal no-signal skip", async () => {
+    const { stashDir } = isolatedStorage();
+    const config = plannerConfig();
+    config.improve = {
+      ...config.improve,
+      salience: { salienceThreshold: 0.1, replayBudget: 0 },
+    };
+    await indexSkills(stashDir, 1, config);
+    seedReplayRank("skills/skill-0", 0.99, "content");
+
+    const result = await akmImprove({
+      scope: "skill",
+      stashDir,
+      config,
+      ensureIndexFn: async () => false,
+      reflectFn: async ({ ref }) => okReflect(ref ?? ""),
+    });
+
+    expect(result.plannedRefs.map((entry) => [entry.ref, entry.eligibilitySource])).toEqual([
+      ["skills/skill-0", "high-salience"],
+    ]);
+    expect(result.plan?.gates.find((gate) => gate.name === "signal")?.removed).toBe(0);
+    expect(result.distillSkipped?.byReason["no new signal since last proposal"] ?? 0).toBe(0);
+    expect(
+      readEvents({ type: "improve_skipped" }).events.filter((event) => event.metadata?.reason === "no_new_signal"),
+    ).toEqual([]);
   });
 
   test("replay intersects the current skill plan and preserves the matching entry in dry and live envelopes", async () => {
@@ -462,6 +505,52 @@ describe("#800 effective dry-run planner", () => {
     }
   });
 
+  test("live replay bypass never also reports the selected ref as a terminal no-signal skip", async () => {
+    const { stashDir } = isolatedStorage();
+    const config = plannerConfig();
+    config.improve = {
+      ...config.improve,
+      salience: { salienceThreshold: 1, replayBudget: 1 },
+    };
+    const skillRef = "skills/replay-after-stale-feedback";
+    writeSkill(stashDir, "replay-after-stale-feedback", "A stale-feedback skill selected by bounded replay.");
+    saveConfig(config);
+    await akmIndex({ stashDir, full: true });
+    const now = Date.now();
+    appendEvent(
+      { eventType: "feedback", ref: `stash//${skillRef}`, metadata: { signal: "positive" } },
+      { now: () => now - 1_000 },
+    );
+    appendEvent({ eventType: "reflect_invoked", ref: `stash//${skillRef}` }, { now: () => now });
+    seedReplayRank(skillRef, 0.99);
+    const infoLines: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "info") infoLines.push(args.map(String).join(" "));
+    });
+
+    const result = await akmImprove({
+      scope: "skill",
+      stashDir,
+      config,
+      ensureIndexFn: async () => false,
+      reflectFn: async ({ ref }) => okReflect(ref ?? ""),
+    });
+
+    expect(result.plannedRefs.map((entry) => [entry.ref, entry.eligibilitySource])).toEqual([[skillRef, "replay"]]);
+    expect(result.plan?.gates.find((gate) => gate.name === "signal")?.removed).toBe(0);
+    expect(result.distillSkipped?.byReason["no new signal since last proposal"] ?? 0).toBe(0);
+    expect(
+      result.distillSkipped?.samples.some(
+        (sample) => sample.ref === skillRef && sample.reason === "no new signal since last proposal",
+      ) ?? false,
+    ).toBe(false);
+    expect(
+      readEvents({ type: "improve_skipped" }).events.filter((event) => event.metadata?.reason === "no_new_signal"),
+    ).toEqual([]);
+    expect(infoLines.some((line) => line.includes("blocked by reflect signal-delta"))).toBe(false);
+    expect(readEvents({ type: "improve_replay_selected" }).events.at(-1)?.metadata?.count).toBe(1);
+  });
+
   test("feedback-only mode suppresses proactive, high-salience, and replay selectors in dry and live plans", async () => {
     const { stashDir } = isolatedStorage();
     const config = plannerConfig({ proactive: { enabled: true, dueDays: 0, maxPerRun: 1 } });
@@ -485,6 +574,10 @@ describe("#800 effective dry-run planner", () => {
     };
 
     const dry = await akmImprove({ ...commonOptions, dryRun: true });
+    const infoLines: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "info") infoLines.push(args.map(String).join(" "));
+    });
     const live = await akmImprove(commonOptions);
 
     for (const result of [dry, live]) {
@@ -505,6 +598,16 @@ describe("#800 effective dry-run planner", () => {
     expect(reflectFn).not.toHaveBeenCalled();
     expect(readEvents({ type: "proactive_selected" }).events).toEqual([]);
     expect(readEvents({ type: "improve_replay_selected" }).events).toEqual([]);
+    expect(live.distillSkipped?.byReason["no new signal since last proposal"]).toBe(1);
+    expect(live.distillSkipped?.samples).toEqual([
+      { ref: "skills/skill-0", reason: "no new signal since last proposal" },
+    ]);
+    const noSignalEvents = readEvents({ type: "improve_skipped" }).events.filter(
+      (event) => event.metadata?.reason === "no_new_signal",
+    );
+    expect(noSignalEvents).toHaveLength(1);
+    expect(noSignalEvents[0]?.metadata?.count).toBe(1);
+    expect(infoLines.filter((line) => line.includes("blocked by reflect signal-delta"))).toHaveLength(1);
   });
 
   test("stash-wide forgetting state cannot escape a type-scoped current plan in dry or live accounting", async () => {
@@ -588,24 +691,43 @@ describe("#800 effective dry-run planner", () => {
     storedRows.unshift({ ref: quiet.itemRef, rankScore: 0.01 });
     seedRankRows(storedRows);
 
-    const result = await akmImprove({
+    const commonOptions = {
       scope: "skill",
       stashDir,
       config,
-      dryRun: true,
       limit: 600,
+      ensureIndexFn: async () => false,
       collectEligibleRefsFn: (async () => ({
         plannedRefs: plannedRefs.map((entry) => ({ ...entry })),
         memorySummary: { eligible: 0, derived: 0 },
         strategyFilteredRefs: [],
       })) as never,
+    };
+    const dry = await akmImprove({ ...commonOptions, dryRun: true });
+    const live = await akmImprove({
+      ...commonOptions,
+      reflectFn: async ({ ref }: { ref?: string }) => ({
+        schemaVersion: 2,
+        ok: false,
+        reason: "no_change",
+        error: "stable",
+        ref: ref ?? "",
+        engine: "test",
+        exitCode: 0,
+      }),
     });
 
-    const admitted = result.plannedRefs.find((entry) => entry.ref === quiet.ref);
-    expect(admitted).toEqual({ ...quiet, eligibilitySource: "forgetting-safety" });
-    expect(result.plan?.effectiveRefs.find((entry) => entry.ref === quiet.ref)?.lane).toBe("forgetting-safety");
-    expect(result.plan?.candidates).toEqual({ rawInScope: 502, selected: 502, effective: 502 });
-    expect(decodeImproveResult(JSON.stringify(result)).envelope.plannedRefs).toEqual(result.plannedRefs);
+    for (const result of [dry, live]) {
+      const admitted = result.plannedRefs.find((entry) => entry.ref === quiet.ref);
+      expect(admitted).toEqual({ ...quiet, eligibilitySource: "forgetting-safety" });
+      expect(result.plan?.effectiveRefs.find((entry) => entry.ref === quiet.ref)?.lane).toBe("forgetting-safety");
+      expect(result.plan?.candidates).toEqual({ rawInScope: 502, selected: 502, effective: 502 });
+      expect(decodeImproveResult(JSON.stringify(result)).envelope.plannedRefs).toEqual(result.plannedRefs);
+    }
+    expect(live.distillSkipped?.byReason["no new signal since last proposal"] ?? 0).toBe(0);
+    expect(
+      readEvents({ type: "improve_skipped" }).events.filter((event) => event.metadata?.reason === "no_new_signal"),
+    ).toEqual([]);
   });
 
   test("a current-plan forgetting candidate deleted after validation is charged to the disk gate", async () => {
