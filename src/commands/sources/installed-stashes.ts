@@ -788,12 +788,21 @@ function prepareWritableManagedUpdate(managed: ManagedInstall, force: boolean): 
   const physicalRequiredRoots = configuredLiveRoots.map((root) =>
     containedWritablePath(root, liveRepo, `Configured component root for "${managed.installId}"`),
   );
+  // The Git provider must preserve ordinary component directories, but not a
+  // symlink's current physical target. The configured lexical path is audited
+  // again after sync, so retaining the old target here would reject a valid
+  // upstream retarget before the new target can reach that audit.
+  const preservedPhysicalRequiredRoots = physicalRequiredRoots.filter(
+    (root, index) => configuredLiveRoots[index] === root,
+  );
   const expectedOldHead = gitHead(liveRepo);
   const stagingParent = createStagingParent(path.dirname(liveRepo));
   const stagedRepo = path.join(stagingParent, path.basename(liveRepo));
-  fs.cpSync(liveRepo, stagedRepo, { recursive: true, preserveTimestamps: true });
+  fs.cpSync(liveRepo, stagedRepo, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
   const stagedContentRoot = remapStagedPath(physicalLocalRoot, liveRepo, stagedRepo);
-  const stagedPhysicalRequiredRoots = physicalRequiredRoots.map((root) => remapStagedPath(root, liveRepo, stagedRepo));
+  const stagedPhysicalRequiredRoots = preservedPhysicalRequiredRoots.map((root) =>
+    remapStagedPath(root, liveRepo, stagedRepo),
+  );
   const stagedConfiguredRoots = configuredLiveRoots.map((root) => remapStagedPath(root, liveRepo, stagedRepo));
 
   return syncFromRef(managed.ref, {

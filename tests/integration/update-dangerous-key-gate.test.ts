@@ -1141,14 +1141,36 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
 
   test("managed writable Git audits an upstream component symlink retarget instead of its old physical target", async () => {
     const id = "managed-component-retarget-danger";
+    const fixture = makeSandboxDir("akm-765-managed-retarget-production-");
+    disposers.push(fixture.cleanup);
+    const remote = path.join(fixture.dir, "remote.git");
+    const author = path.join(fixture.dir, "author");
     const liveRepo = managedCachePaths(id).contentDir;
-    initGitBundle(liveRepo, "managed component retarget base");
-    writeBundle(path.join(liveRepo, "safe"), "API_TOKEN=safe\n", "component-safe");
-    writeBundle(path.join(liveRepo, "danger"), "LD_PRELOAD=/tmp/retarget.so\n", "component-danger");
-    fs.symlinkSync("safe", path.join(liveRepo, "component"), "dir");
-    git(liveRepo, ["add", "-A"]);
-    git(liveRepo, ["commit", "-m", "track safe component link"]);
-    const initialHead = git(liveRepo, ["rev-parse", "HEAD"]);
+    const bareInit = gitProvider.runGit(["init", "--bare", "--initial-branch=main", remote]);
+    if (bareInit.status !== 0) throw new Error(bareInit.stderr.trim() || "git init --bare failed");
+    const authorInit = gitProvider.runGit(["init", "--initial-branch=main", author]);
+    if (authorInit.status !== 0) throw new Error(authorInit.stderr.trim() || "git init failed");
+    git(author, ["config", "user.name", "AKM Update Test"]);
+    git(author, ["config", "user.email", "update-test@example.invalid"]);
+    writeBundle(path.join(author, "safe"), "API_TOKEN=safe\n", "component-safe");
+    fs.symlinkSync("safe", path.join(author, "component"), "dir");
+    git(author, ["add", "-A"]);
+    git(author, ["commit", "-m", "A: track safe component link"]);
+    git(author, ["remote", "add", "origin", remote]);
+    git(author, ["push", "-u", "origin", "main"]);
+    const initialHead = git(author, ["rev-parse", "HEAD"]);
+    const clone = gitProvider.runGit(["clone", remote, liveRepo]);
+    if (clone.status !== 0) throw new Error(clone.stderr.trim() || "git clone failed");
+
+    fs.unlinkSync(path.join(author, "component"));
+    fs.rmSync(path.join(author, "safe"), { recursive: true });
+    writeBundle(path.join(author, "danger"), "LD_PRELOAD=/tmp/retarget.so\n", "component-danger");
+    fs.symlinkSync("danger", path.join(author, "component"), "dir");
+    git(author, ["add", "-A"]);
+    git(author, ["commit", "-m", "B: retarget component and delete safe"]);
+    git(author, ["push", "origin", "main"]);
+    const dangerousHead = git(author, ["rev-parse", "HEAD"]);
+    const ref = `git:https://github.com/example/${id}.git`;
     saveConfig({
       semanticSearchMode: "off",
       bundles: {
@@ -1162,32 +1184,36 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
       {
         id,
         source: "git",
-        ref: `git:https://github.com/example/${id}.git`,
+        ref,
         resolvedRevision: initialHead,
         localRoot: liveRepo,
       },
     ]);
     await akmIndex({ stashDir: storage.stashDir, hydrateSources: false });
     const before = snapshotState();
+    let productionProviderReached = false;
     const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) => {
       if (!options?.writableRoot) throw new Error("writable update did not provide a staged checkout");
-      fs.unlinkSync(path.join(options.writableRoot, "component"));
-      fs.symlinkSync("danger", path.join(options.writableRoot, "component"), "dir");
-      git(options.writableRoot, ["add", "-A"]);
-      git(options.writableRoot, ["commit", "-m", "retarget component to danger"]);
-      const auditedHead = git(options.writableRoot, ["rev-parse", "HEAD"]);
-      return {
-        id,
-        source: "git",
-        ref: `git:https://github.com/example/${id}.git`,
-        artifactUrl: `https://github.com/example/${id}.git`,
-        resolvedRevision: auditedHead,
-        contentDir: options.writableRoot,
-        cacheDir: options.writableRoot,
-        extractedDir: options.writableRoot,
-        syncedAt: "2026-08-19T00:00:00.000Z",
-        writable: true,
-      };
+      productionProviderReached = true;
+      return gitProvider.syncExistingWritableCheckout(
+        {
+          id: `git:${remote}`,
+          source: "git",
+          ref,
+          url: remote,
+          requestedRef: "main",
+        },
+        {
+          id: `git:${remote}`,
+          source: "git",
+          ref,
+          artifactUrl: remote,
+          resolvedRevision: dangerousHead,
+        },
+        options.writableRoot,
+        "2026-08-19T00:00:00.000Z",
+        options.writableRequiredRoots,
+      );
     });
 
     try {
@@ -1198,8 +1224,11 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
       syncSpy.mockRestore();
     }
 
+    expect(productionProviderReached).toBe(true);
     expect(git(liveRepo, ["rev-parse", "HEAD"])).toBe(initialHead);
     expect(fs.readlinkSync(path.join(liveRepo, "component"))).toBe("safe");
+    expect(fs.existsSync(path.join(liveRepo, "safe"))).toBe(true);
+    expect(fs.existsSync(path.join(liveRepo, "danger"))).toBe(false);
     expect(fs.readFileSync(getLockfilePath(), "utf8")).toBe(before.lock as string);
     expect(indexedRows()).toEqual(before.rows);
     expect(indexedSearchText()).toBe(before.text);
