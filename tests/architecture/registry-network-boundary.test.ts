@@ -42,7 +42,13 @@ interface CapabilityAnalysisSpec {
  * network capability, every call through that binding remains in the ratchet.
  */
 function analyzeCapabilityCalls(source: string, fileName: string, spec: CapabilityAnalysisSpec): string[] {
-  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  // Every guarded source is a Node/Bun module, including `.cjs` files whose
+  // wrapper gives top-level declarations module-local scope. The synthetic
+  // marker keeps TypeScript's single-file binder from conflating a local
+  // `globalThis` declaration with the ambient runtime global in snippets that
+  // otherwise contain no import/export.
+  const analysisSource = `${source}\nexport {};`;
+  const sourceFile = ts.createSourceFile(fileName, analysisSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const compilerOptions: ts.CompilerOptions = {
     allowJs: true,
     checkJs: false,
@@ -53,7 +59,7 @@ function analyzeCapabilityCalls(source: string, fileName: string, spec: Capabili
   const compilerHost = ts.createCompilerHost(compilerOptions);
   compilerHost.fileExists = (candidate) => candidate === fileName;
   compilerHost.getSourceFile = (candidate) => (candidate === fileName ? sourceFile : undefined);
-  compilerHost.readFile = (candidate) => (candidate === fileName ? source : undefined);
+  compilerHost.readFile = (candidate) => (candidate === fileName ? analysisSource : undefined);
   const checker = ts
     .createProgram({ rootNames: [fileName], options: compilerOptions, host: compilerHost })
     .getTypeChecker();
@@ -441,6 +447,8 @@ function networkCapabilities(source: string, fileName = "probe.ts"): string[] {
     unboundCallables: new Map([["fetch", { moduleName: "web", method: "fetch" }]]),
     unboundNamespaces: new Map([
       ["globalThis", "web"],
+      ["global", "web"],
+      ["self", "web"],
       ["window", "web"],
       ["Bun", "web"],
     ]),
@@ -757,6 +765,16 @@ describe("registry outbound request architecture", () => {
     },
     { fileName: "probe.cjs", source: "const window = { fetch() {} }; window.fetch();" },
     { fileName: "probe.ts", source: "const Bun = { fetch() {} }; Bun.fetch();" },
+    { fileName: "probe.ts", source: "const global = { fetch() {} }; global.fetch();" },
+    { fileName: "probe.mjs", source: "const self = { fetch() {} }; self.fetch();" },
+    {
+      fileName: "probe.mjs",
+      source: "const globalThis = { fetch() {} }; globalThis.fetch();",
+    },
+    {
+      fileName: "probe.cjs",
+      source: "const globalThis = { fetch() {} }; const localFetch = globalThis.fetch; localFetch();",
+    },
   ])("fetch analysis ignores lexically shadowed globals in $fileName: $source", ({ fileName, source }) => {
     expect(networkCapabilities(source, fileName)).toEqual([]);
   });
@@ -771,6 +789,26 @@ describe("registry outbound request architecture", () => {
       name: "identity-wrapped global fetch",
       source: 'const identity = (value: unknown) => value; identity(globalThis.fetch)("https://example.test");',
       expected: ["call:identity(globalThis.fetch)"],
+    },
+    {
+      name: "Node global fetch",
+      source: 'global.fetch("https://example.test");',
+      expected: ["call:global.fetch"],
+    },
+    {
+      name: "aliased Node global fetch",
+      source: 'const runtime = global; const runtimeFetch = runtime.fetch; runtimeFetch("https://example.test");',
+      expected: ["call:runtimeFetch"],
+    },
+    {
+      name: "Bun self fetch",
+      source: 'self.fetch("https://example.test");',
+      expected: ["call:self.fetch"],
+    },
+    {
+      name: "aliased Bun self fetch",
+      source: 'const runtime = self; const { fetch: runtimeFetch } = runtime; runtimeFetch("https://example.test");',
+      expected: ["call:runtimeFetch"],
     },
   ])("fetch analysis follows runtime global origin: $name", ({ source, expected }) => {
     expect(networkCapabilities(source, "probe.ts")).toEqual([...expected]);
