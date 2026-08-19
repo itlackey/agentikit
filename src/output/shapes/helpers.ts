@@ -26,6 +26,7 @@ export function shapeProposalProducerOutput(
       ...(result.name !== undefined ? { name: result.name } : {}),
       ...(result.engine !== undefined ? { engine: result.engine } : {}),
       ...(result.exitCode !== undefined ? { exitCode: result.exitCode } : {}),
+      ...(Array.isArray(result.notices) ? { notices: result.notices } : {}),
     };
     if (detail === "full") {
       return {
@@ -43,6 +44,7 @@ export function shapeProposalProducerOutput(
     ref: result.ref,
     ...(result.engine !== undefined ? { engine: result.engine } : {}),
     ...(typeof result.durationMs === "number" ? { durationMs: result.durationMs } : {}),
+    ...(Array.isArray(result.notices) ? { notices: result.notices } : {}),
     proposal: shapeProposalEntry(proposal, detail === "brief" ? "normal" : detail),
   };
   if (detail === "full") {

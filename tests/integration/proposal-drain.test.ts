@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  buildJudgmentPrompt,
   classifyProposal,
   type DrainOptions,
   drainProposals,
@@ -411,19 +412,28 @@ describe("drainProposals — dry-run", () => {
 /** A minimal `llm` RunnerSpec — the injected `chat` seam ignores the connection. */
 const FAKE_LLM_RUNNER: RunnerSpec = {
   kind: "llm",
-  connection: { endpoint: "http://fake.invalid/v1/chat/completions", model: "fake-judge" },
+  connection: {
+    endpoint: "http://fake.invalid/v1/chat/completions",
+    model: "provider/exact-fake-judge",
+    temperature: 0.11,
+    maxTokens: 77,
+    contextLength: 8_192,
+  },
 };
 
 /** A minimal `agent` RunnerSpec — the injected `runAgentFn` ignores the profile. */
 const FAKE_AGENT_RUNNER: RunnerSpec = {
   kind: "agent",
+  timeoutMs: 1_234,
   profile: {
     name: "fake-judge",
+    platform: "opencode",
     bin: "fake-judge",
     args: [],
     stdio: "captured",
     envPassthrough: [],
     parseOutput: "text",
+    model: "provider/exact-agent-judge",
   },
 };
 
@@ -444,6 +454,23 @@ describe("drainProposals — judgment tier (llm mode)", () => {
     const result = await drainProposals(baseOpts(stash, { judgment: FAKE_LLM_RUNNER }), promoteFn, rejectFn, seams);
 
     expect(chat).toHaveBeenCalledTimes(1);
+    expect(chat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connection: expect.objectContaining({
+          model: "provider/exact-fake-judge",
+          temperature: 0.11,
+          maxTokens: 77,
+          contextLength: 8_192,
+        }),
+      }),
+      [
+        {
+          role: "user",
+          content: buildJudgmentPrompt(deferred, "mid-band", { liveAsset: undefined, siblings: [] }),
+        },
+      ],
+    );
+    expect(result.notices).toBeUndefined();
     // The ENGINE performed the accept (promote mode), not the runner.
     expect(result.promoted).toEqual([deferred.id]);
     expect(result.deferred).toEqual([]);
@@ -499,6 +526,23 @@ describe("drainProposals — judgment tier (llm mode)", () => {
     expect(result.deferred.map((d) => d.id)).toEqual([deferred.id]);
     expect(promoteFn).not.toHaveBeenCalled();
   });
+
+  test("provider rejection remains deferred without fabricating lowering notices", async () => {
+    const stash = makeStashDir();
+    const deferred = seed(stash, "lessons/provider-reject", "consolidate", BIG_LESSON);
+    const chat = mock(async () => {
+      throw new Error("PROVIDER-BODY-SENTINEL");
+    });
+
+    const result = await drainProposals(baseOpts(stash, { judgment: FAKE_LLM_RUNNER }), fakeAccept(), fakeReject(), {
+      chat,
+    });
+
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(result.deferred.map((item) => item.id)).toEqual([deferred.id]);
+    expect(result.notices).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("PROVIDER-BODY-SENTINEL");
+  });
 });
 
 describe("drainProposals — judgment tier (agent mode)", () => {
@@ -506,9 +550,11 @@ describe("drainProposals — judgment tier (agent mode)", () => {
     const stash = makeStashDir();
     const deferred = seed(stash, "lessons/big", "consolidate", BIG_LESSON);
 
-    const runAgentFn = mock(async () =>
-      agentResult(JSON.stringify({ decision: "accept", reason: "merge is correct" })),
-    );
+    let capturedDispatch: Record<string, unknown> | undefined;
+    const runAgentFn: NonNullable<JudgmentSeams["runAgentFn"]> = mock(async (_profile, _prompt, options) => {
+      capturedDispatch = options.dispatch;
+      return agentResult(JSON.stringify({ decision: "accept", reason: "merge is correct" }));
+    });
     const promoteFn = fakeAccept();
 
     const result = await drainProposals(baseOpts(stash, { judgment: FAKE_AGENT_RUNNER }), promoteFn, fakeReject(), {
@@ -516,6 +562,22 @@ describe("drainProposals — judgment tier (agent mode)", () => {
     });
 
     expect(runAgentFn).toHaveBeenCalledTimes(1);
+    expect(runAgentFn).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "provider/exact-agent-judge", modelIsExact: true }),
+      buildJudgmentPrompt(deferred, "mid-band", { liveAsset: undefined, siblings: [] }),
+      expect.objectContaining({
+        stdio: "captured",
+        parseOutput: "text",
+        timeoutMs: 1_234,
+        dispatch: expect.objectContaining({
+          model: "provider/exact-agent-judge",
+          modelIsExact: true,
+        }),
+      }),
+    );
+    expect(capturedDispatch).not.toHaveProperty("tools");
+    expect(capturedDispatch).not.toHaveProperty("schema");
+    expect(result.notices).toBeUndefined();
     expect(result.promoted).toEqual([deferred.id]);
     expect(result.deferred).toEqual([]);
     expect(promoteFn).toHaveBeenCalledTimes(1);

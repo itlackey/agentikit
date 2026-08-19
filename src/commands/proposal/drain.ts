@@ -24,9 +24,9 @@
  *   - The judgment tier (Phase 3) adjudicates the deferred items: when a
  *     `judgment` RunnerSpec is supplied the engine pre-fetches context (the live
  *     asset + sibling pending proposals for the same ref) into a prompt,
- *     dispatches it to the configured runner (llm → `chatCompletion`, agent →
- *     `runAgent`, sdk → `runOpencodeSdk`, mirroring `reflect.ts`'s switch), and
- *     performs the resulting accept / reject *itself* (the runner only judges).
+ *     dispatches it through the shared resolved/lowered execution boundary,
+ *     and performs the resulting accept / reject *itself* (the runner only
+ *     judges).
  *     Items the runner cannot resolve — and any deferred items when no runner is
  *     configured — surface a `triage_deferred` event so "enabled, no agent"
  *     never silently looks like full success.
@@ -47,10 +47,14 @@ import type { EventsContext } from "../../core/events";
 import { appendEvent } from "../../core/events";
 import { escapeJsonStringControls, stripCodeFences, stripThinkBlocks } from "../../core/parse";
 import { info, warn } from "../../core/warn";
-import type { RunAgentOptions } from "../../integrations/agent";
+import type { LoweringNotice } from "../../execution/resolved-request";
+import {
+  type DispatchLoweredExecutionOptions,
+  dispatchLoweredExecutionRequest,
+  lowerResolvedExecutionRequestWithRunner,
+} from "../../integrations/agent/execution-lowering";
+import { prepareInlineExecutionWithRunner } from "../../integrations/agent/inline-execution";
 import type { RunnerSpec } from "../../integrations/agent/runner";
-import { executeRunner, type RunnerSeams } from "../../integrations/agent/runner-dispatch";
-import { type ChatMessage, chatCompletion } from "../../llm/client";
 import { akmProposalAccept, akmProposalReject, type ProposalRejectResult } from "./proposal";
 import {
   listProposals,
@@ -160,6 +164,8 @@ export interface DrainResult {
    * the `triage_deferred` event. Empty outside queue mode.
    */
   staged: string[];
+  /** Stable, secret-free notices emitted while lowering judgment requests. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 // Injectable test seams (promoteFn/rejectFn overrides, mirroring reflect's).
@@ -181,12 +187,15 @@ export interface JudgmentVerdict {
  * switch runs deterministically without a network call or a real process.
  */
 export interface JudgmentSeams {
-  /** Test seam for the `llm` runner kind — replaces `chatCompletion`. */
-  chat?: (config: RunnerSpec & { kind: "llm" }, messages: ChatMessage[]) => Promise<string>;
-  /** Test seam for the `agent` runner kind — replaces `runAgent`. */
-  runAgentFn?: RunnerSeams["runAgent"];
-  /** Test seam for the `sdk` runner kind — replaces `runOpencodeSdk`. */
-  runSdkFn?: RunnerSeams["runSdk"];
+  /** Test seam for the lowered direct-LLM transport. */
+  chat?: (
+    config: Extract<RunnerSpec, { kind: "llm" }>,
+    messages: Parameters<NonNullable<DispatchLoweredExecutionOptions["chat"]>>[1],
+  ) => Promise<string>;
+  /** Test seam for the lowered agent transport. */
+  runAgentFn?: NonNullable<DispatchLoweredExecutionOptions["runAgent"]>;
+  /** Test seam for the lowered SDK transport. */
+  runSdkFn?: NonNullable<DispatchLoweredExecutionOptions["runSdk"]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -385,42 +394,56 @@ export function parseJudgmentVerdict(raw: string): JudgmentVerdict | null {
 }
 
 /**
- * Dispatch a single judgment prompt to the resolved runner via the unified
- * {@link executeRunner} seam (X3). The `llm` arm is drain-specific (wraps
- * `chatCompletion` — no filesystem) so it is supplied as the `llm` handler; the
- * byte-identical `agent` / `sdk` arms route to the default profile runners (or
- * the injected {@link JudgmentSeams} test fakes). A failed spawn warns and
- * yields `null`, matching the prior per-arm behavior.
+ * Dispatch a single judgment prompt through a strict resolved request. The
+ * runner is already frozen by the caller, so preparation and lowering are
+ * config-free: no live alias, credential, or provider lookup can alter it.
  */
+interface JudgmentDispatchResult {
+  verdict: JudgmentVerdict | null;
+  notices: readonly Readonly<LoweringNotice>[];
+  error?: string;
+}
+
 async function dispatchJudgment(
   runner: RunnerSpec,
   prompt: string,
   seams: JudgmentSeams,
-): Promise<JudgmentVerdict | null> {
-  const runOptions: RunAgentOptions = {
-    stdio: "captured",
-    parseOutput: "text",
-    ...(runner.timeoutMs !== undefined ? { timeoutMs: runner.timeoutMs } : {}),
-  };
-  const result = await executeRunner(runner, prompt, runOptions, {
-    llm: async (spec, p) => {
-      const messages: ChatMessage[] = [{ role: "user", content: p }];
-      const raw = seams.chat
-        ? await seams.chat(spec, messages)
-        : await chatCompletion(spec.connection, messages, {
-            ...(spec.timeoutMs !== undefined ? { timeoutMs: spec.timeoutMs } : {}),
-          });
-      // chatCompletion has no failure envelope — a returned string is success.
-      return { ok: true, exitCode: 0, stdout: raw, stderr: "", durationMs: 0 };
-    },
+): Promise<JudgmentDispatchResult> {
+  const prepared = prepareInlineExecutionWithRunner({
+    content: prompt,
+    runner,
+    invocationKind: "direct",
+  });
+  const lowered = lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
+  const chat = seams.chat;
+  const llmRunner = lowered.runner.kind === "llm" ? lowered.runner : undefined;
+  const dispatchOptions: DispatchLoweredExecutionOptions = {
     ...(seams.runAgentFn ? { runAgent: seams.runAgentFn } : {}),
     ...(seams.runSdkFn ? { runSdk: seams.runSdkFn } : {}),
-  });
-  if (!result.ok) {
-    warn(`[triage] judgment ${runner.kind} failed: ${result.error ?? result.reason ?? "unknown error"}`);
-    return null;
+    ...(chat && llmRunner
+      ? {
+          chat: async (connection, messages) => chat({ ...llmRunner, connection }, messages),
+        }
+      : {}),
+  };
+  let result: Awaited<ReturnType<typeof dispatchLoweredExecutionRequest>>;
+  try {
+    result = await dispatchLoweredExecutionRequest(lowered, dispatchOptions);
+  } catch (error) {
+    return {
+      verdict: null,
+      notices: lowered.notices,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
-  return parseJudgmentVerdict(result.stdout);
+  if (!result.ok) {
+    return {
+      verdict: null,
+      notices: lowered.notices,
+      error: result.error ?? result.reason ?? "unknown error",
+    };
+  }
+  return { verdict: parseJudgmentVerdict(result.stdout), notices: lowered.notices };
 }
 
 interface JudgmentTierInput {
@@ -463,6 +486,7 @@ async function runJudgmentTier(input: JudgmentTierInput): Promise<{
   staged: string[];
   skippedByCap: string[];
   stillDeferred: Array<{ id: string; reason: DrainDeferReason }>;
+  notices: readonly Readonly<LoweringNotice>[];
 }> {
   const byId = new Map(input.pending.map((p) => [p.id, p]));
   const promoted: string[] = [];
@@ -470,6 +494,7 @@ async function runJudgmentTier(input: JudgmentTierInput): Promise<{
   const staged: string[] = [];
   const skippedByCap: string[] = [];
   const stillDeferred: Array<{ id: string; reason: DrainDeferReason }> = [];
+  const noticesByKey = new Map<string, Readonly<LoweringNotice>>();
   // Remaining accept budget shared with the deterministic promote loop.
   let acceptBudget = Math.max(0, input.remainingAcceptBudget);
 
@@ -482,14 +507,24 @@ async function runJudgmentTier(input: JudgmentTierInput): Promise<{
     const ctx = prefetchJudgmentContext(input.stashDir, proposal, input.pending);
     const prompt = buildJudgmentPrompt(proposal, item.reason, ctx);
 
-    let verdict: JudgmentVerdict | null;
+    let dispatch: JudgmentDispatchResult;
     try {
-      verdict = await dispatchJudgment(input.runner, prompt, input.seams);
+      dispatch = await dispatchJudgment(input.runner, prompt, input.seams);
     } catch (err) {
       warn(`[triage] judgment dispatch failed for ${item.id}: ${err instanceof Error ? err.message : String(err)}`);
       stillDeferred.push(item);
       continue;
     }
+    for (const notice of dispatch.notices) {
+      const key = JSON.stringify(notice);
+      if (!noticesByKey.has(key)) noticesByKey.set(key, notice);
+    }
+    if (dispatch.error) {
+      warn(`[triage] judgment dispatch failed for ${item.id}: ${dispatch.error}`);
+      stillDeferred.push(item);
+      continue;
+    }
+    const verdict = dispatch.verdict;
 
     if (!verdict || verdict.decision === "defer") {
       stillDeferred.push(item);
@@ -578,7 +613,14 @@ async function runJudgmentTier(input: JudgmentTierInput): Promise<{
     }
   }
 
-  return { promoted, rejected, staged, skippedByCap, stillDeferred };
+  return {
+    promoted,
+    rejected,
+    staged,
+    skippedByCap,
+    stillDeferred,
+    notices: Object.freeze([...noticesByKey.values()]),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -771,6 +813,7 @@ export async function drainProposals(
     result.promoted.push(...tier.promoted);
     result.rejected.push(...tier.rejected);
     result.staged.push(...tier.staged);
+    if (tier.notices.length > 0) result.notices = tier.notices;
     // Judgment-tier accepts dropped by the shared accept cap surface under
     // skippedByCap, same as deterministic cap drops.
     result.skippedByCap.push(...tier.skippedByCap);

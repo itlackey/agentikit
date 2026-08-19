@@ -19,22 +19,22 @@ import { placementTypes, stashDirFor } from "../../core/asset/asset-placement";
 import { parseRefInput } from "../../core/asset/resolve-ref";
 import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
-import { ConfigError, UsageError } from "../../core/errors";
+import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { redactSensitiveText } from "../../core/redaction";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
 import { warn } from "../../core/warn";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { deriveEntryProvenance } from "../../indexer/installations";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "../../integrations/agent";
+import { fallbackAnnouncement } from "../../integrations/agent/engine-fallback";
 import {
-  fallbackAnnouncement,
-  NO_ENGINE_MESSAGE_SUFFIX,
-  NO_ENGINE_REMEDY,
-  withEngineFallback,
-} from "../../integrations/agent/engine-fallback";
-import { resolveEngine } from "../../integrations/agent/engine-resolution";
+  dispatchLoweredExecutionRequest,
+  lowerResolvedExecutionRequest,
+} from "../../integrations/agent/execution-lowering";
+import { prepareInlineExecution } from "../../integrations/agent/inline-execution";
 import { buildProposePrompt, parseAgentProposalPayload } from "../../integrations/agent/prompts";
-import { collectDispatchSensitiveValues, executeRunner } from "../../integrations/agent/runner-dispatch";
+import { collectDispatchSensitiveValues } from "../../integrations/agent/runner-dispatch";
 import { baseFailureFields, enoentHintMessage, isEnoentFailure } from "../agent/agent-support";
 import {
   type CreateProposalInput,
@@ -68,6 +68,7 @@ export interface AkmProposeFailure {
   exitCode: number | null;
   stdout?: string;
   stderr?: string;
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface AkmProposeSuccess {
@@ -77,6 +78,7 @@ export interface AkmProposeSuccess {
   ref: string;
   engine: string;
   durationMs: number;
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export type AkmProposeResult = AkmProposeSuccess | AkmProposeFailure;
@@ -86,6 +88,7 @@ function failureEnvelope(
   type: string,
   name: string,
   engine: string,
+  notices: readonly Readonly<LoweringNotice>[],
   fallbackReason: AgentFailureReason = "non_zero_exit",
 ): AkmProposeFailure {
   return {
@@ -94,6 +97,59 @@ function failureEnvelope(
     type,
     name,
     engine,
+    ...(notices.length > 0 ? { notices } : {}),
+  };
+}
+
+function noticeFields(notices: readonly Readonly<LoweringNotice>[]): { notices?: readonly Readonly<LoweringNotice>[] } {
+  return notices.length > 0 ? { notices } : {};
+}
+
+interface ProposalDispatchResult {
+  result: AgentRunResult;
+  engineName: string;
+  engineBin?: string;
+  notices: readonly Readonly<LoweringNotice>[];
+  sensitiveValues: readonly string[];
+  interactive: boolean;
+}
+
+/** Resolve, lower, and dispatch the already-rendered legacy proposal prompt. */
+async function dispatchProposalPrompt(
+  prompt: string,
+  config: AkmConfig,
+  options: AkmProposeOptions,
+): Promise<ProposalDispatchResult> {
+  const current = {
+    ...(options.engine !== undefined ? { engine: options.engine } : {}),
+    ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+  };
+  const prepared = prepareInlineExecution({
+    content: prompt,
+    config,
+    invocationKind: "direct",
+    ...(Object.keys(current).length > 0 ? { current } : {}),
+  });
+  const engineName = prepared.request.engine.name;
+  const announcement = fallbackAnnouncement(prepared.fallbackEngineName, engineName);
+  if (announcement) warn(announcement);
+  const lowered = lowerResolvedExecutionRequest(prepared.request, prepared.config);
+
+  const interactive = !options.runAgentOptions?.spawn;
+  const runOptions: RunAgentOptions = {
+    stdio: interactive ? "interactive" : "captured",
+    parseOutput: "text",
+    ...(options.runAgentOptions ?? {}),
+  };
+  const sensitiveValues = collectDispatchSensitiveValues(lowered.runner, runOptions);
+  const result = await dispatchLoweredExecutionRequest(lowered, { runOptions });
+  return {
+    result,
+    engineName,
+    ...(lowered.runner.kind === "llm" ? {} : { engineBin: lowered.runner.profile.bin }),
+    notices: lowered.notices,
+    sensitiveValues,
+    interactive,
   };
 }
 
@@ -147,23 +203,13 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
 
   const stash = options.stashDir ?? resolveStashDir();
 
-  // 1. Resolve the selected engine and write target exactly once.
-  // the LLM arm uses the caller-specific plain-chat handler below.
+  // 1. Resolve the write target. Engine/model/inference resolution happens
+  // exactly once below through the shared execution cascade.
   const config = options.agentConfig ?? (await import("../../core/config/config.js")).loadConfig();
   const target = resolveProposalQueueTarget(stash, config);
   emitProposeInvoked(target.source, options);
-  const { config: engineConfig, fallbackEngineName } = withEngineFallback(config);
-  const engineName = options.engine ?? engineConfig.defaults?.engine;
-  // Announced, never silent: `options.engine` outranks the default, so the
-  // fallback is only reportable when it is the engine actually selected.
-  const engineAnnouncement = fallbackAnnouncement(fallbackEngineName, engineName);
-  if (engineAnnouncement) warn(engineAnnouncement);
-  if (!engineName)
-    throw new ConfigError(`propose ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "INVALID_CONFIG_FILE");
-  const runner = resolveEngine(engineName, engineConfig);
-  const profile = runner.kind === "llm" ? undefined : runner.profile;
 
-  // 3. Build prompt.
+  // 2. Build terminal user content.
   // Synthesize a temp draft path so opencode can write the asset content
   // directly using its file tools rather than returning JSON via stdout.
   const draftFilePath = import("node:os").then((os) =>
@@ -188,51 +234,21 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
     draftFilePath: resolvedDraftPath,
   });
 
-  // 4. Dispatch the selected engine.
-  // Real agent runs use interactive mode so file tools can write the draft.
-  // Injected/custom spawns still need captured stdout for JSON payload tests.
-  // All kinds cross the unified RunnerSpec dispatch boundary.
-  const useCustomSpawn = Boolean(options.runAgentOptions?.spawn);
-  let result: AgentRunResult;
-  const runOptions: RunAgentOptions = {
-    stdio: useCustomSpawn ? "captured" : "interactive",
-    parseOutput: "text",
-    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-    ...(options.runAgentOptions ?? {}),
-  };
-  const sensitiveValues = collectDispatchSensitiveValues(runner, runOptions);
-  result = await executeRunner(runner, prompt, runOptions, {
-    llm: async (spec, llmPrompt, opts) => {
-      const { chatCompletion } = await import("../../llm/client.js");
-      const started = Date.now();
-      try {
-        const stdout = await chatCompletion(spec.connection, [{ role: "user", content: llmPrompt }], {
-          ...(Object.hasOwn(opts, "timeoutMs") ? { timeoutMs: opts.timeoutMs } : {}),
-        });
-        return { ok: true, exitCode: 0, stdout, stderr: "", durationMs: Date.now() - started };
-      } catch (error) {
-        return {
-          ok: false,
-          exitCode: null,
-          stdout: "",
-          stderr: "",
-          durationMs: Date.now() - started,
-          error: String(error),
-          reason: "spawn_failed",
-        };
-      }
-    },
-  });
+  // 3. Preserve the fully-authored legacy prompt as the terminal user content;
+  // no synthetic persona, conversation turn, schema, or tool selection is
+  // introduced while it crosses the shared resolved/lowered boundary.
+  const dispatch = await dispatchProposalPrompt(prompt, config, options);
+  const { result, engineName, notices, sensitiveValues } = dispatch;
 
   if (!result.ok) {
     // B3: ENOENT / not-found gives an actionable hint.
     if (isEnoentFailure(result)) {
       return {
-        ...failureEnvelope(result, options.type, options.name, engineName),
-        error: enoentHintMessage(profile?.bin ?? engineName),
+        ...failureEnvelope(result, options.type, options.name, engineName, notices),
+        error: enoentHintMessage(dispatch.engineBin ?? engineName),
       };
     }
-    return failureEnvelope(result, options.type, options.name, engineName);
+    return failureEnvelope(result, options.type, options.name, engineName, notices);
   }
 
   // 5. Resolve the proposal content.
@@ -250,8 +266,7 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
   } else {
     // B1: When interactive mode was used and stdout is empty, the agent did not
     // write the draft file and stdout was not captured — surface an actionable error.
-    const stdioWasInteractive = !useCustomSpawn;
-    if (stdioWasInteractive && (result.stdout ?? "") === "") {
+    if (dispatch.interactive && (result.stdout ?? "") === "") {
       return {
         schemaVersion: 2,
         ok: false,
@@ -263,6 +278,7 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
         engine: engineName,
         exitCode: result.exitCode,
         ...(result.stderr ? { stderr: result.stderr } : {}),
+        ...noticeFields(notices),
       };
     }
     try {
@@ -279,6 +295,7 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
         exitCode: result.exitCode,
         stdout: result.stdout,
         ...(result.stderr ? { stderr: result.stderr } : {}),
+        ...noticeFields(notices),
       };
     }
   }
@@ -306,6 +323,7 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
         exitCode: result.exitCode,
         stdout: result.stdout,
         ...(result.stderr ? { stderr: result.stderr } : {}),
+        ...noticeFields(notices),
       };
     }
     if (parsedRef.type !== options.type) {
@@ -320,6 +338,7 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
         exitCode: result.exitCode,
         stdout: result.stdout,
         ...(result.stderr ? { stderr: result.stderr } : {}),
+        ...noticeFields(notices),
       };
     }
     ref = proposeItemRef(target.source, parsedRef.type, parsedRef.name);
@@ -354,5 +373,6 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
     ref: proposal.ref,
     engine: engineName,
     durationMs: result.durationMs,
+    ...noticeFields(notices),
   };
 }

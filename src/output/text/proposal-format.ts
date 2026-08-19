@@ -12,6 +12,18 @@
  * R-063/B5.)
  */
 
+function appendLoweringNotices(lines: string[], result: Record<string, unknown>): void {
+  const notices = Array.isArray(result.notices) ? (result.notices as Array<Record<string, unknown>>) : [];
+  for (const notice of notices) {
+    const severity = notice.severity === "info" ? "info" : "warning";
+    const code = typeof notice.code === "string" ? notice.code : "lowering-notice";
+    const adapter = typeof notice.adapter === "string" ? ` adapter=${notice.adapter}` : "";
+    const field = typeof notice.field === "string" ? ` field=${notice.field}` : "";
+    const message = typeof notice.message === "string" ? `: ${notice.message}` : "";
+    lines.push(`  notice[${severity}] ${code}${adapter}${field}${message}`);
+  }
+}
+
 export function formatProposalProducerPlain(command: string, r: Record<string, unknown>): string {
   if (r.ok === false) {
     const reason = String(r.reason);
@@ -22,13 +34,16 @@ export function formatProposalProducerPlain(command: string, r: Record<string, u
     if (r.exitCode !== undefined && r.exitCode !== null) {
       lines.push(`  exitCode: ${String(r.exitCode)}`);
     }
+    appendLoweringNotices(lines, r);
     return lines.join("\n");
   }
   const proposal = r.proposal as Record<string, unknown>;
   const id = String(proposal.id);
   const ref = String(r.ref);
   const status = String(proposal.status);
-  return `${command}: queued proposal ${id} (${ref}) [${status}]`;
+  const lines = [`${command}: queued proposal ${id} (${ref}) [${status}]`];
+  appendLoweringNotices(lines, r);
+  return lines.join("\n");
 }
 
 /**
@@ -185,6 +200,7 @@ export function formatProposalDrainPlain(r: Record<string, unknown>): string {
   for (const d of deferred) {
     lines.push(`    - ${String(d.id ?? "?")} (${String(d.reason ?? "?")})`);
   }
+  appendLoweringNotices(lines, r);
   return lines.join("\n").trimEnd();
 }
 

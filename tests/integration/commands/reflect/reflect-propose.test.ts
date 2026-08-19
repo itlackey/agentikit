@@ -494,6 +494,7 @@ describe("akm propose", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
+    expect(result.notices).toBeUndefined();
     expect(result.proposal.source).toBe("propose");
     expect(result.proposal.ref).toBe(durableItemRef(stash, "skill", "hello"));
 
@@ -643,6 +644,7 @@ describe("akm propose", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.reason).toBe("spawn_failed");
+    expect(result.notices).toBeUndefined();
     expect(listProposals(stash).length).toBe(0);
   });
 
