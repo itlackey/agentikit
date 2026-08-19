@@ -568,6 +568,21 @@ async function testPackageAcceptance(skipBuild = false): Promise<void> {
       name: metadata.name,
       version: metadata.version,
     });
+    const installedModelAsset = path.join(verified.packageDir, "dist", "assets", "models.json");
+    if (!fs.lstatSync(installedModelAsset).isFile()) {
+      throw new Error(`Installed package is missing model-map asset: ${installedModelAsset}`);
+    }
+    const modelConfigDir = path.join(workDir, "model-config");
+    await runCommand(launcherExecutionCommand(verified.launcher, ["models", "copy-defaults"]), {
+      cwd: prefix,
+      env: { ...process.env, AKM_CONFIG_DIR: modelConfigDir },
+    });
+    const copiedModelAsset = path.join(modelConfigDir, "models.json");
+    if (fs.readFileSync(copiedModelAsset, "utf8") !== fs.readFileSync(installedModelAsset, "utf8")) {
+      throw new Error(
+        "Installed launcher copied model-map bytes that differ from its packaged dist/assets/models.json",
+      );
+    }
     console.log(`Package acceptance passed for ${metadata.name}@${verified.version} via ${verified.launcher}`);
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });

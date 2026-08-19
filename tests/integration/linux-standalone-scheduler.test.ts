@@ -123,6 +123,15 @@ test.skipIf(!ENABLED)(
       expectSuccess(version, "standalone candidate --version");
       expect(version.stdout).toContain(candidateVersion as string);
 
+      const copiedModels = run([binary, "models", "copy-defaults"], env);
+      expectSuccess(copiedModels, "standalone models copy-defaults");
+      const modelDocument = JSON.parse(fs.readFileSync(path.join(configHome, "akm", "models.json"), "utf8")) as {
+        version?: number;
+        aliases?: Record<string, unknown>;
+      };
+      expect(modelDocument.version).toBe(1);
+      expect(Object.keys(modelDocument.aliases ?? {}).sort()).toEqual(["balanced", "fast", "reasoning"]);
+
       const doctor = run([binary, "task", "doctor"], env);
       expectSuccess(doctor, "standalone tasks doctor");
       expect(JSON.parse(doctor.stdout)).toMatchObject({ akm: { argv: [binary], via: "standalone" } });

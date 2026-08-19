@@ -4,11 +4,20 @@
 
 import { spawnSync } from "node:child_process";
 import { type AkmConfig, loadConfig } from "../../core/config/config";
+import { ConfigError } from "../../core/errors";
 import type { SemanticSearchStatus } from "../../indexer/search/semantic-status";
 import type { WhichFn } from "../../integrations/agent/detect";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
 import { resolveModel } from "../../integrations/agent/model-aliases";
+import {
+  DEFAULT_MODEL_MAP_TEXT,
+  type LoadModelMapOptions,
+  loadModelMap,
+  mergeModelMapLayers,
+  parseModelMapLayer,
+  userModelMapPath,
+} from "../../integrations/agent/model-map";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { resolveImprovePlan } from "../improve/improve-strategies";
 import {
@@ -322,6 +331,61 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
 }
 
 /**
+ * Validate the immutable installed model map and optional user overlay.
+ * Installed corruption is a package defect (fail); a bad optional user file
+ * is operator-fixable configuration (warn); absence is the normal state.
+ */
+export function runModelMapProbe(options: LoadModelMapOptions = {}): HealthCheckResult {
+  const installedText = options.installedText ?? DEFAULT_MODEL_MAP_TEXT;
+  try {
+    mergeModelMapLayers(parseModelMapLayer(installedText, "installed models.json"));
+  } catch (error) {
+    return {
+      name: "model-map-files",
+      kind: "deterministic",
+      status: "fail",
+      confidence: "high",
+      message: `Installed models.json is invalid; this AKM installation cannot resolve model aliases: ${error instanceof Error ? error.message : String(error)}`,
+      evidence: { installedSource: "package asset" },
+    };
+  }
+
+  try {
+    const loaded = loadModelMap(options);
+    return {
+      name: "model-map-files",
+      kind: "deterministic",
+      status: "pass",
+      confidence: "high",
+      message:
+        loaded.userStatus === "loaded"
+          ? `Installed defaults and user models.json at ${loaded.userPath} are valid.`
+          : "Installed model defaults are valid; no optional user models.json is present.",
+      evidence: {
+        installedSource: "package asset",
+        userPath: loaded.userPath,
+        userStatus: loaded.userStatus,
+        aliases: Object.keys(loaded.map.aliases).sort(),
+      },
+    };
+  } catch (error) {
+    const hint = error instanceof ConfigError ? error.hint() : undefined;
+    return {
+      name: "model-map-files",
+      kind: "deterministic",
+      status: "warn",
+      confidence: "high",
+      message: `${error instanceof Error ? error.message : String(error)}${hint ? ` ${hint}` : ""}`,
+      evidence: {
+        installedSource: "package asset",
+        userPath: userModelMapPath(options.env),
+        userStatus: "invalid",
+      },
+    };
+  }
+}
+
+/**
  * The ordered health-check registry. ORDER IS LOAD-BEARING: `akmHealth`
  * iterates this array and appends to hardChecks/advisories in sequence, so the
  * declaration order below is exactly the emission order (hard checks first in
@@ -411,6 +475,11 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
     name: "default-engine",
     channel: "hard",
     run: () => runDefaultEngineProbe(),
+  },
+  {
+    name: "model-map-files",
+    channel: "hard",
+    run: () => runModelMapProbe(),
   },
   {
     name: "default-llm-engine",

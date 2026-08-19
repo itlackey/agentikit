@@ -92,15 +92,84 @@ with `npm i -g opencode-ai` or opencode's own installer.
 
 Config-root `modelAliases` resolve by exact engine/platform column first, then
 the shared `llm` column for direct and fallback LLM engines, then `"*"`. The
-resolved exact model is used consistently by direct dispatch, SDK fallback,
-health evidence, and frozen workflow plans.
+legacy string mappings remain supported as nearer compatibility inputs. An
+engine's own `modelAliases` wins over the config-root table, and both win over
+the installed/user model-map files described below.
 
-> **Current versus target design:** 0.9.1 model aliases are string mappings and
-> the shipped built-ins are vendor-oriented. The approved target keeps exact
-> identifiers, adds a small operator-overridable starter vocabulary such as
-> `fast`/`balanced`/`reasoning`, and permits explicitly adopted structured
-> inference profiles. That target is not yet implemented; see
-> [Agent, Command, Engine, and Model Resolution](../architecture/specs/agent-command-engine-model-design.md).
+### Model-map files
+
+> **0.9.2 integration status:** this work package ships the versioned asset,
+> loader/expansion contract, copy command, diagnostics, and package coverage.
+> Direct agent, task, and workflow dispatch still use their existing alias
+> call sites until WP3 connects them to the common cascade resolver on the
+> release branch. Until that cutover lands, editing this file alone does not
+> change a dispatched model. This note should be removed with the WP3 cutover.
+
+AKM ships an immutable `models.json` package asset with three intent aliases:
+`fast`, `balanced`, and `reasoning`. The installed starter has separate
+columns for Claude Code, OpenCode, and OpenCode SDK only. It deliberately has
+no universal `"*"` or `llm` value: a provider-specific identifier is not
+pretended to work on unrelated engines. Add mappings for Gemini, Codex, named
+direct LLM engines, or other harnesses in your user file.
+
+An optional operator-owned file lives beside `config.json` at
+`$XDG_CONFIG_HOME/akm/models.json` (or `<AKM_CONFIG_DIR>/models.json`). It uses
+the same version-1 schema as the installed file:
+
+```json
+{
+  "version": 1,
+  "aliases": {
+    "fast": {
+      "gemini": "gemini-2.5-flash"
+    },
+    "reasoning": {
+      "claude": {
+        "inference": {
+          "effort": "medium"
+        }
+      },
+      "local-reasoner": {
+        "model": "qwen3:30b",
+        "inference": {
+          "effort": "high"
+        }
+      }
+    }
+  }
+}
+```
+
+Each engine mapping is either a non-empty exact model string or a structured
+profile with the documented fields `model` and `inference`. A user profile may
+omit `model` when the installed layer already supplies it, as the partial
+Claude override above does. After overlay, every alias/engine entry must have a
+usable model. Unknown profile fields are rejected; JSON-safe fields inside
+`inference` are preserved for engine adapters to lower optimistically.
+
+The user file overlays the installed file by alias, engine, and nested object
+field. Objects merge recursively. Arrays, scalars, and explicit `null` replace
+the lower value; omitted fields preserve it. Alias and engine keys are
+case-normalized, and case-colliding definitions are rejected. Unknown model
+inputs still pass through byte-for-byte as exact identifiers. Once a name is a
+known merged alias, selecting an engine with no mapping is an actionable
+configuration error rather than silently sending the alias as a model ID.
+
+Copy the complete installed starter into the user configuration directory when
+you want to customize all fields:
+
+```sh
+akm models copy-defaults
+akm models copy-defaults --overwrite  # explicit replacement confirmation
+```
+
+The command validates the installed asset, creates the config directory, and
+writes atomically. It refuses an existing file without `--overwrite` and never
+replaces a symlink or other non-regular target. AKM does not auto-create or
+sync this file, and authoritative defaults never live in the cache. `akm
+health` reports `model-map-files` as passing when the optional user file is
+absent, warns with its path and JSON location when the user file is unreadable
+or invalid, and fails when the installed package asset is defective.
 
 `defaults.engine` names an LLM or agent engine. `defaults.llmEngine` must name
 an LLM engine. There is no first-engine fallback: an unset `defaults.engine`

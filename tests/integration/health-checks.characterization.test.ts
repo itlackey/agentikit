@@ -107,6 +107,13 @@ describe("health checks characterization (WS9)", () => {
         message: "No default engine is configured.",
       },
       {
+        name: "model-map-files",
+        kind: "deterministic",
+        status: "pass",
+        confidence: "high",
+        message: "Installed model defaults are valid; no optional user models.json is present.",
+      },
+      {
         name: "default-llm-engine",
         kind: "deterministic",
         status: "unknown",
@@ -259,6 +266,7 @@ describe("health checks characterization (WS9)", () => {
       "task-log-backing",
       "active-runs",
       "default-engine",
+      "model-map-files",
       "default-llm-engine",
       "active-improve-strategy",
     ]);

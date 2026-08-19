@@ -180,6 +180,26 @@ describe("version parity", () => {
   });
 });
 
+// ── packaged models.json ─────────────────────────────────────────────────────
+
+describe("model-map package asset parity", () => {
+  afterEach(() => cleanup());
+
+  test.skipIf(!ENABLED)("Node launcher discovers installed defaults and copies them through the CLI", () => {
+    setupStorage();
+    const result = nodeRun(["models", "copy-defaults"], nodeEnv);
+    assertNoBoundaryLeak(result, "models-copy-defaults");
+    expect(result.status).toBe(0);
+    const copied = path.join(nodeEnv.XDG_CONFIG_HOME!, "akm", "models.json");
+    const document = JSON.parse(fs.readFileSync(copied, "utf8")) as {
+      version?: number;
+      aliases?: Record<string, unknown>;
+    };
+    expect(document.version).toBe(1);
+    expect(Object.keys(document.aliases ?? {}).sort()).toEqual(["balanced", "fast", "reasoning"]);
+  });
+});
+
 // ── bundle create + remember + show ─────────────────────────────────────────
 
 describe("bundle create / remember / show parity", () => {
