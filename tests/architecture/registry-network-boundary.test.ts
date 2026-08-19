@@ -107,6 +107,20 @@ function networkCapabilities(source: string, fileName = "probe.ts"): string[] {
 /** Find raw socket/request call sites even when imports and callables are aliased. */
 function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
   const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const compilerOptions: ts.CompilerOptions = {
+    allowJs: true,
+    checkJs: false,
+    noLib: true,
+    noResolve: true,
+    target: ts.ScriptTarget.Latest,
+  };
+  const compilerHost = ts.createCompilerHost(compilerOptions);
+  compilerHost.fileExists = (candidate) => candidate === fileName;
+  compilerHost.getSourceFile = (candidate) => (candidate === fileName ? sourceFile : undefined);
+  compilerHost.readFile = (candidate) => (candidate === fileName ? source : undefined);
+  const checker = ts
+    .createProgram({ rootNames: [fileName], options: compilerOptions, host: compilerHost })
+    .getTypeChecker();
   const moduleMethods = new Map<string, ReadonlySet<string>>([
     ["http", new Set(["get", "request"])],
     ["node:http", new Set(["get", "request"])],
@@ -122,10 +136,14 @@ function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
     ["undici", new Set(["connect", "fetch", "pipeline", "request", "stream"])],
     ["bun", new Set(["connect", "udpSocket"])],
   ]);
-  const namespaces = new Map<string, string>([["Bun", "bun"]]);
-  const callables = new Set<string>();
+  const namespaces = new Map<ts.Symbol, string>();
+  const callables = new Set<ts.Symbol>();
   const findings = new Set<string>();
   const declarations: ts.VariableDeclaration[] = [];
+  const directInvocations: Array<{
+    target: ts.ArrowFunction | ts.FunctionExpression;
+    args: ts.NodeArray<ts.Expression>;
+  }> = [];
 
   const unwrapExpression = (expression: ts.Expression): ts.Expression => {
     let value = expression;
@@ -160,11 +178,18 @@ function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
     const argument = value.arguments[0];
     if (!argument || !ts.isStringLiteral(argument)) return undefined;
     if (value.expression.kind === ts.SyntaxKind.ImportKeyword) return argument.text;
-    if (ts.isIdentifier(value.expression) && value.expression.text === "require") return argument.text;
+    if (
+      ts.isIdentifier(value.expression) &&
+      value.expression.text === "require" &&
+      checker.getSymbolAtLocation(value.expression) === undefined
+    ) {
+      return argument.text;
+    }
     if (
       ts.isPropertyAccessExpression(value.expression) &&
       ts.isIdentifier(value.expression.expression) &&
       value.expression.expression.text === "process" &&
+      checker.getSymbolAtLocation(value.expression.expression) === undefined &&
       value.expression.name.text === "getBuiltinModule"
     ) {
       return argument.text;
@@ -178,41 +203,43 @@ function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
       const methods = moduleMethods.get(moduleName);
       if (methods) {
         const importClause = node.importClause;
-        if (importClause?.name) namespaces.set(importClause.name.text, moduleName);
+        if (importClause?.name) {
+          const symbol = checker.getSymbolAtLocation(importClause.name);
+          if (symbol) namespaces.set(symbol, moduleName);
+        }
         if (importClause?.namedBindings && ts.isNamespaceImport(importClause.namedBindings)) {
-          namespaces.set(importClause.namedBindings.name.text, moduleName);
+          const symbol = checker.getSymbolAtLocation(importClause.namedBindings.name);
+          if (symbol) namespaces.set(symbol, moduleName);
         }
         if (importClause?.namedBindings && ts.isNamedImports(importClause.namedBindings)) {
           for (const element of importClause.namedBindings.elements) {
             const imported = element.propertyName?.text ?? element.name.text;
-            if (methods.has(imported)) callables.add(element.name.text);
+            const symbol = checker.getSymbolAtLocation(element.name);
+            if (methods.has(imported) && symbol) callables.add(symbol);
           }
         }
       }
     }
     if (ts.isVariableDeclaration(node)) declarations.push(node);
+    if (ts.isCallExpression(node)) {
+      const target = unwrapExpression(node.expression);
+      if (ts.isArrowFunction(target) || ts.isFunctionExpression(target)) {
+        directInvocations.push({ target, args: node.arguments });
+      }
+    }
     ts.forEachChild(node, discover);
   });
 
-  for (const declaration of declarations) {
-    const moduleName =
-      importedModule(declaration.initializer) ??
-      (declaration.initializer && ts.isIdentifier(declaration.initializer)
-        ? namespaces.get(declaration.initializer.text)
-        : undefined);
-    if (!moduleName || !moduleMethods.has(moduleName)) continue;
-    if (ts.isIdentifier(declaration.name)) {
-      namespaces.set(declaration.name.text, moduleName);
-      continue;
+  const namespaceModule = (expression: ts.Expression | undefined): string | undefined => {
+    if (!expression) return undefined;
+    const value = unwrapExpression(expression);
+    if (ts.isIdentifier(value)) {
+      if (value.text === "Bun" && checker.getSymbolAtLocation(value) === undefined) return "bun";
+      const symbol = checker.getSymbolAtLocation(value);
+      return symbol ? namespaces.get(symbol) : undefined;
     }
-    if (ts.isObjectBindingPattern(declaration.name)) {
-      const methods = moduleMethods.get(moduleName);
-      for (const element of declaration.name.elements) {
-        const imported = element.propertyName?.getText(sourceFile) ?? element.name.getText(sourceFile);
-        if (methods?.has(imported) && ts.isIdentifier(element.name)) callables.add(element.name.text);
-      }
-    }
-  }
+    return importedModule(value);
+  };
 
   const propertyCapability = (expression: ts.Expression): string | undefined => {
     const value = unwrapExpression(expression);
@@ -233,14 +260,17 @@ function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
     }
     if (!method) return undefined;
     owner = unwrapExpression(owner);
-    const moduleName = ts.isIdentifier(owner) ? namespaces.get(owner.text) : importedModule(owner);
+    const moduleName = namespaceModule(owner);
     return moduleName && moduleMethods.get(moduleName)?.has(method) ? expression.getText(sourceFile) : undefined;
   };
 
   const expressionIsCallable = (expression: ts.Expression | undefined): boolean => {
     if (!expression) return false;
     const value = unwrapExpression(expression);
-    if (ts.isIdentifier(value)) return callables.has(value.text);
+    if (ts.isIdentifier(value)) {
+      const symbol = checker.getSymbolAtLocation(value);
+      return symbol ? callables.has(symbol) : false;
+    }
     if (propertyCapability(value)) return true;
     if (ts.isConditionalExpression(value)) {
       return expressionIsCallable(value.whenTrue) || expressionIsCallable(value.whenFalse);
@@ -251,26 +281,56 @@ function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
   let changed = true;
   while (changed) {
     changed = false;
-    for (const declaration of declarations) {
-      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
-      if (ts.isIdentifier(declaration.initializer) && namespaces.has(declaration.initializer.text)) {
-        if (!namespaces.has(declaration.name.text)) {
-          const aliasedModule = namespaces.get(declaration.initializer.text);
-          if (!aliasedModule) continue;
-          namespaces.set(declaration.name.text, aliasedModule);
+    for (const { target, args } of directInvocations) {
+      for (const [index, parameter] of target.parameters.entries()) {
+        const argument = args[index];
+        const moduleName = namespaceModule(argument);
+        const symbol = ts.isIdentifier(parameter.name) ? checker.getSymbolAtLocation(parameter.name) : undefined;
+        if (moduleName && symbol && !namespaces.has(symbol)) {
+          namespaces.set(symbol, moduleName);
+          changed = true;
+        } else if (argument && symbol && expressionIsCallable(argument) && !callables.has(symbol)) {
+          callables.add(symbol);
           changed = true;
         }
-      } else if (expressionIsCallable(declaration.initializer) && !callables.has(declaration.name.text)) {
-        callables.add(declaration.name.text);
-        changed = true;
+      }
+    }
+    for (const declaration of declarations) {
+      if (!declaration.initializer) continue;
+      const moduleName = namespaceModule(declaration.initializer);
+      if (ts.isIdentifier(declaration.name)) {
+        const symbol = checker.getSymbolAtLocation(declaration.name);
+        if (!symbol) continue;
+        if (moduleName && moduleMethods.has(moduleName)) {
+          if (!namespaces.has(symbol)) {
+            namespaces.set(symbol, moduleName);
+            changed = true;
+          }
+        } else if (expressionIsCallable(declaration.initializer) && !callables.has(symbol)) {
+          callables.add(symbol);
+          changed = true;
+        }
+        continue;
+      }
+      if (moduleName && ts.isObjectBindingPattern(declaration.name)) {
+        const methods = moduleMethods.get(moduleName);
+        for (const element of declaration.name.elements) {
+          const imported = element.propertyName?.getText(sourceFile) ?? element.name.getText(sourceFile);
+          const symbol = ts.isIdentifier(element.name) ? checker.getSymbolAtLocation(element.name) : undefined;
+          if (methods?.has(imported) && symbol && !callables.has(symbol)) {
+            callables.add(symbol);
+            changed = true;
+          }
+        }
       }
     }
   }
 
   function inspect(node: ts.Node): void {
     if (ts.isCallExpression(node)) {
-      if (ts.isIdentifier(node.expression) && callables.has(node.expression.text)) {
-        findings.add(`call:${node.expression.text}`);
+      const symbol = ts.isIdentifier(node.expression) ? checker.getSymbolAtLocation(node.expression) : undefined;
+      if (symbol && callables.has(symbol)) {
+        findings.add(`call:${node.expression.getText(sourceFile)}`);
       } else {
         const capability = propertyCapability(node.expression);
         if (capability) findings.add(`call:${capability}`);
@@ -390,6 +450,50 @@ describe("registry outbound request architecture", () => {
       'call:process.getBuiltinModule("node:net").connect',
       'call:require("node:https").request',
     ]);
+  });
+
+  test("raw transport analysis follows wrapped namespaces", () => {
+    expect(
+      rawHttpCapabilities(`
+        import * as importedHttps from "node:https";
+        const wrappedBun = (Bun);
+        const commaBun = (0, Bun);
+        const wrappedHttps = (importedHttps);
+        const wrappedRequire = (require("node:http"));
+        const wrappedBuiltin = (process.getBuiltinModule("node:net"));
+        const { udpSocket: wrappedUdp } = (Bun);
+        wrappedBun.connect({});
+        commaBun.udpSocket({});
+        wrappedHttps.request({});
+        wrappedRequire.get({});
+        wrappedBuiltin.createConnection({});
+        wrappedUdp({});
+      `),
+    ).toEqual([
+      "call:commaBun.udpSocket",
+      "call:wrappedBuiltin.createConnection",
+      "call:wrappedBun.connect",
+      "call:wrappedHttps.request",
+      "call:wrappedRequire.get",
+      "call:wrappedUdp",
+    ]);
+  });
+
+  test("raw transport analysis ignores lexically shadowed globals", () => {
+    expect(
+      rawHttpCapabilities(`
+        function localOnly(
+          Bun: { connect: (options: object) => void; udpSocket: (options: object) => void },
+          require: (name: string) => { request: (options: object) => void },
+          process: { getBuiltinModule: (name: string) => { connect: (options: object) => void } },
+        ) {
+          Bun.connect({});
+          Bun.udpSocket({});
+          require("node:https").request({});
+          process.getBuiltinModule("node:net").connect({});
+        }
+      `),
+    ).toEqual([]);
   });
 
   test("registry callers cannot bypass the reusable network boundary", () => {
