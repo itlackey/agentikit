@@ -4,10 +4,17 @@
 
 import { describe, expect, test } from "bun:test";
 import { searchRegistry } from "../../src/commands/read/registry-search";
-import { fetchRegistryResponse, type RegistryHostnameResolver, RegistryNetworkError } from "../../src/registry/network";
-import { npmArtifactNetworkPolicy } from "../../src/registry/resolve";
+import { classifyNetworkAddress } from "../../src/core/network-policy";
+import {
+  _registryRetryDelayForTests,
+  fetchRegistryResponse,
+  type RegistryHostnameResolver,
+  RegistryNetworkError,
+} from "../../src/registry/network";
+import { buildInstallRef, npmArtifactNetworkPolicy } from "../../src/registry/resolve";
+import { loadSetupStashes } from "../../src/setup/registry-stash-loader";
 import { downloadArchive } from "../../src/sources/providers/provider-utils";
-import { withMockedFetch } from "../_helpers/sandbox";
+import { withEnv, withMockedFetch } from "../_helpers/sandbox";
 
 function resolverFor(records: Record<string, string[]>): RegistryHostnameResolver {
   return async (hostname) => records[hostname] ?? [];
@@ -49,6 +56,157 @@ describe("registry outbound request boundary", () => {
     ).rejects.toThrow(/resolves to non-public/i);
   });
 
+  test("re-resolves and revalidates before every retry", async () => {
+    let resolverCalls = 0;
+    let fetchCalls = 0;
+
+    await expect(
+      withMockedFetch(
+        () =>
+          fetchRegistryResponse("https://registry.example/index.json", undefined, {
+            policy: PUBLIC_POLICY,
+            timeoutMs: 1_000,
+            retries: 1,
+            resolveHostname: async () => {
+              resolverCalls += 1;
+              return resolverCalls === 1 ? ["93.184.216.34"] : ["10.0.0.8"];
+            },
+          }),
+        () => {
+          fetchCalls += 1;
+          if (fetchCalls === 1) throw new Error("transient network failure");
+          return new Response("ok");
+        },
+      ),
+    ).rejects.toThrow(/non-public/i);
+
+    expect(resolverCalls).toBe(2);
+    expect(fetchCalls).toBe(1);
+  });
+
+  test("re-pins each retry to the newly validated DNS answer", async () => {
+    const resolved: string[] = [];
+    const pinned: string[] = [];
+    const addresses = ["93.184.216.34", "142.250.191.78"];
+    const response = await fetchRegistryResponse("https://registry.example/index.json", undefined, {
+      policy: PUBLIC_POLICY,
+      timeoutMs: 1_000,
+      retries: 1,
+      resolveHostname: async () => {
+        const address = addresses[resolved.length];
+        if (!address) throw new Error("retry fixture exhausted its addresses");
+        resolved.push(address);
+        return [address];
+      },
+      requestPinnedForTesting: async (_url, address) => {
+        pinned.push(address);
+        return pinned.length === 1
+          ? new Response("retry", { status: 503, headers: { "Retry-After": "0" } })
+          : new Response("ok");
+      },
+    });
+    expect(await response.text()).toBe("ok");
+    expect(resolved).toEqual(addresses);
+    expect(pinned).toEqual(addresses);
+  });
+
+  test("bounds DNS resolution by the per-attempt timeout and never starts transport after expiry", async () => {
+    let transportCalls = 0;
+    await expect(
+      fetchRegistryResponse("https://registry.example/index.json", undefined, {
+        policy: PUBLIC_POLICY,
+        timeoutMs: 20,
+        retries: 0,
+        resolveHostname: () => new Promise(() => undefined),
+        requestPinnedForTesting: async () => {
+          transportCalls += 1;
+          return new Response("unexpected");
+        },
+      }),
+    ).rejects.toThrow(/DNS resolution timed out after 20ms/i);
+    expect(transportCalls).toBe(0);
+  });
+
+  test("aborts a pending DNS resolution without starting transport", async () => {
+    const controller = new AbortController();
+    let transportCalls = 0;
+    const pending = fetchRegistryResponse(
+      "https://registry.example/index.json",
+      { signal: controller.signal },
+      {
+        policy: PUBLIC_POLICY,
+        timeoutMs: 1_000,
+        retries: 0,
+        resolveHostname: () => new Promise(() => undefined),
+        requestPinnedForTesting: async () => {
+          transportCalls += 1;
+          return new Response("unexpected");
+        },
+      },
+    );
+    controller.abort(new Error("dns-stop"));
+    await expect(pending).rejects.toThrow("dns-stop");
+    expect(transportCalls).toBe(0);
+  });
+
+  test("caps server-controlled retry delays and handles invalid or past values", () => {
+    expect(_registryRetryDelayForTests(new Response(null, { headers: { "Retry-After": "999999999" } }), 0)).toBe(
+      30_000,
+    );
+    expect(
+      _registryRetryDelayForTests(
+        new Response(null, { headers: { "Retry-After": "Fri, 31 Dec 9999 23:59:59 GMT" } }),
+        0,
+      ),
+    ).toBe(30_000);
+    expect(
+      _registryRetryDelayForTests(
+        new Response(null, { headers: { "Retry-After": "Thu, 01 Jan 1970 00:00:00 GMT" } }),
+        0,
+      ),
+    ).toBe(0);
+    const negative = _registryRetryDelayForTests(new Response(null, { headers: { "Retry-After": "-1" } }), 0);
+    expect(negative).toBeGreaterThanOrEqual(250);
+    expect(negative).toBeLessThanOrEqual(500);
+  });
+
+  test("production transport connects to the validated address without resolving the URL host again", async () => {
+    const requests: string[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        requests.push(request.headers.get("host") ?? "");
+        return new Response("pinned");
+      },
+    });
+    try {
+      const networkModule = await import("../../src/registry/network");
+      const requestPinned = (
+        networkModule as typeof networkModule & {
+          requestRegistryAddressPinned?: NonNullable<
+            Parameters<typeof fetchRegistryResponse>[2]["requestPinnedForTesting"]
+          >;
+        }
+      ).requestRegistryAddressPinned;
+      expect(typeof requestPinned).toBe("function");
+
+      const url = `http://registry.test:${server.port}/index.json`;
+      const response = await fetchRegistryResponse(url, { headers: { Host: "unrelated.internal" } }, {
+        policy: PUBLIC_POLICY,
+        timeoutMs: 1_000,
+        retries: 0,
+        resolveHostname: resolverFor({ "registry.test": ["127.0.0.1"] }),
+        allowPrivateHostsForTesting: true,
+        requestPinnedForTesting: requestPinned,
+      } as Parameters<typeof fetchRegistryResponse>[2]);
+      expect(await response.text()).toBe("pinned");
+      expect(requests).toEqual([`registry.test:${server.port}`]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("provider requests do not inherit the loopback fixture exception for private hosts", async () => {
     let fetchCalls = 0;
     const result = await withMockedFetch(
@@ -68,6 +226,173 @@ describe("registry outbound request boundary", () => {
     expect(fetchCalls).toBe(0);
     expect(result.warnings).toHaveLength(2);
     expect(result.warnings.every((warning) => warning.includes("non-public"))).toBe(true);
+  });
+
+  test("a registry-derived git ref is rejected before it can become a materializer input", async () => {
+    const maliciousIndex = {
+      version: 3,
+      updatedAt: "2026-08-19T00:00:00.000Z",
+      stashes: [
+        {
+          id: "git:internal",
+          name: "internal",
+          description: "registry-controlled git transport",
+          source: "git",
+          ref: "http://169.254.169.254/latest/meta-data",
+          tags: ["internal"],
+        },
+        {
+          id: "npm:safe",
+          name: "safe internal tool",
+          description: "installable neighboring entry",
+          source: "npm",
+          ref: "safe-package",
+          tags: ["internal"],
+        },
+      ],
+    };
+
+    const result = await withMockedFetch(
+      () =>
+        searchRegistry("internal", {
+          registries: [{ url: "https://registry.example/index.json", provider: "static-index" }],
+        }),
+      () => new Response(JSON.stringify(maliciousIndex), { headers: { "Content-Type": "application/json" } }),
+    );
+
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0]?.installRef).toBe("npm:safe-package");
+    expect(result.warnings.join("\n")).toMatch(/registry.*git|git.*registry/i);
+    expect(buildInstallRef("git", "http://169.254.169.254/latest/meta-data")).toBe(
+      "git+http://169.254.169.254/latest/meta-data",
+    );
+  });
+
+  test("setup never turns registry homepages or raw Git refs into Git materializer inputs", async () => {
+    const entries = await withMockedFetch(
+      () => loadSetupStashes("https://registry.example.test/index.json"),
+      () =>
+        Response.json({
+          stashes: [
+            {
+              id: "itlackey/akm-stash",
+              name: "malicious-default",
+              source: "npm",
+              ref: "safe-package",
+              homepage: "http://169.254.169.254/latest/meta-data",
+            },
+            {
+              id: "raw-git",
+              name: "raw-git",
+              source: "git",
+              ref: "http://169.254.169.254/latest/meta-data",
+            },
+            {
+              id: "local",
+              name: "local",
+              source: "local",
+              ref: "/etc",
+            },
+            {
+              id: "github",
+              name: "github",
+              source: "github",
+              ref: "safe-owner/safe-repo",
+              homepage: "http://169.254.169.254/latest/meta-data",
+            },
+          ],
+        }),
+    );
+
+    expect(entries).toEqual([
+      {
+        id: "itlackey/akm-stash",
+        name: "malicious-default",
+        description: "",
+        url: "npm:safe-package",
+        installType: "npm",
+        source: "registry",
+        defaultSelected: false,
+      },
+      {
+        id: "github",
+        name: "github",
+        description: "",
+        url: "https://github.com/safe-owner/safe-repo.git",
+        installType: "git",
+        source: "registry",
+        defaultSelected: false,
+      },
+    ]);
+  });
+
+  test("setup preselects the official ID only when it resolves to its authenticated target", async () => {
+    const entries = await withMockedFetch(
+      () => loadSetupStashes("https://registry.example.test/index.json"),
+      () =>
+        Response.json({
+          stashes: [
+            {
+              id: "itlackey/akm-stash",
+              name: "official",
+              source: "github",
+              ref: "itlackey/akm-stash",
+            },
+          ],
+        }),
+    );
+
+    expect(entries).toEqual([
+      {
+        id: "itlackey/akm-stash",
+        name: "official",
+        description: "",
+        url: "https://github.com/itlackey/akm-stash.git",
+        installType: "git",
+        source: "registry",
+        defaultSelected: true,
+      },
+    ]);
+  });
+
+  test("setup releases a terminal non-OK registry response body", async () => {
+    let cancelled = false;
+    const body = new ReadableStream({
+      pull(controller) {
+        controller.enqueue(new TextEncoder().encode("never-ending"));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    const entries = await withMockedFetch(
+      () => loadSetupStashes("https://registry.example.test/index.json"),
+      () => new Response(body, { status: 404 }),
+    );
+
+    expect(entries[0]?.source).toBe("fallback");
+    expect(cancelled).toBe(true);
+  });
+
+  test("setup bounds a successful registry response body that never finishes", async () => {
+    let cancelled = false;
+    const body = new ReadableStream({
+      pull() {
+        return new Promise(() => undefined);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    const entries = await withMockedFetch(
+      () => loadSetupStashes("https://registry.example.test/index.json", 20),
+      () => new Response(body, { status: 200 }),
+    );
+
+    expect(entries[0]?.source).toBe("fallback");
+    expect(cancelled).toBe(true);
   });
 
   test("rejects embedded credentials on the initial URL and on redirect targets", async () => {
@@ -202,6 +527,59 @@ describe("registry outbound request boundary", () => {
     expect(seenAuthorization).toEqual(["Bearer same-origin", "Bearer same-origin"]);
   });
 
+  test.each([
+    { status: 301, method: "POST", expectedMethod: "GET", preservesBody: false, preservesBodyHeaders: false },
+    { status: 302, method: "POST", expectedMethod: "GET", preservesBody: false, preservesBodyHeaders: false },
+    { status: 303, method: "PUT", expectedMethod: "GET", preservesBody: false, preservesBodyHeaders: false },
+    { status: 303, method: "HEAD", expectedMethod: "HEAD", preservesBody: false, preservesBodyHeaders: true },
+    { status: 307, method: "POST", expectedMethod: "POST", preservesBody: true, preservesBodyHeaders: true },
+    { status: 308, method: "POST", expectedMethod: "POST", preservesBody: true, preservesBodyHeaders: true },
+  ])("$status applies redirect method/body semantics for $method", async ({
+    status,
+    method,
+    expectedMethod,
+    preservesBody,
+    preservesBodyHeaders,
+  }) => {
+    const requests: RequestInit[] = [];
+    const response = await withMockedFetch(
+      () =>
+        fetchRegistryResponse(
+          "https://registry.example/start",
+          {
+            method,
+            body: method === "HEAD" ? undefined : "payload",
+            headers: {
+              "Content-Type": "text/plain",
+              "Content-Length": "7",
+              "X-Keep": "yes",
+            },
+          },
+          {
+            policy: PUBLIC_POLICY,
+            timeoutMs: 1_000,
+            retries: 0,
+            resolveHostname: resolverFor({ "registry.example": ["93.184.216.34"] }),
+          },
+        ),
+      (_url, init) => {
+        requests.push(init ?? {});
+        return requests.length === 1
+          ? new Response("", { status, headers: { location: "/next" } })
+          : new Response("ok");
+      },
+    );
+    await response.body?.cancel();
+
+    const redirected = requests[1] ?? {};
+    const redirectedHeaders = new Headers(redirected.headers);
+    expect(redirected.method).toBe(expectedMethod);
+    expect(redirected.body === undefined || redirected.body === null).toBe(!preservesBody);
+    expect(redirectedHeaders.get("content-type")).toBe(preservesBodyHeaders ? "text/plain" : null);
+    expect(redirectedHeaders.get("content-length")).toBe(preservesBodyHeaders ? "7" : null);
+    expect(redirectedHeaders.get("x-keep")).toBe("yes");
+  });
+
   test("wraps an invalid redirect Location as a registry policy error", async () => {
     await expect(
       withMockedFetch(
@@ -295,13 +673,70 @@ describe("registry outbound request boundary", () => {
     ).rejects.toThrow(/metadata/i);
   });
 
+  test("an explicit private npm mirror cannot nominate a same-host different origin as private", async () => {
+    const tarballUrl = "https://npm.internal:8443/pkg/-/pkg-1.0.0.tgz";
+    const policy = npmArtifactNetworkPolicy({
+      registryOrigin: "http://npm.internal:4873",
+      allowPrivateRegistryOrigin: true,
+    });
+    expect(policy.registryOrigin).toBe("http://npm.internal:4873");
+
+    await withEnv({ AKM_NPM_REGISTRY: "http://changed.internal:9999" }, async () => {
+      await expect(
+        withMockedFetch(
+          () =>
+            fetchRegistryResponse(tarballUrl, undefined, {
+              policy,
+              timeoutMs: 1_000,
+              retries: 0,
+              resolveHostname: resolverFor({ "npm.internal": ["10.0.0.20"] }),
+            }),
+          () => new Response("archive"),
+        ),
+      ).rejects.toThrow(/non-public/i);
+    });
+  });
+
+  test("classifies every spelling of the AWS IPv6 metadata address numerically", async () => {
+    const expanded = "fd00:0ec2:0000:0000:0000:0000:0000:0254";
+    expect(classifyNetworkAddress("fd00:ec2::254")).toBe("metadata");
+    expect(classifyNetworkAddress(expanded)).toBe("metadata");
+
+    await expect(
+      fetchRegistryResponse("http://npm.internal:4873/pkg", undefined, {
+        policy: {
+          kind: "npm-api",
+          registryOrigin: "http://npm.internal:4873",
+          allowPrivateRegistryOrigin: true,
+        },
+        timeoutMs: 1_000,
+        retries: 0,
+        resolveHostname: resolverFor({ "npm.internal": [expanded] }),
+      }),
+    ).rejects.toThrow(/metadata/i);
+  });
+
+  test("fails closed for IPv6 space outside allocated global unicast", () => {
+    expect(classifyNetworkAddress("2001:4860:4860::8888")).toBe("public");
+    for (const address of ["3ffe::1", "4000::1", "8000::1"]) {
+      expect(classifyNetworkAddress(address)).toBe("reserved");
+    }
+  });
+
   test("npm artifact downloads use the boundary and reject private redirect targets", async () => {
     const tarballUrl = "https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz";
     let fetchCalls = 0;
     await expect(
       withMockedFetch(
         () =>
-          downloadArchive(tarballUrl, "/tmp/akm-registry-boundary-unwritten.tgz", npmArtifactNetworkPolicy(tarballUrl)),
+          downloadArchive(
+            tarballUrl,
+            "/tmp/akm-registry-boundary-unwritten.tgz",
+            npmArtifactNetworkPolicy({
+              registryOrigin: "https://registry.npmjs.org",
+              allowPrivateRegistryOrigin: false,
+            }),
+          ),
         () => {
           fetchCalls += 1;
           return new Response("", { status: 302, headers: { location: "http://169.254.169.254/archive.tgz" } });

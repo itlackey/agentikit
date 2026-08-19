@@ -13,7 +13,7 @@ import {
 import { asString } from "../../integrations/github";
 import { fetchCachedJson } from "../../storage/repositories/registry-cache";
 import { registerRegistryProvider } from "../factory";
-import { allowPrivateRegistryFixtureForTests, fetchRegistryResponse } from "../network";
+import { allowPrivateRegistryFixtureForTests, cancelRegistryResponse, fetchRegistryResponse } from "../network";
 import { buildInstallRef } from "../resolve";
 import type { InstallKind, RegistryAssetEntry, RegistryAssetSearchHit, RegistrySearchHit } from "../types";
 import type { RegistryProvider, RegistryProviderResult, RegistryProviderSearchOptions } from "./types";
@@ -83,6 +83,12 @@ class StaticIndexProvider implements RegistryProvider {
       if (index) {
         const regName = this.config.name;
         for (const stash of index.stashes) {
+          if (stash.source === "git") {
+            warnings.push(
+              `Registry ${formatRegistryLabel(this.config)}: ignored ${stash.id} because registry-provided git transport refs are not installable`,
+            );
+            continue;
+          }
           bundles.push({ stash, registryName: regName });
         }
       }
@@ -113,11 +119,12 @@ async function loadIndex(entry: RegistryConfigEntry): Promise<RegistryIndex | nu
         allowPrivateHostsForTesting: allowPrivateRegistryFixtureForTests(entry.url),
       });
       if (!response.ok) {
+        await cancelRegistryResponse(response);
         throw new Error(`HTTP ${response.status}`);
       }
       // Cap at 50 MB — registry indexes can grow large but unbounded
       // responses from a compromised server would OOM us.
-      const data = await jsonWithByteCap<unknown>(response, 50 * 1024 * 1024);
+      const data = await jsonWithByteCap<unknown>(response, 50 * 1024 * 1024, { bodyTimeoutMs: 10_000 });
       const index = parseRegistryIndex(data);
       if (!index) {
         throw new Error("Invalid registry index format");
@@ -250,7 +257,7 @@ function toSearchHit(stash: RegistryBundleEntry, score: number, registryName?: s
     title: stash.name,
     description: stash.description,
     ref: stash.ref,
-    installRef: buildInstallRef(stash.source, stash.ref),
+    installRef: buildInstallRef(stash.source, stash.ref, "registry"),
     homepage: stash.homepage,
     score: Math.round(score * 1000) / 1000,
     metadata,
@@ -301,7 +308,7 @@ function scoreAssets(
   for (const { stash, registryName } of stashes) {
     if (!stash.assets || stash.assets.length === 0) continue;
 
-    const installRef = buildInstallRef(stash.source, stash.ref);
+    const installRef = buildInstallRef(stash.source, stash.ref, "registry");
 
     for (const asset of stash.assets) {
       const score = scoreAsset(asset, tokens);

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { NotFoundError, UsageError } from "../src/core/errors";
 import {
+  npmArtifactNetworkPolicy,
   parseRegistryRef,
   resolveRegistryArtifact,
   trustedNpmTarballHosts,
@@ -127,6 +128,15 @@ describe("validateNpmTarballUrl", () => {
     ).not.toThrow();
   });
 
+  test("rejects a same-host tarball that changes the metadata origin", () => {
+    for (const url of [
+      "http://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz",
+      "https://registry.npmjs.org:8080/pkg/-/pkg-1.0.0.tgz",
+    ]) {
+      expect(() => validateNpmTarballUrl(url, "pkg@1.0.0")).toThrow(UntrustedNpmTarballError);
+    }
+  });
+
   test("rejects tarball on attacker-controlled host", () => {
     let caught: Error | undefined;
     try {
@@ -156,9 +166,11 @@ describe("validateNpmTarballUrl", () => {
     ).not.toThrow();
   });
 
-  test("still accepts public registry alongside operator override", () => {
+  test("does not let a configured mirror nominate a different public origin", () => {
     process.env.AKM_NPM_REGISTRY = "https://npm.internal.example.com";
-    expect(() => validateNpmTarballUrl("https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz", "pkg@1.0.0")).not.toThrow();
+    expect(() => validateNpmTarballUrl("https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz", "pkg@1.0.0")).toThrow(
+      UntrustedNpmTarballError,
+    );
   });
 
   test("rejects untrusted host even with override set", () => {
@@ -305,6 +317,14 @@ describe("resolveRegistryArtifact — npm metadata honors AKM_NPM_REGISTRY (R-03
     expect(requestedUrls).toEqual(["https://npm.internal.example.com/private-pkg"]);
     expect(requestedUrls.some((u) => u.includes("registry.npmjs.org"))).toBe(false);
     expect(result.resolvedVersion).toBe("1.0.0");
+    expect(result.registryOrigin).toBe("https://npm.internal.example.com");
+    expect(result.allowPrivateRegistryOrigin).toBe(true);
+    process.env.AKM_NPM_REGISTRY = "http://changed-after-metadata.invalid:9999";
+    expect(npmArtifactNetworkPolicy(result)).toEqual({
+      kind: "npm-api",
+      registryOrigin: "https://npm.internal.example.com",
+      allowPrivateRegistryOrigin: true,
+    });
   });
 
   test("falls back to the public registry for metadata when no override is set", async () => {

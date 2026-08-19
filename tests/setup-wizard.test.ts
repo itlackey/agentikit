@@ -56,6 +56,7 @@ const MOCK_SETUP_STASHES = [
     name: "itlackey/akm-stash",
     description: "official onboarding stash",
     url: "https://github.com/itlackey/akm-stash",
+    installType: "git" as const,
     source: "fallback" as const,
     defaultSelected: true,
   },
@@ -64,6 +65,7 @@ const MOCK_SETUP_STASHES = [
     name: "andrewyng/context-hub",
     description: "optional community prompt and context stash",
     url: "https://github.com/andrewyng/context-hub",
+    installType: "git" as const,
     source: "fallback" as const,
     defaultSelected: false,
   },
@@ -187,6 +189,25 @@ describe("stepAddSources – recommended GitHub repos", () => {
         name: "itlackey/akm-stash",
       },
     ]);
+  });
+
+  test("persists a typed npm registry recommendation as npm instead of Git", async () => {
+    overrideSeam(_setLoadSetupStashesForTests, async () => [
+      {
+        id: "npm:safe",
+        name: "safe-package",
+        description: "typed registry package",
+        url: "npm:safe-package",
+        installType: "npm",
+        source: "registry",
+        defaultSelected: true,
+      },
+    ]);
+    q.multiselects.push(["npm:safe-package"]);
+
+    const result = await stepAddSources({ bundles: {} } as never, { promptForAdditional: false });
+
+    expect(result).toEqual([{ type: "npm", path: "npm:safe-package", name: "safe-package" }]);
   });
 
   test("allows an existing recommended source to be unchecked and removed", async () => {

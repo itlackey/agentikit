@@ -8,7 +8,7 @@ import path from "node:path";
 import { getAdapters } from "../../core/adapter/registry";
 import { stashDirNames } from "../../core/asset/asset-placement";
 import type { SourceSpec } from "../../core/config/config";
-import { fetchRegistryResponse, type RegistryNetworkPolicy } from "../../registry/network";
+import { cancelRegistryResponse, fetchRegistryResponse, type RegistryNetworkPolicy } from "../../registry/network";
 import { writeResponseToFileCapped } from "../../runtime";
 import { copyIncludedPaths, findNearestIncludeConfig } from "../include";
 
@@ -126,6 +126,7 @@ export async function downloadArchive(
 ): Promise<void> {
   const response = await fetchRegistryResponse(url, undefined, { policy: networkPolicy, timeoutMs: 120_000 });
   if (!response.ok) {
+    await cancelRegistryResponse(response);
     throw new Error(`Failed to download archive (${response.status}) from ${url}`);
   }
   // Stream to disk with an explicit byte cap + body-read deadline: the fetch

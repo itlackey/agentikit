@@ -301,6 +301,7 @@ function resetSingletons(): void {
   _setRegistryNetworkOverridesForTests({
     allowLoopbackFixtures: true,
     resolveHostname: async () => ["93.184.216.34"],
+    requestPinned: async (url, _address, init) => fetch(url, { ...init, redirect: "manual" }),
   });
   resetConfigCache();
   clearEmbeddingCache();

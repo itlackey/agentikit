@@ -3,16 +3,17 @@
  * `RegistryProvider.search()` seam. Each search hit's `installRef` is built
  * from the registry bundle's source and ref.
  *
- * The four assertions below are the behavior contract:
+ * Registry-provided refs are constrained to fetch-based source kinds:
  *   npm    -> `npm:<ref>`
- *   git    -> `git+<ref>`
  *   local  -> `file:<ref>`
  *   github -> `github:<ref>`
+ *   git    -> omitted (operators may still add a trusted Git URL directly)
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { resolveRegistryProviderFactory } from "../../src/registry/factory";
 import type { RegistryProvider } from "../../src/registry/providers/types";
+import { buildInstallRef } from "../../src/registry/resolve";
 import { type Cleanup, sandboxXdgCacheHome } from "../_helpers/sandbox";
 
 // Trigger self-registration of the static-index provider.
@@ -118,8 +119,9 @@ describe("buildInstallRef behavior contract (via RegistryProvider.search install
     expect(await installRefFor("npm:pinme-pkg")).toBe("npm:pinme-pkg");
   });
 
-  test('source "git" -> "git+<ref>"', async () => {
-    expect(await installRefFor("git:pinme-git")).toBe("git+https://example.com/pinme.git");
+  test('registry source "git" is omitted while direct operator Git remains available', async () => {
+    expect(await installRefFor("git:pinme-git")).toBeUndefined();
+    expect(buildInstallRef("git", "https://example.com/pinme.git")).toBe("git+https://example.com/pinme.git");
   });
 
   test('source "local" -> "file:<ref>"', async () => {
@@ -130,16 +132,18 @@ describe("buildInstallRef behavior contract (via RegistryProvider.search install
     expect(await installRefFor("github:owner/pinme")).toBe("github:owner/pinme");
   });
 
-  test("all four source kinds resolve to distinct, prefixed installRefs in one search", async () => {
+  test("safe registry source kinds resolve and an ignored Git source emits a warning", async () => {
     const srv = serveJson(FIXTURE_INDEX);
     const provider = makeProvider(srv.url);
     const result = await provider.search({ query: "pinme", limit: 10 });
     const refs = Object.fromEntries(result.hits.map((h) => [h.source, h.installRef]));
     expect(refs).toEqual({
       npm: "npm:pinme-pkg",
-      git: "git+https://example.com/pinme.git",
       local: "file:/abs/path/to/pinme",
       github: "github:owner/pinme",
     });
+    expect(result.warnings).toEqual([
+      expect.stringContaining("ignored git:pinme-git because registry-provided git transport refs are not installable"),
+    ]);
   });
 });

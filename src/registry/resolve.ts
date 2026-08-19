@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { jsonWithByteCap } from "../core/common";
 import { NotFoundError, UsageError } from "../core/errors";
 import { asRecord, asString, GITHUB_API_BASE, githubHeaders } from "../integrations/github";
-import { fetchRegistryResponse, type RegistryNetworkPolicy } from "./network";
+import { cancelRegistryResponse, fetchRegistryResponse, type RegistryNetworkPolicy } from "./network";
 import { isExactSemver, isSemverRange, maxSatisfying } from "./semver";
 import type {
   InstallKind,
@@ -92,7 +92,16 @@ export function parseRegistryRef(rawRef: string): ParsedRegistryRef {
 }
 
 /** Inverse of {@link parseRegistryRef}: build the install ref for a source kind. */
-export function buildInstallRef(source: InstallKind, ref: string): string {
+export function buildInstallRef(
+  source: InstallKind,
+  ref: string,
+  provenance: "operator" | "registry" = "operator",
+): string {
+  if (source === "git" && provenance === "registry") {
+    throw new UsageError(
+      "Registry-provided git transport refs are not installable. Add a trusted git URL directly if you intend to use it.",
+    );
+  }
   switch (source) {
     case "npm":
       return `npm:${ref}`;
@@ -354,11 +363,12 @@ export function trustedNpmTarballHosts(): Set<string> {
 }
 
 /**
- * Validate that an npm tarball URL points at a trusted registry host. A
- * compromised mirror could otherwise return an attacker-controlled
- * `dist.tarball` field, redirecting installs to a third-party host.
+ * Validate that an npm tarball URL starts at the exact metadata registry
+ * origin. A compromised mirror must not change scheme or port (or nominate a
+ * different host) in `dist.tarball`; later public redirects remain subject to
+ * the outbound boundary's hop-by-hop policy.
  */
-export function validateNpmTarballUrl(tarballUrl: string, packageRef: string): void {
+export function validateNpmTarballUrl(tarballUrl: string, packageRef: string, registryOrigin?: string): void {
   let url: URL;
   try {
     url = new URL(tarballUrl);
@@ -370,32 +380,25 @@ export function validateNpmTarballUrl(tarballUrl: string, packageRef: string): v
       `npm package ${packageRef} returned a tarball with disallowed scheme "${url.protocol}".`,
     );
   }
-  const trusted = trustedNpmTarballHosts();
-  const host = url.hostname.toLowerCase();
-  if (!trusted.has(host)) {
-    const allowed = Array.from(trusted).join(", ");
+  const expectedOrigin = registryOrigin ?? new URL(npmMetadataRegistry().baseUrl).origin;
+  if (url.origin !== expectedOrigin) {
     throw new UntrustedNpmTarballError(
-      `npm package ${packageRef} returned a tarball URL on untrusted host "${host}" (allowed: ${allowed}).`,
+      `npm package ${packageRef} returned a tarball URL on untrusted origin "${url.origin}" (expected: ${expectedOrigin}).`,
     );
   }
 }
 
 /** Network policy for a tarball URL that already passed {@link validateNpmTarballUrl}. */
-export function npmArtifactNetworkPolicy(tarballUrl: string): RegistryNetworkPolicy {
-  const tarball = new URL(tarballUrl);
-  const override = process.env.AKM_NPM_REGISTRY?.trim();
-  let explicitlyConfiguredHost = false;
-  if (override) {
-    try {
-      explicitlyConfiguredHost = new URL(override).hostname.toLowerCase() === tarball.hostname.toLowerCase();
-    } catch {
-      // Invalid overrides are ignored consistently with trustedNpmTarballHosts().
-    }
+export function npmArtifactNetworkPolicy(
+  artifact: Pick<ResolvedRegistryArtifact, "registryOrigin" | "allowPrivateRegistryOrigin">,
+): Extract<RegistryNetworkPolicy, { kind: "npm-api" }> {
+  if (!artifact.registryOrigin) {
+    throw new UsageError("npm artifact network policy requires the registry origin that authorized its metadata.");
   }
   return {
     kind: "npm-api",
-    registryOrigin: tarball.origin,
-    allowPrivateRegistryOrigin: explicitlyConfiguredHost,
+    registryOrigin: new URL(artifact.registryOrigin).origin,
+    allowPrivateRegistryOrigin: artifact.allowPrivateRegistryOrigin === true,
   };
 }
 
@@ -470,7 +473,7 @@ async function resolveNpmArtifact(parsed: ParsedNpmRef): Promise<ResolvedRegistr
   if (!tarballUrl) {
     throw new Error(`npm package ${parsed.packageName}@${resolvedVersion} does not expose a tarball URL.`);
   }
-  validateNpmTarballUrl(tarballUrl, `${parsed.packageName}@${resolvedVersion}`);
+  validateNpmTarballUrl(tarballUrl, `${parsed.packageName}@${resolvedVersion}`, npmPolicy.registryOrigin);
 
   const resolvedRevision = asString(dist.shasum) ?? asString(dist.integrity);
 
@@ -481,6 +484,8 @@ async function resolveNpmArtifact(parsed: ParsedNpmRef): Promise<ResolvedRegistr
     artifactUrl: tarballUrl,
     resolvedVersion,
     resolvedRevision,
+    registryOrigin: npmPolicy.registryOrigin,
+    allowPrivateRegistryOrigin: npmPolicy.allowPrivateRegistryOrigin,
   };
 }
 
@@ -721,9 +726,10 @@ const GITHUB_API_POLICY: RegistryNetworkPolicy = { kind: "github-api" };
 async function fetchJson<T>(url: string, headers: HeadersInit | undefined, policy: RegistryNetworkPolicy): Promise<T> {
   const response = await fetchRegistryResponse(url, { headers }, { policy, timeoutMs: 30_000 });
   if (!response.ok) {
+    await cancelRegistryResponse(response);
     throw new Error(`Request failed (${response.status}) for ${url}`);
   }
-  return jsonWithByteCap<T>(response, REGISTRY_JSON_BYTE_CAP);
+  return jsonWithByteCap<T>(response, REGISTRY_JSON_BYTE_CAP, { bodyTimeoutMs: 30_000 });
 }
 
 async function tryFetchJson<T>(
@@ -732,6 +738,9 @@ async function tryFetchJson<T>(
   policy: RegistryNetworkPolicy,
 ): Promise<T | null> {
   const response = await fetchRegistryResponse(url, { headers }, { policy, timeoutMs: 30_000 });
-  if (!response.ok) return null;
-  return jsonWithByteCap<T>(response, REGISTRY_JSON_BYTE_CAP);
+  if (!response.ok) {
+    await cancelRegistryResponse(response);
+    return null;
+  }
+  return jsonWithByteCap<T>(response, REGISTRY_JSON_BYTE_CAP, { bodyTimeoutMs: 30_000 });
 }

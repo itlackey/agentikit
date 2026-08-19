@@ -137,7 +137,7 @@ async function doSyncNpm(parsed: ParsedNpmRef, options?: SyncOptions): Promise<S
   let installRoot: string;
   let stashRoot: string;
   try {
-    await downloadArchive(resolved.artifactUrl, archivePath, npmArtifactNetworkPolicy(resolved.artifactUrl));
+    await downloadArchive(resolved.artifactUrl, archivePath, npmArtifactNetworkPolicy(resolved));
     verifyArchiveIntegrity(archivePath, resolved.resolvedRevision, resolved.source);
     integrity = await computeFileHash(archivePath);
     extractTarGzSecure(archivePath, extractedDir);

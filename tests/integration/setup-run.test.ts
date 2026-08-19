@@ -239,6 +239,7 @@ function installSetupSeams(): void {
         name: "itlackey/akm-stash",
         description: "Official AKM onboarding stash",
         url: "https://github.com/itlackey/akm-stash",
+        installType: "git",
         source: "registry",
         defaultSelected: false,
       },

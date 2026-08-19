@@ -87,9 +87,10 @@ function classifyIpv6(address: string): NetworkAddressClass {
   if (value === 1n) return "loopback";
   const embeddedIpv4 = embeddedIpv4Address(words);
   if (embeddedIpv4) return classifyIpv4(embeddedIpv4);
-  if (address.toLowerCase() === "fd00:ec2::254") return "metadata";
+  if (value === ipv6Value("fd00:ec2::254")) return "metadata";
   if (inIpv6Range(value, "fc00::", 7)) return "private";
   if (inIpv6Range(value, "fe80::", 10)) return "link-local";
+  if (!inIpv6Range(value, "2000::", 3)) return "reserved";
   if (FORBIDDEN_IPV6_RANGES.some(([prefix, bits]) => inIpv6Range(value, prefix, bits))) return "reserved";
   return "public";
 }
@@ -102,6 +103,7 @@ const FORBIDDEN_IPV6_RANGES = [
   ["2001:10::", 28],
   ["2001:20::", 28],
   ["2001:db8::", 32],
+  ["3ffe::", 16],
   ["3fff::", 20],
   ["5f00::", 16],
   ["fec0::", 10],

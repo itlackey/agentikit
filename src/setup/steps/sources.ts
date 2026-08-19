@@ -19,6 +19,10 @@ function configuredSourceKey(source: SourceConfigEntry): string {
   return `${source.type}:${source.path ?? source.url ?? source.name ?? "unknown"}`;
 }
 
+function configuredSourceTarget(source: SourceConfigEntry): string | undefined {
+  return source.type === "npm" ? source.path : source.url;
+}
+
 type ConfiguredSourceOption = {
   value: string;
   label: string;
@@ -236,7 +240,7 @@ export async function stepAddSources(
   const availableStashes = await loadSetupStashes(registryUrl);
 
   if (availableStashes.length > 0) {
-    const existingUrls = new Set(sources.map((s) => s.url));
+    const existingUrls = new Set(sources.map(configuredSourceTarget).filter((value): value is string => !!value));
 
     const stashOptions = availableStashes.map((s) => ({
       value: s.url,
@@ -266,7 +270,12 @@ export async function stepAddSources(
     for (const url of selectedUrls) {
       if (!existingUrls.has(url)) {
         const entry = availableStashes.find((s) => s.url === url);
-        sources.push({ type: "git", url, name: entry?.name });
+        if (!entry) continue;
+        sources.push(
+          entry.installType === "npm"
+            ? { type: "npm", path: url, name: entry.name }
+            : { type: "git", url, name: entry.name },
+        );
         existingUrls.add(url);
       }
     }
@@ -274,7 +283,7 @@ export async function stepAddSources(
     // Remove deselected stashes that were previously configured
     for (const entry of availableStashes) {
       if (existingUrls.has(entry.url) && !selectedUrls.includes(entry.url)) {
-        const idx = sources.findIndex((s) => s.url === entry.url);
+        const idx = sources.findIndex((s) => configuredSourceTarget(s) === entry.url);
         if (idx !== -1) {
           sources.splice(idx, 1);
           existingUrls.delete(entry.url);
