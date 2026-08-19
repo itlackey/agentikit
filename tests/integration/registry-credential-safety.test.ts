@@ -190,6 +190,27 @@ const STRICT_MIXED_DEPTH_9_EXHAUSTION_URL = wrapNestedQueryTimes(
   encodeURIComponentTimes("https://mixed-safe.test/x", 5),
   4,
 );
+const R6_ENCODED_CREDENTIAL_URL = "https%3A%2F%2FR5USER%3AR5PASS%40evil.test%2Fx";
+const R6_MIXED_LAYER_COMPONENT = `https://safe.test:bad,${R6_ENCODED_CREDENTIAL_URL}`;
+const STRICT_MIXED_LAYER_URLS = [
+  `https://registry.test/proxy/${R6_MIXED_LAYER_COMPONENT}`,
+  `https://registry.test/#${R6_MIXED_LAYER_COMPONENT}`,
+  wrapNestedQuery(R6_MIXED_LAYER_COMPONENT),
+  `https://registry.test/#https://first.test:bad,https://second.test:worse,${R6_ENCODED_CREDENTIAL_URL}`,
+];
+const STRICT_TOP_AND_MIXED_LAYER_URL = `https://R6TOPUSER:R6TOPPASS@registry.test/proxy/${R6_MIXED_LAYER_COMPONENT}`;
+const INVALID_UTF8_OCTETS = ["%FF", "%C0%AF", "%ED%A0%80"] as const;
+const SAFE_INVALID_UTF8_URLS = INVALID_UTF8_OCTETS.flatMap((octets) => [
+  `https://registry.test/path/${octets}/notes`,
+  `https://registry.test/?note=${octets}`,
+  `https://registry.test/#note=${octets}`,
+]);
+const STRICT_INVALID_UTF8_CREDENTIAL_URLS = INVALID_UTF8_OCTETS.flatMap((octets) => [
+  `https://registry.test/proxy/${octets},${R6_ENCODED_CREDENTIAL_URL}`,
+  `https://registry.test/#${octets},${R6_ENCODED_CREDENTIAL_URL}`,
+  `https://registry.test/?next=${octets}${R6_ENCODED_CREDENTIAL_URL}`,
+  `https://registry.test/#https://${octets}UTF8USER%3AUTF8PASS%40evil.test/x`,
+]);
 const STRICT_CANDIDATE_128_SAFE_URL = `https://registry.test/#${Array.from(
   { length: 128 },
   (_, index) => `https://safe-${index}.test/x`,
@@ -292,6 +313,12 @@ function expectCredentialsAbsent(value: unknown): void {
     "MIXEDSECRET",
     "R5KEY",
     "R5KEYPASS",
+    "R5USER",
+    "R5PASS",
+    "R6TOPUSER",
+    "R6TOPPASS",
+    "UTF8USER",
+    "UTF8PASS",
   ]) {
     expect(serialized).not.toContain(marker);
   }
@@ -487,6 +514,37 @@ describe("registry credential-bearing URL mutation boundaries", () => {
     expect(fs.existsSync(configPath)).toBe(false);
   });
 
+  test("registry add rejects mixed literal and encoded credential layers as usage, never internal error", async () => {
+    const result = await runCliCapture(["registry", "add", fixtureAt(STRICT_MIXED_LAYER_URLS, 0), "--format=json"]);
+
+    expect(result.code).toBe(2);
+    expect(result.code).not.toBe(70);
+    expect(result.stderr.toLowerCase()).toContain("credential");
+    expectCredentialsAbsent(result.stdout);
+    expectCredentialsAbsent(result.stderr);
+  });
+
+  test("invalid UTF-8 credential evidence fails closed at CLI and Zod save boundaries", async () => {
+    const unsafe = fixtureAt(STRICT_INVALID_UTF8_CREDENTIAL_URLS, 0);
+    const result = await runCliCapture(["registry", "add", unsafe, "--format=json"]);
+
+    expect(result.code).toBe(2);
+    expect(result.code).not.toBe(70);
+    expect(result.stderr.toLowerCase()).toContain("credential");
+    expectCredentialsAbsent(result.stdout);
+    expectCredentialsAbsent(result.stderr);
+    for (const url of [...STRICT_MIXED_LAYER_URLS, ...STRICT_INVALID_UTF8_CREDENTIAL_URLS]) {
+      expect(() => saveConfig({ ...DEFAULT_CONFIG, registries: [{ url, name: "r6-private" }] })).toThrow("credential");
+    }
+  });
+
+  test("ordinary invalid UTF-8 octets remain exact across save and load", () => {
+    for (const url of SAFE_INVALID_UTF8_URLS) {
+      saveConfig({ ...DEFAULT_CONFIG, registries: [{ url, name: "invalid-utf8-safe" }] });
+      expect(loadConfig().registries?.[0]?.url).toBe(url);
+    }
+  });
+
   test("add, set, save, and load preserve safe strict component controls", async () => {
     const add = await runCliCapture(["registry", "add", fixtureAt(SAFE_STRICT_COMPONENT_URLS, 0), "--format=json"]);
     expect(add.code).toBe(0);
@@ -570,6 +628,20 @@ describe("already-persisted registry credentials fail closed", () => {
       expectCredentialsAbsent(result.stdout);
       expectCredentialsAbsent(result.stderr);
       expect(result.stderr.toLowerCase()).toContain("credential");
+    }
+  });
+
+  test("persisted mixed-layer and invalid UTF-8 credentials fail config load with exit 78", async () => {
+    const representatives = [fixtureAt(STRICT_MIXED_LAYER_URLS, 1), fixtureAt(STRICT_INVALID_UTF8_CREDENTIAL_URLS, 1)];
+    for (const url of representatives) {
+      writeSandboxConfig({ registries: [{ url, name: "r6-private", provider: "static-index" }] });
+      const result = await runCliCapture(["registry", "list", "--verbose", "--format=json"]);
+
+      expect(result.code).toBe(78);
+      expect(result.code).not.toBe(70);
+      expect(result.stderr.toLowerCase()).toContain("credential");
+      expectCredentialsAbsent(result.stdout);
+      expectCredentialsAbsent(result.stderr);
     }
   });
 });
@@ -744,6 +816,60 @@ describe("registry provider, search, warning, and log boundaries", () => {
       expect(result.hits).toEqual([]);
       expect(result.warnings?.[0]?.toLowerCase()).toContain("credential");
       expectCredentialsAbsent(result);
+    }
+  });
+
+  test("both providers refuse mixed candidate layers and invalid UTF-8 credentials without fetching", async () => {
+    const requested: string[] = [];
+    const results = await withMockedFetch(
+      async () => {
+        const captured = [];
+        for (const providerType of ["static-index", "skills-sh"]) {
+          const factory = resolveRegistryProviderFactory(providerType);
+          if (!factory) throw new Error(`Built-in registry provider ${providerType} is not registered`);
+          for (const url of [...STRICT_MIXED_LAYER_URLS, ...STRICT_INVALID_UTF8_CREDENTIAL_URLS]) {
+            captured.push(
+              await factory({ url, name: `${providerType}-r6-private` }).search({ query: "needle", limit: 20 }),
+            );
+          }
+        }
+        return captured;
+      },
+      (url) => {
+        requested.push(url);
+        return new Response("{}");
+      },
+    );
+
+    expect(requested).toEqual([]);
+    for (const result of results) {
+      expect(result.hits).toEqual([]);
+      expect(result.warnings?.[0]?.toLowerCase()).toContain("credential");
+      expectCredentialsAbsent(result);
+    }
+  });
+
+  test("both providers accept ordinary invalid UTF-8 octets without throwing", async () => {
+    for (const providerType of ["static-index", "skills-sh"]) {
+      const factory = resolveRegistryProviderFactory(providerType);
+      if (!factory) throw new Error(`Built-in registry provider ${providerType} is not registered`);
+      for (const url of SAFE_INVALID_UTF8_URLS) {
+        const requested: string[] = [];
+        const result = await withMockedFetch(
+          () => factory({ url, name: `${providerType}-invalid-utf8-safe` }).search({ query: "needle", limit: 20 }),
+          (requestedUrl) => {
+            requested.push(requestedUrl);
+            return new Response(
+              providerType === "static-index"
+                ? JSON.stringify({ version: 3, updatedAt: "2026-01-01T00:00:00Z", stashes: [] })
+                : JSON.stringify({ skills: [] }),
+            );
+          },
+        );
+
+        expect(requested).toHaveLength(1);
+        expect(result.warnings ?? []).toEqual([]);
+      }
     }
   });
 
@@ -992,6 +1118,24 @@ describe("registry URLs are safe in plain, structured, and health projections", 
     expect(formatRegistryUrl(STRICT_MIXED_DEPTH_9_EXHAUSTION_URL)).toBe("(invalid registry URL)");
   });
 
+  test("strict inspection continues through mixed literal and encoded URL layers", () => {
+    for (const url of STRICT_MIXED_LAYER_URLS) {
+      expect(hasRegistryUrlCredentials(url)).toBe(true);
+      expectCredentialsAbsent(formatRegistryUrl(url));
+    }
+  });
+
+  test("invalid UTF-8 octets are non-throwing, exact when ordinary, and fail closed with credential evidence", () => {
+    for (const url of SAFE_INVALID_UTF8_URLS) {
+      expect(hasRegistryUrlCredentials(url)).toBe(false);
+      expect(formatRegistryUrl(url)).toBe(url);
+    }
+    for (const url of STRICT_INVALID_UTF8_CREDENTIAL_URLS) {
+      expect(hasRegistryUrlCredentials(url)).toBe(true);
+      expectCredentialsAbsent(formatRegistryUrl(url));
+    }
+  });
+
   test("strict candidate budget accepts 128 candidates and fails closed on candidate 129", () => {
     expect(hasRegistryUrlCredentials(STRICT_CANDIDATE_128_SAFE_URL)).toBe(false);
     expect(formatRegistryUrl(STRICT_CANDIDATE_128_SAFE_URL)).toBe(STRICT_CANDIDATE_128_SAFE_URL);
@@ -1117,6 +1261,34 @@ describe("registry URLs are safe in plain, structured, and health projections", 
     expectCredentialsAbsent(persisted.stdout);
     expectCredentialsAbsent(persisted.stderr);
     expect(requested).toEqual([]);
+    expectCredentialsAbsent(fs.readFileSync(logPath, "utf8"));
+  });
+
+  test("top-level credentials composed with mixed encoded layers never leak through warning, result, or log sinks", async () => {
+    const logPath = path.join(storage.root, "registry-r6.log");
+    setLogFile(logPath);
+    const registries = [{ url: STRICT_TOP_AND_MIXED_LAYER_URL, name: "r6-top-private", provider: "static-index" }];
+    const config = { ...DEFAULT_CONFIG, registries };
+    const requested: string[] = [];
+
+    expect(formatRegistryUrl(STRICT_TOP_AND_MIXED_LAYER_URL)).toBe("(invalid registry URL)");
+    expectCredentialsAbsent(getConfigValue(config, "registries"));
+    expectCredentialsAbsent(listConfig(config));
+    expectCredentialsAbsent(formatRegistryListPlain({ registries }));
+    expectCredentialsAbsent(formatInfoPlain({ version: "test", registries }));
+    expectCredentialsAbsent(collectEgressAdvisory({ registries }));
+
+    const result = await withMockedFetch(
+      () => searchRegistry("needle", { registries }),
+      (url) => {
+        requested.push(url);
+        return new Response("{}");
+      },
+    );
+    for (const warning of result.warnings) warn(warning);
+
+    expect(requested).toEqual([]);
+    expectCredentialsAbsent(result);
     expectCredentialsAbsent(fs.readFileSync(logPath, "utf8"));
   });
 

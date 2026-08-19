@@ -22,7 +22,6 @@ const AUTHORITY_SOFT_BOUNDARY = new Set(["\t", "\r", "\n", " ", '"', "'", "`", "
 const STRICT_MAX_DEPTH = 8;
 const STRICT_MAX_CANDIDATES = 128;
 const STRICT_MAX_DECODED_BYTES = 65_536;
-const MALFORMED_PERCENT_ENCODING = /%(?![0-9a-f]{2})/iu;
 const HTTP_SCHEME_EVIDENCE = /h[\t\r\n]*t[\t\r\n]*t[\t\r\n]*p[\t\r\n]*(?:s[\t\r\n]*)?:/iu;
 
 type RegistryUrlScanMode = "strict" | "diagnostic";
@@ -48,6 +47,11 @@ interface StrictWalkState {
   candidates: number;
   decodedBytes: number;
   reason?: StrictInspectionReason;
+}
+
+interface PercentDecodeResult {
+  value: string;
+  valid: boolean;
 }
 
 /**
@@ -162,8 +166,6 @@ function inspectParsedStrictUrl(parsed: URL, state: StrictWalkState, depth: numb
     const equals = pair.indexOf("=");
     const rawKey = equals >= 0 ? pair.slice(0, equals) : pair;
     const rawValue = equals >= 0 ? pair.slice(equals + 1) : "";
-    inspectMalformedQueryPart(rawKey, state);
-    inspectMalformedQueryPart(rawValue, state);
     inspectAuthoredStrictComponent(rawKey, state, depth, true);
     inspectAuthoredStrictComponent(rawValue, state, depth, true);
     if (state.reason) return;
@@ -180,7 +182,15 @@ function inspectAuthoredStrictComponent(
   queryEncoded: boolean,
 ): void {
   for (const authoredPart of splitAuthoredFieldComponents(raw)) {
-    const component = queryEncoded ? decodeQueryComponent(authoredPart) : authoredPart;
+    let component = authoredPart;
+    if (queryEncoded) {
+      const decoded = decodePercentSafely(authoredPart, "query");
+      if (!decoded.valid && hasCredentialLikeUrlEvidence(authoredPart)) {
+        state.reason = "malformed-encoding";
+        return;
+      }
+      component = decoded.value;
+    }
     inspectStrictComponent(component, state, depth);
     if (state.reason) return;
   }
@@ -191,16 +201,14 @@ function inspectStrictComponent(raw: string, state: StrictWalkState, depth: numb
 
   let decoded = raw;
   let currentDepth = depth;
+  const seenCandidateKeys = new Set<string>();
   while (true) {
-    if (MALFORMED_PERCENT_ENCODING.test(decoded)) {
-      if (hasCredentialLikeUrlEvidence(decoded)) state.reason = "malformed-encoding";
-      return;
-    }
-
     const starts = registryUrlStarts(decoded);
     if (starts.length > 0) {
-      inspectStrictUrlCandidates(decoded, starts, state, currentDepth);
-      return;
+      const unseenIndices = unseenCandidateIndices(decoded, starts, seenCandidateKeys);
+      const percentFullyCovered = inspectStrictUrlCandidates(decoded, starts, unseenIndices, state, currentDepth);
+      if (state.reason) return;
+      if (percentFullyCovered) return;
     }
 
     if (!decoded.includes("%")) return;
@@ -209,51 +217,79 @@ function inspectStrictComponent(raw: string, state: StrictWalkState, depth: numb
       return;
     }
 
-    const next = decodeURIComponent(decoded);
-    if (next === decoded) return;
-    decoded = next;
+    const next = decodePercentSafely(decoded, "component");
+    if (!next.valid) {
+      if (hasCredentialLikeUrlEvidence(decoded)) state.reason = "malformed-encoding";
+      return;
+    }
+    if (next.value === decoded) return;
+    decoded = next.value;
     currentDepth++;
   }
+}
+
+function unseenCandidateIndices(
+  decoded: string,
+  starts: RegistryUrlStart[],
+  seenCandidateKeys: Set<string>,
+): Set<number> {
+  const occurrences = new Map<string, number>();
+  const unseen = new Set<number>();
+  for (let index = 0; index < starts.length; index++) {
+    const start = starts[index];
+    if (!start) continue;
+    const authority = strictAuthoritySlice(decoded.slice(start.start));
+    const occurrence = (occurrences.get(authority) ?? 0) + 1;
+    occurrences.set(authority, occurrence);
+    const key = `${authority}\u0000${occurrence}`;
+    if (seenCandidateKeys.has(key)) continue;
+    seenCandidateKeys.add(key);
+    unseen.add(index);
+  }
+  return unseen;
 }
 
 function inspectStrictUrlCandidates(
   decoded: string,
   starts: RegistryUrlStart[],
+  unseenIndices: Set<number>,
   state: StrictWalkState,
   depth: number,
-): void {
+): boolean {
+  const recursivelyInspectedRanges: Array<{ start: number; end: number }> = [];
   const bytes = new TextEncoder().encode(decoded).byteLength;
   if (bytes > STRICT_MAX_DECODED_BYTES - state.decodedBytes) {
     state.reason = "inspection-limit";
-    return;
+    return false;
   }
   state.decodedBytes += bytes;
 
-  if (starts.length > STRICT_MAX_CANDIDATES - state.candidates) {
+  if (unseenIndices.size > STRICT_MAX_CANDIDATES - state.candidates) {
     state.reason = "inspection-limit";
-    return;
+    return false;
   }
-  state.candidates += starts.length;
+  state.candidates += unseenIndices.size;
 
   for (const start of starts) {
     if (findStrictComponentUserinfoSpan(decoded, start)) {
       state.reason = "credentials";
-      return;
+      return false;
     }
   }
 
   for (let index = 0; index < starts.length; index++) {
+    if (!unseenIndices.has(index)) continue;
     const start = starts[index];
     if (!start) continue;
 
     const nextStart = starts[index + 1]?.start ?? decoded.length;
     const candidate = trimStrictCandidateSuffix(decoded.slice(start.start, nextStart));
     const candidateDepth = inspectDecodedCandidateUserinfo(candidate, state, depth);
-    if (state.reason) return;
+    if (state.reason) return false;
 
     if (candidateDepth >= STRICT_MAX_DEPTH) {
       state.reason = "inspection-limit";
-      return;
+      return false;
     }
 
     const parsed = parseWholeHttpUrl(candidate);
@@ -264,8 +300,18 @@ function inspectStrictUrlCandidates(
     // authority scan above found the same userinfo.
     if (parsed.username || parsed.password) continue;
     inspectParsedStrictUrl(parsed, state, candidateDepth + 1);
-    if (state.reason) return;
+    if (state.reason) return false;
+    recursivelyInspectedRanges.push({ start: start.start, end: nextStart });
   }
+
+  return everyPercentEscapeIsCovered(decoded, recursivelyInspectedRanges);
+}
+
+function everyPercentEscapeIsCovered(raw: string, ranges: Array<{ start: number; end: number }>): boolean {
+  for (let cursor = raw.indexOf("%"); cursor >= 0; cursor = raw.indexOf("%", cursor + 1)) {
+    if (!ranges.some((range) => cursor >= range.start && cursor < range.end)) return false;
+  }
+  return true;
 }
 
 function inspectDecodedCandidateUserinfo(raw: string, state: StrictWalkState, depth: number): number {
@@ -277,18 +323,18 @@ function inspectDecodedCandidateUserinfo(raw: string, state: StrictWalkState, de
       return currentDepth;
     }
     if (!decoded.includes("%")) return currentDepth;
-    if (MALFORMED_PERCENT_ENCODING.test(decoded)) {
-      if (hasCredentialLikeUrlEvidence(decoded)) state.reason = "malformed-encoding";
-      return currentDepth;
-    }
     if (currentDepth >= STRICT_MAX_DEPTH) {
       state.reason = "inspection-limit";
       return currentDepth;
     }
 
-    const next = decodeURIComponent(decoded);
-    if (next === decoded) return currentDepth;
-    decoded = strictAuthoritySlice(next);
+    const next = decodePercentSafely(decoded, "component");
+    if (!next.valid) {
+      if (hasCredentialLikeUrlEvidence(decoded)) state.reason = "malformed-encoding";
+      return currentDepth;
+    }
+    if (next.value === decoded) return currentDepth;
+    decoded = strictAuthoritySlice(next.value);
     currentDepth++;
   }
 }
@@ -307,15 +353,21 @@ function strictAuthoritySlice(raw: string): string {
   return raw.slice(start.start, end);
 }
 
-function inspectMalformedQueryPart(raw: string, state: StrictWalkState): void {
-  if (!state.reason && MALFORMED_PERCENT_ENCODING.test(raw) && hasCredentialLikeUrlEvidence(raw)) {
-    state.reason = "malformed-encoding";
+function decodePercentSafely(raw: string, mode: "component" | "query"): PercentDecodeResult {
+  const input = mode === "query" ? raw.replaceAll("+", "%20") : raw;
+  let valid = true;
+  let value = raw;
+  try {
+    value = decodeURIComponent(input);
+  } catch {
+    valid = false;
   }
-}
 
-function decodeQueryComponent(raw: string): string {
-  if (MALFORMED_PERCENT_ENCODING.test(raw)) return raw.replaceAll("+", " ");
-  return decodeURIComponent(raw.replaceAll("+", " "));
+  if (mode === "query") {
+    return { value: new URLSearchParams(`value=${raw}`).get("value") ?? "", valid };
+  }
+  if (!valid) return { value: raw, valid: false };
+  return { value, valid: true };
 }
 
 function splitAuthoredFieldComponents(raw: string): string[] {
