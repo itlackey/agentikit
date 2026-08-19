@@ -10,10 +10,10 @@
  */
 
 import metadataEnhanceSystemPrompt from "../assets/prompts/metadata-enhance-system.md" with { type: "text" };
-import type { AkmConfig, LlmConnectionConfig } from "../core/config/config";
+import type { AkmConfig } from "../core/config/config";
 import { parseJsonResponse } from "../core/parse";
 import type { IndexDocument } from "../indexer/passes/metadata";
-import { callStructured } from "./structured-call";
+import { callStructured, type StructuredLlmRunner } from "./structured-call";
 
 const SYSTEM_PROMPT = metadataEnhanceSystemPrompt;
 
@@ -48,7 +48,7 @@ export type EnhanceMetadataOutcome =
  * unconditionally and errors propagate to direct callers such as tests.
  */
 export async function enhanceMetadata(
-  config: LlmConnectionConfig,
+  runner: StructuredLlmRunner,
   entry: IndexDocument,
   fileContent?: string,
   signal?: AbortSignal,
@@ -82,12 +82,12 @@ Return ONLY the JSON object, no explanation.`;
   const outcome = await callStructured<EnhanceMetadataOutcome>({
     feature: "metadata_enhance",
     akmConfig,
-    config,
+    runner,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: userPrompt },
     ],
-    request: { signal, timeoutMs: config.timeoutMs },
+    request: { signal, timeoutMs: runner.timeoutMs },
     parse: (raw) => {
       const parsed = raw ? parseJsonResponse<Record<string, unknown>>(raw) : undefined;
       const metadata: EnhancedMetadata = {};

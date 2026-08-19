@@ -19,6 +19,7 @@
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import type { AkmConfig, LlmConnectionConfig } from "../../src/core/config/config";
+import { structuredLlmRunnerFromConnection } from "../../src/llm/structured-call";
 
 // ── Local LLM server ─────────────────────────────────────────────────────────
 
@@ -62,16 +63,17 @@ const { extractGraphFromBodies, extractGraphFromBody } = await import("../../src
 
 // ── Shared fixtures ──────────────────────────────────────────────────────────
 
-const SAMPLE_LLM: LlmConnectionConfig = {
+const SAMPLE_CONNECTION: LlmConnectionConfig = {
   endpoint: `http://localhost:${llmServer.port}/v1/chat/completions`,
   model: "llama3.2",
 };
+const SAMPLE_LLM = structuredLlmRunnerFromConnection(SAMPLE_CONNECTION, "test-graph-extraction");
 
 const AKM_CFG_WITH_GATE: AkmConfig = {
   configVersion: "0.9.0",
   semanticSearchMode: "auto" as const,
   engines: {
-    test: { kind: "llm", ...SAMPLE_LLM },
+    test: { kind: "llm", ...SAMPLE_CONNECTION },
   },
   defaults: { engine: "test", llmEngine: "test" },
   index: { defaults: { engine: "test" } },

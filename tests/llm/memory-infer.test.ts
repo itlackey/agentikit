@@ -46,6 +46,7 @@ let warnCalls: string[] = [];
 
 const { compressMemoryToDerivedMemory } = await import("../../src/llm/memory-infer");
 const { _setChatCompletionForTests, isContextSizeError, LlmCallError } = await import("../../src/llm/client");
+const { structuredLlmRunnerFromConnection } = await import("../../src/llm/structured-call");
 const { _setWarnSinkForTests } = await import("../../src/core/warn");
 const { overrideSeam } = await import("../_helpers/seams");
 
@@ -64,7 +65,14 @@ const ENABLED_CONFIG: AkmConfig = {
   index: { defaults: { engine: "test" }, memory: { enabled: true } },
 };
 
-const LLM_CONFIG = { timeoutMs: 5_000 } as unknown as LlmConnectionConfig;
+const LLM_CONFIG = structuredLlmRunnerFromConnection(
+  {
+    endpoint: "http://localhost:1/v1/chat/completions",
+    model: "test-model",
+    timeoutMs: 5_000,
+  } as LlmConnectionConfig,
+  "test-memory-inference",
+);
 
 function validPayload(): string {
   return JSON.stringify({

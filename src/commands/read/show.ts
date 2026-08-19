@@ -48,7 +48,7 @@ import {
   type MatchResult,
 } from "../../indexer/walk/file-context";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
-import { resolveIndexPassLLM } from "../../llm/index-passes";
+import { resolveIndexPassRunner } from "../../llm/index-passes";
 import { resolveSourcesForOrigin } from "../../registry/origin-resolve";
 import { resolveStorageLocations } from "../../storage/locations";
 import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
@@ -495,7 +495,7 @@ export async function showLocal(input: {
  * timeout-bounded: never throws, never hangs, never mutates the response.
  *
  * Preconditions (caller already checked the flag): a model must be configured
- * (model-available guard via {@link resolveIndexPassLLM}) and the asset must be
+ * (model-available guard via {@link resolveIndexPassRunner}) and the asset must be
  * ungraphed ({@link hasGraphData}). Extraction races a 30s timeout so `show`
  * cannot block on a slow provider; any timeout/error/missing-model path is
  * swallowed and `show` returns its already-assembled response unchanged.
@@ -507,7 +507,7 @@ async function maybeExtractGraphInline(
 ): Promise<void> {
   try {
     // Model-available guard — no provider configured ⇒ silent skip, no LLM call.
-    if (!resolveIndexPassLLM("graph", config)) return;
+    if (!resolveIndexPassRunner("graph", config)) return;
 
     let alreadyGraphed = false;
     let bodyHash: string | undefined;

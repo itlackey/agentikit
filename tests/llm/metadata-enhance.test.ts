@@ -61,12 +61,16 @@ let warnCalls: string[] = [];
 
 const { enhanceMetadata } = await import("../../src/llm/metadata-enhance");
 const { _setChatCompletionForTests, isContextSizeError, LlmCallError } = await import("../../src/llm/client");
+const { structuredLlmRunnerFromConnection } = await import("../../src/llm/structured-call");
 const { _setWarnSinkForTests } = await import("../../src/core/warn");
 const { overrideSeam } = await import("../_helpers/seams");
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
-const LLM_CONFIG = { endpoint: "http://localhost:0", model: "test-model", timeoutMs: 5_000 } as LlmConnectionConfig;
+const LLM_CONFIG = structuredLlmRunnerFromConnection(
+  { endpoint: "http://localhost:0", model: "test-model", timeoutMs: 5_000 } as LlmConnectionConfig,
+  "test-metadata-enhance",
+);
 
 // Opens the `metadata_enhance` gate. The gate reads `index.metadataEnhance.enabled`
 // with default `?? false`, so the flag MUST be set explicitly to enable.

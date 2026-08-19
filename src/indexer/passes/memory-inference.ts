@@ -30,7 +30,7 @@
  *   NEVER deleted — the user keeps what was already produced.
  *
  * Locked v1 contract:
- *   - LLM access is exclusively via `resolveIndexPassLLM("memory", config)`.
+ *   - LLM access is exclusively via `resolveIndexPassRunner("memory", config)`.
  *   - All child memory writes go through `writeAssetToSource` in
  *     `src/core/write-source.ts`. The parent's frontmatter rewrite is an
  *     explicit narrow exception — see {@link markParentProcessed}.
@@ -44,14 +44,15 @@ import { parseFrontmatter, parseFrontmatterBlock } from "../../core/asset/frontm
 import { conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { todayIso } from "../../core/common";
 import { concurrentMap } from "../../core/concurrent";
-import type { SourceConfigEntry } from "../../core/config/config";
+import type { LlmConnectionConfig, SourceConfigEntry } from "../../core/config/config";
 import { warn } from "../../core/warn";
 import { recordWrittenPath } from "../../core/write-provenance";
 import { type WriteTargetSource, writeAssetToSource } from "../../core/write-source";
 import { isProcessEnabled } from "../../llm/feature-gate";
-import { resolveIndexPassLLM } from "../../llm/index-passes";
+import { resolveIndexPassRunner } from "../../llm/index-passes";
 import type { DerivedMemoryDraft, MemoryInferTelemetry } from "../../llm/memory-infer";
 import * as memoryInfer from "../../llm/memory-infer";
+import { type StructuredLlmRunner, structuredLlmRunnerFromConnection } from "../../llm/structured-call";
 import { withLlmCache } from "../db/llm-cache";
 import { walkMarkdownFiles } from "../walk/walker";
 import type { EnrichmentPassContext } from "./pass-context";
@@ -138,7 +139,19 @@ export interface MemoryInferenceProgress {
 }
 
 /** Parameter object for {@link runMemoryInferencePass}. */
-export type MemoryInferencePassContext = EnrichmentPassContext<MemoryInferenceProgress, MemoryInferencePassOptions>;
+export type MemoryInferencePassContext = Omit<
+  EnrichmentPassContext<MemoryInferenceProgress, MemoryInferencePassOptions>,
+  "llmConfig"
+> & {
+  /** Preferred invocation-owned symbolic runner. Omit only for standalone index passes. */
+  llmRunner?: StructuredLlmRunner | null;
+  /**
+   * Temporary isolated-branch compatibility for the improve caller owned by
+   * the parallel WP5 lane. Final integration removes this field once that
+   * caller passes `llmRunner` directly. Materialized credentials are rejected.
+   */
+  llmConfig?: LlmConnectionConfig | null;
+};
 
 interface MemoryRecord {
   /** Absolute path on disk. */
@@ -154,6 +167,15 @@ interface MemoryRecord {
   name: string;
 }
 
+function memoryRunnerForContext(
+  ctx: MemoryInferencePassContext,
+  config: MemoryInferencePassContext["config"],
+): StructuredLlmRunner | null | undefined {
+  if (Object.hasOwn(ctx, "llmRunner")) return ctx.llmRunner;
+  if (!Object.hasOwn(ctx, "llmConfig")) return resolveIndexPassRunner("memory", config);
+  return ctx.llmConfig ? structuredLlmRunnerFromConnection(ctx.llmConfig, "legacy-index-memory") : null;
+}
+
 /**
  * Top-level entry point. Returns a no-op result when the pass is disabled.
  *
@@ -162,7 +184,7 @@ interface MemoryRecord {
  *   1. **Feature gate** — the selected strategy's `processes.memoryInference.enabled`
  *      (defaults to `true`). When `false`, no network call may issue regardless
  *      of per-pass settings.
- *   2. **Per-pass gate** — `resolveIndexPassLLM("memory", config)` (which
+ *   2. **Per-pass gate** — `resolveIndexPassRunner("memory", config)` (which
  *      reads `index.memory.llm`). When `false`, the indexer simply skips
  *      this pass for the current run.
  *
@@ -171,7 +193,7 @@ interface MemoryRecord {
  */
 export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): Promise<MemoryInferenceResult> {
   const { config, sources, signal, db, reEnrich, onProgress, options = {} } = ctx;
-  const invocationOwnsConnection = Object.hasOwn(ctx, "llmConfig");
+  const invocationOwnsRunner = Object.hasOwn(ctx, "llmRunner") || Object.hasOwn(ctx, "llmConfig");
   const compressMemoryToDerivedMemory =
     options.compressMemoryToDerivedMemory ?? memoryInfer.compressMemoryToDerivedMemory;
   const result: MemoryInferenceResult = {
@@ -195,13 +217,13 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
   // Gate 1 — feature gate via isProcessEnabled, which reads the 0.8.0 path
   // (selected strategy's processes.memoryInference.enabled). Defaults to
   // enabled when the key is absent.
-  if (!invocationOwnsConnection && !isProcessEnabled("index", "memory_inference", config)) return result;
+  if (!invocationOwnsRunner && !isProcessEnabled("index", "memory_inference", config)) return result;
 
   // Gate 2 — per-pass opt-out (#208). Returns the resolved llm config or
   // `undefined` when the pass should not run.
-  const llmConfig = Object.hasOwn(ctx, "llmConfig") ? ctx.llmConfig : resolveIndexPassLLM("memory", config);
-  if (!llmConfig) return result;
-  const featureConfig = invocationOwnsConnection
+  const llmRunner = memoryRunnerForContext(ctx, config);
+  if (!llmRunner) return result;
+  const featureConfig = invocationOwnsRunner
     ? { ...config, index: { ...config.index, memory: { ...config.index?.memory, enabled: true } } }
     : config;
 
@@ -292,7 +314,7 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
             reEnrich ?? false,
             () =>
               compressMemoryToDerivedMemory(
-                llmConfig,
+                llmRunner,
                 record.body,
                 signal,
                 featureConfig,
@@ -312,7 +334,7 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
             },
           )
         : await compressMemoryToDerivedMemory(
-            llmConfig,
+            llmRunner,
             record.body,
             signal,
             config,
@@ -359,7 +381,7 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
     },
     // Caller-set connection concurrency or 1: `resolveLlmEngineUse` does
     // not forward `engines.<name>.concurrency`, so config cannot raise this.
-    llmConfig.concurrency ?? 1,
+    llmRunner.connection.concurrency ?? 1,
   );
 
   for (let i = 0; i < perRecordResults.length; i++) {

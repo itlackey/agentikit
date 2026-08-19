@@ -15,8 +15,8 @@
  *      as a stateless model handle and exposes `resetLocalEmbedder()`
  *      so tests can construct a fresh pipeline.
  *   3. The transport-level helpers (`chatCompletion`, `enhanceMetadata`,
- *      `compressMemoryToDerivedMemory`, `resolveIndexPassLLM`) take the
- *      connection config as a parameter — they do not read it from
+ *      `compressMemoryToDerivedMemory`, `resolveIndexPassRunner`) take the
+ *      symbolic runner/config as a parameter — they do not read it from
  *      module state.
  *
  * Together these properties keep every in-tree LLM call to a single
@@ -84,8 +84,8 @@ describe("src/llm/* is bounded and stateless (v1 spec §9.7, §14.4)", () => {
   });
 
   test("`index-passes` exports a single pure resolver", () => {
-    expect(typeof indexPasses.resolveIndexPassLLM).toBe("function");
-    expect(indexPasses.resolveIndexPassLLM.length).toBeGreaterThanOrEqual(2);
+    expect(typeof indexPasses.resolveIndexPassRunner).toBe("function");
+    expect(indexPasses.resolveIndexPassRunner.length).toBeGreaterThanOrEqual(2);
     const runtimeExports = Object.entries(indexPasses).filter(([, v]) => v !== undefined);
     expect(runtimeExports.length).toBe(1);
   });

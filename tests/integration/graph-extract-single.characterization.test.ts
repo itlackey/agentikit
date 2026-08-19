@@ -32,6 +32,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { LlmConnectionConfig } from "../../src/core/config/config";
 import { isQuiet, setQuiet } from "../../src/core/warn";
+import { structuredLlmRunnerFromConnection } from "../../src/llm/structured-call";
 
 // ── Local LLM server (fake chat/LLM seam) ────────────────────────────────────
 
@@ -74,17 +75,18 @@ const { extractGraphFromBody } = await import("../../src/llm/graph-extract");
 
 // ── Shared fixtures ──────────────────────────────────────────────────────────
 
-const SAMPLE_LLM: LlmConnectionConfig = {
+const SAMPLE_CONNECTION: LlmConnectionConfig = {
   endpoint: `http://localhost:${llmServer.port}/v1/chat/completions`,
   model: "llama3.2",
   // Keep the timeout small but non-zero; no test path relies on timing.
   timeoutMs: 5000,
 };
+const SAMPLE_LLM = structuredLlmRunnerFromConnection(SAMPLE_CONNECTION, "test-graph-extraction");
 
 // graph_extraction defaults to enabled when the feature key is absent.
 const AKM_CFG = {
   semanticSearchMode: "auto" as const,
-  profiles: { llm: { default: { ...SAMPLE_LLM } } },
+  profiles: { llm: { default: { ...SAMPLE_CONNECTION } } },
   defaults: { llm: "default" },
 };
 

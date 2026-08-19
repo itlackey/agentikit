@@ -17,7 +17,8 @@ import { getDbPath } from "../core/paths";
 import { SCRIPT_EXTENSIONS } from "../core/recognition-util";
 import { withStateDb } from "../core/state-db";
 import { isVerbose, warn, warnVerbose } from "../core/warn";
-import { resolveIndexPassLLM } from "../llm/index-passes";
+import { resolveIndexPassRunner } from "../llm/index-passes";
+import type { StructuredLlmRunner } from "../llm/structured-call";
 import { resolveSourcesForOrigin } from "../registry/origin-resolve";
 /**
  * M-4 / #395 — Index Consistency Architecture Decision Record
@@ -373,7 +374,7 @@ async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
   await enhanceDirsWithLlm(db, config, dirsNeedingLlm, onProgress, signal);
   onProgress({
     phase: "llm",
-    message: resolveIndexPassLLM("enrichment", config)
+    message: resolveIndexPassRunner("enrichment", config)
       ? `LLM enhancement reviewed ${dirsNeedingLlm.length} ${dirsNeedingLlm.length === 1 ? "directory" : "directories"}.`
       : "LLM enhancement disabled.",
   });
@@ -884,7 +885,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
             sourcesCount: allSourceDirs.length,
             semanticSearchMode: config.semanticSearchMode,
             embeddingProvider: getEmbeddingProvider(config.embedding),
-            llmEnabled: !!resolveIndexPassLLM("enrichment", config),
+            llmEnabled: !!resolveIndexPassRunner("enrichment", config),
             vecAvailable: isVecAvailable(db),
           }),
         });
@@ -1799,11 +1800,12 @@ async function enhanceDirsWithLlm(
   onProgress?: (event: IndexProgressEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  // Resolve per-pass LLM config via the unified shim. Returns undefined when
+  // Resolve the per-pass symbolic runner via the common execution planner.
+  // Returns undefined when
   // either no `akm.llm` is configured or the user opted this pass out via
   // `index.enrichment.llm = false`. (#208)
-  const llmConfig = resolveIndexPassLLM("enrichment", config);
-  if (!llmConfig || dirsNeedingLlm.length === 0) return;
+  const llmRunner = resolveIndexPassRunner("enrichment", config);
+  if (!llmRunner || dirsNeedingLlm.length === 0) return;
 
   // Aggregate per-entry failures so a misconfigured LLM endpoint surfaces
   // as a single visible warning instead of silently degrading every entry
@@ -1825,7 +1827,7 @@ async function enhanceDirsWithLlm(
   // engine's timeoutMs (or 10 minutes if not set). Users can extend it via
   // `index.enrichment.timeoutMs` (or `index.defaults.timeoutMs`, or the
   // engine's own `engines.<name>.timeoutMs`) — no separate knob needed.
-  const enrichDeadline = createEnrichmentDeadline(llmConfig.timeoutMs, totalEntries);
+  const enrichDeadline = createEnrichmentDeadline(llmRunner.timeoutMs, totalEntries);
   let deadlineHit = false;
   const enrichSignal: AbortSignal = (() => {
     if (!enrichDeadline) return signal ?? new AbortController().signal;
@@ -1850,7 +1852,7 @@ async function enhanceDirsWithLlm(
       phase: "llm",
       message:
         `LLM enhancement starting for ${totalEntries} entr${totalEntries === 1 ? "y" : "ies"} ` +
-        `across ${totalDirs} director${totalDirs === 1 ? "y" : "ies"} (concurrency ${getDefaultLlmConcurrency(llmConfig)}).`,
+        `across ${totalDirs} director${totalDirs === 1 ? "y" : "ies"} (concurrency ${getDefaultLlmConcurrency(llmRunner.connection)}).`,
       processed: 0,
       total: totalEntries,
     });
@@ -1905,7 +1907,7 @@ async function enhanceDirsWithLlm(
         const targetStash: StashFile = { entries: entriesToEnhance };
         const entryKeys = entriesToEnhance.map((e) => `${currentStashDir}:${e.type}:${e.name}`);
         const enhanced = await enhanceStashWithLlm(
-          llmConfig,
+          llmRunner,
           targetStash,
           files,
           summary,
@@ -1966,7 +1968,7 @@ async function enhanceDirsWithLlm(
       // Studio, Ollama run one inference at a time — parallel requests cause
       // "Model reloaded" / 500 errors). No config override reaches this path:
       // `resolveLlmEngineUse` does not forward `engines.<name>.concurrency`.
-      getDefaultLlmConcurrency(llmConfig),
+      getDefaultLlmConcurrency(llmRunner.connection),
     );
   } finally {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -2312,7 +2314,7 @@ interface LlmEnhancementSummary {
 }
 
 async function enhanceStashWithLlm(
-  llmConfig: LlmConnectionConfig,
+  llmRunner: StructuredLlmRunner,
   stash: StashFile,
   files: string[],
   summary: LlmEnhancementSummary,
@@ -2375,7 +2377,7 @@ async function enhanceStashWithLlm(
           }
         }
 
-        const outcome = await enhanceMetadata(llmConfig, entry, fileContent, signal, akmConfig);
+        const outcome = await enhanceMetadata(llmRunner, entry, fileContent, signal, akmConfig);
 
         if (outcome.status !== "enriched") {
           // Not a genuine LLM success: the gate was closed (`skipped`) or the
@@ -2439,7 +2441,7 @@ async function enhanceStashWithLlm(
     },
     // Defaults: 2 for remote LLM APIs, 1 for local model servers. No config
     // override reaches this path (see getDefaultLlmConcurrency).
-    getDefaultLlmConcurrency(llmConfig),
+    getDefaultLlmConcurrency(llmRunner.connection),
   );
 
   // concurrentMap returns Array<T | undefined>; filter out undefined slots

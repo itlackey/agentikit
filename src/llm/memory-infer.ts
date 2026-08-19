@@ -14,8 +14,8 @@
  * This module is intentionally tiny and stateless so tests can stub it via
  * `mock.module("../src/llm/memory-infer", ...)` without hitting a network.
  *
- * The LLM connection comes from the selected named engine. Callers obtain it
- * via `resolveIndexPassLLM("memory", config)` and pass it straight through.
+ * The symbolic LLM runner comes from the selected named engine. Callers obtain
+ * it via `resolveIndexPassRunner("memory", config)` and pass it straight through.
  */
 
 import memoryInferSystemPrompt from "../assets/prompts/memory-infer-system.md" with { type: "text" };
@@ -24,9 +24,8 @@ import { toErrorMessage } from "../core/common";
 import type { AkmConfig } from "../core/config/config";
 import { parseEmbeddedJsonResponse } from "../core/parse";
 import { warn } from "../core/warn";
-import type { ChatCompletionConfig } from "./client";
 import type { TryLlmFeatureFallbackEvent } from "./feature-gate";
-import { callStructured } from "./structured-call";
+import { callStructured, type StructuredLlmRunner } from "./structured-call";
 
 /** Hard cap on body chars sent to the model — pragmatic and matches `runLlmEnrich`. */
 const MAX_BODY_CHARS = 4000;
@@ -66,7 +65,7 @@ export interface MemoryInferTelemetry {
 
 /**
  * Strict JSON Schema for the derived-memory payload. Sent to providers that
- * opt in via `ChatCompletionConfig.supportsJsonSchema = true`; the client
+ * opt in via `runner.connection.supportsJsonSchema = true`; the client
  * silently drops the schema for providers that don't.
  *
  * Extends the responseSchema lift (PR 1, asset-writers-investigation §5) to
@@ -101,7 +100,7 @@ const DERIVED_MEMORY_JSON_SCHEMA = {
  * (Fix C5).
  */
 export async function compressMemoryToDerivedMemory(
-  llmConfig: ChatCompletionConfig,
+  llmRunner: StructuredLlmRunner,
   body: string,
   signal?: AbortSignal,
   akmConfig?: AkmConfig,
@@ -124,14 +123,14 @@ export async function compressMemoryToDerivedMemory(
   return callStructured<DerivedMemoryDraft | undefined>({
     feature: "memory_inference",
     akmConfig,
-    config: llmConfig,
+    runner: llmRunner,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: userPrompt },
     ],
     request: {
       temperature: 0.1,
-      timeoutMs: llmConfig.timeoutMs,
+      timeoutMs: llmRunner.timeoutMs,
       signal,
       responseSchema: DERIVED_MEMORY_JSON_SCHEMA as unknown as Record<string, unknown>,
       onRetryAttempt,
