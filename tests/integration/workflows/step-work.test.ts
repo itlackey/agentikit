@@ -12,6 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
+import { canonicalResolvedExecutionRequest } from "../../../src/execution/resolved-request";
 import type { WorkflowRunUnitRow } from "../../../src/storage/repositories/workflow-runs-repository";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import type { UnitDispatchRequest, UnitDispatchResult } from "../../../src/workflows/exec/native-executor";
@@ -31,6 +32,7 @@ import {
   type UnitOutcome,
   unitOutcomeFromRow,
 } from "../../../src/workflows/exec/step-work";
+import { prepareFrozenWorkflowExecution } from "../../../src/workflows/exec/unit-dispatch";
 import { canonicalPlanJson, computePlanHash } from "../../../src/workflows/ir/plan-hash";
 import type {
   FrozenEngineSnapshot,
@@ -219,6 +221,251 @@ describe("computeStepWorkList — dispatch-input hash envelope (reviewer finding
     expect(hashOf({ retry: { max: 2, on: ["timeout"] } })).toBe(baseline);
     expect(hashOf({ onError: "continue" })).toBe(baseline);
   });
+});
+
+describe("computeStepWorkList — optional v3 wire fields hash only prepared behavior", () => {
+  type FrozenLlm = Extract<FrozenEngineSnapshot, { kind: "llm" }>;
+  type FrozenAgent = Extract<FrozenEngineSnapshot, { kind: "agent" }>;
+  type PresenceState = "absent" | "false" | "true";
+  type TimeoutState = "absent" | "null" | "600000" | "700000";
+  type OwnerState = "absent" | "false" | "true";
+
+  interface ProbeResult {
+    label: string;
+    behavior: string;
+    inputHash: string;
+  }
+
+  function llm(name: string, timeout: TimeoutState = "600000"): FrozenLlm {
+    return {
+      name,
+      kind: "llm",
+      endpoint: "https://example.test/v1/chat/completions",
+      model: "fallback/model",
+      concurrency: 1,
+      ...(timeout === "absent" ? {} : { timeoutMs: timeout === "null" ? null : Number.parseInt(timeout, 10) }),
+    };
+  }
+
+  function sdk(name: string, fallbackLlmEngine: string | null, owner: OwnerState): FrozenAgent {
+    return {
+      name,
+      kind: "agent",
+      runnerKind: "sdk",
+      platform: "opencode-sdk",
+      bin: "opencode",
+      args: [],
+      workspace: null,
+      envPassthrough: [],
+      commandBuilder: "opencode-sdk",
+      fallbackLlmEngine,
+      ...(owner === "absent" ? {} : { sdkFallbackModelFromRequest: owner === "true" }),
+    };
+  }
+
+  function agent(name: string): FrozenAgent {
+    return {
+      name,
+      kind: "agent",
+      runnerKind: "agent",
+      platform: "codex",
+      bin: "codex",
+      args: ["exec"],
+      workspace: null,
+      envPassthrough: [],
+      commandBuilder: "codex",
+      fallbackLlmEngine: null,
+      sdkFallbackModelFromRequest: false,
+    };
+  }
+
+  function invocation(engine: string, model: string | null, presence: PresenceState): IrInvocation {
+    return {
+      engine,
+      model,
+      timeoutMs: 12_345,
+      ...(presence === "absent" ? {} : { modelPresent: presence === "true" }),
+    };
+  }
+
+  function probe(
+    label: string,
+    engine: FrozenEngineSnapshot,
+    frozenInvocation: IrInvocation,
+    fallback?: FrozenLlm,
+  ): ProbeResult {
+    const engines: Record<string, FrozenEngineSnapshot> = {
+      [engine.name]: engine,
+      ...(fallback ? { [fallback.name]: fallback } : {}),
+    };
+    const step: IrStepPlan = {
+      stepId: "hash-probe",
+      title: "Hash probe",
+      sequenceIndex: 0,
+      root: {
+        kind: "unit",
+        id: "hash-probe",
+        instructions: "Probe optional frozen fields.",
+        templating: "verbatim",
+        invocation: frozenInvocation,
+        onError: "fail",
+      },
+      gate: { kind: "gate", id: "hash-probe.gate", stepId: "hash-probe", criteria: [] },
+    };
+    const work = computeStepWorkList(step, { runId: "hash-run", params: {}, stepOutputs: {}, engines });
+    if (!work.ok) throw new Error(work.error);
+    const lowered = prepareFrozenWorkflowExecution({
+      runId: "hash-run",
+      stepId: "hash-probe",
+      unitId: "hash-probe:solo",
+      nodeId: "hash-probe",
+      prompt: "Probe optional frozen fields.",
+      engine,
+      ...(fallback ? { fallbackEngine: fallback } : {}),
+      invocation: frozenInvocation,
+      timeoutMs: frozenInvocation.timeoutMs,
+    });
+    return {
+      label,
+      behavior: canonicalJson({
+        request: canonicalResolvedExecutionRequest(lowered.request),
+        notices: lowered.notices,
+        runner: lowered.runner,
+      }),
+      inputHash: work.list.units[0]!.inputHash,
+    };
+  }
+
+  function partition(results: readonly ProbeResult[], key: "behavior" | "inputHash"): string[][] {
+    const groups = new Map<string, string[]>();
+    for (const result of results) {
+      const labels = groups.get(result[key]) ?? [];
+      labels.push(result.label);
+      groups.set(result[key], labels);
+    }
+    return [...groups.values()];
+  }
+
+  function expectPartitions(results: readonly ProbeResult[], expected: string[][]): void {
+    expect(partition(results, "behavior")).toEqual(expected);
+    expect(partition(results, "inputHash")).toEqual(expected);
+  }
+
+  test("LLM snapshot timeout is irrelevant for a primary and absent equals null for an SDK fallback", () => {
+    const timeoutStates: TimeoutState[] = ["absent", "null", "600000", "700000"];
+    const primary = timeoutStates.map((state) => {
+      const engine = llm("direct", state);
+      return probe(state, engine, invocation(engine.name, "direct/model", "absent"));
+    });
+    expectPartitions(primary, [["absent", "null", "600000", "700000"]]);
+
+    const fallback = timeoutStates.map((state) => {
+      const fallbackEngine = llm("fallback", state);
+      const engine = sdk("sdk-primary", fallbackEngine.name, "false");
+      return probe(state, engine, invocation(engine.name, "primary/model", "absent"), fallbackEngine);
+    });
+    expectPartitions(fallback, [["absent", "null"], ["600000"], ["700000"]]);
+  });
+
+  test("SDK fallback ownership treats legacy absence as false and preserves true", () => {
+    const fallback = llm("fallback");
+    const ownerStates: OwnerState[] = ["absent", "false", "true"];
+    const results = ownerStates.map((state) => {
+      const engine = sdk("sdk", fallback.name, state);
+      return probe(state, engine, invocation(engine.name, fallback.model, "absent"), fallback);
+    });
+    expectPartitions(results, [["absent", "false"], ["true"]]);
+  });
+
+  const presenceScenarios: Array<{
+    label: string;
+    engine: FrozenEngineSnapshot;
+    fallback?: FrozenLlm;
+    model: string | null;
+    expected: string[][];
+  }> = [
+    {
+      label: "direct LLM with a string model",
+      engine: llm("direct"),
+      model: "direct/model",
+      expected: [["absent", "false", "true"]],
+    },
+    {
+      label: "direct LLM with a null model",
+      engine: llm("direct-null"),
+      model: null,
+      expected: [["absent", "false"], ["true"]],
+    },
+    {
+      label: "ordinary agent with a string model",
+      engine: agent("agent"),
+      model: "agent/model",
+      expected: [["absent", "false", "true"]],
+    },
+    {
+      label: "ordinary agent with a null model",
+      engine: agent("agent-null"),
+      model: null,
+      expected: [["absent", "false"], ["true"]],
+    },
+    {
+      label: "primary-owned SDK with a string model",
+      engine: sdk("sdk-primary", "fallback-primary", "false"),
+      fallback: llm("fallback-primary"),
+      model: "primary/model",
+      expected: [["absent", "false", "true"]],
+    },
+    {
+      label: "primary-owned SDK with a null model",
+      engine: sdk("sdk-primary-null", "fallback-primary-null", "false"),
+      fallback: llm("fallback-primary-null"),
+      model: null,
+      expected: [["absent", "false"], ["true"]],
+    },
+    {
+      label: "fallback-owned SDK with its fallback model",
+      engine: sdk("sdk-fallback", "fallback-equal", "true"),
+      fallback: llm("fallback-equal"),
+      model: "fallback/model",
+      expected: [["absent", "false", "true"]],
+    },
+    {
+      label: "fallback-owned SDK with a distinct invocation model",
+      engine: sdk("sdk-fallback-distinct", "fallback-distinct", "true"),
+      fallback: llm("fallback-distinct"),
+      model: "operator/model",
+      expected: [["absent", "true"], ["false"]],
+    },
+    {
+      label: "fallback-owned SDK with a null model",
+      engine: sdk("sdk-fallback-null", "fallback-null", "true"),
+      fallback: llm("fallback-null"),
+      model: null,
+      expected: [["absent", "false"], ["true"]],
+    },
+    {
+      label: "no-fallback SDK with a string model",
+      engine: sdk("sdk-none", null, "false"),
+      model: "operator/model",
+      expected: [["absent", "false", "true"]],
+    },
+    {
+      label: "no-fallback SDK with a null model",
+      engine: sdk("sdk-none-null", null, "false"),
+      model: null,
+      expected: [["absent", "false"], ["true"]],
+    },
+  ];
+
+  for (const scenario of presenceScenarios) {
+    test(`model presence matches exact preparation equivalence for ${scenario.label}`, () => {
+      const states: PresenceState[] = ["absent", "false", "true"];
+      const results = states.map((state) =>
+        probe(state, scenario.engine, invocation(scenario.engine.name, scenario.model, state), scenario.fallback),
+      );
+      expectPartitions(results, scenario.expected);
+    });
+  }
 });
 
 describe("computeStepWorkList — the frozen timeout reaches dispatch VERBATIM (no engine-side backstop)", () => {

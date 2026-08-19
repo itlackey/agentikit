@@ -615,6 +615,11 @@ function buildExecContextEnv(args: {
  * previously-frozen llm/agent/sdk unit therefore hashes byte-identically to
  * before, and no in-flight run re-dispatches work it already completed.
  *
+ * Optional v3 ownership/presence bytes are normalized against their legacy
+ * missing-field behavior before entering this envelope. They remain in the
+ * identity exactly when they change the canonical prepared request, notices,
+ * or runner; a wire-only distinction must not invalidate a completed unit.
+ *
  * Ambient config is DELIBERATELY excluded — the model-alias table, the resolved
  * backend/connection, and the working directory (`ctx.workDir` /
  * `process.cwd()`) are NOT plan-frozen. The frozen plan is the identity
@@ -622,7 +627,8 @@ function buildExecContextEnv(args: {
  * in-flight run is out of scope by design.
  */
 function computeUnitInputHash(ctx: StepWorkUnitContext, item: unknown): string {
-  const dispatch = ctx.frozenEngine ? transitiveDispatchSnapshot(ctx.frozenEngine, ctx.input.engines ?? {}) : null;
+  const fallback = ctx.frozenEngine ? frozenFallbackSnapshot(ctx.frozenEngine, ctx.input.engines ?? {}) : undefined;
+  const dispatch = ctx.frozenEngine ? transitiveDispatchSnapshot(ctx.frozenEngine, fallback) : null;
   return createHash("sha256")
     .update(
       canonicalJsonString({
@@ -632,7 +638,10 @@ function computeUnitInputHash(ctx: StepWorkUnitContext, item: unknown): string {
         inputs: ctx.resolvedInputs,
         params: ctx.input.params,
         dispatch,
-        invocation: ctx.frozenInvocation ? invocationDispatchIdentity(ctx.frozenInvocation) : null,
+        invocation:
+          ctx.frozenInvocation && ctx.frozenEngine
+            ? invocationDispatchIdentity(ctx.frozenInvocation, ctx.frozenEngine, fallback)
+            : null,
         ...(ctx.frozenExec ? { exec: ctx.frozenExec } : {}),
         schema: ctx.template.schema ?? null,
         env: ctx.template.env ?? null,
@@ -729,14 +738,22 @@ export function unitIdFor(nodeId: string, item: unknown, isFanOut: boolean): str
 /** Include an SDK fallback in v3 call identity without copying catalog entries onto nodes. */
 function transitiveDispatchSnapshot(
   engine: FrozenEngineSnapshot,
-  engines: Record<string, FrozenEngineSnapshot>,
+  fallback: Extract<FrozenEngineSnapshot, { kind: "llm" }> | undefined,
 ): unknown {
-  if (engine.kind !== "agent" || !engine.fallbackLlmEngine) return primaryDispatchIdentity(engine);
+  if (!fallback) return primaryDispatchIdentity(engine);
+  return { engine: primaryDispatchIdentity(engine), fallback: fallbackDispatchIdentity(fallback) };
+}
+
+function frozenFallbackSnapshot(
+  engine: FrozenEngineSnapshot,
+  engines: Record<string, FrozenEngineSnapshot>,
+): Extract<FrozenEngineSnapshot, { kind: "llm" }> | undefined {
+  if (engine.kind !== "agent" || !engine.fallbackLlmEngine) return undefined;
   const fallback = engines[engine.fallbackLlmEngine];
   if (!fallback || fallback.kind !== "llm") {
     throw new UsageError(`Frozen agent engine "${engine.name}" has no valid LLM fallback snapshot.`);
   }
-  return { engine: primaryDispatchIdentity(engine), fallback };
+  return fallback;
 }
 
 /** Keep new provenance fields additive for dispatches whose behavior they cannot change. */
@@ -752,9 +769,38 @@ function primaryDispatchIdentity(engine: FrozenEngineSnapshot): unknown {
   return engine;
 }
 
-/** A false presence bit reproduces the pre-field invocation identity exactly. */
-function invocationDispatchIdentity(invocation: IrInvocation): unknown {
-  if (invocation.modelPresent === true) return invocation;
+/** Legacy absence and an explicit null fallback timeout both dispatch unbounded. */
+function fallbackDispatchIdentity(fallback: Extract<FrozenEngineSnapshot, { kind: "llm" }>): unknown {
+  if (fallback.timeoutMs !== null && fallback.timeoutMs !== undefined) return fallback;
+  const { timeoutMs: _legacyUnboundedTimeout, ...legacy } = fallback;
+  return legacy;
+}
+
+/** Mirror the model material `frozenRunner` exposes before the current layer. */
+function runnerDefaultModel(
+  invocation: IrInvocation,
+  engine: FrozenEngineSnapshot,
+  fallback: Extract<FrozenEngineSnapshot, { kind: "llm" }> | undefined,
+): string | undefined {
+  if (engine.kind === "llm") return invocation.model ?? engine.model;
+  if (invocation.model !== null && (engine.runnerKind === "agent" || engine.sdkFallbackModelFromRequest !== true)) {
+    return invocation.model;
+  }
+  if (engine.runnerKind === "sdk" && engine.sdkFallbackModelFromRequest === true) return fallback?.model;
+  return undefined;
+}
+
+/** Strip presence bytes exactly when legacy absence prepares the same model. */
+function invocationDispatchIdentity(
+  invocation: IrInvocation,
+  engine: FrozenEngineSnapshot,
+  fallback: Extract<FrozenEngineSnapshot, { kind: "llm" }> | undefined,
+): unknown {
+  if (!Object.hasOwn(invocation, "modelPresent")) return invocation;
+  const defaultModel = runnerDefaultModel(invocation, engine, fallback);
+  const legacyModel = invocation.model !== null ? invocation.model : defaultModel;
+  const currentModel = invocation.modelPresent === true ? invocation.model : defaultModel;
+  if (currentModel !== legacyModel) return invocation;
   const { modelPresent: _modelPresence, ...legacy } = invocation;
   return legacy;
 }
