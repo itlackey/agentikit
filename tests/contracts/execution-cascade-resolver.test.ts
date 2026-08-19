@@ -1,0 +1,566 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+import { describe, expect, test } from "bun:test";
+import { ConfigError } from "../../src/core/errors";
+import {
+  canonicalResolvedExecutionRequest,
+  createResolvedCommand,
+  createResolvedPersona,
+} from "../../src/execution/resolved-request";
+import { createAdapterRenderedExecutionSource } from "../../src/execution/source";
+import {
+  canonicalResolvedExecutionPlan,
+  type ExecutionCascadeLayerInput,
+  type ExecutionEngineDefinition,
+  planExecutionCascade,
+  requireAuthorizedExecutionPlan,
+} from "../../src/integrations/agent/execution-cascade";
+import { mergeModelMapLayers, parseModelMapLayer } from "../../src/integrations/agent/model-map";
+
+const modelMap = mergeModelMapLayers(
+  parseModelMapLayer(
+    JSON.stringify({
+      version: 1,
+      aliases: {
+        reasoning: {
+          claude: {
+            model: "claude-opus-exact",
+            inference: { effort: "high", nested: { alias: true, replace: "alias" } },
+          },
+          "opencode-sdk": "anthropic/claude-opus-exact",
+        },
+        mapped: { claude: "claude-sonnet-exact" },
+      },
+    }),
+    "cascade fixture models.json",
+  ),
+);
+
+function source(kind: "command" | "persona", name: string, defaults: Record<string, unknown> = {}) {
+  return createAdapterRenderedExecutionSource({
+    kind,
+    content: kind === "command" ? `Run ${name}.` : `You are ${name}.`,
+    defaults,
+    identity: {
+      ref: `fixture//${kind === "command" ? "commands" : "agents"}/${name}`,
+      bundle: "fixture",
+      adapter: "akm",
+      file: `${kind === "command" ? "commands" : "agents"}/${name}.md`,
+      hash: name
+        .padEnd(64, "a")
+        .slice(0, 64)
+        .replace(/[^a-f0-9]/g, "a"),
+    },
+  });
+}
+
+function command() {
+  const rendered = source("command", "review", { model: "reasoning" });
+  if (rendered.kind !== "command") throw new Error("fixture command kind drifted");
+  return createResolvedCommand({ source: rendered, content: rendered.content });
+}
+
+function persona() {
+  const rendered = source("persona", "reviewer", { model: "mapped", tools: ["read"] });
+  if (rendered.kind !== "persona") throw new Error("fixture persona kind drifted");
+  return createResolvedPersona(rendered);
+}
+
+const engines: Readonly<Record<string, ExecutionEngineDefinition>> = {
+  reviewer: {
+    selection: { name: "reviewer", kind: "agent", platform: "claude", settings: { bin: "claude" } },
+    defaults: {
+      model: "mapped",
+      inference: { effort: "low", temperature: 0.7, nested: { engine: true, replace: "engine" } },
+      timeout: "20m",
+      workspace: "/engine",
+    },
+  },
+  "opencode-sdk": {
+    selection: { name: "opencode-sdk", kind: "sdk", platform: "opencode-sdk" },
+    defaults: { model: "reasoning" },
+  },
+};
+
+function layer(id: string, values: Record<string, unknown>): ExecutionCascadeLayerInput {
+  return { id, values };
+}
+
+function baseInput() {
+  return {
+    command: command(),
+    persona: persona(),
+    modelMap,
+    engines,
+    layers: {
+      installation: layer("installation", { engine: "reviewer", model: "mapped", tools: ["install"] }),
+      agent: layer("fixture//agents/reviewer", {
+        model: "mapped",
+        tools: ["read"],
+        inference: { nested: { agent: true, replace: "agent" } },
+      }),
+      command: layer("fixture//commands/review", {
+        agent: "fixture//agents/reviewer",
+        model: "reasoning",
+        tools: ["shell"],
+        inference: { effort: "medium", nested: { command: true, replace: "command" } },
+      }),
+      invocationDefaults: layer("task-defaults", {
+        timeout: "5m",
+        environment: { FAR: "yes" },
+      }),
+      current: layer("current", {
+        timeout: 0,
+        workspace: null,
+        environment: {},
+        runtime: {},
+        outputSchema: null,
+        inference: { temperature: 0, enabled: false, stops: [], nested: { current: true } },
+      }),
+    },
+    invocationKind: "direct" as const,
+  };
+}
+
+describe("common execution cascade resolver", () => {
+  test("resolves every fixed layer far-to-near while preserving explicit empty, false, zero, and null values", () => {
+    const plan = planExecutionCascade(baseInput());
+
+    expect(plan.selectedAgent).toBe("fixture//agents/reviewer");
+    expect(plan.request.engine).toEqual({
+      name: "reviewer",
+      kind: "agent",
+      platform: "claude",
+      settings: { bin: "claude" },
+    });
+    expect(plan.request.model).toEqual({
+      input: "reasoning",
+      interpretation: "alias",
+      resolved: "claude-opus-exact",
+    });
+    expect(plan.request.inference).toEqual({
+      effort: "medium",
+      temperature: 0,
+      enabled: false,
+      stops: [],
+      nested: {
+        engine: true,
+        agent: true,
+        alias: true,
+        command: true,
+        current: true,
+        replace: "command",
+      },
+    });
+    expect(plan.request.outputSchema).toBeNull();
+    expect(plan.request.tools).toEqual(["shell"]);
+    expect(plan.request.runtime).toEqual({ timeoutMs: 0, workspace: null, environment: {}, settings: {} });
+    expect(plan.request.authorization.status).toBe("denied");
+
+    expect(plan.provenance.engine).toEqual({ layer: "installation", kind: "installation", via: "explicit" });
+    expect(plan.provenance.model).toEqual({
+      layer: "fixture//commands/review",
+      kind: "command",
+      via: "explicit",
+    });
+    expect(plan.provenance["inference.effort"]).toEqual({
+      layer: "fixture//commands/review",
+      kind: "command",
+      via: "explicit",
+    });
+    expect(plan.provenance["inference.nested.alias"]).toEqual({
+      layer: "fixture//commands/review",
+      kind: "command",
+      via: "model-alias",
+    });
+    expect(plan.provenance["runtime.timeoutMs"]).toEqual({ layer: "current", kind: "current", via: "explicit" });
+    expect(plan.provenance["runtime.environment"]).toEqual({
+      layer: "current",
+      kind: "current",
+      via: "explicit",
+    });
+  });
+
+  test("authorizes only the final nearest tool selection and never silently intersects or widens it", () => {
+    const seen: unknown[] = [];
+    const plan = planExecutionCascade({
+      ...baseInput(),
+      authorizeTools(input) {
+        seen.push(input);
+        return { status: "denied", policy: "operator-tools-v1" };
+      },
+    });
+
+    expect(seen).toEqual([
+      {
+        tools: ["shell"],
+        engine: { name: "reviewer", kind: "agent", platform: "claude" },
+        invocationKind: "direct",
+        commandRef: "fixture//commands/review",
+        personaRef: "fixture//agents/reviewer",
+      },
+    ]);
+    expect(plan.request.tools).toEqual(["shell"]);
+    expect(plan.request.authorization).toEqual({
+      status: "denied",
+      reason: "Selected tools are not authorized by operator policy.",
+      policy: { id: "operator-tools-v1" },
+    });
+    expect(() => requireAuthorizedExecutionPlan(plan)).toThrow(ConfigError);
+    try {
+      requireAuthorizedExecutionPlan(plan);
+    } catch (error) {
+      expect((error as ConfigError).code).toBe("EXECUTION_NOT_AUTHORIZED");
+    }
+  });
+
+  test("does not invoke authorization for omitted or explicitly empty tool spellings", () => {
+    for (const tools of [undefined, null, "", [], {}] as const) {
+      let calls = 0;
+      const currentValues = tools === undefined ? {} : { tools };
+      const plan = planExecutionCascade({
+        ...baseInput(),
+        layers: {
+          ...baseInput().layers,
+          command: layer("command", {}),
+          current: layer("current", currentValues),
+        },
+        authorizeTools() {
+          calls += 1;
+          return { status: "allowed", policy: "must-not-run" };
+        },
+      });
+      expect(calls).toBe(tools === undefined ? 1 : 0);
+      if (tools === undefined) expect(plan.request.authorization.status).toBe("allowed");
+      else expect(plan.request.authorization.status).toBe("not-required");
+    }
+  });
+
+  test("uses the announced fixed fallback only when no layer selects an engine", () => {
+    const input = baseInput();
+    const plan = planExecutionCascade({
+      ...input,
+      layers: {
+        installation: layer("installation", {}),
+        command: layer("command", { model: "reasoning", tools: [] }),
+      },
+    });
+    expect(plan.request.engine.name).toBe("opencode-sdk");
+    expect(plan.request.notices).toEqual([
+      {
+        code: "engine-fallback",
+        severity: "info",
+        adapter: "akm",
+        field: "engine",
+        message: "No engine was selected; using the fixed opencode-sdk fallback.",
+      },
+    ]);
+    expect(plan.provenance.engine).toEqual({ layer: "opencode-sdk", kind: "fallback", via: "fallback" });
+
+    expect(() =>
+      planExecutionCascade({ ...input, engines: { reviewer: engines.reviewer! }, layers: planLayers() }),
+    ).toThrow(/opencode-sdk.*unavailable/i);
+  });
+
+  test("fails known-unmapped aliases and invalid engines before authorization", () => {
+    let calls = 0;
+    const authorizeTools = () => {
+      calls += 1;
+      return { status: "allowed" as const, policy: "operator" };
+    };
+    const input = baseInput();
+    expect(() =>
+      planExecutionCascade({
+        ...input,
+        authorizeTools,
+        layers: { ...input.layers, current: layer("current", { model: "mapped", tools: ["read"] }) },
+        engines: {
+          ...engines,
+          custom: { selection: { name: "custom", kind: "agent", platform: "gemini" }, defaults: {} },
+        },
+      }),
+    ).not.toThrow();
+    expect(calls).toBe(1);
+
+    expect(() =>
+      planExecutionCascade({
+        ...input,
+        authorizeTools,
+        layers: { ...input.layers, current: layer("current", { engine: "missing", tools: ["read"] }) },
+      }),
+    ).toThrow(/engine.*missing.*configured/i);
+    expect(calls).toBe(1);
+
+    expect(() =>
+      planExecutionCascade({
+        ...input,
+        authorizeTools,
+        layers: { ...input.layers, current: layer("current", { engine: "custom", model: "mapped", tools: ["read"] }) },
+        engines: {
+          ...engines,
+          custom: { selection: { name: "custom", kind: "agent", platform: "gemini" }, defaults: {} },
+        },
+      }),
+    ).toThrow(/known alias.*mapped.*gemini/i);
+    expect(calls).toBe(1);
+  });
+
+  test("preserves omitted versus explicit null, zero, and empty request fields", () => {
+    const input = baseInput();
+    const makePlan = (values: Record<string, unknown>) =>
+      planExecutionCascade({
+        ...input,
+        layers: { installation: layer("installation", { engine: "reviewer" }), current: layer("current", values) },
+      });
+    const make = (values: Record<string, unknown>) => canonicalResolvedExecutionRequest(makePlan(values).request);
+
+    expect(make({})).not.toBe(make({ model: null }));
+    expect(make({})).not.toBe(make({ timeout: 0 }));
+    expect(make({})).not.toBe(make({ outputSchema: {} }));
+    expect(make({})).not.toBe(make({ tools: [] }));
+    // An empty inference overlay does not erase farther leaf defaults, but its
+    // explicit presence remains visible in the plan's container provenance.
+    expect(canonicalResolvedExecutionPlan(makePlan({}))).not.toBe(
+      canonicalResolvedExecutionPlan(makePlan({ inference: {} })),
+    );
+    expect(make({})).not.toBe(make({ environment: {} }));
+  });
+
+  test("produces byte-equivalent normalized requests for equivalent direct, task, and workflow inputs", () => {
+    const canonical = (["direct", "task", "workflow"] as const).map((invocationKind) => {
+      const input = baseInput();
+      return canonicalResolvedExecutionRequest(
+        planExecutionCascade({
+          ...input,
+          invocationKind,
+          authorizeTools: () => ({ status: "allowed", policy: "operator-tools-v1" }),
+        }).request,
+      );
+    });
+    expect(new Set(canonical).size).toBe(1);
+  });
+
+  test("keeps provenance canonical and free of prompt, environment, model, and policy values", () => {
+    const secret = "AKM_SECRET_PROVENANCE_SENTINEL";
+    const input = baseInput();
+    const plan = planExecutionCascade({
+      ...input,
+      layers: {
+        ...input.layers,
+        current: layer("current", {
+          model: `vendor/${secret}`,
+          environment: { TOKEN: secret },
+          tools: ["read"],
+        }),
+      },
+      authorizeTools: () => ({ status: "allowed", policy: "operator-tools-v1" }),
+    });
+    const provenance = JSON.stringify(plan.provenance);
+    expect(provenance).not.toContain(secret);
+    expect(provenance).not.toContain("Run review");
+    expect(canonicalResolvedExecutionPlan(plan)).toBe(canonicalResolvedExecutionPlan(plan));
+  });
+
+  test("removes provenance for nested inference leaves replaced by a nearer scalar", () => {
+    const input = baseInput();
+    const plan = planExecutionCascade({
+      ...input,
+      layers: {
+        ...input.layers,
+        current: layer("current", { inference: { nested: "replace-object" }, tools: [] }),
+      },
+    });
+    expect(plan.request.inference?.nested).toBe("replace-object");
+    expect(plan.provenance["inference.nested"]).toEqual({
+      layer: "current",
+      kind: "current",
+      via: "explicit",
+    });
+    expect(Object.keys(plan.provenance).some((key) => key.startsWith("inference.nested."))).toBe(false);
+  });
+
+  test("keeps an explicit null engine selection distinguishable from omission while applying the same fallback", () => {
+    const input = baseInput();
+    const omitted = planExecutionCascade({ ...input, layers: planLayers() });
+    const cleared = planExecutionCascade({
+      ...input,
+      layers: {
+        installation: layer("installation", {}),
+        command: layer("command", { engine: null, tools: [] }),
+      },
+    });
+    expect(omitted.request.engine.name).toBe("opencode-sdk");
+    expect(cleared.request.engine.name).toBe("opencode-sdk");
+    expect(canonicalResolvedExecutionPlan(cleared)).not.toBe(canonicalResolvedExecutionPlan(omitted));
+    expect(cleared.provenance["engine.requested"]).toEqual({
+      layer: "command",
+      kind: "command",
+      via: "explicit",
+    });
+    expect(omitted.provenance).not.toHaveProperty("engine.requested");
+  });
+
+  test("applies the selected agent consistently to the resolved persona", () => {
+    const input = baseInput();
+    const cleared = planExecutionCascade({
+      ...input,
+      layers: { ...input.layers, current: layer("current", { agent: null, tools: [] }) },
+    });
+    expect(cleared.selectedAgent).toBeNull();
+    expect(cleared.request.persona).toBeNull();
+    expect(cleared.provenance).not.toHaveProperty("persona");
+
+    const mismatched = source("persona", "other");
+    if (mismatched.kind !== "persona") throw new Error("fixture persona kind drifted");
+    expect(() =>
+      planExecutionCascade({
+        ...input,
+        persona: createResolvedPersona(mismatched),
+        layers: {
+          ...input.layers,
+          current: layer("current", { agent: "fixture//agents/reviewer", tools: [] }),
+        },
+      }),
+    ).toThrow(/selected agent.*persona/i);
+
+    const nativeSelector = planExecutionCascade({
+      ...input,
+      persona: null,
+      layers: { ...input.layers, current: layer("current", { agent: "native-reviewer", tools: [] }) },
+    });
+    expect(nativeSelector.selectedAgent).toBe("native-reviewer");
+    expect(nativeSelector.request.persona).toBeNull();
+  });
+
+  test("validates the entire request before invoking machine/user policy", () => {
+    let calls = 0;
+    const input = baseInput();
+    expect(() =>
+      planExecutionCascade({
+        ...input,
+        layers: { ...input.layers, current: layer("current", { timeout: -1, tools: ["read"] }) },
+        authorizeTools: () => {
+          calls += 1;
+          return { status: "allowed", policy: "operator" };
+        },
+      }),
+    ).toThrow(/timeout/i);
+    expect(calls).toBe(0);
+
+    const withoutMap = { ...input } as Record<string, unknown>;
+    delete withoutMap.modelMap;
+    expect(() => planExecutionCascade(withoutMap as never)).toThrow(/modelMap.*required/i);
+
+    const withoutSelectedModel = {
+      ...input,
+      layers: { installation: layer("installation", { engine: "reviewer", tools: [] }) },
+    } as Record<string, unknown>;
+    delete withoutSelectedModel.modelMap;
+    expect(() => planExecutionCascade(withoutSelectedModel as never)).toThrow(/modelMap.*required/i);
+  });
+
+  test("rejects unknown fields and accessors without reading them or mutating inputs", () => {
+    let reads = 0;
+    const hostile = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(hostile, "engine", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return "reviewer";
+      },
+    });
+    expect(() =>
+      planExecutionCascade({
+        ...baseInput(),
+        layers: { installation: layer("installation", hostile) },
+      }),
+    ).toThrow(/accessor|data property/i);
+    expect(reads).toBe(0);
+
+    expect(() =>
+      planExecutionCascade({
+        ...baseInput(),
+        layers: { installation: layer("installation", { engine: "reviewer", capabilities: {} }) },
+      }),
+    ).toThrow(/capabilities/i);
+  });
+
+  test("rejects prototype-like engine keys and unsafe provenance identifiers", () => {
+    const input = baseInput();
+    expect(() =>
+      planExecutionCascade({
+        ...input,
+        engines: {
+          ...engines,
+          constructor: { selection: { name: "constructor", kind: "agent" as const, platform: "claude" } },
+        },
+      }),
+    ).toThrow(/engines\.constructor|engine name|canonical/i);
+
+    expect(() =>
+      planExecutionCascade({
+        ...input,
+        layers: { ...input.layers, current: layer("hidden\u202E-layer", { tools: [] }) },
+      }),
+    ).toThrow(/stable NFC identifier|control|format/i);
+
+    expect(() =>
+      planExecutionCascade({
+        ...input,
+        layers: { ...input.layers, current: layer("broken-\ud800", { tools: [] }) },
+      }),
+    ).toThrow(/stable NFC identifier|Unicode/i);
+  });
+
+  test("applies engine-local model compatibility before global and file mappings", () => {
+    const input = baseInput();
+    const plan = planExecutionCascade({
+      ...input,
+      engines: {
+        ...engines,
+        reviewer: {
+          ...engines.reviewer!,
+          modelCompatibility: {
+            engineAliases: { reasoning: "engine-local-exact" },
+            globalAliases: { reasoning: { claude: "global-exact" } },
+          },
+        },
+      },
+      layers: { ...input.layers, current: layer("current", { model: "reasoning", tools: [] }) },
+    });
+    expect(plan.request.model).toEqual({
+      input: "reasoning",
+      interpretation: "alias",
+      resolved: "engine-local-exact",
+    });
+    // Compatibility strings supply only the exact model. The file profile's
+    // inference defaults do not leak through a nearer engine-local override.
+    expect(plan.request.inference).not.toHaveProperty("nested.alias");
+  });
+
+  test("rejects accessor-backed policy output without invoking the getter", () => {
+    let reads = 0;
+    const decision = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(decision, "status", { enumerable: true, value: "allowed" });
+    Object.defineProperty(decision, "policy", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return "operator";
+      },
+    });
+    expect(() =>
+      planExecutionCascade({
+        ...baseInput(),
+        authorizeTools: () => decision as never,
+      }),
+    ).toThrow(/accessor|data property/i);
+    expect(reads).toBe(0);
+  });
+});
+
+function planLayers() {
+  return { installation: layer("installation", {}), command: layer("command", { tools: [] }) };
+}
