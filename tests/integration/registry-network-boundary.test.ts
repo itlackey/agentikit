@@ -127,6 +127,30 @@ describe("registry outbound request boundary", () => {
     expect(transportCalls).toBe(0);
   });
 
+  test("does not start transport when a late resolver stalls past the absolute attempt deadline", async () => {
+    let transportCalls = 0;
+    await expect(
+      fetchRegistryResponse("https://registry.example/index.json", undefined, {
+        policy: PUBLIC_POLICY,
+        timeoutMs: 5,
+        retries: 0,
+        resolveHostname: async () => {
+          const releaseAt = Date.now() + 25;
+          while (Date.now() < releaseAt) {
+            // Deliberately occupy the event loop so the resolver settles before
+            // the overdue timeout callback gets a chance to run.
+          }
+          return ["93.184.216.34"];
+        },
+        requestPinnedForTesting: async () => {
+          transportCalls += 1;
+          return new Response("unexpected");
+        },
+      }),
+    ).rejects.toThrow(/deadline expired before transport/i);
+    expect(transportCalls).toBe(0);
+  });
+
   test("aborts a pending DNS resolution without starting transport", async () => {
     const controller = new AbortController();
     let transportCalls = 0;
@@ -318,7 +342,7 @@ describe("registry outbound request boundary", () => {
         id: "github",
         name: "github",
         description: "",
-        url: "https://github.com/safe-owner/safe-repo.git",
+        url: "https://github.com/safe-owner/safe-repo",
         installType: "git",
         source: "registry",
         defaultSelected: false,
@@ -347,7 +371,7 @@ describe("registry outbound request boundary", () => {
         id: "itlackey/akm-stash",
         name: "official",
         description: "",
-        url: "https://github.com/itlackey/akm-stash.git",
+        url: "https://github.com/itlackey/akm-stash",
         installType: "git",
         source: "registry",
         defaultSelected: true,

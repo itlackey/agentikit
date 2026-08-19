@@ -14,6 +14,7 @@ import { DEFAULT_CONFIG, getEffectiveRegistries, getSources } from "../../core/c
 import { readLockfile } from "../../integrations/lockfile";
 import { prompt, promptOrBack } from "../prompt";
 import { loadSetupStashes } from "../registry-stash-loader";
+import { canonicalSetupGitUrl } from "../source-identity";
 
 function configuredSourceKey(source: SourceConfigEntry): string {
   return `${source.type}:${source.path ?? source.url ?? source.name ?? "unknown"}`;
@@ -21,6 +22,15 @@ function configuredSourceKey(source: SourceConfigEntry): string {
 
 function configuredSourceTarget(source: SourceConfigEntry): string | undefined {
   return source.type === "npm" ? source.path : source.url;
+}
+
+function configuredSourceIdentity(source: SourceConfigEntry): string | undefined {
+  const target = configuredSourceTarget(source);
+  return source.type === "git" && target ? canonicalSetupGitUrl(target) : target;
+}
+
+function recommendedSourceIdentity(entry: { installType: "git" | "npm"; url: string }): string {
+  return entry.installType === "git" ? canonicalSetupGitUrl(entry.url) : entry.url;
 }
 
 type ConfiguredSourceOption = {
@@ -94,9 +104,17 @@ export async function stepAdditionalSources(currentSources: SourceConfigEntry[])
       );
       if (name === null) continue;
 
-      const entry: SourceConfigEntry = { type: "git", url: url.trim() };
+      const entryUrl = url.trim();
+      const entry: SourceConfigEntry = { type: "git", url: entryUrl };
       if (name.trim()) entry.name = name.trim();
-      if (!sources.some((s) => s.url === entry.url)) {
+      if (
+        !sources.some(
+          (source) =>
+            source.type === "git" &&
+            source.url !== undefined &&
+            canonicalSetupGitUrl(source.url) === canonicalSetupGitUrl(entryUrl),
+        )
+      ) {
         sources.push(entry);
       } else {
         p.log.warn("This URL is already configured.");
@@ -240,19 +258,21 @@ export async function stepAddSources(
   const availableStashes = await loadSetupStashes(registryUrl);
 
   if (availableStashes.length > 0) {
-    const existingUrls = new Set(sources.map(configuredSourceTarget).filter((value): value is string => !!value));
+    const existingTargets = new Set(sources.map(configuredSourceIdentity).filter((value): value is string => !!value));
 
     const stashOptions = availableStashes.map((s) => ({
-      value: s.url,
+      value: recommendedSourceIdentity(s),
       label: s.name,
-      hint: existingUrls.has(s.url) ? `${s.description} (already added)` : s.description || s.source,
+      hint: existingTargets.has(recommendedSourceIdentity(s))
+        ? `${s.description} (already added)`
+        : s.description || s.source,
     }));
 
     // Pre-check: already-installed stashes OR default-selected on fresh install
     const initialValues =
       sources.length > 0
-        ? stashOptions.filter((o) => existingUrls.has(o.value)).map((o) => o.value)
-        : availableStashes.filter((s) => s.defaultSelected).map((s) => s.url);
+        ? stashOptions.filter((o) => existingTargets.has(o.value)).map((o) => o.value)
+        : availableStashes.filter((s) => s.defaultSelected).map(recommendedSourceIdentity);
 
     const selectedUrls = await prompt(() =>
       p.multiselect({
@@ -267,26 +287,27 @@ export async function stepAddSources(
     );
 
     // Add newly selected stashes
-    for (const url of selectedUrls) {
-      if (!existingUrls.has(url)) {
-        const entry = availableStashes.find((s) => s.url === url);
+    for (const target of selectedUrls) {
+      if (!existingTargets.has(target)) {
+        const entry = availableStashes.find((s) => recommendedSourceIdentity(s) === target);
         if (!entry) continue;
         sources.push(
           entry.installType === "npm"
-            ? { type: "npm", path: url, name: entry.name }
-            : { type: "git", url, name: entry.name },
+            ? { type: "npm", path: target, name: entry.name }
+            : { type: "git", url: target, name: entry.name },
         );
-        existingUrls.add(url);
+        existingTargets.add(target);
       }
     }
 
     // Remove deselected stashes that were previously configured
     for (const entry of availableStashes) {
-      if (existingUrls.has(entry.url) && !selectedUrls.includes(entry.url)) {
-        const idx = sources.findIndex((s) => configuredSourceTarget(s) === entry.url);
+      const target = recommendedSourceIdentity(entry);
+      if (existingTargets.has(target) && !selectedUrls.includes(target)) {
+        const idx = sources.findIndex((source) => configuredSourceIdentity(source) === target);
         if (idx !== -1) {
           sources.splice(idx, 1);
-          existingUrls.delete(entry.url);
+          existingTargets.delete(target);
           p.log.info(`Removed ${entry.name}.`);
         }
       }

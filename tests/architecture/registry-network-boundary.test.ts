@@ -13,11 +13,11 @@ const SRC_DIR = path.join(ROOT, "src");
 const REGISTRY_DIR = path.join(ROOT, "src/registry");
 const PINNED_TRANSPORT = path.join(REGISTRY_DIR, "pinned-transport.ts");
 
-function tsFiles(root: string): string[] {
+function sourceFiles(root: string): string[] {
   return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
     const fullPath = path.join(root, entry.name);
-    if (entry.isDirectory()) return tsFiles(fullPath);
-    return entry.isFile() && entry.name.endsWith(".ts") ? [fullPath] : [];
+    if (entry.isDirectory()) return sourceFiles(fullPath);
+    return entry.isFile() && /\.(?:[cm]?[jt]s)$/.test(entry.name) ? [fullPath] : [];
   });
 }
 
@@ -212,9 +212,11 @@ function rawHttpCapabilities(source: string, fileName = "probe.ts"): string[] {
     } else {
       return undefined;
     }
-    if (!ts.isIdentifier(owner) || !method) return undefined;
-    const moduleName = namespaces.get(owner.text);
-    return moduleName && moduleMethods.get(moduleName)?.has(method) ? `${owner.text}.${method}` : undefined;
+    if (!method) return undefined;
+    const moduleName = ts.isIdentifier(owner) ? namespaces.get(owner.text) : importedModule(owner);
+    return moduleName && moduleMethods.get(moduleName)?.has(method)
+      ? `${owner.getText(sourceFile)}.${method}`
+      : undefined;
   };
 
   const expressionIsCallable = (expression: ts.Expression | undefined): boolean => {
@@ -325,6 +327,9 @@ describe("registry outbound request architecture", () => {
         import bareHttps from "https";
         const { request: bareRequest } = require("http");
         const bareTls = process.getBuiltinModule("tls");
+        require("node:https").request({});
+        (await import("node:https")).request({});
+        process.getBuiltinModule("node:net").connect({});
         alias({});
         dynamic.request({});
         http2.connect("https://example.test");
@@ -335,6 +340,7 @@ describe("registry outbound request architecture", () => {
         bareTls.connect({});
       `),
     ).toEqual([
+      'call:(await import("node:https")).request',
       "call:alias",
       "call:bareHttps.request",
       "call:bareRequest",
@@ -343,12 +349,25 @@ describe("registry outbound request architecture", () => {
       "call:destructuredRequest",
       "call:dynamic.request",
       "call:http2.connect",
+      'call:process.getBuiltinModule("node:net").connect',
+      'call:require("node:https").request',
+    ]);
+
+    const javascriptFixtures = sourceFiles(path.join(ROOT, "tests/fixtures/registry-network"));
+    const directExpressionFixture = javascriptFixtures.find((file) => file.endsWith("raw-direct-expression.mjs"));
+    expect(directExpressionFixture).toBeDefined();
+    expect(
+      rawHttpCapabilities(fs.readFileSync(directExpressionFixture as string, "utf8"), directExpressionFixture),
+    ).toEqual([
+      'call:(await import("node:https")).request',
+      'call:process.getBuiltinModule("node:net").connect',
+      'call:require("node:https").request',
     ]);
   });
 
   test("registry callers cannot bypass the reusable network boundary", () => {
     const guardedFiles = [
-      ...tsFiles(REGISTRY_DIR),
+      ...sourceFiles(REGISTRY_DIR),
       path.join(ROOT, "src/setup/registry-stash-loader.ts"),
       path.join(ROOT, "src/sources/providers/npm.ts"),
       path.join(ROOT, "src/sources/providers/provider-utils.ts"),
@@ -380,7 +399,7 @@ describe("registry outbound request architecture", () => {
       expect(generatedHelper).toContain(`from "${moduleName}"`);
     }
 
-    const unexpectedCoreTransports = tsFiles(REGISTRY_DIR).flatMap((file) => {
+    const unexpectedCoreTransports = sourceFiles(REGISTRY_DIR).flatMap((file) => {
       if (file === PINNED_TRANSPORT) return [];
       const modules = importedModules(fs.readFileSync(file, "utf8"), file);
       return modules
@@ -421,7 +440,7 @@ describe("registry outbound request architecture", () => {
     const providerUtils = fs.readFileSync(path.join(ROOT, "src/sources/providers/provider-utils.ts"), "utf8");
     expect(providerUtils).toContain("fetchRegistryResponse");
 
-    const archiveCallSites = tsFiles(SRC_DIR).flatMap((file) =>
+    const archiveCallSites = sourceFiles(SRC_DIR).flatMap((file) =>
       callSites(fs.readFileSync(file, "utf8"), "downloadArchive", file).map((site) => ({
         file: path.relative(ROOT, file),
         ...site,

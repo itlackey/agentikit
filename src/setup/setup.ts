@@ -69,6 +69,7 @@ import { detectHarnessConfigs } from "./harness-config-import";
 import { bail, prompt } from "./prompt";
 import { PROVIDER_DEFAULTS } from "./providers";
 import { prepareSemanticSearchAssets } from "./semantic-assets";
+import { canonicalSetupGitUrl } from "./source-identity";
 import { createSetupContext, runSetupSteps, type SetupDraftConfig, type SetupStep } from "./steps";
 import { stepAgentConnection, stepLlm, stepOllama, stepSmallModelConnection } from "./steps/connection";
 import { stepOutputConfig } from "./steps/output";
@@ -317,12 +318,11 @@ function setupSourceDescriptor(source: SourceConfigEntry): BundleConfigEntry | u
 
 function selectsExistingBundle(source: SourceConfigEntry, id: string, bundle: BundleConfigEntry): boolean {
   const configured = bundleEntryToSourceEntry(id, bundle);
-  return (
-    configured !== undefined &&
-    configured.type === source.type &&
-    configured.path === source.path &&
-    configured.url === source.url
-  );
+  const sameUrl =
+    configured?.type === "git" && source.type === "git" && configured.url && source.url
+      ? canonicalSetupGitUrl(configured.url) === canonicalSetupGitUrl(source.url)
+      : configured?.url === source.url;
+  return configured !== undefined && configured.type === source.type && configured.path === source.path && sameUrl;
 }
 
 type NewSetupBundle = {

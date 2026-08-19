@@ -239,6 +239,42 @@ describe("stepAddSources – recommended GitHub repos", () => {
     expect(hub?.type).toBe("git");
   });
 
+  test.each([
+    {
+      label: "live .git recommendation and historical existing URL",
+      existingUrl: "https://github.com/itlackey/akm-stash",
+      recommendedUrl: "https://github.com/itlackey/akm-stash.git",
+    },
+    {
+      label: "fallback no-.git recommendation and suffixed existing URL",
+      existingUrl: "https://github.com/itlackey/akm-stash.git",
+      recommendedUrl: "https://github.com/itlackey/akm-stash",
+    },
+  ])("treats $label as the same source", async ({ existingUrl, recommendedUrl }) => {
+    const canonicalUrl = "https://github.com/itlackey/akm-stash";
+    overrideSeam(_setLoadSetupStashesForTests, async () => [
+      {
+        id: "itlackey/akm-stash",
+        name: "itlackey/akm-stash",
+        description: "official onboarding stash",
+        url: recommendedUrl,
+        installType: "git",
+        source: "registry",
+        defaultSelected: true,
+      },
+    ]);
+    const cfg = {
+      bundles: { "itlackey-akm-stash": { git: existingUrl } },
+    };
+
+    q.multiselects.push([`git:${existingUrl}`], [canonicalUrl]);
+    q.selects.push("done");
+
+    const result = await stepAddSources(cfg as never);
+    expect(q.multiselectConfigs[1]?.initialValues).toEqual([canonicalUrl]);
+    expect(result).toEqual([{ type: "git", url: existingUrl, name: "itlackey-akm-stash" }]);
+  });
+
   test("shows existing configured sources as a toggle list before recommendations", async () => {
     const cfg = {
       bundles: {

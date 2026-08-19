@@ -110,13 +110,23 @@ async function requestRegistryHop(
     const attemptDeadline = Date.now() + options.timeoutMs;
     const allowPrivate = privateNetworkAllowed(url, options);
     const addresses = await validatedRegistryAddresses(url, options, allowPrivate, options.timeoutMs, init?.signal);
+    if (Date.now() >= attemptDeadline) {
+      throw new RegistryNetworkError(
+        `Registry request to ${url.hostname} attempt deadline expired before transport could start`,
+      );
+    }
     const address = addresses[attempt % addresses.length];
     if (!address) {
       throw new RegistryNetworkError(`Refusing registry request to ${url.hostname}: no validated address available`);
     }
 
     try {
-      const remainingMs = Math.max(1, attemptDeadline - Date.now());
+      const remainingMs = attemptDeadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new RegistryNetworkError(
+          `Registry request to ${url.hostname} attempt deadline expired before transport could start`,
+        );
+      }
       const response = await transport(url, address, init, remainingMs);
       if (attempt < maxRetries && shouldRetry(response.status)) {
         const delay = retryDelay(response, attempt);

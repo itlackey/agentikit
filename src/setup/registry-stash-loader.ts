@@ -36,7 +36,7 @@ export const DEFAULT_SELECTED_STASH_IDS: readonly string[] = ["itlackey/akm-stas
 const AUTHENTICATED_DEFAULT_TARGETS: Readonly<Record<string, Pick<SetupBundleEntry, "installType" | "url">>> = {
   "itlackey/akm-stash": {
     installType: "git",
-    url: "https://github.com/itlackey/akm-stash.git",
+    url: "https://github.com/itlackey/akm-stash",
   },
 };
 
@@ -180,7 +180,7 @@ function setupInstallTarget(source: unknown, ref: unknown): Pick<SetupBundleEntr
       if (parsed.source !== "github") return undefined;
       return {
         installType: "git",
-        url: `https://github.com/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}.git`,
+        url: `https://github.com/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}`,
       };
     }
   } catch {
