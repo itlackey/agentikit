@@ -67,6 +67,7 @@ export interface TestResolvedRequestInput {
     arguments?: string;
     source?: TestSourceIdentity | null;
   };
+  agent?: string | null;
   persona?: {
     content: string;
     source?: TestSourceIdentity | null;
@@ -98,6 +99,7 @@ export interface TestNormalizedResolvedRequest {
     arguments: string;
     source: TestSourceIdentity | null;
   };
+  agent: string | null;
   persona: {
     content: string;
     source: TestSourceIdentity | null;
@@ -144,6 +146,7 @@ export function normalizeResolvedRequestForTest(input: TestResolvedRequestInput)
       arguments: input.command.arguments ?? "",
       source: input.command.source ? (sortJson(input.command.source) as unknown as TestSourceIdentity) : null,
     },
+    agent: input.agent ?? null,
     persona: input.persona
       ? {
           content: input.persona.content,
@@ -185,6 +188,7 @@ export function projectResolvedExecutionRequestForTest(request: ResolvedExecutio
       ...(Object.hasOwn(request.command, "argumentInput") ? { arguments: request.command.argumentInput } : {}),
       source: request.command.source ? { ...request.command.source } : null,
     },
+    ...(Object.hasOwn(request, "agent") ? { agent: request.agent } : {}),
     persona: request.persona ? { content: request.persona.content, source: { ...request.persona.source } } : null,
     engine: {
       name: request.engine.name,

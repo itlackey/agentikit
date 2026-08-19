@@ -165,12 +165,12 @@ describe("common execution cascade resolver", () => {
       kind: "command",
       via: "explicit",
     });
-    expect(plan.provenance["inference.effort"]).toEqual({
+    expect(plan.provenance["/inference/effort"]).toEqual({
       layer: "fixture//commands/review",
       kind: "command",
       via: "explicit",
     });
-    expect(plan.provenance["inference.nested.alias"]).toEqual({
+    expect(plan.provenance["/inference/nested/alias"]).toEqual({
       layer: "fixture//commands/review",
       kind: "command",
       via: "model-alias",
@@ -373,12 +373,12 @@ describe("common execution cascade resolver", () => {
       },
     });
     expect(plan.request.inference?.nested).toBe("replace-object");
-    expect(plan.provenance["inference.nested"]).toEqual({
+    expect(plan.provenance["/inference/nested"]).toEqual({
       layer: "current",
       kind: "current",
       via: "explicit",
     });
-    expect(Object.keys(plan.provenance).some((key) => key.startsWith("inference.nested."))).toBe(false);
+    expect(Object.keys(plan.provenance).some((key) => key.startsWith("/inference/nested/"))).toBe(false);
   });
 
   test("keeps an explicit null engine selection distinguishable from omission while applying the same fallback", () => {
@@ -431,7 +431,117 @@ describe("common execution cascade resolver", () => {
       layers: { ...input.layers, current: layer("current", { agent: "native-reviewer", tools: [] }) },
     });
     expect(nativeSelector.selectedAgent).toBe("native-reviewer");
+    expect(nativeSelector.request.agent).toBe("native-reviewer");
     expect(nativeSelector.request.persona).toBeNull();
+    expect(requireAuthorizedExecutionPlan(nativeSelector).agent).toBe("native-reviewer");
+
+    const differentNativeSelector = planExecutionCascade({
+      ...input,
+      persona: null,
+      layers: { ...input.layers, current: layer("current", { agent: "different-native-reviewer", tools: [] }) },
+    });
+    expect(canonicalResolvedExecutionRequest(nativeSelector.request)).not.toBe(
+      canonicalResolvedExecutionRequest(differentNativeSelector.request),
+    );
+  });
+
+  test("expands every model alias at its selecting layer before sibling and nearer inference overlays", () => {
+    const layeredMap = mergeModelMapLayers(
+      parseModelMapLayer(
+        JSON.stringify({
+          version: 1,
+          aliases: {
+            far: {
+              claude: { model: "far-exact", inference: { far: 1, nested: { far: true, replace: "far" } } },
+            },
+            near: {
+              claude: { model: "near-exact", inference: { near: 2, nested: { near: true, replace: "near" } } },
+            },
+          },
+        }),
+        "layered cascade models.json",
+      ),
+    );
+    const input = baseInput();
+    const plan = (nearModel: string) =>
+      planExecutionCascade({
+        ...input,
+        modelMap: layeredMap,
+        layers: {
+          installation: layer("installation", { engine: "reviewer", model: "far" }),
+          current: layer("current", { model: nearModel, inference: { nested: { current: true } }, tools: [] }),
+        },
+      });
+
+    const exact = plan("vendor/exact");
+    expect(exact.request.model).toEqual({
+      input: "vendor/exact",
+      interpretation: "exact",
+      resolved: "vendor/exact",
+    });
+    expect(exact.request.inference).toEqual({
+      far: 1,
+      effort: "low",
+      temperature: 0.7,
+      nested: { far: true, engine: true, replace: "engine", current: true },
+    });
+
+    const alias = plan("near");
+    expect(alias.request.model).toEqual({ input: "near", interpretation: "alias", resolved: "near-exact" });
+    expect(alias.request.inference).toEqual({
+      far: 1,
+      near: 2,
+      effort: "low",
+      temperature: 0.7,
+      nested: { far: true, engine: true, near: true, replace: "near", current: true },
+    });
+    expect(alias.provenance["/inference/far"]).toEqual({
+      layer: "installation",
+      kind: "installation",
+      via: "model-alias",
+    });
+    expect(alias.provenance["/inference/near"]).toEqual({
+      layer: "current",
+      kind: "current",
+      via: "model-alias",
+    });
+  });
+
+  test("uses segment-safe JSON Pointer provenance for inference keys", () => {
+    const input = baseInput();
+    const plan = planExecutionCascade({
+      ...input,
+      layers: {
+        installation: layer("installation", {
+          engine: "reviewer",
+          inference: { "a.b": 1, "slash/key": { "tilde~key": true } },
+        }),
+        current: layer("current", { inference: { a: "near" }, tools: [] }),
+      },
+    });
+    expect(plan.request.inference).toEqual({
+      "a.b": 1,
+      "slash/key": { "tilde~key": true },
+      a: "near",
+      effort: "low",
+      temperature: 0.7,
+      nested: { engine: true, replace: "engine" },
+    });
+    expect(plan.provenance["/inference/a.b"]).toEqual({
+      layer: "installation",
+      kind: "installation",
+      via: "explicit",
+    });
+    expect(plan.provenance["/inference/slash~1key/tilde~0key"]).toEqual({
+      layer: "installation",
+      kind: "installation",
+      via: "explicit",
+    });
+    expect(plan.provenance["/inference/a"]).toEqual({
+      layer: "current",
+      kind: "current",
+      via: "explicit",
+    });
   });
 
   test("validates the entire request before invoking machine/user policy", () => {
@@ -485,6 +595,38 @@ describe("common execution cascade resolver", () => {
         layers: { installation: layer("installation", { engine: "reviewer", capabilities: {} }) },
       }),
     ).toThrow(/capabilities/i);
+  });
+
+  test("validates branded command, persona, and model-map inputs before dereferencing them", () => {
+    const input = baseInput();
+    for (const field of ["command", "persona"] as const) {
+      let reads = 0;
+      const hostile = Object.create(null) as Record<string, unknown>;
+      Object.defineProperty(hostile, "source", {
+        enumerable: true,
+        get() {
+          reads += 1;
+          return null;
+        },
+      });
+      expect(() => planExecutionCascade({ ...input, [field]: hostile } as never)).toThrow(
+        /constructed by the execution boundary/,
+      );
+      expect(reads).toBe(0);
+    }
+
+    let modelMapReads = 0;
+    const hostileMap = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(hostileMap, "version", { enumerable: true, value: 1 });
+    Object.defineProperty(hostileMap, "aliases", {
+      enumerable: true,
+      get() {
+        modelMapReads += 1;
+        return {};
+      },
+    });
+    expect(() => planExecutionCascade({ ...input, modelMap: hostileMap } as never)).toThrow(/accessor|data property/);
+    expect(modelMapReads).toBe(0);
   });
 
   test("rejects prototype-like engine keys and unsafe provenance identifiers", () => {

@@ -97,6 +97,8 @@ export interface LoweringNotice {
 export interface ResolvedExecutionRequestV1 {
   readonly schemaVersion: typeof RESOLVED_EXECUTION_SCHEMA_VERSION;
   readonly command: ResolvedCommandContent;
+  /** Exact selected agent ref or native harness selector; null explicitly clears selection. */
+  readonly agent?: string | null;
   readonly persona?: ResolvedPersonaContent | null;
   readonly engine: Readonly<ResolvedEngineSelection>;
   readonly model?: Readonly<ResolvedModelSelection> | null;
@@ -428,6 +430,24 @@ function cloneResolvedPersonaLeaf(input: ResolvedPersonaContent): ResolvedPerson
   return defineBrand(out, resolvedPersonaBrand, resolvedPersonaInstances) as unknown as ResolvedPersonaContent;
 }
 
+/** Revalidate and detach one command leaf before any caller dereferences it. */
+export function cloneResolvedCommandContent(input: ResolvedCommandContent): ResolvedCommandContent {
+  return cloneResolvedCommandLeaf(input);
+}
+
+/** Revalidate and detach one persona leaf before any caller dereferences it. */
+export function cloneResolvedPersonaContent(input: ResolvedPersonaContent): ResolvedPersonaContent {
+  return cloneResolvedPersonaLeaf(input);
+}
+
+function cloneAgentSelector(input: unknown, path: string): string | null {
+  if (input === null) return null;
+  if (typeof input !== "string" || input.length === 0) {
+    throw new TypeError(`${path} must be null or a non-empty string`);
+  }
+  return input;
+}
+
 export type ResolvedExecutionRequestInput = Omit<ResolvedExecutionRequestV1, "schemaVersion">;
 
 /** Validate and freeze one request without normalizing away optional-field presence. */
@@ -437,6 +457,7 @@ export function createResolvedExecutionRequest(input: ResolvedExecutionRequestIn
     record,
     [
       "command",
+      "agent",
       "persona",
       "engine",
       "model",
@@ -466,6 +487,10 @@ export function createResolvedExecutionRequest(input: ResolvedExecutionRequestIn
     runtime: cloneRuntime(runtime as unknown as ResolvedRuntimeSettings),
     notices: Object.freeze(clonedNotices.map((notice, index) => cloneNotice(notice as LoweringNotice, index))),
   };
+  if (Object.hasOwn(record, "agent")) {
+    if (record.agent === undefined) throw new TypeError("agent must be omitted, null, or a selected agent string");
+    out.agent = cloneAgentSelector(record.agent, "agent");
+  }
   if (Object.hasOwn(record, "persona")) {
     if (record.persona !== null && !isResolvedPersona(record.persona)) {
       throw new TypeError("persona must be null or constructed by the execution boundary");
@@ -615,6 +640,7 @@ export function decodeResolvedExecutionRequest(value: unknown): ResolvedExecutio
     [
       "schemaVersion",
       "command",
+      "agent",
       "persona",
       "engine",
       "model",
@@ -641,6 +667,9 @@ export function decodeResolvedExecutionRequest(value: unknown): ResolvedExecutio
     runtime: decodeRuntime(requireOwn(input, "runtime", "resolved execution request")),
     notices: clonedNotices.map(decodeNotice),
   };
+  if (Object.hasOwn(input, "agent")) {
+    request.agent = cloneAgentSelector(input.agent, "resolved execution request.agent");
+  }
   if (Object.hasOwn(input, "persona")) {
     request.persona = input.persona === null ? null : decodeResolvedPersona(input.persona);
   }
@@ -735,6 +764,10 @@ function projectResolvedExecutionWire(request: ResolvedExecutionRequestV1): Reco
     runtime: projectRuntime(request.runtime),
     notices: request.notices.map(projectNotice),
   };
+  if (Object.hasOwn(request, "agent")) {
+    if (request.agent === undefined) throw new TypeError("constructed request agent cannot be undefined");
+    out.agent = request.agent;
+  }
   if (Object.hasOwn(request, "persona")) {
     if (request.persona === undefined) throw new TypeError("constructed request persona cannot be undefined");
     out.persona = request.persona === null ? null : projectPersona(request.persona);

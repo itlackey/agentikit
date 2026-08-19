@@ -21,6 +21,8 @@ import {
 } from "../../execution/record";
 import {
   canonicalResolvedExecutionRequest,
+  cloneResolvedCommandContent,
+  cloneResolvedPersonaContent,
   createResolvedExecutionRequest,
   type ResolvedCommandContent,
   type ResolvedEngineSelection,
@@ -137,6 +139,7 @@ interface SelectedValue<T = unknown> {
 
 const planInstances = new WeakSet<object>();
 const ENGINE_NAME_PATTERN = new RegExp(ENGINE_NAME_PATTERN_SOURCE);
+const MODEL_ALIAS_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const RESERVED_ENGINE_KEYS = new Set(["__proto__", "constructor", "prototype", "tostring"]);
 const CONTROL_OR_LINE_SEPARATOR_PATTERN = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 const FORMAT_CHARACTER_PATTERN = /\p{Cf}/u;
@@ -312,6 +315,45 @@ function normalizeEngines(value: unknown): Readonly<Record<string, NormalizedEng
   return frozenNullPrototypeRecord(entries);
 }
 
+function normalizeModelMap(value: unknown): ResolvedModelMapV1 {
+  const input = record(value, "modelMap");
+  only(input, ["version", "aliases"], "modelMap");
+  if (required(input, "version", "modelMap") !== 1) {
+    throw new TypeError("modelMap.version must be 1");
+  }
+  const aliasesInput = record(required(input, "aliases", "modelMap"), "modelMap.aliases");
+  const aliases: Array<
+    readonly [string, Readonly<Record<string, Readonly<{ model: string; inference?: ExecutionJsonObject | null }>>>]
+  > = [];
+  for (const [alias, rawEngines] of Object.entries(aliasesInput)) {
+    stableIdentifier(alias, `modelMap.aliases.${alias}`);
+    if (!MODEL_ALIAS_PATTERN.test(alias) || RESERVED_ENGINE_KEYS.has(alias.toLowerCase())) {
+      throw new TypeError(`modelMap alias ${JSON.stringify(alias)} is not canonical`);
+    }
+    const engineInput = record(rawEngines, `modelMap.aliases.${alias}`);
+    const profiles: Array<readonly [string, Readonly<{ model: string; inference?: ExecutionJsonObject | null }>]> = [];
+    for (const [engine, rawProfile] of Object.entries(engineInput)) {
+      canonicalEngineName(engine, `modelMap.aliases.${alias}.${engine}`);
+      const profile = record(rawProfile, `modelMap.aliases.${alias}.${engine}`);
+      only(profile, ["model", "inference"], `modelMap.aliases.${alias}.${engine}`);
+      const model = required(profile, "model", `modelMap.aliases.${alias}.${engine}`);
+      if (typeof model !== "string" || model.length === 0 || model.trim() !== model) {
+        throw new TypeError(`modelMap.aliases.${alias}.${engine}.model must be a non-empty exact identifier`);
+      }
+      const normalized: { model: string; inference?: ExecutionJsonObject | null } = { model };
+      if (own(profile, "inference")) {
+        normalized.inference =
+          profile.inference === null
+            ? null
+            : cloneExecutionJsonObject(profile.inference, `modelMap.aliases.${alias}.${engine}.inference`);
+      }
+      profiles.push([engine, Object.freeze(normalized)]);
+    }
+    aliases.push([alias, frozenNullPrototypeRecord(profiles)]);
+  }
+  return Object.freeze({ version: 1, aliases: frozenNullPrototypeRecord(aliases) });
+}
+
 function normalizeLayers(value: unknown): {
   readonly installation: NormalizedLayer;
   readonly agent?: NormalizedLayer;
@@ -436,13 +478,30 @@ function isObject(value: ExecutionJsonValue | undefined): value is ExecutionJson
 
 function deleteInferenceProvenance(fields: Record<string, ExecutionFieldProvenance>): void {
   for (const key of Object.keys(fields)) {
-    if (key === "inference" || key.startsWith("inference.")) delete fields[key];
+    if (key === "/inference" || key.startsWith("/inference/")) delete fields[key];
   }
 }
 
 function deleteInferenceDescendantProvenance(fields: Record<string, ExecutionFieldProvenance>, path: string): void {
   for (const key of Object.keys(fields)) {
-    if (key.startsWith(`${path}.`)) delete fields[key];
+    if (key.startsWith(`${path}/`)) delete fields[key];
+  }
+}
+
+function jsonPointerSegment(value: string): string {
+  return value.replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
+function setInferenceTreeProvenance(
+  value: ExecutionJsonValue,
+  path: string,
+  source: ExecutionFieldProvenance,
+  fields: Record<string, ExecutionFieldProvenance>,
+): void {
+  fields[path] = source;
+  if (!isObject(value)) return;
+  for (const [key, child] of Object.entries(value)) {
+    setInferenceTreeProvenance(child, `${path}/${jsonPointerSegment(key)}`, source, fields);
   }
 }
 
@@ -456,24 +515,23 @@ function mergeInferenceObject(
   const out = new Map<string, ExecutionJsonValue>();
   for (const [key, value] of Object.entries(base)) out.set(key, cloneJsonValue(value, `${prefix}.${key}`));
   for (const [key, value] of Object.entries(overlay)) {
-    const path = `${prefix}.${key}`;
+    const path = `${prefix}/${jsonPointerSegment(key)}`;
     const previous = out.get(key);
-    if (isObject(previous) && isObject(value))
+    if (isObject(previous) && isObject(value)) {
       out.set(key, mergeInferenceObject(previous, value, path, source, fields));
-    else {
+      fields[path] = source;
+    } else {
       deleteInferenceDescendantProvenance(fields, path);
       out.set(key, cloneJsonValue(value, path));
+      setInferenceTreeProvenance(value, path, source, fields);
     }
-    fields[path] = source;
   }
   return Object.freeze(Object.fromEntries(out));
 }
 
 function resolveInference(
   layers: readonly NormalizedLayer[],
-  modelLayerIndex: number,
-  aliasInference: ExecutionJsonObject | null | undefined,
-  aliasSelected: boolean,
+  aliasInferenceByLayer: ReadonlyMap<number, ExecutionJsonObject | null>,
   fields: Record<string, ExecutionFieldProvenance>,
 ): { readonly present: boolean; readonly value?: ExecutionJsonObject | null } {
   let present = false;
@@ -484,22 +542,58 @@ function resolveInference(
     if (value === null) {
       current = null;
       deleteInferenceProvenance(fields);
-      fields.inference = field;
+      fields["/inference"] = field;
       return;
     }
-    fields.inference = field;
-    current = mergeInferenceObject(isObject(current) ? current : Object.freeze({}), value, "inference", field, fields);
+    fields["/inference"] = field;
+    current = mergeInferenceObject(isObject(current) ? current : Object.freeze({}), value, "/inference", field, fields);
   };
 
   for (const [index, layer] of layers.entries()) {
-    if (aliasSelected && index === modelLayerIndex && aliasInference !== undefined) {
-      apply(aliasInference, layer, "model-alias");
+    if (aliasInferenceByLayer.has(index)) {
+      apply(aliasInferenceByLayer.get(index) as ExecutionJsonObject | null, layer, "model-alias");
     }
     if (own(layer.values, "inference")) {
       apply(layer.values.inference as ExecutionJsonObject | null, layer, "explicit");
     }
   }
   return present ? { present: true, value: current as ExecutionJsonObject | null } : { present: false };
+}
+
+function resolveModels(
+  layers: readonly NormalizedLayer[],
+  definition: NormalizedEngineDefinition,
+  modelMap: ResolvedModelMapV1,
+): {
+  readonly selected: SelectedValue<string | null>;
+  readonly resolved?: Readonly<{ input: string; interpretation: "alias" | "exact"; resolved: string }> | null;
+  readonly aliasInferenceByLayer: ReadonlyMap<number, ExecutionJsonObject | null>;
+} {
+  let selected: SelectedValue<string | null> = { present: false, index: -1 };
+  let resolved: Readonly<{ input: string; interpretation: "alias" | "exact"; resolved: string }> | null | undefined;
+  const aliasInferenceByLayer = new Map<number, ExecutionJsonObject | null>();
+  for (const [index, layer] of layers.entries()) {
+    if (!own(layer.values, "model")) continue;
+    const value = layer.values.model;
+    selected = { present: true, value, layer, index };
+    if (value === null) {
+      resolved = null;
+      continue;
+    }
+    if (typeof value !== "string" || value.length === 0) {
+      throw new ConfigError("Resolved model must be null or a non-empty string.", "INVALID_CONFIG_FILE");
+    }
+    const selection = resolveModelMapAlias(value, definition.modelMapKey, modelMap, definition.modelCompatibility);
+    if (selection.interpretation === "alias" && selection.inference !== undefined) {
+      aliasInferenceByLayer.set(index, selection.inference);
+    }
+    resolved = Object.freeze({
+      input: selection.input,
+      interpretation: selection.interpretation,
+      resolved: selection.model,
+    });
+  }
+  return Object.freeze({ selected, resolved, aliasInferenceByLayer });
 }
 
 function normalizeTimeout(value: string | number | null): number | null {
@@ -581,7 +675,9 @@ export function planExecutionCascade(raw: PlanExecutionCascadeInput): ResolvedEx
     ["command", "persona", "layers", "engines", "modelMap", "invocationKind", "authorizeTools"],
     "execution cascade input",
   );
-  const command = required(input, "command", "execution cascade input") as ResolvedCommandContent;
+  const command = cloneResolvedCommandContent(
+    required(input, "command", "execution cascade input") as ResolvedCommandContent,
+  );
   const invocationKind = required(input, "invocationKind", "execution cascade input");
   if (invocationKind !== "direct" && invocationKind !== "task" && invocationKind !== "workflow") {
     throw new TypeError("execution cascade input.invocationKind is invalid");
@@ -591,6 +687,11 @@ export function planExecutionCascade(raw: PlanExecutionCascadeInput): ResolvedEx
   if (personaPresent && input.persona === undefined) {
     throw new TypeError("execution cascade input.persona must be omitted, null, or a resolved persona");
   }
+  let persona = personaPresent
+    ? input.persona === null
+      ? null
+      : cloneResolvedPersonaContent(input.persona as ResolvedPersonaContent)
+    : undefined;
   if (
     own(input, "authorizeTools") &&
     input.authorizeTools !== undefined &&
@@ -601,7 +702,7 @@ export function planExecutionCascade(raw: PlanExecutionCascadeInput): ResolvedEx
 
   const normalizedLayers = normalizeLayers(required(input, "layers", "execution cascade input"));
   const engines = normalizeEngines(required(input, "engines", "execution cascade input"));
-  const modelMap = required(input, "modelMap", "execution cascade input") as ResolvedModelMapV1;
+  const modelMap = normalizeModelMap(required(input, "modelMap", "execution cascade input"));
   const beforeEngine = orderedWithoutEngine(normalizedLayers);
   const selectedEngine = chooseEngine(beforeEngine, engines);
   const engineLayer: NormalizedLayer = Object.freeze({
@@ -624,15 +725,17 @@ export function planExecutionCascade(raw: PlanExecutionCascadeInput): ResolvedEx
   const commandRef = command.source?.ref ?? null;
   fields.command = sourceProvenance(commandRef ?? "inline", "command");
   const selectedAgent = selectNearest<string | null>(layers, "agent");
-  let persona = personaPresent ? (input.persona as ResolvedPersonaContent | null) : undefined;
+  let resolvedAgent: string | null | undefined;
   let requestPersonaPresent = personaPresent;
   if (selectedAgent.present) {
     fields.agent = provenance(selectedAgent.layer as NormalizedLayer);
     if (selectedAgent.value === null) {
+      resolvedAgent = null;
       persona = null;
       requestPersonaPresent = true;
     } else {
       const selector = stableIdentifier(selectedAgent.value, "selected agent");
+      resolvedAgent = selector;
       if (isPortableAgentSelector(selector)) {
         if (!persona || !personaMatchesSelector(selector, persona.source.ref)) {
           throw new ConfigError(
@@ -647,37 +750,13 @@ export function planExecutionCascade(raw: PlanExecutionCascadeInput): ResolvedEx
   const personaRef = persona?.source.ref ?? null;
   if (persona) fields.persona = sourceProvenance(personaRef as string, "agent");
 
-  const selectedModel = selectNearest<string | null>(layers, "model");
-  let resolvedModel:
-    | { readonly input: string; readonly interpretation: "alias" | "exact"; readonly resolved: string }
-    | null
-    | undefined;
-  let aliasInference: ExecutionJsonObject | null | undefined;
-  let aliasSelected = false;
+  const modelResolution = resolveModels(layers, selectedEngine.definition, modelMap);
+  const selectedModel = modelResolution.selected;
   if (selectedModel.present) {
     fields.model = provenance(selectedModel.layer as NormalizedLayer);
-    if (selectedModel.value === null) resolvedModel = null;
-    else {
-      if (typeof selectedModel.value !== "string" || selectedModel.value.length === 0) {
-        throw new ConfigError("Resolved model must be null or a non-empty string.", "INVALID_CONFIG_FILE");
-      }
-      const selection = resolveModelMapAlias(
-        selectedModel.value,
-        selectedEngine.definition.modelMapKey,
-        modelMap,
-        selectedEngine.definition.modelCompatibility,
-      );
-      aliasSelected = selection.interpretation === "alias";
-      aliasInference = selection.inference;
-      resolvedModel = Object.freeze({
-        input: selection.input,
-        interpretation: selection.interpretation,
-        resolved: selection.model,
-      });
-    }
   }
 
-  const inference = resolveInference(layers, selectedModel.index, aliasInference, aliasSelected, fields);
+  const inference = resolveInference(layers, modelResolution.aliasInferenceByLayer, fields);
   const selectedSchema = selectNearest<ExecutionJsonObject | null>(layers, "outputSchema");
   if (selectedSchema.present) fields.outputSchema = provenance(selectedSchema.layer as NormalizedLayer);
   const selectedTools = selectNearest<ToolSelection>(layers, "tools");
@@ -729,8 +808,9 @@ export function planExecutionCascade(raw: PlanExecutionCascadeInput): ResolvedEx
     runtime,
     notices,
   };
+  if (selectedAgent.present) requestInput.agent = resolvedAgent;
   if (requestPersonaPresent) requestInput.persona = persona;
-  if (selectedModel.present) requestInput.model = resolvedModel;
+  if (selectedModel.present) requestInput.model = modelResolution.resolved;
   if (inference.present) requestInput.inference = inference.value;
   if (selectedSchema.present) requestInput.outputSchema = selectedSchema.value;
   if (selectedTools.present) requestInput.tools = tools;
@@ -773,7 +853,7 @@ export function planExecutionCascade(raw: PlanExecutionCascadeInput): ResolvedEx
     request,
     provenance: freezeProvenance(fields),
   };
-  if (selectedAgent.present) planObject.selectedAgent = selectedAgent.value;
+  if (selectedAgent.present) planObject.selectedAgent = resolvedAgent;
   const plan = Object.freeze(planObject) as unknown as ResolvedExecutionPlanV1;
   planInstances.add(plan);
   return plan;

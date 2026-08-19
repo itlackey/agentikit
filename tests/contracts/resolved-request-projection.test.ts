@@ -60,6 +60,7 @@ describe("test-only normalized resolved-request projection", () => {
           hash: "fixture-command-hash",
         },
       },
+      agent: null,
       persona: {
         content: "Review without modifying files.",
         source: {
@@ -96,6 +97,7 @@ describe("test-only normalized resolved-request projection", () => {
     ).toEqual({
       schemaVersion: 1,
       command: { content: "work", arguments: "", source: null },
+      agent: null,
       persona: null,
       engine: { name: "fixture-llm", kind: "llm", platform: null },
       model: null,
