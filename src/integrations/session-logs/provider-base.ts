@@ -41,7 +41,7 @@ export abstract class AbstractSessionLogProvider implements SessionLogHarness {
   protected abstract availabilityRoot(): string;
 
   abstract readEvents(input: { sinceMs: number }): Iterable<SessionEvent>;
-  abstract listSessions(input?: { sinceMs?: number; location?: string }): SessionSummary[];
+  abstract listSessions(input?: { sinceMs?: number; location?: string; isolatedSnapshot?: boolean }): SessionSummary[];
   abstract readSession(ref: SessionRef): SessionData;
 
   isAvailable(): boolean {

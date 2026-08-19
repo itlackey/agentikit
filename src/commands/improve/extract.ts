@@ -1695,7 +1695,10 @@ export function countNewExtractCandidates(_config: AkmConfig, options: CountNewE
           ...(options.stateDbPath ? { stateDbPath: options.stateDbPath } : {}),
           ...(options.readOnly && !options.stateDb ? { skipTracking: true } : {}),
         });
-      const candidates = harness.listSessions({ sinceMs });
+      const candidates = harness.listSessions({
+        sinceMs,
+        ...(options.readOnly ? { isolatedSnapshot: true } : {}),
+      });
       if (candidates.length === 0) continue;
 
       // A dry planner with no pre-existing state database has no seen-session

@@ -142,7 +142,7 @@ export class ClaudeCodeProvider extends AbstractSessionLogProvider implements Se
     }
   }
 
-  listSessions(input: { sinceMs?: number; location?: string } = {}): SessionSummary[] {
+  listSessions(input: { sinceMs?: number; location?: string; isolatedSnapshot?: boolean } = {}): SessionSummary[] {
     const root = input.location ?? claudeProjectsDir();
     return this.listSessionsFromFiles({
       sinceMs: input.sinceMs ?? 0,

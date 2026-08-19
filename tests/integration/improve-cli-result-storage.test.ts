@@ -17,6 +17,7 @@ const disposers: Array<{ cleanup: () => void }> = [];
 const repoRoot = path.resolve(import.meta.dir, "..", "..");
 const cliPath = path.join(repoRoot, "src", "cli.ts");
 const improveCliPath = path.join(repoRoot, "src", "commands", "improve", "improve-cli.ts");
+const sqliteSnapshotPath = path.join(repoRoot, "src", "storage", "sqlite-read-snapshot.ts");
 
 function makeStashDir(): string {
   const stash: SandboxedDir = sandboxMakeStashDir();
@@ -273,86 +274,101 @@ describe("akm improve CLI result storage", () => {
     expect(snapshotRoots(result.roots)).toEqual(result.artifactBefore);
   });
 
-  test("SIGTERM creates no artifact and never persists a dry-run result", async () => {
-    const data = sandboxMakeStashDir();
-    const cache = sandboxMakeStashDir();
-    const config = sandboxMakeStashDir();
-    const state = sandboxMakeStashDir();
-    disposers.push(data, cache, config, state);
-    writeTestConfig(config.dir);
-    const memories = path.join(stashDir, "memories");
-    for (let index = 0; index < 5_000; index++) {
-      fs.writeFileSync(path.join(memories, `signal-${index}.md`), `---\ndescription: signal ${index}\n---\n\nbody\n`);
-    }
-    const roots = [cache.dir, config.dir, data.dir, state.dir, stashDir];
-    const before = snapshotRoots(roots);
-    const preload = sandboxMakeStashDir();
-    disposers.push(preload);
-    const preloadPath = path.join(preload.dir, "signal-ready.mjs");
-    const wrapperPath = path.join(preload.dir, "in-flight-improve.mjs");
-    fs.writeFileSync(
-      preloadPath,
-      [
-        `const originalOnce = process.once;`,
-        `const installed = new Set();`,
-        `process.once = function (event, listener) {`,
-        `  const result = originalOnce.call(this, event, listener);`,
-        `  if (event === "SIGTERM" || event === "SIGINT" || event === "SIGHUP") installed.add(event);`,
-        `  if (installed.size === 3) {`,
-        `    installed.clear();`,
-        `    queueMicrotask(() => process.stderr.write(${JSON.stringify(`${SIGNAL_HANDLERS_READY}\n`)}));`,
-        `  }`,
-        `  return result;`,
-        `};`,
-      ].join("\n"),
-    );
-    fs.writeFileSync(
-      wrapperPath,
-      [
-        `import { _setAkmImproveForTests } from ${JSON.stringify(improveCliPath)};`,
-        `_setAkmImproveForTests(() => new Promise(() => {}));`,
-        `process.env.AKM_NODE_ENTRY = "1";`,
-        `await import(${JSON.stringify(cliPath)});`,
-      ].join("\n"),
-    );
-    const child = spawn("bun", ["--preload", preloadPath, wrapperPath, "improve", "--dry-run"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
-        AKM_BUNDLE_DIR: stashDir,
-        XDG_CACHE_HOME: cache.dir,
-        XDG_CONFIG_HOME: config.dir,
-        XDG_DATA_HOME: data.dir,
-        XDG_STATE_HOME: state.dir,
-      },
+  for (const { signal, code } of [
+    { signal: "SIGTERM", code: 143 },
+    { signal: "SIGINT", code: 130 },
+    { signal: "SIGHUP", code: 129 },
+  ] as const) {
+    test(`${signal} removes in-flight SQLite read snapshots and persists no dry-run result`, async () => {
+      const data = sandboxMakeStashDir();
+      const cache = sandboxMakeStashDir();
+      const config = sandboxMakeStashDir();
+      const state = sandboxMakeStashDir();
+      const snapshotTemp = sandboxMakeStashDir();
+      disposers.push(data, cache, config, state, snapshotTemp);
+      writeTestConfig(config.dir);
+      const snapshotSourcePath = path.join(snapshotTemp.dir, "source.db");
+      const snapshotSource = new Database(snapshotSourcePath);
+      snapshotSource.exec("CREATE TABLE held(value TEXT); INSERT INTO held VALUES ('preserve')");
+      snapshotSource.close();
+      const roots = [cache.dir, config.dir, data.dir, state.dir, stashDir];
+      const before = snapshotRoots(roots);
+      const preload = sandboxMakeStashDir();
+      disposers.push(preload);
+      const preloadPath = path.join(preload.dir, "signal-ready.mjs");
+      const wrapperPath = path.join(preload.dir, "in-flight-improve.mjs");
+      fs.writeFileSync(
+        preloadPath,
+        [
+          `const originalOnce = process.once;`,
+          `const installed = new Set();`,
+          `process.once = function (event, listener) {`,
+          `  const result = originalOnce.call(this, event, listener);`,
+          `  if (event === "SIGTERM" || event === "SIGINT" || event === "SIGHUP") installed.add(event);`,
+          `  if (installed.size === 3) {`,
+          `    installed.clear();`,
+          `    queueMicrotask(() => process.stderr.write(${JSON.stringify(`${SIGNAL_HANDLERS_READY}\n`)}));`,
+          `  }`,
+          `  return result;`,
+          `};`,
+        ].join("\n"),
+      );
+      fs.writeFileSync(
+        wrapperPath,
+        [
+          `import { _setAkmImproveForTests } from ${JSON.stringify(improveCliPath)};`,
+          `import { openSqliteReadSnapshot } from ${JSON.stringify(sqliteSnapshotPath)};`,
+          `_setAkmImproveForTests(async () => {`,
+          `  const db = openSqliteReadSnapshot(${JSON.stringify(snapshotSourcePath)});`,
+          `  try { await new Promise(() => {}); } finally { db?.close(); }`,
+          `  throw new Error("unreachable");`,
+          `});`,
+          `process.env.AKM_NODE_ENTRY = "1";`,
+          `await import(${JSON.stringify(cliPath)});`,
+        ].join("\n"),
+      );
+      const child = spawn("bun", ["--preload", preloadPath, wrapperPath, "improve", "--dry-run"], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+          AKM_BUNDLE_DIR: stashDir,
+          XDG_CACHE_HOME: cache.dir,
+          XDG_CONFIG_HOME: config.dir,
+          XDG_DATA_HOME: data.dir,
+          XDG_STATE_HOME: state.dir,
+          TMPDIR: snapshotTemp.dir,
+        },
+      });
+      const stderrChunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`CLI did not install ${signal} handlers in time`)), 10_000);
+        const onData = (chunk: Buffer) => {
+          stderrChunks.push(Buffer.from(chunk));
+          if (!Buffer.concat(stderrChunks).toString("utf8").includes(SIGNAL_HANDLERS_READY)) return;
+          clearTimeout(timeout);
+          child.off("close", onClose);
+          resolve();
+        };
+        const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+          clearTimeout(timeout);
+          reject(new Error(`CLI exited before installing ${signal} handlers (code=${code}, signal=${signal})`));
+        };
+        child.stderr.on("data", onData);
+        child.once("close", onClose);
+      });
+      expect(fs.readdirSync(snapshotTemp.dir).some((entry) => entry.startsWith("akm-sqlite-read-"))).toBe(true);
+      child.kill(signal);
+      const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+        child.once("close", (code, signal) => resolve({ code, signal }));
+      });
+      expect(exit.code === code || exit.signal === signal).toBe(true);
+      const stderr = Buffer.concat(stderrChunks).toString("utf8");
+      expect(stderr).toContain(SIGNAL_HANDLERS_READY);
+      if (exit.code === code && signal !== "SIGHUP") expect(stderr).toContain("dry-run state was not persisted");
+      expect(readImproveRuns(data.dir)).toEqual([]);
+      expect(snapshotRoots(roots)).toEqual(before);
+      expect(fs.readdirSync(snapshotTemp.dir).filter((entry) => entry.startsWith("akm-sqlite-read-"))).toEqual([]);
     });
-    const stderrChunks: Buffer[] = [];
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("CLI did not install SIGTERM handlers in time")), 10_000);
-      const onData = (chunk: Buffer) => {
-        stderrChunks.push(Buffer.from(chunk));
-        if (!Buffer.concat(stderrChunks).toString("utf8").includes(SIGNAL_HANDLERS_READY)) return;
-        clearTimeout(timeout);
-        child.off("close", onClose);
-        resolve();
-      };
-      const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
-        clearTimeout(timeout);
-        reject(new Error(`CLI exited before installing SIGTERM handlers (code=${code}, signal=${signal})`));
-      };
-      child.stderr.on("data", onData);
-      child.once("close", onClose);
-    });
-    child.kill("SIGTERM");
-    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-      child.once("close", (code, signal) => resolve({ code, signal }));
-    });
-    expect(exit.code === 143 || exit.signal === "SIGTERM").toBe(true);
-    const stderr = Buffer.concat(stderrChunks).toString("utf8");
-    expect(stderr).toContain(SIGNAL_HANDLERS_READY);
-    if (exit.code === 143) expect(stderr).toContain("dry-run state was not persisted");
-    expect(readImproveRuns(data.dir)).toEqual([]);
-    expect(snapshotRoots(roots)).toEqual(before);
-  });
+  }
 });

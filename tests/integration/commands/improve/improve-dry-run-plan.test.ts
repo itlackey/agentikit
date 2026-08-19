@@ -23,6 +23,7 @@ import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/im
 import { getDbPath } from "../../../../src/core/paths";
 import { getStateDbPath } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
+import { OpenCodeProvider } from "../../../../src/integrations/harnesses/opencode/session-log";
 import type { SessionLogHarness } from "../../../../src/integrations/session-logs/types";
 import { writeSkill } from "../../../_helpers/assets";
 import { withTestImproveLlm } from "../../../_helpers/improve-config";
@@ -435,6 +436,61 @@ describe("#800 effective dry-run planner", () => {
       wouldRun: false,
       reason: "1 new sessions is below minNewSessions 3",
     });
+  });
+
+  test("real OpenCode held-WAL discovery leaves its live main, WAL, and SHM byte-identical", async () => {
+    const storage = isolatedStorage();
+    const config = plannerConfig({ extract: { enabled: true, minNewSessions: 1, defaultSince: "7d" } });
+    await indexSkills(storage.stashDir, 1, config);
+
+    const opencodeDir = path.join(storage.root, "opencode");
+    const dbPath = path.join(opencodeDir, "opencode.db");
+    fs.mkdirSync(opencodeDir, { recursive: true });
+    const writer = new Database(dbPath);
+    try {
+      writer.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0");
+      writer.exec(`
+        CREATE TABLE session (
+          id TEXT PRIMARY KEY,
+          title TEXT,
+          directory TEXT,
+          time_created INTEGER,
+          time_updated INTEGER
+        );
+      `);
+      const now = Date.now();
+      writer
+        .prepare("INSERT INTO session(id, title, directory, time_created, time_updated) VALUES (?, ?, ?, ?, ?)")
+        .run("held-session", "Held WAL session", storage.stashDir, now - 1_000, now);
+      expect(fs.existsSync(`${dbPath}-wal`)).toBe(true);
+      expect(fs.existsSync(`${dbPath}-shm`)).toBe(true);
+      const before = snapshotTree(opencodeDir);
+      const provider = new OpenCodeProvider();
+      const harness: SessionLogHarness = {
+        name: provider.name,
+        isAvailable: () => true,
+        readEvents: (input) => provider.readEvents(input),
+        listSessions: (input) => provider.listSessions({ ...input, location: opencodeDir }),
+        readSession: (ref) => provider.readSession(ref),
+      };
+
+      const result = await akmImprove({
+        scope: "skill",
+        stashDir: storage.stashDir,
+        config,
+        dryRun: true,
+        extractHarnesses: [harness],
+      });
+
+      expect(result.plan?.stages.find((stage) => stage.name === "extract")).toEqual({
+        name: "extract",
+        wouldRun: true,
+        reason: "1 new sessions satisfies minNewSessions 1",
+      });
+      expect(snapshotTree(opencodeDir)).toEqual(before);
+    } finally {
+      writer.close();
+    }
   });
 
   test("dry planning with existing state performs no writes, locks, events, proposals, assets, or LLM calls", async () => {

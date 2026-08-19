@@ -123,15 +123,32 @@ export function openSqliteReadSnapshot(dbPath: string): Database | undefined {
     db = openDatabaseFinalizing(snapshotPath, { readonly: true, create: false });
     const closeSnapshot = db.close.bind(db);
     let closed = false;
-    db.close = () => {
+    const cleanup = (bestEffort: boolean): void => {
       if (closed) return;
       closed = true;
+      process.removeListener("exit", cleanupOnExit);
+      if (bestEffort) {
+        try {
+          closeSnapshot();
+        } catch {
+          // Process teardown is already committed; keep removing the copy.
+        }
+        try {
+          fs.rmSync(snapshotDir, { recursive: true, force: true });
+        } catch {
+          // Best-effort process-exit backstop. Normal close still surfaces IO errors.
+        }
+        return;
+      }
       try {
         closeSnapshot();
       } finally {
         fs.rmSync(snapshotDir, { recursive: true, force: true });
       }
     };
+    const cleanupOnExit = (): void => cleanup(true);
+    process.once("exit", cleanupOnExit);
+    db.close = () => cleanup(false);
     return db;
   } catch (error) {
     try {
