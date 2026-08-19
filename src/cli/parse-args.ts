@@ -54,9 +54,9 @@ export function parsePositiveIntFlag(raw: string | undefined, flagName = "--limi
   if (raw === undefined) return undefined;
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
-  // Strict digits, matching parseNonNegativeIntFlag below. parseInt stops at the
-  // first non-digit, so "10x" silently became 10, "3.5" became 3, and
-  // "5 apples" became 5 — accepted rather than rejected as invalid.
+  // Strict digits: parseInt stops at the first non-digit, so "10x" silently
+  // became 10, "3.5" became 3, and "5 apples" became 5 — accepted rather than
+  // rejected as invalid.
   if (!/^\d+$/.test(trimmed)) {
     throw new UsageError(`Invalid ${flagName} value: "${raw}". Must be a positive integer.`, "INVALID_FLAG_VALUE");
   }
@@ -65,26 +65,6 @@ export function parsePositiveIntFlag(raw: string | undefined, flagName = "--limi
     throw new UsageError(`Invalid ${flagName} value: "${raw}". Must be a positive integer.`, "INVALID_FLAG_VALUE");
   }
   return parsed;
-}
-
-/**
- * Parse a non-negative integer flag value (0 is allowed, unlike `parsePositiveIntFlag`).
- *
- * Returns `undefined` when `raw` is `undefined` or empty (flag not supplied).
- * Throws `UsageError` when the raw value is present but not a valid non-negative
- * integer (e.g. contains decimals, letters, or is negative).
- *
- * @param raw       The raw string value (may be undefined).
- * @param flagName  The flag name to include in the error message.
- */
-export function parseNonNegativeIntFlag(raw: string | undefined, flagName: string): number | undefined {
-  if (raw === undefined) return undefined;
-  const trimmed = raw.trim();
-  if (!trimmed) return undefined;
-  if (!/^\d+$/.test(trimmed)) {
-    throw new UsageError(`Invalid ${flagName} value: "${raw}". Must be a non-negative integer.`, "INVALID_FLAG_VALUE");
-  }
-  return parseInt(trimmed, 10);
 }
 
 // ── String flag parsing ──────────────────────────────────────────────────────

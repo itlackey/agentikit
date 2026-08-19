@@ -325,14 +325,6 @@ function inspectInstalledLaunchdTask(
   }
 }
 
-/**
- * Recover the bundle name embedded as a `--bundle <bundle>` pair in a plist's
- * `<ProgramArguments>`. Returns undefined for the primary/default form.
- */
-export function extractPlistTarget(xml: string): string | undefined {
-  return extractPlistInvocation(xml)?.target;
-}
-
 export function extractPlistInvocation(xml: string): ReturnType<typeof parseScheduledTaskArgv> {
   const block = xml.match(/<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/);
   if (!block) return undefined;

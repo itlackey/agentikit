@@ -1157,23 +1157,6 @@ function gitTargetNotMaterialized(target: ResolvedWriteTarget, contentRoot: stri
   );
 }
 
-/** Enumerate enabled writable targets, deduplicated by materialized content root. */
-export function resolveWritableTargets(akmConfig: AkmConfig): ResolvedWriteTarget[] {
-  const byRoot = new Map<string, ResolvedWriteTarget>();
-  for (const runtime of resolveConfiguredSources(akmConfig)) {
-    if (runtime.enabled === false || !resolveWritable({ type: runtime.type, writable: runtime.writable })) continue;
-    const target = adaptConfiguredSource(runtime);
-    const root = path.resolve(target.source.path);
-    const existing = byRoot.get(root);
-    if (!existing || target.source.name === akmConfig.defaultWriteTarget) byRoot.set(root, target);
-  }
-  if (process.env.AKM_BUNDLE_DIR?.trim()) {
-    const target = resolveWorkingStashTarget(akmConfig);
-    byRoot.set(path.resolve(target.source.path), target);
-  }
-  return [...byRoot.values()];
-}
-
 /**
  * Resolve the destination for a write per locked decision 3:
  *

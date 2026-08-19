@@ -22,10 +22,9 @@
  * without dragging in the rest of the runtime.
  */
 
-import fs from "node:fs";
 import { parseFrontmatter } from "./asset/frontmatter";
 
-/** A single finding produced by `lintLessonContent` / `lintLessonFile`. */
+/** A single finding produced by `lintLessonContent`. */
 export interface LessonLintFinding {
   /** Stable identifier for the kind of violation. */
   kind: "missing-description" | "missing-when_to_use" | "empty-description" | "empty-when_to_use";
@@ -88,10 +87,4 @@ export function lintLessonContent(raw: string, pathForMessages: string): LessonL
   }
 
   return { path: pathForMessages, findings };
-}
-
-/** Lint a lesson file on disk. Throws if the file cannot be read. */
-export function lintLessonFile(filePath: string): LessonLintReport {
-  const raw = fs.readFileSync(filePath, "utf8");
-  return lintLessonContent(raw, filePath);
 }

@@ -3417,7 +3417,9 @@ waiver approver:
 waiver expiry:
 ```
 
-Two stale-consolidation recovery cases remain unconditionally skipped in the
-improve-memory integration suite. Treat those cases as `BLOCKED`, not covered by
-a green full check. Do not carry historical failures into this list unless they
-remain reproducible against the exact candidate.
+The stale-consolidation CLI recovery surface was removed in 0.9.1; its two
+obsolete skipped improve-memory integration cases were deleted during the 0.9.2
+cleanup ([#794](https://github.com/itlackey/akm/issues/794)).
+Stale transaction journals remain covered through the `stale-txn-journals`
+health check. Do not carry historical failures into this list unless they remain
+reproducible against the exact candidate.
