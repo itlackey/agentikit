@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import path from "node:path";
 import type { EmbeddingConnectionConfig } from "../../src/core/config/config";
 import { setQuiet } from "../../src/core/warn";
 import {
@@ -10,6 +11,7 @@ import {
   resetLocalEmbedder,
 } from "../../src/llm/embedder";
 import { LocalEmbedder } from "../../src/llm/embedders/local";
+import { withEnv } from "../_helpers/sandbox";
 import { overrideSeam } from "../_helpers/seams";
 
 let pipelineImpl: ((task: string, model: string, options?: { dtype?: string }) => Promise<unknown>) | undefined;
@@ -338,6 +340,21 @@ describe("cosineSimilarity", () => {
 });
 
 describe("local embedder pipeline setup", () => {
+  test("routes Transformers.js file caching through the stable HF_HOME", async () => {
+    const transformersEnv = { cacheDir: "node_modules/@huggingface/transformers/.cache" };
+    const stableHfHome = path.join("stable", "huggingface");
+    const fakeModule = {
+      env: transformersEnv,
+      pipeline: async () => async () => ({ data: createLocalVector() }),
+    };
+    overrideSeam(_setTransformersLoaderForTests, async () => fakeModule);
+
+    await withEnv({ HF_HOME: stableHfHome }, async () => {
+      await embed("cache me");
+      expect(transformersEnv.cacheDir).toBe(stableHfHome);
+    });
+  });
+
   test("requests fp32 dtype for local embeddings", async () => {
     const pipelineMock = mock(async (_task: string, _model: string, options?: { dtype?: string }) => {
       expect(options?.dtype).toBe("fp32");

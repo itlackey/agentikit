@@ -84,6 +84,12 @@ while iterating on output-related changes.
 
 ## Shipping a release — migration notes
 
+Maintainers must also follow the
+[release checklist](../docs/maintainers/release-checklist.md). In particular,
+the semantic, Docker, and Linux/macOS/Windows native-scheduler gates must pass
+in a manually dispatched **Gated CI** run against the exact candidate SHA, and
+that Actions run must be linked from the release record.
+
 `akm help migrate <version>` prints a per-release migration note to the
 terminal. Each note lives as its own markdown file under
 [`docs/migration/release-notes/<version>.md`](../docs/migration/release-notes/)
