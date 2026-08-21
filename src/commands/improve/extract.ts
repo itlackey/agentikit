@@ -164,6 +164,12 @@ function getExtractSessionLockPath(harness: string, sessionId: string, stateDbPa
   return path.join(path.dirname(stateDbPath), "extract-locks", `extract-${safe}.lock`);
 }
 
+function extractSessionLockIsUnavailable(harness: string, sessionId: string, stateDbPath: string): boolean {
+  const lockPath = getExtractSessionLockPath(harness, sessionId, stateDbPath);
+  const probe = probeLock(lockPath, { staleAfterMs: EXTRACT_SESSION_LOCK_STALE_MS });
+  return probe.state === "held" || probe.state === "inaccessible";
+}
+
 /**
  * Try to claim the per-session extract lock so a concurrent extract (e.g. a
  * session-end hook firing `--session-id` while the hourly improve pass runs
@@ -662,21 +668,6 @@ function lockedConcurrentResult(harness: string, summary: SessionSummary): Extra
   };
 }
 
-function alreadyExtractedAfterLock(args: {
-  stateDb: Database | undefined;
-  harness: string;
-  summary: SessionSummary;
-  force: boolean;
-  contentHash: string;
-}): ExtractedSessionResult | undefined {
-  const { stateDb, harness, summary, force, contentHash } = args;
-  if (!stateDb || force) return undefined;
-  const prior = getExtractedSessionsMap(stateDb, harness, [summary.sessionId]).get(summary.sessionId);
-  return shouldSkipAlreadyExtractedSession(prior, contentHash)
-    ? alreadyExtractedResult(harness, summary.sessionId, prior, contentHash)
-    : undefined;
-}
-
 function planExtractSessions(args: {
   candidates: SessionSummary[];
   options: AkmExtractOptions;
@@ -688,25 +679,19 @@ function planExtractSessions(args: {
   triage: { enabled: boolean; minScore: number };
   trackingEnabled: boolean;
   dryRun: boolean;
-}): { plans: ExtractSessionPlan[]; deferred: number } {
+}): { plans: ExtractSessionPlan[]; deferredCandidates: SessionSummary[] } {
   const { candidates, options, harness, seenMap, maxSessionsPerRun, trackingEnabled, dryRun } = args;
   const plans: ExtractSessionPlan[] = [];
   let modelCount = 0;
   for (let index = 0; index < candidates.length; index++) {
-    if (options.signal?.aborted) break;
+    if (options.signal?.aborted) return { plans, deferredCandidates: candidates.slice(index) };
     if (!options.sessionId && !options.force && maxSessionsPerRun > 0 && modelCount >= maxSessionsPerRun) {
-      return { plans, deferred: candidates.length - index };
+      return { plans, deferredCandidates: candidates.slice(index) };
     }
     const summary = candidates[index];
     if (!summary) continue;
     if (trackingEnabled && !dryRun && !options.stateDb) {
-      const lockPath = getExtractSessionLockPath(
-        harness.name,
-        summary.sessionId,
-        options.stateDbPath ?? getStateDbPath(),
-      );
-      const probe = probeLock(lockPath, { staleAfterMs: EXTRACT_SESSION_LOCK_STALE_MS });
-      if (probe.state === "held" || probe.state === "inaccessible") {
+      if (extractSessionLockIsUnavailable(harness.name, summary.sessionId, options.stateDbPath ?? getStateDbPath())) {
         plans.push({ kind: "skip", summary, result: lockedConcurrentResult(harness.name, summary) });
         continue;
       }
@@ -724,10 +709,22 @@ function planExtractSessions(args: {
       plans.push({ kind: "skip", summary, result: gate.skip });
       continue;
     }
+    // Reading and classifying a session can take long enough for a concurrent
+    // session-end hook to claim its lock. Re-probe the fully classified model
+    // plan before it consumes a cap slot or forces credential materialization.
+    if (
+      trackingEnabled &&
+      !dryRun &&
+      !options.stateDb &&
+      extractSessionLockIsUnavailable(harness.name, summary.sessionId, options.stateDbPath ?? getStateDbPath())
+    ) {
+      plans.push({ kind: "skip", summary, result: lockedConcurrentResult(harness.name, summary) });
+      continue;
+    }
     plans.push({ kind: "model", summary, gate });
     modelCount += 1;
   }
-  return { plans, deferred: 0 };
+  return { plans, deferredCandidates: [] };
 }
 
 /**
@@ -1037,6 +1034,8 @@ async function processSession(
 /** Run-scoped inputs for {@link runExtractSessionLoop}. */
 interface ExtractSessionLoopArgs {
   plans: ExtractSessionPlan[];
+  deferredCandidates: SessionSummary[];
+  seenMap: Map<string, ExtractedSessionRow>;
   options: AkmExtractOptions;
   harness: SessionLogHarness;
   stateDb: Database | undefined;
@@ -1050,6 +1049,8 @@ interface ExtractSessionLoopArgs {
   chat: AkmExtractOptions["chat"];
   sourceRun: string;
   timeoutMs: number | null;
+  maxTotalChars: number | undefined;
+  minContentChars: number;
   triage: { enabled: boolean; minScore: number };
   sessionIndexing: { enabled: boolean; minDurationMinutes: number; generate: SessionSummaryGenerator };
   extractStandardsContext: string;
@@ -1066,6 +1067,7 @@ interface ExtractSessionLoopResult {
   triagePassed: number;
   triagedOut: number;
   allProposalIds: string[];
+  deferred: number;
 }
 
 function recordExtractSessionOutcome(args: {
@@ -1078,7 +1080,14 @@ function recordExtractSessionOutcome(args: {
   sourceRun: string;
 }): void {
   const { stateDb, trackingEnabled, dryRun, harness, summary, result, sourceRun } = args;
-  if (!trackingEnabled || !stateDb || dryRun || result.skipReason === "already_extracted") return;
+  if (
+    !trackingEnabled ||
+    !stateDb ||
+    dryRun ||
+    result.skipReason === "already_extracted" ||
+    result.skipReason === "locked_concurrent"
+  )
+    return;
   try {
     const outcome: ExtractedSessionRow["outcome"] = result.skipped
       ? result.skipReason === "read_failed" || result.skipReason === "exception"
@@ -1150,6 +1159,8 @@ function accountExtractSessionResult(
 async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<ExtractSessionLoopResult> {
   const {
     plans,
+    deferredCandidates,
+    seenMap,
     options,
     harness,
     stateDb,
@@ -1194,9 +1205,30 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
     triagePassed: 0,
     triagedOut: 0,
     allProposalIds: [],
+    deferred: 0,
   };
 
-  for (const plan of plans) {
+  const workPlans = [...plans];
+  let remainingCandidates = deferredCandidates;
+  const refillModelSlot = (): void => {
+    if (remainingCandidates.length === 0 || options.signal?.aborted) return;
+    const refill = planExtractSessions({
+      candidates: remainingCandidates,
+      options,
+      harness,
+      seenMap,
+      maxTotalChars: args.maxTotalChars,
+      minContentChars: args.minContentChars,
+      maxSessionsPerRun: 1,
+      triage,
+      trackingEnabled,
+      dryRun,
+    });
+    workPlans.push(...refill.plans);
+    remainingCandidates = refill.deferredCandidates;
+  };
+
+  for (const plan of workPlans) {
     if (options.signal?.aborted) break;
     const { summary } = plan;
     if (plan.kind === "skip") {
@@ -1223,30 +1255,46 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
       const sessionLock = acquireExtractSessionLock(sessionLockPath);
       if (!sessionLock.proceed) {
         accountExtractSessionResult(lockedConcurrentResult(harness.name, summary), triage.enabled, output);
+        refillModelSlot();
         continue;
       }
       sessionLockOwnership = sessionLock.ownership;
     }
 
     try {
-      // Planning uses a read snapshot so a credential failure cannot create a
-      // live state DB or lock. Re-check under the acquired session lock to
-      // close the snapshot-to-lock race with another extractor that finished
-      // the same content while this run was preflighting.
-      const racedAlreadyExtracted = alreadyExtractedAfterLock({
-        stateDb: options.stateDb ? undefined : stateDb,
-        harness: harness.name,
-        summary,
+      // Planning stays read-only so a credential failure creates no state. Once
+      // this run owns the session lock, read and gate the session again: the log
+      // may have grown, become too short after replacement, or been completed by
+      // another extractor between the planning snapshot and acquisition.
+      const currentPrior = stateDb
+        ? getExtractedSessionsMap(stateDb, harness.name, [summary.sessionId]).get(summary.sessionId)
+        : seenMap.get(summary.sessionId);
+      const executionGate = runPreLlmSessionGates({
+        harness,
+        sessionRef: summary,
+        prior: currentPrior,
         force: options.force === true,
-        contentHash: plan.gate.contentHash,
+        maxTotalChars: args.maxTotalChars,
+        minContentChars: args.minContentChars,
+        triage,
       });
-      if (racedAlreadyExtracted) {
-        accountExtractSessionResult(racedAlreadyExtracted, triage.enabled, output);
+      if ("skip" in executionGate) {
+        accountExtractSessionResult(executionGate.skip, triage.enabled, output);
+        recordExtractSessionOutcome({
+          stateDb,
+          trackingEnabled,
+          dryRun,
+          harness: harness.name,
+          summary,
+          result: executionGate.skip,
+          sourceRun,
+        });
+        refillModelSlot();
         continue;
       }
       const result = await processSession(sessionRunCtx, {
         sessionRef: summary,
-        gate: plan.gate,
+        gate: executionGate,
       });
       accountExtractSessionResult(result, triage.enabled, output);
       recordExtractSessionOutcome({
@@ -1283,6 +1331,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
     }
   }
 
+  output.deferred = remainingCandidates.length;
   return output;
 }
 
@@ -1717,11 +1766,6 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
     trackingEnabled,
     dryRun,
   });
-  if (planned.deferred > 0) {
-    topLevelWarnings.push(
-      `Reached maxSessionsPerRun=${maxSessionsPerRun}; ${planned.deferred} session(s) deferred to a later run.`,
-    );
-  }
   const modelPlanCount = planned.plans.filter((plan) => plan.kind === "model").length;
 
   // Eligible dry-runs still dispatch to produce their candidate preview. Only
@@ -1746,6 +1790,8 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
   try {
     loopResult = await runExtractSessionLoop({
       plans: planned.plans,
+      deferredCandidates: planned.deferredCandidates,
+      seenMap,
       options,
       harness,
       stateDb,
@@ -1759,6 +1805,8 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
       chat: options.chat,
       sourceRun,
       timeoutMs,
+      maxTotalChars,
+      minContentChars,
       triage,
       sessionIndexing,
       extractStandardsContext,
@@ -1774,6 +1822,11 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
     }
   }
   const { sessions, processedCount, skippedCount, allProposalIds } = loopResult;
+  if (loopResult.deferred > 0) {
+    topLevelWarnings.push(
+      `Reached maxSessionsPerRun=${maxSessionsPerRun}; ${loopResult.deferred} session(s) deferred to a later run.`,
+    );
+  }
 
   emitExtractTriageEvent({
     modelPlanCount,

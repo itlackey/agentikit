@@ -249,7 +249,7 @@ async function inferPendingMemoryRecord(
 
   // Existing children are complete, but the parent may be unmarked after a
   // crash between the child write and parent update (or an external write).
-  if (plan.kind === "existing-child" || fs.existsSync(derivedChildPath(record))) {
+  if (fs.existsSync(derivedChildPath(record))) {
     markParentProcessed(record);
     return {
       skipped: false,
@@ -260,6 +260,13 @@ async function inferPendingMemoryRecord(
       childExists: true,
       precheck: true,
     } as const;
+  }
+  // The child can disappear after the read-only classification pass (for
+  // example, an external cleanup racing this index run). The plan is not proof
+  // that the child still exists at the mutation boundary: leave the parent
+  // pending so a later run can classify and preflight the now-real model work.
+  if (plan.kind === "existing-child") {
+    return { skipped: true, fromCache: false, retryAttempts: 0 } as const;
   }
 
   let fromCache = plan.kind === "cache-hit";

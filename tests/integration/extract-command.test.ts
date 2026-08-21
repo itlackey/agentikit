@@ -21,6 +21,7 @@ import type { AkmConfig } from "../../src/core/config/config";
 import { ImproveProcessConfigSchema, ImproveProfileConfigSchema } from "../../src/core/config/config-schema";
 import { ConfigError, UsageError } from "../../src/core/errors";
 import { readEvents } from "../../src/core/events";
+import { createLockPayload } from "../../src/core/file-lock";
 import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { detectTruncatedDescription } from "../../src/core/text-truncation";
 import type {
@@ -715,6 +716,248 @@ describe("minContentChars improve-process config schema", () => {
 // ── per-process engine + strategy config support ────────────────────────────
 
 describe("akmExtract — engine + strategy config resolution", () => {
+  test("a live lock created while classification reads the session suppresses credential materialization", async () => {
+    const stash = storage.stashDir;
+    const session = fakeSession("credential-lock-race", Date.now());
+    const config = configEnabled(stash);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.apiKey = "$AKM_EXTRACT_LOCK_RACE_REQUIRED_KEY";
+    const stateDbPath = getStateDbPath();
+    const lockPath = path.join(
+      path.dirname(stateDbPath),
+      "extract-locks",
+      `extract-claude-code-${session.ref.sessionId}.lock`,
+    );
+    const baseHarness = makeFakeHarness([session]);
+    let lockBytes = "";
+    let chatCalls = 0;
+    const harness: SessionLogHarness = {
+      ...baseHarness,
+      readSession: (ref) => {
+        fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+        lockBytes ||= createLockPayload();
+        if (!fs.existsSync(lockPath)) fs.writeFileSync(lockPath, lockBytes, "utf8");
+        return baseHarness.readSession(ref);
+      },
+    };
+
+    const result = await withEnv({ AKM_EXTRACT_LOCK_RACE_REQUIRED_KEY: undefined }, () =>
+      akmExtract({
+        type: "claude-code",
+        sessionId: session.ref.sessionId,
+        stashDir: stash,
+        stateDbPath,
+        config,
+        harnesses: [harness],
+        chat: async () => {
+          chatCalls += 1;
+          throw new Error("locked session dispatched an LLM request");
+        },
+      }),
+    );
+
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0]).toMatchObject({ skipped: true, skipReason: "locked_concurrent" });
+    expect(chatCalls).toBe(0);
+    expect(fs.readFileSync(lockPath, "utf8")).toBe(lockBytes);
+    expect(fs.existsSync(stateDbPath)).toBe(false);
+  });
+
+  test("a newly locked first candidate frees its maxSessionsPerRun slot for the next candidate", async () => {
+    const stash = storage.stashDir;
+    const first = fakeSession("lock-cap-first", Date.now());
+    const second = fakeSession("lock-cap-second", Date.now() - 1);
+    const config = configEnabled(stash);
+    const process = config.improve?.strategies?.extract?.processes?.extract;
+    if (process) process.maxSessionsPerRun = 1;
+    const stateDbPath = getStateDbPath();
+    const firstLockPath = path.join(
+      path.dirname(stateDbPath),
+      "extract-locks",
+      `extract-claude-code-${first.ref.sessionId}.lock`,
+    );
+    const baseHarness = makeFakeHarness([first, second]);
+    let chatCalls = 0;
+    const harness: SessionLogHarness = {
+      ...baseHarness,
+      readSession: (ref) => {
+        if (ref.sessionId === first.ref.sessionId && !fs.existsSync(firstLockPath)) {
+          fs.mkdirSync(path.dirname(firstLockPath), { recursive: true });
+          fs.writeFileSync(firstLockPath, createLockPayload(), "utf8");
+        }
+        return baseHarness.readSession(ref);
+      },
+    };
+
+    const result = await akmExtract({
+      type: "claude-code",
+      since: "24h",
+      stashDir: stash,
+      stateDbPath,
+      config,
+      harnesses: [harness],
+      chat: async () => {
+        chatCalls += 1;
+        return JSON.stringify({ candidates: [], rationale_if_empty: "nothing durable" });
+      },
+    });
+
+    expect(result.sessions.map((item) => [item.sessionId, item.skipReason ?? null])).toEqual([
+      [first.ref.sessionId, "locked_concurrent"],
+      [second.ref.sessionId, null],
+    ]);
+    expect(result.sessionsProcessed).toBe(1);
+    expect(result.sessionsSkipped).toBe(1);
+    expect(chatCalls).toBe(1);
+    expect(result.warnings.join(" ")).not.toContain("deferred");
+    const stateDb = openStateDatabase(stateDbPath);
+    try {
+      expect(getExtractedSessionsMap(stateDb, "claude-code", [first.ref.sessionId]).size).toBe(0);
+      expect(getExtractedSessionsMap(stateDb, "claude-code", [second.ref.sessionId]).size).toBe(1);
+    } finally {
+      stateDb.close();
+    }
+  });
+
+  test("a lock acquired after the final planning probe refills the capped slot at execution", async () => {
+    const stash = storage.stashDir;
+    const first = fakeSession("post-probe-lock-first", Date.now());
+    const second = fakeSession("post-probe-lock-second", Date.now() - 1);
+    const config = configEnabled(stash);
+    const process = config.improve?.strategies?.extract?.processes?.extract;
+    if (process) process.maxSessionsPerRun = 1;
+    const stateDbPath = getStateDbPath();
+    const firstLockPath = path.join(
+      path.dirname(stateDbPath),
+      "extract-locks",
+      `extract-claude-code-${first.ref.sessionId}.lock`,
+    );
+    const baseHarness = makeFakeHarness([first, second]);
+    let scheduled = false;
+    let chatCalls = 0;
+    const harness: SessionLogHarness = {
+      ...baseHarness,
+      readSession: (ref) => {
+        if (ref.sessionId === first.ref.sessionId && !scheduled) {
+          scheduled = true;
+          queueMicrotask(() => {
+            fs.mkdirSync(path.dirname(firstLockPath), { recursive: true });
+            fs.writeFileSync(firstLockPath, createLockPayload(), "utf8");
+          });
+        }
+        return baseHarness.readSession(ref);
+      },
+    };
+
+    const result = await akmExtract({
+      type: "claude-code",
+      since: "24h",
+      stashDir: stash,
+      stateDbPath,
+      config,
+      harnesses: [harness],
+      chat: async () => {
+        chatCalls += 1;
+        return JSON.stringify({ candidates: [], rationale_if_empty: "nothing durable" });
+      },
+    });
+
+    expect(result.sessions.map((item) => [item.sessionId, item.skipReason ?? null])).toEqual([
+      [first.ref.sessionId, "locked_concurrent"],
+      [second.ref.sessionId, null],
+    ]);
+    expect(chatCalls).toBe(1);
+    expect(result.warnings.join(" ")).not.toContain("deferred");
+  });
+
+  test("execution rereads and gates the current session revision after acquiring its lock", async () => {
+    const stash = storage.stashDir;
+    const initial = fakeSession("content-race", Date.now());
+    const current = fakeSession(initial.ref.sessionId, initial.ref.endedAt ?? Date.now());
+    const currentEvent = current.events[0];
+    if (!currentEvent) throw new Error("test fixture requires a session event");
+    current.events = [
+      { ...currentEvent, text: "CURRENT_REVISION_MARKER durable insight from the latest session bytes" },
+    ];
+    const baseHarness = makeFakeHarness([initial]);
+    let reads = 0;
+    let prompt = "";
+    const harness: SessionLogHarness = {
+      ...baseHarness,
+      readSession: () => {
+        reads += 1;
+        return reads === 1 ? initial : current;
+      },
+    };
+
+    const result = await akmExtract({
+      type: "claude-code",
+      sessionId: initial.ref.sessionId,
+      stashDir: stash,
+      config: configEnabled(stash),
+      harnesses: [harness],
+      chat: async (_connection, messages) => {
+        prompt = messages.at(-1)?.content ?? "";
+        return JSON.stringify({ candidates: [], rationale_if_empty: "nothing durable" });
+      },
+    });
+
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(prompt).toContain("CURRENT_REVISION_MARKER");
+    expect(result.sessions[0]?.contentHash).toBe(
+      createHash("sha256").update(`user\n${current.events[0]?.text}`).digest("hex"),
+    );
+  });
+
+  test("an under-lock content regate frees its capped slot for the next candidate", async () => {
+    const stash = storage.stashDir;
+    const first = fakeSession("content-regate-first", Date.now());
+    const second = fakeSession("content-regate-second", Date.now() - 1);
+    const shortened = fakeSession(first.ref.sessionId, first.ref.endedAt ?? Date.now());
+    const firstEvent = shortened.events[0];
+    if (!firstEvent) throw new Error("test fixture requires a session event");
+    shortened.events = [{ ...firstEvent, text: "tiny" }];
+    const config = configEnabled(stash);
+    const process = config.improve?.strategies?.extract?.processes?.extract;
+    if (process) {
+      process.maxSessionsPerRun = 1;
+      process.minContentChars = 100;
+    }
+    const baseHarness = makeFakeHarness([first, second]);
+    let firstReads = 0;
+    let chatCalls = 0;
+    const harness: SessionLogHarness = {
+      ...baseHarness,
+      readSession: (ref) => {
+        if (ref.sessionId !== first.ref.sessionId) return baseHarness.readSession(ref);
+        firstReads += 1;
+        return firstReads === 1 ? first : shortened;
+      },
+    };
+
+    const result = await akmExtract({
+      type: "claude-code",
+      since: "24h",
+      stashDir: stash,
+      config,
+      harnesses: [harness],
+      chat: async () => {
+        chatCalls += 1;
+        return JSON.stringify({ candidates: [], rationale_if_empty: "nothing durable" });
+      },
+    });
+
+    expect(result.sessions.map((item) => [item.sessionId, item.skipReason ?? null])).toEqual([
+      [first.ref.sessionId, "too_short"],
+      [second.ref.sessionId, null],
+    ]);
+    expect(result.sessionsProcessed).toBe(1);
+    expect(result.sessionsSkipped).toBe(1);
+    expect(chatCalls).toBe(1);
+    expect(result.warnings.join(" ")).not.toContain("deferred");
+  });
+
   test("missing required symbolic credential aborts without proposals, session assets, or session-state rows", async () => {
     const stash = makeStashDir();
     const session = fakeSession("credential", Date.now());

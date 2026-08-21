@@ -60,12 +60,12 @@ import type { LlmCacheEntry } from "../../storage/repositories/index-entry-types
 import {
   computeBodyHash,
   getLlmCacheEntriesByRefs,
-  getLlmCacheEntry,
   upsertLlmCacheEntry,
 } from "../../storage/repositories/index-llm-cache-repository";
 import { GRAPH_SCHEMA_VERSION } from "../../storage/repositories/index-schema";
 import {
   acknowledgeExtractionQueueEntry,
+  enqueueGraphExtraction,
   loadStoredGraphSnapshot,
   peekExtractionQueue,
   replaceStoredGraph,
@@ -218,6 +218,17 @@ type GraphCacheShape = {
   status?: GraphExtractionStatus;
   reason?: GraphExtractionReason;
 };
+
+type EligibleGraphPlan =
+  | {
+      kind: "cache-hit";
+      candidate: EligibleFile;
+      bodyHash: string;
+      cached: GraphCacheShape;
+      /** A previous graph node supplied the hit and should seed the DB cache. */
+      persistCache: boolean;
+    }
+  | { kind: "model"; candidate: EligibleFile; bodyHash: string };
 
 type ExtractionRecord =
   | {
@@ -378,15 +389,66 @@ function reuseGraphNode(
   };
 }
 
-async function extractGraphBatches(args: {
+function planEligibleGraphExtractions(args: {
   eligible: EligibleFile[];
-  batchSize: number;
-  signal: AbortSignal | undefined;
   db: Database | undefined;
   reEnrich: boolean | undefined;
   cacheVariant: string;
   previousNodes: Map<string, GraphFileNode>;
   canReusePreviousGraph: boolean;
+}): EligibleGraphPlan[] {
+  const { eligible, db, reEnrich, cacheVariant, previousNodes, canReusePreviousGraph } = args;
+  const bodyHashes = eligible.map((candidate) => computeBodyHash(candidate.body));
+  const cacheEntries =
+    db && !reEnrich
+      ? getLlmCacheEntriesByRefs(
+          db,
+          eligible.map((candidate) => candidate.absPath),
+          cacheVariant,
+        )
+      : new Map<string, LlmCacheEntry>();
+
+  return eligible.map((candidate, index) => {
+    const bodyHash = bodyHashes[index] ?? "";
+    if (!reEnrich && db) {
+      const entry = cacheEntries.get(candidate.absPath);
+      if (entry?.bodyHash === bodyHash) {
+        try {
+          const cached = validateGraphCacheShape(JSON.parse(entry.resultJson));
+          if (cached) return { kind: "cache-hit", candidate, bodyHash, cached, persistCache: false };
+        } catch {
+          // Corrupt cache rows are immutable model plans for this pass.
+        }
+      }
+    }
+
+    if (!reEnrich && (!db || canReusePreviousGraph)) {
+      const cached = reuseGraphNode(previousNodes, candidate, bodyHash);
+      if (cached) return { kind: "cache-hit", candidate, bodyHash, cached, persistCache: Boolean(db) };
+    }
+    return { kind: "model", candidate, bodyHash };
+  });
+}
+
+function graphRecordFromCachePlan(plan: Extract<EligibleGraphPlan, { kind: "cache-hit" }>): ExtractionRecord {
+  return {
+    absPath: plan.candidate.absPath,
+    type: plan.candidate.type,
+    bodyHash: plan.bodyHash,
+    entities: plan.cached.entities,
+    relations: plan.cached.relations,
+    ...(plan.cached.confidence !== undefined ? { confidence: plan.cached.confidence } : {}),
+    ...(plan.cached.status ? { status: plan.cached.status } : {}),
+    ...(plan.cached.reason ? { reason: plan.cached.reason } : {}),
+  };
+}
+
+async function extractGraphBatches(args: {
+  plans: EligibleGraphPlan[];
+  batchSize: number;
+  signal: AbortSignal | undefined;
+  db: Database | undefined;
+  cacheVariant: string;
   telemetry: GraphExtractionTelemetry;
   llmRunner: StructuredLlmRunner;
   featureConfig: AkmConfig;
@@ -397,14 +459,11 @@ async function extractGraphBatches(args: {
   reportProgress: (currentPath: string | undefined, result: ExtractionRecord | undefined) => void;
 }): Promise<{ results: Array<ExtractionRecord | undefined>; configFailure?: ConfigError }> {
   const {
-    eligible,
+    plans,
     batchSize,
     signal,
     db,
-    reEnrich,
     cacheVariant,
-    previousNodes,
-    canReusePreviousGraph,
     telemetry,
     llmRunner,
     featureConfig,
@@ -414,91 +473,46 @@ async function extractGraphBatches(args: {
     onNotices,
     reportProgress,
   } = args;
-  const results: Array<ExtractionRecord | undefined> = new Array(eligible.length).fill(undefined);
+  const results: Array<ExtractionRecord | undefined> = new Array(plans.length).fill(undefined);
   const chunkStarts: number[] = [];
-  for (let start = 0; start < eligible.length; start += batchSize) chunkStarts.push(start);
+  for (let start = 0; start < plans.length; start += batchSize) chunkStarts.push(start);
   let configFailure: ConfigError | undefined;
 
   await concurrentMap(
     chunkStarts,
     async (start) => {
       if (signal?.aborted) return;
-      const chunk = eligible.slice(start, start + batchSize);
+      const chunk = plans.slice(start, start + batchSize);
       const reportChunkProgress = (): void => {
         for (let j = 0; j < chunk.length; j++) {
-          const candidate = chunk[j];
-          if (candidate) reportProgress(candidate.absPath, results[start + j]);
+          const plan = chunk[j];
+          if (plan) reportProgress(plan.candidate.absPath, results[start + j]);
         }
       };
 
-      const bodyHashes = chunk.map((candidate) => computeBodyHash(candidate.body));
-      const chunkCache: Map<string, LlmCacheEntry> =
-        db && !reEnrich
-          ? getLlmCacheEntriesByRefs(
-              db,
-              chunk.map((candidate) => candidate.absPath),
-              cacheVariant,
-            )
-          : new Map();
-      const needsLlm = chunk.map((candidate, index) => {
-        if (!db || reEnrich) return true;
-        const cached = chunkCache.get(candidate.absPath);
-        if (!cached || cached.bodyHash !== (bodyHashes[index] ?? "")) return true;
-        try {
-          const parsed = validateGraphCacheShape(JSON.parse(cached.resultJson));
-          if (!parsed) return true;
-          telemetry.cacheHits += 1;
-          results[start + index] = {
-            absPath: candidate.absPath,
-            type: candidate.type,
-            bodyHash: bodyHashes[index] ?? "",
-            entities: parsed.entities,
-            relations: parsed.relations,
-            ...(parsed.confidence !== undefined ? { confidence: parsed.confidence } : {}),
-            ...(parsed.status ? { status: parsed.status } : {}),
-            ...(parsed.reason ? { reason: parsed.reason } : {}),
-          };
-          return false;
-        } catch {
-          return true;
-        }
-      });
-
-      if (!(reEnrich ?? false) && canReusePreviousGraph) {
-        for (let index = 0; index < chunk.length; index++) {
-          if (!needsLlm[index]) continue;
-          const candidate = chunk[index];
-          if (!candidate) continue;
-          const bodyHash = bodyHashes[index] ?? "";
-          const reused = reuseGraphNode(previousNodes, candidate, bodyHash);
-          if (!reused) continue;
-          telemetry.cacheHits += 1;
-          results[start + index] = {
-            absPath: candidate.absPath,
-            type: candidate.type,
-            bodyHash,
-            entities: reused.entities,
-            relations: reused.relations,
-            ...(reused.confidence !== undefined ? { confidence: reused.confidence } : {}),
-            ...(reused.status ? { status: reused.status } : {}),
-            ...(reused.reason ? { reason: reused.reason } : {}),
-          };
-          if (db) upsertLlmCacheEntry(db, candidate.absPath, bodyHash, JSON.stringify(reused), cacheVariant);
-          needsLlm[index] = false;
+      for (let index = 0; index < chunk.length; index++) {
+        const plan = chunk[index];
+        if (!plan || plan.kind !== "cache-hit") continue;
+        telemetry.cacheHits += 1;
+        results[start + index] = graphRecordFromCachePlan(plan);
+        if (db && plan.persistCache) {
+          upsertLlmCacheEntry(db, plan.candidate.absPath, plan.bodyHash, JSON.stringify(plan.cached), cacheVariant);
         }
       }
 
-      const uncachedChunk = chunk.filter((_, index) => needsLlm[index]);
-      if (uncachedChunk.length === 0) {
+      const modelPlans = chunk.filter(
+        (plan): plan is Extract<EligibleGraphPlan, { kind: "model" }> => plan.kind === "model",
+      );
+      if (modelPlans.length === 0) {
         reportChunkProgress();
         return;
       }
-      telemetry.cacheMisses += uncachedChunk.length;
+      telemetry.cacheMisses += modelPlans.length;
       let batchExtractions: Awaited<ReturnType<typeof graphExtract.extractGraphFromBodies>>;
       try {
         batchExtractions = await graphExtract.extractGraphFromBodies(
           llmRunner,
-          uncachedChunk.map((candidate) => candidate.body),
+          modelPlans.map((plan) => plan.candidate.body),
           signal,
           featureConfig,
           onFallback,
@@ -514,11 +528,10 @@ async function extractGraphBatches(args: {
 
       let llmIndex = 0;
       for (let index = 0; index < chunk.length; index++) {
-        if (!needsLlm[index]) continue;
-        const candidate = chunk[index];
+        const plan = chunk[index];
+        if (!plan || plan.kind !== "model") continue;
         const extraction = batchExtractions[llmIndex++];
-        if (!candidate || !extraction) continue;
-        const bodyHash = bodyHashes[index] ?? "";
+        if (!extraction) continue;
         const cacheShape: GraphCacheShape = {
           entities: extraction.entities,
           relations: extraction.relations,
@@ -526,8 +539,15 @@ async function extractGraphBatches(args: {
           ...(extraction.status ? { status: extraction.status } : {}),
           ...(extraction.reason ? { reason: extraction.reason } : {}),
         };
-        if (db) upsertLlmCacheEntry(db, candidate.absPath, bodyHash, JSON.stringify(cacheShape), cacheVariant);
-        results[start + index] = { absPath: candidate.absPath, type: candidate.type, bodyHash, ...cacheShape };
+        if (db) {
+          upsertLlmCacheEntry(db, plan.candidate.absPath, plan.bodyHash, JSON.stringify(cacheShape), cacheVariant);
+        }
+        results[start + index] = {
+          absPath: plan.candidate.absPath,
+          type: plan.candidate.type,
+          bodyHash: plan.bodyHash,
+          ...cacheShape,
+        };
       }
       reportChunkProgress();
     },
@@ -537,36 +557,20 @@ async function extractGraphBatches(args: {
   return { results, ...(configFailure ? { configFailure } : {}) };
 }
 
-function graphCandidateNeedsModel(args: {
-  candidate: EligibleFile;
-  db: Database | undefined;
-  reEnrich: boolean | undefined;
-  cacheVariant: string;
-  previousNodes: Map<string, GraphFileNode>;
-  canReusePreviousGraph: boolean;
-}): boolean {
-  const { candidate, db, reEnrich, cacheVariant, previousNodes, canReusePreviousGraph } = args;
-  if (reEnrich) return true;
-  const bodyHash = computeBodyHash(candidate.body);
-  if (db) {
-    const entry = getLlmCacheEntry(db, candidate.absPath, bodyHash, cacheVariant);
-    if (entry) {
-      try {
-        if (validateGraphCacheShape(JSON.parse(entry.resultJson))) return false;
-      } catch {
-        // Corrupt cache rows are model misses.
-      }
-    }
-  } else if (reuseGraphNode(previousNodes, candidate, bodyHash)) {
-    return false;
-  }
-  return !(canReusePreviousGraph && reuseGraphNode(previousNodes, candidate, bodyHash));
-}
-
 type QueuedGraphPlan =
-  | { kind: "deferred"; filePath: string; queuedBodyHash: string }
-  | { kind: "discard" | "hit"; filePath: string; queuedBodyHash: string }
-  | { kind: "model"; filePath: string; queuedBodyHash: string; currentBodyHash: string };
+  | { kind: "deferred"; filePath: string; queuedBodyHash: string; priority: number }
+  | { kind: "discard"; filePath: string; queuedBodyHash: string; priority: number }
+  | { kind: "hit"; filePath: string; queuedBodyHash: string; currentBodyHash: string; priority: number }
+  | { kind: "model"; filePath: string; queuedBodyHash: string; currentBodyHash: string; priority: number };
+
+function readCurrentGraphBodyHash(filePath: string): string | undefined {
+  try {
+    const body = parseFrontmatter(fs.readFileSync(filePath, "utf8")).content.trim();
+    return body ? computeBodyHash(body) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function planQueuedGraphExtractions(args: {
   db: Database | undefined;
@@ -579,23 +583,47 @@ function planQueuedGraphExtractions(args: {
   if (!db) return [];
   return peekExtractionQueue(db, stashRoot, GRAPH_EXTRACTION_QUEUE_DRAIN_LIMIT).map((queued) => {
     if (signal?.aborted) {
-      return { kind: "deferred", filePath: queued.filePath, queuedBodyHash: queued.bodyHash };
+      return {
+        kind: "deferred",
+        filePath: queued.filePath,
+        queuedBodyHash: queued.bodyHash,
+        priority: queued.priority,
+      };
     }
     let raw: string;
     try {
       raw = fs.readFileSync(queued.filePath, "utf8");
     } catch {
-      return { kind: "discard", filePath: queued.filePath, queuedBodyHash: queued.bodyHash };
+      return { kind: "discard", filePath: queued.filePath, queuedBodyHash: queued.bodyHash, priority: queued.priority };
     }
     const body = parseFrontmatter(raw).content.trim();
-    if (!body) return { kind: "discard", filePath: queued.filePath, queuedBodyHash: queued.bodyHash };
+    if (!body) {
+      return { kind: "discard", filePath: queued.filePath, queuedBodyHash: queued.bodyHash, priority: queued.priority };
+    }
     const currentBodyHash = computeBodyHash(body);
     const type = inferGraphTypeForPath(stashRoot, queued.filePath) ?? "memory";
     if (!reEnrich && reuseGraphNode(previousNodes, { absPath: queued.filePath, type }, currentBodyHash)) {
-      return { kind: "hit", filePath: queued.filePath, queuedBodyHash: queued.bodyHash };
+      return {
+        kind: "hit",
+        filePath: queued.filePath,
+        queuedBodyHash: queued.bodyHash,
+        currentBodyHash,
+        priority: queued.priority,
+      };
     }
-    return { kind: "model", filePath: queued.filePath, queuedBodyHash: queued.bodyHash, currentBodyHash };
+    return {
+      kind: "model",
+      filePath: queued.filePath,
+      queuedBodyHash: queued.bodyHash,
+      currentBodyHash,
+      priority: queued.priority,
+    };
   });
+}
+
+interface QueuedGraphExecution {
+  graphChanged: boolean;
+  acknowledgements: Array<{ filePath: string; queuedBodyHash: string }>;
 }
 
 async function executeQueuedGraphPlans(args: {
@@ -606,25 +634,60 @@ async function executeQueuedGraphPlans(args: {
   signal: AbortSignal | undefined;
   llmRunner: StructuredLlmRunner;
   onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
-}): Promise<boolean> {
+}): Promise<QueuedGraphExecution> {
   const { plans, db, stashRoot, featureConfig, signal, llmRunner, onNotices } = args;
-  if (!db) return false;
+  if (!db) return { graphChanged: false, acknowledgements: [] };
   let graphChanged = false;
+  const acknowledgements: QueuedGraphExecution["acknowledgements"] = [];
   for (const plan of plans) {
     if (signal?.aborted || plan.kind === "deferred") break;
+    if (plan.kind === "discard") {
+      const currentBodyHash = readCurrentGraphBodyHash(plan.filePath);
+      if (currentBodyHash) {
+        enqueueGraphExtraction(db, stashRoot, plan.filePath, currentBodyHash, plan.priority);
+        continue;
+      }
+      acknowledgements.push({ filePath: plan.filePath, queuedBodyHash: plan.queuedBodyHash });
+      continue;
+    }
+    if (plan.kind === "hit") {
+      const currentBodyHash = readCurrentGraphBodyHash(plan.filePath);
+      if (currentBodyHash !== plan.currentBodyHash) {
+        if (currentBodyHash) enqueueGraphExtraction(db, stashRoot, plan.filePath, currentBodyHash, plan.priority);
+        continue;
+      }
+      acknowledgements.push({ filePath: plan.filePath, queuedBodyHash: plan.queuedBodyHash });
+      continue;
+    }
     if (plan.kind === "model") {
-      const written = await extractGraphForSingleFile(db, stashRoot, plan.filePath, plan.currentBodyHash, {
+      const outcome = await extractGraphForSingleFileRevision(db, stashRoot, plan.filePath, {
         config: featureConfig,
         signal,
         llmRunner,
         onNotices,
       });
-      if (!written) continue;
+      if (!outcome.written) continue;
       graphChanged = true;
+      const currentBodyHash = readCurrentGraphBodyHash(plan.filePath);
+      if (currentBodyHash !== outcome.bodyHash) {
+        if (currentBodyHash) enqueueGraphExtraction(db, stashRoot, plan.filePath, currentBodyHash, plan.priority);
+        continue;
+      }
     }
-    acknowledgeExtractionQueueEntry(db, stashRoot, plan.filePath, plan.queuedBodyHash);
+    acknowledgements.push({ filePath: plan.filePath, queuedBodyHash: plan.queuedBodyHash });
   }
-  return graphChanged;
+  return { graphChanged, acknowledgements };
+}
+
+function acknowledgeQueuedGraphPlans(
+  db: Database | undefined,
+  stashRoot: string,
+  execution: QueuedGraphExecution,
+): void {
+  if (!db) return;
+  for (const intent of execution.acknowledgements) {
+    acknowledgeExtractionQueueEntry(db, stashRoot, intent.filePath, intent.queuedBodyHash);
+  }
 }
 
 /**
@@ -693,14 +756,14 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
 
   const includeTypes = options.includeTypes ?? getGraphExtractionIncludeTypes(config);
   let previousGraph = loadGraphFile(primary.path, db);
-  let previousNodes = new Map(previousGraph.files.map((node) => [node.path, node]));
+  const previousNodes = new Map(previousGraph.files.map((node) => [node.path, node]));
   const batchSize = resolveBatchSize(
     options.batchSize ?? getIndexPassConfig(config.index, "graph")?.graphExtractionBatchSize,
     llmRunner.connection.contextLength,
   );
   const extractorId = getGraphExtractorId({ model: llmRunner.connection.model, batchSize, includeTypes });
   const cacheVariant = extractorId;
-  let canReusePreviousGraph = previousGraph.telemetry?.extractorId === extractorId;
+  const canReusePreviousGraph = previousGraph.telemetry?.extractorId === extractorId;
   const queuePlans = planQueuedGraphExtractions({
     db,
     stashRoot: primary.path,
@@ -722,19 +785,16 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
     eligible = rankCandidatesByUtility(db, eligible, primary.path).slice(0, options.topN);
   }
   const considered = eligible.length;
+  const eligiblePlans = planEligibleGraphExtractions({
+    eligible,
+    db,
+    reEnrich,
+    cacheVariant,
+    previousNodes,
+    canReusePreviousGraph,
+  });
   const queueNeedsModel = queuePlans.some((plan) => plan.kind === "model");
-  const eligibleNeedsModel =
-    !signal?.aborted &&
-    eligible.some((candidate) =>
-      graphCandidateNeedsModel({
-        candidate,
-        db,
-        reEnrich,
-        cacheVariant,
-        previousNodes,
-        canReusePreviousGraph,
-      }),
-    );
+  const eligibleNeedsModel = !signal?.aborted && eligiblePlans.some((plan) => plan.kind === "model");
 
   if (signal?.aborted) return emptyResult();
 
@@ -743,7 +803,7 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
   // this boundary, so a missing credential cannot partially mutate a batch.
   if (queueNeedsModel || eligibleNeedsModel) await preflightStructuredLlmRunner(llmRunner);
 
-  const queueGraphChanged = await executeQueuedGraphPlans({
+  const queueExecution = await executeQueuedGraphPlans({
     plans: queuePlans,
     db,
     stashRoot: primary.path,
@@ -752,13 +812,12 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
     llmRunner,
     onNotices,
   });
-  if (queueGraphChanged) {
+  if (queueExecution.graphChanged) {
     previousGraph = loadGraphFile(primary.path, db);
-    previousNodes = new Map(previousGraph.files.map((node) => [node.path, node]));
-    canReusePreviousGraph = previousGraph.telemetry?.extractorId === extractorId;
   }
 
   if (considered === 0) {
+    acknowledgeQueuedGraphPlans(db, primary.path, queueExecution);
     const scoped = options.candidatePaths ? ` matching ${options.candidatePaths.size} candidate path(s)` : "";
     warnVerbose(
       `graph extraction: skipped because no eligible files${scoped} were found under ${primary.path}. ` +
@@ -837,44 +896,21 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
   if (batchSize <= 1) {
     // ── Original per-asset path (with incremental cache) ─────────────────
     extractionResults = await concurrentMap(
-      eligible,
-      async (candidate) => {
+      eligiblePlans,
+      async (plan) => {
+        const { candidate, bodyHash } = plan;
         if (signal?.aborted) {
           reportProgress(candidate.absPath, undefined);
           return undefined;
         }
-        const bodyHash = computeBodyHash(candidate.body);
-
-        let cached: GraphCacheShape | undefined;
-        if (db) {
-          if (!(reEnrich ?? false)) {
-            const cacheEntry = getLlmCacheEntry(db, candidate.absPath, bodyHash, cacheVariant);
-            if (cacheEntry) {
-              try {
-                cached = validateGraphCacheShape(JSON.parse(cacheEntry.resultJson));
-                if (cached) telemetry.cacheHits += 1;
-              } catch {
-                cached = undefined;
-              }
-            }
+        let cached: GraphCacheShape;
+        if (plan.kind === "cache-hit") {
+          telemetry.cacheHits += 1;
+          cached = plan.cached;
+          if (db && plan.persistCache) {
+            upsertLlmCacheEntry(db, candidate.absPath, bodyHash, JSON.stringify(cached), cacheVariant);
           }
-        } else if (!(reEnrich ?? false)) {
-          // No DB — best-effort reuse from the previous in-memory graph.
-          cached = reuseGraphNode(previousNodes, candidate, bodyHash);
-        }
-
-        if (!cached && !(reEnrich ?? false) && canReusePreviousGraph) {
-          const reused = reuseGraphNode(previousNodes, candidate, bodyHash);
-          if (reused) {
-            cached = reused;
-            if (db) {
-              upsertLlmCacheEntry(db, candidate.absPath, bodyHash, JSON.stringify(reused), cacheVariant);
-            }
-            telemetry.cacheHits += 1;
-          }
-        }
-
-        if (!cached) {
+        } else {
           telemetry.cacheMisses += 1;
           let extraction: Awaited<ReturnType<typeof graphExtract.extractGraphFromBody>>;
           try {
@@ -924,14 +960,11 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
     );
   } else {
     const batch = await extractGraphBatches({
-      eligible,
+      plans: eligiblePlans,
       batchSize,
       signal,
       db,
-      reEnrich,
       cacheVariant,
-      previousNodes,
-      canReusePreviousGraph,
       telemetry,
       llmRunner,
       featureConfig,
@@ -946,6 +979,7 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
   }
 
   if (configFailure) throw configFailure;
+  acknowledgeQueuedGraphPlans(db, primary.path, queueExecution);
 
   for (const result of extractionResults) {
     if (!result) continue;
@@ -1043,6 +1077,16 @@ export type SingleFileLlmOverride = (body: string) => Promise<{
   confidence?: number;
 }>;
 
+interface SingleFileGraphOptions {
+  llmOverride?: SingleFileLlmOverride;
+  llmRunner?: StructuredLlmRunner | null;
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
+  signal?: AbortSignal;
+  config?: AkmConfig;
+}
+
+type SingleFileGraphRevision = { written: false } | { written: true; bodyHash: string };
+
 /**
  * Infer the asset type (`memory`, `knowledge`, …) for a path from the stash
  * directory segment it lives under. Returns the matching include-type, or
@@ -1073,33 +1117,26 @@ function inferGraphTypeForPath(stashRoot: string, absPath: string): string | und
  * Returns `true` when a graph row was written for the file, `false` on any
  * skip (missing file, empty body, unknown type, no model, or extraction error).
  */
-export async function extractGraphForSingleFile(
+async function extractGraphForSingleFileRevision(
   db: Database,
   stashRoot: string,
   filePath: string,
-  bodyHash?: string,
-  opts?: {
-    llmOverride?: SingleFileLlmOverride;
-    llmRunner?: StructuredLlmRunner | null;
-    onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
-    signal?: AbortSignal;
-    config?: AkmConfig;
-  },
-): Promise<boolean> {
+  opts?: SingleFileGraphOptions,
+): Promise<SingleFileGraphRevision> {
   try {
     // Re-read from disk — never trust a stale queued body.
     let raw: string;
     try {
       raw = fs.readFileSync(filePath, "utf8");
     } catch {
-      return false; // file gone / unreadable → silent skip
+      return { written: false }; // file gone / unreadable → silent skip
     }
     const parsed = parseFrontmatter(raw);
     const body = parsed.content.trim();
-    if (!body) return false;
+    if (!body) return { written: false };
 
     const type = inferGraphTypeForPath(stashRoot, filePath) ?? "memory";
-    const effectiveHash = bodyHash ?? computeBodyHash(body);
+    const effectiveHash = computeBodyHash(body);
 
     // Extract — via the injected seam, or the real per-asset path.
     let extraction: { entities: string[]; relations: GraphRelation[]; confidence?: number };
@@ -1113,13 +1150,13 @@ export async function extractGraphForSingleFile(
     } else {
       const config = opts?.config ?? loadConfig();
       const invocationOwnsRunner = Object.hasOwn(opts ?? {}, "llmRunner");
-      if (!invocationOwnsRunner && !isProcessEnabled("index", "graph_extraction", config)) return false;
+      if (!invocationOwnsRunner && !isProcessEnabled("index", "graph_extraction", config)) return { written: false };
       const execution = Object.hasOwn(opts ?? {}, "llmRunner")
         ? Object.freeze({ runner: opts?.llmRunner ?? undefined, notices: Object.freeze([]) })
         : resolveIndexPassExecution("graph", config);
       opts?.onNotices?.(execution.notices);
       const llmRunner = execution.runner;
-      if (!llmRunner) return false; // model-available guard
+      if (!llmRunner) return { written: false }; // model-available guard
       const featureConfig = invocationOwnsRunner
         ? { ...config, index: { ...config.index, graph: { ...config.index?.graph, enabled: true } } }
         : config;
@@ -1186,12 +1223,22 @@ export async function extractGraphForSingleFile(
       ...(previousGraph.telemetry ? { telemetry: previousGraph.telemetry } : {}),
     };
 
-    return writeGraphFile(stashRoot, graph, db);
+    return writeGraphFile(stashRoot, graph, db) ? { written: true, bodyHash: effectiveHash } : { written: false };
   } catch (err) {
     if (err instanceof ConfigError) throw err;
     rethrowIfTestIsolationError(err);
-    return false;
+    return { written: false };
   }
+}
+
+export async function extractGraphForSingleFile(
+  db: Database,
+  stashRoot: string,
+  filePath: string,
+  _bodyHash?: string,
+  opts?: SingleFileGraphOptions,
+): Promise<boolean> {
+  return (await extractGraphForSingleFileRevision(db, stashRoot, filePath, opts)).written;
 }
 
 // ── Eligible-file detection ─────────────────────────────────────────────────

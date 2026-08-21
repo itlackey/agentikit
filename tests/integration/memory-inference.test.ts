@@ -329,6 +329,75 @@ describe("runMemoryInferencePass — progress", () => {
 // ── runMemoryInferencePass — enabled path ───────────────────────────────────
 
 describe("runMemoryInferencePass — enabled", () => {
+  test("an existing child that disappears after classification leaves its parent retryable", async () => {
+    const parent = writeMemory("vanishing-child", { description: "keep" }, "Parent body.");
+    const child = writeMemory("vanishing-child.derived", { inferred: true }, "Transient derived body.");
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_MEMORY_VANISHING_CHILD_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+    let calls = 0;
+    let removed = false;
+    compressor = () => {
+      calls += 1;
+      throw new Error("vanishing existing-child plan dispatched an LLM request");
+    };
+
+    const result = await withEnv({ AKM_MEMORY_VANISHING_CHILD_REQUIRED_KEY: undefined }, () =>
+      runMemoryInferencePass({
+        config,
+        sources: sources(),
+        onProgress: (event) => {
+          if (!removed && event.processed === 0) {
+            fs.rmSync(child);
+            removed = true;
+          }
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ considered: 1, skippedNoFacts: 1, skippedChildExists: 0, writtenFacts: 0 });
+    expect(calls).toBe(0);
+    expect(fs.existsSync(child)).toBe(false);
+    expect(parseFrontmatter(fs.readFileSync(parent, "utf8")).data.inferenceProcessed).toBeUndefined();
+    expect(collectPendingMemories(tmpStash).map((record) => record.ref)).toContain("memories/vanishing-child");
+  });
+
+  test("a child that appears after model classification wins without a provider call", async () => {
+    const parent = writeMemory("appearing-child", { description: "keep" }, "Parent body.");
+    const child = path.join(tmpStash, "memories", "appearing-child.derived.md");
+    let calls = 0;
+    let created = false;
+    compressor = () => {
+      calls += 1;
+      throw new Error("appearing child still dispatched an LLM request");
+    };
+
+    const result = await runMemoryInferencePass({
+      config: configWithLlm(),
+      sources: sources(),
+      onProgress: (event) => {
+        if (!created && event.processed === 0) {
+          writeMemory("appearing-child.derived", { inferred: true }, "Externally derived body.");
+          created = true;
+        }
+      },
+    });
+
+    expect(result).toMatchObject({ considered: 1, skippedChildExists: 1, writtenFacts: 0 });
+    expect(calls).toBe(0);
+    expect(fs.existsSync(child)).toBe(true);
+    expect(parseFrontmatter(fs.readFileSync(parent, "utf8")).data.inferenceProcessed).toBe(true);
+  });
+
   test("all existing children self-heal their parents without materializing a required credential", async () => {
     const first = writeMemory("existing-a", { description: "first" }, "First body.");
     const second = writeMemory("existing-b", { description: "second" }, "Second body.");

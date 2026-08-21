@@ -56,6 +56,12 @@ const drainExtractionQueue = (
   }
 ).drainExtractionQueue;
 
+const acknowledgeExtractionQueueEntry = (
+  graphDb as unknown as {
+    acknowledgeExtractionQueueEntry: (db: Database, stashRoot: string, filePath: string, bodyHash: string) => boolean;
+  }
+).acknowledgeExtractionQueueEntry;
+
 type LlmOverride = (body: string) => Promise<{
   entities: string[];
   relations: Array<{ from: string; to: string; type?: string; confidence?: number }>;
@@ -164,6 +170,17 @@ describe("#624 P3 enqueueGraphExtraction / drainExtractionQueue (AC1)", () => {
       .prepare("SELECT priority FROM graph_extraction_queue WHERE stash_root = ? AND file_path = ?")
       .get(stash.dir, "/a.md") as { priority: number };
     expect(row.priority).toBe(5);
+  });
+
+  test("acknowledging an older revision preserves a concurrent re-enqueue", () => {
+    enqueueGraphExtraction(db, stash.dir, "/a.md", "hashA", 5);
+    enqueueGraphExtraction(db, stash.dir, "/a.md", "hashA2", 5);
+
+    expect(acknowledgeExtractionQueueEntry(db, stash.dir, "/a.md", "hashA")).toBe(false);
+    const row = db
+      .prepare("SELECT body_hash FROM graph_extraction_queue WHERE stash_root = ? AND file_path = ?")
+      .get(stash.dir, "/a.md") as { body_hash: string };
+    expect(row.body_hash).toBe("hashA2");
   });
 
   test("drainExtractionQueue returns rows highest-priority-first then oldest queued_at", () => {
@@ -327,6 +344,23 @@ describe("#624 P3 extractGraphForSingleFile (AC2)", () => {
     expect(entityRows.map((r) => r.entity)).toEqual(["Alice", "Bob", "Project X"]);
     // Keep bodyText referenced (sanity that the file is real on disk).
     expect(bodyText.length).toBeGreaterThan(0);
+  });
+
+  test("binds a single-file graph row to the body revision actually read from disk", async () => {
+    const currentBody = "Current body about Alice and Bob.";
+    const absPath = makeEligibleMemory("revision-bound", currentBody);
+    const staleHash = computeBodyHash("stale queued body");
+
+    const ok = await extractGraphForSingleFile(db, stash.dir, absPath, staleHash, {
+      llmOverride: async () => ({ entities: ["Alice", "Bob"], relations: [] }),
+    });
+
+    expect(ok).toBe(true);
+    const row = db
+      .prepare("SELECT body_hash FROM graph_files WHERE stash_root = ? AND file_path = ?")
+      .get(stash.dir, absPath) as { body_hash: string };
+    expect(row.body_hash).toBe(computeBodyHash(currentBody));
+    expect(row.body_hash).not.toBe(staleHash);
   });
 
   test("merges — extracting one file does NOT clobber another file's existing graph", async () => {
