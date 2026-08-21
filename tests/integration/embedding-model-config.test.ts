@@ -11,6 +11,7 @@ beforeEach(() => {
   clearEmbeddingCache();
   resetLocalEmbedder();
   overrideSeam(_setTransformersLoaderForTests, async () => ({
+    env: { backends: { onnx: { wasm: {} } } },
     pipeline: async () => {
       return async () => ({
         data: (() => {
