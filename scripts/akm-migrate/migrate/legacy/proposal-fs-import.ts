@@ -40,7 +40,7 @@ import type { Proposal } from "../../../../src/commands/proposal/proposal-types"
 import { parseBundleRef } from "../../../../src/core/asset/asset-ref";
 import { warn } from "../../../../src/core/warn";
 import { parseRegistryRef } from "../../../../src/registry/resolve";
-import { type Database, openDatabase } from "../../../../src/storage/database";
+import { type Database, openDatabaseFinalizing } from "../../../../src/storage/database";
 import { classifyRefGrammar, legacyRefToBundleRef, parseAssetRef as parseLegacyAssetRef } from "../legacy-ref-grammar";
 
 /** Legacy (pre-0.9.0) proposal directory: `<stashDir>/.akm/proposals[/archive]`. */
@@ -82,7 +82,7 @@ export function importLegacyProposalsIntoState(
     }
     throw error;
   }
-  const db: Database = openDatabase(stateDbPath);
+  const db: Database = openDatabaseFinalizing(stateDbPath);
   try {
     let imported = 0;
     const seen = new Set<string>();

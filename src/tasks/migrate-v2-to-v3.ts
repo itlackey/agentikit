@@ -42,6 +42,8 @@ export interface TaskV2ToV3FilesystemIdentity {
 export interface TaskV2ToV3InspectionIdentity {
   readonly file: TaskV2ToV3FilesystemIdentity;
   readonly root: TaskV2ToV3FilesystemIdentity;
+  /** Stable owning bundle identity when `root` is a nested component. */
+  readonly bundleRoot?: TaskV2ToV3FilesystemIdentity;
 }
 
 interface TaskV2ToV3OutcomeBase {
@@ -145,6 +147,9 @@ function base(input: TaskV2ToV3FileInput): Omit<TaskV2ToV3OutcomeBase, "reason">
     ? Object.freeze({
         file: Object.freeze({ ...input.inspectionIdentity.file }),
         root: Object.freeze({ ...input.inspectionIdentity.root }),
+        ...(input.inspectionIdentity.bundleRoot
+          ? { bundleRoot: Object.freeze({ ...input.inspectionIdentity.bundleRoot }) }
+          : {}),
       })
     : undefined;
   return {
@@ -490,6 +495,21 @@ function generationFor(files: readonly TaskV2ToV3FileOutcome[]): string {
   return digest.digest("hex");
 }
 
+/** Build/fingerprint a plan from already-derived immutable outcomes. */
+export function taskV2ToV3PlanFromOutcomes(outcomes: readonly TaskV2ToV3FileOutcome[]): TaskV2ToV3MigrationPlan {
+  const files = [...outcomes].sort((left, right) =>
+    left.filePath < right.filePath ? -1 : left.filePath > right.filePath ? 1 : 0,
+  );
+  for (let index = 1; index < files.length; index += 1) {
+    const previous = files[index - 1];
+    const current = files[index];
+    if (previous && current && path.resolve(previous.filePath) === path.resolve(current.filePath)) {
+      throw new Error(`duplicate task migration file path: ${current.filePath}`);
+    }
+  }
+  return Object.freeze({ schemaVersion: 1 as const, generation: generationFor(files), files: Object.freeze(files) });
+}
+
 /** Plan a complete, stable file set. Input order cannot change the result. */
 export function planTaskV2ToV3Migration(inputs: readonly TaskV2ToV3FileInput[]): TaskV2ToV3MigrationPlan {
   const sorted = [...inputs].sort((left, right) =>
@@ -502,6 +522,5 @@ export function planTaskV2ToV3Migration(inputs: readonly TaskV2ToV3FileInput[]):
     }
     previous = current;
   }
-  const files = sorted.map(planTaskV2ToV3File);
-  return Object.freeze({ schemaVersion: 1 as const, generation: generationFor(files), files: Object.freeze(files) });
+  return taskV2ToV3PlanFromOutcomes(sorted.map(planTaskV2ToV3File));
 }

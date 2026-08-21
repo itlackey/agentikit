@@ -127,15 +127,17 @@ export interface BuildCutoverRefMapOptions {
 const CUTOVER_REFMAP_FORMAT = 1 as const;
 
 /**
- * Compute the old-ref → new item_ref map BEFORE any re-layout, and persist it as
- * JSON (fsynced) next to the apply sentinel. Sources, in precedence order:
+ * Compute the old-ref → new item_ref map BEFORE any re-layout without writing.
+ * Sources, in precedence order:
  *
  *   (a) last-good index join — `entries.entry_key` / `item_ref`, generalizing
  *       the F4c `classifyLegacyRefForRekey` origin rules to a full-table pass.
  *   (b) frozen legacy-layout walk of the configured stash roots, for on-disk
  *       refs the index no longer holds (best-effort — source (a) wins).
  */
-export function buildCutoverRefMap(opts: BuildCutoverRefMapOptions): Map<string, string> {
+export function computeCutoverRefMap(
+  opts: Omit<BuildCutoverRefMapOptions, "mapOutputPath">,
+): Map<string, string> {
   const map = new Map<string, string>();
 
   // ── Source (a): the last-good index join (authoritative). ──
@@ -160,6 +162,12 @@ export function buildCutoverRefMap(opts: BuildCutoverRefMapOptions): Map<string,
   // ── Source (b): the frozen legacy-layout walk (completeness for stale-index refs). ──
   for (const root of opts.stashRoots ?? []) walkLegacyLayoutInto(map, root);
 
+  return map;
+}
+
+/** Compute and durably persist the immutable operation ref map. */
+export function buildCutoverRefMap(opts: BuildCutoverRefMapOptions): Map<string, string> {
+  const map = computeCutoverRefMap(opts);
   persistRefMapJson(opts.mapOutputPath, map);
   return map;
 }

@@ -366,6 +366,30 @@ test("retries a failed parent-directory sync after the replacement is already pr
   }
 });
 
+test("tolerates unsupported parent-directory fsync through the shared portable durability helper", () => {
+  const sandbox = makeSandboxDir("akm-task-target-portable-directory-sync-unit");
+  try {
+    writeBundle(sandbox.dir, "ship", { ship: 'schedule: "@daily"\nworkflow: workflow:ship\n' });
+    const taskPath = path.join(sandbox.dir, "tasks", "ship.yml");
+    const plan = planTaskTargetRefMigration(configFor({ stash: { path: sandbox.dir, writable: true } }));
+    const originalFsync = fs.fsyncSync;
+    let unsupportedDirectorySyncs = 0;
+    spyOn(fs, "fsyncSync").mockImplementation((fd) => {
+      if (fs.fstatSync(fd).isDirectory()) {
+        unsupportedDirectorySyncs += 1;
+        throw Object.assign(new Error("directory fsync unsupported"), { code: "EINVAL" });
+      }
+      return originalFsync(fd);
+    });
+
+    expect(() => applyTaskTargetRefMigration(plan)).not.toThrow();
+    expect(unsupportedDirectorySyncs).toBeGreaterThan(0);
+    expect(fs.readFileSync(taskPath, "utf8")).toContain("version: 2");
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
 test.skipIf(process.platform === "win32")("preserves the task YAML mode independently of the process umask", () => {
   const sandbox = makeSandboxDir("akm-task-target-mode-unit");
   const previousUmask = process.umask();

@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { inspectMigrationPlan } from "../../scripts/akm-migrate/config-migrate";
 import { getLegacyWorkflowDbPath } from "../../scripts/akm-migrate/migrate/legacy/legacy-paths";
+import { cutoverMergeCommitted } from "../../scripts/akm-migrate/migrate/legacy/three-db-cutover";
 import {
   getMigrationApplyJournalPath,
   getMigrationBackupRoot,
@@ -171,6 +172,50 @@ test("a completed cutover can receive a later additive state schema migration wi
     id: STATE_MIGRATIONS.at(-1)?.id,
   });
   migrated.close();
+});
+
+test("a ledger-current WAL database without a cutover marker remains unresolved until residual refs are cut over", async () => {
+  fs.writeFileSync(getConfigPath(), `${JSON.stringify(currentConfig())}\n`, { mode: 0o600 });
+  const assetPath = path.join(storage.stashDir, "memories", "wal-note.md");
+  fs.mkdirSync(path.dirname(assetPath), { recursive: true });
+  fs.writeFileSync(assetPath, "# WAL note\n");
+
+  const statePath = getStateDbPathInDataDir();
+  const seeded = openStateDbAtCeiling(getStateDbPathInDataDir(), STATE_MIGRATIONS.at(-1)!.id);
+  const insert = seeded.prepare(
+    "INSERT INTO proposals(id, stash_dir, ref, status, source, created_at, updated_at, content, frontmatter_json, metadata_json) VALUES (?, ?, ?, 'pending', 'legacy', 'c', 'u', 'body', NULL, '{}')",
+  );
+  insert.run("wal-residual", storage.stashDir, "memory:wal-note");
+  seeded.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  seeded.close();
+
+  const wal = new Database(statePath);
+  expect((wal.query("PRAGMA journal_mode=WAL").get() as { journal_mode: string }).journal_mode).toBe("wal");
+  wal.close();
+
+  expect(cutoverMergeCommitted(statePath)).toBe(false);
+  expect(inspectMigrationPlan()).toMatchObject({ status: "ready", artifacts: { state: { status: "current" } } });
+
+  const applied = await runCliCapture(["migrate", "apply"]);
+  expect(applied.code, applied.stderr).toBe(0);
+  expect(cutoverMergeCommitted(statePath)).toBe(true);
+  expect(fs.existsSync(`${statePath}-wal`)).toBe(false);
+  expect(fs.existsSync(`${statePath}-shm`)).toBe(false);
+  expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+
+  const current = new Database(statePath, { readonly: true });
+  expect((current.query("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode).toBe("delete");
+  expect(current.query("SELECT ref FROM proposals WHERE id='wal-residual'").get()).toEqual({
+    ref: "stash//memories/wal-note",
+  });
+  expect(current.query("SELECT operation_id FROM akm_cutover_ledger WHERE singleton=1").get()).toMatchObject({
+    operation_id: expect.any(String),
+  });
+  expect(current.query("SELECT backup_run_id, task_generation FROM akm_migration_completion").get()).toMatchObject({
+    backup_run_id: expect.any(String),
+    task_generation: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  current.close();
 });
 
 test("future and holey ledgers are blocked without mutation", async () => {

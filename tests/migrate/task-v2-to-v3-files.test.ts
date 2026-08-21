@@ -8,8 +8,10 @@ import os from "node:os";
 import path from "node:path";
 import {
   applyTaskV2ToV3MigrationPlan,
+  createTaskMigrationBackup,
   inspectTaskV2ToV3Files,
   taskMigrationBackupPath,
+  verifyTaskMigrationBackup,
 } from "../../scripts/akm-migrate/migrate/task-v2-to-v3-files";
 import { planTaskV2ToV3Migration } from "../../src/tasks/migrate-v2-to-v3";
 
@@ -134,6 +136,29 @@ describe("durable task v2 to v3 migration application", () => {
     }
   });
 
+  test("the main-backup recovery ledger rejects same-byte inode drift before publication starts", () => {
+    const root = tempRoot();
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
+    const task = path.join(root, "tasks", "safe.yml");
+    const displaced = path.join(root, "tasks", "displaced.yml");
+    fs.writeFileSync(task, SAFE, { mode: 0o640 });
+    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const manifest = createTaskMigrationBackup(backupRoot, plan, "not-started-identity-operation");
+    if (!manifest) throw new Error("expected a task backup manifest");
+    fs.renameSync(task, displaced);
+    fs.writeFileSync(task, SAFE, { mode: 0o640 });
+    try {
+      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
+        /identity|inode|drift/i,
+      );
+      expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
+      expect(() => verifyTaskMigrationBackup(backupRoot, manifest)).not.toThrow();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+  });
+
   test("rejects replacement of the inspected component root even when file bytes and mode match", () => {
     const root = tempRoot();
     const displacedRoot = `${root}-displaced`;
@@ -249,6 +274,164 @@ describe("durable task v2 to v3 migration application", () => {
       }
     } finally {
       rename.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+  });
+
+  for (const position of [0, 1, 2] as const) {
+    for (const timing of ["before", "after"] as const) {
+      test(`retries the immutable main-backup plan after a ${timing}-rename fault on task ${position + 1}`, () => {
+        const root = tempRoot();
+        const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
+        const tasks = ["a.yml", "b.yml", "c.yml"].map((name, index) => {
+          const filePath = path.join(root, "tasks", name);
+          fs.writeFileSync(filePath, SAFE.replace("@daily", `0 ${index} * * *`), { mode: 0o640 });
+          return filePath;
+        });
+        const before = new Map(tasks.map((filePath) => [filePath, fs.readFileSync(filePath)]));
+        const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+        const manifest = createTaskMigrationBackup(backupRoot, plan, "fault-matrix-operation");
+        if (!manifest) throw new Error("expected a task backup manifest");
+        const target = tasks[position];
+        try {
+          expect(() =>
+            applyTaskV2ToV3MigrationPlan(plan, {
+              backupRoot,
+              backupManifest: manifest,
+              testHooks: {
+                ...(timing === "before"
+                  ? {
+                      beforePublish(filePath: string) {
+                        if (filePath === target) throw new Error(`injected before-rename fault at ${target}`);
+                      },
+                    }
+                  : {
+                      afterPublish(filePath: string) {
+                        if (filePath === target) throw new Error(`injected after-rename fault at ${target}`);
+                      },
+                    }),
+              },
+            }),
+          ).toThrow(/injected|restored/i);
+          for (const filePath of tasks) {
+            expect(fs.readFileSync(filePath).equals(before.get(filePath) ?? Buffer.alloc(0))).toBe(true);
+          }
+
+          const retry = applyTaskV2ToV3MigrationPlan(plan, {
+            backupRoot,
+            backupManifest: manifest,
+          });
+          expect(retry.changed).toEqual(tasks);
+          for (const filePath of tasks) expect(fs.readFileSync(filePath, "utf8")).toContain("version: 3");
+        } finally {
+          fs.rmSync(root, { recursive: true, force: true });
+          fs.rmSync(backupRoot, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
+  test("propagates a source-directory fsync failure, compensates, and retries from the declared backup", () => {
+    const root = tempRoot();
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
+    const task = path.join(root, "tasks", "safe.yml");
+    fs.writeFileSync(task, SAFE, { mode: 0o640 });
+    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const manifest = createTaskMigrationBackup(backupRoot, plan, "directory-fsync-operation");
+    if (!manifest) throw new Error("expected a task backup manifest");
+    const realOpenSync = fs.openSync;
+    let injected = false;
+    const open = spyOn(fs, "openSync").mockImplementation((filePath, flags, mode) => {
+      if (!injected && flags === "r" && path.resolve(String(filePath)) === path.dirname(task)) {
+        injected = true;
+        throw Object.assign(new Error("injected task directory fsync failure"), { code: "EIO" });
+      }
+      return realOpenSync(filePath, flags, mode);
+    });
+    try {
+      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
+        /directory fsync|restored/i,
+      );
+      expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
+      open.mockRestore();
+      expect(applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest }).changed).toEqual([task]);
+      expect(fs.readFileSync(task, "utf8")).toContain("version: 3");
+    } finally {
+      open.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("propagates a staged-source fsync failure before rename and retries without source mutation", () => {
+    const root = tempRoot();
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
+    const task = path.join(root, "tasks", "safe.yml");
+    fs.writeFileSync(task, SAFE, { mode: 0o640 });
+    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const manifest = createTaskMigrationBackup(backupRoot, plan, "source-fsync-operation");
+    if (!manifest) throw new Error("expected a task backup manifest");
+    const tempDescriptors = new Set<number>();
+    const realOpenSync = fs.openSync;
+    const realFsyncSync = fs.fsyncSync;
+    const open = spyOn(fs, "openSync").mockImplementation((filePath, flags, mode) => {
+      const descriptor = realOpenSync(filePath, flags, mode);
+      if (String(filePath).startsWith(`${task}.tmp-task-v3-`)) tempDescriptors.add(descriptor);
+      return descriptor;
+    });
+    let injected = false;
+    const fsync = spyOn(fs, "fsyncSync").mockImplementation((descriptor) => {
+      if (!injected && tempDescriptors.has(descriptor)) {
+        injected = true;
+        throw Object.assign(new Error("injected staged source fsync failure"), { code: "EIO" });
+      }
+      return realFsyncSync(descriptor);
+    });
+    try {
+      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
+        /source fsync|restored/i,
+      );
+      expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
+      open.mockRestore();
+      fsync.mockRestore();
+      expect(applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest }).changed).toEqual([task]);
+    } finally {
+      open.mockRestore();
+      fsync.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed on corrupted task-backup bytes or noncanonical task-backup metadata", () => {
+    const root = tempRoot();
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
+    const task = path.join(root, "tasks", "safe.yml");
+    fs.writeFileSync(task, SAFE, { mode: 0o640 });
+    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const manifest = createTaskMigrationBackup(backupRoot, plan, "corruption-operation");
+    if (!manifest) throw new Error("expected a task backup manifest");
+    const entry = manifest.files[0];
+    if (!entry) throw new Error("expected a task backup entry");
+    try {
+      fs.writeFileSync(path.join(backupRoot, entry.backupPath), "corrupted original bytes", { mode: 0o600 });
+      expect(() => verifyTaskMigrationBackup(backupRoot, manifest)).toThrow(/hash verification/i);
+      fs.writeFileSync(path.join(backupRoot, entry.backupPath), SAFE, { mode: 0o600 });
+      const recoveryPath = path.join(backupRoot, manifest.recoveryPath);
+      const originalRecovery = fs.readFileSync(recoveryPath, "utf8");
+      const invalidRecovery = JSON.parse(originalRecovery) as { operationId: string };
+      invalidRecovery.operationId = "different-operation";
+      fs.writeFileSync(recoveryPath, `${JSON.stringify(invalidRecovery, null, 2)}\n`, { mode: 0o600 });
+      expect(() => verifyTaskMigrationBackup(backupRoot, manifest)).toThrow(/journal.*operation|does not match/i);
+      fs.writeFileSync(recoveryPath, originalRecovery, { mode: 0o600 });
+      const invalidManifest = {
+        ...manifest,
+        files: [{ ...entry, backupPath: "tasks/not-the-source-digest.before" }],
+      };
+      expect(() => verifyTaskMigrationBackup(backupRoot, invalidManifest)).toThrow(/canonical/i);
+      expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
+    } finally {
       fs.rmSync(root, { recursive: true, force: true });
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }

@@ -42,9 +42,11 @@ import { deriveBundleIds } from "../../src/core/bundle-id";
 import type { AkmConfig } from "../../src/core/config/config";
 import { getMigrationOperationRoot } from "../../src/core/migration-operation";
 import { getConfigPath, getDataDir, getDbPath, getLockfilePath, getStateDbPathInDataDir } from "../../src/core/paths";
+import { STATE_MIGRATIONS } from "../../src/core/state/migrations";
 import { openStateDatabase } from "../../src/core/state-db";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
 import type { StashFile } from "../../src/indexer/passes/metadata";
+import { openDatabaseFinalizing } from "../../src/storage/database";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
 import { parseTaskV3Yaml } from "../../src/tasks/source-v3";
 import {
@@ -1375,9 +1377,13 @@ describe("(g) migrate apply imports pre-0.9 filesystem proposals into state.db",
     writeLegacyProposal(stash, legacyProposalRecord(id, oldRef, "pending"));
     expect(importLegacyProposalsIntoState(getStateDbPathInDataDir(), [{ path: stash, bundleId: "stash" }])).toBe(1);
 
-    const earlierRc = readState();
+    const earlierRc = openDatabaseFinalizing(getStateDbPathInDataDir(), { readonly: true });
     try {
-      expect(refsIn(earlierRc, "proposals", "ref")).toEqual([oldRef]);
+      expect(
+        (earlierRc.prepare("SELECT ref FROM proposals ORDER BY ref").all() as Array<{ ref: string }>).map(
+          (row) => row.ref,
+        ),
+      ).toEqual([oldRef]);
     } finally {
       earlierRc.close();
     }
@@ -1450,7 +1456,7 @@ describe("index quarantine boundary recovery", () => {
 describe("already-current proposal ref repair", () => {
   test("status blocks an unmappable pending legacy ref", async () => {
     fs.writeFileSync(getConfigPath(), '{"configVersion":"0.9.0","semanticSearchMode":"off"}\n', { mode: 0o600 });
-    const state = openStateDatabase(getStateDbPathInDataDir());
+    const state = openStateDbAtCeiling(getStateDbPathInDataDir(), STATE_MIGRATIONS.at(-1)?.id ?? "");
     state
       .prepare(
         "INSERT INTO proposals(id, stash_dir, ref, status, source, created_at, updated_at, content, frontmatter_json, metadata_json) VALUES (?, '/stash', ?, 'pending', 'legacy', 'c', 'u', 'body', NULL, '{}')",
@@ -1466,7 +1472,7 @@ describe("already-current proposal ref repair", () => {
 
   test("an already-current apply quarantines terminal legacy refs and becomes current", async () => {
     fs.writeFileSync(getConfigPath(), '{"configVersion":"0.9.0","semanticSearchMode":"off"}\n', { mode: 0o600 });
-    const state = openStateDatabase(getStateDbPathInDataDir());
+    const state = openStateDbAtCeiling(getStateDbPathInDataDir(), STATE_MIGRATIONS.at(-1)?.id ?? "");
     state
       .prepare(
         "INSERT INTO proposals(id, stash_dir, ref, status, source, created_at, updated_at, content, frontmatter_json, metadata_json) VALUES (?, '/stash', ?, 'rejected', 'legacy', 'c', 'u', 'body', NULL, '{}')",

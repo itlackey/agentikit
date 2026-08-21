@@ -12,6 +12,13 @@ import {
 } from "./migrate/legacy/config-source-migration";
 import { getLegacyWorkflowDbPath } from "./migrate/legacy/legacy-paths";
 import { FROZEN_WORKFLOW_MIGRATIONS } from "./migrate/legacy/workflow-migrations-bodies";
+import {
+  createTaskMigrationBackup,
+  restoreTaskMigrationBackup,
+  type TaskMigrationBackupManifest,
+  verifyTaskMigrationBackup,
+} from "./migrate/task-v2-to-v3-files";
+import type { TaskV2ToV3MigrationPlan } from "../../src/tasks/migrate-v2-to-v3";
 import { MAX_CONFIG_FILE_BYTES, MAX_LOCAL_METADATA_BYTES, readTextFileWithLimit, writeFileAtomic } from "../../src/core/common";
 import { resetConfigCache } from "../../src/core/config/config";
 import { parseConfigText, withConfigLock } from "../../src/core/config/config-io";
@@ -85,6 +92,8 @@ export interface MigrationBackupManifest {
   createdAt: string;
   complete: true;
   artifacts: Record<ArtifactName, MigrationBackupArtifact>;
+  /** Optional immutable external-task leg, bound to this apply operation. */
+  taskMigration?: TaskMigrationBackupManifest;
 }
 
 export interface MigrationBackupResult {
@@ -363,7 +372,13 @@ function newRunId(): string {
   return `${new Date().toISOString().replace(/[-:.TZ]/g, "")}-${process.pid}-${randomUUID()}`;
 }
 
-function createMigrationBackupUnlocked(options: { allowCorruptIndex?: boolean } = {}): MigrationBackupResult {
+export interface CreateMigrationBackupOptions {
+  allowCorruptIndex?: boolean;
+  operationId?: string;
+  taskPlan?: TaskV2ToV3MigrationPlan;
+}
+
+function createMigrationBackupUnlocked(options: CreateMigrationBackupOptions = {}): MigrationBackupResult {
   const state = inspectMigrationState();
   assertBackupEligible(state, options.allowCorruptIndex);
   const root = getMigrationBackupRoot();
@@ -397,6 +412,9 @@ function createMigrationBackupUnlocked(options: { allowCorruptIndex?: boolean } 
       artifacts[name] = { ...sourceState, sourcePath, present, createdAt };
     }
 
+    const taskMigration = options.taskPlan
+      ? createTaskMigrationBackup(temporary, options.taskPlan, options.operationId ?? "")
+      : undefined;
     const manifest: MigrationBackupManifest = {
       formatVersion: MANIFEST_FORMAT_VERSION,
       version: MIGRATION_BACKUP_VERSION,
@@ -406,6 +424,7 @@ function createMigrationBackupUnlocked(options: { allowCorruptIndex?: boolean } 
       createdAt,
       complete: true,
       artifacts,
+      ...(taskMigration ? { taskMigration } : {}),
     };
     writeFileAtomic(path.join(temporary, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, 0o600);
     fsyncDirectory(temporary);
@@ -462,6 +481,21 @@ function parseManifest(bundlePath: string): MigrationBackupManifest {
       throw new ConfigError(`Migration backup manifest has an invalid ${name} entry.`, "INVALID_CONFIG_FILE");
     }
   }
+  if (manifest.taskMigration !== undefined) {
+    const taskMigration = manifest.taskMigration as Partial<TaskMigrationBackupManifest>;
+    if (
+      !taskMigration ||
+      typeof taskMigration !== "object" ||
+      Array.isArray(taskMigration) ||
+      taskMigration.schemaVersion !== 1 ||
+      typeof taskMigration.operationId !== "string" ||
+      typeof taskMigration.generation !== "string" ||
+      taskMigration.recoveryPath !== "tasks/recovery.json" ||
+      !Array.isArray(taskMigration.files)
+    ) {
+      throw new ConfigError("Migration backup manifest has an invalid taskMigration declaration.", "INVALID_CONFIG_FILE");
+    }
+  }
   return manifest as MigrationBackupManifest;
 }
 
@@ -498,6 +532,10 @@ export function verifyMigrationBackup(bundlePath = resolveBackupRun()): Migratio
   if (!ownerOnlyMode(path.join(bundlePath, "manifest.json"), false)) {
     throw new ConfigError("Migration backup manifest must have mode 0600.", "INVALID_CONFIG_FILE");
   }
+  if (manifest.taskMigration) {
+    expectedFiles.add("tasks");
+    verifyTaskMigrationBackup(bundlePath, manifest.taskMigration);
+  }
   const extras = fs.readdirSync(bundlePath).filter((name) => !expectedFiles.has(name));
   if (extras.length > 0) {
     throw new ConfigError(`Migration backup contains unexpected files: ${extras.join(", ")}.`, "INVALID_CONFIG_FILE");
@@ -509,8 +547,8 @@ export function createMigrationBackup(): MigrationBackupResult {
   return withConfigLock(() => withBackupLock(() => withMaintenanceStartBarrier(createMigrationBackupUnlocked)));
 }
 
-export function ensureMigrationBackupWithConfigLockHeld(): MigrationBackupResult {
-  return withBackupLock(() => withMaintenanceStartBarrier(createMigrationBackupUnlocked));
+export function ensureMigrationBackupWithConfigLockHeld(options: CreateMigrationBackupOptions = {}): MigrationBackupResult {
+  return withBackupLock(() => withMaintenanceStartBarrier(() => createMigrationBackupUnlocked(options)));
 }
 
 export function ensureMigrationBackup(): MigrationBackupResult {
@@ -784,6 +822,15 @@ function failRestoreAfterForTests(name: ArtifactName): void {
 }
 
 function publishBackup(bundlePath: string, manifest: MigrationBackupManifest): void {
+  if (manifest.taskMigration) {
+    restoreTaskMigrationBackup(bundlePath, manifest.taskMigration, {
+      afterPublish(filePath) {
+        if (process.env.AKM_TEST_MIGRATION_FAIL_RESTORE_TASK_AFTER === path.basename(filePath)) {
+          throw new Error(`injected task restore interruption after ${filePath}`);
+        }
+      },
+    });
+  }
   const order: ArtifactName[] = ["state.db", "workflow.db", "index.db", "config.json"];
   for (const name of order) {
     const artifact = manifest.artifacts[name];

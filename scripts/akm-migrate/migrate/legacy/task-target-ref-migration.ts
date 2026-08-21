@@ -26,6 +26,7 @@ import { parseTaskDocument } from "../../../../src/tasks/parser";
 import { classifyRefGrammar, legacyConceptId, parseAssetRef } from "../legacy-ref-grammar";
 import { warn } from "../../../../src/core/warn";
 import { normalizeLegacyTask } from "./legacy-task-normalize";
+import { fsyncDirectoryPortable } from "../durable-fs";
 import {
   canonicalizeWorkflowName,
   type LegacySource,
@@ -335,12 +336,7 @@ function legacyTaskFilesIn(bundle: MigrationBundle): string[] {
 }
 
 function syncParentDirectory(filePath: string): void {
-  const fd = fs.openSync(path.dirname(filePath), "r");
-  try {
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
+  fsyncDirectoryPortable(path.dirname(filePath));
 }
 
 function writeTaskFileDurably(target: string, content: Buffer, mode: number): void {
