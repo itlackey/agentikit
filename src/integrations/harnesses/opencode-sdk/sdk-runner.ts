@@ -347,6 +347,27 @@ function serverRegistryKey(profile: AgentProfile, env: Record<string, string>): 
     .digest("hex");
 }
 
+const OPENCODE_SDK_SERVER_ENV_NAMES = [
+  "HOME",
+  "PATH",
+  "USER",
+  "LANG",
+  "LC_ALL",
+  "TERM",
+  "TMPDIR",
+  "SYSTEMROOT",
+  "COMSPEC",
+  "PATHEXT",
+  "WINDIR",
+  "TEMP",
+  "TMP",
+] as const;
+
+/** @internal Exact environment allowlist used to start the OpenCode SDK server. */
+export function opencodeSdkServerEnvironmentNames(profile: AgentProfile): string[] {
+  return [...new Set([...OPENCODE_SDK_SERVER_ENV_NAMES, ...(profile.envPassthrough ?? [])])];
+}
+
 function buildServerEnv(
   profile: AgentProfile,
   config: Record<string, unknown>,
@@ -354,23 +375,7 @@ function buildServerEnv(
   envSource: NodeJS.ProcessEnv,
 ): Record<string, string> {
   const env: Record<string, string> = {};
-  const inheritedNames = new Set([
-    "HOME",
-    "PATH",
-    "USER",
-    "LANG",
-    "LC_ALL",
-    "TERM",
-    "TMPDIR",
-    "SYSTEMROOT",
-    "COMSPEC",
-    "PATHEXT",
-    "WINDIR",
-    "TEMP",
-    "TMP",
-    ...(profile.envPassthrough ?? []),
-  ]);
-  for (const key of inheritedNames) {
+  for (const key of opencodeSdkServerEnvironmentNames(profile)) {
     const value = envSource[key];
     if (value !== undefined) env[key] = value;
   }

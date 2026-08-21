@@ -26,7 +26,12 @@ import {
   redactSensitiveText,
   redactSensitiveValue,
 } from "../../core/redaction";
-import { closeServer as disposeOpencodeSdkServers, runOpencodeSdk } from "../harnesses/opencode-sdk/sdk-runner";
+import { spawnEnvNamesFor } from "../../core/spawn-env";
+import {
+  closeServer as disposeOpencodeSdkServers,
+  opencodeSdkServerEnvironmentNames,
+  runOpencodeSdk,
+} from "../harnesses/opencode-sdk/sdk-runner";
 import {
   lookupCredentialFromEnv,
   materializeLlmConnection,
@@ -51,6 +56,8 @@ export interface RunnerDispatchLease {
 
 interface RunnerDispatchLeaseState {
   readonly binding: string;
+  readonly environmentSnapshot: Map<string, string | undefined>;
+  readonly environmentSource: NodeJS.ProcessEnv;
   primaryCredential: string | undefined;
   fallbackCredential: string | undefined;
   sensitiveValues: string[];
@@ -68,25 +75,39 @@ function passthroughBinding(spec: Extract<RunnerSpec, { kind: "agent" | "sdk" }>
   return [...new Set(spec.profile.envPassthrough)].sort();
 }
 
+function dispatchEnvironmentNames(spec: RunnerSpec): string[] {
+  switch (spec.kind) {
+    case "llm":
+      return [];
+    case "agent":
+      return spawnEnvNamesFor(spec.profile.envPassthrough);
+    case "sdk":
+      return opencodeSdkServerEnvironmentNames(spec.profile);
+    default:
+      return assertNever(spec);
+  }
+}
+
 function snapshotDispatchEnvironment(spec: RunnerSpec, envSource: NodeJS.ProcessEnv) {
   const snapshot = new Map<string, string | undefined>();
   const read = (name: string): string | undefined => {
     if (!snapshot.has(name)) snapshot.set(name, envSource[name]);
     return snapshot.get(name);
   };
-  const credentialSource = new Proxy(Object.create(null) as NodeJS.ProcessEnv, {
+  const environmentSource = new Proxy(Object.create(null) as NodeJS.ProcessEnv, {
     get(_target, property) {
-      return typeof property === "string" ? read(property) : undefined;
+      return typeof property === "string" ? snapshot.get(property) : undefined;
     },
   });
+  for (const name of dispatchEnvironmentNames(spec)) read(name);
   const passthroughSensitiveValues = new Set<string>();
   if (spec.kind !== "llm") {
     for (const name of new Set(spec.profile.envPassthrough)) {
-      const value = read(name);
+      const value = snapshot.get(name);
       if (!isEnvPassthroughValueSafeToExpose(name, value) && value) passthroughSensitiveValues.add(value);
     }
   }
-  return { credentialSource, passthroughSensitiveValues };
+  return { environmentSnapshot: snapshot, environmentSource, passthroughSensitiveValues, read };
 }
 
 /** Bind only transport identity; request model/inference/schema/timeout remain per-call. */
@@ -151,7 +172,12 @@ export function acquireRunnerDispatchLease(
   spec: RunnerSpec,
   envSource: NodeJS.ProcessEnv = process.env,
 ): RunnerDispatchLease {
-  const { credentialSource, passthroughSensitiveValues } = snapshotDispatchEnvironment(spec, envSource);
+  const environment = snapshotDispatchEnvironment(spec, envSource);
+  const credentialSource = new Proxy(Object.create(null) as NodeJS.ProcessEnv, {
+    get(_target, property) {
+      return typeof property === "string" ? environment.read(property) : undefined;
+    },
+  });
   const primaryCredential =
     spec.kind === "llm" ? resolveCredentialFromEnv(spec.credential, credentialSource) : undefined;
   const fallbackCredential =
@@ -169,12 +195,14 @@ export function acquireRunnerDispatchLease(
   const sensitiveValues = collectSensitiveValues([
     primaryCredential,
     fallbackCredential,
-    ...passthroughSensitiveValues,
+    ...environment.passthroughSensitiveValues,
   ]);
   liveRunnerDispatchLeases.set(handle, {
     binding: runnerLeaseBinding(spec),
     primaryCredential,
     fallbackCredential,
+    environmentSnapshot: environment.environmentSnapshot,
+    environmentSource: environment.environmentSource,
     sensitiveValues,
   });
   issuedRunnerDispatchLeases.add(handle);
@@ -190,6 +218,7 @@ export function disposeRunnerDispatchLease(lease: RunnerDispatchLease): void {
   if (!state) return;
   state.primaryCredential = undefined;
   state.fallbackCredential = undefined;
+  state.environmentSnapshot.clear();
   state.sensitiveValues.fill("");
   state.sensitiveValues = [];
   liveRunnerDispatchLeases.delete(lease);
@@ -316,8 +345,8 @@ export interface RunnerSeams {
 /**
  * Dispatch a {@link RunnerSpec} to its runner and return the raw
  * {@link AgentRunResult}. `opts` is the {@link RunAgentOptions} for the profile
- * (`agent` / `sdk`) arms; it is passed through unchanged so each caller keeps
- * its exact option set (incl. any `timeoutMs` the caller chose to apply).
+ * (`agent` / `sdk`) arms. Callers keep their per-call options; a bound lease
+ * replaces only `envSource` with its private immutable environment snapshot.
  */
 export async function executeRunner(
   spec: RunnerSpec,
@@ -326,10 +355,15 @@ export async function executeRunner(
   seams: RunnerSeams = {},
   lease?: RunnerDispatchLease,
 ): Promise<AgentRunResult> {
-  const withSpecOptions = (timeoutMs: number | null | undefined, workspace?: string): RunAgentOptions => ({
+  const withSpecOptions = (
+    timeoutMs: number | null | undefined,
+    workspace?: string,
+    environmentSource?: NodeJS.ProcessEnv,
+  ): RunAgentOptions => ({
     ...opts,
     ...(Object.hasOwn(opts, "timeoutMs") ? {} : timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(opts.cwd === undefined && workspace ? { cwd: workspace } : {}),
+    ...(environmentSource ? { envSource: environmentSource } : {}),
   });
   let result: AgentRunResult;
   const dispatchSensitiveValues: string[] = [];
@@ -354,7 +388,11 @@ export async function executeRunner(
     }
     case "agent": {
       const run = seams.runAgent ?? runAgent;
-      result = await run(spec.profile, prompt, withSpecOptions(spec.timeoutMs, spec.profile.workspace));
+      result = await run(
+        spec.profile,
+        prompt,
+        withSpecOptions(spec.timeoutMs, spec.profile.workspace, leaseState?.environmentSource),
+      );
       break;
     }
     case "sdk": {
@@ -381,7 +419,7 @@ export async function executeRunner(
       result = await run(
         spec.profile,
         prompt,
-        withSpecOptions(spec.timeoutMs, spec.profile.workspace),
+        withSpecOptions(spec.timeoutMs, spec.profile.workspace, leaseState?.environmentSource),
         fallbackConnection,
       );
       break;

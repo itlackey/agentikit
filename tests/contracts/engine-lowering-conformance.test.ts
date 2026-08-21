@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { renderMarkdownExecutionSource } from "../../src/core/adapter/execution-source";
 import type { AkmConfig } from "../../src/core/config/config";
 import { redactSensitiveText } from "../../src/core/redaction";
+import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
 import type { ExecutionJsonObject } from "../../src/execution/json";
 import {
   canonicalResolvedExecutionRequest,
@@ -39,10 +40,32 @@ import {
   executeRunner,
 } from "../../src/integrations/agent/runner-dispatch";
 import { HARNESS_REGISTRY } from "../../src/integrations/harnesses";
+import {
+  __setServerFactory,
+  closeServer as closeOpencodeSdkServer,
+} from "../../src/integrations/harnesses/opencode-sdk/sdk-runner";
 import { LlmCallError, type LlmCallErrorCode } from "../../src/llm/client";
 import { mutateScopedEnv, withEnv } from "../_helpers/sandbox";
 
 const CLI_HARNESSES = HARNESS_REGISTRY.filter((harness) => harness.agentBuilder).map((harness) => harness.id);
+
+function completedSubprocess(stdout: string, stderr = stdout): SpawnedSubprocess {
+  const stream = (text: string) =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(text));
+        controller.close();
+      },
+    });
+  return {
+    exitCode: 0,
+    exited: Promise.resolve(0),
+    stdout: stream(stdout),
+    stderr: stream(stderr),
+    stdin: null,
+    kill() {},
+  };
+}
 
 function configFor(platform: string, kind: "agent" | "llm" = "agent"): AkmConfig {
   const engine =
@@ -310,6 +333,137 @@ describe("resolved execution lowerer registry", () => {
       disposeLoweredExecutionDispatchLease(lease);
     }
     expect(() => redactWithLoweredExecutionDispatchLease(lease, secret)).toThrow(/disposed|invalid dispatch lease/i);
+  });
+
+  test("an agent lease drives the real child env from its immutable passthrough snapshot", async () => {
+    const name = "AKM_WP5_AGENT_IMMUTABLE_PASSTHROUGH";
+    const original = "agent-immutable-original-secret";
+    const replacement = "agent-live-replacement-secret";
+    const profile = {
+      name: "fixture-agent-immutable-env",
+      platform: "opencode",
+      personaChannel: "prompt" as const,
+      bin: "fixture-agent",
+      args: [],
+      stdio: "captured" as const,
+      envPassthrough: [name],
+      parseOutput: "text" as const,
+    };
+    const runner: RunnerSpec = { kind: "agent", engine: "fixture", profile };
+    const lowered = lowerResolvedExecutionRequestWithRunner(requestFor("opencode", "agent"), runner);
+    let current = original;
+    let ambientReads = 0;
+    let passthroughReads = 0;
+    const envSource = new Proxy(Object.create(null) as NodeJS.ProcessEnv, {
+      get(_target, property) {
+        ambientReads += 1;
+        if (property !== name) return undefined;
+        passthroughReads += 1;
+        return current;
+      },
+    });
+    let childValue: string | undefined;
+    const spawn: SpawnFn = (_argv, options) => {
+      childValue = options.env?.[name];
+      return completedSubprocess(childValue ?? "");
+    };
+
+    const lease = acquireLoweredExecutionDispatchLease(lowered, { envSource });
+    const readsAfterAcquire = ambientReads;
+    try {
+      current = replacement;
+      const result = await dispatchLoweredExecutionRequest(lowered, {
+        lease,
+        runOptions: { envSource, spawn, timeoutMs: null },
+      });
+      expect(ambientReads).toBe(readsAfterAcquire);
+      expect(passthroughReads).toBe(1);
+      expect(childValue).toBe(original);
+      expect(result.stdout).toContain("[REDACTED]");
+      expect(result.stderr).toContain("[REDACTED]");
+      expect(JSON.stringify(result)).not.toContain(original);
+      expect(JSON.stringify(result)).not.toContain(replacement);
+    } finally {
+      disposeLoweredExecutionDispatchLease(lease);
+    }
+
+    const unleased = await executeRunner(runner, "prompt", { envSource, spawn, timeoutMs: null });
+    expect(childValue).toBe(replacement);
+    expect(unleased.stdout).toContain("[REDACTED]");
+    expect(JSON.stringify(unleased)).not.toContain(replacement);
+  });
+
+  test("an SDK lease drives the real server env from its immutable passthrough snapshot", async () => {
+    const name = "AKM_WP5_SDK_IMMUTABLE_PASSTHROUGH";
+    const original = "sdk-immutable-original-secret";
+    const replacement = "sdk-live-replacement-secret";
+    const profile = {
+      name: "fixture-sdk-immutable-env",
+      platform: "opencode-sdk",
+      personaChannel: "native" as const,
+      bin: "fixture-opencode",
+      args: [],
+      stdio: "captured" as const,
+      envPassthrough: [name],
+      parseOutput: "text" as const,
+    };
+    const runner: RunnerSpec = { kind: "sdk", engine: "fixture", profile };
+    const lowered = lowerResolvedExecutionRequestWithRunner(
+      requestFor("opencode-sdk", "sdk", {
+        runtime: { timeoutMs: null, workspace: "/fixture/workspace", environment: {} },
+      }),
+      runner,
+    );
+    let current = original;
+    let ambientReads = 0;
+    let passthroughReads = 0;
+    const envSource = new Proxy(Object.create(null) as NodeJS.ProcessEnv, {
+      get(_target, property) {
+        ambientReads += 1;
+        if (property !== name) return undefined;
+        passthroughReads += 1;
+        return current;
+      },
+    });
+    let serverValue: string | undefined;
+    __setServerFactory(((options: { env: Record<string, string> }) => {
+      serverValue = options.env[name];
+      return Promise.resolve({
+        client: {
+          session: {
+            create: async () => ({ data: { id: "lease-env-session" } }),
+            prompt: async () => ({ data: { parts: [{ type: "text", text: serverValue }] } }),
+            delete: async () => ({}),
+          },
+        },
+        server: { close() {} },
+      });
+    }) as never);
+
+    const lease = acquireLoweredExecutionDispatchLease(lowered, { envSource });
+    const readsAfterAcquire = ambientReads;
+    try {
+      current = replacement;
+      const result = await dispatchLoweredExecutionRequest(lowered, {
+        lease,
+        runOptions: { envSource, timeoutMs: null },
+      });
+      expect(ambientReads).toBe(readsAfterAcquire);
+      expect(passthroughReads).toBe(1);
+      expect(serverValue).toBe(original);
+      expect(result.stdout).toContain("[REDACTED]");
+      expect(JSON.stringify(result)).not.toContain(original);
+      expect(JSON.stringify(result)).not.toContain(replacement);
+
+      const unleased = await executeRunner(runner, "prompt", { envSource, timeoutMs: null });
+      expect(serverValue).toBe(replacement);
+      expect(unleased.stdout).toContain("[REDACTED]");
+      expect(JSON.stringify(unleased)).not.toContain(replacement);
+    } finally {
+      disposeLoweredExecutionDispatchLease(lease);
+      __setServerFactory(null);
+      await closeOpencodeSdkServer();
+    }
   });
 
   test("executeRunner snapshots mutable profile and per-dispatch env before awaiting the runner", async () => {
