@@ -22,7 +22,7 @@ import path from "node:path";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { recognizeMatch } from "../../core/adapter/recognize-match";
 import { adapterForId } from "../../core/adapter/registry";
-import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
+import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { extractSection, markdownFragmentSlugs } from "../../core/asset/markdown";
 import { displayRef, typeNameFromConceptId } from "../../core/asset/resolve-ref";
@@ -109,6 +109,13 @@ export async function akmShowUnified(input: {
     const metaRef = parseMetaRef(ref);
     if (metaRef) return showStashMeta(metaRef);
   }
+
+  // Env/secret bodies have no safe fragment surface. Reject from the canonical
+  // ref namespace before auto-index or lookup can touch authored bytes. This is
+  // deliberately independent of on-disk suffix probing: secret filenames keep
+  // their natural extension, and a misspelled extensionless ref must not move
+  // the sensitive-fragment policy behind a not-found result.
+  assertSensitiveFragmentUnsupported(parseBundleRef(ref));
 
   // Auto-index when stale so the index is current before lookup.
   const { primarySource } = resolveReadSources();
@@ -224,6 +231,7 @@ export async function showLocal(input: {
   stashDir?: string;
 }): Promise<ShowResponse> {
   const parsed = parseBundleRef(input.ref);
+  assertSensitiveFragmentUnsupported(parsed);
   const assetParts = typeNameFromConceptId(parsed.conceptId);
   const config = loadConfig();
   const allSources = resolveSourceEntries(input.stashDir);
@@ -406,6 +414,17 @@ export async function showLocal(input: {
   }
 
   return fullResponse;
+}
+
+/** Reject body fragments for namespaces whose authored bytes are sensitive. */
+function assertSensitiveFragmentUnsupported(ref: BundleRef): void {
+  if (ref.fragment === undefined) return;
+  const type = typeNameFromConceptId(ref.conceptId)?.type;
+  if (type !== "env" && type !== "secret") return;
+  throw new UsageError(
+    `Fragments are not supported for ${makeBundleRef(ref.bundle, ref.conceptId)}. Sensitive ${type} assets do not expose body fragments.`,
+    "INVALID_FLAG_VALUE",
+  );
 }
 
 /**

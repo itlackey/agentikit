@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -168,16 +168,51 @@ describe("akmShow installed ref", () => {
 describe("akmShow sensitive fragments", () => {
   test("rejects secret fragments before reading the secret body", async () => {
     saveConfig({ semanticSearchMode: "off" });
-    writeFile(path.join(stashDir, "secrets", "leak.md"), "# token\nDO_NOT_PRINT\n");
+    const secretPath = path.join(stashDir, "secrets", "leak.md");
+    const secretBody = "# token\nDO_NOT_PRINT\n";
+    writeFile(secretPath, secretBody);
 
-    await expect(akmShow({ ref: "secrets/leak#token" })).rejects.toThrow(/Fragments are not supported/);
+    const readFileSync = fs.readFileSync.bind(fs);
+    let secretBodyReads = 0;
+    spyOn(fs, "readFileSync").mockImplementation(((filePath: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+      if (typeof filePath !== "number" && path.resolve(String(filePath)) === path.resolve(secretPath)) {
+        secretBodyReads++;
+      }
+      return Reflect.apply(readFileSync, fs, [filePath, ...args]);
+    }) as typeof fs.readFileSync);
+
+    const error = await akmShow({ ref: "secrets/leak#token" }).then(
+      () => new Error("expected a sensitive-fragment rejection"),
+      (caught: unknown) => caught,
+    );
+
+    expect(String(error)).toMatch(/Fragments are not supported/);
+    expect(String(error)).not.toContain("DO_NOT_PRINT");
+    expect(secretBodyReads).toBe(0);
   });
 
   test("rejects env fragments before reading values or comments", async () => {
     saveConfig({ semanticSearchMode: "off" });
-    writeFile(path.join(stashDir, "env", "prod.env"), "# token\nAPI_KEY=DO_NOT_PRINT\n");
+    const envPath = path.join(stashDir, "env", "prod.env");
+    writeFile(envPath, "# token\nAPI_KEY=DO_NOT_PRINT\n");
 
-    await expect(akmShow({ ref: "env/prod#token" })).rejects.toThrow(/Fragments are not supported/);
+    const readFileSync = fs.readFileSync.bind(fs);
+    let envBodyReads = 0;
+    spyOn(fs, "readFileSync").mockImplementation(((filePath: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+      if (typeof filePath !== "number" && path.resolve(String(filePath)) === path.resolve(envPath)) {
+        envBodyReads++;
+      }
+      return Reflect.apply(readFileSync, fs, [filePath, ...args]);
+    }) as typeof fs.readFileSync);
+
+    const error = await akmShow({ ref: "env/prod#token" }).then(
+      () => new Error("expected a sensitive-fragment rejection"),
+      (caught: unknown) => caught,
+    );
+
+    expect(String(error)).toMatch(/Fragments are not supported/);
+    expect(String(error)).not.toContain("DO_NOT_PRINT");
+    expect(envBodyReads).toBe(0);
   });
 });
 
