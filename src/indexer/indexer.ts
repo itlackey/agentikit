@@ -1231,6 +1231,9 @@ function buildSourceScanPlans(
     }
     const walked = walkStashFlatWithStatus(currentStashDir, {
       includeAllDirectories: component.adapter === "okf",
+      ...(component.adapter === "akm" || component.adapter === "akm-workflow"
+        ? { workflowSymlinkAdapter: component.adapter }
+        : {}),
     });
     const dirGroups = groupFileContextsByDir(walked.files);
     const adapter = adapterForId(component.adapter);
@@ -1464,7 +1467,7 @@ async function scanSourceDirs(
       // abstains on its own bundle's walked files. The core walk keeps only the
       // universal hygiene `walkStashFlat` already applies (.git/dot-dirs/etc.).
       const indexableFiles = ctxs.map((ctx) => ctx.absPath);
-      const forceScan = handoffDirs.has(path.resolve(dirPath));
+      const forceScan = handoffDirs.has(path.resolve(dirPath)) || requiresWorkflowSourcePreflight(ctxs);
 
       if (markSeenOrSkipDuplicate(dirPath, currentStashDir, indexableFiles)) continue;
 
@@ -1541,6 +1544,16 @@ async function scanSourceDirs(
     warnings,
     complete: plans.every((plan) => plan.walkComplete && plan.adapter !== undefined),
   };
+}
+
+function requiresWorkflowSourcePreflight(ctxs: readonly FileContext[]): boolean {
+  return ctxs.some((ctx) => {
+    try {
+      return fs.lstatSync(ctx.absPath).isSymbolicLink();
+    } catch {
+      return true;
+    }
+  });
 }
 
 function preserveExistingIndex(

@@ -37,10 +37,11 @@ import path from "node:path";
 import { akmAdapter } from "../../core/adapter/adapters/akm-adapter";
 import type { BundleAdapter } from "../../core/adapter/bundle-adapter";
 import type { BundleComponent, IndexDocument } from "../../core/adapter/types";
+import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import { cacheWorkflowDocument } from "../../workflows/runtime/document-cache";
 import {
   resolveUniqueWorkflowSource,
-  WorkflowSourceCollisionError,
+  WorkflowSourceRejectionError,
   workflowNameForSourcePath,
 } from "../../workflows/source-files";
 import { compileWorkflowSource } from "../../workflows/source-ir/compile";
@@ -66,8 +67,10 @@ export interface DrainedDir {
    * `item_ref` verbatim (D-R3: identity comes from the owning adapter).
    */
   conceptIdByFile: Map<string, string>;
-  /** Paths rejected as members of a same-canonical-ref workflow collision. */
+  /** Authored paths rejected by workflow source-ownership preflight. */
   rejectedPaths: Set<string>;
+  /** Adapter-owned canonical concept ids rejected before workflow parsing. */
+  rejectedConceptIds: Set<string>;
 }
 
 /**
@@ -89,25 +92,34 @@ export function drainDirDocuments(
   const hashByFile = new Map<string, string>();
   const conceptIdByFile = new Map<string, string>();
   const rejectedPaths = new Set<string>();
-  const reportedCollisions = new Set<string>();
+  const rejectedConceptIds = new Set<string>();
+  const workflowLookups = new Map<string, string>();
 
   for (const file of fileContexts) {
     const workflowName = workflowNameForSourcePath(component.root, adapter.id, file.absPath);
     if (workflowName !== undefined) {
-      try {
-        resolveUniqueWorkflowSource(component.root, adapter.id, workflowName);
-      } catch (error) {
-        if (!(error instanceof WorkflowSourceCollisionError)) throw error;
-        for (const relativePath of error.sourcePaths) {
-          rejectedPaths.add(path.join(component.root, relativePath));
-        }
-        if (!reportedCollisions.has(error.canonicalName)) {
-          reportedCollisions.add(error.canonicalName);
-          warnings.push(error.message);
-        }
-        continue;
-      }
+      const canonicalName = canonicalizeWorkflowName(workflowName);
+      if (!workflowLookups.has(canonicalName)) workflowLookups.set(canonicalName, workflowName);
     }
+  }
+
+  for (const [canonicalName, workflowName] of [...workflowLookups].sort(([left], [right]) =>
+    comparePaths(left, right),
+  )) {
+    try {
+      resolveUniqueWorkflowSource(component.root, adapter.id, workflowName);
+    } catch (error) {
+      if (!(error instanceof WorkflowSourceRejectionError)) throw error;
+      rejectedConceptIds.add(adapter.id === "akm" ? `workflows/${canonicalName}` : canonicalName);
+      for (const relativePath of error.sourcePaths) {
+        rejectedPaths.add(path.join(component.root, relativePath));
+      }
+      warnings.push(error.message);
+    }
+  }
+
+  for (const file of fileContexts) {
+    if (rejectedPaths.has(file.absPath)) continue;
 
     const doc = adapter.recognize(component, file);
     if (doc === null) continue;
@@ -130,7 +142,11 @@ export function drainDirDocuments(
     entries.push(entry);
   }
 
-  return { entries, warnings, hashByFile, conceptIdByFile, rejectedPaths };
+  return { entries, warnings, hashByFile, conceptIdByFile, rejectedPaths, rejectedConceptIds };
+}
+
+function comparePaths(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /**

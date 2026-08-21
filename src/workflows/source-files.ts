@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { UsageError } from "../core/errors";
+import { UsageError, type UsageErrorCode } from "../core/errors";
 import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../core/recognition-util";
 
 export type WorkflowSourceFormat = "markdown" | "github-yaml";
@@ -30,9 +30,18 @@ export interface WorkflowSourceFile {
   format: WorkflowSourceFormat;
 }
 
-export class WorkflowSourceCollisionError extends UsageError {
-  readonly canonicalName: string;
+export abstract class WorkflowSourceRejectionError extends UsageError {
   readonly sourcePaths: readonly string[];
+
+  protected constructor(message: string, code: UsageErrorCode, sourcePaths: readonly string[]) {
+    super(message, code);
+    this.sourcePaths = [...sourcePaths].sort(comparePaths);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class WorkflowSourceCollisionError extends WorkflowSourceRejectionError {
+  readonly canonicalName: string;
 
   constructor(canonicalName: string, sourcePaths: readonly string[]) {
     const sorted = [...sourcePaths].sort(comparePaths);
@@ -40,10 +49,10 @@ export class WorkflowSourceCollisionError extends UsageError {
       `Workflow "${canonicalName}" resolves to multiple workflow source files: ${sorted.join(", ")}. ` +
         "A canonical workflow ref must be owned by exactly one recognized .md or .yml source; remove or rename the duplicate.",
       "RESOURCE_ALREADY_EXISTS",
+      sorted,
     );
     this.name = "WorkflowSourceCollisionError";
     this.canonicalName = canonicalName;
-    this.sourcePaths = sorted;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -60,28 +69,62 @@ export class WorkflowSourceIdentityError extends UsageError {
   }
 }
 
-export class WorkflowSourceLinkIdentityError extends UsageError {
+export class WorkflowSourceNameError extends WorkflowSourceRejectionError {
+  constructor(sourcePath: string, nestedSuffix: string) {
+    super(
+      `Workflow source filename ${sourcePath} has an extensionless stem ending in recognized workflow suffix "${nestedSuffix}". ` +
+        "Nested workflow suffixes are invalid; remove the inner .md or .yml suffix instead of relying on repeated stripping.",
+      "INVALID_FLAG_VALUE",
+      [sourcePath],
+    );
+    this.name = "WorkflowSourceNameError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class WorkflowSourceLinkIdentityError extends WorkflowSourceRejectionError {
   constructor(sourcePath: string, targetPath: string) {
     super(
       `Workflow source ${sourcePath} resolves through a symlink to ${targetPath} with a different source format. ` +
         "The authored workflow path and resolved source must use the same .md or .yml format.",
       "INVALID_FLAG_VALUE",
+      [sourcePath],
     );
     this.name = "WorkflowSourceLinkIdentityError";
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 
+export class WorkflowSourceLinkResolutionError extends WorkflowSourceRejectionError {
+  constructor(sourcePath: string) {
+    super(`Workflow source symlink ${sourcePath} cannot be resolved to a regular file.`, "INVALID_FLAG_VALUE", [
+      sourcePath,
+    ]);
+    this.name = "WorkflowSourceLinkResolutionError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class WorkflowSourcePathIdentityError extends WorkflowSourceRejectionError {
+  constructor(sourcePath: string, targetPath: string) {
+    super(`Workflow source ${sourcePath} resolves outside the bundle root to ${targetPath}.`, "PATH_ESCAPE_VIOLATION", [
+      sourcePath,
+    ]);
+    this.name = "WorkflowSourcePathIdentityError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 /** Convert an adapter-owned concept id into its extensionless workflow name. */
 export function workflowNameForConceptId(adapterId: string, conceptId: string): string | undefined {
-  if (adapterId === "akm-workflow") return canonicalizeWorkflowName(conceptId);
+  if (adapterId === "akm-workflow") return conceptId;
   if (adapterId !== "akm") return undefined;
   const prefix = "workflows/";
   if (!conceptId.startsWith(prefix) || conceptId.length === prefix.length) return undefined;
-  return canonicalizeWorkflowName(conceptId.slice(prefix.length));
+  return conceptId.slice(prefix.length);
 }
 
-/** Derive the canonical workflow name from an adapter-owned authored path. */
+/** Derive the once-canonicalizable workflow name from an adapter-owned authored path. */
 export function workflowNameForSourcePath(
   sourceRoot: string,
   adapterId: string,
@@ -94,8 +137,7 @@ export function workflowNameForSourcePath(
   if (adapterId === "akm" && ownedPath === relativePath) return undefined;
   const extension = path.posix.extname(ownedPath);
   if (!(WORKFLOW_EXTENSIONS as readonly string[]).includes(extension.toLowerCase())) return undefined;
-  const canonicalName = canonicalizeWorkflowName(ownedPath);
-  return isSafeRelativeName(canonicalName) ? canonicalName : undefined;
+  return ownedPath;
 }
 
 /**
@@ -142,15 +184,24 @@ export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, n
     if (entry.name.slice(0, -extension.length) !== basename) continue;
 
     const candidatePath = path.join(parent, entry.name);
+    const relativePath = toPosix(path.relative(authoredRoot, candidatePath));
+    const extensionlessStem = entry.name.slice(0, -extension.length);
+    const nestedSuffix = (WORKFLOW_EXTENSIONS as readonly string[]).find((suffix) =>
+      extensionlessStem.toLowerCase().endsWith(suffix),
+    );
+    if (nestedSuffix) {
+      throw new WorkflowSourceNameError(relativePath, nestedSuffix);
+    }
     let realPath: string;
     try {
       if (!fs.statSync(candidatePath).isFile()) continue;
       realPath = fs.realpathSync(candidatePath);
     } catch {
+      if (entry.isSymbolicLink()) throw new WorkflowSourceLinkResolutionError(relativePath);
       continue;
     }
     if (!isWithinResolved(realPath, realRoot)) {
-      throw new UsageError("Workflow ref resolves outside the bundle root.", "PATH_ESCAPE_VIOLATION");
+      throw new WorkflowSourcePathIdentityError(relativePath, toPosix(path.relative(realRoot, realPath)));
     }
 
     const realExtension = path.extname(realPath).toLowerCase();
@@ -164,7 +215,7 @@ export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, n
     sources.push({
       path: candidatePath,
       realPath,
-      relativePath: toPosix(path.relative(authoredRoot, candidatePath)),
+      relativePath,
       canonicalName,
       format: lowerExtension === ".md" ? "markdown" : "github-yaml",
     });

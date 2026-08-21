@@ -110,9 +110,16 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
     const { source, bundleId } = candidateSource;
     try {
       const adapterId = source.adapterId ?? detectAdapterId(source.path);
+      const ownedSource = source.adapterId ? source : { ...source, adapterId };
+      if (!ownsNativeWorkflowRuntime(ownedSource)) {
+        if (adapterOwnsConcept(source.path, adapterId, bundleRef.conceptId)) {
+          rejectedSource ??= { source: ownedSource, bundleId };
+          break;
+        }
+        continue;
+      }
       const candidateName =
         adapterId === "akm-workflow" ? bundleRef.conceptId : workflowNameFromConceptId(bundleRef.conceptId);
-      const ownedSource = source.adapterId ? source : { ...source, adapterId };
       if (!candidateName) {
         if (adapterOwnsConcept(source.path, adapterId, bundleRef.conceptId)) {
           rejectedSource ??= { source: ownedSource, bundleId };
@@ -122,10 +129,6 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
       }
       const candidateSource = resolveUniqueWorkflowSource(source.path, adapterId, candidateName);
       if (!candidateSource) throw new NotFoundError(`Workflow not found: ${candidateName}`);
-      if (!ownsNativeWorkflowRuntime(ownedSource)) {
-        rejectedSource ??= { source: ownedSource, bundleId };
-        break;
-      }
       assetPath = candidateSource.path;
       sourcePath = source.path;
       sourceBundleId = bundleId;

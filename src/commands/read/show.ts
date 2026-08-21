@@ -61,11 +61,7 @@ import type { ShowDetailLevel, ShowResponse } from "../../sources/types";
 import { getCurrentWorkflowScopeKey } from "../../workflows/authoring/scope-key";
 import { buildWorkflowAction } from "../../workflows/renderer";
 import { getActiveWorkflowRun } from "../../workflows/runtime/runs";
-import {
-  WorkflowSourceCollisionError,
-  WorkflowSourceIdentityError,
-  WorkflowSourceLinkIdentityError,
-} from "../../workflows/source-files";
+import { WorkflowSourceIdentityError, WorkflowSourceRejectionError } from "../../workflows/source-files";
 
 /**
  * Unified show: queries the local FTS5 index, then falls back to on-disk
@@ -232,11 +228,7 @@ export async function showLocal(input: {
     indexedEntry = await lookupBundleRef(parsed);
   } catch (err) {
     rethrowIfTestIsolationError(err);
-    if (
-      err instanceof WorkflowSourceCollisionError ||
-      err instanceof WorkflowSourceIdentityError ||
-      err instanceof WorkflowSourceLinkIdentityError
-    ) {
+    if (err instanceof WorkflowSourceRejectionError || err instanceof WorkflowSourceIdentityError) {
       throw err;
     }
     indexedEntry = null;
