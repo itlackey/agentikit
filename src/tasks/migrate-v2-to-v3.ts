@@ -37,6 +37,10 @@ export interface TaskV2ToV3FilesystemIdentity {
   readonly realPath: string;
   readonly device: string;
   readonly inode: string;
+  /** Decimal hard-link count captured with the physical inode identity. */
+  readonly linkCount: string;
+  /** Decimal nanosecond inode change time; catches transient link/unlink drift. */
+  readonly changeTimeNs: string;
 }
 
 export interface TaskV2ToV3InspectionIdentity {

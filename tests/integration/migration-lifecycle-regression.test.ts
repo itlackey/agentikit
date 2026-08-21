@@ -23,6 +23,7 @@ import { openLegacyWorkflowDb } from "../_helpers/legacy-workflow-db";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
+type MigrationSeedDatabase = ReturnType<typeof openStateDbAtCeiling>;
 
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
@@ -211,6 +212,261 @@ test("a ledger-current WAL database without a cutover marker remains unresolved 
   expect(current.query("SELECT operation_id FROM akm_cutover_ledger WHERE singleton=1").get()).toMatchObject({
     operation_id: expect.any(String),
   });
+  expect(current.query("SELECT backup_run_id, task_generation FROM akm_migration_completion").get()).toMatchObject({
+    backup_run_id: expect.any(String),
+    task_generation: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  current.close();
+});
+
+const MATRIX_MEMORY_LEGACY_REF = ["memory", "table-matrix"].join(":");
+const MATRIX_MEMORY_REF = "stash//memories/table-matrix";
+
+test.each([
+  {
+    label: "asset salience",
+    legacyRef: MATRIX_MEMORY_LEGACY_REF,
+    expectedRef: MATRIX_MEMORY_REF,
+    insert: (db: MigrationSeedDatabase, ref: string) =>
+      db.prepare("INSERT INTO asset_salience(asset_ref, updated_at) VALUES (?, 1)").run(ref),
+    select: (db: Database) => (db.query("SELECT asset_ref AS ref FROM asset_salience").get() as { ref: string }).ref,
+  },
+  {
+    label: "asset outcome",
+    legacyRef: MATRIX_MEMORY_LEGACY_REF,
+    expectedRef: MATRIX_MEMORY_REF,
+    insert: (db: MigrationSeedDatabase, ref: string) =>
+      db.prepare("INSERT INTO asset_outcome(asset_ref, updated_at) VALUES (?, 1)").run(ref),
+    select: (db: Database) => (db.query("SELECT asset_ref AS ref FROM asset_outcome").get() as { ref: string }).ref,
+  },
+  {
+    label: "event history",
+    legacyRef: MATRIX_MEMORY_LEGACY_REF,
+    expectedRef: MATRIX_MEMORY_REF,
+    insert: (db: MigrationSeedDatabase, ref: string) =>
+      db.prepare("INSERT INTO events(event_type, ts, ref, metadata_json) VALUES ('probe', 'now', ?, '{}')").run(ref),
+    select: (db: Database) => (db.query("SELECT ref FROM events").get() as { ref: string }).ref,
+  },
+  {
+    label: "task history",
+    legacyRef: MATRIX_MEMORY_LEGACY_REF,
+    expectedRef: MATRIX_MEMORY_REF,
+    insert: (db: MigrationSeedDatabase, ref: string) =>
+      db
+        .prepare(
+          "INSERT INTO task_history(task_id, status, started_at, target_ref, metadata_json) VALUES ('task', 'done', 'now', ?, '{}')",
+        )
+        .run(ref),
+    select: (db: Database) => (db.query("SELECT target_ref AS ref FROM task_history").get() as { ref: string }).ref,
+  },
+  {
+    label: "proposal fingerprint",
+    legacyRef: MATRIX_MEMORY_LEGACY_REF,
+    expectedRef: MATRIX_MEMORY_REF,
+    insert: (db: MigrationSeedDatabase, ref: string) =>
+      db
+        .prepare(
+          "INSERT INTO proposal_fingerprints(stash_dir, fingerprint, ref, source, created_at) VALUES ('stash', 'fingerprint', ?, 'probe', 'now')",
+        )
+        .run(ref),
+    select: (db: Database) => (db.query("SELECT ref FROM proposal_fingerprints").get() as { ref: string }).ref,
+  },
+  {
+    label: "canary query",
+    legacyRef: MATRIX_MEMORY_LEGACY_REF,
+    expectedRef: MATRIX_MEMORY_REF,
+    insert: (db: MigrationSeedDatabase, ref: string) =>
+      db
+        .prepare(
+          "INSERT INTO canary_queries(canary_set_id, anchor_ref, query, created_at) VALUES ('set', ?, 'query', 'now')",
+        )
+        .run(ref),
+    select: (db: Database) => (db.query("SELECT anchor_ref AS ref FROM canary_queries").get() as { ref: string }).ref,
+  },
+  {
+    label: "usage history",
+    legacyRef: MATRIX_MEMORY_LEGACY_REF,
+    expectedRef: MATRIX_MEMORY_REF,
+    insert: (db: MigrationSeedDatabase, ref: string) =>
+      db.prepare("INSERT INTO usage_events(event_type, entry_ref, source) VALUES ('probe', ?, 'user')").run(ref),
+    select: (db: Database) => (db.query("SELECT entry_ref AS ref FROM usage_events").get() as { ref: string }).ref,
+  },
+  {
+    label: "workflow runs",
+    legacyRef: ["workflow", "table-matrix"].join(":"),
+    expectedRef: "workflows/table-matrix",
+    insert: (db: MigrationSeedDatabase, ref: string) =>
+      db
+        .prepare(
+          "INSERT INTO workflow_runs(id, workflow_ref, workflow_title, status, params_json, created_at, updated_at) VALUES ('run', ?, 'probe', 'completed', '{}', 'now', 'now')",
+        )
+        .run(ref),
+    select: (db: Database) => (db.query("SELECT workflow_ref AS ref FROM workflow_runs").get() as { ref: string }).ref,
+  },
+])("a markerless current ledger repairs a mapped residual in $label under DELETE mode", async ({
+  insert,
+  select,
+  legacyRef,
+  expectedRef,
+}) => {
+  fs.writeFileSync(getConfigPath(), `${JSON.stringify(currentConfig())}\n`, { mode: 0o600 });
+  const assetPath = path.join(storage.stashDir, "memories", "table-matrix.md");
+  fs.mkdirSync(path.dirname(assetPath), { recursive: true });
+  fs.writeFileSync(assetPath, "# Table matrix\n");
+  const statePath = getStateDbPathInDataDir();
+  const seeded = openStateDbAtCeiling(statePath, STATE_MIGRATIONS.at(-1)!.id);
+  insert(seeded, legacyRef);
+  seeded.close();
+
+  expect(cutoverMergeCommitted(statePath)).toBe(false);
+  expect(inspectMigrationPlan()).toMatchObject({ status: "ready", artifacts: { state: { status: "current" } } });
+  const applied = await runCliCapture(["migrate", "apply"]);
+  expect(applied.code, applied.stderr).toBe(0);
+  expect(cutoverMergeCommitted(statePath)).toBe(true);
+  const current = new Database(statePath, { readonly: true });
+  expect(select(current)).toBe(expectedRef);
+  expect(current.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "delete" });
+  current.close();
+  expect(fs.existsSync(`${statePath}-wal`)).toBe(false);
+  expect(fs.existsSync(`${statePath}-shm`)).toBe(false);
+});
+
+test("an unmappable asset-salience ref in a markerless current WAL ledger blocks without mutation", async () => {
+  fs.writeFileSync(getConfigPath(), `${JSON.stringify(currentConfig())}\n`, { mode: 0o600 });
+  const statePath = getStateDbPathInDataDir();
+  openStateDbAtCeiling(statePath, STATE_MIGRATIONS.at(-1)!.id).close();
+  const writer = new Database(statePath);
+  try {
+    expect(writer.query("PRAGMA journal_mode=WAL").get()).toEqual({ journal_mode: "wal" });
+    writer.exec("PRAGMA wal_autocheckpoint=0");
+    writer.prepare("INSERT INTO asset_salience(asset_ref, updated_at) VALUES ('memory:invalid-unrekeyed', 1)").run();
+    const durablePaths = [statePath, `${statePath}-wal`];
+    const shmPath = `${statePath}-shm`;
+    expect([...durablePaths, shmPath].every((filePath) => fs.existsSync(filePath))).toBe(true);
+    const shmMode = fs.statSync(shmPath).mode & 0o777;
+    const before = durablePaths.map((filePath) => ({
+      filePath,
+      bytes: fs.readFileSync(filePath),
+      mode: fs.statSync(filePath).mode & 0o777,
+    }));
+
+    const status = await runCliCapture(["migrate", "status"]);
+    expect(status.code).not.toBe(0);
+    expect(JSON.parse(status.stdout)).toMatchObject({ status: "blocked" });
+    expect(status.stdout).toMatch(/asset_salience\.asset_ref.*unmappable.*memory:invalid-unrekeyed/i);
+    const applied = await runCliCapture(["migrate", "apply"]);
+    expect(applied.code).not.toBe(0);
+    expect(
+      durablePaths.map((filePath) => ({
+        filePath,
+        bytes: fs.readFileSync(filePath),
+        mode: fs.statSync(filePath).mode & 0o777,
+      })),
+    ).toEqual(before);
+    // SQLite readers legitimately update lock/read-mark bytes in the shared-
+    // memory coordination file; durable database and WAL bytes stay exact.
+    expect(fs.existsSync(shmPath)).toBe(true);
+    expect(fs.statSync(shmPath).mode & 0o777).toBe(shmMode);
+    expect(cutoverMergeCommitted(statePath)).toBe(false);
+    expect(backupRuns()).toEqual([]);
+    expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+  } finally {
+    writer.close();
+  }
+});
+
+test("a committed marker uses its persisted map to repair a later durable ref and converge WAL to one file", async () => {
+  fs.writeFileSync(getConfigPath(), `${JSON.stringify(currentConfig())}\n`, { mode: 0o600 });
+  const statePath = getStateDbPathInDataDir();
+  const seeded = openStateDbAtCeiling(statePath, STATE_MIGRATIONS.at(-1)!.id);
+  seeded.exec(`
+    CREATE TABLE akm_cutover_ledger (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      operation_id TEXT NOT NULL,
+      merged_at TEXT NOT NULL
+    );
+    INSERT INTO akm_cutover_ledger VALUES (1, 'original-cutover', datetime('now'));
+  `);
+  const legacyRef = ["memory", "late-ref"].join(":");
+  seeded.prepare("INSERT INTO asset_salience(asset_ref, updated_at) VALUES (?, 1)").run(legacyRef);
+  seeded.close();
+  const mapPath = path.join(path.dirname(getMigrationApplyJournalPath()), "completed-cutover-refmap.json");
+  fs.mkdirSync(path.dirname(mapPath), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    mapPath,
+    `${JSON.stringify({ formatVersion: 1, entries: { [legacyRef]: "stash//memories/late-ref" } }, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  const wal = new Database(statePath);
+  expect(wal.query("PRAGMA journal_mode=WAL").get()).toEqual({ journal_mode: "wal" });
+  wal.close();
+
+  expect(inspectMigrationPlan()).toMatchObject({ status: "ready" });
+  const applied = await runCliCapture(["migrate", "apply"]);
+  expect(applied.code, applied.stderr).toBe(0);
+  const current = new Database(statePath, { readonly: true });
+  expect(current.query("SELECT asset_ref FROM asset_salience").get()).toEqual({
+    asset_ref: "stash//memories/late-ref",
+  });
+  expect(current.query("SELECT operation_id FROM akm_cutover_ledger WHERE singleton=1").get()).toEqual({
+    operation_id: "original-cutover",
+  });
+  expect(current.query("SELECT backup_run_id, task_generation FROM akm_migration_completion").get()).toMatchObject({
+    backup_run_id: expect.any(String),
+    task_generation: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  expect(current.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "delete" });
+  current.close();
+  expect(fs.existsSync(`${statePath}-wal`)).toBe(false);
+  expect(fs.existsSync(`${statePath}-shm`)).toBe(false);
+  expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+});
+
+test("a non-proposal markerless WAL repair commits provenance last and resumes after cutover", async () => {
+  fs.writeFileSync(getConfigPath(), `${JSON.stringify(currentConfig())}\n`, { mode: 0o600 });
+  const assetPath = path.join(storage.stashDir, "memories", "retry-ref.md");
+  fs.mkdirSync(path.dirname(assetPath), { recursive: true });
+  fs.writeFileSync(assetPath, "# Retry ref\n");
+  const statePath = getStateDbPathInDataDir();
+  const seeded = openStateDbAtCeiling(statePath, STATE_MIGRATIONS.at(-1)!.id);
+  seeded
+    .prepare("INSERT INTO asset_salience(asset_ref, updated_at) VALUES (?, 1)")
+    .run(["memory", "retry-ref"].join(":"));
+  seeded.close();
+  const wal = new Database(statePath);
+  expect(wal.query("PRAGMA journal_mode=WAL").get()).toEqual({ journal_mode: "wal" });
+  wal.close();
+
+  const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "apply"], {
+    cwd: path.resolve(import.meta.dir, "../.."),
+    env: { ...process.env, AKM_TEST_MIGRATION_FAIL_PHASE: "after-cutover" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  expect(exitCode, stderr).not.toBe(0);
+  expect(stderr).toContain("injected migration interruption at after-cutover");
+  expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(true);
+  const interrupted = new Database(statePath, { readonly: true });
+  expect(interrupted.query("SELECT asset_ref FROM asset_salience").get()).toEqual({
+    asset_ref: "stash//memories/retry-ref",
+  });
+  expect(
+    (
+      interrupted
+        .query("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='akm_migration_completion'")
+        .get() as { n: number }
+    ).n,
+  ).toBe(0);
+  expect(interrupted.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "delete" });
+  interrupted.close();
+  expect(fs.existsSync(`${statePath}-wal`)).toBe(false);
+  expect(fs.existsSync(`${statePath}-shm`)).toBe(false);
+
+  const resumed = await runCliCapture(["migrate", "apply"]);
+  expect(resumed.code, resumed.stderr).toBe(0);
+  expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+  const current = new Database(statePath, { readonly: true });
   expect(current.query("SELECT backup_run_id, task_generation FROM akm_migration_completion").get()).toMatchObject({
     backup_run_id: expect.any(String),
     task_generation: expect.stringMatching(/^[a-f0-9]{64}$/),

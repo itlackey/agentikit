@@ -54,11 +54,11 @@ import {
   type TaskTargetRefMigrationPlan,
 } from "./migrate/legacy/task-target-ref-migration";
 import {
-  assertLegacyProposalRefsRepairable,
+  assertLegacyStateRefsRepairable,
   buildCutoverRefMap,
   computeCutoverRefMap,
   completeCutoverRefMap,
-  countLegacyProposalRefs,
+  countLegacyStateRefs,
   type CutoverStashRoot,
   cutoverMergeCommitted,
   deleteWorkflowDb,
@@ -67,7 +67,6 @@ import {
   migratePilotTreatmentFiles,
   quarantineIndexDb,
   rekeyStateDb,
-  repairAlreadyCurrentProposalRefs,
   runThreeDbCutover,
 } from "./migrate/legacy/three-db-cutover";
 import { FROZEN_WORKFLOW_MIGRATIONS } from "./migrate/legacy/workflow-migrations-bodies";
@@ -444,7 +443,7 @@ function completedCutoverRefMapPath(): string {
   return path.join(path.dirname(getMigrationApplyJournalPath()), "completed-cutover-refmap.json");
 }
 
-function loadCompletedProposalRefMap(): Map<string, string> {
+function loadCompletedStateRefMap(): Map<string, string> {
   const mapPath = completedCutoverRefMapPath();
   if (!fs.existsSync(mapPath)) return new Map();
   return loadCompletedCutoverRefMap(mapPath).map;
@@ -462,7 +461,7 @@ function stateJournalMode(): string | undefined {
   }
 }
 
-function inspectCurrentProposalRepair(
+function inspectCurrentStateRefRepair(
   artifacts: MigrationState,
   roots: readonly CutoverStashRoot[] = [],
 ): { count: number; blocker?: string; requiresCutover: boolean } {
@@ -473,15 +472,15 @@ function inspectCurrentProposalRepair(
       artifacts.state.migrationIds?.includes("020-three-db-cutover") === true);
   if (!postCutover) return { count: 0, requiresCutover: false };
 
-  const count = countLegacyProposalRefs(getStateDbPathInDataDir());
+  const count = countLegacyStateRefs(getStateDbPathInDataDir());
   const markerCommitted = cutoverMergeCommitted(getStateDbPathInDataDir());
-  const requiresCutover = !markerCommitted && count > 0 && stateJournalMode() === "wal";
+  const requiresCutover = !markerCommitted && count > 0;
   if (count === 0) return { count, requiresCutover };
   try {
     const refMap = requiresCutover
       ? computeCutoverRefMap({ oldIndexDbPath: getDbPath(), stashRoots: roots })
-      : loadCompletedProposalRefMap();
-    assertLegacyProposalRefsRepairable(getStateDbPathInDataDir(), refMap);
+      : loadCompletedStateRefMap();
+    assertLegacyStateRefsRepairable(getStateDbPathInDataDir(), refMap);
     return { count, requiresCutover };
   } catch (error) {
     return { count, requiresCutover, blocker: error instanceof Error ? error.message : String(error) };
@@ -698,9 +697,9 @@ function buildMigrationPlan(
     }
   }
 
-  let proposalRepair: ReturnType<typeof inspectCurrentProposalRepair> = { count: 0, requiresCutover: false };
+  let stateRefRepair: ReturnType<typeof inspectCurrentStateRefRepair> = { count: 0, requiresCutover: false };
   try {
-    const proposalRepairRoots = target.config
+    const stateRefRepairRoots = target.config
       ? cutoverStashRootsFromConfig(
           target.config,
           target.migrationLockEntries ?? [],
@@ -708,11 +707,11 @@ function buildMigrationPlan(
           active.sentinel?.pathResolutionBase ?? process.cwd(),
         )
       : [];
-    proposalRepair = inspectCurrentProposalRepair(artifacts, proposalRepairRoots);
+    stateRefRepair = inspectCurrentStateRefRepair(artifacts, stateRefRepairRoots);
   } catch (error) {
     if (blockers.length === 0) blockers.push(error instanceof Error ? error.message : String(error));
   }
-  if (blockers.length === 0 && proposalRepair.blocker) blockers.push(proposalRepair.blocker);
+  if (blockers.length === 0 && stateRefRepair.blocker) blockers.push(stateRefRepair.blocker);
   const needsApply =
     !!active.sentinel ||
     artifacts.config.status !== "current" ||
@@ -720,8 +719,8 @@ function buildMigrationPlan(
     artifacts.workflow.status === "old" ||
     artifacts.workflow.status === "current" ||
     taskV3Plan?.files.some((file) => file.status === "changed") === true ||
-    proposalRepair.count > 0 ||
-    proposalRepair.requiresCutover;
+    stateRefRepair.count > 0 ||
+    stateRefRepair.requiresCutover;
 
   const generatedConfig = describeGeneratedConfig(preparedConfigPath, !!active.sentinel);
 
@@ -1115,10 +1114,22 @@ function repairCurrentData(
   taskV3Plan: TaskV2ToV3MigrationPlan,
   taskBackup?: TaskMigrationBackupManifest,
 ): TaskV2ToV3MigrationPlan {
-  if (countLegacyProposalRefs(getStateDbPathInDataDir()) > 0) {
-    const report = repairAlreadyCurrentProposalRefs(getStateDbPathInDataDir(), loadCompletedProposalRefMap());
-    if (report.rekeyed > 0 || report.quarantined > 0) {
-      console.log(JSON.stringify({ event: "proposal-ref-repair", ...report }));
+  if (countLegacyStateRefs(getStateDbPathInDataDir()) > 0) {
+    const refMap = loadCompletedStateRefMap();
+    assertLegacyStateRefsRepairable(getStateDbPathInDataDir(), refMap);
+    const report = rekeyStateDb(getStateDbPathInDataDir(), refMap);
+    const proposalRekeyed = report.rekeyed.proposals ?? 0;
+    const proposalQuarantined = report.quarantined.proposals ?? 0;
+    if (proposalRekeyed > 0 || proposalQuarantined > 0) {
+      console.log(
+        JSON.stringify({ event: "proposal-ref-repair", rekeyed: proposalRekeyed, quarantined: proposalQuarantined }),
+      );
+    }
+    const stateChanged = [...Object.entries(report.rekeyed), ...Object.entries(report.quarantined)].some(
+      ([table, count]) => table !== "proposals" && count > 0,
+    );
+    if (stateChanged) {
+      console.log(JSON.stringify({ event: "state-ref-repair", ...report }));
     }
   }
   const blockers = taskV3Blockers(taskV3Plan);
@@ -1201,8 +1212,7 @@ function isTaskOnlyRepair(manifest: MigrationBackupManifest): boolean {
     !(
       manifest.artifacts["state.db"].present &&
       !cutoverMergeCommitted(getStateDbPathInDataDir()) &&
-      stateJournalMode() === "wal" &&
-      countLegacyProposalRefs(getStateDbPathInDataDir()) > 0
+      countLegacyStateRefs(getStateDbPathInDataDir()) > 0
     )
   );
 }
@@ -1257,8 +1267,8 @@ function requireSemanticCompletion(config: AkmConfig, sentinel: ApplySentinel, f
   } catch (error) {
     blockers.push(error instanceof Error ? error.message : String(error));
   }
-  const legacyProposalRefs = countLegacyProposalRefs(getStateDbPathInDataDir());
-  if (legacyProposalRefs > 0) blockers.push(`${legacyProposalRefs} proposal ref(s) still use legacy grammar`);
+  const legacyStateRefs = countLegacyStateRefs(getStateDbPathInDataDir());
+  if (legacyStateRefs > 0) blockers.push(`${legacyStateRefs} durable state ref(s) still use legacy grammar`);
   if (blockers.length > 0) {
     throw new ConfigError(`Migration verification failed: ${blockers.join("; ")}.`, "INVALID_CONFIG_FILE");
   }

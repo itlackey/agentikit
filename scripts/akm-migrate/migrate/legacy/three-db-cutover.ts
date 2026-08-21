@@ -426,6 +426,12 @@ const EVENT_REKEY_TABLES: ReadonlyArray<{ table: string; keyColumn: string }> = 
   { table: "canary_queries", keyColumn: "anchor_ref" },
 ];
 
+const HISTORICAL_REKEY_TABLES: ReadonlyArray<{ table: string; keyColumn: string }> = [
+  { table: "usage_events", keyColumn: "entry_ref" },
+];
+
+const WORKFLOW_REF_TABLE = { table: "workflow_runs", keyColumn: "workflow_ref" } as const;
+
 type RefResolution =
   | { kind: "rekey"; target: string }
   | { kind: "orphan" }
@@ -525,6 +531,65 @@ function quarantineRow(db: Database, surface: string, oldRef: string, count: num
   ).run(surface, oldRef, count, reason);
 }
 
+function rekeyHistoricalTable(
+  db: Database,
+  spec: { table: string; keyColumn: string },
+  refMap: Map<string, string>,
+  report: CutoverRekeyReport,
+): void {
+  if (!tableExists(db, "main", spec.table) || !columnNames(db, "main", spec.table).includes(spec.keyColumn)) {
+    report.skipped.push(`${spec.table}.${spec.keyColumn}`);
+    return;
+  }
+  const refs = db
+    .prepare(`SELECT DISTINCT ${spec.keyColumn} AS ref FROM ${spec.table} WHERE ${spec.keyColumn} IS NOT NULL`)
+    .all() as Array<{ ref: string }>;
+  for (const { ref } of refs) {
+    if (classifyRefGrammar(ref) !== "legacy") continue;
+    const resolution = classifyCutoverRef(ref, refMap);
+    if (resolution.kind === "integrity") throw new CutoverIntegrityError(`${spec.table}: ${resolution.reason}`);
+    if (resolution.kind === "skip") continue;
+    const rowCount = (
+      db.prepare(`SELECT COUNT(*) AS n FROM ${spec.table} WHERE ${spec.keyColumn} = ?`).get(ref) as { n: number }
+    ).n;
+    if (resolution.kind === "rekey") {
+      db.prepare(`UPDATE ${spec.table} SET ${spec.keyColumn} = ? WHERE ${spec.keyColumn} = ?`).run(
+        resolution.target,
+        ref,
+      );
+      bump(report.rekeyed, spec.table);
+      continue;
+    }
+    // Append-only history stays readable in place while the old spelling is
+    // archived for audit; unlike event-row quarantine, no history is deleted.
+    quarantineRow(db, spec.table, ref, rowCount, "orphan");
+    bump(report.quarantined, spec.table);
+  }
+}
+
+function canonicalWorkflowRunRef(ref: string): string | undefined {
+  if (ref.startsWith("workflow:")) return `workflows/${ref.slice("workflow:".length)}`;
+  const marker = "//workflow:";
+  const markerIndex = ref.indexOf(marker);
+  if (markerIndex < 0) return undefined;
+  return `${ref.slice(0, markerIndex + 2)}workflows/${ref.slice(markerIndex + marker.length)}`;
+}
+
+function rekeyWorkflowRunRefs(db: Database, report: CutoverRekeyReport): void {
+  const { table, keyColumn } = WORKFLOW_REF_TABLE;
+  if (!tableExists(db, "main", table) || !columnNames(db, "main", table).includes(keyColumn)) {
+    report.skipped.push(`${table}.${keyColumn}`);
+    return;
+  }
+  const refs = db.prepare(`SELECT DISTINCT ${keyColumn} AS ref FROM ${table}`).all() as Array<{ ref: string }>;
+  for (const { ref } of refs) {
+    const target = canonicalWorkflowRunRef(ref);
+    if (target === undefined || target === ref) continue;
+    db.prepare(`UPDATE ${table} SET ${keyColumn} = ? WHERE ${keyColumn} = ?`).run(target, ref);
+    bump(report.rekeyed, table);
+  }
+}
+
 function isMissingTableOrColumn(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
   return msg.includes("no such table") || msg.includes("no such column");
@@ -541,6 +606,8 @@ export function rekeyStateDbCore(db: Database, refMap: Map<string, string>): Cut
   ensureLegacyStateRowsTable(db);
   for (const spec of SCALAR_REKEY_TABLES) rekeyScalarTable(db, spec, refMap, report);
   for (const spec of EVENT_REKEY_TABLES) rekeyEventTable(db, spec, refMap, report);
+  for (const spec of HISTORICAL_REKEY_TABLES) rekeyHistoricalTable(db, spec, refMap, report);
+  rekeyWorkflowRunRefs(db, report);
   return report;
 }
 
@@ -567,6 +634,101 @@ export function rekeyStateDb(dbPath: string, refMap: Map<string, string>): Cutov
 export interface ProposalRefRepairReport {
   rekeyed: number;
   quarantined: number;
+}
+
+export interface LegacyStateRefRecord {
+  readonly table: string;
+  readonly column: string;
+  readonly ref: string;
+  readonly rowCount: number;
+}
+
+/**
+ * Read-only inventory of every residual legacy ref surface owned by the state
+ * re-key transaction. Keeping this list derived from the same table policy as
+ * {@link rekeyStateDbCore} prevents recovery classification from lagging the
+ * actual cutover surface.
+ */
+export function inspectLegacyStateRefs(dbPath: string): readonly LegacyStateRefRecord[] {
+  if (!fs.existsSync(dbPath)) return [];
+  const db = openDatabaseFinalizing(dbPath, { readonly: true });
+  try {
+    const records: LegacyStateRefRecord[] = [];
+    const acknowledgedHistoricalRefs = new Set<string>();
+    if (tableExists(db, "main", "legacy_state")) {
+      const rows = db
+        .prepare("SELECT surface, old_ref FROM legacy_state WHERE surface = 'usage_events'")
+        .all() as Array<{ surface: string; old_ref: string }>;
+      for (const row of rows) acknowledgedHistoricalRefs.add(`${row.surface}\0${row.old_ref}`);
+    }
+    const specs = [
+      ...SCALAR_REKEY_TABLES.map((spec) => ({ table: spec.table, column: spec.keyColumn })),
+      ...EVENT_REKEY_TABLES.map((spec) => ({ table: spec.table, column: spec.keyColumn })),
+      ...HISTORICAL_REKEY_TABLES.map((spec) => ({ table: spec.table, column: spec.keyColumn })),
+      { table: WORKFLOW_REF_TABLE.table, column: WORKFLOW_REF_TABLE.keyColumn },
+    ];
+    for (const spec of specs) {
+      if (!tableExists(db, "main", spec.table) || !columnNames(db, "main", spec.table).includes(spec.column)) {
+        continue;
+      }
+      const rows = db
+        .prepare(
+          `SELECT ${spec.column} AS ref, COUNT(*) AS row_count FROM ${spec.table} ` +
+            `WHERE ${spec.column} IS NOT NULL GROUP BY ${spec.column} ORDER BY ${spec.column}`,
+        )
+        .all() as Array<{ ref: string; row_count: number }>;
+      for (const row of rows) {
+        if (classifyRefGrammar(row.ref) !== "legacy") continue;
+        if (acknowledgedHistoricalRefs.has(`${spec.table}\0${row.ref}`)) continue;
+        records.push(
+          Object.freeze({ table: spec.table, column: spec.column, ref: row.ref, rowCount: row.row_count }),
+        );
+      }
+    }
+    return Object.freeze(records);
+  } finally {
+    db.close();
+  }
+}
+
+export function countLegacyStateRefs(dbPath: string): number {
+  return inspectLegacyStateRefs(dbPath).reduce((total, record) => total + record.rowCount, 0);
+}
+
+/**
+ * A current-ledger repair must be lossless: non-proposal durable rows may only
+ * be rewritten through the provenance-bound map. Terminal proposals retain
+ * their established quarantine policy; pending proposals and every other
+ * unmappable surface fail before backup or mutation.
+ */
+export function assertLegacyStateRefsRepairable(dbPath: string, refMap: Map<string, string>): void {
+  const records = inspectLegacyStateRefs(dbPath);
+  if (records.length === 0) return;
+  let pendingProposals: Array<{ id: string; ref: string }> = [];
+  if (records.some((record) => record.table === "proposals")) {
+    const db = openDatabaseFinalizing(dbPath, { readonly: true });
+    try {
+      pendingProposals = db
+        .prepare("SELECT id, ref FROM proposals WHERE status = 'pending' ORDER BY id")
+        .all() as Array<{ id: string; ref: string }>;
+    } finally {
+      db.close();
+    }
+  }
+  for (const record of records) {
+    if (record.table === WORKFLOW_REF_TABLE.table && canonicalWorkflowRunRef(record.ref) !== undefined) continue;
+    if (refMap.has(record.ref)) continue;
+    if (record.table === "proposals") {
+      const pending = pendingProposals.find((row) => row.ref === record.ref);
+      if (!pending) continue;
+      throw new CutoverIntegrityError(`pending proposal ${pending.id} has unmappable legacy ref ${pending.ref}`);
+    }
+    throw new CutoverIntegrityError(
+      `${record.table}.${record.column} contains unmappable legacy ref ${record.ref} (${record.rowCount} row${
+        record.rowCount === 1 ? "" : "s"
+      }); restore or rebuild its pre-cutover ref mapping before retrying`,
+    );
+  }
 }
 
 export function countLegacyProposalRefs(dbPath: string): number {
@@ -897,27 +1059,10 @@ export function runThreeDbCutover(opts: RunThreeDbCutoverOptions): RunThreeDbCut
         copied.workflow_runs = copyTable(db, "wf", "workflow_runs");
         copied.workflow_run_steps = copyTable(db, "wf", "workflow_run_steps");
         copied.workflow_run_units = copyTable(db, "wf", "workflow_run_units");
-        // Normative §11.4: workflow target refs are a MUST-rekey durable
-        // record. The run-key is a deterministic spelling transform
-        // (`[origin//]workflow:<n>` → `[origin//]workflows/<n>`) — no index
-        // join needed, and idempotent (already-new rows don't match).
-        db.exec(
-          `UPDATE workflow_runs SET workflow_ref =
-             CASE
-               WHEN workflow_ref LIKE 'workflow:%'
-                 THEN 'workflows/' || substr(workflow_ref, length('workflow:') + 1)
-               WHEN instr(workflow_ref, '//workflow:') > 0
-                 THEN substr(workflow_ref, 1, instr(workflow_ref, '//workflow:') + 1)
-                      || 'workflows/'
-                      || substr(workflow_ref, instr(workflow_ref, '//workflow:') + length('//workflow:'))
-               ELSE workflow_ref
-             END
-           WHERE workflow_ref LIKE 'workflow:%' OR instr(workflow_ref, '//workflow:') > 0`,
-        );
       }
 
       if (oldIndexExists) {
-        copied.usage_events = rescueUsageEvents(db, opts.refMap);
+        copied.usage_events = rescueUsageEvents(db);
         carryLegacyState(db, "oldidx");
       }
 
@@ -986,12 +1131,11 @@ function copyTable(db: Database, srcSchema: string, table: string): number {
 /**
  * Rescue the durable index.db `usage_events` history into state.db. Copies the
  * column intersection (fresh AUTOINCREMENT ids are fine — `entry_id` is an
- * index-generation-scoped provenance column the relink pass re-derives), then
- * re-keys residual legacy `entry_ref`s via the map. Rows already in
- * `bundle//conceptId` grammar are carried as-is; unmapped legacy rows are KEPT
- * in place (append-only history) and recorded in `legacy_state`.
+ * index-generation-scoped provenance column the relink pass re-derives).
+ * The shared state re-key pass handles both copied and already-present
+ * `entry_ref`s afterward, so current-ledger recovery cannot miss this table.
  */
-function rescueUsageEvents(db: Database, refMap: Map<string, string>): number {
+function rescueUsageEvents(db: Database): number {
   if (!tableExists(db, "oldidx", "usage_events")) return 0;
   const srcCols = new Set(columnNames(db, "oldidx", "usage_events"));
   // Never carry the source rowid/id — let state.db mint fresh AUTOINCREMENT ids.
@@ -1012,28 +1156,6 @@ function rescueUsageEvents(db: Database, refMap: Map<string, string>): number {
     );
   }
 
-  if (!columnNames(db, "main", "usage_events").includes("entry_ref")) return countRows(db, "usage_events");
-
-  const legacyRefs = (
-    db.prepare("SELECT DISTINCT entry_ref AS ref FROM main.usage_events WHERE entry_ref IS NOT NULL").all() as Array<{
-      ref: string;
-    }>
-  )
-    .map((r) => r.ref)
-    .filter((ref) => classifyRefGrammar(ref) === "legacy");
-
-  for (const oldRef of legacyRefs) {
-    const target = refMap.get(oldRef);
-    if (target !== undefined) {
-      db.prepare("UPDATE main.usage_events SET entry_ref = ? WHERE entry_ref = ?").run(target, oldRef);
-    } else {
-      // Expected orphan — KEEP the append-only rows in place, archive for audit.
-      const n = (
-        db.prepare("SELECT COUNT(*) AS n FROM main.usage_events WHERE entry_ref = ?").get(oldRef) as { n: number }
-      ).n;
-      quarantineRow(db, "usage_events", oldRef, n, "orphan");
-    }
-  }
   return countRows(db, "usage_events");
 }
 

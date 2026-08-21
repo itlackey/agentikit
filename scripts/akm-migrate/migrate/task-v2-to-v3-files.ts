@@ -52,7 +52,7 @@ export interface TaskMigrationBackupEntry {
 }
 
 export interface TaskMigrationBackupManifest {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly operationId: string;
   readonly generation: string;
   readonly recoveryPath: "tasks/recovery.json";
@@ -110,6 +110,8 @@ function physicalIdentity(filePath: string, expectedKind: "file" | "directory"):
     realPath: fs.realpathSync(filePath),
     device: stat.dev.toString(),
     inode: stat.ino.toString(),
+    linkCount: stat.nlink.toString(),
+    changeTimeNs: stat.ctimeNs.toString(),
   });
 }
 
@@ -124,14 +126,23 @@ function inspectRegularFile(filePath: string): {
   const bytes = fs.readFileSync(filePath);
   const afterStat = fs.lstatSync(filePath);
   const afterIdentity = physicalIdentity(filePath, "file");
-  if ((afterStat.mode & 0o777) !== mode || !sameIdentity(identity, afterIdentity)) {
+  if ((afterStat.mode & 0o777) !== mode || !sameFileIdentity(identity, afterIdentity)) {
     throw migrationError(`${filePath} identity or mode drifted while migration preflight read it.`);
   }
   return Object.freeze({ bytes, identity: afterIdentity, mode });
 }
 
 function sameIdentity(left: TaskV2ToV3FilesystemIdentity, right: TaskV2ToV3FilesystemIdentity): boolean {
-  return left.realPath === right.realPath && left.device === right.device && left.inode === right.inode;
+  return (
+    left.realPath === right.realPath &&
+    left.device === right.device &&
+    left.inode === right.inode &&
+    left.linkCount === right.linkCount
+  );
+}
+
+function sameFileIdentity(left: TaskV2ToV3FilesystemIdentity, right: TaskV2ToV3FilesystemIdentity): boolean {
+  return sameIdentity(left, right) && left.changeTimeNs === right.changeTimeNs;
 }
 
 function physicalTaskIdentityKey(identity: TaskV2ToV3FilesystemIdentity): string {
@@ -262,6 +273,19 @@ export function inspectTaskV2ToV3Files(roots: readonly TaskV2ToV3Root[]): TaskV2
       );
     }
     physicalTasks.set(identityKey, input.filePath);
+  }
+  for (const input of inspected) {
+    const identity = input.inspectionIdentity?.file;
+    if (!identity) throw migrationError(`${input.filePath} has no physical identity after whole-plan inspection.`);
+    const currentIdentity = physicalIdentity(input.filePath, "file");
+    if (currentIdentity.linkCount !== "1") {
+      throw migrationError(
+        `task ${input.filePath} has hard-link count ${currentIdentity.linkCount}; task sources must have exactly one physical link.`,
+      );
+    }
+    if (!sameFileIdentity(identity, currentIdentity)) {
+      throw migrationError(`${input.filePath} file identity drifted during whole-plan inspection.`);
+    }
   }
   return inspected;
 }
@@ -410,10 +434,15 @@ function readPlannedSource(
   }
   const realRoot = currentRootIdentity.realPath;
   const identity = physicalIdentity(file.filePath, "file");
+  if (identity.linkCount !== "1") {
+    throw migrationError(
+      `task ${file.filePath} has hard-link count ${identity.linkCount}; task sources must have exactly one physical link.`,
+    );
+  }
   if (!contained(realRoot, identity.realPath)) {
     throw migrationError(`${file.filePath} resolves outside its planned bundle/component root.`);
   }
-  if (expectedFileIdentity && !sameIdentity(identity, expectedFileIdentity)) {
+  if (expectedFileIdentity && !sameFileIdentity(identity, expectedFileIdentity)) {
     throw migrationError(`${file.filePath} file identity drifted after migration preflight.`);
   }
   const bytes = fs.readFileSync(file.filePath);
@@ -426,7 +455,7 @@ function readPlannedSource(
   if (
     !afterStat.isFile() ||
     (afterStat.mode & 0o777) !== mode ||
-    !sameIdentity(identity, afterIdentity) ||
+    !sameFileIdentity(identity, afterIdentity) ||
     !sameIdentity(currentRootIdentity, afterRootIdentity) ||
     !sameIdentity(currentBundleRootIdentity, afterBundleRootIdentity)
   ) {
@@ -484,7 +513,12 @@ function sameFilesystemIdentity(
   left: TaskV2ToV3FilesystemIdentity,
   right: TaskV2ToV3FilesystemIdentity,
 ): boolean {
-  return left.realPath === right.realPath && left.device === right.device && left.inode === right.inode;
+  return (
+    left.realPath === right.realPath &&
+    left.device === right.device &&
+    left.inode === right.inode &&
+    left.linkCount === right.linkCount
+  );
 }
 
 function assertPlanMatchesBackupManifest(
@@ -503,7 +537,7 @@ function assertPlanMatchesBackupManifest(
       entry.mode !== change.mode ||
       entry.beforeHash !== change.beforeHash ||
       entry.finalHash !== change.afterHash ||
-      !sameFilesystemIdentity(entry.sourceIdentity, identities.file) ||
+      !sameFileIdentity(entry.sourceIdentity, identities.file) ||
       !sameFilesystemIdentity(entry.componentRootIdentity, identities.root) ||
       !sameFilesystemIdentity(entry.bundleRootIdentity, identities.bundleRoot ?? identities.root)
     ) {
@@ -605,10 +639,17 @@ function assertTaskBackupEntryShape(entry: TaskMigrationBackupEntry): void {
       typeof identity.device !== "string" ||
       identity.device.length === 0 ||
       typeof identity.inode !== "string" ||
-      identity.inode.length === 0
+      identity.inode.length === 0 ||
+      typeof identity.linkCount !== "string" ||
+      !/^[1-9][0-9]*$/.test(identity.linkCount) ||
+      typeof identity.changeTimeNs !== "string" ||
+      !/^[0-9]+$/.test(identity.changeTimeNs)
     ) {
       throw migrationError(`task backup declaration for ${entry.sourcePath} has invalid filesystem provenance.`);
     }
+  }
+  if (entry.sourceIdentity.linkCount !== "1") {
+    throw migrationError(`task backup declaration for ${entry.sourcePath} declares a hard-linked source.`);
   }
 }
 
@@ -646,7 +687,7 @@ export function createTaskMigrationBackup(
     return entry;
   });
   const manifest: TaskMigrationBackupManifest = Object.freeze({
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     operationId,
     generation: plan.generation,
     recoveryPath: "tasks/recovery.json" as const,
@@ -676,7 +717,7 @@ export function createTaskMigrationBackup(
 /** Strict recursive verification; the task directory may contain no extras. */
 export function verifyTaskMigrationBackup(backupRoot: string, manifest: TaskMigrationBackupManifest): void {
   if (
-    manifest.schemaVersion !== 1 ||
+    manifest.schemaVersion !== 2 ||
     !/^[A-Za-z0-9._-]+$/.test(manifest.operationId) ||
     !/^[a-f0-9]{64}$/.test(manifest.generation) ||
     manifest.recoveryPath !== "tasks/recovery.json" ||
@@ -869,7 +910,7 @@ export function applyTaskV2ToV3MigrationPlan(
     const state = recoveryStates?.get(sourcePath);
     if (
       !file.inspectionIdentity ||
-      (!sameIdentity(current.identity, file.inspectionIdentity.file) &&
+      (!sameFileIdentity(current.identity, file.inspectionIdentity.file) &&
         (!recoveryStates || (state !== "published" && state !== "restored")))
     ) {
       throw migrationError(`${file.filePath} file identity drifted after migration preflight; it was left untouched.`);
@@ -961,7 +1002,7 @@ export function applyTaskV2ToV3MigrationPlan(
         verifyRegularFile(backupPath, change.before, "recoverable backup");
         if (!publishedIdentity) throw new Error("published file identity was not captured; current source was left untouched");
         const current = readPlannedSource(change);
-        if (!sameIdentity(current.identity, publishedIdentity) || !current.bytes.equals(change.after)) {
+        if (!sameFileIdentity(current.identity, publishedIdentity) || !current.bytes.equals(change.after)) {
           throw new Error("concurrent source drift detected; current source was left untouched");
         }
         const backup = fs.readFileSync(backupPath);

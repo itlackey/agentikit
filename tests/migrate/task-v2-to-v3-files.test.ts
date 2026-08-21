@@ -134,6 +134,156 @@ describe("durable task v2 to v3 migration application", () => {
     }
   });
 
+  test("rejects a task with an undiscovered outside hard link during inspection with zero writes", () => {
+    const root = tempRoot();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-outside-hardlink-"));
+    const backupRoot = path.join(root, "backups");
+    const task = path.join(root, "tasks", "safe.yml");
+    const outsideAlias = path.join(outside, "safe-alias.yml");
+    fs.writeFileSync(task, SAFE, { mode: 0o640 });
+    fs.linkSync(task, outsideAlias);
+    const beforeRoot = snapshot(root);
+    const beforeOutside = snapshot(outside);
+    try {
+      expect(() => inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }])).toThrow(
+        /hard link|link count|exactly one/i,
+      );
+      expect(snapshot(root)).toEqual(beforeRoot);
+      expect(snapshot(outside)).toEqual(beforeOutside);
+      expect(fs.existsSync(backupRoot)).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("a hard link introduced after planning is detected before any backup artifact or source mutation", () => {
+    const root = tempRoot();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-late-hardlink-"));
+    const backupRoot = path.join(root, "backups");
+    const task = path.join(root, "tasks", "safe.yml");
+    const outsideAlias = path.join(outside, "safe-alias.yml");
+    fs.writeFileSync(task, SAFE, { mode: 0o640 });
+    try {
+      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+      expect(
+        (plan.files[0]?.inspectionIdentity?.file as unknown as { linkCount?: string } | undefined)?.linkCount,
+      ).toBe("1");
+      fs.linkSync(task, outsideAlias);
+      const beforeRoot = snapshot(root);
+      const beforeOutside = snapshot(outside);
+
+      expect(() => createTaskMigrationBackup(backupRoot, plan, "late-hardlink-operation")).toThrow(
+        /hard link|link count|identity|drift/i,
+      );
+      expect(snapshot(root)).toEqual(beforeRoot);
+      expect(snapshot(outside)).toEqual(beforeOutside);
+      expect(fs.existsSync(backupRoot)).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("a transient hard link after planning is detected before backup even after link count returns to one", () => {
+    const root = tempRoot();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-transient-plan-hardlink-"));
+    const backupRoot = path.join(root, "backups");
+    const task = path.join(root, "tasks", "safe.yml");
+    const outsideAlias = path.join(outside, "safe-alias.yml");
+    fs.writeFileSync(task, SAFE, { mode: 0o640 });
+    try {
+      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+      const plannedIdentity = plan.files[0]?.inspectionIdentity?.file;
+      if (!plannedIdentity) throw new Error("expected a planned task identity");
+      fs.linkSync(task, outsideAlias);
+      fs.unlinkSync(outsideAlias);
+      expect(fs.lstatSync(task).nlink).toBe(1);
+      expect(fs.lstatSync(task, { bigint: true }).ctimeNs.toString()).not.toBe(plannedIdentity.changeTimeNs);
+      const beforeRoot = snapshot(root);
+      const beforeOutside = snapshot(outside);
+
+      expect(() => createTaskMigrationBackup(backupRoot, plan, "transient-plan-hardlink-operation")).toThrow(
+        /identity|drift|change/i,
+      );
+      expect(snapshot(root)).toEqual(beforeRoot);
+      expect(snapshot(outside)).toEqual(beforeOutside);
+      expect(fs.existsSync(backupRoot)).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("a hard link introduced after backup is detected before source publication", () => {
+    const root = tempRoot();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-publish-hardlink-"));
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
+    const task = path.join(root, "tasks", "safe.yml");
+    const outsideAlias = path.join(outside, "safe-alias.yml");
+    fs.writeFileSync(task, SAFE, { mode: 0o640 });
+    try {
+      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+      const manifest = createTaskMigrationBackup(backupRoot, plan, "publish-hardlink-operation");
+      if (!manifest) throw new Error("expected a task backup manifest");
+      fs.linkSync(task, outsideAlias);
+      const beforeRoot = snapshot(root);
+      const beforeOutside = snapshot(outside);
+      const beforeBackup = snapshot(backupRoot);
+
+      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
+        /hard link|link count|identity|drift/i,
+      );
+      expect(() => restoreTaskMigrationBackup(backupRoot, manifest)).toThrow(/hard link|link count|identity|drift/i);
+      expect(snapshot(root)).toEqual(beforeRoot);
+      expect(snapshot(outside)).toEqual(beforeOutside);
+      expect(snapshot(backupRoot)).toEqual(beforeBackup);
+      expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("a transient hard link after backup blocks publication while satisfied restore stays a no-op", () => {
+    const root = tempRoot();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-transient-publish-hardlink-"));
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
+    const task = path.join(root, "tasks", "safe.yml");
+    const outsideAlias = path.join(outside, "safe-alias.yml");
+    fs.writeFileSync(task, SAFE, { mode: 0o640 });
+    try {
+      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+      const manifest = createTaskMigrationBackup(backupRoot, plan, "transient-publish-hardlink-operation");
+      if (!manifest) throw new Error("expected a task backup manifest");
+      const declaredIdentity = manifest.files[0]?.sourceIdentity;
+      if (!declaredIdentity) throw new Error("expected a declared task identity");
+      fs.linkSync(task, outsideAlias);
+      fs.unlinkSync(outsideAlias);
+      expect(fs.lstatSync(task).nlink).toBe(1);
+      expect(fs.lstatSync(task, { bigint: true }).ctimeNs.toString()).not.toBe(declaredIdentity.changeTimeNs);
+      const beforeRoot = snapshot(root);
+      const beforeOutside = snapshot(outside);
+      const beforeBackup = snapshot(backupRoot);
+
+      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
+        /identity|drift|change/i,
+      );
+      // Explicit restore is already satisfied by the original bytes, so it is
+      // a verified no-op rather than a publication path.
+      expect(() => restoreTaskMigrationBackup(backupRoot, manifest)).not.toThrow();
+      expect(snapshot(root)).toEqual(beforeRoot);
+      expect(snapshot(outside)).toEqual(beforeOutside);
+      expect(snapshot(backupRoot)).toEqual(beforeBackup);
+      expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+  });
+
   test("rejects duplicate lexical aliases of one physical task with deterministic diagnostics and zero writes", () => {
     if (process.platform === "win32") return;
     const root = tempRoot();
@@ -197,6 +347,54 @@ describe("durable task v2 to v3 migration application", () => {
       expect(() => verifyTaskMigrationBackup(backupRoot, forged)).toThrow(/duplicate physical task identity/i);
       expect(fs.readFileSync(firstPath, "utf8")).toBe(SAFE);
       expect(fs.readFileSync(secondPath, "utf8")).toBe(SAFE.replace("@daily", "@hourly"));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("public verification rejects hard-linked and tampered task identity provenance", () => {
+    const root = tempRoot();
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
+    const task = path.join(root, "tasks", "safe.yml");
+    fs.writeFileSync(task, SAFE, { mode: 0o640 });
+    try {
+      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+      const manifest = createTaskMigrationBackup(backupRoot, plan, "identity-provenance-operation");
+      if (!manifest) throw new Error("expected a task backup manifest");
+      const entry = manifest.files[0];
+      if (!entry) throw new Error("expected a task backup declaration");
+      const hardLinked = {
+        ...manifest,
+        files: [{ ...entry, sourceIdentity: { ...entry.sourceIdentity, linkCount: "2" } }],
+      };
+      expect(() => verifyTaskMigrationBackup(backupRoot, hardLinked)).toThrow(/hard-linked source/i);
+
+      const malformed = {
+        ...manifest,
+        files: [{ ...entry, sourceIdentity: { ...entry.sourceIdentity, changeTimeNs: "not-a-time" } }],
+      };
+      expect(() => verifyTaskMigrationBackup(backupRoot, malformed)).toThrow(/invalid filesystem provenance/i);
+
+      const drifted = {
+        ...manifest,
+        files: [
+          {
+            ...entry,
+            sourceIdentity: {
+              ...entry.sourceIdentity,
+              changeTimeNs: (BigInt(entry.sourceIdentity.changeTimeNs) + 1n).toString(),
+            },
+          },
+        ],
+      };
+      const beforeRoot = snapshot(root);
+      const beforeBackup = snapshot(backupRoot);
+      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: drifted })).toThrow(
+        /provenance|authorized plan/i,
+      );
+      expect(snapshot(root)).toEqual(beforeRoot);
+      expect(snapshot(backupRoot)).toEqual(beforeBackup);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
       fs.rmSync(backupRoot, { recursive: true, force: true });

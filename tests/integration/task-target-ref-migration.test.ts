@@ -127,7 +127,13 @@ test("migrate apply previews, backs up, restores, and emits strict v3 for persis
         mode: number;
         beforeHash: string;
         finalHash: string;
-        sourceIdentity: { realPath: string; device: string; inode: string };
+        sourceIdentity: {
+          realPath: string;
+          device: string;
+          inode: string;
+          linkCount: string;
+          changeTimeNs: string;
+        };
       }>;
     };
   };
@@ -135,7 +141,7 @@ test("migrate apply previews, backs up, restores, and emits strict v3 for persis
   const recoveryPath = manifest.taskMigration?.recoveryPath;
   const taskOperationId = manifest.taskMigration?.operationId;
   expect(manifest.taskMigration).toMatchObject({
-    schemaVersion: 1,
+    schemaVersion: 2,
     generation: previewPlan.taskV3Migration.generation,
     operationId: expect.any(String),
     recoveryPath: "tasks/recovery.json",
@@ -151,6 +157,8 @@ test("migrate apply previews, backs up, restores, and emits strict v3 for persis
           realPath: fs.realpathSync(currentTaskPath),
           device: expect.any(String),
           inode: expect.any(String),
+          linkCount: "1",
+          changeTimeNs: expect.any(String),
         },
       },
       {
@@ -164,6 +172,8 @@ test("migrate apply previews, backs up, restores, and emits strict v3 for persis
           realPath: fs.realpathSync(taskPath),
           device: expect.any(String),
           inode: expect.any(String),
+          linkCount: "1",
+          changeTimeNs: expect.any(String),
         },
       },
     ],

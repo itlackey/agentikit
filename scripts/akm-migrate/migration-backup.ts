@@ -487,7 +487,7 @@ function parseManifest(bundlePath: string): MigrationBackupManifest {
       !taskMigration ||
       typeof taskMigration !== "object" ||
       Array.isArray(taskMigration) ||
-      taskMigration.schemaVersion !== 1 ||
+      taskMigration.schemaVersion !== 2 ||
       typeof taskMigration.operationId !== "string" ||
       typeof taskMigration.generation !== "string" ||
       taskMigration.recoveryPath !== "tasks/recovery.json" ||
