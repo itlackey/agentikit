@@ -32,7 +32,7 @@ import type { ChatCompletionOptions, ChatMessage } from "../../../llm/client";
 import { callStructured, structuredLlmRunnerFromConnection } from "../../../llm/structured-call";
 import type { EligibilitySource } from "../../proposal/proposal-types";
 import { isProposalSkipped, type Proposal, type ProposalsContext } from "../../proposal/repository";
-import { assessMemoryKnowledgePromotionCandidate } from "../distill-promotion-policy";
+import { assessMemoryKnowledgePromotionCandidate, type MemoryPromotionAssessment } from "../distill-promotion-policy";
 import { emitProposal } from "../proposal-envelope";
 import { durableImproveRef } from "../source-identity";
 import { persistOutputEncodingSalience, runLessonQualityJudge, writeQualityRejection } from "./quality-gate";
@@ -92,6 +92,53 @@ export interface PromoteMemoryContext {
  */
 type KnowledgePromotionContent = { earlyResult: AkmDistillResult } | { resolvedContent: string };
 
+export interface MemoryKnowledgePromotionPlan {
+  promotion: MemoryPromotionAssessment & { promote: true; content: string };
+  existingKnowledgeContent: string | null;
+}
+
+/** Read-only classification of the deterministic promotion path and destination conflict. */
+export async function planMemoryKnowledgePromotion(
+  ctx: PromoteMemoryContext,
+): Promise<MemoryKnowledgePromotionPlan | null> {
+  const durableInputRef = ctx.durableInputRef ?? ctx.inputRef;
+  const promotion =
+    ctx.targetKind === "lesson"
+      ? null
+      : assessMemoryKnowledgePromotionCandidate({
+          inputRef: durableInputRef,
+          assetContent: ctx.assetContent,
+          feedbackEvents: ctx.filteredEvents.map((event) => ({
+            ...(event.metadata !== undefined ? { metadata: event.metadata } : {}),
+          })),
+        });
+  if (!(promotion?.promote && promotion.content && (ctx.targetKind === "knowledge" || ctx.targetKind === "auto"))) {
+    return null;
+  }
+  const existingKnowledgePath = await ctx.lookup(durableImproveRef(promotion.knowledgeRef));
+  let existingKnowledgeContent: string | null = null;
+  if (existingKnowledgePath && fs.existsSync(existingKnowledgePath)) {
+    try {
+      existingKnowledgeContent = fs.readFileSync(existingKnowledgePath, "utf8");
+    } catch {
+      existingKnowledgeContent = null;
+    }
+  }
+  return { promotion: promotion as MemoryKnowledgePromotionPlan["promotion"], existingKnowledgeContent };
+}
+
+/** Whether a classified promotion will actually call merge generation and/or the judge. */
+export function memoryKnowledgePromotionRequiresDispatch(
+  ctx: PromoteMemoryContext,
+  plan: MemoryKnowledgePromotionPlan,
+): boolean {
+  const hasRunner = Boolean(ctx.llmRunner || ctx.llmConfig);
+  return (
+    (Boolean(plan.existingKnowledgeContent) && hasRunner) ||
+    (ctx.strategy?.processes?.distill?.qualityGate?.enabled ?? true)
+  );
+}
+
 /**
  * Resolve the knowledge content to propose when a memory promotes to knowledge,
  * reconciling it with any existing knowledge file at the destination (D-1 / #369).
@@ -104,22 +151,13 @@ type KnowledgePromotionContent = { earlyResult: AkmDistillResult } | { resolvedC
  */
 async function resolveKnowledgePromotionContent(
   ctx: PromoteMemoryContext,
-  baseContent: string,
-  knowledgeRef: string,
+  plan: MemoryKnowledgePromotionPlan,
 ): Promise<KnowledgePromotionContent> {
   const durableInputRef = ctx.durableInputRef ?? ctx.inputRef;
+  const baseContent = plan.promotion.content;
+  const knowledgeRef = plan.promotion.knowledgeRef;
   let resolvedPromotionContent = baseContent;
-  const existingKnowledgePath = await ctx.lookup(durableImproveRef(knowledgeRef));
-  const existingKnowledgeContent =
-    existingKnowledgePath && fs.existsSync(existingKnowledgePath)
-      ? (() => {
-          try {
-            return fs.readFileSync(existingKnowledgePath, "utf8");
-          } catch {
-            return null;
-          }
-        })()
-      : null;
+  const existingKnowledgeContent = plan.existingKnowledgeContent;
 
   const runner = ctx.llmRunner ?? (ctx.llmConfig ? structuredLlmRunnerFromConnection(ctx.llmConfig) : undefined);
 
@@ -229,9 +267,11 @@ async function resolveKnowledgePromotionContent(
  * not a promotion candidate and the caller should continue to the ordinary
  * lesson/knowledge distillation path.
  */
-export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promise<AkmDistillResult | null> {
+export async function promoteMemoryToKnowledge(
+  ctx: PromoteMemoryContext,
+  planned?: MemoryKnowledgePromotionPlan | null,
+): Promise<AkmDistillResult | null> {
   const {
-    targetKind,
     inputRef,
     assetContent,
     config,
@@ -246,27 +286,15 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
     feedbackFullyFiltered,
   } = ctx;
   const durableInputRef = ctx.durableInputRef ?? inputRef;
-
-  const promotion =
-    targetKind === "lesson"
-      ? null
-      : assessMemoryKnowledgePromotionCandidate({
-          inputRef: durableInputRef,
-          assetContent,
-          feedbackEvents: ctx.filteredEvents.map((event) => ({
-            ...(event.metadata !== undefined ? { metadata: event.metadata } : {}),
-          })),
-        });
-
-  if (!(promotion?.promote && promotion.content && (targetKind === "knowledge" || targetKind === "auto"))) {
-    return null;
-  }
+  const promotionPlan = planned === undefined ? await planMemoryKnowledgePromotion(ctx) : planned;
+  if (!promotionPlan) return null;
+  const promotion = promotionPlan.promotion;
 
   // D-1 / #369: When the destination knowledge file already exists, route
   // through the LLM for contradiction resolution instead of silently
   // overwriting. Follows mem0 ADD/UPDATE/DELETE/NOOP pattern (arXiv:2504.19413 §3.2)
   // and A-MEM dynamic linking (arXiv:2502.12110).
-  const merged = await resolveKnowledgePromotionContent(ctx, promotion.content, promotion.knowledgeRef);
+  const merged = await resolveKnowledgePromotionContent(ctx, promotionPlan);
   if ("earlyResult" in merged) return merged.earlyResult;
   const resolvedPromotionContent = merged.resolvedContent;
 

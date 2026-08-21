@@ -11,7 +11,7 @@ import { akmIndex } from "../../../src/indexer/indexer";
 import { writeMemory } from "../../_helpers/assets";
 import { makeProposal } from "../../_helpers/factories";
 import { withTestImproveLlm } from "../../_helpers/improve-config";
-import { withEnv } from "../../_helpers/sandbox";
+import { mutateScopedEnv, withEnv } from "../../_helpers/sandbox";
 
 const tempDirs: string[] = [];
 const savedEnv = {
@@ -515,6 +515,98 @@ describe("M-1: contradiction-detection pass writes contradictedBy edges (#367)",
     expect(readState("vpn.ccc.derived")).toContain("beliefState: contradicted");
   });
 
+  test("a missing operation credential leaves a contradiction triad completely unstamped", async () => {
+    const { detectAndWriteContradictions } = await import(
+      "../../../src/commands/improve/memory/memory-contradiction-detect"
+    );
+    const stashDir = makeTempDir("akm-m1-triad-required-credential-");
+    for (const [name, body] of [
+      ["vpn.aaa.derived", "Always use VPN."],
+      ["vpn.bbb.derived", "VPN is optional."],
+      ["vpn.ccc.derived", "VPN is never required."],
+    ] as const) {
+      writeMemory(stashDir, name, { inferred: true, source: "memories/vpn" }, body);
+    }
+    const config = contradictionConfig(stashDir);
+    config.engines = {
+      default: {
+        kind: "llm",
+        endpoint: "http://localhost/v1/chat",
+        model: "test",
+        apiKey: "$AKM_CONTRADICTION_TRIAD_KEY",
+      },
+    };
+    const before = fs
+      .readdirSync(path.join(stashDir, "memories"))
+      .sort()
+      .map((name) => [name, fs.readFileSync(path.join(stashDir, "memories", name), "utf8")] as const);
+
+    await withEnv({ AKM_CONTRADICTION_TRIAD_KEY: undefined }, async () => {
+      await expect(
+        detectAndWriteContradictions(
+          stashDir,
+          config,
+          async () => JSON.stringify({ contradicts: true, confidence: 1, reason: "conflict" }),
+          contradictionStrategy,
+        ),
+      ).rejects.toBeInstanceOf(ConfigError);
+    });
+
+    expect(
+      fs
+        .readdirSync(path.join(stashDir, "memories"))
+        .sort()
+        .map((name) => [name, fs.readFileSync(path.join(stashDir, "memories", name), "utf8")] as const),
+    ).toEqual(before);
+    expect(before.every(([, content]) => !content.includes("contradictedBy") && !content.includes("beliefState"))).toBe(
+      true,
+    );
+  });
+
+  test.each([
+    { mutation: "deletion", nextCredential: undefined },
+    { mutation: "replacement", nextCredential: "replacement-secret" },
+  ])("all contradiction-pair calls survive ambient credential $mutation", async ({ nextCredential }) => {
+    const { detectAndWriteContradictions } = await import(
+      "../../../src/commands/improve/memory/memory-contradiction-detect"
+    );
+    const stashDir = makeTempDir("akm-m1-triad-lease-");
+    for (const [name, body] of [
+      ["vpn.aaa.derived", "Always use VPN."],
+      ["vpn.bbb.derived", "VPN is optional."],
+      ["vpn.ccc.derived", "VPN is never required."],
+    ] as const) {
+      writeMemory(stashDir, name, { inferred: true, source: "memories/vpn" }, body);
+    }
+    const config = contradictionConfig(stashDir);
+    config.engines = {
+      default: {
+        kind: "llm",
+        endpoint: "http://localhost/v1/chat",
+        model: "test",
+        apiKey: "$AKM_CONTRADICTION_LEASE_KEY",
+      },
+    };
+    const observed: Array<string | undefined> = [];
+    const original = "contradiction-original-secret";
+
+    const result = await withEnv({ AKM_CONTRADICTION_LEASE_KEY: original }, () =>
+      detectAndWriteContradictions(
+        stashDir,
+        config,
+        async (connection) => {
+          observed.push(connection.apiKey);
+          if (observed.length === 1) mutateScopedEnv("AKM_CONTRADICTION_LEASE_KEY", nextCredential);
+          return JSON.stringify({ contradicts: true, confidence: 1, reason: "conflict" });
+        },
+        contradictionStrategy,
+      ),
+    );
+
+    expect(result.edgesWritten).toBe(3);
+    expect(observed).toEqual([original, original, original]);
+  });
+
   test("detectAndWriteContradictions skips pair when LLM judges no contradiction", async () => {
     const { detectAndWriteContradictions } = await import(
       "../../../src/commands/improve/memory/memory-contradiction-detect"
@@ -616,6 +708,98 @@ describe("M-3: schema-repair routes through proposal queue (#387)", () => {
     expect(proposals.length).toBe(1);
     expect(proposals[0]?.ref).toBe(durableRef("memories/auth-guide"));
     expect(proposals[0]?.payload.content).toContain("Authentication guide");
+  });
+
+  test("two-item schema repair validates a required credential before any proposal or event", async () => {
+    const { runSchemaRepairPass } = await import("../../../src/commands/sources/schema-repair");
+    const { listProposals } = await import("../../../src/commands/proposal/repository");
+    const stashDir = makeTempDir("akm-m3-schema-batch-required-");
+    const files = new Map<string, string>();
+    for (const name of ["first", "second"]) {
+      const ref = `memories/${name}`;
+      const file = path.join(stashDir, "memories", `${name}.md`);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `---\n---\n${name} body.\n`, "utf8");
+      files.set(ref, file);
+    }
+    configureStash(stashDir);
+
+    await withEnv({ AKM_SCHEMA_BATCH_KEY: undefined }, async () => {
+      await expect(
+        runSchemaRepairPass(
+          [
+            { ref: "memories/first", reason: "missing description" },
+            { ref: "memories/second", reason: "missing description" },
+          ],
+          {
+            startMs: Date.now(),
+            budgetMs: 30_000,
+            stashDir,
+            llmRunner: {
+              kind: "llm",
+              engine: "repair",
+              connection: { endpoint: "http://localhost/v1/chat", model: "test" },
+              credential: { names: ["AKM_SCHEMA_BATCH_KEY"], required: true },
+            },
+            findFilePath: async (ref) => files.get(ref) ?? null,
+            isLessonCandidateFn: () => false,
+            chatFn: async () => JSON.stringify({ description: "must not run" }),
+          },
+        ),
+      ).rejects.toBeInstanceOf(ConfigError);
+    });
+
+    expect(listProposals(stashDir)).toEqual([]);
+    expect(readEvents({ type: "schema_repair_invoked" }).events).toEqual([]);
+  });
+
+  test.each([
+    { mutation: "deletion", nextCredential: undefined },
+    { mutation: "replacement", nextCredential: "replacement-secret" },
+  ])("two-item schema repair survives ambient credential $mutation", async ({ nextCredential }) => {
+    const { runSchemaRepairPass } = await import("../../../src/commands/sources/schema-repair");
+    const stashDir = makeTempDir("akm-m3-schema-batch-lease-");
+    const files = new Map<string, string>();
+    for (const name of ["first", "second"]) {
+      const ref = `memories/${name}`;
+      const file = path.join(stashDir, "memories", `${name}.md`);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `---\n---\n${name} body.\n`, "utf8");
+      files.set(ref, file);
+    }
+    configureStash(stashDir);
+    const original = "schema-original-secret";
+    const observed: Array<string | undefined> = [];
+
+    const result = await withEnv({ AKM_SCHEMA_BATCH_KEY: original }, () =>
+      runSchemaRepairPass(
+        [
+          { ref: "memories/first", reason: "missing description" },
+          { ref: "memories/second", reason: "missing description" },
+        ],
+        {
+          startMs: Date.now(),
+          budgetMs: 30_000,
+          stashDir,
+          llmRunner: {
+            kind: "llm",
+            engine: "repair",
+            connection: { endpoint: "http://localhost/v1/chat", model: "test" },
+            credential: { names: ["AKM_SCHEMA_BATCH_KEY"], required: true },
+          },
+          findFilePath: async (ref) => files.get(ref) ?? null,
+          isLessonCandidateFn: () => false,
+          chatFn: async (connection) => {
+            observed.push(connection.apiKey);
+            if (observed.length === 1) mutateScopedEnv("AKM_SCHEMA_BATCH_KEY", nextCredential);
+            return JSON.stringify({ description: `Description ${observed.length}` });
+          },
+        },
+      ),
+    );
+
+    expect(result.repairs.map((repair) => repair.outcome)).toEqual(["queued", "queued"]);
+    expect(observed).toEqual([original, original]);
   });
 
   test("runSchemaRepairPass requires stashDir instead of bypassing the proposal queue", async () => {

@@ -19,9 +19,17 @@ import { parseSinceToIsoLenient } from "../../core/time";
 import { warn, warnVerbose } from "../../core/warn";
 import { type ResolvedWriteTarget, resolveWriteTarget } from "../../core/write-source";
 import type { LoweringNotice } from "../../execution/resolved-request";
+import {
+  disposeLoweredExecutionDispatchLease,
+  type LoweredExecutionDispatchLease,
+} from "../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { cosineSimilarity, embedBatch, resolveEmbeddingModelId } from "../../llm/embedder";
-import { callStructured, structuredLlmRunnerFromConnection } from "../../llm/structured-call";
+import {
+  callStructured,
+  preflightStructuredLlmRunner,
+  structuredLlmRunnerFromConnection,
+} from "../../llm/structured-call";
 import type { Database } from "../../storage/database";
 import { getBodyEmbeddings, upsertBodyEmbeddings } from "../../storage/repositories/embeddings-repository";
 import {
@@ -924,6 +932,7 @@ async function judgeConsolidationChunks(args: {
   opts: AkmConsolidateOptions;
   config: AkmConfig;
   llmRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined;
+  lease: LoweredExecutionDispatchLease | undefined;
   sourceName: string;
   bodyTruncation: number;
   pendingProposalBodyHashes: Set<string>;
@@ -936,6 +945,7 @@ async function judgeConsolidationChunks(args: {
     opts,
     config,
     llmRunner,
+    lease,
     sourceName,
     bodyTruncation,
     pendingProposalBodyHashes,
@@ -1040,6 +1050,7 @@ async function judgeConsolidationChunks(args: {
         akmConfig: config,
         enabled: true,
         runner: llmRunner,
+        ...(lease ? { lease } : {}),
         messages: [
           { role: "system", content: CONSOLIDATE_SYSTEM_PROMPT },
           { role: "user", content: userPrompt },
@@ -1200,118 +1211,132 @@ async function planConsolidation(
 
   // WS-5: capture llmPoolSize after every pre-LLM cap.
   const llmPoolSize = budgetedMemories.length;
+  const dispatchingChunks: MemoryEntry[][] = [];
+  for (let i = 0; i < budgetedMemories.length; i += chunkSize) {
+    const chunk = budgetedMemories.slice(i, i + chunkSize);
+    if (chunk.length > 0 && !chunk.every((memory) => isHotCapturedMemory(memory.filePath))) {
+      dispatchingChunks.push(chunk);
+    }
+  }
+  const dispatchLease =
+    llmRunner && dispatchingChunks.length > 0 ? await preflightStructuredLlmRunner(llmRunner) : undefined;
 
-  // C-1 / #380: Pre-cluster memories by embedding similarity before chunking.
-  // This ensures that semantically similar memories land in the same LLM
-  // context window, allowing the model to detect and merge duplicates that
-  // would otherwise be split across chunks and survive indefinitely.
-  // mem0 arXiv:2504.19413, A-MEM arXiv:2502.12110.
-  // Fails open: if embeddings are unavailable or fail, original order is used.
-  const { ordered: clusteredMemories, embedTelemetry } = await clusterMemoriesBySimilarity(
-    budgetedMemories,
-    config,
-    sharedStateDb,
-    opts.signal,
-  );
+  try {
+    // C-1 / #380: Pre-cluster memories by embedding similarity before chunking.
+    // This ensures that semantically similar memories land in the same LLM
+    // context window, allowing the model to detect and merge duplicates that
+    // would otherwise be split across chunks and survive indefinitely.
+    // mem0 arXiv:2504.19413, A-MEM arXiv:2502.12110.
+    // Fails open: if embeddings are unavailable or fail, original order is used.
+    const { ordered: clusteredMemories, embedTelemetry } = await clusterMemoriesBySimilarity(
+      budgetedMemories,
+      config,
+      sharedStateDb,
+      opts.signal,
+    );
 
-  // WS-3b Anti-collapse step 8c: inject random (non-similar) clusters.
-  // A small fraction (default 5%) of the pool is shuffled into random positions
-  // so the pipeline isn't PURELY similarity-driven. This prevents rich-get-richer
-  // entrenchment where only the most-retrieved assets ever get consolidated.
-  // DEFAULT ON since R5 — opt out via antiCollapse.enabled: false.
-  let finalClusteredMemories = clusteredMemories;
-  {
-    const antiCollapseForCluster: AntiCollapseConfig =
-      (getImproveProcessConfig("consolidate", opts.improveProfile)?.antiCollapse as AntiCollapseConfig | undefined) ??
-      {};
-    if (antiCollapseForCluster.enabled !== false && clusteredMemories.length > 2) {
-      const fraction = antiCollapseForCluster.randomClusterFraction ?? 0.05;
-      const randomCount = Math.max(1, Math.floor(clusteredMemories.length * fraction));
-      // Pick `randomCount` positions to inject random (un-clustered) members.
-      // Use a seeded-ish shuffle: sort by hash of the name so it's deterministic
-      // per run but not strictly similarity-driven.
-      const shuffled = [...clusteredMemories].sort((a, b) => {
-        // Deterministic shuffle: compare sha256-ish (use name hash as proxy).
-        const ha = a.name.split("").reduce((acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0, 0);
-        const hb = b.name.split("").reduce((acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0, 0);
-        return ha - hb;
-      });
-      const randomSlice = shuffled.slice(0, randomCount);
-      const randomSet = new Set(randomSlice.map((m) => m.name));
-      // Insert random members at intervals through the clustered sequence.
-      const withRandom: MemoryEntry[] = [];
-      const interval = Math.max(2, Math.floor(clusteredMemories.length / randomCount));
-      let randomIdx = 0;
-      for (let i = 0; i < clusteredMemories.length; i++) {
-        const m = clusteredMemories[i];
-        if (m && !randomSet.has(m.name)) withRandom.push(m);
-        if (i > 0 && i % interval === 0 && randomIdx < randomSlice.length) {
+    // WS-3b Anti-collapse step 8c: inject random (non-similar) clusters.
+    // A small fraction (default 5%) of the pool is shuffled into random positions
+    // so the pipeline isn't PURELY similarity-driven. This prevents rich-get-richer
+    // entrenchment where only the most-retrieved assets ever get consolidated.
+    // DEFAULT ON since R5 — opt out via antiCollapse.enabled: false.
+    let finalClusteredMemories = clusteredMemories;
+    {
+      const antiCollapseForCluster: AntiCollapseConfig =
+        (getImproveProcessConfig("consolidate", opts.improveProfile)?.antiCollapse as AntiCollapseConfig | undefined) ??
+        {};
+      if (antiCollapseForCluster.enabled !== false && clusteredMemories.length > 2) {
+        const fraction = antiCollapseForCluster.randomClusterFraction ?? 0.05;
+        const randomCount = Math.max(1, Math.floor(clusteredMemories.length * fraction));
+        // Pick `randomCount` positions to inject random (un-clustered) members.
+        // Use a seeded-ish shuffle: sort by hash of the name so it's deterministic
+        // per run but not strictly similarity-driven.
+        const shuffled = [...clusteredMemories].sort((a, b) => {
+          // Deterministic shuffle: compare sha256-ish (use name hash as proxy).
+          const ha = a.name.split("").reduce((acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0, 0);
+          const hb = b.name.split("").reduce((acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0, 0);
+          return ha - hb;
+        });
+        const randomSlice = shuffled.slice(0, randomCount);
+        const randomSet = new Set(randomSlice.map((m) => m.name));
+        // Insert random members at intervals through the clustered sequence.
+        const withRandom: MemoryEntry[] = [];
+        const interval = Math.max(2, Math.floor(clusteredMemories.length / randomCount));
+        let randomIdx = 0;
+        for (let i = 0; i < clusteredMemories.length; i++) {
+          const m = clusteredMemories[i];
+          if (m && !randomSet.has(m.name)) withRandom.push(m);
+          if (i > 0 && i % interval === 0 && randomIdx < randomSlice.length) {
+            const r = randomSlice[randomIdx++];
+            if (r) withRandom.push(r);
+          }
+        }
+        // Append any remaining random members not yet inserted.
+        while (randomIdx < randomSlice.length) {
           const r = randomSlice[randomIdx++];
           if (r) withRandom.push(r);
         }
+        finalClusteredMemories = withRandom;
+        warnings.push(
+          `Anti-collapse: injected ${randomCount} random (non-similarity-driven) cluster member(s) into consolidation pool (fraction=${fraction}).`,
+        );
       }
-      // Append any remaining random members not yet inserted.
-      while (randomIdx < randomSlice.length) {
-        const r = randomSlice[randomIdx++];
-        if (r) withRandom.push(r);
-      }
-      finalClusteredMemories = withRandom;
-      warnings.push(
-        `Anti-collapse: injected ${randomCount} random (non-similarity-driven) cluster member(s) into consolidation pool (fraction=${fraction}).`,
-      );
     }
+
+    const chunks: MemoryEntry[][] = [];
+    for (let i = 0; i < finalClusteredMemories.length; i += chunkSize) {
+      chunks.push(finalClusteredMemories.slice(i, i + chunkSize));
+    }
+
+    // 2026-05-27 prompt-context fix: precompute body-hashes of pending
+    // consolidate proposals once, so the per-chunk prompt can annotate
+    // memories whose body would just produce a deterministic
+    // `dedup_pending_proposal` skip. Cuts ~110 wasted LLM proposals per
+    // 4h on this user's stack. See
+    // /tmp/akm-health-investigations/tuning-reasons-investigation.md §Q3.
+    const pendingProposalBodyHashes = loadPendingConsolidateProposalHashes(stashDir);
+
+    warn(
+      `[consolidate] ${budgetedMemories.length} memories / ${chunks.length} chunk(s) / chunk_size=${chunkSize}` +
+        ` / pending-proposal hashes: ${pendingProposalBodyHashes.size}`,
+    );
+
+    // Consolidate output merges memories (non-wiki) → stash authoring standards.
+    // Resolved ONCE per run and passed to each chunk prompt (facts not re-read
+    // per chunk).
+    const standardsContext = resolveStandardsContext("memories/_consolidated", stashDir);
+
+    const chunkOpsArrays = await judgeConsolidationChunks({
+      chunks,
+      opts,
+      config,
+      llmRunner,
+      lease: dispatchLease,
+      sourceName,
+      bodyTruncation,
+      pendingProposalBodyHashes,
+      standardsContext,
+      warnings,
+      accounting,
+    });
+
+    // Build the known-refs set from the already-filtered memory pool so
+    // mergePlans() can reject LLM-hallucinated primary refs before execution.
+    const knownRefs = new Set(budgetedMemories.map((m) => conceptIdFromTypeName("memory", m.name)));
+    const { ops: allOps, warnings: mergeWarnings } = mergePlans(chunkOpsArrays, knownRefs);
+    warnings.push(...mergeWarnings);
+
+    return {
+      allOps,
+      totalChunks: chunks.length,
+      llmPoolSize,
+      deferredMemories: memories.length - budgetedMemories.length,
+      embedTelemetry,
+      sourceName,
+    };
+  } finally {
+    if (dispatchLease) disposeLoweredExecutionDispatchLease(dispatchLease);
   }
-
-  const chunks: MemoryEntry[][] = [];
-  for (let i = 0; i < finalClusteredMemories.length; i += chunkSize) {
-    chunks.push(finalClusteredMemories.slice(i, i + chunkSize));
-  }
-
-  // 2026-05-27 prompt-context fix: precompute body-hashes of pending
-  // consolidate proposals once, so the per-chunk prompt can annotate
-  // memories whose body would just produce a deterministic
-  // `dedup_pending_proposal` skip. Cuts ~110 wasted LLM proposals per
-  // 4h on this user's stack. See
-  // /tmp/akm-health-investigations/tuning-reasons-investigation.md §Q3.
-  const pendingProposalBodyHashes = loadPendingConsolidateProposalHashes(stashDir);
-
-  warn(
-    `[consolidate] ${budgetedMemories.length} memories / ${chunks.length} chunk(s) / chunk_size=${chunkSize}` +
-      ` / pending-proposal hashes: ${pendingProposalBodyHashes.size}`,
-  );
-
-  // Consolidate output merges memories (non-wiki) → stash authoring standards.
-  // Resolved ONCE per run and passed to each chunk prompt (facts not re-read
-  // per chunk).
-  const standardsContext = resolveStandardsContext("memories/_consolidated", stashDir);
-
-  const chunkOpsArrays = await judgeConsolidationChunks({
-    chunks,
-    opts,
-    config,
-    llmRunner,
-    sourceName,
-    bodyTruncation,
-    pendingProposalBodyHashes,
-    standardsContext,
-    warnings,
-    accounting,
-  });
-
-  // Build the known-refs set from the already-filtered memory pool so
-  // mergePlans() can reject LLM-hallucinated primary refs before execution.
-  const knownRefs = new Set(budgetedMemories.map((m) => conceptIdFromTypeName("memory", m.name)));
-  const { ops: allOps, warnings: mergeWarnings } = mergePlans(chunkOpsArrays, knownRefs);
-  warnings.push(...mergeWarnings);
-
-  return {
-    allOps,
-    totalChunks: chunks.length,
-    llmPoolSize,
-    deferredMemories: memories.length - budgetedMemories.length,
-    embedTelemetry,
-    sourceName,
-  };
 }
 
 async function akmConsolidateInner(

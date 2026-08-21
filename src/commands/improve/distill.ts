@@ -99,7 +99,12 @@ import {
   type DistillValidationFinding,
   repairLessonDescriptionTruncation,
 } from "./distill/content-repair";
-import { promoteMemoryToKnowledge } from "./distill/promote-memory";
+import {
+  memoryKnowledgePromotionRequiresDispatch,
+  type PromoteMemoryContext,
+  planMemoryKnowledgePromotion,
+  promoteMemoryToKnowledge,
+} from "./distill/promote-memory";
 import {
   fetchTopSimilarLessons,
   persistOutputEncodingSalience,
@@ -942,7 +947,35 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     filteredFeedbackCount,
     feedbackFullyFiltered,
   } = prepared;
-  const dispatchLease = distillRunner ? await preflightStructuredLlmRunner(distillRunner) : undefined;
+  const promotionContext = {
+    targetKind,
+    inputRef,
+    durableInputRef,
+    ...(options.itemRef ? { itemRef: options.itemRef } : {}),
+    assetContent: assetState.assetContent,
+    filteredEvents,
+    config,
+    strategy: options.improveProfile,
+    llmRunner: distillRunner,
+    signal: options.signal,
+    chat,
+    stash,
+    lookup,
+    fetchSimilarLessonsFn,
+    existingRefVocabulary: assetState.existingRefVocabulary,
+    outcomeWeightEnabled,
+    eligMeta,
+    eligibilitySource: options.eligibilitySource,
+    sourceRun: options.sourceRun,
+    proposalsCtx: options.ctx,
+    eventsCtx: options.eventsCtx,
+    exclusionSetSize: exclusionSet.size,
+    filteredFeedbackCount,
+    feedbackFullyFiltered,
+    onNotices: collectNotices,
+  } satisfies PromoteMemoryContext;
+  const promotionPlan = await planMemoryKnowledgePromotion(promotionContext);
+  let dispatchLease: LoweredExecutionDispatchLease | undefined;
 
   try {
     // Memory→knowledge promotion branch (D-1/#369). When the target ref is a
@@ -951,34 +984,13 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     // proposal creation, event emit) lives in `promoteMemoryToKnowledge` and is
     // terminal when it fires. A `null` return means "not a promotion candidate";
     // fall through to the ordinary lesson/knowledge distillation path.
-    const promotionResult = await promoteMemoryToKnowledge({
-      targetKind,
-      inputRef,
-      durableInputRef,
-      ...(options.itemRef ? { itemRef: options.itemRef } : {}),
-      assetContent: assetState.assetContent,
-      filteredEvents,
-      config,
-      strategy: options.improveProfile,
-      llmRunner: distillRunner,
-      ...(dispatchLease ? { lease: dispatchLease } : {}),
-      signal: options.signal,
-      chat,
-      stash,
-      lookup,
-      fetchSimilarLessonsFn,
-      existingRefVocabulary: assetState.existingRefVocabulary,
-      outcomeWeightEnabled,
-      eligMeta,
-      eligibilitySource: options.eligibilitySource,
-      sourceRun: options.sourceRun,
-      proposalsCtx: options.ctx,
-      eventsCtx: options.eventsCtx,
-      exclusionSetSize: exclusionSet.size,
-      filteredFeedbackCount,
-      feedbackFullyFiltered,
-      onNotices: collectNotices,
-    });
+    if (promotionPlan && distillRunner && memoryKnowledgePromotionRequiresDispatch(promotionContext, promotionPlan)) {
+      dispatchLease = await preflightStructuredLlmRunner(distillRunner);
+    }
+    const promotionResult = await promoteMemoryToKnowledge(
+      { ...promotionContext, ...(dispatchLease ? { lease: dispatchLease } : {}) },
+      promotionPlan,
+    );
     if (promotionResult) {
       await persistInputSalience();
       return withNotices(promotionResult);
@@ -998,6 +1010,8 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
       effectiveLessonRef,
       fetchSimilarLessonsFn,
     });
+
+    if (!dispatchLease && distillRunner) dispatchLease = await preflightStructuredLlmRunner(distillRunner);
 
     const { raw, fallbackReason } = await runDistillLlmCall({
       config,

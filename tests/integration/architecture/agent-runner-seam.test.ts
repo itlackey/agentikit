@@ -16,6 +16,7 @@ import {
 import { resolveEngine } from "../../../src/integrations/agent/engine-resolution";
 import type { AgentProfile } from "../../../src/integrations/agent/profiles";
 import type { RunnerSpec } from "../../../src/integrations/agent/runner";
+import * as runnerDispatchModule from "../../../src/integrations/agent/runner-dispatch";
 import { executeRunner } from "../../../src/integrations/agent/runner-dispatch";
 import { makeSandboxDir } from "../../_helpers/sandbox";
 
@@ -78,6 +79,18 @@ function collectTypeScriptFiles(root: string): string[] {
 }
 
 describe("RunnerSpec dispatch authority", () => {
+  test("runner-dispatch runtime exports stay complete for actual-module consumers", () => {
+    expect(Object.keys(runnerDispatchModule).sort()).toEqual([
+      "acquireRunnerDispatchLease",
+      "assertRunnerDispatchLease",
+      "collectDispatchSensitiveValues",
+      "disposeDispatchResources",
+      "disposeRunnerDispatchLease",
+      "executeRunner",
+      "redactWithRunnerDispatchLease",
+    ]);
+  });
+
   test("routes sdk and agent specs through their one low-level switch", async () => {
     const sdk: RunnerSpec = { kind: "sdk", profile };
     const agent: RunnerSpec = { kind: "agent", profile };
@@ -194,6 +207,180 @@ describe("RunnerSpec dispatch authority", () => {
     expect(discarded).toEqual([]);
     expect(missingFinallyDisposal).toEqual([]);
     expect(unauthorizedRawImports).toEqual([]);
+  });
+
+  test("production structured dispatch inventory is exact and multi-call sinks carry a bound lease", () => {
+    const oneShotLeafAllowlist = new Set([
+      "src/commands/command/command-execution.ts:dispatchPreparedCommandInvocation:dispatchLoweredExecutionRequest",
+      "src/commands/remember.ts:<anonymous>:callStructured",
+      "src/tasks/runner.ts:runPromptTask:dispatchLoweredExecutionRequest",
+      "src/workflows/exec/unit-dispatch.ts:dispatchFrozenWorkflowExecution:dispatchLoweredExecutionRequest",
+    ]);
+    const authorityAllowlist = new Set(["src/llm/structured-call.ts:<anonymous>:dispatchLoweredExecutionRequest"]);
+    const expected = new Set([
+      ...oneShotLeafAllowlist,
+      ...authorityAllowlist,
+      "src/commands/improve/consolidate.ts:callChunkLlm:callStructured",
+      "src/commands/improve/distill.ts:runDistillLlmCall:callStructured",
+      "src/commands/improve/distill/promote-memory.ts:resolveKnowledgePromotionContent:callStructured",
+      "src/commands/improve/distill/quality-gate.ts:runQualityJudge:callStructured",
+      "src/commands/improve/extract.ts:defaultSessionSummaryGenerator:callStructured",
+      "src/commands/improve/extract.ts:runSessionExtractionLlmCall:callStructured",
+      "src/commands/improve/memory/memory-contradiction-detect.ts:detectAndWriteContradictions:callStructured",
+      "src/commands/improve/reflect.ts:call:callStructured",
+      "src/commands/improve/reflect.ts:runReflectRefineIterations:dispatchLoweredExecutionRequest",
+      "src/commands/proposal/drain.ts:dispatchJudgment:dispatchLoweredExecutionRequest",
+      "src/commands/proposal/propose.ts:dispatchProposalPrompt:dispatchLoweredExecutionRequest",
+      "src/commands/sources/schema-repair.ts:runSchemaRepairPass:callStructured",
+      "src/llm/graph-extract.ts:callGraphLlm:callStructured",
+      "src/llm/graph-extract.ts:extractGraphFromBody:callStructured",
+      "src/llm/memory-infer.ts:compressMemoryToDerivedMemory:callStructured",
+      "src/llm/metadata-enhance.ts:enhanceMetadata:callStructured",
+    ]);
+    const expectedBoundLease: ReadonlyMap<string, string> = new Map([
+      ["src/commands/improve/consolidate.ts:callChunkLlm:callStructured", "lease"],
+      ["src/commands/improve/distill.ts:runDistillLlmCall:callStructured", "lease"],
+      ["src/commands/improve/distill/promote-memory.ts:resolveKnowledgePromotionContent:callStructured", "ctx.lease"],
+      ["src/commands/improve/distill/quality-gate.ts:runQualityJudge:callStructured", "options.lease"],
+      ["src/commands/improve/extract.ts:defaultSessionSummaryGenerator:callStructured", "lease"],
+      ["src/commands/improve/extract.ts:runSessionExtractionLlmCall:callStructured", "lease"],
+      [
+        "src/commands/improve/memory/memory-contradiction-detect.ts:detectAndWriteContradictions:callStructured",
+        "dispatchLease",
+      ],
+      ["src/commands/improve/reflect.ts:call:callStructured", "opts.lease"],
+      ["src/commands/improve/reflect.ts:runReflectRefineIterations:dispatchLoweredExecutionRequest", "lease"],
+      ["src/commands/proposal/drain.ts:dispatchJudgment:dispatchLoweredExecutionRequest", "lease"],
+      ["src/commands/proposal/propose.ts:dispatchProposalPrompt:dispatchLoweredExecutionRequest", "lease"],
+      ["src/commands/sources/schema-repair.ts:runSchemaRepairPass:callStructured", "dispatchLease"],
+      ["src/llm/graph-extract.ts:callGraphLlm:callStructured", "lease"],
+      ["src/llm/graph-extract.ts:extractGraphFromBody:callStructured", "options.lease"],
+      ["src/llm/memory-infer.ts:compressMemoryToDerivedMemory:callStructured", "lease"],
+      ["src/llm/metadata-enhance.ts:enhanceMetadata:callStructured", "lease"],
+    ]);
+    const found = new Set<string>();
+    const unbound: string[] = [];
+    const wrongLease: string[] = [];
+
+    for (const file of collectTypeScriptFiles(path.join(repoRoot, "src"))) {
+      const relative = path.relative(repoRoot, file).replaceAll(path.sep, "/");
+      const source = fs.readFileSync(file, "utf8");
+      const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const initializers = new Map<string, ts.Expression>();
+
+      const enclosingName = (node: ts.Node): string => {
+        for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+          if (ts.isFunctionDeclaration(parent) && parent.name) return parent.name.text;
+          if (ts.isMethodDeclaration(parent) && parent.name && ts.isIdentifier(parent.name)) return parent.name.text;
+          if (ts.isArrowFunction(parent) || ts.isFunctionExpression(parent)) {
+            const declaration = parent.parent;
+            if (ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name))
+              return declaration.name.text;
+            return "<anonymous>";
+          }
+        }
+        return "<module>";
+      };
+      const collectLeaseReferences = (node: ts.Node): string[] => {
+        const references: string[] = [];
+        const visit = (child: ts.Node): void => {
+          if (ts.isPropertyAssignment(child) && child.name.getText(sourceFile) === "lease") {
+            references.push(child.initializer.getText(sourceFile));
+            return;
+          }
+          if (ts.isShorthandPropertyAssignment(child) && child.name.text === "lease") {
+            references.push(child.name.text);
+            return;
+          }
+          ts.forEachChild(child, visit);
+        };
+        visit(node);
+        return references;
+      };
+      const scan = (node: ts.Node): void => {
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+          initializers.set(node.name.text, node.initializer);
+        }
+        if (
+          ts.isCallExpression(node) &&
+          ts.isIdentifier(node.expression) &&
+          (node.expression.text === "callStructured" || node.expression.text === "dispatchLoweredExecutionRequest") &&
+          !(relative === "src/llm/structured-call.ts" && node.expression.text === "callStructured")
+        ) {
+          const key = `${relative}:${enclosingName(node)}:${node.expression.text}`;
+          found.add(key);
+          if (!oneShotLeafAllowlist.has(key) && !authorityAllowlist.has(key)) {
+            const optionsArg = node.arguments.at(-1);
+            const leaseReferences =
+              optionsArg === undefined
+                ? []
+                : ts.isIdentifier(optionsArg) && initializers.has(optionsArg.text)
+                  ? collectLeaseReferences(initializers.get(optionsArg.text) as ts.Expression)
+                  : collectLeaseReferences(optionsArg);
+            if (leaseReferences.length === 0) unbound.push(key);
+            const expectedLease = expectedBoundLease.get(key);
+            if (expectedLease === undefined || !leaseReferences.includes(expectedLease)) {
+              wrongLease.push(`${key}:${leaseReferences.join(",") || "<none>"}`);
+            }
+          }
+        }
+        ts.forEachChild(node, scan);
+      };
+      scan(sourceFile);
+    }
+
+    expect(found).toEqual(expected);
+    expect(unbound).toEqual([]);
+    expect(wrongLease).toEqual([]);
+    expect(new Set(expectedBoundLease.keys())).toEqual(
+      new Set([...expected].filter((key) => !oneShotLeafAllowlist.has(key) && !authorityAllowlist.has(key))),
+    );
+  });
+
+  test("multi-call operation scopes classify before acquisition, mutate after it, and dispose lexically", () => {
+    const invariants = [
+      {
+        file: "src/commands/improve/memory/memory-contradiction-detect.ts",
+        classify: "candidatePairs",
+        acquire: "preflightStructuredLlmRunner",
+        mutate: "writeContradictedByEdge",
+      },
+      {
+        file: "src/commands/sources/schema-repair.ts",
+        classify: "eligibleRepairs",
+        acquire: "preflightStructuredLlmRunner",
+        mutate: "createProposal",
+      },
+      {
+        file: "src/commands/improve/consolidate.ts",
+        classify: "dispatchingChunks",
+        acquire: "preflightStructuredLlmRunner",
+        mutate: "judgeConsolidationChunks({",
+      },
+      {
+        file: "src/commands/improve/distill.ts",
+        classify: "promotionPlan",
+        acquire: "preflightStructuredLlmRunner",
+        mutate: "promoteMemoryToKnowledge",
+      },
+      {
+        file: "src/commands/improve/reflect.ts",
+        classify: "qualityJudgeRunner",
+        acquire: "acquireLoweredExecutionDispatchLease",
+        mutate: "emitReflectInvoked",
+      },
+    ] as const;
+
+    for (const invariant of invariants) {
+      const source = fs.readFileSync(path.join(repoRoot, invariant.file), "utf8");
+      const classifyAt = source.indexOf(invariant.classify);
+      const acquireAt = source.indexOf(invariant.acquire, classifyAt + 1);
+      const mutateAt = source.indexOf(invariant.mutate, acquireAt + 1);
+      expect(classifyAt, invariant.file).toBeGreaterThanOrEqual(0);
+      expect(acquireAt, invariant.file).toBeGreaterThan(classifyAt);
+      expect(mutateAt, invariant.file).toBeGreaterThan(acquireAt);
+      expect(source.slice(acquireAt)).toMatch(/finally\s*\{[\s\S]*disposeLoweredExecutionDispatchLease/);
+    }
   });
 
   test("symbol-origin guard catches aliases, namespaces, barrels, wrappers, call/apply/bind, and default injection", () => {

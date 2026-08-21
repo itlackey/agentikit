@@ -197,6 +197,8 @@ export interface QualityJudgeOptions {
   similarLessons?: Array<{ ref: string; content: string }>;
   /** Preferred production path: exact symbolic runner selected for this improve process. */
   llmRunner?: Extract<RunnerSpec, { kind: "llm" }>;
+  /** The caller already froze judge selection; absence of llmRunner must fail closed without re-resolution. */
+  runnerSelectionFrozen?: true;
   lease?: LoweredExecutionDispatchLease;
   /** Legacy non-secret connection seam retained for isolated tests. */
   llmConfig?: LlmConnectionConfig;
@@ -213,7 +215,7 @@ async function runQualityJudge(
   options: QualityJudgeOptions = {},
 ): Promise<QualityJudgeResult> {
   const resolvedDefault =
-    !options.llmRunner && !options.llmConfig
+    !options.runnerSelectionFrozen && !options.llmRunner && !options.llmConfig
       ? resolveImproveLlmExecution({ config, processName: `${feature}-judge` })
       : null;
   if (resolvedDefault) options.onNotices?.(resolvedDefault.notices);

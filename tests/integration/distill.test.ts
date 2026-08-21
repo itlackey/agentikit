@@ -874,6 +874,52 @@ describe("akmDistill — queued proposal", () => {
     expect(events[0]!.metadata?.proposalRef).toBe("knowledge/deploy-fact");
   });
 
+  test("deterministic reinforced-memory promotion does not resolve an unused credential", async () => {
+    const stash = makeStashDir();
+    const memoryFile = path.join(stash, "memories", "credential-free-promotion.md");
+    fs.writeFileSync(
+      memoryFile,
+      [
+        "---",
+        "description: Deterministic promotion needs no model",
+        "source: skill:deploy",
+        "observed_at: 2026-04-20",
+        "confidence: 0.95",
+        "tags: [deploy, ops]",
+        "---",
+        "",
+        "Always validate the deployment manifest before release.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const config = configAbsentFeature(stash);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("expected LLM fixture engine");
+    engine.apiKey = "$AKM_UNUSED_DISTILL_PROMOTION_KEY";
+    let chatCalls = 0;
+
+    const result = await withEnv({ AKM_UNUSED_DISTILL_PROMOTION_KEY: undefined }, () =>
+      akmDistill({
+        ref: "memories/credential-free-promotion",
+        proposalKind: "auto",
+        config,
+        stashDir: stash,
+        chat: async () => {
+          chatCalls += 1;
+          throw new Error("deterministic promotion must not dispatch");
+        },
+        lookupFn: async (ref) => (ref === "memories/credential-free-promotion" ? memoryFile : null),
+        readEventsFn: eventsFor("memories/credential-free-promotion", ["positive", "positive"]),
+      }),
+    );
+
+    expect(result.outcome).toBe("queued");
+    expect(result.proposalKind).toBe("knowledge");
+    expect(chatCalls).toBe(0);
+    expect(listProposals(stash)).toHaveLength(1);
+  });
+
   test("explicit knowledge mode uses knowledge validation instead of lesson lint", async () => {
     const stash = makeStashDir();
     let receivedPrompt = "";

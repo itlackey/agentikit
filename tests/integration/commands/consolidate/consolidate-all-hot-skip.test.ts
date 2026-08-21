@@ -23,7 +23,13 @@ import type { AkmConfig } from "../../../../src/core/config/config";
 import { ConfigError } from "../../../../src/core/errors";
 import { getStateDbPath } from "../../../../src/core/state-db";
 import type { LoweringNotice } from "../../../../src/execution/resolved-request";
-import { type Cleanup, withEnv, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
+import {
+  type Cleanup,
+  mutateScopedEnv,
+  withEnv,
+  withIsolatedAkmStorage,
+  withMockedFetch,
+} from "../../../_helpers/sandbox";
 
 let cleanup: Cleanup;
 let stashDir: string;
@@ -82,6 +88,52 @@ describe("akmConsolidate — all-hot chunk early-exit", () => {
     });
 
     expect(fs.existsSync(stateDbPath)).toBe(false);
+  });
+
+  test.each([
+    { dryRun: false, mutation: "deletion", nextCredential: undefined },
+    { dryRun: false, mutation: "replacement", nextCredential: "replacement-secret" },
+    { dryRun: true, mutation: "deletion", nextCredential: undefined },
+    { dryRun: true, mutation: "replacement", nextCredential: "replacement-secret" },
+  ])("all $dryRun-run chunks survive ambient credential $mutation", async ({ dryRun, nextCredential }) => {
+    writeMemory("cold-a", { hot: false });
+    writeMemory("cold-b", { hot: false });
+    const config = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+      engines: {
+        planner: {
+          kind: "llm",
+          endpoint: "https://consolidate.example.test/v1/chat/completions",
+          model: "planner",
+          apiKey: "$AKM_CONSOLIDATE_LEASE_KEY",
+        },
+      },
+      defaults: { llmEngine: "planner", improveStrategy: "default" },
+      improve: { strategies: { default: { processes: { consolidate: { enabled: true } } } } },
+    } as AkmConfig;
+    const original = "consolidate-original-secret";
+    const observed: Array<string | null> = [];
+
+    const result = await withEnv({ AKM_CONSOLIDATE_LEASE_KEY: original }, () =>
+      withMockedFetch(
+        () => akmConsolidate({ stashDir, config, dryRun, maxChunkSize: 1 }),
+        async (_input, init) => {
+          observed.push(new Headers(init?.headers).get("authorization"));
+          if (observed.length === 1) mutateScopedEnv("AKM_CONSOLIDATE_LEASE_KEY", nextCredential);
+          return new Response(
+            JSON.stringify({ choices: [{ message: { content: JSON.stringify({ operations: [] }) } }] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        },
+      ),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(observed).toEqual([`Bearer ${original}`, `Bearer ${original}`]);
   });
 
   test("an all-hot chunk skips the LLM and buckets every memory as judgedNoAction", async () => {

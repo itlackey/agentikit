@@ -32,7 +32,7 @@ import { parseAgentProposalPayload } from "../../../src/integrations/agent/promp
 import type { RunnerSpec } from "../../../src/integrations/agent/runner";
 import { _setChatCompletionForTests } from "../../../src/llm/client";
 import { quietQualityGateConfig } from "../../_helpers/factories";
-import { withEnv } from "../../_helpers/sandbox";
+import { mutateScopedEnv, withEnv } from "../../_helpers/sandbox";
 import { overrideSeam } from "../../_helpers/seams";
 
 // ── chatCompletion spy (swap-and-restore seam) ──────────────────────────────
@@ -234,6 +234,46 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
     expect(fs.readFileSync(sourcePath, "utf8")).toBe(original);
     expect(fs.existsSync(eventDbPath)).toBe(false);
     expect(fs.existsSync(defaultStateDbPath)).toBe(false);
+  });
+
+  test.each([
+    { mutation: "deletion", nextCredential: undefined },
+    { mutation: "replacement", nextCredential: "replacement-secret" },
+  ])("direct generation and refinement survive ambient credential $mutation", async ({ nextCredential }) => {
+    const stash = makeStashDir();
+    const original = "reflect-direct-original-secret";
+    const observed: Array<string | undefined> = [];
+    const source =
+      "---\ndescription: Preserve direct operation credentials\n---\n\n# Existing\n\nKeep the credential snapshot stable across refinement.\n";
+    const runner: Extract<RunnerSpec, { kind: "llm" }> = {
+      kind: "llm",
+      engine: "reflect",
+      connection: fakeLlmConnection(),
+      credential: { names: ["AKM_REFLECT_DIRECT_LEASE_KEY"], required: true },
+    };
+
+    const result = await withEnv({ AKM_REFLECT_DIRECT_LEASE_KEY: original }, () =>
+      akmReflect({
+        ref: "knowledge/direct-lease",
+        assetContent: source,
+        stashDir: stash,
+        config: quietQualityGateConfig(),
+        runner,
+        maxRefineIters: 2,
+        chat: async (connection) => {
+          observed.push(connection.apiKey);
+          if (observed.length === 1) mutateScopedEnv("AKM_REFLECT_DIRECT_LEASE_KEY", nextCredential);
+          return JSON.stringify({
+            content: "# Existing\n\nKeep the credential snapshot stable across every refinement call.\n",
+            confidence: 0.9,
+            frontmatterPatch: { description: null, when_to_use: null },
+          });
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(observed).toEqual([original, original]);
   });
 
   test("when responseSchema is provided and no test-seam `chat` is set, chatCompletion receives the schema", async () => {
