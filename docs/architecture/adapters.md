@@ -96,6 +96,10 @@ interface BundleAdapter {
   // resolveRef for link/xref existence.
   validate(c: BundleComponent, changes: FileChange[], ctx: ValidateContext): Promise<Diagnostic[]>;
 
+  // OPTIONAL — authoritative existing-file placements/read aliases used for
+  // first-owner arbitration without reading authored bytes.
+  readCandidates?(c: BundleComponent, conceptId: string): string[];
+
   // OPTIONAL — placement / discovery.
   placeNew?(c: BundleComponent, conceptId: string): string;   // where a new item would live
   directoryList?(c: BundleComponent): string[];               // owned dirs; feeds git exact-path staging
@@ -104,11 +108,18 @@ interface BundleAdapter {
 ```
 
 `recognize` and `validate` are required on every adapter; `index`,
-`affectedItems`, `placeNew`, `directoryList`, and `looksLikeRoot` are
-optional capability methods. An adapter overriding `index()` must keep
+`affectedItems`, `readCandidates`, `placeNew`, `directoryList`, and
+`looksLikeRoot` are optional capability methods. An adapter overriding `index()` must keep
 `recognize()` coherent with it (conformance: `index()` == fold of
 `recognize()` over the core walk) or declare component-level
 incrementality.
+
+`readCandidates` is intentionally distinct from both `extensions` and
+`placeNew`: extensions are non-exhaustive walk hints, while placement is a
+write-normalization policy. Read candidates preserve accepted aliases and
+directory manifests (for example OpenCode's singular `skill/` and
+`<name>/SKILL.md`) so lookup, disk show, and workflow runtime share one
+physical-owner decision.
 
 The core walk — the live indexer's per-dir walk, drained by
 `drainDirDocuments` — is one implementation carrying the security policy

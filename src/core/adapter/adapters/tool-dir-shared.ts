@@ -196,6 +196,20 @@ export function placeNewToolDir(layout: ToolDirLayout, c: BundleComponent, conce
   return path.join(c.root, `${posix}.md`);
 }
 
+/** List native read spellings without normalizing OpenCode's singular aliases. */
+export function readCandidatesToolDir(layout: ToolDirLayout, c: BundleComponent, conceptId: string): string[] {
+  const posix = toPosix(conceptId);
+  if (posix === layout.instructionConceptId) return [path.join(c.root, layout.instructionFile)];
+
+  const segs = posix.split("/").filter((segment) => segment.length > 0);
+  const head = segs[0];
+  const rest = segs.slice(1).join("/");
+  if (!head || !rest) return [];
+  if (layout.skillDirs.has(head)) return [path.join(c.root, head, rest, SKILL_MANIFEST)];
+  if (layout.commandDirs.has(head) || layout.agentDirs.has(head)) return [path.join(c.root, head, `${rest}.md`)];
+  return [];
+}
+
 /** LENIENT command/agent check: a diagnostic only when NEITHER a name/description NOR a type-shaped signal is present. */
 function nameOrSignalDiagnostics(
   type: "command" | "agent",
@@ -311,6 +325,7 @@ export function makeToolDirAdapter(layout: ToolDirLayout, looksLikeRoot: (root: 
     recognize: (c, file) => recognizeToolDir(layout, c, file),
     renderExecutionSource: (c, file) => renderToolDirExecutionSource(layout, c, file),
     validate: (c, changes, ctx) => validateToolDir(layout, c, changes, ctx),
+    readCandidates: (c, conceptId) => readCandidatesToolDir(layout, c, conceptId),
     placeNew: (c, conceptId) => placeNewToolDir(layout, c, conceptId),
     directoryList: () => [CANONICAL_COMMAND_DIR, CANONICAL_AGENT_DIR, CANONICAL_SKILL_DIR],
     looksLikeRoot,

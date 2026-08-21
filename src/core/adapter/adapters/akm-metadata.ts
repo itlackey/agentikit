@@ -55,8 +55,7 @@
  * distinction never triggers.
  */
 
-import fs from "node:fs";
-import { listKeys } from "../../../commands/env/env";
+import { scanEnvKeyNames } from "../../../commands/env/env";
 import type { IndexDocument } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseTaskV3Yaml } from "../../../tasks/source-v3";
@@ -85,14 +84,7 @@ export interface FoldedMetadata {
  * others are imported). Reads a leading JSDoc block or hash-comment run from the
  * script file; returns `null` on read/parse miss.
  */
-function extractDescriptionFromComments(filePath: string): string | null {
-  let content: string;
-  try {
-    content = fs.readFileSync(filePath, "utf8");
-  } catch {
-    return null;
-  }
-
+function extractDescriptionFromComments(content: string): string | null {
   const lines = content.split(/\r?\n/).slice(0, 50);
 
   const blockStart = lines.findIndex((l) => /^\s*\/\*\*/.test(l));
@@ -219,7 +211,7 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
     // ── script-comment-metadata (script-source) ──
     case "script-source": {
       if (file.ext === ".md") return out;
-      const commentDesc = extractDescriptionFromComments(file.absPath);
+      const commentDesc = extractDescriptionFromComments(file.content());
       if (commentDesc && !out.description) {
         out.description = commentDesc;
         out.source = "comments";
@@ -230,7 +222,7 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
 
     // ── env-file-metadata (env-file) ──
     case "env-file": {
-      const { keys } = listKeys(file.absPath);
+      const keys = scanEnvKeyNames(file.content());
       if (keys.length > 0) out.searchHints = keys;
       out.tags = Array.from(new Set([...(out.tags ?? []), "env", "secrets"]));
       return out;

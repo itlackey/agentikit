@@ -6,21 +6,19 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
-import { adapterForId } from "../../core/adapter/registry";
 import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
-import { isWithin } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { NotFoundError, UsageError } from "../../core/errors";
 import { getDbPath } from "../../core/paths";
 import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import { deriveInstallations } from "../../indexer/installations";
+import { resolveAdapterConceptOwner } from "../../indexer/lookup/adapter-concept-owner";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
-import { buildFileContext } from "../../indexer/walk/file-context";
 import type { WorkflowParameter, WorkflowStepDefinition } from "../../sources/types";
 import { withIndexDb } from "../../storage/repositories/index-db";
 import { computeSourceHash } from "../../storage/repositories/index-entries-repository";
 import { WORKFLOW_SCHEMA_VERSION, type WorkflowDocument } from "../schema";
-import { resolveUniqueWorkflowSource } from "../source-files";
+import { workflowNameForConceptId } from "../source-files";
 import { compileWorkflowSource } from "../source-ir/compile";
 import { WorkflowSourceProjectionError, workflowSourceIrToDocument } from "../source-ir/document";
 
@@ -108,37 +106,20 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
 
   for (const candidateSource of searchSources) {
     const { source, bundleId } = candidateSource;
-    try {
-      const adapterId = source.adapterId ?? detectAdapterId(source.path);
-      const ownedSource = source.adapterId ? source : { ...source, adapterId };
-      if (!ownsNativeWorkflowRuntime(ownedSource)) {
-        if (adapterOwnsConcept(source.path, adapterId, bundleRef.conceptId)) {
-          rejectedSource ??= { source: ownedSource, bundleId };
-          break;
-        }
-        continue;
-      }
-      const candidateName =
-        adapterId === "akm-workflow" ? bundleRef.conceptId : workflowNameFromConceptId(bundleRef.conceptId);
-      if (!candidateName) {
-        if (adapterOwnsConcept(source.path, adapterId, bundleRef.conceptId)) {
-          rejectedSource ??= { source: ownedSource, bundleId };
-          break;
-        }
-        continue;
-      }
-      const candidateSource = resolveUniqueWorkflowSource(source.path, adapterId, candidateName);
-      if (!candidateSource) throw new NotFoundError(`Workflow not found: ${candidateName}`);
-      assetPath = candidateSource.path;
-      sourcePath = source.path;
-      sourceBundleId = bundleId;
-      workflowName = candidateName;
-      workflowAdapterId = adapterId;
+    const adapterId = source.adapterId ?? detectAdapterId(source.path);
+    const ownedSource = source.adapterId ? source : { ...source, adapterId };
+    const owner = resolveAdapterConceptOwner(source.path, adapterId, bundleRef.conceptId);
+    if (!owner) continue;
+    if (!ownsNativeWorkflowRuntime(ownedSource) || !owner.workflowSource) {
+      rejectedSource ??= { source: ownedSource, bundleId };
       break;
-    } catch (error) {
-      if (error instanceof NotFoundError) continue;
-      throw error;
     }
+    assetPath = owner.path;
+    sourcePath = source.path;
+    sourceBundleId = bundleId;
+    workflowName = owner.workflowSource.canonicalName;
+    workflowAdapterId = adapterId;
+    break;
   }
 
   if (!assetPath) {
@@ -169,62 +150,6 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
 
 function ownsNativeWorkflowRuntime(source: SearchSource): boolean {
   return source.adapterId === "akm" || source.adapterId === "akm-workflow";
-}
-
-function workflowNameFromConceptId(conceptId: string): string | undefined {
-  const prefix = "workflows/";
-  return conceptId.startsWith(prefix) && conceptId.length > prefix.length ? conceptId.slice(prefix.length) : undefined;
-}
-
-function adapterOwnsConcept(sourcePath: string, adapterId: string, conceptId: string): boolean {
-  const adapter = adapterForId(adapterId);
-  if (!adapter) return false;
-  const normalized = conceptId.replaceAll("\\", "/");
-  if (
-    !normalized ||
-    path.posix.isAbsolute(normalized) ||
-    normalized === ".." ||
-    normalized.startsWith("../") ||
-    path.posix.normalize(normalized) !== normalized
-  ) {
-    return false;
-  }
-  const extensions = [...adapter.extensions].sort((left, right) => right.length - left.length);
-  const extension = extensions.find((candidate) => normalized.toLowerCase().endsWith(candidate.toLowerCase()));
-  const extensionless = extension ? normalized.slice(0, -extension.length) : normalized;
-  const parent = path.join(sourcePath, path.posix.dirname(extensionless));
-  let realRoot: string;
-  let realParent: string;
-  try {
-    realRoot = fs.realpathSync(sourcePath);
-    realParent = fs.realpathSync(parent);
-  } catch {
-    return false;
-  }
-  if (!isWithin(realParent, realRoot)) return false;
-  const basename = path.posix.basename(extensionless);
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(realParent, { withFileTypes: true });
-  } catch {
-    return false;
-  }
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    const recognizedExtension = extensions.find(
-      (candidate) =>
-        entry.name.toLowerCase().endsWith(candidate.toLowerCase()) &&
-        entry.name.slice(0, -candidate.length) === basename,
-    );
-    if (!recognizedExtension) continue;
-    const candidatePath = path.join(realParent, entry.name);
-    const document = adapter.recognize(
-      { id: adapterId, adapter: adapterId, root: realRoot, writable: false },
-      buildFileContext(realRoot, candidatePath),
-    );
-    if (document) return true;
-  }
-  return false;
 }
 
 /**
@@ -366,7 +291,7 @@ function workflowEntryKey(sourcePath: string, ref: string, adapterId?: string): 
   if ((adapterId ?? detectAdapterId(sourcePath)) === "akm-workflow") {
     return `${sourcePath}:concept:${bundleRef.conceptId}`;
   }
-  const name = workflowNameFromConceptId(bundleRef.conceptId);
+  const name = workflowNameForConceptId("akm", bundleRef.conceptId);
   if (!name) throw new UsageError(`Expected a workflow ref, got "${ref}".`);
   return `${sourcePath}:workflow:${name}`;
 }

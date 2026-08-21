@@ -116,6 +116,11 @@ export const akmTaskAdapter: BundleAdapter = {
   recognize,
   validate,
 
+  readCandidates(c: BundleComponent, conceptId: string): string[] {
+    const posix = toPosix(conceptId).replace(/\.ya?ml$/i, "");
+    return [path.join(c.root, `${posix}.yml`), path.join(c.root, `${posix}.yaml`)];
+  },
+
   /** A task places to `<conceptId>.yml`; an already-suffixed conceptId is idempotent. */
   placeNew(c: BundleComponent, conceptId: string): string {
     const posix = toPosix(conceptId);

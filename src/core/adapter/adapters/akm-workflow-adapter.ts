@@ -176,6 +176,13 @@ export const akmWorkflowAdapter: BundleAdapter = {
   recognize,
   validate,
 
+  readCandidates(c: BundleComponent, conceptId: string): string[] {
+    const posix = toPosix(conceptId);
+    return /\.(?:md|yml)$/i.test(posix)
+      ? [path.join(c.root, posix)]
+      : [path.join(c.root, `${posix}.md`), path.join(c.root, `${posix}.yml`)];
+  },
+
   /** Markdown remains the default; an explicit `.md`/`.yml` suffix is preserved. */
   placeNew(c: BundleComponent, conceptId: string): string {
     const posix = toPosix(conceptId);

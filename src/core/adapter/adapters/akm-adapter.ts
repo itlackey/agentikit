@@ -506,6 +506,16 @@ export const akmAdapter: BundleAdapter = {
   renderExecutionSource,
   validate,
 
+  readCandidates(c: BundleComponent, conceptId: string): string[] {
+    const posix = conceptId.replace(/\\/g, "/");
+    const slash = posix.indexOf("/");
+    if (slash <= 0) return [path.join(c.root, `${posix}.md`)];
+    const head = posix.slice(0, slash);
+    const rest = posix.slice(slash + 1);
+    const type = stashDirToType(head);
+    return type === undefined || rest.length === 0 ? [] : [assetPathForName(type, path.join(c.root, head), rest)];
+  },
+
   /**
    * Type-driven placement (§5.1), reproducing `path-resolver.ts#buildDiskCandidates`:
    * the primary candidate is

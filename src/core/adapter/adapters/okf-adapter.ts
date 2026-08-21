@@ -351,6 +351,10 @@ export const okfAdapter: BundleAdapter = {
   recognize,
   validate,
 
+  readCandidates(c: BundleComponent, conceptId: string): string[] {
+    return [path.join(c.root, `${conceptId.replace(/\\/g, "/").replace(/\.md$/i, "")}.md`)];
+  },
+
   /** OKF concepts live anywhere under the component root (§5). */
   directoryList(_c: BundleComponent): string[] {
     return ["."];

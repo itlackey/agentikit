@@ -171,6 +171,20 @@ export const dotenvAdapter: BundleAdapter = {
   recognize,
   validate,
 
+  readCandidates(c: BundleComponent, conceptId: string): string[] {
+    const posix = toPosix(conceptId);
+    const slash = posix.indexOf("/");
+    if (slash <= 0) return [];
+    const head = posix.slice(0, slash);
+    const rest = posix.slice(slash + 1);
+    const type = typeForStashDir(head);
+    if ((type !== "env" && type !== "secret") || rest.length === 0) return [];
+    const primary = assetPathForName(type, path.join(c.root, head), rest);
+    return type === "env"
+      ? [primary, primary.replace(/\.env$/i, ".sensitive")]
+      : [primary, `${primary}.sensitive`, `${primary}.lock`];
+  },
+
   /**
    * env places to `env/<name>.env`, secret to `secrets/<name>` (identity join,
    * no extension logic) — reusing the shared `assetPathForName` so the env

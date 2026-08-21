@@ -101,16 +101,11 @@ import {
   warnIfVecMissing,
 } from "../storage/repositories/index-vec-repository";
 import { takeWorkflowDocument } from "../workflows/runtime/document-cache";
-import {
-  assertIndexedWorkflowSourceIdentity,
-  resolveUniqueWorkflowSource,
-  WorkflowSourceIdentityError,
-  workflowNameForConceptId,
-} from "../workflows/source-files";
+import { assertIndexedWorkflowSourceIdentity, WorkflowSourceIdentityError } from "../workflows/source-files";
 import { deleteStoredGraph } from "./db/graph-db";
 import { withIndexWriterLease } from "./index-writer-lock";
 import { deriveEntryProvenance, deriveInstallations } from "./installations";
-import { adapterOwnsConceptOnDisk } from "./lookup/adapter-concept-owner";
+import { indexedPathMatchesOwner, resolveAdapterConceptOwner } from "./lookup/adapter-concept-owner";
 import {
   canUseIncrementalSkip,
   computeDirFingerprint,
@@ -2649,24 +2644,20 @@ export async function lookupBundleRef(ref: BundleRef): Promise<IndexEntry | null
   try {
     for (const source of candidateSources) {
       const adapterId = source.adapterId ?? detectAdapterId(source.path);
-      const workflowName = workflowNameForConceptId(adapterId, ref.conceptId);
-      const authoritativeWorkflowSource =
-        workflowName === undefined ? undefined : resolveUniqueWorkflowSource(source.path, adapterId, workflowName);
-      const lookupConceptId = authoritativeWorkflowSource
-        ? adapterId === "akm"
-          ? `workflows/${authoritativeWorkflowSource.canonicalName}`
-          : authoritativeWorkflowSource.canonicalName
-        : ref.conceptId;
+      const owner = resolveAdapterConceptOwner(source.path, adapterId, ref.conceptId);
+      const lookupConceptId = owner?.conceptId ?? ref.conceptId;
       const inputRef = makeBundleRef(qualified ? ref.bundle : undefined, lookupConceptId);
       const id = findEntryIdByRef(db, inputRef, source.path);
-      if (id !== undefined) {
+      if (id !== undefined && owner) {
         const entry = readLookupEntry(db, id, ref.conceptId);
         if (entry) {
-          if (authoritativeWorkflowSource) {
-            assertIndexedWorkflowSourceIdentity(inputRef, entry.filePath, authoritativeWorkflowSource);
+          if (owner.workflowSource) {
+            assertIndexedWorkflowSourceIdentity(inputRef, entry.filePath, owner.workflowSource);
             if (entry.adapterId !== adapterId) {
-              throw new WorkflowSourceIdentityError(inputRef, entry.filePath, authoritativeWorkflowSource.path);
+              throw new WorkflowSourceIdentityError(inputRef, entry.filePath, owner.path);
             }
+          } else if (entry.adapterId !== adapterId || !indexedPathMatchesOwner(entry.filePath, owner)) {
+            return null;
           }
           return entry;
         }
@@ -2674,7 +2665,7 @@ export async function lookupBundleRef(ref: BundleRef): Promise<IndexEntry | null
 
       // A physical owner with a missing/incomplete index row still owns this
       // unqualified concept. Stop here so a later source cannot retarget it.
-      if (authoritativeWorkflowSource || adapterOwnsConceptOnDisk(source.path, adapterId, ref.conceptId)) return null;
+      if (owner) return null;
     }
     return null;
   } finally {

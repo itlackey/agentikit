@@ -146,6 +146,10 @@ export const websiteSnapshotAdapter: BundleAdapter = {
   recognize,
   validate,
 
+  readCandidates(c: BundleComponent, conceptId: string): string[] {
+    return [path.join(c.root, PAGES_PREFIX, `${toPosix(conceptId).replace(/\.md$/i, "")}.md`)];
+  },
+
   // No placeNew: the snapshot is READ-ONLY (Mode A). Export (Mode B) routes
   // content through the DESTINATION adapter, which owns placement.
 

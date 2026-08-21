@@ -37,9 +37,10 @@
  *   validate .......................... REQUIRED
  *   placeNew / directoryList / looksLikeRoot ... optional
  *
- * 0.9.2 adds one independent optional runtime facet,
- * `renderExecutionSource`, for the approved agent/command design. It does not
- * change the 0.9.0 indexing, validation, placement, or authoring contract.
+ * 0.9.2 adds two independent optional read/runtime facets:
+ * `renderExecutionSource`, for the approved agent/command design, and
+ * `readCandidates`, which makes native read aliases explicit without changing
+ * write placement. They do not change the 0.9.0 indexing or validation contract.
  *
  * The spec's optional authoring (§12.2) / export (§12.3) / memory (§12.4)
  * facet methods are Tier-B ("no 0.9.0 adapter implements these") and their
@@ -110,6 +111,12 @@ export interface BundleAdapter {
   // frontmatter-free command/persona source. Core resolution never reads raw
   // native bytes into a prompt after this boundary.
   renderExecutionSource?(c: BundleComponent, file: FileContext): AdapterRenderedExecutionSource | null;
+
+  // OPTIONAL — authoritative read placement. Unlike `extensions` (a walk
+  // collection hint) and `placeNew` (a write-normalization policy), this lists
+  // the existing path spellings that may own one canonical concept. Core uses
+  // it for first-owner arbitration without reading authored bytes.
+  readCandidates?(c: BundleComponent, conceptId: string): string[];
 
   // OPTIONAL — placement / discovery
   /** Replaces the per-type stash-subdir + name-to-path placement primitives. */

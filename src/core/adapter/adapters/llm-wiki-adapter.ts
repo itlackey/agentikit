@@ -421,6 +421,10 @@ export const llmWikiAdapter: BundleAdapter = {
   recognize,
   validate,
 
+  readCandidates(c: BundleComponent, conceptId: string): string[] {
+    return [path.join(c.root, `${toPosix(conceptId).replace(/\.md$/i, "")}.md`)];
+  },
+
   /** `<c.root>/<conceptId>.md` — the conceptId already carries its `pages/`/`raw/` prefix (placement golden). */
   placeNew(c: BundleComponent, conceptId: string): string {
     return path.join(c.root, `${conceptId}.md`);

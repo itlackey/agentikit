@@ -38,6 +38,7 @@ import { hasGraphData } from "../../indexer/db/graph-db";
 import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
 import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction";
 import { lookupBundleRef } from "../../indexer/indexer";
+import { AdapterConceptOwnershipError, resolveAdapterConceptOwner } from "../../indexer/lookup/adapter-concept-owner";
 import type { StashEntryScope } from "../../indexer/passes/metadata";
 import { ensurePrimaryIndexForRead, resolveReadSources } from "../../indexer/read-preflight";
 import {
@@ -56,7 +57,6 @@ import {
   getRenderer,
   type MatchResult,
 } from "../../indexer/walk/file-context";
-import { resolveAssetPath } from "../../indexer/walk/path-resolver";
 import { resolveIndexPassExecution } from "../../llm/index-passes";
 import { resolveSourcesForOrigin } from "../../registry/origin-resolve";
 import { resolveStorageLocations } from "../../storage/locations";
@@ -236,22 +236,26 @@ export async function showLocal(input: {
     indexedEntry = await lookupBundleRef(parsed);
   } catch (err) {
     rethrowIfTestIsolationError(err);
-    if (err instanceof WorkflowSourceRejectionError || err instanceof WorkflowSourceIdentityError) {
+    if (
+      err instanceof AdapterConceptOwnershipError ||
+      err instanceof WorkflowSourceRejectionError ||
+      err instanceof WorkflowSourceIdentityError
+    ) {
       throw err;
     }
     indexedEntry = null;
   }
-  const resolvedAssetPath =
-    indexedEntry?.filePath ??
-    (assetParts
-      ? await resolveAssetPath(
-          { type: assetParts.type, name: assetParts.name, origin: parsed.bundle },
-          {
-            stashDir: input.stashDir,
-            mode: "disk-only",
-          },
-        )
-      : null);
+  let physicalAssetPath: string | undefined;
+  if (!indexedEntry) {
+    for (const source of searchSources) {
+      const adapterId = source.adapterId ?? detectAdapterId(source.path);
+      const owner = resolveAdapterConceptOwner(source.path, adapterId, parsed.conceptId);
+      if (!owner) continue;
+      physicalAssetPath = owner.path;
+      break;
+    }
+  }
+  const resolvedAssetPath = indexedEntry?.filePath ?? physicalAssetPath;
   const assetPath = resolvedAssetPath ?? undefined;
   const displayType = indexedEntry?.type ?? assetParts?.type ?? "asset";
   const displayName = indexedEntry?.name ?? assetParts?.name ?? parsed.conceptId;

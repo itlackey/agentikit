@@ -8,9 +8,39 @@ import type { BundleAdapter } from "../../core/adapter/bundle-adapter";
 import { adapterForId } from "../../core/adapter/registry";
 import type { BundleComponent } from "../../core/adapter/types";
 import { isWithin } from "../../core/common";
-import { buildFileContext } from "../walk/file-context";
+import { UsageError } from "../../core/errors";
+import {
+  resolveUniqueWorkflowSource,
+  type WorkflowSourceFile,
+  workflowNameForConceptId,
+} from "../../workflows/source-files";
+import { buildFileContext, type FileContext } from "../walk/file-context";
 
-const CONTENT_READ_REQUIRED = new Error("adapter ownership probe requires content");
+const CONTENT_READ_REQUIRED = Symbol("adapter ownership probe requires content");
+
+export interface AdapterConceptOwner {
+  /** Authored path spelling used by index/show/runtime provenance. */
+  path: string;
+  /** Resolved path used only for containment and identity checks. */
+  realPath: string;
+  conceptId: string;
+  adapterId: string;
+  workflowSource?: WorkflowSourceFile;
+}
+
+export abstract class AdapterConceptOwnershipError extends UsageError {}
+
+export class AdapterConceptCollisionError extends AdapterConceptOwnershipError {
+  constructor(adapterId: string, conceptId: string, paths: readonly string[]) {
+    const sorted = [...paths].sort(comparePaths);
+    super(
+      `Adapter "${adapterId}" has multiple physical owners for "${conceptId}": ${sorted.join(", ")}.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+    this.name = "AdapterConceptCollisionError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
 
 function normalizedConceptId(conceptId: string): string | undefined {
   const normalized = conceptId.replaceAll("\\", "/");
@@ -30,89 +60,83 @@ function componentFor(sourcePath: string, adapterId: string): BundleComponent {
   return { id: adapterId, adapter: adapterId, root: sourcePath, writable: false };
 }
 
-function placementCandidates(adapter: BundleAdapter, component: BundleComponent, conceptId: string): string[] {
-  return adapter.placeNew ? [adapter.placeNew(component, conceptId)] : [];
-}
-
-function extensionCandidates(
-  sourcePath: string,
-  realRoot: string,
-  adapter: BundleAdapter,
-  conceptId: string,
-): string[] {
-  const extensions = [...adapter.extensions].sort((left, right) => right.length - left.length);
-  const extension = extensions.find((candidate) => conceptId.toLowerCase().endsWith(candidate.toLowerCase()));
-  const extensionless = extension ? conceptId.slice(0, -extension.length) : conceptId;
-  const parent = path.join(sourcePath, path.posix.dirname(extensionless));
-  let entries: fs.Dirent[];
-  try {
-    if (!lexicallyWithin(parent, sourcePath) || !isWithin(fs.realpathSync(parent), realRoot)) return [];
-    entries = fs.readdirSync(parent, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  const basename = path.posix.basename(extensionless);
-  return entries
-    .filter((entry) =>
-      entry.isFile()
-        ? extensions.some(
-            (candidate) =>
-              entry.name.toLowerCase().endsWith(candidate.toLowerCase()) &&
-              entry.name.slice(0, -candidate.length) === basename,
-          )
-        : false,
-    )
-    .map((entry) => path.join(parent, entry.name));
-}
-
 function lexicallyWithin(candidate: string, root: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
-function containedRegularFile(sourcePath: string, realRoot: string, candidate: string): string | undefined {
+/** Add case-only suffix spellings beside an adapter-authored read candidate. */
+function candidateSpellings(candidate: string, sourcePath: string, realRoot: string): string[] {
+  const authored = path.resolve(candidate);
+  if (!lexicallyWithin(authored, sourcePath)) return [authored];
+  const parent = path.dirname(authored);
+  let realParent: string;
+  let entries: fs.Dirent[];
+  try {
+    realParent = fs.realpathSync(parent);
+    entries = fs.readdirSync(parent, { withFileTypes: true });
+  } catch {
+    return [authored];
+  }
+  if (!isWithin(realParent, realRoot)) return [authored];
+
+  const extension = path.extname(authored);
+  if (!extension) return [authored];
+  const stem = path.basename(authored, extension);
+  return entries
+    .filter((entry) => {
+      const entryExtension = path.extname(entry.name);
+      return (
+        path.basename(entry.name, entryExtension) === stem && entryExtension.toLowerCase() === extension.toLowerCase()
+      );
+    })
+    .map((entry) => path.join(parent, entry.name));
+}
+
+function inspectCandidate(
+  sourcePath: string,
+  realRoot: string,
+  adapterId: string,
+  conceptId: string,
+  candidate: string,
+): AdapterConceptOwner | undefined {
   const authoredPath = path.resolve(candidate);
   if (!lexicallyWithin(authoredPath, sourcePath)) return undefined;
+  let authoredStat: fs.Stats;
   try {
-    if (!fs.lstatSync(authoredPath).isFile()) return undefined;
-    const realPath = fs.realpathSync(authoredPath);
-    return isWithin(realPath, realRoot) ? authoredPath : undefined;
+    authoredStat = fs.lstatSync(authoredPath);
   } catch {
     return undefined;
   }
-}
+  if (!authoredStat.isFile() && !authoredStat.isSymbolicLink()) return undefined;
 
-function akmNonMarkdownPathAbstains(sourcePath: string, candidate: string): boolean {
-  const relative = path.relative(sourcePath, candidate);
-  const segments = relative.split(path.sep).filter(Boolean);
-  if (segments[0] === "env" && (candidate.endsWith(".env") || path.basename(candidate) === ".env")) {
-    return fs.existsSync(candidate.replace(/\.env$/, ".sensitive"));
-  }
-  if (segments[0] !== "secrets") return false;
-  return candidate.endsWith(".sensitive") || candidate.endsWith(".lock") || fs.existsSync(`${candidate}.sensitive`);
-}
-
-function adapterClaimsPathWithoutContent(
-  adapter: BundleAdapter,
-  component: BundleComponent,
-  candidate: string,
-): boolean {
-  if (adapter.id === "akm" && akmNonMarkdownPathAbstains(component.root, candidate)) return false;
-  if (path.extname(candidate).toLowerCase() !== ".md") return true;
-
-  const file = buildFileContext(component.root, candidate);
-  const noContentFile = {
-    ...file,
-    content(): never {
-      throw CONTENT_READ_REQUIRED;
-    },
-    frontmatter(): never {
-      throw CONTENT_READ_REQUIRED;
-    },
-  };
+  let realPath: string;
   try {
-    return adapter.recognize(component, noContentFile) !== null;
+    realPath = fs.realpathSync(authoredPath);
+  } catch {
+    return undefined;
+  }
+  if (!isWithin(realPath, realRoot)) return undefined;
+  try {
+    if (!fs.statSync(realPath).isFile()) return undefined;
+  } catch {
+    return undefined;
+  }
+  return { path: authoredPath, realPath, conceptId, adapterId };
+}
+
+function claimsWithoutContent(adapter: BundleAdapter, component: BundleComponent, owner: AdapterConceptOwner): boolean {
+  const file = buildFileContext(component.root, owner.path);
+  let requestedBytes = false;
+  const denyBytes = (): never => {
+    requestedBytes = true;
+    throw CONTENT_READ_REQUIRED;
+  };
+  const noContentFile: FileContext = { ...file, content: denyBytes, frontmatter: denyBytes };
+  try {
+    const document = adapter.recognize(component, noContentFile);
+    if (requestedBytes) return true;
+    return document?.conceptId === owner.conceptId;
   } catch (error) {
     if (error === CONTENT_READ_REQUIRED) return true;
     throw error;
@@ -120,35 +144,72 @@ function adapterClaimsPathWithoutContent(
 }
 
 /**
- * Probe one adapter/component for an exact physical concept owner.
- *
- * Adapter placement is authoritative and covers directory manifests, aliases,
- * and extensionless assets that `extensions` cannot enumerate. The extension
- * hint remains a fallback for adapters without placement and supported suffix
- * spelling variants. Candidates are contained regular files before either
- * placement or no-content recognition establishes ownership, and the probe
- * never reads or parses authored bytes.
+ * Resolve one adapter/component's exact physical concept owner without reading
+ * authored bytes. Native workflow arbitration is reused verbatim; every other
+ * adapter supplies its own read placements and is probed with a byte-denying
+ * FileContext so path-level abstention remains authoritative.
  */
-export function adapterOwnsConceptOnDisk(sourcePath: string, adapterId: string, conceptId: string): boolean {
+export function resolveAdapterConceptOwner(
+  sourcePath: string,
+  adapterId: string,
+  conceptId: string,
+): AdapterConceptOwner | undefined {
   const adapter = adapterForId(adapterId);
   const normalized = normalizedConceptId(conceptId);
-  if (!adapter || !normalized) return false;
+  if (!adapter || !normalized) return undefined;
+
+  const workflowName = workflowNameForConceptId(adapterId, normalized);
+  if (workflowName !== undefined) {
+    const workflowSource = resolveUniqueWorkflowSource(sourcePath, adapterId, workflowName);
+    if (!workflowSource) return undefined;
+    const canonicalConceptId =
+      adapterId === "akm" ? `workflows/${workflowSource.canonicalName}` : workflowSource.canonicalName;
+    return {
+      path: workflowSource.path,
+      realPath: workflowSource.realPath,
+      conceptId: canonicalConceptId,
+      adapterId,
+      workflowSource,
+    };
+  }
+  if (!adapter.readCandidates) return undefined;
 
   let realRoot: string;
   try {
     realRoot = fs.realpathSync(sourcePath);
   } catch {
+    return undefined;
+  }
+  const component = componentFor(sourcePath, adapterId);
+  const spellings = adapter
+    .readCandidates(component, normalized)
+    .flatMap((candidate) => candidateSpellings(candidate, sourcePath, realRoot));
+  const inspected = [...new Set(spellings.map((candidate) => path.resolve(candidate)))]
+    .sort(comparePaths)
+    .flatMap((candidate) => {
+      const owner = inspectCandidate(sourcePath, realRoot, adapterId, normalized, candidate);
+      return owner ? [owner] : [];
+    });
+  const owners = inspected.filter((candidate) => claimsWithoutContent(adapter, component, candidate));
+  if (owners.length > 1) {
+    throw new AdapterConceptCollisionError(
+      adapterId,
+      normalized,
+      owners.map((owner) => path.relative(sourcePath, owner.path).replaceAll("\\", "/")),
+    );
+  }
+  return owners[0];
+}
+
+export function indexedPathMatchesOwner(indexedPath: string, owner: AdapterConceptOwner): boolean {
+  if (path.resolve(indexedPath) !== path.resolve(owner.path)) return false;
+  try {
+    return path.resolve(fs.realpathSync(indexedPath)) === path.resolve(owner.realPath);
+  } catch {
     return false;
   }
+}
 
-  const component = componentFor(sourcePath, adapterId);
-  const candidates = [
-    ...placementCandidates(adapter, component, normalized),
-    ...extensionCandidates(sourcePath, realRoot, adapter, normalized),
-  ];
-  for (const candidate of new Set(candidates)) {
-    const contained = containedRegularFile(sourcePath, realRoot, candidate);
-    if (contained && adapterClaimsPathWithoutContent(adapter, component, contained)) return true;
-  }
-  return false;
+function comparePaths(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
