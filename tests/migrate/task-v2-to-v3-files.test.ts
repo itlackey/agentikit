@@ -284,6 +284,56 @@ describe("durable task v2 to v3 migration application", () => {
     }
   });
 
+  for (const transient of [false, true] as const) {
+    test(`the final prepublication hook cannot race in a ${transient ? "transient " : ""}hard link`, () => {
+      const root = tempRoot();
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-hook-hardlink-"));
+      const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
+      const task = path.join(root, "tasks", "safe.yml");
+      const outsideAlias = path.join(outside, "safe-alias.yml");
+      fs.writeFileSync(task, SAFE, { mode: 0o640 });
+      try {
+        const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+        const manifest = createTaskMigrationBackup(backupRoot, plan, `hook-hardlink-${transient}`);
+        if (!manifest) throw new Error("expected a task backup manifest");
+        const entry = manifest.files[0];
+        if (!entry) throw new Error("expected a task backup declaration");
+        const beforeInode = fs.lstatSync(task).ino;
+        const beforeBackup = fs.readFileSync(path.join(backupRoot, entry.backupPath));
+        const beforeFinal = fs.readFileSync(path.join(backupRoot, entry.finalPath));
+
+        expect(() =>
+          applyTaskV2ToV3MigrationPlan(plan, {
+            backupRoot,
+            backupManifest: manifest,
+            testHooks: {
+              beforePublish(filePath) {
+                expect(filePath).toBe(task);
+                fs.linkSync(task, outsideAlias);
+                if (transient) fs.unlinkSync(outsideAlias);
+              },
+            },
+          }),
+        ).toThrow(/hard link|link count|identity|drift|change/i);
+
+        expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
+        expect(fs.lstatSync(task).ino).toBe(beforeInode);
+        expect(fs.lstatSync(task).nlink).toBe(transient ? 1 : 2);
+        expect(fs.readFileSync(path.join(backupRoot, entry.backupPath))).toEqual(beforeBackup);
+        expect(fs.readFileSync(path.join(backupRoot, entry.finalPath))).toEqual(beforeFinal);
+        expect(() => verifyTaskMigrationBackup(backupRoot, manifest)).not.toThrow();
+        expect(JSON.parse(fs.readFileSync(path.join(backupRoot, manifest.recoveryPath), "utf8"))).toMatchObject({
+          files: [{ sourcePath: entry.sourcePath, state: "backed-up" }],
+        });
+        expect(fs.readdirSync(path.dirname(task)).some((name) => name.includes(".tmp-task-v3-"))).toBe(false);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(outside, { recursive: true, force: true });
+        fs.rmSync(backupRoot, { recursive: true, force: true });
+      }
+    });
+  }
+
   test("rejects duplicate lexical aliases of one physical task with deterministic diagnostics and zero writes", () => {
     if (process.platform === "win32") return;
     const root = tempRoot();

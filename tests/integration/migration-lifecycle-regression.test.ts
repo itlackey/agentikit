@@ -294,7 +294,7 @@ test.each([
   {
     label: "workflow runs",
     legacyRef: ["workflow", "table-matrix"].join(":"),
-    expectedRef: "workflows/table-matrix",
+    expectedRef: "stash//workflows/table-matrix",
     insert: (db: MigrationSeedDatabase, ref: string) =>
       db
         .prepare(
@@ -310,7 +310,11 @@ test.each([
   expectedRef,
 }) => {
   fs.writeFileSync(getConfigPath(), `${JSON.stringify(currentConfig())}\n`, { mode: 0o600 });
-  const assetPath = path.join(storage.stashDir, "memories", "table-matrix.md");
+  const assetPath = path.join(
+    storage.stashDir,
+    legacyRef.startsWith("workflow:") ? "workflows" : "memories",
+    "table-matrix.md",
+  );
   fs.mkdirSync(path.dirname(assetPath), { recursive: true });
   fs.writeFileSync(assetPath, "# Table matrix\n");
   const statePath = getStateDbPathInDataDir();
@@ -329,6 +333,12 @@ test.each([
   current.close();
   expect(fs.existsSync(`${statePath}-wal`)).toBe(false);
   expect(fs.existsSync(`${statePath}-shm`)).toBe(false);
+  const provenance = new Database(statePath, { readonly: true });
+  expect(provenance.query("SELECT backup_run_id, task_generation FROM akm_migration_completion").get()).toMatchObject({
+    backup_run_id: expect.any(String),
+    task_generation: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  provenance.close();
 });
 
 test("an unmappable asset-salience ref in a markerless current WAL ledger blocks without mutation", async () => {
@@ -375,6 +385,86 @@ test("an unmappable asset-salience ref in a markerless current WAL ledger blocks
   }
 });
 
+test("an unmapped workflow run in a markerless current ledger blocks before backup with exact bytes", async () => {
+  fs.writeFileSync(getConfigPath(), `${JSON.stringify(currentConfig())}\n`, { mode: 0o600 });
+  const statePath = getStateDbPathInDataDir();
+  const seeded = openStateDbAtCeiling(statePath, STATE_MIGRATIONS.at(-1)!.id);
+  const legacyRef = ["workflow", "missing"].join(":");
+  seeded
+    .prepare(
+      "INSERT INTO workflow_runs(id, workflow_ref, workflow_title, status, params_json, created_at, updated_at) VALUES ('unmapped-run', ?, 'Missing', 'completed', '{}', 'c', 'u')",
+    )
+    .run(legacyRef);
+  seeded.close();
+  const beforeConfig = fs.readFileSync(getConfigPath());
+  const beforeState = fs.readFileSync(statePath);
+  const beforeMode = fs.statSync(statePath).mode & 0o777;
+
+  const status = await runCliCapture(["migrate", "status"]);
+  expect(status.code).not.toBe(0);
+  expect(JSON.parse(status.stdout)).toMatchObject({ status: "blocked" });
+  expect(status.stdout).toMatch(/workflow_runs\.workflow_ref.*unmapped/i);
+  expect(status.stdout).toContain(legacyRef);
+  const applied = await runCliCapture(["migrate", "apply"]);
+  expect(applied.code).not.toBe(0);
+  expect(fs.readFileSync(getConfigPath())).toEqual(beforeConfig);
+  expect(fs.readFileSync(statePath)).toEqual(beforeState);
+  expect(fs.statSync(statePath).mode & 0o777).toBe(beforeMode);
+  expect(cutoverMergeCommitted(statePath)).toBe(false);
+  expect(backupRuns()).toEqual([]);
+  expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+});
+
+test("a mismatched npm workflow map target blocks read-only under a committed marker", async () => {
+  fs.writeFileSync(getConfigPath(), `${JSON.stringify(currentConfig())}\n`, { mode: 0o600 });
+  const statePath = getStateDbPathInDataDir();
+  const seeded = openStateDbAtCeiling(statePath, STATE_MIGRATIONS.at(-1)!.id);
+  seeded.exec(`
+    CREATE TABLE akm_cutover_ledger (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      operation_id TEXT NOT NULL,
+      merged_at TEXT NOT NULL
+    );
+    INSERT INTO akm_cutover_ledger VALUES (1, 'original-cutover', datetime('now'));
+  `);
+  const legacyRef = `${["npm", "@scope/pkg"].join(":")}//${["workflow", "ship"].join(":")}`;
+  seeded
+    .prepare(
+      "INSERT INTO workflow_runs(id, workflow_ref, workflow_title, status, params_json, created_at, updated_at) VALUES ('npm-run', ?, 'Ship', 'completed', '{}', 'c', 'u')",
+    )
+    .run(legacyRef);
+  seeded.close();
+  const mapPath = path.join(path.dirname(getMigrationApplyJournalPath()), "completed-cutover-refmap.json");
+  fs.mkdirSync(path.dirname(mapPath), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    mapPath,
+    `${JSON.stringify({ formatVersion: 1, entries: { [legacyRef]: "pkg//workflows/other" } }, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  const before = [getConfigPath(), statePath, mapPath].map((filePath) => ({
+    filePath,
+    bytes: fs.readFileSync(filePath),
+    mode: fs.statSync(filePath).mode & 0o777,
+  }));
+
+  const status = await runCliCapture(["migrate", "status"]);
+  expect(status.code).not.toBe(0);
+  expect(JSON.parse(status.stdout)).toMatchObject({ status: "blocked" });
+  expect(status.stdout).toMatch(/workflow_runs\.workflow_ref.*npm:@scope\/pkg.*invalid mapped target/i);
+  const applied = await runCliCapture(["migrate", "apply"]);
+  expect(applied.code).not.toBe(0);
+  expect(
+    before.map(({ filePath }) => ({
+      filePath,
+      bytes: fs.readFileSync(filePath),
+      mode: fs.statSync(filePath).mode & 0o777,
+    })),
+  ).toEqual(before);
+  expect(cutoverMergeCommitted(statePath)).toBe(true);
+  expect(backupRuns()).toEqual([]);
+  expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+});
+
 test("a committed marker uses its persisted map to repair a later durable ref and converge WAL to one file", async () => {
   fs.writeFileSync(getConfigPath(), `${JSON.stringify(currentConfig())}\n`, { mode: 0o600 });
   const statePath = getStateDbPathInDataDir();
@@ -388,13 +478,29 @@ test("a committed marker uses its persisted map to repair a later durable ref an
     INSERT INTO akm_cutover_ledger VALUES (1, 'original-cutover', datetime('now'));
   `);
   const legacyRef = ["memory", "late-ref"].join(":");
+  const legacyWorkflowRef = ["workflow", "late-workflow"].join(":");
   seeded.prepare("INSERT INTO asset_salience(asset_ref, updated_at) VALUES (?, 1)").run(legacyRef);
+  seeded
+    .prepare(
+      "INSERT INTO workflow_runs(id, workflow_ref, workflow_title, status, params_json, created_at, updated_at) VALUES ('late-run', ?, 'Late', 'completed', '{}', 'c', 'u')",
+    )
+    .run(legacyWorkflowRef);
   seeded.close();
   const mapPath = path.join(path.dirname(getMigrationApplyJournalPath()), "completed-cutover-refmap.json");
   fs.mkdirSync(path.dirname(mapPath), { recursive: true, mode: 0o700 });
   fs.writeFileSync(
     mapPath,
-    `${JSON.stringify({ formatVersion: 1, entries: { [legacyRef]: "stash//memories/late-ref" } }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        formatVersion: 1,
+        entries: {
+          [legacyRef]: "stash//memories/late-ref",
+          [legacyWorkflowRef]: "stash//workflows/late-workflow",
+        },
+      },
+      null,
+      2,
+    )}\n`,
     { mode: 0o600 },
   );
   const wal = new Database(statePath);
@@ -407,6 +513,9 @@ test("a committed marker uses its persisted map to repair a later durable ref an
   const current = new Database(statePath, { readonly: true });
   expect(current.query("SELECT asset_ref FROM asset_salience").get()).toEqual({
     asset_ref: "stash//memories/late-ref",
+  });
+  expect(current.query("SELECT workflow_ref FROM workflow_runs WHERE id='late-run'").get()).toEqual({
+    workflow_ref: "stash//workflows/late-workflow",
   });
   expect(current.query("SELECT operation_id FROM akm_cutover_ledger WHERE singleton=1").get()).toEqual({
     operation_id: "original-cutover",
@@ -589,7 +698,7 @@ test("a config.json with a present-but-garbage configVersion stays inconsistent/
  * built here) — so after a migration this asset fails 0.9 structural
  * validation and is invisible to `akm search --type workflow`, yet its
  * `active` run row survives the cutover (only the run-key spelling is
- * rewritten, `workflow:<n>` → `workflows/<n>`). Migrate apply must still
+ * rewritten through the cutover map to `bundle//workflows/<n>`). Migrate apply must still
  * SUCCEED, and must name the run and the fix in a non-fatal warning.
  */
 test("migrate apply warns (non-fatally) about an active run whose workflow asset fails 0.9 structural validation", async () => {
@@ -626,7 +735,7 @@ Do the thing.
   const migratedState = new Database(getStateDbPathInDataDir(), { readonly: true });
   try {
     expect(migratedState.query("SELECT status, workflow_ref FROM workflow_runs WHERE id = 'run-orphan'").get()).toEqual(
-      { status: "active", workflow_ref: "workflows/ship" },
+      { status: "active", workflow_ref: "stash//workflows/ship" },
     );
   } finally {
     migratedState.close();
@@ -635,6 +744,6 @@ Do the thing.
   // The non-fatal warning names the run, the asset, and both remedies —
   // forwarded from the akm-migrate subprocess's stderr through to the CLI's.
   expect(applied.stderr).toContain("run-orphan");
-  expect(applied.stderr).toContain("workflows/ship");
+  expect(applied.stderr).toContain("stash//workflows/ship");
   expect(applied.stderr).toContain("akm workflow abandon run-orphan");
 });

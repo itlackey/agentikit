@@ -962,11 +962,14 @@ export function applyTaskV2ToV3MigrationPlan(
       // still fail after the new inode has become visible.
       atomicReplace(file.filePath, file.after, file.mode, {
         beforeRename: () => {
+          // Test hooks model the last possible external race. Run them before
+          // the final fence so no hook-side link/metadata drift can slip into
+          // the rename window after identity was already accepted.
+          options.testHooks?.beforePublish?.(file.filePath);
           const immediate = readPlannedSource(file, current.identity);
           if (!immediate.bytes.equals(file.before)) {
             throw migrationError(`${file.filePath} drifted immediately before atomic replacement; it was left untouched.`);
           }
-          options.testHooks?.beforePublish?.(file.filePath);
         },
         onPublished: () => {
           let publishedIdentity: TaskV2ToV3FilesystemIdentity | undefined;

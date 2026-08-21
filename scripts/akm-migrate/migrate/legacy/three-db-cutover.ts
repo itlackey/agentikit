@@ -567,15 +567,56 @@ function rekeyHistoricalTable(
   }
 }
 
-function canonicalWorkflowRunRef(ref: string): string | undefined {
-  if (ref.startsWith("workflow:")) return `workflows/${ref.slice("workflow:".length)}`;
-  const marker = "//workflow:";
-  const markerIndex = ref.indexOf(marker);
-  if (markerIndex < 0) return undefined;
-  return `${ref.slice(0, markerIndex + 2)}workflows/${ref.slice(markerIndex + marker.length)}`;
+function assertQualifiedWorkflowRef(ref: string): ReturnType<typeof parseStoredRef> {
+  if (classifyRefGrammar(ref) !== "bundle") {
+    throw new CutoverIntegrityError(`target ${ref} is not in bundle-ref grammar`);
+  }
+  let parsed: ReturnType<typeof parseStoredRef>;
+  try {
+    parsed = parseStoredRef(ref);
+  } catch (cause) {
+    throw new CutoverIntegrityError(
+      `target ${ref} is invalid: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+  if (parsed.origin === undefined || parsed.type !== "workflow") {
+    throw new CutoverIntegrityError(`target ${ref} must be a fully-qualified bundle//workflows/... ref`);
+  }
+  return parsed;
 }
 
-function rekeyWorkflowRunRefs(db: Database, report: CutoverRekeyReport): void {
+function mappedWorkflowRunRef(ref: string, refMap: Map<string, string>): string {
+  let source: ReturnType<typeof parseStoredRef>;
+  try {
+    source = parseStoredRef(ref);
+  } catch (cause) {
+    throw new CutoverIntegrityError(
+      `workflow_runs.workflow_ref contains invalid workflow ref ${ref}: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+  if (classifyRefGrammar(ref) !== "legacy" || source.type !== "workflow") {
+    throw new CutoverIntegrityError(`workflow_runs.workflow_ref ${ref} is not a legacy workflow-family ref`);
+  }
+  const target = refMap.get(ref);
+  if (target === undefined) {
+    throw new CutoverIntegrityError(`workflow_runs.workflow_ref contains unmapped legacy workflow ref ${ref}`);
+  }
+  try {
+    const parsedTarget = assertQualifiedWorkflowRef(target);
+    if (parsedTarget.name !== source.name) {
+      throw new CutoverIntegrityError(
+        `target ${target} names workflow ${parsedTarget.name}, not source workflow ${source.name}`,
+      );
+    }
+  } catch (cause) {
+    throw new CutoverIntegrityError(
+      `workflow_runs.workflow_ref ${ref} has invalid mapped target ${target}: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+  return target;
+}
+
+function rekeyWorkflowRunRefs(db: Database, refMap: Map<string, string>, report: CutoverRekeyReport): void {
   const { table, keyColumn } = WORKFLOW_REF_TABLE;
   if (!tableExists(db, "main", table) || !columnNames(db, "main", table).includes(keyColumn)) {
     report.skipped.push(`${table}.${keyColumn}`);
@@ -583,8 +624,8 @@ function rekeyWorkflowRunRefs(db: Database, report: CutoverRekeyReport): void {
   }
   const refs = db.prepare(`SELECT DISTINCT ${keyColumn} AS ref FROM ${table}`).all() as Array<{ ref: string }>;
   for (const { ref } of refs) {
-    const target = canonicalWorkflowRunRef(ref);
-    if (target === undefined || target === ref) continue;
+    if (classifyRefGrammar(ref) === "bundle") continue;
+    const target = mappedWorkflowRunRef(ref, refMap);
     db.prepare(`UPDATE ${table} SET ${keyColumn} = ? WHERE ${keyColumn} = ?`).run(target, ref);
     bump(report.rekeyed, table);
   }
@@ -607,7 +648,7 @@ export function rekeyStateDbCore(db: Database, refMap: Map<string, string>): Cut
   for (const spec of SCALAR_REKEY_TABLES) rekeyScalarTable(db, spec, refMap, report);
   for (const spec of EVENT_REKEY_TABLES) rekeyEventTable(db, spec, refMap, report);
   for (const spec of HISTORICAL_REKEY_TABLES) rekeyHistoricalTable(db, spec, refMap, report);
-  rekeyWorkflowRunRefs(db, report);
+  rekeyWorkflowRunRefs(db, refMap, report);
   return report;
 }
 
@@ -716,7 +757,10 @@ export function assertLegacyStateRefsRepairable(dbPath: string, refMap: Map<stri
     }
   }
   for (const record of records) {
-    if (record.table === WORKFLOW_REF_TABLE.table && canonicalWorkflowRunRef(record.ref) !== undefined) continue;
+    if (record.table === WORKFLOW_REF_TABLE.table) {
+      mappedWorkflowRunRef(record.ref, refMap);
+      continue;
+    }
     if (refMap.has(record.ref)) continue;
     if (record.table === "proposals") {
       const pending = pendingProposals.find((row) => row.ref === record.ref);

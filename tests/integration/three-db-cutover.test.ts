@@ -29,10 +29,12 @@ import { getLegacyWorkflowDbPath } from "../../scripts/akm-migrate/migrate/legac
 import { writeLegacyStashFile } from "../../scripts/akm-migrate/migrate/legacy/legacy-stash-json";
 import { importLegacyProposalsIntoState } from "../../scripts/akm-migrate/migrate/legacy/proposal-fs-import";
 import {
+  assertLegacyStateRefsRepairable,
   buildCutoverRefMap,
   deleteWorkflowDb,
   migratePilotTreatmentFiles,
   quarantineIndexDb,
+  rekeyStateDb,
   repairAlreadyCurrentProposalRefs,
 } from "../../scripts/akm-migrate/migrate/legacy/three-db-cutover";
 import { getMigrationApplyJournalPath, restoreMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
@@ -1450,6 +1452,69 @@ describe("index quarantine boundary recovery", () => {
     expect(fs.readFileSync(`${indexPath}-wal`, "utf8")).toBe("canonical-wal");
     expect(fs.readFileSync(`${indexPath}-shm`, "utf8")).toBe("canonical-shm");
     expect(fs.existsSync(`${target}-shm`)).toBe(false);
+  });
+});
+
+describe("workflow run provenance re-key", () => {
+  const workflowShip = ["workflow", "ship"].join(":");
+  test.each([
+    ["bare", workflowShip, "stash//workflows/ship"],
+    ["local", `local//${workflowShip}`, "stash//workflows/ship"],
+    ["stash", `stash//${workflowShip}`, "stash//workflows/ship"],
+    ["npm", `${["npm", "@scope/pkg"].join(":")}//${workflowShip}`, "pkg//workflows/ship"],
+  ] as const)("uses the exact persisted map target for a %s workflow ref", (_label, legacyRef, targetRef) => {
+    const statePath = getStateDbPathInDataDir();
+    const state = openStateDbAtCeiling(statePath, STATE_MIGRATIONS.at(-1)?.id ?? "");
+    state
+      .prepare(
+        "INSERT INTO workflow_runs(id, workflow_ref, workflow_title, status, params_json, created_at, updated_at) VALUES ('run', ?, 'Ship', 'completed', '{}', 'c', 'u')",
+      )
+      .run(legacyRef);
+    state.close();
+
+    expect(rekeyStateDb(statePath, new Map([[legacyRef, targetRef]])).rekeyed.workflow_runs).toBe(1);
+    const repaired = new Database(statePath, { readonly: true });
+    try {
+      expect(repaired.query("SELECT workflow_ref FROM workflow_runs WHERE id='run'").get()).toEqual({
+        workflow_ref: targetRef,
+      });
+    } finally {
+      repaired.close();
+    }
+  });
+
+  test.each([
+    ["unmapped", ["workflow", "missing"].join(":"), []],
+    ["empty workflow", ["workflow", ""].join(":"), []],
+    ["wrong input family", ["memory", "ship"].join(":"), [[["memory", "ship"].join(":"), "stash//memories/ship"]]],
+    ["unqualified target", workflowShip, [[workflowShip, "workflows/ship"]]],
+    ["wrong target family", workflowShip, [[workflowShip, "stash//memories/ship"]]],
+    [
+      "mismatched npm-qualified target",
+      `${["npm", "@scope/pkg"].join(":")}//${workflowShip}`,
+      [[`${["npm", "@scope/pkg"].join(":")}//${workflowShip}`, "pkg//workflows/other"]],
+    ],
+    [
+      "mismatched registry-qualified target",
+      `registry//${workflowShip}`,
+      [[`registry//${workflowShip}`, "registry//workflows/other"]],
+    ],
+  ] as const)("blocks %s without changing state bytes", (_label, legacyRef, entries) => {
+    const statePath = getStateDbPathInDataDir();
+    const state = openStateDbAtCeiling(statePath, STATE_MIGRATIONS.at(-1)?.id ?? "");
+    state
+      .prepare(
+        "INSERT INTO workflow_runs(id, workflow_ref, workflow_title, status, params_json, created_at, updated_at) VALUES ('run', ?, 'Ship', 'completed', '{}', 'c', 'u')",
+      )
+      .run(legacyRef);
+    state.close();
+    const before = fs.readFileSync(statePath);
+    const refMap = new Map<string, string>(entries);
+
+    expect(() => assertLegacyStateRefsRepairable(statePath, refMap)).toThrow(
+      /workflow_runs\.workflow_ref.*workflow|workflow.*workflow_runs\.workflow_ref/i,
+    );
+    expect(fs.readFileSync(statePath)).toEqual(before);
   });
 });
 
