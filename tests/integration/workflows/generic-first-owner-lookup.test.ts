@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmShowUnified, showByRef, showLocal } from "../../../src/commands/read/show";
@@ -19,7 +19,7 @@ import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } f
 
 interface BundleFixture {
   root: string;
-  adapter: "akm" | "akm-workflow" | "okf";
+  adapter: "agent-skills" | "akm" | "akm-workflow" | "okf";
 }
 
 let storage: IsolatedAkmStorage;
@@ -39,6 +39,10 @@ function write(root: string, relativePath: string, content: string): string {
 
 function genericDocument(marker: string): string {
   return `---\ntype: knowledge\ntitle: ${marker}\n---\n\n# ${marker}\n\n${marker}\n`;
+}
+
+function skillDocument(name: string, marker: string): string {
+  return `---\nname: ${name}\ndescription: ${marker}\n---\n\n# ${marker}\n`;
 }
 
 function configure(early: BundleFixture, later: BundleFixture): void {
@@ -75,6 +79,146 @@ function deleteIndexEntry(itemRef: string): void {
 }
 
 describe("generic lookup/show installation-priority ownership", () => {
+  test.each([
+    {
+      label: "an AKM skill package directory",
+      adapter: "akm" as const,
+      conceptId: "skills/physical-owner",
+      relativePath: "skills/physical-owner/SKILL.md",
+      content: skillDocument("physical-owner", "EARLY_AKM_SKILL"),
+      diskShow: true,
+    },
+    {
+      label: "an AKM secret with an unlisted extension",
+      adapter: "akm" as const,
+      conceptId: "secrets/physical-owner.key",
+      relativePath: "secrets/physical-owner.key",
+      content: "EARLY_AKM_KEY_SECRET",
+      diskShow: true,
+    },
+    {
+      label: "an AKM extensionless secret",
+      adapter: "akm" as const,
+      conceptId: "secrets/physical-owner",
+      relativePath: "secrets/physical-owner",
+      content: "EARLY_AKM_EXTENSIONLESS_SECRET",
+      diskShow: true,
+    },
+    {
+      label: "the AKM default environment alias",
+      adapter: "akm" as const,
+      conceptId: "env/default",
+      relativePath: "env/.env",
+      content: "PHYSICAL_OWNER_ENV=early",
+      diskShow: true,
+    },
+    {
+      label: "an Agent Skills package directory",
+      adapter: "agent-skills" as const,
+      conceptId: "physical-owner",
+      relativePath: "physical-owner/SKILL.md",
+      content: skillDocument("physical-owner", "EARLY_AGENT_SKILL"),
+      diskShow: false,
+    },
+  ])("a missing first index row still stops at $label", async (shape) => {
+    const early = fixture(`early-${shape.adapter}-${shape.conceptId.replaceAll("/", "-")}`, shape.adapter);
+    const later = fixture(`later-${shape.adapter}-${shape.conceptId.replaceAll("/", "-")}`, shape.adapter);
+    const earlyPath = write(early.root, shape.relativePath, shape.content);
+    const laterPath = write(later.root, shape.relativePath, shape.content.replaceAll("EARLY", "LATER"));
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+
+    expect(await lookupBundleRef(parseBundleRef(shape.conceptId))).toMatchObject({
+      filePath: earlyPath,
+      adapterId: shape.adapter,
+    });
+    deleteIndexEntry(`early//${shape.conceptId}`);
+
+    const originalReadFileSync = fs.readFileSync;
+    const readSpy = spyOn(fs, "readFileSync").mockImplementation(((candidate, options) => {
+      if (path.resolve(String(candidate)) === path.resolve(earlyPath)) {
+        throw new Error(`physical ownership must not read ${earlyPath}`);
+      }
+      return originalReadFileSync(candidate, options as never);
+    }) as typeof fs.readFileSync);
+    try {
+      expect(await lookupBundleRef(parseBundleRef(shape.conceptId))).toBeNull();
+    } finally {
+      readSpy.mockRestore();
+    }
+    await expect(showByRef(shape.conceptId)).rejects.toThrow(/not found/i);
+    if (shape.diskShow) {
+      expect((await showLocal({ ref: shape.conceptId })).path).toBe(earlyPath);
+    }
+    expect(await lookupBundleRef(parseBundleRef(`later//${shape.conceptId}`))).toMatchObject({
+      filePath: laterPath,
+      adapterId: shape.adapter,
+    });
+  });
+
+  test.each([
+    ["commands/read-free", "commands/read-free.md", genericDocument("EARLY_COMMAND")],
+    ["agents/read-free", "agents/read-free.md", genericDocument("EARLY_AGENT")],
+    ["env/prod", "env/prod.env", "READ_FREE_ENV=early"],
+  ])("physical-owner arbitration for %s does not read or parse asset bytes", async (conceptId, relativePath, content) => {
+    const early = fixture(`early-${conceptId.replaceAll("/", "-")}`, "akm");
+    const later = fixture(`later-${conceptId.replaceAll("/", "-")}`, "akm");
+    const earlyPath = write(early.root, relativePath, content);
+    write(later.root, relativePath, content.replaceAll("early", "later").replaceAll("EARLY", "LATER"));
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+    deleteIndexEntry(`early//${conceptId}`);
+
+    const originalReadFileSync = fs.readFileSync;
+    const readSpy = spyOn(fs, "readFileSync").mockImplementation(((candidate, options) => {
+      if (path.resolve(String(candidate)) === path.resolve(earlyPath)) {
+        throw new Error(`physical ownership must not read ${earlyPath}`);
+      }
+      return originalReadFileSync(candidate, options as never);
+    }) as typeof fs.readFileSync);
+    try {
+      expect(await lookupBundleRef(parseBundleRef(conceptId))).toBeNull();
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  test("an escaping placement candidate is neither read nor treated as an owning source", async () => {
+    const early = fixture("early-escaping-skill", "akm");
+    const later = fixture("later-after-escaping-skill", "akm");
+    const outsidePath = write(storage.root, "outside/SKILL.md", skillDocument("escape", "OUTSIDE_BYTES"));
+    const authoredPath = path.join(early.root, "skills", "escape", "SKILL.md");
+    fs.mkdirSync(path.dirname(authoredPath), { recursive: true });
+    fs.symlinkSync(outsidePath, authoredPath);
+    const laterPath = write(later.root, "skills/escape/SKILL.md", skillDocument("escape", "LATER_SAFE_OWNER"));
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+
+    const originalReadFileSync = fs.readFileSync;
+    const readSpy = spyOn(fs, "readFileSync").mockImplementation(((candidate, options) => {
+      if (path.resolve(String(candidate)) === path.resolve(outsidePath)) {
+        throw new Error(`physical ownership must not read ${outsidePath}`);
+      }
+      return originalReadFileSync(candidate, options as never);
+    }) as typeof fs.readFileSync);
+    try {
+      expect(await lookupBundleRef(parseBundleRef("skills/escape"))).toMatchObject({ filePath: laterPath });
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  test("an AKM reserved index.md abstains and allows a later owner", async () => {
+    const early = fixture("early-akm-reserved", "akm");
+    const later = fixture("later-standalone-index", "akm-workflow");
+    write(early.root, "knowledge/index.md", "# Reserved structural index\n");
+    const laterPath = write(later.root, "knowledge/index.md", getWorkflowTemplate());
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+
+    expect(await lookupBundleRef(parseBundleRef("knowledge/index"))).toMatchObject({ filePath: laterPath });
+  });
+
   test("an unqualified generic read keeps the first OKF owner while runtime rejects it and qualified native remains valid", async () => {
     const early = fixture("early-okf", "okf");
     const later = fixture("later-native", "akm");
