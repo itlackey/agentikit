@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmShowUnified } from "../../../src/commands/read/show";
@@ -140,8 +140,12 @@ function moveIndexedWorkflowIdentity(rowId: number, stalePath: string): void {
   }
 }
 
-function cloneWorkflowRowIntoBundle(rowId: number, bundle: string, filePath: string): string {
-  const conceptId = "workflows/canonical";
+function cloneWorkflowRowIntoBundle(
+  rowId: number,
+  bundle: string,
+  filePath: string,
+  conceptId = "workflows/canonical",
+): string {
   const itemRef = `${bundle}//${conceptId}`;
   const db = openIndexDatabase();
   try {
@@ -158,7 +162,7 @@ function cloneWorkflowRowIntoBundle(rowId: number, bundle: string, filePath: str
             WHERE id = ?`,
         )
         .run(
-          [bundle, "workflow", "canonical"].join(":"),
+          [bundle, "workflow", conceptId].join(":"),
           path.dirname(filePath),
           filePath,
           itemRef,
@@ -178,6 +182,12 @@ function cloneWorkflowRowIntoBundle(rowId: number, bundle: string, filePath: str
     closeDatabase(db);
   }
   return itemRef;
+}
+
+function authoredSourcePaths(fixture: Fixture, filenames: string[]): string[] {
+  return filenames
+    .map((filename) => path.relative(fixture.root, path.join(fixture.ownedDir, filename)).replaceAll("\\", "/"))
+    .sort();
 }
 
 async function expectNoExecutionMutation(ref: string): Promise<void> {
@@ -514,6 +524,176 @@ describe("workflow source ownership review blockers", () => {
       await expect(akmShowUnified({ ref: fixture.ref("format"), skipLogging: true })).rejects.toBeDefined();
       await expect(akmShowUnified({ ref: fixture.ref("escape"), skipLogging: true })).rejects.toBeDefined();
       await expectNoExecutionMutation(fixture.ref("format"));
+    },
+  );
+
+  test.each([
+    "ordinary",
+    "standalone",
+  ] as BundleKind[])("%s rejects every owner in a canonical domain containing multiple nested-suffix sources", async (kind) => {
+    const fixture = configure(kind);
+    const markdownFilename = "dual.md.md";
+    const yamlFilename = "dual.md.yml";
+    const filenames = [markdownFilename, yamlFilename];
+    fs.writeFileSync(path.join(fixture.ownedDir, markdownFilename), markdownWorkflow("nested-markdown"));
+    fs.writeFileSync(path.join(fixture.ownedDir, yamlFilename), yamlWorkflow("nested-yaml"));
+    const ref = fixture.ref("dual.md.md");
+    const sourcePaths = authoredSourcePaths(fixture, filenames);
+
+    await expect(loadWorkflowAsset(ref)).rejects.toMatchObject({
+      code: "INVALID_FLAG_VALUE",
+      sourcePaths,
+      message: expect.stringMatching(/dual\.md\.md.*dual\.md\.yml/is),
+    });
+    await expectNoExecutionMutation(ref);
+    expect(fs.existsSync(getDbPath())).toBe(false);
+
+    const indexed = await akmIndex({ stashDir: fixture.root, full: true });
+    expect(indexed.warnings).toEqual([expect.stringMatching(/dual\.md\.md.*dual\.md\.yml/is)]);
+    expect(workflowRows()).toHaveLength(0);
+  });
+
+  test.skipIf(process.platform === "win32").each(["ordinary", "standalone"] as BundleKind[])(
+    "%s rejects a valid extension-case alias together with its escaping invalid peer and restores the valid owner",
+    async (kind) => {
+      const fixture = configure(kind);
+      const validPath = path.join(fixture.ownedDir, "peer.MD");
+      const invalidPath = path.join(fixture.ownedDir, "peer.md");
+      const outsidePath = path.join(storage.root, `${kind}-peer-outside.md`);
+      const ref = fixture.ref("peer");
+      fs.writeFileSync(validPath, markdownWorkflow("valid-peer"));
+      await akmIndex({ stashDir: fixture.root, full: true });
+      expect(workflowRows(ref)).toEqual([expect.objectContaining({ filePath: validPath })]);
+
+      fs.writeFileSync(outsidePath, markdownWorkflow("outside-peer"));
+      fs.symlinkSync(outsidePath, invalidPath);
+      const sourcePaths = authoredSourcePaths(fixture, ["peer.MD", "peer.md"]);
+      await expect(loadWorkflowAsset(ref)).rejects.toMatchObject({ code: "PATH_ESCAPE_VIOLATION", sourcePaths });
+      await expectNoExecutionMutation(ref);
+      expect(workflowRows(ref)).toEqual([expect.objectContaining({ filePath: validPath })]);
+
+      await expect(akmShowUnified({ ref, skipLogging: true })).rejects.toMatchObject({
+        code: "PATH_ESCAPE_VIOLATION",
+        sourcePaths,
+      });
+      expect(workflowRows(ref)).toHaveLength(0);
+
+      const rejected = await akmIndex({ stashDir: fixture.root });
+      expect(rejected.warnings).toEqual([expect.stringMatching(/peer\.MD.*peer\.md.*outside/is)]);
+      expect(workflowRows(ref)).toHaveLength(0);
+
+      fs.unlinkSync(invalidPath);
+      const restored = await akmIndex({ stashDir: fixture.root });
+      expect(restored.warnings ?? []).toEqual([]);
+      expect(workflowRows(ref)).toEqual([expect.objectContaining({ filePath: validPath })]);
+    },
+  );
+
+  test.skipIf(process.platform === "win32").each(["ordinary", "standalone"] as BundleKind[])(
+    "%s collects dangling and escaping link failures without reading outside content or retaining a peer",
+    async (kind) => {
+      const fixture = configure(kind);
+      const escapingPath = path.join(fixture.ownedDir, "mixed.md");
+      const danglingPath = path.join(fixture.ownedDir, "mixed.yml");
+      const outsidePath = path.join(storage.root, `${kind}-mixed-outside.md`);
+      const ref = fixture.ref("mixed");
+      fs.writeFileSync(escapingPath, markdownWorkflow("stale-mixed"));
+      await akmIndex({ stashDir: fixture.root, full: true });
+      expect(workflowRows(ref)).toHaveLength(1);
+
+      fs.unlinkSync(escapingPath);
+      fs.symlinkSync("missing.yml", danglingPath);
+      fs.writeFileSync(outsidePath, markdownWorkflow("outside-secret-marker"));
+      fs.symlinkSync(outsidePath, escapingPath);
+      const sourcePaths = authoredSourcePaths(fixture, ["mixed.md", "mixed.yml"]);
+      const originalRead = fs.readFileSync;
+      let outsideReads = 0;
+      const readSpy = spyOn(fs, "readFileSync").mockImplementation(((
+        file: fs.PathOrFileDescriptor,
+        ...args: unknown[]
+      ) => {
+        if (path.resolve(String(file)) === path.resolve(outsidePath)) outsideReads++;
+        return originalRead(file, ...(args as [BufferEncoding?]));
+      }) as typeof fs.readFileSync);
+      try {
+        await expect(loadWorkflowAsset(ref)).rejects.toMatchObject({
+          code: "PATH_ESCAPE_VIOLATION",
+          sourcePaths,
+          message: expect.stringMatching(/mixed\.md.*outside.*mixed\.yml.*cannot be resolved/is),
+        });
+        await expect(akmShowUnified({ ref, skipLogging: true })).rejects.toMatchObject({ sourcePaths });
+        await expectNoExecutionMutation(ref);
+
+        const rejected = await akmIndex({ stashDir: fixture.root });
+        expect(rejected.warnings).toEqual([
+          expect.stringMatching(/mixed\.md.*outside.*mixed\.yml.*cannot be resolved/is),
+        ]);
+        expect(workflowRows(ref)).toHaveLength(0);
+        expect(outsideReads).toBe(0);
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      fs.unlinkSync(escapingPath);
+      fs.unlinkSync(danglingPath);
+      fs.writeFileSync(escapingPath, markdownWorkflow("restored-mixed"));
+      const restored = await akmIndex({ stashDir: fixture.root });
+      expect(restored.warnings ?? []).toEqual([]);
+      expect(workflowRows(ref)).toEqual([expect.objectContaining({ filePath: escapingPath })]);
+    },
+  );
+
+  test.each([
+    "ordinary",
+    "standalone",
+  ] as BundleKind[])("%s rejects a valid workflow and malformed peer by pre-parse ownership without indexing either", async (kind) => {
+    const fixture = configure(kind);
+    const validPath = path.join(fixture.ownedDir, "malformed.md");
+    const malformedPath = path.join(fixture.ownedDir, "malformed.yml");
+    const ref = fixture.ref("malformed");
+    fs.writeFileSync(validPath, markdownWorkflow("valid"));
+    fs.writeFileSync(malformedPath, "jobs: [unterminated\n");
+    const sourcePaths = authoredSourcePaths(fixture, ["malformed.md", "malformed.yml"]);
+
+    await expect(loadWorkflowAsset(ref)).rejects.toMatchObject({
+      code: "RESOURCE_ALREADY_EXISTS",
+      sourcePaths,
+    });
+    await expectNoExecutionMutation(ref);
+    const rejected = await akmIndex({ stashDir: fixture.root, full: true });
+    expect(rejected.warnings).toEqual([expect.stringMatching(/malformed\.md.*malformed\.yml/is)]);
+    expect(workflowRows(ref)).toHaveLength(0);
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "targeted indexing cannot delete a stale domain and then re-upsert its valid peer",
+    async () => {
+      const fixture = configure("ordinary");
+      const validPath = path.join(fixture.ownedDir, "targeted.MD");
+      const invalidPath = path.join(fixture.ownedDir, "targeted.md");
+      const outsidePath = path.join(storage.root, "targeted-outside.md");
+      const baselinePath = path.join(fixture.ownedDir, "baseline.md");
+      const ref = fixture.ref("targeted");
+      fs.writeFileSync(validPath, markdownWorkflow("targeted-valid"));
+      fs.writeFileSync(baselinePath, markdownWorkflow("baseline"));
+      await akmIndex({ stashDir: fixture.root, full: true });
+      const row = workflowRows(ref)[0];
+      if (!row?.documentJson) throw new Error("expected seeded targeted workflow cache row");
+      const otherRef = cloneWorkflowRowIntoBundle(row.id, "other-domain", validPath, "workflows/targeted");
+
+      fs.writeFileSync(outsidePath, markdownWorkflow("targeted-outside"));
+      fs.symlinkSync(outsidePath, invalidPath);
+      expect(await indexWrittenAssets(fixture.root, [validPath, invalidPath], { bundleId: fixture.bundle })).toBe(true);
+      expect(workflowRows(ref)).toHaveLength(0);
+      expect(workflowRows(fixture.ref("baseline"))).toEqual([expect.objectContaining({ filePath: baselinePath })]);
+      expect(workflowRows(otherRef)).toEqual([expect.objectContaining({ documentJson: expect.any(String) })]);
+      await expect(loadWorkflowAsset(ref)).rejects.toMatchObject({
+        sourcePaths: authoredSourcePaths(fixture, ["targeted.MD", "targeted.md"]),
+      });
+
+      fs.unlinkSync(invalidPath);
+      expect(await indexWrittenAssets(fixture.root, [validPath], { bundleId: fixture.bundle })).toBe(true);
+      expect(workflowRows(ref)).toEqual([expect.objectContaining({ filePath: validPath })]);
     },
   );
 });

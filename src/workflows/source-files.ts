@@ -30,6 +30,18 @@ export interface WorkflowSourceFile {
   format: WorkflowSourceFormat;
 }
 
+interface WorkflowSourceCandidate {
+  path: string;
+  relativePath: string;
+  lowerExtension: string;
+  extensionlessStem: string;
+}
+
+interface WorkflowSourceCandidateInspection {
+  source?: WorkflowSourceFile;
+  issues: WorkflowSourceRejectionError[];
+}
+
 export abstract class WorkflowSourceRejectionError extends UsageError {
   readonly sourcePaths: readonly string[];
 
@@ -52,6 +64,35 @@ export class WorkflowSourceCollisionError extends WorkflowSourceRejectionError {
       sorted,
     );
     this.name = "WorkflowSourceCollisionError";
+    this.canonicalName = canonicalName;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class WorkflowSourceDomainError extends WorkflowSourceRejectionError {
+  readonly canonicalName: string;
+
+  constructor(
+    canonicalName: string,
+    sourcePaths: readonly string[],
+    issues: readonly WorkflowSourceRejectionError[],
+    collidingSourcePaths: readonly string[],
+  ) {
+    const sortedPaths = [...sourcePaths].sort(comparePaths);
+    const sortedCollisions = [...collidingSourcePaths].sort(comparePaths);
+    const code: UsageErrorCode = issues.some((issue) => issue.code === "PATH_ESCAPE_VIOLATION")
+      ? "PATH_ESCAPE_VIOLATION"
+      : "INVALID_FLAG_VALUE";
+    const collisionDetail =
+      sortedCollisions.length > 1 ? ` Valid owners also collide: ${sortedCollisions.join(", ")}.` : "";
+    super(
+      `Workflow "${canonicalName}" has an invalid source ownership domain across candidates: ${sortedPaths.join(", ")}. ` +
+        `Problems: ${issues.map((issue) => issue.message).join(" ")}${collisionDetail} ` +
+        "Every candidate in the canonical domain is rejected until all invalid or duplicate sources are removed.",
+      code,
+      sortedPaths,
+    );
+    this.name = "WorkflowSourceDomainError";
     this.canonicalName = canonicalName;
     Object.setPrototypeOf(this, new.target.prototype);
   }
@@ -174,7 +215,9 @@ export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, n
   }
 
   const basename = path.basename(canonicalName);
+  const candidates: WorkflowSourceCandidate[] = [];
   const sources: WorkflowSourceFile[] = [];
+  const issues: WorkflowSourceRejectionError[] = [];
 
   for (const entry of entries) {
     if (!entry.isFile() && !entry.isSymbolicLink()) continue;
@@ -184,45 +227,90 @@ export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, n
     if (entry.name.slice(0, -extension.length) !== basename) continue;
 
     const candidatePath = path.join(parent, entry.name);
-    const relativePath = toPosix(path.relative(authoredRoot, candidatePath));
-    const extensionlessStem = entry.name.slice(0, -extension.length);
-    const nestedSuffix = (WORKFLOW_EXTENSIONS as readonly string[]).find((suffix) =>
-      extensionlessStem.toLowerCase().endsWith(suffix),
-    );
-    if (nestedSuffix) {
-      throw new WorkflowSourceNameError(relativePath, nestedSuffix);
-    }
-    let realPath: string;
-    try {
-      if (!fs.statSync(candidatePath).isFile()) continue;
-      realPath = fs.realpathSync(candidatePath);
-    } catch {
-      if (entry.isSymbolicLink()) throw new WorkflowSourceLinkResolutionError(relativePath);
-      continue;
-    }
-    if (!isWithinResolved(realPath, realRoot)) {
-      throw new WorkflowSourcePathIdentityError(relativePath, toPosix(path.relative(realRoot, realPath)));
-    }
-
-    const realExtension = path.extname(realPath).toLowerCase();
-    if (entry.isSymbolicLink() && realExtension !== lowerExtension) {
-      throw new WorkflowSourceLinkIdentityError(
-        toPosix(path.relative(authoredRoot, candidatePath)),
-        toPosix(path.relative(realRoot, realPath)),
-      );
-    }
-
-    sources.push({
+    candidates.push({
       path: candidatePath,
-      realPath,
-      relativePath,
-      canonicalName,
-      format: lowerExtension === ".md" ? "markdown" : "github-yaml",
+      relativePath: toPosix(path.relative(authoredRoot, candidatePath)),
+      lowerExtension,
+      extensionlessStem: entry.name.slice(0, -extension.length),
     });
   }
 
-  sources.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
+  candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
+  for (const candidate of candidates) {
+    const inspection = inspectWorkflowSourceCandidate(candidate, canonicalName, realRoot);
+    if (inspection.source) sources.push(inspection.source);
+    issues.push(...inspection.issues);
+  }
+
+  if (issues.length > 0) {
+    const displayedName = adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName;
+    throw new WorkflowSourceDomainError(
+      displayedName,
+      candidates.map((candidate) => candidate.relativePath),
+      issues,
+      sources.map((source) => source.relativePath),
+    );
+  }
   return sources;
+}
+
+function inspectWorkflowSourceCandidate(
+  candidate: WorkflowSourceCandidate,
+  canonicalName: string,
+  realRoot: string,
+): WorkflowSourceCandidateInspection {
+  const issues: WorkflowSourceRejectionError[] = [];
+  const nestedSuffix = (WORKFLOW_EXTENSIONS as readonly string[]).find((suffix) =>
+    candidate.extensionlessStem.toLowerCase().endsWith(suffix),
+  );
+  if (nestedSuffix) issues.push(new WorkflowSourceNameError(candidate.relativePath, nestedSuffix));
+
+  let authoredStat: fs.Stats;
+  try {
+    authoredStat = fs.lstatSync(candidate.path);
+  } catch {
+    issues.push(new WorkflowSourceLinkResolutionError(candidate.relativePath));
+    return { issues };
+  }
+  const isLink = authoredStat.isSymbolicLink();
+  if (!isLink && !authoredStat.isFile()) {
+    issues.push(new WorkflowSourceLinkResolutionError(candidate.relativePath));
+    return { issues };
+  }
+
+  let realPath: string;
+  try {
+    realPath = fs.realpathSync(candidate.path);
+  } catch {
+    issues.push(new WorkflowSourceLinkResolutionError(candidate.relativePath));
+    return { issues };
+  }
+  const targetPath = toPosix(path.relative(realRoot, realPath));
+  const contained = isWithinResolved(realPath, realRoot);
+  if (!contained) issues.push(new WorkflowSourcePathIdentityError(candidate.relativePath, targetPath));
+  if (isLink && path.extname(realPath).toLowerCase() !== candidate.lowerExtension) {
+    issues.push(new WorkflowSourceLinkIdentityError(candidate.relativePath, targetPath));
+  }
+
+  if (contained) {
+    try {
+      if (!fs.statSync(realPath).isFile()) issues.push(new WorkflowSourceLinkResolutionError(candidate.relativePath));
+    } catch {
+      issues.push(new WorkflowSourceLinkResolutionError(candidate.relativePath));
+    }
+  }
+  if (issues.length > 0) return { issues };
+
+  return {
+    issues,
+    source: {
+      path: candidate.path,
+      realPath,
+      relativePath: candidate.relativePath,
+      canonicalName,
+      format: candidate.lowerExtension === ".md" ? "markdown" : "github-yaml",
+    },
+  };
 }
 
 /** Return the sole owner, throw on a collision, or return undefined when absent. */

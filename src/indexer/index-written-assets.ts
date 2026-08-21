@@ -145,7 +145,16 @@ export async function indexWrittenAssets(
         db.transaction(() => {
           const unindexableEntryIds = new Set<number>();
           for (const file of unindexable) {
-            const rows = db.prepare("SELECT id FROM entries WHERE file_path = ?").all(file) as Array<{ id: number }>;
+            const rows = db
+              .prepare(
+                `SELECT id FROM entries
+                  WHERE file_path = ?
+                    AND (
+                      (bundle_id = ? AND (adapter_id = ? OR adapter_id IS NULL))
+                      OR (bundle_id IS NULL AND stash_dir = ?)
+                    )`,
+              )
+              .all(file, component.id, component.adapter, stashDir) as Array<{ id: number }>;
             for (const row of rows) unindexableEntryIds.add(row.id);
           }
           for (const conceptId of rejectedConceptIds) {
