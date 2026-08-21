@@ -174,8 +174,8 @@ describe("common command invocation preparation", () => {
       modelMap,
       current,
     });
-    const task = prepareInlineExecution({
-      content: "Review this exactly.",
+    const task = await prepareCommandInvocation({
+      action: { content: "Review this exactly." },
       config,
       modelMap,
       invocationKind: "task",
@@ -183,6 +183,8 @@ describe("common command invocation preparation", () => {
     });
 
     expect(canonicalResolvedExecutionRequest(task.request)).toBe(canonicalResolvedExecutionRequest(direct.request));
+    expect(direct.plan.invocationKind).toBe("direct");
+    expect(task.plan.invocationKind).toBe("task");
     const withoutRequest = (lowered: ReturnType<typeof lowerResolvedExecutionRequest>) => {
       const { request: _request, ...projection } = lowered;
       return JSON.parse(JSON.stringify(projection));

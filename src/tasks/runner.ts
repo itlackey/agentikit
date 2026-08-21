@@ -6,40 +6,29 @@
  * `akm task run <id>` — what cron / launchd / schtasks invoke at the
  * scheduled moment.
  *
- * Responsibilities:
- *
- *   1. Resolve the task file via `resolveAssetPath(stashDir, "task", id)`.
- *   2. Parse the task document. (Validation runs at `tasks add` /
- *      `tasks sync` time, not here — at run time we still want to attempt
- *      execution and surface the actual failure rather than re-fail on a
- *      validation error that the user already knows about.)
- *   3. Skip disabled tasks only when the invocation is scheduler-generated;
- *      explicit manual runs are allowed for catch-up and testing.
- *   4. Dispatch by target kind:
- *        • workflow → `runWorkflowSteps({ target: ref, params, signal, … })`
- *                     under a whole-run timeout (issue 11): an unattended run
- *                     gets the same abort path `akm workflow run --timeout`
- *                     gives an interactive one.
- *        • prompt   → common cascade → resolved lowerer → captured runner
- *   5. Capture stdout / stderr as structured rows in logs.db (task_logs) and,
- *      transitionally, as a flat text tail at `<cacheDir>/tasks/logs/<id>/<ts>.log`
- *      (per the #579 logs audit).
- *   6. Write a history row to state.db task_history table.
+ * The durable boundary is intentional: id/bundle resolution, source read,
+ * strict v3 parsing, target resolution, command authorization/lowering,
+ * workflow projectability, and frozen script-byte capture all finish before
+ * an attempt is reserved or a log is created. Once prepared, the runner skips
+ * disabled scheduler firings or dispatches the immutable command, workflow,
+ * shell, or script projection and records that actual attempt.
  *
  * Returns a structured result so the CLI handler can shape it for `output()`
  * and so tests can assert against it without scraping stdout.
  */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { type CommandDispatchResult, dispatchPreparedCommandInvocation } from "../commands/command/command-execution";
 import { armAbortDeadline } from "../core/abort-deadline";
 import { shouldSkipUnactivatedTask } from "../core/activation-policy";
 import { assertNever } from "../core/assert";
-import { placementSpecFor } from "../core/asset/asset-placement";
-import { parseRefInput } from "../core/asset/resolve-ref";
+import { makeBundleRef } from "../core/asset/asset-ref";
 import { loadConfig } from "../core/config/config";
-import { AkmError, NotFoundError, rethrowIfTestIsolationError } from "../core/errors";
+import type { AkmConfig } from "../core/config/config-types";
+import { AkmError, rethrowIfTestIsolationError } from "../core/errors";
 import {
   buildTaskRunId,
   insertTaskLogLines,
@@ -52,21 +41,10 @@ import { getTaskLogDir } from "../core/paths";
 import { redactCredentialPatterns, redactSensitiveText } from "../core/redaction";
 import { withStateDb } from "../core/state-db";
 import { runManagedSubprocess, type SpawnFn } from "../core/subprocess";
-import { cloneExecutionJsonObject } from "../execution/json";
+import { resolveWriteTarget } from "../core/write-source";
 import type { LoweringNotice } from "../execution/resolved-request";
-import type { UnresolvedExecutionDefaults } from "../execution/source";
-import type { AgentRunResult, RunAgentOptions } from "../integrations/agent";
-import {
-  fallbackAnnouncement,
-  NO_ENGINE_MESSAGE_SUFFIX,
-  NO_ENGINE_REMEDY,
-} from "../integrations/agent/engine-fallback";
-import {
-  type DispatchLoweredExecutionOptions,
-  dispatchLoweredExecutionRequest,
-  lowerResolvedExecutionRequest,
-} from "../integrations/agent/execution-lowering";
-import { prepareInlineExecution } from "../integrations/agent/inline-execution";
+import type { RunAgentOptions } from "../integrations/agent";
+import type { DispatchLoweredExecutionOptions } from "../integrations/agent/execution-lowering";
 import type { chatCompletion } from "../llm/client";
 import { resolveAssetPath } from "../sources/resolve";
 import type { WorkflowRunStatus, WorkflowRunSummary } from "../sources/types";
@@ -80,12 +58,16 @@ import {
   upsertTaskHistory,
 } from "../storage/repositories/task-history-repository";
 import { runWorkflowSteps } from "../workflows/exec/run-workflow";
-import { findBareAkmExecutableIndex } from "./command-executable";
 import { collectTaskLogSensitiveValues } from "./log-redaction";
-import { parseTaskDocument } from "./parser";
-import { resolveAkmInvocation } from "./resolve-akm-bin";
-import { scheduledTaskContextEnv } from "./scheduler-invocation";
-import type { TaskDocument } from "./schema";
+import {
+  type PreparedTaskV3Command,
+  type PreparedTaskV3Execution,
+  type PreparedTaskV3Script,
+  type PreparedTaskV3Shell,
+  type PreparedTaskV3Workflow,
+  prepareTaskV3Execution,
+} from "./runtime-v3";
+import { parseTaskV3Yaml } from "./source-v3";
 import { validateTaskId } from "./task-id";
 
 export type TaskRunStatus = "completed" | "blocked" | "failed" | "disabled" | "active";
@@ -123,7 +105,9 @@ export interface RunTaskOptions {
    * this runner no longer reads the ambient stash-dir resolver.
    */
   stashDir: string;
-  /** Override the agent runner (tests). Defaults to {@link runAgent}. */
+  /** Durable bundle identity for fully-qualified refs. */
+  bundleName?: string;
+  /** Override the common command dispatch's agent runner (tests). */
   runAgentImpl?: DispatchLoweredExecutionOptions["runAgent"];
   /**
    * Override the workflow orchestrator (tests). Defaults to
@@ -134,7 +118,7 @@ export interface RunTaskOptions {
   now?: () => Date;
   /** Override log dir (tests). */
   logDir?: string;
-  /** Extra args/env to pass through to runAgent (tests). */
+  /** Extra args/env to pass through the common command dispatcher (tests). */
   agentOptions?: Partial<RunAgentOptions>;
   /** Override plain LLM prompt dispatch (tests). */
   chatCompletionImpl?: typeof chatCompletion;
@@ -150,76 +134,56 @@ export interface RunTaskOptions {
   scheduled?: boolean;
 }
 
+const CONFIG_FREE_TASK_RUNTIME: AkmConfig = Object.freeze({
+  configVersion: "0.9.0",
+  semanticSearchMode: "off",
+});
+
 export async function runTask(id: string, options: RunTaskOptions): Promise<TaskRunResult> {
-  const runAgentImpl = options.runAgentImpl;
   const runWorkflowStepsImpl = options.runWorkflowStepsImpl ?? runWorkflowSteps;
   const now = options.now ?? (() => new Date());
   const requestedStartedAt = now();
+  validateTaskId(id);
+  const stashDir = options.stashDir;
+  const filePath = await resolveAssetPath(stashDir, "task", id);
+  const yaml = fs.readFileSync(filePath, "utf8");
+  const source = parseTaskV3Yaml({ yaml, filePath, workspaceRoot: stashDir });
+  const requiresCommandConfig =
+    source.target.kind === "uses" &&
+    (source.target.uses.kind === "builtin-command" || source.target.uses.kind === "command");
+  const config = requiresCommandConfig ? loadConfig() : CONFIG_FREE_TASK_RUNTIME;
+  const bundleName = options.bundleName ?? config.defaultBundle ?? "stash";
+  const task = await prepareTaskV3Execution(source, {
+    taskId: id,
+    taskRef: makeBundleRef(bundleName, `tasks/${id}`),
+    bundleName,
+    bundleRoot: stashDir,
+    config,
+    resolveAsset: async ({ bundle, type, name }) => {
+      if (bundle === bundleName) {
+        return { file: await resolveAssetPath(stashDir, type, name), bundleRoot: stashDir };
+      }
+      const resolutionConfig = requiresCommandConfig ? config : loadConfig();
+      const resolvedBundle = resolveWriteTarget(resolutionConfig, bundle, { requireWritable: false });
+      return {
+        file: await resolveAssetPath(resolvedBundle.source.path, type, name),
+        bundleRoot: resolvedBundle.source.path,
+      };
+    },
+  });
 
-  try {
-    validateTaskId(id);
-  } catch (failure) {
-    const attempt = reserveTaskAttempt(INVALID_TASK_ATTEMPT_ID, requestedStartedAt);
-    recordTaskAttemptFailure({
-      taskId: INVALID_TASK_ATTEMPT_ID,
-      reason: "invalid_task_id",
-      failure,
-      startedAt: attempt.startedAt,
-      finishedAt: now(),
-      logDir: options.logDir,
-      historyReserved: attempt.historyReserved,
-    });
-    throw failure;
-  }
-
+  // All validation, parsing, source resolution, command cascade preparation,
+  // and frozen-byte capture above is non-mutating. Only a fully projectable
+  // task may reserve durable history or create a log.
   const attempt = reserveTaskAttempt(id, requestedStartedAt);
   const startedAt = attempt.startedAt;
-  let failureReason: TaskAttemptFailureReason = "task_load_failed";
-
+  const startedIso = startedAt.toISOString();
+  const logPath = resolveTaskLogPath(options.logDir, id, startedIso);
   try {
-    const stashDir = options.stashDir;
-    const filePath = await resolveAssetPath(stashDir, "task", id);
-    const yaml = fs.readFileSync(filePath, "utf8");
-
-    failureReason = "task_parse_failed";
-    const task = parseTaskDocument({ yaml, filePath, id });
-
-    failureReason = "task_dispatch_failed";
-    const startedIso = startedAt.toISOString();
-    const logPath = resolveTaskLogPath(options.logDir, id, startedIso);
-
     if (shouldSkipUnactivatedTask({ enabled: task.enabled, scheduled: options.scheduled === true })) {
-      const finishedAt = finishAttempt(startedAt, now());
-      const disabledTarget: TaskRunResult["target"] =
-        task.target.kind === "workflow"
-          ? { kind: "workflow", ref: task.target.ref }
-          : task.target.kind === "command"
-            ? { kind: "command", cmd: task.target.cmd }
-            : { kind: "prompt", engine: task.target.engine ?? null };
-      const result: TaskRunResult = {
-        id,
-        status: "disabled",
-        startedAt: startedIso,
-        finishedAt: finishedAt.toISOString(),
-        durationMs: finishedAt.getTime() - startedAt.getTime(),
-        log: logPath,
-        target: disabledTarget,
-      };
-      const disabledLine = `[akm task] task "${id}" is disabled — skipping run.`;
-      persistRunLog({
-        taskId: id,
-        startedAtIso: startedIso,
-        finishedAtIso: result.finishedAt,
-        logPath,
-        fileText: `${disabledLine}\n`,
-        dbLines: [{ line: disabledLine }],
-        redactNames: task.redact,
-      });
-      appendHistory(result, attempt.historyReserved);
-      return result;
+      return finishDisabledTask(task, logPath, startedAt, now(), attempt.historyReserved);
     }
-
-    if (task.target.kind === "workflow") {
+    if (task.kind === "workflow") {
       return await runWorkflowTask({
         task,
         logPath,
@@ -231,35 +195,32 @@ export async function runTask(id: string, options: RunTaskOptions): Promise<Task
         ...(options.clearTimeoutFn ? { clearTimeoutFn: options.clearTimeoutFn } : {}),
       });
     }
-
-    if (task.target.kind === "command") {
-      return await runCommandTask({
+    if (task.kind === "command") {
+      return await runPreparedCommandTask({
         task,
         logPath,
         startedAt,
         now,
         historyReserved: attempt.historyReserved,
-        ...(options.spawnFn ? { spawnFn: options.spawnFn } : {}),
-        ...(options.setTimeoutFn ? { setTimeoutFn: options.setTimeoutFn } : {}),
-        ...(options.clearTimeoutFn ? { clearTimeoutFn: options.clearTimeoutFn } : {}),
+        runAgentImpl: options.runAgentImpl,
+        agentOptions: options.agentOptions,
+        chatCompletionImpl: options.chatCompletionImpl,
       });
     }
-
-    return await runPromptTask({
+    return await runNativeTask({
       task,
-      stashDir,
       logPath,
       startedAt,
       now,
-      runAgentImpl,
-      agentOptions: options.agentOptions,
-      ...(options.chatCompletionImpl ? { chatCompletionImpl: options.chatCompletionImpl } : {}),
       historyReserved: attempt.historyReserved,
+      ...(options.spawnFn ? { spawnFn: options.spawnFn } : {}),
+      ...(options.setTimeoutFn ? { setTimeoutFn: options.setTimeoutFn } : {}),
+      ...(options.clearTimeoutFn ? { clearTimeoutFn: options.clearTimeoutFn } : {}),
     });
   } catch (failure) {
     recordTaskAttemptFailure({
       taskId: id,
-      reason: failureReason,
+      reason: "task_dispatch_failed",
       failure,
       startedAt,
       finishedAt: now(),
@@ -270,10 +231,101 @@ export async function runTask(id: string, options: RunTaskOptions): Promise<Task
   }
 }
 
-// ── command target ──────────────────────────────────────────────────────────
+function preparedResultTarget(task: PreparedTaskV3Execution): TaskRunResult["target"] {
+  if (task.kind === "workflow") return { kind: "workflow", ref: task.ref };
+  if (task.kind === "command") return { kind: "prompt", engine: task.invocation.request.engine.name ?? null };
+  return { kind: "command" };
+}
 
-async function runCommandTask(input: {
-  task: TaskDocument;
+function finishDisabledTask(
+  task: PreparedTaskV3Execution,
+  logPath: string,
+  startedAt: Date,
+  observedFinishedAt: Date,
+  historyReserved: boolean,
+): TaskRunResult {
+  const finishedAt = finishAttempt(startedAt, observedFinishedAt);
+  const line = `[akm task] task "${task.taskId}" is disabled — skipping run.`;
+  const result: TaskRunResult = {
+    id: task.taskId,
+    status: "disabled",
+    startedAt: startedAt.toISOString(),
+    finishedAt: finishedAt.toISOString(),
+    durationMs: finishedAt.getTime() - startedAt.getTime(),
+    log: logPath,
+    target: preparedResultTarget(task),
+  };
+  persistRunLog({
+    taskId: task.taskId,
+    startedAtIso: result.startedAt,
+    finishedAtIso: result.finishedAt,
+    logPath,
+    fileText: `${line}\n`,
+    dbLines: [{ line }],
+    redactNames: task.redact,
+  });
+  appendHistory(result, historyReserved);
+  return result;
+}
+
+// ── shell and frozen-script targets ─────────────────────────────────────────
+
+function shellCommand(task: PreparedTaskV3Shell): string[] {
+  switch (task.shell) {
+    case "sh":
+    case "bash":
+    case "zsh":
+      return [task.shell, "-c", task.command];
+    case "pwsh":
+    case "powershell":
+      return [task.shell, "-NoProfile", "-NonInteractive", "-Command", task.command];
+    case "cmd":
+      return ["cmd", "/d", "/s", "/c", task.command];
+    default:
+      return assertNever(task.shell, "shellCommand");
+  }
+}
+
+function frozenScriptCommand(task: PreparedTaskV3Script, materializedPath: string): string[] {
+  switch (task.interpreter) {
+    case "bun":
+      return [process.execPath, materializedPath];
+    case "powershell":
+      return ["powershell", "-NoProfile", "-NonInteractive", "-File", materializedPath];
+    case "cmd":
+      return ["cmd", "/d", "/s", "/c", materializedPath];
+    case "go":
+      return ["go", "run", materializedPath];
+    case "kotlin":
+      return task.extension === ".kts" ? ["kotlinc", "-script", materializedPath] : ["kotlin", materializedPath];
+    case "sh":
+    case "python":
+    case "ruby":
+    case "perl":
+    case "php":
+    case "lua":
+    case "rscript":
+    case "swift":
+      return [task.interpreter, materializedPath];
+    default:
+      return assertNever(task.interpreter, "frozenScriptCommand");
+  }
+}
+
+function materializeFrozenScript(task: PreparedTaskV3Script): { directory: string; file: string } {
+  const bytes = Buffer.from(task.bytesBase64, "base64");
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  if (bytes.byteLength !== task.byteLength || digest !== task.sha256) {
+    throw new Error(`Frozen script snapshot ${task.sourceRef} failed its byte/hash integrity check.`);
+  }
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-script-"));
+  const file = path.join(directory, `snapshot${task.extension}`);
+  fs.writeFileSync(file, bytes, { mode: 0o700 });
+  return { directory, file };
+}
+
+async function runNativeTask(input: {
+  task: PreparedTaskV3Shell | PreparedTaskV3Script;
   logPath: string;
   startedAt: Date;
   now: () => Date;
@@ -283,14 +335,19 @@ async function runCommandTask(input: {
   clearTimeoutFn?: typeof clearTimeout;
 }): Promise<TaskRunResult> {
   const { task, logPath, startedAt, now, historyReserved } = input;
-  if (task.target.kind !== "command") throw new Error("invariant: command target");
-  const { cmd } = task.target;
-  const spawnCmd = resolveNestedAkmCommand(cmd);
+  let materialized: { directory: string; file: string } | undefined;
+  const cmd =
+    task.kind === "shell"
+      ? shellCommand(task)
+      : frozenScriptCommand(task, (materialized = materializeFrozenScript(task)).file);
 
   // Unset → the unattended default; `null` → the explicit no-timeout opt-out.
-  const timeoutMs: number | null = task.timeoutMs !== undefined ? task.timeoutMs : DEFAULT_SCHEDULED_TASK_TIMEOUT_MS;
+  const timeoutMs = task.timeoutMs !== undefined ? task.timeoutMs : DEFAULT_SCHEDULED_TASK_TIMEOUT_MS;
 
-  const header = `[akm task] task=${task.id} kind=command cmd=${cmd.join(" ")}`;
+  const header =
+    task.kind === "shell"
+      ? `[akm task] task=${task.taskId} kind=run shell=${task.shell}`
+      : `[akm task] task=${task.taskId} kind=script ref=${task.sourceRef} sha256=${task.sha256}`;
   const logLines: string[] = [header];
   const dbLines: TaskLogLineInput[] = [{ line: header }];
 
@@ -300,14 +357,18 @@ async function runCommandTask(input: {
     // Managed spawn (src/core/subprocess.ts): process-GROUP kill so a timeout
     // reaps the whole command tree (no orphans), and a SIGTERM→SIGKILL ladder
     // so a child that ignores SIGTERM can't wedge the run forever.
-    const result = await runManagedSubprocess(spawnCmd, {
+    const result = await runManagedSubprocess(cmd, {
       capture: true,
-      cwd: process.env.HOME ?? os.tmpdir(),
+      cwd: task.cwd,
       // Stamp task-runner provenance so any akm invocation in the command tree
       // records usage events as machine traffic, not user demand (DRIFT-6).
       // A more specific stamp already in the environment (e.g. improve's
       // AKM_EVENT_SOURCE=improve on its child spawns) still wins in children.
-      env: { ...process.env, AKM_EVENT_SOURCE: process.env.AKM_EVENT_SOURCE ?? "task" },
+      env: {
+        ...process.env,
+        ...task.environment,
+        AKM_EVENT_SOURCE: process.env.AKM_EVENT_SOURCE ?? "task",
+      },
       timeoutMs,
       ...(input.spawnFn ? { spawnFn: input.spawnFn } : {}),
       ...(input.setTimeoutFn ? { setTimeoutFn: input.setTimeoutFn } : {}),
@@ -340,11 +401,13 @@ async function runCommandTask(input: {
     logLines.push(`spawn_error=${msg}`);
     dbLines.push({ level: "error", line: `spawn_error=${msg}` });
     exitCode = 1;
+  } finally {
+    if (materialized) fs.rmSync(materialized.directory, { recursive: true, force: true });
   }
 
   const finishedAt = finishAttempt(startedAt, now());
   persistRunLog({
-    taskId: task.id,
+    taskId: task.taskId,
     startedAtIso: startedAt.toISOString(),
     finishedAtIso: finishedAt.toISOString(),
     logPath,
@@ -354,7 +417,7 @@ async function runCommandTask(input: {
   });
   const status: TaskRunStatus = exitCode === 0 ? "completed" : "failed";
   const result: TaskRunResult = {
-    id: task.id,
+    id: task.taskId,
     status,
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
@@ -365,13 +428,6 @@ async function runCommandTask(input: {
   };
   appendHistory(result, historyReserved);
   return result;
-}
-
-/** Avoid a second PATH lookup when a task invokes the same AKM installation. */
-function resolveNestedAkmCommand(cmd: string[]): string[] {
-  const akmIndex = findBareAkmExecutableIndex(cmd);
-  if (akmIndex === undefined) return cmd;
-  return [...cmd.slice(0, akmIndex), ...resolveAkmInvocation().argv, ...cmd.slice(akmIndex + 1)];
 }
 
 // ── workflow target ─────────────────────────────────────────────────────────
@@ -414,7 +470,7 @@ export const DEFAULT_WORKFLOW_TASK_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 export const DEFAULT_SCHEDULED_TASK_TIMEOUT_MS = DEFAULT_WORKFLOW_TASK_TIMEOUT_MS;
 
 async function runWorkflowTask(input: {
-  task: TaskDocument;
+  task: PreparedTaskV3Workflow;
   logPath: string;
   startedAt: Date;
   now: () => Date;
@@ -424,19 +480,9 @@ async function runWorkflowTask(input: {
   clearTimeoutFn?: typeof clearTimeout;
 }): Promise<TaskRunResult> {
   const { task, logPath, startedAt, now, runWorkflowStepsImpl, historyReserved } = input;
-  if (task.target.kind !== "workflow") throw new Error("invariant: workflow target");
-  const workflowTarget = task.target;
-  const ref = parseRefInput(workflowTarget.ref);
-  if (ref.type !== "workflow") {
-    throw new NotFoundError(
-      `Task "${task.id}" workflow target must be a workflow ref (got "${workflowTarget.ref}").`,
-      "WORKFLOW_NOT_FOUND",
-    );
-  }
 
   // Unset → the unattended default; `null` → the explicit no-timeout opt-out.
-  const timeoutMs =
-    workflowTarget.timeoutMs === undefined ? DEFAULT_WORKFLOW_TASK_TIMEOUT_MS : workflowTarget.timeoutMs;
+  const timeoutMs = task.timeoutMs === undefined ? DEFAULT_WORKFLOW_TASK_TIMEOUT_MS : task.timeoutMs;
   // The shared deadline `akm workflow run --timeout` also arms
   // ({@link armAbortDeadline}): one AbortController for the run's lifetime,
   // aborted by a timer. The engine reads `options.signal` at every step
@@ -446,7 +492,7 @@ async function runWorkflowTask(input: {
   const controller = new AbortController();
   const deadline = armAbortDeadline(controller, {
     timeoutMs,
-    reason: `Workflow task "${task.id}" timed out after ${timeoutMs}ms.`,
+    reason: `Workflow task "${task.taskId}" timed out after ${timeoutMs}ms.`,
     ...(input.setTimeoutFn ? { setTimeoutFn: input.setTimeoutFn } : {}),
     ...(input.clearTimeoutFn ? { clearTimeoutFn: input.clearTimeoutFn } : {}),
   });
@@ -466,11 +512,11 @@ async function runWorkflowTask(input: {
   process.env.AKM_EVENT_SOURCE = priorEventSource ?? "task";
   try {
     const execution = await runWorkflowStepsImpl({
-      target: workflowTarget.ref,
-      params: workflowTarget.params,
+      target: task.ref,
+      params: task.params,
       signal: controller.signal,
-      ...(workflowTarget.maxSteps !== undefined ? { maxSteps: workflowTarget.maxSteps } : {}),
-      ...(workflowTarget.maxRetries !== undefined ? { maxRetries: workflowTarget.maxRetries } : {}),
+      ...(task.maxSteps !== undefined ? { maxSteps: task.maxSteps } : {}),
+      ...(task.maxRetries !== undefined ? { maxRetries: task.maxRetries } : {}),
     });
     detail = execution.run;
     runWarnings = execution.warnings ?? [];
@@ -521,7 +567,7 @@ async function runWorkflowTask(input: {
     ...(timedOutAfterMs !== undefined ? { timedOutAfterMs } : {}),
   });
   persistRunLog({
-    taskId: task.id,
+    taskId: task.taskId,
     startedAtIso: startedAt.toISOString(),
     finishedAtIso: finishedAt.toISOString(),
     logPath,
@@ -531,13 +577,13 @@ async function runWorkflowTask(input: {
   });
 
   const result: TaskRunResult = {
-    id: task.id,
+    id: task.taskId,
     status,
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
     durationMs: finishedAt.getTime() - startedAt.getTime(),
     log: logPath,
-    target: { kind: "workflow", ref: task.target.ref },
+    target: { kind: "workflow", ref: task.ref },
     detail: {
       runId: detail?.id,
       ...(failure ? { error: failure.message } : {}),
@@ -580,7 +626,7 @@ function mapWorkflowStatus(status: WorkflowRunStatus | undefined): TaskRunStatus
 }
 
 function renderWorkflowLog(input: {
-  task: TaskDocument;
+  task: PreparedTaskV3Workflow;
   detail?: WorkflowRunSummary;
   error?: Error;
   warnings?: readonly string[];
@@ -588,7 +634,7 @@ function renderWorkflowLog(input: {
   timedOutAfterMs?: number;
 }): RunLogContent {
   const dbLines: TaskLogLineInput[] = [
-    { line: `[akm task] task=${input.task.id} kind=workflow ref=${(input.task.target as { ref: string }).ref}` },
+    { line: `[akm task] task=${input.task.taskId} kind=workflow ref=${input.task.ref}` },
   ];
   for (const warning of input.warnings ?? []) dbLines.push({ level: "warn", line: warning });
   if (input.timedOutAfterMs !== undefined) {
@@ -604,11 +650,10 @@ function renderWorkflowLog(input: {
   return { fileText: `${dbLines.map((entry) => entry.line).join("\n")}\n`, dbLines };
 }
 
-// ── prompt target ───────────────────────────────────────────────────────────
+// ── common command target ───────────────────────────────────────────────────
 
-async function runPromptTask(input: {
-  task: TaskDocument;
-  stashDir: string;
+async function runPreparedCommandTask(input: {
+  task: PreparedTaskV3Command;
   logPath: string;
   startedAt: Date;
   now: () => Date;
@@ -617,64 +662,18 @@ async function runPromptTask(input: {
   agentOptions?: Partial<RunAgentOptions>;
   historyReserved: boolean;
 }): Promise<TaskRunResult> {
-  const { task, stashDir, logPath, startedAt, now, agentOptions } = input;
-  if (task.target.kind !== "prompt") throw new Error("invariant: prompt target");
-  const promptTarget = task.target;
-
-  // Same implicit opencode-sdk fallback the workflow freeze boundary applies,
-  // so a scheduled prompt task on an engine-less install behaves identically.
-  const promptText = await resolvePromptText(task, stashDir);
-  const inputConfig = loadConfig();
-  const environment = { AKM_EVENT_SOURCE: "task", ...scheduledTaskContextEnv(), ...agentOptions?.env };
-  const selectedAgentTimeout = agentOptions?.timeoutMs;
-  const current = {
-    ...(promptTarget.engine !== undefined ? { engine: promptTarget.engine } : {}),
-    ...(promptTarget.model !== undefined ? { model: promptTarget.model } : {}),
-    ...(promptTarget.llm !== undefined
-      ? { inference: cloneExecutionJsonObject(promptTarget.llm, "task target llm") }
-      : {}),
-    ...(promptTarget.timeoutMs !== undefined ? { timeout: promptTarget.timeoutMs } : {}),
-    workspace: agentOptions?.cwd ?? stashDir,
-    environment,
-    ...(Object.hasOwn(agentOptions ?? {}, "timeoutMs") && selectedAgentTimeout !== undefined
-      ? { timeout: selectedAgentTimeout }
-      : {}),
-  } satisfies UnresolvedExecutionDefaults;
-  let prepared = prepareInlineExecution({
-    content: promptText,
-    config: inputConfig,
-    invocationKind: "task",
-    current,
-  });
-  // Unattended agent transports keep the scheduler's bounded default; direct
-  // LLM engines retain their own configured/default timeout.
-  if (prepared.request.engine.kind !== "llm" && !Object.hasOwn(current, "timeout")) {
-    const boundedCurrent = {
-      ...current,
-      timeout: DEFAULT_SCHEDULED_TASK_TIMEOUT_MS,
-    } satisfies UnresolvedExecutionDefaults;
-    prepared = prepareInlineExecution({
-      content: promptText,
-      config: inputConfig,
-      invocationKind: "task",
-      current: boundedCurrent,
-    });
-  }
-  const engineName = prepared.request.engine.name;
-  const engineAnnouncement = fallbackAnnouncement(prepared.fallbackEngineName, engineName);
-  if (!engineName)
-    throw new NotFoundError(`Task "${task.id}" ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "ASSET_NOT_FOUND");
-  const lowered = lowerResolvedExecutionRequest(prepared.request, prepared.config);
-  const result = await dispatchLoweredExecutionRequest(lowered, {
+  const { task, logPath, startedAt, now, agentOptions } = input;
+  const result = await dispatchPreparedCommandInvocation(task.invocation, {
     ...(input.runAgentImpl ? { runAgent: input.runAgentImpl } : {}),
     ...(input.chatCompletionImpl ? { chat: input.chatCompletionImpl } : {}),
     ...(agentOptions ? { runOptions: agentOptions } : {}),
   });
+  const engineName = result.engine;
 
   const finishedAt = finishAttempt(startedAt, now());
-  const log = renderPromptLog({ task, engineName, result, engineAnnouncement, notices: lowered.notices });
+  const log = renderPromptLog({ task, engineName, result, notices: result.notices, warnings: result.warnings });
   persistRunLog({
-    taskId: task.id,
+    taskId: task.taskId,
     startedAtIso: startedAt.toISOString(),
     finishedAtIso: finishedAt.toISOString(),
     logPath,
@@ -685,7 +684,7 @@ async function runPromptTask(input: {
 
   const status: TaskRunStatus = result.ok ? "completed" : "failed";
   const out: TaskRunResult = {
-    id: task.id,
+    id: task.taskId,
     status,
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
@@ -695,55 +694,28 @@ async function runPromptTask(input: {
     detail: result.ok
       ? { exitCode: result.exitCode }
       : { reason: result.reason, error: result.error, exitCode: result.exitCode },
-    ...(lowered.notices.length > 0 ? { notices: lowered.notices } : {}),
+    ...(result.notices && result.notices.length > 0 ? { notices: result.notices } : {}),
   };
   appendHistory(out, input.historyReserved);
   return out;
 }
 
-async function resolvePromptText(task: TaskDocument, stashDir: string): Promise<string> {
-  if (task.target.kind !== "prompt") throw new Error("invariant: prompt target");
-  const src = task.target.source;
-  if (src.kind === "inline") return src.text;
-  if (src.kind === "file") {
-    const taskDir = path.dirname(task.source.path);
-    const filePath = path.isAbsolute(src.path) ? src.path : path.resolve(taskDir, src.path);
-    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-      throw new NotFoundError(`Prompt file not found: ${filePath}`, "FILE_NOT_FOUND");
-    }
-    return fs.readFileSync(filePath, "utf8");
-  }
-  // asset
-  const ref = parseRefInput(src.ref);
-  // D11 — see the matching guard in validator.ts: `resolveAssetPath`
-  // (src/sources/resolve.ts) is placement-dir-only and cannot route an
-  // opaque adapter conceptId, which `parseRefInput` now otherwise accepts.
-  if (placementSpecFor(ref.type) === undefined) {
-    throw new NotFoundError(
-      `Task "${task.id}" prompt asset ref "${src.ref}" is not an AKM-placed asset — adapter-owned (opaque) prompt sources are not resolvable as task inputs yet.`,
-      "ASSET_NOT_FOUND",
-    );
-  }
-  const assetPath = await resolveAssetPath(stashDir, ref.type, ref.name);
-  return fs.readFileSync(assetPath, "utf8");
-}
-
 function renderPromptLog(input: {
-  task: TaskDocument;
+  task: PreparedTaskV3Command;
   engineName: string;
-  result: AgentRunResult;
-  engineAnnouncement?: string;
+  result: CommandDispatchResult;
+  warnings?: readonly string[];
   notices?: readonly Readonly<LoweringNotice>[];
 }): RunLogContent {
   const lines: string[] = [];
   const dbLines: TaskLogLineInput[] = [];
-  const header = `[akm task] task=${input.task.id} kind=prompt engine=${input.engineName}`;
+  const header = `[akm task] task=${input.task.taskId} kind=prompt engine=${input.engineName}`;
   const summary = `ok=${input.result.ok} exit_code=${input.result.exitCode ?? "null"} duration_ms=${input.result.durationMs}`;
   lines.push(header, summary);
   dbLines.push({ line: header }, { level: input.result.ok ? "info" : "error", line: summary });
-  if (input.engineAnnouncement) {
-    lines.push(input.engineAnnouncement);
-    dbLines.push({ level: "warn", line: input.engineAnnouncement });
+  for (const warning of input.warnings ?? []) {
+    lines.push(warning);
+    dbLines.push({ level: "warn", line: warning });
   }
   for (const notice of input.notices ?? []) {
     const line = `lowering_notice=${notice.code} adapter=${notice.adapter} field=${notice.field ?? ""} message=${notice.message}`;

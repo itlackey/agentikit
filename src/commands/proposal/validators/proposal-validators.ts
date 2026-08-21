@@ -6,7 +6,7 @@ import { parseFrontmatter } from "../../../core/asset/frontmatter";
 import { parseRefInput } from "../../../core/asset/resolve-ref";
 import { proposalContent } from "../../../core/file-change";
 import { lintLessonContent } from "../../../core/lesson-lint";
-import { parseTaskDocument } from "../../../tasks/parser";
+import { parseTaskV3Yaml } from "../../../tasks/source-v3";
 import { parseWorkflow } from "../../../workflows/parser";
 import type {
   Proposal,
@@ -73,10 +73,9 @@ const canonicalProposalValidators: Readonly<Record<string, CanonicalProposalVali
   task(proposal, ctx) {
     const name = ctx.parsedRef?.name;
     if (!name) return [];
-    parseTaskDocument({
+    parseTaskV3Yaml({
       yaml: proposalContent(proposal),
       filePath: proposal.changes[0]?.path || proposal.ref,
-      id: name,
     });
     return [];
   },

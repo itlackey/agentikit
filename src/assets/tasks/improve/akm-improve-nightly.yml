@@ -1,5 +1,6 @@
-version: 2
-schedule: "15 2 * * *"
-command: akm improve --strategy thorough --skip-if-locked
-enabled: true
-description: Full nightly quality sweep (daily 2:15am; suggested for server installs)
+version: 3
+run: akm improve --strategy thorough --skip-if-locked
+akm:
+  schedule: "15 2 * * *"
+  enabled: true
+  description: Full nightly quality sweep (daily 2:15am; suggested for server installs)

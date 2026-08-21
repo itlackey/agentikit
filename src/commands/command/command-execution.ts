@@ -28,6 +28,7 @@ import {
   NO_ENGINE_REMEDY,
 } from "../../integrations/agent/engine-fallback";
 import {
+  type ExecutionInvocationKind,
   type ResolvedExecutionPlanV1,
   requireAuthorizedExecutionPlan,
   type ToolAuthorizer,
@@ -59,6 +60,8 @@ export interface PrepareCommandInvocationOptions {
   readonly invocationDefaults?: UnresolvedExecutionDefaults;
   readonly current?: UnresolvedExecutionDefaults;
   readonly authorizeTools?: ToolAuthorizer;
+  /** Provenance selects the common cascade layer; direct remains the public default. */
+  readonly invocationKind?: ExecutionInvocationKind;
 }
 
 export interface PreparedCommandInvocation {
@@ -85,6 +88,9 @@ export interface CommandDispatchResult {
 
 export interface DispatchPreparedCommandOptions {
   readonly executeRunner?: DispatchLoweredExecutionOptions["executeRunner"];
+  /** Compatibility seam for tests; production uses the leased executeRunner path. */
+  readonly runAgent?: DispatchLoweredExecutionOptions["runAgent"];
+  readonly runOptions?: DispatchLoweredExecutionOptions["runOptions"];
   readonly chat?: typeof chatCompletion;
 }
 
@@ -179,7 +185,7 @@ export async function prepareCommandInvocation(
   return prepareResolvedExecution({
     command,
     config: inputConfig,
-    invocationKind: "direct",
+    invocationKind: options.invocationKind ?? "direct",
     ...(persona !== undefined ? { persona } : {}),
     ...(renderedPersona ? { agentLayer: { id: renderedPersona.identity.ref, values: renderedPersona.defaults } } : {}),
     commandLayer: {

@@ -4,6 +4,7 @@
 
 import path from "node:path";
 import { parseFrontmatterBlock } from "../../core/asset/frontmatter";
+import { classifyTaskV3Triggers, classifyTaskV3Uses } from "../../tasks/source-v3";
 import { parseWorkflow } from "../parser";
 import { type ProgramUnit, projectExecCore } from "../program/schema";
 import type { WorkflowStep as MarkdownWorkflowStep } from "../schema";
@@ -37,9 +38,16 @@ export function compileGithubWorkflowSource(
   try {
     return {
       ok: true,
-      ir: decodeWorkflowSourceIrV1(parseGithubWorkflowSource(source, options), {
-        workspaceRoot: options.workspaceRoot,
-      }),
+      ir: decodeWorkflowSourceIrV1(
+        parseGithubWorkflowSource(source, {
+          ...options,
+          classifyUses: options.classifyUses ?? classifyTaskV3Uses,
+          classifyTriggers: options.classifyTriggers ?? classifyTaskV3Triggers,
+        }),
+        {
+          workspaceRoot: options.workspaceRoot,
+        },
+      ),
     };
   } catch (cause) {
     return sourceFailureResult(cause, options.path);

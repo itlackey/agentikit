@@ -1,5 +1,6 @@
-version: 2
-schedule: "20 */4 * * *"
-command: akm improve --strategy consolidate --skip-if-locked
-enabled: true
-description: Consolidation-only pass (every 4h at :20)
+version: 3
+run: akm improve --strategy consolidate --skip-if-locked
+akm:
+  schedule: "20 */4 * * *"
+  enabled: true
+  description: Consolidation-only pass (every 4h at :20)

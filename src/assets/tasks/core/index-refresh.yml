@@ -1,5 +1,6 @@
-version: 2
-schedule: "0 4 * * *"
-command: akm index
-enabled: true
-description: Nightly incremental index refresh
+version: 3
+run: akm index
+akm:
+  schedule: "0 4 * * *"
+  enabled: true
+  description: Nightly incremental index refresh

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { buildTaskRunId, openLogsDatabase, queryTaskLogs, type TaskLogRow } from "../../src/core/logs-db";
 import { openStateDatabase } from "../../src/core/state-db";
@@ -53,6 +54,11 @@ beforeEach(() => {
   fs.mkdirSync(tasksDir, { recursive: true });
   // Workflows directory needs to exist so resolveAssetPath can stat the type root.
   fs.mkdirSync(path.join(stashDir, "workflows"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stashDir, "workflows", "noop.md"),
+    "---\ntype: workflow\nsteps:\n  - id: work\n---\n\n## work\n\nDo it.\n",
+    "utf8",
+  );
   // Point state.db to an isolated data dir so tests don't share history.
   process.env.AKM_DATA_DIR = dataDir;
   process.env.AKM_CONFIG_DIR = configDir;
@@ -77,8 +83,49 @@ afterAll(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+/** Reauthor the suite's historical fixtures onto the v3 runtime contract. */
+function toTaskV3Fixture(body: string): string {
+  const data = parseYaml(body) as Record<string, unknown> | null;
+  if (!data || data.version !== 2) return body;
+  const output: Record<string, unknown> = { version: 3 };
+  if (typeof data.name === "string") output.name = data.name;
+  if (typeof data.workflow === "string") {
+    output.uses = data.workflow;
+    if (data.params && typeof data.params === "object") output.with = data.params;
+  } else if (typeof data.prompt === "string") {
+    if (/^(?:[^/]+\/\/)?commands\//.test(data.prompt)) output.uses = data.prompt;
+    else {
+      output.uses = "akm/command";
+      output.with = { content: data.prompt };
+    }
+  } else if (typeof data.command === "string" || Array.isArray(data.command)) {
+    output.run = Array.isArray(data.command)
+      ? data.command.map((value) => shellWord(String(value))).join(" ")
+      : data.command;
+  }
+  const akm: Record<string, unknown> = { schedule: data.schedule, enabled: data.enabled ?? true };
+  for (const key of ["description", "when_to_use", "tags", "engine", "model", "maxSteps", "maxRetries", "redact"]) {
+    if (data[key] !== undefined) akm[key] = data[key];
+  }
+  if (data.timeoutMs !== undefined) akm.timeout = data.timeoutMs;
+  if (data.llm && typeof data.llm === "object") {
+    const llm = data.llm as Record<string, unknown>;
+    akm.inference = {
+      ...(llm.extraParams && typeof llm.extraParams === "object" ? llm.extraParams : {}),
+      ...(llm.temperature !== undefined ? { temperature: llm.temperature } : {}),
+      ...(llm.maxTokens !== undefined ? { maxTokens: llm.maxTokens } : {}),
+    };
+  }
+  output.akm = akm;
+  return stringifyYaml(output);
+}
+
 function writeTask(id: string, body: string): void {
-  fs.writeFileSync(path.join(tasksDir, `${id}.yml`), body, "utf8");
+  fs.writeFileSync(path.join(tasksDir, `${id}.yml`), toTaskV3Fixture(body), "utf8");
 }
 
 /** Read this run's logs.db rows (the runner writes them via persistRunLog). */
@@ -217,9 +264,9 @@ describe("runTask — workflow target", () => {
       now: () => new Date("2025-01-01T00:00:00Z"),
     });
 
-    expect(calls).toEqual([{ ref: "workflows/noop", params: {} }]);
+    expect(calls).toEqual([{ ref: "stash//workflows/noop", params: {} }]);
     expect(result.status).toBe("completed");
-    expect(result.target).toEqual({ kind: "workflow", ref: "workflows/noop" });
+    expect(result.target).toEqual({ kind: "workflow", ref: "stash//workflows/noop" });
     expect(result.detail?.runId).toBe("run-id-1");
 
     const logExists = fs.existsSync(result.log);
@@ -581,7 +628,7 @@ describe("runTask — workflow target", () => {
 });
 
 describe("runTask — command target", () => {
-  test("routes a bare akm command through the current installation", async () => {
+  test("preserves an authored akm command as exact shell text", async () => {
     const command = ["akm", "improve", "--strategy", "quick"];
     writeTask(
       "literal-command",
@@ -603,7 +650,7 @@ describe("runTask — command target", () => {
     const result = await runTask("literal-command", { stashDir, logDir, spawnFn });
 
     expect(result.status).toBe("completed");
-    expect(spawned).toEqual([...resolveAkmInvocation().argv, ...command.slice(1)]);
+    expect(spawned).toEqual(["sh", "-c", command.map(shellWord).join(" ")]);
   });
 
   test("executes an explicitly selected akm path without replacing it", async () => {
@@ -632,7 +679,7 @@ describe("runTask — command target", () => {
     expect(fs.readFileSync(result.log, "utf8")).toContain("explicit vendor akm");
   });
 
-  test("uses the platform temp directory when HOME is absent", async () => {
+  test("uses the owning bundle as the default working directory when HOME is absent", async () => {
     const fallbackDir = path.join(tmpRoot, "command-cwd");
     fs.mkdirSync(fallbackDir, { recursive: true });
     writeTask(
@@ -650,7 +697,7 @@ describe("runTask — command target", () => {
     );
 
     expect(result.status).toBe("completed");
-    expect(fs.readFileSync(result.log, "utf8")).toContain(`cwd=${fallbackDir}`);
+    expect(fs.readFileSync(result.log, "utf8")).toContain(`cwd=${stashDir}`);
   });
 
   test("a command that ignores SIGTERM is SIGKILLed on timeout, logging timed_out + exit 143", async () => {
@@ -756,7 +803,14 @@ describe("runTask — command target", () => {
       path.join(configDir, "config.json"),
       JSON.stringify({
         configVersion: "0.9.0",
-        engines: { main: { kind: "llm", apiKey: "${ACME_LLM_KEY}", endpoint: "https://api.example.com" } },
+        engines: {
+          main: {
+            kind: "llm",
+            endpoint: "https://api.example.com/v1/chat/completions",
+            model: "fixture",
+            credential: { names: ["ACME_LLM_KEY"], required: true },
+          },
+        },
       }),
     );
     echoTask("leaky-config-secret", `calling out with ${secret}`);
@@ -841,13 +895,15 @@ describe("runTask — command target", () => {
     fs.mkdirSync(path.join(secondaryStash, "workflows"), { recursive: true });
     fs.writeFileSync(
       path.join(secondaryStash, "tasks", "secondary-leak.yml"),
-      [
-        "version: 2",
-        'schedule: "@daily"',
-        `command: ${JSON.stringify([process.execPath, "-e", `console.log(${JSON.stringify(`shipping ${secret}`)})`])}`,
-        "redact: [ACME_SECONDARY_VALUE]",
-        "",
-      ].join("\n"),
+      toTaskV3Fixture(
+        [
+          "version: 2",
+          'schedule: "@daily"',
+          `command: ${JSON.stringify([process.execPath, "-e", `console.log(${JSON.stringify(`shipping ${secret}`)})`])}`,
+          "redact: [ACME_SECONDARY_VALUE]",
+          "",
+        ].join("\n"),
+      ),
     );
 
     const result = await withEnv({ ACME_SECONDARY_VALUE: secret }, () =>
@@ -937,11 +993,10 @@ describe("runTask — prompt target", () => {
     expect(seen).toEqual({ model: "qwen3-small", prompt: "answer briefly" });
     expect(result.notices?.map((notice) => [notice.code, notice.field])).toEqual([
       ["untranslated-field", "runtime.workspace"],
-      ["untranslated-field", "runtime.environment"],
     ]);
     const log = fs.readFileSync(result.log, "utf8");
     expect(log).toContain("lowering_notice=untranslated-field adapter=llm field=runtime.workspace");
-    expect(log).toContain("lowering_notice=untranslated-field adapter=llm field=runtime.environment");
+    expect(log).not.toContain("lowering_notice=untranslated-field adapter=llm field=runtime.environment");
   });
 
   test("dispatches to runAgent (mocked) and writes captured stdout to the log", async () => {

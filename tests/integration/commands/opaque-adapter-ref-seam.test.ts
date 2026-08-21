@@ -30,8 +30,7 @@ import { resetConfigCache } from "../../../src/core/config/config";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { resolveAssetPath } from "../../../src/indexer/walk/path-resolver";
 import { type ProposalRow, proposalRowToProposal } from "../../../src/storage/repositories/proposals-repository";
-import type { TaskDocument } from "../../../src/tasks/schema";
-import { validateTaskDocument } from "../../../src/tasks/validator";
+import { planTaskV2ToV3File } from "../../../src/tasks/migrate-v2-to-v3";
 // Trigger source-provider self-registration.
 import "../../../src/sources/providers/index";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
@@ -130,28 +129,18 @@ describe("Q-07 / D11 — opaque adapter conceptIds at the ref-consuming commands
     expect(proposal.ref).toBe("adversarial//tables/customers");
   });
 
-  test("tasks: the parser seam accepts the opaque ref; the remaining gap is `src/sources/resolve.ts` (out of package)", async () => {
-    await akmIndex({ stashDir: storage.stashDir, full: true });
-    const task: TaskDocument = {
-      version: 2,
-      schemaVersion: 2,
-      id: "opaque-prompt-source",
-      schedule: "@daily",
-      enabled: true,
-      target: {
-        kind: "prompt",
-        source: { kind: "asset", ref: "adversarial//tables/customers" },
-      },
-      source: { path: path.join(storage.stashDir, "tasks", "opaque-prompt-source.yml") },
-    };
-    // Before the fix this threw at `parseRefInput` itself: "Unrecognized asset
-    // ref ... has no known asset-type prefix." That no longer happens — the
-    // ref parses. `src/sources/resolve.ts` (owned by a different package /
-    // explicitly out of scope here) is placement-dir-only and has no stash
-    // subdir to route an opaque type through, so the validator raises this
-    // clear, dedicated domain error instead of letting that helper crash.
-    await expect(validateTaskDocument(task, { backend: "cron", stashDir: okfRoot })).rejects.toThrow(
-      /adapter-owned \(opaque\) prompt sources are not resolvable as task inputs yet/,
-    );
+  test("task migration recognizes the opaque ref and blocks because task-v3 has no generic asset target", () => {
+    const filePath = path.join(storage.stashDir, "tasks", "opaque-prompt-source.yml");
+    const outcome = planTaskV2ToV3File({
+      filePath,
+      bytes: Buffer.from('version: 2\nschedule: "@daily"\nprompt: adversarial//tables/customers\n', "utf8"),
+      mode: 0o644,
+      writable: true,
+      containmentRoot: storage.stashDir,
+    });
+    expect(outcome).toMatchObject({
+      status: "blocked",
+      reason: "non-command-asset-has-no-v3-command-ref-equivalent",
+    });
   });
 });

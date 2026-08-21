@@ -341,7 +341,7 @@ describe("task definition preparation", () => {
       const taskDir = path.join(storage.stashDir, "tasks");
       const improvePath = path.join(taskDir, "improve.yml");
       const syncPath = path.join(taskDir, "sync.yml");
-      const original = 'version: 2\nschedule: "0 1 * * *"\ncommand: akm improve\nenabled: false';
+      const original = 'version: 3\nrun: akm improve\nakm:\n  schedule: "0 1 * * *"\n  enabled: false\n';
       fs.mkdirSync(taskDir, { recursive: true });
       fs.writeFileSync(improvePath, original, "utf8");
       let commits = 0;

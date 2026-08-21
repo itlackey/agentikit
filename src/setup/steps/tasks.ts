@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import * as p from "../../cli/clack";
-import { akmTasksSync, setEnabledInYaml } from "../../commands/tasks/tasks";
+import { akmTasksSync } from "../../commands/tasks/tasks";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import {
@@ -21,8 +21,8 @@ import {
 } from "../../core/write-source";
 import { backendNameForPlatform } from "../../tasks/backends";
 import { type EmbeddedTask, listEmbeddedTasks } from "../../tasks/embedded";
-import { parseTaskDocument } from "../../tasks/parser";
 import { parseSchedule } from "../../tasks/schedule";
+import { parseTaskV3Yaml } from "../../tasks/source-v3";
 import { prompt } from "../prompt";
 
 /**
@@ -90,6 +90,16 @@ function normaliseTaskIdForMatch(raw: string): string {
   return raw.trim().replace(/\.(yml|md)$/, "");
 }
 
+function setTaskV3EnabledInYaml(yaml: string, enabled: boolean): string {
+  const document = yamlParse(yaml) as Record<string, unknown>;
+  const akm = document.akm;
+  if (!akm || typeof akm !== "object" || Array.isArray(akm)) {
+    throw new UsageError("Task v3 source must declare an akm mapping before setup can change enabled state.");
+  }
+  (akm as Record<string, unknown>).enabled = enabled;
+  return yamlStringify(document);
+}
+
 export interface SetupTaskDefinition {
   id: string;
   schedule: string;
@@ -122,8 +132,23 @@ export function listSetupTaskDefinitions(): SetupTaskDefinition[] {
     const id = file.slice(0, -4);
     const filePath = path.join(taskDir, file);
     try {
-      const task = parseTaskDocument({ yaml: fs.readFileSync(filePath, "utf8"), filePath, id });
-      tasks.push({ id: task.id, schedule: task.schedule, enabled: task.enabled, description: task.description });
+      const task = parseTaskV3Yaml({
+        yaml: fs.readFileSync(filePath, "utf8"),
+        filePath,
+        workspaceRoot: target.source.path,
+      });
+      if (task.triggers.schedules.length !== 1) {
+        throw new UsageError(
+          `Setup review requires exactly one scheduled binding for task ${JSON.stringify(id)}.`,
+          "INVALID_FLAG_VALUE",
+        );
+      }
+      tasks.push({
+        id,
+        schedule: task.triggers.schedules[0]!.cron,
+        enabled: task.akm?.enabled !== false,
+        ...(task.akm?.description !== undefined ? { description: task.akm.description } : {}),
+      });
     } catch (error) {
       throw new UsageError(
         `Cannot review task definition ${filePath}: ${error instanceof Error ? error.message : String(error)} ` +
@@ -160,15 +185,16 @@ export async function prepareSetupTaskDefinitions(
     const original = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : undefined;
     let yaml: string;
     if (original !== undefined) {
-      yaml = setEnabledInYaml(original, plan.enabled);
+      yaml = setTaskV3EnabledInYaml(original, plan.enabled);
     } else {
       const document = yamlParse(plan.task.yaml) as Record<string, unknown>;
-      document.schedule = plan.schedule;
-      document.enabled = plan.enabled;
+      const akm = document.akm as Record<string, unknown>;
+      akm.schedule = plan.schedule;
+      akm.enabled = plan.enabled;
       yaml = yamlStringify(document);
     }
 
-    parseTaskDocument({ yaml, filePath, id: plan.task.id });
+    parseTaskV3Yaml({ yaml, filePath, workspaceRoot: target.source.path });
     parseSchedule(plan.schedule, backendNameForPlatform());
     return { filePath, original, yaml, ref: { type: "task" as const, name: plan.task.id } };
   });

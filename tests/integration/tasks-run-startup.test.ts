@@ -26,14 +26,13 @@ describe("tasks run startup", () => {
     fs.writeFileSync(
       path.join(storage.stashDir, "tasks", "blocked-command.yml"),
       [
-        "version: 2",
-        'schedule: "@daily"',
-        `command: ${JSON.stringify([
-          process.execPath,
-          "-e",
-          `require("node:fs").writeFileSync(${JSON.stringify(sideEffectPath)}, "ran")`,
-        ])}`,
-        "enabled: true",
+        "version: 3",
+        `run: ${JSON.stringify(
+          `${process.execPath} -e ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(sideEffectPath)}, "ran")`)}`,
+        )}`,
+        "akm:",
+        '  schedule: "@daily"',
+        "  enabled: true",
         "",
       ].join("\n"),
       "utf8",
