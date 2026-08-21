@@ -289,6 +289,12 @@ embedding-based search. `"auto"` lets AKM set up embeddings (which downloads
 a local model unless you point `embedding` at a remote provider) and falls
 back to keyword-only FTS if the embedding runtime is unavailable; `"off"`
 disables semantic search outright and search is always keyword-only FTS.
+If a backend marked ready cannot serve a query, search still returns the FTS
+results but reports `searchMode: "fts-fallback"` and one sanitized warning.
+This is distinct from `searchMode: "keyword"`, which is the normal result when
+semantic search is disabled or has not been built. A read-only sandbox that
+cannot record best-effort usage telemetry does not by itself mark search as
+degraded.
 The npm/Bun package owns its local Transformers.js/ONNX Web dependencies as
 optionals. If the package was installed with `--omit=optional`, reinstall it
 without that flag or configure a remote `embedding.endpoint`; setup does not

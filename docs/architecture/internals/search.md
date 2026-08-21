@@ -87,6 +87,13 @@ keyword-only because they do not ship optional runtime packages.
 An LRU cache (100 entries) avoids redundant embedding computation for repeated
 queries.
 
+Query-time semantic failure is not conflated with configured keyword search.
+FTS still serves the request, while `searchMode: "fts-fallback"` and one
+sanitized warning name the normalized endpoint without URL userinfo, query
+parameters, fragments, API keys, or raw runtime error text. Curate deduplicates
+that warning across its internal fallback queries. `searchMode: "keyword"`
+means no ready semantic attempt failed for this request.
+
 ### Score Normalization
 
 FTS5 BM25 scores are negative (lower = better match). They are normalized to

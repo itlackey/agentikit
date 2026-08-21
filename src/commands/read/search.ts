@@ -37,6 +37,7 @@ import type {
   AkmSearchType,
   BeliefFilterMode,
   RegistrySearchResultHit,
+  SearchExecutionMode,
   SearchResponse,
   SearchSource,
   SourceSearchHit,
@@ -217,9 +218,10 @@ export async function akmSearch(input: {
       hits: localHits,
       tip: hasResults ? undefined : localResult?.tip,
       warnings: localResult?.warnings?.length ? localResult.warnings : undefined,
+      searchMode: localResult?.mode ?? "keyword",
       timing: { totalMs: Date.now() - t0, rankMs: localResult?.rankMs, embedMs: localResult?.embedMs },
     };
-    maybeLogSearchEvent(input, query, response, localResult?.mode ?? "keyword");
+    maybeLogSearchEvent(input, query, response, usageSearchMode(localResult?.mode));
     return response;
   }
 
@@ -268,10 +270,16 @@ export async function akmSearch(input: {
     registryHits,
     tip: hasResults ? undefined : "No matching stash assets or registry entries were found.",
     warnings: warnings.length ? warnings : undefined,
+    searchMode: localResult?.mode ?? "keyword",
     timing: { totalMs: Date.now() - t0 },
   };
-  maybeLogSearchEvent(input, query, response);
+  maybeLogSearchEvent(input, query, response, usageSearchMode(localResult?.mode));
   return response;
+}
+
+/** Usage telemetry retains its historical semantic|keyword vocabulary. */
+function usageSearchMode(mode: SearchExecutionMode | undefined): "semantic" | "keyword" {
+  return mode === "semantic" ? "semantic" : "keyword";
 }
 
 function maybeLogSearchEvent(

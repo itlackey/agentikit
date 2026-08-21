@@ -1,0 +1,133 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+/**
+ * #813 — a failed query embedding is a real search-quality degradation, not
+ * ordinary keyword mode. The fallback must stay useful, machine-visible, and
+ * safe to print even when the provider/runtime error contains credentials.
+ */
+
+import { expect, test } from "bun:test";
+import { akmCurate } from "../../../src/commands/read/curate";
+import { akmSearch } from "../../../src/commands/read/search";
+import type { AkmConfig } from "../../../src/core/config/config";
+import { saveConfig } from "../../../src/core/config/config";
+import { getDbPath } from "../../../src/core/paths";
+import { _setWarnSinkForTests } from "../../../src/core/warn";
+import { deriveEntryProvenance } from "../../../src/indexer/installations";
+import type { IndexDocument } from "../../../src/indexer/passes/metadata";
+import { searchLocal } from "../../../src/indexer/search/db-search";
+import { deriveSemanticProviderFingerprint, writeSemanticStatus } from "../../../src/indexer/search/semantic-status";
+import { _setEmbedderForTests } from "../../../src/llm/embedder";
+import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
+import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
+import { rebuildFts } from "../../../src/storage/repositories/index-fts-repository";
+import { setMeta } from "../../../src/storage/repositories/index-meta-repository";
+import { upsertEmbedding } from "../../../src/storage/repositories/index-vec-repository";
+import { withIsolatedAkmStorage } from "../../_helpers/sandbox";
+import { overrideSeam } from "../../_helpers/seams";
+
+test("query-embedding failure preserves FTS results and returns one sanitized fts-fallback disclosure", async () => {
+  const storage = withIsolatedAkmStorage();
+  const config: AkmConfig = {
+    semanticSearchMode: "auto",
+    embedding: {
+      endpoint: "http://endpoint-user:endpoint-password@127.0.0.1:1234/v1?api_key=query-secret",
+      model: "test-model",
+    },
+  };
+  const warnings: string[] = [];
+  overrideSeam(_setWarnSinkForTests, (level, args) => {
+    if (level === "warn") warnings.push(args.map(String).join(" "));
+  });
+
+  try {
+    const db = openIndexDatabase(getDbPath(), { embeddingDim: 4 });
+    try {
+      const entryId = upsertEntry(
+        db,
+        "knowledge/deploy-guide",
+        storage.stashDir,
+        `${storage.stashDir}/knowledge/deploy-guide.md`,
+        storage.stashDir,
+        { type: "knowledge", name: "deploy-guide", description: "deploy applications safely" } as IndexDocument,
+        "deploy-guide deploy applications safely",
+        deriveEntryProvenance(
+          { bundleId: "stash", componentId: "stash", adapterId: "akm" },
+          "knowledge",
+          "deploy-guide",
+        ),
+      );
+      upsertEmbedding(db, entryId, [1, 0, 0, 0]);
+      rebuildFts(db);
+      setMeta(db, "hasEmbeddings", "1");
+      setMeta(db, "stashDir", storage.stashDir);
+    } finally {
+      closeDatabase(db);
+    }
+
+    writeSemanticStatus({
+      status: "ready-vec",
+      providerFingerprint: deriveSemanticProviderFingerprint(config.embedding),
+      lastCheckedAt: new Date().toISOString(),
+    });
+    overrideSeam(_setEmbedderForTests, {
+      embed: async () => {
+        throw Object.assign(
+          new TypeError("Was there a typo in the url or port? endpoint-password query-secret sk-runtime-secret"),
+          { code: "ECONNREFUSED" },
+        );
+      },
+    });
+
+    const result = await searchLocal({
+      query: "deploy",
+      searchType: "any",
+      limit: 10,
+      stashDir: storage.stashDir,
+      sources: [{ path: storage.stashDir }],
+      config,
+      disableProjectContext: true,
+      disableScopedUtility: true,
+    });
+
+    expect(result.hits.map((hit) => hit.ref)).toContain("knowledge/deploy-guide");
+    expect(result.mode).toBe("fts-fallback");
+    expect(result.warnings).toEqual([
+      "Vector search unavailable: cannot reach embedding endpoint http://127.0.0.1:1234/v1/embeddings (connection failed) — falling back to keyword search.",
+    ]);
+    expect(warnings).toEqual([]);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("endpoint-user");
+    expect(serialized).not.toContain("endpoint-password");
+    expect(serialized).not.toContain("query-secret");
+    expect(serialized).not.toContain("sk-runtime-secret");
+    expect(serialized).not.toContain("typo in the url or port");
+
+    saveConfig(config);
+    const publicSearch = await akmSearch({ query: "deploy", skipLogging: true });
+    expect(publicSearch.searchMode).toBe("fts-fallback");
+    expect(publicSearch.warnings).toEqual(result.warnings);
+
+    const curated = await akmCurate({ query: "deploy applications safely", skipLogging: true });
+    expect(curated.searchMode).toBe("fts-fallback");
+    expect(curated.warnings).toEqual(result.warnings);
+
+    const intentionalKeyword = await searchLocal({
+      query: "deploy",
+      searchType: "any",
+      limit: 10,
+      stashDir: storage.stashDir,
+      sources: [{ path: storage.stashDir }],
+      config: { semanticSearchMode: "off" },
+      disableProjectContext: true,
+      disableScopedUtility: true,
+    });
+    expect(intentionalKeyword.mode).toBe("keyword");
+    expect(intentionalKeyword.warnings ?? []).not.toContainEqual(expect.stringContaining("Vector search unavailable"));
+    expect(warnings).toEqual([]);
+  } finally {
+    storage.cleanup();
+  }
+});

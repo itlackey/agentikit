@@ -1,5 +1,5 @@
 {
   "exitCode": 0,
   "shape": "curate",
-  "stdoutKeys": ["items", "query", "schemaVersion", "shape", "summary", "tip"]
+  "stdoutKeys": ["items", "query", "schemaVersion", "searchMode", "shape", "summary", "tip"]
 }

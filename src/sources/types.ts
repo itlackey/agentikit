@@ -9,6 +9,8 @@ export type AkmSearchType = string;
 export type SearchSource = "local" | "registry" | "all";
 export type SearchHitSize = "small" | "medium" | "large";
 export type BeliefFilterMode = "all" | "current" | "historical";
+/** Actual local ranking mode, including a semantic attempt that failed at runtime. */
+export type SearchExecutionMode = "semantic" | "keyword" | "fts-fallback";
 
 export interface SourceSearchHit {
   type: string;
@@ -95,6 +97,8 @@ export interface SearchResponse {
   registryHits?: RegistrySearchResultHit[];
   tip?: string;
   warnings?: string[];
+  /** `fts-fallback` means semantic ranking was attempted but keyword search had to serve the result. */
+  searchMode?: SearchExecutionMode;
   /** Timing counters in milliseconds */
   timing?: { totalMs: number; rankMs?: number; embedMs?: number };
 }

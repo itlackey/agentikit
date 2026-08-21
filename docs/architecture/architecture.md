@@ -149,6 +149,12 @@ Notes:
 - registry results live in `registryHits`, never in `hits`
 - `--from all` keeps registry results in `registryHits` — they are not
   rank-merged with source hits
+- local search and curate expose the actual execution in `searchMode`:
+  `semantic`, intentional/unavailable `keyword`, or `fts-fallback` when a
+  ready semantic runtime failed during the query; that degradation also
+  surfaces as one sanitized `warnings[]` entry, including in agent shape
+- usage-event writes are best-effort; `EROFS`/`EACCES` from a read-only
+  environment are silent and never affect `searchMode`
 
 `akm search` is implemented in `src/commands/read/search.ts` and queries the
 indexer's local search (`src/indexer/search/db-search.ts`). Provider fan-out is gone.

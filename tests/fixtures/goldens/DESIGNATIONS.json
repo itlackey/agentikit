@@ -57,12 +57,12 @@
     },
     {
       "path": "tests/fixtures/goldens/cli/a-curate.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
+      "reBaselineChunk": "9",
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `curate <term>` JSON envelope key-set + shape tag. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "71200b7c47126e81718aa0e2e27c22616ba38b388300197ceea0526d99ae5b7d"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `curate <term>` JSON envelope key-set + shape tag. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals. | Re-baselined by #813: `curate` deliberately gained the additive top-level `searchMode` machine signal so callers can distinguish semantic execution, intentional keyword execution, and an FTS fallback after semantic degradation. Chunk 9 owns the CLI output surface under the surface-owner rule; all previously pinned keys remain unchanged."
     },
     {
       "path": "tests/fixtures/goldens/cli/a-env-secret-list.json",
@@ -111,12 +111,12 @@
     },
     {
       "path": "tests/fixtures/goldens/cli/a-search.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
+      "reBaselineChunk": "9",
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `search <term>` JSON envelope + hit key-set. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "feac94cca559640efe5c91a8e7947bdb2449cd41ae8408a93781dc8dced2c79e"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `search <term>` JSON envelope + hit key-set. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals. | Re-baselined by #813: `search` deliberately gained the additive top-level `searchMode` machine signal so callers can distinguish semantic execution, intentional keyword execution, and an FTS fallback after semantic degradation. Chunk 9 owns the CLI output surface under the surface-owner rule; all previously pinned keys remain unchanged."
     },
     {
       "path": "tests/fixtures/goldens/cli/a-show-apply-branches.json",

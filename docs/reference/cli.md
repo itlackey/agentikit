@@ -356,6 +356,14 @@ The pre-0.9.0 `<type>:` / `<type>:<prefix>/` spelling was removed. A query in
 that shape is now an ordinary keyword search, and when it returns nothing the
 tip names the conceptId spelling that replaces it.
 
+Local search responses include `searchMode`: `semantic` when vector ranking
+ran, `keyword` when keyword-only search was intentional or semantic search was
+not ready, and `fts-fallback` when a ready semantic backend failed during this
+query. The last case also adds one sanitized, endpoint-naming entry to
+`warnings`; it never repeats the provider/runtime error text. Both fields are
+preserved by `--shape agent` so machine consumers can lower their confidence
+instead of treating keyword fallback as healthy semantic ranking.
+
 | Flag | Values | Default | Description |
 | --- | --- | --- | --- |
 | `--type` | `skill`, `command`, `agent`, `knowledge`, `instruction`, `workflow`, `script`, `memory`, `env`, `secret`, `lesson`, `task`, `session`, `fact`, `any` | `any` | Filter by asset type. Free-form and unvalidated — an unknown type returns no hits. Also accepts any adapter-defined type (e.g. `website`) — see [Bundle Types](bundle-types.md) for the open types each adapter emits. |
@@ -450,6 +458,8 @@ includes direct follow-up commands such as `akm show <ref>` or `akm bundle add <
 so you can immediately inspect or install what it found.
 `--detail` and `--shape agent` both work on curate output; `--shape summary`
 does not.
+Curate preserves the underlying `searchMode` and deduplicates semantic fallback
+warnings across its full-query and token-fallback searches.
 Agent-shaped local items include `ref`, `path`, and `editable`, plus `editHint`
 only for read-only items. Their `followUp` remains `akm show <ref>` rather than
 being replaced by clone guidance.

@@ -31,6 +31,7 @@ import { rethrowIfTestIsolationError } from "./errors";
 import type { EventEnvelope } from "./events-types";
 import { getStateDbPath, openStateDatabase, withStateDb } from "./state-db";
 import { borrowScopedStateDb } from "./state-db-scope";
+import { isReadOnlyFilesystemError } from "./system-error";
 import { error } from "./warn";
 
 /**
@@ -270,6 +271,10 @@ export function appendEvent(input: AppendEventInput, ctx?: EventsContext): void 
   } catch (err) {
     // Never mask the bun-test isolation guard as a silent "events failed".
     rethrowIfTestIsolationError(err);
+    // Read-only sandboxes can serve an existing index but cannot create the
+    // maintenance lock or state DB used by best-effort usage tracking. That is
+    // expected for a read verb; unrelated storage failures remain visible.
+    if (isReadOnlyFilesystemError(err)) return;
     // Best-effort: events stream failures must not break the mutating verb.
     // Surface once to stderr so operators can diagnose.
     error(`akm: appendEvent failed: ${String(err)}`);
