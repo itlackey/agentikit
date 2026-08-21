@@ -9,6 +9,7 @@ import { akmIndex, lookup } from "../../src/indexer/indexer";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
 import type { RunAgentOptions } from "../../src/integrations/agent/spawn";
+import { planTaskV2ToV3File } from "../../src/tasks/migrate-v2-to-v3";
 import { runTask } from "../../src/tasks/runner";
 import { runCliCapture } from "../_helpers/cli";
 import {
@@ -78,6 +79,19 @@ function installFixture(source: string, destination: string): void {
   fs.copyFileSync(source, destination);
 }
 
+function installMigratedTaskFixture(source: string, destination: string): void {
+  const outcome = planTaskV2ToV3File({
+    filePath: source,
+    bytes: fs.readFileSync(source),
+    mode: 0o600,
+    writable: true,
+  });
+  expect(outcome.status, outcome.detail).toBe("changed");
+  if (outcome.status !== "changed") throw new Error(outcome.detail ?? outcome.reason);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.writeFileSync(destination, outcome.after);
+}
+
 interface DirectDispatchCapture {
   runner: Extract<RunnerSpec, { kind: "agent" | "sdk" }>;
   prompt: string;
@@ -120,7 +134,7 @@ describe("current execution entry points projected onto one test-only request sh
     writeSandboxConfig(config);
 
     const taskSource = path.join(TASK_ROOT, "deterministic/prompt-inline-agent.yml");
-    installFixture(taskSource, path.join(storage.stashDir, "tasks/equivalent.yml"));
+    installMigratedTaskFixture(taskSource, path.join(storage.stashDir, "tasks/equivalent.yml"));
 
     let capturedProfile: AgentProfile | undefined;
     let capturedPrompt: string | undefined;
@@ -195,8 +209,15 @@ describe("current execution entry points projected onto one test-only request sh
   test("task command, workflow, and direct-LLM targets reach their production injection seams", async () => {
     writeSandboxConfig(fixtureConfig());
     for (const id of ["command-string", "workflow-ref-full", "prompt-inline-full"]) {
-      installFixture(path.join(TASK_ROOT, `deterministic/${id}.yml`), path.join(storage.stashDir, `tasks/${id}.yml`));
+      installMigratedTaskFixture(
+        path.join(TASK_ROOT, `deterministic/${id}.yml`),
+        path.join(storage.stashDir, `tasks/${id}.yml`),
+      );
     }
+    installFixture(
+      path.join(WORKFLOW_ROOT, "current/agent-unit.md"),
+      path.join(storage.stashDir, "workflows/contract-review.md"),
+    );
 
     let commandCapture: { cmd: string[]; options: Parameters<SpawnFn>[1] } | undefined;
     const commandSpawn: SpawnFn = (cmd, options) => {
@@ -211,11 +232,11 @@ describe("current execution entry points projected onto one test-only request sh
     });
     expect(commandResult).toMatchObject({
       status: "completed",
-      target: { kind: "command", cmd: ["akm", "index", "--full"] },
+      target: { kind: "command" },
     });
-    expect(commandCapture?.cmd.slice(-2)).toEqual(["index", "--full"]);
+    expect(commandCapture?.cmd).toEqual(["sh", "-c", "akm index --full"]);
     expect(commandCapture?.options).toMatchObject({
-      cwd: process.env.HOME,
+      cwd: storage.stashDir,
       detached: true,
       env: { AKM_EVENT_SOURCE: "task" },
     });
@@ -246,10 +267,10 @@ describe("current execution entry points projected onto one test-only request sh
     });
     expect(workflowResult).toMatchObject({
       status: "completed",
-      target: { kind: "workflow", ref: "workflows/contract-review" },
+      target: { kind: "workflow", ref: "stash//workflows/contract-review" },
     });
     expect(workflowCapture).toMatchObject({
-      target: "workflows/contract-review",
+      target: "stash//workflows/contract-review",
       params: { target: "packages/core", strict: true },
       maxSteps: 8,
       maxRetries: 2,
@@ -401,35 +422,21 @@ describe("WP4 command compatibility boundary", () => {
   });
 });
 
-describe("remaining explicitly non-normative execution observations", () => {
-  test("task prompt assets currently become raw prompt text, not an agent persona", async () => {
-    const config = fixtureConfig();
-    writeSandboxConfig(config);
+describe("retired task-v2 execution observations", () => {
+  test("an agent-shaped v2 prompt ref is migration-only and blocks instead of becoming command work", () => {
     const fixtureBytes = captureFixtureBytes(NATIVE_ROOT);
-    const agentSource = path.join(NATIVE_ROOT, "akm/agents/contract-reviewer.md");
-    installFixture(agentSource, path.join(storage.stashDir, "agents/contract-reviewer.md"));
-    installFixture(
-      path.join(TASK_ROOT, "blocked/prompt-agent-ref.yml"),
-      path.join(storage.stashDir, "tasks/prompt-agent-ref.yml"),
-    );
-    const installedBytes = captureFixtureBytes(storage.stashDir);
-
-    let capturedPrompt = "";
-    const result = await runTask("prompt-agent-ref", {
-      stashDir: storage.stashDir,
-      logDir: path.join(storage.root, "task-logs"),
-      now: NOW,
-      runAgentImpl: async (_profile, prompt) => {
-        capturedPrompt = prompt;
-        return { ok: true, exitCode: 0, stdout: "reviewed", stderr: "", durationMs: 1 };
-      },
+    const source = path.join(TASK_ROOT, "blocked/prompt-agent-ref.yml");
+    const outcome = planTaskV2ToV3File({
+      filePath: source,
+      bytes: fs.readFileSync(source),
+      mode: 0o600,
+      writable: true,
     });
 
-    expect(result.status).toBe("completed");
-    expect(capturedPrompt).toBe(fs.readFileSync(agentSource, "utf8"));
-    expect(capturedPrompt).toStartWith("---\n");
-    expect(capturedPrompt).toContain("type: agent");
+    expect(outcome).toMatchObject({
+      status: "blocked",
+      reason: "agent-ref-has-persona-but-no-command-work",
+    });
     assertFixtureBytesUnchanged(NATIVE_ROOT, fixtureBytes);
-    assertFixtureBytesUnchanged(storage.stashDir, installedBytes);
   });
 });

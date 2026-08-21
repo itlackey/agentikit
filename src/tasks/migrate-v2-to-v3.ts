@@ -320,13 +320,10 @@ function promptSourceKind(raw: string): "file" | "agent" | "command" | "other-re
   try {
     const parsed = parseBundleRef(trimmed);
     const family = parsed.conceptId.split("/", 1)[0] ?? "";
-    if (
-      bundleRefToString(parsed) !== trimmed ||
-      !parsed.conceptId.includes("/") ||
-      !KNOWN_PROMPT_REF_FAMILIES.has(family)
-    ) {
+    if (bundleRefToString(parsed) !== trimmed || !parsed.conceptId.includes("/")) {
       return "inline";
     }
+    if (!KNOWN_PROMPT_REF_FAMILIES.has(family)) return parsed.bundle === undefined ? "inline" : "other-ref";
     if (family === "agents") return "agent";
     if (family === "commands") return "command";
     return "other-ref";

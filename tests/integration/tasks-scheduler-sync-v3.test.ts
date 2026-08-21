@@ -20,12 +20,9 @@ function write(file: string, content: string): void {
 const emptyInstalled = [] as const;
 
 describe("whole-set v3 scheduler sync planning", () => {
-  test("compiles task and workflow schedules together and never installs workflow_dispatch", () => {
+  test("compiles task and workflow schedules together and never installs workflow_dispatch", async () => {
     const bundleRoot = root();
-    write(
-      path.join(bundleRoot, "tasks", "nightly.yml"),
-      "version: 3\nuses: commands/index\nakm:\n  schedule: '@daily'\n",
-    );
+    write(path.join(bundleRoot, "tasks", "nightly.yml"), "version: 3\nrun: echo index\nakm:\n  schedule: '@daily'\n");
     write(
       path.join(bundleRoot, "workflows", "release.yml"),
       [
@@ -44,7 +41,7 @@ describe("whole-set v3 scheduler sync planning", () => {
       ].join("\n"),
     );
 
-    const plan = planSchedulerSync({
+    const plan = await planSchedulerSync({
       sourceRoot: bundleRoot,
       adapterId: "akm",
       bundleName: "team",
@@ -63,11 +60,11 @@ describe("whole-set v3 scheduler sync planning", () => {
     expect(plan.operations.map(({ kind }) => kind)).toEqual(["install", "install", "install"]);
   });
 
-  test("enumerates a standalone akm-task bundle with qualified logical refs", () => {
+  test("enumerates a standalone akm-task bundle with qualified logical refs", async () => {
     const bundleRoot = root();
     write(path.join(bundleRoot, "nightly.yml"), "version: 3\nrun: echo yes\nakm:\n  schedule: '@daily'\n");
 
-    const plan = planSchedulerSync({
+    const plan = await planSchedulerSync({
       sourceRoot: bundleRoot,
       adapterId: "akm-task",
       bundleName: "team",
@@ -81,13 +78,13 @@ describe("whole-set v3 scheduler sync planning", () => {
     expect(plan.desired[0]?.invocation).toEqual(["task", "run", "nightly", "--bundle", "team", "--scheduled"]);
   });
 
-  test("one invalid desired task poisons the whole plan without signature or mutation preparation", () => {
+  test("one invalid desired task poisons the whole plan without signature or mutation preparation", async () => {
     const bundleRoot = root();
     write(path.join(bundleRoot, "tasks", "a-valid.yml"), "version: 3\nuses: commands/a\nakm:\n  schedule: '@daily'\n");
     write(path.join(bundleRoot, "tasks", "b-invalid.yml"), "version: 2\nschedule: '@daily'\ncommand: echo no\n");
     let signatures = 0;
 
-    expect(() =>
+    await expect(
       planSchedulerSync({
         sourceRoot: bundleRoot,
         adapterId: "akm",
@@ -100,11 +97,76 @@ describe("whole-set v3 scheduler sync planning", () => {
           return "sig";
         },
       }),
-    ).toThrow("akm migrate apply --dry-run");
+    ).rejects.toThrow("akm migrate apply --dry-run");
     expect(signatures).toBe(0);
   });
 
-  test("an unsupported workflow trigger and a valid peer fail as one read-only source set", () => {
+  test("an unresolved desired task target poisons the whole read-only plan", async () => {
+    const bundleRoot = root();
+    write(path.join(bundleRoot, "tasks", "a-valid.yml"), "version: 3\nrun: echo yes\nakm:\n  schedule: '@daily'\n");
+    write(
+      path.join(bundleRoot, "tasks", "b-unresolved.yml"),
+      "version: 3\nuses: scripts/does-not-exist\nakm:\n  schedule: '@daily'\n",
+    );
+    let signatures = 0;
+
+    await expect(
+      Promise.resolve(
+        planSchedulerSync({
+          sourceRoot: bundleRoot,
+          adapterId: "akm",
+          bundleName: "team",
+          bundleTarget: "team",
+          backend: "cron",
+          installed: emptyInstalled,
+          expectedSignature: () => {
+            signatures += 1;
+            return "sig";
+          },
+        }),
+      ),
+    ).rejects.toThrow(/not found|not present|no script assets/i);
+    expect(signatures).toBe(0);
+  });
+
+  test("a nonprojectable workflow poisons the whole read-only plan", async () => {
+    const bundleRoot = root();
+    write(
+      path.join(bundleRoot, "workflows", "multi.yml"),
+      [
+        "name: multi",
+        "on:",
+        "  schedule:",
+        "    - cron: '0 0 * * *'",
+        "jobs:",
+        "  first:",
+        "    runs-on: [self-hosted]",
+        "    steps:",
+        "      - id: first",
+        "        run: echo first",
+        "  second:",
+        "    runs-on: [self-hosted]",
+        "    steps:",
+        "      - id: second",
+        "        run: echo second",
+      ].join("\n"),
+    );
+
+    await expect(
+      Promise.resolve(
+        planSchedulerSync({
+          sourceRoot: bundleRoot,
+          adapterId: "akm",
+          bundleName: "team",
+          bundleTarget: "team",
+          backend: "cron",
+          installed: emptyInstalled,
+        }),
+      ),
+    ).rejects.toThrow(/exactly one job|single-job|multi-job|cannot project/i);
+  });
+
+  test("an unsupported workflow trigger and a valid peer fail as one read-only source set", async () => {
     const bundleRoot = root();
     write(path.join(bundleRoot, "tasks", "valid.yml"), "version: 3\nrun: echo yes\nakm:\n  schedule: '@daily'\n");
     write(
@@ -112,7 +174,7 @@ describe("whole-set v3 scheduler sync planning", () => {
       "name: bad\non: { push: {} }\njobs: { main: { runs-on: [self-hosted], steps: [{ run: echo no }] } }\n",
     );
 
-    expect(() =>
+    await expect(
       planSchedulerSync({
         sourceRoot: bundleRoot,
         adapterId: "akm",
@@ -121,10 +183,10 @@ describe("whole-set v3 scheduler sync planning", () => {
         backend: "cron",
         installed: emptyInstalled,
       }),
-    ).toThrow(/unsupported|trigger/i);
+    ).rejects.toThrow(/unsupported|trigger/i);
   });
 
-  test("workflow collision domains fail before reading or fingerprinting either candidate", () => {
+  test("workflow collision domains fail before reading or fingerprinting either candidate", async () => {
     const bundleRoot = root();
     const workflows = path.join(bundleRoot, "workflows");
     write(path.join(workflows, "same.md"), "---\ntype: workflow\n---\n# Same\n\n## Steps\n\n### one\nDo it.\n");
@@ -134,7 +196,7 @@ describe("whole-set v3 scheduler sync planning", () => {
     );
     let signatures = 0;
 
-    expect(() =>
+    await expect(
       planSchedulerSync({
         sourceRoot: bundleRoot,
         adapterId: "akm",
@@ -146,15 +208,15 @@ describe("whole-set v3 scheduler sync planning", () => {
           return "sig";
         },
       }),
-    ).toThrow(/multiple workflow source files/i);
+    ).rejects.toThrow(/multiple workflow source files/i);
     expect(signatures).toBe(0);
   });
 
-  test("preflights desired and foreign installed id collisions before diffing", () => {
+  test("preflights desired and foreign installed id collisions before diffing", async () => {
     const bundleRoot = root();
     write(path.join(bundleRoot, "tasks", "nightly.yml"), "version: 3\nrun: echo yes\nakm:\n  schedule: '@daily'\n");
 
-    expect(() =>
+    await expect(
       planSchedulerSync({
         sourceRoot: bundleRoot,
         adapterId: "akm",
@@ -163,10 +225,10 @@ describe("whole-set v3 scheduler sync planning", () => {
         backend: "cron",
         installed: [{ id: "nightly", target: "other", binding: ["/bin/akm"], contextPath: "/tmp/context.json" }],
       }),
-    ).toThrow(/already scheduled|collision/i);
+    ).rejects.toThrow(/already scheduled|collision/i);
   });
 
-  test("rejects desired sources that physically escape the bundle before diffing", () => {
+  test("rejects desired sources that physically escape the bundle before diffing", async () => {
     const bundleRoot = root();
     const outsideRoot = root();
     const outside = path.join(outsideRoot, "escaped.yml");
@@ -175,7 +237,7 @@ describe("whole-set v3 scheduler sync planning", () => {
     fs.symlinkSync(outside, path.join(bundleRoot, "tasks", "escaped.yml"));
     let signatures = 0;
 
-    expect(() =>
+    await expect(
       planSchedulerSync({
         sourceRoot: bundleRoot,
         adapterId: "akm",
@@ -187,7 +249,7 @@ describe("whole-set v3 scheduler sync planning", () => {
           return "sig";
         },
       }),
-    ).toThrow(/outside the bundle root/);
+    ).rejects.toThrow(/outside the bundle root/);
     expect(signatures).toBe(0);
   });
 });

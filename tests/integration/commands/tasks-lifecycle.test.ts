@@ -118,7 +118,20 @@ describe("task lifecycle failure handling", () => {
   test("add accepts --timeout-ms on a workflow task and records it in the YAML", async () => {
     const workflowsDir = path.join(storage.stashDir, "workflows");
     fs.mkdirSync(workflowsDir, { recursive: true });
-    fs.writeFileSync(path.join(workflowsDir, "nightly.md"), "# Nightly\n", "utf8");
+    fs.writeFileSync(
+      path.join(workflowsDir, "nightly.yml"),
+      [
+        "name: nightly",
+        "on: { workflow_dispatch: null }",
+        "jobs:",
+        "  main:",
+        "    runs-on: [self-hosted]",
+        "    steps:",
+        "      - id: run",
+        "        run: echo nightly",
+      ].join("\n"),
+      "utf8",
+    );
 
     const result = await akmTasksAdd(
       { id: "nightly-wf", schedule: "@daily", workflow: "workflows/nightly", timeoutMs: 900_000 },
@@ -145,8 +158,16 @@ describe("task lifecycle failure handling", () => {
   test("add rejects a recognized remote action before source or scheduler mutation", async () => {
     await expect(
       akmTasksAdd({ id: "remote", schedule: "@daily", workflow: "owner/repository/action@v1" }, { backend }),
-    ).rejects.toThrow(/remote GitHub actions/);
+    ).rejects.toThrow(/GitHub action.*unsupported|remote GitHub actions/i);
     expect(fs.existsSync(path.join(storage.stashDir, "tasks", "remote.yml"))).toBe(false);
+    expect(installCalls).toEqual([]);
+  });
+
+  test("add rejects an unresolved workflow before source or scheduler mutation", async () => {
+    await expect(
+      akmTasksAdd({ id: "unresolved", schedule: "@daily", workflow: "workflows/does-not-exist" }, { backend }),
+    ).rejects.toThrow(/not found|not present|no workflow assets/i);
+    expect(fs.existsSync(path.join(storage.stashDir, "tasks", "unresolved.yml"))).toBe(false);
     expect(installCalls).toEqual([]);
   });
 

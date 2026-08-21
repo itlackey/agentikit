@@ -22,7 +22,7 @@ import {
 } from "../commands/command/command-execution";
 import { type BundleRef, makeBundleRef, parseBundleRef } from "../core/asset/asset-ref";
 import type { AkmConfig } from "../core/config/config-types";
-import { ConfigError, UsageError } from "../core/errors";
+import { ConfigError, NotFoundError, UsageError } from "../core/errors";
 import { DURATION_UNITS, parseDuration } from "../core/time";
 import { isPortableExecutionAgentSelector, type UnresolvedExecutionDefaults } from "../execution/source";
 import { requireAuthorizedExecutionPlan } from "../integrations/agent/execution-cascade";
@@ -225,6 +225,12 @@ async function resolvedOwnedAsset(
     return typeof resolved === "string"
       ? Object.freeze({ file: resolved, bundleRoot: context.bundleRoot })
       : Object.freeze({ file: resolved.file, bundleRoot: resolved.bundleRoot });
+  }
+  if (parsed.bundle !== context.bundleName) {
+    throw new NotFoundError(
+      `Task target ${JSON.stringify(qualified)} names bundle ${JSON.stringify(parsed.bundle)}, but no bundle resolver was provided.`,
+      "ASSET_NOT_FOUND",
+    );
   }
   return Object.freeze({
     file: await resolveAssetPath(context.bundleRoot, type, name),

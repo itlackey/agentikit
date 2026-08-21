@@ -283,14 +283,6 @@ const PERMANENT_EXECUTION_BOUNDARY_ALLOWLIST: readonly ExecutionBoundaryAllowRul
     exact: true,
     rationale: "final harness argv/stdin/env construction authority",
   },
-  {
-    operation: "engine.resolve",
-    file: "src/tasks/validator.ts",
-    enclosing: "validateTaskDocument",
-    maxReferences: 1,
-    exact: true,
-    rationale: "validation-only compatibility seam; WP6 removes it with task-v3 migration",
-  },
 ]);
 
 /**

@@ -42,13 +42,7 @@ function makeStashDir(): string {
 function writeDisabledCommandTask(stashDir: string): void {
   fs.writeFileSync(
     path.join(stashDir, "tasks", "disabled-command.yml"),
-    [
-      "version: 2",
-      'schedule: "@daily"',
-      "enabled: false",
-      `command: ${JSON.stringify([process.execPath, "-e", "process.exit(0)"])}`,
-      "",
-    ].join("\n"),
+    ["version: 3", "run: exit 0", "akm:", '  schedule: "@daily"', "  enabled: false", ""].join("\n"),
   );
 }
 

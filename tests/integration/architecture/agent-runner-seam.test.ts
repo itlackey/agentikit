@@ -213,7 +213,6 @@ describe("RunnerSpec dispatch authority", () => {
     const oneShotLeafAllowlist = new Set([
       "src/commands/command/command-execution.ts:dispatchPreparedCommandInvocation:dispatchLoweredExecutionRequest",
       "src/commands/remember.ts:<anonymous>:callStructured",
-      "src/tasks/runner.ts:runPromptTask:dispatchLoweredExecutionRequest",
       "src/workflows/exec/unit-dispatch.ts:dispatchFrozenWorkflowExecution:dispatchLoweredExecutionRequest",
     ]);
     const authorityAllowlist = new Set(["src/llm/structured-call.ts:<anonymous>:dispatchLoweredExecutionRequest"]);

@@ -336,10 +336,13 @@ async function runNativeTask(input: {
 }): Promise<TaskRunResult> {
   const { task, logPath, startedAt, now, historyReserved } = input;
   let materialized: { directory: string; file: string } | undefined;
-  const cmd =
-    task.kind === "shell"
-      ? shellCommand(task)
-      : frozenScriptCommand(task, (materialized = materializeFrozenScript(task)).file);
+  let cmd: string[];
+  if (task.kind === "shell") {
+    cmd = shellCommand(task);
+  } else {
+    materialized = materializeFrozenScript(task);
+    cmd = frozenScriptCommand(task, materialized.file);
+  }
 
   // Unset → the unattended default; `null` → the explicit no-timeout opt-out.
   const timeoutMs = task.timeoutMs !== undefined ? task.timeoutMs : DEFAULT_SCHEDULED_TASK_TIMEOUT_MS;

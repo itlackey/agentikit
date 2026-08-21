@@ -19,6 +19,7 @@ import { makeBundleRef } from "../../core/asset/asset-ref";
 import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { isWithin, resolveStashDir } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
+import type { AkmConfig } from "../../core/config/config-types";
 import { IMPROVE_AUTONOMY_CONFIG_KEY, isImproveAutonomyEnabled } from "../../core/config/experimental";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { getTaskHistoryDir, getTaskLogDir } from "../../core/paths";
@@ -32,10 +33,12 @@ import {
   writeAssetToSource,
 } from "../../core/write-source";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
+import { resolveAssetPath } from "../../sources/resolve";
 import { backendNameForPlatform, selectBackend } from "../../tasks/backends";
 import type { InstalledTaskRef, RebindTaskRef, TaskBackend } from "../../tasks/backends/types";
 import { type ResolvedAkmInvocation, resolveAkmInvocation } from "../../tasks/resolve-akm-bin";
 import { exitCodeForStatus, readTaskHistory, runTask, type TaskRunResult } from "../../tasks/runner";
+import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "../../tasks/runtime-v3";
 import { parseSchedule, SCHEDULE_SUPPORTED_SUBSET_HINT } from "../../tasks/schedule";
 import {
   compileTaskSchedulerBindings,
@@ -186,15 +189,18 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   });
 
   const task = parseTaskV3Yaml({ yaml, filePath: assetPath, workspaceRoot: stashDir });
-  if (task.target.kind === "uses" && task.target.uses.kind === "github-action") {
-    throw new UsageError(
-      `${assetPath}: remote GitHub actions are recognized but cannot execute locally in 0.9.2.`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
+  const qualifiedRef = makeBundleRef(bundle.bundleName, `tasks/${id}`);
+  await prepareTaskV3Execution(task, {
+    taskId: id,
+    taskRef: qualifiedRef,
+    bundleName: bundle.bundleName,
+    bundleRoot: stashDir,
+    config: bundle.config,
+    resolveAsset: taskProjectionAssetResolver(bundle.config, bundle.bundleName, stashDir),
+  });
   const [taskBinding] = compileTaskSchedulerBindings({
     id,
-    qualifiedRef: makeBundleRef(bundle.bundleName, `tasks/${id}`),
+    qualifiedRef,
     ...(bundle.installTarget ? { bundleTarget: bundle.installTarget } : {}),
     enabled: task.akm?.enabled !== false,
     schedules: task.triggers.schedules,
@@ -387,8 +393,9 @@ export interface TasksSyncResult {
 
 /**
  * Reconcile the on-disk task files of ONE bundle with the OS scheduler.
- *   • install missing tasks (after validating them — invalid files are
- *     skipped with a per-task reason rather than aborting the whole sync)
+ *   • compile and runtime-project the complete desired task/workflow set;
+ *     one invalid source rejects the sync before descriptor/backend mutation
+ *   • install missing bindings only after that whole-set preflight succeeds
  *   • reinstall tasks whose schedule or enabled state changed in the .yml
  *     (drift detected by comparing the backend's installed signature against
  *     the signature the current definition would produce)
@@ -409,6 +416,7 @@ export async function akmTasksSync(
   options: { rebind?: boolean } = {},
 ): Promise<TasksSyncResult> {
   const resolved = resolveTaskReadBundle(undefined, bundleTarget);
+  const config = loadConfig();
   const stashDir = resolved.source.path;
   const syncTarget = bundleTarget !== undefined && !isPrimaryStashPath(stashDir) ? bundleTarget : undefined;
   const sched = deps.backend ?? selectBackend();
@@ -427,15 +435,19 @@ export async function akmTasksSync(
     backend: sched.name,
     installed: allEntries,
     rebind: options.rebind === true,
+    config,
+    resolveAsset: taskProjectionAssetResolver(config, resolved.source.name, stashDir),
   } as const;
 
   // Pass one validates every desired source, ownership domain, schedule, and
   // installed-id collision before runtime descriptor preparation is possible.
-  const preflight = planSchedulerSync(common);
+  const preflight = await planSchedulerSync(common);
   const warnings: string[] = [];
   const expectedSignature = sched.expectedSignature?.bind(sched);
-  const needsInstall = preflight.operations.some((operation) => operation.kind !== "remove");
-  const prepared = needsInstall
+  const needsRuntime = preflight.operations.some(
+    (operation) => operation.kind !== "remove" && operation.options?.binding === undefined,
+  );
+  const prepared = needsRuntime
     ? prepareSchedulerSyncRuntime(
         syncTarget ? { target: syncTarget } : undefined,
         deps,
@@ -444,7 +456,7 @@ export async function akmTasksSync(
         warnings,
       )
     : undefined;
-  const plan = planSchedulerSync({
+  const plan = await planSchedulerSync({
     ...common,
     ...(prepared?.options ? { installOptions: prepared.options } : {}),
     ...(expectedSignature
@@ -781,12 +793,36 @@ async function restoreTaskSourceBytes(
 function resolveTaskBundle(
   target: string | undefined,
   opts: { requireWritable: boolean },
-): { resolved: ResolvedWriteTarget; stashDir: string; bundleName: string; installTarget: string | undefined } {
-  const selected = resolveWriteTarget(loadConfig(), target, { requireWritable: opts.requireWritable });
+): {
+  resolved: ResolvedWriteTarget;
+  config: AkmConfig;
+  stashDir: string;
+  bundleName: string;
+  installTarget: string | undefined;
+} {
+  const config = loadConfig();
+  const selected = resolveWriteTarget(config, target, { requireWritable: opts.requireWritable });
   const resolved = opts.requireWritable ? prepareWriteTargetForMutation(selected) : selected;
   const stashDir = resolved.source.path;
   const installTarget = isPrimaryStashPath(stashDir) ? undefined : (resolved.selector ?? resolved.source.name);
-  return { resolved, stashDir, bundleName: resolved.source.name, installTarget };
+  return { resolved, config, stashDir, bundleName: resolved.source.name, installTarget };
+}
+
+function taskProjectionAssetResolver(
+  config: AkmConfig,
+  bundleName: string,
+  bundleRoot: string,
+): NonNullable<PrepareTaskV3ExecutionContext["resolveAsset"]> {
+  return async ({ bundle, type, name }) => {
+    if (bundle === bundleName) {
+      return { file: await resolveAssetPath(bundleRoot, type, name), bundleRoot };
+    }
+    const target = resolveWriteTarget(config, bundle, { requireWritable: false });
+    return {
+      file: await resolveAssetPath(target.source.path, type, name),
+      bundleRoot: target.source.path,
+    };
+  };
 }
 
 function resolveTaskReadBundle(refBundle: string | undefined, flagBundle: string | undefined): ResolvedWriteTarget {

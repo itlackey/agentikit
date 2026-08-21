@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { makeBundleRef } from "../core/asset/asset-ref";
+import type { AkmConfig } from "../core/config/config-types";
 import { UsageError } from "../core/errors";
 import { canonicalizeWorkflowName } from "../core/recognition-util";
 import {
@@ -16,8 +17,10 @@ import {
   workflowNameForSourcePath,
 } from "../workflows/source-files";
 import { compileWorkflowSource } from "../workflows/source-ir/compile";
+import { workflowSourceIrToDocument } from "../workflows/source-ir/document";
 import type { WorkflowSourceIrV1 } from "../workflows/source-ir/schema";
 import { classifyWorkflowSourceUses } from "../workflows/source-ir/uses";
+import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "./runtime-v3";
 import { parseSchedule, type ScheduleBackend } from "./schedule";
 import {
   compileTaskSchedulerBindings,
@@ -36,6 +39,10 @@ export interface SchedulerSyncPlanInput {
   readonly bundleTarget?: string;
   readonly backend: ScheduleBackend;
   readonly installed: readonly InstalledSchedulerBinding[];
+  /** Frozen config used only while projecting command targets. */
+  readonly config?: AkmConfig;
+  /** Bundle-aware local asset resolver used while freezing workflow/script targets. */
+  readonly resolveAsset?: PrepareTaskV3ExecutionContext["resolveAsset"];
   readonly installOptions?: SchedulerInstallOptions;
   readonly rebind?: boolean;
   readonly expectedSignature?: (binding: SchedulerBinding, options?: SchedulerInstallOptions) => string;
@@ -54,12 +61,17 @@ export interface SchedulerSyncPlan {
   readonly operations: readonly SchedulerSyncOperation[];
 }
 
+const SCHEDULER_PROJECTION_CONFIG: AkmConfig = Object.freeze({
+  configVersion: "0.9.0",
+  semanticSearchMode: "off",
+});
+
 /**
  * Read and validate the complete desired bundle before signatures are computed.
  * This function performs no writes and invokes no backend mutation method.
  */
-export function planSchedulerSync(input: SchedulerSyncPlanInput): SchedulerSyncPlan {
-  const desired = compileDesiredSourceSet(input);
+export async function planSchedulerSync(input: SchedulerSyncPlanInput): Promise<SchedulerSyncPlan> {
+  const desired = await compileDesiredSourceSet(input);
   assertUniqueDesiredIds(desired);
   assertUniqueInstalledIds(input.installed);
   assertNoForeignIds(desired, input);
@@ -105,10 +117,10 @@ export function planSchedulerSync(input: SchedulerSyncPlanInput): SchedulerSyncP
   });
 }
 
-function compileDesiredSourceSet(input: SchedulerSyncPlanInput): readonly SchedulerBinding[] {
+async function compileDesiredSourceSet(input: SchedulerSyncPlanInput): Promise<readonly SchedulerBinding[]> {
   const bindings: SchedulerBinding[] = [];
   const failures: string[] = [];
-  compileTaskSources(input, bindings, failures);
+  await compileTaskSources(input, bindings, failures);
   compileWorkflowSources(input, bindings, failures);
   if (failures.length > 0) {
     throw new UsageError(
@@ -119,7 +131,11 @@ function compileDesiredSourceSet(input: SchedulerSyncPlanInput): readonly Schedu
   return Object.freeze(bindings);
 }
 
-function compileTaskSources(input: SchedulerSyncPlanInput, out: SchedulerBinding[], failures: string[]): void {
+async function compileTaskSources(
+  input: SchedulerSyncPlanInput,
+  out: SchedulerBinding[],
+  failures: string[],
+): Promise<void> {
   if (input.adapterId !== "akm" && input.adapterId !== "akm-task") return;
   for (const sourcePath of enumerateTaskSources(input, failures)) {
     const relative = toPosix(path.relative(input.sourceRoot, sourcePath));
@@ -132,13 +148,15 @@ function compileTaskSources(input: SchedulerSyncPlanInput, out: SchedulerBinding
         filePath: sourcePath,
         workspaceRoot: input.sourceRoot,
       });
-      if (document.target.kind === "uses" && document.target.uses.kind === "github-action") {
-        throw new UsageError(
-          `${sourcePath}: remote GitHub actions are recognized but cannot execute locally in 0.9.2.`,
-          "INVALID_FLAG_VALUE",
-        );
-      }
       const qualifiedRef = makeBundleRef(input.bundleName, conceptId);
+      await prepareTaskV3Execution(document, {
+        taskId: id,
+        taskRef: qualifiedRef,
+        bundleName: input.bundleName,
+        bundleRoot: input.sourceRoot,
+        config: input.config ?? SCHEDULER_PROJECTION_CONFIG,
+        ...(input.resolveAsset ? { resolveAsset: input.resolveAsset } : {}),
+      });
       const sourceBindings = compileTaskSchedulerBindings({
         id,
         qualifiedRef,
@@ -273,6 +291,7 @@ function assertWorkflowProjectable(ir: WorkflowSourceIrV1): void {
       }
     }
   }
+  workflowSourceIrToDocument(ir, { mode: "runtime" });
 }
 
 function installOptionsFor(

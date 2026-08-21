@@ -183,12 +183,12 @@
     },
     {
       "path": "tests/fixtures/goldens/cli/c-tasks-run-config-bypass.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
+      "reBaselineChunk": "9",
       "consumers": [
         "tests/commands/goldens-cli-health-tasks.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family C `tasks run <id>` config-bypass path (cli.ts:609-620) against a deliberately malformed config.json. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "bb644dabdf16872c254aee8c1d4118d433188cf29e082425ff6afab570c358bd"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Re-baselined by the WP6 v3 task-runtime owner: `task run <id>` must load and project the complete execution boundary before reserving task history, so a deliberately malformed config now fails closed with INVALID_CONFIG_FILE instead of using the retired v2 config-bypass behavior. Chunk 9 owns this task CLI output surface under the surface-owner rule — code/error classification only, no production ref literals."
     },
     {
       "path": "tests/fixtures/goldens/cli/d-help-migrate-format-collision.json",
