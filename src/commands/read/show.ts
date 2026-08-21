@@ -22,15 +22,17 @@ import path from "node:path";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { recognizeMatch } from "../../core/adapter/recognize-match";
 import { adapterForId } from "../../core/adapter/registry";
+import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
 import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { extractSection, markdownFragmentSlugs } from "../../core/asset/markdown";
 import { displayRef, typeNameFromConceptId } from "../../core/asset/resolve-ref";
 import { META_DIR, type MetaRef, parseMetaRef, resolveMetaFilePath } from "../../core/asset/stash-meta";
-import { asNonEmptyString } from "../../core/common";
+import { asNonEmptyString, isWithin } from "../../core/common";
 import { getIndexPassConfig, loadConfig } from "../../core/config/config";
 import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
+import { SCRIPT_EXTENSIONS } from "../../core/recognition-util";
 import { presentationFor } from "../../core/type-presentation";
 import { warn } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
@@ -270,6 +272,19 @@ export async function showLocal(input: {
   }
 
   if (!assetPath) {
+    const unsupportedExtension = existingUnsupportedScriptExtension(assetParts, searchSources);
+    if (unsupportedExtension !== undefined) {
+      const displayExtension = unsupportedExtension || "no extension";
+      throw new NotFoundError(
+        `Script ref "${makeBundleRef(parsed.bundle, parsed.conceptId)}" resolves to an existing file with ` +
+          `unsupported extension "${displayExtension}". Script refs must use a supported script extension: ` +
+          `${[...SCRIPT_EXTENSIONS].join(", ")}.`,
+        "ASSET_NOT_FOUND",
+      );
+    }
+  }
+
+  if (!assetPath) {
     throw new NotFoundError(
       `Stash asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
         "Check the name with `akm search` or verify the asset exists in your stash.",
@@ -425,6 +440,42 @@ function assertSensitiveFragmentUnsupported(ref: BundleRef): void {
     `Fragments are not supported for ${makeBundleRef(ref.bundle, ref.conceptId)}. Sensitive ${type} assets do not expose body fragments.`,
     "INVALID_FLAG_VALUE",
   );
+}
+
+/**
+ * Return the unsupported extension only when the exact canonical AKM script
+ * path exists as a contained regular file. Physical owner arbitration runs
+ * first; this is a diagnostic for its miss, never an alternate owner or
+ * runnable-file classifier. No authored bytes are read.
+ */
+function existingUnsupportedScriptExtension(
+  assetParts: ReturnType<typeof typeNameFromConceptId>,
+  sources: readonly SearchSource[],
+): string | undefined {
+  if (assetParts?.type !== "script") return undefined;
+  const extension = path.extname(assetParts.name);
+  if (SCRIPT_EXTENSIONS.has(extension.toLowerCase())) return undefined;
+
+  const scriptDir = stashDirFor("script");
+  if (!scriptDir) return undefined;
+  for (const source of sources) {
+    try {
+      if ((source.adapterId ?? detectAdapterId(source.path)) !== "akm") continue;
+      const sourceRoot = path.resolve(source.path);
+      const candidate = path.resolve(assetPathForName("script", path.join(sourceRoot, scriptDir), assetParts.name));
+      if (!isWithin(candidate, sourceRoot)) continue;
+      const authoredStat = fs.lstatSync(candidate);
+      if (!authoredStat.isFile() && !authoredStat.isSymbolicLink()) continue;
+      const realRoot = fs.realpathSync(sourceRoot);
+      const realCandidate = fs.realpathSync(candidate);
+      if (!isWithin(realCandidate, realRoot) || !fs.statSync(realCandidate).isFile()) continue;
+      return extension;
+    } catch {
+      // Missing, unreadable, dangling, or otherwise unsafe paths remain normal
+      // not-found misses; this diagnostic never widens physical ownership.
+    }
+  }
+  return undefined;
 }
 
 /**
