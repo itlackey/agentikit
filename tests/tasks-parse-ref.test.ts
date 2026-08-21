@@ -23,7 +23,7 @@ describe("parseTaskRef (0.9.0 grammar, D-R3)", () => {
   });
 
   test("accepts a bundle-qualified `[bundle//]tasks/<id>`", () => {
-    expect(parseTaskRef("mybundle//tasks/foo")).toEqual({ id: "foo" });
+    expect(parseTaskRef("mybundle//tasks/foo")).toEqual({ id: "foo", bundle: "mybundle" });
   });
 
   test("trims surrounding whitespace", () => {

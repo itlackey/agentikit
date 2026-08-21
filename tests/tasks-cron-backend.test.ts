@@ -13,12 +13,12 @@ import {
   upsertBlock,
 } from "../src/tasks/backends/cron";
 import type { InstalledTaskRef } from "../src/tasks/backends/types";
+import type { SchedulerBinding } from "../src/tasks/scheduler-binding";
 import {
   type ScheduledTaskContext,
   schedulerContextDescriptor,
   schedulerContextPath,
 } from "../src/tasks/scheduler-invocation";
-import type { TaskDocument } from "../src/tasks/schema";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
   AKM_BUNDLE_DIR: "/srv/akm stash/100%'s",
@@ -29,15 +29,23 @@ const SCHEDULED_CONTEXT: ScheduledTaskContext = {
 };
 const contextPath = (envPath = "") => schedulerContextPath(schedulerContextDescriptor(SCHEDULED_CONTEXT, envPath));
 
-const TASK: TaskDocument = {
-  version: 2,
-  schemaVersion: 2,
+const TASK: SchedulerBinding = {
   id: "ping",
-  schedule: "*/15 * * * *",
+  logicalSource: { kind: "task", ref: "stash//tasks/ping" },
+  cron: "*/15 * * * *",
+  source: "akm.schedule",
+  ordinal: 0,
   enabled: true,
-  target: { kind: "workflow", ref: "workflows/noop", params: {} },
-  source: { path: "/stash/tasks/ping.yml" },
+  invocation: ["task", "run", "ping", "--scheduled"],
 };
+
+function targeted(binding: SchedulerBinding, target: string): SchedulerBinding {
+  return {
+    ...binding,
+    logicalSource: { ...binding.logicalSource, ref: `${target}//tasks/${binding.id}` },
+    invocation: ["task", "run", binding.id, "--bundle", target, "--scheduled"],
+  };
+}
 
 describe("cron backend helpers", () => {
   test("buildCronLine emits absolute akm path", () => {
@@ -48,8 +56,21 @@ describe("cron backend helpers", () => {
     expect(line).not.toContain("AKM_LLM_API_KEY");
   });
 
-  test("buildCronLine embeds --bundle only when a non-default bundle is given", () => {
-    const withTarget = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath(), "work");
+  test("buildCronLine renders a qualified workflow binding without task-only arguments", () => {
+    const workflow: SchedulerBinding = {
+      ...TASK,
+      id: "wf-1234",
+      logicalSource: { kind: "workflow", ref: "team//workflows/release" },
+      source: "workflows/release.yml:on.schedule[0]",
+      invocation: ["workflow", "run", "team//workflows/release"],
+    };
+    const line = buildCronLine(workflow, ["/usr/local/bin/akm"], "/var/log", contextPath());
+    expect(line).toContain("workflow run team//workflows/release");
+    expect(line).not.toContain("--scheduled");
+  });
+
+  test("buildCronLine renders the binding invocation without hidden target state", () => {
+    const withTarget = buildCronLine(targeted(TASK, "work"), ["/usr/local/bin/akm"], "/var/log", contextPath());
     expect(withTarget).toContain("task run ping --bundle work --scheduled");
     const withoutTarget = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath());
     expect(withoutTarget).toContain("task run ping --scheduled");
@@ -57,7 +78,7 @@ describe("cron backend helpers", () => {
   });
 
   test("extractInstalledTarget recovers the bundle from a cron body (and undefined for the primary form)", () => {
-    const withTarget = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath(), "team-stash");
+    const withTarget = buildCronLine(targeted(TASK, "team-stash"), ["/usr/local/bin/akm"], "/var/log", contextPath());
     expect(extractInstalledTarget(withTarget)).toBe("team-stash");
     expect(extractInstalledTarget(cronBlockBody(withTarget, false))).toBe("team-stash");
     const primary = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath());
@@ -87,7 +108,7 @@ describe("cron backend helpers", () => {
   });
 
   test("buildCronLine escapes cron percent syntax even inside POSIX shell quotes", () => {
-    const task = { ...TASK, id: "ping%done" };
+    const task = { ...TASK, id: "ping%done", invocation: ["task", "run", "ping%done", "--scheduled"] as const };
     const line = buildCronLine(
       task,
       ["/opt/100% ready/akm's bin"],
@@ -248,14 +269,14 @@ function memoryExec(initial = ""): CronExec & { current: () => string } {
   };
 }
 
-const SYNC_TASK: TaskDocument = {
-  version: 2,
-  schemaVersion: 2,
+const SYNC_TASK: SchedulerBinding = {
   id: "ping",
-  schedule: "*/15 * * * *",
+  logicalSource: { kind: "task", ref: "stash//tasks/ping" },
+  cron: "*/15 * * * *",
+  source: "akm.schedule",
+  ordinal: 0,
   enabled: true,
-  target: { kind: "workflow", ref: "workflows/noop", params: {} },
-  source: { path: "/stash/tasks/ping.yml" },
+  invocation: ["task", "run", "ping", "--scheduled"],
 };
 
 describe("cron backend drift detection", () => {
@@ -287,13 +308,14 @@ describe("cron backend drift detection", () => {
   test("list() attributes a target-installed entry, and its signature matches the target-aware expectation", () => {
     const exec = memoryExec();
     const backend = CRON_BACKEND(opts(exec));
-    backend.install(SYNC_TASK, { target: "work" });
+    const targetBinding = targeted(SYNC_TASK, "work");
+    backend.install(targetBinding);
     const listed = listSync(backend);
     expect(listed).toHaveLength(1);
     expect(listed[0]!.target).toBe("work");
-    expect(listed[0]!.signature).toBe(backend.expectedSignature?.(SYNC_TASK, { target: "work" }));
+    expect(listed[0]!.signature).toBe(backend.expectedSignature?.(targetBinding));
     // The target-aware signature differs from the primary (no-target) one.
-    expect(backend.expectedSignature?.(SYNC_TASK, { target: "work" })).not.toBe(backend.expectedSignature?.(SYNC_TASK));
+    expect(backend.expectedSignature?.(targetBinding)).not.toBe(backend.expectedSignature?.(SYNC_TASK));
   });
 
   // 0.9 scheduler ABI respelling (S6): an entry whose invocation no longer
@@ -319,7 +341,7 @@ describe("cron backend drift detection", () => {
     const backend = CRON_BACKEND(opts(exec));
     backend.install(SYNC_TASK);
     const installedSig = listSync(backend)[0]!.signature;
-    const rescheduled: TaskDocument = { ...SYNC_TASK, schedule: "45 */6 * * *" };
+    const rescheduled: SchedulerBinding = { ...SYNC_TASK, cron: "45 */6 * * *" };
     expect(backend.expectedSignature?.(rescheduled)).not.toBe(installedSig);
   });
 
@@ -389,7 +411,7 @@ describe("cron backend drift detection", () => {
     const prior = store;
     failNextWrite = true;
 
-    expect(() => backend.install({ ...SYNC_TASK, schedule: "45 */6 * * *" })).toThrow("injected write failure");
+    expect(() => backend.install({ ...SYNC_TASK, cron: "45 */6 * * *" })).toThrow("injected write failure");
 
     expect(writes).toHaveLength(3);
     expect(store).toBe(prior);

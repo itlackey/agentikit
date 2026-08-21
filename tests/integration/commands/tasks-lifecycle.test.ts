@@ -5,21 +5,33 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { akmTasksAdd, akmTasksSync } from "../../../src/commands/tasks/tasks";
+import { akmTasksAdd, akmTasksSync, setEnabledInYaml } from "../../../src/commands/tasks/tasks";
 import type { TaskBackend } from "../../../src/tasks/backends/types";
 import type { ScheduleBackend } from "../../../src/tasks/schedule";
-import type { TaskDocument } from "../../../src/tasks/schema";
+import type { SchedulerBinding } from "../../../src/tasks/scheduler-binding";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
 let backendName: ScheduleBackend;
-let installed: Map<string, TaskDocument | undefined>;
-let installCalls: TaskDocument[];
+let installed: Map<string, SchedulerBinding | undefined>;
+let installCalls: SchedulerBinding[];
 let enabledCalls: Array<{ id: string; enabled: boolean }>;
 let uninstallCalls: string[];
-let failInstall: ((task: TaskDocument) => boolean) | undefined;
+let failInstall: ((task: SchedulerBinding) => boolean) | undefined;
 let setEnabledError: Error | undefined;
 let uninstallError: Error | undefined;
+
+function nativeBinding(id: string, cron: string, enabled = true): SchedulerBinding {
+  return {
+    id,
+    logicalSource: { kind: "task", ref: `stash//tasks/${id}` },
+    cron,
+    source: "akm.schedule",
+    ordinal: 0,
+    enabled,
+    invocation: ["task", "run", id, "--scheduled"],
+  };
+}
 
 const backend: TaskBackend = {
   get name() {
@@ -56,6 +68,17 @@ function writeTask(id: string, yaml: string): string {
   return filePath;
 }
 
+function taskYaml(run: string, schedule: string, enabled = true, name?: string): string {
+  return [
+    "version: 3",
+    `run: ${run}`,
+    ...(name ? [`name: ${name}`] : []),
+    "akm:",
+    `  schedule: "${schedule}"`,
+    `  enabled: ${enabled}`,
+  ].join("\n");
+}
+
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
   writeSandboxConfig({
@@ -78,6 +101,16 @@ afterEach(() => {
 });
 
 describe("task lifecycle failure handling", () => {
+  test("setup-style enable edits stay inside the v3 akm mapping", () => {
+    const yaml = "version: 3\nrun: echo yes\nakm:\n  schedule: '@daily'\n  enabled: true # keep\n";
+    expect(setEnabledInYaml(yaml, false)).toBe(
+      "version: 3\nrun: echo yes\nakm:\n  schedule: '@daily'\n  enabled: false # keep\n",
+    );
+    expect(setEnabledInYaml("version: 3\nrun: echo yes\n", false)).toBe(
+      "version: 3\nrun: echo yes\nakm:\n  enabled: false\n",
+    );
+  });
+
   // Issue 11: a workflow task's `timeoutMs` is its whole-run bound (the task
   // runner turns it into the abort signal `akm workflow run --timeout` uses),
   // so `--timeout-ms` is no longer refused alongside `--workflow`. Engine and
@@ -92,8 +125,8 @@ describe("task lifecycle failure handling", () => {
       { backend },
     );
 
-    expect(result.target).toEqual({ kind: "workflow", ref: "workflows/nightly", params: {}, timeoutMs: 900_000 });
-    expect(fs.readFileSync(result.path, "utf8")).toContain("timeoutMs: 900000");
+    expect(result.target).toMatchObject({ kind: "uses", uses: { kind: "workflow", ref: "workflows/nightly" } });
+    expect(fs.readFileSync(result.path, "utf8")).toContain("timeout: 900000");
   });
 
   test("add still refuses --engine on a workflow task", async () => {
@@ -107,6 +140,14 @@ describe("task lifecycle failure handling", () => {
         { backend },
       ),
     ).rejects.toMatchObject({ code: "INVALID_FLAG_VALUE" });
+  });
+
+  test("add rejects a recognized remote action before source or scheduler mutation", async () => {
+    await expect(
+      akmTasksAdd({ id: "remote", schedule: "@daily", workflow: "owner/repository/action@v1" }, { backend }),
+    ).rejects.toThrow(/remote GitHub actions/);
+    expect(fs.existsSync(path.join(storage.stashDir, "tasks", "remote.yml"))).toBe(false);
+    expect(installCalls).toEqual([]);
   });
 
   test("add refuses to shadow a legacy markdown task without --force", async () => {
@@ -128,53 +169,62 @@ describe("task lifecycle failure handling", () => {
     expect(installCalls).toEqual([]);
   });
 
-  test("sync disables an installed task whose filesystem-derived id is invalid", async () => {
-    writeTask("manual task", 'version: 2\nschedule: "@daily"\ncommand: echo unsafe\n');
+  test("sync rejects an invalid filesystem-derived id without mutating its installed definition", async () => {
+    writeTask("manual task", taskYaml("echo unsafe", "@daily"));
     installed.set("manual task", undefined);
 
-    const result = await akmTasksSync({ backend });
-
-    expect(result.skipped).toHaveLength(1);
-    expect(result.skipped[0]?.id).toBe("manual task");
-    expect(result.skipped[0]?.reason).toContain('Task id "manual task" is invalid');
-    expect(enabledCalls).toEqual([{ id: "manual task", enabled: false }]);
+    await expect(akmTasksSync({ backend })).rejects.toThrow('Task id "manual task" is invalid');
+    expect(enabledCalls).toEqual([]);
     expect(installCalls).toEqual([]);
   });
 
-  test("sync disables an installed task whose schedule is unsupported by the backend", async () => {
+  test("sync rejects an unsupported schedule without mutating its installed definition", async () => {
     backendName = "schtasks";
-    writeTask("monthly", 'version: 2\nschedule: "0 0 1 * *"\ncommand: echo monthly\n');
+    writeTask("monthly", taskYaml("echo monthly", "0 0 1 * *"));
     installed.set("monthly", undefined);
 
-    const result = await akmTasksSync({ backend });
-
-    expect(result.skipped).toHaveLength(1);
-    expect(result.skipped[0]?.id).toBe("monthly");
-    expect(enabledCalls).toEqual([{ id: "monthly", enabled: false }]);
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/unsupported|schedule/i);
+    expect(enabledCalls).toEqual([]);
     expect(installCalls).toEqual([]);
+  });
+
+  test("sync validates the entire desired set before runtime preparation or native mutation", async () => {
+    writeTask("a-valid", taskYaml("echo yes", "@daily"));
+    writeTask("b-invalid", 'version: 2\nschedule: "@daily"\ncommand: echo no\n');
+    const prior = nativeBinding("old-installed", "0 2 * * *");
+    installed.set(prior.id, prior);
+    let runtimeCalls = 0;
+
+    await expect(
+      akmTasksSync({
+        backend,
+        schedulerRuntime() {
+          runtimeCalls += 1;
+          return { binding: ["/test/akm"], contextPath: "/test/context.json" };
+        },
+      }),
+    ).rejects.toThrow(/version must be exactly 3|version 2/i);
+
+    expect(runtimeCalls).toBe(0);
+    expect(installCalls).toEqual([]);
+    expect(uninstallCalls).toEqual([]);
+    expect(enabledCalls).toEqual([]);
+    expect(installed).toEqual(new Map([[prior.id, prior]]));
   });
 
   test("add --force trusts a rejected install to preserve prior scheduler state and restores only source", async () => {
     const priorYaml = [
-      "version: 2",
-      'schedule: "0 2 * * *"',
-      "command: echo prior",
-      "enabled: false",
+      "version: 3",
+      "run: echo prior",
       "name: Prior task",
+      "akm:",
+      '  schedule: "0 2 * * *"',
+      "  enabled: false",
     ].join("\n");
     const taskPath = writeTask("nightly", priorYaml);
-    const priorTask: TaskDocument = {
-      version: 2,
-      schemaVersion: 2,
-      id: "nightly",
-      schedule: "0 2 * * *",
-      enabled: false,
-      target: { kind: "command", cmd: ["echo", "prior"] },
-      name: "Prior task",
-      source: { path: taskPath },
-    };
+    const priorTask = nativeBinding("nightly", "0 2 * * *", false);
     installed.set("nightly", priorTask);
-    failInstall = (task) => task.schedule === "0 3 * * *";
+    failInstall = (task) => task.cron === "0 3 * * *";
 
     await expect(
       akmTasksAdd(
@@ -189,26 +239,18 @@ describe("task lifecycle failure handling", () => {
     ).rejects.toThrow("install failed for nightly");
 
     expect(fs.readFileSync(taskPath, "utf8")).toBe(priorYaml);
-    expect(installCalls.map((task) => ({ schedule: task.schedule, enabled: task.enabled }))).toEqual([
+    expect(installCalls.map((task) => ({ schedule: task.cron, enabled: task.enabled }))).toEqual([
       { schedule: "0 3 * * *", enabled: true },
     ]);
     expect(enabledCalls).toEqual([]);
     expect(uninstallCalls).toEqual([]);
-    expect(installed.get("nightly")).toMatchObject({ schedule: "0 2 * * *", enabled: false });
+    expect(installed.get("nightly")).toMatchObject({ cron: "0 2 * * *", enabled: false });
   });
 
   test("add does not uninstall an orphaned prior scheduler entry when replacement install rejects", async () => {
     const taskPath = path.join(storage.stashDir, "tasks", "orphaned.yml");
-    installed.set("orphaned", {
-      version: 2,
-      schemaVersion: 2,
-      id: "orphaned",
-      schedule: "0 2 * * *",
-      enabled: true,
-      target: { kind: "command", cmd: ["echo", "native-prior"] },
-      source: { path: taskPath },
-    });
-    failInstall = (task) => task.schedule === "0 3 * * *";
+    installed.set("orphaned", nativeBinding("orphaned", "0 2 * * *"));
+    failInstall = (task) => task.cron === "0 3 * * *";
 
     await expect(
       akmTasksAdd(
@@ -222,18 +264,19 @@ describe("task lifecycle failure handling", () => {
     ).rejects.toThrow("install failed for orphaned");
 
     expect(fs.existsSync(taskPath)).toBe(false);
-    expect(installCalls.map((task) => task.schedule)).toEqual(["0 3 * * *"]);
+    expect(installCalls.map((task) => task.cron)).toEqual(["0 3 * * *"]);
     expect(enabledCalls).toEqual([]);
     expect(uninstallCalls).toEqual([]);
-    expect(installed.get("orphaned")).toMatchObject({ schedule: "0 2 * * *", enabled: true });
+    expect(installed.get("orphaned")).toMatchObject({ cron: "0 2 * * *", enabled: true });
   });
 
   test("add --force restores exact prior bytes after a partial source write throws", async () => {
     const priorYaml = [
-      "version: 2",
-      'schedule: "0 2 * * *"',
-      "command: echo prior",
-      "enabled: true # exact prior bytes",
+      "version: 3",
+      "run: echo prior",
+      "akm:",
+      '  schedule: "0 2 * * *"',
+      "  enabled: true # exact prior bytes",
     ].join("\n");
     const taskPath = writeTask("nightly", priorYaml);
     let writeCalls = 0;
@@ -251,7 +294,7 @@ describe("task lifecycle failure handling", () => {
           async writeAsset(_source, _config, ref, content) {
             writeCalls += 1;
             if (writeCalls === 1) {
-              fs.writeFileSync(taskPath, "version: 2\nschedule:", "utf8");
+              fs.writeFileSync(taskPath, "version: 3\nrun:", "utf8");
               throw new Error("partial source write failed");
             }
             fs.writeFileSync(taskPath, content, "utf8");
@@ -281,7 +324,7 @@ describe("task lifecycle failure handling", () => {
         {
           backend,
           async writeAsset() {
-            fs.writeFileSync(taskPath, "version: 2\nschedule:", "utf8");
+            fs.writeFileSync(taskPath, "version: 3\nrun:", "utf8");
             throw new Error("partial source write failed");
           },
           async deleteAsset(_source, _config, ref) {
@@ -336,17 +379,9 @@ describe("task lifecycle failure handling", () => {
   });
 
   test("install rejection aggregates source rollback failure without touching a valid prior entry", async () => {
-    const priorYaml = 'version: 2\nschedule: "0 2 * * *"\ncommand: echo prior\nenabled: true\n';
+    const priorYaml = `${taskYaml("echo prior", "0 2 * * *")}\n`;
     const taskPath = writeTask("nightly", priorYaml);
-    installed.set("nightly", {
-      version: 2,
-      schemaVersion: 2,
-      id: "nightly",
-      schedule: "0 2 * * *",
-      enabled: true,
-      target: { kind: "command", cmd: ["echo", "prior"] },
-      source: { path: taskPath },
-    });
+    installed.set("nightly", nativeBinding("nightly", "0 2 * * *"));
     failInstall = () => true;
     let writeCalls = 0;
     let failure: unknown;
@@ -378,25 +413,17 @@ describe("task lifecycle failure handling", () => {
       "Error: install failed for nightly",
       "Error: source restore failed",
     ]);
-    expect(installCalls.map((task) => task.schedule)).toEqual(["0 3 * * *"]);
+    expect(installCalls.map((task) => task.cron)).toEqual(["0 3 * * *"]);
     expect(enabledCalls).toEqual([]);
     expect(uninstallCalls).toEqual([]);
-    expect(installed.get("nightly")).toMatchObject({ schedule: "0 2 * * *", enabled: true });
+    expect(installed.get("nightly")).toMatchObject({ cron: "0 2 * * *", enabled: true });
   });
 
   test("commit failure disables the replacement when restoring the prior scheduler definition fails", async () => {
-    const priorYaml = 'version: 2\nschedule: "0 2 * * *"\ncommand: echo prior\nenabled: true\n';
+    const priorYaml = `${taskYaml("echo prior", "0 2 * * *")}\n`;
     const taskPath = writeTask("nightly", priorYaml);
-    installed.set("nightly", {
-      version: 2,
-      schemaVersion: 2,
-      id: "nightly",
-      schedule: "0 2 * * *",
-      enabled: true,
-      target: { kind: "command", cmd: ["echo", "prior"] },
-      source: { path: taskPath },
-    });
-    failInstall = (task) => task.schedule === "0 2 * * *";
+    installed.set("nightly", nativeBinding("nightly", "0 2 * * *"));
+    failInstall = (task) => task.cron === "0 2 * * *";
     let commitCalls = 0;
     let failure: unknown;
 
@@ -427,25 +454,17 @@ describe("task lifecycle failure handling", () => {
     ]);
     expect(commitCalls).toBe(2);
     expect(fs.readFileSync(taskPath, "utf8")).toBe(priorYaml);
-    expect(installCalls.map((task) => task.schedule)).toEqual(["0 3 * * *", "0 2 * * *"]);
+    expect(installCalls.map((task) => task.cron)).toEqual(["0 3 * * *", "0 2 * * *"]);
     expect(enabledCalls).toEqual([{ id: "nightly", enabled: false }]);
     expect(uninstallCalls).toEqual([]);
-    expect(installed.get("nightly")).toMatchObject({ schedule: "0 3 * * *", enabled: false });
+    expect(installed.get("nightly")).toMatchObject({ cron: "0 3 * * *", enabled: false });
   });
 
   test("commit failure uninstalls the replacement and aggregates a failed fail-safe disable", async () => {
-    const priorYaml = 'version: 2\nschedule: "0 2 * * *"\ncommand: echo prior\nenabled: true\n';
+    const priorYaml = `${taskYaml("echo prior", "0 2 * * *")}\n`;
     const taskPath = writeTask("nightly", priorYaml);
-    installed.set("nightly", {
-      version: 2,
-      schemaVersion: 2,
-      id: "nightly",
-      schedule: "0 2 * * *",
-      enabled: true,
-      target: { kind: "command", cmd: ["echo", "prior"] },
-      source: { path: taskPath },
-    });
-    failInstall = (task) => task.schedule === "0 2 * * *";
+    installed.set("nightly", nativeBinding("nightly", "0 2 * * *"));
+    failInstall = (task) => task.cron === "0 2 * * *";
     setEnabledError = new Error("disable failed for nightly");
     let commitCalls = 0;
     let failure: unknown;
@@ -478,24 +497,16 @@ describe("task lifecycle failure handling", () => {
     ]);
     expect(commitCalls).toBe(2);
     expect(fs.readFileSync(taskPath, "utf8")).toBe(priorYaml);
-    expect(installCalls.map((task) => task.schedule)).toEqual(["0 3 * * *", "0 2 * * *"]);
+    expect(installCalls.map((task) => task.cron)).toEqual(["0 3 * * *", "0 2 * * *"]);
     expect(enabledCalls).toEqual([{ id: "nightly", enabled: false }]);
     expect(uninstallCalls).toEqual(["nightly"]);
     expect(installed.has("nightly")).toBe(false);
   });
 
   test("add --force restores the prior definition and installed state when the commit boundary fails", async () => {
-    const priorYaml = 'version: 2\nschedule: "0 2 * * *"\ncommand: echo prior\nenabled: false\n';
+    const priorYaml = `${taskYaml("echo prior", "0 2 * * *", false)}\n`;
     const taskPath = writeTask("nightly", priorYaml);
-    installed.set("nightly", {
-      version: 2,
-      schemaVersion: 2,
-      id: "nightly",
-      schedule: "0 2 * * *",
-      enabled: false,
-      target: { kind: "command", cmd: ["echo", "prior"] },
-      source: { path: taskPath },
-    });
+    installed.set("nightly", nativeBinding("nightly", "0 2 * * *", false));
     let commitCalls = 0;
 
     await expect(
@@ -518,38 +529,38 @@ describe("task lifecycle failure handling", () => {
 
     expect(commitCalls).toBe(2);
     expect(fs.readFileSync(taskPath, "utf8")).toBe(priorYaml);
-    expect(installCalls.map((task) => ({ schedule: task.schedule, enabled: task.enabled }))).toEqual([
+    expect(installCalls.map((task) => ({ schedule: task.cron, enabled: task.enabled }))).toEqual([
       { schedule: "0 3 * * *", enabled: true },
       { schedule: "0 2 * * *", enabled: false },
     ]);
-    expect(installed.get("nightly")).toMatchObject({ schedule: "0 2 * * *", enabled: false });
+    expect(installed.get("nightly")).toMatchObject({ cron: "0 2 * * *", enabled: false });
   });
 
   test("sync installs command arguments without obsolete-command handling", async () => {
-    const yaml = ["version: 2", 'schedule: "0 3 * * 0"', "command: akm db backups", "enabled: true", ""].join("\n");
+    const yaml = ["version: 3", "run: akm db backups", "akm:", '  schedule: "0 3 * * 0"', "  enabled: true", ""].join(
+      "\n",
+    );
     writeTask("backup", yaml);
 
     const result = await akmTasksSync({ backend });
 
     expect(result.installed).toEqual(["backup"]);
     expect(result.skipped).toEqual([]);
-    expect(installCalls[0]?.target).toEqual({ kind: "command", cmd: ["akm", "db", "backups"] });
+    expect(installCalls[0]?.logicalSource).toEqual({ kind: "task", ref: "stash//tasks/backup" });
+    expect(installCalls[0]?.invocation).toEqual(["task", "run", "backup", "--scheduled"]);
   });
 
-  test("add stores command arguments without rewriting them", async () => {
-    const result = await akmTasksAdd(
-      {
-        id: "backup",
-        schedule: "0 3 * * 0",
-        command: ["akm", "db", "backups"],
-      },
-      { backend },
-    );
-
-    expect(result.target).toEqual({
-      kind: "command",
-      cmd: ["akm", "db", "backups"],
-    });
-    expect(installCalls).toHaveLength(1);
+  test("add rejects argv arrays instead of silently joining them", async () => {
+    await expect(
+      akmTasksAdd(
+        {
+          id: "backup",
+          schedule: "0 3 * * 0",
+          command: ["akm", "db", "backups"],
+        },
+        { backend },
+      ),
+    ).rejects.toThrow(/shell string|argv arrays/i);
+    expect(installCalls).toHaveLength(0);
   });
 });

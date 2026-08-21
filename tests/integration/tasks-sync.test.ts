@@ -39,7 +39,7 @@ function memoryExec(initial = ""): CronExec & { current: () => string } {
 function writeTask(id: string, schedule: string, enabled = true): void {
   fs.writeFileSync(
     path.join(tasksDir, `${id}.yml`),
-    `version: 2\nschedule: "${schedule}"\ncommand: echo ${id}\nenabled: ${enabled}\nname: ${id}\n`,
+    `version: 3\nrun: echo ${id}\nname: ${id}\nakm:\n  schedule: "${schedule}"\n  enabled: ${enabled}\n`,
     "utf8",
   );
 }
@@ -136,7 +136,7 @@ describe("akmTasksSync — schedule drift", () => {
     expect(exec.current()).toContain("task run alpha");
   });
 
-  test("skips an unversioned task without installing it", async () => {
+  test("rejects an unversioned task without installing it", async () => {
     const exec = memoryExec();
     const backend = backendFor(exec);
     fs.writeFileSync(
@@ -145,10 +145,7 @@ describe("akmTasksSync — schedule drift", () => {
       "utf8",
     );
 
-    const result = await akmTasksSync({ backend });
-    expect(result.installed).toEqual([]);
-    expect(result.skipped).toHaveLength(1);
-    expect(result.skipped[0]?.reason).toContain("TASK_SCHEMA_VERSION_UNSUPPORTED");
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/version is required and must be 3/);
     expect(exec.current()).toBe("");
   });
 

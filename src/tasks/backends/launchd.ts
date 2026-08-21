@@ -31,15 +31,15 @@ import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { type LaunchdTrigger, parseSchedule, translateToLaunchd } from "../schedule";
+import type { SchedulerBinding } from "../scheduler-binding";
 import {
-  buildScheduledTaskInvocation,
-  parseScheduledTaskArgv,
+  buildScheduledBindingInvocation,
+  parseScheduledBindingArgv,
   resolveScheduledTaskContext,
   type ScheduledTaskContext,
   schedulerContextDescriptor,
   schedulerContextPath,
 } from "../scheduler-invocation";
-import type { TaskDocument } from "../schema";
 import { type BackendExec, escapeXml, type NodeFs, nodeExec, nodeFs, runOrThrow } from "./exec-utils";
 import type { InstalledTaskRef, TaskBackend, TaskInstallOptions } from "./types";
 
@@ -101,7 +101,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
 
   return {
     name: "launchd",
-    install(task: TaskDocument, opts?: TaskInstallOptions) {
+    install(task: SchedulerBinding, opts?: TaskInstallOptions) {
       // Capture PATH at install time so launchd (which strips the environment
       // aggressively) can find the same binaries the user sees interactively.
       const xml = buildPlistXml(
@@ -269,7 +269,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
       }
       return refs;
     },
-    expectedSignature(task: TaskDocument, opts?: TaskInstallOptions): string {
+    expectedSignature(task: SchedulerBinding, opts?: TaskInstallOptions): string {
       return normalizeSignature(
         buildPlistXml(
           task,
@@ -325,11 +325,11 @@ function inspectInstalledLaunchdTask(
   }
 }
 
-export function extractPlistInvocation(xml: string): ReturnType<typeof parseScheduledTaskArgv> {
+export function extractPlistInvocation(xml: string): ReturnType<typeof parseScheduledBindingArgv> {
   const block = xml.match(/<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/);
   if (!block) return undefined;
   const args = [...block[1]!.matchAll(/<string>([\s\S]*?)<\/string>/g)].map((m) => decodeXmlEntities(m[1]!));
-  return parseScheduledTaskArgv(args);
+  return parseScheduledBindingArgv(args);
 }
 
 function decodeXmlEntities(value: string): string {
@@ -344,15 +344,15 @@ function decodeXmlEntities(value: string): string {
 // ── XML builder (exported for tests) ────────────────────────────────────────
 
 export function buildPlistXml(
-  task: TaskDocument,
+  task: SchedulerBinding,
   akmArgv: string[],
   logDir: string,
   contextPath: string,
-  target?: string,
+  _target?: string,
 ): string {
-  const spec = parseSchedule(task.schedule, "launchd");
+  const spec = parseSchedule(task.cron, "launchd");
   const trigger = translateToLaunchd(spec);
-  const invocation = buildScheduledTaskInvocation(akmArgv, task.id, contextPath, target);
+  const invocation = buildScheduledBindingInvocation(akmArgv, contextPath, task.invocation);
   const argv = invocation.argv;
   const programArgs = argv.map((a) => `      <string>${escapeXml(a)}</string>`).join("\n");
   const logPath = path.join(logDir, `${task.id}.log`);

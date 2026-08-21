@@ -13,7 +13,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { stringify as yamlStringify } from "yaml";
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { assetPathForName } from "../../core/asset/asset-placement";
+import { makeBundleRef } from "../../core/asset/asset-ref";
 import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { isWithin, resolveStashDir } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
@@ -25,31 +27,30 @@ import {
   deleteAssetFromSource,
   prepareWriteTargetForMutation,
   type ResolvedWriteTarget,
+  resolveWorkingStashTarget,
   resolveWriteTarget,
   writeAssetToSource,
 } from "../../core/write-source";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { backendNameForPlatform, selectBackend } from "../../tasks/backends";
 import type { InstalledTaskRef, RebindTaskRef, TaskBackend } from "../../tasks/backends/types";
-import { parseTaskDocument } from "../../tasks/parser";
 import { type ResolvedAkmInvocation, resolveAkmInvocation } from "../../tasks/resolve-akm-bin";
-import {
-  exitCodeForStatus,
-  INVALID_TASK_ATTEMPT_ID,
-  readTaskHistory,
-  recordTaskAttemptFailure,
-  runTask,
-  type TaskRunResult,
-} from "../../tasks/runner";
+import { exitCodeForStatus, readTaskHistory, runTask, type TaskRunResult } from "../../tasks/runner";
 import { parseSchedule, SCHEDULE_SUPPORTED_SUBSET_HINT } from "../../tasks/schedule";
 import {
+  compileTaskSchedulerBindings,
+  type SchedulerBinding,
+  type SchedulerInstallOptions,
+} from "../../tasks/scheduler-binding";
+import {
   schedulerContextDescriptor,
+  schedulerContextPath,
   validateSchedulerContextDescriptor,
   writeSchedulerContextDescriptor,
 } from "../../tasks/scheduler-invocation";
-import type { TaskDocument } from "../../tasks/schema";
+import { planSchedulerSync, type SchedulerSyncPlan } from "../../tasks/scheduler-sync";
+import { parseTaskV3Yaml, type TaskV3SourceDocument } from "../../tasks/source-v3";
 import { normaliseTaskId } from "../../tasks/task-id";
-import { validateTaskDocument } from "../../tasks/validator";
 import { applyAutonomyGate, configuredDirectAutonomyLanes, describeGatedLanes } from "../improve/autonomy-gate";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
 
@@ -65,9 +66,9 @@ export interface TasksAddInput {
   workflow?: string;
   prompt?: string;
   /**
-   * Shell command to run on the schedule. Accepts either a pre-split argv
-   * array (`["echo", "hi"]`) or a single string that the parser splits on
-   * whitespace (`"echo hi"`). Mutually exclusive with `workflow` and `prompt`.
+   * Exact shell command string to run on the schedule. Arrays are rejected so
+   * authoring cannot silently change shell semantics. Mutually exclusive with
+   * `workflow` and `prompt`.
    */
   command?: string | string[];
   engine?: string;
@@ -92,7 +93,7 @@ export interface TasksAddResult {
   schedule: string;
   enabled: boolean;
   backend: string;
-  target: TaskDocument["target"];
+  target: TaskV3SourceDocument["target"];
 }
 
 export interface TaskMutationDeps {
@@ -184,16 +185,36 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     enabled: input.disabled !== true,
   });
 
-  const task = parseTaskDocument({ yaml, filePath: assetPath, id });
-  await validateTaskDocument(task, { backend, stashDir });
+  const task = parseTaskV3Yaml({ yaml, filePath: assetPath, workspaceRoot: stashDir });
+  if (task.target.kind === "uses" && task.target.uses.kind === "github-action") {
+    throw new UsageError(
+      `${assetPath}: remote GitHub actions are recognized but cannot execute locally in 0.9.2.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  const [taskBinding] = compileTaskSchedulerBindings({
+    id,
+    qualifiedRef: makeBundleRef(bundle.bundleName, `tasks/${id}`),
+    ...(bundle.installTarget ? { bundleTarget: bundle.installTarget } : {}),
+    enabled: task.akm?.enabled !== false,
+    schedules: task.triggers.schedules,
+  });
+  if (!taskBinding) throw new UsageError(`Task "${id}" has no schedulable trigger.`, "INVALID_FLAG_VALUE");
 
   const ref = taskAssetRef(id);
   const previousYaml = fs.existsSync(assetPath) ? fs.readFileSync(assetPath, "utf8") : undefined;
-  let previousTask: TaskDocument | undefined;
+  let previousTask: SchedulerBinding | undefined;
   let previousTaskError: unknown;
   if (previousYaml !== undefined) {
     try {
-      previousTask = parseTaskDocument({ yaml: previousYaml, filePath: assetPath, id });
+      const previous = parseTaskV3Yaml({ yaml: previousYaml, filePath: assetPath, workspaceRoot: stashDir });
+      [previousTask] = compileTaskSchedulerBindings({
+        id,
+        qualifiedRef: makeBundleRef(bundle.bundleName, `tasks/${id}`),
+        ...(bundle.installTarget ? { bundleTarget: bundle.installTarget } : {}),
+        enabled: previous.akm?.enabled !== false,
+        schedules: previous.triggers.schedules,
+      });
     } catch (err) {
       previousTaskError = err;
     }
@@ -203,7 +224,7 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   const deleteAsset = deps.deleteAsset ?? deleteAssetFromSource;
   const commitBoundary = deps.commitBoundary ?? commitWriteTargetBoundary;
   const installedEntries = await sched.list();
-  assertNoForeignSchedule(installedEntries, id, bundle.installTarget);
+  assertNoForeignSchedule(installedEntries, taskBinding.id, bundle.installTarget);
   const wasInstalled = previousYaml !== undefined && installedEntries.some((entry) => entry.id === id);
   const installedEntry = installedEntries.find((entry) => entry.id === id);
   const runtimeOpts = schedulerInstallOptions(
@@ -219,7 +240,7 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   try {
     sourceRestoreArmed = true;
     await writeAsset(writeTarget.source, writeTarget.config, ref, yaml);
-    await sched.install(task, runtimeOpts);
+    await sched.install(taskBinding, runtimeOpts);
     installSucceeded = true;
     commitBoundary(writeTarget, `Update tasks/${id}`);
   } catch (err) {
@@ -297,8 +318,8 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     ref: conceptIdFromTypeName("task", id),
     path: assetPath,
     bundleDir: stashDir,
-    schedule: task.schedule,
-    enabled: task.enabled,
+    schedule: taskBinding.cron,
+    enabled: taskBinding.enabled,
     backend,
     target: task.target,
   };
@@ -314,39 +335,16 @@ export async function akmTasksRun(
   id: string,
   options: { scheduled?: boolean; target?: string } = {},
 ): Promise<TasksRunResultEnvelope> {
-  const startedAt = new Date();
-  let normalised: string;
-  try {
-    normalised = parseTaskRef(id).id;
-  } catch (failure) {
-    recordTaskAttemptFailure({
-      taskId: INVALID_TASK_ATTEMPT_ID,
-      reason: "invalid_task_id",
-      failure,
-      startedAt,
-    });
-    throw failure;
-  }
-
-  let stashDir: string;
-  try {
-    // No --bundle uses the primary stash. With --bundle, resolve (read-only)
-    // the named bundle so the task file and
-    // its relative asset refs load from that bundle's path.
-    stashDir =
-      options.target !== undefined
-        ? resolveWriteTarget(loadConfig(), options.target, { requireWritable: false }).source.path
-        : resolveStashDir();
-  } catch (failure) {
-    recordTaskAttemptFailure({
-      taskId: normalised,
-      reason: "task_load_failed",
-      failure,
-      startedAt,
-    });
-    throw failure;
-  }
-  const result = await runTask(normalised, { stashDir, scheduled: options.scheduled === true });
+  const parsed = parseTaskRef(id);
+  const bundle = resolveTaskReadBundle(parsed.bundle, options.target);
+  const runOptions = {
+    stashDir: bundle.source.path,
+    bundleName: bundle.source.name,
+    scheduled: options.scheduled === true,
+  } as Parameters<typeof runTask>[1] & { bundleName: string };
+  // The runner owns the prepare-before-reserve boundary. Invalid source,
+  // projectability, and resolver failures therefore create no history row.
+  const result = await runTask(parsed.id, runOptions);
   const exitCode =
     result.status === "failed" && result.target.kind === "command" && result.detail?.exitCode === 78
       ? 78
@@ -368,7 +366,9 @@ export async function akmTasksHistory(input: {
   target?: string;
 }): Promise<TasksHistoryResult> {
   const limit = input.limit !== undefined && input.limit > 0 ? input.limit : 50;
-  const id = input.id ? normaliseTaskId(input.id) : undefined;
+  const parsed = input.id ? parseTaskRef(input.id) : undefined;
+  resolveTaskReadBundle(parsed?.bundle, input.target);
+  const id = parsed?.id;
   // History rows are keyed by task id in state.db, not per bundle.
   return { rows: readTaskHistory({ id, limit }) };
 }
@@ -408,115 +408,61 @@ export async function akmTasksSync(
   bundleTarget?: string,
   options: { rebind?: boolean } = {},
 ): Promise<TasksSyncResult> {
-  const stashDir = resolveTaskInspectDir(bundleTarget);
-  // Primary-bundle scheduler entries omit --bundle; other bundles carry it.
+  const resolved = resolveTaskReadBundle(undefined, bundleTarget);
+  const stashDir = resolved.source.path;
   const syncTarget = bundleTarget !== undefined && !isPrimaryStashPath(stashDir) ? bundleTarget : undefined;
-  const typeRoot = path.join(stashDir, "tasks");
-  const fileIds = fs.existsSync(typeRoot)
-    ? fs
-        .readdirSync(typeRoot)
-        .filter((f) => f.endsWith(".yml"))
-        .map((f) => f.slice(0, -4))
-    : [];
   const sched = deps.backend ?? selectBackend();
-  const backend = sched.name;
-  const installOpts = syncTarget !== undefined ? { target: syncTarget } : undefined;
-  const allEntries: Array<InstalledTaskRef | RebindTaskRef> =
+  const rawEntries: Array<InstalledTaskRef | RebindTaskRef> =
     options.rebind && sched.listForRebind ? await sched.listForRebind() : await sched.list();
-  // Attribution filter: only entries installed from THIS bundle are reconciled
-  // here. Entries carrying a `--bundle` for a different bundle are invisible to
-  // this sync — never removed, never touched.
-  const present = new Map(allEntries.filter((t) => sameBundle(t.target, syncTarget)).map((t) => [t.id, t] as const));
-  const installed: string[] = [];
-  const updated: string[] = [];
-  const unchanged: string[] = [];
-  const skipped: { id: string; reason: string }[] = [];
+  const allEntries: InstalledTaskRef[] = rawEntries.map((entry) => ({
+    ...entry,
+    binding: "binding" in entry ? [...entry.binding] : [],
+    contextPath: "contextPath" in entry ? entry.contextPath : "",
+  }));
+  const common = {
+    sourceRoot: stashDir,
+    adapterId: resolved.source.adapterId ?? detectAdapterId(stashDir),
+    bundleName: resolved.source.name,
+    ...(syncTarget ? { bundleTarget: syncTarget } : {}),
+    backend: sched.name,
+    installed: allEntries,
+    rebind: options.rebind === true,
+  } as const;
+
+  // Pass one validates every desired source, ownership domain, schedule, and
+  // installed-id collision before runtime descriptor preparation is possible.
+  const preflight = planSchedulerSync(common);
   const warnings: string[] = [];
-
-  for (const id of fileIds) {
-    const filePath = path.join(typeRoot, `${id}.yml`);
-    let task: TaskDocument;
-    try {
-      task = parseTaskDocument({ yaml: fs.readFileSync(filePath, "utf8"), filePath, id });
-      await validateTaskDocument(task, { backend, stashDir });
-      // A bare id can only be scheduled from ONE bundle at a time (scheduler ids
-      // are never namespaced). If this id is already scheduled from a different
-      // bundle, refuse rather than clobber it — surface it as a per-task skip so
-      // the rest of the sync still proceeds.
-      const foreign = allEntries.find((e) => e.id === id && !sameBundle(e.target, syncTarget));
-      if (foreign) throw new UsageError(foreignScheduleMessage(id, foreign.target), "RESOURCE_ALREADY_EXISTS");
-    } catch (err) {
-      skipped.push({ id, reason: err instanceof Error ? err.message : String(err) });
-      if (present.has(id)) {
-        try {
-          await sched.setEnabled(id, false);
-        } catch (disableError) {
-          try {
-            await sched.uninstall(id);
-          } catch (uninstallError) {
-            throw new AggregateError(
-              [err, disableError, uninstallError],
-              `Task "${id}" is invalid and its installed scheduler entry could not be disabled or removed.`,
-            );
-          }
+  const expectedSignature = sched.expectedSignature?.bind(sched);
+  const needsInstall = preflight.operations.some((operation) => operation.kind !== "remove");
+  const prepared = needsInstall
+    ? prepareSchedulerSyncRuntime(
+        syncTarget ? { target: syncTarget } : undefined,
+        deps,
+        options.rebind === true,
+        "reconcile native scheduler bindings",
+        warnings,
+      )
+    : undefined;
+  const plan = planSchedulerSync({
+    ...common,
+    ...(prepared?.options ? { installOptions: prepared.options } : {}),
+    ...(expectedSignature
+      ? {
+          expectedSignature: (binding: SchedulerBinding, install?: SchedulerInstallOptions) =>
+            expectedSignature(binding, install),
         }
-      }
-      continue;
-    }
-    if (!present.has(id)) {
-      try {
-        const runtimeOpts = schedulerInstallOptions(
-          installOpts,
-          undefined,
-          deps,
-          options.rebind === true,
-          `create scheduler entry for task "${id}"`,
-          warnings,
-        );
-        await sched.install(task, runtimeOpts);
-        installed.push(id);
-      } catch (error) {
-        skipped.push({ id, reason: error instanceof Error ? error.message : String(error) });
-      }
-      continue;
-    }
-    // Already installed — reconcile against the current definition. Compare the
-    // installed signature to what this task would render to; reinstall on drift.
-    // When the backend can't produce a signature (no expectedSignature, or it
-    // didn't record one), reinstall unconditionally — install() is idempotent,
-    // so the cost is one crontab write and correctness is guaranteed.
-    const installedEntry = present.get(id)!;
-    const runtimeOpts = schedulerInstallOptions(
-      installOpts,
-      options.rebind ? undefined : (installedEntry as InstalledTaskRef),
-      deps,
-      options.rebind === true,
-      `rebind scheduler entry for task "${id}"`,
-      warnings,
-    );
-    const installedSig = installedEntry.signature;
-    const expectedSig = sched.expectedSignature?.(task, runtimeOpts);
-    if (installedSig !== undefined && expectedSig !== undefined && installedSig === expectedSig) {
-      unchanged.push(id);
-    } else {
-      await sched.install(task, runtimeOpts);
-      updated.push(id);
-    }
-  }
+      : {}),
+  });
 
-  const removed: string[] = [];
-  for (const installedId of present.keys()) {
-    if (!fileIds.includes(installedId)) {
-      await sched.uninstall(installedId);
-      removed.push(installedId);
-    }
-  }
+  if (prepared?.publish && plan.operations.some((operation) => operation.kind !== "remove")) prepared.publish();
+  await applySchedulerSyncPlan(sched, plan);
   return {
-    installed,
-    updated,
-    removed,
-    unchanged,
-    skipped,
+    installed: [...plan.installed],
+    updated: [...plan.updated],
+    removed: [...plan.removed],
+    unchanged: [...plan.unchanged],
+    skipped: [],
     backend: sched.name,
     ...(warnings.length > 0 ? { warnings } : {}),
   };
@@ -645,6 +591,61 @@ export async function akmTasksDoctor(
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
+async function applySchedulerSyncPlan(backend: TaskBackend, plan: SchedulerSyncPlan): Promise<void> {
+  for (const operation of plan.operations) {
+    if (operation.kind === "remove") await backend.uninstall(operation.id);
+    else await backend.install(operation.binding, operation.options);
+  }
+}
+
+function prepareSchedulerSyncRuntime(
+  base: { target?: string } | undefined,
+  deps: { backend?: TaskBackend; schedulerRuntime?: () => PreparedSchedulerRuntime },
+  explicitRebind: boolean,
+  operation: string,
+  warnings: string[],
+): { options?: SchedulerInstallOptions; publish?: () => void } {
+  if (deps.backend && !deps.schedulerRuntime) return base ? { options: base } : {};
+  if (deps.schedulerRuntime) {
+    const runtime = deps.schedulerRuntime();
+    warnIneligibleRebind(runtime, explicitRebind, warnings);
+    return { options: { ...base, binding: runtime.binding, contextPath: runtime.contextPath } };
+  }
+
+  const invocation = resolveAndValidateSchedulerInvocation(explicitRebind, operation);
+  warnIneligibleRebind(invocation, explicitRebind, warnings);
+  const descriptor = schedulerContextDescriptor();
+  const contextPath = schedulerContextPath(descriptor);
+  return {
+    options: { ...base, binding: invocation.binding, contextPath },
+    publish: () => {
+      const written = writeSchedulerContextDescriptor(descriptor);
+      if (written !== contextPath) {
+        throw new ConfigError("Scheduler context descriptor path changed after preflight.", "INVALID_CONFIG_FILE");
+      }
+    },
+  };
+}
+
+function resolveAndValidateSchedulerInvocation(explicitRebind: boolean, operation: string): PreparedSchedulerRuntime {
+  const invocation = resolveAkmInvocation();
+  if (!invocation.eligible && !explicitRebind) {
+    throw new UsageError(
+      `Refusing to ${operation} from an ineligible ${invocation.kind ?? "unknown"} invocation (${invocation.argv.join(" ")}).`,
+      "INVALID_FLAG_VALUE",
+      "npm-global ownership could not be verified. Run `npm install --global akm-cli` and use that launcher, use a standalone installation, or explicitly repeat the operation with --rebind.",
+    );
+  }
+  return { binding: invocation.argv, contextPath: "", eligible: invocation.eligible, kind: invocation.kind };
+}
+
+function warnIneligibleRebind(runtime: PreparedSchedulerRuntime, explicitRebind: boolean, warnings: string[]): void {
+  if (!explicitRebind || runtime.eligible !== false || warnings.length > 0) return;
+  warnings.push(
+    `--rebind bound scheduled tasks to an ineligible ${runtime.kind ?? "unknown"} invocation (${runtime.binding.join(" ")}); scheduled runs will invoke a mutable, unproven binary. Install akm via \`npm install --global akm-cli\` or a standalone release, then re-run \`akm task sync --rebind\`.`,
+  );
+}
+
 function schedulerInstallOptions(
   base: { target?: string } | undefined,
   installed: InstalledTaskRef | undefined,
@@ -663,13 +664,7 @@ function schedulerInstallOptions(
   // Injected backends can own their default runtime unless a resolver is supplied.
   if (deps.backend && !deps.schedulerRuntime) return base;
   const runtime = deps.schedulerRuntime?.() ?? prepareSchedulerRuntime(explicitRebind, operation);
-  // --rebind bypasses the eligibility refusal in prepareSchedulerRuntime; warn once
-  // per sync run rather than silently writing a mutable/unproven binary into cron.
-  if (explicitRebind && runtime.eligible === false && warnings.length === 0) {
-    warnings.push(
-      `--rebind bound scheduled tasks to an ineligible ${runtime.kind ?? "unknown"} invocation (${runtime.binding.join(" ")}); scheduled runs will invoke a mutable, unproven binary. Install akm via \`npm install --global akm-cli\` or a standalone release, then re-run \`akm task sync --rebind\`.`,
-    );
-  }
+  warnIneligibleRebind(runtime, explicitRebind, warnings);
   return { ...base, binding: runtime.binding, contextPath: runtime.contextPath };
 }
 
@@ -699,7 +694,7 @@ function groupInstalledBindings(
 ): TasksDoctorResult["bindings"] {
   const groups = new Map<string, TasksDoctorResult["bindings"][number]>();
   for (const entry of entries) {
-    const argv = entry.binding;
+    const argv = [...entry.binding];
     const status = inspectInstalledBinding(entry, invocation);
     const key = JSON.stringify([argv, entry.contextPath, status]);
     const existing = groups.get(key);
@@ -786,21 +781,33 @@ async function restoreTaskSourceBytes(
 function resolveTaskBundle(
   target: string | undefined,
   opts: { requireWritable: boolean },
-): { resolved: ResolvedWriteTarget; stashDir: string; installTarget: string | undefined } {
+): { resolved: ResolvedWriteTarget; stashDir: string; bundleName: string; installTarget: string | undefined } {
   const selected = resolveWriteTarget(loadConfig(), target, { requireWritable: opts.requireWritable });
   const resolved = opts.requireWritable ? prepareWriteTargetForMutation(selected) : selected;
   const stashDir = resolved.source.path;
   const installTarget = isPrimaryStashPath(stashDir) ? undefined : (resolved.selector ?? resolved.source.name);
-  return { resolved, stashDir, installTarget };
+  return { resolved, stashDir, bundleName: resolved.source.name, installTarget };
 }
 
-/**
- * Resolve the tasks/ directory a read/inspect command operates on. No
- * `--bundle` uses the primary stash; `--bundle X` resolves bundle X read-only.
- */
-function resolveTaskInspectDir(target: string | undefined): string {
-  if (target === undefined) return resolveStashDir();
-  return resolveWriteTarget(loadConfig(), target, { requireWritable: false }).source.path;
+function resolveTaskReadBundle(refBundle: string | undefined, flagBundle: string | undefined): ResolvedWriteTarget {
+  if (refBundle && flagBundle && refBundle !== flagBundle) {
+    throw new UsageError(
+      `Task ref selects bundle ${JSON.stringify(refBundle)}, but --bundle selects ${JSON.stringify(flagBundle)}.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  const selector = flagBundle ?? refBundle;
+  const config = loadConfig();
+  const resolved = selector
+    ? resolveWriteTarget(config, selector, { requireWritable: false })
+    : resolveWorkingStashTarget(config, { requireWritable: false });
+  if (refBundle && resolved.source.name !== refBundle) {
+    throw new UsageError(
+      `Task ref bundle ${JSON.stringify(refBundle)} does not match the resolved source.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  return resolved;
 }
 
 /** True when `candidate` resolves to the same directory as the primary stash. */
@@ -856,30 +863,42 @@ interface RenderInput {
 }
 
 function renderTaskYaml(input: RenderInput): string {
-  const obj: Record<string, unknown> = { version: 2, schedule: input.schedule, enabled: input.enabled };
+  const obj: Record<string, unknown> = { version: 3 };
   if (input.workflow) {
-    obj.workflow = input.workflow;
-    if (input.params) {
-      obj.params = parseJsonObjectArg(input.params);
-    }
-    if (input.timeoutMs !== undefined) obj.timeoutMs = input.timeoutMs;
+    obj.uses = input.workflow;
+    if (input.params) obj.with = parseJsonObjectArg(input.params);
   } else if (input.prompt) {
-    obj.prompt = input.prompt;
-    if (input.engine) obj.engine = input.engine;
-    if (input.model) obj.model = input.model;
-    if (input.timeoutMs !== undefined) obj.timeoutMs = input.timeoutMs;
+    obj.uses = "akm/command";
+    obj.with = isCanonicalCommandRef(input.prompt) ? { ref: input.prompt } : { content: input.prompt };
   } else if (input.command !== undefined) {
-    // Emit a string when given a string, an array when given an array. The
-    // parser accepts both forms; preserving the caller's shape keeps the YAML
-    // ergonomic for humans editing the file later.
-    obj.command = input.command;
-    if (input.timeoutMs !== undefined) obj.timeoutMs = input.timeoutMs;
+    if (Array.isArray(input.command)) {
+      throw new UsageError(
+        "Task v3 --command accepts one shell string; argv arrays require manual migration.",
+        "INVALID_FLAG_VALUE",
+      );
+    }
+    obj.run = input.command;
   }
   if (input.name) obj.name = input.name;
-  if (input.description) obj.description = input.description;
-  if (input.when_to_use) obj.when_to_use = input.when_to_use;
-  if (input.tags && input.tags.length > 0) obj.tags = input.tags;
+  obj.akm = {
+    schedule: input.schedule,
+    enabled: input.enabled,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.when_to_use !== undefined ? { when_to_use: input.when_to_use } : {}),
+    ...(input.tags && input.tags.length > 0 ? { tags: input.tags } : {}),
+    ...(input.engine !== undefined ? { engine: input.engine } : {}),
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.timeoutMs !== undefined ? { timeout: input.timeoutMs } : {}),
+  };
   return yamlStringify(obj);
+}
+
+function isCanonicalCommandRef(input: string): boolean {
+  try {
+    return parseRefInput(input).type === "command";
+  } catch {
+    return false;
+  }
 }
 
 function parseJsonObjectArg(raw: string): Record<string, unknown> {
@@ -896,7 +915,7 @@ function parseJsonObjectArg(raw: string): Record<string, unknown> {
 }
 
 /**
- * Toggle the `enabled:` value in a task YAML file in-place without a full
+ * Toggle the v3 `akm.enabled:` value in a task YAML file without a full
  * parse/render round-trip (which would reformat the file). Appends the key
  * if absent.
  *
@@ -904,27 +923,39 @@ function parseJsonObjectArg(raw: string): Record<string, unknown> {
  * case-sensitive matching (YAML keys are case-sensitive).
  */
 export function setEnabledInYaml(yaml: string, enabled: boolean): string {
-  // Match: key prefix (group 1), value (group 2), optional trailing comment (group 3)
-  const pattern = /^(enabled:\s*)([^\s#\r\n][^\r\n]*?)(\s*(?:#[^\r\n]*))?$/m;
-  if (pattern.test(yaml)) {
-    return yaml.replace(pattern, `$1${enabled}$3`);
+  const lines = yaml.replace(/\r\n/g, "\n").split("\n");
+  const akmLine = lines.findIndex((line) => /^akm:\s*(?:#.*)?$/.test(line));
+  if (akmLine < 0) return `${yaml.trimEnd()}\nakm:\n  enabled: ${enabled}\n`;
+
+  let insertAt = akmLine + 1;
+  for (let index = akmLine + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line === undefined) break;
+    if (line !== "" && !/^[ \t]/.test(line)) break;
+    insertAt = index + 1;
+    const match = line.match(/^([ \t]+enabled:\s*)([^\s#\r\n][^\r\n]*?)(\s*(?:#[^\r\n]*))?$/);
+    if (match) {
+      lines[index] = `${match[1]}${enabled}${match[3] ?? ""}`;
+      return `${lines.join("\n").trimEnd()}\n`;
+    }
+    const bare = line.match(/^([ \t]+enabled:)\s*$/);
+    if (bare) {
+      lines[index] = `${bare[1]} ${enabled}`;
+      return `${lines.join("\n").trimEnd()}\n`;
+    }
   }
-  // Handle the case where enabled: has no value yet (bare key)
-  const simplePattern = /^(enabled:)\s*$/m;
-  if (simplePattern.test(yaml)) {
-    return yaml.replace(simplePattern, `$1 ${enabled}`);
-  }
-  return `${yaml.trimEnd()}\nenabled: ${enabled}\n`;
+  lines.splice(insertAt, 0, `  enabled: ${enabled}`);
+  return `${lines.join("\n").trimEnd()}\n`;
 }
 
 // Re-exported so tests can verify the validator path directly.
 // Re-export error classes consumed by callers that want to instanceof-check.
 // Re-export this so the CLI can decide what process exit code to use after
 // `akm task run` completes.
-export { ConfigError, exitCodeForStatus, NotFoundError, parseTaskDocument, UsageError };
+export { ConfigError, exitCodeForStatus, NotFoundError, UsageError };
 
 // Accept a bare task id or the canonical `[bundle//]tasks/<id>` ref.
-export function parseTaskRef(input: string): { id: string } {
+export function parseTaskRef(input: string): { id: string; bundle?: string } {
   const trimmed = input.trim();
   // Canonical conceptId form: `[bundle//]tasks/<id>`. A `/` unambiguously marks
   // it — a bare task id can never contain `/` (`validateTaskId` forbids it) — so
@@ -933,7 +964,11 @@ export function parseTaskRef(input: string): { id: string } {
   if (trimmed.includes("/")) {
     try {
       const parsed = parseRefInput(trimmed);
-      if (parsed.type === "task") return { id: normaliseTaskId(parsed.name) };
+      if (parsed.type === "task") {
+        const separator = trimmed.indexOf("//");
+        const bundle = separator >= 0 ? trimmed.slice(0, separator) : undefined;
+        return { id: normaliseTaskId(parsed.name), ...(bundle ? { bundle } : {}) };
+      }
     } catch {
       // fall through to the shared error below
     }

@@ -4,12 +4,12 @@ import path from "node:path";
 import { akmTasksSync } from "../../src/commands/tasks/tasks";
 import type { LaunchdExec, LaunchdFs } from "../../src/tasks/backends/launchd";
 import { buildPlistXml, LAUNCHD_BACKEND } from "../../src/tasks/backends/launchd";
+import type { SchedulerBinding } from "../../src/tasks/scheduler-binding";
 import {
   type ScheduledTaskContext,
   schedulerContextDescriptor,
   schedulerContextPath,
 } from "../../src/tasks/scheduler-invocation";
-import type { TaskDocument } from "../../src/tasks/schema";
 import { sandboxStashDir } from "../_helpers/sandbox";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
@@ -21,15 +21,15 @@ const SCHEDULED_CONTEXT: ScheduledTaskContext = {
 };
 const contextPath = (envPath = "") => schedulerContextPath(schedulerContextDescriptor(SCHEDULED_CONTEXT, envPath));
 
-function makeTask(schedule: string, id = "ping"): TaskDocument {
+function makeTask(schedule: string, id = "ping"): SchedulerBinding {
   return {
-    version: 2,
-    schemaVersion: 2,
     id,
-    schedule,
+    logicalSource: { kind: "task", ref: `stash//tasks/${id}` },
+    cron: schedule,
+    source: "akm.schedule",
+    ordinal: 0,
     enabled: true,
-    target: { kind: "workflow", ref: "workflows/noop", params: {} },
-    source: { path: `/stash/tasks/${id}.yml` },
+    invocation: ["task", "run", id, "--scheduled"],
   };
 }
 
@@ -55,6 +55,19 @@ describe("buildPlistXml", () => {
     expect(xml).not.toContain("<key>AKM_BUNDLE_DIR</key>");
     expect(xml).not.toContain("AKM_LLM_API_KEY");
     expect(xml).toContain("<string>/var/log/akm/ping.log</string>");
+  });
+
+  test("renders a qualified workflow binding without task-only arguments", () => {
+    const workflow: SchedulerBinding = {
+      ...makeTask("0 8 * * 1", "wf-1234"),
+      logicalSource: { kind: "workflow", ref: "team//workflows/release" },
+      source: "workflows/release.yml:on.schedule[0]",
+      invocation: ["workflow", "run", "team//workflows/release"],
+    };
+    const xml = buildPlistXml(workflow, ["/abs/akm"], "/var/log/akm", contextPath());
+    expect(xml).toContain("<string>workflow</string>");
+    expect(xml).toContain("<string>team//workflows/release</string>");
+    expect(xml).not.toContain("<string>--scheduled</string>");
   });
 
   test("daily at HH:MM -> StartCalendarInterval", () => {
@@ -544,7 +557,7 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
       fs.mkdirSync(tasksDir, { recursive: true });
       fs.writeFileSync(
         path.join(tasksDir, "ping.yml"),
-        'version: 2\nschedule: "0 9 * * *"\ncommand: echo ping\nenabled: true\n',
+        'version: 3\nrun: echo ping\nakm:\n  schedule: "0 9 * * *"\n  enabled: true\n',
         "utf8",
       );
       const { backend, exec } = makeBackend();
@@ -571,7 +584,7 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
       fs.mkdirSync(tasksDir, { recursive: true });
       fs.writeFileSync(
         path.join(tasksDir, "ping.yml"),
-        'version: 2\nschedule: "0 9 * * *"\ncommand: echo ping\nenabled: true\n',
+        'version: 3\nrun: echo ping\nakm:\n  schedule: "0 9 * * *"\n  enabled: true\n',
         "utf8",
       );
       const { backend, exec } = makeBackend();
@@ -651,9 +664,7 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
     const { backend } = makeBackend();
     const task = makeTask("0 9 * * *");
 
-    expect(backend.expectedSignature?.({ ...task, schedule: "0 10 * * *" })).not.toBe(
-      backend.expectedSignature?.(task),
-    );
+    expect(backend.expectedSignature?.({ ...task, cron: "0 10 * * *" })).not.toBe(backend.expectedSignature?.(task));
     expect(backend.expectedSignature?.({ ...task, enabled: false })).not.toBe(backend.expectedSignature?.(task));
   });
 

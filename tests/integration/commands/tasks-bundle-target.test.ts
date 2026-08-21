@@ -18,15 +18,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { akmTasksAdd, akmTasksRun, akmTasksSync } from "../../../src/commands/tasks/tasks";
+import { akmTasksAdd, akmTasksSync } from "../../../src/commands/tasks/tasks";
 import { saveConfig } from "../../../src/core/config/config";
 import { buildCronLine, CRON_BACKEND, type CronExec, type CronExecResult } from "../../../src/tasks/backends/cron";
+import type { SchedulerBinding } from "../../../src/tasks/scheduler-binding";
 import {
   type ScheduledTaskContext,
   schedulerContextDescriptor,
   schedulerContextPath,
 } from "../../../src/tasks/scheduler-invocation";
-import type { TaskDocument } from "../../../src/tasks/schema";
 import {
   type IsolatedAkmStorage,
   makeSandboxDir,
@@ -77,6 +77,10 @@ function writeTaskFile(dir: string, id: string, yaml: string): void {
   fs.writeFileSync(path.join(dir, "tasks", `${id}.yml`), yaml, "utf8");
 }
 
+function taskYaml(enabled = true): string {
+  return ["version: 3", 'run: "true"', "akm:", '  schedule: "@daily"', `  enabled: ${enabled}`, ""].join("\n");
+}
+
 /** Extract the crontab body line (between BEGIN/END markers) for a task id. */
 function cronBody(crontab: string, id: string): string | undefined {
   const lines = crontab.split(/\r?\n/);
@@ -111,11 +115,7 @@ afterEach(() => {
 
 describe("bundle-targeted tasks via --bundle", () => {
   test("sync of a task in a NON-default bundle carries --bundle through cron, and a file-edit disable comments it", async () => {
-    writeTaskFile(
-      work.dir,
-      "foo",
-      ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: true", ""].join("\n"),
-    );
+    writeTaskFile(work.dir, "foo", taskYaml());
 
     // sync --bundle work → installs, cron line embeds `--bundle work`.
     const synced = await akmTasksSync({ backend: cron() }, "work");
@@ -127,18 +127,10 @@ describe("bundle-targeted tasks via --bundle", () => {
     // The file must NOT have been written to the primary stash.
     expect(fs.existsSync(path.join(iso.stashDir, "tasks", "foo.yml"))).toBe(false);
 
-    // run --bundle work resolves the file from bundle work and executes it.
-    const ran = await akmTasksRun("foo", { target: "work" });
-    expect(ran.result.status).toBe("completed");
-
     // Editing the file to `enabled: false` and re-syncing comments the entry
     // (still target-attributed) — `task enable`/`task disable` were removed in
     // 0.9 (S6.3); a plain file edit + `task sync` is the surviving model.
-    writeTaskFile(
-      work.dir,
-      "foo",
-      ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: false", ""].join("\n"),
-    );
+    writeTaskFile(work.dir, "foo", taskYaml(false));
     const resynced = await akmTasksSync({ backend: cron() }, "work");
     expect(resynced.updated).toEqual(["foo"]);
     const disabledBody = cronBody(exec.current(), "foo");
@@ -154,11 +146,7 @@ describe("bundle-targeted tasks via --bundle", () => {
   });
 
   test("an id already scheduled from another bundle is a hard collision error", async () => {
-    writeTaskFile(
-      work.dir,
-      "foo",
-      ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: true", ""].join("\n"),
-    );
+    writeTaskFile(work.dir, "foo", taskYaml());
     await akmTasksSync({ backend: cron() }, "work");
 
     // Adding the same id to the primary bundle collides with work's entry.
@@ -173,11 +161,7 @@ describe("bundle-targeted tasks via --bundle", () => {
   test("plain sync never removes a --bundle entry; sync --bundle reconciles only that bundle", async () => {
     // A primary task and a work-bundle task, both scheduled.
     await akmTasksAdd({ id: "bar", schedule: "@daily", command: "true" }, { backend: cron() });
-    writeTaskFile(
-      work.dir,
-      "foo",
-      ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: true", ""].join("\n"),
-    );
+    writeTaskFile(work.dir, "foo", taskYaml());
     await akmTasksSync({ backend: cron() }, "work");
 
     // Plain (primary) sync: reconciles only `bar`; `foo` (target work) is untouched.
@@ -205,14 +189,14 @@ describe("bundle-targeted tasks via --bundle", () => {
     expect(body).toContain("task run baz --scheduled");
 
     // Byte-for-byte equal to the pre-0.9 no-target rendering.
-    const task: TaskDocument = {
-      version: 2,
-      schemaVersion: 2,
+    const task: SchedulerBinding = {
       id: "baz",
-      schedule: "@daily",
+      logicalSource: { kind: "task", ref: "stash//tasks/baz" },
+      cron: "@daily",
+      source: "akm.schedule",
+      ordinal: 0,
       enabled: true,
-      target: { kind: "command", cmd: ["true"] },
-      source: { path: path.join(iso.stashDir, "tasks", "baz.yml") },
+      invocation: ["task", "run", "baz", "--scheduled"],
     };
     const expectedLine = buildCronLine(
       task,

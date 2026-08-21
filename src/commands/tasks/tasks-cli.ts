@@ -68,8 +68,7 @@ const tasksAddCommand = defineJsonCommand({
     },
     command: {
       type: "string",
-      description:
-        'Shell command to run on the schedule (no AI agent), e.g. "akm improve --strategy frequent". Split on whitespace; quote the whole flag value.',
+      description: 'Exact shell string to run on the schedule (no AI agent), e.g. "akm improve --strategy frequent".',
     },
     engine: { type: "string", description: "Engine to use for prompt targets (default: defaults.engine)" },
     model: { type: "string", description: "Model override for prompt targets" },
@@ -166,7 +165,7 @@ const tasksHistoryCommand = defineJsonCommand({
 const tasksSyncCommand = defineJsonCommand({
   meta: {
     name: "sync",
-    description: "Reconcile the on-disk task files of a bundle with the OS scheduler",
+    description: "Atomically preflight and reconcile a bundle's task/workflow schedules with the OS scheduler",
   },
   args: {
     ...bundleArg,

@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { bundleRefToString, parseBundleRef } from "../core/asset/asset-ref";
 import { resolveStashDir } from "../core/common";
 import { ConfigError } from "../core/errors";
 import { getCacheDir, getConfigDir, getDataDir, getTaskContextDir } from "../core/paths";
@@ -49,6 +50,13 @@ export interface ScheduledTaskInvocation {
   argv: string[];
 }
 
+export interface ParsedScheduledBindingInvocation {
+  binding: string[];
+  contextPath: string;
+  invocation: string[];
+  target?: string;
+}
+
 export const SCHEDULER_CONTEXT_ARG = "--scheduler-context";
 
 /** Resolve the complete non-secret AKM directory context captured by schedulers. */
@@ -82,17 +90,19 @@ export function buildScheduledTaskInvocation(
   target?: string,
 ): ScheduledTaskInvocation {
   const targetArgs = target !== undefined && target !== "" ? ["--bundle", target] : [];
+  return buildScheduledBindingInvocation(akmArgv, contextPath, ["task", "run", id, ...targetArgs, "--scheduled"]);
+}
+
+/** Build an installed argv from one already-validated public scheduler tail. */
+export function buildScheduledBindingInvocation(
+  akmArgv: readonly string[],
+  contextPath: string,
+  invocation: readonly string[],
+): ScheduledTaskInvocation {
+  const parsed = parsePublicSchedulerInvocation(invocation);
+  if (!parsed) throw invalidSchedulerInvocation();
   return {
-    argv: [
-      ...akmArgv,
-      SCHEDULER_CONTEXT_ARG,
-      assertAbsolutePath(contextPath),
-      "task",
-      "run",
-      id,
-      ...targetArgs,
-      "--scheduled",
-    ],
+    argv: [...akmArgv, SCHEDULER_CONTEXT_ARG, assertAbsolutePath(contextPath), ...parsed.invocation],
   };
 }
 
@@ -221,28 +231,55 @@ export function parseScheduledTaskArgv(argv: readonly string[]):
       target?: string;
     }
   | undefined {
+  const parsed = parseScheduledBindingArgv(argv);
+  if (!parsed || parsed.invocation[0] !== "task") return undefined;
+  return {
+    binding: parsed.binding,
+    contextPath: parsed.contextPath,
+    ...(parsed.target !== undefined ? { target: parsed.target } : {}),
+  };
+}
+
+/** Parse either the public scheduled task or qualified workflow invocation. */
+export function parseScheduledBindingArgv(argv: readonly string[]): ParsedScheduledBindingInvocation | undefined {
   const contextIndex = argv.indexOf(SCHEDULER_CONTEXT_ARG);
   if (contextIndex < 1 || argv.indexOf(SCHEDULER_CONTEXT_ARG, contextIndex + 1) !== -1) return undefined;
   const contextPath = argv[contextIndex + 1];
-  const tasksIndex = contextIndex + 2;
-  if (!contextPath || argv[tasksIndex] !== "task" || argv[tasksIndex + 1] !== "run" || !argv[tasksIndex + 2]) {
-    return undefined;
-  }
-
-  let index = tasksIndex + 3;
-  let target: string | undefined;
-  if (argv[index] === "--bundle") {
-    target = argv[index + 1];
-    if (!target) return undefined;
-    index += 2;
-  }
-  if (argv[index] !== "--scheduled" || index !== argv.length - 1) return undefined;
-
+  if (!contextPath) return undefined;
+  const publicInvocation = parsePublicSchedulerInvocation(argv.slice(contextIndex + 2));
+  if (!publicInvocation) return undefined;
   return {
     binding: [...argv.slice(0, contextIndex)],
     contextPath: assertAbsolutePath(contextPath),
-    ...(target !== undefined ? { target } : {}),
+    invocation: publicInvocation.invocation,
+    ...(publicInvocation.target !== undefined ? { target: publicInvocation.target } : {}),
   };
+}
+
+function parsePublicSchedulerInvocation(
+  invocation: readonly string[],
+): { invocation: string[]; target?: string } | undefined {
+  if (invocation[0] === "task" && invocation[1] === "run" && invocation[2]) {
+    let index = 3;
+    let target: string | undefined;
+    if (invocation[index] === "--bundle") {
+      target = invocation[index + 1];
+      if (!target) return undefined;
+      index += 2;
+    }
+    if (invocation[index] !== "--scheduled" || index !== invocation.length - 1) return undefined;
+    return { invocation: [...invocation], ...(target !== undefined ? { target } : {}) };
+  }
+  if (invocation[0] !== "workflow" || invocation[1] !== "run" || invocation.length !== 3) return undefined;
+  const ref = invocation[2];
+  if (!ref) return undefined;
+  try {
+    const parsed = parseBundleRef(ref);
+    if (!parsed.bundle || parsed.fragment !== undefined || bundleRefToString(parsed) !== ref) return undefined;
+    return { invocation: [...invocation], target: parsed.bundle };
+  } catch {
+    return undefined;
+  }
 }
 
 function canonicalContext(input: Record<string, unknown>): ScheduledTaskContext {
@@ -352,6 +389,13 @@ function resolveStateDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): str
 function invalidSchedulerContext(): ConfigError {
   return new ConfigError(
     `Invalid scheduler context; expected exactly ${SCHEDULED_TASK_CONTEXT_KEYS.join(", ")} as absolute paths.`,
+    "INVALID_CONFIG_FILE",
+  );
+}
+
+function invalidSchedulerInvocation(): ConfigError {
+  return new ConfigError(
+    "Invalid scheduler invocation; expected public `task run <id> [--bundle <bundle>] --scheduled` or `workflow run <qualified-ref>` argv.",
     "INVALID_CONFIG_FILE",
   );
 }

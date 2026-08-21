@@ -39,15 +39,15 @@ import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { parseSchedule, type SchtasksTrigger, translateToSchtasks } from "../schedule";
+import type { SchedulerBinding } from "../scheduler-binding";
 import {
-  buildScheduledTaskInvocation,
-  parseScheduledTaskArgv,
+  buildScheduledBindingInvocation,
+  parseScheduledBindingArgv,
   resolveScheduledTaskContext,
   type ScheduledTaskContext,
   schedulerContextDescriptor,
   schedulerContextPath,
 } from "../scheduler-invocation";
-import type { TaskDocument } from "../schema";
 import {
   type BackendExec,
   escapeXml,
@@ -97,7 +97,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
 
   return {
     name: "schtasks",
-    install(task: TaskDocument, opts?: TaskInstallOptions) {
+    install(task: SchedulerBinding, opts?: TaskInstallOptions) {
       const xml = normalizeXmlForUtf16File(
         buildSchtasksXml(task, akmArgv, logDir, {
           folderPrefix: folder,
@@ -252,7 +252,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
       }
       return refs;
     },
-    expectedSignature(task: TaskDocument, opts?: TaskInstallOptions): string {
+    expectedSignature(task: SchedulerBinding, opts?: TaskInstallOptions): string {
       const signature = taskXmlSignature(
         buildSchtasksXml(task, akmArgv, logDir, {
           folderPrefix: folder,
@@ -277,13 +277,13 @@ export function extractSchtasksTarget(xml: string): string | undefined {
   return extractSchtasksInvocation(xml)?.target;
 }
 
-export function extractSchtasksInvocation(xml: string): ReturnType<typeof parseScheduledTaskArgv> {
+export function extractSchtasksInvocation(xml: string): ReturnType<typeof parseScheduledBindingArgv> {
   const argsElement = xml.match(/<(?:[\w.-]+:)?Arguments>([\s\S]*?)<\/(?:[\w.-]+:)?Arguments>/i);
   if (!argsElement) return undefined;
   const commandLine = decodeXml(argsElement[1]!);
   const invocationStart = findPowerShellInvocationOperator(commandLine);
   if (invocationStart === undefined) return undefined;
-  return parseScheduledTaskArgv(parsePowerShellSingleQuotedArgs(commandLine, invocationStart + 1));
+  return parseScheduledBindingArgv(parsePowerShellSingleQuotedArgs(commandLine, invocationStart + 1));
 }
 
 function findPowerShellInvocationOperator(script: string): number | undefined {
@@ -361,7 +361,7 @@ interface SchtasksDefinition {
 }
 
 export function buildSchtasksXml(
-  task: TaskDocument,
+  task: SchedulerBinding,
   akmArgv: string[],
   logDir: string,
   options: BuildSchtasksXmlOptions,
@@ -392,17 +392,17 @@ export function buildSchtasksXml(
 }
 
 function buildSchtasksDefinition(
-  task: TaskDocument,
+  task: SchedulerBinding,
   akmArgv: string[],
   logDir: string,
   folder: string,
   contextPath: string,
   userSid: string,
-  target?: string,
+  _target?: string,
 ): SchtasksDefinition {
-  const spec = parseSchedule(task.schedule, "schtasks");
+  const spec = parseSchedule(task.cron, "schtasks");
   const trigger = translateToSchtasks(spec);
-  const invocation = buildScheduledTaskInvocation(akmArgv, task.id, contextPath, target);
+  const invocation = buildScheduledBindingInvocation(akmArgv, contextPath, task.invocation);
   const invoke = `& ${invocation.argv.map((arg) => quotePowerShell(arg)).join(" ")}`;
   const script = `${invoke}; exit $LASTEXITCODE`;
   const command = "powershell.exe";

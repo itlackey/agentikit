@@ -3,8 +3,10 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  buildScheduledBindingInvocation,
   buildScheduledTaskInvocation,
   loadSchedulerContextDescriptor,
+  parseScheduledBindingArgv,
   parseScheduledTaskArgv,
   resolveScheduledTaskContext,
   SCHEDULED_TASK_CONTEXT_KEYS,
@@ -59,6 +61,32 @@ describe("scheduled task invocation", () => {
       "work",
       "--scheduled",
     ]);
+  });
+
+  test("builds and recognizes the public qualified workflow invocation without hidden scheduler flags", () => {
+    const argv = buildScheduledBindingInvocation(["/opt/akm"], "/data/context.json", [
+      "workflow",
+      "run",
+      "team//workflows/release",
+    ]).argv;
+
+    expect(argv).toEqual([
+      "/opt/akm",
+      "--scheduler-context",
+      "/data/context.json",
+      "workflow",
+      "run",
+      "team//workflows/release",
+    ]);
+    expect(parseScheduledBindingArgv(argv)).toEqual({
+      binding: ["/opt/akm"],
+      contextPath: "/data/context.json",
+      invocation: ["workflow", "run", "team//workflows/release"],
+      target: "team",
+    });
+    expect(() =>
+      buildScheduledBindingInvocation(["/opt/akm"], "/data/context.json", ["workflow", "run", "workflows/release"]),
+    ).toThrow("Invalid scheduler invocation");
   });
 
   test("recognizes only the current descriptor-bearing invocation shape", () => {

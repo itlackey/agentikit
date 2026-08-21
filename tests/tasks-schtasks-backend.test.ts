@@ -3,12 +3,12 @@ import { decodeCommandOutput, escapeXml } from "../src/tasks/backends/exec-utils
 import type { SchtasksExec, SchtasksFs } from "../src/tasks/backends/schtasks";
 import { buildSchtasksXml, extractSchtasksTarget, SCHTASKS_BACKEND } from "../src/tasks/backends/schtasks";
 import type { InstalledTaskRef } from "../src/tasks/backends/types";
+import type { SchedulerBinding } from "../src/tasks/scheduler-binding";
 import {
   type ScheduledTaskContext,
   schedulerContextDescriptor,
   schedulerContextPath,
 } from "../src/tasks/scheduler-invocation";
-import type { TaskDocument } from "../src/tasks/schema";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
   AKM_BUNDLE_DIR: "C:\\Users\\Akm User\\O'Brien & notes",
@@ -25,15 +25,15 @@ const xmlOptions = <T extends Record<string, unknown>>(options?: T) => ({
   userSid: USER_SID,
 });
 
-function makeTask(schedule: string, id = "ping", enabled = true): TaskDocument {
+function makeTask(schedule: string, id = "ping", enabled = true): SchedulerBinding {
   return {
-    version: 2,
-    schemaVersion: 2,
     id,
-    schedule,
+    logicalSource: { kind: "task", ref: `stash//tasks/${id}` },
+    cron: schedule,
+    source: "akm.schedule",
+    ordinal: 0,
     enabled,
-    target: { kind: "workflow", ref: "workflows/noop", params: {} },
-    source: { path: `/stash/tasks/${id}.yml` },
+    invocation: ["task", "run", id, "--scheduled"],
   };
 }
 
@@ -92,6 +92,19 @@ describe("buildSchtasksXml", () => {
     expect(xml).not.toContain("AKM_LLM_API_KEY");
     expect(xml).toContain("<Enabled>true</Enabled>");
     expect(xml).not.toContain("<WorkingDirectory>");
+  });
+
+  test("renders a qualified workflow binding without task-only arguments", () => {
+    const workflow: SchedulerBinding = {
+      ...makeTask("0 9 * * *", "wf-1234"),
+      logicalSource: { kind: "workflow", ref: "team//workflows/release" },
+      source: "workflows/release.yml:on.schedule[0]",
+      invocation: ["workflow", "run", "team//workflows/release"],
+    };
+    const xml = buildSchtasksXml(workflow, ["C:/akm.exe"], "C:/log", xmlOptions());
+    expect(xml).toContain("&apos;workflow&apos;");
+    expect(xml).toContain("&apos;team//workflows/release&apos;");
+    expect(xml).not.toContain("&apos;--scheduled&apos;");
   });
 
   test("non-divisor minute steps reset on every hour indefinitely", () => {
@@ -312,10 +325,13 @@ describe("buildSchtasksXml", () => {
 
 describe("schtasks bundle attribution", () => {
   test("parses --bundle from the current descriptor-bearing invocation", () => {
-    const xml = buildSchtasksXml(makeTask("0 9 * * *"), ["C:\\Program Files\\O'Brien & Sons\\akm.exe"], "C:/log", {
-      ...xmlOptions(),
-      target: "work",
-    });
+    const task = makeTask("0 9 * * *");
+    const targeted: SchedulerBinding = {
+      ...task,
+      logicalSource: { kind: "task", ref: "work//tasks/ping" },
+      invocation: ["task", "run", "ping", "--bundle", "work", "--scheduled"],
+    };
+    const xml = buildSchtasksXml(targeted, ["C:\\Program Files\\O'Brien & Sons\\akm.exe"], "C:/log", xmlOptions());
     expect(extractSchtasksTarget(xml)).toBe("work");
   });
 
@@ -619,9 +635,7 @@ describe("schtasks backend signatures", () => {
       userSid: USER_SID,
     });
 
-    expect(backend.expectedSignature?.(task)).not.toBe(
-      backend.expectedSignature?.({ ...task, schedule: "0 */3 * * *" }),
-    );
+    expect(backend.expectedSignature?.(task)).not.toBe(backend.expectedSignature?.({ ...task, cron: "0 */3 * * *" }));
   });
 
   test("expected signature changes when the resolved AKM context changes", () => {

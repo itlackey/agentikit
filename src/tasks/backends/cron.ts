@@ -32,15 +32,15 @@ import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { parseSchedule, translateToCron } from "../schedule";
+import type { SchedulerBinding } from "../scheduler-binding";
 import {
-  buildScheduledTaskInvocation,
-  parseScheduledTaskArgv,
+  buildScheduledBindingInvocation,
+  parseScheduledBindingArgv,
   resolveScheduledTaskContext,
   type ScheduledTaskContext,
   schedulerContextDescriptor,
   schedulerContextPath,
 } from "../scheduler-invocation";
-import type { TaskDocument } from "../schema";
 import { type NodeFs, nodeFs, throwIfNotOk } from "./exec-utils";
 import type { InstalledTaskRef, TaskBackend, TaskInstallOptions } from "./types";
 
@@ -86,7 +86,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
 
   return {
     name: "cron",
-    install(task: TaskDocument, opts?: TaskInstallOptions) {
+    install(task: SchedulerBinding, opts?: TaskInstallOptions) {
       // Create the log directory before writing the crontab line — cron
       // appends with `>>` and the surrounding shell will fail the entire
       // entry if the parent directory doesn't exist.
@@ -148,7 +148,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
         };
       });
     },
-    expectedSignature(task: TaskDocument, opts?: TaskInstallOptions): string {
+    expectedSignature(task: SchedulerBinding, opts?: TaskInstallOptions): string {
       const cronLine = buildCronLine(
         task,
         [...(opts?.binding ?? akmArgv)],
@@ -165,16 +165,16 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
 // ── helpers (exported for tests) ────────────────────────────────────────────
 
 export function buildCronLine(
-  task: TaskDocument,
+  task: SchedulerBinding,
   akmArgv: string[],
   logDir: string,
   contextPath: string,
-  target?: string,
+  _target?: string,
 ): string {
-  const spec = parseSchedule(task.schedule, "cron");
+  const spec = parseSchedule(task.cron, "cron");
   const cronExpr = translateToCron(spec);
   const logPath = path.join(logDir, `${task.id}.log`);
-  const invocation = buildScheduledTaskInvocation(akmArgv, task.id, contextPath, target);
+  const invocation = buildScheduledBindingInvocation(akmArgv, contextPath, task.invocation);
   const cmd = invocation.argv.map((part) => quoteForCron(part)).join(" ");
   return `${cronExpr} ${cmd} >> ${quoteForCron(logPath)} 2>&1`;
 }
@@ -254,7 +254,7 @@ export function extractInstalledTarget(body: string): string | undefined {
   return extractCronInvocation(body)?.target;
 }
 
-export function extractCronInvocation(body: string): ReturnType<typeof parseScheduledTaskArgv> {
+export function extractCronInvocation(body: string): ReturnType<typeof parseScheduledBindingArgv> {
   const line = body.startsWith(DISABLED_PREFIX) ? body.slice(DISABLED_PREFIX.length) : body;
   const fields = splitCronShellWords(line);
   if (fields.length < 6) return undefined;
@@ -262,7 +262,7 @@ export function extractCronInvocation(body: string): ReturnType<typeof parseSche
   while (commandStart < fields.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(fields[commandStart]!)) commandStart += 1;
   const redirectIndex = fields.indexOf(">>", commandStart);
   if (redirectIndex === -1) return undefined;
-  return parseScheduledTaskArgv(fields.slice(commandStart, redirectIndex));
+  return parseScheduledBindingArgv(fields.slice(commandStart, redirectIndex));
 }
 
 /** Reverse {@link quoteForCron} for a single whitespace-free token. */
