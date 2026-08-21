@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
@@ -11,14 +12,15 @@ import { isWithin } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { NotFoundError, UsageError } from "../../core/errors";
 import { getDbPath } from "../../core/paths";
-import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../../core/recognition-util";
+import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import { deriveInstallations } from "../../indexer/installations";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import { buildFileContext } from "../../indexer/walk/file-context";
-import { resolveAssetPath } from "../../sources/resolve";
 import type { WorkflowParameter, WorkflowStepDefinition } from "../../sources/types";
 import { withIndexDb } from "../../storage/repositories/index-db";
+import { computeSourceHash } from "../../storage/repositories/index-entries-repository";
 import { WORKFLOW_SCHEMA_VERSION, type WorkflowDocument } from "../schema";
+import { resolveUniqueWorkflowSource } from "../source-files";
 import { compileWorkflowSource } from "../source-ir/compile";
 import { WorkflowSourceProjectionError, workflowSourceIrToDocument } from "../source-ir/document";
 
@@ -118,12 +120,13 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
         }
         continue;
       }
-      const candidate = await resolveNativeWorkflowPath(source.path, adapterId, candidateName);
+      const candidateSource = resolveUniqueWorkflowSource(source.path, adapterId, candidateName);
+      if (!candidateSource) throw new NotFoundError(`Workflow not found: ${candidateName}`);
       if (!ownsNativeWorkflowRuntime(ownedSource)) {
         rejectedSource ??= { source: ownedSource, bundleId };
         break;
       }
-      assetPath = candidate;
+      assetPath = candidateSource.path;
       sourcePath = source.path;
       sourceBundleId = bundleId;
       workflowName = candidateName;
@@ -156,7 +159,7 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
       ? makeBundleRef(sourceBundleId, canonicalName)
       : canonicalWorkflowRunRef(sourceBundleId, canonicalName);
 
-  const cached = readWorkflowDocumentFromIndex(resolvedSourcePath, fullRef, workflowAdapterId as string);
+  const cached = readWorkflowDocumentFromIndex(resolvedSourcePath, fullRef, workflowAdapterId as string, assetPath);
   const document = cached ?? loadWorkflowDocumentFromDisk(assetPath, resolvedSourcePath);
   return projectAsset(document, fullRef, assetPath, resolvedSourcePath, workflowAdapterId as string, canonicalName);
 }
@@ -212,68 +215,13 @@ function adapterOwnsConcept(sourcePath: string, adapterId: string, conceptId: st
     );
     if (!recognizedExtension) continue;
     const candidatePath = path.join(realParent, entry.name);
-    try {
-      const document = adapter.recognize(
-        { id: adapterId, adapter: adapterId, root: realRoot, writable: false },
-        buildFileContext(realRoot, candidatePath),
-      );
-      if (document) return true;
-    } catch {
-      // A malformed matching file still belongs to the earlier adapter and cannot be bypassed for execution.
-      return true;
-    }
+    const document = adapter.recognize(
+      { id: adapterId, adapter: adapterId, root: realRoot, writable: false },
+      buildFileContext(realRoot, candidatePath),
+    );
+    if (document) return true;
   }
   return false;
-}
-
-async function resolveNativeWorkflowPath(sourcePath: string, adapterId: string, name: string): Promise<string> {
-  if (adapterId !== "akm-workflow") return resolveAssetPath(sourcePath, "workflow", name);
-  const canonicalName = canonicalizeWorkflowName(name);
-  let realRoot: string;
-  try {
-    realRoot = fs.realpathSync(sourcePath);
-  } catch {
-    throw new NotFoundError(`Workflow bundle root not found: ${sourcePath}`);
-  }
-  const parent = path.join(sourcePath, path.dirname(canonicalName));
-  if (!isWithin(parent, realRoot)) {
-    throw new UsageError("Workflow ref resolves outside the bundle root.", "PATH_ESCAPE_VIOLATION");
-  }
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(parent, { withFileTypes: true });
-  } catch {
-    throw new NotFoundError(`Workflow not found: ${name}`);
-  }
-  const basename = path.basename(canonicalName);
-  for (const extension of WORKFLOW_EXTENSIONS) {
-    const matches = entries.filter((entry) => {
-      if (!entry.isFile() && !entry.isSymbolicLink()) return false;
-      const entryExtension = path.extname(entry.name);
-      return entryExtension.toLowerCase() === extension && entry.name.slice(0, -entryExtension.length) === basename;
-    });
-    if (matches.length > 1) {
-      throw new UsageError(
-        `Workflow "${canonicalName}" has multiple ${extension} files that differ only by extension case.`,
-        "RESOURCE_ALREADY_EXISTS",
-      );
-    }
-    const match = matches[0];
-    if (!match) continue;
-    const candidate = path.join(parent, match.name);
-    let realTarget: string;
-    try {
-      if (!fs.statSync(candidate).isFile()) continue;
-      realTarget = fs.realpathSync(candidate);
-    } catch {
-      continue;
-    }
-    if (!isWithin(realTarget, realRoot)) {
-      throw new UsageError("Workflow ref resolves outside the bundle root.", "PATH_ESCAPE_VIOLATION");
-    }
-    return realTarget;
-  }
-  throw new NotFoundError(`Workflow not found: ${name}`);
 }
 
 /**
@@ -300,7 +248,11 @@ export function resolveWorkflowEntryId(sourcePath: string, ref: string, adapterI
 
 function loadWorkflowDocumentFromDisk(assetPath: string, workspaceRoot: string): WorkflowDocument {
   const content = fs.readFileSync(assetPath, "utf8");
-  const result = compileWorkflowSource(content, { path: assetPath, workspaceRoot });
+  return compileWorkflowDocument(content, assetPath, workspaceRoot);
+}
+
+function compileWorkflowDocument(content: string, sourcePath: string, workspaceRoot: string): WorkflowDocument {
+  const result = compileWorkflowSource(content, { path: sourcePath, workspaceRoot });
   if (!result.ok) {
     const details = result.errors.map((error) => `  ${error.path}:${error.line} — ${error.message}`).join("\n");
     throw new UsageError(`Workflow source has ${result.errors.length} error(s):\n${details}`);
@@ -313,27 +265,97 @@ function loadWorkflowDocumentFromDisk(assetPath: string, workspaceRoot: string):
   }
 }
 
-function readWorkflowDocumentFromIndex(sourcePath: string, ref: string, adapterId: string): WorkflowDocument | null {
+function readWorkflowDocumentFromIndex(
+  sourcePath: string,
+  ref: string,
+  adapterId: string,
+  assetPath: string,
+): WorkflowDocument | null {
   if (!fs.existsSync(getDbPath())) return null;
 
   const entryKey = workflowEntryKey(sourcePath, ref, adapterId);
   return withIndexDb((db) => {
     const row = db
       .prepare(
-        `SELECT wd.document_json AS document_json, wd.schema_version AS schema_version
+        `SELECT wd.document_json AS document_json, wd.schema_version AS schema_version,
+                wd.source_path AS source_path, wd.source_hash AS source_hash,
+                e.file_path AS file_path, e.item_ref AS item_ref,
+                e.concept_id AS concept_id, e.adapter_id AS adapter_id,
+                e.content_hash AS content_hash
            FROM workflow_documents wd
            JOIN entries e ON e.id = wd.entry_id
           WHERE e.entry_type = 'workflow' AND e.entry_key = ?
           LIMIT 1`,
       )
-      .get(entryKey) as { document_json: string; schema_version: number } | undefined;
+      .get(entryKey) as
+      | {
+          document_json: string;
+          schema_version: number;
+          source_path: string;
+          source_hash: string;
+          file_path: string;
+          item_ref: string | null;
+          concept_id: string | null;
+          adapter_id: string | null;
+          content_hash: string | null;
+        }
+      | undefined;
     if (!row || row.schema_version !== WORKFLOW_SCHEMA_VERSION) return null;
+
+    const expectedConceptId = parseBundleRef(ref).conceptId;
+    if (
+      row.adapter_id !== adapterId ||
+      row.item_ref !== ref ||
+      row.concept_id !== expectedConceptId ||
+      !sameAuthoredSourcePath(row.file_path, assetPath) ||
+      !sameDocumentSourcePath(sourcePath, row.source_path, assetPath) ||
+      path.extname(row.source_path).toLowerCase() !== path.extname(assetPath).toLowerCase()
+    ) {
+      return null;
+    }
+
+    let sourceBytes: Buffer;
     try {
-      return JSON.parse(row.document_json) as WorkflowDocument;
+      sourceBytes = fs.readFileSync(assetPath);
+    } catch {
+      return null;
+    }
+    if (
+      row.source_hash !== computeSourceHash(sourceBytes) ||
+      row.content_hash !== createHash("sha256").update(sourceBytes).digest("hex")
+    ) {
+      return null;
+    }
+
+    try {
+      const document = JSON.parse(row.document_json) as WorkflowDocument;
+      if (document.source?.path !== row.source_path) return null;
+      const authoritativeDocument = compileWorkflowDocument(sourceBytes.toString("utf8"), row.source_path, sourcePath);
+      if (JSON.stringify(document) !== JSON.stringify(authoritativeDocument)) return null;
+      return document;
     } catch {
       return null;
     }
   });
+}
+
+function sameRealPath(left: string, right: string): boolean {
+  try {
+    return path.resolve(fs.realpathSync(left)) === path.resolve(fs.realpathSync(right));
+  } catch {
+    return false;
+  }
+}
+
+function sameAuthoredSourcePath(left: string, right: string): boolean {
+  return path.resolve(left) === path.resolve(right) && sameRealPath(left, right);
+}
+
+function sameDocumentSourcePath(sourceRoot: string, documentSourcePath: string, assetPath: string): boolean {
+  const candidate = path.isAbsolute(documentSourcePath)
+    ? documentSourcePath
+    : path.resolve(sourceRoot, documentSourcePath);
+  return sameAuthoredSourcePath(candidate, assetPath);
 }
 
 function workflowEntryKey(sourcePath: string, ref: string, adapterId?: string): string {

@@ -116,6 +116,7 @@ export async function indexWrittenAssets(
         // adapter is always the right recognizer here — no per-component
         // dispatch needed.
         const drained = drainDirDocuments(akmAdapter, component, [ctx]);
+        for (const rejectedPath of drained.rejectedPaths) unindexable.add(rejectedPath);
         const entry = drained.entries[0];
         // Workflows also carry a workflow_documents side-table upsert — handled
         // below, mirroring the full walk — since `akm mv` rewrites citer files

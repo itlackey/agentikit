@@ -1,0 +1,244 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+/**
+ * Authoritative workflow-source ownership.
+ *
+ * Markdown and the bounded GitHub-shaped YAML subset are peer authoring
+ * formats, but one canonical workflow ref must have exactly one source file.
+ * This module is the shared filesystem arbitration point used before indexing,
+ * cache reuse, lookup/show, and runtime load/start. It never chooses one
+ * extension by priority: two recognized siblings are a hard collision.
+ */
+
+import fs from "node:fs";
+import path from "node:path";
+import { UsageError } from "../core/errors";
+import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../core/recognition-util";
+
+export type WorkflowSourceFormat = "markdown" | "github-yaml";
+
+export interface WorkflowSourceFile {
+  /** Path with its authored filename/extension spelling. */
+  path: string;
+  /** Symlink-resolved path used for containment and identity comparison. */
+  realPath: string;
+  /** Source-root-relative path with POSIX separators. */
+  relativePath: string;
+  canonicalName: string;
+  format: WorkflowSourceFormat;
+}
+
+export class WorkflowSourceCollisionError extends UsageError {
+  readonly canonicalName: string;
+  readonly sourcePaths: readonly string[];
+
+  constructor(canonicalName: string, sourcePaths: readonly string[]) {
+    const sorted = [...sourcePaths].sort(comparePaths);
+    super(
+      `Workflow "${canonicalName}" resolves to multiple workflow source files: ${sorted.join(", ")}. ` +
+        "A canonical workflow ref must be owned by exactly one recognized .md or .yml source; remove or rename the duplicate.",
+      "RESOURCE_ALREADY_EXISTS",
+    );
+    this.name = "WorkflowSourceCollisionError";
+    this.canonicalName = canonicalName;
+    this.sourcePaths = sorted;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class WorkflowSourceIdentityError extends UsageError {
+  constructor(ref: string, indexedPath: string, authoritativePath: string) {
+    super(
+      `Indexed workflow source identity for "${ref}" points to ${indexedPath}, but the authoritative source is ${authoritativePath}. ` +
+        "Refusing the stale index/cache identity; run `akm index --full` to reconcile it.",
+      "INVALID_FLAG_VALUE",
+    );
+    this.name = "WorkflowSourceIdentityError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class WorkflowSourceLinkIdentityError extends UsageError {
+  constructor(sourcePath: string, targetPath: string) {
+    super(
+      `Workflow source ${sourcePath} resolves through a symlink to ${targetPath} with a different source format. ` +
+        "The authored workflow path and resolved source must use the same .md or .yml format.",
+      "INVALID_FLAG_VALUE",
+    );
+    this.name = "WorkflowSourceLinkIdentityError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/** Convert an adapter-owned concept id into its extensionless workflow name. */
+export function workflowNameForConceptId(adapterId: string, conceptId: string): string | undefined {
+  if (adapterId === "akm-workflow") return canonicalizeWorkflowName(conceptId);
+  if (adapterId !== "akm") return undefined;
+  const prefix = "workflows/";
+  if (!conceptId.startsWith(prefix) || conceptId.length === prefix.length) return undefined;
+  return canonicalizeWorkflowName(conceptId.slice(prefix.length));
+}
+
+/** Derive the canonical workflow name from an adapter-owned authored path. */
+export function workflowNameForSourcePath(
+  sourceRoot: string,
+  adapterId: string,
+  sourcePath: string,
+): string | undefined {
+  if (adapterId !== "akm" && adapterId !== "akm-workflow") return undefined;
+  const relativePath = toPosix(path.relative(path.resolve(sourceRoot), path.resolve(sourcePath)));
+  if (!isSafeRelativeName(relativePath)) return undefined;
+  const ownedPath = adapterId === "akm" ? relativePath.replace(/^workflows\//, "") : relativePath;
+  if (adapterId === "akm" && ownedPath === relativePath) return undefined;
+  const extension = path.posix.extname(ownedPath);
+  if (!(WORKFLOW_EXTENSIONS as readonly string[]).includes(extension.toLowerCase())) return undefined;
+  const canonicalName = canonicalizeWorkflowName(ownedPath);
+  return isSafeRelativeName(canonicalName) ? canonicalName : undefined;
+}
+
+/**
+ * Enumerate every owned source path that maps to `name` under one component.
+ * Ownership is decided before parsing so a malformed peer cannot be hidden by
+ * a valid source. Results retain authored extension case for diagnostics.
+ */
+export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, name: string): WorkflowSourceFile[] {
+  if (adapterId !== "akm" && adapterId !== "akm-workflow") return [];
+
+  const canonicalName = canonicalizeWorkflowName(normalizeName(name));
+  if (!isSafeRelativeName(canonicalName)) {
+    throw new UsageError("Workflow ref resolves outside the bundle root.", "PATH_ESCAPE_VIOLATION");
+  }
+
+  let realRoot: string;
+  const authoredRoot = path.resolve(sourceRoot);
+  try {
+    realRoot = fs.realpathSync(authoredRoot);
+  } catch {
+    return [];
+  }
+  const ownershipRoot = adapterId === "akm" ? path.join(authoredRoot, "workflows") : authoredRoot;
+  const parent = path.join(ownershipRoot, path.dirname(canonicalName));
+  if (!isWithinResolved(parent, authoredRoot)) {
+    throw new UsageError("Workflow ref resolves outside the bundle root.", "PATH_ESCAPE_VIOLATION");
+  }
+
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(parent, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const basename = path.basename(canonicalName);
+  const sources: WorkflowSourceFile[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+    const extension = path.extname(entry.name);
+    const lowerExtension = extension.toLowerCase();
+    if (!(WORKFLOW_EXTENSIONS as readonly string[]).includes(lowerExtension)) continue;
+    if (entry.name.slice(0, -extension.length) !== basename) continue;
+
+    const candidatePath = path.join(parent, entry.name);
+    let realPath: string;
+    try {
+      if (!fs.statSync(candidatePath).isFile()) continue;
+      realPath = fs.realpathSync(candidatePath);
+    } catch {
+      continue;
+    }
+    if (!isWithinResolved(realPath, realRoot)) {
+      throw new UsageError("Workflow ref resolves outside the bundle root.", "PATH_ESCAPE_VIOLATION");
+    }
+
+    const realExtension = path.extname(realPath).toLowerCase();
+    if (entry.isSymbolicLink() && realExtension !== lowerExtension) {
+      throw new WorkflowSourceLinkIdentityError(
+        toPosix(path.relative(authoredRoot, candidatePath)),
+        toPosix(path.relative(realRoot, realPath)),
+      );
+    }
+
+    sources.push({
+      path: candidatePath,
+      realPath,
+      relativePath: toPosix(path.relative(authoredRoot, candidatePath)),
+      canonicalName,
+      format: lowerExtension === ".md" ? "markdown" : "github-yaml",
+    });
+  }
+
+  sources.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
+  return sources;
+}
+
+/** Return the sole owner, throw on a collision, or return undefined when absent. */
+export function resolveUniqueWorkflowSource(
+  sourceRoot: string,
+  adapterId: string,
+  name: string,
+): WorkflowSourceFile | undefined {
+  const sources = listWorkflowSourceFiles(sourceRoot, adapterId, name);
+  if (sources.length > 1) {
+    const canonicalName = sources[0]?.canonicalName ?? canonicalizeWorkflowName(normalizeName(name));
+    throw new WorkflowSourceCollisionError(
+      adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName,
+      sources.map((source) => source.relativePath),
+    );
+  }
+  return sources[0];
+}
+
+/** Compare an indexed path with the single authoritative on-disk source. */
+export function assertIndexedWorkflowSourceIdentity(
+  ref: string,
+  indexedPath: string,
+  authoritative: WorkflowSourceFile,
+): void {
+  let indexedRealPath: string;
+  try {
+    indexedRealPath = fs.realpathSync(indexedPath);
+  } catch {
+    throw new WorkflowSourceIdentityError(ref, indexedPath, authoritative.path);
+  }
+  if (
+    path.resolve(indexedPath) !== path.resolve(authoritative.path) ||
+    path.resolve(indexedRealPath) !== path.resolve(authoritative.realPath)
+  ) {
+    throw new WorkflowSourceIdentityError(ref, indexedPath, authoritative.path);
+  }
+  const indexedExtension = path.extname(indexedPath).toLowerCase();
+  const authoritativeExtension = authoritative.format === "markdown" ? ".md" : ".yml";
+  if (indexedExtension !== authoritativeExtension) {
+    throw new WorkflowSourceIdentityError(ref, indexedPath, authoritative.path);
+  }
+}
+
+function normalizeName(name: string): string {
+  return name.replaceAll("\\", "/");
+}
+
+function isSafeRelativeName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    !path.posix.isAbsolute(name) &&
+    name !== ".." &&
+    !name.startsWith("../") &&
+    path.posix.normalize(name) === name
+  );
+}
+
+function isWithinResolved(candidate: string, root: string): boolean {
+  const relative = path.relative(root, path.resolve(candidate));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function toPosix(value: string): string {
+  return value.replaceAll("\\", "/");
+}
+
+function comparePaths(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}

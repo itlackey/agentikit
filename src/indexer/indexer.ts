@@ -101,6 +101,13 @@ import {
   warnIfVecMissing,
 } from "../storage/repositories/index-vec-repository";
 import { takeWorkflowDocument } from "../workflows/runtime/document-cache";
+import {
+  assertIndexedWorkflowSourceIdentity,
+  resolveUniqueWorkflowSource,
+  type WorkflowSourceFile,
+  WorkflowSourceIdentityError,
+  workflowNameForConceptId,
+} from "../workflows/source-files";
 import { deleteStoredGraph } from "./db/graph-db";
 import { withIndexWriterLease } from "./index-writer-lock";
 import { deriveEntryProvenance, deriveInstallations } from "./installations";
@@ -2624,11 +2631,31 @@ export async function lookupBundleRef(ref: BundleRef): Promise<IndexEntry | null
 
   const { candidateDirs, qualified } = resolveLookupScope(ref.bundle, sources);
   if (candidateDirs.length === 0) return null;
+  const candidateDirSet = new Set(candidateDirs.map((dir) => path.resolve(dir)));
+  let authoritativeWorkflowSource: { adapterId: string; sourceRoot: string; source: WorkflowSourceFile } | undefined;
+  for (const source of sources) {
+    const sourceKey = path.resolve(source.path);
+    if (!candidateDirSet.has(sourceKey)) continue;
+    const adapterId = source.adapterId ?? detectAdapterId(source.path);
+    const workflowName = workflowNameForConceptId(adapterId, ref.conceptId);
+    if (workflowName === undefined) continue;
+    const authoritative = resolveUniqueWorkflowSource(source.path, adapterId, workflowName);
+    if (authoritative) {
+      authoritativeWorkflowSource = { adapterId, sourceRoot: source.path, source: authoritative };
+      break;
+    }
+  }
 
   const db = openExistingDatabase(getDbPath());
   try {
-    const inputRef = makeBundleRef(qualified ? ref.bundle : undefined, ref.conceptId);
-    for (const dir of candidateDirs) {
+    const lookupConceptId = authoritativeWorkflowSource
+      ? authoritativeWorkflowSource.adapterId === "akm"
+        ? `workflows/${authoritativeWorkflowSource.source.canonicalName}`
+        : authoritativeWorkflowSource.source.canonicalName
+      : ref.conceptId;
+    const inputRef = makeBundleRef(qualified ? ref.bundle : undefined, lookupConceptId);
+    const lookupDirs = authoritativeWorkflowSource ? [authoritativeWorkflowSource.sourceRoot] : candidateDirs;
+    for (const dir of lookupDirs) {
       const id = findEntryIdByRef(db, inputRef, dir);
       if (id === undefined) continue;
       const row = db
@@ -2651,6 +2678,12 @@ export async function lookupBundleRef(ref: BundleRef): Promise<IndexEntry | null
           }
         | undefined;
       if (!row) continue;
+      if (authoritativeWorkflowSource) {
+        assertIndexedWorkflowSourceIdentity(inputRef, row.filePath, authoritativeWorkflowSource.source);
+        if (row.adapterId !== authoritativeWorkflowSource.adapterId) {
+          throw new WorkflowSourceIdentityError(inputRef, row.filePath, authoritativeWorkflowSource.source.path);
+        }
+      }
       let document: IndexDocument | undefined;
       try {
         document = JSON.parse(row.entryJson) as IndexDocument;

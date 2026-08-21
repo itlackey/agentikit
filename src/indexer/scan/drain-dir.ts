@@ -33,10 +33,16 @@
  * (nothing imports it back), so it joins no import cycle.
  */
 
+import path from "node:path";
 import { akmAdapter } from "../../core/adapter/adapters/akm-adapter";
 import type { BundleAdapter } from "../../core/adapter/bundle-adapter";
 import type { BundleComponent, IndexDocument } from "../../core/adapter/types";
 import { cacheWorkflowDocument } from "../../workflows/runtime/document-cache";
+import {
+  resolveUniqueWorkflowSource,
+  WorkflowSourceCollisionError,
+  workflowNameForSourcePath,
+} from "../../workflows/source-files";
 import { compileWorkflowSource } from "../../workflows/source-ir/compile";
 import { WorkflowSourceProjectionError, workflowSourceIrToDocument } from "../../workflows/source-ir/document";
 import { buildMetadataSkipWarning, type StashFile } from "../passes/metadata";
@@ -60,6 +66,8 @@ export interface DrainedDir {
    * `item_ref` verbatim (D-R3: identity comes from the owning adapter).
    */
   conceptIdByFile: Map<string, string>;
+  /** Paths rejected as members of a same-canonical-ref workflow collision. */
+  rejectedPaths: Set<string>;
 }
 
 /**
@@ -80,8 +88,27 @@ export function drainDirDocuments(
   const warnings: string[] = [];
   const hashByFile = new Map<string, string>();
   const conceptIdByFile = new Map<string, string>();
+  const rejectedPaths = new Set<string>();
+  const reportedCollisions = new Set<string>();
 
   for (const file of fileContexts) {
+    const workflowName = workflowNameForSourcePath(component.root, adapter.id, file.absPath);
+    if (workflowName !== undefined) {
+      try {
+        resolveUniqueWorkflowSource(component.root, adapter.id, workflowName);
+      } catch (error) {
+        if (!(error instanceof WorkflowSourceCollisionError)) throw error;
+        for (const relativePath of error.sourcePaths) {
+          rejectedPaths.add(path.join(component.root, relativePath));
+        }
+        if (!reportedCollisions.has(error.canonicalName)) {
+          reportedCollisions.add(error.canonicalName);
+          warnings.push(error.message);
+        }
+        continue;
+      }
+    }
+
     const doc = adapter.recognize(component, file);
     if (doc === null) continue;
     if (!doc.conceptId) {
@@ -103,7 +130,7 @@ export function drainDirDocuments(
     entries.push(entry);
   }
 
-  return { entries, warnings, hashByFile, conceptIdByFile };
+  return { entries, warnings, hashByFile, conceptIdByFile, rejectedPaths };
 }
 
 /**
