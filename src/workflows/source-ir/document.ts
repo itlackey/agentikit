@@ -41,11 +41,10 @@ export function workflowSourceIrToDocument(
         "the legacy single-spine runtime cannot preserve those semantics.",
     );
   }
-  const markdownSource = ir.extensions?.["akm.dev/workflow-markdown"] !== undefined;
   const allSteps = ir.jobs.flatMap((job) => job.steps.map((step) => ({ job, step })));
   const duplicateIds = duplicateStepIds(allSteps.map(({ step }) => step.id));
   const steps = allSteps.map(({ job, step }, sequenceIndex) =>
-    projectStep(job, step, sequenceIndex, duplicateIds, options.mode, markdownSource),
+    projectStep(job, step, sequenceIndex, duplicateIds, options.mode),
   );
   return {
     schemaVersion: WORKFLOW_SCHEMA_VERSION,
@@ -66,7 +65,6 @@ function projectStep(
   sequenceIndex: number,
   duplicateIds: ReadonlySet<string>,
   mode: WorkflowSourceProjectionMode,
-  markdownSource: boolean,
 ): WorkflowStep {
   const id = duplicateIds.has(step.id) ? `${job.id}-${step.id}` : step.id;
   const source = toSourceRef(step.source);
@@ -77,7 +75,7 @@ function projectStep(
     );
   }
 
-  const { unit, instructions } = projectDispatch(step, source, mode, markdownSource);
+  const { unit, instructions } = projectDispatch(step, source, mode);
   const out: WorkflowStep = {
     id,
     sequenceIndex,
@@ -106,7 +104,6 @@ function projectDispatch(
   step: WorkflowSourceStep,
   source: SourceRef,
   mode: WorkflowSourceProjectionMode,
-  markdownSource: boolean,
 ): { unit?: ProgramUnit; instructions?: string } {
   if (step.route) return { instructions: step.instructions };
   const unit: ProgramUnit = {
@@ -139,7 +136,7 @@ function projectDispatch(
         instructions: `Invoke stored command ${action.ref}${action.arguments === undefined ? "" : " with arguments"}.`,
       };
     }
-    if (markdownSource) return { unit, instructions: action.content };
+    if (step.commandMode === "literal") return { unit, instructions: action.content };
     const applied = applyPortableCommandArguments(action.content, action.arguments, "inline workflow command");
     return { unit, instructions: applied.content };
   }

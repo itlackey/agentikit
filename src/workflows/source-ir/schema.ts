@@ -45,6 +45,7 @@ import {
   classifyWorkflowStepUses,
   rejectNulInArgv,
   validateWorkflowBuiltinCommand,
+  type WorkflowSourceCommandMode,
   WorkflowSourceSemanticError,
 } from "./semantics";
 
@@ -134,6 +135,11 @@ export interface WorkflowSourceStep {
   uses?: string;
   /** Exactly one of `uses`, `run`, and `exec` is present unless this is a route. */
   run?: string;
+  /**
+   * Explicit portable command-content semantics. Required only for
+   * `uses: akm/command`; never inferred from an adapter extension.
+   */
+  commandMode?: WorkflowSourceCommandMode;
   /** Lossless direct-spawn argv. It is never joined into a shell string. */
   exec?: WorkflowSourceExec;
   with?: Record<string, WorkflowSourceScalar>;
@@ -219,9 +225,6 @@ export function decodeWorkflowSourceIrV1(
   validateBudget(root.budget);
   span(root.source, "source");
   extensions(root.extensions, "extensions");
-  const markdownSource =
-    root.extensions !== undefined &&
-    Object.hasOwn(root.extensions as Record<string, unknown>, "akm.dev/workflow-markdown");
 
   if (!Array.isArray(root.triggers) || root.triggers.length === 0 || root.triggers.length > 64) {
     fail("triggers must contain 1 through 64 entries");
@@ -232,7 +235,7 @@ export function decodeWorkflowSourceIrV1(
     fail("jobs must contain 1 through 256 entries");
   }
   const jobIds = new Set<string>();
-  for (const [index, job] of root.jobs.entries()) validateJob(job, index, jobIds, options, markdownSource);
+  for (const [index, job] of root.jobs.entries()) validateJob(job, index, jobIds, options);
   for (const job of root.jobs as unknown as WorkflowSourceJob[]) {
     for (const need of job.needs) if (!jobIds.has(need)) fail(`job ${job.id} needs missing job ${need}`);
   }
@@ -279,13 +282,7 @@ function validateTriggers(value: unknown[]): void {
   }
 }
 
-function validateJob(
-  value: unknown,
-  index: number,
-  jobIds: Set<string>,
-  options: WorkflowSourceDecodeOptions,
-  markdownSource: boolean,
-): void {
+function validateJob(value: unknown, index: number, jobIds: Set<string>, options: WorkflowSourceDecodeOptions): void {
   const job = record(value, `job ${index}`);
   keys(job, ["id", "name", "needs", "steps", "extensions", "source"], `job ${index}`);
   const id = sourceId(job.id, `job ${index} id`);
@@ -302,7 +299,7 @@ function validateJob(
   }
   const stepIds = new Set<string>();
   for (const [stepIndex, step] of job.steps.entries()) {
-    validateStep(step, id, stepIndex, stepIds, options, markdownSource);
+    validateStep(step, id, stepIndex, stepIds, options);
   }
   validateRouteTargets(job.steps as WorkflowSourceStep[], id);
   extensions(job.extensions, `job ${id} extensions`);
@@ -315,7 +312,6 @@ function validateStep(
   index: number,
   stepIds: Set<string>,
   options: WorkflowSourceDecodeOptions,
-  markdownSource: boolean,
 ): void {
   const step = record(value, `job ${jobId} step ${index}`);
   keys(
@@ -325,6 +321,7 @@ function validateStep(
       "name",
       "uses",
       "run",
+      "commandMode",
       "exec",
       "with",
       "env",
@@ -357,12 +354,30 @@ function validateStep(
   if (step.uses !== undefined && !hasUses) fail(`step ${id} uses must be a non-empty string`);
   if (step.run !== undefined && !hasRun) fail(`step ${id} run must be a non-empty string`);
   if (hasUses) {
+    let target: ReturnType<typeof classifyWorkflowStepUses>;
     try {
-      const target = classifyWorkflowStepUses(step.uses as string);
-      if (target.kind === "builtin-command") validateWorkflowBuiltinCommand(step.with);
+      target = classifyWorkflowStepUses(step.uses as string);
     } catch (cause) {
       semanticFail(cause, `step ${id} uses`);
     }
+    if (target.kind === "builtin-command") {
+      if (
+        step.commandMode !== "literal" &&
+        step.commandMode !== "portable-template" &&
+        step.commandMode !== "stored-ref"
+      ) {
+        fail(`step ${id} akm/command requires an explicit commandMode`);
+      }
+      try {
+        validateWorkflowBuiltinCommand(step.with, step.commandMode);
+      } catch (cause) {
+        semanticFail(cause, `step ${id} uses`);
+      }
+    } else if (step.commandMode !== undefined) {
+      fail(`step ${id} commandMode is legal only with uses akm/command`);
+    }
+  } else if (step.commandMode !== undefined) {
+    fail(`step ${id} commandMode is legal only with uses akm/command`);
   }
   if (hasRun) {
     try {
@@ -374,7 +389,7 @@ function validateStep(
   validateExec(step.exec, `step ${id} exec`, options);
   scalarRecord(step.with, `step ${id} with`, true);
   environment(step.env, `step ${id} env`);
-  rejectStepWithExpressions(step, id, markdownSource);
+  rejectStepWithExpressions(step, id);
   rejectExpressionsInRecord(step.env, `step ${id} env`);
   if (step.with !== undefined && !hasUses) fail(`step ${id} with is legal only with uses`);
   if ((step.shell !== undefined || step.workingDirectory !== undefined) && !hasRun) {
@@ -690,11 +705,11 @@ function rejectExpressionsInRecord(value: unknown, location: string): void {
   }
 }
 
-function rejectStepWithExpressions(step: Record<string, unknown>, id: string, markdownSource: boolean): void {
+function rejectStepWithExpressions(step: Record<string, unknown>, id: string): void {
   if (step.with === undefined) return;
   for (const [key, item] of Object.entries(record(step.with, `step ${id} with`))) {
     if (typeof item !== "string" || !item.includes("${{")) continue;
-    if (markdownSource && step.uses === "akm/command" && key === "content") continue;
+    if (step.uses === "akm/command" && step.commandMode === "literal" && key === "content") continue;
     fail(`step ${id} with.${key} contains an unsupported expression`);
   }
 }

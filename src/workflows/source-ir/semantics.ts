@@ -6,7 +6,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseBuiltinCommandAction } from "../../commands/command/builtin-action";
+import { type ParsedBuiltinCommandAction, parseBuiltinCommandAction } from "../../commands/command/builtin-action";
+import { validatePortableCommandTemplate } from "../../commands/command/portable-template";
 import { bundleRefToString, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseSchedule } from "../../tasks/schedule";
 import { classifyWorkflowSourceUses, type WorkflowSourceUsesClassifier, type WorkflowSourceUsesTarget } from "./uses";
@@ -22,6 +23,8 @@ export class WorkflowSourceSemanticError extends Error {
     this.name = "WorkflowSourceSemanticError";
   }
 }
+
+export type WorkflowSourceCommandMode = "literal" | "portable-template" | "stored-ref";
 
 export function canonicalizeWorkflowCron(value: string): string {
   const canonical = value.trim().split(/\s+/).join(" ");
@@ -158,15 +161,63 @@ function canonicalTaskTarget(value: string): { kind: "task"; ref: string } | und
   }
 }
 
-export function validateWorkflowBuiltinCommand(value: unknown): void {
+/**
+ * Validate AKM's built-in command action at the shared source/decoder boundary.
+ *
+ * Inline YAML actions are portable templates and therefore use WP4's one
+ * authoritative template validator. Markdown prose is explicitly `literal`,
+ * while a stored ref remains resolution-owned because its template bytes are
+ * not available until the later resolver loads the command asset.
+ */
+export function validateWorkflowBuiltinCommand(
+  value: unknown,
+  mode?: WorkflowSourceCommandMode,
+): ParsedBuiltinCommandAction {
+  let action: ParsedBuiltinCommandAction;
   try {
-    parseBuiltinCommandAction(value);
+    action = parseBuiltinCommandAction(value);
   } catch (cause) {
     throw new WorkflowSourceSemanticError(
       "builtin-command-inputs",
       cause instanceof Error ? cause.message : "Invalid akm/command inputs.",
     );
   }
+
+  const expectedMode: WorkflowSourceCommandMode = action.kind === "stored" ? "stored-ref" : "portable-template";
+  const effectiveMode = mode ?? expectedMode;
+  if (action.kind === "stored") {
+    if (effectiveMode !== "stored-ref") {
+      throw new WorkflowSourceSemanticError(
+        "builtin-command-inputs",
+        "Stored akm/command refs require commandMode stored-ref.",
+      );
+    }
+    return action;
+  }
+  if (effectiveMode === "stored-ref") {
+    throw new WorkflowSourceSemanticError(
+      "builtin-command-inputs",
+      "Inline akm/command content cannot use commandMode stored-ref.",
+    );
+  }
+  if (effectiveMode === "literal") {
+    if (action.arguments !== undefined) {
+      throw new WorkflowSourceSemanticError(
+        "builtin-command-inputs",
+        "Literal akm/command content cannot declare arguments because no substitution occurs.",
+      );
+    }
+    return action;
+  }
+  try {
+    validatePortableCommandTemplate(action.content, "inline workflow command");
+  } catch (cause) {
+    throw new WorkflowSourceSemanticError(
+      "builtin-command-inputs",
+      cause instanceof Error ? cause.message : "Invalid portable command template.",
+    );
+  }
+  return action;
 }
 
 export function rejectNulInArgv(command: readonly string[]): void {
@@ -202,43 +253,71 @@ function verifyPhysicalContainment(workspaceRoot: string, relative: string): voi
     throw new WorkflowSourceSemanticError("working-directory-escape", "working-directory escapes the workspace.");
   }
 
-  let current = candidate;
-  const suffix: string[] = [];
-  for (;;) {
+  let current = root;
+  for (const segment of relative === "." ? [] : relative.split("/")) {
+    current = path.join(current, segment);
     try {
-      const stat = fs.statSync(current);
-      if (!stat.isDirectory()) {
+      const entry = fs.lstatSync(current);
+      if (entry.isSymbolicLink()) {
+        let physical: string;
+        try {
+          physical = fs.realpathSync(current);
+        } catch {
+          throw new WorkflowSourceSemanticError(
+            "working-directory-unverifiable",
+            "working-directory contains a dangling or unresolvable symlink.",
+          );
+        }
+        if (!contained(root, physical)) {
+          throw new WorkflowSourceSemanticError(
+            "working-directory-escape",
+            "working-directory resolves through a symlink outside the workspace.",
+          );
+        }
+        let target: fs.Stats;
+        try {
+          target = fs.statSync(current);
+        } catch {
+          throw new WorkflowSourceSemanticError(
+            "working-directory-unverifiable",
+            "working-directory symlink target cannot be physically verified.",
+          );
+        }
+        if (!target.isDirectory()) {
+          throw new WorkflowSourceSemanticError(
+            "working-directory-unverifiable",
+            "working-directory must resolve through directories.",
+          );
+        }
+        continue;
+      }
+      if (!entry.isDirectory()) {
         throw new WorkflowSourceSemanticError(
           "working-directory-unverifiable",
           "working-directory must resolve through directories.",
         );
       }
-      const physical = path.join(fs.realpathSync(current), ...suffix);
+      const physical = fs.realpathSync(current);
       if (!contained(root, physical)) {
         throw new WorkflowSourceSemanticError(
           "working-directory-escape",
           "working-directory resolves through a symlink outside the workspace.",
         );
       }
-      return;
     } catch (cause) {
       if (cause instanceof WorkflowSourceSemanticError) throw cause;
       const code = (cause as NodeJS.ErrnoException | undefined)?.code;
-      if (code !== "ENOENT") {
-        throw new WorkflowSourceSemanticError(
-          "working-directory-unverifiable",
-          "working-directory cannot be physically verified.",
-        );
+      if (code === "ENOENT") {
+        // A genuinely absent lexical component is allowed at source time; the
+        // runtime dispatch boundary revalidates containment when it appears.
+        // `lstat` distinguishes this from a dangling symlink, which fails
+        // closed above even before its target can appear.
+        return;
       }
-      const parent = path.dirname(current);
-      if (parent === current) {
-        throw new WorkflowSourceSemanticError(
-          "working-directory-unverifiable",
-          "working-directory cannot be physically verified.",
-        );
-      }
-      suffix.unshift(path.basename(current));
-      current = parent;
+      throw new WorkflowSourceSemanticError(
+        "working-directory-unverifiable",
+        "working-directory cannot be physically verified.",
+      );
     }
   }
 }

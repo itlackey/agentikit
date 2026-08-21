@@ -91,9 +91,12 @@ export interface WorkflowDocument {
 /**
  * A single problem in the source markdown. CLI and indexer format these
  * uniformly as `path:line — message`. The fix is baked into the message
- * itself; there is no separate hint field, code, or severity.
+ * itself; source adapters may attach a stable code, but there is no separate
+ * hint or severity field.
  */
 export interface WorkflowError {
+  /** Optional stable code supplied by a format adapter's semantic boundary. */
+  code?: string;
   /** 1-indexed line in the source markdown the problem refers to. */
   line: number;
   /** Human-readable message including the offending value and how to fix it. */

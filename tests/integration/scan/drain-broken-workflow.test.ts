@@ -173,4 +173,42 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test.each([
+    ["ordinary", akmAdapter, "akm", "workflows"],
+    ["standalone", akmWorkflowAdapter, "akm-workflow", "."],
+  ] as const)("%s adapter owns invalid portable command diagnostics without throwing or caching", (_label, adapter, adapterId, subdir) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-drain-template-"));
+    const ownedDir = path.join(root, subdir);
+    fs.mkdirSync(ownedDir, { recursive: true });
+    const invalidPath = path.join(ownedDir, "invalid.yml");
+    fs.writeFileSync(
+      invalidPath,
+      `name: Invalid template
+on: { workflow_dispatch: null }
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: invalid
+        uses: akm/command
+        with:
+          content: echo $HOME
+`,
+    );
+    try {
+      const c: BundleComponent = { id: "b", adapter: adapterId, root, writable: true };
+      const context = buildFileContext(root, invalidPath);
+      expect(adapter.recognize(c, context)).toMatchObject({ type: "workflow" });
+
+      const drained = drainDirDocuments(adapter, c, [context]);
+      expect(drained.entries).toHaveLength(0);
+      expect(drained.hashByFile.has(invalidPath)).toBe(false);
+      expect(drained.warnings).toHaveLength(1);
+      expect(drained.warnings[0]).toContain(invalidPath);
+      expect(drained.warnings[0]).toMatch(/unsupported portable template construct/i);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

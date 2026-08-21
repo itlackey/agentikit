@@ -22,6 +22,7 @@ import {
   canonicalizeWorkflowWorkingDirectory,
   classifyWorkflowStepUses,
   validateWorkflowBuiltinCommand,
+  type WorkflowSourceCommandMode,
   WorkflowSourceSemanticError,
 } from "./semantics";
 import {
@@ -585,10 +586,16 @@ function parseUsesStep(
   const uses = reader.string(usesPair.value, "step.uses");
   const target = classifyUses(reader, uses, usesPair.value, options.classifyUses ?? classifyWorkflowSourceUses);
   const withValues = parseScalarMap(reader, fields.get("with"), "step.with", INPUT_KEY, true);
-  if (target.kind === "builtin-command") {
-    validateBuiltinCommand(reader, withValues, fields.get("with")?.value ?? usesPair.value);
-  }
-  return { ...common, uses, ...(withValues ? { with: withValues } : {}) };
+  const commandMode =
+    target.kind === "builtin-command"
+      ? validateBuiltinCommand(reader, withValues, fields.get("with")?.value ?? usesPair.value)
+      : undefined;
+  return {
+    ...common,
+    uses,
+    ...(commandMode ? { commandMode } : {}),
+    ...(withValues ? { with: withValues } : {}),
+  };
 }
 
 function classifyUses(
@@ -608,9 +615,11 @@ function validateBuiltinCommand(
   reader: StrictYamlReader,
   values: Record<string, WorkflowSourceScalar> | undefined,
   node: ParsedNode | null | undefined,
-): void {
+): WorkflowSourceCommandMode {
   try {
-    validateWorkflowBuiltinCommand(values);
+    const action = validateWorkflowBuiltinCommand(values);
+    if (action.kind === "stored") return "stored-ref";
+    return action.arguments !== undefined || action.content.includes("$ARGUMENTS") ? "portable-template" : "literal";
   } catch (cause) {
     semanticReaderFail(reader, cause, node);
   }

@@ -19,6 +19,7 @@ import {
   type WorkflowSourceSpan,
   type WorkflowSourceStep,
 } from "./schema";
+import { canonicalizeWorkflowWorkingDirectory, WorkflowSourceSemanticError } from "./semantics";
 
 export type { GithubWorkflowSourceOptions } from "./github-yaml";
 export { looksLikeGithubWorkflowSource } from "./github-yaml";
@@ -49,12 +50,28 @@ export function compileMarkdownWorkflowSource(
   source: string,
   options: MarkdownWorkflowSourceOptions,
 ): WorkflowSourceCompileResult {
-  const parsed = parseWorkflow(source, { path: options.path });
+  const parsed = parseWorkflow(source, {
+    path: options.path,
+    validateExecCwd: (value) => {
+      try {
+        return { ok: true, value: canonicalizeWorkflowWorkingDirectory(value, options.workspaceRoot) };
+      } catch (cause) {
+        if (cause instanceof WorkflowSourceSemanticError) {
+          return { ok: false, code: cause.code, message: cause.message };
+        }
+        return {
+          ok: false,
+          code: "working-directory-unverifiable",
+          message: cause instanceof Error ? cause.message : "working-directory cannot be physically verified.",
+        };
+      }
+    },
+  });
   if (!parsed.ok) {
     return {
       ok: false,
       errors: parsed.errors.map((error) => ({
-        code: "invalid-markdown-workflow",
+        code: error.code ?? "invalid-markdown-workflow",
         message: error.message,
         path: options.path,
         line: error.line,
@@ -154,6 +171,7 @@ function portableStep(step: WorkflowSourceStep): Record<string, unknown> {
       step.route !== undefined ? "route" : step.exec !== undefined ? "exec" : step.run !== undefined ? "run" : "uses",
     ...(step.run !== undefined ? { run: step.run } : {}),
     ...(step.uses !== undefined ? { uses: step.uses } : {}),
+    ...(step.commandMode !== undefined ? { commandMode: step.commandMode } : {}),
     ...(step.exec !== undefined ? { exec: step.exec } : {}),
   };
   if (step.name !== undefined && step.name !== step.id) out.name = step.name;
@@ -225,6 +243,7 @@ function markdownStep(step: MarkdownWorkflowStep, filePath: string): WorkflowSou
   return {
     ...common,
     uses: "akm/command",
+    commandMode: "literal",
     with: { content },
   };
 }

@@ -156,12 +156,23 @@ interface RangedNode {
 interface Ctx {
   readonly filePath: string;
   readonly errors: WorkflowError[];
+  readonly validateExecCwd?: WorkflowParseOptions["validateExecCwd"];
   lineAt(path: Path): number;
   lineAtOffset(offset: number): number;
   refAt(path: Path): SourceRef;
   nodeAt(path: Path): unknown;
   err(path: Path, message: string): void;
   errAtLine(line: number, message: string): void;
+}
+
+export type WorkflowExecCwdValidationResult =
+  | { ok: true; value: string }
+  | { ok: false; code: string; message: string };
+
+export interface WorkflowParseOptions {
+  path: string;
+  /** Optional adapter-neutral semantic validator used by the source-IR frontend. */
+  validateExecCwd?: (value: string) => WorkflowExecCwdValidationResult;
 }
 
 /** Route branch bookkeeping for the post-pass (targets need all step ids). */
@@ -172,7 +183,7 @@ interface RouteCheck {
   defaultTarget?: { stepId: string; line: number };
 }
 
-export function parseWorkflow(markdown: string, source: { path: string }): WorkflowParseResult {
+export function parseWorkflow(markdown: string, source: WorkflowParseOptions): WorkflowParseResult {
   if (utf8Bytes(markdown) > WORKFLOW_MAX_SOURCE_BYTES) {
     return {
       ok: false,
@@ -244,6 +255,7 @@ export function parseWorkflow(markdown: string, source: { path: string }): Workf
   const ctx: Ctx = {
     filePath: path,
     errors,
+    ...(source.validateExecCwd ? { validateExecCwd: source.validateExecCwd } : {}),
     lineAt,
     lineAtOffset: (offset) => Math.max(1, lineCounter.linePos(offset).line + lineOffset),
     nodeAt: (p) => (p.length === 0 ? doc.contents : doc.getIn(p, true)),
@@ -940,6 +952,10 @@ function parseExecCommand(ctx: Ctx, raw: unknown, path: Path, stepLabel: string)
       ctx.err(path, `${stepLabel} "exec.command[${index}]" must be a non-empty string.`);
       return undefined;
     }
+    if (entry.includes("\0")) {
+      ctx.err([...path, index], `${stepLabel} "exec.command[${index}]" may not contain NUL bytes.`);
+      return undefined;
+    }
     if (utf8Bytes(entry) > WORKFLOW_MAX_EXEC_ARG_BYTES) {
       ctx.err(path, `${stepLabel} "exec.command[${index}]" exceeds ${WORKFLOW_MAX_EXEC_ARG_BYTES} bytes.`);
       return undefined;
@@ -972,6 +988,18 @@ function parseExecCwd(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): st
         `directory — absolute paths, Windows drive letters, "~", and ".." segments are rejected.`,
     );
     return undefined;
+  }
+  if (ctx.validateExecCwd) {
+    const semantic = ctx.validateExecCwd(value);
+    if (!semantic.ok) {
+      ctx.errors.push({
+        code: semantic.code,
+        line: ctx.lineAt(path),
+        message: semantic.message,
+      });
+      return undefined;
+    }
+    return semantic.value;
   }
   return value;
 }

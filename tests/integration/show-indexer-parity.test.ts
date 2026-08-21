@@ -429,6 +429,30 @@ jobs:
     });
   });
 
+  test("invalid owned YAML is not indexed and show surfaces its source-located portable-template diagnostic", async () => {
+    const invalidPath = path.join(stashDir, "workflows", "invalid-template.yml");
+    writeFile(
+      invalidPath,
+      `name: Invalid template
+on: { workflow_dispatch: null }
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: invalid
+        uses: akm/command
+        with:
+          content: echo $HOME
+`,
+    );
+    await akmIndex({ stashDir, full: true });
+
+    expect(await lookupBundleRef(parseBundleRef("workflows/invalid-template"))).toBeNull();
+    await expect(akmShowUnified({ ref: "workflows/invalid-template", skipLogging: true })).rejects.toThrow(
+      /invalid-template\.yml:10.*unsupported portable template construct/is,
+    );
+  });
+
   test("non-Markdown indexed files reject Markdown heading fragments", async () => {
     await indexAdapterBundle("generic-fixture", copyFixtureToTmp(GENERIC_ROOT), "generic-files", true);
 

@@ -437,6 +437,121 @@ jobs:
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.ir.jobs[0]?.steps[0]?.with).toEqual({ content: "", arguments: "" });
+    expect(result.ir.jobs[0]?.steps[0]?.commandMode).toBe("portable-template");
+  });
+
+  test("validates portable inline command templates at source compile and strict decode boundaries", () => {
+    expectGithubError(
+      `${VALID_HEADER}
+      - id: unsafe
+        uses: akm/command
+        with:
+          content: echo $HOME
+          arguments: exact input
+`,
+      "builtin-command-inputs",
+      11,
+    );
+
+    const stored = github(`${VALID_HEADER}
+      - id: stored
+        uses: akm/command
+        with:
+          ref: commands/review
+          arguments: "  exact $HOME input  "
+`);
+    expect(stored.ok).toBe(true);
+    if (!stored.ok) return;
+    expect(stored.ir.jobs[0]?.steps[0]).toMatchObject({
+      uses: "akm/command",
+      commandMode: "stored-ref",
+      with: { ref: "commands/review", arguments: "  exact $HOME input  " },
+    });
+    expect(decodeWorkflowSourceIrV1(stored.ir)).toEqual(stored.ir);
+    expect(canonicalPortableWorkflowSourceBytes(stored.ir)).toContain('"commandMode":"stored-ref"');
+
+    const mismatchedStored = structuredClone(stored.ir);
+    requireOnlyDecodedStep(mismatchedStored).commandMode = "literal";
+    expect(() => decodeWorkflowSourceIrV1(mismatchedStored)).toThrow(/stored.*commandMode stored-ref/i);
+
+    const hostile = structuredClone(stored.ir);
+    const hostileStep = requireOnlyDecodedStep(hostile);
+    hostileStep.commandMode = "portable-template";
+    hostileStep.with = { content: "echo $HOME", arguments: "exact input" };
+    expect(() => decodeWorkflowSourceIrV1(hostile)).toThrow(/unsupported portable template construct/i);
+  });
+
+  test("carries literal and portable-template command semantics explicitly in portable bytes", () => {
+    const markdown = compileMarkdownWorkflowSource(
+      `---
+type: workflow
+steps:
+  - id: review
+---
+# Review
+
+## review
+
+Review $ARGUMENTS and \${{ github.sha }} literally.
+`,
+      { path: "workflows/literal.md" },
+    );
+    const yaml = github(`${VALID_HEADER}
+      - id: review
+        uses: akm/command
+        with:
+          content: Review $ARGUMENTS
+          arguments: "  exact $HOME input  "
+`);
+    expect(markdown.ok).toBe(true);
+    expect(yaml.ok).toBe(true);
+    if (!markdown.ok || !yaml.ok) return;
+
+    expect(markdown.ir.jobs[0]?.steps[0]?.commandMode).toBe("literal");
+    expect(yaml.ir.jobs[0]?.steps[0]?.commandMode).toBe("portable-template");
+    const stored = github(
+      `${VALID_HEADER}\n      - id: stored\n        uses: akm/command\n        with: { ref: commands/review }\n`,
+    );
+    expect(stored.ok).toBe(true);
+    if (!stored.ok) return;
+    expect(canonicalPortableWorkflowSourceBytes(markdown.ir)).toContain('"commandMode":"literal"');
+    expect(canonicalPortableWorkflowSourceBytes(yaml.ir)).toContain('"commandMode":"portable-template"');
+    expect(canonicalPortableWorkflowSourceBytes(markdown.ir)).not.toBe(canonicalPortableWorkflowSourceBytes(yaml.ir));
+    expect(
+      new Set([
+        canonicalPortableWorkflowSourceBytes(markdown.ir),
+        canonicalPortableWorkflowSourceBytes(yaml.ir),
+        canonicalPortableWorkflowSourceBytes(stored.ir),
+      ]).size,
+    ).toBe(3);
+    const expectedLiteralText = "Review $ARGUMENTS and $" + "{{ github.sha }} literally.";
+    expect(workflowSourceIrToDocument(markdown.ir, { mode: "runtime" }).steps[0]?.instructions?.text).toContain(
+      expectedLiteralText,
+    );
+    expect(workflowSourceIrToDocument(yaml.ir, { mode: "runtime" }).steps[0]?.instructions?.text).toBe(
+      "Review   exact $HOME input  ",
+    );
+
+    const withoutOwnerExtension = structuredClone(markdown.ir);
+    delete withoutOwnerExtension.extensions;
+    expect(decodeWorkflowSourceIrV1(withoutOwnerExtension)).toEqual(withoutOwnerExtension);
+    expect(
+      workflowSourceIrToDocument(withoutOwnerExtension, { mode: "runtime" }).steps[0]?.instructions?.text,
+    ).toContain(expectedLiteralText);
+
+    const missingMode = structuredClone(markdown.ir);
+    delete requireOnlyDecodedStep(missingMode).commandMode;
+    expect(() => decodeWorkflowSourceIrV1(missingMode)).toThrow(/explicit commandMode/i);
+
+    const withSpoofedOwnerExtension = structuredClone(yaml.ir);
+    withSpoofedOwnerExtension.extensions = { "akm.dev/workflow-markdown": { workflowSchemaVersion: 3 } };
+    expect(
+      workflowSourceIrToDocument(decodeWorkflowSourceIrV1(withSpoofedOwnerExtension), { mode: "runtime" }).steps[0]
+        ?.instructions?.text,
+    ).toBe("Review   exact $HOME input  ");
+    expect(canonicalPortableWorkflowSourceBytes(withSpoofedOwnerExtension)).toBe(
+      canonicalPortableWorkflowSourceBytes(yaml.ir),
+    );
   });
 
   test("exposes the immutable WP6 uses classifier as an injected pure boundary", () => {
@@ -733,6 +848,98 @@ Run it.
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
   });
+
+  test("source-locates Markdown cwd semantic failures at the authored field", () => {
+    const source = `---
+type: workflow
+steps:
+  - id: cwd
+    unit:
+      exec:
+        command: [echo, ok]
+        cwd: "bad\\0cwd"
+---
+# Bad cwd
+
+## cwd
+
+Run it.
+`;
+    const result = compileMarkdownWorkflowSource(source, {
+      path: "workflows/bad-cwd.md",
+      workspaceRoot: process.cwd(),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors).toContainEqual(
+        expect.objectContaining({ code: "working-directory-control-character", line: 8 }),
+      );
+    }
+
+    const invalidArgv = compileMarkdownWorkflowSource(
+      source.replace("command: [echo, ok]", 'command: ["bad\\0argv"]'),
+      {
+        path: "workflows/bad-argv.md",
+        workspaceRoot: process.cwd(),
+      },
+    );
+    expect(invalidArgv.ok).toBe(false);
+    if (!invalidArgv.ok) {
+      expect(invalidArgv.errors[0]).toMatchObject({ code: "invalid-markdown-workflow", line: 7 });
+      expect(invalidArgv.errors[0]?.message).toMatch(/NUL/i);
+    }
+  });
+
+  test("fails closed on dangling cwd symlinks before an outside target can appear", () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "akm-source-ir-dangling-"));
+    const workspace = path.join(sandbox, "workspace");
+    const outside = path.join(sandbox, "outside-missing");
+    fs.mkdirSync(workspace);
+    fs.symlinkSync(outside, path.join(workspace, "escape"), "dir");
+    const markdownSource = `---
+type: workflow
+steps:
+  - id: cwd
+    unit:
+      exec:
+        command: [echo, ok]
+        cwd: escape
+---
+# Escape
+
+## cwd
+
+Run it.
+`;
+    const compileBoth = () => [
+      compileGithubWorkflowSource(
+        `${VALID_HEADER}\n      - id: cwd\n        run: echo ok\n        working-directory: escape\n`,
+        { path: "workflows/dangling.yml", workspaceRoot: workspace },
+      ),
+      compileMarkdownWorkflowSource(markdownSource, {
+        path: "workflows/dangling.md",
+        workspaceRoot: workspace,
+      }),
+    ];
+    try {
+      const beforeAppearance = compileBoth();
+      for (const result of beforeAppearance) {
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.errors[0]).toMatchObject({ code: "working-directory-unverifiable" });
+      }
+      const markdownBeforeAppearance = beforeAppearance[1];
+      if (markdownBeforeAppearance && !markdownBeforeAppearance.ok) {
+        expect(markdownBeforeAppearance.errors[0]).toMatchObject({ line: 8 });
+      }
+      fs.mkdirSync(outside);
+      for (const result of compileBoth()) {
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.errors[0]?.code).toMatch(/working-directory-(?:escape|unverifiable)/);
+      }
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("strict source IR decoder", () => {
@@ -868,6 +1075,7 @@ describe("strict source IR decoder", () => {
     replaceOnlyDecodedStep(builtin, {
       id: "ok",
       uses: "akm/command",
+      commandMode: "stored-ref",
       with: { ref: "commands/review", content: "both are forbidden" },
       source: builtin.source,
     });
@@ -885,10 +1093,11 @@ describe("strict source IR decoder", () => {
     replaceOnlyDecodedStep(builtinExpression, {
       id: "ok",
       uses: "akm/command",
+      commandMode: "portable-template",
       with: { content: "Review $" + "{{ github.sha }}" },
       source: builtinExpression.source,
     });
-    expect(() => decodeWorkflowSourceIrV1(builtinExpression)).toThrow(/expression/i);
+    expect(() => decodeWorkflowSourceIrV1(builtinExpression)).toThrow(/expression|template construct/i);
   });
 
   test("canonicalizes decoded cron, run, and cwd and physically contains decoded cwd", () => {

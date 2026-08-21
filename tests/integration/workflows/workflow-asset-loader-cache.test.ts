@@ -173,3 +173,37 @@ jobs:
   expect(dispatches).toBe(0);
   expect((await listWorkflowRuns()).runs).toHaveLength(0);
 });
+
+test("rejects an invalid portable YAML template before run creation, journal writes, or dispatch", async () => {
+  workflowPath = path.join(storage.stashDir, "workflows", "invalid-template.yml");
+  fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+  fs.writeFileSync(
+    workflowPath,
+    `name: Invalid template
+on: { workflow_dispatch: null }
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: run
+        uses: akm/command
+        with:
+          content: echo $HOME
+`,
+    "utf8",
+  );
+
+  let dispatches = 0;
+  await expect(
+    runWorkflowSteps({
+      target: "workflows/invalid-template",
+      summaryJudge: null,
+      dispatcher: async () => {
+        dispatches++;
+        return { ok: true, text: "unexpected" };
+      },
+    }),
+  ).rejects.toThrow(/invalid-template\.yml:10.*unsupported portable template construct/is);
+  expect(dispatches).toBe(0);
+  expect((await listWorkflowRuns()).runs).toHaveLength(0);
+});
