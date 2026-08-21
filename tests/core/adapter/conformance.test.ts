@@ -42,12 +42,27 @@
  */
 
 import { beforeAll, describe, expect, test } from "bun:test";
+import fs from "node:fs";
 import path from "node:path";
-import { akmAdapter, llmWikiAdapter, okfAdapter, registerBuiltinAdapters } from "../../../src/core/adapter/adapters";
+import {
+  akmAdapter,
+  dotenvAdapter,
+  genericFilesAdapter,
+  llmWikiAdapter,
+  okfAdapter,
+  opencodeAdapter,
+  registerBuiltinAdapters,
+} from "../../../src/core/adapter/adapters";
 import type { BundleAdapter } from "../../../src/core/adapter/bundle-adapter";
 import { adapterForId, getAdapters, resetAdapterRegistryForTests } from "../../../src/core/adapter/registry";
 import type { BundleComponent, IndexDocument } from "../../../src/core/adapter/types";
+import {
+  AdapterConceptCollisionError,
+  resolveAdapterConceptOwner,
+} from "../../../src/indexer/lookup/adapter-concept-owner";
+import { buildFileContext } from "../../../src/indexer/walk/file-context";
 import { walkStashFlat } from "../../../src/indexer/walk/walker";
+import { sandboxStashDir } from "../../_helpers/sandbox";
 
 /** The `okf` reference bundle's own root (root `index.md`, no `TYPE_DIRS` subdir). */
 const OKF_ROOT = path.resolve(__dirname, "../../fixtures/bundles/okf-sample");
@@ -225,5 +240,116 @@ describe("conformance — index() == fold(recognize) (§12.3)", () => {
     const folded = foldRecognize(llmWikiAdapter, c);
     expect(folded.length).toBeGreaterThan(0);
     expect(refType(folded)).toEqual(refType(foldRecognize(llmWikiAdapter, c)));
+  });
+});
+
+describe("conformance — read candidates and recognition are two-way canonical peers", () => {
+  test("every registered adapter maps each recognized fixture file back from its canonical concept", () => {
+    for (const adapter of getAdapters()) {
+      const root = OWN_ROOT_BY_ID[adapter.id]!;
+      const c = component(adapter.id, adapter.id, root);
+      expect(typeof adapter.readCandidates, adapter.id).toBe("function");
+      for (const file of walkStashFlat(root)) {
+        const document = adapter.recognize(c, file);
+        if (!document?.conceptId) continue;
+        const candidates = adapter.readCandidates?.(c, document.conceptId) ?? [];
+        expect(
+          candidates.some(
+            (candidate) =>
+              candidate.conceptId === document.conceptId && path.resolve(candidate.path) === path.resolve(file.absPath),
+          ),
+          `${adapter.id}:${document.conceptId} must include ${file.relPath}`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  test("every existing fixture candidate either abstains or recognizes the queried canonical concept", () => {
+    for (const adapter of getAdapters()) {
+      const root = OWN_ROOT_BY_ID[adapter.id]!;
+      const c = component(adapter.id, adapter.id, root);
+      for (const file of walkStashFlat(root)) {
+        const indexed = adapter.recognize(c, file);
+        if (!indexed?.conceptId) continue;
+        for (const candidate of adapter.readCandidates?.(c, indexed.conceptId) ?? []) {
+          expect(candidate.conceptId, `${adapter.id}:${candidate.path}`).toBe(indexed.conceptId);
+          if (!fs.existsSync(candidate.path)) continue;
+          const recognized = adapter.recognize(c, buildFileContext(root, candidate.path));
+          if (recognized) expect(recognized.conceptId, `${adapter.id}:${candidate.path}`).toBe(indexed.conceptId);
+        }
+      }
+    }
+  });
+
+  test("generated aliases, abstentions, suffixes, links, and collisions preserve the same two-way contract", () => {
+    const sandbox = sandboxStashDir();
+    try {
+      const genericRoot = path.join(sandbox.dir, "generic");
+      const dotenvRoot = path.join(sandbox.dir, "dotenv");
+      const toolRoot = path.join(sandbox.dir, "tool");
+      for (const root of [genericRoot, dotenvRoot, toolRoot]) fs.mkdirSync(root, { recursive: true });
+
+      const genericComponent = component("generic", "generic-files", genericRoot);
+      const upperText = path.join(genericRoot, "docs", "format.TEXT");
+      fs.mkdirSync(path.dirname(upperText), { recursive: true });
+      fs.writeFileSync(upperText, "generic text");
+      expect(genericFilesAdapter.recognize(genericComponent, buildFileContext(genericRoot, upperText))?.conceptId).toBe(
+        "docs/format",
+      );
+      expect(resolveAdapterConceptOwner(genericRoot, "generic-files", "docs/format")?.path).toBe(upperText);
+
+      fs.writeFileSync(path.join(genericRoot, "docs", "format.md"), "# collision");
+      expect(() => resolveAdapterConceptOwner(genericRoot, "generic-files", "docs/format")).toThrow(
+        AdapterConceptCollisionError,
+      );
+
+      const extensionless = path.join(genericRoot, "LICENSE");
+      fs.writeFileSync(extensionless, "license");
+      expect(resolveAdapterConceptOwner(genericRoot, "generic-files", "LICENSE")?.path).toBe(extensionless);
+      const reserved = path.join(genericRoot, "index.md");
+      fs.writeFileSync(reserved, "# reserved");
+      expect(genericFilesAdapter.recognize(genericComponent, buildFileContext(genericRoot, reserved))).toBeNull();
+
+      const outside = path.join(sandbox.dir, "outside.md");
+      fs.writeFileSync(outside, "outside");
+      const escaping = path.join(genericRoot, "escape.md");
+      fs.symlinkSync(outside, escaping);
+      expect(resolveAdapterConceptOwner(genericRoot, "generic-files", "escape")).toBeUndefined();
+
+      const dotenvComponent = component("dotenv", "dotenv", dotenvRoot);
+      const defaultEnv = path.join(dotenvRoot, "env", ".env");
+      fs.mkdirSync(path.dirname(defaultEnv), { recursive: true });
+      fs.writeFileSync(defaultEnv, "TOKEN=hidden\n");
+      expect(dotenvAdapter.recognize(dotenvComponent, buildFileContext(dotenvRoot, defaultEnv))?.conceptId).toBe(
+        "env/default",
+      );
+      expect(dotenvAdapter.placeNew?.(dotenvComponent, "env/default")).toBe(defaultEnv);
+      expect(dotenvAdapter.readCandidates?.(dotenvComponent, "env/default")[0]).toEqual({
+        path: defaultEnv,
+        conceptId: "env/default",
+      });
+      fs.writeFileSync(path.join(dotenvRoot, "env", ".sensitive"), "");
+      expect(dotenvAdapter.recognize(dotenvComponent, buildFileContext(dotenvRoot, defaultEnv))).toBeNull();
+      expect(resolveAdapterConceptOwner(dotenvRoot, "dotenv", "env/default")).toBeUndefined();
+
+      const toolComponent = component("tool", "opencode", toolRoot);
+      const singular = path.join(toolRoot, "skill", "pkg", "SKILL.md");
+      fs.mkdirSync(path.dirname(singular), { recursive: true });
+      fs.writeFileSync(singular, "---\nname: pkg\ndescription: pkg\n---\n");
+      expect(opencodeAdapter.recognize(toolComponent, buildFileContext(toolRoot, singular))?.conceptId).toBe(
+        "skill/pkg",
+      );
+      expect(opencodeAdapter.readCandidates?.(toolComponent, "skill/pkg")[0]).toEqual({
+        path: singular,
+        conceptId: "skill/pkg",
+      });
+      const nested = path.join(toolRoot, "skills", "pkg", "nested", "SKILL.md");
+      fs.mkdirSync(path.dirname(nested), { recursive: true });
+      fs.writeFileSync(nested, "---\nname: nested\ndescription: nested\n---\n");
+      expect(opencodeAdapter.recognize(toolComponent, buildFileContext(toolRoot, nested))).toBeNull();
+      expect(opencodeAdapter.readCandidates?.(toolComponent, "skills/pkg/nested")).toEqual([]);
+    } finally {
+      sandbox.cleanup();
+    }
   });
 });

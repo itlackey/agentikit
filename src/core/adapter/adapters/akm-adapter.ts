@@ -506,14 +506,16 @@ export const akmAdapter: BundleAdapter = {
   renderExecutionSource,
   validate,
 
-  readCandidates(c: BundleComponent, conceptId: string): string[] {
+  readCandidates(c: BundleComponent, conceptId: string) {
     const posix = conceptId.replace(/\\/g, "/");
     const slash = posix.indexOf("/");
-    if (slash <= 0) return [path.join(c.root, `${posix}.md`)];
+    if (slash <= 0) return [{ path: path.join(c.root, `${posix}.md`), conceptId: posix }];
     const head = posix.slice(0, slash);
     const rest = posix.slice(slash + 1);
     const type = stashDirToType(head);
-    return type === undefined || rest.length === 0 ? [] : [assetPathForName(type, path.join(c.root, head), rest)];
+    return type === undefined || rest.length === 0
+      ? []
+      : [{ path: assetPathForName(type, path.join(c.root, head), rest), conceptId: posix }];
   },
 
   /**

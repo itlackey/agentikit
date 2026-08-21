@@ -98,7 +98,7 @@ interface BundleAdapter {
 
   // OPTIONAL — authoritative existing-file placements/read aliases used for
   // first-owner arbitration without reading authored bytes.
-  readCandidates?(c: BundleComponent, conceptId: string): string[];
+  readCandidates?(c: BundleComponent, conceptId: string): Array<{ path: string; conceptId: string }>;
 
   // OPTIONAL — placement / discovery.
   placeNew?(c: BundleComponent, conceptId: string): string;   // where a new item would live
@@ -119,7 +119,8 @@ incrementality.
 write-normalization policy. Read candidates preserve accepted aliases and
 directory manifests (for example OpenCode's singular `skill/` and
 `<name>/SKILL.md`) so lookup, disk show, and workflow runtime share one
-physical-owner decision.
+physical-owner decision. Each candidate carries its canonical concept identity,
+so a byte-denying ownership probe never has to infer identity from the query.
 
 The core walk — the live indexer's per-dir walk, drained by
 `drainDirDocuments` — is one implementation carrying the security policy

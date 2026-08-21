@@ -127,7 +127,7 @@ function classify(relPath: string, layout: ToolDirLayout): ToolDirClassification
   // skill: <skillDir>/<name>/SKILL.md — the item is the DIRECTORY. Any other
   // file under a skill dir (bundled resources) is part of the item, not a concept.
   if (layout.skillDirs.has(head)) {
-    if (segs.length >= 3 && base === SKILL_MANIFEST) {
+    if (segs.length === 3 && base === SKILL_MANIFEST) {
       return { type: "skill", conceptId: `${segs[0]}/${segs[1]}`, name: segs[1]! };
     }
     return null;
@@ -197,16 +197,22 @@ export function placeNewToolDir(layout: ToolDirLayout, c: BundleComponent, conce
 }
 
 /** List native read spellings without normalizing OpenCode's singular aliases. */
-export function readCandidatesToolDir(layout: ToolDirLayout, c: BundleComponent, conceptId: string): string[] {
+export function readCandidatesToolDir(layout: ToolDirLayout, c: BundleComponent, conceptId: string) {
   const posix = toPosix(conceptId);
-  if (posix === layout.instructionConceptId) return [path.join(c.root, layout.instructionFile)];
+  if (posix === layout.instructionConceptId) {
+    return [{ path: path.join(c.root, layout.instructionFile), conceptId: posix }];
+  }
 
   const segs = posix.split("/").filter((segment) => segment.length > 0);
   const head = segs[0];
   const rest = segs.slice(1).join("/");
   if (!head || !rest) return [];
-  if (layout.skillDirs.has(head)) return [path.join(c.root, head, rest, SKILL_MANIFEST)];
-  if (layout.commandDirs.has(head) || layout.agentDirs.has(head)) return [path.join(c.root, head, `${rest}.md`)];
+  if (layout.skillDirs.has(head)) {
+    return segs.length === 2 ? [{ path: path.join(c.root, head, rest, SKILL_MANIFEST), conceptId: posix }] : [];
+  }
+  if (layout.commandDirs.has(head) || layout.agentDirs.has(head)) {
+    return [{ path: path.join(c.root, head, `${rest}.md`), conceptId: posix }];
+  }
   return [];
 }
 

@@ -421,8 +421,9 @@ export const llmWikiAdapter: BundleAdapter = {
   recognize,
   validate,
 
-  readCandidates(c: BundleComponent, conceptId: string): string[] {
-    return [path.join(c.root, `${toPosix(conceptId).replace(/\.md$/i, "")}.md`)];
+  readCandidates(c: BundleComponent, conceptId: string) {
+    const canonical = toPosix(conceptId).replace(/\.md$/i, "");
+    return [{ path: path.join(c.root, `${canonical}.md`), conceptId: canonical }];
   },
 
   /** `<c.root>/<conceptId>.md` — the conceptId already carries its `pages/`/`raw/` prefix (placement golden). */

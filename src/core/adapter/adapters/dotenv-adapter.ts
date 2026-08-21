@@ -116,7 +116,8 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
 
   if (type === "env") {
     // env: strip `.env`; surface KEY NAMES only (never values/comments/content).
-    const conceptId = posix.replace(/\.env$/i, "");
+    const stripped = posix.replace(/\.env$/i, "");
+    const conceptId = stripped.endsWith("/") ? `${stripped}default` : stripped;
     const name = (conceptId.split("/").pop() ?? conceptId) || "default";
     const keys = scanKeyNames(raw);
     const doc: IndexDocument = {
@@ -171,7 +172,7 @@ export const dotenvAdapter: BundleAdapter = {
   recognize,
   validate,
 
-  readCandidates(c: BundleComponent, conceptId: string): string[] {
+  readCandidates(c: BundleComponent, conceptId: string) {
     const posix = toPosix(conceptId);
     const slash = posix.indexOf("/");
     if (slash <= 0) return [];
@@ -180,9 +181,11 @@ export const dotenvAdapter: BundleAdapter = {
     const type = typeForStashDir(head);
     if ((type !== "env" && type !== "secret") || rest.length === 0) return [];
     const primary = assetPathForName(type, path.join(c.root, head), rest);
-    return type === "env"
-      ? [primary, primary.replace(/\.env$/i, ".sensitive")]
-      : [primary, `${primary}.sensitive`, `${primary}.lock`];
+    return (
+      type === "env"
+        ? [primary, primary.replace(/\.env$/i, ".sensitive")]
+        : [primary, `${primary}.sensitive`, `${primary}.lock`]
+    ).map((candidatePath) => ({ path: candidatePath, conceptId: posix }));
   },
 
   /**

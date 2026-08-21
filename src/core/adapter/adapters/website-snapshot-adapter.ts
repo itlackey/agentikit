@@ -146,8 +146,9 @@ export const websiteSnapshotAdapter: BundleAdapter = {
   recognize,
   validate,
 
-  readCandidates(c: BundleComponent, conceptId: string): string[] {
-    return [path.join(c.root, PAGES_PREFIX, `${toPosix(conceptId).replace(/\.md$/i, "")}.md`)];
+  readCandidates(c: BundleComponent, conceptId: string) {
+    const canonical = toPosix(conceptId).replace(/\.md$/i, "");
+    return [{ path: path.join(c.root, PAGES_PREFIX, `${canonical}.md`), conceptId: canonical }];
   },
 
   // No placeNew: the snapshot is READ-ONLY (Mode A). Export (Mode B) routes

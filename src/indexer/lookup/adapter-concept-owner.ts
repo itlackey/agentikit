@@ -4,7 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { BundleAdapter } from "../../core/adapter/bundle-adapter";
+import type { AdapterReadCandidate, BundleAdapter } from "../../core/adapter/bundle-adapter";
 import { adapterForId } from "../../core/adapter/registry";
 import type { BundleComponent } from "../../core/adapter/types";
 import { isWithin } from "../../core/common";
@@ -66,9 +66,13 @@ function lexicallyWithin(candidate: string, root: string): boolean {
 }
 
 /** Add case-only suffix spellings beside an adapter-authored read candidate. */
-function candidateSpellings(candidate: string, sourcePath: string, realRoot: string): string[] {
-  const authored = path.resolve(candidate);
-  if (!lexicallyWithin(authored, sourcePath)) return [authored];
+function candidateSpellings(
+  candidate: AdapterReadCandidate,
+  sourcePath: string,
+  realRoot: string,
+): AdapterReadCandidate[] {
+  const authored = path.resolve(candidate.path);
+  if (!lexicallyWithin(authored, sourcePath)) return [{ ...candidate, path: authored }];
   const parent = path.dirname(authored);
   let realParent: string;
   let entries: fs.Dirent[];
@@ -76,12 +80,12 @@ function candidateSpellings(candidate: string, sourcePath: string, realRoot: str
     realParent = fs.realpathSync(parent);
     entries = fs.readdirSync(parent, { withFileTypes: true });
   } catch {
-    return [authored];
+    return [{ ...candidate, path: authored }];
   }
-  if (!isWithin(realParent, realRoot)) return [authored];
+  if (!isWithin(realParent, realRoot)) return [{ ...candidate, path: authored }];
 
   const extension = path.extname(authored);
-  if (!extension) return [authored];
+  if (!extension) return [{ ...candidate, path: authored }];
   const stem = path.basename(authored, extension);
   return entries
     .filter((entry) => {
@@ -90,17 +94,16 @@ function candidateSpellings(candidate: string, sourcePath: string, realRoot: str
         path.basename(entry.name, entryExtension) === stem && entryExtension.toLowerCase() === extension.toLowerCase()
       );
     })
-    .map((entry) => path.join(parent, entry.name));
+    .map((entry) => ({ ...candidate, path: path.join(parent, entry.name) }));
 }
 
 function inspectCandidate(
   sourcePath: string,
   realRoot: string,
   adapterId: string,
-  conceptId: string,
-  candidate: string,
+  candidate: AdapterReadCandidate,
 ): AdapterConceptOwner | undefined {
-  const authoredPath = path.resolve(candidate);
+  const authoredPath = path.resolve(candidate.path);
   if (!lexicallyWithin(authoredPath, sourcePath)) return undefined;
   let authoredStat: fs.Stats;
   try {
@@ -122,7 +125,7 @@ function inspectCandidate(
   } catch {
     return undefined;
   }
-  return { path: authoredPath, realPath, conceptId, adapterId };
+  return { path: authoredPath, realPath, conceptId: candidate.conceptId, adapterId };
 }
 
 function claimsWithoutContent(adapter: BundleAdapter, component: BundleComponent, owner: AdapterConceptOwner): boolean {
@@ -184,13 +187,19 @@ export function resolveAdapterConceptOwner(
   const spellings = adapter
     .readCandidates(component, normalized)
     .flatMap((candidate) => candidateSpellings(candidate, sourcePath, realRoot));
-  const inspected = [...new Set(spellings.map((candidate) => path.resolve(candidate)))]
-    .sort(comparePaths)
+  const inspected = [
+    ...new Map(
+      spellings.map((candidate) => [`${path.resolve(candidate.path)}\0${candidate.conceptId}`, candidate]),
+    ).values(),
+  ]
+    .sort((left, right) => comparePaths(left.path, right.path))
     .flatMap((candidate) => {
-      const owner = inspectCandidate(sourcePath, realRoot, adapterId, normalized, candidate);
+      const owner = inspectCandidate(sourcePath, realRoot, adapterId, candidate);
       return owner ? [owner] : [];
     });
-  const owners = inspected.filter((candidate) => claimsWithoutContent(adapter, component, candidate));
+  const owners = inspected.filter(
+    (candidate) => candidate.conceptId === normalized && claimsWithoutContent(adapter, component, candidate),
+  );
   if (owners.length > 1) {
     throw new AdapterConceptCollisionError(
       adapterId,

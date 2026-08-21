@@ -18,7 +18,15 @@ import { listWorkflowRuns, startWorkflowRun } from "../../../src/workflows/runti
 import { loadWorkflowAsset } from "../../../src/workflows/runtime/workflow-asset-loader";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
-type AdapterId = "agent-skills" | "akm" | "akm-task" | "akm-workflow" | "claude" | "dotenv" | "opencode";
+type AdapterId =
+  | "agent-skills"
+  | "akm"
+  | "akm-task"
+  | "akm-workflow"
+  | "claude"
+  | "dotenv"
+  | "generic-files"
+  | "opencode";
 
 interface Fixture {
   root: string;
@@ -84,6 +92,22 @@ function denyAssetRead(assetPath: string): ReturnType<typeof spyOn> {
   }) as typeof fs.readFileSync);
 }
 
+function workflowDocumentSnapshot(): Array<Record<string, unknown>> {
+  const db = openExistingDatabase(getDbPath());
+  try {
+    return db
+      .prepare(
+        `SELECT entry_id AS entryId, schema_version AS schemaVersion, document_json AS documentJson,
+                source_path AS sourcePath, source_hash AS sourceHash
+           FROM workflow_documents
+          ORDER BY entry_id`,
+      )
+      .all() as Array<Record<string, unknown>>;
+  } finally {
+    closeDatabase(db);
+  }
+}
+
 const toolDirShapes = [
   ["claude", "commands/deploy", "commands/deploy.md", "# deploy"],
   ["claude", "agents/reviewer", "agents/reviewer.md", "# reviewer"],
@@ -107,6 +131,101 @@ const nonExtensionHintShapes = [
 ] as const;
 
 describe("shared adapter physical-owner authority", () => {
+  test.each([
+    ".md",
+    ".markdown",
+    ".txt",
+    ".text",
+    ".MD",
+    ".MARKDOWN",
+    ".TXT",
+    ".TEXT",
+  ])("generic-files canonical document owner covers %s with a missing row", async (extension) => {
+    const early = fixture(`early-generic-${extension.slice(1)}`, "generic-files");
+    const later = fixture(`later-generic-${extension.slice(1)}`, "akm-workflow");
+    const earlyPath = write(early.root, `docs/format${extension}`, "# generic document\n");
+    const laterPath = write(later.root, "docs/format.md", getWorkflowTemplate());
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+    mutateEntry("early//docs/format", "missing", "");
+
+    expect(await lookupBundleRef(parseBundleRef("docs/format"))).toBeNull();
+    expect((await showLocal({ ref: "docs/format" })).path).toBe(earlyPath);
+    expect(await lookupBundleRef(parseBundleRef("later//docs/format"))).toMatchObject({ filePath: laterPath });
+  });
+
+  test.each([
+    "complete",
+    "missing",
+    "incomplete",
+    "stale",
+  ] as const)("dotenv env/.env is canonically env/default with a %s row", async (state) => {
+    const early = fixture(`early-dotenv-default-${state}`, "dotenv");
+    const later = fixture(`later-dotenv-default-${state}`, "akm-workflow");
+    const earlyPath = write(early.root, "env/.env", "TOKEN=hidden\n");
+    write(later.root, "env/default.md", getWorkflowTemplate());
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+    mutateEntry("early//env/default", state, path.join(early.root, "stale", ".env"));
+
+    const found = await lookupBundleRef(parseBundleRef("env/default"));
+    if (state === "complete") expect(found).toMatchObject({ filePath: earlyPath, conceptId: "env/default" });
+    else expect(found).toBeNull();
+    expect((await showLocal({ ref: "env/default" })).path).toBe(earlyPath);
+  });
+
+  test("a nested tool skill manifest cannot claim a deeper queried concept", async () => {
+    const early = fixture("early-nested-tool-skill", "opencode");
+    const later = fixture("later-nested-tool-skill", "akm-workflow");
+    write(early.root, "skills/pkg/nested/SKILL.md", skill("nested"));
+    const laterPath = write(later.root, "skills/pkg/nested.md", getWorkflowTemplate());
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+
+    expect(await lookupBundleRef(parseBundleRef("skills/pkg/nested"))).toMatchObject({ filePath: laterPath });
+    expect((await showLocal({ ref: "skills/pkg/nested" })).path).toBe(laterPath);
+    expect((await loadWorkflowAsset("skills/pkg/nested")).path).toBe(laterPath);
+  });
+
+  test("generic document collisions reject runtime without reads, state, runs, or dispatch", async () => {
+    const early = fixture("early-generic-collision", "generic-files");
+    const later = fixture("later-generic-collision", "akm-workflow");
+    const markdown = write(early.root, "collision.md", "# markdown owner\n");
+    const text = write(early.root, "collision.txt", "text owner\n");
+    const laterPath = write(later.root, "collision.md", getWorkflowTemplate());
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+    expect((await loadWorkflowAsset("later//collision")).path).toBe(laterPath);
+    await listWorkflowRuns();
+    const stateBefore = fs.readFileSync(getStateDbPath());
+    const cacheBefore = workflowDocumentSnapshot();
+    let dispatches = 0;
+
+    const markdownSpy = denyAssetRead(markdown);
+    const textSpy = denyAssetRead(text);
+    try {
+      await expect(loadWorkflowAsset("collision")).rejects.toThrow(/multiple physical owners/i);
+      await expect(startWorkflowRun("collision")).rejects.toThrow(/multiple physical owners/i);
+      await expect(
+        runWorkflowSteps({
+          target: "collision",
+          summaryJudge: null,
+          dispatcher: async () => {
+            dispatches++;
+            return { ok: true as const, text: "unexpected" };
+          },
+        }),
+      ).rejects.toThrow(/multiple physical owners/i);
+    } finally {
+      markdownSpy.mockRestore();
+      textSpy.mockRestore();
+    }
+    expect(dispatches).toBe(0);
+    expect(fs.readFileSync(getStateDbPath())).toEqual(stateBefore);
+    expect(workflowDocumentSnapshot()).toEqual(cacheBefore);
+    expect((await listWorkflowRuns()).runs).toHaveLength(0);
+  });
+
   test.each(
     toolDirShapes,
   )("disk lookup/show honors %s read placement %s without bytes", async (adapter, conceptId, relativePath, content) => {

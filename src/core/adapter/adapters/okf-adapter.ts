@@ -351,8 +351,9 @@ export const okfAdapter: BundleAdapter = {
   recognize,
   validate,
 
-  readCandidates(c: BundleComponent, conceptId: string): string[] {
-    return [path.join(c.root, `${conceptId.replace(/\\/g, "/").replace(/\.md$/i, "")}.md`)];
+  readCandidates(c: BundleComponent, conceptId: string) {
+    const canonical = conceptId.replace(/\\/g, "/").replace(/\.md$/i, "");
+    return [{ path: path.join(c.root, `${canonical}.md`), conceptId: canonical }];
   },
 
   /** OKF concepts live anywhere under the component root (§5). */

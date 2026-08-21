@@ -113,9 +113,16 @@ export const genericFilesAdapter: BundleAdapter = {
   recognize,
   validate,
 
-  readCandidates(c: BundleComponent, conceptId: string): string[] {
+  readCandidates(c: BundleComponent, conceptId: string) {
     const posix = toPosix(conceptId);
-    return [path.join(c.root, path.extname(posix) === "" ? `${posix}.md` : posix)];
+    const extension = path.extname(posix).toLowerCase();
+    const documentCandidates = [...DOCUMENT_EXTENSIONS].map((candidateExtension) => ({
+      path: path.join(c.root, `${posix}${candidateExtension}`),
+      conceptId: posix,
+    }));
+    return DOCUMENT_EXTENSIONS.has(extension)
+      ? documentCandidates
+      : [{ path: path.join(c.root, posix), conceptId: posix }, ...documentCandidates];
   },
 
   /**

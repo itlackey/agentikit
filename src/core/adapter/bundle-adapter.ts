@@ -35,7 +35,7 @@
  *   index .............................. optional
  *   affectedItems ....................... optional
  *   validate .......................... REQUIRED
- *   placeNew / directoryList / looksLikeRoot ... optional
+ *   readCandidates / placeNew / directoryList / looksLikeRoot ... optional
  *
  * 0.9.2 adds two independent optional read/runtime facets:
  * `renderExecutionSource`, for the approved agent/command design, and
@@ -71,6 +71,12 @@ import type { AdapterRenderedExecutionSource } from "../../execution/source";
 import type { FileContext } from "../../indexer/walk/file-context";
 import type { FileChange } from "../file-change";
 import type { BundleComponent, BundleInstallation, Diagnostic, IndexDocument, ValidateContext } from "./types";
+
+export interface AdapterReadCandidate {
+  path: string;
+  /** Canonical concept identity this authored path may own. */
+  conceptId: string;
+}
 
 export interface BundleAdapter {
   readonly id: string;
@@ -114,9 +120,10 @@ export interface BundleAdapter {
 
   // OPTIONAL — authoritative read placement. Unlike `extensions` (a walk
   // collection hint) and `placeNew` (a write-normalization policy), this lists
-  // the existing path spellings that may own one canonical concept. Core uses
-  // it for first-owner arbitration without reading authored bytes.
-  readCandidates?(c: BundleComponent, conceptId: string): string[];
+  // the existing path spellings that may own one canonical concept. Every
+  // candidate carries that canonical identity, so core can arbitrate without
+  // reading authored bytes or inferring identity from the query.
+  readCandidates?(c: BundleComponent, conceptId: string): AdapterReadCandidate[];
 
   // OPTIONAL — placement / discovery
   /** Replaces the per-type stash-subdir + name-to-path placement primitives. */
