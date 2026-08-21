@@ -19,7 +19,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { recognizeMatch } from "../../core/adapter/recognize-match";
+import { adapterForId } from "../../core/adapter/registry";
 import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { extractSection, markdownFragmentSlugs } from "../../core/asset/markdown";
@@ -38,7 +40,13 @@ import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction"
 import { lookupBundleRef } from "../../indexer/indexer";
 import type { StashEntryScope } from "../../indexer/passes/metadata";
 import { ensurePrimaryIndexForRead, resolveReadSources } from "../../indexer/read-preflight";
-import { buildEditHint, findSourceForPath, isEditable, resolveSourceEntries } from "../../indexer/search/search-source";
+import {
+  buildEditHint,
+  findSourceForPath,
+  isEditable,
+  resolveSourceEntries,
+  type SearchSource,
+} from "../../indexer/search/search-source";
 import { recentShowCount, recordShowUsage } from "../../indexer/usage/show-usage";
 import type { UsageEventSource } from "../../indexer/usage/usage-events";
 import {
@@ -282,15 +290,18 @@ export async function showLocal(input: {
   }
 
   const fileCtx = buildFileContext(sourceStashDir, assetPath);
-  const indexedRenderer = indexedEntry ? rendererForIndexedEntry(indexedEntry, fileCtx) : undefined;
+  const diskEntry = !indexedEntry && source ? recognizeDiskEntry(source, fileCtx, parsed.conceptId) : null;
+  const presentationEntry = indexedEntry ?? diskEntry;
+  const presentedName = presentationEntry?.name ?? displayName;
+  const indexedRenderer = presentationEntry ? rendererForIndexedEntry(presentationEntry, fileCtx) : undefined;
   let response: ShowResponse;
   try {
-    if (indexedEntry && indexedRenderer === null) {
-      response = buildIndexedProjectionResponse(indexedEntry, assetPath, parsed.fragment);
+    if (presentationEntry && indexedRenderer === null) {
+      response = buildIndexedProjectionResponse(presentationEntry, assetPath, parsed.fragment);
     } else {
       const match =
-        indexedEntry && typeof indexedRenderer === "string"
-          ? indexedMatch(indexedEntry, indexedRenderer)
+        presentationEntry && typeof indexedRenderer === "string"
+          ? indexedMatch(presentationEntry, indexedRenderer)
           : recognizeMatch(fileCtx);
       if (!match) {
         throw new UsageError(
@@ -298,7 +309,7 @@ export async function showLocal(input: {
         );
       }
 
-      match.meta = { ...match.meta, name: displayName };
+      match.meta = { ...match.meta, name: presentedName };
       const renderer = await getRenderer(match.renderer);
       if (!renderer) {
         throw new UsageError(
@@ -318,23 +329,23 @@ export async function showLocal(input: {
             "INVALID_FLAG_VALUE",
           );
         }
-        applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, displayName);
+        applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, presentedName);
       }
     }
   } catch (error) {
     if (indexedEntry) throwIndexedPathNotFound(error, input.ref);
     throw error;
   }
-  if (indexedEntry) {
-    response.type = indexedEntry.type;
-    response.name = indexedEntry.name;
+  if (presentationEntry) {
+    response.type = presentationEntry.type;
+    response.name = presentationEntry.name;
   }
   const isPrimaryStash = source !== undefined && source.path === allSources[0]?.path;
   const canonicalRef = displayRef(
     {
-      type: displayType,
-      name: displayName,
-      conceptId: indexedEntry?.conceptId,
+      type: presentationEntry?.type ?? displayType,
+      name: presentedName,
+      conceptId: presentationEntry?.conceptId,
       bundleId: indexedEntry ? indexedEntry.bundleId : source?.registryId,
     },
     config.defaultBundle ?? (isPrimaryStash ? indexedEntry?.bundleId : undefined),
@@ -513,6 +524,31 @@ function throwIndexedPathNotFound(error: unknown, ref: string): never {
 }
 
 type IndexedEntry = NonNullable<Awaited<ReturnType<typeof lookupBundleRef>>>;
+
+function recognizeDiskEntry(source: SearchSource, file: FileContext, fallbackConceptId: string): IndexedEntry | null {
+  const adapterId = source.adapterId ?? detectAdapterId(source.path);
+  const adapter = adapterForId(adapterId);
+  if (!adapter) return null;
+  const bundleId = source.registryId ?? "stash";
+  const document = adapter.recognize(
+    { id: bundleId, adapter: adapterId, root: source.path, writable: source.writable === true },
+    file,
+  );
+  if (!document) return null;
+  const conceptId = document.conceptId ?? fallbackConceptId;
+  return {
+    entryKey: `${source.path}:${document.type}:${document.name}`,
+    filePath: file.absPath,
+    stashDir: source.path,
+    type: document.type,
+    name: document.name,
+    adapterId,
+    document,
+    itemRef: document.ref ?? makeBundleRef(bundleId, conceptId),
+    bundleId,
+    conceptId,
+  };
+}
 
 /** `null` selects adapter-owned projection; a string selects a core renderer. */
 function rendererForIndexedEntry(entry: IndexedEntry, _file: FileContext): string | null | undefined {

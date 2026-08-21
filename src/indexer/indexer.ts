@@ -104,13 +104,13 @@ import { takeWorkflowDocument } from "../workflows/runtime/document-cache";
 import {
   assertIndexedWorkflowSourceIdentity,
   resolveUniqueWorkflowSource,
-  type WorkflowSourceFile,
   WorkflowSourceIdentityError,
   workflowNameForConceptId,
 } from "../workflows/source-files";
 import { deleteStoredGraph } from "./db/graph-db";
 import { withIndexWriterLease } from "./index-writer-lock";
 import { deriveEntryProvenance, deriveInstallations } from "./installations";
+import { adapterOwnsConceptOnDisk } from "./lookup/adapter-concept-owner";
 import {
   canUseIncrementalSkip,
   computeDirFingerprint,
@@ -2632,9 +2632,9 @@ async function resolveLookupSources(): Promise<SearchSource[]> {
 function resolveLookupScope(
   bundle: string | undefined,
   sources: SearchSource[],
-): { candidateDirs: string[]; qualified: boolean } {
-  if (!bundle) return { candidateDirs: sources.map((source) => source.path), qualified: false };
-  return { candidateDirs: resolveSourcesForOrigin(bundle, sources).map((source) => source.path), qualified: true };
+): { candidateSources: SearchSource[]; qualified: boolean } {
+  if (!bundle) return { candidateSources: sources, qualified: false };
+  return { candidateSources: resolveSourcesForOrigin(bundle, sources), qualified: true };
 }
 
 /** Resolve an adapter-owned `[bundle//]conceptId` without interpreting its path as an AKM type. */
@@ -2642,85 +2642,85 @@ export async function lookupBundleRef(ref: BundleRef): Promise<IndexEntry | null
   const sources = await resolveLookupSources();
   if (sources.length === 0) return null;
 
-  const { candidateDirs, qualified } = resolveLookupScope(ref.bundle, sources);
-  if (candidateDirs.length === 0) return null;
-  const candidateDirSet = new Set(candidateDirs.map((dir) => path.resolve(dir)));
-  let authoritativeWorkflowSource: { adapterId: string; sourceRoot: string; source: WorkflowSourceFile } | undefined;
-  for (const source of sources) {
-    const sourceKey = path.resolve(source.path);
-    if (!candidateDirSet.has(sourceKey)) continue;
-    const adapterId = source.adapterId ?? detectAdapterId(source.path);
-    const workflowName = workflowNameForConceptId(adapterId, ref.conceptId);
-    if (workflowName === undefined) continue;
-    const authoritative = resolveUniqueWorkflowSource(source.path, adapterId, workflowName);
-    if (authoritative) {
-      authoritativeWorkflowSource = { adapterId, sourceRoot: source.path, source: authoritative };
-      break;
-    }
-  }
+  const { candidateSources, qualified } = resolveLookupScope(ref.bundle, sources);
+  if (candidateSources.length === 0) return null;
 
   const db = openExistingDatabase(getDbPath());
   try {
-    const lookupConceptId = authoritativeWorkflowSource
-      ? authoritativeWorkflowSource.adapterId === "akm"
-        ? `workflows/${authoritativeWorkflowSource.source.canonicalName}`
-        : authoritativeWorkflowSource.source.canonicalName
-      : ref.conceptId;
-    const inputRef = makeBundleRef(qualified ? ref.bundle : undefined, lookupConceptId);
-    const lookupDirs = authoritativeWorkflowSource ? [authoritativeWorkflowSource.sourceRoot] : candidateDirs;
-    for (const dir of lookupDirs) {
-      const id = findEntryIdByRef(db, inputRef, dir);
-      if (id === undefined) continue;
-      const row = db
-        .prepare(
-          "SELECT entry_key AS entryKey, file_path AS filePath, stash_dir AS stashDir, entry_type AS type, " +
-            "entry_json AS entryJson, item_ref AS itemRef, bundle_id AS bundleId, concept_id AS conceptId, " +
-            "adapter_id AS adapterId FROM entries WHERE id = ?",
-        )
-        .get(id) as
-        | {
-            entryKey: string;
-            filePath: string;
-            stashDir: string;
-            type: string;
-            entryJson: string;
-            itemRef: string | null;
-            bundleId: string | null;
-            conceptId: string | null;
-            adapterId: string | null;
+    for (const source of candidateSources) {
+      const adapterId = source.adapterId ?? detectAdapterId(source.path);
+      const workflowName = workflowNameForConceptId(adapterId, ref.conceptId);
+      const authoritativeWorkflowSource =
+        workflowName === undefined ? undefined : resolveUniqueWorkflowSource(source.path, adapterId, workflowName);
+      const lookupConceptId = authoritativeWorkflowSource
+        ? adapterId === "akm"
+          ? `workflows/${authoritativeWorkflowSource.canonicalName}`
+          : authoritativeWorkflowSource.canonicalName
+        : ref.conceptId;
+      const inputRef = makeBundleRef(qualified ? ref.bundle : undefined, lookupConceptId);
+      const id = findEntryIdByRef(db, inputRef, source.path);
+      if (id !== undefined) {
+        const entry = readLookupEntry(db, id, ref.conceptId);
+        if (entry) {
+          if (authoritativeWorkflowSource) {
+            assertIndexedWorkflowSourceIdentity(inputRef, entry.filePath, authoritativeWorkflowSource);
+            if (entry.adapterId !== adapterId) {
+              throw new WorkflowSourceIdentityError(inputRef, entry.filePath, authoritativeWorkflowSource.path);
+            }
           }
-        | undefined;
-      if (!row) continue;
-      if (authoritativeWorkflowSource) {
-        assertIndexedWorkflowSourceIdentity(inputRef, row.filePath, authoritativeWorkflowSource.source);
-        if (row.adapterId !== authoritativeWorkflowSource.adapterId) {
-          throw new WorkflowSourceIdentityError(inputRef, row.filePath, authoritativeWorkflowSource.source.path);
+          return entry;
         }
       }
-      let document: IndexDocument | undefined;
-      try {
-        document = JSON.parse(row.entryJson) as IndexDocument;
-      } catch {
-        // Corrupt optional projection does not erase the durable path identity.
-      }
-      if (!row.itemRef || !row.bundleId || !row.conceptId || !row.adapterId) continue;
-      return {
-        entryKey: row.entryKey,
-        filePath: row.filePath,
-        stashDir: row.stashDir,
-        type: row.type,
-        name: document?.name ?? ref.conceptId.split("/").pop() ?? ref.conceptId,
-        adapterId: row.adapterId,
-        document,
-        itemRef: row.itemRef,
-        bundleId: row.bundleId,
-        conceptId: row.conceptId,
-      };
+
+      // A physical owner with a missing/incomplete index row still owns this
+      // unqualified concept. Stop here so a later source cannot retarget it.
+      if (authoritativeWorkflowSource || adapterOwnsConceptOnDisk(source.path, adapterId, ref.conceptId)) return null;
     }
     return null;
   } finally {
     closeDatabase(db);
   }
+}
+
+function readLookupEntry(db: Database, id: number, fallbackConceptId: string): IndexEntry | null {
+  const row = db
+    .prepare(
+      "SELECT entry_key AS entryKey, file_path AS filePath, stash_dir AS stashDir, entry_type AS type, " +
+        "entry_json AS entryJson, item_ref AS itemRef, bundle_id AS bundleId, concept_id AS conceptId, " +
+        "adapter_id AS adapterId FROM entries WHERE id = ?",
+    )
+    .get(id) as
+    | {
+        entryKey: string;
+        filePath: string;
+        stashDir: string;
+        type: string;
+        entryJson: string;
+        itemRef: string | null;
+        bundleId: string | null;
+        conceptId: string | null;
+        adapterId: string | null;
+      }
+    | undefined;
+  if (!row?.itemRef || !row.bundleId || !row.conceptId || !row.adapterId) return null;
+  let document: IndexDocument | undefined;
+  try {
+    document = JSON.parse(row.entryJson) as IndexDocument;
+  } catch {
+    // Corrupt optional projection does not erase the durable path identity.
+  }
+  return {
+    entryKey: row.entryKey,
+    filePath: row.filePath,
+    stashDir: row.stashDir,
+    type: row.type,
+    name: document?.name ?? fallbackConceptId.split("/").pop() ?? fallbackConceptId,
+    adapterId: row.adapterId,
+    document,
+    itemRef: row.itemRef,
+    bundleId: row.bundleId,
+    conceptId: row.conceptId,
+  };
 }
 
 /**
