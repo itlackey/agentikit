@@ -24,6 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import { registerBuiltinAdapters } from "../../../src/core/adapter/adapters";
 import { akmAdapter } from "../../../src/core/adapter/adapters/akm-adapter";
+import { akmWorkflowAdapter } from "../../../src/core/adapter/adapters/akm-workflow-adapter";
 import { resetAdapterRegistryForTests } from "../../../src/core/adapter/registry";
 import type { BundleComponent } from "../../../src/core/adapter/types";
 import { drainDirDocuments } from "../../../src/indexer/scan/drain-dir";
@@ -60,6 +61,22 @@ steps:
 
 do A
 `;
+
+const VALID_YAML_WORKFLOW = `name: YAML drain
+on: { workflow_dispatch: null }
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: validate
+        run: echo ok
+        working-directory: packages/cli
+`;
+
+const BROKEN_YAML_WORKFLOW = VALID_YAML_WORKFLOW.replace(
+  "        run: echo ok\n        working-directory: packages/cli",
+  "        uses: actions/checkout@v4",
+);
 
 function makeStash(): { stashDir: string; goodPath: string; badPath: string } {
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-drain-wf-"));
@@ -101,7 +118,8 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
     // The broken one produced a workflow-skip warning naming the file.
     expect(drained.warnings).toHaveLength(1);
     const warning = drained.warnings[0];
-    expect(warning!.startsWith("Skipped workflow ")).toBe(true);
+    if (!warning) throw new Error("Expected one workflow warning");
+    expect(warning.startsWith("Skipped workflow ")).toBe(true);
     expect(warning).toContain(badPath);
     // Its concrete parse error (duplicate step id) is carried in the detail.
     expect(warning).toMatch(/Duplicate step id/);
@@ -113,8 +131,46 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
 
     // The valid workflow's parsed document is cached for the persist-time
     // workflow_documents write (same side channel the live contributor used).
-    const cached = takeWorkflowDocument(drained.entries[0]!);
+    const entry = drained.entries[0];
+    if (!entry) throw new Error("Expected one valid workflow entry");
+    const cached = takeWorkflowDocument(entry);
     expect(cached).toBeDefined();
     expect(cached?.steps.map((s) => s.id)).toEqual(["validate"]);
+  });
+
+  test.each([
+    ["ordinary", akmAdapter, "akm", "workflows"],
+    ["standalone", akmWorkflowAdapter, "akm-workflow", "."],
+  ] as const)("%s adapter drains valid YAML and surfaces invalid YAML", (_label, adapter, adapterId, subdir) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-drain-yaml-"));
+    const ownedDir = path.join(root, subdir);
+    fs.mkdirSync(ownedDir, { recursive: true });
+    const goodPath = path.join(ownedDir, "good.yml");
+    const badPath = path.join(ownedDir, "bad.yml");
+    fs.writeFileSync(goodPath, VALID_YAML_WORKFLOW);
+    fs.writeFileSync(badPath, BROKEN_YAML_WORKFLOW);
+    try {
+      const c: BundleComponent = { id: "b", adapter: adapterId, root, writable: true };
+      const contexts = [buildFileContext(root, goodPath), buildFileContext(root, badPath)];
+      const [goodContext, badContext] = contexts;
+      if (!goodContext || !badContext) throw new Error("YAML drain fixture must contain two contexts");
+      expect(adapter.recognize(c, goodContext)).toMatchObject({ type: "workflow" });
+      expect(adapter.recognize(c, badContext)).toMatchObject({ type: "workflow" });
+
+      const drained = drainDirDocuments(adapter, c, contexts);
+      expect(drained.entries.map(({ name }) => name)).toEqual(["good"]);
+      expect(drained.warnings).toHaveLength(1);
+      expect(drained.warnings[0]).toContain(badPath);
+      expect(drained.warnings[0]).toContain("Remote action acquisition");
+      const entry = drained.entries[0];
+      if (!entry) throw new Error("valid YAML workflow must survive drain");
+      const cached = takeWorkflowDocument(entry);
+      expect(cached?.steps[0]?.unit?.exec).toEqual({
+        command: ["sh", "-c", "echo ok"],
+        cwd: "packages/cli",
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

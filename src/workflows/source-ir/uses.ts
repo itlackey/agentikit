@@ -12,7 +12,7 @@
 import { bundleRefToString, parseBundleRef } from "../../core/asset/asset-ref";
 export type WorkflowSourceUsesTarget =
   | { kind: "builtin-command"; ref: "akm/command" }
-  | { kind: "command" | "workflow" | "script"; ref: string }
+  | { kind: "command" | "task" | "workflow" | "script"; ref: string }
   | {
       kind: "github-action";
       ref: string;
@@ -67,8 +67,8 @@ export function classifyWorkflowSourceUses(value: string): WorkflowSourceUsesTar
   if (value.startsWith("./") || value.startsWith("../") || value.startsWith("/")) {
     throw new Error("Local action paths are unsupported");
   }
-  if (/^(?:[A-Za-z0-9][A-Za-z0-9._-]*\/\/)?(?:agents|tasks)\//.test(value)) {
-    throw new Error("Agent and task refs are not executable uses targets");
+  if (/^(?:[A-Za-z0-9][A-Za-z0-9._-]*\/\/)?agents\//.test(value)) {
+    throw new Error("Agent refs are not executable uses targets");
   }
   try {
     const parsed = parseBundleRef(value);
@@ -76,8 +76,18 @@ export function classifyWorkflowSourceUses(value: string): WorkflowSourceUsesTar
       const slash = parsed.conceptId.indexOf("/");
       const family = slash < 0 ? "" : parsed.conceptId.slice(0, slash);
       const name = slash < 0 ? "" : parsed.conceptId.slice(slash + 1);
-      if (name.length > 0 && (family === "commands" || family === "workflows" || family === "scripts")) {
-        const kind = family === "commands" ? "command" : family === "workflows" ? "workflow" : "script";
+      if (
+        name.length > 0 &&
+        (family === "commands" || family === "tasks" || family === "workflows" || family === "scripts")
+      ) {
+        const kind =
+          family === "commands"
+            ? "command"
+            : family === "tasks"
+              ? "task"
+              : family === "workflows"
+                ? "workflow"
+                : "script";
         return { kind, ref: value };
       }
     }

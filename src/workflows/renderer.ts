@@ -20,9 +20,10 @@ import type {
   WorkflowStepDefinition,
   WorkflowStepOrchestrationSummary,
 } from "../sources/types";
-import { parseWorkflow } from "./parser";
 import { type ProgramDefaults, projectExecCore } from "./program/schema";
 import type { WorkflowDocument, WorkflowStep } from "./schema";
+import { compileWorkflowSource } from "./source-ir/compile";
+import { workflowSourceIrToDocument } from "./source-ir/document";
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -40,9 +41,9 @@ function deriveName(ctx: RenderContext): string {
 }
 
 function loadDocument(ctx: RenderContext): WorkflowDocument {
-  const result = parseWorkflow(ctx.content(), { path: ctx.relPath });
-  if (result.ok) return result.document;
-  const summary = result.errors.map((e) => `${ctx.relPath}:${e.line} — ${e.message}`).join("\n");
+  const result = compileWorkflowSource(ctx.content(), { path: ctx.relPath, workspaceRoot: ctx.stashRoot });
+  if (result.ok) return workflowSourceIrToDocument(result.ir, { mode: "display" });
+  const summary = result.errors.map((e) => `${e.path}:${e.line} — ${e.message}`).join("\n");
   throw new UsageError(`Workflow has errors:\n${summary}`);
 }
 

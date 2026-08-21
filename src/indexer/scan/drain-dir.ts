@@ -36,8 +36,9 @@
 import { akmAdapter } from "../../core/adapter/adapters/akm-adapter";
 import type { BundleAdapter } from "../../core/adapter/bundle-adapter";
 import type { BundleComponent, IndexDocument } from "../../core/adapter/types";
-import { parseWorkflow } from "../../workflows/parser";
 import { cacheWorkflowDocument } from "../../workflows/runtime/document-cache";
+import { compileWorkflowSource } from "../../workflows/source-ir/compile";
+import { WorkflowSourceProjectionError, workflowSourceIrToDocument } from "../../workflows/source-ir/document";
 import { buildMetadataSkipWarning, type StashFile } from "../passes/metadata";
 import { buildFileContext, type FileContext } from "../walk/file-context";
 import { indexDocumentToStashEntry } from "./doc-to-entry";
@@ -89,9 +90,9 @@ export function drainDirDocuments(
     }
 
     const entry = indexDocumentToStashEntry(doc);
-    // Workflow docs: drop-with-warning if broken; otherwise cache the parsed
-    // markdown document for the persist-time `workflow_documents` write.
-    const dropWarning = handleWorkflowDoc(doc, entry, file);
+    // Workflow docs: drop-with-warning if broken; otherwise cache a lossless
+    // runtime projection when the current executor can represent the source.
+    const dropWarning = handleWorkflowDoc(doc, entry, file, component.root);
     if (dropWarning !== null) {
       warnings.push(dropWarning);
       continue;
@@ -130,15 +131,33 @@ export function recognizeStashEntries(stashRoot: string, files: string[]): Stash
 /**
  * If `doc` is a workflow, re-parse it: return a `Skipped workflow …` drop
  * warning when it is broken, or cache the parsed markdown `WorkflowDocument`
- * (workflow-md only) and return `null` when valid. Non-workflow docs return
- * `null` immediately.
+ * (Markdown or GitHub-shaped YAML) and return `null` when valid. Non-workflow
+ * docs return `null` immediately.
  */
-function handleWorkflowDoc(doc: IndexDocument, entry: IndexDocument, file: FileContext): string | null {
-  if (docRenderer(doc) !== WORKFLOW_MD_RENDERER) return null;
+function handleWorkflowDoc(
+  doc: IndexDocument,
+  entry: IndexDocument,
+  file: FileContext,
+  workspaceRoot: string,
+): string | null {
+  if (
+    doc.type !== "workflow" ||
+    (doc.adapterId !== "akm" && doc.adapterId !== "akm-workflow") ||
+    (docRenderer(doc) !== WORKFLOW_MD_RENDERER && doc.adapterId !== "akm-workflow")
+  ) {
+    return null;
+  }
 
-  const result = parseWorkflow(file.content(), { path: file.relPath });
+  const result = compileWorkflowSource(file.content(), { path: file.relPath, workspaceRoot });
   if (!result.ok) return workflowDropWarning(file, result.errors);
-  cacheWorkflowDocument(entry, result.document);
+  try {
+    cacheWorkflowDocument(entry, workflowSourceIrToDocument(result.ir, { mode: "runtime" }));
+  } catch (cause) {
+    // A valid source target may require a later resolver (for example tasks/*).
+    // Keep it indexable/showable; the runtime loader will surface the precise
+    // unsupported projection instead of caching a semantically false document.
+    if (!(cause instanceof WorkflowSourceProjectionError)) throw cause;
+  }
   return null;
 }
 

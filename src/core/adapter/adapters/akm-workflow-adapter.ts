@@ -71,14 +71,9 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   if (isReservedDocFile(file.fileName)) return null;
   const raw = file.content();
   if (file.ext === ".md" && !isWorkflowFile(raw)) return null;
-  if (file.ext === ".yml" && !looksLikeGithubWorkflowSource(raw)) return null;
 
   const conceptId = conceptIdOf(file.relPath);
   const name = conceptId.split("/").pop() ?? conceptId;
-  if (file.ext === ".yml") {
-    const compiled = compileGithubWorkflowSource(raw, { path: file.relPath, workspaceRoot: c.root });
-    if (!compiled.ok) return null;
-  }
   const parsed = parseFrontmatter(raw);
   const description = file.ext === ".md" ? nonEmptyString(parsed.data.description) : undefined;
   const body = file.ext === ".md" ? parsed.content : raw;
@@ -194,8 +189,8 @@ export const akmWorkflowAdapter: BundleAdapter = {
   },
 
   /**
-   * Install-time probe (§1.2): a root holding a workflow-shaped `.md` file at
-   * top level (frontmatter `type: workflow` or no `type:` at all).
+   * Install-time probe (§1.2): a root holding an explicitly typed Markdown
+   * workflow or a complete GitHub-shaped YAML workflow at top level.
    */
   looksLikeRoot(root: string): boolean {
     let entries: fs.Dirent[];

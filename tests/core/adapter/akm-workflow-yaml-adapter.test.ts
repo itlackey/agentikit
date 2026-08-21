@@ -93,7 +93,7 @@ describe("GitHub YAML workflow adapter ownership", () => {
       expect(diagnostics?.some(({ issue }) => issue === "invalid-task-yaml")).toBe(false);
       expect(
         akmWorkflowAdapter.recognize(component, buildFileContext(root, path.join(root, "contract.yml"))),
-      ).toBeNull();
+      ).toMatchObject({ type: "workflow", conceptId: "contract", adapterId: "akm-workflow" });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -117,6 +117,9 @@ describe("GitHub YAML workflow adapter ownership", () => {
         fixed: false,
       });
       expect(diagnostics?.[0]?.detail).toContain("root must be a mapping");
+      expect(
+        akmWorkflowAdapter.recognize(component, buildFileContext(root, path.join(root, "broken.yml"))),
+      ).toMatchObject({ type: "workflow", conceptId: "broken", adapterId: "akm-workflow" });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

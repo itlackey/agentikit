@@ -2,12 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import fs from "node:fs";
-import path from "node:path";
 import { isAlias, isMap, isScalar, isSeq, LineCounter, type Pair, type ParsedNode, parseDocument } from "yaml";
-import { parseBuiltinCommandAction } from "../../commands/command/builtin-action";
-import { parseSchedule } from "../../tasks/schedule";
 import { utf8Bytes, WORKFLOW_MAX_SOURCE_BYTES } from "../resource-limits";
+import { canonicalTopologicalJobs } from "./ordering";
 import { WorkflowSourceFailure } from "./result";
 import {
   WORKFLOW_SOURCE_HOST_SHELLS,
@@ -19,6 +16,14 @@ import {
   type WorkflowSourceStep,
   type WorkflowSourceTrigger,
 } from "./schema";
+import {
+  canonicalizeWorkflowCron,
+  canonicalizeWorkflowRun,
+  canonicalizeWorkflowWorkingDirectory,
+  classifyWorkflowStepUses,
+  validateWorkflowBuiltinCommand,
+  WorkflowSourceSemanticError,
+} from "./semantics";
 import {
   classifyWorkflowSourceUses,
   type WorkflowSourceTriggerClassifier,
@@ -37,7 +42,6 @@ const HOST_SHELLS = new Set<string>(WORKFLOW_SOURCE_HOST_SHELLS);
 const SOURCE_ID = /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/;
 const INPUT_KEY = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const TOKEN_SAFE_RUN = /^[A-Za-z0-9_./:@+=,-]+(?:[ \t]+[A-Za-z0-9_./:@+=,-]+)*$/;
 const MAX_YAML_DEPTH = 32;
 const MAX_YAML_NODES = 20_000;
 const MAX_STEPS_PER_JOB = 256;
@@ -347,8 +351,7 @@ function parseTriggers(
     for (const [ordinal, record] of records.entries()) {
       const scheduleFields = reader.fields(record, SCHEDULE_KEYS, `workflow.on.schedule[${ordinal}]`);
       const cronNode = reader.required(scheduleFields, "cron", `workflow.on.schedule[${ordinal}]`);
-      const cron = reader.string(cronNode, `workflow.on.schedule[${ordinal}].cron`);
-      validateCron(reader, cron, cronNode);
+      const cron = validateCron(reader, reader.string(cronNode, `workflow.on.schedule[${ordinal}].cron`), cronNode);
       triggers.push({ kind: "schedule", cron, ordinal, source: reader.span(cronNode) });
     }
   }
@@ -422,9 +425,15 @@ function verifyOwnerTriggerPlan(
     plan.schedules.length === expectedSchedules.length &&
     plan.schedules.every((binding, index) => {
       const expected = expectedSchedules[index];
+      let canonicalBindingCron: string;
+      try {
+        canonicalBindingCron = canonicalizeWorkflowCron(binding.cron);
+      } catch {
+        return false;
+      }
       return (
         expected !== undefined &&
-        binding.cron === expected.cron &&
+        canonicalBindingCron === expected.cron &&
         binding.ordinal === expected.ordinal &&
         binding.source === `on.schedule[${expected.ordinal}].cron`
       );
@@ -438,12 +447,11 @@ function verifyOwnerTriggerPlan(
   }
 }
 
-function validateCron(reader: StrictYamlReader, cron: string, node: ParsedNode | null): void {
-  if (cron.startsWith("@")) reader.fail("invalid-cron", "GitHub schedule cron must use exactly five fields.", node);
+function validateCron(reader: StrictYamlReader, cron: string, node: ParsedNode | null): string {
   try {
-    parseSchedule(cron, "cron");
+    return canonicalizeWorkflowCron(cron);
   } catch (cause) {
-    reader.fail("invalid-cron", cause instanceof Error ? cause.message : "Invalid cron schedule.", node);
+    semanticReaderFail(reader, cause, node);
   }
 }
 
@@ -456,16 +464,30 @@ function parseJobs(
   if (fields.size === 0 || fields.size > 256) {
     reader.fail("job-count-limit", "workflow.jobs must contain 1 through 256 jobs.", node);
   }
-  const jobs = [...fields.entries()].map(([id, pair]) => parseJob(reader, id, pair.value, options));
-  return topologicallyOrderJobs(jobs);
+  const jobs = [...fields.entries()].map(([id, pair]) => parseJob(reader, id, pair, options));
+  const ordered = canonicalTopologicalJobs(jobs);
+  if (ordered.ok) return ordered.jobs;
+  if (ordered.kind === "missing") {
+    throw new WorkflowSourceFailure(
+      "missing-job-dependency",
+      `Job ${ordered.job.id} needs missing job ${ordered.dependency}.`,
+      ordered.job.source,
+    );
+  }
+  throw new WorkflowSourceFailure(
+    "job-dependency-cycle",
+    "Workflow jobs contain a dependency cycle.",
+    ordered.job.source,
+  );
 }
 
 function parseJob(
   reader: StrictYamlReader,
   id: string,
-  node: ParsedNode | null,
+  pair: YamlPair,
   options: GithubWorkflowSourceOptions,
 ): WorkflowSourceJob {
+  const node = pair.value;
   if (!SOURCE_ID.test(id)) reader.fail("invalid-job-id", `Invalid job id ${JSON.stringify(id)}.`, node);
   const fields = reader.fields(node, JOB_KEYS, `workflow.jobs.${id}`);
   validateRunner(reader, reader.required(fields, "runs-on", `workflow.jobs.${id}`), id);
@@ -478,13 +500,15 @@ function parseJob(
   const stepIds = new Set<string>();
   const steps = stepNodes.map((step, index) => parseStep(reader, step, id, index, stepIds, options));
   const name = reader.optionalString(fields, "name", `workflow.jobs.${id}`);
+  const keySource = reader.span(pair.key);
+  const valueSource = reader.span(node);
   return {
     id,
     ...(name ? { name } : {}),
     needs,
     steps,
     extensions: { "github.com/actions-workflow": { runsOn: ["self-hosted"] } },
-    source: reader.span(node),
+    source: { path: keySource.path, start: keySource.start, end: valueSource.end },
   };
 }
 
@@ -560,15 +584,10 @@ function parseUsesStep(
   }
   const uses = reader.string(usesPair.value, "step.uses");
   const target = classifyUses(reader, uses, usesPair.value, options.classifyUses ?? classifyWorkflowSourceUses);
-  if (target.kind === "github-action") {
-    reader.fail(
-      "remote-action-acquisition-out-of-scope",
-      `Remote action acquisition is out of scope for ${JSON.stringify(uses)}.`,
-      usesPair.value,
-    );
-  }
   const withValues = parseScalarMap(reader, fields.get("with"), "step.with", INPUT_KEY, true);
-  if (target.kind === "builtin-command") validateBuiltinCommand(reader, withValues, fields.get("with")?.value);
+  if (target.kind === "builtin-command") {
+    validateBuiltinCommand(reader, withValues, fields.get("with")?.value ?? usesPair.value);
+  }
   return { ...common, uses, ...(withValues ? { with: withValues } : {}) };
 }
 
@@ -579,17 +598,9 @@ function classifyUses(
   classifier: WorkflowSourceUsesClassifier,
 ): WorkflowSourceUsesTarget {
   try {
-    return classifier(uses);
+    return classifyWorkflowStepUses(uses, classifier);
   } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    const code = uses.startsWith("docker://")
-      ? "docker-action-unsupported"
-      : uses.startsWith("./") || uses.startsWith("../") || uses.startsWith("/")
-        ? "local-action-path-unsupported"
-        : /^(?:[A-Za-z0-9][A-Za-z0-9._-]*\/\/)?(?:agents|tasks)\//.test(uses)
-          ? "non-executable-asset-ref"
-          : "unsupported-uses-target";
-    reader.fail(code, message, node);
+    semanticReaderFail(reader, cause, node);
   }
 }
 
@@ -599,9 +610,9 @@ function validateBuiltinCommand(
   node: ParsedNode | null | undefined,
 ): void {
   try {
-    parseBuiltinCommandAction(values);
+    validateWorkflowBuiltinCommand(values);
   } catch (cause) {
-    reader.fail("builtin-command-inputs", cause instanceof Error ? cause.message : "Invalid akm/command inputs.", node);
+    semanticReaderFail(reader, cause, node);
   }
 }
 
@@ -613,22 +624,25 @@ function parseRunStep(
   common: Pick<WorkflowSourceStep, "id" | "name" | "env" | "source">,
 ): WorkflowSourceStep {
   if (fields.has("with")) reader.fail("run-field-conflict", "with is legal only with uses.", fields.get("with")?.value);
-  const run = reader.string(runPair.value, "step.run");
-  if (run.includes("\n") || run.includes("\r") || !TOKEN_SAFE_RUN.test(run)) {
-    reader.fail(
-      "unsafe-run-syntax",
-      "Local run accepts only whitespace-separated safe tokens; shell expansion and operators are unsupported.",
-      runPair.value,
-    );
+  let run: string;
+  try {
+    run = canonicalizeWorkflowRun(reader.string(runPair.value, "step.run"));
+  } catch (cause) {
+    semanticReaderFail(reader, cause, runPair.value);
   }
   const shell = fields.has("shell") ? reader.requiredString(fields, "shell", "step") : undefined;
   if (shell !== undefined && !HOST_SHELLS.has(shell))
     reader.fail("unsupported-shell", `Unsupported shell ${shell}.`, fields.get("shell")?.value);
-  const workingDirectory = fields.has("working-directory")
+  let workingDirectory = fields.has("working-directory")
     ? reader.requiredString(fields, "working-directory", "step")
     : undefined;
-  if (workingDirectory !== undefined)
-    validateWorkingDirectory(reader, workingDirectory, fields.get("working-directory")?.value, options);
+  if (workingDirectory !== undefined) {
+    try {
+      workingDirectory = canonicalizeWorkflowWorkingDirectory(workingDirectory, options.workspaceRoot);
+    } catch (cause) {
+      semanticReaderFail(reader, cause, fields.get("working-directory")?.value);
+    }
+  }
   return {
     ...common,
     run,
@@ -655,91 +669,6 @@ function parseScalarMap(
   return out;
 }
 
-function validateWorkingDirectory(
-  reader: StrictYamlReader,
-  value: string,
-  node: ParsedNode | null | undefined,
-  options: GithubWorkflowSourceOptions,
-): void {
-  const segments = value.replaceAll("\\", "/").split("/");
-  if (
-    path.isAbsolute(value) ||
-    path.win32.isAbsolute(value) ||
-    segments.some((segment) => segment === ".." || segment === "")
-  ) {
-    reader.fail("working-directory-escape", "working-directory must be relative and contained.", node);
-  }
-  if (!options.workspaceRoot) return;
-  let root: string;
-  try {
-    root = fs.realpathSync(options.workspaceRoot);
-  } catch {
-    reader.fail("working-directory-unverifiable", "Workspace root cannot be physically verified.", node);
-  }
-  const candidate = path.resolve(root, value);
-  if (!contained(root, candidate))
-    reader.fail("working-directory-escape", "working-directory escapes the workspace.", node);
-  try {
-    if (fs.existsSync(candidate) && !fs.statSync(candidate).isDirectory()) {
-      reader.fail("working-directory-unverifiable", "working-directory must resolve to a directory.", node);
-    }
-  } catch (cause) {
-    if (cause instanceof WorkflowSourceFailure) throw cause;
-    reader.fail("working-directory-unverifiable", "working-directory cannot be physically verified.", node);
-  }
-  let physical: string;
-  try {
-    physical = realpathThroughExistingAncestor(candidate);
-  } catch {
-    reader.fail("working-directory-unverifiable", "working-directory cannot be physically verified.", node);
-  }
-  if (!contained(root, physical)) {
-    reader.fail(
-      "working-directory-escape",
-      "working-directory resolves through a symlink outside the workspace.",
-      node,
-    );
-  }
-}
-
-function topologicallyOrderJobs(jobs: WorkflowSourceJob[]): WorkflowSourceJob[] {
-  const byId = new Map(jobs.map((job) => [job.id, job]));
-  for (const job of jobs) {
-    for (const dependency of job.needs) {
-      if (!byId.has(dependency)) {
-        throw new WorkflowSourceFailure(
-          "missing-job-dependency",
-          `Job ${job.id} needs missing job ${dependency}.`,
-          job.source,
-        );
-      }
-    }
-  }
-  const ordered: WorkflowSourceJob[] = [];
-  const emitted = new Set<string>();
-  while (ordered.length < jobs.length) {
-    const ready = jobs
-      .filter((job) => !emitted.has(job.id) && job.needs.every((need) => emitted.has(need)))
-      .sort((left, right) => compareCodePoints(left.id, right.id));
-    if (ready.length === 0) {
-      const cyclic = jobs
-        .filter((job) => !emitted.has(job.id))
-        .sort((left, right) => compareCodePoints(left.id, right.id))[0];
-      if (!cyclic) throw new Error("Dependency ordering stalled without a remaining job.");
-      throw new WorkflowSourceFailure(
-        "job-dependency-cycle",
-        "Workflow jobs contain a dependency cycle.",
-        cyclic.source,
-      );
-    }
-    for (const job of ready) {
-      ordered.push(job);
-      emitted.add(job.id);
-    }
-  }
-  return ordered;
-}
-
 function wholeSourceSpan(source: string, filePath: string): WorkflowSourceSpan {
   return { path: filePath, start: 1, end: Math.max(1, source.split(/\r?\n/).length) };
 }
@@ -753,23 +682,7 @@ function cleanYamlMessage(message: string): string {
   return message.replace(/\s+at line \d+, column \d+:[\s\S]*$/i, "").trim();
 }
 
-function contained(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
-}
-
-function compareCodePoints(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function realpathThroughExistingAncestor(candidate: string): string {
-  let current = candidate;
-  const suffix: string[] = [];
-  while (!fs.existsSync(current)) {
-    const parent = path.dirname(current);
-    if (parent === current) return candidate;
-    suffix.unshift(path.basename(current));
-    current = parent;
-  }
-  return path.join(fs.realpathSync(current), ...suffix);
+function semanticReaderFail(reader: StrictYamlReader, cause: unknown, node: ParsedNode | null | undefined): never {
+  if (cause instanceof WorkflowSourceSemanticError) reader.fail(cause.code, cause.message, node);
+  reader.fail("invalid-workflow-source", cause instanceof Error ? cause.message : String(cause), node);
 }

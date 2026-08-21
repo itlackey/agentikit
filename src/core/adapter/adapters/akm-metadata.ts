@@ -60,7 +60,8 @@ import { listKeys } from "../../../commands/env/env";
 import type { IndexDocument } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseTaskV3Yaml } from "../../../tasks/source-v3";
-import { parseWorkflow } from "../../../workflows/parser";
+import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
+import { workflowSourceIrToDocument } from "../../../workflows/source-ir/document";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { TocHeading } from "../../asset/markdown";
 import { parseMarkdownToc } from "../../asset/markdown";
@@ -311,9 +312,9 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
     // ── workflow-document-metadata (workflow-md) ──
     case "workflow-md": {
       try {
-        const result = parseWorkflow(file.content(), { path: file.relPath });
+        const result = compileWorkflowSource(file.content(), { path: file.relPath, workspaceRoot: file.stashRoot });
         if (!result.ok) return out;
-        const doc = result.document;
+        const doc = workflowSourceIrToDocument(result.ir, { mode: "display" });
         const hints = new Set<string>();
         if (doc.preamble) hints.add(doc.preamble);
         for (const step of doc.steps) {

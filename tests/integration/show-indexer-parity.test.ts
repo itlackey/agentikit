@@ -381,6 +381,54 @@ describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
     expect(shown.action).not.toContain("workflow-fixture//workflows/release");
   });
 
+  test.each([
+    "ordinary",
+    "standalone",
+  ] as const)("%s GitHub YAML workflow indexes and shows through its owning adapter", async (kind) => {
+    const yaml = `name: YAML show
+on: { workflow_dispatch: null }
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: verify
+        run: bun test
+        shell: bash
+        working-directory: packages/cli
+`;
+    if (kind === "ordinary") {
+      writeFile(path.join(stashDir, "workflows", "yaml-show.yml"), yaml);
+      await akmIndex({ stashDir, full: true });
+      const shown = await akmShowUnified({ ref: "workflows/yaml-show", skipLogging: true });
+      expect(shown).toMatchObject({
+        type: "workflow",
+        name: "yaml-show",
+        steps: [
+          {
+            id: "verify",
+            orchestration: { exec: { command: ["bash", "-c", "bun test"], cwd: "packages/cli" } },
+          },
+        ],
+      });
+      return;
+    }
+
+    const root = _createTmpDir("akm-yaml-show-");
+    writeFile(path.join(root, "yaml-show.yml"), yaml);
+    await indexAdapterBundle("workflow-yaml", root, "akm-workflow", true);
+    const shown = await akmShowUnified({ ref: "workflow-yaml//yaml-show", skipLogging: true });
+    expect(shown).toMatchObject({
+      type: "workflow",
+      name: "yaml-show",
+      steps: [
+        {
+          id: "verify",
+          orchestration: { exec: { command: ["bash", "-c", "bun test"], cwd: "packages/cli" } },
+        },
+      ],
+    });
+  });
+
   test("non-Markdown indexed files reject Markdown heading fragments", async () => {
     await indexAdapterBundle("generic-fixture", copyFixtureToTmp(GENERIC_ROOT), "generic-files", true);
 

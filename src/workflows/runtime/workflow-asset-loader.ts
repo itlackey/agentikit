@@ -18,9 +18,9 @@ import { buildFileContext } from "../../indexer/walk/file-context";
 import { resolveAssetPath } from "../../sources/resolve";
 import type { WorkflowParameter, WorkflowStepDefinition } from "../../sources/types";
 import { withIndexDb } from "../../storage/repositories/index-db";
-import { formatWorkflowErrors } from "../authoring/authoring";
-import { parseWorkflow } from "../parser";
 import { WORKFLOW_SCHEMA_VERSION, type WorkflowDocument } from "../schema";
+import { compileWorkflowSource } from "../source-ir/compile";
+import { WorkflowSourceProjectionError, workflowSourceIrToDocument } from "../source-ir/document";
 
 /**
  * A workflow asset projected from its on-disk (or index-cached) document into
@@ -157,7 +157,7 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
       : canonicalWorkflowRunRef(sourceBundleId, canonicalName);
 
   const cached = readWorkflowDocumentFromIndex(resolvedSourcePath, fullRef, workflowAdapterId as string);
-  const document = cached ?? loadWorkflowDocumentFromDisk(assetPath);
+  const document = cached ?? loadWorkflowDocumentFromDisk(assetPath, resolvedSourcePath);
   return projectAsset(document, fullRef, assetPath, resolvedSourcePath, workflowAdapterId as string, canonicalName);
 }
 
@@ -298,13 +298,19 @@ export function resolveWorkflowEntryId(sourcePath: string, ref: string, adapterI
   });
 }
 
-function loadWorkflowDocumentFromDisk(assetPath: string): WorkflowDocument {
+function loadWorkflowDocumentFromDisk(assetPath: string, workspaceRoot: string): WorkflowDocument {
   const content = fs.readFileSync(assetPath, "utf8");
-  const result = parseWorkflow(content, { path: assetPath });
+  const result = compileWorkflowSource(content, { path: assetPath, workspaceRoot });
   if (!result.ok) {
-    throw new UsageError(formatWorkflowErrors(assetPath, result.errors));
+    const details = result.errors.map((error) => `  ${error.path}:${error.line} — ${error.message}`).join("\n");
+    throw new UsageError(`Workflow source has ${result.errors.length} error(s):\n${details}`);
   }
-  return result.document;
+  try {
+    return workflowSourceIrToDocument(result.ir, { mode: "runtime" });
+  } catch (cause) {
+    if (cause instanceof WorkflowSourceProjectionError) throw new UsageError(cause.message, "INVALID_FLAG_VALUE");
+    throw cause;
+  }
 }
 
 function readWorkflowDocumentFromIndex(sourcePath: string, ref: string, adapterId: string): WorkflowDocument | null {

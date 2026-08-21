@@ -356,7 +356,7 @@ function rejectedGithubFixtureReason(input: unknown): string | null {
 }
 
 describe("workflow frontend fixtures", () => {
-  test("AKM Markdown and GitHub-shaped YAML carry the same deliberately portable semantics", () => {
+  test("AKM Markdown and GitHub-shaped YAML share fixture intent without erasing dispatch form", () => {
     const manifest = readJson<WorkflowManifest>(path.join(WORKFLOW_ROOT, "manifest.json"));
     const before = captureFixtureBytes(WORKFLOW_ROOT);
     const markdown = fs.readFileSync(path.join(WORKFLOW_ROOT, manifest.equivalent.markdown), "utf8");
@@ -368,8 +368,9 @@ describe("workflow frontend fixtures", () => {
     expect(manifest.currentFreezeWithSchema).toBe("current/agent-unit-schema.md");
     expect(manifest.equivalent.boundary).toContain("self-hosted");
     expect(markdownFixtureProjection(markdown, plan)).toEqual(expected);
-    // This is a fixture-only projection for WP7. It does not claim the current
-    // runtime accepts YAML workflow sources.
+    // This fixture-only intent projection deliberately ignores direct-argv
+    // versus shell dispatch. The source-IR contract separately pins that they
+    // remain distinct and are never converted by joining argv.
     expect(githubFixtureProjection(parseYaml(githubYaml))).toEqual(expected);
     assertFixtureBytesUnchanged(WORKFLOW_ROOT, before);
   });

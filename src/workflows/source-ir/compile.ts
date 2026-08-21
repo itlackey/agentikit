@@ -5,15 +5,16 @@
 import path from "node:path";
 import { parseFrontmatterBlock } from "../../core/asset/frontmatter";
 import { parseWorkflow } from "../parser";
+import { type ProgramUnit, projectExecCore } from "../program/schema";
 import type { WorkflowStep as MarkdownWorkflowStep } from "../schema";
 import { type GithubWorkflowSourceOptions, parseGithubWorkflowSource } from "./github-yaml";
 import { sourceFailureResult, type WorkflowSourceCompileResult, WorkflowSourceFailure } from "./result";
 import {
   decodeWorkflowSourceIrV1,
   type WorkflowSourceEnvironmentValue,
-  type WorkflowSourceExtensions,
   type WorkflowSourceExtensionValue,
   type WorkflowSourceIrV1,
+  type WorkflowSourceJsonValue,
   type WorkflowSourceScalar,
   type WorkflowSourceSpan,
   type WorkflowSourceStep,
@@ -25,6 +26,7 @@ export type { WorkflowSourceCompileResult, WorkflowSourceError } from "./result"
 
 export interface MarkdownWorkflowSourceOptions {
   path: string;
+  workspaceRoot?: string;
 }
 
 export function compileGithubWorkflowSource(
@@ -32,7 +34,12 @@ export function compileGithubWorkflowSource(
   options: GithubWorkflowSourceOptions,
 ): WorkflowSourceCompileResult {
   try {
-    return { ok: true, ir: decodeWorkflowSourceIrV1(parseGithubWorkflowSource(source, options)) };
+    return {
+      ok: true,
+      ir: decodeWorkflowSourceIrV1(parseGithubWorkflowSource(source, options), {
+        workspaceRoot: options.workspaceRoot,
+      }),
+    };
   } catch (cause) {
     return sourceFailureResult(cause, options.path);
   }
@@ -60,6 +67,14 @@ export function compileMarkdownWorkflowSource(
     const ir: WorkflowSourceIrV1 = {
       sourceIrVersion: 1,
       name: markdownName(source, options.path),
+      ...(parsed.document.description ? { description: parsed.document.description } : {}),
+      ...(parsed.document.tags ? { tags: [...parsed.document.tags] } : {}),
+      ...(parsed.document.params ? { params: jsonClone(parsed.document.params) as WorkflowSourceIrV1["params"] } : {}),
+      ...(parsed.document.defaults
+        ? { defaults: jsonClone(parsed.document.defaults) as WorkflowSourceIrV1["defaults"] }
+        : {}),
+      ...(parsed.document.budget ? { budget: jsonClone(parsed.document.budget) } : {}),
+      ...(parsed.document.preamble ? { preamble: parsed.document.preamble } : {}),
       triggers: [{ kind: "workflow_dispatch", source: sourceSpan }],
       jobs: [
         {
@@ -72,17 +87,14 @@ export function compileMarkdownWorkflowSource(
       extensions: {
         "akm.dev/workflow-markdown": jsonExtension({
           workflowSchemaVersion: parsed.document.schemaVersion,
-          ...(parsed.document.description ? { description: parsed.document.description } : {}),
-          ...(parsed.document.tags ? { tags: [...parsed.document.tags] } : {}),
-          ...(parsed.document.params ? { params: jsonClone(parsed.document.params) } : {}),
-          ...(parsed.document.defaults ? { defaults: jsonClone(parsed.document.defaults) } : {}),
-          ...(parsed.document.budget ? { budget: jsonClone(parsed.document.budget) } : {}),
-          ...(parsed.document.preamble ? { preamble: parsed.document.preamble } : {}),
         }),
       },
       source: sourceSpan,
     };
-    return { ok: true, ir: decodeWorkflowSourceIrV1(ir) };
+    return {
+      ok: true,
+      ir: decodeWorkflowSourceIrV1(ir, { workspaceRoot: options.workspaceRoot }),
+    };
   } catch (cause) {
     return sourceFailureResult(cause, options.path);
   }
@@ -116,63 +128,91 @@ export function compileWorkflowSource(
  */
 export function canonicalPortableWorkflowSourceBytes(ir: WorkflowSourceIrV1): string {
   const decoded = decodeWorkflowSourceIrV1(ir);
-  return JSON.stringify({
-    schemaVersion: 1,
-    name: decoded.name,
-    triggers: decoded.triggers.map((trigger) =>
-      trigger.kind === "workflow_dispatch" ? "workflow_dispatch" : { schedule: trigger.cron },
-    ),
-    jobs: decoded.jobs.map((job) => ({
-      id: job.id,
-      needs: [...job.needs],
-      steps: job.steps.map(portableStep),
-    })),
-  });
+  return JSON.stringify(
+    stableJson({
+      schemaVersion: 1,
+      name: decoded.name,
+      ...(decoded.params ? { params: decoded.params } : {}),
+      ...(decoded.defaults ? { defaults: decoded.defaults } : {}),
+      ...(decoded.budget ? { budget: decoded.budget } : {}),
+      triggers: decoded.triggers.map((trigger) =>
+        trigger.kind === "workflow_dispatch" ? "workflow_dispatch" : { schedule: trigger.cron },
+      ),
+      jobs: decoded.jobs.map((job) => ({
+        id: job.id,
+        needs: [...job.needs],
+        steps: job.steps.map(portableStep),
+      })),
+    }),
+  );
 }
 
 function portableStep(step: WorkflowSourceStep): Record<string, unknown> {
   const out: Record<string, unknown> = {
     id: step.id,
-    kind: step.run !== undefined ? "run" : "uses",
-    ...(step.run !== undefined ? { run: step.run } : { uses: step.uses }),
+    kind:
+      step.route !== undefined ? "route" : step.exec !== undefined ? "exec" : step.run !== undefined ? "run" : "uses",
+    ...(step.run !== undefined ? { run: step.run } : {}),
+    ...(step.uses !== undefined ? { uses: step.uses } : {}),
+    ...(step.exec !== undefined ? { exec: step.exec } : {}),
   };
   if (step.name !== undefined && step.name !== step.id) out.name = step.name;
   if (step.with !== undefined) out.with = sortedRecord(step.with);
   if (step.env !== undefined) out.env = sortedRecord(step.env);
   if (step.shell !== undefined) out.shell = step.shell;
   if (step.workingDirectory !== undefined) out["working-directory"] = step.workingDirectory;
+  if (step.unit !== undefined) out.unit = step.unit;
+  if (step.map !== undefined) out.map = step.map;
+  if (step.route !== undefined) out.route = step.route;
+  if (step.inputs !== undefined) out.inputs = [...step.inputs];
+  if (step.output !== undefined) out.output = step.output;
+  if (step.gate !== undefined) out.gate = step.gate;
   return out;
 }
 
 function markdownStep(step: MarkdownWorkflowStep, filePath: string): WorkflowSourceStep {
   const source = step.source ?? { path: filePath, start: 1, end: 1 };
-  if (step.map || step.route) {
-    throw new WorkflowSourceFailure(
-      "markdown-extension-lowering-required",
-      `Markdown step ${JSON.stringify(step.id)} uses map/route semantics owned by the Markdown adapter.`,
-      source,
-    );
-  }
-  const extension: WorkflowSourceExtensions = {
-    "akm.dev/workflow-markdown": jsonExtension({
-      sequenceIndex: step.sequenceIndex,
-      ...(step.unit ? { unit: jsonClone(step.unit) } : {}),
-      ...(step.inputs ? { inputs: [...step.inputs] } : {}),
-      ...(step.output ? { output: jsonClone(step.output) } : {}),
-      ...(step.gate ? { gate: jsonClone(step.gate) } : {}),
-      ...(step.gateRubric ? { gateRubric: step.gateRubric.text } : {}),
-    }),
+  const dispatchUnit = step.map?.unit ?? step.unit;
+  const unit = markdownUnit(dispatchUnit);
+  const common: Omit<WorkflowSourceStep, "uses" | "run" | "exec" | "source"> & {
+    source: WorkflowSourceSpan;
+  } = {
+    id: step.id,
+    ...(unit ? { unit } : {}),
+    ...(step.map
+      ? {
+          map: {
+            over: step.map.over,
+            ...(step.map.concurrency !== undefined ? { concurrency: step.map.concurrency } : {}),
+            ...(step.map.reducer !== undefined ? { reducer: step.map.reducer } : {}),
+          },
+        }
+      : {}),
+    ...(step.route ? { route: jsonClone(step.route) } : {}),
+    ...(step.inputs ? { inputs: [...step.inputs] } : {}),
+    ...(step.output ? { output: jsonClone(step.output) as WorkflowSourceStep["output"] } : {}),
+    ...(step.gate || step.gateRubric
+      ? {
+          gate: {
+            ...(step.gate?.maxLoops !== undefined ? { maxLoops: step.gate.maxLoops } : {}),
+            ...(step.gateRubric?.text.trim() ? { rubric: step.gateRubric.text } : {}),
+          },
+        }
+      : {}),
+    source,
   };
-  if (step.unit?.exec) {
-    const command = step.unit.exec.command;
-    if (!command.every(isTokenSafeArg)) {
-      throw new WorkflowSourceFailure(
-        "markdown-exec-not-token-safe",
-        `Markdown step ${JSON.stringify(step.id)} has exec argv that cannot be represented exactly as token-safe run.`,
-        source,
-      );
-    }
-    return { id: step.id, run: command.join(" "), extensions: extension, source };
+  if (step.route) {
+    return {
+      ...common,
+      ...(step.instructions?.text.trim() ? { instructions: step.instructions.text } : {}),
+    };
+  }
+  if (dispatchUnit?.exec) {
+    return {
+      ...common,
+      exec: projectExecCore(dispatchUnit.exec),
+      ...(step.instructions?.text.trim() ? { instructions: step.instructions.text } : {}),
+    };
   }
   const content = step.instructions?.text ?? "";
   if (content.trim() === "") {
@@ -183,12 +223,18 @@ function markdownStep(step: MarkdownWorkflowStep, filePath: string): WorkflowSou
     );
   }
   return {
-    id: step.id,
+    ...common,
     uses: "akm/command",
     with: { content },
-    extensions: extension,
-    source,
   };
+}
+
+function markdownUnit(value: ProgramUnit | undefined): WorkflowSourceStep["unit"] {
+  if (!value) return undefined;
+  const { exec: _exec, source: _source, ...unit } = value;
+  return Object.keys(unit).length > 0
+    ? (jsonClone(unit) as unknown as NonNullable<WorkflowSourceStep["unit"]>)
+    : undefined;
 }
 
 function markdownName(source: string, filePath: string): string {
@@ -201,10 +247,6 @@ function markdownName(source: string, filePath: string): string {
 
 function wholeSourceSpan(source: string, filePath: string): WorkflowSourceSpan {
   return { path: filePath, start: 1, end: Math.max(1, source.split(/\r?\n/).length) };
-}
-
-function isTokenSafeArg(value: string): boolean {
-  return /^[A-Za-z0-9_./:@+=,-]+$/.test(value);
 }
 
 function sortedRecord<T extends WorkflowSourceScalar | WorkflowSourceEnvironmentValue>(
@@ -221,4 +263,16 @@ function jsonClone<T>(value: T): T {
 
 function jsonExtension(value: unknown): WorkflowSourceExtensionValue {
   return JSON.parse(JSON.stringify(value)) as WorkflowSourceExtensionValue;
+}
+
+function stableJson(value: unknown): WorkflowSourceJsonValue {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, item]) => [key, stableJson(item)]),
+    );
+  }
+  return value as WorkflowSourceJsonValue;
 }

@@ -4,7 +4,7 @@
     "markdown": "equivalent/contract-review.md",
     "githubYaml": "equivalent/contract-review.yml",
     "expected": "equivalent/portable-projection.json",
-    "boundary": "Only token-safe run commands and a local self-hosted runner are used; no shell expansion is needed for equivalence."
+    "boundary": "Both fixtures intend the same output on a local self-hosted runner, but source IR must retain Markdown direct argv separately from GitHub shell text; argv is never joined into a shell command."
   },
   "currentFreeze": "current/agent-unit.md",
   "currentFreezeWithSchema": "current/agent-unit-schema.md",

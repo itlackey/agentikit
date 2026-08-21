@@ -7,6 +7,7 @@ import {
   compileGithubWorkflowSource,
   compileMarkdownWorkflowSource,
 } from "../../src/workflows/source-ir/compile";
+import { workflowSourceIrToDocument } from "../../src/workflows/source-ir/document";
 import { decodeWorkflowSourceIrV1, type WorkflowSourceIrV1 } from "../../src/workflows/source-ir/schema";
 
 const FIXTURES = path.join(import.meta.dir, "../fixtures/execution-contracts/workflows");
@@ -30,6 +31,21 @@ function expectGithubError(yaml: string, code: string, line?: number): void {
   if (line !== undefined) expect(result.errors.find((error) => error.code === code)?.line).toBe(line);
 }
 
+function requireOnlyDecodedStep(ir: WorkflowSourceIrV1): WorkflowSourceIrV1["jobs"][number]["steps"][number] {
+  const step = ir.jobs[0]?.steps[0];
+  if (!step) throw new Error("decoded source-IR fixture must contain one step");
+  return step;
+}
+
+function replaceOnlyDecodedStep(
+  ir: WorkflowSourceIrV1,
+  step: WorkflowSourceIrV1["jobs"][number]["steps"][number],
+): void {
+  const job = ir.jobs[0];
+  if (!job) throw new Error("decoded source-IR fixture must contain one job");
+  job.steps[0] = step;
+}
+
 const VALID_HEADER = `name: Local contract
 on:
   workflow_dispatch:
@@ -39,7 +55,7 @@ jobs:
     steps:`;
 
 describe("workflow source IR portable contract", () => {
-  test("equivalent Markdown and GitHub YAML compile to byte-equivalent canonical portable IR", () => {
+  test("direct Markdown argv stays distinct from GitHub shell text in canonical portable IR", () => {
     const markdown = compileMarkdownWorkflowSource(readFixture("equivalent/contract-review.md"), {
       path: "workflows/contract-review.md",
     });
@@ -57,13 +73,96 @@ describe("workflow source IR portable contract", () => {
     expect(yaml.ir.source.path).toBe("workflows/contract-review.yml");
     expect(Object.keys(markdown.ir.extensions ?? {})).toEqual(["akm.dev/workflow-markdown"]);
     expect(Object.keys(yaml.ir.jobs[0]?.extensions ?? {})).toEqual(["github.com/actions-workflow"]);
-    expect(canonicalPortableWorkflowSourceBytes(markdown.ir)).toEqual(canonicalPortableWorkflowSourceBytes(yaml.ir));
-    expect(JSON.parse(canonicalPortableWorkflowSourceBytes(markdown.ir))).toEqual(
-      JSON.parse(readFixture("equivalent/portable-projection.json")),
+    expect(markdown.ir.jobs[0]?.steps[0]).toMatchObject({
+      exec: { command: ["printf", "contract-reviewed"] },
+    });
+    expect(markdown.ir.jobs[0]?.steps[0]?.run).toBeUndefined();
+    expect(canonicalPortableWorkflowSourceBytes(markdown.ir)).not.toEqual(
+      canonicalPortableWorkflowSourceBytes(yaml.ir),
     );
   });
 
-  test("preserves a Markdown agent unit through the owner-keyed extension while using the built-in command action", () => {
+  test("equivalent built-in command sources have exact portable bytes", () => {
+    const markdown = compileMarkdownWorkflowSource(
+      `---\ntype: workflow\nsteps:\n  - id: review\n---\n# Contract review\n\n## review\n\nReview the execution contract.\n`,
+      { path: "workflows/contract-review.md" },
+    );
+    const yaml = github(`name: Contract review
+on: { workflow_dispatch: null }
+jobs:
+  contract:
+    runs-on: [self-hosted]
+    steps:
+      - id: review
+        uses: akm/command
+        with:
+          content: Review the execution contract.
+`);
+    expect(markdown.ok).toBe(true);
+    expect(yaml.ok).toBe(true);
+    if (!markdown.ok || !yaml.ok) return;
+    expect(canonicalPortableWorkflowSourceBytes(markdown.ir)).toEqual(canonicalPortableWorkflowSourceBytes(yaml.ir));
+  });
+
+  test.each([
+    ["embedded whitespace", ["printf", "a b"]],
+    ["literal shell operator", ["printf", "a;b"]],
+    ["literal variable spelling", ["printf", "$HOME"]],
+    ["literal quote bytes", ["printf", "'quoted'"]],
+    ["explicit interpreter payload", ["bash", "-lc", "a | b"]],
+  ] as const)("preserves %s argv without an argv-to-shell join", (_label, command) => {
+    const source = `---
+type: workflow
+steps:
+  - id: direct
+    unit:
+      exec:
+        command: ${JSON.stringify(command)}
+---
+# Direct
+
+## direct
+
+Run the direct command.
+`;
+    const result = compileMarkdownWorkflowSource(source, { path: "workflows/direct.md" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const step = result.ir.jobs[0]?.steps[0];
+    expect(step?.exec?.command).toEqual([...command]);
+    expect(step?.run).toBeUndefined();
+    const document = workflowSourceIrToDocument(result.ir, { mode: "runtime" });
+    expect(document.steps[0]?.unit?.exec?.command).toEqual([...command]);
+    expect(canonicalPortableWorkflowSourceBytes(result.ir)).not.toContain(`"run":${JSON.stringify(command.join(" "))}`);
+  });
+
+  test("canonicalizes equivalent direct cwd spellings without changing argv bytes", () => {
+    const markdown = (cwd: string) => `---
+type: workflow
+steps:
+  - id: direct
+    unit:
+      exec:
+        command: [bash, -lc, "a | b"]
+        cwd: ${JSON.stringify(cwd)}
+---
+# Direct
+
+## direct
+
+Run the direct command.
+`;
+    const dotted = compileMarkdownWorkflowSource(markdown("packages/./cli"), { path: "workflows/direct.md" });
+    const slashed = compileMarkdownWorkflowSource(markdown("packages\\cli"), { path: "workflows/direct.md" });
+    expect(dotted.ok).toBe(true);
+    expect(slashed.ok).toBe(true);
+    if (!dotted.ok || !slashed.ok) return;
+    expect(dotted.ir.jobs[0]?.steps[0]?.exec).toEqual({ command: ["bash", "-lc", "a | b"], cwd: "packages/cli" });
+    expect(slashed.ir.jobs[0]?.steps[0]?.exec).toEqual({ command: ["bash", "-lc", "a | b"], cwd: "packages/cli" });
+    expect(canonicalPortableWorkflowSourceBytes(dotted.ir)).toBe(canonicalPortableWorkflowSourceBytes(slashed.ir));
+  });
+
+  test("preserves a Markdown agent unit as explicit common semantics while using the built-in command action", () => {
     const result = compileMarkdownWorkflowSource(readFixture("current/agent-unit.md"), {
       path: "workflows/agent-unit.md",
     });
@@ -73,12 +172,7 @@ describe("workflow source IR portable contract", () => {
       id: "review",
       uses: "akm/command",
       with: { content: "Review the execution contract." },
-      extensions: {
-        "akm.dev/workflow-markdown": {
-          sequenceIndex: 0,
-          unit: { engine: "fixture-agent", model: "fixture-exact-model", timeoutMs: 45_000 },
-        },
-      },
+      unit: { engine: "fixture-agent", model: "fixture-exact-model", timeoutMs: 45_000 },
     });
   });
 
@@ -303,12 +397,13 @@ jobs:
     );
   });
 
-  test("accepts owner-pinned local uses forms and rejects remote, guessed, local-action, Docker, agent, and task forms", () => {
+  test("accepts workflow-step task definitions and rejects nested workflows and remote actions", () => {
     for (const uses of [
       "akm/command",
       "commands/review",
       "team//commands/review",
-      "workflows/child",
+      "tasks/review",
+      "team//tasks/review",
       "scripts/build.sh",
     ]) {
       const withBlock = uses === "akm/command" ? "\n        with: { content: Review this }" : "";
@@ -320,7 +415,7 @@ jobs:
       ["./actions/review", "local-action-path-unsupported"],
       ["docker://alpine:latest", "docker-action-unsupported"],
       ["agents/reviewer", "non-executable-asset-ref"],
-      ["tasks/review", "non-executable-asset-ref"],
+      ["workflows/child", "nested-workflow-unsupported"],
       ["akm:commands/review", "unsupported-uses-target"],
       ["bad.bundle//commands/review", "unsupported-uses-target"],
       ["commands/review#fragment", "unsupported-uses-target"],
@@ -357,6 +452,38 @@ jobs:
     expect(classified).toBe("commands/review");
   });
 
+  test("adds workflow-only task composition around the injected WP6 task-context classifier", () => {
+    let calls = 0;
+    const result = compileGithubWorkflowSource(`${VALID_HEADER}\n      - id: local\n        uses: tasks/review\n`, {
+      path: "workflows/classified-task.yml",
+      classifyUses: () => {
+        calls++;
+        throw new Error("task-context classifier does not accept task composition");
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toBe(0);
+  });
+
+  test.each([
+    [
+      "literal env",
+      `${VALID_HEADER}\n      - id: local\n        run: echo ok\n        env: { MODE: safe }\n`,
+      /contract\.yml:8.*literal env values.*cannot preserve/is,
+    ],
+    [
+      "task composition",
+      `${VALID_HEADER}\n      - id: local\n        uses: tasks/review\n`,
+      /contract\.yml:8.*tasks\/review.*source-target resolver/is,
+    ],
+  ] as const)("keeps non-projectable %s source displayable but fails runtime with a source location", (_label, source, error) => {
+    const result = github(source);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(workflowSourceIrToDocument(result.ir, { mode: "display" }).steps).toHaveLength(1);
+    expect(() => workflowSourceIrToDocument(result.ir, { mode: "runtime" })).toThrow(error);
+  });
+
   test("accepts token-safe local run with the closed shell table and contained working directories", () => {
     for (const shell of ["bash", "sh", "zsh", "pwsh", "powershell", "cmd"]) {
       const result = github(
@@ -390,6 +517,184 @@ jobs:
     );
   });
 
+  test("canonicalizes accepted cron, token-safe run, and contained cwd spellings", () => {
+    const left = github(`name: Canonical
+on:
+  schedule: [{ cron: "0  8\t* * 1" }]
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: run
+        run: "bun\t run   check"
+        working-directory: packages/./cli
+`);
+    const right = github(`name: Canonical
+on:
+  schedule: [{ cron: "0 8 * * 1" }]
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: run
+        run: bun run check
+        working-directory: packages/cli
+`);
+    expect(left.ok).toBe(true);
+    expect(right.ok).toBe(true);
+    if (!left.ok || !right.ok) return;
+    expect(left.ir.triggers[0]).toMatchObject({ cron: "0 8 * * 1" });
+    expect(left.ir.jobs[0]?.steps[0]).toMatchObject({ run: "bun run check", workingDirectory: "packages/cli" });
+    expect(canonicalPortableWorkflowSourceBytes(left.ir)).toBe(canonicalPortableWorkflowSourceBytes(right.ir));
+  });
+
+  test("uses one greedy lexical topological order in producer and decoder", () => {
+    const result = github(`name: Topology
+on: { workflow_dispatch: null }
+jobs:
+  z:
+    runs-on: [self-hosted]
+    steps: [{ id: z, run: echo z }]
+  b:
+    runs-on: [self-hosted]
+    steps: [{ id: b, run: echo b }]
+  a:
+    needs: b
+    runs-on: [self-hosted]
+    steps: [{ id: a, run: echo a }]
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ir.jobs.map(({ id }) => id)).toEqual(["b", "a", "z"]);
+    expect(decodeWorkflowSourceIrV1(result.ir)).toEqual(result.ir);
+  });
+
+  test("keeps multi-job YAML displayable but refuses to fabricate legacy runtime semantics", () => {
+    const result = github(`name: Multi-job
+on: { workflow_dispatch: null }
+jobs:
+  build:
+    runs-on: [self-hosted]
+    steps: [{ id: build, run: echo build }]
+  deploy:
+    needs: build
+    runs-on: [self-hosted]
+    steps: [{ id: deploy, run: echo deploy }]
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(workflowSourceIrToDocument(result.ir, { mode: "display" }).steps.map(({ id }) => id)).toEqual([
+      "build",
+      "deploy",
+    ]);
+    expect(() => workflowSourceIrToDocument(result.ir, { mode: "runtime" })).toThrow(
+      /multi-job.*source-target resolver/i,
+    );
+  });
+
+  test("rejects NUL and control bytes in compiler working directories", () => {
+    expectGithubError(
+      `${VALID_HEADER}\n      - id: nul\n        run: echo ok\n        working-directory: "packages\\0cli"\n`,
+      "working-directory-control-character",
+    );
+    expectGithubError(
+      `${VALID_HEADER}\n      - id: control\n        run: echo ok\n        working-directory: "packages\\x1fcli"\n`,
+      "working-directory-control-character",
+    );
+  });
+
+  test("anchors missing akm/command with input at the uses selector", () => {
+    expectGithubError(`${VALID_HEADER}\n      - id: inline\n        uses: akm/command\n`, "builtin-command-inputs", 9);
+  });
+
+  test("preserves direct argv, cwd, map, route, inputs, schemas, and gates as explicit common semantics", () => {
+    const result = compileMarkdownWorkflowSource(
+      `---
+type: workflow
+description: Characterize every current dispatch form
+defaults: { engine: local }
+budget: { max_units: 9 }
+steps:
+  - id: discover
+    output: { type: object }
+  - id: review
+    map:
+      over: steps.discover.output.items
+      concurrency: 2
+      reducer: collect
+      unit:
+        exec:
+          command: [bash, -lc, "a | b"]
+          cwd: packages/./cli
+        on_error: continue
+    inputs: [steps.discover.output]
+    gate: { max_loops: 2 }
+  - id: choose
+    route:
+      input: steps.review.output
+      when:
+        - { match: pass, step: ship }
+      default: repair
+  - id: ship
+  - id: repair
+---
+# Explicit semantics
+
+Preamble.
+
+## discover
+
+Discover items.
+
+## review
+
+Review each item.
+
+### gate
+
+Every item passes.
+
+## choose
+
+Routing documentation.
+
+## ship
+
+Ship.
+
+## repair
+
+Repair.
+`,
+      { path: "workflows/explicit.md" },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ir).toMatchObject({
+      description: "Characterize every current dispatch form",
+      defaults: { engine: "local" },
+      budget: { maxUnits: 9 },
+      preamble: "# Explicit semantics\n\nPreamble.",
+    });
+    expect(result.ir.jobs[0]?.steps[1]).toMatchObject({
+      id: "review",
+      exec: { command: ["bash", "-lc", "a | b"], cwd: "packages/cli" },
+      unit: { onError: "continue" },
+      map: { over: "steps.discover.output.items", concurrency: 2, reducer: "collect" },
+      inputs: ["steps.discover.output"],
+      gate: { maxLoops: 2, rubric: "Every item passes." },
+      instructions: "Review each item.",
+    });
+    expect(result.ir.jobs[0]?.steps[2]).toMatchObject({
+      route: {
+        input: "steps.review.output",
+        branches: [{ match: "pass", stepId: "ship" }],
+        defaultStepId: "repair",
+      },
+      instructions: "Routing documentation.",
+    });
+  });
+
   test("rejects a working-directory symlink that physically escapes its workspace", () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "akm-source-ir-"));
     const workspace = path.join(sandbox, "workspace");
@@ -404,6 +709,26 @@ jobs:
       );
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.errors.some((error) => error.code === "working-directory-escape")).toBe(true);
+
+      const markdown = compileMarkdownWorkflowSource(
+        `---
+type: workflow
+steps:
+  - id: cwd
+    unit:
+      exec:
+        command: [echo, ok]
+        cwd: escape
+---
+# Escape
+
+## cwd
+
+Run it.
+`,
+        { path: "workflows/escape.md", workspaceRoot: workspace },
+      );
+      expect(markdown.ok).toBe(false);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
@@ -512,6 +837,132 @@ describe("strict source IR decoder", () => {
     expect(() => decodeWorkflowSourceIrV1({ ...structuredClone(valid), name: "bad\ud800" })).toThrow(
       /well-formed Unicode/i,
     );
+  });
+
+  test("reapplies authoritative semantic validation to hostile decoded objects", () => {
+    const scheduled = structuredClone(valid);
+    scheduled.triggers = [{ kind: "schedule", cron: "61 25 * * *", ordinal: 0, source: scheduled.source }];
+    expect(() => decodeWorkflowSourceIrV1(scheduled)).toThrow(/cron|schedule/i);
+
+    const unsafeRun = structuredClone(valid);
+    requireOnlyDecodedStep(unsafeRun).run = "echo ok && curl example.com";
+    expect(() => decodeWorkflowSourceIrV1(unsafeRun)).toThrow(/safe tokens|unsafe run/i);
+
+    const escapedCwd = structuredClone(valid);
+    requireOnlyDecodedStep(escapedCwd).workingDirectory = "../outside";
+    expect(() => decodeWorkflowSourceIrV1(escapedCwd)).toThrow(/contained|workingDirectory/i);
+
+    const controlCwd = structuredClone(valid);
+    requireOnlyDecodedStep(controlCwd).workingDirectory = "packages\0cli";
+    expect(() => decodeWorkflowSourceIrV1(controlCwd)).toThrow(/control/i);
+
+    const remote = structuredClone(valid);
+    replaceOnlyDecodedStep(remote, { id: "ok", uses: "actions/checkout@v4", source: remote.source });
+    expect(() => decodeWorkflowSourceIrV1(remote)).toThrow(/remote action/i);
+
+    const nested = structuredClone(valid);
+    replaceOnlyDecodedStep(nested, { id: "ok", uses: "workflows/child", source: nested.source });
+    expect(() => decodeWorkflowSourceIrV1(nested)).toThrow(/nested workflow/i);
+
+    const builtin = structuredClone(valid);
+    replaceOnlyDecodedStep(builtin, {
+      id: "ok",
+      uses: "akm/command",
+      with: { ref: "commands/review", content: "both are forbidden" },
+      source: builtin.source,
+    });
+    expect(() => decodeWorkflowSourceIrV1(builtin)).toThrow(/exactly one|mutually exclusive/i);
+
+    const expression = structuredClone(valid);
+    replaceOnlyDecodedStep(expression, {
+      id: "ok",
+      uses: "tasks/$" + "{{ github.ref }}",
+      source: expression.source,
+    });
+    expect(() => decodeWorkflowSourceIrV1(expression)).toThrow(/expression/i);
+
+    const builtinExpression = structuredClone(valid);
+    replaceOnlyDecodedStep(builtinExpression, {
+      id: "ok",
+      uses: "akm/command",
+      with: { content: "Review $" + "{{ github.sha }}" },
+      source: builtinExpression.source,
+    });
+    expect(() => decodeWorkflowSourceIrV1(builtinExpression)).toThrow(/expression/i);
+  });
+
+  test("canonicalizes decoded cron, run, and cwd and physically contains decoded cwd", () => {
+    const canonical = structuredClone(valid);
+    canonical.triggers = [{ kind: "schedule", cron: " 0  8\t* * 1 ", ordinal: 0, source: canonical.source }];
+    const canonicalStep = requireOnlyDecodedStep(canonical);
+    canonicalStep.run = " bun\t run   check ";
+    canonicalStep.workingDirectory = "packages/./cli";
+    expect(decodeWorkflowSourceIrV1(canonical)).toMatchObject({
+      triggers: [{ cron: "0 8 * * 1" }],
+      jobs: [{ steps: [{ run: "bun run check", workingDirectory: "packages/cli" }] }],
+    });
+
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "akm-decoded-cwd-"));
+    const workspace = path.join(sandbox, "workspace");
+    const outside = path.join(sandbox, "outside");
+    fs.mkdirSync(workspace);
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(workspace, "escape"), "dir");
+    try {
+      const escaped = structuredClone(valid);
+      requireOnlyDecodedStep(escaped).workingDirectory = "escape";
+      expect(() => decodeWorkflowSourceIrV1(escaped, { workspaceRoot: workspace })).toThrow(/symlink|workspace/i);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test("enforces authoritative dispatch bounds on hostile decoded objects", () => {
+    const oversizedArgv = structuredClone(valid);
+    replaceOnlyDecodedStep(oversizedArgv, {
+      id: "ok",
+      exec: { command: Array.from({ length: 65 }, () => "x") },
+      source: oversizedArgv.source,
+    });
+    expect(() => decodeWorkflowSourceIrV1(oversizedArgv)).toThrow(/at most 64|argv/i);
+
+    const oversizedArg = structuredClone(valid);
+    replaceOnlyDecodedStep(oversizedArg, {
+      id: "ok",
+      exec: { command: ["x".repeat(4097)] },
+      source: oversizedArg.source,
+    });
+    expect(() => decodeWorkflowSourceIrV1(oversizedArg)).toThrow(/4096 bytes/i);
+
+    const emptyPassEnv = structuredClone(valid);
+    replaceOnlyDecodedStep(emptyPassEnv, {
+      id: "ok",
+      exec: { command: ["echo", "ok"], passEnv: [] },
+      source: emptyPassEnv.source,
+    });
+    expect(() => decodeWorkflowSourceIrV1(emptyPassEnv)).toThrow(/non-empty array/i);
+
+    const invalidUnit = structuredClone(valid);
+    requireOnlyDecodedStep(invalidUnit).unit = {
+      engine: "NOT_CANONICAL",
+      timeoutMs: 0,
+      retry: { max: 101, on: ["invented"] },
+    };
+    expect(() => decodeWorkflowSourceIrV1(invalidUnit)).toThrow(/engine name|timeout|retry/i);
+
+    const invalidFanout = structuredClone(valid);
+    const fanoutStep = requireOnlyDecodedStep(invalidFanout);
+    fanoutStep.map = { over: "steps.previous.output", concurrency: 65 };
+    fanoutStep.gate = { maxLoops: 101 };
+    expect(() => decodeWorkflowSourceIrV1(invalidFanout)).toThrow(/concurrency|maxLoops/i);
+
+    const invalidLlm = structuredClone(valid);
+    requireOnlyDecodedStep(invalidLlm).unit = { llm: { headers: { Authorization: "secret" } } };
+    expect(() => decodeWorkflowSourceIrV1(invalidLlm)).toThrow(/unknown key|llm/i);
+
+    const invalidSchema = structuredClone(valid);
+    requireOnlyDecodedStep(invalidSchema).output = { type: "string", pattern: ".*" };
+    expect(() => decodeWorkflowSourceIrV1(invalidSchema)).toThrow(/pattern|schema|unsupported/i);
   });
 
   test("rejects noncanonical trigger, needs, and ready-job ordering", () => {

@@ -270,11 +270,6 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   if (akmStashAbstains(c.root, file.absPath)) return null;
   const match = recognizeMatch(file);
   if (match === null) return null;
-  if (match.type === "workflow" && file.ext === ".yml") {
-    const compiled = compileGithubWorkflowSource(file.content(), { path: file.relPath, workspaceRoot: c.root });
-    if (!compiled.ok) return null;
-  }
-
   // Canonical name = the winning type's per-type canonical name (§5.1).
   // Invalid placements are not projected onto a different identity.
   const derived = deriveCanonicalAssetNameFromStashRoot(match.type, c.root, file.absPath);
