@@ -134,6 +134,16 @@ function sameIdentity(left: TaskV2ToV3FilesystemIdentity, right: TaskV2ToV3Files
   return left.realPath === right.realPath && left.device === right.device && left.inode === right.inode;
 }
 
+function physicalTaskIdentityKey(identity: TaskV2ToV3FilesystemIdentity): string {
+  return `${identity.device}:${identity.inode}`;
+}
+
+function sourceIdentityKey(file: TaskV2ToV3MigrationPlan["files"][number]): string {
+  const sourcePath = file.inspectionIdentity?.file.realPath;
+  if (!sourcePath) throw migrationError(`${file.filePath} has no canonical physical source identity.`);
+  return sourcePath;
+}
+
 function modeIsWritable(mode: number): boolean {
   return (mode & 0o222) !== 0;
 }
@@ -239,7 +249,21 @@ export function inspectTaskV2ToV3Files(roots: readonly TaskV2ToV3Root[]): TaskV2
       throw migrationError(`bundle ${root.bundleId} owner-root identity drifted while migration preflight inspected it.`);
     }
   }
-  return inputs.sort((left, right) => compareStrings(left.filePath, right.filePath));
+  const inspected = inputs.sort((left, right) => compareStrings(left.filePath, right.filePath));
+  const physicalTasks = new Map<string, string>();
+  for (const input of inspected) {
+    const identity = input.inspectionIdentity?.file;
+    if (!identity) throw migrationError(`${input.filePath} has no physical identity after whole-plan inspection.`);
+    const identityKey = physicalTaskIdentityKey(identity);
+    const prior = physicalTasks.get(identityKey);
+    if (prior) {
+      throw migrationError(
+        `duplicate physical task identity ${identityKey} is referenced by ${prior} and ${input.filePath}.`,
+      );
+    }
+    physicalTasks.set(identityKey, input.filePath);
+  }
+  return inspected;
 }
 
 /** Stable, recoverable per-file backup location within one migration operation. */
@@ -356,6 +380,7 @@ function readPlannedSource(
   file: TaskV2ToV3MigrationPlan["files"][number],
   expectedFileIdentity?: TaskV2ToV3FilesystemIdentity,
 ): SourceSnapshot {
+  sourceIdentityKey(file);
   const plannedIdentity = file.inspectionIdentity;
   if (!plannedIdentity || !file.containmentRoot) {
     throw migrationError(`${file.filePath} has no filesystem identity recorded by migration preflight.`);
@@ -431,7 +456,7 @@ function entryForChange(backupRoot: string, change: TaskV2ToV3Changed): TaskMigr
   if (!identities || !change.containmentRoot) {
     throw migrationError(`${change.filePath} has no stable filesystem provenance for backup.`);
   }
-  const sourcePath = identities.file.realPath;
+  const sourcePath = sourceIdentityKey(change);
   return Object.freeze({
     sourcePath,
     backupPath: relativeBackupPath(backupRoot, taskMigrationBackupPath(backupRoot, sourcePath)),
@@ -449,8 +474,8 @@ function manifestEntryForFile(
   manifest: TaskMigrationBackupManifest,
   file: TaskV2ToV3Changed,
 ): TaskMigrationBackupEntry {
-  const realPath = file.inspectionIdentity?.file.realPath ?? path.resolve(file.filePath);
-  const entry = manifest.files.find((candidate) => candidate.sourcePath === realPath);
+  const sourcePath = sourceIdentityKey(file);
+  const entry = manifest.files.find((candidate) => candidate.sourcePath === sourcePath);
   if (!entry) throw migrationError(`${file.filePath} has no declared artifact in the main migration backup.`);
   return entry;
 }
@@ -669,6 +694,7 @@ export function verifyTaskMigrationBackup(backupRoot: string, manifest: TaskMigr
     throw migrationError(`task backup directory ${tasksRoot} must have mode 0700.`);
   }
   const expected = new Set<string>([path.basename(manifest.recoveryPath)]);
+  const physicalTasks = new Map<string, string>();
   let previous = "";
   for (const entry of manifest.files) {
     assertTaskBackupEntryShape(entry);
@@ -676,6 +702,14 @@ export function verifyTaskMigrationBackup(backupRoot: string, manifest: TaskMigr
       throw migrationError("task backup declarations must be uniquely sorted by source path.");
     }
     previous = entry.sourcePath;
+    const identityKey = physicalTaskIdentityKey(entry.sourceIdentity);
+    const prior = physicalTasks.get(identityKey);
+    if (prior) {
+      throw migrationError(
+        `task backup declares duplicate physical task identity ${identityKey} for ${prior} and ${entry.sourcePath}.`,
+      );
+    }
+    physicalTasks.set(identityKey, entry.sourcePath);
     for (const [relative, expectedHash] of [
       [entry.backupPath, entry.beforeHash],
       [entry.finalPath, entry.finalHash],
@@ -816,6 +850,7 @@ export function applyTaskV2ToV3MigrationPlan(
   const alreadyApplied = new Set<string>();
   // Whole-plan drift fence before creating the backup directory or mutating a source.
   for (const file of plan.files) {
+    const sourcePath = sourceIdentityKey(file);
     let current: SourceSnapshot;
     try {
       current = readPlannedSource(file);
@@ -823,15 +858,15 @@ export function applyTaskV2ToV3MigrationPlan(
       throw migrationError(`cannot revalidate ${file.filePath}: ${cause instanceof Error ? cause.message : String(cause)}.`);
     }
     if (file.status === "changed" && current.bytes.equals(file.after)) {
-      const state = recoveryStates?.get(file.filePath);
+      const state = recoveryStates?.get(sourcePath);
       if (recoveryStates && state !== "backed-up" && state !== "published") {
         throw migrationError(`${file.filePath} has final bytes without an authorized publication state.`);
       }
       validatePlannedV3(file, current.bytes);
-      alreadyApplied.add(file.filePath);
+      alreadyApplied.add(sourcePath);
       continue;
     }
-    const state = recoveryStates?.get(file.filePath);
+    const state = recoveryStates?.get(sourcePath);
     if (
       !file.inspectionIdentity ||
       (!sameIdentity(current.identity, file.inspectionIdentity.file) &&
@@ -851,7 +886,8 @@ export function applyTaskV2ToV3MigrationPlan(
   }> = [];
   try {
     for (const file of plan.files) {
-      if (file.status !== "changed" || alreadyApplied.has(file.filePath)) continue;
+      const sourcePath = sourceIdentityKey(file);
+      if (file.status !== "changed" || alreadyApplied.has(sourcePath)) continue;
       // Complete generated-document validation is repeated immediately before publication.
       validatePlannedV3(file, file.after);
       const declared = options.backupManifest ? manifestEntryForFile(options.backupManifest, file) : undefined;
@@ -863,7 +899,7 @@ export function applyTaskV2ToV3MigrationPlan(
         verifyRegularFile(path.join(options.backupRoot, declared.finalPath), file.after, "authorized final artifact");
       }
       if (!file.inspectionIdentity) throw migrationError(`${file.filePath} has no planned file identity.`);
-      const recoveryState = recoveryStates?.get(file.filePath);
+      const recoveryState = recoveryStates?.get(sourcePath);
       const expectedIdentity =
         recoveryState === "published" || recoveryState === "restored"
           ? undefined
@@ -877,7 +913,7 @@ export function applyTaskV2ToV3MigrationPlan(
           recoveryJournalPath,
           options.backupManifest,
           recoveryStates,
-          file.filePath,
+          sourcePath,
           "backed-up",
         );
       }
@@ -903,7 +939,7 @@ export function applyTaskV2ToV3MigrationPlan(
               recoveryJournalPath,
               options.backupManifest,
               recoveryStates,
-              file.filePath,
+              sourcePath,
               "published",
             );
           }
@@ -921,6 +957,7 @@ export function applyTaskV2ToV3MigrationPlan(
     const compensationFailures: string[] = [];
     for (const { change, backupPath, publishedIdentity } of [...replaced].reverse()) {
       try {
+        const sourcePath = sourceIdentityKey(change);
         verifyRegularFile(backupPath, change.before, "recoverable backup");
         if (!publishedIdentity) throw new Error("published file identity was not captured; current source was left untouched");
         const current = readPlannedSource(change);
@@ -943,7 +980,7 @@ export function applyTaskV2ToV3MigrationPlan(
             recoveryJournalPath,
             options.backupManifest,
             recoveryStates,
-            change.filePath,
+            sourcePath,
             "restored",
           );
         }

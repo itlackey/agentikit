@@ -10,6 +10,7 @@ import {
   applyTaskV2ToV3MigrationPlan,
   createTaskMigrationBackup,
   inspectTaskV2ToV3Files,
+  restoreTaskMigrationBackup,
   taskMigrationBackupPath,
   verifyTaskMigrationBackup,
 } from "../../scripts/akm-migrate/migrate/task-v2-to-v3-files";
@@ -50,6 +51,152 @@ describe("durable task v2 to v3 migration application", () => {
       const backup = taskMigrationBackupPath(backupRoot, task);
       expect(fs.readFileSync(backup, "utf8")).toBe(SAFE);
       expect(fs.statSync(backup).isFile()).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("uses one physical source key through an internal ancestor symlink for verify, crash retry, and restore", () => {
+    if (process.platform === "win32") return;
+    const bundleRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-inside-symlink-"));
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
+    const physicalParent = path.join(bundleRoot, "physical");
+    const physicalComponent = path.join(physicalParent, "component");
+    fs.mkdirSync(path.join(physicalComponent, "tasks"), { recursive: true });
+    const aliasParent = path.join(bundleRoot, "alias");
+    fs.symlinkSync(physicalParent, aliasParent, "dir");
+    const lexicalComponent = path.join(aliasParent, "component");
+    const lexicalTask = path.join(lexicalComponent, "tasks", "safe.yml");
+    fs.writeFileSync(lexicalTask, SAFE, { mode: 0o640 });
+    const physicalTask = fs.realpathSync(lexicalTask);
+    try {
+      const plan = planTaskV2ToV3Migration(
+        inspectTaskV2ToV3Files([{ bundleId: "inside-alias", root: lexicalComponent, bundleRoot, writable: true }]),
+      );
+      const manifest = createTaskMigrationBackup(backupRoot, plan, "inside-alias-operation");
+      if (!manifest) throw new Error("expected a task backup manifest");
+      expect(manifest.files.map((entry) => entry.sourcePath)).toEqual([physicalTask]);
+
+      expect(() =>
+        applyTaskV2ToV3MigrationPlan(plan, {
+          backupRoot,
+          backupManifest: manifest,
+          testHooks: {
+            beforePublish(filePath) {
+              expect(filePath).toBe(lexicalTask);
+              throw new Error("injected inside-alias pre-rename crash");
+            },
+          },
+        }),
+      ).toThrow(/injected|restored/i);
+      expect(() => verifyTaskMigrationBackup(backupRoot, manifest)).not.toThrow();
+      expect(plan.files.map((file) => file.inspectionIdentity?.file.realPath)).toEqual([physicalTask]);
+      expect(JSON.parse(fs.readFileSync(path.join(backupRoot, manifest.recoveryPath), "utf8"))).toMatchObject({
+        files: [{ sourcePath: physicalTask, state: "backed-up" }],
+      });
+
+      expect(applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest }).changed).toEqual([
+        lexicalTask,
+      ]);
+      expect(() => verifyTaskMigrationBackup(backupRoot, manifest)).not.toThrow();
+      expect(JSON.parse(fs.readFileSync(path.join(backupRoot, manifest.recoveryPath), "utf8"))).toMatchObject({
+        files: [{ sourcePath: physicalTask, state: "published" }],
+      });
+      expect(fs.readFileSync(lexicalTask, "utf8")).toContain("version: 3");
+
+      expect(() => restoreTaskMigrationBackup(backupRoot, manifest)).not.toThrow();
+      expect(fs.readFileSync(lexicalTask, "utf8")).toBe(SAFE);
+      expect(fs.statSync(lexicalTask).mode & 0o777).toBe(0o640);
+      expect(() => verifyTaskMigrationBackup(backupRoot, manifest)).not.toThrow();
+    } finally {
+      fs.rmSync(bundleRoot, { recursive: true, force: true });
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects duplicate hard-linked task identities during inspection without writing", () => {
+    const root = tempRoot();
+    const backupRoot = path.join(root, "backups");
+    const first = path.join(root, "tasks", "a.yml");
+    const second = path.join(root, "tasks", "b.yml");
+    fs.writeFileSync(first, SAFE, { mode: 0o640 });
+    fs.linkSync(first, second);
+    const before = snapshot(root);
+    const identity = fs.lstatSync(first, { bigint: true });
+    const detail = `duplicate physical task identity ${identity.dev}:${identity.ino} is referenced by ${first} and ${second}`;
+    try {
+      expect(() => inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }])).toThrow(detail);
+      expect(snapshot(root)).toEqual(before);
+      expect(fs.existsSync(backupRoot)).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects duplicate lexical aliases of one physical task with deterministic diagnostics and zero writes", () => {
+    if (process.platform === "win32") return;
+    const root = tempRoot();
+    const backupRoot = path.join(root, "backups");
+    const physicalTask = path.join(root, "tasks", "safe.yml");
+    fs.writeFileSync(physicalTask, SAFE, { mode: 0o640 });
+    const alias = path.join(root, "alias");
+    fs.symlinkSync(root, alias, "dir");
+    const lexicalTask = path.join(alias, "tasks", "safe.yml");
+    const before = snapshot(root);
+    const identity = fs.lstatSync(physicalTask, { bigint: true });
+    const [first, second] = [lexicalTask, physicalTask].sort();
+    const detail = `duplicate physical task identity ${identity.dev}:${identity.ino} is referenced by ${first} and ${second}`;
+    try {
+      expect(() =>
+        inspectTaskV2ToV3Files([
+          { bundleId: "a-stash", root, bundleRoot: root, writable: true },
+          {
+            bundleId: "z-alias-component",
+            root: path.join(alias, "tasks"),
+            bundleRoot: root,
+            writable: true,
+            layout: "akm-task",
+          },
+        ]),
+      ).toThrow(detail);
+      expect(snapshot(root)).toEqual(before);
+      expect(fs.existsSync(backupRoot)).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("public verification rejects a manifest that declares duplicate physical task identities", () => {
+    const root = tempRoot();
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
+    const firstPath = path.join(root, "tasks", "a.yml");
+    const secondPath = path.join(root, "tasks", "b.yml");
+    fs.writeFileSync(firstPath, SAFE, { mode: 0o640 });
+    fs.writeFileSync(secondPath, SAFE.replace("@daily", "@hourly"), { mode: 0o640 });
+    try {
+      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+      const manifest = createTaskMigrationBackup(backupRoot, plan, "duplicate-manifest-operation");
+      if (!manifest) throw new Error("expected a task backup manifest");
+      const [first, second] = manifest.files;
+      if (!first || !second) throw new Error("expected two task backup declarations");
+      const forged = {
+        ...manifest,
+        files: [
+          first,
+          {
+            ...second,
+            sourceIdentity: {
+              ...second.sourceIdentity,
+              device: first.sourceIdentity.device,
+              inode: first.sourceIdentity.inode,
+            },
+          },
+        ],
+      };
+      expect(() => verifyTaskMigrationBackup(backupRoot, forged)).toThrow(/duplicate physical task identity/i);
+      expect(fs.readFileSync(firstPath, "utf8")).toBe(SAFE);
+      expect(fs.readFileSync(secondPath, "utf8")).toBe(SAFE.replace("@daily", "@hourly"));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
       fs.rmSync(backupRoot, { recursive: true, force: true });

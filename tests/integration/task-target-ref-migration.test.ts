@@ -397,6 +397,75 @@ test("task-v3 migration honors the configured nested component root and componen
 });
 
 test.skipIf(process.platform === "win32")(
+  "an internal ancestor symlink uses one physical task key across crash retry, public verify, and public restore",
+  async () => {
+    const bundleRoot = path.join(storage.root, "inside-symlink-bundle");
+    const physicalParent = path.join(bundleRoot, "physical");
+    const physicalComponent = path.join(physicalParent, "catalog");
+    const alias = path.join(bundleRoot, "alias");
+    fs.mkdirSync(path.join(physicalComponent, "tasks"), { recursive: true });
+    fs.symlinkSync(physicalParent, alias, "dir");
+    const lexicalTask = path.join(alias, "catalog", "tasks", "inside.yml");
+    const original = "version: 2\nschedule: '@daily'\ncommand: akm index\n";
+    fs.writeFileSync(lexicalTask, original, { mode: 0o640 });
+    const physicalTask = fs.realpathSync(lexicalTask);
+    fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
+    fs.writeFileSync(
+      getConfigPath(),
+      `${JSON.stringify({
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        bundles: {
+          inside: {
+            path: bundleRoot,
+            writable: true,
+            components: { main: { root: "alias/catalog", adapter: "akm", writable: true } },
+          },
+        },
+        defaultBundle: "inside",
+      })}\n`,
+      { mode: 0o600 },
+    );
+    seedCurrentState();
+
+    const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "apply"], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      env: { ...process.env, AKM_TEST_MIGRATION_FAIL_PHASE: "after-config-publish" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, , stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode, stderr).not.toBe(0);
+    expect(stderr).toContain("injected migration interruption at after-config-publish");
+
+    const sentinelPath = getMigrationApplyJournalPath();
+    const sentinel = JSON.parse(fs.readFileSync(sentinelPath, "utf8")) as { backupPath: string; backupRunId: string };
+    const interruptedManifest = verifyMigrationBackup(sentinel.backupPath);
+    expect(interruptedManifest.taskMigration?.files.map((entry) => entry.sourcePath)).toEqual([physicalTask]);
+    expect(
+      JSON.parse(
+        fs.readFileSync(path.join(sentinel.backupPath, interruptedManifest.taskMigration?.recoveryPath ?? ""), "utf8"),
+      ),
+    ).toMatchObject({ files: [{ sourcePath: physicalTask, state: "published" }] });
+
+    const resumed = await runCliCapture(["migrate", "apply"]);
+    expect(resumed.code, resumed.stderr).toBe(0);
+    expect(fs.existsSync(sentinelPath)).toBe(false);
+    expect(() => verifyMigrationBackup(sentinel.backupPath)).not.toThrow();
+    expect(parseTaskV3Yaml({ yaml: fs.readFileSync(lexicalTask, "utf8"), filePath: lexicalTask }).version).toBe(3);
+
+    restoreMigrationBackup(true, sentinel.backupRunId);
+    expect(fs.readFileSync(lexicalTask, "utf8")).toBe(original);
+    expect(fs.statSync(lexicalTask).mode & 0o777).toBe(0o640);
+    expect(() => verifyMigrationBackup(sentinel.backupPath)).not.toThrow();
+  },
+);
+
+test.skipIf(process.platform === "win32")(
   "task-v3 migration rejects a component that is lexically inside but physically outside its stable bundle root",
   async () => {
     const bundleRoot = path.join(storage.root, "physical-bundle");
