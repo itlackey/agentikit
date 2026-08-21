@@ -23,6 +23,7 @@ import {
   listExecutionLowerers,
   lowerResolvedExecutionRequest,
   lowerResolvedExecutionRequestWithRunner,
+  redactWithLoweredExecutionDispatchLease,
 } from "../../src/integrations/agent/execution-lowering";
 import {
   prepareInlineExecution,
@@ -31,7 +32,12 @@ import {
 import type { ResolvedModelMapV1 } from "../../src/integrations/agent/model-map";
 import { PERSONA_FALLBACK_BEGIN, PERSONA_FALLBACK_END } from "../../src/integrations/agent/persona-fallback";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
-import { collectDispatchSensitiveValues, executeRunner } from "../../src/integrations/agent/runner-dispatch";
+import {
+  acquireRunnerDispatchLease,
+  collectDispatchSensitiveValues,
+  disposeRunnerDispatchLease,
+  executeRunner,
+} from "../../src/integrations/agent/runner-dispatch";
 import { HARNESS_REGISTRY } from "../../src/integrations/harnesses";
 import { LlmCallError, type LlmCallErrorCode } from "../../src/llm/client";
 import { mutateScopedEnv, withEnv } from "../_helpers/sandbox";
@@ -236,6 +242,126 @@ describe("resolved execution lowerer registry", () => {
     }
   });
 
+  test.each([
+    { kind: "agent" as const, mutation: "deletion", replacement: undefined },
+    { kind: "agent" as const, mutation: "replacement", replacement: "agent-passthrough-replacement" },
+    { kind: "sdk" as const, mutation: "deletion", replacement: undefined },
+    { kind: "sdk" as const, mutation: "replacement", replacement: "sdk-passthrough-replacement" },
+  ])("$kind lease redacts its acquired envPassthrough snapshot after ambient $mutation", async ({
+    kind,
+    replacement,
+  }) => {
+    const secret = `${kind}-passthrough-original-secret`;
+    const profileSecret = `${kind}-profile-original-secret`;
+    const profileEnv = { AKM_WP5_PROFILE_SECRET: profileSecret };
+    const profile = {
+      name: `fixture-${kind}`,
+      platform: kind === "sdk" ? "opencode-sdk" : "opencode",
+      personaChannel: kind === "sdk" ? ("native" as const) : ("prompt" as const),
+      bin: "fixture-agent",
+      args: [],
+      stdio: "captured" as const,
+      env: profileEnv,
+      envPassthrough: ["AKM_WP5_PASSTHROUGH_SECRET"],
+      parseOutput: "text" as const,
+    };
+    const runner: RunnerSpec = { kind, engine: "fixture", profile };
+    const lowered = lowerResolvedExecutionRequestWithRunner(
+      requestFor(kind === "sdk" ? "opencode-sdk" : "opencode", kind),
+      runner,
+    );
+    let current: string | undefined = secret;
+    let reads = 0;
+    const envSource = new Proxy(Object.create(null) as NodeJS.ProcessEnv, {
+      get(_target, property) {
+        if (property === "AKM_WP5_PASSTHROUGH_SECRET") {
+          reads += 1;
+          return current;
+        }
+        return undefined;
+      },
+    });
+    const lease = acquireLoweredExecutionDispatchLease(lowered, { envSource });
+    try {
+      const mutateAndEcho = async () => {
+        current = replacement;
+        profileEnv.AKM_WP5_PROFILE_SECRET = replacement ?? "";
+        return {
+          ok: true as const,
+          stdout: `${secret} ${profileSecret}`,
+          stderr: `${secret} ${profileSecret}`,
+          exitCode: 0,
+          durationMs: 0,
+        };
+      };
+      const result = await dispatchLoweredExecutionRequest(lowered, {
+        lease,
+        runOptions: { envSource },
+        ...(kind === "sdk" ? { runSdk: mutateAndEcho } : { runAgent: mutateAndEcho }),
+      });
+
+      expect(reads).toBe(1);
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(JSON.stringify(result)).not.toContain(profileSecret);
+      expect(Object.keys(lease)).toEqual([]);
+      expect(Reflect.ownKeys(lease)).toEqual(["toJSON"]);
+      expect(() => JSON.stringify(lease)).toThrow(/dispatch lease.*serializ/i);
+    } finally {
+      disposeLoweredExecutionDispatchLease(lease);
+    }
+    expect(() => redactWithLoweredExecutionDispatchLease(lease, secret)).toThrow(/disposed|invalid dispatch lease/i);
+  });
+
+  test("executeRunner snapshots mutable profile and per-dispatch env before awaiting the runner", async () => {
+    const profileSecret = "mutable-profile-original-secret";
+    const optionSecret = "mutable-option-original-secret";
+    const runner: RunnerSpec = {
+      kind: "agent",
+      engine: "fixture",
+      profile: {
+        name: "mutable-sensitive-inputs",
+        platform: "opencode",
+        personaChannel: "prompt",
+        bin: "fixture-agent",
+        args: [],
+        stdio: "captured",
+        env: { AKM_WP5_PROFILE_SECRET: profileSecret },
+        envPassthrough: [],
+        parseOutput: "text",
+      },
+    };
+    const runOptions = { env: { AKM_WP5_OPTION_SECRET: optionSecret } };
+    const lease = acquireRunnerDispatchLease(runner, Object.create(null) as NodeJS.ProcessEnv);
+    try {
+      const result = await executeRunner(
+        runner,
+        "prompt",
+        runOptions,
+        {
+          runAgent: async () => {
+            if (runner.kind !== "agent") throw new Error("fixture runner changed kind");
+            if (runner.profile.env) {
+              (runner.profile.env as Record<string, string>).AKM_WP5_PROFILE_SECRET = "replacement";
+            }
+            if (runOptions.env) runOptions.env.AKM_WP5_OPTION_SECRET = "replacement";
+            return {
+              ok: true,
+              stdout: `${profileSecret} ${optionSecret}`,
+              stderr: `${profileSecret} ${optionSecret}`,
+              exitCode: 0,
+              durationMs: 0,
+            };
+          },
+        },
+        lease,
+      );
+      expect(JSON.stringify(result)).not.toContain(profileSecret);
+      expect(JSON.stringify(result)).not.toContain(optionSecret);
+    } finally {
+      disposeRunnerDispatchLease(lease);
+    }
+  });
+
   test("forged and mismatched primary transport leases are rejected before provider dispatch", async () => {
     const baseRunner: RunnerSpec = {
       kind: "llm",
@@ -367,6 +493,58 @@ describe("resolved execution lowerer registry", () => {
         }),
       ).rejects.toThrow(/lease.*does not match|transport/i);
       expect(sdkRan).toBe(false);
+    } finally {
+      disposeLoweredExecutionDispatchLease(lease);
+    }
+  });
+
+  test.each([
+    "agent" as const,
+    "sdk" as const,
+  ])("%s lease cannot cross to a profile with different passthrough sources", async (kind) => {
+    const profile = (envPassthrough: string[]) => ({
+      name: `fixture-${kind}`,
+      platform: kind === "sdk" ? "opencode-sdk" : "opencode",
+      personaChannel: kind === "sdk" ? ("native" as const) : ("prompt" as const),
+      bin: "fixture-agent",
+      args: [],
+      stdio: "captured" as const,
+      envPassthrough,
+      parseOutput: "text" as const,
+    });
+    const request = requestFor(kind === "sdk" ? "opencode-sdk" : "opencode", kind);
+    const first = lowerResolvedExecutionRequestWithRunner(request, {
+      kind,
+      engine: "fixture",
+      profile: profile([]),
+    });
+    const second = lowerResolvedExecutionRequestWithRunner(request, {
+      kind,
+      engine: "fixture",
+      profile: profile(["AKM_WP5_NEW_PASSTHROUGH"]),
+    });
+    const lease = acquireLoweredExecutionDispatchLease(first);
+    let runnerCalled = false;
+    try {
+      await expect(
+        dispatchLoweredExecutionRequest(second, {
+          lease,
+          ...(kind === "sdk"
+            ? {
+                runSdk: async () => {
+                  runnerCalled = true;
+                  return { ok: true as const, stdout: "", stderr: "", exitCode: 0, durationMs: 0 };
+                },
+              }
+            : {
+                runAgent: async () => {
+                  runnerCalled = true;
+                  return { ok: true as const, stdout: "", stderr: "", exitCode: 0, durationMs: 0 };
+                },
+              }),
+        }),
+      ).rejects.toThrow(/lease.*does not match|transport/i);
+      expect(runnerCalled).toBe(false);
     } finally {
       disposeLoweredExecutionDispatchLease(lease);
     }

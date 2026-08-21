@@ -208,6 +208,26 @@ describe("akmAgentDispatch engine capability", () => {
     expect(calls).toBe(0);
   });
 
+  test("rejects a non-agent positional ref before canonical command delegation", async () => {
+    let calls = 0;
+    await expect(
+      akmAgentDispatch(
+        {
+          agentRef: "knowledge/guide",
+          prompt: "Review exactly this.",
+          agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
+        },
+        {
+          executeCommand: async () => {
+            calls += 1;
+            throw new Error("must not delegate");
+          },
+        },
+      ),
+    ).rejects.toThrow(/agent asset ref|agents\//i);
+    expect(calls).toBe(0);
+  });
+
   test("rejects legacy workflow flattening before resolution or command dispatch", async () => {
     let calls = 0;
     await expect(

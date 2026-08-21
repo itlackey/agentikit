@@ -1,5 +1,6 @@
 {
   "containsAkm": true,
+  "containsCommand": true,
   "containsUsage": true,
   "exitCode": 0
 }

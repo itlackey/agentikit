@@ -434,6 +434,7 @@ describe("family D — argv-handling surfaces", () => {
       exitCode: result.code,
       containsUsage: /usage/i.test(result.stdout),
       containsAkm: result.stdout.includes("akm"),
+      containsCommand: result.stdout.includes("command"),
     });
   });
 

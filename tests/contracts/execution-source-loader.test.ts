@@ -11,9 +11,11 @@ import {
   loadAdapterExecutionSource,
 } from "../../src/commands/command/execution-source-loader";
 import { adapterForId } from "../../src/core/adapter/registry";
+import { slugForPath } from "../../src/core/bundle-id";
 import type { AkmConfig } from "../../src/core/config/config-types";
 import { createAdapterRenderedExecutionSource } from "../../src/execution/source";
 import type { IndexEntry } from "../../src/indexer/indexer";
+import { withEnv } from "../_helpers/sandbox";
 
 const FIXTURES = path.resolve("tests/fixtures/execution-contracts/native");
 const roots: string[] = [];
@@ -105,6 +107,31 @@ describe("adapter-owned execution source loading", () => {
       });
     }
   }
+
+  test("loads an indexed persona from the canonical implicit AKM_BUNDLE_DIR source", async () => {
+    const fixture = installFixture("akm", "persona");
+    const bundleId = slugForPath(fixture.root);
+    const entry = {
+      ...entryFor(fixture.root, fixture.destination, "akm", fixture.conceptId, "agent"),
+      itemRef: `${bundleId}//${fixture.conceptId}`,
+      bundleId,
+    };
+
+    const loaded = await withEnv({ AKM_BUNDLE_DIR: fixture.root }, () =>
+      loadAdapterExecutionSource(`${bundleId}//${fixture.conceptId}`, "persona", {
+        config: { configVersion: "0.9.0", semanticSearchMode: "off" },
+        lookup: lookupFor(entry),
+      }),
+    );
+
+    expect(loaded.content).toStartWith("# Contract reviewer");
+    expect(loaded.identity).toMatchObject({
+      ref: `${bundleId}//${fixture.conceptId}`,
+      bundle: bundleId,
+      adapter: "akm",
+      file: "agents/contract-reviewer.md",
+    });
+  });
 
   test("rejects wrong types, unknown adapters, missing runtime facets, and renderer abstention", async () => {
     const fixture = installFixture("akm", "command");

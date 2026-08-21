@@ -28,8 +28,7 @@ import { META_DIR, type MetaRef, parseMetaRef, resolveMetaFilePath } from "../..
 import { asNonEmptyString } from "../../core/common";
 import { getIndexPassConfig, loadConfig } from "../../core/config/config";
 import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
-import { appendEvent, readEvents } from "../../core/events";
-import { withStateDbTelemetry } from "../../core/state-db";
+import { appendEvent } from "../../core/events";
 import { presentationFor } from "../../core/type-presentation";
 import { warn } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
@@ -39,9 +38,9 @@ import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction"
 import { lookupBundleRef } from "../../indexer/indexer";
 import type { StashEntryScope } from "../../indexer/passes/metadata";
 import { ensurePrimaryIndexForRead, resolveReadSources } from "../../indexer/read-preflight";
-import { usageEventAttributionMetadata } from "../../indexer/search/search-attribution";
 import { buildEditHint, findSourceForPath, isEditable, resolveSourceEntries } from "../../indexer/search/search-source";
-import { insertUsageEvent, type UsageEventSource } from "../../indexer/usage/usage-events";
+import { recentShowCount, recordShowUsage } from "../../indexer/usage/show-usage";
+import type { UsageEventSource } from "../../indexer/usage/usage-events";
 import {
   buildFileContext,
   buildRenderContext,
@@ -55,12 +54,6 @@ import { resolveSourcesForOrigin } from "../../registry/origin-resolve";
 import { resolveStorageLocations } from "../../storage/locations";
 import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
 import { TELEMETRY_BUSY_TIMEOUT_MS, withIndexDb } from "../../storage/repositories/index-db";
-import {
-  findEntryIdByRef,
-  getEntryById,
-  getEntryIdByFilePath,
-  getItemRefById,
-} from "../../storage/repositories/index-entries-repository";
 import { computeBodyHash } from "../../storage/repositories/index-llm-cache-repository";
 // Eagerly import source providers to trigger self-registration.
 import "../../sources/providers/index";
@@ -125,7 +118,7 @@ export async function akmShowUnified(input: {
   if (!input.skipLogging) {
     const consumedRef = result.ref ?? makeBundleRef(undefined, parseBundleRef(ref).conceptId);
     const priorShowCount = recentShowCount(consumedRef);
-    logShowEvent(consumedRef, result.type, result.name, input.eventSource, result.path);
+    recordShowUsage(consumedRef, result.type, result.name, input.eventSource, result.path);
     if (priorShowCount >= 2) {
       // Agent has shown this same asset 3+ times — inject a loop-break hint.
       (result as unknown as Record<string, unknown>).showLoopWarning = priorShowCount + 1;
@@ -212,95 +205,6 @@ function enforceScopeOrThrow(filePath: string, ref: string, scope: StashEntrySco
     if (actual !== expectedValue) {
       throw new NotFoundError(`Asset "${ref}" exists but is out of scope (expected scope_${key}="${expectedValue}").`);
     }
-  }
-}
-
-/**
- * Count how many times `ref` has been shown in the current session by reading
- * recent events. Returns the count BEFORE the current invocation.
- */
-function recentShowCount(ref: string): number {
-  try {
-    const { events } = readEvents({
-      type: "show",
-      ref,
-      since: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-    });
-    return events.length;
-  } catch {
-    return 0;
-  }
-}
-
-function logShowEvent(
-  ref: string,
-  type: string,
-  name: string,
-  eventSource: UsageEventSource = "user",
-  filePath?: string,
-): void {
-  // Emit a structured event to events.jsonl so workflow-trace consumers
-  // detect akm show invocations without relying on stdout scraping.
-  const eventRef = makeBundleRef(parseBundleRef(ref).bundle, parseBundleRef(ref).conceptId);
-  appendEvent({ eventType: "show", ref: eventRef, metadata: { type, name } });
-
-  // Detect if this show is a selection from a recent search result.
-  try {
-    // D7: bound the query to the last 60 s so we never scan unbounded history
-    const { events: recentSearches } = readEvents({
-      type: "search",
-      since: new Date(Date.now() - 60_000).toISOString(),
-    });
-    const cutoffMs = Date.now() - 60_000;
-    const matchingSearch = [...recentSearches].reverse().find((e) => {
-      if (!e.ts || new Date(e.ts).getTime() < cutoffMs) return false;
-      const refs = (e.metadata?.resultRefs as string[] | undefined) ?? [];
-      return refs.includes(ref);
-    });
-    if (matchingSearch) {
-      appendEvent({
-        eventType: "select",
-        ref,
-        metadata: {
-          query: matchingSearch.metadata?.query as string | undefined,
-          searchTs: matchingSearch.ts,
-          rankPosition: ((matchingSearch.metadata?.resultRefs as string[] | undefined) ?? []).indexOf(ref),
-        },
-      });
-    }
-  } catch {
-    /* fire-and-forget — select is best-effort */
-  }
-
-  try {
-    withIndexDb(
-      (db) => {
-        const entryId = filePath ? getEntryIdByFilePath(db, filePath) : findEntryIdByRef(db, eventRef);
-        if (entryId === undefined) return;
-        // Usage events carry only the resolved row's fully-qualified item_ref.
-        // A disk-only show has no durable indexed identity yet, so it does not
-        // create a per-entry usage row.
-        const entryRef = getItemRefById(db, entryId);
-        if (!entryRef) return;
-        const entry = getEntryById(db, entryId);
-        withStateDbTelemetry((stateDb) => {
-          insertUsageEvent(stateDb, {
-            event_type: "show",
-            entry_ref: entryRef,
-            entry_id: entryId,
-            metadata: usageEventAttributionMetadata(
-              entry?.entry.derivedFrom ? { memoryInference: { exposure: "direct" } } : undefined,
-              entryRef,
-            ),
-            source: eventSource,
-          });
-        }, TELEMETRY_BUSY_TIMEOUT_MS);
-      },
-      { busyTimeoutMs: TELEMETRY_BUSY_TIMEOUT_MS },
-    );
-  } catch (err) {
-    rethrowIfTestIsolationError(err);
-    /* fire-and-forget */
   }
 }
 

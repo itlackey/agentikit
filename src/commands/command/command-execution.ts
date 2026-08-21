@@ -20,6 +20,8 @@ import {
   isPortableExecutionAgentSelector,
   type UnresolvedExecutionDefaults,
 } from "../../execution/source";
+import { recordIndexedShowUsage } from "../../indexer/usage/show-usage";
+import { resolveUsageEventSource } from "../../indexer/usage/usage-events";
 import {
   fallbackAnnouncement,
   NO_ENGINE_MESSAGE_SUFFIX,
@@ -224,6 +226,11 @@ export async function dispatchPreparedCommandInvocation(
     throw new ConfigError(`command ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "INVALID_CONFIG_FILE");
   }
   const result = await dispatchLoweredExecutionRequest(lowered, options);
+  const consumedRefs = new Set<string>();
+  if (request.command.source) consumedRefs.add(request.command.source.ref);
+  if (request.persona) consumedRefs.add(request.persona.source.ref);
+  const eventSource = resolveUsageEventSource();
+  for (const ref of consumedRefs) recordIndexedShowUsage(ref, eventSource);
   const announcement = fallbackAnnouncement(prepared.fallbackEngineName, selectedEngine);
   return resultEnvelope(result, selectedEngine, announcement ? [announcement] : [], lowered.notices);
 }

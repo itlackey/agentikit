@@ -64,6 +64,31 @@ function credentialBinding(credential: { names: readonly string[]; required: boo
   return credential ? { names: [...credential.names], required: credential.required } : null;
 }
 
+function passthroughBinding(spec: Extract<RunnerSpec, { kind: "agent" | "sdk" }>): string[] {
+  return [...new Set(spec.profile.envPassthrough)].sort();
+}
+
+function snapshotDispatchEnvironment(spec: RunnerSpec, envSource: NodeJS.ProcessEnv) {
+  const snapshot = new Map<string, string | undefined>();
+  const read = (name: string): string | undefined => {
+    if (!snapshot.has(name)) snapshot.set(name, envSource[name]);
+    return snapshot.get(name);
+  };
+  const credentialSource = new Proxy(Object.create(null) as NodeJS.ProcessEnv, {
+    get(_target, property) {
+      return typeof property === "string" ? read(property) : undefined;
+    },
+  });
+  const passthroughSensitiveValues = new Set<string>();
+  if (spec.kind !== "llm") {
+    for (const name of new Set(spec.profile.envPassthrough)) {
+      const value = read(name);
+      if (!isEnvPassthroughValueSafeToExpose(name, value) && value) passthroughSensitiveValues.add(value);
+    }
+  }
+  return { credentialSource, passthroughSensitiveValues };
+}
+
 /** Bind only transport identity; request model/inference/schema/timeout remain per-call. */
 function runnerLeaseBinding(spec: RunnerSpec): string {
   switch (spec.kind) {
@@ -82,6 +107,7 @@ function runnerLeaseBinding(spec: RunnerSpec): string {
         platform: spec.profile.platform ?? null,
         name: spec.profile.name,
         bin: spec.profile.bin,
+        envPassthrough: passthroughBinding(spec),
       });
     case "sdk":
       return JSON.stringify({
@@ -90,6 +116,7 @@ function runnerLeaseBinding(spec: RunnerSpec): string {
         platform: spec.profile.platform ?? null,
         name: spec.profile.name,
         bin: spec.profile.bin,
+        envPassthrough: passthroughBinding(spec),
         fallbackEndpoint: spec.fallbackConnection?.endpoint ?? null,
         fallbackProvider: spec.fallbackConnection?.provider ?? null,
         fallbackCredential: credentialBinding(spec.fallbackCredential),
@@ -124,9 +151,11 @@ export function acquireRunnerDispatchLease(
   spec: RunnerSpec,
   envSource: NodeJS.ProcessEnv = process.env,
 ): RunnerDispatchLease {
-  const primaryCredential = spec.kind === "llm" ? resolveCredentialFromEnv(spec.credential, envSource) : undefined;
+  const { credentialSource, passthroughSensitiveValues } = snapshotDispatchEnvironment(spec, envSource);
+  const primaryCredential =
+    spec.kind === "llm" ? resolveCredentialFromEnv(spec.credential, credentialSource) : undefined;
   const fallbackCredential =
-    spec.kind === "sdk" ? resolveCredentialFromEnv(spec.fallbackCredential, envSource) : undefined;
+    spec.kind === "sdk" ? resolveCredentialFromEnv(spec.fallbackCredential, credentialSource) : undefined;
   const handle = Object.create(null) as object;
   Object.defineProperty(handle, "toJSON", {
     configurable: false,
@@ -137,7 +166,11 @@ export function acquireRunnerDispatchLease(
     },
   });
   Object.freeze(handle);
-  const sensitiveValues = collectSensitiveValues([primaryCredential, fallbackCredential]);
+  const sensitiveValues = collectSensitiveValues([
+    primaryCredential,
+    fallbackCredential,
+    ...passthroughSensitiveValues,
+  ]);
   liveRunnerDispatchLeases.set(handle, {
     binding: runnerLeaseBinding(spec),
     primaryCredential,
@@ -224,6 +257,7 @@ function collectNonCredentialDispatchSensitiveValues(
   spec: RunnerSpec,
   opts: RunAgentOptions,
   envSource: NodeJS.ProcessEnv = opts.envSource ?? process.env,
+  includeProfilePassthrough = true,
 ): string[] {
   const values = new Set<string>();
   const add = (value: string | undefined): void => {
@@ -233,9 +267,11 @@ function collectNonCredentialDispatchSensitiveValues(
   if (spec.kind === "sdk") add(spec.fallbackConnection?.apiKey);
   if (spec.kind !== "llm") {
     for (const value of Object.values(spec.profile.env ?? {})) add(value);
-    for (const name of spec.profile.envPassthrough) {
-      const value = envSource[name];
-      if (!isEnvPassthroughValueSafeToExpose(name, value)) add(value);
+    if (includeProfilePassthrough) {
+      for (const name of spec.profile.envPassthrough) {
+        const value = envSource[name];
+        if (!isEnvPassthroughValueSafeToExpose(name, value)) add(value);
+      }
     }
   }
   for (const [name, value] of Object.entries(opts.env ?? {})) {
@@ -298,6 +334,12 @@ export async function executeRunner(
   let result: AgentRunResult;
   const dispatchSensitiveValues: string[] = [];
   const leaseState = lease ? requireRunnerDispatchLease(lease, spec) : undefined;
+  const preDispatchSensitiveValues = leaseState
+    ? collectSensitiveValues([
+        ...leaseState.sensitiveValues,
+        ...collectNonCredentialDispatchSensitiveValues(spec, opts, undefined, false),
+      ])
+    : collectDispatchSensitiveValues(spec, opts);
   switch (spec.kind) {
     case "llm": {
       if (!seams.llm) {
@@ -348,12 +390,6 @@ export async function executeRunner(
       // Exhaustiveness arm: a 4th RunnerSpec kind becomes a compile error here.
       return assertNever(spec);
   }
-  const sensitiveValues = leaseState
-    ? collectSensitiveValues([
-        ...leaseState.sensitiveValues,
-        ...collectNonCredentialDispatchSensitiveValues(spec, opts),
-        ...dispatchSensitiveValues,
-      ])
-    : [...collectDispatchSensitiveValues(spec, opts), ...dispatchSensitiveValues];
+  const sensitiveValues = collectSensitiveValues([...preDispatchSensitiveValues, ...dispatchSensitiveValues]);
   return redactResult(result, sensitiveValues);
 }

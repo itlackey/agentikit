@@ -20,7 +20,7 @@ import type { AkmConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { warn } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
-import type { UnresolvedExecutionDefaults } from "../../execution/source";
+import { isPortableExecutionAgentSelector, type UnresolvedExecutionDefaults } from "../../execution/source";
 import type { AgentDispatchRequest } from "../../integrations/agent/builder-shared";
 import {
   fallbackAnnouncement,
@@ -39,7 +39,7 @@ export interface AkmAgentDispatchOptions {
   commandRef?: string;
   /** Exact, non-tokenized string substituted for the portable `$ARGUMENTS` token. */
   argumentInput?: string;
-  /** Portable agent ref or native selector used by the canonical command path. */
+  /** Portable agent asset ref used by the canonical command path. */
   agentRef?: string;
   /** @deprecated Workflows must run through `akm workflow run`. */
   workflowRef?: string;
@@ -119,6 +119,14 @@ function rejectRawPersona(options: AkmAgentDispatchOptions): void {
   }
 }
 
+function rejectInvalidAgentRef(agentRef: string | undefined): void {
+  if (agentRef === undefined || isPortableExecutionAgentSelector(agentRef)) return;
+  throw new UsageError(
+    `agent expects an agent asset ref under agents/...; received ${JSON.stringify(agentRef)}.`,
+    "INVALID_FLAG_VALUE",
+  );
+}
+
 async function delegateCanonicalCommand(
   options: AkmAgentDispatchOptions,
   seams: AkmAgentDispatchSeams,
@@ -142,6 +150,7 @@ export async function akmAgentDispatch(
     throw new UsageError("agent requires a valid config with an agent engine.", "MISSING_REQUIRED_ARGUMENT");
 
   rejectLegacyWorkflowRef(options.workflowRef);
+  rejectInvalidAgentRef(options.agentRef);
 
   if (options.commandRef) {
     if (options.prompt !== undefined || options.workflowRef !== undefined) {

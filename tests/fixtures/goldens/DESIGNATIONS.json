@@ -354,12 +354,12 @@
     },
     {
       "path": "tests/fixtures/goldens/cli/d-help.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family D `--help` output — booleans (usage/akm substring presence) only, never the full citty-rendered usage text. Chunk 9 oracle; no production ref literals.",
-      "sha256": "e57e483e94d993b6229cf1ad9f5741f431b5539872108f0e230dea87c7a7624b"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family D `--help` output — booleans (usage/akm substring presence) only, never the full citty-rendered usage text. Chunk 9 oracle; no production ref literals. Re-baselined by WP5 after the public command execution surface added the top-level `command` entry; the fixture now pins that entry without capturing full help text.",
+      "reBaselineChunk": "5"
     },
     {
       "path": "tests/fixtures/goldens/improve/since-to-iso-identity-fallback.json",

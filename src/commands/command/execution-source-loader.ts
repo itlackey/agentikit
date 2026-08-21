@@ -20,7 +20,8 @@ import type {
   AdapterRenderedPersonaSource,
 } from "../../execution/source";
 import { type IndexEntry, lookupBundleRef } from "../../indexer/indexer";
-import { resolveEntryContentDir } from "../../indexer/search/search-source";
+import { deriveInstallations } from "../../indexer/installations";
+import { resolveEntryContentDir, resolveSourceEntries } from "../../indexer/search/search-source";
 import { buildFileContext } from "../../indexer/walk/file-context";
 
 export type ExecutionSourceLookup = (ref: BundleRef) => Promise<IndexEntry | null>;
@@ -74,9 +75,48 @@ function isLexicallyWithin(candidate: string, root: string): boolean {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
+function implicitComponentForEntry(
+  entry: IndexEntry,
+  config: AkmConfig,
+  realRoot: string,
+): BundleComponent | undefined {
+  const sources = resolveSourceEntries(undefined, config);
+  const installations = deriveInstallations(sources);
+  for (const [index, installation] of installations.entries()) {
+    if (installation.id !== entry.bundleId) continue;
+    const source = sources[index];
+    const component = installation.components[0];
+    if (!source || !component) continue;
+    const canonicalRoot = realDirectory(component.root, `Canonical implicit source root for ${entry.bundleId}`);
+    if (canonicalRoot !== realRoot) {
+      throw new ConfigError(
+        `Canonical implicit source root drift for ${JSON.stringify(entry.itemRef)}; the indexed root no longer matches the working bundle source.`,
+        "INVALID_CONFIG_FILE",
+        "Run `akm index --full` after changing AKM_BUNDLE_DIR or the default bundle directory.",
+      );
+    }
+    if (component.adapter !== entry.adapterId) {
+      throw new ConfigError(
+        `Implicit adapter drift for ${JSON.stringify(entry.itemRef)}: the index records ${JSON.stringify(entry.adapterId)} but the canonical working source selects ${JSON.stringify(component.adapter)}.`,
+        "INVALID_CONFIG_FILE",
+        "Run `akm index --full` after changing the working source adapter.",
+      );
+    }
+    return Object.freeze({
+      id: installation.id,
+      adapter: component.adapter,
+      root: canonicalRoot,
+      writable: component.writable,
+    });
+  }
+  return undefined;
+}
+
 function componentForEntry(entry: IndexEntry, config: AkmConfig, realRoot: string): BundleComponent {
   const configured = config.bundles?.[entry.bundleId];
   if (!configured) {
+    const implicit = implicitComponentForEntry(entry, config, realRoot);
+    if (implicit) return implicit;
     throw new ConfigError(
       `Indexed execution source ${JSON.stringify(entry.itemRef)} belongs to unconfigured bundle ${JSON.stringify(entry.bundleId)}.`,
       "INVALID_CONFIG_FILE",

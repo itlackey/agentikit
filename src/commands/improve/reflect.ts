@@ -2017,6 +2017,54 @@ function buildReflectEventEmitters(options: AkmReflectOptions): {
   return { emitInvoked, emitFailed };
 }
 
+function cleanupReflectDrafts(paths: readonly string[]): void {
+  for (const draftPath of paths) {
+    try {
+      if (fs.existsSync(draftPath)) fs.unlinkSync(draftPath);
+    } catch {
+      // Draft cleanup is best-effort; the proposal result remains authoritative.
+    }
+  }
+}
+
+function validateReflectPayloadRef(args: {
+  payload: ReturnType<typeof parseAgentProposalPayload>;
+  result: AgentRunResult;
+  options: AkmReflectOptions;
+  engineName: string;
+  emitReflectFailed: ReturnType<typeof buildReflectEventEmitters>["emitFailed"];
+  executionNotices: Map<string, Readonly<LoweringNotice>>;
+}): AkmReflectResult | undefined {
+  const { payload, result, options, engineName, emitReflectFailed, executionNotices } = args;
+  if (!options.ref) return undefined;
+  try {
+    const expectedParsed = parseRefInput(options.ref);
+    const actualParsed = parseRefInput(payload.ref);
+    if (expectedParsed.type === actualParsed.type && expectedParsed.name === actualParsed.name) return undefined;
+    emitReflectFailed("parse_error", "ref_mismatch", options.ref, {
+      expectedRef: options.ref,
+      actualRef: payload.ref,
+      ...(result.exitCode !== null ? { exitCode: result.exitCode } : {}),
+      ...(reflectLlmTelemetry(result) ?? {}),
+    });
+    return {
+      schemaVersion: 2,
+      ok: false,
+      reason: "parse_error",
+      error: `Agent retargeted proposal: expected ref "${options.ref}" but got "${payload.ref}". Proposal rejected to prevent silent ref hallucination.`,
+      ref: options.ref,
+      engine: engineName,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      ...(result.stderr ? { stderr: result.stderr } : {}),
+      ...reflectNoticeFields(executionNotices),
+    };
+  } catch {
+    // Malformed refs are rejected downstream by proposal validation.
+    return undefined;
+  }
+}
+
 export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmReflectResult> {
   const stash = resolveRunStashDir(options.stashDir);
 
@@ -2105,24 +2153,7 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
       ...(options.runAgentOptions ?? {}),
     });
 
-    // Track every draft file path we synthesize so cleanup can remove them on
-    // every return path (success and failure). Mirrors propose's unlink pattern
-    // in `src/commands/proposal/propose.ts` but generalised to N refinement
-    // iterations. Always called via {@link cleanupDrafts} below.
     const draftPathsToCleanup: string[] = [];
-
-    // Best-effort unlink: tolerate already-deleted files (we may have unlinked
-    // an intermediate iteration's draft) and unwritable paths. Never throws —
-    // the proposal result is the source of truth for the caller.
-    const cleanupDrafts = (): void => {
-      for (const p of draftPathsToCleanup) {
-        try {
-          if (fs.existsSync(p)) fs.unlinkSync(p);
-        } catch {
-          // Swallow — cleanup is best-effort.
-        }
-      }
-    };
 
     // `result` / `lastDraftPath` / `payload` are populated inside the try. Hoisted
     // here so the post-try sections (R-3 ref guard, sanitizer, quality gate,
@@ -2200,46 +2231,20 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
       // inside the try above trigger this block before the function exits. Code
       // after this point uses the already-loaded `payload` and never touches the
       // draft paths.
-      cleanupDrafts();
+      cleanupReflectDrafts(draftPathsToCleanup);
     }
 
     payload = { ...payload, content: redactSensitiveText(payload.content, sensitiveValues) };
 
-    // 6b. Validate payload.ref === options.ref (R-3 / #366).
-    // A hallucinating agent can silently retarget proposals to a different ref.
-    // Parse both current refs so an optional bundle prefix does not cause a false
-    // positive, then reject genuine concept mismatches.
-    // References: CRITIC (arXiv:2305.11738), CoVe (arXiv:2309.11495).
-    if (options.ref) {
-      try {
-        const expectedParsed = parseRefInput(options.ref);
-        const actualParsed = parseRefInput(payload.ref);
-        // Compare type + name (drop origin — agent may omit origin prefix).
-        if (expectedParsed.type !== actualParsed.type || expectedParsed.name !== actualParsed.name) {
-          emitReflectFailed("parse_error", "ref_mismatch", options.ref, {
-            expectedRef: options.ref,
-            actualRef: payload.ref,
-            ...(result.exitCode !== null ? { exitCode: result.exitCode } : {}),
-            ...(reflectLlmTelemetry(result) ?? {}),
-          });
-          return {
-            schemaVersion: 2,
-            ok: false,
-            reason: "parse_error" as const,
-            error: `Agent retargeted proposal: expected ref "${options.ref}" but got "${payload.ref}". Proposal rejected to prevent silent ref hallucination.`,
-            ref: options.ref,
-            engine: engineName,
-            exitCode: result.exitCode,
-            stdout: result.stdout,
-            ...(result.stderr ? { stderr: result.stderr } : {}),
-            ...reflectNoticeFields(executionNotices),
-          };
-        }
-      } catch {
-        // parseRefInput failure means the agent returned a malformed ref — already
-        // caught downstream by createProposal; allow it to surface naturally.
-      }
-    }
+    const refFailure = validateReflectPayloadRef({
+      payload,
+      result,
+      options,
+      engineName,
+      emitReflectFailed,
+      executionNotices,
+    });
+    if (refFailure) return refFailure;
 
     const finalized = await finalizeReflectProposal({
       payload,

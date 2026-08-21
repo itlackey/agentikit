@@ -108,6 +108,87 @@ interface EligibleSchemaRepair {
   messages: ChatMessage[];
 }
 
+async function classifySchemaRepairs(args: {
+  failures: SchemaRepairFailure[];
+  startMs: number;
+  budgetMs: number;
+  stashDir: string;
+  findFilePath: NonNullable<SchemaRepairOptions["findFilePath"]>;
+  isLessonCandidateFn: NonNullable<SchemaRepairOptions["isLessonCandidateFn"]>;
+  repairs: SchemaRepairRecord[];
+}): Promise<{ eligibleRepairs: EligibleSchemaRepair[]; pendingErrors: SchemaRepairRecord[] }> {
+  const { failures, startMs, budgetMs, stashDir, findFilePath, isLessonCandidateFn, repairs } = args;
+  const eligibleRepairs: EligibleSchemaRepair[] = [];
+  const pendingErrors: SchemaRepairRecord[] = [];
+  for (const failure of failures) {
+    if (Date.now() - startMs >= budgetMs) break;
+    const recentRepairs = readEvents({ type: "schema_repair_invoked", ref: failure.ref });
+    const lastRepair = recentRepairs.events
+      .filter((event) => event.metadata?.outcome === "queued")
+      .sort((a, b) => new Date(b.ts ?? 0).getTime() - new Date(a.ts ?? 0).getTime())[0];
+    if (lastRepair?.ts && Date.now() - new Date(lastRepair.ts).getTime() < SCHEMA_REPAIR_COOLDOWN_MS) {
+      repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "skipped" });
+      continue;
+    }
+    const windowStart = Date.now() - SCHEMA_REPAIR_WINDOW_MS;
+    const attemptsInWindow = recentRepairs.events.filter(
+      (event) => event.ts !== undefined && new Date(event.ts).getTime() >= windowStart,
+    ).length;
+    if (attemptsInWindow >= SCHEMA_REPAIR_MAX_ATTEMPTS) {
+      repairs.push({
+        ref: failure.ref,
+        reason: failure.reason,
+        outcome: "skipped",
+        error: `schema-repair attempt cap reached (${attemptsInWindow}/${SCHEMA_REPAIR_MAX_ATTEMPTS} in 30d window)`,
+      });
+      continue;
+    }
+    const filePath = await findFilePath(failure.ref, stashDir);
+    if (!filePath || path.extname(filePath).toLowerCase() !== ".md") {
+      repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "skipped" });
+      continue;
+    }
+    try {
+      const raw = fs.readFileSync(filePath, "utf8");
+      const frontmatter = parseFrontmatter(raw);
+      const missingFields: string[] = [];
+      if (!frontmatter.data.description) missingFields.push("description");
+      if (isLessonCandidateFn(failure.ref) && !frontmatter.data.when_to_use) missingFields.push("when_to_use");
+      if (missingFields.length === 0) {
+        repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "skipped" });
+        continue;
+      }
+      const fieldList = missingFields.join(" and ");
+      const standardsContext = resolveStandardsContext(failure.ref, stashDir);
+      const standardsSection = standardsContext.trim()
+        ? `\n\nStandards to follow (the rulebook for this target):\n${standardsContext.trim()}`
+        : "";
+      const assetType = parseRefInput(failure.ref).type;
+      const authoringRules = authoringRulesForType(assetType);
+      const authoringRulesSection = authoringRules ? `\n\n${authoringRules}` : "";
+      eligibleRepairs.push({
+        failure,
+        frontmatter,
+        fieldList,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You generate concise asset frontmatter fields. Respond with a JSON object containing only the missing fields. No prose, no markdown fences.",
+          },
+          {
+            role: "user",
+            content: `Generate the missing frontmatter fields (${fieldList}) for this ${assetType} asset. Return ONLY valid JSON like {"description": "...", "when_to_use": "..."}${standardsSection}${authoringRulesSection}\n\n${(frontmatter.content ?? raw).slice(0, 2000)}`,
+          },
+        ],
+      });
+    } catch (error) {
+      pendingErrors.push({ ref: failure.ref, reason: failure.reason, outcome: "error", error: String(error) });
+    }
+  }
+  return { eligibleRepairs, pendingErrors };
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -143,90 +224,15 @@ export async function runSchemaRepairPass(
   // Classify the entire batch using read-only work before credential lookup or
   // proposal/event persistence. A missing required credential therefore aborts
   // the eligible batch atomically instead of leaving an earlier proposal behind.
-  const eligibleRepairs: EligibleSchemaRepair[] = [];
-  const pendingErrors: SchemaRepairRecord[] = [];
-  for (const failure of failures) {
-    if (Date.now() - startMs >= budgetMs) break;
-
-    // Cooldown: skip repair if we ran it successfully recently.
-    const recentRepairs = readEvents({ type: "schema_repair_invoked", ref: failure.ref });
-    const lastRepair = recentRepairs.events
-      .filter((e) => e.metadata?.outcome === "queued")
-      .sort((a, b) => new Date(b.ts ?? 0).getTime() - new Date(a.ts ?? 0).getTime())[0];
-    if (lastRepair?.ts && Date.now() - new Date(lastRepair.ts).getTime() < SCHEMA_REPAIR_COOLDOWN_MS) {
-      repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "skipped" });
-      continue;
-    }
-
-    // O-6 / #379: Cap total attempts at SCHEMA_REPAIR_MAX_ATTEMPTS per SCHEMA_REPAIR_WINDOW_MS.
-    // Prevents indefinite nightly re-repair of assets whose source is genuinely ambiguous.
-    // After the cap is reached, the asset is skipped until the window rolls over.
-    const windowStart = Date.now() - SCHEMA_REPAIR_WINDOW_MS;
-    const attemptsInWindow = recentRepairs.events.filter(
-      (e) => e.ts !== undefined && new Date(e.ts).getTime() >= windowStart,
-    ).length;
-    if (attemptsInWindow >= SCHEMA_REPAIR_MAX_ATTEMPTS) {
-      repairs.push({
-        ref: failure.ref,
-        reason: failure.reason,
-        outcome: "skipped",
-        error: `schema-repair attempt cap reached (${attemptsInWindow}/${SCHEMA_REPAIR_MAX_ATTEMPTS} in 30d window)`,
-      });
-      continue;
-    }
-
-    const filePath = await findFilePath(failure.ref, stashDir);
-    if (!filePath) {
-      repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "skipped" });
-      continue;
-    }
-
-    if (path.extname(filePath).toLowerCase() !== ".md") {
-      repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "skipped" });
-      continue;
-    }
-
-    try {
-      const raw = fs.readFileSync(filePath, "utf8");
-      const fm = parseFrontmatter(raw);
-
-      const missingFields: string[] = [];
-      if (!fm.data.description) missingFields.push("description");
-      if (isLessonCandidateFn(failure.ref) && !fm.data.when_to_use) missingFields.push("when_to_use");
-
-      if (missingFields.length === 0) {
-        repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "skipped" });
-        continue;
-      }
-
-      const fieldList = missingFields.join(" and ");
-
-      const bodyPreview = (fm.content ?? raw).slice(0, 2000);
-      // Standards "rulebook" for this target — wiki schema (wiki page) or stash
-      // convention/meta facts (non-wiki asset). `resolveStandardsContext`
-      // dispatches on the ref.
-      const standardsContext = resolveStandardsContext(failure.ref, stashDir);
-      const standardsSection = standardsContext.trim()
-        ? `\n\nStandards to follow (the rulebook for this target):\n${standardsContext.trim()}`
-        : "";
-      const assetType = parseRefInput(failure.ref).type;
-      const authoringRules = authoringRulesForType(assetType);
-      const authoringRulesSection = authoringRules ? `\n\n${authoringRules}` : "";
-      const messages: ChatMessage[] = [
-        {
-          role: "system",
-          content: `You generate concise asset frontmatter fields. Respond with a JSON object containing only the missing fields. No prose, no markdown fences.`,
-        },
-        {
-          role: "user",
-          content: `Generate the missing frontmatter fields (${fieldList}) for this ${assetType} asset. Return ONLY valid JSON like {"description": "...", "when_to_use": "..."}${standardsSection}${authoringRulesSection}\n\n${bodyPreview}`,
-        },
-      ];
-      eligibleRepairs.push({ failure, frontmatter: fm, fieldList, messages });
-    } catch (e) {
-      pendingErrors.push({ ref: failure.ref, reason: failure.reason, outcome: "error", error: String(e) });
-    }
-  }
+  const { eligibleRepairs, pendingErrors } = await classifySchemaRepairs({
+    failures,
+    startMs,
+    budgetMs,
+    stashDir,
+    findFilePath,
+    isLessonCandidateFn,
+    repairs,
+  });
 
   if (eligibleRepairs.length === 0) {
     for (const repair of pendingErrors) {
