@@ -9,6 +9,7 @@ import { adapterForId } from "../../core/adapter/registry";
 import type { BundleComponent } from "../../core/adapter/types";
 import { isWithin } from "../../core/common";
 import { UsageError } from "../../core/errors";
+import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import {
   resolveUniqueWorkflowSource,
   type WorkflowSourceFile,
@@ -265,28 +266,32 @@ export function resolveAdapterConceptOwner(
   const ownersByIdentity = new Map<string, AdapterConceptOwner>();
 
   const workflowName = workflowNameForConceptId(adapterId, normalized);
+  const resolutionConceptId =
+    workflowName === undefined
+      ? normalized
+      : adapterId === "akm"
+        ? `workflows/${canonicalizeWorkflowName(workflowName)}`
+        : canonicalizeWorkflowName(workflowName);
   if (workflowName !== undefined) {
     const workflowSource = resolveUniqueWorkflowSource(sourcePath, adapterId, workflowName);
     if (workflowSource) {
-      const canonicalConceptId =
-        adapterId === "akm" ? `workflows/${workflowSource.canonicalName}` : workflowSource.canonicalName;
       const workflowOwner = {
         path: workflowSource.path,
         realPath: workflowSource.realPath,
-        conceptId: canonicalConceptId,
+        conceptId: resolutionConceptId,
         adapterId,
         workflowSource,
       };
-      ownersByIdentity.set(`${path.resolve(workflowOwner.path)}\0${canonicalConceptId}`, workflowOwner);
+      ownersByIdentity.set(`${path.resolve(workflowOwner.path)}\0${resolutionConceptId}`, workflowOwner);
     }
   }
 
-  const directSpellings = (adapter.readCandidates?.(component, normalized) ?? []).flatMap((candidate) =>
+  const directSpellings = (adapter.readCandidates?.(component, resolutionConceptId) ?? []).flatMap((candidate) =>
     candidateSpellings(candidate, sourcePath, realRoot),
   );
   const spellings = [
     ...directSpellings,
-    ...scannedReadCandidates(adapter, component, sourcePath, realRoot, normalized),
+    ...scannedReadCandidates(adapter, component, sourcePath, realRoot, resolutionConceptId),
   ];
   const inspected = [
     ...new Map(
@@ -299,16 +304,16 @@ export function resolveAdapterConceptOwner(
       return owner ? [owner] : [];
     });
   for (const candidate of inspected) {
-    if (candidate.conceptId !== normalized) continue;
+    if (candidate.conceptId !== resolutionConceptId) continue;
     const identity = `${path.resolve(candidate.path)}\0${candidate.conceptId}`;
     if (ownersByIdentity.has(identity)) continue;
     if (claimsWithoutContent(adapter, component, candidate)) ownersByIdentity.set(identity, candidate);
   }
-  const owners = [...ownersByIdentity.values()].filter((owner) => owner.conceptId === normalized);
+  const owners = [...ownersByIdentity.values()].filter((owner) => owner.conceptId === resolutionConceptId);
   if (owners.length > 1) {
     throw new AdapterConceptCollisionError(
       adapterId,
-      normalized,
+      resolutionConceptId,
       owners.map((owner) => path.relative(sourcePath, owner.path).replaceAll("\\", "/")),
     );
   }

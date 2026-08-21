@@ -7,6 +7,7 @@ import { resetConfigCache } from "../../../src/core/config/config";
 import { getDbPath } from "../../../src/core/paths";
 import { indexWrittenAssets } from "../../../src/indexer/index-written-assets";
 import { akmIndex, lookupBundleRef } from "../../../src/indexer/indexer";
+import { resolveAdapterConceptOwner } from "../../../src/indexer/lookup/adapter-concept-owner";
 import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { listWorkflowRuns, startWorkflowRun } from "../../../src/workflows/runtime/runs";
@@ -129,8 +130,64 @@ function indexSnapshot(): {
 }
 
 const kinds: BundleKind[] = ["ordinary", "standalone"];
+const soleSourceCases = [
+  [".md", markdownWorkflow],
+  [".yml", yamlWorkflow],
+  [".MD", markdownWorkflow],
+  [".YML", yamlWorkflow],
+] as const;
 
 describe("workflow source canonical-ref collisions", () => {
+  test.each(
+    kinds.flatMap((kind) => soleSourceCases.map(([extension, source]) => [kind, extension, source] as const)),
+  )("%s canonicalizes every explicit alias onto one %s workflow owner", async (kind, extension, source) => {
+    const fixture = configure(kind);
+    const sourcePath = path.join(fixture.ownedDir, `collision${extension}`);
+    fs.writeFileSync(sourcePath, source(`sole-${kind}-${extension.slice(1).toLowerCase()}`));
+    const adapterId = kind === "ordinary" ? "akm" : "akm-workflow";
+    const canonicalConceptId = kind === "ordinary" ? "workflows/collision" : "collision";
+
+    for (const ref of fixture.aliases) {
+      const owner = resolveAdapterConceptOwner(fixture.root, adapterId, parseBundleRef(ref).conceptId);
+      expect(owner, ref).toMatchObject({
+        path: sourcePath,
+        conceptId: canonicalConceptId,
+        workflowSource: { path: sourcePath, canonicalName: "collision" },
+      });
+      await expect(loadWorkflowAsset(ref), ref).resolves.toMatchObject({
+        ref: fixture.canonicalRef,
+        path: sourcePath,
+        document: { source: { path: sourcePath } },
+      });
+    }
+    expect(fs.existsSync(getDbPath())).toBe(false);
+  });
+
+  test.each(kinds)("%s rejects a repeated-suffix alias instead of stripping twice", async (kind) => {
+    const fixture = configure(kind);
+    fs.writeFileSync(path.join(fixture.ownedDir, "collision.md.yml"), yamlWorkflow("nested-suffix"));
+
+    await expect(loadWorkflowAsset(`${fixture.canonicalRef}.md.yml`)).rejects.toMatchObject({
+      code: "INVALID_FLAG_VALUE",
+      message: expect.stringMatching(/extensionless stem ending in recognized workflow suffix.*\.md/is),
+    });
+    expect(fs.existsSync(getDbPath())).toBe(false);
+  });
+
+  test("ordinary load rejects a canonical workflow source colliding with a loose smart-Markdown peer", async () => {
+    const fixture = configure("ordinary");
+    const canonicalPath = path.join(fixture.ownedDir, "collision.md");
+    const loosePath = path.join(fixture.root, "collision.md");
+    fs.writeFileSync(canonicalPath, markdownWorkflow("canonical"));
+    fs.writeFileSync(loosePath, markdownWorkflow("loose"));
+
+    await expect(loadWorkflowAsset(`${fixture.canonicalRef}.MD`)).rejects.toMatchObject({
+      code: "RESOURCE_ALREADY_EXISTS",
+      message: expect.stringMatching(/multiple physical owners.*collision\.md.*workflows\/collision\.md/is),
+    });
+    expect(fs.existsSync(getDbPath())).toBe(false);
+  });
+
   test.each(kinds)("%s rejects every explicit alias before uncached load", async (kind) => {
     const fixture = configure(kind);
     writeCollision(fixture);
