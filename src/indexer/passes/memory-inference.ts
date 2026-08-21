@@ -52,6 +52,10 @@ import { warn } from "../../core/warn";
 import { recordWrittenPath } from "../../core/write-provenance";
 import { type WriteTargetSource, writeAssetToSource } from "../../core/write-source";
 import type { LoweringNotice } from "../../execution/resolved-request";
+import {
+  disposeLoweredExecutionDispatchLease,
+  type LoweredExecutionDispatchLease,
+} from "../../integrations/agent/execution-lowering";
 import { isProcessEnabled } from "../../llm/feature-gate";
 import { type ResolvedIndexPassExecution, resolveIndexPassExecution } from "../../llm/index-passes";
 import type { DerivedMemoryDraft, MemoryInferTelemetry } from "../../llm/memory-infer";
@@ -226,6 +230,7 @@ async function inferPendingMemoryRecord(
     db?: MemoryInferencePassContext["db"];
     reEnrich?: boolean;
     llmRunner: StructuredLlmRunner;
+    lease: LoweredExecutionDispatchLease | undefined;
     inferTelemetry: MemoryInferTelemetry;
     compressMemoryToDerivedMemory: typeof memoryInfer.compressMemoryToDerivedMemory;
     onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
@@ -240,6 +245,7 @@ async function inferPendingMemoryRecord(
     db,
     reEnrich,
     llmRunner,
+    lease,
     inferTelemetry,
     compressMemoryToDerivedMemory,
     onNotices,
@@ -284,6 +290,7 @@ async function inferPendingMemoryRecord(
       inferTelemetry,
       onRetryAttempt,
       onNotices,
+      lease,
     );
   let derived: DerivedMemoryDraft | undefined = plan.kind === "cache-hit" ? plan.derived : undefined;
   try {
@@ -313,6 +320,7 @@ async function inferPendingMemoryRecord(
             inferTelemetry,
             onRetryAttempt,
             onNotices,
+            lease,
           );
     }
   } catch (error) {
@@ -421,41 +429,88 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
   // keeps aborted, existing-child, and validated-cache-only batches available
   // offline while preserving all-or-nothing preflight for mixed batches.
   const plans = pending.map((record) => planPendingMemoryRecord(record, { signal, db, reEnrich }));
-  if (plans.some((plan) => plan.kind === "model")) await preflightStructuredLlmRunner(llmRunner);
+  const dispatchLease = plans.some((plan) => plan.kind === "model")
+    ? await preflightStructuredLlmRunner(llmRunner)
+    : undefined;
 
-  let processed = 0;
-  const total = pending.length;
-  onProgress?.({ processed, total, writtenFacts: 0, skippedNoFacts: 0 });
+  try {
+    let processed = 0;
+    const total = pending.length;
+    onProgress?.({ processed, total, writtenFacts: 0, skippedNoFacts: 0 });
 
-  let configFailure: ConfigError | undefined;
-  const perRecordResults = await concurrentMap(
-    plans,
-    (plan) =>
-      inferPendingMemoryRecord(plan, {
-        config,
-        featureConfig,
-        signal,
-        db,
-        reEnrich,
-        llmRunner,
-        inferTelemetry,
-        compressMemoryToDerivedMemory,
-        onNotices,
-        onConfigFailure: (error) => {
-          configFailure ??= error;
-        },
-      }),
-    // Caller-set connection concurrency or 1: `resolveLlmEngineUse` does
-    // not forward `engines.<name>.concurrency`, so config cannot raise this.
-    llmRunner.connection.concurrency ?? 1,
-  );
-  if (configFailure) throw configFailure;
+    let configFailure: ConfigError | undefined;
+    const perRecordResults = await concurrentMap(
+      plans,
+      (plan) =>
+        inferPendingMemoryRecord(plan, {
+          config,
+          featureConfig,
+          signal,
+          db,
+          reEnrich,
+          llmRunner,
+          lease: dispatchLease,
+          inferTelemetry,
+          compressMemoryToDerivedMemory,
+          onNotices,
+          onConfigFailure: (error) => {
+            configFailure ??= error;
+          },
+        }),
+      // Caller-set connection concurrency or 1: `resolveLlmEngineUse` does
+      // not forward `engines.<name>.concurrency`, so config cannot raise this.
+      llmRunner.connection.concurrency ?? 1,
+    );
+    if (configFailure) throw configFailure;
 
-  for (let i = 0; i < perRecordResults.length; i++) {
-    const res = perRecordResults[i];
-    if (!res) continue;
-    if ("aborted" in res && res.aborted) {
-      result.skippedAborted += 1;
+    for (let i = 0; i < perRecordResults.length; i++) {
+      const res = perRecordResults[i];
+      if (!res) continue;
+      if ("aborted" in res && res.aborted) {
+        result.skippedAborted += 1;
+        processed++;
+        onProgress?.({
+          processed,
+          total,
+          writtenFacts: result.writtenFacts,
+          skippedNoFacts: result.skippedNoFacts,
+          currentRef: pending[i]?.ref,
+        });
+        continue;
+      }
+      if (res.fromCache) {
+        result.cacheHits += 1;
+      }
+      if ("retryAttempts" in res) {
+        result.retryAttempts += res.retryAttempts;
+      }
+      if (res.skipped) {
+        result.skippedNoFacts += 1;
+        // Intentionally NOT marked processed — a transient LLM failure should
+        // be retried on the next index run.
+      } else if (res.splitParent) {
+        result.splitParents += 1;
+        result.writtenFacts += res.written;
+      } else if ("childExists" in res && res.childExists) {
+        // Derived child already on disk. Track separately so this category is
+        // observable in health output and stops bleeding into the
+        // freshAttempts denominator. Pre-check skips (#588) are the routine
+        // self-healing path — no LLM attempt was consumed and the parent has
+        // been marked processed — so only the rare post-LLM case (mid-flight
+        // race or write failure) warrants a per-ref warning.
+        result.skippedChildExists += 1;
+        if (!res.precheck) {
+          warn(
+            `memory inference: derived child for ${pending[i]?.ref ?? "<unknown>"} already existed or write failed; counted as skippedChildExists`,
+          );
+        }
+      } else {
+        // The per-record state machine should cover every outcome. A hit here
+        // means a new code path slipped past the categorisation — surface it
+        // loudly so health metrics stay honest and we get a signal to fix.
+        result.unaccounted += 1;
+        warn(`memory inference: unaccounted per-record outcome for ${pending[i]?.ref ?? "<unknown>"}`);
+      }
       processed++;
       onProgress?.({
         processed,
@@ -464,53 +519,13 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
         skippedNoFacts: result.skippedNoFacts,
         currentRef: pending[i]?.ref,
       });
-      continue;
     }
-    if (res.fromCache) {
-      result.cacheHits += 1;
-    }
-    if ("retryAttempts" in res) {
-      result.retryAttempts += res.retryAttempts;
-    }
-    if (res.skipped) {
-      result.skippedNoFacts += 1;
-      // Intentionally NOT marked processed — a transient LLM failure should
-      // be retried on the next index run.
-    } else if (res.splitParent) {
-      result.splitParents += 1;
-      result.writtenFacts += res.written;
-    } else if ("childExists" in res && res.childExists) {
-      // Derived child already on disk. Track separately so this category is
-      // observable in health output and stops bleeding into the
-      // freshAttempts denominator. Pre-check skips (#588) are the routine
-      // self-healing path — no LLM attempt was consumed and the parent has
-      // been marked processed — so only the rare post-LLM case (mid-flight
-      // race or write failure) warrants a per-ref warning.
-      result.skippedChildExists += 1;
-      if (!res.precheck) {
-        warn(
-          `memory inference: derived child for ${pending[i]?.ref ?? "<unknown>"} already existed or write failed; counted as skippedChildExists`,
-        );
-      }
-    } else {
-      // The per-record state machine should cover every outcome. A hit here
-      // means a new code path slipped past the categorisation — surface it
-      // loudly so health metrics stay honest and we get a signal to fix.
-      result.unaccounted += 1;
-      warn(`memory inference: unaccounted per-record outcome for ${pending[i]?.ref ?? "<unknown>"}`);
-    }
-    processed++;
-    onProgress?.({
-      processed,
-      total,
-      writtenFacts: result.writtenFacts,
-      skippedNoFacts: result.skippedNoFacts,
-      currentRef: pending[i]?.ref,
-    });
-  }
 
-  result.htmlErrorCount = inferTelemetry.htmlErrorCount ?? 0;
-  return completeResult();
+    result.htmlErrorCount = inferTelemetry.htmlErrorCount ?? 0;
+    return completeResult();
+  } finally {
+    if (dispatchLease) disposeLoweredExecutionDispatchLease(dispatchLease);
+  }
 }
 
 // ── Pending detection ───────────────────────────────────────────────────────

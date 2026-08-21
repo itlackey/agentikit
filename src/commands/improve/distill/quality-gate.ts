@@ -22,6 +22,7 @@ import { parseEmbeddedJsonResponse } from "../../../core/parse";
 import { withStateDb } from "../../../core/state-db";
 import { recordWrittenPath } from "../../../core/write-provenance";
 import type { LoweringNotice } from "../../../execution/resolved-request";
+import type { LoweredExecutionDispatchLease } from "../../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../../integrations/agent/runner";
 import type { ChatCompletionOptions, ChatMessage } from "../../../llm/client";
 import type { LlmFeatureKey } from "../../../llm/feature-gate";
@@ -196,6 +197,7 @@ export interface QualityJudgeOptions {
   similarLessons?: Array<{ ref: string; content: string }>;
   /** Preferred production path: exact symbolic runner selected for this improve process. */
   llmRunner?: Extract<RunnerSpec, { kind: "llm" }>;
+  lease?: LoweredExecutionDispatchLease;
   /** Legacy non-secret connection seam retained for isolated tests. */
   llmConfig?: LlmConnectionConfig;
   timeoutMs?: number | null;
@@ -228,6 +230,7 @@ async function runQualityJudge(
     const raw = await callStructured<string>({
       feature,
       runner,
+      ...(options.lease ? { lease: options.lease } : {}),
       messages: [
         { role: "system", content: "Return only valid JSON. No prose." },
         { role: "user", content: prompt },

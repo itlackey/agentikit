@@ -19,8 +19,13 @@ import { SCRIPT_EXTENSIONS } from "../core/recognition-util";
 import { withStateDb } from "../core/state-db";
 import { isVerbose, warn, warnVerbose } from "../core/warn";
 import type { LoweringNotice } from "../execution/resolved-request";
+import {
+  disposeLoweredExecutionDispatchLease,
+  type LoweredExecutionDispatchLease,
+} from "../integrations/agent/execution-lowering";
+import { isLlmFeatureEnabled } from "../llm/feature-gate";
 import { type ResolvedIndexPassExecution, resolveIndexPassExecution } from "../llm/index-passes";
-import type { StructuredLlmRunner } from "../llm/structured-call";
+import { preflightStructuredLlmRunner, type StructuredLlmRunner } from "../llm/structured-call";
 import { resolveSourcesForOrigin } from "../registry/origin-resolve";
 /**
  * M-4 / #395 — Index Consistency Architecture Decision Record
@@ -71,7 +76,11 @@ import {
 } from "../storage/repositories/index-entries-repository";
 import type { EntryProvenance } from "../storage/repositories/index-entry-types";
 import { rebuildFts } from "../storage/repositories/index-fts-repository";
-import { clearStaleCacheEntries } from "../storage/repositories/index-llm-cache-repository";
+import {
+  clearStaleCacheEntries,
+  computeBodyHash,
+  getLlmCacheEntry,
+} from "../storage/repositories/index-llm-cache-repository";
 import {
   deleteIndexDirState,
   deleteIndexDirStatesByStashDir,
@@ -353,6 +362,12 @@ async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
     doFullDelete,
     onProgress,
     !clean,
+    async (dirRecords) => {
+      const runner = ctx.enrichmentExecution.runner;
+      if (runner && isLlmFeatureEnabled(config, "metadata_enhance") && dirRecordsNeedMetadataDispatch(db, dirRecords)) {
+        ctx.enrichmentLease = await preflightStructuredLlmRunner(runner);
+      }
+    },
   );
 
   ctx.scannedDirs = scannedDirs;
@@ -388,8 +403,15 @@ async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
   throwIfAborted(signal);
 
   // LLM enrichment for directories that need it
-  await enhanceDirsWithLlm(db, config, ctx.enrichmentExecution, dirsNeedingLlm, onProgress, signal, (notices) =>
-    collectLoweringNotices(ctx.loweringNotices, notices),
+  await enhanceDirsWithLlm(
+    db,
+    config,
+    ctx.enrichmentExecution,
+    dirsNeedingLlm,
+    onProgress,
+    signal,
+    (notices) => collectLoweringNotices(ctx.loweringNotices, notices),
+    ctx.enrichmentLease,
   );
   onProgress({
     phase: "llm",
@@ -762,6 +784,53 @@ function detectAndPersistBundleAdapters(
   return { config: nextConfig, persistedAdapters };
 }
 
+interface CreateIndexRunContextOptions {
+  db: Database;
+  config: AkmConfig;
+  enrichmentExecution: ResolvedIndexPassExecution;
+  sources: SearchSource[];
+  sourceDirs: string[];
+  full: boolean;
+  clean: boolean;
+  stashDir: string;
+  onProgress: (event: IndexProgressEvent) => void;
+  signal: AbortSignal | undefined;
+  t0: number;
+}
+
+function createIndexRunContext(options: CreateIndexRunContextOptions): IndexRunContext {
+  const prevStashDir = getMeta(options.db, "stashDir");
+  const prevBuiltAt = getMeta(options.db, "builtAt");
+  const isIncremental = !options.full && prevStashDir === options.stashDir && !!prevBuiltAt;
+  const builtAtMs = isIncremental && prevBuiltAt ? new Date(prevBuiltAt).getTime() : 0;
+  const { t0, ...context } = options;
+  return {
+    ...context,
+    loweringNotices: [...options.enrichmentExecution.notices],
+    timing: {
+      t0,
+      tWalkStart: t0,
+      tWalkEnd: t0,
+      tLlmEnd: t0,
+      tFtsEnd: t0,
+      tEmbedEnd: t0,
+      tFinalizeStart: t0,
+      tFinalizeEnd: t0,
+    },
+    isIncremental,
+    builtAtMs,
+    hadRemovedSources: false,
+    removedSourceDirs: [],
+    scanComplete: true,
+    scannedDirs: 0,
+    skippedDirs: 0,
+    generatedCount: 0,
+    walkWarnings: [],
+    dirsNeedingLlm: [],
+    embeddingResult: null,
+  };
+}
+
 async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
   // R-022: `dryRun` only ever gated the `--clean` stale-entry removal pass
   // (see `runCleanPass` below) — every other phase (walk, LLM enrichment,
@@ -857,19 +926,13 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
         throw new Error("Source update index requires an active borrowed index transaction.");
       }
 
+      let indexRunContext: IndexRunContext | undefined;
       try {
-        // Determine incremental vs full mode
-        const prevStashDir = getMeta(db, "stashDir");
-        const prevBuiltAt = getMeta(db, "builtAt");
-        const isIncremental = !full && prevStashDir === stashDir && !!prevBuiltAt;
-        const builtAtMs = isIncremental && prevBuiltAt ? new Date(prevBuiltAt).getTime() : 0;
-
         // Assemble the run context
-        const ctx: IndexRunContext = {
+        const ctx = createIndexRunContext({
           db,
           config,
           enrichmentExecution,
-          loweringNotices: [...enrichmentExecution.notices],
           sources: allSourceEntries,
           sourceDirs: allSourceDirs,
           full,
@@ -877,33 +940,14 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           stashDir,
           onProgress,
           signal,
-          timing: {
-            t0,
-            tWalkStart: t0,
-            tWalkEnd: t0,
-            tLlmEnd: t0,
-            tFtsEnd: t0,
-            tEmbedEnd: t0,
-            tFinalizeStart: t0,
-            tFinalizeEnd: t0,
-          },
-          isIncremental,
-          builtAtMs,
-          hadRemovedSources: false,
-          removedSourceDirs: [],
-          scanComplete: true,
-          scannedDirs: 0,
-          skippedDirs: 0,
-          generatedCount: 0,
-          walkWarnings: [],
-          dirsNeedingLlm: [],
-          embeddingResult: null,
-        };
+          t0,
+        });
+        indexRunContext = ctx;
 
         onProgress({
           phase: "summary",
           message: buildIndexSummaryMessage({
-            mode: isIncremental ? "incremental" : "full",
+            mode: ctx.isIncremental ? "incremental" : "full",
             sourcesCount: allSourceDirs.length,
             semanticSearchMode: config.semanticSearchMode,
             embeddingProvider: getEmbeddingProvider(config.embedding),
@@ -950,7 +994,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           totalEntries,
           generatedMetadata: ctx.generatedCount,
           indexPath: dbPath,
-          mode: isIncremental ? "incremental" : "full",
+          mode: ctx.isIncremental ? "incremental" : "full",
           directoriesScanned: ctx.scannedDirs,
           directoriesSkipped: ctx.skippedDirs,
           ...(ctx.walkWarnings.length > 0 ? { warnings: ctx.walkWarnings } : {}),
@@ -975,6 +1019,9 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           ...(cleanResult !== undefined ? { clean: cleanResult } : {}),
         };
       } finally {
+        if (indexRunContext?.enrichmentLease) {
+          disposeLoweredExecutionDispatchLease(indexRunContext.enrichmentLease);
+        }
         if (!borrowedUpdateDb) closeDatabase(db);
       }
     },
@@ -1033,6 +1080,37 @@ type DirNeedingLlm = {
   currentStashDir: string;
   stash: StashFile;
 };
+
+/** Read-only mirror of the enrichment cache gate used before entry persistence. */
+function dirRecordsNeedMetadataDispatch(db: Database, records: readonly DirRecord[]): boolean {
+  for (const record of records) {
+    if (record.skip || record.remove || !record.stash) continue;
+    for (const entry of record.stash.entries) {
+      if (entry.quality !== "generated" || isEnrichmentComplete(entry)) continue;
+      const entryFile = entry.filename
+        ? (record.files.find((file) => path.basename(file) === entry.filename) ?? record.files[0])
+        : record.files[0];
+      let fileContent: string | undefined;
+      if (entryFile) {
+        try {
+          fileContent = fs.readFileSync(entryFile, "utf8");
+        } catch {
+          // The dispatch path uses the same deterministic metadata fallback.
+        }
+      }
+      const bodyHash = computeBodyHash(fileContent ?? `${entry.name}\n${entry.description ?? ""}`);
+      const cacheKey = `${record.currentStashDir}:${entry.type}:${entry.name}`;
+      const cached = getLlmCacheEntry(db, cacheKey, bodyHash);
+      if (!cached) return true;
+      try {
+        JSON.parse(cached.resultJson);
+      } catch {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 type SourceScanPlan = {
   currentStashDir: string;
@@ -1730,6 +1808,7 @@ async function indexEntries(
   doFullDelete = false,
   onProgress?: (event: IndexProgressEvent) => void,
   reconcileMissingDirs = true,
+  beforePersist?: (dirRecords: readonly DirRecord[]) => Promise<void>,
 ): Promise<{
   scannedDirs: number;
   skippedDirs: number;
@@ -1749,6 +1828,8 @@ async function indexEntries(
     onProgress,
     reconcileMissingDirs,
   );
+
+  await beforePersist?.(dirRecords);
 
   // Phase 2 (sync): write all pre-generated metadata inside a single transaction.
   // Source roots feed the #624-P1 zero-document preflight (a full-rebuild wipe
@@ -1824,6 +1905,7 @@ async function enhanceDirsWithLlm(
   onProgress?: (event: IndexProgressEvent) => void,
   signal?: AbortSignal,
   onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void,
+  lease?: LoweredExecutionDispatchLease,
 ): Promise<void> {
   // The invocation owns one frozen symbolic selection. Summary reporting and
   // every enrichment dispatch consume this same snapshot.
@@ -1957,6 +2039,7 @@ async function enhanceDirsWithLlm(
               });
             },
             onNotices,
+            lease,
           );
         } catch (err) {
           if (err instanceof ConfigError) {
@@ -2359,6 +2442,7 @@ async function enhanceStashWithLlm(
   akmConfig?: AkmConfig,
   onEntryDone?: (event: { entryName: string; outcome: "cache-hit" | "llm" | "failed" | "skipped" }) => void,
   onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void,
+  lease?: LoweredExecutionDispatchLease,
 ): Promise<StashFile> {
   const { enhanceMetadata } = await import("../llm/metadata-enhance");
   const { computeBodyHash, getLlmCacheEntry, upsertLlmCacheEntry } = await import(
@@ -2414,7 +2498,7 @@ async function enhanceStashWithLlm(
           }
         }
 
-        const outcome = await enhanceMetadata(llmRunner, entry, fileContent, signal, akmConfig, onNotices);
+        const outcome = await enhanceMetadata(llmRunner, entry, fileContent, signal, akmConfig, onNotices, lease);
 
         if (outcome.status !== "enriched") {
           // Not a genuine LLM success: the gate was closed (`skipped`) or the

@@ -21,7 +21,6 @@ import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
-import { redactSensitiveText } from "../../core/redaction";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
 import { warn } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
@@ -29,12 +28,15 @@ import { deriveEntryProvenance } from "../../indexer/installations";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "../../integrations/agent";
 import { fallbackAnnouncement } from "../../integrations/agent/engine-fallback";
 import {
+  acquireLoweredExecutionDispatchLease,
   dispatchLoweredExecutionRequest,
+  disposeLoweredExecutionDispatchLease,
+  type LoweredExecutionDispatchLease,
   lowerResolvedExecutionRequest,
+  redactWithLoweredExecutionDispatchLease,
 } from "../../integrations/agent/execution-lowering";
 import { prepareInlineExecution } from "../../integrations/agent/inline-execution";
 import { buildProposePrompt, parseAgentProposalPayload } from "../../integrations/agent/prompts";
-import { collectDispatchSensitiveValues } from "../../integrations/agent/runner-dispatch";
 import { baseFailureFields, enoentHintMessage, isEnoentFailure } from "../agent/agent-support";
 import {
   type CreateProposalInput,
@@ -55,6 +57,8 @@ export interface AkmProposeOptions {
   runAgentOptions?: Pick<RunAgentOptions, "spawn" | "setTimeoutFn" | "clearTimeoutFn">;
   agentConfig?: AkmConfig;
   ctx?: ProposalsContext;
+  /** Test seam invoked after credential acquisition and before provider dispatch. */
+  onDispatchReady?: () => void;
 }
 
 export interface AkmProposeFailure {
@@ -110,7 +114,7 @@ interface ProposalDispatchResult {
   engineName: string;
   engineBin?: string;
   notices: readonly Readonly<LoweringNotice>[];
-  sensitiveValues: readonly string[];
+  lease: LoweredExecutionDispatchLease;
   interactive: boolean;
 }
 
@@ -118,19 +122,9 @@ interface ProposalDispatchResult {
 async function preflightProposalDispatch(
   lowered: Parameters<typeof dispatchLoweredExecutionRequest>[0],
   runOptions: RunAgentOptions,
-): Promise<void> {
-  const success = async (): Promise<AgentRunResult> => ({
-    ok: true,
-    exitCode: 0,
-    stdout: "",
-    stderr: "",
-    durationMs: 0,
-  });
-  await dispatchLoweredExecutionRequest(lowered, {
-    runOptions,
-    chat: async () => "",
-    runAgent: success,
-    runSdk: success,
+): Promise<LoweredExecutionDispatchLease> {
+  return acquireLoweredExecutionDispatchLease(lowered, {
+    ...(runOptions.envSource ? { envSource: runOptions.envSource } : {}),
   });
 }
 
@@ -162,21 +156,26 @@ async function dispatchProposalPrompt(
     parseOutput: "text",
     ...(options.runAgentOptions ?? {}),
   };
-  await preflightProposalDispatch(lowered, runOptions);
-  const sensitiveValues = collectDispatchSensitiveValues(lowered.runner, runOptions);
+  const lease = await preflightProposalDispatch(lowered, runOptions);
   // Materialize/validate every required symbolic credential before the entry
   // event opens durable state. Provider/runtime failures still occur after the
   // event, preserving the command-attempt observability contract.
-  onDispatchReady();
-  const result = await dispatchLoweredExecutionRequest(lowered, { runOptions });
-  return {
-    result,
-    engineName,
-    ...(lowered.runner.kind === "llm" ? {} : { engineBin: lowered.runner.profile.bin }),
-    notices: lowered.notices,
-    sensitiveValues,
-    interactive,
-  };
+  try {
+    onDispatchReady();
+    options.onDispatchReady?.();
+    const result = await dispatchLoweredExecutionRequest(lowered, { runOptions, lease });
+    return {
+      result,
+      engineName,
+      ...(lowered.runner.kind === "llm" ? {} : { engineBin: lowered.runner.profile.bin }),
+      notices: lowered.notices,
+      lease,
+      interactive,
+    };
+  } catch (error) {
+    disposeLoweredExecutionDispatchLease(lease);
+    throw error;
+  }
 }
 
 /**
@@ -265,141 +264,144 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
   const dispatch = await dispatchProposalPrompt(prompt, config, options, () =>
     emitProposeInvoked(target.source, options),
   );
-  const { result, engineName, notices, sensitiveValues } = dispatch;
-
-  if (!result.ok) {
-    // B3: ENOENT / not-found gives an actionable hint.
-    if (isEnoentFailure(result)) {
-      return {
-        ...failureEnvelope(result, options.type, options.name, engineName, notices),
-        error: enoentHintMessage(dispatch.engineBin ?? engineName),
-      };
+  const { result, engineName, notices, lease } = dispatch;
+  try {
+    if (!result.ok) {
+      // B3: ENOENT / not-found gives an actionable hint.
+      if (isEnoentFailure(result)) {
+        return {
+          ...failureEnvelope(result, options.type, options.name, engineName, notices),
+          error: enoentHintMessage(dispatch.engineBin ?? engineName),
+        };
+      }
+      return failureEnvelope(result, options.type, options.name, engineName, notices);
     }
-    return failureEnvelope(result, options.type, options.name, engineName, notices);
-  }
 
-  // 5. Resolve the proposal content.
-  // Path A: opencode wrote the draft file — read it directly (no stdout parse).
-  // Path B: fallback to stdout JSON parse for non-file-writing agents.
-  let payload: ReturnType<typeof parseAgentProposalPayload>;
+    // 5. Resolve the proposal content.
+    // Path A: opencode wrote the draft file — read it directly (no stdout parse).
+    // Path B: fallback to stdout JSON parse for non-file-writing agents.
+    let payload: ReturnType<typeof parseAgentProposalPayload>;
 
-  if (fs.existsSync(resolvedDraftPath)) {
-    const draftContent = fs.readFileSync(resolvedDraftPath, "utf8");
-    fs.unlinkSync(resolvedDraftPath);
-    payload = {
-      ref: proposeItemRef(target.source, options.type, options.name),
-      content: draftContent,
+    if (fs.existsSync(resolvedDraftPath)) {
+      const draftContent = fs.readFileSync(resolvedDraftPath, "utf8");
+      fs.unlinkSync(resolvedDraftPath);
+      payload = {
+        ref: proposeItemRef(target.source, options.type, options.name),
+        content: draftContent,
+      };
+    } else {
+      // B1: When interactive mode was used and stdout is empty, the agent did not
+      // write the draft file and stdout was not captured — surface an actionable error.
+      if (dispatch.interactive && (result.stdout ?? "") === "") {
+        return {
+          schemaVersion: 2,
+          ok: false,
+          reason: "parse_error",
+          error:
+            "Agent did not write draft file and stdout was not captured (interactive mode). Check that the agent CLI understood the file-write instruction, or configure a headless profile with stdio: 'captured'.",
+          type: options.type,
+          name: options.name,
+          engine: engineName,
+          exitCode: result.exitCode,
+          ...(result.stderr ? { stderr: result.stderr } : {}),
+          ...noticeFields(notices),
+        };
+      }
+      try {
+        payload = parseAgentProposalPayload(result.stdout ?? "");
+      } catch (err) {
+        return {
+          schemaVersion: 2,
+          ok: false,
+          reason: "parse_error",
+          error: err instanceof Error ? err.message : String(err),
+          type: options.type,
+          name: options.name,
+          engine: engineName,
+          exitCode: result.exitCode,
+          stdout: result.stdout,
+          ...(result.stderr ? { stderr: result.stderr } : {}),
+          ...noticeFields(notices),
+        };
+      }
+    }
+
+    payload = { ...payload, content: redactWithLoweredExecutionDispatchLease(lease, payload.content) };
+
+    // 6. Insert the proposal. Note: we allow the agent's `ref` to normalise the
+    // asset name (e.g. path-cleanup), but only after validating that the ref is
+    // well-formed and the type still matches the requested type.
+    const expectedRef = proposeItemRef(target.source, options.type, options.name);
+    let ref = expectedRef;
+    if (payload.ref) {
+      let parsedRef: ReturnType<typeof parseRefInput>;
+      try {
+        parsedRef = parseRefInput(payload.ref);
+      } catch (err) {
+        return {
+          schemaVersion: 2,
+          ok: false,
+          reason: "parse_error",
+          error: err instanceof Error ? err.message : String(err),
+          type: options.type,
+          name: options.name,
+          engine: engineName,
+          exitCode: result.exitCode,
+          stdout: result.stdout,
+          ...(result.stderr ? { stderr: result.stderr } : {}),
+          ...noticeFields(notices),
+        };
+      }
+      if (parsedRef.type !== options.type) {
+        return {
+          schemaVersion: 2,
+          ok: false,
+          reason: "parse_error",
+          error: `Agent returned ref type ${parsedRef.type} but expected ${options.type}`,
+          type: options.type,
+          name: options.name,
+          engine: engineName,
+          exitCode: result.exitCode,
+          stdout: result.stdout,
+          ...(result.stderr ? { stderr: result.stderr } : {}),
+          ...noticeFields(notices),
+        };
+      }
+      ref = proposeItemRef(target.source, parsedRef.type, parsedRef.name);
+    }
+
+    const createInput: CreateProposalInput = {
+      ref,
+      source: "propose",
+      sourceRun: `propose-${Date.now()}`,
+      target,
+      // User-initiated proposals always bypass dedup/cooldown guards — the
+      // operator is explicitly asking for a new proposal.
+      force: true,
+      payload: {
+        content: payload.content,
+        ...(payload.frontmatter ? { frontmatter: payload.frontmatter } : {}),
+      },
     };
-  } else {
-    // B1: When interactive mode was used and stdout is empty, the agent did not
-    // write the draft file and stdout was not captured — surface an actionable error.
-    if (dispatch.interactive && (result.stdout ?? "") === "") {
-      return {
-        schemaVersion: 2,
-        ok: false,
-        reason: "parse_error",
-        error:
-          "Agent did not write draft file and stdout was not captured (interactive mode). Check that the agent CLI understood the file-write instruction, or configure a headless profile with stdio: 'captured'.",
-        type: options.type,
-        name: options.name,
-        engine: engineName,
-        exitCode: result.exitCode,
-        ...(result.stderr ? { stderr: result.stderr } : {}),
-        ...noticeFields(notices),
-      };
+    const proposalResult = createProposal(stash, createInput, options.ctx);
+
+    // With force:true, the result is always a Proposal (never skipped).
+    if (isProposalSkipped(proposalResult)) {
+      // Should never happen when force:true, but be defensive.
+      throw new Error(`Unexpected skip in propose command: ${proposalResult.message}`);
     }
-    try {
-      payload = parseAgentProposalPayload(result.stdout ?? "");
-    } catch (err) {
-      return {
-        schemaVersion: 2,
-        ok: false,
-        reason: "parse_error",
-        error: err instanceof Error ? err.message : String(err),
-        type: options.type,
-        name: options.name,
-        engine: engineName,
-        exitCode: result.exitCode,
-        stdout: result.stdout,
-        ...(result.stderr ? { stderr: result.stderr } : {}),
-        ...noticeFields(notices),
-      };
-    }
+
+    const proposal: Proposal = proposalResult;
+    return {
+      schemaVersion: 2,
+      ok: true,
+      proposal,
+      ref: proposal.ref,
+      engine: engineName,
+      durationMs: result.durationMs,
+      ...noticeFields(notices),
+    };
+  } finally {
+    disposeLoweredExecutionDispatchLease(lease);
   }
-
-  payload = { ...payload, content: redactSensitiveText(payload.content, sensitiveValues) };
-
-  // 6. Insert the proposal. Note: we allow the agent's `ref` to normalise the
-  // asset name (e.g. path-cleanup), but only after validating that the ref is
-  // well-formed and the type still matches the requested type.
-  const expectedRef = proposeItemRef(target.source, options.type, options.name);
-  let ref = expectedRef;
-  if (payload.ref) {
-    let parsedRef: ReturnType<typeof parseRefInput>;
-    try {
-      parsedRef = parseRefInput(payload.ref);
-    } catch (err) {
-      return {
-        schemaVersion: 2,
-        ok: false,
-        reason: "parse_error",
-        error: err instanceof Error ? err.message : String(err),
-        type: options.type,
-        name: options.name,
-        engine: engineName,
-        exitCode: result.exitCode,
-        stdout: result.stdout,
-        ...(result.stderr ? { stderr: result.stderr } : {}),
-        ...noticeFields(notices),
-      };
-    }
-    if (parsedRef.type !== options.type) {
-      return {
-        schemaVersion: 2,
-        ok: false,
-        reason: "parse_error",
-        error: `Agent returned ref type ${parsedRef.type} but expected ${options.type}`,
-        type: options.type,
-        name: options.name,
-        engine: engineName,
-        exitCode: result.exitCode,
-        stdout: result.stdout,
-        ...(result.stderr ? { stderr: result.stderr } : {}),
-        ...noticeFields(notices),
-      };
-    }
-    ref = proposeItemRef(target.source, parsedRef.type, parsedRef.name);
-  }
-
-  const createInput: CreateProposalInput = {
-    ref,
-    source: "propose",
-    sourceRun: `propose-${Date.now()}`,
-    target,
-    // User-initiated proposals always bypass dedup/cooldown guards — the
-    // operator is explicitly asking for a new proposal.
-    force: true,
-    payload: {
-      content: payload.content,
-      ...(payload.frontmatter ? { frontmatter: payload.frontmatter } : {}),
-    },
-  };
-  const proposalResult = createProposal(stash, createInput, options.ctx);
-
-  // With force:true, the result is always a Proposal (never skipped).
-  if (isProposalSkipped(proposalResult)) {
-    // Should never happen when force:true, but be defensive.
-    throw new Error(`Unexpected skip in propose command: ${proposalResult.message}`);
-  }
-
-  const proposal: Proposal = proposalResult;
-  return {
-    schemaVersion: 2,
-    ok: true,
-    proposal,
-    ref: proposal.ref,
-    engine: engineName,
-    durationMs: result.durationMs,
-    ...noticeFields(notices),
-  };
 }

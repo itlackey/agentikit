@@ -12,6 +12,7 @@ import { ConfigError } from "../../core/errors";
 import {
   type CredentialDescriptor,
   materializeLlmConnection,
+  materializeLlmConnectionWithCredential,
   type ResolvedLlmUse,
   resolveEngine,
   resolveLlmEngineUse,
@@ -59,6 +60,29 @@ export function materializeLlmRunnerConnection(runner: Extract<RunnerSpec, { kin
     ...(runner.credential ? { credential: runner.credential } : {}),
     timeoutMs,
   });
+}
+
+/** Inject an already-snapshotted credential without consulting live process state. */
+export function materializeLlmRunnerConnectionWithCredential(
+  runner: Extract<RunnerSpec, { kind: "llm" }>,
+  credentialValue: string | undefined,
+): LlmConnectionConfig {
+  const connectionWithLegacyTimeout = runner.connection as LlmConnectionConfig;
+  const timeoutMs =
+    runner.timeoutMs !== undefined
+      ? runner.timeoutMs
+      : Object.hasOwn(connectionWithLegacyTimeout, "timeoutMs")
+        ? (connectionWithLegacyTimeout.timeoutMs ?? null)
+        : null;
+  return materializeLlmConnectionWithCredential(
+    {
+      engine: runner.engine ?? "unnamed",
+      connection: runner.connection,
+      ...(runner.credential ? { credential: runner.credential } : {}),
+      timeoutMs,
+    },
+    credentialValue,
+  );
 }
 
 export function runnerIsLlm(runner: RunnerSpec): runner is Extract<RunnerSpec, { kind: "llm" }> {

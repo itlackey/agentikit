@@ -51,6 +51,10 @@ import { DURATION_UNITS, parseDuration } from "../../core/time";
 import { warn } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import { indexWrittenAssets } from "../../indexer/index-written-assets";
+import {
+  disposeLoweredExecutionDispatchLease,
+  type LoweredExecutionDispatchLease,
+} from "../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { normalizeHarnessId } from "../../integrations/harnesses";
 import { getAvailableHarnesses } from "../../integrations/session-logs";
@@ -305,6 +309,10 @@ export interface ResolvedExtractPlan {
 }
 
 type ExtractLlmRunner = Extract<RunnerSpec, { kind: "llm" }>;
+type ExtractSessionSummaryGenerator = (
+  data: SessionData,
+  lease?: LoweredExecutionDispatchLease,
+) => ReturnType<SessionSummaryGenerator>;
 
 function cloneAndFreeze<T>(value: T): Readonly<T> {
   const clone = structuredClone(value);
@@ -737,6 +745,7 @@ interface ExtractSessionRunCtx {
   stashDir: string;
   config: AkmConfig;
   llmRunner: ExtractLlmRunner;
+  lease: LoweredExecutionDispatchLease | undefined;
   onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
   getNotices: () => readonly Readonly<LoweringNotice>[];
   chat: AkmExtractOptions["chat"];
@@ -749,7 +758,7 @@ interface ExtractSessionRunCtx {
   sessionIndexing: {
     enabled: boolean;
     minDurationMinutes: number;
-    generate: SessionSummaryGenerator;
+    generate: ExtractSessionSummaryGenerator;
   };
   signal: AbortSignal | undefined;
   /**
@@ -785,18 +794,20 @@ interface ExtractSessionInput {
 async function runSessionExtractionLlmCall(args: {
   config: AkmConfig;
   llmRunner: ExtractLlmRunner;
+  lease: LoweredExecutionDispatchLease;
   chat: AkmExtractOptions["chat"];
   prompt: string;
   timeoutMs: number | null;
   signal: AbortSignal | undefined;
   onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
 }): Promise<{ llmResult: string; llmRaw: string }> {
-  const { config, llmRunner, chat, prompt, timeoutMs, signal, onNotices } = args;
+  const { config, llmRunner, lease, chat, prompt, timeoutMs, signal, onNotices } = args;
   let llmRaw = "";
   const llmResult = await callStructured<string>({
     feature: "session_extraction",
     akmConfig: config,
     runner: llmRunner,
+    lease,
     messages: [{ role: "user", content: prompt }],
     request: {
       timeoutMs,
@@ -833,6 +844,7 @@ async function processSession(
     stashDir,
     config,
     llmRunner,
+    lease,
     onNotices,
     getNotices,
     chat,
@@ -848,6 +860,7 @@ async function processSession(
   const { sessionRef, gate } = session;
   const warnings: string[] = [];
   const { data, filtered, contentHash } = gate;
+  if (!lease) throw new TypeError("extract model work requires an operation dispatch lease");
 
   const prompt = buildExtractPrompt({
     data,
@@ -865,7 +878,9 @@ async function processSession(
     if (!sessionIndexing.enabled || dryRun) return {};
     if (!sessionMeetsDurationGate(data, sessionIndexing.minDurationMinutes)) return {};
     try {
-      const result = await writeSessionAsset(data, stashDir, sessionIndexing.generate);
+      const result = await writeSessionAsset(data, stashDir, (summaryData) =>
+        sessionIndexing.generate(summaryData, lease),
+      );
       if (result.written) {
         // Write-path indexing (itself fail-open): standalone `akm extract`
         // (session-end hook) has no post-loop reindex to pick this file up.
@@ -885,6 +900,7 @@ async function processSession(
   const { llmResult, llmRaw } = await runSessionExtractionLlmCall({
     config,
     llmRunner,
+    lease,
     chat,
     prompt,
     timeoutMs,
@@ -1044,6 +1060,7 @@ interface ExtractSessionLoopArgs {
   stashDir: string;
   config: AkmConfig;
   llmRunner: ExtractLlmRunner;
+  lease: LoweredExecutionDispatchLease | undefined;
   onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
   getNotices: () => readonly Readonly<LoweringNotice>[];
   chat: AkmExtractOptions["chat"];
@@ -1052,7 +1069,7 @@ interface ExtractSessionLoopArgs {
   maxTotalChars: number | undefined;
   minContentChars: number;
   triage: { enabled: boolean; minScore: number };
-  sessionIndexing: { enabled: boolean; minDurationMinutes: number; generate: SessionSummaryGenerator };
+  sessionIndexing: { enabled: boolean; minDurationMinutes: number; generate: ExtractSessionSummaryGenerator };
   extractStandardsContext: string;
   /** Mutated in place with run-level (non-session) warnings. */
   topLevelWarnings: string[];
@@ -1169,6 +1186,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
     stashDir,
     config,
     llmRunner,
+    lease,
     onNotices,
     getNotices,
     chat,
@@ -1185,6 +1203,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
     stashDir,
     config,
     llmRunner,
+    lease,
     onNotices,
     getNotices,
     chat,
@@ -1346,7 +1365,7 @@ interface ExtractRunConfig {
   maxSessionsPerRun: number;
   effectiveSince: string | undefined;
   triage: { enabled: boolean; minScore: number };
-  sessionIndexing: { enabled: boolean; minDurationMinutes: number; generate: SessionSummaryGenerator };
+  sessionIndexing: { enabled: boolean; minDurationMinutes: number; generate: ExtractSessionSummaryGenerator };
 }
 
 /**
@@ -1438,12 +1457,13 @@ function resolveExtractRunConfig(
   // same fail-open `callStructured` seam as the rest of extract. Returns
   // `undefined` on disablement / timeout / error so no asset is written.
   // Tests inject a fake.
-  const defaultSessionSummaryGenerator: SessionSummaryGenerator = async (data) => {
+  const defaultSessionSummaryGenerator: ExtractSessionSummaryGenerator = async (data, lease) => {
     let raw = "";
     await callStructured<string>({
       feature: "session_extraction",
       akmConfig: config,
       runner: llmRunner,
+      ...(lease ? { lease } : {}),
       messages: [{ role: "user", content: buildSessionSummaryPrompt(data) }],
       request: {
         timeoutMs,
@@ -1771,23 +1791,23 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
   // Eligible dry-runs still dispatch to produce their candidate preview. Only
   // deterministic no-work plans are credential-free. Materialize once after
   // every read-only gate and before opening live state or acquiring a lock.
-  if (modelPlanCount > 0) await preflightStructuredLlmRunner(llmRunner);
-
-  const stateDb = openExtractLiveStateDb({
-    options,
-    trackingEnabled,
-    hasModelWork: modelPlanCount > 0,
-    dryRun,
-    warnings: topLevelWarnings,
-  });
-
-  // Stash authoring standards (convention/meta fact bodies) for non-wiki
-  // extract output. Resolved ONCE per run and threaded into each session's
-  // prompt so facts are not re-read per session.
-  const extractStandardsContext = modelPlanCount > 0 ? resolveExtractStandards(stashDir) : "";
-
+  const dispatchLease = modelPlanCount > 0 ? await preflightStructuredLlmRunner(llmRunner) : undefined;
+  let stateDb: Database | undefined;
   let loopResult: ExtractSessionLoopResult;
   try {
+    stateDb = openExtractLiveStateDb({
+      options,
+      trackingEnabled,
+      hasModelWork: modelPlanCount > 0,
+      dryRun,
+      warnings: topLevelWarnings,
+    });
+
+    // Stash authoring standards (convention/meta fact bodies) for non-wiki
+    // extract output. Resolved ONCE per run and threaded into each session's
+    // prompt so facts are not re-read per session.
+    const extractStandardsContext = modelPlanCount > 0 ? resolveExtractStandards(stashDir) : "";
+
     loopResult = await runExtractSessionLoop({
       plans: planned.plans,
       deferredCandidates: planned.deferredCandidates,
@@ -1800,6 +1820,7 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
       stashDir,
       config,
       llmRunner,
+      lease: dispatchLease,
       onNotices,
       getNotices,
       chat: options.chat,
@@ -1820,6 +1841,7 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
         // best-effort close
       }
     }
+    if (dispatchLease) disposeLoweredExecutionDispatchLease(dispatchLease);
   }
   const { sessions, processedCount, skippedCount, allProposalIds } = loopResult;
   if (loopResult.deferred > 0) {

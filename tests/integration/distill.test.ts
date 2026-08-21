@@ -28,7 +28,7 @@ import { readEvents } from "../../src/core/events";
 import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
 import { LlmFeatureTimeoutError } from "../../src/llm/feature-gate";
-import { withEnv } from "../_helpers/sandbox";
+import { mutateScopedEnv, withEnv } from "../_helpers/sandbox";
 
 // ── Test scaffolding ────────────────────────────────────────────────────────
 
@@ -1779,6 +1779,41 @@ describe("akmDistill — pipeline-fix integration", () => {
 // ── R3/G4: judge-verdict routing + output encoding salience ──────────────────
 
 describe("akmDistill — R3 judge verdict routing + G4 output encoding salience", () => {
+  test("generation and quality judging share the credential captured before distill mutations", async () => {
+    const stash = makeStashDir();
+    const sourcePath = path.join(stash, "skills", "deploy.md");
+    fs.writeFileSync(sourcePath, "---\ndescription: Deploy safely\n---\n\nCheck deployment prerequisites.\n");
+    const config = configJudgeEnabled(stash);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.apiKey = "$AKM_DISTILL_LEASE_KEY";
+    const secret = "distill-lease-original-092";
+    const observed: Array<string | undefined> = [];
+
+    const result = await withEnv({ AKM_DISTILL_LEASE_KEY: secret }, () =>
+      akmDistill({
+        ref: "skills/deploy",
+        config,
+        stashDir: stash,
+        lookupFn: async () => sourcePath,
+        readEventsFn: emptyEvents,
+        chat: async (connection, messages) => {
+          observed.push(connection.apiKey);
+          if (observed.length === 1) mutateScopedEnv("AKM_DISTILL_LEASE_KEY", undefined);
+          const joined = messages.map((message) => message.content).join("\n");
+          if (joined.includes("Score this lesson")) {
+            return JSON.stringify({ score: 4.5, reason: "adds new info" });
+          }
+          return VALID_LESSON;
+        },
+      }),
+    );
+
+    expect(result.outcome).toBe("queued");
+    expect(observed).toEqual([secret, secret]);
+    expect(listProposals(stash)).toHaveLength(1);
+  });
+
   test("queued lesson stamps judgeConfidence on the event and content-scores the OUTPUT ref", async () => {
     const stash = makeStashDir();
     const result = await akmDistill({

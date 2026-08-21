@@ -21,9 +21,10 @@ import type { AkmConfig } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
 import type { LoweringNotice } from "../../src/execution/resolved-request";
 import type { SearchSource } from "../../src/indexer/search/search-source";
+import { compressMemoryToDerivedMemory } from "../../src/llm/memory-infer";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { computeBodyHash, upsertLlmCacheEntry } from "../../src/storage/repositories/index-llm-cache-repository";
-import { withEnv } from "../_helpers/sandbox";
+import { mutateScopedEnv, withEnv, withMockedFetch } from "../_helpers/sandbox";
 
 type Draft = {
   title: string;
@@ -524,6 +525,54 @@ describe("runMemoryInferencePass — enabled", () => {
     await expect(failure).rejects.toBeInstanceOf(ConfigError);
     expect(fs.existsSync(path.join(tmpStash, "memories", "credential.derived.md"))).toBe(false);
     expect(parseFrontmatter(fs.readFileSync(parentPath, "utf8")).data.inferenceProcessed).toBeUndefined();
+  });
+
+  test("multiple inferred memories use the operation credential after the environment entry is removed", async () => {
+    const firstParent = writeMemory("lease-first", {}, "First body.");
+    const secondParent = writeMemory("lease-second", {}, "Second body.");
+    const secret = "memory-lease-original-092";
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "https://memory-lease.invalid/v1/chat/completions",
+          model: "provider/exact-memory",
+          apiKey: "$AKM_MEMORY_LEASE_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+    const authorization: Array<string | null> = [];
+
+    const result = await withEnv({ AKM_MEMORY_LEASE_KEY: secret }, () =>
+      withMockedFetch(
+        () =>
+          runMemoryInferencePassImpl({
+            config,
+            sources: sources(),
+            options: { compressMemoryToDerivedMemory },
+          }),
+        (_url, init) => {
+          authorization.push(new Headers(init?.headers).get("authorization"));
+          if (authorization.length === 1) mutateScopedEnv("AKM_MEMORY_LEASE_KEY", undefined);
+          return Response.json({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify(sampleDraft(`Derived ${authorization.length}`)),
+                },
+              },
+            ],
+          });
+        },
+      ),
+    );
+
+    expect(result.writtenFacts).toBe(2);
+    expect(authorization).toEqual([`Bearer ${secret}`, `Bearer ${secret}`]);
+    expect(parseFrontmatter(fs.readFileSync(firstParent, "utf8")).data.inferenceProcessed).toBe(true);
+    expect(parseFrontmatter(fs.readFileSync(secondParent, "utf8")).data.inferenceProcessed).toBe(true);
   });
 
   test("required symbolic credential failure leaves every earlier and later parent and derived asset unchanged", async () => {

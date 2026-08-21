@@ -35,7 +35,7 @@ import {
   upsertExtractedSession,
 } from "../../src/storage/repositories/extract-sessions-repository";
 import { durableItemRef } from "../_helpers/durable-ref";
-import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { type IsolatedAkmStorage, mutateScopedEnv, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 // ── Test scaffolding ────────────────────────────────────────────────────────
 
@@ -991,6 +991,42 @@ describe("akmExtract — engine + strategy config resolution", () => {
         [],
       );
       expect(getExtractedSessionsMap(stateDb, "claude-code", [session.ref.sessionId]).size).toBe(0);
+    } finally {
+      stateDb.close();
+    }
+  });
+
+  test("an extract run keeps its preflight credential snapshot across multiple session mutations", async () => {
+    const stash = makeStashDir();
+    const first = fakeSession("lease-first", Date.now());
+    const second = fakeSession("lease-second", Date.now() - 1);
+    const config = configEnabled(stash);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.apiKey = "$AKM_EXTRACT_LEASE_KEY";
+    const secret = "extract-lease-original-092";
+    const observed: Array<string | undefined> = [];
+    const stateDb = openStateDatabase();
+    try {
+      const result = await withEnv({ AKM_EXTRACT_LEASE_KEY: secret }, () =>
+        akmExtract({
+          type: "claude-code",
+          since: "24h",
+          stashDir: stash,
+          config,
+          harnesses: [makeFakeHarness([first, second])],
+          stateDb,
+          chat: async (connection) => {
+            observed.push(connection.apiKey);
+            if (observed.length === 1) mutateScopedEnv("AKM_EXTRACT_LEASE_KEY", undefined);
+            return JSON.stringify({ candidates: [], rationale_if_empty: "nothing durable" });
+          },
+        }),
+      );
+
+      expect(result.sessionsProcessed).toBe(2);
+      expect(observed).toEqual([secret, secret]);
+      expect(getExtractedSessionsMap(stateDb, "claude-code", [first.ref.sessionId, second.ref.sessionId]).size).toBe(2);
     } finally {
       stateDb.close();
     }

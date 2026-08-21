@@ -49,10 +49,12 @@ import { appendEvent } from "../../core/events";
 import { escapeJsonStringControls, stripCodeFences, stripThinkBlocks } from "../../core/parse";
 import { info, warn } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
-import type { AgentRunResult } from "../../integrations/agent";
 import {
+  acquireLoweredExecutionDispatchLease,
   type DispatchLoweredExecutionOptions,
   dispatchLoweredExecutionRequest,
+  disposeLoweredExecutionDispatchLease,
+  type LoweredExecutionDispatchLease,
   lowerResolvedExecutionRequestWithRunner,
 } from "../../integrations/agent/execution-lowering";
 import { prepareInlineExecutionWithRunner } from "../../integrations/agent/inline-execution";
@@ -411,6 +413,7 @@ async function dispatchJudgment(
   runner: RunnerSpec,
   prompt: string,
   seams: JudgmentSeams,
+  lease: LoweredExecutionDispatchLease,
 ): Promise<JudgmentDispatchResult> {
   const prepared = prepareInlineExecutionWithRunner({
     content: prompt,
@@ -421,6 +424,7 @@ async function dispatchJudgment(
   const chat = seams.chat;
   const llmRunner = lowered.runner.kind === "llm" ? lowered.runner : undefined;
   const dispatchOptions: DispatchLoweredExecutionOptions = {
+    lease,
     ...(seams.runAgentFn ? { runAgent: seams.runAgentFn } : {}),
     ...(seams.runSdkFn ? { runSdk: seams.runSdkFn } : {}),
     ...(chat && llmRunner
@@ -451,25 +455,14 @@ async function dispatchJudgment(
 }
 
 /** Validate symbolic judgment credentials without contacting a provider. */
-async function preflightJudgmentRunner(runner: RunnerSpec): Promise<void> {
+async function preflightJudgmentRunner(runner: RunnerSpec): Promise<LoweredExecutionDispatchLease> {
   const prepared = prepareInlineExecutionWithRunner({
     content: "Validate the selected proposal judgment runner before mutation.",
     runner,
     invocationKind: "direct",
   });
   const lowered = lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
-  const success = async (): Promise<AgentRunResult> => ({
-    ok: true,
-    exitCode: 0,
-    stdout: "",
-    stderr: "",
-    durationMs: 0,
-  });
-  await dispatchLoweredExecutionRequest(lowered, {
-    chat: async () => "",
-    runAgent: success,
-    runSdk: success,
-  });
+  return acquireLoweredExecutionDispatchLease(lowered);
 }
 
 interface JudgmentTierInput {
@@ -477,6 +470,7 @@ interface JudgmentTierInput {
   applyMode: "queue" | "promote";
   dryRun: boolean;
   runner: RunnerSpec;
+  lease: LoweredExecutionDispatchLease;
   deferred: Array<{ id: string; reason: DrainDeferReason }>;
   pending: Proposal[];
   promoteFn: PromoteFn;
@@ -535,7 +529,7 @@ async function runJudgmentTier(input: JudgmentTierInput): Promise<{
 
     let dispatch: JudgmentDispatchResult;
     try {
-      dispatch = await dispatchJudgment(input.runner, prompt, input.seams);
+      dispatch = await dispatchJudgment(input.runner, prompt, input.seams, input.lease);
     } catch (err) {
       if (err instanceof ConfigError) throw err;
       warn(`[triage] judgment dispatch failed for ${item.id}: ${err instanceof Error ? err.message : String(err)}`);
@@ -765,146 +759,153 @@ export async function drainProposals(
   // Validate its symbolic credentials before applying any deterministic gate,
   // reject, promote, or event mutation. Provider/runtime failures remain the
   // judgment tier's fail-soft responsibility after this configuration fence.
-  if (opts.judgment && result.deferred.length > 0) await preflightJudgmentRunner(opts.judgment);
-  for (const { id, decision } of deferredGateDecisions) stampGateDecision(opts, id, decision);
+  const dispatchLease =
+    opts.judgment && result.deferred.length > 0 ? await preflightJudgmentRunner(opts.judgment) : undefined;
+  try {
+    for (const { id, decision } of deferredGateDecisions) stampGateDecision(opts, id, decision);
 
-  // --- Reject empties (independent of the accept ceiling / applyMode) ---
-  for (const target of rejectTargets) {
-    if (opts.dryRun) {
-      result.rejected.push(target.id);
-      continue;
-    }
-    try {
-      await rejectFn({
-        stashDir: opts.stashDir,
-        id: target.id,
-        reason: target.reason,
-        gateDecision: { outcome: "auto-rejected", reason: "empty-diff", gate: gateLabel },
-      });
-      result.rejected.push(target.id);
-    } catch (err) {
-      warn(`[triage] reject failed for ${target.id}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  // --- Accept ceiling: enforced BEFORE the promote loop ---
-  const withinCap = acceptIds.slice(0, Math.max(0, opts.maxAccepts));
-  result.skippedByCap = acceptIds.slice(Math.max(0, opts.maxAccepts));
-  if (result.skippedByCap.length > 0) {
-    info(
-      `[triage] accept ceiling reached: ${withinCap.length} promoted, ${result.skippedByCap.length} skipped by cap (maxAccepts=${opts.maxAccepts})`,
-    );
-  }
-
-  // --- Promotion gate: applyMode "queue" never promotes (stage only) ---
-  // Count deterministic promotions so the judgment tier shares the same accept
-  // budget (deterministic + judgment promotions ≤ maxAccepts).
-  let deterministicPromoted = 0;
-  if (opts.applyMode === "promote" && !opts.dryRun) {
-    info(`[triage] auto-promote active: ${withinCap.length} accepts allowed this run`);
-    for (const id of withinCap) {
+    // --- Reject empties (independent of the accept ceiling / applyMode) ---
+    for (const target of rejectTargets) {
+      if (opts.dryRun) {
+        result.rejected.push(target.id);
+        continue;
+      }
       try {
-        await promoteFn({
+        await rejectFn({
           stashDir: opts.stashDir,
-          id,
-          ...(opts.target ? { target: opts.target } : {}),
-          ...(opts.config ? { config: opts.config } : {}),
-          gateDecision: {
-            outcome: "auto-accepted",
-            reason: acceptGateReasons.get(id) ?? "policy-accept",
-            gate: gateLabel,
-          },
+          id: target.id,
+          reason: target.reason,
+          gateDecision: { outcome: "auto-rejected", reason: "empty-diff", gate: gateLabel },
         });
-        result.promoted.push(id);
-        deterministicPromoted += 1;
+        result.rejected.push(target.id);
       } catch (err) {
-        warn(`[triage] promote failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+        warn(`[triage] reject failed for ${target.id}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-  } else if (opts.applyMode === "promote" && opts.dryRun) {
-    // Exercise the same stamped candidate and lint boundary as real promotion.
-    // Tests that omit config retain the classification-only seam.
-    const byId = new Map(pending.map((proposal) => [proposal.id, proposal]));
-    for (const id of withinCap) {
-      try {
-        if (opts.config) {
-          const proposal = byId.get(id);
-          if (!proposal) throw new Error(`Proposal ${id} disappeared during drain preflight.`);
-          preflightProposalPromotion(opts.config, proposal, {
+
+    // --- Accept ceiling: enforced BEFORE the promote loop ---
+    const withinCap = acceptIds.slice(0, Math.max(0, opts.maxAccepts));
+    result.skippedByCap = acceptIds.slice(Math.max(0, opts.maxAccepts));
+    if (result.skippedByCap.length > 0) {
+      info(
+        `[triage] accept ceiling reached: ${withinCap.length} promoted, ${result.skippedByCap.length} skipped by cap (maxAccepts=${opts.maxAccepts})`,
+      );
+    }
+
+    // --- Promotion gate: applyMode "queue" never promotes (stage only) ---
+    // Count deterministic promotions so the judgment tier shares the same accept
+    // budget (deterministic + judgment promotions ≤ maxAccepts).
+    let deterministicPromoted = 0;
+    if (opts.applyMode === "promote" && !opts.dryRun) {
+      info(`[triage] auto-promote active: ${withinCap.length} accepts allowed this run`);
+      for (const id of withinCap) {
+        try {
+          await promoteFn({
+            stashDir: opts.stashDir,
+            id,
             ...(opts.target ? { target: opts.target } : {}),
+            ...(opts.config ? { config: opts.config } : {}),
             gateDecision: {
               outcome: "auto-accepted",
               reason: acceptGateReasons.get(id) ?? "policy-accept",
               gate: gateLabel,
             },
           });
+          result.promoted.push(id);
+          deterministicPromoted += 1;
+        } catch (err) {
+          warn(`[triage] promote failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
         }
-        result.promoted.push(id);
-        deterministicPromoted += 1;
-      } catch (err) {
-        warn(`[triage] preflight failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else if (opts.applyMode === "promote" && opts.dryRun) {
+      // Exercise the same stamped candidate and lint boundary as real promotion.
+      // Tests that omit config retain the classification-only seam.
+      const byId = new Map(pending.map((proposal) => [proposal.id, proposal]));
+      for (const id of withinCap) {
+        try {
+          if (opts.config) {
+            const proposal = byId.get(id);
+            if (!proposal) throw new Error(`Proposal ${id} disappeared during drain preflight.`);
+            preflightProposalPromotion(opts.config, proposal, {
+              ...(opts.target ? { target: opts.target } : {}),
+              gateDecision: {
+                outcome: "auto-accepted",
+                reason: acceptGateReasons.get(id) ?? "policy-accept",
+                gate: gateLabel,
+              },
+            });
+          }
+          result.promoted.push(id);
+          deterministicPromoted += 1;
+        } catch (err) {
+          warn(`[triage] preflight failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
-  }
-  // applyMode "queue": leave accept candidates pending (staged). No promotion.
+    // applyMode "queue": leave accept candidates pending (staged). No promotion.
 
-  // Remaining accept budget for the judgment tier: maxAccepts minus what was
-  // actually promoted deterministically. Bounds the TOTAL promotions, not just
-  // the deterministic path. Moot in queue mode (it promotes nothing).
-  const remainingAcceptBudget = Math.max(0, Math.max(0, opts.maxAccepts) - deterministicPromoted);
+    // Remaining accept budget for the judgment tier: maxAccepts minus what was
+    // actually promoted deterministically. Bounds the TOTAL promotions, not just
+    // the deterministic path. Moot in queue mode (it promotes nothing).
+    const remainingAcceptBudget = Math.max(0, Math.max(0, opts.maxAccepts) - deterministicPromoted);
 
-  // --- Judgment tier (Phase 3): adjudicate the deferred items ---
-  // Only runs when a RunnerSpec is configured. The runner returns a verdict; the
-  // ENGINE performs the resulting accept (respecting applyMode) / reject write.
-  if (opts.judgment && result.deferred.length > 0) {
-    const tier = await runJudgmentTier({
-      stashDir: opts.stashDir,
-      applyMode: opts.applyMode,
-      dryRun: opts.dryRun,
-      runner: opts.judgment,
-      deferred: result.deferred,
-      pending,
-      promoteFn,
-      rejectFn,
-      seams: judgmentSeams,
-      ...(opts.target ? { target: opts.target } : {}),
-      ...(opts.config ? { config: opts.config } : {}),
-      remainingAcceptBudget,
-      gateLabel,
-    });
-    result.promoted.push(...tier.promoted);
-    result.rejected.push(...tier.rejected);
-    result.staged.push(...tier.staged);
-    if (tier.notices.length > 0) result.notices = tier.notices;
-    // Judgment-tier accepts dropped by the shared accept cap surface under
-    // skippedByCap, same as deterministic cap drops.
-    result.skippedByCap.push(...tier.skippedByCap);
-    if (tier.skippedByCap.length > 0) {
-      info(
-        `[triage] accept ceiling reached in judgment tier: ${tier.skippedByCap.length} judged-accept items skipped by cap (maxAccepts=${opts.maxAccepts})`,
-      );
-    }
-    // Replace the deferred list with only the items the judgment tier could NOT
-    // resolve (verdict "defer", parse failure, or runner error). Staged
-    // queue-mode accepts are RESOLVED and tracked in result.staged instead.
-    result.deferred = tier.stillDeferred;
-  } else if (result.deferred.length > 0) {
-    // #577: no judgment runner configured — items deferred *because they need a
-    // judge* (mid-band / possible-dup, no threshold reason) stay pending solely
-    // for lack of one. Re-stamp those as `no-judge-configured` so the operator
-    // sees a per-proposal reason instead of inferring it from the run-level
-    // triage_deferred aggregate. Band-deferred items keep their specific reason
-    // (e.g. `max-diff-lines`), which is more actionable than "no judge".
-    for (const item of result.deferred) {
-      if (needsJudge.has(item.id)) {
-        stampGateDecision(opts, item.id, { outcome: "deferred", reason: "no-judge-configured", gate: gateLabel });
+    // --- Judgment tier (Phase 3): adjudicate the deferred items ---
+    // Only runs when a RunnerSpec is configured. The runner returns a verdict; the
+    // ENGINE performs the resulting accept (respecting applyMode) / reject write.
+    if (opts.judgment && result.deferred.length > 0) {
+      if (!dispatchLease) throw new TypeError("proposal judgment work requires an operation dispatch lease");
+      const tier = await runJudgmentTier({
+        stashDir: opts.stashDir,
+        applyMode: opts.applyMode,
+        dryRun: opts.dryRun,
+        runner: opts.judgment,
+        lease: dispatchLease,
+        deferred: result.deferred,
+        pending,
+        promoteFn,
+        rejectFn,
+        seams: judgmentSeams,
+        ...(opts.target ? { target: opts.target } : {}),
+        ...(opts.config ? { config: opts.config } : {}),
+        remainingAcceptBudget,
+        gateLabel,
+      });
+      result.promoted.push(...tier.promoted);
+      result.rejected.push(...tier.rejected);
+      result.staged.push(...tier.staged);
+      if (tier.notices.length > 0) result.notices = tier.notices;
+      // Judgment-tier accepts dropped by the shared accept cap surface under
+      // skippedByCap, same as deterministic cap drops.
+      result.skippedByCap.push(...tier.skippedByCap);
+      if (tier.skippedByCap.length > 0) {
+        info(
+          `[triage] accept ceiling reached in judgment tier: ${tier.skippedByCap.length} judged-accept items skipped by cap (maxAccepts=${opts.maxAccepts})`,
+        );
+      }
+      // Replace the deferred list with only the items the judgment tier could NOT
+      // resolve (verdict "defer", parse failure, or runner error). Staged
+      // queue-mode accepts are RESOLVED and tracked in result.staged instead.
+      result.deferred = tier.stillDeferred;
+    } else if (result.deferred.length > 0) {
+      // #577: no judgment runner configured — items deferred *because they need a
+      // judge* (mid-band / possible-dup, no threshold reason) stay pending solely
+      // for lack of one. Re-stamp those as `no-judge-configured` so the operator
+      // sees a per-proposal reason instead of inferring it from the run-level
+      // triage_deferred aggregate. Band-deferred items keep their specific reason
+      // (e.g. `max-diff-lines`), which is more actionable than "no judge".
+      for (const item of result.deferred) {
+        if (needsJudge.has(item.id)) {
+          stampGateDecision(opts, item.id, { outcome: "deferred", reason: "no-judge-configured", gate: gateLabel });
+        }
       }
     }
+
+    emitDrainEvents(opts, result);
+
+    return result;
+  } finally {
+    if (dispatchLease) disposeLoweredExecutionDispatchLease(dispatchLease);
   }
-
-  emitDrainEvents(opts, result);
-
-  return result;
 }
 
 /**

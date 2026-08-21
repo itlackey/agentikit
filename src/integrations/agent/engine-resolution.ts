@@ -174,8 +174,11 @@ export function lookupCredentialFromEnv(
  * The enforcing env-credential seam. Live and frozen dispatch use the same
  * ordered lookup; a missing required descriptor names its primary variable.
  */
-export function resolveCredentialFromEnv(credential: CredentialDescriptor | undefined): string | undefined {
-  const value = lookupCredentialFromEnv(credential);
+export function resolveCredentialFromEnv(
+  credential: CredentialDescriptor | undefined,
+  envSource: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const value = lookupCredentialFromEnv(credential, envSource);
   if (value) return value;
   if (credential?.required) {
     throw new ConfigError(`Required engine credential ${credential.names[0]} is not set.`, "INVALID_CONFIG_FILE");
@@ -287,7 +290,10 @@ export function resolveLlmEngineUse(
 }
 
 /** Read a resolved symbolic credential only at the runtime dispatch boundary. */
-export function materializeLlmConnection(resolved: ResolvedLlmUse): LlmConnectionConfig {
+export function materializeLlmConnectionWithCredential(
+  resolved: ResolvedLlmUse,
+  credentialValue: string | undefined,
+): LlmConnectionConfig {
   const extraParams = ownValue(resolved.connection, "extraParams");
   if (extraParams !== undefined) {
     const issue = validateExtraParams(extraParams)[0];
@@ -298,12 +304,19 @@ export function materializeLlmConnection(resolved: ResolvedLlmUse): LlmConnectio
       );
     }
   }
-  const apiKey = resolveCredentialFromEnv(resolved.credential);
   return sterileRecord({
     ...resolved.connection,
-    ...(apiKey ? { apiKey } : {}),
+    ...(credentialValue ? { apiKey: credentialValue } : {}),
     timeoutMs: resolved.timeoutMs,
   }) as LlmConnectionConfig;
+}
+
+/** Read and inject one resolved symbolic credential at the runtime boundary. */
+export function materializeLlmConnection(
+  resolved: ResolvedLlmUse,
+  envSource: NodeJS.ProcessEnv = process.env,
+): LlmConnectionConfig {
+  return materializeLlmConnectionWithCredential(resolved, resolveCredentialFromEnv(resolved.credential, envSource));
 }
 
 function lowerAgentEngine(

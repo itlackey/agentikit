@@ -26,6 +26,7 @@ import { appendEvent, type EventsContext } from "../../../core/events";
 import type { AkmDistillResult } from "../../../core/improve-types";
 import { parseEmbeddedJsonResponse } from "../../../core/parse";
 import type { LoweringNotice } from "../../../execution/resolved-request";
+import type { LoweredExecutionDispatchLease } from "../../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../../integrations/agent/runner";
 import type { ChatCompletionOptions, ChatMessage } from "../../../llm/client";
 import { callStructured, structuredLlmRunnerFromConnection } from "../../../llm/structured-call";
@@ -58,6 +59,7 @@ export interface PromoteMemoryContext {
   strategy?: ImproveProfileConfig;
   /** Preferred production path: exact symbolic runner selected for distill. */
   llmRunner?: Extract<RunnerSpec, { kind: "llm" }>;
+  lease?: LoweredExecutionDispatchLease;
   /** Legacy non-secret connection seam retained for isolated tests. */
   llmConfig?: LlmConnectionConfig;
   signal?: AbortSignal;
@@ -144,6 +146,7 @@ async function resolveKnowledgePromotionContent(
       const mergeResponse = await callStructured<string>({
         feature: "distill",
         runner,
+        ...(ctx.lease ? { lease: ctx.lease } : {}),
         messages: [
           { role: "system", content: "Return only valid JSON. No prose." },
           { role: "user", content: mergePrompt },
@@ -277,6 +280,7 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
     const judgeResult = await runLessonQualityJudge(config, resolvedPromotionContent, assetContent ?? "", chat, {
       ...(similarLessons.length > 0 ? { similarLessons } : {}),
       ...(ctx.llmRunner ? { llmRunner: ctx.llmRunner } : {}),
+      ...(ctx.lease ? { lease: ctx.lease } : {}),
       ...(!ctx.llmRunner && ctx.llmConfig ? { llmConfig: ctx.llmConfig } : {}),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       ...(ctx.onNotices ? { onNotices: ctx.onNotices } : {}),

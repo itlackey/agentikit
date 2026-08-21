@@ -14,7 +14,8 @@
  * requires a handler because structured callers own their parse/fallback
  * contract. The `assertNever` arm keeps a fourth transport kind from becoming
  * an implicit fallthrough. Symbolic LLM and SDK-fallback credentials are
- * materialized here, at the final call boundary, then scrubbed from the result.
+ * materialized here, at authorized operation-lease acquisition or the final
+ * single-call boundary, then scrubbed from the result.
  */
 
 import { assertNever } from "../../core/assert";
@@ -26,10 +27,146 @@ import {
   redactSensitiveValue,
 } from "../../core/redaction";
 import { closeServer as disposeOpencodeSdkServers, runOpencodeSdk } from "../harnesses/opencode-sdk/sdk-runner";
-import { lookupCredentialFromEnv, materializeLlmConnection } from "./engine-resolution";
+import {
+  lookupCredentialFromEnv,
+  materializeLlmConnection,
+  materializeLlmConnectionWithCredential,
+  resolveCredentialFromEnv,
+} from "./engine-resolution";
 import type { AgentProfile } from "./profiles";
-import { type DispatchedLlmRunner, materializeLlmRunnerConnection, type RunnerSpec } from "./runner";
+import {
+  type DispatchedLlmRunner,
+  materializeLlmRunnerConnection,
+  materializeLlmRunnerConnectionWithCredential,
+  type RunnerSpec,
+} from "./runner";
 import { type AgentRunResult, type RunAgentOptions, runAgent } from "./spawn";
+
+declare const runnerDispatchLeaseBrand: unique symbol;
+
+/** Opaque operation-scoped authority for dispatching with snapshotted credentials. */
+export interface RunnerDispatchLease {
+  readonly [runnerDispatchLeaseBrand]: true;
+}
+
+interface RunnerDispatchLeaseState {
+  readonly binding: string;
+  primaryCredential: string | undefined;
+  fallbackCredential: string | undefined;
+  sensitiveValues: string[];
+}
+
+const liveRunnerDispatchLeases = new WeakMap<object, RunnerDispatchLeaseState>();
+const issuedRunnerDispatchLeases = new WeakSet<object>();
+const disposedRunnerDispatchLeases = new WeakSet<object>();
+
+function credentialBinding(credential: { names: readonly string[]; required: boolean } | undefined) {
+  return credential ? { names: [...credential.names], required: credential.required } : null;
+}
+
+/** Bind only transport identity; request model/inference/schema/timeout remain per-call. */
+function runnerLeaseBinding(spec: RunnerSpec): string {
+  switch (spec.kind) {
+    case "llm":
+      return JSON.stringify({
+        kind: spec.kind,
+        engine: spec.engine ?? null,
+        endpoint: spec.connection.endpoint,
+        provider: spec.connection.provider ?? null,
+        credential: credentialBinding(spec.credential),
+      });
+    case "agent":
+      return JSON.stringify({
+        kind: spec.kind,
+        engine: spec.engine ?? null,
+        platform: spec.profile.platform ?? null,
+        name: spec.profile.name,
+        bin: spec.profile.bin,
+      });
+    case "sdk":
+      return JSON.stringify({
+        kind: spec.kind,
+        engine: spec.engine ?? null,
+        platform: spec.profile.platform ?? null,
+        name: spec.profile.name,
+        bin: spec.profile.bin,
+        fallbackEndpoint: spec.fallbackConnection?.endpoint ?? null,
+        fallbackProvider: spec.fallbackConnection?.provider ?? null,
+        fallbackCredential: credentialBinding(spec.fallbackCredential),
+      });
+    default:
+      return assertNever(spec);
+  }
+}
+
+function requireRunnerDispatchLease(lease: RunnerDispatchLease, spec?: RunnerSpec): RunnerDispatchLeaseState {
+  if (typeof lease !== "object" || lease === null) throw new TypeError("invalid dispatch lease");
+  const state = liveRunnerDispatchLeases.get(lease);
+  if (!state) {
+    if (issuedRunnerDispatchLeases.has(lease) && disposedRunnerDispatchLeases.has(lease)) {
+      throw new TypeError("dispatch lease is disposed");
+    }
+    throw new TypeError("invalid dispatch lease");
+  }
+  if (spec && state.binding !== runnerLeaseBinding(spec)) {
+    throw new TypeError("dispatch lease does not match the lowered runner transport");
+  }
+  return state;
+}
+
+/** @internal Verify provenance, liveness, and transport binding without exposing state. */
+export function assertRunnerDispatchLease(lease: RunnerDispatchLease, spec: RunnerSpec): void {
+  requireRunnerDispatchLease(lease, spec);
+}
+
+/** @internal Acquire only through execution-lowering after authorization/provenance validation. */
+export function acquireRunnerDispatchLease(
+  spec: RunnerSpec,
+  envSource: NodeJS.ProcessEnv = process.env,
+): RunnerDispatchLease {
+  const primaryCredential = spec.kind === "llm" ? resolveCredentialFromEnv(spec.credential, envSource) : undefined;
+  const fallbackCredential =
+    spec.kind === "sdk" ? resolveCredentialFromEnv(spec.fallbackCredential, envSource) : undefined;
+  const handle = Object.create(null) as object;
+  Object.defineProperty(handle, "toJSON", {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: () => {
+      throw new TypeError("dispatch lease is not serializable");
+    },
+  });
+  Object.freeze(handle);
+  const sensitiveValues = collectSensitiveValues([primaryCredential, fallbackCredential]);
+  liveRunnerDispatchLeases.set(handle, {
+    binding: runnerLeaseBinding(spec),
+    primaryCredential,
+    fallbackCredential,
+    sensitiveValues,
+  });
+  issuedRunnerDispatchLeases.add(handle);
+  return handle as RunnerDispatchLease;
+}
+
+/** @internal Scrub private material and invalidate one issued handle. */
+export function disposeRunnerDispatchLease(lease: RunnerDispatchLease): void {
+  if (typeof lease !== "object" || lease === null || !issuedRunnerDispatchLeases.has(lease)) {
+    throw new TypeError("invalid dispatch lease");
+  }
+  const state = liveRunnerDispatchLeases.get(lease);
+  if (!state) return;
+  state.primaryCredential = undefined;
+  state.fallbackCredential = undefined;
+  state.sensitiveValues.fill("");
+  state.sensitiveValues = [];
+  liveRunnerDispatchLeases.delete(lease);
+  disposedRunnerDispatchLeases.add(lease);
+}
+
+/** @internal Redact with private credential material without exposing its values. */
+export function redactWithRunnerDispatchLease(lease: RunnerDispatchLease, value: string): string {
+  return redactSensitiveText(value, requireRunnerDispatchLease(lease).sensitiveValues);
+}
 
 /**
  * Release every long-lived resource the dispatch runners CACHE for reuse, so a
@@ -70,6 +207,30 @@ export function collectDispatchSensitiveValues(
   if (spec.kind === "sdk") addConnection(spec.fallbackConnection);
   if (spec.kind === "llm") add(lookupCredentialFromEnv(spec.credential, envSource));
   if (spec.kind === "sdk") add(lookupCredentialFromEnv(spec.fallbackCredential, envSource));
+  if (spec.kind !== "llm") {
+    for (const value of Object.values(spec.profile.env ?? {})) add(value);
+    for (const name of spec.profile.envPassthrough) {
+      const value = envSource[name];
+      if (!isEnvPassthroughValueSafeToExpose(name, value)) add(value);
+    }
+  }
+  for (const [name, value] of Object.entries(opts.env ?? {})) {
+    if (!isEnvPassthroughValueSafeToExpose(name, value)) add(value);
+  }
+  return collectSensitiveValues(values);
+}
+
+function collectNonCredentialDispatchSensitiveValues(
+  spec: RunnerSpec,
+  opts: RunAgentOptions,
+  envSource: NodeJS.ProcessEnv = opts.envSource ?? process.env,
+): string[] {
+  const values = new Set<string>();
+  const add = (value: string | undefined): void => {
+    if (value !== undefined && value.length > 0) values.add(value);
+  };
+  if (spec.kind === "llm") add(spec.connection.apiKey);
+  if (spec.kind === "sdk") add(spec.fallbackConnection?.apiKey);
   if (spec.kind !== "llm") {
     for (const value of Object.values(spec.profile.env ?? {})) add(value);
     for (const name of spec.profile.envPassthrough) {
@@ -127,6 +288,7 @@ export async function executeRunner(
   prompt: string,
   opts: RunAgentOptions,
   seams: RunnerSeams = {},
+  lease?: RunnerDispatchLease,
 ): Promise<AgentRunResult> {
   const withSpecOptions = (timeoutMs: number | null | undefined, workspace?: string): RunAgentOptions => ({
     ...opts,
@@ -135,12 +297,15 @@ export async function executeRunner(
   });
   let result: AgentRunResult;
   const dispatchSensitiveValues: string[] = [];
+  const leaseState = lease ? requireRunnerDispatchLease(lease, spec) : undefined;
   switch (spec.kind) {
     case "llm": {
       if (!seams.llm) {
         throw new Error("executeRunner: an `llm` runner requires a `seams.llm` handler (no default LLM dispatch).");
       }
-      const connection = materializeLlmRunnerConnection(spec);
+      const connection = leaseState
+        ? materializeLlmRunnerConnectionWithCredential(spec, leaseState.primaryCredential)
+        : materializeLlmRunnerConnection(spec);
       if (connection.apiKey) dispatchSensitiveValues.push(connection.apiKey);
       result = await seams.llm({ ...spec, connection }, prompt, withSpecOptions(spec.timeoutMs));
       break;
@@ -152,8 +317,8 @@ export async function executeRunner(
     }
     case "sdk": {
       const run = seams.runSdk ?? runOpencodeSdk;
-      const fallbackConnection = spec.fallbackConnection
-        ? materializeLlmConnection({
+      const fallbackMaterial = spec.fallbackConnection
+        ? {
             engine: spec.engine ?? "unnamed-sdk-fallback",
             connection: spec.fallbackConnection,
             ...(spec.fallbackCredential ? { credential: spec.fallbackCredential } : {}),
@@ -163,7 +328,12 @@ export async function executeRunner(
                 : Object.hasOwn(spec.fallbackConnection, "timeoutMs")
                   ? (spec.fallbackConnection.timeoutMs ?? null)
                   : null,
-          })
+          }
+        : undefined;
+      const fallbackConnection = fallbackMaterial
+        ? leaseState
+          ? materializeLlmConnectionWithCredential(fallbackMaterial, leaseState.fallbackCredential)
+          : materializeLlmConnection(fallbackMaterial)
         : undefined;
       if (fallbackConnection?.apiKey) dispatchSensitiveValues.push(fallbackConnection.apiKey);
       result = await run(
@@ -178,5 +348,12 @@ export async function executeRunner(
       // Exhaustiveness arm: a 4th RunnerSpec kind becomes a compile error here.
       return assertNever(spec);
   }
-  return redactResult(result, [...collectDispatchSensitiveValues(spec, opts), ...dispatchSensitiveValues]);
+  const sensitiveValues = leaseState
+    ? collectSensitiveValues([
+        ...leaseState.sensitiveValues,
+        ...collectNonCredentialDispatchSensitiveValues(spec, opts),
+        ...dispatchSensitiveValues,
+      ])
+    : [...collectDispatchSensitiveValues(spec, opts), ...dispatchSensitiveValues];
+  return redactResult(result, sensitiveValues);
 }

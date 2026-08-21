@@ -4,11 +4,11 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import { akmPropose } from "../../src/commands/proposal/propose";
+import { type AkmProposeOptions, akmPropose } from "../../src/commands/proposal/propose";
 import type { AkmConfig } from "../../src/core/config/config";
 import { buildProposePrompt } from "../../src/integrations/agent/prompts";
 import { __setTestServer, closeServer } from "../../src/integrations/harnesses/opencode-sdk/sdk-runner";
-import { makeStashDir, type SandboxedDir, withEnv, withMockedFetch } from "../_helpers/sandbox";
+import { makeStashDir, mutateScopedEnv, type SandboxedDir, withEnv, withMockedFetch } from "../_helpers/sandbox";
 
 const sandboxes: SandboxedDir[] = [];
 
@@ -156,6 +156,53 @@ describe("proposal consumers lower resolved execution requests", () => {
     expect(result).toMatchObject({ ok: false, reason: "spawn_failed", engine: "direct" });
     expect(JSON.stringify(result)).not.toContain(secret);
     expect(result.notices).toBeUndefined();
+  });
+
+  test("proposal dispatch uses the preflight credential when it is replaced before the provider call", async () => {
+    const stashDir = proposalStash();
+    const secret = "proposal-lease-original-092";
+    const replacement = "proposal-lease-replacement-092";
+    let dispatchReady = false;
+    let authorization: string | null = null;
+    const options = {
+      type: "skill",
+      name: "lease-bound",
+      task: "Keep the operation credential stable.",
+      engine: "direct",
+      stashDir,
+      agentConfig: directConfig(stashDir, "$PROPOSAL_LEASE_KEY"),
+      onDispatchReady: () => {
+        dispatchReady = true;
+        mutateScopedEnv("PROPOSAL_LEASE_KEY", replacement);
+      },
+    } as AkmProposeOptions & { onDispatchReady: () => void };
+
+    const result = await withEnv({ PROPOSAL_LEASE_KEY: secret }, () =>
+      withMockedFetch(
+        () => akmPropose(options),
+        (_url, init) => {
+          authorization = new Headers(init?.headers).get("authorization");
+          return Response.json({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    ref: "skills/lease-bound",
+                    content: "---\ndescription: Lease-bound proposal\n---\n\nUse the operation snapshot.\n",
+                  }),
+                },
+              },
+            ],
+          });
+        },
+      ),
+    );
+
+    expect(dispatchReady).toBe(true);
+    expect(authorization as string | null).toBe(`Bearer ${secret}`);
+    expect(result.ok).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(JSON.stringify(result)).not.toContain(replacement);
   });
 
   test("file-written SDK drafts redact a symbolic fallback credential before persistence or output", async () => {

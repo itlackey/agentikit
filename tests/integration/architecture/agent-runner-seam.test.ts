@@ -64,6 +64,19 @@ function writeFixture(root: string, relative: string, source: string): string {
   return file;
 }
 
+function collectTypeScriptFiles(root: string): string[] {
+  const files: string[] = [];
+  const visit = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const absolute = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(absolute);
+      else if (entry.isFile() && absolute.endsWith(".ts")) files.push(absolute);
+    }
+  };
+  visit(root);
+  return files;
+}
+
 describe("RunnerSpec dispatch authority", () => {
   test("routes sdk and agent specs through their one low-level switch", async () => {
     const sdk: RunnerSpec = { kind: "sdk", profile };
@@ -97,6 +110,91 @@ describe("RunnerSpec dispatch authority", () => {
     expect(policy.unauthorized).toEqual([]);
     expect(policy.countErrors).toEqual([]);
   }, 20_000);
+
+  test("structured-runner preflight leases are retained for disposal and raw lease authority stays lowering-only", () => {
+    const rawLeaseExports = new Set([
+      "acquireRunnerDispatchLease",
+      "assertRunnerDispatchLease",
+      "disposeRunnerDispatchLease",
+      "redactWithRunnerDispatchLease",
+      "RunnerDispatchLease",
+    ]);
+    const discarded: string[] = [];
+    const missingFinallyDisposal: string[] = [];
+    const unauthorizedRawImports: string[] = [];
+
+    for (const file of collectTypeScriptFiles(path.join(repoRoot, "src"))) {
+      const relative = path.relative(repoRoot, file).replaceAll(path.sep, "/");
+      const source = fs.readFileSync(file, "utf8");
+      const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      let hasPreflightCall = false;
+      let hasFinallyDisposal = false;
+
+      const isInsideFinally = (node: ts.Node): boolean => {
+        for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+          if (ts.isBlock(parent) && ts.isTryStatement(parent.parent) && parent.parent.finallyBlock === parent) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isImportDeclaration(node) &&
+          ts.isStringLiteral(node.moduleSpecifier) &&
+          node.moduleSpecifier.text.endsWith("/runner-dispatch") &&
+          node.importClause?.namedBindings &&
+          ts.isNamedImports(node.importClause.namedBindings)
+        ) {
+          for (const specifier of node.importClause.namedBindings.elements) {
+            const imported = specifier.propertyName?.text ?? specifier.name.text;
+            if (rawLeaseExports.has(imported) && relative !== "src/integrations/agent/execution-lowering.ts") {
+              unauthorizedRawImports.push(
+                `${relative}:${sourceFile.getLineAndCharacterOfPosition(specifier.pos).line + 1}`,
+              );
+            }
+          }
+        }
+        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+          if (node.expression.text === "disposeLoweredExecutionDispatchLease" && isInsideFinally(node)) {
+            hasFinallyDisposal = true;
+          }
+          if (node.expression.text === "preflightStructuredLlmRunner") {
+            hasPreflightCall = true;
+            let retained = false;
+            for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+              if (ts.isVariableDeclaration(parent) && parent.initializer) {
+                retained = true;
+                break;
+              }
+              if (
+                ts.isBinaryExpression(parent) &&
+                parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                parent.right.getStart(sourceFile) <= node.getStart(sourceFile)
+              ) {
+                retained = true;
+                break;
+              }
+              if (ts.isReturnStatement(parent) || ts.isExpressionStatement(parent)) break;
+            }
+            if (!retained) {
+              discarded.push(
+                `${relative}:${sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1}`,
+              );
+            }
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceFile);
+      if (hasPreflightCall && !hasFinallyDisposal) missingFinallyDisposal.push(relative);
+    }
+
+    expect(discarded).toEqual([]);
+    expect(missingFinallyDisposal).toEqual([]);
+    expect(unauthorizedRawImports).toEqual([]);
+  });
 
   test("symbol-origin guard catches aliases, namespaces, barrels, wrappers, call/apply/bind, and default injection", () => {
     const sandbox = makeSandboxDir("execution-boundary-symbols");

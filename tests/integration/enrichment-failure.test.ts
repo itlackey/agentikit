@@ -26,6 +26,7 @@ import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories
 import { getAllEntries } from "../../src/storage/repositories/index-entries-repository";
 import {
   type Cleanup,
+  mutateScopedEnv,
   sandboxEnvDir,
   sandboxStashDir,
   sandboxXdgCacheHome,
@@ -38,11 +39,15 @@ let cleanup: Cleanup = () => {};
 let llmCallCount = 0;
 let llmSucceeds = false;
 let llmModels: string[] = [];
+let llmAuthorizations: Array<string | null> = [];
+let onLlmRequest: (() => void) | undefined;
 
 const llmServer = Bun.serve({
   port: 0,
   async fetch(request) {
     llmCallCount++;
+    llmAuthorizations.push(request.headers.get("authorization"));
+    onLlmRequest?.();
     const payload = (await request.json()) as { model?: string };
     if (typeof payload.model === "string") llmModels.push(payload.model);
     if (llmSucceeds) {
@@ -75,6 +80,8 @@ beforeEach(() => {
   llmCallCount = 0;
   llmSucceeds = false;
   llmModels = [];
+  llmAuthorizations = [];
+  onLlmRequest = undefined;
 });
 
 afterEach(() => {
@@ -162,6 +169,43 @@ test("missing required symbolic credential aborts indexing without provider or e
     expect(cacheCount).toBe(0);
     const thing = getAllEntries(db).find((entry) => entry.entry.name === "thing");
     expect(thing?.entry.quality).not.toBe("enriched");
+  } finally {
+    closeDatabase(db);
+  }
+});
+
+test("metadata enrichment keeps one preflight credential across every entry mutation", async () => {
+  llmSucceeds = true;
+  const knowledgeDir = path.join(stashDir, "knowledge");
+  fs.mkdirSync(knowledgeDir, { recursive: true });
+  fs.writeFileSync(path.join(knowledgeDir, "first.md"), "# First\n\nFirst generated body.\n");
+  fs.writeFileSync(path.join(knowledgeDir, "second.md"), "# Second\n\nSecond generated body.\n");
+
+  saveConfig({
+    semanticSearchMode: "off",
+    engines: {
+      index: {
+        kind: "llm",
+        endpoint: `http://localhost:${llmServer.port}/v1/chat/completions`,
+        model: "test-model",
+        apiKey: "$AKM_ENRICH_LEASE_KEY",
+      },
+    },
+    index: { defaults: { engine: "index" }, metadataEnhance: { enabled: true } },
+  });
+  const secret = "enrichment-lease-original-092";
+  onLlmRequest = () => {
+    if (llmCallCount === 1) mutateScopedEnv("AKM_ENRICH_LEASE_KEY", undefined);
+  };
+
+  await withEnv({ AKM_ENRICH_LEASE_KEY: secret }, () => akmIndex({ stashDir, full: true }));
+
+  expect(llmAuthorizations).toEqual([`Bearer ${secret}`, `Bearer ${secret}`]);
+  const db = openIndexDatabase(getDbPath());
+  try {
+    expect(getAllEntries(db).filter((row) => row.entry.quality === "enriched")).toHaveLength(2);
+    const cacheCount = (db.prepare("SELECT COUNT(*) AS cnt FROM llm_enrichment_cache").get() as { cnt: number }).cnt;
+    expect(cacheCount).toBe(2);
   } finally {
     closeDatabase(db);
   }

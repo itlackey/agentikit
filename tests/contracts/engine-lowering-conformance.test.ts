@@ -17,7 +17,9 @@ import {
 } from "../../src/integrations/agent/conversation-fallback";
 import { resolveEngine, resolveEngineTransportMaterial } from "../../src/integrations/agent/engine-resolution";
 import {
+  acquireLoweredExecutionDispatchLease,
   dispatchLoweredExecutionRequest,
+  disposeLoweredExecutionDispatchLease,
   listExecutionLowerers,
   lowerResolvedExecutionRequest,
   lowerResolvedExecutionRequestWithRunner,
@@ -32,7 +34,7 @@ import type { RunnerSpec } from "../../src/integrations/agent/runner";
 import { collectDispatchSensitiveValues, executeRunner } from "../../src/integrations/agent/runner-dispatch";
 import { HARNESS_REGISTRY } from "../../src/integrations/harnesses";
 import { LlmCallError, type LlmCallErrorCode } from "../../src/llm/client";
-import { withEnv } from "../_helpers/sandbox";
+import { mutateScopedEnv, withEnv } from "../_helpers/sandbox";
 
 const CLI_HARNESSES = HARNESS_REGISTRY.filter((harness) => harness.agentBuilder).map((harness) => harness.id);
 
@@ -101,6 +103,275 @@ function requestFor(
 }
 
 describe("resolved execution lowerer registry", () => {
+  test("an opaque dispatch lease snapshots a required credential once and is invalid after disposal", async () => {
+    const secret = "lease-original-secret-092";
+    const replacement = "lease-replacement-secret-092";
+    const runner: RunnerSpec = {
+      kind: "llm",
+      engine: "fixture",
+      connection: {
+        provider: "openai-compatible",
+        endpoint: "https://fixture.invalid/v1/chat/completions",
+        model: "provider/exact-model",
+      },
+      credential: { names: ["AKM_WP5_LEASE_KEY"], required: true },
+    };
+    const lowered = lowerResolvedExecutionRequestWithRunner(
+      requestFor("fixture-llm", "llm", { tools: [], authorization: { status: "not-required" } }),
+      runner,
+    );
+
+    await withEnv({ AKM_WP5_LEASE_KEY: secret }, async () => {
+      const lease = await acquireLoweredExecutionDispatchLease(lowered);
+      expect(Object.keys(lease)).toEqual([]);
+      expect(Reflect.ownKeys(lease)).toEqual(["toJSON"]);
+      expect(Object.getPrototypeOf(lease)).toBeNull();
+      expect(Object.isFrozen(lease)).toBe(true);
+      expect(() => JSON.stringify(lease)).toThrow(/dispatch lease.*serializ/i);
+
+      mutateScopedEnv("AKM_WP5_LEASE_KEY", replacement);
+      const observed: Array<string | undefined> = [];
+      const run = () =>
+        dispatchLoweredExecutionRequest(lowered, {
+          lease,
+          chat: async (connection) => {
+            observed.push(connection.apiKey);
+            return secret;
+          },
+        });
+      const firstResult = await run();
+      expect(JSON.stringify(firstResult)).not.toContain(secret);
+      expect(firstResult.stdout).toContain("[REDACTED]");
+      mutateScopedEnv("AKM_WP5_LEASE_KEY", undefined);
+      await run();
+      expect(observed).toEqual([secret, secret]);
+
+      disposeLoweredExecutionDispatchLease(lease);
+      await expect(run()).rejects.toThrow(/dispatch lease.*disposed|invalid dispatch lease/i);
+      disposeLoweredExecutionDispatchLease(lease);
+    });
+  });
+
+  test("lease acquisition validates lowered provenance before touching an accessor-backed environment", () => {
+    const runner: RunnerSpec = {
+      kind: "llm",
+      engine: "fixture",
+      connection: {
+        provider: "openai-compatible",
+        endpoint: "https://fixture.invalid/v1/chat/completions",
+        model: "provider/exact-model",
+      },
+      credential: { names: ["AKM_WP5_ACCESSOR_KEY"], required: true },
+    };
+    const lowered = lowerResolvedExecutionRequestWithRunner(
+      requestFor("fixture-llm", "llm", { tools: [], authorization: { status: "not-required" } }),
+      runner,
+    );
+    let reads = 0;
+    const envSource = new Proxy(Object.create(null) as NodeJS.ProcessEnv, {
+      get() {
+        reads += 1;
+        throw new Error("environment accessor must not run");
+      },
+    });
+    const forged = Object.freeze({ ...lowered });
+
+    expect(() => acquireLoweredExecutionDispatchLease(forged as typeof lowered, { envSource })).toThrow(
+      /produced by the engine lowerer registry/i,
+    );
+    expect(reads).toBe(0);
+  });
+
+  test("a genuine lease reads only the selected credential once and never re-reads it at dispatch", async () => {
+    const secret = "accessor-credential-original-092";
+    const runner: RunnerSpec = {
+      kind: "llm",
+      engine: "fixture",
+      connection: {
+        provider: "openai-compatible",
+        endpoint: "https://fixture.invalid/v1/chat/completions",
+        model: "provider/exact-model",
+      },
+      credential: { names: ["AKM_WP5_ACCESSOR_KEY", "AKM_WP5_UNUSED_KEY"], required: true },
+    };
+    const lowered = lowerResolvedExecutionRequestWithRunner(
+      requestFor("fixture-llm", "llm", { tools: [], authorization: { status: "not-required" } }),
+      runner,
+    );
+    let selectedReads = 0;
+    let unusedReads = 0;
+    const envSource = Object.create(null) as NodeJS.ProcessEnv;
+    Object.defineProperties(envSource, {
+      AKM_WP5_ACCESSOR_KEY: {
+        enumerable: true,
+        get() {
+          selectedReads += 1;
+          return secret;
+        },
+      },
+      AKM_WP5_UNUSED_KEY: {
+        enumerable: true,
+        get() {
+          unusedReads += 1;
+          throw new Error("fallback credential accessor must not run");
+        },
+      },
+    });
+
+    const lease = acquireLoweredExecutionDispatchLease(lowered, { envSource });
+    try {
+      let observed: string | undefined;
+      await dispatchLoweredExecutionRequest(lowered, {
+        lease,
+        chat: async (connection) => {
+          observed = connection.apiKey;
+          return "ok";
+        },
+      });
+      expect(observed).toBe(secret);
+      expect(selectedReads).toBe(1);
+      expect(unusedReads).toBe(0);
+    } finally {
+      disposeLoweredExecutionDispatchLease(lease);
+    }
+  });
+
+  test("forged and mismatched primary transport leases are rejected before provider dispatch", async () => {
+    const baseRunner: RunnerSpec = {
+      kind: "llm",
+      engine: "fixture",
+      connection: {
+        provider: "openai-compatible",
+        endpoint: "https://one.invalid/v1/chat/completions",
+        model: "provider/model-one",
+      },
+    };
+    const otherRunner: RunnerSpec = {
+      ...baseRunner,
+      connection: {
+        provider: "openai-compatible",
+        endpoint: "https://two.invalid/v1/chat/completions",
+        model: "provider/model-two",
+      },
+    };
+    const request = requestFor("fixture-llm", "llm", { tools: [], authorization: { status: "not-required" } });
+    const base = lowerResolvedExecutionRequestWithRunner(request, baseRunner);
+    const other = lowerResolvedExecutionRequestWithRunner(request, otherRunner);
+    const lease = acquireLoweredExecutionDispatchLease(base);
+    const forgedLease = Object.freeze(Object.create(null)) as typeof lease;
+    let chatRan = false;
+    try {
+      await expect(
+        dispatchLoweredExecutionRequest(other, {
+          lease,
+          chat: async () => {
+            chatRan = true;
+            return "wrong";
+          },
+        }),
+      ).rejects.toThrow(/lease.*does not match|transport/i);
+      await expect(
+        dispatchLoweredExecutionRequest(base, {
+          lease: forgedLease,
+          chat: async () => "wrong",
+        }),
+      ).rejects.toThrow(/invalid dispatch lease/i);
+      expect(() => disposeLoweredExecutionDispatchLease(forgedLease)).toThrow(/invalid dispatch lease/i);
+      expect(chatRan).toBe(false);
+    } finally {
+      disposeLoweredExecutionDispatchLease(lease);
+    }
+  });
+
+  test("an operation lease snapshots the SDK fallback credential without exposing it", async () => {
+    const secret = "sdk-fallback-lease-secret-092";
+    const runner: RunnerSpec = {
+      kind: "sdk",
+      engine: "fixture",
+      profile: {
+        name: "fixture-sdk",
+        platform: "opencode-sdk",
+        personaChannel: "native",
+        bin: "opencode",
+        args: [],
+        stdio: "captured",
+        envPassthrough: [],
+        parseOutput: "text",
+      },
+      fallbackConnection: {
+        provider: "openai-compatible",
+        endpoint: "https://fallback.invalid/v1/chat/completions",
+        model: "provider/fallback-model",
+      },
+      fallbackCredential: { names: ["AKM_WP5_SDK_FALLBACK_KEY"], required: true },
+    };
+    const lowered = lowerResolvedExecutionRequestWithRunner(requestFor("opencode-sdk", "sdk"), runner);
+
+    await withEnv({ AKM_WP5_SDK_FALLBACK_KEY: secret }, async () => {
+      const lease = await acquireLoweredExecutionDispatchLease(lowered);
+      mutateScopedEnv("AKM_WP5_SDK_FALLBACK_KEY", undefined);
+      let captured: string | undefined;
+      await dispatchLoweredExecutionRequest(lowered, {
+        lease,
+        runSdk: async (_profile, _prompt, _options, fallbackConnection) => {
+          captured = fallbackConnection?.apiKey;
+          return { ok: true, stdout: secret, stderr: secret, exitCode: 0, durationMs: 0 };
+        },
+      });
+      expect(captured).toBe(secret);
+      const result = await dispatchLoweredExecutionRequest(lowered, {
+        lease,
+        runSdk: async () => ({ ok: true, stdout: secret, stderr: "", exitCode: 0, durationMs: 0 }),
+      });
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(() => JSON.stringify(lease)).toThrow(/dispatch lease.*serializ/i);
+      disposeLoweredExecutionDispatchLease(lease);
+    });
+  });
+
+  test("an SDK fallback lease cannot cross to a different fallback transport", async () => {
+    const sdkRunner = (endpoint: string): RunnerSpec => ({
+      kind: "sdk",
+      engine: "fixture",
+      profile: {
+        name: "fixture-sdk",
+        platform: "opencode-sdk",
+        personaChannel: "native",
+        bin: "opencode",
+        args: [],
+        stdio: "captured",
+        envPassthrough: [],
+        parseOutput: "text",
+      },
+      fallbackConnection: { endpoint, model: "provider/fallback" },
+    });
+    const request = requestFor("opencode-sdk", "sdk");
+    const first = lowerResolvedExecutionRequestWithRunner(
+      request,
+      sdkRunner("https://one.invalid/v1/chat/completions"),
+    );
+    const second = lowerResolvedExecutionRequestWithRunner(
+      request,
+      sdkRunner("https://two.invalid/v1/chat/completions"),
+    );
+    const lease = acquireLoweredExecutionDispatchLease(first);
+    let sdkRan = false;
+    try {
+      await expect(
+        dispatchLoweredExecutionRequest(second, {
+          lease,
+          runSdk: async () => {
+            sdkRan = true;
+            return { ok: true, stdout: "wrong", stderr: "", exitCode: 0, durationMs: 0 };
+          },
+        }),
+      ).rejects.toThrow(/lease.*does not match|transport/i);
+      expect(sdkRan).toBe(false);
+    } finally {
+      disposeLoweredExecutionDispatchLease(lease);
+    }
+  });
+
   test("is structurally complete for every harness plus direct LLM", () => {
     expect(listExecutionLowerers()).toEqual([...HARNESS_REGISTRY.map((harness) => harness.id), "llm"]);
   });

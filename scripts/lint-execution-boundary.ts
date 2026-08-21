@@ -188,6 +188,14 @@ const PERMANENT_EXECUTION_BOUNDARY_ALLOWLIST: readonly ExecutionBoundaryAllowRul
     rationale: "direct-LLM lowerer transport authority",
   },
   {
+    operation: "engine.materialize-credential",
+    file: "src/integrations/agent/runner-dispatch.ts",
+    enclosing: "acquireRunnerDispatchLease",
+    maxReferences: 2,
+    exact: true,
+    rationale: "operation-scoped runner dispatch lease snapshots primary and SDK fallback credentials once",
+  },
+  {
     operation: "engine.materialize-runner",
     file: "src/integrations/agent/runner-dispatch.ts",
     enclosing: "executeRunner",

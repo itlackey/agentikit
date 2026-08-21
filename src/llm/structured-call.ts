@@ -42,7 +42,9 @@ import type { LoweringNotice, ResolvedConversationMessage } from "../execution/r
 import type { UnresolvedExecutionDefaults } from "../execution/source";
 import type { ToolAuthorizer } from "../integrations/agent/execution-cascade";
 import {
+  acquireLoweredExecutionDispatchLease,
   dispatchLoweredExecutionRequest,
+  type LoweredExecutionDispatchLease,
   lowerResolvedExecutionRequestWithRunner,
 } from "../integrations/agent/execution-lowering";
 import { prepareInlineExecutionWithRunner } from "../integrations/agent/inline-execution";
@@ -162,6 +164,8 @@ export interface CallStructuredOptions<T> {
    * authorization precedes credential lookup and aliases are never re-run.
    */
   runner?: StructuredLlmRunner;
+  /** Operation-scoped credential capability shared across related calls. */
+  lease?: LoweredExecutionDispatchLease;
   /**
    * Legacy/test-only non-secret connection adapter. Omit in production and
    * pass `runner` instead.
@@ -247,19 +251,20 @@ function dispatchFailure(result: Awaited<ReturnType<typeof dispatchLoweredExecut
 /**
  * Validate one already-selected symbolic LLM runner before an operation makes
  * any durable mutation. Callers must apply their feature/authorization gates
- * first. The no-op transport still crosses the canonical prepare -> lower ->
- * dispatch boundary, so required credentials are materialized by the same
- * authority as a real call without contacting the provider.
+ * first. Acquisition crosses the canonical prepare -> lower -> lease boundary,
+ * so required credentials are snapshotted by the same central authority as a
+ * real call without contacting the provider.
  */
-export async function preflightStructuredLlmRunner(runner: StructuredLlmRunner): Promise<void> {
+export async function preflightStructuredLlmRunner(
+  runner: StructuredLlmRunner,
+): Promise<LoweredExecutionDispatchLease> {
   const prepared = prepareInlineExecutionWithRunner({
     content: "Validate the selected LLM runner before operation dispatch.",
     runner,
     invocationKind: "direct",
   });
   const lowered = lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
-  const result = await dispatchLoweredExecutionRequest(lowered, { chat: async () => "" });
-  if (!result.ok) throw dispatchFailure(result);
+  return acquireLoweredExecutionDispatchLease(lowered);
 }
 
 export async function callStructured<T>(opts: CallStructuredOptions<T>): Promise<T> {
@@ -295,6 +300,7 @@ export async function callStructured<T>(opts: CallStructuredOptions<T>): Promise
     opts.onNotices?.(lowered.notices);
     return async () => {
       const result = await dispatchLoweredExecutionRequest(lowered, {
+        ...(opts.lease ? { lease: opts.lease } : {}),
         ...(request?.chat ? { chat: request.chat } : {}),
         ...(request?.onRetryAttempt ? { onRetryAttempt: request.onRetryAttempt } : {}),
         ...(own(request, "signal") ? { runOptions: { signal: request?.signal } } : {}),

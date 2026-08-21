@@ -14,6 +14,7 @@
 
 import type { AkmConfig } from "../../core/config/config";
 import type { LoweringNotice } from "../../execution/resolved-request";
+import type { LoweredExecutionDispatchLease } from "../../integrations/agent/execution-lowering";
 import type { ResolvedIndexPassExecution } from "../../llm/index-passes";
 import type { Database } from "../../storage/database";
 import type { SearchSource } from "../search/search-source";
@@ -64,6 +65,8 @@ export interface IndexRunContext {
   config: AkmConfig;
   /** Frozen standalone metadata-enrichment selection for this invocation. */
   enrichmentExecution: ResolvedIndexPassExecution;
+  /** Opaque credential snapshot held for the full metadata mutation scope. */
+  enrichmentLease?: LoweredExecutionDispatchLease;
   /** Stable, deduped lowering diagnostics accumulated across enrichment calls. */
   loweringNotices: Array<Readonly<LoweringNotice>>;
   /** All resolved stash source entries (primary + additional). */

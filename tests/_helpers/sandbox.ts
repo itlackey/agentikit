@@ -140,6 +140,18 @@ export async function withEnv<T>(
   }
 }
 
+/**
+ * Change one environment entry inside an active {@link withEnv} scope.
+ *
+ * Race-boundary tests use this from injected callbacks to prove production
+ * code does not re-read credentials after preflight. The owning `withEnv`
+ * scope remains responsible for restoration.
+ */
+export function mutateScopedEnv(key: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
 /** Synchronous counterpart for production helpers that must run before fixture writes. */
 export function withEnvSync<T>(overrides: Record<string, string | undefined>, fn: () => T): T {
   const keys = Object.keys(overrides);

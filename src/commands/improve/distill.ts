@@ -69,9 +69,17 @@ import { withStateDb } from "../../core/state-db";
 import { warnVerbose } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
+import {
+  disposeLoweredExecutionDispatchLease,
+  type LoweredExecutionDispatchLease,
+} from "../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import type { ChatMessage, chatCompletion } from "../../llm/client";
-import { callStructured, structuredLlmRunnerFromConnection } from "../../llm/structured-call";
+import {
+  callStructured,
+  preflightStructuredLlmRunner,
+  structuredLlmRunnerFromConnection,
+} from "../../llm/structured-call";
 import { closeDatabase, openReadonlyExistingDatabase } from "../../storage/repositories/index-connection";
 import { getAllEntries } from "../../storage/repositories/index-entries-repository";
 import type { EligibilitySource } from "../proposal/proposal-types";
@@ -934,141 +942,149 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     filteredFeedbackCount,
     feedbackFullyFiltered,
   } = prepared;
+  const dispatchLease = distillRunner ? await preflightStructuredLlmRunner(distillRunner) : undefined;
 
-  // Memory→knowledge promotion branch (D-1/#369). When the target ref is a
-  // reinforced memory, distill graduates it into a knowledge proposal instead
-  // of a lesson — the whole branch (LLM contradiction-merge, quality gate,
-  // proposal creation, event emit) lives in `promoteMemoryToKnowledge` and is
-  // terminal when it fires. A `null` return means "not a promotion candidate";
-  // fall through to the ordinary lesson/knowledge distillation path.
-  const promotionResult = await promoteMemoryToKnowledge({
-    targetKind,
-    inputRef,
-    durableInputRef,
-    ...(options.itemRef ? { itemRef: options.itemRef } : {}),
-    assetContent: assetState.assetContent,
-    filteredEvents,
-    config,
-    strategy: options.improveProfile,
-    llmRunner: distillRunner,
-    signal: options.signal,
-    chat,
-    stash,
-    lookup,
-    fetchSimilarLessonsFn,
-    existingRefVocabulary: assetState.existingRefVocabulary,
-    outcomeWeightEnabled,
-    eligMeta,
-    eligibilitySource: options.eligibilitySource,
-    sourceRun: options.sourceRun,
-    proposalsCtx: options.ctx,
-    eventsCtx: options.eventsCtx,
-    exclusionSetSize: exclusionSet.size,
-    filteredFeedbackCount,
-    feedbackFullyFiltered,
-    onNotices: collectNotices,
-  });
-  if (promotionResult) {
-    await persistInputSalience();
-    return withNotices(promotionResult);
-  }
-
-  const effectiveProposalKind = targetKind === "knowledge" ? "knowledge" : "lesson";
-  const effectiveLessonRef =
-    effectiveProposalKind === "knowledge" ? deriveKnowledgeRef(inputRef) : deriveLessonRef(inputRef);
-
-  const messages = await buildDistillMessages({
-    options,
-    stash,
-    inputRef,
-    assetContent: assetState.assetContent,
-    feedback,
-    effectiveProposalKind,
-    effectiveLessonRef,
-    fetchSimilarLessonsFn,
-  });
-
-  const { raw, fallbackReason } = await runDistillLlmCall({
-    config,
-    options,
-    distillRunner,
-    messages,
-    effectiveProposalKind,
-    onNotices: collectNotices,
-  });
-  await persistInputSalience();
-
-  if (raw === null || raw.trim() === "") {
-    return withNotices(
-      distillEmptyResponseResult({
-        fallbackReason,
-        inputRef,
-        durableInputRef,
-        ...(options.itemRef ? { itemRef: options.itemRef } : {}),
-        effectiveLessonRef,
-        effectiveProposalKind,
-        exclusionSet,
-        filteredFeedbackCount,
-        feedbackFullyFiltered,
-        eligMeta,
-        eventsCtx: options.eventsCtx,
-      }),
-    );
-  }
-
-  const { content, descriptionSwapped } = assembleAndValidateDistillContent({
-    raw,
-    effectiveProposalKind,
-    inputRef,
-    durableInputRef,
-    ...(options.itemRef ? { itemRef: options.itemRef } : {}),
-    effectiveLessonRef,
-    exclusionSet,
-    filteredFeedbackCount,
-    eligMeta,
-    eventsCtx: options.eventsCtx,
-  });
-
-  const gate = await applyDistillQualityGate({
-    config,
-    options,
-    content,
-    assetContent: assetState.assetContent,
-    chat,
-    distillRunner,
-    fetchSimilarLessonsFn,
-    stash,
-    inputRef,
-    effectiveLessonRef,
-    exclusionSet,
-    filteredFeedbackCount,
-    feedbackFullyFiltered,
-    onNotices: collectNotices,
-  });
-  if ("rejection" in gate) return withNotices(gate.rejection);
-  const lessonJudgeConfidence = gate.confidence;
-
-  return withNotices(
-    await emitDistillLessonProposal({
-      content,
-      options,
-      distillRunner,
-      assetContent: assetState.assetContent,
+  try {
+    // Memory→knowledge promotion branch (D-1/#369). When the target ref is a
+    // reinforced memory, distill graduates it into a knowledge proposal instead
+    // of a lesson — the whole branch (LLM contradiction-merge, quality gate,
+    // proposal creation, event emit) lives in `promoteMemoryToKnowledge` and is
+    // terminal when it fires. A `null` return means "not a promotion candidate";
+    // fall through to the ordinary lesson/knowledge distillation path.
+    const promotionResult = await promoteMemoryToKnowledge({
+      targetKind,
       inputRef,
       durableInputRef,
-      effectiveLessonRef,
-      effectiveProposalKind,
+      ...(options.itemRef ? { itemRef: options.itemRef } : {}),
+      assetContent: assetState.assetContent,
+      filteredEvents,
+      config,
+      strategy: options.improveProfile,
+      llmRunner: distillRunner,
+      ...(dispatchLease ? { lease: dispatchLease } : {}),
+      signal: options.signal,
+      chat,
       stash,
+      lookup,
+      fetchSimilarLessonsFn,
+      existingRefVocabulary: assetState.existingRefVocabulary,
+      outcomeWeightEnabled,
+      eligMeta,
+      eligibilitySource: options.eligibilitySource,
+      sourceRun: options.sourceRun,
+      proposalsCtx: options.ctx,
+      eventsCtx: options.eventsCtx,
+      exclusionSetSize: exclusionSet.size,
+      filteredFeedbackCount,
+      feedbackFullyFiltered,
+      onNotices: collectNotices,
+    });
+    if (promotionResult) {
+      await persistInputSalience();
+      return withNotices(promotionResult);
+    }
+
+    const effectiveProposalKind = targetKind === "knowledge" ? "knowledge" : "lesson";
+    const effectiveLessonRef =
+      effectiveProposalKind === "knowledge" ? deriveKnowledgeRef(inputRef) : deriveLessonRef(inputRef);
+
+    const messages = await buildDistillMessages({
+      options,
+      stash,
+      inputRef,
+      assetContent: assetState.assetContent,
+      feedback,
+      effectiveProposalKind,
+      effectiveLessonRef,
+      fetchSimilarLessonsFn,
+    });
+
+    const { raw, fallbackReason } = await runDistillLlmCall({
+      config,
+      options,
+      distillRunner,
+      lease: dispatchLease,
+      messages,
+      effectiveProposalKind,
+      onNotices: collectNotices,
+    });
+    await persistInputSalience();
+
+    if (raw === null || raw.trim() === "") {
+      return withNotices(
+        distillEmptyResponseResult({
+          fallbackReason,
+          inputRef,
+          durableInputRef,
+          ...(options.itemRef ? { itemRef: options.itemRef } : {}),
+          effectiveLessonRef,
+          effectiveProposalKind,
+          exclusionSet,
+          filteredFeedbackCount,
+          feedbackFullyFiltered,
+          eligMeta,
+          eventsCtx: options.eventsCtx,
+        }),
+      );
+    }
+
+    const { content, descriptionSwapped } = assembleAndValidateDistillContent({
+      raw,
+      effectiveProposalKind,
+      inputRef,
+      durableInputRef,
+      ...(options.itemRef ? { itemRef: options.itemRef } : {}),
+      effectiveLessonRef,
+      exclusionSet,
+      filteredFeedbackCount,
+      eligMeta,
+      eventsCtx: options.eventsCtx,
+    });
+
+    const gate = await applyDistillQualityGate({
+      config,
+      options,
+      content,
+      assetContent: assetState.assetContent,
+      chat,
+      distillRunner,
+      lease: dispatchLease,
+      fetchSimilarLessonsFn,
+      stash,
+      inputRef,
+      effectiveLessonRef,
       exclusionSet,
       filteredFeedbackCount,
       feedbackFullyFiltered,
-      lessonJudgeConfidence,
-      existingRefVocabulary: assetState.existingRefVocabulary,
-      outcomeWeightEnabled,
-      descriptionSwapped,
-      eligMeta,
-    }),
-  );
+      onNotices: collectNotices,
+    });
+    if ("rejection" in gate) return withNotices(gate.rejection);
+    const lessonJudgeConfidence = gate.confidence;
+
+    return withNotices(
+      await emitDistillLessonProposal({
+        content,
+        options,
+        distillRunner,
+        assetContent: assetState.assetContent,
+        inputRef,
+        durableInputRef,
+        effectiveLessonRef,
+        effectiveProposalKind,
+        stash,
+        exclusionSet,
+        filteredFeedbackCount,
+        feedbackFullyFiltered,
+        lessonJudgeConfidence,
+        existingRefVocabulary: assetState.existingRefVocabulary,
+        outcomeWeightEnabled,
+        descriptionSwapped,
+        eligMeta,
+      }),
+    );
+  } finally {
+    if (dispatchLease) disposeLoweredExecutionDispatchLease(dispatchLease);
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1386,11 +1402,12 @@ async function runDistillLlmCall(args: {
   config: AkmConfig;
   options: AkmDistillOptions;
   distillRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined;
+  lease: LoweredExecutionDispatchLease | undefined;
   messages: ChatMessage[];
   effectiveProposalKind: "lesson" | "knowledge";
   onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
 }): Promise<{ raw: string | null; fallbackReason: "disabled" | "timeout" | "error" | undefined }> {
-  const { config, options, distillRunner, messages, effectiveProposalKind, onNotices } = args;
+  const { config, options, distillRunner, lease, messages, effectiveProposalKind, onNotices } = args;
   const distillSchema =
     effectiveProposalKind === "knowledge" ? DISTILL_KNOWLEDGE_JSON_SCHEMA : DISTILL_LESSON_JSON_SCHEMA;
   let fallbackReason: "disabled" | "timeout" | "error" | undefined;
@@ -1420,6 +1437,7 @@ async function runDistillLlmCall(args: {
     // Safe: when the gate is open, distillRunner is defined (guard above); when
     // it is closed, the transport never runs and the runner is never read.
     runner: distillRunner as Extract<RunnerSpec, { kind: "llm" }>,
+    ...(lease ? { lease } : {}),
     messages,
     request:
       options.chat === undefined
@@ -1542,6 +1560,7 @@ async function applyDistillQualityGate(args: {
   assetContent: string | null;
   chat: typeof chatCompletion | undefined;
   distillRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined;
+  lease: LoweredExecutionDispatchLease | undefined;
   fetchSimilarLessonsFn: (query: string, n: number) => Promise<Array<{ ref: string; content: string }>>;
   stash: string;
   inputRef: string;
@@ -1558,6 +1577,7 @@ async function applyDistillQualityGate(args: {
     assetContent,
     chat,
     distillRunner,
+    lease,
     fetchSimilarLessonsFn,
     stash,
     inputRef,
@@ -1575,6 +1595,7 @@ async function applyDistillQualityGate(args: {
   const judgeResult = await runLessonQualityJudge(config, content, assetContent ?? "", chat, {
     ...(similarLessons.length > 0 ? { similarLessons } : {}),
     ...(distillRunner ? { llmRunner: distillRunner } : {}),
+    ...(lease ? { lease } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
     onNotices,
   });

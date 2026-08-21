@@ -27,7 +27,7 @@ import { getStateDbPath } from "../../src/core/state-db";
 import type { AgentRunResult } from "../../src/integrations/agent";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
 import { makeConfig } from "../_helpers/factories";
-import { withEnv } from "../_helpers/sandbox";
+import { mutateScopedEnv, withEnv } from "../_helpers/sandbox";
 
 // ── Test setup ────────────────────────────────────────────────────────────
 //
@@ -511,6 +511,32 @@ describe("drainProposals — judgment tier (llm mode)", () => {
     expect(snapshotTree(stash)).toEqual(before);
     expect(snapshotTree(stateDir)).toEqual(stateBefore);
     expect(fs.existsSync(eventContext.dbPath ?? "")).toBe(false);
+  });
+
+  test("all deferred judgments use the credential captured before drain mutations", async () => {
+    const stash = makeStashDir();
+    const first = seed(stash, "lessons/lease-first", "consolidate", BIG_LESSON);
+    const second = seed(stash, "lessons/lease-second", "consolidate", BIG_LESSON);
+    const secret = "drain-lease-original-092";
+    const runner: RunnerSpec = {
+      ...FAKE_LLM_RUNNER,
+      credential: { names: ["AKM_DRAIN_LEASE_KEY"], required: true },
+    };
+    const observed: Array<string | undefined> = [];
+    const chat = mock(async (dispatched: Extract<RunnerSpec, { kind: "llm" }>) => {
+      observed.push(dispatched.connection.apiKey);
+      if (observed.length === 1) mutateScopedEnv("AKM_DRAIN_LEASE_KEY", undefined);
+      return JSON.stringify({ decision: "reject", reason: "lease fixture" });
+    });
+    const rejectFn = fakeReject();
+
+    const result = await withEnv({ AKM_DRAIN_LEASE_KEY: secret }, () =>
+      drainProposals(baseOpts(stash, { judgment: runner }), fakeAccept(), rejectFn, { chat }),
+    );
+
+    expect(result.rejected.sort()).toEqual([first.id, second.id].sort());
+    expect(observed).toEqual([secret, secret]);
+    expect(rejectFn).toHaveBeenCalledTimes(2);
   });
 
   test("engine accepts a deferred item when the llm verdict is accept", async () => {

@@ -25,7 +25,15 @@ import type { AgentDispatchRequest, AgentRequestLowerer } from "./builder-shared
 import { resolveEngineTransportMaterial } from "./engine-resolution";
 import { SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING } from "./execution-definitions";
 import type { RunnerSpec } from "./runner";
-import { executeRunner, type RunnerSeams } from "./runner-dispatch";
+import {
+  acquireRunnerDispatchLease,
+  assertRunnerDispatchLease,
+  disposeRunnerDispatchLease,
+  executeRunner,
+  type RunnerDispatchLease,
+  type RunnerSeams,
+  redactWithRunnerDispatchLease,
+} from "./runner-dispatch";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "./spawn";
 
 export const EXECUTION_LOWERING_SCHEMA_VERSION = 1 as const;
@@ -71,8 +79,16 @@ export interface DispatchLoweredExecutionOptions {
   readonly onRetryAttempt?: NonNullable<ChatCompletionOptions["onRetryAttempt"]>;
   readonly runAgent?: RunnerSeams["runAgent"];
   readonly runSdk?: RunnerSeams["runSdk"];
+  /** Operation-scoped credential capability acquired after lowering. */
+  readonly lease?: RunnerDispatchLease;
   /** Operational test/cancellation seams; resolved content/argv/env/cwd/timeout cannot be overridden here. */
   readonly runOptions?: Partial<RunAgentOptions>;
+}
+
+export type LoweredExecutionDispatchLease = RunnerDispatchLease;
+
+export interface AcquireLoweredExecutionDispatchLeaseOptions {
+  readonly envSource?: NodeJS.ProcessEnv;
 }
 
 function own(value: object, key: PropertyKey): boolean {
@@ -720,11 +736,7 @@ export function lowerResolvedExecutionRequestWithRunner(
   return base.kind === "llm" ? lowerLlm(request, base) : lowerAgent(request, base);
 }
 
-/** Dispatch a previously lowered request without re-resolving any model, ref, or persona. */
-export async function dispatchLoweredExecutionRequest(
-  lowered: LoweredExecutionRequest,
-  options: DispatchLoweredExecutionOptions = {},
-): Promise<AgentRunResult> {
+function requireLoweredExecutionProvenance(lowered: LoweredExecutionRequest): void {
   if (
     typeof lowered !== "object" ||
     lowered === null ||
@@ -734,16 +746,50 @@ export async function dispatchLoweredExecutionRequest(
     throw new TypeError("lowered execution request must be produced by the engine lowerer registry");
   }
   canonicalResolvedExecutionRequest(lowered.request);
+}
+
+/**
+ * Acquire an opaque operation capability only after genuine lowered-request
+ * provenance and canonical authorization have been revalidated.
+ */
+export function acquireLoweredExecutionDispatchLease(
+  lowered: LoweredExecutionRequest,
+  options: AcquireLoweredExecutionDispatchLeaseOptions = {},
+): LoweredExecutionDispatchLease {
+  requireLoweredExecutionProvenance(lowered);
+  const optionSnapshot = snapshotStrictRecord(options, "dispatch lease acquisition options");
+  assertSnapshotKeys(optionSnapshot, ["envSource"], "dispatch lease acquisition options");
+  const strictOptions = optionSnapshot as unknown as AcquireLoweredExecutionDispatchLeaseOptions;
+  return acquireRunnerDispatchLease(lowered.runner, strictOptions.envSource ?? process.env);
+}
+
+/** Idempotently scrub and invalidate a genuine operation dispatch lease. */
+export function disposeLoweredExecutionDispatchLease(lease: LoweredExecutionDispatchLease): void {
+  disposeRunnerDispatchLease(lease);
+}
+
+/** Redact text with a lease's private credential inventory without exposing it. */
+export function redactWithLoweredExecutionDispatchLease(lease: LoweredExecutionDispatchLease, value: string): string {
+  return redactWithRunnerDispatchLease(lease, value);
+}
+
+/** Dispatch a previously lowered request without re-resolving any model, ref, or persona. */
+export async function dispatchLoweredExecutionRequest(
+  lowered: LoweredExecutionRequest,
+  options: DispatchLoweredExecutionOptions = {},
+): Promise<AgentRunResult> {
+  requireLoweredExecutionProvenance(lowered);
   const optionSnapshot = snapshotStrictRecord(options, "lowered execution dispatch options");
   assertSnapshotKeys(
     optionSnapshot,
-    ["executeRunner", "chat", "onRetryAttempt", "runAgent", "runSdk", "runOptions"],
+    ["executeRunner", "chat", "onRetryAttempt", "runAgent", "runSdk", "lease", "runOptions"],
     "lowered execution dispatch options",
   );
   const strictOptions = optionSnapshot as unknown as DispatchLoweredExecutionOptions;
   if (strictOptions.onRetryAttempt !== undefined && typeof strictOptions.onRetryAttempt !== "function") {
     throw new TypeError("lowered execution dispatch options.onRetryAttempt must be a function");
   }
+  const usesDefaultRunner = strictOptions.executeRunner === undefined;
   const run = strictOptions.executeRunner ?? executeRunner;
   const operationalSnapshot = snapshotStrictRecord(
     strictOptions.runOptions ?? {},
@@ -782,40 +828,55 @@ export async function dispatchLoweredExecutionRequest(
     ...(operational.clearTimeoutFn !== undefined ? { clearTimeoutFn: operational.clearTimeoutFn } : {}),
     ...(operational.onEvent !== undefined ? { onEvent: operational.onEvent } : {}),
   });
-  return run(lowered.runner, lowered.prompt, runOptions, {
-    ...(strictOptions.runAgent ? { runAgent: strictOptions.runAgent } : {}),
-    ...(strictOptions.runSdk ? { runSdk: strictOptions.runSdk } : {}),
-    ...("messages" in lowered
-      ? {
-          llm: async (spec, _prompt, runOptions) => {
-            const started = Date.now();
-            try {
-              const stdout = await (strictOptions.chat ?? chatCompletion)(spec.connection, [...lowered.messages], {
-                ...lowered.chatOptions,
-                ...(!own(lowered.chatOptions, "timeoutMs") && own(runOptions, "timeoutMs")
-                  ? { timeoutMs: runOptions.timeoutMs }
-                  : {}),
-                ...(runOptions.signal ? { signal: runOptions.signal } : {}),
-                ...(strictOptions.onRetryAttempt ? { onRetryAttempt: strictOptions.onRetryAttempt } : {}),
-              });
-              return { ok: true, exitCode: 0, stdout, stderr: "", durationMs: Date.now() - started };
-            } catch (error) {
-              // Return through executeRunner so its credential-aware redactor
-              // handles provider bodies before any caller can persist them.
-              const failure = directLlmFailure(error);
-              return {
-                ok: false,
-                exitCode: null,
-                stdout: "",
-                stderr: "",
-                durationMs: Date.now() - started,
-                error: safeCaughtErrorMessage(error),
-                reason: failure.reason,
-                ...(failure.code ? { llmErrorCode: failure.code } : {}),
-              };
+  const ownedLease = strictOptions.lease === undefined && usesDefaultRunner;
+  const lease =
+    strictOptions.lease ??
+    (ownedLease ? acquireRunnerDispatchLease(lowered.runner, runOptions.envSource ?? process.env) : undefined);
+  if (lease) assertRunnerDispatchLease(lease, lowered.runner);
+  try {
+    return await run(
+      lowered.runner,
+      lowered.prompt,
+      runOptions,
+      {
+        ...(strictOptions.runAgent ? { runAgent: strictOptions.runAgent } : {}),
+        ...(strictOptions.runSdk ? { runSdk: strictOptions.runSdk } : {}),
+        ...("messages" in lowered
+          ? {
+              llm: async (spec, _prompt, runOptions) => {
+                const started = Date.now();
+                try {
+                  const stdout = await (strictOptions.chat ?? chatCompletion)(spec.connection, [...lowered.messages], {
+                    ...lowered.chatOptions,
+                    ...(!own(lowered.chatOptions, "timeoutMs") && own(runOptions, "timeoutMs")
+                      ? { timeoutMs: runOptions.timeoutMs }
+                      : {}),
+                    ...(runOptions.signal ? { signal: runOptions.signal } : {}),
+                    ...(strictOptions.onRetryAttempt ? { onRetryAttempt: strictOptions.onRetryAttempt } : {}),
+                  });
+                  return { ok: true, exitCode: 0, stdout, stderr: "", durationMs: Date.now() - started };
+                } catch (error) {
+                  // Return through executeRunner so its credential-aware redactor
+                  // handles provider bodies before any caller can persist them.
+                  const failure = directLlmFailure(error);
+                  return {
+                    ok: false,
+                    exitCode: null,
+                    stdout: "",
+                    stderr: "",
+                    durationMs: Date.now() - started,
+                    error: safeCaughtErrorMessage(error),
+                    reason: failure.reason,
+                    ...(failure.code ? { llmErrorCode: failure.code } : {}),
+                  };
+                }
+              },
             }
-          },
-        }
-      : {}),
-  });
+          : {}),
+      },
+      lease,
+    );
+  } finally {
+    if (ownedLease && lease) disposeRunnerDispatchLease(lease);
+  }
 }
