@@ -24,7 +24,14 @@
  */
 
 import type { AssetMatcher, FileContext, MatchResult } from "../../indexer/walk/file-context";
-import { directoryMatcher, extensionMatcher, parentDirHintMatcher, smartMdMatcher } from "../../indexer/walk/matchers";
+import {
+  directoryMatcher,
+  extensionMatcher,
+  parentDirHintMatcher,
+  smartMdMatcher,
+  smartMdPathCandidates,
+} from "../../indexer/walk/matchers";
+import type { AdapterPathContext } from "./bundle-adapter";
 
 /**
  * The four builtin matchers, in registration order. The array index IS the
@@ -42,6 +49,16 @@ const AKM_MATCHERS: readonly AssetMatcher[] = [
   smartMdMatcher,
 ];
 
+function winningMatch(hits: Array<{ result: MatchResult; index: number }>): MatchResult | null {
+  if (hits.length === 0) return null;
+  hits.sort((a, b) => {
+    const specDiff = b.result.specificity - a.result.specificity;
+    if (specDiff !== 0) return specDiff;
+    return b.index - a.index;
+  });
+  return hits[0]!.result;
+}
+
 /**
  * Synchronous reproduction of `file-context.ts#runMatchers`'s arbitration
  * (`:242-265`), minus its `ensureBuiltinsRegistered()` dynamic import. Runs
@@ -56,11 +73,25 @@ export function recognizeMatch(file: FileContext): MatchResult | null {
     const result = AKM_MATCHERS[i]!(file);
     if (result !== null) hits.push({ result, index: i });
   }
-  if (hits.length === 0) return null;
-  hits.sort((a, b) => {
-    const specDiff = b.result.specificity - a.result.specificity;
-    if (specDiff !== 0) return specDiff;
-    return b.index - a.index;
+  return winningMatch(hits);
+}
+
+/**
+ * Every AKM matcher winner possible from path fields alone. The three
+ * path-only matchers run exactly as production does; each possible result of
+ * the shared smart-Markdown fact table is then arbitrated at its real index.
+ */
+export function recognizePathCandidateMatches(file: AdapterPathContext): MatchResult[] {
+  const fileContext = file as FileContext;
+  const pathHits = [extensionMatcher, directoryMatcher, parentDirHintMatcher].flatMap((matcher, index) => {
+    const result = matcher(fileContext);
+    return result ? [{ result, index }] : [];
   });
-  return hits[0]!.result;
+  const smartCandidates = smartMdPathCandidates(file);
+  const variants = smartCandidates.length > 0 ? smartCandidates : [undefined];
+  const winners = variants.flatMap((smart) => {
+    const winner = winningMatch(smart ? [...pathHits, { result: smart, index: 3 }] : [...pathHits]);
+    return winner ? [winner] : [];
+  });
+  return [...new Map(winners.map((winner) => [`${winner.type}\0${winner.renderer}`, winner])).values()];
 }

@@ -4,7 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { AdapterReadCandidate, BundleAdapter } from "../../core/adapter/bundle-adapter";
+import type { AdapterPathContext, AdapterReadCandidate, BundleAdapter } from "../../core/adapter/bundle-adapter";
 import { adapterForId } from "../../core/adapter/registry";
 import type { BundleComponent } from "../../core/adapter/types";
 import { isWithin } from "../../core/common";
@@ -17,6 +17,10 @@ import {
 import { buildFileContext, type FileContext } from "../walk/file-context";
 
 const CONTENT_READ_REQUIRED = Symbol("adapter ownership probe requires content");
+const OWNER_SCAN_MAX_DIRECTORIES = 4_096;
+const OWNER_SCAN_MAX_FILES = 16_384;
+const OWNER_SCAN_SKIP_DIRECTORIES = new Set([".git", "node_modules", "bin", ".cache"]);
+const OWNER_SCAN_SKIP_FILES = new Set([".stash.json", ".gitignore", ".gitattributes"]);
 
 export interface AdapterConceptOwner {
   /** Authored path spelling used by index/show/runtime provenance. */
@@ -38,6 +42,14 @@ export class AdapterConceptCollisionError extends AdapterConceptOwnershipError {
       "RESOURCE_ALREADY_EXISTS",
     );
     this.name = "AdapterConceptCollisionError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class AdapterConceptScanError extends AdapterConceptOwnershipError {
+  constructor(adapterId: string, sourcePath: string, detail: string) {
+    super(`Adapter "${adapterId}" could not safely enumerate ${sourcePath}: ${detail}.`, "INVALID_FLAG_VALUE");
+    this.name = "AdapterConceptScanError";
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -146,6 +158,87 @@ function claimsWithoutContent(adapter: BundleAdapter, component: BundleComponent
   }
 }
 
+function adapterPathContext(root: string, authoredPath: string): AdapterPathContext {
+  const file = buildFileContext(root, authoredPath);
+  return {
+    absPath: file.absPath,
+    relPath: file.relPath,
+    ext: file.ext,
+    fileName: file.fileName,
+    parentDir: file.parentDir,
+    parentDirAbs: file.parentDirAbs,
+    ancestorDirs: file.ancestorDirs,
+    stashRoot: file.stashRoot,
+  };
+}
+
+function scanRegularAuthoredPaths(sourcePath: string, realRoot: string, adapterId: string): string[] {
+  const paths: string[] = [];
+  const stack = [path.resolve(sourcePath)];
+  let directories = 0;
+  let files = 0;
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+    directories++;
+    if (directories > OWNER_SCAN_MAX_DIRECTORIES) {
+      throw new AdapterConceptScanError(
+        adapterId,
+        sourcePath,
+        `directory limit ${OWNER_SCAN_MAX_DIRECTORIES} exceeded`,
+      );
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = fs
+        .readdirSync(current, { withFileTypes: true })
+        .sort((left, right) => comparePaths(left.name, right.name));
+    } catch (error) {
+      throw new AdapterConceptScanError(adapterId, sourcePath, `cannot read ${current}: ${String(error)}`);
+    }
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const entry = entries[index];
+      if (!entry) continue;
+      const authoredPath = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (OWNER_SCAN_SKIP_DIRECTORIES.has(entry.name) || entry.name.startsWith(".")) continue;
+        stack.push(authoredPath);
+        continue;
+      }
+      if (!entry.isFile() || OWNER_SCAN_SKIP_FILES.has(entry.name)) continue;
+      files++;
+      if (files > OWNER_SCAN_MAX_FILES) {
+        throw new AdapterConceptScanError(adapterId, sourcePath, `file limit ${OWNER_SCAN_MAX_FILES} exceeded`);
+      }
+      let realPath: string;
+      try {
+        realPath = fs.realpathSync(authoredPath);
+      } catch {
+        continue;
+      }
+      if (isWithin(realPath, realRoot)) paths.push(authoredPath);
+    }
+  }
+  return paths.sort(comparePaths);
+}
+
+function scannedReadCandidates(
+  adapter: BundleAdapter,
+  component: BundleComponent,
+  sourcePath: string,
+  realRoot: string,
+  conceptId: string,
+): AdapterReadCandidate[] {
+  const recognizePathCandidates = adapter.recognizePathCandidates;
+  if (!recognizePathCandidates) return [];
+  return scanRegularAuthoredPaths(sourcePath, realRoot, adapter.id).flatMap((authoredPath) =>
+    recognizePathCandidates(component, adapterPathContext(sourcePath, authoredPath)).flatMap((candidateConceptId) =>
+      candidateConceptId === conceptId ? [{ path: authoredPath, conceptId: candidateConceptId }] : [],
+    ),
+  );
+}
+
 /**
  * Resolve one adapter/component's exact physical concept owner without reading
  * authored bytes. Native workflow arbitration is reused verbatim; every other
@@ -161,32 +254,40 @@ export function resolveAdapterConceptOwner(
   const normalized = normalizedConceptId(conceptId);
   if (!adapter || !normalized) return undefined;
 
-  const workflowName = workflowNameForConceptId(adapterId, normalized);
-  if (workflowName !== undefined) {
-    const workflowSource = resolveUniqueWorkflowSource(sourcePath, adapterId, workflowName);
-    if (!workflowSource) return undefined;
-    const canonicalConceptId =
-      adapterId === "akm" ? `workflows/${workflowSource.canonicalName}` : workflowSource.canonicalName;
-    return {
-      path: workflowSource.path,
-      realPath: workflowSource.realPath,
-      conceptId: canonicalConceptId,
-      adapterId,
-      workflowSource,
-    };
-  }
-  if (!adapter.readCandidates) return undefined;
-
   let realRoot: string;
   try {
     realRoot = fs.realpathSync(sourcePath);
   } catch {
     return undefined;
   }
+
   const component = componentFor(sourcePath, adapterId);
-  const spellings = adapter
-    .readCandidates(component, normalized)
-    .flatMap((candidate) => candidateSpellings(candidate, sourcePath, realRoot));
+  const ownersByIdentity = new Map<string, AdapterConceptOwner>();
+
+  const workflowName = workflowNameForConceptId(adapterId, normalized);
+  if (workflowName !== undefined) {
+    const workflowSource = resolveUniqueWorkflowSource(sourcePath, adapterId, workflowName);
+    if (workflowSource) {
+      const canonicalConceptId =
+        adapterId === "akm" ? `workflows/${workflowSource.canonicalName}` : workflowSource.canonicalName;
+      const workflowOwner = {
+        path: workflowSource.path,
+        realPath: workflowSource.realPath,
+        conceptId: canonicalConceptId,
+        adapterId,
+        workflowSource,
+      };
+      ownersByIdentity.set(`${path.resolve(workflowOwner.path)}\0${canonicalConceptId}`, workflowOwner);
+    }
+  }
+
+  const directSpellings = (adapter.readCandidates?.(component, normalized) ?? []).flatMap((candidate) =>
+    candidateSpellings(candidate, sourcePath, realRoot),
+  );
+  const spellings = [
+    ...directSpellings,
+    ...scannedReadCandidates(adapter, component, sourcePath, realRoot, normalized),
+  ];
   const inspected = [
     ...new Map(
       spellings.map((candidate) => [`${path.resolve(candidate.path)}\0${candidate.conceptId}`, candidate]),
@@ -197,9 +298,13 @@ export function resolveAdapterConceptOwner(
       const owner = inspectCandidate(sourcePath, realRoot, adapterId, candidate);
       return owner ? [owner] : [];
     });
-  const owners = inspected.filter(
-    (candidate) => candidate.conceptId === normalized && claimsWithoutContent(adapter, component, candidate),
-  );
+  for (const candidate of inspected) {
+    if (candidate.conceptId !== normalized) continue;
+    const identity = `${path.resolve(candidate.path)}\0${candidate.conceptId}`;
+    if (ownersByIdentity.has(identity)) continue;
+    if (claimsWithoutContent(adapter, component, candidate)) ownersByIdentity.set(identity, candidate);
+  }
+  const owners = [...ownersByIdentity.values()].filter((owner) => owner.conceptId === normalized);
   if (owners.length > 1) {
     throw new AdapterConceptCollisionError(
       adapterId,

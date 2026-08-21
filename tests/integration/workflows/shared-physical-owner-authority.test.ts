@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { showLocal } from "../../../src/commands/read/show";
+import { opencodeAdapter } from "../../../src/core/adapter/adapters";
 import { parseBundleRef } from "../../../src/core/asset/asset-ref";
 import { resetConfigCache } from "../../../src/core/config/config";
 import { getDbPath } from "../../../src/core/paths";
@@ -131,6 +132,89 @@ const nonExtensionHintShapes = [
 ] as const;
 
 describe("shared adapter physical-owner authority", () => {
+  test.each([
+    "complete",
+    "missing",
+    "incomplete",
+    "stale",
+  ] as const)("loose AKM smart-Markdown remains the first owner with a %s row", async (state) => {
+    const early = fixture(`early-loose-command-${state}`, "akm");
+    const later = fixture(`later-loose-command-${state}`, "akm-workflow");
+    const earlyPath = write(early.root, "same.md", "Use $ARGUMENTS exactly.\n");
+    const laterPath = write(later.root, "commands/same.md", getWorkflowTemplate());
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+    mutateEntry("early//commands/same", state, path.join(early.root, "stale", "same.md"));
+
+    const found = await lookupBundleRef(parseBundleRef("commands/same"));
+    if (state === "complete") expect(found).toMatchObject({ filePath: earlyPath, conceptId: "commands/same" });
+    else expect(found).toBeNull();
+    expect((await showLocal({ ref: "commands/same" })).path).toBe(earlyPath);
+    expect(await lookupBundleRef(parseBundleRef("later//commands/same"))).toMatchObject({ filePath: laterPath });
+  });
+
+  test("show reuses lookup's physical-owner resolution instead of probing the source twice", async () => {
+    const early = fixture("early-single-owner-pass", "opencode");
+    const later = fixture("later-single-owner-pass", "akm-workflow");
+    const earlyPath = write(early.root, "skill/once/SKILL.md", skill("once"));
+    write(later.root, "skill/once.md", getWorkflowTemplate());
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+    mutateEntry("early//skill/once", "missing", "");
+
+    const candidateSpy = spyOn(opencodeAdapter, "readCandidates");
+    try {
+      expect((await showLocal({ ref: "skill/once" })).path).toBe(earlyPath);
+      expect(candidateSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      candidateSpy.mockRestore();
+    }
+  });
+
+  test.each([
+    ["load", "complete"],
+    ["start", "missing"],
+    ["run", "incomplete"],
+    ["load", "stale"],
+  ] as const)("%s rejects a loose AKM command owner with a %s row before mutation", async (surface, state) => {
+    const early = fixture(`early-loose-runtime-${surface}-${state}`, "akm");
+    const later = fixture(`later-loose-runtime-${surface}-${state}`, "akm-workflow");
+    const earlyPath = write(early.root, "same.md", "Use $ARGUMENTS exactly.\n");
+    const laterPath = write(later.root, "commands/same.md", getWorkflowTemplate());
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+    mutateEntry("early//commands/same", state, path.join(early.root, "stale", "same.md"));
+    await listWorkflowRuns();
+    const stateBefore = fs.readFileSync(getStateDbPath());
+    const cacheBefore = workflowDocumentSnapshot();
+    let dispatches = 0;
+
+    const readSpy = denyAssetRead(earlyPath);
+    try {
+      const operation =
+        surface === "load"
+          ? loadWorkflowAsset("commands/same")
+          : surface === "start"
+            ? startWorkflowRun("commands/same")
+            : runWorkflowSteps({
+                target: "commands/same",
+                summaryJudge: null,
+                dispatcher: async () => {
+                  dispatches++;
+                  return { ok: true as const, text: "unexpected" };
+                },
+              });
+      await expect(operation).rejects.toThrow(/adapter "akm".*does not support native workflow execution/i);
+    } finally {
+      readSpy.mockRestore();
+    }
+    expect(dispatches).toBe(0);
+    expect(fs.readFileSync(getStateDbPath())).toEqual(stateBefore);
+    expect(workflowDocumentSnapshot()).toEqual(cacheBefore);
+    expect((await listWorkflowRuns()).runs).toHaveLength(0);
+    expect((await loadWorkflowAsset("later//commands/same")).path).toBe(laterPath);
+  });
+
   test.each([
     ".md",
     ".markdown",

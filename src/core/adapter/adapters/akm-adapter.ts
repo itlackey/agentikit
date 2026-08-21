@@ -99,9 +99,9 @@ import {
 } from "../../asset/asset-placement";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { FileChange } from "../../file-change";
-import type { BundleAdapter } from "../bundle-adapter";
+import type { AdapterPathContext, BundleAdapter } from "../bundle-adapter";
 import { executionDefaultsFromFrontmatter, renderMarkdownExecutionSource } from "../execution-source";
-import { recognizeMatch } from "../recognize-match";
+import { recognizeMatch, recognizePathCandidateMatches } from "../recognize-match";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
 import { perTypeValidateChecks, skillDirectoryDiagnostics } from "./akm-lint";
 import { applyFoldedMetadata, foldRecognizedMetadata } from "./akm-metadata";
@@ -259,6 +259,21 @@ function indexDocumentFromEntry(
   return doc;
 }
 
+function conceptIdForRecognizedType(root: string, filePath: string, type: string): string | undefined {
+  const canonicalName = deriveCanonicalAssetNameFromStashRoot(type, root, filePath);
+  if (canonicalName === undefined) return undefined;
+  const stashDir = stashDirFor(type);
+  return stashDir !== undefined ? `${stashDir}/${canonicalName}` : canonicalName;
+}
+
+function recognizePathCandidates(c: BundleComponent, file: AdapterPathContext): readonly string[] {
+  if (isReservedFileName(file.fileName) || akmStashAbstains(c.root, file.absPath)) return [];
+  return recognizePathCandidateMatches(file).flatMap((match) => {
+    const conceptId = conceptIdForRecognizedType(c.root, file.absPath, match.type);
+    return conceptId === undefined ? [] : [conceptId];
+  });
+}
+
 function recognize(c: BundleComponent, file: FileContext): IndexDocument | null {
   // D-R6 (spec §5.1): `index.md` / `log.md` are OKF reserved structural files at
   // every depth — never items. Excluded BEFORE classification so a directory
@@ -272,9 +287,10 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   if (match === null) return null;
   // Canonical name = the winning type's per-type canonical name (§5.1).
   // Invalid placements are not projected onto a different identity.
-  const derived = deriveCanonicalAssetNameFromStashRoot(match.type, c.root, file.absPath);
-  if (derived === undefined) return null;
-  const canonicalName = derived;
+  const conceptId = conceptIdForRecognizedType(c.root, file.absPath, match.type);
+  if (conceptId === undefined) return null;
+  const stashDir = stashDirFor(match.type);
+  const canonicalName = stashDir !== undefined ? conceptId.slice(stashDir.length + 1) : conceptId;
   // conceptId = the QUALIFIED `<stash-subdir>/<canonical-name>` spelling
   // (ref-grammar decision D-R2): the same form `placeNew` consumes, and for
   // markdown types the OKF concept ID (path − .md). Both branches now feed a
@@ -283,8 +299,6 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   // `skills/x`, never the un-prefixed `x` or the double-prefixed
   // `skills/skills/x`. `entry.name` below keeps the BARE canonical name —
   // identity ≠ search text.
-  const stashDir = stashDirFor(match.type);
-  const conceptId = stashDir !== undefined ? `${stashDir}/${canonicalName}` : canonicalName;
   const dirPath = path.dirname(file.absPath);
 
   // Chunk 5 M-b: recognize now carries the FULL index-time metadata surface
@@ -503,6 +517,7 @@ export const akmAdapter: BundleAdapter = {
   ],
 
   recognize,
+  recognizePathCandidates,
   renderExecutionSource,
   validate,
 

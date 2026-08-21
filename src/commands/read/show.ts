@@ -37,8 +37,8 @@ import type { LoweringNotice } from "../../execution/resolved-request";
 import { hasGraphData } from "../../indexer/db/graph-db";
 import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
 import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction";
-import { lookupBundleRef } from "../../indexer/indexer";
-import { AdapterConceptOwnershipError, resolveAdapterConceptOwner } from "../../indexer/lookup/adapter-concept-owner";
+import { lookupBundleRef, lookupBundleRefWithResolution } from "../../indexer/indexer";
+import { AdapterConceptOwnershipError } from "../../indexer/lookup/adapter-concept-owner";
 import type { StashEntryScope } from "../../indexer/passes/metadata";
 import { ensurePrimaryIndexForRead, resolveReadSources } from "../../indexer/read-preflight";
 import {
@@ -232,8 +232,11 @@ export async function showLocal(input: {
   const allSourceDirs = searchSources.map((s) => s.path);
 
   let indexedEntry: Awaited<ReturnType<typeof lookupBundleRef>> = null;
+  let physicalAssetPath: string | undefined;
   try {
-    indexedEntry = await lookupBundleRef(parsed);
+    const resolution = await lookupBundleRefWithResolution(parsed);
+    indexedEntry = resolution.entry;
+    physicalAssetPath = resolution.owner?.path;
   } catch (err) {
     rethrowIfTestIsolationError(err);
     if (
@@ -244,16 +247,6 @@ export async function showLocal(input: {
       throw err;
     }
     indexedEntry = null;
-  }
-  let physicalAssetPath: string | undefined;
-  if (!indexedEntry) {
-    for (const source of searchSources) {
-      const adapterId = source.adapterId ?? detectAdapterId(source.path);
-      const owner = resolveAdapterConceptOwner(source.path, adapterId, parsed.conceptId);
-      if (!owner) continue;
-      physicalAssetPath = owner.path;
-      break;
-    }
   }
   const resolvedAssetPath = indexedEntry?.filePath ?? physicalAssetPath;
   const assetPath = resolvedAssetPath ?? undefined;

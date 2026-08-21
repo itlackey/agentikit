@@ -34,7 +34,7 @@ import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { assetPathForName, typeForStashDir } from "../../asset/asset-placement";
 import type { FileChange } from "../../file-change";
-import type { BundleAdapter } from "../bundle-adapter";
+import type { AdapterPathContext, BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
 import { dangerousEnvKeyDiagnostics } from "./akm-lint";
 import { hashContent } from "./shared";
@@ -107,6 +107,19 @@ function scanKeyNames(raw: string): string[] {
   return keys;
 }
 
+function conceptIdForPath(type: DotenvType, relativePath: string): string {
+  const posix = toPosix(relativePath);
+  if (type === "secret") return posix;
+  const stripped = posix.replace(/\.env$/i, "");
+  return stripped.endsWith("/") ? `${stripped}default` : stripped;
+}
+
+function recognizePathCandidates(_c: BundleComponent, file: AdapterPathContext): readonly string[] {
+  const type = classify(file.relPath);
+  if (type === null || hasSensitiveMarker(file.absPath, type)) return [];
+  return [conceptIdForPath(type, file.relPath)];
+}
+
 function recognize(c: BundleComponent, file: FileContext): IndexDocument | null {
   const type = classify(file.relPath);
   if (type === null) return null;
@@ -116,8 +129,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
 
   if (type === "env") {
     // env: strip `.env`; surface KEY NAMES only (never values/comments/content).
-    const stripped = posix.replace(/\.env$/i, "");
-    const conceptId = stripped.endsWith("/") ? `${stripped}default` : stripped;
+    const conceptId = conceptIdForPath(type, posix);
     const name = (conceptId.split("/").pop() ?? conceptId) || "default";
     const keys = scanKeyNames(raw);
     const doc: IndexDocument = {
@@ -170,6 +182,7 @@ export const dotenvAdapter: BundleAdapter = {
   extensions: [".env"],
 
   recognize,
+  recognizePathCandidates,
   validate,
 
   readCandidates(c: BundleComponent, conceptId: string) {

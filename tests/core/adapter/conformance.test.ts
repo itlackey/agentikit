@@ -41,7 +41,7 @@
  * `scanComponent` module used to carry (owner ruling 2026-07-21).
  */
 
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -348,6 +348,119 @@ describe("conformance — read candidates and recognition are two-way canonical 
       fs.writeFileSync(nested, "---\nname: nested\ndescription: nested\n---\n");
       expect(opencodeAdapter.recognize(toolComponent, buildFileContext(toolRoot, nested))).toBeNull();
       expect(opencodeAdapter.readCandidates?.(toolComponent, "skills/pkg/nested")).toEqual([]);
+    } finally {
+      sandbox.cleanup();
+    }
+  });
+
+  test("real recognition mechanically resolves every noncanonical AKM omission and nested dotenv default without bytes", () => {
+    const sandbox = sandboxStashDir();
+    try {
+      const akmRoot = path.join(sandbox.dir, "akm");
+      const dotenvRoot = path.join(sandbox.dir, "dotenv");
+      fs.mkdirSync(akmRoot, { recursive: true });
+      fs.mkdirSync(dotenvRoot, { recursive: true });
+      const authored = [
+        ["same.md", "Use $ARGUMENTS exactly.\n"],
+        ["loose-workflow.md", "---\ntype: workflow\n---\n\n# Loose workflow\n"],
+        ["loose-tools-agent.md", "---\ntools: [Read]\n---\n\n# Loose tools agent\n"],
+        ["loose-agent-command.md", "---\nagent: planner\n---\n\n# Loose agent command\n"],
+        ["loose-model-agent.md", "---\nmodel: local\n---\n\n# Loose model agent\n"],
+        ["loose-knowledge.md", "# Loose knowledge\n"],
+        ["vendor/commands/deploy.md", "# Deploy\n"],
+        ["workflows/README.md", "# Workflow documentation\n"],
+        ["foreign/package/SKILL.md", "---\nname: package\ndescription: package\n---\n"],
+        ["foreign/run.PY", "print('ok')\n"],
+        ["foreign/tasks/nightly.YML", "schedule: '* * * * *'\nprompt: hello\n"],
+        ["foreign/workflows/release.MD", "---\ntype: workflow\n---\n\n# Release\n"],
+        ["env/team/.env", "TOKEN=hidden\n"],
+      ] as const;
+      const expected: Array<{ adapterId: string; root: string; path: string; conceptId: string }> = [];
+      const akmComponent = component("akm", "akm", akmRoot);
+      for (const [relativePath, content] of authored) {
+        const filePath = path.join(akmRoot, relativePath);
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, content);
+        const document = akmAdapter.recognize(akmComponent, buildFileContext(akmRoot, filePath));
+        expect(document?.conceptId, relativePath).toBeDefined();
+        if (!document?.conceptId) throw new Error(`Expected AKM recognition for ${relativePath}`);
+        expected.push({ adapterId: "akm", root: akmRoot, path: filePath, conceptId: document.conceptId });
+      }
+
+      const nestedDefault = path.join(dotenvRoot, "env", "team", ".env");
+      fs.mkdirSync(path.dirname(nestedDefault), { recursive: true });
+      fs.writeFileSync(nestedDefault, "TOKEN=hidden\n");
+      const dotenvDocument = dotenvAdapter.recognize(
+        component("dotenv", "dotenv", dotenvRoot),
+        buildFileContext(dotenvRoot, nestedDefault),
+      );
+      expect(dotenvDocument?.conceptId).toBe("env/team/default");
+      if (!dotenvDocument?.conceptId) throw new Error("Expected nested dotenv default recognition");
+      expected.push({
+        adapterId: "dotenv",
+        root: dotenvRoot,
+        path: nestedDefault,
+        conceptId: dotenvDocument.conceptId,
+      });
+
+      const protectedPaths = new Set(expected.map((entry) => path.resolve(entry.path)));
+      const originalRead = fs.readFileSync;
+      const readSpy = spyOn(fs, "readFileSync").mockImplementation(((candidate, options) => {
+        if (protectedPaths.has(path.resolve(String(candidate)))) {
+          throw new Error(`owner resolution must not read ${candidate}`);
+        }
+        return originalRead(candidate, options as never);
+      }) as typeof fs.readFileSync);
+      try {
+        for (const entry of expected) {
+          expect(
+            resolveAdapterConceptOwner(entry.root, entry.adapterId, entry.conceptId),
+            entry.conceptId,
+          ).toMatchObject({
+            path: entry.path,
+            conceptId: entry.conceptId,
+          });
+        }
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      for (const entry of expected) {
+        const adapter = adapterForId(entry.adapterId)!;
+        expect(
+          adapter.recognize(
+            component(entry.adapterId, entry.adapterId, entry.root),
+            buildFileContext(entry.root, entry.path),
+          )?.conceptId,
+          entry.path,
+        ).toBe(entry.conceptId);
+      }
+    } finally {
+      sandbox.cleanup();
+    }
+  });
+
+  test("a loose smart-Markdown owner collides with its canonical AKM placement without reading either file", () => {
+    const sandbox = sandboxStashDir();
+    try {
+      const root = path.join(sandbox.dir, "akm");
+      const loose = path.join(root, "same.md");
+      const canonical = path.join(root, "commands", "same.md");
+      fs.mkdirSync(path.dirname(canonical), { recursive: true });
+      fs.writeFileSync(loose, "Use $ARGUMENTS exactly.\n");
+      fs.writeFileSync(canonical, "# Same command\n");
+      const originalRead = fs.readFileSync;
+      const readSpy = spyOn(fs, "readFileSync").mockImplementation(((candidate, options) => {
+        if ([loose, canonical].some((entry) => path.resolve(entry) === path.resolve(String(candidate)))) {
+          throw new Error(`owner resolution must not read ${candidate}`);
+        }
+        return originalRead(candidate, options as never);
+      }) as typeof fs.readFileSync);
+      try {
+        expect(() => resolveAdapterConceptOwner(root, "akm", "commands/same")).toThrow(AdapterConceptCollisionError);
+      } finally {
+        readSpy.mockRestore();
+      }
     } finally {
       sandbox.cleanup();
     }

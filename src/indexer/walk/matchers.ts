@@ -14,6 +14,8 @@ import { SCRIPT_EXTENSIONS } from "../../core/recognition-util";
 import { presentationFor } from "../../core/type-presentation";
 import type { FileContext, MatchResult } from "./file-context";
 
+export type PathFileContext = Omit<FileContext, "content" | "frontmatter" | "stat">;
+
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
@@ -124,6 +126,13 @@ const DIR_TYPE_MAP: DirTypeRule[] = [
 ];
 
 const COMMAND_PLACEHOLDER_RE = /\$ARGUMENTS|\$[123]\b/;
+const SMART_MD_FACTS = {
+  workflow: { type: "workflow", specificity: 19 },
+  toolsAgent: { type: "agent", specificity: 20 },
+  command: { type: "command", specificity: 18 },
+  modelAgent: { type: "agent", specificity: 8 },
+  knowledge: { type: "knowledge", specificity: 5 },
+} as const satisfies Record<string, MatchFact>;
 
 // Files that should never be treated as the typed asset for the surrounding
 // directory (e.g. `workflows/README.md` is documentation, not a workflow).
@@ -209,7 +218,7 @@ function classifyBySmartMd(ctx: FileContext): MatchFact | null {
   // body shape would otherwise classify (e.g. step-list inside a project
   // README under workflows/). Fall straight through to `knowledge`.
   if (isTypedDirDocFile(ctx.fileName)) {
-    return { type: "knowledge", specificity: 5 };
+    return SMART_MD_FACTS.knowledge;
   }
 
   const body = ctx.content();
@@ -221,30 +230,30 @@ function classifyBySmartMd(ctx: FileContext): MatchFact | null {
   // this only catches a workflow living OUTSIDE `workflows/` that still
   // declares its type explicitly.
   if (fm && fm.type === "workflow") {
-    return { type: "workflow", specificity: 19 };
+    return SMART_MD_FACTS.workflow;
   }
 
   if (fm) {
     // `tools` is the one authoring key for an agent's tool grant. Recognition
     // covers only the key the renderer honors.
     if ("tools" in fm) {
-      return { type: "agent", specificity: 20 };
+      return SMART_MD_FACTS.toolsAgent;
     }
 
     if ("agent" in fm) {
-      return { type: "command", specificity: 18 };
+      return SMART_MD_FACTS.command;
     }
   }
 
   if (COMMAND_PLACEHOLDER_RE.test(body)) {
-    return { type: "command", specificity: 18 };
+    return SMART_MD_FACTS.command;
   }
 
   if (fm && "model" in fm) {
-    return { type: "agent", specificity: 8 };
+    return SMART_MD_FACTS.modelAgent;
   }
 
-  return { type: "knowledge", specificity: 5 };
+  return SMART_MD_FACTS.knowledge;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +262,10 @@ function classifyBySmartMd(ctx: FileContext): MatchFact | null {
 
 function toMatchResult(ctx: FileContext, classify: (ctx: FileContext) => MatchFact | null): MatchResult | null {
   const fact = classify(ctx);
-  if (!fact) return null;
+  return fact ? matchResultForFact(fact) : null;
+}
+
+function matchResultForFact(fact: MatchFact): MatchResult | null {
   // Renderer name resolved via TYPE_PRESENTATION (core leaf), so matchers.ts
   // carries no edge into the taxonomy SCC (chunk-3 cutover enabler).
   // TYPE_PRESENTATION.renderer is the single source of truth for renderer names.
@@ -265,6 +277,28 @@ function toMatchResult(ctx: FileContext, classify: (ctx: FileContext) => MatchFa
     renderer,
     ...(fact.meta ? { meta: fact.meta } : {}),
   };
+}
+
+/**
+ * Every smart-Markdown result possible from path fields alone. The actual
+ * classifier above returns only facts from this shared table, so owner
+ * discovery can conservatively model a byte request without reading bytes.
+ */
+export function smartMdPathCandidates(ctx: PathFileContext): MatchResult[] {
+  if (ctx.ext !== ".md" || ctx.ancestorDirs.includes("secrets")) return [];
+  const facts = isTypedDirDocFile(ctx.fileName)
+    ? [SMART_MD_FACTS.knowledge]
+    : [
+        SMART_MD_FACTS.workflow,
+        SMART_MD_FACTS.toolsAgent,
+        SMART_MD_FACTS.command,
+        SMART_MD_FACTS.modelAgent,
+        SMART_MD_FACTS.knowledge,
+      ];
+  return facts.flatMap((fact) => {
+    const result = matchResultForFact(fact);
+    return result ? [result] : [];
+  });
 }
 
 // ---------------------------------------------------------------------------

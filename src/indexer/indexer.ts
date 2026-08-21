@@ -105,7 +105,11 @@ import { assertIndexedWorkflowSourceIdentity, WorkflowSourceIdentityError } from
 import { deleteStoredGraph } from "./db/graph-db";
 import { withIndexWriterLease } from "./index-writer-lock";
 import { deriveEntryProvenance, deriveInstallations } from "./installations";
-import { indexedPathMatchesOwner, resolveAdapterConceptOwner } from "./lookup/adapter-concept-owner";
+import {
+  type AdapterConceptOwner,
+  indexedPathMatchesOwner,
+  resolveAdapterConceptOwner,
+} from "./lookup/adapter-concept-owner";
 import {
   canUseIncrementalSkip,
   computeDirFingerprint,
@@ -2618,6 +2622,14 @@ export interface IndexEntry {
   conceptId: string;
 }
 
+export interface BundleRefLookupResolution {
+  entry: IndexEntry | null;
+  /** First physical owner, retained even when its index row is absent/stale. */
+  owner?: AdapterConceptOwner;
+  /** Deferred index failure for callers (such as show) that can use owner.path. */
+  indexError?: unknown;
+}
+
 async function resolveLookupSources(): Promise<SearchSource[]> {
   const { loadConfig } = await import("../core/config/config.js");
   const { resolveSourceEntries } = await import("./search/search-source.js");
@@ -2632,23 +2644,32 @@ function resolveLookupScope(
   return { candidateSources: resolveSourcesForOrigin(bundle, sources), qualified: true };
 }
 
-/** Resolve an adapter-owned `[bundle//]conceptId` without interpreting its path as an AKM type. */
-export async function lookupBundleRef(ref: BundleRef): Promise<IndexEntry | null> {
+/**
+ * Resolve index and physical ownership together. The owner detail lets disk
+ * show reuse this exact arbitration instead of probing the same source again.
+ */
+export async function lookupBundleRefWithResolution(ref: BundleRef): Promise<BundleRefLookupResolution> {
   const sources = await resolveLookupSources();
-  if (sources.length === 0) return null;
+  if (sources.length === 0) return { entry: null };
 
   const { candidateSources, qualified } = resolveLookupScope(ref.bundle, sources);
-  if (candidateSources.length === 0) return null;
+  if (candidateSources.length === 0) return { entry: null };
 
-  const db = openExistingDatabase(getDbPath());
+  let db: Database | undefined;
+  let indexError: unknown;
+  try {
+    db = openExistingDatabase(getDbPath());
+  } catch (error) {
+    indexError = error;
+  }
   try {
     for (const source of candidateSources) {
       const adapterId = source.adapterId ?? detectAdapterId(source.path);
       const owner = resolveAdapterConceptOwner(source.path, adapterId, ref.conceptId);
       const lookupConceptId = owner?.conceptId ?? ref.conceptId;
       const inputRef = makeBundleRef(qualified ? ref.bundle : undefined, lookupConceptId);
-      const id = findEntryIdByRef(db, inputRef, source.path);
-      if (id !== undefined && owner) {
+      const id = db ? findEntryIdByRef(db, inputRef, source.path) : undefined;
+      if (id !== undefined && owner && db) {
         const entry = readLookupEntry(db, id, ref.conceptId);
         if (entry) {
           if (owner.workflowSource) {
@@ -2657,20 +2678,27 @@ export async function lookupBundleRef(ref: BundleRef): Promise<IndexEntry | null
               throw new WorkflowSourceIdentityError(inputRef, entry.filePath, owner.path);
             }
           } else if (entry.adapterId !== adapterId || !indexedPathMatchesOwner(entry.filePath, owner)) {
-            return null;
+            return { entry: null, owner, ...(indexError === undefined ? {} : { indexError }) };
           }
-          return entry;
+          return { entry, owner, ...(indexError === undefined ? {} : { indexError }) };
         }
       }
 
       // A physical owner with a missing/incomplete index row still owns this
       // unqualified concept. Stop here so a later source cannot retarget it.
-      if (owner) return null;
+      if (owner) return { entry: null, owner, ...(indexError === undefined ? {} : { indexError }) };
     }
-    return null;
+    return { entry: null, ...(indexError === undefined ? {} : { indexError }) };
   } finally {
-    closeDatabase(db);
+    if (db) closeDatabase(db);
   }
+}
+
+/** Resolve an adapter-owned `[bundle//]conceptId` without interpreting its path as an AKM type. */
+export async function lookupBundleRef(ref: BundleRef): Promise<IndexEntry | null> {
+  const resolution = await lookupBundleRefWithResolution(ref);
+  if (resolution.indexError !== undefined) throw resolution.indexError;
+  return resolution.entry;
 }
 
 function readLookupEntry(db: Database, id: number, fallbackConceptId: string): IndexEntry | null {

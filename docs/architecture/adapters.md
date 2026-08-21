@@ -100,6 +100,10 @@ interface BundleAdapter {
   // first-owner arbitration without reading authored bytes.
   readCandidates?(c: BundleComponent, conceptId: string): Array<{ path: string; conceptId: string }>;
 
+  // OPTIONAL — path-only identities for placements that cannot be inverted
+  // from a concept id. The context exposes no byte-reading methods.
+  recognizePathCandidates?(c: BundleComponent, file: AdapterPathContext): readonly string[];
+
   // OPTIONAL — placement / discovery.
   placeNew?(c: BundleComponent, conceptId: string): string;   // where a new item would live
   directoryList?(c: BundleComponent): string[];               // owned dirs; feeds git exact-path staging
@@ -108,7 +112,7 @@ interface BundleAdapter {
 ```
 
 `recognize` and `validate` are required on every adapter; `index`,
-`affectedItems`, `readCandidates`, `placeNew`, `directoryList`, and
+`affectedItems`, `readCandidates`, `recognizePathCandidates`, `placeNew`, `directoryList`, and
 `looksLikeRoot` are optional capability methods. An adapter overriding `index()` must keep
 `recognize()` coherent with it (conformance: `index()` == fold of
 `recognize()` over the core walk) or declare component-level
@@ -121,6 +125,14 @@ directory manifests (for example OpenCode's singular `skill/` and
 `<name>/SKILL.md`) so lookup, disk show, and workflow runtime share one
 physical-owner decision. Each candidate carries its canonical concept identity,
 so a byte-denying ownership probe never has to infer identity from the query.
+When an adapter accepts noncanonical authored placements that cannot be
+inverted from the concept id, `recognizePathCandidates` supplies the possible
+canonical identities from path fields alone. The shared authority performs one
+contained, deterministic regular-file scan with hard file/directory ceilings,
+never follows directory symlinks, and matches those identities to the query.
+Content-dependent recognition may conservatively report multiple possible
+identities; authored bytes are still denied until the selected show/runtime
+consumer intentionally reads its resolved file.
 
 The core walk — the live indexer's per-dir walk, drained by
 `drainDirDocuments` — is one implementation carrying the security policy
