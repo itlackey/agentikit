@@ -22,6 +22,24 @@ In every case the receiving endpoint is one you configured or invoked; the data 
 
 ---
 
+## Dry runs and diagnostic output
+
+Command dry-run is an intentionally zero-write diagnostic.
+A command dry-run does not mutate or write authored source.
+A command dry-run does not mutate or write durable state.
+A command dry-run records no usage.
+A command dry-run emits no events.
+A command dry-run performs no accounting.
+
+`akm command run --dry-run` still reads the selected source and configuration,
+performs authorization, and lowers a request. It does not dispatch or
+materialize credentials. Its output contains only safe field provenance and
+fixed lowering notices; resolved prompt, command, environment, endpoint,
+model, and credential values are excluded. Live `--verbose` writes the same
+safe diagnostic metadata to stderr while preserving normal stdout.
+
+---
+
 ## Local On-Disk Surface
 
 AKM writes to these locations on your machine. All paths follow [XDG Base Directory](https://specifications.freedesktop.org/basedir-spec/latest/) conventions on Linux/macOS and Windows conventions on Windows.

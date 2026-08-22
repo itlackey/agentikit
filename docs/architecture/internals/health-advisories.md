@@ -13,7 +13,10 @@ and whether to act. Some `warn`s below are *adjudicated, expected* states — tr
 | `task-log-backing` | task_history rows reference log files missing on disk. | Logs were pruned/moved out from under the DB; safe to ignore if intentional, else restore the log dir. |
 | `active-runs` | A task run has exceeded the stale threshold (>15 min). | Inspect with `akm task history`; a lane is likely wedged — kill/re-run it. |
 | `default-engine` | The configured general default agent, SDK, or LLM engine is missing or incomplete. | Correct `defaults.engine`; SDK operation requires the `opencode` binary on PATH (the npm SDK is an HTTP client and spawns `opencode serve`), while a fallback LLM is checked only when configured. |
+| `model-map-files` | The installed or optional user `models.json` is missing, unreadable, or invalid. | Repair the installation for an installed-map failure; remove or correct the user overlay for a warning. |
+| `selected-model-aliases` | A known selected alias lacks a mapping for its selected engine. Unknown model strings remain exact pass-through identifiers. | Add the missing alias/engine entry or select an exact model ID. |
 | `default-llm-engine` | The independently configured LLM default is missing, incompatible, or lacks a required credential. | Correct `defaults.llmEngine`, its connection, and any symbolic credential binding. |
+| `configured-engines` | Checks every explicitly configured engine and aggregates its deterministic availability. | Repair engines whose safe status is `warn`; no configured engines yields `unknown`. |
 | `active-improve-strategy` | An enabled process in the effective improve strategy cannot resolve its engine or required credential. | Inspect the named unavailable process, then correct its process override, strategy triage engine, SDK fallback, or default LLM. |
 | `task-fail-rate` | ≥5% of scheduled task runs failed in the window (exit 143/70 recurring). | Triage as a bug: `akm task doctor`, inspect failing lane logs; exit-143 = killed/timeout, exit-70 = internal error. |
 | `stash-git-exposure` | `env/` or `secrets/` assets are git-tracked **and** a remote is set — `git push` can leak keys. | `git rm --cached` the files, add `env/`+`secrets/` to `.gitignore` (a rule alone does not untrack). |
@@ -32,6 +35,31 @@ and whether to act. Some `warn`s below are *adjudicated, expected* states — tr
 > Adjudicated states (`outcome-proxy-dead`, `enrichment-lane-minting`)
 > are the before/after instrument for the 12-D1 minting shutdown — do not "fix" them by retuning.
 > When in doubt, prefer no action over panic-retuning (per the review-12 guard).
+
+## Engine and model advisories
+
+`selected-model-aliases` warns when a known selected alias is missing the selected engine mapping.
+It checks explicit string model selections on sorted
+configured engines against the merged installed/user model map. Unknown model
+identifiers are exact pass-through values and are not reported as missing. An
+invalid model map makes this check `unknown` with generic evidence rather than
+copying parser text or authored values.
+
+`configured-engines` covers every explicitly configured engine. It reuses the
+same availability result as the default-engine projections and reports sorted
+safe evidence containing only engine name and status. All available engines
+pass; any unavailable engine warns; no explicitly configured engines is
+`unknown`.
+
+These health checks make no network or provider call. Agent checks inspect
+local binary availability; SDK checks inspect the package/binary and any
+configured fallback; LLM checks validate local configuration and symbolic
+credential availability without contacting the endpoint.
+
+Health evidence never includes endpoint values.
+Health evidence never includes exact model IDs.
+Health evidence never includes credential values.
+Health evidence never includes provider output.
 
 The salience Gini guardrails are calibrated against distribution shape, not a
 top-ranked quantile: near-uniform `0.49/0.51` scores produce about `0.01`, a

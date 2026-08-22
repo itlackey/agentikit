@@ -1847,8 +1847,10 @@ Resolve a stored command through its owning bundle adapter and execute one
 fresh session through the common engine/model cascade:
 
 ```sh
-akm command run <command-ref> [--arguments <exact-text>] [--agent <selector>] [--engine <name>] [--model <id-or-alias>] [--timeout-ms <ms>] [--cwd <path>]
+akm command run <command-ref> [--arguments <exact-text>] [--agent <selector>] [--engine <name>] [--model <id-or-alias>] [--timeout-ms <ms>] [--cwd <path>] [--dry-run]
 ```
+
+`--dry-run` does not dispatch and does not materialize credentials.
 
 | Argument / Flag | Description |
 | --- | --- |
@@ -1859,6 +1861,7 @@ akm command run <command-ref> [--arguments <exact-text>] [--agent <selector>] [-
 | `--model <id-or-alias>` | Current-invocation exact model or operator model-map alias |
 | `--timeout-ms <ms>` | Current-invocation timeout override |
 | `--cwd <path>` | Current-invocation workspace override |
+| `--dry-run` | Resolve, authorize, and lower the command without dispatching or materializing credentials |
 
 Commands and portable personas are rendered by their bundle adapter. Native
 frontmatter is never sent as prompt text and native files are never rewritten.
@@ -1867,6 +1870,31 @@ expression, legacy `{{...}}`, and other native-only constructs fail before
 authorization or dispatch; invoke those templates through their native tool.
 Omitting `--arguments` and passing an explicit empty string both substitute
 empty text, but remain distinct in the resolved request.
+
+`akm command run ... --dry-run` performs the real adapter read, cascade/model
+resolution, operator authorization or policy check, and engine lowering. It
+returns a successful JSON result with `schemaVersion: 1`,
+`shape: "command-dry-run"`, `ok: true`, `dryRun: true`, the selected engine
+name, safe `provenance`, and safe lowering `notices`. It has no fake exit code,
+stdout, stderr, or duration.
+
+Each provenance entry contains only `field`, `layer`, `kind`, and `via`. Each
+lowering notice contains `code`, `severity`, `adapter`, optional `field`, and
+fixed `message`. Dry-run does not dispatch and does not materialize
+credentials. It uses a read-only source lookup and records no usage, events, or
+accounting.
+
+Diagnostics exclude resolved values. They never include prompt content.
+They never include command content. They never include environment values.
+They never include credential values. User-authored
+inference keys are collapsed to the safe wildcard field instead of being
+echoed.
+
+For live execution, global `--verbose` emits the same safe provenance and
+notices to stderr before dispatch. The normal command result on stdout is preserved
+unchanged, so enabling verbose diagnostics does not corrupt scripts
+that consume stdout. The compatibility `akm agent --command` surface does not
+add a dry-run flag; use canonical `akm command run --dry-run`.
 
 ### agent
 

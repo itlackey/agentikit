@@ -244,6 +244,11 @@ payload to lower. Task-v3 and durable workflow-v4 adapters use this same seam;
 resume lowers already-frozen material without consulting live resolution
 inputs.
 
+Diagnostic provenance is field metadata (`field`, `layer`, `kind`, `via`), not
+resolved values or content. Lowering notices are secret-free records with a
+fixed public vocabulary; arbitrary authored inference keys are represented by
+wildcard field names rather than copied into diagnostics.
+
 ---
 
 ## 3.10 Session Log Harness Contract

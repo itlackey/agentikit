@@ -148,6 +148,6 @@ idempotent where possible.
 ## See also
 
 - [CLI Reference: task](cli.md#task)
-- [Scheduling guide](../guides/scheduling.md)
+- [Scheduling guide](https://github.com/itlackey/akm/blob/main/docs/guides/scheduling.md)
 - [Workflow source formats](workflow-schema.md)
 - [Data and telemetry](data-and-telemetry.md)
