@@ -412,7 +412,7 @@ const proposalDrainCommand = defineJsonCommand({
     judgment: {
       type: "boolean",
       description:
-        "Opt into the judgment tier (llm by default; agent/sdk per config) for deferred items. No-op with a logged triage_deferred summary when no runner is configured.",
+        "Explicitly enable the judgment tier for this drain (overrides judgment.enabled=false; agent/sdk per config). No-op with a logged triage_deferred summary when no runner is configured.",
       default: false,
     },
     strategy: {
@@ -482,11 +482,11 @@ const proposalDrainCommand = defineJsonCommand({
       );
     }
 
-    // Phase 3: resolve the judgment runner when --judgment is set. Default
-    // mode is llm; falls back to defaults.llm when the triage block sets
-    // no explicit engine selection. null when
-    // nothing is configured → the engine leaves deferred items unresolved and
-    // emits triage_deferred.
+    // Phase 3: --judgment is an invocation-level opt-in. It deliberately
+    // overrides judgment.enabled=false for this standalone drain while still
+    // reusing that block's execution overrides. Without the flag, configured
+    // judgment enablement is owned only by `akm improve`. A missing runner is
+    // a documented standalone no-op that leaves deferred items unresolved.
     const judgmentResolution =
       args.judgment === true
         ? resolveImproveExecution({

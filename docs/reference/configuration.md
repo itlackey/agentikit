@@ -256,6 +256,32 @@ incompatible engine never falls back to another engine. Built-in strategies
 are complete presets. User-defined strategies inherit omitted fields from the
 built-in `default` strategy before applying their own overrides.
 
+`processes.triage.judgment` explicitly controls the optional judgment tier.
+Use `true` to enable it, `false` to disable it, or an object with `enabled`,
+`engine`, `model`, `timeoutMs`, and/or `llm` overrides. Existing object values
+such as `{}` and `{ "engine": "reviewer" }` remain enabled by default. Unknown
+object keys are rejected so misspellings cannot silently change execution;
+the retired `mode` and `profile` keys continue to report their engine migration
+guidance. When enabled, engine selection is judgment → triage → strategy →
+`defaults.llmEngine`, and resolution fails closed if none is available.
+
+```jsonc
+{
+  "improve": {
+    "strategies": {
+      "nightly": {
+        "processes": {
+          "triage": {
+            "enabled": true,
+            "judgment": { "enabled": true, "engine": "reviewer" }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 The shipped `default` and `frequent` strategies keep improve-stage session
 extraction off. `proactiveMaintenance` is off in `default` and
 `reflect-distill`; run `akm improve --strategy proactive-maintenance` to use the

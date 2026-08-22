@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking changes & migration
+
+- `improve.strategies.*.processes.triage.judgment` now accepts `true`/`false`
+  and honors `enabled` on object values; existing `{}` and configured objects
+  remain enabled. Unknown object keys are now rejected instead of ignored, so
+  correct typos such as `egnine`, `judgement`, or other unrecognized fields
+  before upgrading. Use `judgment: false` to disable the tier explicitly.
+
 ## [0.9.1] - 2026-08-18
 
 ### Fixed

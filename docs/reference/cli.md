@@ -2324,7 +2324,7 @@ akm proposal drain --strategy default --promote -y  # Read the triage block from
 | `--max-accepts` | Hard per-run accept ceiling; accepts beyond this are reported as `skippedByCap` |
 | `--max-diff-lines` | Defer (never promote) accepts whose proposed content exceeds this many lines |
 | `--older-than` | Only consider proposals created more than this many days ago |
-| `--judgment` | Opt into the judgment tier (`llm` by default; `agent`/`sdk` per config) for deferred items. No-op with a logged `triage_deferred` summary when no runner is configured. |
+| `--judgment` | Explicitly enable the judgment tier for this standalone drain, including when the selected strategy says `judgment.enabled: false`; execution overrides still come from that strategy. Without this flag, strategy judgment config does not enable standalone drain judgment. A missing runner remains a no-op with a logged `triage_deferred` summary. |
 | `-y`, `--yes` | Skip the confirmation prompt (required in non-interactive mode for promotion) |
 
 ### feedback (`--reason`)

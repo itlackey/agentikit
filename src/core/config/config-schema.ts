@@ -301,7 +301,7 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
       }
     }
     for (const [processName, process] of Object.entries(strategy.processes ?? {})) {
-      const processConfig = process as { engine?: string; judgment?: { engine?: string } };
+      const processConfig = process as { engine?: string; judgment?: { enabled?: boolean; engine?: string } };
       const capability =
         IMPROVE_PROCESS_ENGINE_CAPABILITIES[processName as keyof typeof IMPROVE_PROCESS_ENGINE_CAPABILITIES];
       if (processConfig.engine && capability === null) {
@@ -330,7 +330,7 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
         }
       }
       const judgmentEngine = processConfig.judgment?.engine;
-      if (judgmentEngine) {
+      if (processConfig.judgment?.enabled === true && judgmentEngine) {
         const engine = config.engines?.[judgmentEngine];
         if (!engine) {
           ctx.addIssue({

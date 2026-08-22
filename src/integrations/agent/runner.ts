@@ -108,11 +108,12 @@ export function resolveDefaultLlmRunner(config: AkmConfig, timeoutMs?: number | 
 
 /** Resolve a triage judgment using judgment -> triage -> strategy -> defaults.llmEngine precedence. */
 export function resolveTriageJudgmentRunner(
-  judgment: Pick<ImproveProcessConfig, "engine" | "model" | "timeoutMs" | "llm"> | undefined,
+  judgment: Pick<ImproveProcessConfig, "enabled" | "engine" | "model" | "timeoutMs" | "llm"> | undefined,
   config: AkmConfig,
   triage?: Pick<ImproveProcessConfig, "engine" | "model" | "timeoutMs" | "llm">,
   strategy?: Pick<ImproveProfileConfig, "engine" | "model" | "timeoutMs" | "llm">,
 ): RunnerSpec | null {
+  if (judgment?.enabled === false) return null;
   const layers = [strategy ?? {}, triage ?? {}, judgment ?? {}];
   const selectedEngine = judgment?.engine ?? triage?.engine ?? strategy?.engine ?? config.defaults?.llmEngine;
   if (selectedEngine) {

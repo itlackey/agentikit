@@ -14,6 +14,7 @@ import reflectDistill from "../../assets/improve-strategies/reflect-distill.json
 import thorough from "../../assets/improve-strategies/thorough.json" with { type: "json" };
 import { parseRefInput } from "../../core/asset/resolve-ref";
 import type { AkmConfig, ImproveProcessConfig, ImproveProfileConfig } from "../../core/config/config";
+import { ImproveProfileConfigSchema } from "../../core/config/config-schema";
 import { deepMergeConfig } from "../../core/config/deep-merge";
 import {
   BUILTIN_IMPROVE_STRATEGY_NAMES,
@@ -66,17 +67,17 @@ export function isStrategyFilteredForAllPasses(ref: string, strategy: ImprovePro
   return shouldSkipRef(ref, "reflect", strategy).skip && shouldSkipRef(ref, "distill", strategy).skip;
 }
 
-const BUILTIN_STRATEGIES: Record<string, ImproveStrategyConfig> = {
-  default: defaultStrategy as ImproveStrategyConfig,
-  quick: quick as ImproveStrategyConfig,
-  thorough: thorough as ImproveStrategyConfig,
-  "memory-focus": memoryFocus as ImproveStrategyConfig,
-  "graph-refresh": graphRefresh as ImproveStrategyConfig,
-  frequent: frequent as ImproveStrategyConfig,
-  consolidate: consolidate as ImproveStrategyConfig,
-  catchup: catchup as ImproveStrategyConfig,
-  "reflect-distill": reflectDistill as ImproveStrategyConfig,
-  "proactive-maintenance": proactiveMaintenance as ImproveStrategyConfig,
+const BUILTIN_STRATEGIES: Record<string, Record<string, unknown>> = {
+  default: defaultStrategy,
+  quick,
+  thorough,
+  "memory-focus": memoryFocus,
+  "graph-refresh": graphRefresh,
+  frequent,
+  consolidate,
+  catchup,
+  "reflect-distill": reflectDistill,
+  "proactive-maintenance": proactiveMaintenance,
 };
 
 if (BUILTIN_IMPROVE_STRATEGY_NAMES.some((name) => !(name in BUILTIN_STRATEGIES))) {
@@ -94,15 +95,12 @@ export function resolveImproveStrategy(name: string | undefined, config: AkmConf
     );
   }
   const selectedStrategy = BUILTIN_STRATEGIES[selectedName] ?? {};
-  const baseStrategy = deepMergeConfig(
-    BUILTIN_STRATEGIES.default as Record<string, unknown>,
-    selectedStrategy as Record<string, unknown>,
-  );
+  const baseStrategy = deepMergeConfig(BUILTIN_STRATEGIES.default ?? {}, selectedStrategy);
   const resolved = deepMergeConfig(
     baseStrategy as Record<string, unknown>,
     (userStrategies[selectedName] ?? {}) as Record<string, unknown>,
-  ) as ImproveStrategyConfig;
-  return { name: selectedName, config: resolved };
+  );
+  return { name: selectedName, config: ImproveProfileConfigSchema.parse(resolved) };
 }
 
 export type ImproveLlmRunner = Extract<RunnerSpec, { kind: "llm" }>;
@@ -198,9 +196,9 @@ function buildImprovePlan(
   }
 
   const triage = strategy.config.processes?.triage;
-  const judgmentOptedIn = triage !== undefined && Object.hasOwn(triage, "judgment");
+  const judgmentEnabled = triage?.judgment?.enabled === true;
   const triageJudgmentResolution =
-    processes.triage.enabled && judgmentOptedIn
+    processes.triage.enabled && judgmentEnabled
       ? resolveImproveExecution({
           config,
           profile: strategy.config,
@@ -217,7 +215,7 @@ function buildImprovePlan(
       "INVALID_CONFIG_FILE",
     );
   }
-  if (processes.triage.enabled && judgmentOptedIn && !triageJudgment) {
+  if (processes.triage.enabled && judgmentEnabled && !triageJudgment) {
     throw new ConfigError(
       `Enabled improve triage judgment requires an engine. Set defaults.llmEngine or improve.strategies.${strategy.name}.processes.triage.judgment.engine.`,
       "LLM_NOT_CONFIGURED",
