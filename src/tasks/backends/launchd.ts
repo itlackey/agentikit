@@ -32,6 +32,7 @@ import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { type LaunchdTrigger, parseSchedule, translateToLaunchd } from "../schedule";
 import {
+  assertSchedulerExecutionEvidenceDigest,
   assertSchedulerExpectationIdentity,
   assertSchedulerMutationArtifact,
   assertSchedulerNativeArtifactCardinality,
@@ -1140,8 +1141,12 @@ export function buildPlistXml(
   const logPath = path.join(logDir, `${nativeId}.log`);
   const triggerXml = renderLaunchdTrigger(trigger);
 
+  const executionEvidence =
+    task.executionEvidenceDigest === undefined
+      ? ""
+      : `  <!-- akm-workflow-evidence:${assertSchedulerExecutionEvidenceDigest(task.executionEvidenceDigest)} -->\n`;
   const xml = launchdTemplate
-    .replace("<dict>\n", `<dict>\n  <!-- akm-enabled:${task.enabled} -->\n`)
+    .replace("<dict>\n", `<dict>\n  <!-- akm-enabled:${task.enabled} -->\n${executionEvidence}`)
     .replace("{{LABEL}}", LAUNCHD_LABEL_PREFIX + escapeXml(nativeId))
     .replace("{{PROGRAM_ARGS}}", programArgs)
     .replaceAll("{{LOG_PATH}}", escapeXml(logPath))

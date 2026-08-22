@@ -33,6 +33,7 @@ import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { parseSchedule, translateToCron } from "../schedule";
 import {
+  assertSchedulerExecutionEvidenceDigest,
   assertSchedulerExpectationIdentity,
   assertSchedulerMutationArtifact,
   assertSchedulerNativeArtifactCardinality,
@@ -143,7 +144,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       } else if (prior) {
         assertSchedulerNativeArtifactOwner(prior.id, task, extractCronInvocation(prior.body)?.invocation);
       }
-      const block = renderBlock(nativeId, cronLine, task.enabled);
+      const block = renderBlock(nativeId, cronLine, task.enabled, task.executionEvidenceDigest);
       const next = upsertBlock(existing, nativeId, block);
       replaceCrontab(exec, existing, next);
     },
@@ -271,7 +272,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
         opts?.target,
       );
       assertPortableCronLine(cronLine);
-      return normalizeSignature(cronBlockBody(cronLine, task.enabled));
+      return normalizeSignature(cronBlockBody(cronLine, task.enabled, task.executionEvidenceDigest));
     },
   };
 }
@@ -340,12 +341,18 @@ export function buildCronLine(
 }
 
 /** The crontab line as it appears inside a block — commented when disabled. */
-export function cronBlockBody(cronLine: string, enabled: boolean): string {
-  return enabled ? cronLine : `${DISABLED_PREFIX}${cronLine}`;
+export function cronBlockBody(cronLine: string, enabled: boolean, executionEvidenceDigest?: string): string {
+  const lines = [
+    cronLine,
+    ...(executionEvidenceDigest === undefined
+      ? []
+      : [`# akm:workflow-evidence ${assertSchedulerExecutionEvidenceDigest(executionEvidenceDigest)}`]),
+  ];
+  return (enabled ? lines : lines.map((line) => `${DISABLED_PREFIX}${line}`)).join("\n");
 }
 
-export function renderBlock(id: string, cronLine: string, enabled: boolean): string {
-  return [BEGIN(id), cronBlockBody(cronLine, enabled), END(id)].join("\n");
+export function renderBlock(id: string, cronLine: string, enabled: boolean, executionEvidenceDigest?: string): string {
+  return [BEGIN(id), cronBlockBody(cronLine, enabled, executionEvidenceDigest), END(id)].join("\n");
 }
 
 /**

@@ -4,6 +4,7 @@
 
 /** Pure whole-set scheduler reconciliation planning. */
 
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { loadAdapterExecutionSource } from "../commands/command/execution-source-loader";
 import { makeBundleRef } from "../core/asset/asset-ref";
@@ -19,7 +20,8 @@ import {
 } from "../execution/guarded-source";
 import type { FileContext } from "../indexer/walk/file-context";
 import { compileResolveFreezeWorkflowV4 } from "../workflows/ir/freeze-v4";
-import { computePlanHash } from "../workflows/ir/plan-hash";
+import { canonicalJson, computePlanHash } from "../workflows/ir/plan-hash";
+import type { DurableWorkflowSourceSnapshot } from "../workflows/ir/schema-v4";
 import type { WorkflowAsset } from "../workflows/runtime/workflow-asset-loader";
 import {
   WorkflowSourceCollisionError,
@@ -116,6 +118,24 @@ export interface SchedulerExecutableWorkflowEvidence {
   readonly irVersion: 4;
   readonly planHash: string;
   readonly sourceReadSet: import("../workflows/ir/schema-v4").WorkflowPlanGraphV4["sourceReadSet"];
+  readonly executionEvidenceDigest: string;
+}
+
+export function computeSchedulerExecutionEvidenceDigest(
+  planHash: string,
+  sourceReadSet: readonly DurableWorkflowSourceSnapshot[],
+): string {
+  const envelope = canonicalJson({
+    version: 1,
+    planHash,
+    sourceReadSet: sourceReadSet.map((snapshot) => ({
+      identity: snapshot.identity,
+      containmentPhysicalIdentity: snapshot.containmentPhysicalIdentity,
+      physicalIdentity: snapshot.physicalIdentity,
+      size: snapshot.size,
+    })),
+  });
+  return createHash("sha256").update("akm.scheduler.workflow-evidence\0v1\0").update(envelope).digest("hex");
 }
 
 const SCHEDULER_PROJECTION_CONFIG: AkmConfig = Object.freeze({
@@ -436,6 +456,7 @@ function sameDesiredArtifact(left: SchedulerBinding, right: SchedulerBinding): b
     left.logicalSource.kind === right.logicalSource.kind &&
     left.logicalSource.ref === right.logicalSource.ref &&
     left.ordinal === right.ordinal &&
+    left.executionEvidenceDigest === right.executionEvidenceDigest &&
     sameInvocation(left.invocation, right.invocation)
   );
 }
@@ -580,12 +601,15 @@ async function compileWorkflowSources(
       const frozen = await compileResolveFreezeWorkflowV4(asset, input.config ?? schedulerProjectionConfig(input), {
         sourceCollector: collector.executionCollector(),
       });
+      const planHash = computePlanHash(frozen.plan);
+      const executionEvidenceDigest = computeSchedulerExecutionEvidenceDigest(planHash, frozen.plan.sourceReadSet);
       evidence.push(
         Object.freeze({
           ref: qualifiedRef,
           irVersion: 4 as const,
-          planHash: computePlanHash(frozen.plan),
+          planHash,
           sourceReadSet: frozen.plan.sourceReadSet,
+          executionEvidenceDigest,
         }),
       );
       const schedules = compiled.ir.triggers.flatMap((trigger) =>
@@ -599,7 +623,11 @@ async function compileWorkflowSources(
             ]
           : [],
       );
-      for (const binding of compileWorkflowSchedulerBindings({ qualifiedRef, schedules })) {
+      for (const binding of compileWorkflowSchedulerBindings({
+        qualifiedRef,
+        schedules,
+        executionEvidenceDigest,
+      })) {
         parseSchedule(binding.cron, input.backend);
         out.push(binding);
       }

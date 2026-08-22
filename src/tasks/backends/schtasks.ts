@@ -40,6 +40,7 @@ import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { parseSchedule, type SchtasksTrigger, translateToSchtasks } from "../schedule";
 import {
+  assertSchedulerExecutionEvidenceDigest,
   assertSchedulerExpectationIdentity,
   assertSchedulerMutationArtifact,
   assertSchedulerNativeArtifactCardinality,
@@ -702,7 +703,11 @@ function buildSchtasksDefinition(
   const trigger = translateToSchtasks(spec);
   const invocation = buildScheduledBindingInvocation(akmArgv, contextPath, task.invocation);
   const invoke = `& ${invocation.argv.map((arg) => quotePowerShell(arg)).join(" ")}`;
-  const script = `${invoke}; exit $LASTEXITCODE`;
+  const executionEvidence =
+    task.executionEvidenceDigest === undefined
+      ? ""
+      : `$null=${quotePowerShell(`akm-workflow-evidence:${assertSchedulerExecutionEvidenceDigest(task.executionEvidenceDigest)}`)}; `;
+  const script = `${executionEvidence}${invoke}; exit $LASTEXITCODE`;
   const command = "powershell.exe";
   const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script].map(quoteArg).join(" ");
   const nativeId = schedulerBindingNativeId(task);

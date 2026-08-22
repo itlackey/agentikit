@@ -5,9 +5,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { CRON_BACKEND } from "../../src/tasks/backends/cron";
-import { LAUNCHD_BACKEND } from "../../src/tasks/backends/launchd";
-import { SCHTASKS_BACKEND } from "../../src/tasks/backends/schtasks";
+import { buildCronLine, CRON_BACKEND, renderBlock } from "../../src/tasks/backends/cron";
+import { buildPlistXml, LAUNCHD_BACKEND } from "../../src/tasks/backends/launchd";
+import { buildSchtasksXml, SCHTASKS_BACKEND } from "../../src/tasks/backends/schtasks";
 import type { SchedulerBinding } from "../../src/tasks/scheduler-binding";
 import type { ScheduledTaskContext } from "../../src/tasks/scheduler-invocation";
 import {
@@ -169,6 +169,44 @@ describe("scheduled workflow execution evidence", () => {
     expect(changedPlan.unchanged).toEqual([]);
   });
 
+  test("a transitive task/script read-set change plans an update without changing the workflow body", async () => {
+    const taskFile = path.join(storage.stashDir, "tasks", "child.yml");
+    const scriptFile = path.join(storage.stashDir, "scripts", "child.sh");
+    fs.mkdirSync(path.dirname(taskFile), { recursive: true });
+    fs.mkdirSync(path.dirname(scriptFile), { recursive: true });
+    fs.writeFileSync(taskFile, "version: 3\nuses: scripts/child.sh\nakm:\n  schedule: '@daily'\n");
+    fs.writeFileSync(scriptFile, "#!/bin/sh\nprintf first\n");
+    const workflowFile = path.join(storage.stashDir, "workflows", "scheduled.yml");
+    fs.mkdirSync(path.dirname(workflowFile), { recursive: true });
+    fs.writeFileSync(
+      workflowFile,
+      [
+        "name: Scheduled evidence",
+        "on:",
+        "  schedule:",
+        "    - cron: '0 8 * * 1'",
+        "jobs:",
+        "  main:",
+        "    runs-on: [self-hosted]",
+        "    steps:",
+        "      - id: work",
+        "        uses: tasks/child",
+        "",
+      ].join("\n"),
+    );
+
+    const first = await prepareSchedulerSyncSourceSet(input());
+    const firstBinding = workflowBinding(first);
+    const firstSignature = JSON.stringify(firstBinding);
+
+    fs.writeFileSync(scriptFile, "#!/bin/sh\nprintf second\n");
+    const changed = await prepareSchedulerSyncSourceSet(input());
+    expect(evidence(changed).executionEvidenceDigest).not.toBe(evidence(first).executionEvidenceDigest);
+    const changedPlan = finalizeSchedulerSyncPlan(installedInput(firstBinding, firstSignature), changed);
+    expect(changedPlan.updated).toEqual([firstBinding.id]);
+    expect(changedPlan.unchanged).toEqual([]);
+  });
+
   test("cron, launchd, and schtasks fingerprints include evidence without changing the public invocation ABI", async () => {
     writeWorkflow("printf backend");
     const prepared = await prepareSchedulerSyncSourceSet(input());
@@ -190,6 +228,20 @@ describe("scheduled workflow execution evidence", () => {
     for (const backend of backends) {
       expect(backend.expectedSignature?.(original)).toBeTruthy();
       expect(backend.expectedSignature?.(changed)).not.toBe(backend.expectedSignature?.(original));
+    }
+
+    const cronLine = buildCronLine(original, ["/abs/akm"], "/logs", "/context.json");
+    const nativeBodies = [
+      renderBlock(original.nativeId ?? original.id, cronLine, original.enabled, original.executionEvidenceDigest),
+      buildPlistXml(original, ["/abs/akm"], "/logs", "/context.json"),
+      buildSchtasksXml(original, ["C:\\akm.exe"], "C:\\logs", {
+        contextPath: "C:\\context.json",
+        userSid: "S-1-5-21-1000",
+        now: () => new Date("2026-08-22T12:00:00Z"),
+      }),
+    ];
+    for (const nativeBody of nativeBodies) {
+      expect(nativeBody).toContain(original.executionEvidenceDigest);
     }
   });
 });

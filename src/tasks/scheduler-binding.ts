@@ -34,6 +34,8 @@ export interface SchedulerBinding {
   readonly enabled: boolean;
   /** Public CLI tail, excluding the resolved launcher and context descriptor. */
   readonly invocation: readonly string[];
+  /** Secret-free digest of a scheduled workflow's dry-frozen v4 plan/read set. */
+  readonly executionEvidenceDigest?: string;
 }
 
 export interface SchedulerSourceSchedule {
@@ -53,6 +55,7 @@ export interface CompileTaskSchedulerBindingsInput {
 export interface CompileWorkflowSchedulerBindingsInput {
   readonly qualifiedRef: string;
   readonly schedules: readonly SchedulerSourceSchedule[];
+  readonly executionEvidenceDigest?: string;
 }
 
 /** Existing native definition as exposed to the whole-set planner. */
@@ -202,9 +205,22 @@ export function compileWorkflowSchedulerBindings(
         ordinal: schedule.ordinal,
         enabled: true,
         invocation,
+        ...(input.executionEvidenceDigest !== undefined
+          ? { executionEvidenceDigest: assertSchedulerExecutionEvidenceDigest(input.executionEvidenceDigest) }
+          : {}),
       });
     }),
   );
+}
+
+export function assertSchedulerExecutionEvidenceDigest(value: string): string {
+  if (!/^[a-f0-9]{64}$/u.test(value)) {
+    throw new UsageError(
+      "Scheduler workflow execution evidence must be a lowercase SHA-256 digest.",
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  return value;
 }
 
 /**
