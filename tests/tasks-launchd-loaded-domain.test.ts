@@ -46,11 +46,6 @@ describe("parseLaunchdLoadedLabels", () => {
     }
     99 = com.apple.WindowServer
   }
-  endpoints = {
-    "com.akm.task.not-a-service" = {
-      port = 0x123
-    }
-  }
 }`;
 
     expect([...parseLaunchdLoadedLabels(output)!]).toEqual(["com.akm.task.ping", "com.akm.task.second"]);
@@ -77,6 +72,20 @@ describe("parseLaunchdLoadedLabels", () => {
     expect(parseLaunchdLoadedLabels("gui/501 = {\n  note = com.akm.task.unproven\n}\n")).toBeUndefined();
   });
 
+  test("rejects a dictionary-shaped AKM label outside the single services block", () => {
+    const output = `gui/501 = {
+  services = {
+    799 - com.akm.task.ping
+  }
+  endpoints = {
+    "com.akm.task.not-a-service" = {
+    }
+  }
+}`;
+
+    expect(parseLaunchdLoadedLabels(output)).toBeUndefined();
+  });
+
   test("rejects extra domain table columns and malformed services braces", () => {
     expect(
       parseLaunchdLoadedLabels("gui/501 = {\n  services = {\n    799 - com.akm.task.ping extra\n  }\n}\n"),
@@ -86,6 +95,27 @@ describe("parseLaunchdLoadedLabels", () => {
         'gui/501 = {\n  services = {\n    "com.akm.task.ping" = {\n      active count = 1\n  }\n',
       ),
     ).toBeUndefined();
+  });
+
+  test("rejects duplicate services blocks even when both use dictionary-shaped AKM labels", () => {
+    const output = `gui/501 = {
+  services = {
+    "com.akm.task.ping" = {
+    }
+  }
+  services = {
+    "com.akm.task.PING" = {
+    }
+  }
+}`;
+
+    expect(parseLaunchdLoadedLabels(output)).toBeUndefined();
+  });
+
+  test("rejects nested services blocks and extra outer braces", () => {
+    expect(parseLaunchdLoadedLabels("gui/501 = {\n  wrapper = {\n    services = {\n    }\n  }\n}\n")).toBeUndefined();
+    expect(parseLaunchdLoadedLabels("gui/501 = {\n  services = {\n  }\n}\n}\n")).toBeUndefined();
+    expect(parseLaunchdLoadedLabels("gui/501 = {\n  services = {\n  }\n}\ntrailing\n")).toBeUndefined();
   });
 
   test("rejects control characters anywhere in launchctl inventory output", () => {

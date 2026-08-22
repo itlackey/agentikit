@@ -107,6 +107,19 @@ interface LaunchdBindingSnapshot {
   }>[];
 }
 
+interface LaunchdNamespaceEntry {
+  readonly nativeId: string;
+  readonly plist?: string;
+  readonly loaded: boolean;
+  readonly enabled: boolean;
+  readonly artifact: SchedulerNativeArtifact;
+}
+
+interface StableLaunchdNamespace {
+  readonly inspection: SchedulerBackendInspection;
+  readonly entries: readonly LaunchdNamespaceEntry[];
+}
+
 export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBackend {
   const exec = options.exec ?? defaultLaunchdExec();
   const fsLike = options.fs ?? defaultLaunchdFs();
@@ -138,32 +151,28 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
       });
     },
     uninstall(nativeId: string, expected?: SchedulerRemovalExpectation) {
-      let resolvedNativeId = findLaunchdNativeId(fsLike, agentsDir, nativeId) ?? nativeId;
+      const inspectionContext = { exec, fsLike, agentsDir, plistPath, target, label };
+      const initialNamespace = inspectStableLaunchdNamespace([nativeId], inspectionContext);
+      let initialArtifact: SchedulerNativeArtifact | undefined;
       if (expected) {
         assertSchedulerExpectationIdentity({ ...expected, state: "present" });
-        const inspection = inspectLaunchdState({ exec, fsLike, agentsDir, plistPath, target, label });
-        const artifact = assertSchedulerNativeArtifactCardinality(inspection.artifacts, nativeId, 1);
-        resolvedNativeId = artifact?.nativeId ?? nativeId;
-        const current = readLaunchdArtifactState(resolvedNativeId, {
-          exec,
-          fsLike,
-          plistPath,
-          target,
-          label,
-        });
-        if (!current) {
+        initialArtifact = assertSchedulerNativeArtifactCardinality(initialNamespace.inspection.artifacts, nativeId, 1);
+        if (!initialArtifact) {
           throw new ConfigError(
-            `launchd artifact ${JSON.stringify(nativeId)} disappeared after coherent inspection.`,
+            `launchd artifact ${JSON.stringify(nativeId)} disappeared during inspection.`,
             "INVALID_CONFIG_FILE",
           );
         }
         assertSchedulerRemovalArtifact(
-          current.artifact.nativeId,
+          initialArtifact.nativeId,
           expected,
-          current.artifact.invocation,
-          current.artifact.fingerprint,
+          initialArtifact.invocation,
+          initialArtifact.fingerprint,
         );
+      } else {
+        initialArtifact = assertLaunchdDirectRemovalOwner(initialNamespace.inspection.artifacts, nativeId);
       }
+      let resolvedNativeId = initialArtifact?.nativeId ?? nativeId;
       const file = plistPath(resolvedNativeId);
       const snapshot = snapshotLaunchdBindings([resolvedNativeId], {
         exec,
@@ -173,7 +182,25 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
         target,
         label,
       });
-      if (snapshot.artifacts.length === 0) return;
+      const finalArtifact = expected
+        ? assertSchedulerNativeArtifactCardinality(snapshot.artifacts, nativeId, 1)
+        : assertLaunchdDirectRemovalOwner(snapshot.artifacts, nativeId);
+      if (expected) {
+        if (!finalArtifact) {
+          throw new ConfigError(
+            `launchd artifact ${JSON.stringify(nativeId)} disappeared during snapshot.`,
+            "INVALID_CONFIG_FILE",
+          );
+        }
+        assertSchedulerRemovalArtifact(
+          finalArtifact.nativeId,
+          expected,
+          finalArtifact.invocation,
+          finalArtifact.fingerprint,
+        );
+      }
+      if (!finalArtifact) return;
+      resolvedNativeId = finalArtifact.nativeId;
       try {
         runOrThrow(exec, ["launchctl", "bootout", target(resolvedNativeId)], {
           isOk: (r) => r.status === 0 || isServiceNotFoundResult(r),
@@ -185,7 +212,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
       } catch (primaryError) {
         try {
           const rollbackExpected = [
-            launchdRollbackExpectationForCurrent(resolvedNativeId, { exec, fsLike, plistPath, target, label }),
+            launchdRollbackExpectationForCurrent(resolvedNativeId, inspectionContext, initialArtifact),
           ];
           restoreLaunchdBindings(
             snapshot,
@@ -210,12 +237,12 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
       ] as InstalledTaskRef[];
     },
     listForRebind() {
-      if (!fsLike.exists(agentsDir)) return [];
+      const namespace = inspectStableLaunchdNamespace([], { exec, fsLike, agentsDir, plistPath, target, label });
       const refs: Array<{ id: string; target?: string }> = [];
-      for (const file of fsLike.list(agentsDir)) {
-        if (!file.startsWith(LAUNCHD_LABEL_PREFIX) || !file.endsWith(".plist")) continue;
-        const id = file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length);
-        const installed = extractPlistInvocation(fsLike.readFile(plistPath(id)));
+      for (const entry of namespace.entries) {
+        if (entry.plist === undefined) continue;
+        const installed = extractPlistInvocation(entry.plist);
+        const id = entry.nativeId;
         const ref = {
           id: installed ? schedulerLogicalBindingId(id, installed.invocation) : id,
           ...(installed?.target !== undefined ? { target: installed.target } : {}),
@@ -294,22 +321,21 @@ function installLaunchdBinding(
   // points at a non-existent directory; create it before reading or mutating
   // launchd state so a local preparation failure has no scheduler side effect.
   fsLike.ensureDir(logDir);
-  const initialInspection = inspectLaunchdState({ exec, fsLike, agentsDir, plistPath, target, label });
+  const inspectionContext = { exec, fsLike, agentsDir, plistPath, target, label };
+  const initialNamespace = inspectStableLaunchdNamespace([nativeId], inspectionContext);
   const initialArtifact = expected
     ? assertSchedulerNativeArtifactCardinality(
-        initialInspection.artifacts,
+        initialNamespace.inspection.artifacts,
         nativeId,
         expected.state === "absent" ? 0 : 1,
       )
+    : assertLaunchdDirectMutationOwner(initialNamespace.inspection.artifacts, nativeId, task);
+  if (expected) assertSchedulerMutationArtifact(initialArtifact, expected);
+  const priorEntry = initialArtifact
+    ? initialNamespace.entries.find((entry) => entry.nativeId === initialArtifact.nativeId)
     : undefined;
-  const existingNativeId = initialArtifact?.nativeId ?? findLaunchdNativeId(fsLike, agentsDir, nativeId);
-  const priorState = expected
-    ? readLaunchdArtifactState(existingNativeId ?? nativeId, { exec, fsLike, plistPath, target, label })
-    : undefined;
-  if (expected) assertSchedulerMutationArtifact(priorState?.artifact, expected);
-  const { previousPlist, previousEnabled } = expected
-    ? { previousPlist: priorState?.plist, previousEnabled: priorState?.enabled ?? true }
-    : readLaunchdPriorState(fsLike, file, exec, nativeId, label(nativeId), task);
+  const previousPlist = priorEntry?.plist;
+  const previousEnabled = priorEntry?.enabled ?? true;
   const tempFile = path.join(agentsDir, `.${nativeId}.${Date.now()}.tmp`);
   fsLike.writeFile(tempFile, xml);
   let bootoutCompleted = false;
@@ -318,22 +344,28 @@ function installLaunchdBinding(
   let enableStateTouched = false;
   try {
     if (expected) {
-      const finalInspection = inspectLaunchdState({ exec, fsLike, agentsDir, plistPath, target, label });
+      const finalInspection = inspectStableLaunchdNamespace([nativeId], inspectionContext).inspection;
       const finalArtifact = assertSchedulerNativeArtifactCardinality(
         finalInspection.artifacts,
         nativeId,
         expected.state === "absent" ? 0 : 1,
       );
-      const finalState = readLaunchdArtifactState(finalArtifact?.nativeId ?? nativeId, {
-        exec,
-        fsLike,
-        plistPath,
-        target,
-        label,
-      });
-      assertSchedulerMutationArtifact(finalState?.artifact, expected);
+      assertSchedulerMutationArtifact(finalArtifact, expected);
     } else {
-      assertLaunchdArtifactUnchanged(fsLike, file, previousPlist, nativeId, label(nativeId), task);
+      const finalArtifact = assertLaunchdDirectMutationOwner(
+        inspectStableLaunchdNamespace([nativeId], inspectionContext).inspection.artifacts,
+        nativeId,
+        task,
+      );
+      if (
+        finalArtifact?.nativeId !== initialArtifact?.nativeId ||
+        finalArtifact?.fingerprint !== initialArtifact?.fingerprint
+      ) {
+        throw new ConfigError(
+          `launchd task ${JSON.stringify(nativeId)} changed while it was being prepared; refusing to replace an unverified owner.`,
+          "INVALID_CONFIG_FILE",
+        );
+      }
     }
     const bootout = runOrThrow(exec, ["launchctl", "bootout", target(nativeId)], {
       isOk: (r) => r.status === 0 || isServiceNotFoundResult(r),
@@ -477,49 +509,26 @@ function snapshotLaunchdBindings(
     label: (id: string) => string;
   },
 ): LaunchdBindingSnapshot {
-  const disabledLabels = readDisabledLabels(context.exec);
-  if (disabledLabels === undefined) {
-    throw new ConfigError(
-      "launchctl print-disabled failed; cannot snapshot scheduler bindings.",
-      "INVALID_CONFIG_FILE",
-    );
-  }
   const requestedKeys = new Set(ids.map(schedulerNativeArtifactKey));
-  const enumeratedIds = new Set(ids);
-  if (context.fsLike.exists(context.agentsDir)) {
-    for (const file of context.fsLike.list(context.agentsDir)) {
-      if (!file.startsWith(LAUNCHD_LABEL_PREFIX) || !file.endsWith(".plist")) continue;
-      const nativeId = file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length);
-      if (requestedKeys.has(schedulerNativeArtifactKey(nativeId))) enumeratedIds.add(nativeId);
-    }
-  }
-  for (const serviceLabel of disabledLabels) {
-    if (!serviceLabel.startsWith(LAUNCHD_LABEL_PREFIX)) continue;
-    const nativeId = serviceLabel.slice(LAUNCHD_LABEL_PREFIX.length);
-    if (requestedKeys.has(schedulerNativeArtifactKey(nativeId))) enumeratedIds.add(nativeId);
-  }
-  const entries = [...enumeratedIds].map((id) => {
-    const file = context.plistPath(id);
-    const plist = context.fsLike.exists(file) ? context.fsLike.readFile(file) : undefined;
-    const loadedResult = context.exec.run(["launchctl", "print", context.target(id)]);
-    if (loadedResult.status !== 0 && !isServiceNotFoundResult(loadedResult)) {
-      throw new ConfigError(
-        `launchctl print failed while snapshotting task "${id}": ${loadedResult.stderr || loadedResult.stdout || "no output"}.`,
-        "INVALID_CONFIG_FILE",
-      );
-    }
-    return Object.freeze({
-      id,
-      ...(plist !== undefined ? { plist } : {}),
-      loaded: loadedResult.status === 0,
-      enabled: !disabledLabels.has(context.label(id)),
-    });
-  });
-  const artifacts = entries.flatMap((entry) => {
-    if (entry.plist !== undefined) return [launchdArtifact(entry.id, entry.plist, entry.enabled, entry.loaded)];
-    if (!entry.enabled || entry.loaded) return [launchdMissingPlistArtifact(entry.id, entry.enabled, entry.loaded)];
-    return [];
-  });
+  const namespace = inspectStableLaunchdNamespace(ids, context);
+  const matchingEntries = namespace.entries.filter((entry) =>
+    requestedKeys.has(schedulerNativeArtifactKey(entry.nativeId)),
+  );
+  const matchedKeys = new Set(matchingEntries.map((entry) => schedulerNativeArtifactKey(entry.nativeId)));
+  const entries = [
+    ...matchingEntries.map((entry) =>
+      Object.freeze({
+        id: entry.nativeId,
+        ...(entry.plist !== undefined ? { plist: entry.plist } : {}),
+        loaded: entry.loaded,
+        enabled: entry.enabled,
+      }),
+    ),
+    ...ids
+      .filter((id) => !matchedKeys.has(schedulerNativeArtifactKey(id)))
+      .map((id) => Object.freeze({ id, loaded: false, enabled: true })),
+  ];
+  const artifacts = matchingEntries.map((entry) => entry.artifact);
   return Object.freeze({
     kind: LAUNCHD_SNAPSHOT,
     nativeIds: Object.freeze([...ids]),
@@ -548,7 +557,7 @@ function restoreLaunchdBindings(
   let rollbackInventory: SchedulerBackendInspection | undefined;
   if (expectedCurrent) {
     try {
-      rollbackInventory = inspectLaunchdRollbackState(snapshot.nativeIds, context);
+      rollbackInventory = inspectStableLaunchdNamespace(snapshot.nativeIds, context).inspection;
     } catch (error) {
       errors.push(error);
     }
@@ -577,7 +586,7 @@ function restoreLaunchdBindings(
   }
 }
 
-function inspectLaunchdRollbackState(
+function inspectStableLaunchdNamespace(
   seedIds: readonly string[],
   context: {
     exec: LaunchdExec;
@@ -587,19 +596,19 @@ function inspectLaunchdRollbackState(
     target: (id: string) => string;
     label: (id: string) => string;
   },
-): SchedulerBackendInspection {
-  const first = captureLaunchdRollbackInventoryPass(seedIds, context);
-  const second = captureLaunchdRollbackInventoryPass(seedIds, context);
+): StableLaunchdNamespace {
+  const first = captureLaunchdNamespacePass(seedIds, context);
+  const second = captureLaunchdNamespacePass(seedIds, context);
   if (first.stabilityKey !== second.stabilityKey) {
     throw new ConfigError(
-      "The launchd AKM service namespace changed while rollback inventory was being stabilized.",
+      "The launchd AKM service namespace changed while scheduler state was being stabilized.",
       "INVALID_CONFIG_FILE",
     );
   }
-  return second.inspection;
+  return second.namespace;
 }
 
-function captureLaunchdRollbackInventoryPass(
+function captureLaunchdNamespacePass(
   seedIds: readonly string[],
   context: {
     exec: LaunchdExec;
@@ -609,24 +618,24 @@ function captureLaunchdRollbackInventoryPass(
     target: (id: string) => string;
     label: (id: string) => string;
   },
-): Readonly<{ inspection: SchedulerBackendInspection; stabilityKey: string }> {
+): Readonly<{ namespace: StableLaunchdNamespace; stabilityKey: string }> {
   const domain = context.exec.run(["launchctl", "print", `gui/${context.exec.uid()}`]);
   if (domain.status !== 0) {
     throw new ConfigError(
-      `launchctl failed to enumerate the loaded user domain during rollback CAS: ${domain.stderr || domain.stdout || "no output"}.`,
+      `launchctl failed to enumerate the loaded user domain during scheduler state inspection: ${domain.stderr || domain.stdout || "no output"}.`,
       "INVALID_CONFIG_FILE",
     );
   }
   const loadedLabels = parseLaunchdLoadedLabels(domain.stdout);
   if (loadedLabels === undefined) {
     throw new ConfigError(
-      "launchctl returned an unsafe, unsupported, or oversized loaded-service inventory during rollback CAS.",
+      "launchctl returned an unsafe, unsupported, or oversized loaded-service inventory during scheduler state inspection.",
       "INVALID_CONFIG_FILE",
     );
   }
   const disabledLabels = readDisabledLabels(context.exec);
   if (disabledLabels === undefined) {
-    throw new ConfigError("launchctl print-disabled failed during rollback CAS inspection.", "INVALID_CONFIG_FILE");
+    throw new ConfigError("launchctl print-disabled failed during scheduler state inspection.", "INVALID_CONFIG_FILE");
   }
   const akmDisabledLabels = [...disabledLabels].filter((label) => label.startsWith(LAUNCHD_LABEL_PREFIX)).sort();
   const plistEntries: Array<readonly [nativeId: string, raw: string]> = [];
@@ -643,22 +652,49 @@ function captureLaunchdRollbackInventoryPass(
   for (const serviceLabel of akmDisabledLabels) ids.add(serviceLabel.slice(LAUNCHD_LABEL_PREFIX.length));
   if (ids.size > MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES) {
     throw new ConfigError(
-      `launchd AKM rollback inventory exceeds ${MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES} namespace entries.`,
+      `launchd AKM scheduler inventory exceeds ${MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES} namespace entries.`,
       "INVALID_CONFIG_FILE",
     );
   }
   const plistByNativeId = new Map(plistEntries);
-  const artifacts: SchedulerNativeArtifact[] = [];
+  const entries: LaunchdNamespaceEntry[] = [];
   for (const nativeId of [...ids].sort()) {
     const serviceLabel = context.label(nativeId);
     const plist = plistByNativeId.get(nativeId);
     const enabled = !disabledLabels.has(serviceLabel);
     const loaded = loadedLabels.has(serviceLabel);
-    if (plist !== undefined) artifacts.push(launchdArtifact(nativeId, plist, enabled, loaded));
-    else if (!enabled || loaded) artifacts.push(launchdMissingPlistArtifact(nativeId, enabled, loaded));
+    if (plist === undefined && enabled && !loaded) continue;
+    const artifact =
+      plist === undefined
+        ? launchdMissingPlistArtifact(nativeId, enabled, loaded)
+        : launchdArtifact(nativeId, plist, enabled, loaded);
+    entries.push(Object.freeze({ nativeId, ...(plist !== undefined ? { plist } : {}), enabled, loaded, artifact }));
+  }
+  const artifacts = entries.map((entry) => entry.artifact);
+  const installed: InstalledTaskRef[] = [];
+  for (const entry of entries) {
+    if (entry.plist === undefined) continue;
+    const parsed = extractPlistInvocation(entry.plist);
+    if (!parsed) continue;
+    installed.push(
+      withInstalledInvocation(
+        {
+          id: schedulerLogicalBindingId(entry.nativeId, parsed.invocation),
+          ...(entry.loaded ? { signature: entry.artifact.fingerprint } : {}),
+          ...(parsed.target !== undefined ? { target: parsed.target } : {}),
+          binding: parsed.binding,
+          contextPath: parsed.contextPath,
+        },
+        parsed.invocation,
+        entry.nativeId,
+      ),
+    );
   }
   return Object.freeze({
-    inspection: Object.freeze({ installed: Object.freeze([]), artifacts: Object.freeze(artifacts) }),
+    namespace: Object.freeze({
+      inspection: Object.freeze({ installed: Object.freeze(installed), artifacts: Object.freeze(artifacts) }),
+      entries: Object.freeze(entries),
+    }),
     stabilityKey: JSON.stringify({
       loadedLabels: [...loadedLabels].sort(),
       disabledLabels: akmDisabledLabels,
@@ -753,93 +789,71 @@ function inspectLaunchdState(context: {
   target: (id: string) => string;
   label: (id: string) => string;
 }): SchedulerBackendInspection {
-  if (!context.fsLike.exists(context.agentsDir)) {
-    return Object.freeze({ installed: Object.freeze([]), artifacts: Object.freeze([]) });
-  }
-  const disabledLabels = readDisabledLabels(context.exec);
-  const installed: InstalledTaskRef[] = [];
-  const artifacts: SchedulerNativeArtifact[] = [];
-  for (const file of context.fsLike.list(context.agentsDir).sort()) {
-    if (!file.startsWith(LAUNCHD_LABEL_PREFIX) || !file.endsWith(".plist")) continue;
-    const nativeId = file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length);
-    const raw = context.fsLike.readFile(context.plistPath(nativeId));
-    const enabled = disabledLabels ? !disabledLabels.has(context.label(nativeId)) : undefined;
-    const loadedResult =
-      enabled !== undefined ? context.exec.run(["launchctl", "print", context.target(nativeId)]) : undefined;
-    const loaded = loadedResult?.status === 0;
-    const loadedKnown = loadedResult !== undefined && (loaded || isServiceNotFoundResult(loadedResult));
-    const artifact =
-      enabled !== undefined && loadedKnown
-        ? launchdArtifact(nativeId, raw, enabled, loaded)
-        : launchdArtifact(nativeId, raw);
-    artifacts.push(artifact);
-    const parsed = extractPlistInvocation(raw);
-    if (!parsed) continue;
-    const ref = withInstalledInvocation(
-      {
-        id: schedulerLogicalBindingId(nativeId, parsed.invocation),
-        ...(artifact.fingerprint !== undefined && loaded ? { signature: artifact.fingerprint } : {}),
-        ...(parsed.target !== undefined ? { target: parsed.target } : {}),
-        binding: parsed.binding,
-        contextPath: parsed.contextPath,
-      },
-      parsed.invocation,
-      nativeId,
-    );
-    installed.push(ref);
-  }
-  return Object.freeze({ installed: Object.freeze(installed), artifacts: Object.freeze(artifacts) });
+  return inspectStableLaunchdNamespace([], context).inspection;
 }
 
-function readLaunchdArtifactState(
-  nativeId: string | undefined,
-  context: {
-    exec: LaunchdExec;
-    fsLike: LaunchdFs;
-    plistPath: (id: string) => string;
-    target: (id: string) => string;
-    label: (id: string) => string;
-  },
-):
-  | Readonly<{
-      plist?: string;
-      enabled: boolean;
-      loaded: boolean;
-      artifact: SchedulerNativeArtifact;
-    }>
-  | undefined {
-  if (nativeId === undefined) return undefined;
-  const file = context.plistPath(nativeId);
-  const disabledLabels = readDisabledLabels(context.exec);
-  if (disabledLabels === undefined) {
-    throw new ConfigError("launchctl print-disabled failed during scheduler CAS inspection.", "INVALID_CONFIG_FILE");
+function assertLaunchdDirectMutationOwner(
+  artifacts: readonly SchedulerNativeArtifact[],
+  nativeId: string,
+  task: SchedulerBinding,
+): SchedulerNativeArtifact | undefined {
+  const key = schedulerNativeArtifactKey(nativeId);
+  const count = artifacts.filter((artifact) => schedulerNativeArtifactKey(artifact.nativeId) === key).length;
+  const artifact = assertSchedulerNativeArtifactCardinality(artifacts, nativeId, count === 0 ? 0 : 1);
+  if (artifact) assertSchedulerNativeArtifactOwner(artifact.nativeId, task, artifact.invocation);
+  return artifact;
+}
+
+function assertLaunchdDirectRemovalOwner(
+  artifacts: readonly SchedulerNativeArtifact[],
+  nativeId: string,
+): SchedulerNativeArtifact | undefined {
+  const key = schedulerNativeArtifactKey(nativeId);
+  const count = artifacts.filter((artifact) => schedulerNativeArtifactKey(artifact.nativeId) === key).length;
+  const artifact = assertSchedulerNativeArtifactCardinality(artifacts, nativeId, count === 0 ? 0 : 1);
+  if (!artifact) return undefined;
+  if (artifact.nativeId !== nativeId || artifact.invocation === undefined) {
+    throw new ConfigError(
+      `launchd artifact ${JSON.stringify(artifact.nativeId)} is not the exact proven requested owner ${JSON.stringify(nativeId)}; refusing direct removal.`,
+      "INVALID_CONFIG_FILE",
+    );
   }
-  const loadedResult = context.exec.run(["launchctl", "print", context.target(nativeId)]);
-  if (loadedResult.status !== 0 && !isServiceNotFoundResult(loadedResult)) {
-    throw new ConfigError("launchctl print failed during scheduler CAS inspection.", "INVALID_CONFIG_FILE");
-  }
-  const plist = context.fsLike.exists(file) ? context.fsLike.readFile(file) : undefined;
-  const enabled = !disabledLabels.has(context.label(nativeId));
-  const loaded = loadedResult.status === 0;
-  if (plist === undefined && enabled && !loaded) return undefined;
-  const artifact =
-    plist === undefined
-      ? launchdMissingPlistArtifact(nativeId, enabled, loaded)
-      : launchdArtifact(nativeId, plist, enabled, loaded);
-  return Object.freeze({ ...(plist !== undefined ? { plist } : {}), enabled, loaded, artifact });
+  return artifact;
 }
 
 function launchdRollbackExpectationForCurrent(
   nativeId: string,
-  context: Parameters<typeof readLaunchdArtifactState>[1],
+  context: {
+    exec: LaunchdExec;
+    fsLike: LaunchdFs;
+    agentsDir: string;
+    plistPath: (id: string) => string;
+    target: (id: string) => string;
+    label: (id: string) => string;
+  },
+  priorArtifact: SchedulerNativeArtifact | undefined,
 ): SchedulerRollbackExpectation {
-  const current = readLaunchdArtifactState(nativeId, context);
-  if (!current) {
+  const namespace = inspectStableLaunchdNamespace([nativeId], context);
+  const key = schedulerNativeArtifactKey(nativeId);
+  const count = namespace.inspection.artifacts.filter(
+    (artifact) => schedulerNativeArtifactKey(artifact.nativeId) === key,
+  ).length;
+  const artifact = assertSchedulerNativeArtifactCardinality(
+    namespace.inspection.artifacts,
+    nativeId,
+    count === 0 ? 0 : 1,
+  );
+  if (!artifact) {
     return Object.freeze({ nativeId, allowed: Object.freeze([{ state: "absent" as const }]) });
   }
-  if (current.artifact.fingerprint === undefined) {
+  if (
+    artifact.fingerprint === undefined ||
+    artifact.invocation === undefined ||
+    priorArtifact?.invocation === undefined ||
+    !sameStringArray(artifact.invocation, priorArtifact.invocation)
+  ) {
     throw new ConfigError(
-      `launchd artifact ${JSON.stringify(nativeId)} has no exact rollback fingerprint.`,
+      `launchd artifact ${JSON.stringify(nativeId)} has no exact transaction-owned rollback fingerprint.`,
       "INVALID_CONFIG_FILE",
     );
   }
@@ -848,14 +862,16 @@ function launchdRollbackExpectationForCurrent(
     allowed: Object.freeze([
       Object.freeze({
         state: "present" as const,
-        ...(current.artifact.bindingId !== undefined ? { bindingId: current.artifact.bindingId } : {}),
-        ...(current.artifact.invocation !== undefined
-          ? { invocation: Object.freeze([...current.artifact.invocation]) }
-          : {}),
-        fingerprint: current.artifact.fingerprint,
+        ...(artifact.bindingId !== undefined ? { bindingId: artifact.bindingId } : {}),
+        invocation: Object.freeze([...artifact.invocation]),
+        fingerprint: artifact.fingerprint,
       }),
     ]),
   });
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function errorMessage(error: unknown): string {
@@ -891,17 +907,6 @@ function launchdFingerprint(raw: string, enabled: boolean, loaded: boolean): str
   return `${normalizeSignature(signed)}:loaded=${loaded}`;
 }
 
-function findLaunchdNativeId(fsLike: LaunchdFs, agentsDir: string, intended: string): string | undefined {
-  if (!fsLike.exists(agentsDir)) return undefined;
-  const key = schedulerNativeArtifactKey(intended);
-  for (const file of fsLike.list(agentsDir)) {
-    if (!file.startsWith(LAUNCHD_LABEL_PREFIX) || !file.endsWith(".plist")) continue;
-    const nativeId = file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length);
-    if (schedulerNativeArtifactKey(nativeId) === key) return nativeId;
-  }
-  return undefined;
-}
-
 function withInstalledInvocation(
   ref: InstalledTaskRef,
   invocation: readonly string[],
@@ -927,48 +932,6 @@ function setLaunchdEnableState(exec: LaunchdExec, nativeTarget: string, enabled:
   runOrThrow(exec, ["launchctl", verb, nativeTarget], {
     message: (result) => `launchctl ${verb} failed: ${result.stderr || result.stdout || "no output"}.`,
   });
-}
-
-function readLaunchdPriorState(
-  fsLike: LaunchdFs,
-  file: string,
-  exec: LaunchdExec,
-  nativeId: string,
-  nativeLabel: string,
-  task: SchedulerBinding,
-): { previousPlist: string | undefined; previousEnabled: boolean } {
-  const previousPlist = fsLike.exists(file) ? fsLike.readFile(file) : undefined;
-  if (previousPlist === undefined) return { previousPlist, previousEnabled: true };
-  assertSchedulerNativeArtifactOwner(nativeId, task, extractPlistInvocation(previousPlist)?.invocation);
-  const disabledLabels = readDisabledLabels(exec);
-  if (disabledLabels === undefined) {
-    throw new ConfigError(
-      `launchctl print-disabled failed; cannot safely replace existing task "${task.id}".`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
-  return { previousPlist, previousEnabled: !disabledLabels.has(nativeLabel) };
-}
-
-/** Close the read/prepare-to-bootout ownership race at the native boundary. */
-function assertLaunchdArtifactUnchanged(
-  fsLike: LaunchdFs,
-  file: string,
-  previousPlist: string | undefined,
-  nativeId: string,
-  nativeLabel: string,
-  task: SchedulerBinding,
-): void {
-  const currentPlist = fsLike.exists(file) ? fsLike.readFile(file) : undefined;
-  if (currentPlist !== previousPlist) {
-    throw new ConfigError(
-      `launchd task "${nativeLabel}" changed while it was being prepared; refusing to replace an unverified owner.`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
-  if (currentPlist !== undefined) {
-    assertSchedulerNativeArtifactOwner(nativeId, task, extractPlistInvocation(currentPlist)?.invocation);
-  }
 }
 
 export function extractPlistInvocation(xml: string): ReturnType<typeof parseScheduledBindingArgv> {
@@ -1075,54 +1038,71 @@ export function parseLaunchdLoadedLabels(output: string): Set<string> | undefine
     for (const line of lines.slice(firstContent + 1)) {
       if (!line.trim()) continue;
       const row = /^\s*(?:-|\d+)\s+-?\d+\s+(\S+)\s*$/u.exec(line);
-      if (row?.[1]?.startsWith(LAUNCHD_LABEL_PREFIX)) {
-        if (!add(row[1])) return undefined;
-      } else if (line.includes(LAUNCHD_LABEL_PREFIX)) {
-        return undefined;
-      }
+      if (!row?.[1]) return undefined;
+      if (row[1].startsWith(LAUNCHD_LABEL_PREFIX) && !add(row[1])) return undefined;
     }
     return labels;
   }
 
-  const inlineEmpty = lines.findIndex((line) => /^\s*services\s*=\s*\{\s*\}\s*$/u.test(line));
-  if (inlineEmpty >= 0) {
-    if (lines.some((line, index) => index !== inlineEmpty && line.includes(LAUNCHD_LABEL_PREFIX))) {
-      return undefined;
-    }
-    return labels;
-  }
-  const servicesStart = lines.findIndex((line) => /^\s*services\s*=\s*\{\s*$/u.test(line));
-  if (servicesStart < 0) return undefined;
+  const firstLine = firstContent < 0 ? undefined : lines[firstContent];
+  if (firstLine === undefined || !/^\s*(?:gui|user)\/\d+\s*=\s*\{\s*$/u.test(firstLine)) return undefined;
+  let lastContent = lines.length - 1;
+  while (lastContent >= 0 && !lines[lastContent]?.trim()) lastContent -= 1;
+  const lastLine = lines[lastContent];
+  if (lastContent <= firstContent || lastLine === undefined || !/^\s*\}\s*$/u.test(lastLine)) return undefined;
+
   let depth = 1;
-  let servicesEnd = -1;
-  for (let index = servicesStart + 1; index < lines.length; index += 1) {
+  let servicesSeen = false;
+  let insideServices = false;
+  for (let index = firstContent + 1; index <= lastContent; index += 1) {
     const line = lines[index]!;
-    if (depth === 1) {
+    if (index === lastContent) {
+      if (insideServices || depth !== 1) return undefined;
+      depth = 0;
+      continue;
+    }
+
+    const servicesBlock = /^\s*services\s*=\s*\{\s*$/u.test(line);
+    const emptyServicesBlock = /^\s*services\s*=\s*\{\s*\}\s*$/u.test(line);
+    if (servicesBlock || emptyServicesBlock) {
+      if (servicesSeen || insideServices || depth !== 1) return undefined;
+      servicesSeen = true;
+      if (servicesBlock) {
+        insideServices = true;
+        depth += 1;
+      }
+      continue;
+    }
+    if (/^\s*services\s*=/u.test(line)) return undefined;
+
+    if (insideServices && depth === 2) {
+      if (!line.trim()) continue;
+      if (/^\s*\}\s*$/u.test(line)) {
+        insideServices = false;
+        depth -= 1;
+        continue;
+      }
       const assignment = /^\s*-?\d+\s*=\s*"?([^"\s{}=]+)"?\s*$/u.exec(line);
       const domainTable = /^\s*(?:-|\d+)\s+(?:-|-?\d+)\s+(\S+)\s*$/u.exec(line);
       const dictionary = /^\s*"?([^"\s{}=]+)"?\s*=\s*\{\s*$/u.exec(line);
       const candidate = assignment?.[1] ?? domainTable?.[1] ?? dictionary?.[1];
-      if (candidate?.startsWith(LAUNCHD_LABEL_PREFIX)) {
-        if (!add(candidate)) return undefined;
-      } else if (line.includes(LAUNCHD_LABEL_PREFIX)) {
-        return undefined;
-      }
+      if (!candidate) return undefined;
+      if (candidate.startsWith(LAUNCHD_LABEL_PREFIX) && !add(candidate)) return undefined;
+      if (dictionary) depth += 1;
+      continue;
     }
-    depth += (line.match(/\{/gu)?.length ?? 0) - (line.match(/\}/gu)?.length ?? 0);
-    if (depth === 0) {
-      servicesEnd = index;
-      break;
-    }
-    if (depth < 0) return undefined;
+
+    if (line.includes(LAUNCHD_LABEL_PREFIX)) return undefined;
+    depth += countCharacter(line, "{") - countCharacter(line, "}");
+    if (depth < 1 || (insideServices && depth < 2)) return undefined;
   }
-  if (servicesEnd < 0) return undefined;
-  for (const [index, line] of lines.entries()) {
-    if (index >= servicesStart && index <= servicesEnd) continue;
-    if (line.includes(LAUNCHD_LABEL_PREFIX) && !/^\s*"?com\.akm\.task\.[A-Za-z0-9._-]+"?\s*=\s*\{\s*$/u.test(line)) {
-      return undefined;
-    }
-  }
-  return labels;
+  return servicesSeen && depth === 0 ? labels : undefined;
+}
+
+function countCharacter(value: string, needle: "{" | "}"): number {
+  let count = 0;
+  for (const character of value) if (character === needle) count += 1;
+  return count;
 }
 
 function hasUnsafeLaunchdControlCharacter(output: string): boolean {

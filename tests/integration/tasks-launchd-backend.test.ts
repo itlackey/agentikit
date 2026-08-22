@@ -6,7 +6,9 @@ import type { LaunchdExec, LaunchdFs } from "../../src/tasks/backends/launchd";
 import { buildPlistXml, LAUNCHD_BACKEND } from "../../src/tasks/backends/launchd";
 import {
   compileTaskSchedulerBindings,
+  type SchedulerBackendInspection,
   type SchedulerBinding,
+  type SchedulerRemovalExpectation,
   schedulerNativeBindingId,
 } from "../../src/tasks/scheduler-binding";
 import {
@@ -418,6 +420,66 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(fs.readFile(file)).toBe(prior);
   });
 
+  test.each([
+    "PING",
+    "ping.",
+  ])("direct create CAS rejects a portable-key-equivalent enabled loaded-only service %s", (loadedId) => {
+    const { backend, exec, fs } = makeBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    exec.loadedLabels.add(`com.akm.task.${loadedId}`);
+    exec.calls.length = 0;
+
+    expect(() =>
+      (backend.install as (...args: unknown[]) => void)(owned, undefined, mutationExpectation(owned, "absent")),
+    ).toThrow(/changed|absence|exists|cardinality|collision|duplicate/i);
+    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
+    expect(exec.loadedLabels.has(`com.akm.task.${loadedId}`)).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("direct install without an expectation rejects a case-equivalent enabled loaded-only service", () => {
+    const { backend, exec, fs } = makeBackend();
+    exec.loadedLabels.add("com.akm.task.PING");
+    exec.calls.length = 0;
+
+    expect(() => backend.install(qualifiedTask("0 9 * * *"))).toThrow(
+      /changed|owner|exists|cardinality|collision|duplicate/i,
+    );
+    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
+    expect(exec.loadedLabels.has("com.akm.task.PING")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("coherent inspection reports every loaded-only portable-key peer without inventing ownership", () => {
+    const { backend, exec } = makeBackend();
+    exec.loadedLabels.add("com.akm.task.PING");
+    exec.loadedLabels.add("com.akm.task.ping.");
+
+    const inspection = backend.inspectBindings?.() as SchedulerBackendInspection;
+
+    expect(inspection?.installed).toEqual([]);
+    expect(inspection?.artifacts.map((artifact) => artifact.nativeId)).toEqual(["PING", "ping."]);
+    expect(inspection?.artifacts.every((artifact) => artifact.invocation === undefined)).toBe(true);
+  });
+
+  test("expected-present update and removal reject a loaded-only service with no frozen public owner", () => {
+    const { backend, exec, fs } = makeBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    backend.install(owned);
+    const nativeId = schedulerNativeBindingId(owned.id);
+    const fingerprint = backend.expectedSignature?.(owned);
+    const expected = mutationExpectation(owned, "present", fingerprint) as SchedulerRemovalExpectation;
+    fs.removeFile(`/tmp/agents/com.akm.task.${nativeId}.plist`);
+    exec.calls.length = 0;
+
+    expect(() =>
+      (backend.install as (...args: unknown[]) => void)({ ...owned, cron: "30 10 * * *" }, undefined, expected),
+    ).toThrow(/changed|owner|fingerprint|present/i);
+    expect(() => backend.uninstall(nativeId, expected)).toThrow(/changed|owner|fingerprint|present/i);
+    expect(exec.loadedLabels.has(`com.akm.task.${nativeId}`)).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
   test("direct update CAS rejects same-owner plist drift after planning", () => {
     const { backend, fs } = makeBackend();
     const owned = qualifiedTask("0 9 * * *");
@@ -661,7 +723,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     };
     exec.calls.length = 0;
 
-    expect(() => backend.install({ ...nested, cron: "30 10 * * *" })).toThrow(/changed.*refusing/i);
+    expect(() => backend.install({ ...nested, cron: "30 10 * * *" })).toThrow(/belongs to|changed.*refusing/i);
     expect(exec.calls.some((call) => call[1] === "bootout")).toBe(false);
   });
 
@@ -724,6 +786,28 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(exec.disabledLabels.has("com.akm.task.ping")).toBe(false);
   });
 
+  test("direct uninstall without an expectation rejects a case-equivalent enabled loaded-only service", () => {
+    const { backend, exec, fs } = makeBackend();
+    exec.loadedLabels.add("com.akm.task.PING");
+    exec.calls.length = 0;
+
+    expect(() => backend.uninstall("ping")).toThrow(/owner|cardinality|collision|duplicate|unproven/i);
+    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
+    expect(exec.loadedLabels.has("com.akm.task.PING")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("direct uninstall rejects an exact-spelling loaded-only service with no provable public owner", () => {
+    const { backend, exec, fs } = makeBackend();
+    exec.loadedLabels.add("com.akm.task.ping");
+    exec.calls.length = 0;
+
+    expect(() => backend.uninstall("ping")).toThrow(/proven|owner|refusing/i);
+    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
+    expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
   test("binding snapshots restore exact plist, loaded, enabled, and absent states", () => {
     const { backend, exec, fs } = makeBackend();
     const priorTask = { ...makeTask("0 9 * * *"), enabled: false };
@@ -742,6 +826,21 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(exec.loadedLabels.has("com.akm.task.absent")).toBe(false);
     expect(exec.disabledLabels.has("com.akm.task.ping")).toBe(true);
     expect(exec.disabledLabels.has("com.akm.task.absent")).toBe(false);
+  });
+
+  test("binding snapshots include a case-equivalent enabled loaded-only service", () => {
+    const { backend, exec } = makeBackend();
+    exec.loadedLabels.add("com.akm.task.PING");
+
+    const snapshot = backend.snapshotBindings?.(["ping"]) as unknown as {
+      artifacts: ReadonlyArray<{ nativeId: string; fingerprint?: string }>;
+      entries: ReadonlyArray<{ id: string; loaded: boolean; enabled: boolean }>;
+    };
+
+    expect(snapshot.artifacts).toEqual([
+      expect.objectContaining({ nativeId: "PING", fingerprint: "launchd:missing-plist:enabled=true:loaded=true" }),
+    ]);
+    expect(snapshot.entries).toEqual([expect.objectContaining({ id: "PING", loaded: true, enabled: true })]);
   });
 
   test("snapshot rollback CAS never clobbers a concurrent same-label plist edit", () => {
@@ -1458,8 +1557,10 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
     expect(listed[0]!.signature).toBeDefined();
     expect(listed[0]!.signature).toBe(backend.expectedSignature?.(task));
     expect(exec.calls).toEqual([
+      ["launchctl", "print", "gui/501"],
       ["launchctl", "print-disabled", "gui/501"],
-      ["launchctl", "print", "gui/501/com.akm.task.ping"],
+      ["launchctl", "print", "gui/501"],
+      ["launchctl", "print-disabled", "gui/501"],
     ]);
   });
 
@@ -1471,8 +1572,10 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
 
     expect(backend.list()).toEqual([{ id: "ping", binding: ["/abs/akm"], contextPath: expect.any(String) }]);
     expect(exec.calls).toEqual([
+      ["launchctl", "print", "gui/501"],
       ["launchctl", "print-disabled", "gui/501"],
-      ["launchctl", "print", "gui/501/com.akm.task.ping"],
+      ["launchctl", "print", "gui/501"],
+      ["launchctl", "print-disabled", "gui/501"],
     ]);
   });
 
@@ -1557,7 +1660,7 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
     }
   });
 
-  test("unreadable or unknown launchctl disabled state is reported as drift", () => {
+  test("unreadable or unknown launchctl disabled state fails coherent inspection closed", () => {
     for (const printDisabledResult of [
       { status: 1, stdout: "", stderr: "domain unavailable" },
       { status: 0, stdout: "unexpected launchctl output", stderr: "" },
@@ -1568,8 +1671,11 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
       exec.printDisabledResult = printDisabledResult;
       exec.calls.length = 0;
 
-      expect(backend.list()).toEqual([{ id: "ping", binding: ["/abs/akm"], contextPath: expect.any(String) }]);
-      expect(exec.calls).toEqual([["launchctl", "print-disabled", "gui/501"]]);
+      expect(() => backend.list()).toThrow(/print-disabled failed.*inspection/i);
+      expect(exec.calls).toEqual([
+        ["launchctl", "print", "gui/501"],
+        ["launchctl", "print-disabled", "gui/501"],
+      ]);
     }
   });
 
