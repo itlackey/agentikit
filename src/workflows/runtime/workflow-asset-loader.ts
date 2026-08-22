@@ -75,7 +75,7 @@ export function parseWorkflowRefInput(ref: string): BundleRef {
 
 /** Resolve input sugar to the workflow's canonical run identity. */
 export async function canonicalizeWorkflowRefInput(ref: string): Promise<string> {
-  return (await loadWorkflowAsset(ref)).ref;
+  return (await loadWorkflowAsset(ref, { projectionMode: "display" })).ref;
 }
 
 /**
@@ -83,7 +83,10 @@ export async function canonicalizeWorkflowRefInput(ref: string): Promise<string>
  * parsed document cached in `index.db` (fast path) and falls back to reading +
  * parsing the source file from disk.
  */
-export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
+export async function loadWorkflowAsset(
+  ref: string,
+  options: { readonly projectionMode?: "display" | "runtime" } = {},
+): Promise<WorkflowAsset> {
   const bundleRef = parseWorkflowRefInput(ref);
 
   const config = loadConfig();
@@ -143,8 +146,12 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
       ? makeBundleRef(sourceBundleId, canonicalName)
       : canonicalWorkflowRunRef(sourceBundleId, canonicalName);
 
-  const cached = readWorkflowDocumentFromIndex(resolvedSourcePath, fullRef, workflowAdapterId as string, assetPath);
-  const document = cached ?? loadWorkflowDocumentFromDisk(assetPath, resolvedSourcePath);
+  const projectionMode = options.projectionMode ?? "runtime";
+  const cached =
+    projectionMode === "runtime"
+      ? readWorkflowDocumentFromIndex(resolvedSourcePath, fullRef, workflowAdapterId as string, assetPath)
+      : null;
+  const document = cached ?? loadWorkflowDocumentFromDisk(assetPath, resolvedSourcePath, projectionMode);
   return projectAsset(document, fullRef, assetPath, resolvedSourcePath, workflowAdapterId as string, canonicalName);
 }
 
@@ -174,19 +181,28 @@ export function resolveWorkflowEntryId(sourcePath: string, ref: string, adapterI
   });
 }
 
-function loadWorkflowDocumentFromDisk(assetPath: string, workspaceRoot: string): WorkflowDocument {
+function loadWorkflowDocumentFromDisk(
+  assetPath: string,
+  workspaceRoot: string,
+  projectionMode: "display" | "runtime" = "runtime",
+): WorkflowDocument {
   const content = fs.readFileSync(assetPath, "utf8");
-  return compileWorkflowDocument(content, assetPath, workspaceRoot);
+  return compileWorkflowDocument(content, assetPath, workspaceRoot, projectionMode);
 }
 
-function compileWorkflowDocument(content: string, sourcePath: string, workspaceRoot: string): WorkflowDocument {
+function compileWorkflowDocument(
+  content: string,
+  sourcePath: string,
+  workspaceRoot: string,
+  projectionMode: "display" | "runtime" = "runtime",
+): WorkflowDocument {
   const result = compileWorkflowSource(content, { path: sourcePath, workspaceRoot });
   if (!result.ok) {
     const details = result.errors.map((error) => `  ${error.path}:${error.line} — ${error.message}`).join("\n");
     throw new UsageError(`Workflow source has ${result.errors.length} error(s):\n${details}`);
   }
   try {
-    return workflowSourceIrToDocument(result.ir, { mode: "runtime" });
+    return workflowSourceIrToDocument(result.ir, { mode: projectionMode });
   } catch (cause) {
     if (cause instanceof WorkflowSourceProjectionError) throw new UsageError(cause.message, "INVALID_FLAG_VALUE");
     throw cause;

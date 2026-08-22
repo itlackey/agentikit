@@ -136,6 +136,8 @@ import { appendEvent } from "../../core/events";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
 import { runStructured } from "../../core/structured";
 import { warn } from "../../core/warn";
+import { assertFrozenDirectoryIdentity } from "../../execution/directory-identity";
+import { assertFrozenExecutableIdentity } from "../../execution/executable-identity";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import { insertEventStrict } from "../../storage/repositories/events-repository";
 import {
@@ -146,6 +148,7 @@ import {
 } from "../../storage/repositories/workflow-runs-repository";
 import { materializeFrozenWorkflowEnvironment } from "../ir/environment-v4";
 import type { FrozenEngineSnapshot, IrBudget, IrStepPlan, IrUnitNode } from "../ir/schema";
+import type { FrozenWorkflowTarget } from "../ir/schema-v4";
 import { WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
 // The ONE dispatch redaction contract, shared with the gate-judge path
 // (exec/frozen-judge.ts). Consumers import the leaf directly — this module is
@@ -173,6 +176,7 @@ import {
 import {
   dispatchFrozenWorkflowExecution,
   prepareFrozenWorkflowExecution,
+  prepareFrozenWorkflowTargetExecution,
   type UnitDispatcher,
   type UnitDispatchRequest,
   type UnitDispatchResult,
@@ -180,6 +184,7 @@ import {
 
 export type { UnitDispatcher, UnitDispatchRequest, UnitDispatchResult } from "./unit-dispatch";
 
+import { cleanupFrozenScript, frozenScriptCommand, materializeFrozenScript } from "../../tasks/frozen-script";
 import { enqueueUnitWrite } from "./unit-writer";
 import { assertGitWorkTree, cleanupUnitWorktree, createUnitWorktree } from "./worktree";
 
@@ -554,7 +559,10 @@ async function prepareStepDispatchPrerequisites(input: {
         ),
       };
     }
-    const base = ctx.workDir ?? process.cwd();
+    const target = workUnits[0]?.frozenTarget;
+    const frozenCwd = target && "cwdIdentity" in target ? target.cwdIdentity : undefined;
+    if (frozenCwd) assertFrozenDirectoryIdentity(frozenCwd);
+    const base = frozenCwd?.realRoot ?? ctx.workDir ?? process.cwd();
     const preflightWorktree = ctx.preflightWorktree ?? assertGitWorkTree;
     const gitError = preflightWorktree(base);
     if (gitError !== undefined) {
@@ -824,6 +832,7 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
     ...(workUnit.fallbackEngine ? { fallbackEngine: workUnit.fallbackEngine } : {}),
     ...(workUnit.invocation ? { invocation: workUnit.invocation } : {}),
     ...(workUnit.exec ? { exec: workUnit.exec } : {}),
+    ...(workUnit.frozenTarget ? { frozenTarget: workUnit.frozenTarget } : {}),
     ...(workUnit.execContext ? { execContext: workUnit.execContext } : {}),
     // A NON-isolated exec unit spawns in the engine invocation's working
     // directory. `dispatchJournaledAttempt` overwrites this with the unit's
@@ -1004,7 +1013,12 @@ type PreparedAttemptWorktree =
 
 async function prepareAttemptWorktree(input: JournaledAttemptInput): Promise<PreparedAttemptWorktree> {
   if (input.worktreeBase === undefined) return { ok: true, request: input.request };
-  const created = await createUnitWorktree(input.worktreeBase, input.ctx.runId, input.attemptId);
+  const created = await createUnitWorktree(
+    input.worktreeBase,
+    input.ctx.runId,
+    input.attemptId,
+    input.workUnit.frozenTarget?.gitCommitOid,
+  );
   if (created.preservedLeftover !== undefined) {
     warn(
       `Workflow unit ${input.attemptId}: a previous attempt left uncollected work in its isolation worktree; ` +
@@ -1483,7 +1497,13 @@ export function buildAgentDispatchRequest(
   request: UnitDispatchRequest,
   prompt: string,
 ): import("../../integrations/agent/builder-shared").AgentDispatchRequest {
-  const lowered = prepareFrozenWorkflowExecution(request, prompt);
+  const lowered =
+    request.frozenTarget?.kind === "command"
+      ? prepareFrozenWorkflowTargetExecution(
+          request as UnitDispatchRequest & { frozenTarget: Extract<FrozenWorkflowTarget, { kind: "command" }> },
+          prompt,
+        )
+      : prepareFrozenWorkflowExecution(request, prompt);
   if (!("dispatch" in lowered)) {
     throw new TypeError("an agent dispatch request requires a frozen agent or sdk engine");
   }
@@ -1496,6 +1516,69 @@ export function buildAgentDispatchRequest(
  * symbolic until the final dispatch boundary.
  */
 export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) => {
+  const frozenTarget = request.frozenTarget;
+  if (frozenTarget?.kind === "script") {
+    assertFrozenDirectoryIdentity(frozenTarget.cwdIdentity);
+    if (frozenTarget.executable) {
+      assertFrozenExecutableIdentity(frozenTarget.executable, `unit ${request.unitId} executable`);
+    }
+    const materialized = materializeFrozenScript({
+      sourceRef: frozenTarget.ref,
+      interpreter: frozenTarget.interpreter as import("../../tasks/runtime-v3").TaskV3ScriptInterpreter,
+      extension: frozenTarget.extension,
+      bytesBase64: frozenTarget.bytesBase64,
+      byteLength: frozenTarget.byteLength,
+      sha256: frozenTarget.contentHash,
+    });
+    try {
+      const command = frozenScriptCommand(
+        {
+          sourceRef: frozenTarget.ref,
+          interpreter: frozenTarget.interpreter as import("../../tasks/runtime-v3").TaskV3ScriptInterpreter,
+          extension: frozenTarget.extension,
+          bytesBase64: frozenTarget.bytesBase64,
+          byteLength: frozenTarget.byteLength,
+          sha256: frozenTarget.contentHash,
+        },
+        materialized.file,
+      );
+      if (frozenTarget.executable) command[0] = frozenTarget.executable.absolutePath;
+      return await runExecUnit({
+        unitId: request.unitId,
+        exec: {
+          ...(request.exec ?? { command: command as [string, ...string[]], timeoutMs: request.timeoutMs }),
+          command: command as [string, ...string[]],
+        },
+        baseDir: request.cwd ?? frozenTarget.cwdIdentity.realCwd,
+        ...(request.env ? { env: request.env } : {}),
+        ...(request.execContext ? { context: request.execContext } : {}),
+        ...(request.schema ? { hasOutputSchema: true } : {}),
+        timeoutMs: request.timeoutMs,
+        ...(request.signal ? { signal: request.signal } : {}),
+      });
+    } finally {
+      cleanupFrozenScript(materialized);
+    }
+  }
+  if (frozenTarget?.kind === "shell") {
+    assertFrozenDirectoryIdentity(frozenTarget.cwdIdentity);
+    if (frozenTarget.executable) {
+      assertFrozenExecutableIdentity(frozenTarget.executable, `unit ${request.unitId} executable`);
+    }
+    if (!request.exec) throw new TypeError(`frozen shell unit ${request.unitId} has no exec snapshot`);
+    const command = [...request.exec.command];
+    if (frozenTarget.executable) command[0] = frozenTarget.executable.absolutePath;
+    return runExecUnit({
+      unitId: request.unitId,
+      exec: { ...request.exec, command: command as [string, ...string[]] },
+      baseDir: request.cwd ?? frozenTarget.cwdIdentity.realCwd,
+      ...(request.env ? { env: request.env } : {}),
+      ...(request.execContext ? { context: request.execContext } : {}),
+      ...(request.schema ? { hasOutputSchema: true } : {}),
+      timeoutMs: request.timeoutMs,
+      ...(request.signal ? { signal: request.signal } : {}),
+    });
+  }
   // `exec` units are dispatched FIRST and separately: they name no engine, so
   // none of the engine-resolution below applies. `feedback` is deliberately
   // ignored — a corrective re-prompt is meaningless to a fixed argv, and

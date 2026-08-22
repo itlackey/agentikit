@@ -264,12 +264,12 @@ export async function startWorkflowRun(
     parameterFlags?: readonly WorkflowParameterFlag[];
   },
 ): Promise<WorkflowRunDetail> {
-  const asset = await loadWorkflowAsset(ref);
+  const asset = await loadWorkflowAsset(ref, { projectionMode: "display" });
   // Frozen plan (redesign addendum, R1): compile the plan ONCE at start and
   // persist it on the run row in the same transaction as the insert. Every
   // later invocation executes this snapshot — the asset file is never re-read
   // for an in-flight run; re-planning is an explicit new run.
-  const frozen = compileResolveFreezeWorkflowV4(asset, loadConfig());
+  const frozen = await compileResolveFreezeWorkflowV4(asset, loadConfig());
   const plan = frozen.plan;
   if (options?.parameterFlags?.length && Object.keys(params).length > 0) {
     throw new UsageError("Workflow parameters must use either an object or per-parameter flags, not both.");

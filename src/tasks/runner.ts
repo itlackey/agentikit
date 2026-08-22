@@ -17,9 +17,7 @@
  * and so tests can assert against it without scraping stdout.
  */
 
-import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { type CommandDispatchResult, dispatchPreparedCommandInvocation } from "../commands/command/command-execution";
 import { armAbortDeadline } from "../core/abort-deadline";
@@ -43,6 +41,7 @@ import { redactCredentialPatterns, redactSensitiveText } from "../core/redaction
 import { withStateDb } from "../core/state-db";
 import { runManagedSubprocess, type SpawnFn } from "../core/subprocess";
 import { resolveWriteTarget } from "../core/write-source";
+import { assertFrozenDirectoryIdentity } from "../execution/directory-identity";
 import type { LoweringNotice } from "../execution/resolved-request";
 import { resolveAdapterConceptOwner } from "../indexer/lookup/adapter-concept-owner";
 import type { RunAgentOptions } from "../integrations/agent";
@@ -60,10 +59,10 @@ import {
   upsertTaskHistory,
 } from "../storage/repositories/task-history-repository";
 import { runWorkflowSteps } from "../workflows/exec/run-workflow";
+import { cleanupFrozenScript, frozenScriptCommand, materializeFrozenScript } from "./frozen-script";
 import { collectTaskLogSensitiveValues } from "./log-redaction";
 import {
   type PreparedTaskV3Command,
-  type PreparedTaskV3DirectoryIdentity,
   type PreparedTaskV3Execution,
   type PreparedTaskV3Script,
   type PreparedTaskV3Shell,
@@ -71,7 +70,6 @@ import {
   prepareTaskV3Execution,
 } from "./runtime-v3";
 import { parseTaskV3Yaml } from "./source-v3";
-import { STANDALONE_FROZEN_SCRIPT_ARG } from "./standalone-script-entry";
 import { validateTaskConceptId, validateTaskId } from "./task-id";
 
 export type TaskRunStatus = "completed" | "blocked" | "failed" | "disabled" | "active";
@@ -306,81 +304,6 @@ function shellCommand(task: PreparedTaskV3Shell): string[] {
   }
 }
 
-function frozenScriptCommand(task: PreparedTaskV3Script, materializedPath: string): string[] {
-  switch (task.interpreter) {
-    case "bun":
-      return [process.execPath, materializedPath];
-    case "bun-standalone":
-      return [process.execPath, STANDALONE_FROZEN_SCRIPT_ARG, materializedPath];
-    case "powershell":
-      return ["powershell", "-NoProfile", "-NonInteractive", "-File", materializedPath];
-    case "cmd":
-      return ["cmd", "/d", "/s", "/c", materializedPath];
-    case "go":
-      return ["go", "run", materializedPath];
-    case "kotlin":
-      return task.extension === ".kts" ? ["kotlinc", "-script", materializedPath] : ["kotlin", materializedPath];
-    case "sh":
-    case "python":
-    case "ruby":
-    case "perl":
-    case "php":
-    case "lua":
-    case "rscript":
-    case "swift":
-      return [task.interpreter, materializedPath];
-    default:
-      return assertNever(task.interpreter, "frozenScriptCommand");
-  }
-}
-
-function materializeFrozenScript(task: PreparedTaskV3Script): { directory: string; file: string } {
-  const bytes = Buffer.from(task.bytesBase64, "base64");
-  const digest = createHash("sha256").update(bytes).digest("hex");
-  if (bytes.byteLength !== task.byteLength || digest !== task.sha256) {
-    throw new Error(`Frozen script snapshot ${task.sourceRef} failed its byte/hash integrity check.`);
-  }
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-script-"));
-  const file = path.join(directory, `snapshot${task.extension}`);
-  fs.writeFileSync(file, bytes, { mode: 0o700 });
-  return { directory, file };
-}
-
-function physicalIdentity(directory: string): { device: string; inode: string } {
-  const stat = fs.lstatSync(directory, { bigint: true });
-  if (stat.isSymbolicLink() || !stat.isDirectory()) {
-    throw new Error(`Prepared task working directory ${JSON.stringify(directory)} is no longer a no-follow directory.`);
-  }
-  return { device: stat.dev.toString(), inode: stat.ino.toString() };
-}
-
-function assertPreparedCwdIdentity(identity: PreparedTaskV3DirectoryIdentity): void {
-  try {
-    const realRoot = fs.realpathSync.native(identity.requestedRoot);
-    const realCwd = fs.realpathSync.native(identity.requestedCwd);
-    const root = physicalIdentity(realRoot);
-    const cwd = physicalIdentity(realCwd);
-    const relative = path.relative(realRoot, realCwd);
-    const contained =
-      relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-    if (
-      !contained ||
-      realRoot !== identity.realRoot ||
-      realCwd !== identity.realCwd ||
-      root.device !== identity.rootDevice ||
-      root.inode !== identity.rootInode ||
-      cwd.device !== identity.cwdDevice ||
-      cwd.inode !== identity.cwdInode
-    ) {
-      throw new Error("identity changed");
-    }
-  } catch (cause) {
-    throw new Error(
-      `Prepared task working directory physical identity changed before spawn; refusing execution: ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
-  }
-}
-
 async function runNativeTask(input: {
   task: PreparedTaskV3Shell | PreparedTaskV3Script;
   logPath: string;
@@ -412,7 +335,7 @@ async function runNativeTask(input: {
     // history mutation. Re-resolve the authored root/cwd immediately before
     // spawn so a symlink, ancestor, bundle-root, or directory/file swap cannot
     // redirect execution outside that physical workspace.
-    assertPreparedCwdIdentity(task.cwdIdentity);
+    assertFrozenDirectoryIdentity(task.cwdIdentity);
     if (task.kind === "script") {
       materialized = materializeFrozenScript(task);
       cmd = frozenScriptCommand(task, materialized.file);
@@ -465,7 +388,7 @@ async function runNativeTask(input: {
     dbLines.push({ level: "error", line: `spawn_error=${msg}` });
     exitCode = 1;
   } finally {
-    if (materialized) fs.rmSync(materialized.directory, { recursive: true, force: true });
+    if (materialized) cleanupFrozenScript(materialized);
   }
 
   const finishedAt = finishAttempt(startedAt, now());

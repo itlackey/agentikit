@@ -85,7 +85,14 @@ export function freezeWorkflowEnvironment(
     logical.add(resolved.ref);
 
     trackParentDirectories(collector, resolved.root, resolved.path);
-    const captured = collector.capture(resolved.path, resolved.root, { authored: true });
+    const retained = collector.capture(resolved.path, resolved.root, { authored: true });
+    const captured = collector.bindIdentity(resolved.path, resolved.root, {
+      ref: resolved.ref,
+      bundle: resolved.bundle,
+      adapter: resolved.adapter,
+      file: retained.relativePath,
+      hash: retained.sha256,
+    });
     const physicalKey = `${captured.containmentPhysicalIdentity}\0${captured.physicalIdentity}`;
     const alias = physical.get(physicalKey);
     if (alias !== undefined && alias !== resolved.ref) {

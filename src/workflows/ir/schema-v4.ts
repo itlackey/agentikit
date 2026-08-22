@@ -13,6 +13,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { UsageError } from "../../core/errors";
+import { decodeFrozenExecutableIdentity, type FrozenExecutableIdentity } from "../../execution/executable-identity";
 import {
   canonicalResolvedExecutionRequest,
   decodeResolvedExecutionRequest,
@@ -80,12 +81,17 @@ export interface FrozenWorkflowCommandTarget {
   readonly contentHash: string;
   readonly request: ResolvedExecutionRequestV1;
   readonly runner: RunnerSpec;
+  readonly cwdIdentity?: FrozenWorkflowDirectoryIdentity;
+  readonly executable?: FrozenExecutableIdentity;
+  readonly gitCommitOid?: string;
 }
 
 export interface FrozenWorkflowShellTarget {
   readonly kind: "shell";
   readonly contentHash: string;
   readonly cwdIdentity: FrozenWorkflowDirectoryIdentity;
+  readonly executable?: FrozenExecutableIdentity;
+  readonly gitCommitOid?: string;
 }
 
 export interface FrozenWorkflowScriptTarget {
@@ -98,6 +104,8 @@ export interface FrozenWorkflowScriptTarget {
   readonly byteLength: number;
   readonly cwdIdentity: FrozenWorkflowDirectoryIdentity;
   readonly materialization: "ephemeral-0700-delete";
+  readonly executable?: FrozenExecutableIdentity;
+  readonly gitCommitOid?: string;
 }
 
 export type FrozenWorkflowTarget = FrozenWorkflowCommandTarget | FrozenWorkflowShellTarget | FrozenWorkflowScriptTarget;
@@ -212,7 +220,11 @@ function decodeCommandTarget(
   unit: IrUnitNode,
   requiredSources: ExecutionSourceIdentity[],
 ): FrozenWorkflowCommandTarget {
-  assertKeys(target, ["kind", "ref", "contentHash", "request", "runner"], `unit ${unit.id} command target`);
+  assertKeys(
+    target,
+    ["kind", "ref", "contentHash", "request", "runner", "cwdIdentity", "executable", "gitCommitOid"],
+    `unit ${unit.id} command target`,
+  );
   if (!unit.invocation || unit.exec) fail(`unit ${unit.id} command target requires an invocation arm`);
   if (target.ref !== null && typeof target.ref !== "string") fail(`unit ${unit.id} command target ref is invalid`);
   const request = decodeResolvedExecutionRequest(target.request);
@@ -238,9 +250,33 @@ function decodeCommandTarget(
     fail(`unit ${unit.id} inline command target ref must be null`);
   }
   if (request.persona) requiredSources.push(request.persona.source);
+  const cwdIdentity = Object.hasOwn(target, "cwdIdentity")
+    ? decodeDirectoryIdentity(target.cwdIdentity, unit.id)
+    : undefined;
+  const executable = Object.hasOwn(target, "executable")
+    ? decodeFrozenExecutableIdentity(target.executable, `unit ${unit.id} executable`)
+    : undefined;
+  if (runner.kind === "agent" && (cwdIdentity !== undefined || executable !== undefined)) {
+    if (!cwdIdentity || !executable) fail(`unit ${unit.id} CLI command target requires cwdIdentity and executable`);
+    if (runner.profile.bin !== executable.requested && runner.profile.bin !== executable.absolutePath) {
+      fail(`unit ${unit.id} executable does not match the frozen runner bin`);
+    }
+  } else if (runner.kind !== "agent" && executable !== undefined) {
+    fail(`unit ${unit.id} non-CLI target cannot carry a host executable`);
+  }
+  const gitCommitOid = decodeGitCommitOid(target.gitCommitOid, unit);
   // Force the shared request canonicalizer across every accepted wire request.
   canonicalResolvedExecutionRequest(request);
-  return Object.freeze({ kind: "command", ref: target.ref as string | null, contentHash, request, runner });
+  return Object.freeze({
+    kind: "command",
+    ref: target.ref as string | null,
+    contentHash,
+    request,
+    runner,
+    ...(cwdIdentity ? { cwdIdentity } : {}),
+    ...(executable ? { executable } : {}),
+    ...(gitCommitOid ? { gitCommitOid } : {}),
+  });
 }
 
 function decodeShellTarget(
@@ -248,17 +284,34 @@ function decodeShellTarget(
   unit: IrUnitNode,
   environment: readonly FrozenWorkflowEnvironmentBinding[],
 ): FrozenWorkflowShellTarget {
-  assertKeys(target, ["kind", "contentHash", "cwdIdentity"], `unit ${unit.id} shell target`);
+  assertKeys(
+    target,
+    ["kind", "contentHash", "cwdIdentity", "executable", "gitCommitOid"],
+    `unit ${unit.id} shell target`,
+  );
   if (!unit.exec || unit.invocation) fail(`unit ${unit.id} shell target requires an exec arm`);
   if (unit.exec.inheritEnv) fail(`unit ${unit.id} inheritEnv is forbidden; use named environment bindings`);
   const cwdIdentity = decodeDirectoryIdentity(target.cwdIdentity, unit.id);
+  const executable = Object.hasOwn(target, "executable")
+    ? decodeFrozenExecutableIdentity(target.executable, `unit ${unit.id} executable`)
+    : undefined;
+  if (executable && unit.exec.command[0] !== executable.requested && unit.exec.command[0] !== executable.absolutePath) {
+    fail(`unit ${unit.id} shell executable does not match the frozen command`);
+  }
+  const gitCommitOid = decodeGitCommitOid(target.gitCommitOid, unit);
   const contentHash = digest(target.contentHash, `unit ${unit.id} shell contentHash`);
   const expected = createHash("sha256")
     .update("akm.workflow.shell.v1\0")
     .update(canonicalJsonLocal({ exec: unit.exec, environment, cwdIdentity }))
     .digest("hex");
   if (contentHash !== expected) fail(`unit ${unit.id} shell contentHash does not match its frozen dispatch`);
-  return Object.freeze({ kind: "shell", contentHash, cwdIdentity });
+  return Object.freeze({
+    kind: "shell",
+    contentHash,
+    cwdIdentity,
+    ...(executable ? { executable } : {}),
+    ...(gitCommitOid ? { gitCommitOid } : {}),
+  });
 }
 
 function decodeScriptTarget(
@@ -278,6 +331,8 @@ function decodeScriptTarget(
       "byteLength",
       "cwdIdentity",
       "materialization",
+      "executable",
+      "gitCommitOid",
     ],
     `unit ${unit.id} script target`,
   );
@@ -299,6 +354,10 @@ function decodeScriptTarget(
   if (contentHash !== sha256(bytes)) fail(`unit ${unit.id} script contentHash does not match frozen bytes`);
   if (target.materialization !== "ephemeral-0700-delete") fail(`unit ${unit.id} script materialization is invalid`);
   const cwdIdentity = decodeDirectoryIdentity(target.cwdIdentity, unit.id);
+  const executable = Object.hasOwn(target, "executable")
+    ? decodeFrozenExecutableIdentity(target.executable, `unit ${unit.id} executable`)
+    : undefined;
+  const gitCommitOid = decodeGitCommitOid(target.gitCommitOid, unit);
   requiredSources.push({ ref: target.ref, bundle: "", adapter: "", file: "", hash: contentHash });
   return Object.freeze({
     kind: "script",
@@ -310,7 +369,20 @@ function decodeScriptTarget(
     byteLength: target.byteLength as number,
     cwdIdentity,
     materialization: "ephemeral-0700-delete",
+    ...(executable ? { executable } : {}),
+    ...(gitCommitOid ? { gitCommitOid } : {}),
   });
+}
+
+function decodeGitCommitOid(value: unknown, unit: IrUnitNode): string | undefined {
+  if (unit.isolation === "worktree") {
+    if (typeof value !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value)) {
+      fail(`unit ${unit.id} worktree target requires a canonical gitCommitOid`);
+    }
+    return value;
+  }
+  if (value !== undefined) fail(`unit ${unit.id} gitCommitOid is only valid for worktree isolation`);
+  return undefined;
 }
 
 function decodeDirectoryIdentity(value: unknown, unitId: string): FrozenWorkflowDirectoryIdentity {

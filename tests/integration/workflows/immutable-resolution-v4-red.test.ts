@@ -162,7 +162,10 @@ describe("workflow v4 common target resolution", () => {
     expect(target.request.command.content).toBe("Review once exactly.\n");
     expect(target.request.command.source).toMatchObject({ ref: target.ref, adapter: "akm" });
     expect(target.runner.engine).toBe(target.request.engine.name);
-    expect(target.runner).toMatchObject({ kind: "agent", profile: { bin: expect.stringMatching(/^\//) } });
+    expect(target.runner).toMatchObject({
+      kind: "sdk",
+      profile: { name: "test-agent", platform: "opencode-sdk", bin: "opencode" },
+    });
   });
 
   test("preserves a qualified cross-bundle command owner through sourceReadSet, request, and target", async () => {

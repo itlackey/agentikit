@@ -5,7 +5,13 @@
 import type { LlmConnectionConfig } from "../../core/config/config";
 import { deepMergeConfig } from "../../core/config/deep-merge";
 import { ConfigError } from "../../core/errors";
-import type { LoweringNotice } from "../../execution/resolved-request";
+import { assertFrozenDirectoryIdentity } from "../../execution/directory-identity";
+import { assertFrozenExecutableIdentity } from "../../execution/executable-identity";
+import {
+  canonicalResolvedExecutionRequest,
+  decodeResolvedExecutionRequest,
+  type LoweringNotice,
+} from "../../execution/resolved-request";
 import {
   dispatchLoweredExecutionRequest,
   type LoweredExecutionRequest,
@@ -16,6 +22,7 @@ import type { RunnerSpec } from "../../integrations/agent/runner";
 import type { AgentTokenUsage } from "../../integrations/agent/spawn";
 import { getHarness } from "../../integrations/harnesses";
 import type { FrozenEngineSnapshot, IrExecSpec, IrInvocation } from "../ir/schema";
+import type { FrozenWorkflowTarget } from "../ir/schema-v4";
 
 /** Everything the dispatcher needs to run one frozen workflow unit. */
 export interface UnitDispatchRequest {
@@ -46,6 +53,8 @@ export interface UnitDispatchRequest {
    * branch on this field alone.
    */
   exec?: IrExecSpec;
+  /** V4 immutable target. Dispatch authority comes from this snapshot only. */
+  frozenTarget?: FrozenWorkflowTarget;
   /**
    * `AKM_*` context environment for an exec unit's child — run/step/unit ids,
    * the run params, a map unit's item + index, and the step's declared
@@ -216,6 +225,33 @@ export function prepareFrozenWorkflowExecution(
   return lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
 }
 
+/** Lower a persisted v4 common request through its persisted runner only. */
+export function prepareFrozenWorkflowTargetExecution(
+  request: UnitDispatchRequest & { frozenTarget: Extract<FrozenWorkflowTarget, { kind: "command" }> },
+  prompt = request.prompt,
+): LoweredExecutionRequest {
+  const target = request.frozenTarget;
+  if (target.cwdIdentity) assertFrozenDirectoryIdentity(target.cwdIdentity);
+  if (target.executable) assertFrozenExecutableIdentity(target.executable, `unit ${request.unitId} executable`);
+  const wire = JSON.parse(canonicalResolvedExecutionRequest(target.request)) as Record<string, unknown>;
+  const command = { ...(wire.command as Record<string, unknown>), content: prompt };
+  const runtime = {
+    ...(wire.runtime as Record<string, unknown>),
+    ...(request.cwd !== undefined
+      ? { workspace: request.cwd }
+      : target.cwdIdentity
+        ? { workspace: target.cwdIdentity.realCwd }
+        : {}),
+    ...(request.env !== undefined ? { environment: request.env } : {}),
+  };
+  wire.command = command;
+  wire.runtime = runtime;
+  if (request.systemPrompt !== undefined) {
+    wire.conversation = [{ role: "system", content: request.systemPrompt }];
+  }
+  return lowerResolvedExecutionRequestWithRunner(decodeResolvedExecutionRequest(wire), target.runner);
+}
+
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -229,7 +265,13 @@ export async function dispatchFrozenWorkflowExecution(
   feedback?: string,
 ): Promise<UnitDispatchResult> {
   const prompt = feedback ? `${request.prompt}\n\n${feedback}` : request.prompt;
-  const lowered = prepareFrozenWorkflowExecution(request, prompt);
+  const lowered =
+    request.frozenTarget?.kind === "command"
+      ? prepareFrozenWorkflowTargetExecution(
+          request as UnitDispatchRequest & { frozenTarget: Extract<FrozenWorkflowTarget, { kind: "command" }> },
+          prompt,
+        )
+      : prepareFrozenWorkflowExecution(request, prompt);
   const notices = lowered.notices.length > 0 ? lowered.notices : undefined;
 
   if (request.env && Object.keys(request.env).length > 0 && lowered.runner.kind === "llm") {

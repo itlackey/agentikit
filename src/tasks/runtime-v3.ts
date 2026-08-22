@@ -24,6 +24,7 @@ import { type BundleRef, makeBundleRef, parseBundleRef } from "../core/asset/ass
 import type { AkmConfig } from "../core/config/config-types";
 import { ConfigError, NotFoundError, UsageError } from "../core/errors";
 import { DURATION_UNITS, parseDuration } from "../core/time";
+import { captureFrozenDirectoryIdentity, type FrozenDirectoryIdentity } from "../execution/directory-identity";
 import { isPortableExecutionAgentSelector, type UnresolvedExecutionDefaults } from "../execution/source";
 import { requireAuthorizedExecutionPlan } from "../integrations/agent/execution-cascade";
 import { lowerResolvedExecutionRequest } from "../integrations/agent/execution-lowering";
@@ -61,16 +62,7 @@ export interface TaskV3PreparedBase {
 }
 
 /** Physical directory identity frozen before durable task history begins. */
-export interface PreparedTaskV3DirectoryIdentity {
-  readonly requestedRoot: string;
-  readonly realRoot: string;
-  readonly rootDevice: string;
-  readonly rootInode: string;
-  readonly requestedCwd: string;
-  readonly realCwd: string;
-  readonly cwdDevice: string;
-  readonly cwdInode: string;
-}
+export type PreparedTaskV3DirectoryIdentity = FrozenDirectoryIdentity;
 
 export interface PreparedTaskV3Command extends TaskV3PreparedBase {
   readonly kind: "command";
@@ -274,46 +266,9 @@ function scriptInterpreter(extension: string, ref: string): TaskV3ScriptInterpre
   return isBunStandaloneMain() ? "bun-standalone" : "bun";
 }
 
-function isContained(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-}
-
-function directoryStat(directory: string): { device: string; inode: string } {
-  const stat = fs.lstatSync(directory, { bigint: true });
-  if (stat.isSymbolicLink() || !stat.isDirectory()) {
-    throw new UsageError(
-      `Task working directory ${JSON.stringify(directory)} is not a no-follow physical directory.`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  return { device: stat.dev.toString(), inode: stat.ino.toString() };
-}
-
 function captureDirectoryIdentity(bundleRoot: string, workingDirectory?: string): PreparedTaskV3DirectoryIdentity {
-  const requestedRoot = path.resolve(bundleRoot);
-  const requestedCwd = workingDirectory ? path.resolve(requestedRoot, workingDirectory) : requestedRoot;
   try {
-    const realRoot = fs.realpathSync.native(requestedRoot);
-    const realCwd = fs.realpathSync.native(requestedCwd);
-    if (!isContained(realRoot, realCwd)) {
-      throw new UsageError(
-        `Task working directory ${JSON.stringify(workingDirectory ?? ".")} resolves outside its physical bundle root.`,
-        "INVALID_FLAG_VALUE",
-      );
-    }
-    const root = directoryStat(realRoot);
-    const cwd = directoryStat(realCwd);
-    return Object.freeze({
-      requestedRoot,
-      realRoot,
-      rootDevice: root.device,
-      rootInode: root.inode,
-      requestedCwd,
-      realCwd,
-      cwdDevice: cwd.device,
-      cwdInode: cwd.inode,
-    });
+    return captureFrozenDirectoryIdentity(bundleRoot, workingDirectory);
   } catch (cause) {
     if (cause instanceof UsageError) throw cause;
     throw new UsageError(
