@@ -1060,7 +1060,7 @@ function normalizeSignature(xml: string): string {
 
 /** Parse only proven loaded-service labels from bounded launchctl domain/list output. */
 export function parseLaunchdLoadedLabels(output: string): Set<string> | undefined {
-  if (Buffer.byteLength(output, "utf8") > MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES || output.includes("\0")) {
+  if (Buffer.byteLength(output, "utf8") > MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES || hasUnsafeLaunchdControlCharacter(output)) {
     return undefined;
   }
   const lines = output.replace(/\r\n?/gu, "\n").split("\n");
@@ -1099,9 +1099,9 @@ export function parseLaunchdLoadedLabels(output: string): Set<string> | undefine
     const line = lines[index]!;
     if (depth === 1) {
       const assignment = /^\s*-?\d+\s*=\s*"?([^"\s{}=]+)"?\s*$/u.exec(line);
-      const table = /^\s*(?:-|\d+)\s+-?\d+\s+(\S+)\s*$/u.exec(line);
+      const domainTable = /^\s*(?:-|\d+)\s+(?:-|-?\d+)\s+(\S+)\s*$/u.exec(line);
       const dictionary = /^\s*"?([^"\s{}=]+)"?\s*=\s*\{\s*$/u.exec(line);
-      const candidate = assignment?.[1] ?? table?.[1] ?? dictionary?.[1];
+      const candidate = assignment?.[1] ?? domainTable?.[1] ?? dictionary?.[1];
       if (candidate?.startsWith(LAUNCHD_LABEL_PREFIX)) {
         if (!add(candidate)) return undefined;
       } else if (line.includes(LAUNCHD_LABEL_PREFIX)) {
@@ -1123,6 +1123,16 @@ export function parseLaunchdLoadedLabels(output: string): Set<string> | undefine
     }
   }
   return labels;
+}
+
+function hasUnsafeLaunchdControlCharacter(output: string): boolean {
+  for (let index = 0; index < output.length; index += 1) {
+    const code = output.charCodeAt(index);
+    if (code <= 8 || code === 11 || code === 12 || (code >= 14 && code <= 31) || (code >= 127 && code <= 159)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function readDisabledLabels(exec: LaunchdExec): Set<string> | undefined {
