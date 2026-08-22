@@ -149,16 +149,14 @@ known merged alias, selecting an engine with no mapping is an actionable
 configuration error rather than silently sending the alias as a model ID.
 
 The common execution cascade reads these files for current direct command and
-non-interactive agent calls, task-v2 prompt runs, and improve/proposal/index
+non-interactive agent calls, task-v3 runs, and improve/proposal/index
 model work routed through that resolver. A structured alias expands as
 defaults at the layer that selected it; explicit sibling fields and nearer
 layers still win. The resulting request carries the exact model ID and merged
 inference object. Engine lowerers consume that exact selection and never run
-alias resolution again. Current already-frozen workflow engine calls use the
-same lowerers with their existing exact runner snapshot, but their temporary
-freeze resolver remains until WP7. This runtime integration does not imply
-that the WP6 task-v3 schema or the WP7 durable workflow IR/resume
-representation has shipped.
+alias resolution again. New workflow starts persist the exact request and
+symbolic runner selection in durable plan v4; resume consumes that frozen
+material without resolving aliases again.
 
 Copy the complete installed starter into the user configuration directory when
 you want to customize all fields:

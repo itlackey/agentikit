@@ -2338,7 +2338,8 @@ prompts. Negative feedback requires a reason by default.
 `akm task` is the scheduling surface for workflows, agent prompts, and
 shell commands. It manages on-disk task definitions under
 `<bundle>/tasks/<id>.yml` and reconciles them with the OS-native scheduler
-(cron / launchd / schtasks). Only version-2 task YAML is discovered. The
+(cron / launchd / schtasks). Strict task v3 YAML is the executable source
+contract; see the canonical [Tasks reference](tasks.md). The
 group is `add | run | sync | doctor | history` — there is no `list` or
 `remove`; use `akm search --type task` / `akm show tasks/<id>` to inspect,
 and edit the file + `akm task sync` to change or remove a schedule.
@@ -2404,16 +2405,16 @@ disturbs another bundle's scheduled tasks. Scheduler ids are the bare task id an
 are never namespaced: registering a task whose id is already scheduled from a
 different bundle is a hard error.
 
-Each task targets exactly one of `--workflow <ref>`, `--prompt <text-or-ref>`,
-or `--command <shell>`. Task YAML is strict and begins with `version: 2`.
-Prompt targets dispatch through `--engine` or `defaults.engine` and may set
-`model`, `timeoutMs`, and LLM request overrides; command tasks may set only
-`timeoutMs`; workflow tasks may set `params`, `timeoutMs`, `maxSteps`, and
-`maxRetries`. `task add` accepts `--engine`, `--model`, `--timeout-ms`,
-`--params`, `--name`, `--when-to-use`, `--description`, and `--tags`
-(`maxSteps` / `maxRetries` are YAML-only — set them in the file and run `akm
-task sync`). A v1 task is diagnosed by sync and doctor but is never rewritten
-or executed.
+`task add` accepts exactly one CLI target selector (`--workflow <ref>`,
+`--prompt <text-or-ref>`, or `--command <shell>`) and writes a strict task v3
+source. In the file, exactly one of `uses` or `run` is allowed. `uses` accepts
+command, workflow, and script refs plus `akm/command`; agents and task refs are
+not executable. `run` accepts a shell string with the closed shell and
+contained working-directory contract. The `akm` object owns scheduling,
+resolver overrides, `timeout`, `maxSteps`, `maxRetries`, and redaction names.
+Normal execution rejects v2 and points to `akm migrate apply --dry-run` followed
+by `akm migrate apply`. See [Tasks](tasks.md#migrating-task-v2-to-v3) for the
+complete grammar and fail-closed migration behavior.
 
 **Task-log redaction and `redact:`.** A task's persisted output — the run `.log`
 file and its `logs.db` rows — is scrubbed before it is written. Two passes run:
@@ -2430,10 +2431,11 @@ Any task kind may add `redact:` for a secret exported under a name none of those
 rules recognise:
 
 ```yaml
-version: 2
-schedule: "0 3 * * *"
-command: ./deploy.sh
-redact: [ACME_DEPLOY_TOKEN]   # NAMES, never values — max 32
+version: 3
+run: ./deploy.sh
+akm:
+  schedule: "0 3 * * *"
+  redact: [ACME_DEPLOY_TOKEN]   # NAMES, never values
 ```
 
 akm looks each name up in the environment the run is given; a name that is unset
@@ -2449,13 +2451,13 @@ run`; it does not stop after creating a run. Completion maps to task
 `failed`. The task schema's `params` mapping remains the non-CLI way a scheduled
 definition supplies its new-run parameter snapshot.
 
-**Workflow-task run bounds.** `timeoutMs`, `maxSteps`, and `maxRetries` are the
-task-file spellings of `akm workflow run --timeout`, `--max-steps`, and
+**Workflow-task run bounds.** `akm.timeout`, `akm.maxSteps`, and
+`akm.maxRetries` correspond to `akm workflow run --timeout`, `--max-steps`, and
 `--max-retries`. Unlike the interactive command, a scheduled workflow task gets
 a **default whole-run timeout of 6 hours**
 (`DEFAULT_WORKFLOW_TASK_TIMEOUT_MS`): nobody is at the terminal to Ctrl-C an
 unattended run, so without one a single wedged unit hangs the task forever. An
-explicit `timeoutMs` always wins, and `timeoutMs: null` opts out entirely. On
+explicit `akm.timeout` always wins, and `timeout: null` opts out entirely. On
 expiry the runner aborts the run's signal, which the engine treats as a
 graceful break at the next step boundary — the journal is kept and the run
 stays resumable with `akm workflow resume <run-id>` (the run id is in the task
@@ -2463,12 +2465,13 @@ run's `detail.error` and log). The attempt itself is recorded as `failed`, so
 the OS scheduler sees a non-zero exit.
 
 ```yaml
-version: 2
-schedule: "@daily"
-workflow: workflows/nightly-report
-params:
+version: 3
+uses: workflows/nightly-report
+with:
   region: us-east-1
-timeoutMs: 3600000   # 1h whole-run bound (omit for the 6h default, null for none)
-maxSteps: 20         # optional
-maxRetries: 1        # optional
+akm:
+  schedule: "@daily"
+  timeout: 3600000   # 1h whole-run bound (omit for the 6h default, null for none)
+  maxSteps: 20       # optional
+  maxRetries: 1      # optional
 ```

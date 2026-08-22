@@ -89,6 +89,8 @@ See [Supported Formats](docs/reference/supported-formats.md) for current write s
 - Capture memories, import docs, and manage wikis — [Capture Knowledge](docs/guides/capture-knowledge.md)
 - Turn feedback and usage into reviewable proposals — [Improve the Library](docs/guides/improve-the-library.md)
 - Run resumable, multi-step procedures — [Workflows](docs/reference/workflows.md)
+- Author strict scheduled automation — [Tasks](docs/reference/tasks.md)
+- Upgrading from 0.9.1 — [0.9.2 migration guide](docs/migration/v0.9.1-to-v0.9.2.md)
 - Wire akm into Claude Code, OpenCode, Cursor, and other assistants — [Use AKM With Any Agent](docs/guides/use-with-any-agent.md)
 
 Scheduling background tasks (like `akm improve`) involves reviewing and activating OS scheduler entries — see [Scheduling](docs/guides/scheduling.md) for the full walkthrough.

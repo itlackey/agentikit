@@ -365,11 +365,10 @@ scripts tell "akm threw unexpectedly" apart from an ordinary `NotFoundError`
 The approved target semantics that connect native agent and command assets to
 this engine boundary are specified in
 [Agent, Command, Engine, and Model Resolution](specs/agent-command-engine-model-design.md).
-The WP2/WP3 model-map and common-cascade path, WP4 command surface, and WP5
-runtime lowering convergence are implemented. WP6 task v3 and WP7's final
-source-to-frozen durable workflow IR/resume representation remain separate
-work; the current frozen workflow adapter described below does not claim that
-source-plan convergence.
+The WP2/WP3 model-map and common-cascade path, WP4 command surface, WP5 runtime
+lowering convergence, WP6 task v3, and WP7 source-to-frozen durable workflow
+IR are implemented. Direct commands, task execution, and new workflow freezes
+share this boundary.
 
 Public execution selection uses named `engines`, never profiles. An engine is
 either `kind: "llm"` (an OpenAI-compatible chat-completions connection) or
@@ -433,10 +432,9 @@ prompt-free interactive `akm agent` launch, which has no user/model payload to
 resolve or lower. An explicit missing or incompatible engine is an error and
 never falls through to another configured engine.
 
-The existing task-v2 prompt arm and frozen workflow engine calls use this
-runtime boundary. Task-v3 authoring/migration remains WP6. WP7 still owns the
-final multi-format source compiler and durable common-request IR/resume
-convergence, including removal of its temporary legacy freeze resolver. AKM
+Task-v3 execution and durable workflow-v4 dispatch use this runtime boundary.
+Markdown and GitHub-shaped YAML compile through source IR v1; new starts freeze
+v4, while stored v3 plans resume through an exact compatibility decoder. AKM
 does not support full GitHub Actions semantics or arbitrary remote action
 execution.
 
@@ -493,12 +491,10 @@ External coding agents are reachable via two execution paths:
   startup against its own deadline (including `null`); no caller's timeout is
   stored in the shared lifecycle.
 
-New prompt tasks are versioned task YAML v2 assets. Valid 0.8 task YAML is
-normalized to the v2 runtime shape while reading and is not rewritten. Prompt
-tasks resolve `engine` from the task or `defaults.engine`; LLM prompt tasks use
-plain chat completion and agent prompt tasks use the spawn or SDK runner. Task
-run history writes metadata v2 with an `engine`; historical v1 metadata remains
-readable.
+New tasks are strict task-v3 `.yml` assets. Normal execution rejects v2 and
+directs operators to the explicit preview/apply migrator. Task-v3 command,
+workflow, script, and shell targets use the common resolved/lowered execution
+boundary. Historical task-run metadata remains readable.
 
 Migration restore holds a global maintenance barrier from its final blocker
 check through artifact replacement. Index writers, improve/extract process

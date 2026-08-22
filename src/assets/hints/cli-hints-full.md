@@ -160,7 +160,9 @@ akm secret run secrets/deploy-token GITHUB_TOKEN -- gh release create v1.0.0  # 
 
 ## Workflows
 
-Workflows live under `<bundle>/workflows/` as unified markdown assets.
+Workflows live under `<bundle>/workflows/` as peer `.md` and `.yml` sources.
+Both compile to the same source IR; see `docs/reference/workflow-schema.md` for
+the bounded GitHub-shaped YAML subset.
 
 Ref-based workflow commands are scoped to the current project/worktree/directory,
 so one active run does not block unrelated directories from starting the same
@@ -363,18 +365,20 @@ akm task run <id>                              # Run one task immediately (works
 akm search --type task                         # Enumerate task assets (there is no `task list`)
 ```
 
-To disable a task, set `enabled: false` in its YAML and run `akm task sync`
+Task files use strict task v3 (`version: 3`). To disable one, set
+`akm.enabled: false` and run `akm task sync`
 (the cron line stays, commented). To remove one, delete the YAML and run
-`akm task sync` — the scheduler entry is unbound. Per-task `timeoutMs` in
-the YAML may be `null` (disable the agent kill timer for long local-model
-runs) or a number of milliseconds overriding the selected engine invocation timeout.
+`akm task sync` — the scheduler entry is unbound. Per-task `akm.timeout` may
+be `null` (disable the invocation timer) or a duration/number overriding the
+selected engine invocation timeout. Preview old task-v2 conversion with
+`akm migrate apply --dry-run`.
 
 ## Agent Dispatch
 
 ```sh
 akm agent --prompt "summarize open proposals"   # Dispatch the configured agent CLI
 akm agent agents/architect --prompt "..."       # Embody a bundle agent asset (system prompt, model, tool policy)
-akm agent --workflow workflows/ship-release     # Load the task from a workflow asset
+akm command run commands/release                # Canonical reusable-command dispatch
 akm agent --model sonnet --prompt "..."         # Model override (aliases or exact IDs)
 ```
 

@@ -240,9 +240,9 @@ The 0.9.2 engine boundary has two deliberately separate levels:
 The lowerer boundary, rather than `RunnerSpec` alone, is the required seam for
 user/model work. A prompt-free interactive native-agent launch is the narrow
 exception because it carries no command, persona, model, tools, or other model
-payload to lower. Current task-v2 prompt and frozen-workflow adapters use this
-runtime seam; task v3 and the final durable workflow source/IR/resume
-representation remain separate WP6/WP7 work.
+payload to lower. Task-v3 and durable workflow-v4 adapters use this same seam;
+resume lowers already-frozen material without consulting live resolution
+inputs.
 
 ---
 

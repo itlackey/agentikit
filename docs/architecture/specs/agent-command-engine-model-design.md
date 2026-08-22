@@ -1,5 +1,10 @@
 # Agent, Command, Engine, and Model Resolution
 
+> **Historical implementation design.** The 0.9.2 implementation is complete;
+> current public contracts live in [Tasks](../../reference/tasks.md) and
+> [Workflow Schema](../../reference/workflow-schema.md). The staged checkpoints
+> below are retained as design history and are not current status.
+
 **Status:** Approved target design
 
 **Decision date:** 2026-08-18
