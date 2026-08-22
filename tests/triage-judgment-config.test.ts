@@ -258,6 +258,8 @@ describe("triage judgment config patch semantics (#814 remediation-1)", () => {
 
     const unset = configUnset(judgmentPatchBase(), judgmentPath);
     expect(configGet(unset, judgmentPath)).toBeNull();
+
+    expect(() => configSet(judgmentPatchBase(), judgmentPath, "")).toThrow("Invalid value");
   });
 
   test("unsetting enabled intentionally restores the legacy object default", () => {
