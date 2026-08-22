@@ -136,6 +136,7 @@ run_step \
 	"Verify npm candidate release surface" \
 	tar -tzf "$PACKAGE_CANDIDATE" \
 	package/dist/assets/models.json \
+	package/schemas/akm-task.json \
 	package/docs/reference/tasks.md \
 	package/docs/migration/v0.9.1-to-v0.9.2.md \
 	package/docs/migration/release-notes/0.9.2.md \

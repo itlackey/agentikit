@@ -56,7 +56,7 @@ describe("migration help", () => {
     expect(result).toContain("Migration notes for akm v0.9.2");
     expect(result).toContain("Task v3");
     expect(result).toContain("akm migrate apply --dry-run");
-    expect(result).toContain("v0.9.1-to-v0.9.2.md");
+    expect(result).toMatch(/\[[^\]]+\]\(\.\.\/v0\.9\.1-to-v0\.9\.2\.md(?:#[^)]+)?\)/i);
   });
 
   test("supports latest alias when changelog text is available", () => {

@@ -30,6 +30,32 @@ function missing(relative: string, requirements: readonly Requirement[]): string
   return requirements.filter(([, pattern]) => !pattern.test(text)).map(([label]) => `${relative}: ${label}`);
 }
 
+function markdownSection(relative: string, headingPattern: RegExp): string | undefined {
+  const lines = read(relative).split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index]?.match(/^(#{1,6})\s+(.+?)\s*$/);
+    if (!match) continue;
+    const [, hashes = "", title = ""] = match;
+    if (!headingPattern.test(title)) continue;
+
+    const level = hashes.length;
+    let end = index + 1;
+    while (end < lines.length) {
+      const next = lines[end]?.match(/^(#{1,6})\s+/);
+      if ((next?.[1]?.length ?? Number.POSITIVE_INFINITY) <= level) break;
+      end += 1;
+    }
+    return lines.slice(index + 1, end).join("\n");
+  }
+  return undefined;
+}
+
+function missingInSection(relative: string, heading: RegExp, requirements: readonly Requirement[]): string[] {
+  const body = markdownSection(relative, heading);
+  if (body === undefined) return [`${relative}: section ${heading}`];
+  return requirements.filter(([, pattern]) => !pattern.test(body)).map(([label]) => `${relative}: ${label}`);
+}
+
 function section(markdown: string, heading: string): string | undefined {
   const marker = `## [${heading}]`;
   const start = markdown.indexOf(marker);
@@ -49,6 +75,7 @@ const CURRENT_TRUTH_DOCS = [
   "docs/reference/cli.md",
   "docs/reference/configuration.md",
   "docs/reference/data-and-telemetry.md",
+  "docs/reference/asset-types.md",
   "docs/reference/supported-formats.md",
   "docs/reference/tasks.md",
   "docs/reference/workflows.md",
@@ -62,6 +89,8 @@ const CURRENT_TRUTH_DOCS = [
   "docs/architecture/internals/functional-contract-patterns.md",
   "docs/architecture/internals/health-advisories.md",
   "docs/architecture/internals/storage-locations.md",
+  "schemas/akm-workflow.json",
+  "src/assets/hints/cli-hints-full.md",
 ] as const;
 
 describe("0.9.2 release surface", () => {
@@ -125,23 +154,30 @@ describe("0.9.2 release surface", () => {
 
   test("documents the exact task-v3 grammar, supported targets, refusals, and fail-closed v2 migration", () => {
     const failures = [
-      ...missing("docs/reference/tasks.md", [
+      ...missingInSection("docs/reference/tasks.md", /files?|schema/i, [
         ["the only task extension is .yml", /\.yml.*(?:only|recognized)|only.*\.yml/is],
         [
           ".yaml is a rejected near miss",
           /\.yaml.*(?:never|not).*(?:index|schedul|run)|(?:never|not).*(?:index|schedul|run).*\.yaml/is,
         ],
         ["version 3 is mandatory", /version:\s*3/],
+        ["links the shipped task schema", /\[[^\]]*schema[^\]]*\]\(\.\.\/\.\.\/schemas\/akm-task\.json(?:#[^)]+)?\)/i],
+      ]),
+      ...missingInSection("docs/reference/tasks.md", /executable|targets?|uses.*run/i, [
         ["uses xor run", /exactly one of [`*]*uses[`*]* (?:or|and) [`*]*run|uses.*run.*mutual/is],
-        [
-          "akm.schedule xor on",
-          /exactly one.*(?:akm\.schedule).*(?:`on`|\bon\b)|(?:akm\.schedule).*(?:`on`|\bon\b).*exactly one/is,
-        ],
         ["built-in command target", /akm\/command/],
+        [
+          "akm/command requires exactly one with.ref xor with.content",
+          /akm\/command[\s\S]{0,800}exactly one[\s\S]{0,300}with\.ref[\s\S]{0,300}with\.content|akm\/command[\s\S]{0,800}with\.ref[\s\S]{0,300}with\.content[\s\S]{0,300}(?:mutually exclusive|xor)/i,
+        ],
+        [
+          "akm/command with.arguments is one optional portable string",
+          /with\.arguments[^.\n]{0,240}(?:optional)[^.\n]{0,240}(?:portable)[^.\n]{0,120}(?:single |one )?string|with\.arguments[^.\n]{0,240}(?:optional)[^.\n]{0,240}(?:single |one )?portable string/i,
+        ],
         ["command workflow and script refs", /commands\/.*workflows\/.*scripts\//is],
         [
-          "version-pinned GitHub action syntax is recognized but not acquired",
-          /owner\/repo(?:\[\/path\]|\/path)?.*@(?:ref|revision|sha)[\s\S]{0,500}(?:recognized)[\s\S]{0,300}(?:remote action acquisition|unsupported in 0\.9\.2)/i,
+          "revision-qualified GitHub action syntax is recognized but not acquired",
+          /revision-qualified[\s\S]{0,300}owner\/repo(?:\[\/path\]|\/path)?@(?:ref|revision)[\s\S]{0,500}recognized[\s\S]{0,300}(?:remote action acquisition|unsupported in 0\.9\.2)|owner\/repo(?:\[\/path\]|\/path)?@(?:ref|revision)[\s\S]{0,300}revision-qualified[\s\S]{0,500}recognized[\s\S]{0,300}(?:remote action acquisition|unsupported in 0\.9\.2)/i,
         ],
         ["agent refs are not executable", /agents\/[^.\n]{0,240}(?:not executable|reject)/i],
         ["task refs are not executable", /tasks\/[^.\n]{0,240}(?:not executable|reject)/i],
@@ -152,6 +188,14 @@ describe("0.9.2 release surface", () => {
         ["GitHub expressions are refused", /GitHub (?:expressions|expression).*(?:unsupported|reject)/i],
         ["closed host-shell table", /bash.*sh.*zsh.*pwsh.*powershell.*cmd/is],
         ["working-directory is relative and contained", /working-directory.*(?:relative|contain)/is],
+      ]),
+      ...missingInSection("docs/reference/tasks.md", /schedul|triggers?/i, [
+        [
+          "akm.schedule xor on",
+          /exactly one.*(?:akm\.schedule).*(?:`on`|\bon\b)|(?:akm\.schedule).*(?:`on`|\bon\b).*exactly one/is,
+        ],
+      ]),
+      ...missingInSection("docs/reference/tasks.md", /migrat.*v2|v2.*v3|upgrade/i, [
         [
           "normal execution rejects v2",
           /(?:normal )?execution.*(?:reject|does not accept).*v2|v2.*(?:reject|does not accept).*(?:normal )?execution/is,
@@ -160,25 +204,44 @@ describe("0.9.2 release surface", () => {
         ["migration apply", /akm migrate apply(?:`|\s|$)/m],
         ["ambiguous argv arrays are blocked", /argv array.*(?:block|manual)|(?:block|manual).*argv array/is],
       ]),
-      ...missing("docs/migration/v0.9.1-to-v0.9.2.md", [
+      ...missingInSection("docs/migration/v0.9.1-to-v0.9.2.md", /before.*(?:task )?v2|0\.9\.1.*task v2/i, [
         ["v2 before example", /(?:before|0\.9\.1)[\s\S]*version:\s*2/i],
+      ]),
+      ...missingInSection("docs/migration/v0.9.1-to-v0.9.2.md", /after.*(?:task )?v3|0\.9\.2.*task v3/i, [
         ["v3 after example", /(?:after|0\.9\.2)[\s\S]*version:\s*3/i],
+      ]),
+      ...missingInSection("docs/migration/v0.9.1-to-v0.9.2.md", /procedure|preview.*apply|migrat.*safely/i, [
         ["preview and apply commands", /akm migrate apply --dry-run[\s\S]*akm migrate apply/i],
-        ["immediate backup behavior", /back(?:s|ed)? up|backup/i],
-        ["changed skipped and blocked report", /changed.*skipped.*blocked/is],
+        ["validation completes before replacement", /validat[^.\n]{0,240}before[^.\n]{0,160}replac/i],
+        [
+          "backup is immediate before replacement",
+          /(?:back(?:s|ed)? up|backup)[^.\n]{0,160}immediately before[^.\n]{0,160}replac/i,
+        ],
+        ["preserves schedule", /preserv[^.\n]{0,300}\bschedule\b/i],
+        ["preserves enabled state", /preserv[^.\n]{0,300}\benabled\b/i],
+        ["preserves params", /preserv[^.\n]{0,300}\bparams\b/i],
+        ["preserves timeout", /preserv[^.\n]{0,300}\btimeout\b/i],
+        ["preserves redaction", /preserv[^.\n]{0,300}\bredaction\b/i],
+        ["preserves resolver overrides", /preserv[^.\n]{0,300}resolver overrides?/i],
+        ["reports every file", /every (?:input )?file|each (?:input )?file/i],
+        ["reports exact changed status", /`changed`/],
+        ["reports exact skipped status", /`skipped`/],
+        ["reports exact blocked status", /`blocked`/],
+      ]),
+      ...missingInSection("docs/migration/v0.9.1-to-v0.9.2.md", /blocked|manual review/i, [
         ["argv-array manual case", /argv array.*(?:block|manual)|(?:block|manual).*argv array/is],
       ]),
-      ...missing("docs/reference/cli.md", [
+      ...missingInSection("docs/reference/cli.md", /^task$/i, [
         ["links the canonical task reference", /docs\/reference\/tasks\.md|\]\(tasks\.md(?:#[^)]+)?\)/i],
         ["names task v3", /task v3/i],
       ]),
-      ...missing("docs/reference/supported-formats.md", [
+      ...missingInSection("docs/reference/supported-formats.md", /task/i, [
         ["task .yml-only v3 contract", /akm-task.*\.yml.*(?:version\s*3|v3)|(?:version\s*3|v3).*akm-task.*\.yml/is],
       ]),
-      ...missing("docs/architecture/adapters.md", [
+      ...missingInSection("docs/architecture/adapters.md", /task/i, [
         ["adapter task-v3 contract", /akm-task.*(?:version:\s*3|task v3)|(?:version:\s*3|task v3).*akm-task/is],
       ]),
-      ...missing("docs/guides/scheduling.md", [
+      ...missingInSection("docs/guides/scheduling.md", /task definitions.*scheduler state|task source/i, [
         ["links the task source reference", /reference\/tasks\.md/i],
         ["names task v3", /task v3/i],
       ]),
@@ -188,14 +251,24 @@ describe("0.9.2 release surface", () => {
 
   test("documents peer workflow sources, source IR v1, durable v4, and the explicit 0.9.3 boundary", () => {
     const failures = [
-      ...missing("docs/reference/workflow-schema.md", [
+      ...missingInSection("docs/reference/workflow-schema.md", /source formats|shared IR/i, [
         [
           "peer .md and .yml sources",
           /(?:peer|both)[^\n]{0,160}\.md[^\n]{0,160}\.yml|(?:peer|both)[^\n]{0,160}\.yml[^\n]{0,160}\.md/i,
         ],
         [".yaml is not a workflow source", /\.yaml.*(?:not|unsupported|reject)|(?:not|unsupported|reject).*\.yaml/is],
         ["shared source IR v1", /source IR (?:version )?1|sourceIrVersion:?\s*1/i],
+      ]),
+      ...missingInSection("docs/reference/workflow-schema.md", /GitHub.*YAML.*subset/i, [
         ["GitHub YAML root vocabulary", /\bname\b.*\bon\b.*\bjobs\b/is],
+        [
+          "complete on and jobs source is one workflow asset",
+          /(?:complete|valid)[^.\n]{0,160}(?:`on`|\bon\b)[^.\n]{0,160}(?:`jobs`|\bjobs\b)[^.\n]{0,240}(?:one|single)[^.\n]{0,80}workflow asset/i,
+        ],
+        [
+          "complete workflow does not create a duplicate task asset",
+          /(?:does not|never|no)[^.\n]{0,160}(?:duplicate|second)[^.\n]{0,80}task asset|task asset[^.\n]{0,160}(?:does not|never)[^.\n]{0,120}(?:duplicate|second)/i,
+        ],
         ["local runner restriction", /runs-on:\s*\[self-hosted\]/i],
         ["schedule and manual triggers", /schedule.*workflow_dispatch/is],
         [
@@ -203,6 +276,14 @@ describe("0.9.2 release surface", () => {
           /workflow_dispatch[^.\n]{0,200}(?:empty|no inputs|inputs are unsupported)/i,
         ],
         ["service events are refused", /service events?[^.\n]{0,300}(?:unsupported|reject)/i],
+        [
+          "rejected service events create no watcher",
+          /service events?[^.\n]{0,300}(?:does not|never|no)[^.\n]{0,160}watcher|(?:does not|never|no)[^.\n]{0,160}watcher[^.\n]{0,300}service events?/i,
+        ],
+        [
+          "rejected service events create no polling daemon",
+          /service events?[^.\n]{0,300}(?:does not|never|no)[^.\n]{0,160}poll(?:ing)?(?: daemon)?|(?:does not|never|no)[^.\n]{0,160}poll(?:ing)?(?: daemon)?[^.\n]{0,300}service events?/i,
+        ],
         [
           "only token-safe local run is accepted",
           /(?:token-safe|safe tokens?)[^\n]{0,240}run|run[^\n]{0,240}(?:token-safe|safe tokens?)/i,
@@ -223,33 +304,37 @@ describe("0.9.2 release surface", () => {
           /multi-job[^.\n]{0,300}(?:display|index)[^.\n]{0,300}(?:cannot execute|not executable|refus)|single-job[^.\n]{0,300}(?:execution|runtime)/i,
         ],
       ]),
-      ...missing("docs/reference/workflows.md", [
+      ...missingInSection("docs/reference/workflows.md", /source formats|execution versions/i, [
         [
           "Markdown and GitHub-shaped YAML are peer formats",
           /Markdown.*GitHub[- ]shaped YAML.*peer|peer.*Markdown.*GitHub[- ]shaped YAML/is,
         ],
         ["new runs freeze durable v4", /new (?:run|start).*(?:IR|plan).*v4|v4.*new (?:run|start)/is],
         ["stored v3 runs resume unchanged", /v3.*resume.*(?:exact|unchanged|without.*(?:rewrite|normaliz|refreez))/is],
+      ]),
+      ...missingInSection("docs/reference/workflows.md", /0\.9\.3|unsupported.*boundary/i, [
         ["0.9.3 boundary names GitHub semantics", /0\.9\.3[\s\S]{0,1600}(?:full GitHub|expressions|contexts)/i],
         ["0.9.3 boundary names actions", /0\.9\.3[\s\S]{0,1600}actions?/i],
         ["0.9.3 boundary names service events", /0\.9\.3[\s\S]{0,1600}(?:service )?events?/i],
         ["0.9.3 boundary names runners", /0\.9\.3[\s\S]{0,1600}runners?/i],
       ]),
-      ...missing("docs/reference/supported-formats.md", [
+      ...missingInSection("docs/reference/supported-formats.md", /workflow/i, [
         ["both workflow extensions", /workflow.*\.md.*\.yml|workflow.*\.yml.*\.md/is],
       ]),
-      ...missing("docs/guides/author-workflows.md", [
+      ...missingInSection("docs/guides/author-workflows.md", /start from the template|source formats/i, [
         [
           "authors can choose Markdown or GitHub-shaped YAML",
           /Markdown.*GitHub[- ]shaped YAML|GitHub[- ]shaped YAML.*Markdown/is,
         ],
         ["YAML subset links to authoritative reference", /reference\/workflow-schema\.md/i],
       ]),
-      ...missing("docs/guides/run-workflows.md", [
+      ...missingInSection("docs/guides/run-workflows.md", /start or continue a run|start.*run/i, [
         ["new starts use v4", /new (?:run|start).*(?:v4|version 4)|(?:v4|version 4).*new (?:run|start)/is],
+      ]),
+      ...missingInSection("docs/guides/run-workflows.md", /resume a blocked or failed run|resume/i, [
         ["v3 resume compatibility", /v3.*resume.*(?:exact|unchanged|compatibility)/is],
       ]),
-      ...missing("docs/guides/scheduling.md", [
+      ...missingInSection("docs/guides/scheduling.md", /task definitions.*scheduler state|scheduled workflow/i, [
         [
           "scheduled fires fresh-freeze current source",
           /scheduled (?:fire|run)[^.\n]{0,300}(?:current source|re-read)[^.\n]{0,300}(?:fresh|new)[^.\n]{0,120}(?:freeze|v4)/i,
@@ -264,18 +349,10 @@ describe("0.9.2 release surface", () => {
   });
 
   test("states durable-v4 immutability, its narrow live-value exceptions, and at-least-once dispatch truth", () => {
-    expect(
-      missing("docs/architecture/workflow-engine.md", [
+    const failures = [
+      ...missingInSection("docs/architecture/workflow-engine.md", /frozen plans?|durable plan/i, [
         ["durable plan IR v4", /(?:durable|frozen).*(?:IR|plan).*v4|v4.*(?:durable|frozen).*(?:IR|plan)/is],
         ["new starts persist v4", /new (?:run|start).*(?:persist|freeze|create).*v4|v4.*new (?:run|start)/is],
-        [
-          "v3 is an exact compatibility island",
-          /v3.*(?:exact|byte[- ]stable|unchanged).*compatibility|compatibility island.*v3/is,
-        ],
-        [
-          "resume does not re-read source or config",
-          /resume.*does not re-read.*(?:source|config)|(?:source|config).*not re-read.*resume/is,
-        ],
         ["frozen source read set", /source read set|sourceReadSet/i],
         [
           "resolved target runner cwd executable and git identity",
@@ -293,6 +370,18 @@ describe("0.9.2 release surface", () => {
           "pass-through values are read at dispatch",
           /pass-through.*(?:dispatch|materializ).*current|current.*pass-through.*(?:dispatch|materializ)/is,
         ],
+      ]),
+      ...missingInSection("docs/architecture/workflow-engine.md", /resume is journaled replay|resume/i, [
+        [
+          "v3 is an exact compatibility island",
+          /v3.*(?:exact|byte[- ]stable|unchanged).*compatibility|compatibility island.*v3/is,
+        ],
+        [
+          "resume does not re-read source or config",
+          /resume.*does not re-read.*(?:source|config)|(?:source|config).*not re-read.*resume/is,
+        ],
+      ]),
+      ...missingInSection("docs/architecture/workflow-engine.md", /durable attempts?|at-least-once/i, [
         ["at-least-once execution", /at-least-once/i],
         [
           "crash reclaim reuses the stable dispatchId",
@@ -307,12 +396,13 @@ describe("0.9.2 release surface", () => {
           /(?:unknown|ambiguous).*(?:outcome|dispatch).*(?:re-run|rerun|duplicate)|(?:re-run|rerun|duplicate).*(?:unknown|ambiguous).*(?:outcome|dispatch)/is,
         ],
       ]),
-    ).toEqual([]);
+    ];
+    expect(failures).toEqual([]);
   });
 
   test("documents safe command diagnostics and health checks without claiming value disclosure", () => {
     const failures = [
-      ...missing("docs/reference/cli.md", [
+      ...missingInSection("docs/reference/cli.md", /^command run$/i, [
         ["command run dry-run", /akm command run[^\n]*--dry-run/i],
         ["command-dry-run shape", /command-dry-run/],
         ["safe provenance fields", /field.*layer.*kind.*via/is],
@@ -321,44 +411,69 @@ describe("0.9.2 release surface", () => {
           "dry-run still performs authorization and lowering",
           /--dry-run[\s\S]{0,1200}(?:authoriz|policy)[\s\S]{0,500}(?:lower|lowering)|--dry-run[\s\S]{0,1200}(?:lower|lowering)[\s\S]{0,500}(?:authoriz|policy)/i,
         ],
+        ["dry-run does not dispatch", /--dry-run[\s\S]{0,1200}(?:does not|never)[^.\n]{0,200}dispatch/i],
         [
-          "dry-run does not dispatch or materialize credentials",
-          /--dry-run[\s\S]{0,1200}(?:does not|never)[\s\S]{0,200}dispatch[\s\S]{0,400}credential[^\n]{0,120}materializ/i,
+          "dry-run does not materialize credentials",
+          /--dry-run[\s\S]{0,1200}(?:does not|never)[^.\n]{0,240}materializ[^.\n]{0,120}credentials?|--dry-run[\s\S]{0,1200}credentials?[^.\n]{0,120}(?:are not|never)[^.\n]{0,120}materializ/i,
         ],
         [
           "verbose diagnostics use stderr and preserve stdout",
           /--verbose[\s\S]{0,1000}stderr[\s\S]{0,500}stdout[^.\n]{0,160}(?:unchanged|preserv)|stdout[^.\n]{0,160}(?:unchanged|preserv)[\s\S]{0,500}--verbose[\s\S]{0,500}stderr/i,
         ],
-        [
-          "resolved values are excluded",
-          /(?:never|does not).*(?:resolved values|prompt content|environment values|credential values)/is,
-        ],
+        ["resolved values are excluded", /(?:never|does not|exclud(?:e|es|ed))[^.\n]{0,240}resolved values/i],
+        ["prompt content is excluded", /(?:never|does not|exclud(?:e|es|ed))[^.\n]{0,240}prompt content/i],
+        ["command content is excluded", /(?:never|does not|exclud(?:e|es|ed))[^.\n]{0,240}command content/i],
+        ["environment values are excluded", /(?:never|does not|exclud(?:e|es|ed))[^.\n]{0,240}environment values/i],
+        ["credential values are excluded", /(?:never|does not|exclud(?:e|es|ed))[^.\n]{0,240}credential values/i],
       ]),
-      ...missing("docs/architecture/internals/health-advisories.md", [
-        ["selected-model-aliases check", /selected-model-aliases/],
-        ["configured-engines check", /configured-engines/],
+      ...missingInSection(
+        "docs/architecture/internals/health-advisories.md",
+        /engine.*model.*advisories|akm health advisory reference/i,
         [
-          "health checks do not make network calls",
-          /(?:no|without).*(?:network|provider call)|(?:network|provider call).*(?:never|not)/is,
+          ["selected-model-aliases check", /selected-model-aliases/],
+          ["configured-engines check", /configured-engines/],
+          [
+            "health checks do not make network calls",
+            /(?:no|without).*(?:network|provider call)|(?:network|provider call).*(?:never|not)/is,
+          ],
+          [
+            "health evidence excludes endpoint values",
+            /evidence[^.\n]{0,240}(?:never|does not|exclud(?:e|es|ed))[^.\n]{0,240}endpoint values?/i,
+          ],
+          [
+            "health evidence excludes exact model IDs",
+            /evidence[^.\n]{0,240}(?:never|does not|exclud(?:e|es|ed))[^.\n]{0,240}exact model IDs?/i,
+          ],
+          [
+            "health evidence excludes credential values",
+            /evidence[^.\n]{0,240}(?:never|does not|exclud(?:e|es|ed))[^.\n]{0,240}credential values?/i,
+          ],
+          [
+            "health evidence excludes provider output",
+            /evidence[^.\n]{0,240}(?:never|does not|exclud(?:e|es|ed))[^.\n]{0,240}provider output/i,
+          ],
         ],
-        [
-          "health evidence excludes sensitive values",
-          /evidence.*(?:never|does not).*(?:endpoint|model ID|credential|provider output)/is,
-        ],
-      ]),
-      ...missing("docs/reference/data-and-telemetry.md", [
+      ),
+      ...missingInSection("docs/reference/data-and-telemetry.md", /dry runs?|diagnostic output/i, [
         [
           "command dry-run has no writes or usage",
           /command.*dry-run.*(?:no|without).*(?:write|usage|event)|(?:write|usage|event).*(?:never|not).*command.*dry-run/is,
         ],
       ]),
-      ...missing("docs/architecture/internals/functional-contract-patterns.md", [
+      ...missingInSection(
+        "docs/architecture/internals/functional-contract-patterns.md",
+        /resolved-request lowering and runner dispatch contract/i,
         [
-          "provenance is field metadata not resolved values",
-          /provenance.*(?:field|layer|kind|via).*(?:not|never).*(?:value|content)|(?:not|never).*(?:value|content).*provenance/is,
+          [
+            "provenance is field metadata not resolved values",
+            /provenance.*(?:field|layer|kind|via).*(?:not|never).*(?:value|content)|(?:not|never).*(?:value|content).*provenance/is,
+          ],
+          [
+            "lowering notices are secret-free",
+            /secret-free.*(?:lowering )?notices|(?:lowering )?notices.*secret-free/is,
+          ],
         ],
-        ["lowering notices are secret-free", /secret-free.*(?:lowering )?notices|(?:lowering )?notices.*secret-free/is],
-      ]),
+      ),
     ];
     expect(failures).toEqual([]);
   });
@@ -391,19 +506,29 @@ describe("0.9.2 release surface", () => {
 
   test("marks staged design documents as historical and points to current truth instead of rewriting history", () => {
     const historical = [
-      "docs/architecture/specs/agent-command-engine-model-design.md",
-      "docs/plans/0.9.2-agent-command-workflow-plan.md",
-    ];
+      {
+        relative: "docs/architecture/specs/agent-command-engine-model-design.md",
+        taskLink: /\[[^\]]+\]\(\.\.\/\.\.\/reference\/tasks\.md(?:#[^)]+)?\)/i,
+        workflowLink:
+          /\[[^\]]+\]\((?:\.\.\/\.\.\/reference\/workflow-schema\.md|\.\.\/workflow-engine\.md)(?:#[^)]+)?\)/i,
+      },
+      {
+        relative: "docs/plans/0.9.2-agent-command-workflow-plan.md",
+        taskLink: /\[[^\]]+\]\(\.\.\/reference\/tasks\.md(?:#[^)]+)?\)/i,
+        workflowLink:
+          /\[[^\]]+\]\((?:\.\.\/reference\/workflow-schema\.md|\.\.\/architecture\/workflow-engine\.md)(?:#[^)]+)?\)/i,
+      },
+    ] as const;
     const failures: string[] = [];
-    for (const relative of historical) {
+    for (const { relative, taskLink, workflowLink } of historical) {
       const banner = read(relative).split("\n").slice(0, 60).join("\n");
       if (!/(?:historical|superseded|implementation-complete)/i.test(banner)) {
         failures.push(`${relative}: historical/supersession banner`);
       }
-      if (!/docs\/reference\/tasks\.md|\.\.\/\.\.\/reference\/tasks\.md|\.\.\/reference\/tasks\.md/i.test(banner)) {
+      if (!taskLink.test(banner)) {
         failures.push(`${relative}: current task reference link`);
       }
-      if (!/workflow-schema\.md|workflow-engine\.md|reference\/workflows\.md/i.test(banner)) {
+      if (!workflowLink.test(banner)) {
         failures.push(`${relative}: current workflow reference link`);
       }
     }
@@ -418,7 +543,7 @@ describe("0.9.2 release surface", () => {
         ["dry-run command", /akm migrate apply --dry-run/],
         ["workflow source IR and durable v4", /source IR.*(?:v1|version 1).*v4|v4.*source IR.*(?:v1|version 1)/is],
         ["judgment false change", /judgment:\s*false/],
-        ["long-form guide", /v0\.9\.1-to-v0\.9\.2\.md/],
+        ["links the long-form guide", /\[[^\]]+\]\(\.\.\/v0\.9\.1-to-v0\.9\.2\.md(?:#[^)]+)?\)/i],
       ]),
     ).toEqual([]);
   });
@@ -427,6 +552,7 @@ describe("0.9.2 release surface", () => {
     const releaseCheck = read("tests/release-check.sh");
     for (const member of [
       "package/dist/assets/models.json",
+      "package/schemas/akm-task.json",
       "package/docs/reference/tasks.md",
       "package/docs/migration/v0.9.1-to-v0.9.2.md",
       "package/docs/migration/release-notes/0.9.2.md",
