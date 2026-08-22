@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import Ajv2020 from "ajv/dist/2020";
 import { ENGINE_NAME_PATTERN_SOURCE } from "../../../src/core/config/engine-semantics";
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
@@ -35,10 +36,51 @@ describe("config schema drift pins", () => {
     };
     const booleanArm = judgment.anyOf?.find((arm) => arm.type === "boolean");
     const objectArm = judgment.anyOf?.find((arm) => arm.type === "object");
+    const llmOverrides = objectArm?.properties?.llm as {
+      properties?: Record<string, unknown>;
+      additionalProperties?: boolean;
+    };
+    const extraParams = llmOverrides.properties?.extraParams as { additionalProperties?: unknown };
 
     expect(booleanArm).toBeDefined();
     expect(Object.keys(objectArm?.properties ?? {}).sort()).toEqual(["enabled", "engine", "llm", "model", "timeoutMs"]);
     expect(objectArm?.additionalProperties).toBe(false);
+    expect(Object.keys(llmOverrides.properties ?? {}).sort()).toEqual([
+      "contextLength",
+      "enableThinking",
+      "extraParams",
+      "maxTokens",
+      "supportsJsonSchema",
+      "temperature",
+    ]);
+    expect(llmOverrides.additionalProperties).toBe(false);
+    expect(extraParams.additionalProperties).toEqual({});
+  });
+
+  test("generated schema rejects unknown judgment LLM keys but accepts arbitrary extraParams", () => {
+    const validate = new Ajv2020({ allErrors: true, strict: false }).compile(readSchema());
+    const withLlm = (llm: Record<string, unknown>) => ({
+      configVersion: "0.9.0",
+      improve: {
+        strategies: {
+          nightly: { processes: { triage: { enabled: true, judgment: { llm } } } },
+        },
+      },
+    });
+
+    for (const llm of [{ tempertaure: 0.2 }, { futureTopLevelKnob: true }]) {
+      expect(validate(withLlm(llm))).toBe(false);
+      expect(validate.errors?.some((error) => error.instancePath.endsWith("/judgment/llm"))).toBe(true);
+    }
+
+    expect(
+      validate(
+        withLlm({
+          temperature: 0.2,
+          extraParams: { providerFeature: { nested: [1, true, "kept"] }, arbitrary_number: 7 },
+        }),
+      ),
+    ).toBe(true);
   });
 
   test("ImproveProfileConfig.processes includes distill + validation entries (0.8.0 unified feedbackDistillation into distill)", () => {

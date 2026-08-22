@@ -10,6 +10,7 @@ import {
   TriageProcessConfigSchema,
   validateConfigShape,
 } from "../src/core/config/config-schema";
+import { configGet, configSet, configUnset } from "../src/core/config/config-walker";
 import { resolveTriageJudgmentRunner } from "../src/integrations/agent/runner";
 
 const llm = {
@@ -35,6 +36,23 @@ function isolatedProcesses(judgment: unknown): Record<string, unknown> {
     validation: { enabled: false },
     proactiveMaintenance: { enabled: false },
     triage: { enabled: true, judgment },
+  };
+}
+
+const judgmentPath = "improve.strategies.nightly.processes.triage.judgment";
+
+function judgmentPatchBase(): Record<string, unknown> {
+  return {
+    configVersion: "0.9.0",
+    improve: {
+      strategies: {
+        nightly: {
+          processes: {
+            triage: { enabled: true, judgment: { enabled: false, engine: "old" } },
+          },
+        },
+      },
+    },
   };
 }
 
@@ -66,6 +84,44 @@ describe("triage judgment config normalization (#814)", () => {
       if (result.success) throw new Error("retired judgment key must fail");
       expect(result.error.issues.map((issue) => issue.message).join("\n")).toContain(`${key} is retired; use engine`);
     }
+  });
+
+  test("rejects unknown judgment LLM override keys but retains arbitrary extraParams", () => {
+    for (const llmOverrides of [{ tempertaure: 0.2 }, { futureTopLevelKnob: true }]) {
+      expect(ImproveProcessConfigSchema.safeParse({ judgment: { llm: llmOverrides } }).success).toBe(false);
+
+      const live = validateConfigShape({
+        configVersion: "0.9.0",
+        improve: {
+          strategies: {
+            nightly: { processes: { triage: { enabled: true, judgment: { llm: llmOverrides } } } },
+          },
+        },
+      });
+      expect(live.ok).toBe(false);
+      if (live.ok) throw new Error("unknown judgment LLM override must fail live config validation");
+      expect(live.errors.map((issue) => issue.path).join("\n")).toContain("judgment.llm");
+    }
+
+    const extraParams = {
+      providerFeature: { nested: [1, true, "kept"] },
+      arbitrary_number: 7,
+    };
+    expect(ImproveProcessConfigSchema.parse({ judgment: { llm: { temperature: 0.2, extraParams } } }).judgment).toEqual(
+      { enabled: true, llm: { temperature: 0.2, extraParams } },
+    );
+
+    const live = validateConfigShape({
+      configVersion: "0.9.0",
+      improve: {
+        strategies: {
+          nightly: { processes: { triage: { enabled: true, judgment: { llm: { extraParams } } } } },
+        },
+      },
+    });
+    expect(live.ok).toBe(true);
+    if (!live.ok) throw new Error(JSON.stringify(live.errors));
+    expect(live.value.improve?.strategies?.nightly?.processes?.triage?.judgment?.llm?.extraParams).toEqual(extraParams);
   });
 
   test("cross-validation ignores disabled judgment engines but validates enabled ones", () => {
@@ -163,5 +219,54 @@ describe("triage judgment config normalization (#814)", () => {
     };
     expect(resolveTriageJudgmentRunner({ enabled: false, engine: "ready" }, config)).toBeNull();
     expect(resolveTriageJudgmentRunner({ enabled: true }, config)).toMatchObject({ kind: "llm", engine: "ready" });
+  });
+});
+
+describe("triage judgment config patch semantics (#814 remediation-1)", () => {
+  test("whole-object patches preserve an existing explicit disabled state", () => {
+    const changedEngine = configSet(judgmentPatchBase(), judgmentPath, '{"engine":"new"}');
+    expect(configGet(changedEngine, judgmentPath)).toEqual({ enabled: false, engine: "new" });
+
+    const emptyPatch = configSet(judgmentPatchBase(), judgmentPath, "{}");
+    expect(configGet(emptyPatch, judgmentPath)).toEqual({ enabled: false, engine: "old" });
+
+    const nullOverride = configSet(judgmentPatchBase(), judgmentPath, '{"timeoutMs":null}');
+    expect(configGet(nullOverride, judgmentPath)).toEqual({ enabled: false, engine: "old", timeoutMs: null });
+  });
+
+  test("leaf set and unset patches preserve an existing explicit disabled state", () => {
+    const changedEngine = configSet(judgmentPatchBase(), `${judgmentPath}.engine`, "new");
+    expect(configGet(changedEngine, judgmentPath)).toEqual({ enabled: false, engine: "new" });
+
+    const nullTimeout = configSet(judgmentPatchBase(), `${judgmentPath}.timeoutMs`, "null");
+    expect(configGet(nullTimeout, judgmentPath)).toEqual({ enabled: false, engine: "old", timeoutMs: null });
+
+    const removedEngine = configUnset(judgmentPatchBase(), `${judgmentPath}.engine`);
+    expect(configGet(removedEngine, judgmentPath)).toEqual({ enabled: false });
+  });
+
+  test("a newly introduced legacy object still defaults enabled true", () => {
+    const base = judgmentPatchBase();
+    const withoutJudgment = configUnset(base, judgmentPath);
+    const added = configSet(withoutJudgment, judgmentPath, '{"engine":"new"}');
+    expect(configGet(added, judgmentPath)).toEqual({ enabled: true, engine: "new" });
+  });
+
+  test("null and unset remove the whole judgment object without reviving it", () => {
+    const cleared = configSet(judgmentPatchBase(), judgmentPath, "null");
+    expect(configGet(cleared, judgmentPath)).toBeNull();
+
+    const unset = configUnset(judgmentPatchBase(), judgmentPath);
+    expect(configGet(unset, judgmentPath)).toBeNull();
+  });
+
+  test("unsetting enabled intentionally restores the legacy object default", () => {
+    const raw = configUnset(judgmentPatchBase(), `${judgmentPath}.enabled`);
+    const legacy = configGet(raw, judgmentPath);
+    expect(legacy).toEqual({ engine: "old" });
+    expect(ImproveProcessConfigSchema.parse({ judgment: legacy }).judgment).toEqual({
+      enabled: true,
+      engine: "old",
+    });
   });
 });
