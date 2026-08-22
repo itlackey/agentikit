@@ -12,6 +12,7 @@ import {
   ORPHANED_STUB_DETAIL,
   taskDiagnostics,
   workflowFrontendDiagnostics,
+  workflowYamlSourceDiagnostics,
 } from "../../core/adapter/adapters/akm-lint";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { adapterForId } from "../../core/adapter/registry";
@@ -26,9 +27,16 @@ import type { AkmConfig } from "../../core/config/config";
 import { loadConfig, primaryBundlePath } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import type { FileChange } from "../../core/file-change";
+import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import { warn } from "../../core/warn";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import { TASK_EXTENSION, TASK_NEAR_MISS_EXTENSION, taskExtensionDetail } from "../../tasks/schema";
+import {
+  resolveUniqueWorkflowSource,
+  WorkflowSourceRejectionError,
+  workflowNameForSourcePath,
+} from "../../workflows/source-files";
+import { compareWorkflowSourceCodePoints } from "../../workflows/source-ir/ordering";
 import { runBaseChecks } from "./base-linter";
 import { checkEnvForDangerousKeys } from "./env-key-rules";
 import { isAdvisoryLintIssue, type LintContext, type LintIssue, type LintIssueType } from "./types";
@@ -117,6 +125,79 @@ function collectMarkdownFiles(dir: string, caseInsensitive = false): string[] {
   return results;
 }
 
+function isCachedLintPath(filePath: string): boolean {
+  const posixPath = filePath.replace(/\\/g, "/");
+  return posixPath.includes("/.cache/") || posixPath.includes("/registry/");
+}
+
+/** Peer workflow sources accepted by the source-IR compiler; `.yaml` remains unsupported. */
+function collectWorkflowFiles(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const results: string[] = [];
+  for (const entry of fs
+    .readdirSync(dir, { withFileTypes: true })
+    .sort((left, right) => compareWorkflowSourceCodePoints(left.name, right.name))) {
+    if (entry.name === ".git" || entry.isSymbolicLink()) continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === ".cache" || entry.name === "registry") continue;
+      results.push(...collectWorkflowFiles(full));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const extension = path.extname(entry.name).toLowerCase();
+    if (extension === ".md" || extension === ".yml") results.push(full);
+  }
+  return results.sort(compareWorkflowSourceCodePoints);
+}
+
+interface WorkflowLintOwnership {
+  files: string[];
+  issues: LintIssue[];
+}
+
+/**
+ * Resolve every canonical workflow through the same workflow-source authority
+ * used by index/show/run. Unlike the adapter-wide generic resolver, this
+ * bounded lookup visits only the canonical source's parent directory, so a
+ * full workflow lint does not rescan the whole bundle once per asset. A
+ * collision is one deterministic finding and neither source is parsed.
+ */
+function resolveWorkflowLintOwnership(stashRoot: string, files: readonly string[]): WorkflowLintOwnership {
+  const candidatesByName = new Map<string, string[]>();
+  for (const file of files) {
+    const authoredName = workflowNameForSourcePath(stashRoot, "akm", file);
+    if (authoredName === undefined) continue;
+    const canonicalName = canonicalizeWorkflowName(authoredName);
+    const candidates = candidatesByName.get(canonicalName) ?? [];
+    candidates.push(file);
+    candidatesByName.set(canonicalName, candidates);
+  }
+
+  const ownedFiles: string[] = [];
+  const issues: LintIssue[] = [];
+  for (const canonicalName of [...candidatesByName.keys()].sort(compareWorkflowSourceCodePoints)) {
+    const candidates = candidatesByName.get(canonicalName)?.sort(compareWorkflowSourceCodePoints) ?? [];
+    try {
+      const owner = resolveUniqueWorkflowSource(stashRoot, "akm", canonicalName);
+      if (owner && candidates.some((candidate) => path.resolve(candidate) === path.resolve(owner.path))) {
+        ownedFiles.push(owner.path);
+      }
+    } catch (cause) {
+      if (!(cause instanceof WorkflowSourceRejectionError)) throw cause;
+      const first = candidates[0];
+      if (!first) continue;
+      issues.push({
+        file: path.relative(stashRoot, first),
+        issue: "invalid-workflow-structure",
+        detail: cause.message,
+        fixed: false,
+      });
+    }
+  }
+  return { files: ownedFiles.sort(compareWorkflowSourceCodePoints), issues };
+}
+
 // ── Non-akm adapter dispatch (real `adapter.validate()`, not a re-implementation) ──
 //
 // akm 0.9.0 lint/adapter-dispatch wiring: `akm lint` used to special-case
@@ -202,6 +283,7 @@ const KNOWN_ADAPTER_ISSUE_TYPES: ReadonlySet<string> = new Set<LintIssueType>([
   "missing-description",
   "broken-xref",
   "broken-source",
+  "invalid-workflow-structure",
   "workflow-warning",
 ]);
 
@@ -547,11 +629,22 @@ function lintAkmSweep(
 
   for (const subdir of dirsToScan) {
     const dirPath = path.join(stashRoot, subdir);
-    // Tasks are .yml files; everything else (including workflows, one
-    // markdown format now) is .md
-    const files = subdir === "tasks" ? collectTaskFiles(dirPath) : collectMarkdownFiles(dirPath, true);
-    const assetFiles =
+    // Tasks have their own `.yml` plus near-miss collector. Workflows accept
+    // peer `.md`/`.yml` sources; every remaining AKM subdir is Markdown.
+    const files =
+      subdir === "tasks"
+        ? collectTaskFiles(dirPath)
+        : subdir === "workflows"
+          ? collectWorkflowFiles(dirPath)
+          : collectMarkdownFiles(dirPath, true);
+    let assetFiles =
       subdir === "workflows" ? files.filter((file) => path.basename(file).toLowerCase() !== "readme.md") : files;
+    if (subdir === "workflows") {
+      assetFiles = assetFiles.filter((file) => !isCachedLintPath(file));
+      const ownership = resolveWorkflowLintOwnership(stashRoot, assetFiles);
+      assetFiles = ownership.files;
+      flagged.push(...ownership.issues);
+    }
 
     // Directory-level check: skills require a SKILL.md entry point (was
     // SkillLinter.lintDirectory). Run once per direct subdirectory before the
@@ -576,13 +669,27 @@ function lintAkmSweep(
       // Compare on a separator-normalized copy: on Windows these paths carry
       // backslashes, so the forward-slash substring never matched and --fix
       // rewrote files inside the registry cache.
-      const posixPath = filePath.replace(/\\/g, "/");
-      if (posixPath.includes("/.cache/") || posixPath.includes("/registry/")) continue;
+      if (isCachedLintPath(filePath)) continue;
       const relPath = path.relative(stashRoot, filePath);
       let raw: string;
       try {
         raw = fs.readFileSync(filePath, "utf8");
       } catch {
+        continue;
+      }
+
+      // GitHub-shaped YAML is a peer workflow source, not a Markdown document:
+      // no frontmatter/base/stub checks and no `--fix` mutation apply. Compile
+      // once through the shared source-IR frontend and route its findings.
+      if (subdir === "workflows" && path.extname(filePath).toLowerCase() === ".yml") {
+        const frontend = workflowYamlSourceDiagnostics(relPath, raw, filePath, stashRoot);
+        for (const finding of [...frontend.errors, ...frontend.warnings]) {
+          if (isAdvisoryLintIssue(finding)) {
+            warnings.push(finding);
+          } else {
+            flagged.push(finding);
+          }
+        }
         continue;
       }
 

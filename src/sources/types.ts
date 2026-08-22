@@ -147,7 +147,7 @@ export interface WorkflowStepDefinition {
   instructions: string;
   completionCriteria?: string[];
   sequenceIndex?: number;
-  /** Present only for YAML workflow-program steps that declare orchestration. */
+  /** Present when either peer workflow source projects orchestration for this step. */
   orchestration?: WorkflowStepOrchestrationSummary;
 }
 

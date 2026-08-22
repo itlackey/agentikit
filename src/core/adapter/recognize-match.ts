@@ -37,10 +37,11 @@ import type { AdapterPathContext } from "./bundle-adapter";
  * The four builtin matchers, in registration order. The array index IS the
  * registration index `runMatchers` uses for tie-breaking. (The `wiki` matcher
  * was removed in chunk 4 — the wiki asset-type is retired; LLM Wiki content is
- * served by the first-class `llm-wiki` adapter, not the akm adapter. The YAML
- * workflow-program matcher was removed by workflow-format-unification — one
- * workflow format now, recognized by frontmatter `type: workflow` or
- * residence under `workflows/`, both already covered by the remaining four.)
+ * served by the first-class `llm-wiki` adapter, not the akm adapter. The old
+ * YAML workflow-program matcher is also gone: peer Markdown and GitHub-shaped
+ * `.yml` workflow sources are both path-owned by residence under `workflows/`
+ * (with Markdown frontmatter as an additional signal), while source IR owns
+ * their distinct parse/compile semantics.)
  */
 const AKM_MATCHERS: readonly AssetMatcher[] = [
   extensionMatcher,

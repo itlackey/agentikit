@@ -57,6 +57,7 @@ import { isDangerousEnvKey } from "../../../commands/lint/env-key-rules";
 import { parseTaskV3Yaml, taskV3SourceErrorDetail } from "../../../tasks/source-v3";
 import { compileWorkflowPlan } from "../../../workflows/ir/compile";
 import { parseWorkflow } from "../../../workflows/parser";
+import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
 import { conceptIdForStashFile } from "../../asset/resolve-ref";
 import type { BundleComponent, Diagnostic, ValidateContext } from "../types";
 
@@ -386,6 +387,34 @@ export type WorkflowFrontendDiagnostic = Diagnostic & {
 export interface WorkflowFrontendDiagnostics {
   errors: WorkflowFrontendDiagnostic[];
   warnings: WorkflowFrontendDiagnostic[];
+}
+
+/**
+ * Compile one peer GitHub-shaped `.yml` source through the shared source-IR
+ * frontend. YAML has no Markdown frontmatter/base/stub pass and currently
+ * emits fatal source diagnostics only; keeping the same two-channel result
+ * shape lets the ordinary sweep and both workflow adapters route it exactly
+ * like the established Markdown frontend without inventing another parser.
+ */
+export function workflowYamlSourceDiagnostics(
+  relPath: string,
+  raw: string,
+  parsePath: string,
+  workspaceRoot: string,
+): WorkflowFrontendDiagnostics {
+  if (parsePath.includes("/.cache/") || parsePath.includes("/registry/")) return { errors: [], warnings: [] };
+  const compiled = compileWorkflowSource(raw, { path: parsePath, workspaceRoot });
+  if (compiled.ok) return { errors: [], warnings: [] };
+  return {
+    errors: compiled.errors.map((error) => ({
+      file: relPath,
+      issue: "invalid-workflow-structure",
+      detail: error.message,
+      fixed: false,
+      ...lineOf(error),
+    })),
+    warnings: [],
+  };
 }
 
 /**

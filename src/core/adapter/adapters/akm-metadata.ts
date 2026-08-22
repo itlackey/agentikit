@@ -15,7 +15,8 @@
  *     lesson-frontmatter-metadata, memory-frontmatter-metadata,
  *     script-comment-metadata, env-file-metadata, secret-file-metadata,
  *     task-yaml-metadata, session-md-metadata, fact-md-metadata;
- *   - `workflows/renderer.ts` (1): workflow-document-metadata (workflow-md).
+ *   - `workflows/renderer.ts` (1): workflow-document-metadata (the historical
+ *     `workflow-md` renderer id now presents both peer workflow sources).
  *
  * ── Cycle-safety (chunk-2 ratchet, baseline 18) ──
  *
@@ -23,9 +24,9 @@
  * that file's header), so this leaf can never gain an inbound edge from a cycle
  * participant and therefore can never JOIN a cycle. It VALUE-imports the pure
  * parsers each contributor already uses so the fold cannot drift from them:
- * `parseFrontmatter`, `parseMarkdownToc`, `parseWorkflow`, `parseWorkflowProgram`,
- * `projectProgramParameters`/`programStepInstructions`, and `listKeys`
- * (env key-names). `output/renderers.ts` / `workflows/renderer.ts` are the
+ * `parseFrontmatter`, `parseMarkdownToc`, the peer-source
+ * `compileWorkflowSource` frontend/projection, and env key-name scanning.
+ * `output/renderers.ts` / `workflows/renderer.ts` are the
  * cycle-sensitive modules whose contributor bodies live in this port — their
  * ONE non-importable helper (`metadata.ts#extractDescriptionFromComments`, a
  * heavy cycle-participant module) is copied verbatim below as
@@ -47,8 +48,8 @@
  *
  * Every contributor that reads/parses content is reproduced with the SAME
  * try/catch tolerance it has today (toc/memory/session/fact/task swallow parse
- * errors). The two workflow contributors throw-to-skip in today's pipeline (a
- * broken workflow is dropped by the metadata drain); here the parse is wrapped
+ * errors). Workflow source compilation fails closed in the drain (a broken
+ * workflow is dropped); here the compile/projection is wrapped
  * so a broken workflow yields no folded metadata instead of throwing out of the
  * synchronous `recognize` — the drop-the-entry behavior is an index-drain
  * concern (Chunk 4/5), not recognition's. On the valid Chunk-0b fixture this
@@ -301,7 +302,7 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
       return out;
     }
 
-    // ── workflow-document-metadata (workflow-md) ──
+    // ── workflow-document-metadata (historical renderer id `workflow-md`, peer sources) ──
     case "workflow-md": {
       try {
         const result = compileWorkflowSource(file.content(), { path: file.relPath, workspaceRoot: file.stashRoot });
@@ -344,8 +345,8 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
  * Precedence, verified against every case in {@link foldRecognizedMetadata}:
  *  - description/source/confidence travel together and only when the entry has
  *    no description yet (contributors gate on `!entry.description`); a
- *    contributor that sets description WITHOUT source/confidence
- *    (workflow-program-yaml) leaves those untouched — mirrored by the
+ *    contributor that sets description WITHOUT source/confidence leaves those
+ *    untouched — mirrored by the
  *    `folded.source`/`folded.confidence` guards below;
  *  - tags UNION into the existing set (order-preserving Set dedup), matching the
  *    contributors' `Array.from(new Set([...entry.tags, ...added]))`;

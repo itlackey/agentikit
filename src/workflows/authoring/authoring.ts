@@ -85,11 +85,10 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
   ) {
     throw new UsageError(`Resolved workflow path escapes the bundle: "${normalizedName}"`, "PATH_ESCAPE_VIOLATION");
   }
-  // A file whose canonical name matches but whose PATH differs can only be a
-  // case variant now (`upper.MD` vs `upper.md`) — the cross-EXTENSION case this
-  // guard also covered is gone with the unified `.md`-only format. It still
-  // matters: on a case-insensitive filesystem the two spellings are one file,
-  // so writing the target would silently clobber or shadow the existing asset.
+  // A peer `.md` or `.yml` file whose canonical name matches already owns this
+  // ref. Case variants (`upper.MD` vs `upper.md`) may also name one physical
+  // file on a case-insensitive filesystem, so writing the Markdown create
+  // target would silently clobber or shadow the existing asset.
   const shadowing = findExistingWorkflowPaths(typeRoot, normalizedName).find((p) => p !== assetPath);
   if (shadowing !== undefined) {
     throw new UsageError(
@@ -208,9 +207,9 @@ export function formatWorkflowErrors(path: string, errors: WorkflowError[]): str
 
 /**
  * Every file under `typeRoot` whose canonical workflow name equals
- * `normalizedName`. Extension matching is case-INSENSITIVE, so `foo.MD` and
- * `foo.md` both match — the case-variant collision the create path must refuse
- * rather than silently clobber on a case-insensitive filesystem.
+ * `normalizedName`. Peer `.md`/`.yml` extension matching is case-INSENSITIVE,
+ * so both cross-format owners and case variants are returned for the create
+ * path to refuse rather than silently clobber or shadow them.
  */
 function findExistingWorkflowPaths(typeRoot: string, normalizedName: string): string[] {
   const parent = path.join(typeRoot, path.dirname(normalizedName));

@@ -52,9 +52,9 @@ type YamlPair = Pair<ParsedNode, ParsedNode | null>;
 export interface GithubWorkflowSourceOptions {
   path: string;
   workspaceRoot?: string;
-  /** Inject WP6's canonical `classifyTaskV3Uses` after that package lands. */
+  /** Canonical task-v3 uses classifier; injectable only for bounded compiler tests/consumers. */
   classifyUses?: WorkflowSourceUsesClassifier;
-  /** Inject WP6's canonical `classifyTaskV3Triggers` after that package lands. */
+  /** Canonical task-v3 trigger classifier; injectable only for bounded compiler tests/consumers. */
   classifyTriggers?: WorkflowSourceTriggerClassifier;
 }
 

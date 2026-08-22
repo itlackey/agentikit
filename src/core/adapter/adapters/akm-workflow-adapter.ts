@@ -24,12 +24,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
-import { compileGithubWorkflowSource, looksLikeGithubWorkflowSource } from "../../../workflows/source-ir/compile";
+import { looksLikeGithubWorkflowSource } from "../../../workflows/source-ir/compile";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
-import { perTypeValidateChecks } from "./akm-lint";
+import { perTypeValidateChecks, workflowYamlSourceDiagnostics } from "./akm-lint";
 import { hashContent, nonEmptyString, type ParsedForValidate, readTags, runBaseValidateChecks } from "./shared";
 
 /** A native workflow bundle is single-component; its one component is `main`. */
@@ -107,18 +107,7 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
 
     const relPath = toPosix(change.path);
     if (ext === ".yml") {
-      const compiled = compileGithubWorkflowSource(raw, { path: relPath, workspaceRoot: c.root });
-      if (!compiled.ok) {
-        diagnostics.push(
-          ...compiled.errors.map((error) => ({
-            file: relPath,
-            issue: "invalid-workflow-structure",
-            detail: error.message,
-            fixed: false as const,
-            line: error.line,
-          })),
-        );
-      }
+      diagnostics.push(...workflowYamlSourceDiagnostics(relPath, raw, relPath, c.root).errors);
       continue;
     }
     if (!isWorkflowFile(raw)) continue;

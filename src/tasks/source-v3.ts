@@ -5,9 +5,9 @@
 /**
  * Canonical task-v3 source contract.
  *
- * This module owns the strict source grammar. It deliberately does not project
- * a v3 source into the still-v2 task runner; execution integration must consume
- * this typed result rather than inventing a second parser.
+ * This module owns the strict source grammar and the typed result consumed by
+ * current task execution, scheduler binding, and workflow-source classifiers.
+ * Task v2 is read only by the explicit migration compatibility path.
  */
 
 import fs from "node:fs";

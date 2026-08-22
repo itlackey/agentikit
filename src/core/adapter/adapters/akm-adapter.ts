@@ -40,9 +40,10 @@
  * conceptId = `<stash-subdir>/<canonical-name>` — the placement stash-subdir
  * (`stashDirFor(type)`) followed by the winning type's canonical name
  * (`deriveCanonicalAssetNameFromStashRoot`: skill = its dir, script keeps its
- * extension, markdown strips `.md`, env/task strip their ext, secret/session
- * keep the natural path). For markdown types this IS the OKF concept ID
- * (path − `.md`); it is the same spelling {@link placeNew} consumes, so
+ * extension, Markdown strips `.md`, workflow strips its peer `.md`/`.yml`
+ * extension, env/task strip their ext, and secret/session keep the natural
+ * path). For Markdown types this IS the OKF concept ID (path − `.md`); it is
+ * the same spelling {@link placeNew} consumes, so
  * recognize/place share one identity (D-R2 resolved the earlier split). The
  * `type` is carried separately on `IndexDocument.type`, per §0.2 (type ≠
  * identity), and `entry.name` keeps the BARE canonical name for FTS parity.
@@ -89,7 +90,6 @@ import {
   extractPackageMetadata,
 } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
-import { compileGithubWorkflowSource } from "../../../workflows/source-ir/compile";
 import {
   assetPathForName,
   deriveCanonicalAssetNameFromStashRoot,
@@ -103,7 +103,7 @@ import type { AdapterPathContext, BundleAdapter } from "../bundle-adapter";
 import { executionDefaultsFromFrontmatter, renderMarkdownExecutionSource } from "../execution-source";
 import { recognizeMatch, recognizePathCandidateMatches } from "../recognize-match";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
-import { perTypeValidateChecks, skillDirectoryDiagnostics } from "./akm-lint";
+import { perTypeValidateChecks, skillDirectoryDiagnostics, workflowYamlSourceDiagnostics } from "./akm-lint";
 import { applyFoldedMetadata, foldRecognizedMetadata } from "./akm-metadata";
 import { hashContent, type ParsedForValidate, runBaseValidateChecks } from "./shared";
 
@@ -292,8 +292,9 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   const stashDir = stashDirFor(match.type);
   const canonicalName = stashDir !== undefined ? conceptId.slice(stashDir.length + 1) : conceptId;
   // conceptId = the QUALIFIED `<stash-subdir>/<canonical-name>` spelling
-  // (ref-grammar decision D-R2): the same form `placeNew` consumes, and for
-  // markdown types the OKF concept ID (path − .md). Both branches now feed a
+  // (ref-grammar decision D-R2): the same form `placeNew` consumes; Markdown
+  // types use the OKF concept ID (path − .md), while workflows strip either
+  // peer source extension. Both branches feed a
   // BARE canonicalName (the abstain fallback is the basename, above), so the
   // stash-subdir is prefixed uniformly — a flat `skills/x.md` yields
   // `skills/x`, never the un-prefixed `x` or the double-prefixed
@@ -437,20 +438,9 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
     const type = match?.type;
 
     // A complete GitHub-shaped `on` + `jobs` document is workflow-owned. It
-    // never flows through task-v2 parsing or Markdown base/frontmatter checks.
+    // never flows through task-v3 parsing or Markdown base/frontmatter checks.
     if (type === "workflow" && overlay.ext === ".yml") {
-      const compiled = compileGithubWorkflowSource(raw, { path: change.path, workspaceRoot: c.root });
-      if (!compiled.ok) {
-        diagnostics.push(
-          ...compiled.errors.map((error) => ({
-            file: change.path,
-            issue: "invalid-workflow-structure",
-            detail: error.message,
-            fixed: false as const,
-            line: error.line,
-          })),
-        );
-      }
+      diagnostics.push(...workflowYamlSourceDiagnostics(change.path, raw, change.path, c.root).errors);
       continue;
     }
 
@@ -488,8 +478,9 @@ export const akmAdapter: BundleAdapter = {
   id: "akm",
   version: "0.9.0",
   // Recognized-extension HINT, derived from what the matchers accept (§6):
-  // `.md` (markdown types + skill), `.yaml`/`.yml` (task YAML), `.env` (env
-  // files), and the 16 SCRIPT_EXTENSIONS. This is a
+  // `.md` (Markdown types + workflow peer), `.yml` (task and workflow YAML),
+  // `.yaml` (task near-miss diagnostics), `.env` (env files), and the 16
+  // SCRIPT_EXTENSIONS. This is a
   // NON-EXHAUSTIVE hint for the akm adapter: recognition is directory-driven
   // via `recognize()` (e.g. a bare `secrets/<anything>` file with no extension
   // is a `secret`), so `recognize()` — not this list — is the source of truth.

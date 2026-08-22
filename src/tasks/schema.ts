@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Legacy task-v2 runtime projection. A task pairs a cron-style schedule with
+ * Legacy task-v2 compatibility projection. A task pairs a cron-style schedule with
  * exactly one of:
  *
  *   • a workflow target  — executed via `runWorkflowSteps()`
@@ -11,10 +11,12 @@
  *                          agent harness (e.g. `opencode run`)
  *   • a command target   — invoked directly via `Bun.spawn()`, no AI agent
  *
- * Tasks are stored as pure YAML files at `<stash>/tasks/<id>.yml`. This module
- * remains the temporary runner/backend seam while those consumers are moved
- * to the canonical task-v3 source contract in `source-v3.ts`. New source
- * validation and the published JSON schema must not use this v2 projection.
+ * Historical tasks were stored as pure YAML files at
+ * `<stash>/tasks/<id>.yml`. This module now supports explicit v2 migration and
+ * retained compatibility types/constants only. Normal validation, execution,
+ * and scheduler binding consume the canonical task-v3 contract in
+ * `source-v3.ts`; new source and the published JSON schema must not use this
+ * projection.
  */
 
 import { parse as parseYaml } from "yaml";
@@ -191,7 +193,7 @@ export interface TaskCommandTarget {
 export type TaskTarget = TaskWorkflowTarget | TaskPromptTarget | TaskCommandTarget;
 
 export interface TaskDocument {
-  /** Runtime and on-disk schema version. */
+  /** Legacy decoded task-v2 schema version. */
   version: typeof TASK_SCHEMA_VERSION;
   schemaVersion: typeof TASK_SCHEMA_VERSION;
   /** Filesystem-derived id (basename without `.yml`). */
