@@ -564,6 +564,129 @@ describe("0.9.2 release surface", () => {
     expect(failures).toEqual([]);
   });
 
+  test("describes native workflow invocation, observer polling, and invoking-session context without a live driver", () => {
+    const relative = "docs/architecture/comparisons/claude-code-vs-akm-workflows-full.md";
+    const text = read(relative);
+    const failures = missing(relative, [
+      [
+        "an invoking agent or orchestrator invokes native akm workflow run",
+        /(?:invoking agent|orchestrator)[^.\n]{0,180}invokes?[^.\n]{0,120}(?:native )?`?akm workflow run`?/i,
+      ],
+      [
+        "a supervising or polling observer receives the notification",
+        /(?:supervising|polling) observer[^.\n]{0,220}(?:notification|continue directive)/i,
+      ],
+      [
+        "agent_harness and agent_session_id describe invoking harness/session context",
+        /invoking harness[^.\n]{0,180}(?:session context|agent_harness|agent_session_id)|(?:session context|agent_harness|agent_session_id)[^.\n]{0,180}invoking harness/i,
+      ],
+    ]);
+
+    for (const [label, pattern] of [
+      ["calls agent identity driving", /driving\s+\*{0,2}agent identity/i],
+      ["calls workflow invocation driving an akm run", /driving an akm run/i],
+      ["calls the invoking harness a driving harness", /driving harness/i],
+      ["says a notification wakes the driver", /wake the driver/i],
+      ["claims a workflow invocation drove the run", /driven by[^.\n]{0,180}workflow invocation/i],
+    ] satisfies Requirement[]) {
+      if (pattern.test(text)) failures.push(`${relative}: ${label}`);
+    }
+
+    const protocolParagraphs = text
+      .split(/\n\s*\n/)
+      .filter((paragraph) => !paragraph.trimStart().startsWith("#"))
+      .filter((paragraph) => /external-driver|driver protocol/i.test(paragraph));
+    for (const paragraph of protocolParagraphs) {
+      if (!/(?:former|removed|retired|there is no|historical)/i.test(paragraph)) {
+        failures.push(`${relative}: driver-protocol mention lacks explicit historical or removal context`);
+      }
+    }
+
+    expect(failures).toEqual([]);
+  });
+
+  test("documents peer workflow detection in the format table and workflow command source comment", () => {
+    const formatsRelative = "docs/reference/supported-formats.md";
+    const formats = read(formatsRelative);
+    const workflowRow = formats.split("\n").find((line) => line.startsWith("| `akm-workflow` |")) ?? "";
+    const cliRelative = "src/commands/workflow-cli.ts";
+    const sourceComment = read(cliRelative).split("*/", 1)[0] ?? "";
+    const failures: string[] = [];
+
+    if (!/top-level[^|]{0,120}\.md/i.test(workflowRow)) {
+      failures.push(`${formatsRelative}: akm-workflow row detects a top-level .md source`);
+    }
+    if (
+      !/\.md[^|]{0,180}(?:peer|either|or)[^|]{0,180}top-level[^|]{0,120}GitHub-shaped[^|]{0,120}\.yml/i.test(
+        workflowRow,
+      )
+    ) {
+      failures.push(`${formatsRelative}: akm-workflow row detects a peer top-level GitHub-shaped .yml source`);
+    }
+    if (/markdown-only/i.test(sourceComment)) {
+      failures.push(`${cliRelative}: source comment does not call workflows Markdown-only`);
+    }
+    if (!/create(?: --print)?[\s\S]{0,160}(?:emits|creates)[\s\S]{0,80}Markdown/i.test(sourceComment)) {
+      failures.push(`${cliRelative}: source comment says create emits Markdown`);
+    }
+    if (!/(?:execution|run)[\s\S]{0,180}(?:peer|both)[\s\S]{0,120}\.md[\s\S]{0,120}\.yml/i.test(sourceComment)) {
+      failures.push(`${cliRelative}: source comment says execution accepts peer .md and .yml sources`);
+    }
+
+    expect(failures).toEqual([]);
+  });
+
+  test("keeps the shipped inherit_env schema description compatibility-only", () => {
+    const relative = "schemas/akm-workflow.json";
+    const schema = JSON.parse(read(relative)) as {
+      definitions?: {
+        exec?: {
+          description?: string;
+          properties?: { inherit_env?: { type?: string; description?: string } };
+        };
+      };
+    };
+    const execDescription = schema.definitions?.exec?.description ?? "";
+    const inheritEnv = schema.definitions?.exec?.properties?.inherit_env;
+    const description = inheritEnv?.description ?? "";
+    const failures: string[] = [];
+
+    if (inheritEnv?.type !== "boolean") failures.push(`${relative}: inherit_env remains a stored-v3 boolean`);
+    for (const [label, pattern] of [
+      [
+        "inherit_env is stored-v3 compatibility only",
+        /stored[^.\n]{0,60}v3[^.\n]{0,120}compatibility[^.\n]{0,40}only/i,
+      ],
+      ["new v4 starts reject inherit_env", /new[^.\n]{0,80}v4[^.\n]{0,120}reject[^.\n]{0,80}inherit_env/i],
+      [
+        "named environment bindings are preferred",
+        /(?:named|explicit)[^.\n]{0,80}(?:environment|env:)[^.\n]{0,80}bindings?/i,
+      ],
+      ["pass_env is preferred", /pass_env/i],
+    ] satisfies Requirement[]) {
+      if (!pattern.test(description)) failures.push(`${relative}: ${label}`);
+    }
+    if (
+      /(?:give|hand)[^.\n]{0,160}(?:entire|whole)[^.\n]{0,80}environment|opt in[^.\n]{0,200}(?:entire|whole)[^.\n]{0,80}environment/i.test(
+        description,
+      )
+    ) {
+      failures.push(`${relative}: inherit_env description recommends whole-process inheritance`);
+    }
+    if (/widen[^.\n]{0,160}inherit_env|pass_env[^.\n]{0,80}\bor\b[^.\n]{0,80}inherit_env/i.test(execDescription)) {
+      failures.push(`${relative}: exec description recommends inherit_env for new authoring`);
+    }
+    if (
+      !/(?:named|explicit)[^.\n]{0,80}(?:environment|env:)[^.\n]{0,80}bindings?[^.\n]{0,160}pass_env|pass_env[^.\n]{0,160}(?:named|explicit)[^.\n]{0,80}(?:environment|env:)[^.\n]{0,80}bindings?/i.test(
+        execDescription,
+      )
+    ) {
+      failures.push(`${relative}: exec description prefers named bindings or pass_env`);
+    }
+
+    expect(failures).toEqual([]);
+  });
+
   test("states durable-v4 immutability, its narrow live-value exceptions, and at-least-once dispatch truth", () => {
     const failures = [
       ...missingInSection("docs/architecture/workflow-engine.md", /frozen plans?|durable plan/i, [
