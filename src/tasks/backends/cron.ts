@@ -448,22 +448,124 @@ function extractPublished08CronInvocation(
 ): ReturnType<typeof parseScheduledBindingArgv> {
   if (body.includes("\n")) return undefined;
   const line = body.startsWith(DISABLED_PREFIX) ? body.slice(DISABLED_PREFIX.length) : body;
-  const fields = splitCronShellWords(line);
-  if (fields.length < 10) return undefined;
-  let commandStart = 5;
-  while (commandStart < fields.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(fields[commandStart]!)) commandStart += 1;
-  const redirectIndex = fields.indexOf(">>", commandStart);
-  if (redirectIndex !== fields.length - 3 || fields[redirectIndex + 2] !== "2>&1") return undefined;
-  const argv = fields.slice(commandStart, redirectIndex);
-  if (argv.length < 4) return undefined;
-  const invocation = argv.slice(-3);
+  if (line.trim() !== line) return undefined;
+  const fields = splitPublished08CronWords(line);
+  if (!fields || (fields.length !== 12 && fields.length !== 13)) return undefined;
+
+  const schedule = fields.slice(0, 5);
+  if (schedule.some((word) => word.raw !== word.value || !/^[0-9*/,]+$/u.test(word.value))) return undefined;
+  try {
+    parseSchedule(schedule.map((word) => word.value).join(" "), "cron");
+  } catch {
+    return undefined;
+  }
+
+  const redirect = fields.slice(-3);
+  if (redirect[0]?.raw !== ">>" || redirect[0].value !== ">>" || redirect[2]?.raw !== "2>&1") return undefined;
+  const logPath = redirect[1];
+  if (
+    !logPath ||
+    logPath.raw !== quotePublished08CronValue(logPath.value) ||
+    !isPublished08TaskLogPath(logPath.value, nativeId)
+  ) {
+    return undefined;
+  }
+
+  const invocationWords = fields.slice(-6, -3);
+  const invocation = invocationWords.map((word) => word.value);
   const id = invocation[2];
-  if (invocation[0] !== "tasks" || invocation[1] !== "run" || !id || id !== nativeId) return undefined;
+  if (
+    invocationWords.some((word) => word.raw !== quotePublished08CronValue(word.value)) ||
+    invocation[0] !== "tasks" ||
+    invocation[1] !== "run" ||
+    !id ||
+    id !== nativeId
+  ) {
+    return undefined;
+  }
+
+  const launcherWords = fields.slice(5, -6);
+  if (
+    launcherWords.some(
+      (word) => word.raw !== quotePublished08CronValue(word.value) || !isCanonicalPublished08AbsolutePath(word.value),
+    ) ||
+    !isPublished08AkmLauncher(launcherWords.map((word) => word.value))
+  ) {
+    return undefined;
+  }
   return {
-    binding: argv.slice(0, -3),
+    binding: launcherWords.map((word) => word.value),
     contextPath: "",
     invocation,
   };
+}
+
+interface Published08CronWord {
+  readonly raw: string;
+  readonly value: string;
+}
+
+function splitPublished08CronWords(line: string): Published08CronWord[] | undefined {
+  const words: Published08CronWord[] = [];
+  let index = 0;
+  while (index < line.length) {
+    while (index < line.length) {
+      const whitespace = line[index];
+      if (whitespace === undefined || !/\s/u.test(whitespace)) break;
+      index += 1;
+    }
+    if (index >= line.length) break;
+    const start = index;
+    let value = "";
+    let quoted = false;
+    while (index < line.length) {
+      const char = line[index];
+      if (char === undefined) return undefined;
+      if (!quoted && /\s/u.test(char)) break;
+      if (char === "'") {
+        quoted = !quoted;
+        index += 1;
+        continue;
+      }
+      if (!quoted && char === "\\") {
+        const escaped = line[index + 1];
+        if (escaped === undefined) return undefined;
+        value += escaped;
+        index += 2;
+        continue;
+      }
+      value += char;
+      index += 1;
+    }
+    if (quoted) return undefined;
+    words.push({ raw: line.slice(start, index), value });
+  }
+  return words;
+}
+
+function quotePublished08CronValue(value: string): string {
+  if (/^[A-Za-z0-9_\-./@:%=+,]+$/u.test(value)) return value;
+  return `'${value.replace(/'/gu, `'\\''`)}'`;
+}
+
+function isCanonicalPublished08AbsolutePath(value: string): boolean {
+  return path.posix.isAbsolute(value) && path.posix.normalize(value) === value;
+}
+
+function isPublished08AkmLauncher(argv: readonly string[]): boolean {
+  if (argv.length === 1) return argv[0] !== undefined && path.posix.basename(argv[0]) === "akm";
+  if (argv.length !== 2) return false;
+  const [runtimePath, cliPath] = argv;
+  if (runtimePath === undefined || cliPath === undefined) return false;
+  const runtime = path.posix.basename(runtimePath);
+  if (runtime !== "node" && runtime !== "bun") return false;
+  return cliPath.endsWith("/node_modules/akm-cli/dist/cli.js");
+}
+
+function isPublished08TaskLogPath(value: string, nativeId: string): boolean {
+  if (!isCanonicalPublished08AbsolutePath(value) || path.posix.basename(value) !== `${nativeId}.log`) return false;
+  const logDir = path.posix.dirname(value);
+  return path.posix.basename(logDir) === "logs" && path.posix.basename(path.posix.dirname(logDir)) === "tasks";
 }
 
 /** Reverse {@link quoteForCron} for a single whitespace-free token. */

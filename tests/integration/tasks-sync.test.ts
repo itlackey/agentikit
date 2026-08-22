@@ -146,6 +146,31 @@ describe("akmTasksSync — schedule drift", () => {
   });
 
   test.each([
+    ["standalone akm", "/usr/local/bin/akm", "/var/cache/akm/tasks/logs/alpha.log"],
+    [
+      "canonically quoted node launcher",
+      "'/opt/runtime root/bin/node' '/opt/package root/node_modules/akm-cli/dist/cli.js'",
+      "'/var/cache root/akm/tasks/logs/alpha.log'",
+    ],
+  ])("adopts the published 0.8 %s renderer shape", async (_label, launcher, logPath) => {
+    const exec = memoryExec(
+      [
+        "# akm:task alpha BEGIN",
+        `*/15 * * * * ${launcher} tasks run alpha >> ${logPath} 2>&1`,
+        "# akm:task alpha END",
+        "",
+      ].join("\n"),
+    );
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+
+    const migrated = await akmTasksSync({ backend }, undefined, { rebind: true });
+    expect(migrated.updated).toEqual(["alpha"]);
+    expect(exec.current()).toContain("task run alpha --bundle");
+    expect(exec.current()).not.toContain("tasks run alpha");
+  });
+
+  test.each([
     "tasks run beta",
     "tasks run alpha --scheduled",
     "tasks run alpha extra",
