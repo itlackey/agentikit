@@ -367,6 +367,34 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
 });
 
 describe("akmReflect — passes REFLECT_JSON_SCHEMA when dispatching via the llm RunnerSpec", () => {
+  test("reserves reasoning-token headroom beyond the content-derived output cap", async () => {
+    const stash = makeStashDir();
+    const observedMaxTokens: number[] = [];
+    const sourceBody = "x".repeat(1_000);
+
+    const result = await akmReflect({
+      ref: "lessons/reasoning-headroom",
+      stashDir: stash,
+      config: quietQualityGateConfig(),
+      runner: { kind: "llm", engine: "test-llm", connection: fakeLlmConnection() },
+      assetContent: `---\ndescription: Reserve enough response capacity for thinking models\nwhen_to_use: When direct reflection sends a content-derived output ceiling\n---\n\n${sourceBody}`,
+      chat: async (connection) => {
+        observedMaxTokens.push(connection.maxTokens ?? -1);
+        return JSON.stringify({
+          content: `# Completed response\n\n${"y".repeat(600)}`,
+          confidence: 0.9,
+          frontmatterPatch: { description: null, when_to_use: null },
+        });
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    // 2,500 content chars + 500 response-envelope chars -> 1,000 tokens;
+    // reflect must reserve another 2,048 tokens for servers that ignore
+    // `enable_thinking: false` and bill hidden reasoning against max_tokens.
+    expect(observedMaxTokens).toEqual([3_048]);
+  });
+
   test("llm RunnerSpec path wires REFLECT_JSON_SCHEMA into the underlying chatCompletion call", async () => {
     const stash = makeStashDir();
     stubReturn = JSON.stringify({
