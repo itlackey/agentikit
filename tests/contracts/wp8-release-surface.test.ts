@@ -487,6 +487,83 @@ describe("0.9.2 release surface", () => {
     expect(failures).toEqual([]);
   });
 
+  test("keeps the full comparison on the single native workflow surface and live six-command CLI", () => {
+    const relative = "docs/architecture/comparisons/claude-code-vs-akm-workflows-full.md";
+    const text = read(relative);
+    const retiredCommands = read("src/cli/retired-commands.ts");
+    const workflowCli = read("src/commands/workflow-cli.ts");
+
+    expect(retiredCommands).toMatch(
+      /"workflow brief"[\s\S]{0,300}removed[\s\S]{0,300}external-driver protocol is gone/i,
+    );
+    expect(retiredCommands).toMatch(
+      /"workflow report"[\s\S]{0,300}removed[\s\S]{0,300}external-driver protocol is gone/i,
+    );
+
+    const subCommandsBody = workflowCli.match(
+      /export const workflowCommand[\s\S]*?subCommands:\s*\{([\s\S]*?)\n\s*\},\n\s*\/\//,
+    )?.[1];
+    const publicCommands = [...(subCommandsBody ?? "").matchAll(/^\s*([a-z][a-z-]*):\s*workflow[A-Z]/gm)].map(
+      (match) => match[1],
+    );
+    expect(publicCommands).toEqual(["status", "list", "create", "resume", "abandon", "run"]);
+
+    const failures = missing(relative, [
+      [
+        "akm workflow run is the one stable native execution surface",
+        /(?:one|single)[^.\n]{0,120}(?:stable )?native[^.\n]{0,120}(?:execution|orchestration)[^.\n]{0,80}surface[^.\n]{0,160}akm workflow run|akm workflow run[^.\n]{0,160}(?:one|single)[^.\n]{0,120}(?:stable )?native[^.\n]{0,120}(?:execution|orchestration)[^.\n]{0,80}surface/i,
+      ],
+      [
+        "a second run against a live lease refuses",
+        /second[\s\S]{0,160}\brun\b[\s\S]{0,160}live[- ]lease[\s\S]{0,160}refus/i,
+      ],
+      [
+        "native completion evaluates the promoted artifact",
+        /native[^.\n]{0,100}completion[^.\n]{0,160}promoted artifact/i,
+      ],
+      ["the native engine owns the step spine", /native engine[^.\n]{0,180}owns[^.\n]{0,120}step spine/i],
+      [
+        "peer source formats share source IR rather than one unified format",
+        /peer[^.\n]{0,160}(?:source )?formats?[^.\n]{0,200}(?:shared|same)[^.\n]{0,160}source IR/i,
+      ],
+    ]);
+
+    const cliSection = markdownSectionText(text, /CLI surface/i);
+    if (!cliSection) {
+      failures.push(`${relative}: CLI surface section`);
+    } else {
+      if (!/(?:exactly )?(?:six|6)[^.\n]{0,100}(?:public )?subcommands/i.test(cliSection)) {
+        failures.push(`${relative}: exactly six public workflow subcommands`);
+      }
+      const documented = cliSection.match(/akm workflow ([a-z]+(?:\|[a-z]+)+)/)?.[1]?.split("|") ?? [];
+      if (documented.join("|") !== publicCommands.join("|")) {
+        failures.push(`${relative}: documented subcommand list matches workflowCommand.subCommands`);
+      }
+      if (/\beight\b[^.\n]{0,80}subcommands/i.test(cliSection)) {
+        failures.push(`${relative}: stale eight-subcommand count`);
+      }
+    }
+
+    for (const [label, pattern] of [
+      ["mentions retired driver report calls", /driver\s+`?report`?\s+calls/i],
+      ["claims external-driver completion", /external-driver completion/i],
+      ["claims engine/driver execution", /\bengine\/driver\b/i],
+      [
+        "claims multiple akm execution surfaces",
+        /\btwo (?:different )?(?:execution )?surfaces?\b|which execution surface is in play/i,
+      ],
+      [
+        "claims the live driver protocol shipped",
+        /driver\s+protocol[\s\S]{0,120}(?:shipped[\s\S]{0,80}live|live[\s\S]{0,80}shipped)/i,
+      ],
+      ["calls the peer source parser one unified format", /\b(?:the )?unified (?:Markdown )?(?:workflow )?format\b/i],
+    ] satisfies Requirement[]) {
+      if (pattern.test(text)) failures.push(`${relative}: ${label}`);
+    }
+
+    expect(failures).toEqual([]);
+  });
+
   test("states durable-v4 immutability, its narrow live-value exceptions, and at-least-once dispatch truth", () => {
     const failures = [
       ...missingInSection("docs/architecture/workflow-engine.md", /frozen plans?|durable plan/i, [
