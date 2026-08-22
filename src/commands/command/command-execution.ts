@@ -250,26 +250,73 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+const DIAGNOSTIC_PROVENANCE_FIELDS = new Set([
+  "/inference",
+  "agent",
+  "authorization",
+  "command",
+  "engine",
+  "engine.requested",
+  "model",
+  "outputSchema",
+  "persona",
+  "runtime.environment",
+  "runtime.settings",
+  "runtime.timeoutMs",
+  "runtime.workspace",
+  "tools",
+]);
+
+const DIAGNOSTIC_NOTICE_FIELDS = new Set([
+  "agent",
+  "command.content",
+  "command.extensions",
+  "conversation",
+  "engine",
+  "engine.extensions",
+  "extensions",
+  "inference",
+  "model",
+  "outputSchema",
+  "persona",
+  "persona.extensions",
+  "runtime.environment",
+  "runtime.extensions",
+  "runtime.settings",
+  "runtime.timeoutMs",
+  "runtime.workspace",
+  "tools",
+]);
+
+function canonicalDiagnosticProvenanceField(field: string): string | undefined {
+  if (field.startsWith("/inference/")) return "/inference/*";
+  return DIAGNOSTIC_PROVENANCE_FIELDS.has(field) ? field : undefined;
+}
+
+function canonicalDiagnosticNoticeField(field: string | null | undefined): string | undefined {
+  if (typeof field !== "string") return undefined;
+  if (field.startsWith("inference.")) return "inference.*";
+  return DIAGNOSTIC_NOTICE_FIELDS.has(field) ? field : undefined;
+}
+
 function diagnosticProvenance(
   provenance: ResolvedExecutionPlanV1["provenance"],
 ): readonly Readonly<CommandDiagnosticProvenance>[] {
-  return Object.freeze(
-    Object.entries(provenance)
-      .sort(([left], [right]) => compareText(left, right))
-      .map(([field, source]) => Object.freeze({ field, layer: source.layer, kind: source.kind, via: source.via })),
-  );
+  const canonical = new Map<string, Readonly<CommandDiagnosticProvenance>>();
+  for (const [field, source] of Object.entries(provenance)) {
+    const safeField = canonicalDiagnosticProvenanceField(field);
+    if (!safeField) continue;
+    const candidate = Object.freeze({ field: safeField, layer: source.layer, kind: source.kind, via: source.via });
+    const previous = canonical.get(safeField);
+    if (!previous || compareText(JSON.stringify(candidate), JSON.stringify(previous)) < 0) {
+      canonical.set(safeField, candidate);
+    }
+  }
+  return Object.freeze([...canonical.values()].sort((left, right) => compareText(left.field, right.field)));
 }
 
 function safeDiagnosticToken(value: string): boolean {
   return value.length <= 128 && /^[a-z][a-z0-9-]*$/.test(value);
-}
-
-function safeDiagnosticField(value: string | null | undefined): value is string {
-  return (
-    typeof value === "string" &&
-    value.length <= 256 &&
-    (/^[A-Za-z][A-Za-z0-9_.-]*$/.test(value) || /^\/[A-Za-z0-9_.~/-]+$/.test(value))
-  );
 }
 
 /** Rebuild a known lowerer notice instead of forwarding its optional details or arbitrary message bytes. */
@@ -292,13 +339,14 @@ function safeDiagnosticNotice(notice: Readonly<LoweringNotice>): Readonly<Comman
         message: "An unrecognized durable execution notice was omitted at the engine lowering boundary.",
       });
     case "untranslated-field": {
-      if (!safeDiagnosticField(notice.field)) return undefined;
+      const field = canonicalDiagnosticNoticeField(notice.field);
+      if (!field) return undefined;
       return Object.freeze({
         code: "untranslated-field",
         severity: "warning",
         adapter: notice.adapter,
-        field: notice.field,
-        message: `The ${notice.adapter} lowerer does not translate resolved field ${notice.field}; dispatch will continue optimistically.`,
+        field,
+        message: `The ${notice.adapter} lowerer does not translate resolved field ${field}; dispatch will continue optimistically.`,
       });
     }
     case "conversation-prompt-composed":
@@ -323,13 +371,13 @@ function safeDiagnosticNotice(notice: Readonly<LoweringNotice>): Readonly<Comman
 }
 
 function diagnosticNotices(notices: readonly Readonly<LoweringNotice>[]): readonly Readonly<CommandDiagnosticNotice>[] {
+  const canonical = new Map<string, Readonly<CommandDiagnosticNotice>>();
+  for (const notice of notices) {
+    const safe = safeDiagnosticNotice(notice);
+    if (safe) canonical.set(JSON.stringify(safe), safe);
+  }
   return Object.freeze(
-    notices
-      .flatMap((notice) => {
-        const safe = safeDiagnosticNotice(notice);
-        return safe ? [safe] : [];
-      })
-      .sort((left, right) => compareText(JSON.stringify(left), JSON.stringify(right))),
+    [...canonical.values()].sort((left, right) => compareText(JSON.stringify(left), JSON.stringify(right))),
   );
 }
 

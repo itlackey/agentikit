@@ -89,6 +89,7 @@ async function installHostileInferenceKey(): Promise<void> {
       "akm:",
       "  inference:",
       "    DO-NOT-LEAK-secret-key: ordinary-value",
+      "    another-user-defined-key: another-value",
       "---",
       "Review exactly: [$ARGUMENTS]",
       "",
@@ -175,13 +176,7 @@ describe("command CLI execution convergence", () => {
   test("command run --dry-run canonicalizes user-authored inference keys in provenance and notices", async () => {
     await installHostileInferenceKey();
 
-    const result = await runCliCapture([
-      "command",
-      "run",
-      "commands/review",
-      "--dry-run",
-      "--format=json",
-    ]);
+    const result = await runCliCapture(["command", "run", "commands/review", "--dry-run", "--format=json"]);
 
     expect(result.code).toBe(0);
     expect(result.stderr).toBe("");
@@ -189,8 +184,8 @@ describe("command CLI execution convergence", () => {
       provenance: Array<{ field: string }>;
       notices: Array<{ field?: string; message: string }>;
     };
-    expect(envelope.provenance.map(({ field }) => field)).toContain("/inference/*");
-    expect(envelope.notices.map(({ field }) => field)).toContain("inference.*");
+    expect(envelope.provenance.map(({ field }) => field).filter((field) => field === "/inference/*")).toHaveLength(1);
+    expect(envelope.notices.map(({ field }) => field).filter((field) => field === "inference.*")).toHaveLength(1);
     expect(JSON.stringify(envelope.provenance)).not.toContain("DO-NOT-LEAK-secret-key");
     expect(JSON.stringify(envelope.notices)).not.toContain("DO-NOT-LEAK-secret-key");
   });
@@ -198,13 +193,7 @@ describe("command CLI execution convergence", () => {
   test("command run --verbose canonicalizes user-authored inference keys in stderr diagnostics", async () => {
     await installHostileInferenceKey();
 
-    const result = await runCliCapture([
-      "command",
-      "run",
-      "commands/review",
-      "--verbose",
-      "--format=json",
-    ]);
+    const result = await runCliCapture(["command", "run", "commands/review", "--verbose", "--format=json"]);
 
     expect(result.code).toBe(0);
     expect(result.stderr).toContain('"field":"/inference/*"');
