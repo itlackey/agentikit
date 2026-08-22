@@ -861,6 +861,226 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(launchdMutationCalls(exec.calls)).toEqual([]);
   });
 
+  test("whole-snapshot restore preflights a plist-backed owner before a loaded-only normalized peer", () => {
+    const { backend, exec, fs } = makeBackend();
+    backend.install(qualifiedTask("0 9 * * *", "PING"));
+    exec.loadedLabels.add("com.akm.task.ping");
+    const snapshot = backend.snapshotBindings?.(["PING"]);
+    const ownerFile = "/tmp/agents/com.akm.task.PING.plist";
+    const ownerPlist = fs.readFile(ownerFile);
+    exec.calls.length = 0;
+
+    expect(() => backend.restoreBindings?.(snapshot)).toThrow(/restore|snapshot|cardinality|duplicate|collision/i);
+    expect(fs.readFile(ownerFile)).toBe(ownerPlist);
+    expect(exec.loadedLabels.has("com.akm.task.PING")).toBe(true);
+    expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("whole-snapshot restore validates expected-current coverage before restoring an earlier entry", () => {
+    const { backend, exec, fs } = makeBackend();
+    const ping = qualifiedTask("0 9 * * *");
+    const second = qualifiedTask("15 9 * * *", "second");
+    backend.install(ping);
+    backend.install(second);
+    const snapshot = backend.snapshotBindings?.(["ping", "second"]);
+    const pingFile = "/tmp/agents/com.akm.task.ping.plist";
+    const secondFile = "/tmp/agents/com.akm.task.second.plist";
+    const pingPlist = fs.readFile(pingFile);
+    const secondPlist = fs.readFile(secondFile);
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            {
+              state: "present",
+              bindingId: ping.id,
+              invocation: ping.invocation,
+              fingerprint: backend.expectedSignature?.(ping),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/restore|preflight|expectation|coverage|missing/i);
+    expect(fs.readFile(pingFile)).toBe(pingPlist);
+    expect(fs.readFile(secondFile)).toBe(secondPlist);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("whole-snapshot restore rejects an expected-current entry outside the snapshot before mutation", () => {
+    const { backend, exec, fs } = makeBackend();
+    const ping = qualifiedTask("0 9 * * *");
+    backend.install(ping);
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    const pingFile = "/tmp/agents/com.akm.task.ping.plist";
+    const pingPlist = fs.readFile(pingFile);
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            {
+              state: "present",
+              bindingId: ping.id,
+              invocation: ping.invocation,
+              fingerprint: backend.expectedSignature?.(ping),
+            },
+          ],
+        },
+        { nativeId: "outside", allowed: [{ state: "absent" }] },
+      ]),
+    ).toThrow(/restore|preflight|expectation|snapshot|unexpected/i);
+    expect(fs.readFile(pingFile)).toBe(pingPlist);
+    expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("whole-snapshot restore rejects duplicate normalized requested native IDs before mutation", () => {
+    const { backend, exec, fs } = makeBackend();
+    backend.install(qualifiedTask("0 9 * * *", "PING"));
+    const snapshot = backend.snapshotBindings?.(["PING", "ping"]);
+    const ownerFile = "/tmp/agents/com.akm.task.PING.plist";
+    const ownerPlist = fs.readFile(ownerFile);
+    exec.calls.length = 0;
+
+    expect(() => backend.restoreBindings?.(snapshot)).toThrow(/restore|snapshot|normalized|duplicate|collision/i);
+    expect(fs.readFile(ownerFile)).toBe(ownerPlist);
+    expect(exec.loadedLabels.has("com.akm.task.PING")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("whole-snapshot guarded restore reports one deterministic duplicate-snapshot preflight error", () => {
+    const { backend, exec, fs } = makeBackend();
+    backend.install(qualifiedTask("0 9 * * *", "PING"));
+    exec.loadedLabels.add("com.akm.task.ping");
+    const snapshot = backend.snapshotBindings?.(["PING"]) as unknown as {
+      artifacts: ReadonlyArray<{
+        nativeId: string;
+        bindingId?: string;
+        invocation?: readonly string[];
+        fingerprint?: string;
+      }>;
+    };
+    const guards = snapshot.artifacts.map((artifact) => ({
+      nativeId: artifact.nativeId,
+      allowed: [
+        {
+          state: "present",
+          ...(artifact.bindingId !== undefined ? { bindingId: artifact.bindingId } : {}),
+          ...(artifact.invocation !== undefined ? { invocation: artifact.invocation } : {}),
+          fingerprint: artifact.fingerprint,
+        },
+      ],
+    }));
+    const ownerFile = "/tmp/agents/com.akm.task.PING.plist";
+    const ownerPlist = fs.readFile(ownerFile);
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      expectedCurrent: readonly Record<string, unknown>[],
+    ) => void;
+
+    let caught: unknown;
+    try {
+      restore(snapshot, guards);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toHaveLength(1);
+    expect(fs.readFile(ownerFile)).toBe(ownerPlist);
+    expect(exec.loadedLabels.has("com.akm.task.PING")).toBe(true);
+    expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test.each([
+    { ownerId: "ping", peerId: "PING", guarded: false },
+    { ownerId: "PING", peerId: "ping.", guarded: false },
+    { ownerId: "ping", peerId: "PING", guarded: true },
+    { ownerId: "PING", peerId: "ping.", guarded: true },
+  ])("whole-snapshot preflight rejects owner $ownerId and loaded-only peer $peerId before mutation (guarded=$guarded)", ({
+    ownerId,
+    peerId,
+    guarded,
+  }) => {
+    const { backend, exec, fs } = makeBackend();
+    backend.install(qualifiedTask("0 9 * * *", ownerId));
+    exec.loadedLabels.add(`com.akm.task.${peerId}`);
+    const snapshot = backend.snapshotBindings?.([ownerId]) as unknown as {
+      artifacts: ReadonlyArray<{
+        nativeId: string;
+        bindingId?: string;
+        invocation?: readonly string[];
+        fingerprint?: string;
+      }>;
+    };
+    const guards = snapshot.artifacts.map((artifact) => ({
+      nativeId: artifact.nativeId,
+      allowed: [
+        {
+          state: "present",
+          ...(artifact.bindingId !== undefined ? { bindingId: artifact.bindingId } : {}),
+          ...(artifact.invocation !== undefined ? { invocation: artifact.invocation } : {}),
+          fingerprint: artifact.fingerprint,
+        },
+      ],
+    }));
+    const ownerFile = `/tmp/agents/com.akm.task.${ownerId}.plist`;
+    const ownerPlist = fs.readFile(ownerFile);
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      expectedCurrent?: readonly Record<string, unknown>[],
+    ) => void;
+
+    let caught: unknown;
+    try {
+      restore(snapshot, guarded ? guards : undefined);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toHaveLength(1);
+    expect(fs.readFile(ownerFile)).toBe(ownerPlist);
+    expect(exec.loadedLabels.has(`com.akm.task.${ownerId}`)).toBe(true);
+    expect(exec.loadedLabels.has(`com.akm.task.${peerId}`)).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("restore rechecks the preflight fingerprint immediately before each entry mutation", () => {
+    const { backend, exec, fs } = makeBackend();
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    const run = exec.run.bind(exec);
+    let domainPasses = 0;
+    exec.run = (args) => {
+      const result = run(args);
+      if (args[1] === "print" && args[2] === "gui/501" && ++domainPasses === 2) {
+        exec.loadedLabels.add("com.akm.task.PING");
+      }
+      return result;
+    };
+    exec.calls.length = 0;
+
+    expect(() => backend.restoreBindings?.(snapshot)).toThrow(/restore|changed|cardinality|concurrent|fingerprint/i);
+    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
+    expect(exec.loadedLabels.has("com.akm.task.PING")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
   test.each([
     "disappeared",
     "disabled",
@@ -887,7 +1107,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(launchdMutationCalls(exec.calls)).toEqual([]);
   });
 
-  test("direct restore aggregates an unrestorable loaded-only mismatch and still restores an independent entry", () => {
+  test("direct restore aborts the whole set before mutation on an unrestorable loaded-only mismatch", () => {
     const { backend, exec, fs } = makeBackend();
     exec.loadedLabels.add("com.akm.task.ping");
     const snapshot = backend.snapshotBindings?.(["ping", "second"]);
@@ -905,9 +1125,9 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(caught).toBeInstanceOf(AggregateError);
     expect((caught as AggregateError).errors).toHaveLength(1);
     expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(false);
-    expect(fs.written.has("/tmp/agents/com.akm.task.second.plist")).toBe(false);
-    expect(exec.loadedLabels.has("com.akm.task.second")).toBe(false);
-    expect(launchdMutationCalls(exec.calls).some((call) => call[2]?.endsWith(".ping"))).toBe(false);
+    expect(fs.written.has("/tmp/agents/com.akm.task.second.plist")).toBe(true);
+    expect(exec.loadedLabels.has("com.akm.task.second")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
   });
 
   test("whole-set transaction preparation rejects an affected loaded-only artifact before mutation", async () => {
@@ -1299,7 +1519,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(launchdMutationCalls(exec.calls)).toEqual([]);
   });
 
-  test("rollback preserves a loaded-only peer while restoring an independent safe entry", () => {
+  test("rollback preflight preserves a loaded-only peer and leaves every independent entry untouched", () => {
     const { backend, exec, fs } = makeBackend();
     const ping = qualifiedTask("0 9 * * *");
     const second = qualifiedTask("15 9 * * *", "second");
@@ -1345,11 +1565,12 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
     expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
     expect(exec.loadedLabels.has("com.akm.task.PING")).toBe(true);
-    expect(fs.written.has("/tmp/agents/com.akm.task.second.plist")).toBe(true);
-    expect(exec.loadedLabels.has("com.akm.task.second")).toBe(true);
+    expect(fs.written.has("/tmp/agents/com.akm.task.second.plist")).toBe(false);
+    expect(exec.loadedLabels.has("com.akm.task.second")).toBe(false);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
   });
 
-  test("rollback skips a duplicate launchd key but continues restoring an independent entry", () => {
+  test("rollback preflight rejects a duplicate launchd key before restoring any independent entry", () => {
     const { backend, exec, fs } = makeBackend();
     const ping = qualifiedTask("0 9 * * *");
     const second = qualifiedTask("15 9 * * *", "second");
@@ -1396,8 +1617,8 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
     expect(fs.written.has(pingFile)).toBe(true);
     expect(fs.written.has(duplicate)).toBe(true);
-    expect(fs.written.has(secondFile)).toBe(false);
-    expect(launchdMutationCalls(exec.calls).some((call) => call[2]?.endsWith(".second"))).toBe(true);
+    expect(fs.written.has(secondFile)).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
   });
 
   test("binding snapshots preserve a plist whose service was unloaded", () => {
@@ -1444,6 +1665,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(exec.disabledLabels.has("com.akm.task.ping")).toBe(!priorEnabled);
     expect(events).toEqual([
       ...STABILIZED_LAUNCHD_INSPECTION_EVENTS,
+      ...STABILIZED_LAUNCHD_INSPECTION_EVENTS,
       "exec:bootout",
       `write:${file}`,
       ...(priorLoaded ? ["exec:enable", "exec:bootstrap"] : []),
@@ -1467,13 +1689,14 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(exec.disabledLabels.has("com.akm.task.absent")).toBe(false);
     expect(events).toEqual([
       ...STABILIZED_LAUNCHD_INSPECTION_EVENTS,
+      ...STABILIZED_LAUNCHD_INSPECTION_EVENTS,
       "exec:bootout",
       "remove:/tmp/agents/com.akm.task.absent.plist",
       "exec:enable",
     ]);
   });
 
-  test("snapshot restore continues with later entries and aggregates a partial failure", () => {
+  test("snapshot restore continues after an apply-phase failure once the global preflight is clean", () => {
     const exec = makeFakeExec();
     const fakeFs = makeFakeFs();
     const { backend } = makeBackend(exec, fakeFs);

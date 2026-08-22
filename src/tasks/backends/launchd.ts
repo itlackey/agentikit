@@ -120,6 +120,12 @@ interface StableLaunchdNamespace {
   readonly entries: readonly LaunchdNamespaceEntry[];
 }
 
+interface LaunchdRestorePlanEntry {
+  readonly entry: LaunchdBindingSnapshot["entries"][number];
+  readonly immediateExpectation: SchedulerRollbackExpectation;
+  readonly noOp: boolean;
+}
+
 export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBackend {
   const exec = options.exec ?? defaultLaunchdExec();
   const fsLike = options.fs ?? defaultLaunchdFs();
@@ -553,43 +559,184 @@ function restoreLaunchdBindings(
   if (!isLaunchdBindingSnapshot(snapshot)) {
     throw new ConfigError("Invalid launchd scheduler snapshot.", "INVALID_CONFIG_FILE");
   }
-  const errors: unknown[] = [];
+  const preflightErrors: unknown[] = [];
+  const duplicateSnapshotKeys = new Set<string>();
+  const requestedIdsByKey = new Map<string, string>();
+  for (const nativeId of snapshot.nativeIds) {
+    const key = schedulerNativeArtifactKey(nativeId);
+    const priorId = requestedIdsByKey.get(key);
+    if (priorId !== undefined) {
+      duplicateSnapshotKeys.add(key);
+      preflightErrors.push(
+        new ConfigError(
+          `Launchd scheduler snapshot requests normalized duplicate artifacts ${JSON.stringify(priorId)} and ${JSON.stringify(nativeId)}; refusing restore.`,
+          "INVALID_CONFIG_FILE",
+        ),
+      );
+      continue;
+    }
+    requestedIdsByKey.set(key, nativeId);
+  }
+  const snapshotEntryIdsByKey = new Map<string, string>();
+  for (const entry of snapshot.entries) {
+    const key = schedulerNativeArtifactKey(entry.id);
+    const priorId = snapshotEntryIdsByKey.get(key);
+    if (priorId !== undefined) {
+      if (duplicateSnapshotKeys.has(key)) continue;
+      duplicateSnapshotKeys.add(key);
+      preflightErrors.push(
+        new ConfigError(
+          `Launchd scheduler snapshot contains normalized duplicate artifacts ${JSON.stringify(priorId)} and ${JSON.stringify(entry.id)}; refusing restore.`,
+          "INVALID_CONFIG_FILE",
+        ),
+      );
+      continue;
+    }
+    snapshotEntryIdsByKey.set(key, entry.id);
+  }
   let rollbackInventory: SchedulerBackendInspection | undefined;
   try {
     rollbackInventory = inspectStableLaunchdNamespace(snapshot.nativeIds, context).inspection;
   } catch (error) {
-    errors.push(error);
+    preflightErrors.push(error);
   }
-  for (const entry of snapshot.entries) {
-    if (!rollbackInventory) continue;
-    if (expectedCurrent) {
-      try {
-        const expected = expectedCurrent.find((candidate) => candidate.nativeId === entry.id);
-        if (!expected) {
-          throw new ConfigError(
-            `Missing launchd rollback expectation for ${JSON.stringify(entry.id)}.`,
+  if (preflightErrors.length > 0) {
+    throw new AggregateError(
+      preflightErrors,
+      `Failed to preflight ${preflightErrors.length} launchd scheduler restore operation(s).`,
+    );
+  }
+
+  const expectationsById = new Map<string, SchedulerRollbackExpectation>();
+  const expectationIdsByKey = new Map<string, string>();
+  if (expectedCurrent) {
+    for (const expected of expectedCurrent) {
+      const key = schedulerNativeArtifactKey(expected.nativeId);
+      const priorExact = expectationsById.get(expected.nativeId);
+      const priorKeyId = expectationIdsByKey.get(key);
+      if (priorExact !== undefined || priorKeyId !== undefined) {
+        preflightErrors.push(
+          new ConfigError(
+            `Launchd rollback expectations contain duplicate normalized artifact ${JSON.stringify(expected.nativeId)}.`,
             "INVALID_CONFIG_FILE",
-          );
-        }
-        assertSchedulerRollbackArtifactCardinality(rollbackInventory.artifacts, expected);
-      } catch (error) {
-        errors.push(error);
+          ),
+        );
         continue;
       }
+      expectationsById.set(expected.nativeId, expected);
+      expectationIdsByKey.set(key, expected.nativeId);
     }
-    if (entry.loaded && entry.plist === undefined) {
+  }
+
+  const plannedEntries: LaunchdRestorePlanEntry[] = [];
+  const coveredExpectationIds = new Set<string>();
+  if (rollbackInventory) {
+    for (const entry of snapshot.entries) {
+      if (duplicateSnapshotKeys.has(schedulerNativeArtifactKey(entry.id))) continue;
       try {
-        assertUnrestorableLaunchdSnapshotUnchanged(entry, rollbackInventory.artifacts);
+        let current: SchedulerNativeArtifact | undefined;
+        if (expectedCurrent) {
+          const expected = expectationsById.get(entry.id);
+          if (!expected) {
+            throw new ConfigError(
+              `Missing launchd rollback expectation for ${JSON.stringify(entry.id)}.`,
+              "INVALID_CONFIG_FILE",
+            );
+          }
+          coveredExpectationIds.add(entry.id);
+          current = assertSchedulerRollbackArtifactCardinality(rollbackInventory.artifacts, expected);
+        } else {
+          const currentCount = rollbackInventory.artifacts.filter(
+            (artifact) => schedulerNativeArtifactKey(artifact.nativeId) === schedulerNativeArtifactKey(entry.id),
+          ).length;
+          current = assertSchedulerNativeArtifactCardinality(
+            rollbackInventory.artifacts,
+            entry.id,
+            currentCount === 0 ? 0 : 1,
+          );
+          if (current !== undefined && current.nativeId !== entry.id) {
+            throw new ConfigError(
+              `Launchd scheduler artifact ${JSON.stringify(entry.id)} changed to case- or suffix-equivalent spelling ${JSON.stringify(current.nativeId)} before restore.`,
+              "INVALID_CONFIG_FILE",
+            );
+          }
+        }
+        if (entry.loaded && entry.plist === undefined) {
+          assertUnrestorableLaunchdSnapshotUnchanged(entry, rollbackInventory.artifacts);
+        }
+        plannedEntries.push(
+          Object.freeze({
+            entry,
+            immediateExpectation: launchdRollbackExpectationFromArtifact(entry.id, current),
+            noOp: entry.loaded && entry.plist === undefined,
+          }),
+        );
       } catch (error) {
-        errors.push(error);
+        preflightErrors.push(error);
       }
+    }
+  }
+  if (expectedCurrent) {
+    for (const expected of expectedCurrent) {
+      if (!coveredExpectationIds.has(expected.nativeId)) {
+        preflightErrors.push(
+          new ConfigError(
+            `Unexpected launchd rollback expectation for ${JSON.stringify(expected.nativeId)} is not covered by the snapshot.`,
+            "INVALID_CONFIG_FILE",
+          ),
+        );
+      }
+    }
+  }
+
+  if (preflightErrors.length > 0) {
+    throw new AggregateError(
+      preflightErrors,
+      `Failed to preflight ${preflightErrors.length} launchd scheduler restore operation(s).`,
+    );
+  }
+
+  const errors: unknown[] = [];
+  for (const planned of plannedEntries) {
+    if (planned.noOp) continue;
+    try {
+      const immediateInventory = inspectStableLaunchdNamespace(snapshot.nativeIds, context).inspection;
+      assertSchedulerRollbackArtifactCardinality(immediateInventory.artifacts, planned.immediateExpectation);
+    } catch (error) {
+      errors.push(error);
       continue;
     }
-    restoreLaunchdBindingEntry(entry, context, errors);
+    restoreLaunchdBindingEntry(planned.entry, context, errors);
   }
   if (errors.length > 0) {
     throw new AggregateError(errors, `Failed to completely restore ${errors.length} launchd scheduler operation(s).`);
   }
+}
+
+function launchdRollbackExpectationFromArtifact(
+  nativeId: string,
+  current: SchedulerNativeArtifact | undefined,
+): SchedulerRollbackExpectation {
+  if (current === undefined) {
+    return Object.freeze({ nativeId, allowed: Object.freeze([{ state: "absent" as const }]) });
+  }
+  if (current.nativeId !== nativeId || current.fingerprint === undefined) {
+    throw new ConfigError(
+      `Launchd scheduler artifact ${JSON.stringify(nativeId)} has no exact restorable fingerprint.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  return Object.freeze({
+    nativeId,
+    allowed: Object.freeze([
+      Object.freeze({
+        state: "present" as const,
+        ...(current.bindingId !== undefined ? { bindingId: current.bindingId } : {}),
+        ...(current.invocation !== undefined ? { invocation: current.invocation } : {}),
+        fingerprint: current.fingerprint,
+      }),
+    ]),
+  });
 }
 
 function assertUnrestorableLaunchdSnapshotUnchanged(
