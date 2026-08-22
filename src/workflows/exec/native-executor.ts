@@ -1066,6 +1066,7 @@ async function reserveJournaledDispatch(
           claimHolder: holder,
           claimExpiresAt: new Date(Date.parse(startedAt) + 90_000).toISOString(),
           now: startedAt,
+          leaseMode: ctx.leaseHolder === undefined ? "direct" : "engine",
         });
         if (reserved.kind === "busy") {
           throw new Error(

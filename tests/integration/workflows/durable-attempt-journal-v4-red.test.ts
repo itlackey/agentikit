@@ -73,6 +73,7 @@ interface ReserveUnitAttemptV4Input {
   claimHolder: string;
   claimExpiresAt: string;
   now: string;
+  leaseMode: "engine" | "direct";
 }
 
 interface FinishUnitAttemptV4Input {
@@ -164,6 +165,7 @@ function reserveInput(unitId: string, overrides: Partial<ReserveUnitAttemptV4Inp
     claimHolder: "driver-a",
     claimExpiresAt: LIVE_UNTIL,
     now: START,
+    leaseMode: "direct",
     ...overrides,
   };
 }

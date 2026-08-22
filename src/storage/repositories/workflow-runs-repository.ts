@@ -205,6 +205,8 @@ export interface ReserveUnitAttemptV4Input {
   claimHolder: string;
   claimExpiresAt: string;
   now: string;
+  /** Engine-driven reservations are fenced by the run lease; direct calls are allowed only on an unleased run. */
+  leaseMode: "engine" | "direct";
 }
 
 export interface FinishUnitAttemptV4Input {
@@ -233,6 +235,31 @@ export interface WorkflowAttemptAccountingV4 {
 export interface ReserveUnitAttemptV4Result {
   kind: "reserved" | "existing" | "reclaimed" | "busy";
   attempt: WorkflowRunUnitAttemptRowV4;
+}
+
+function assertAttemptReservationLease(
+  input: ReserveUnitAttemptV4Input,
+  run: { engine_lease_holder: string | null; engine_lease_until: string | null },
+): void {
+  if (input.leaseMode === "direct") {
+    if (run.engine_lease_holder === null) return;
+    throw new UsageError(
+      `Workflow run ${input.runId} is leased by another engine; direct durable dispatch reservation is forbidden.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+  if (run.engine_lease_holder !== input.claimHolder) {
+    throw new UsageError(
+      `Workflow run ${input.runId} lease holder changed; refusing a stale durable dispatch reservation.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+  if (run.engine_lease_until === null || run.engine_lease_until < input.now) {
+    throw new UsageError(
+      `Workflow run ${input.runId} engine lease expired before durable dispatch reservation.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
 }
 
 /** Input row for {@link WorkflowRunsRepository.insertRun}. */
@@ -680,14 +707,22 @@ export class WorkflowRunsRepository {
   reserveUnitAttempt(input: ReserveUnitAttemptV4Input): ReserveUnitAttemptV4Result {
     return this.immediateTransaction((db) => {
       const run = db
-        .prepare("SELECT workflow_ref, status, engine_lease_holder FROM workflow_runs WHERE id = ?")
-        .get(input.runId) as { workflow_ref: string; status: string; engine_lease_holder: string | null } | undefined;
+        .prepare("SELECT workflow_ref, status, engine_lease_holder, engine_lease_until FROM workflow_runs WHERE id = ?")
+        .get(input.runId) as
+        | {
+            workflow_ref: string;
+            status: string;
+            engine_lease_holder: string | null;
+            engine_lease_until: string | null;
+          }
+        | undefined;
       if (!run || run.status !== "active") {
         throw new UsageError(
           `Workflow run ${input.runId} is not active; refusing to reserve a durable dispatch attempt.`,
           "RESOURCE_ALREADY_EXISTS",
         );
       }
+      assertAttemptReservationLease(input, run);
 
       const latest = db
         .prepare(

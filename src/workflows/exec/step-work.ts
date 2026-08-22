@@ -1419,6 +1419,7 @@ export async function journalGateEvaluationStart(gate: GateUnitRef): Promise<Gat
           claimHolder,
           claimExpiresAt: new Date(Date.parse(now) + 90_000).toISOString(),
           now,
+          leaseMode: gate.claimHolder === undefined ? "direct" : "engine",
         }),
       ),
     );
