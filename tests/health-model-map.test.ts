@@ -6,7 +6,12 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { HEALTH_CHECKS, runModelMapProbe } from "../src/commands/health/checks";
+import {
+  HEALTH_CHECKS,
+  runModelMapProbe,
+  runSelectedModelAliasesProbe,
+} from "../src/commands/health/checks";
+import type { AkmConfig } from "../src/core/config/config";
 import { runCliCapture } from "./_helpers/cli";
 import { withEnv, withIsolatedAkmStorage } from "./_helpers/sandbox";
 
@@ -93,5 +98,91 @@ describe("models.json health diagnostics", () => {
 
   test("is registered as an ordered hard health check", () => {
     expect(HEALTH_CHECKS.find((check) => check.name === "model-map-files")?.channel).toBe("hard");
+  });
+});
+
+describe("selected model alias health diagnostics", () => {
+  const installedText = JSON.stringify({
+    version: 1,
+    aliases: {
+      balanced: {
+        claude: "claude/exact",
+      },
+    },
+  });
+
+  test("warns when a selected known alias has no mapping for its engine", () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        gemini: { kind: "agent", platform: "gemini", model: "balanced" },
+        claude: { kind: "agent", platform: "claude", model: "balanced" },
+      },
+    };
+
+    expect(runSelectedModelAliasesProbe({ loadConfig: () => config, installedText })).toEqual({
+      name: "selected-model-aliases",
+      kind: "deterministic",
+      status: "warn",
+      confidence: "high",
+      message: "1 of 2 configured model selections has no mapping for its selected engine.",
+      evidence: {
+        checked: [
+          { engine: "claude", alias: "balanced", modelMapKey: "claude" },
+          { engine: "gemini", alias: "balanced", modelMapKey: "gemini" },
+        ],
+        missing: [{ engine: "gemini", alias: "balanced", modelMapKey: "gemini" }],
+      },
+    });
+  });
+
+  test("treats an unknown model identifier as an exact pass-through", () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        gemini: { kind: "agent", platform: "gemini", model: "vendor/private-model-v2" },
+      },
+    };
+
+    expect(runSelectedModelAliasesProbe({ loadConfig: () => config, installedText })).toMatchObject({
+      status: "pass",
+      evidence: {
+        checked: [{ engine: "gemini", alias: "vendor/private-model-v2", modelMapKey: "gemini" }],
+        missing: [],
+      },
+    });
+  });
+
+  test("reports an invalid map generically without echoing parser detail", () => {
+    const sentinel = "PRIVATE_MODEL_MAP_SENTINEL";
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: { claude: { kind: "agent", platform: "claude", model: "balanced" } },
+    };
+
+    const result = runSelectedModelAliasesProbe({
+      loadConfig: () => config,
+      installedText: JSON.stringify({ version: sentinel, aliases: {} }),
+    });
+    expect(result).toEqual({
+      name: "selected-model-aliases",
+      kind: "deterministic",
+      status: "unknown",
+      confidence: "high",
+      message: "Configured model selections could not be checked because the model map is invalid.",
+      evidence: { checked: [], missing: [] },
+    });
+    expect(JSON.stringify(result)).not.toContain(sentinel);
+    expect(JSON.stringify(result)).not.toContain("$.version");
+  });
+
+  test("is ordered between model-map-files and default-llm-engine", () => {
+    const names = HEALTH_CHECKS.map((check) => check.name);
+    expect(names.indexOf("selected-model-aliases")).toBe(names.indexOf("model-map-files") + 1);
+    expect(names.indexOf("default-llm-engine")).toBe(names.indexOf("selected-model-aliases") + 1);
+    expect(HEALTH_CHECKS.find((check) => check.name === "selected-model-aliases")?.channel).toBe("hard");
   });
 });

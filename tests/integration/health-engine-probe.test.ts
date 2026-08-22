@@ -4,7 +4,12 @@
 
 import { describe, expect, test } from "bun:test";
 import * as healthChecks from "../../src/commands/health/checks";
-import { runDefaultEngineProbe, runDefaultLlmEngineProbe } from "../../src/commands/health/checks";
+import {
+  HEALTH_CHECKS,
+  runConfiguredEnginesProbe,
+  runDefaultEngineProbe,
+  runDefaultLlmEngineProbe,
+} from "../../src/commands/health/checks";
 import type { AkmConfig } from "../../src/core/config/config";
 import { validateConfigShape } from "../../src/core/config/config-schema";
 
@@ -15,6 +20,66 @@ const llm = {
 };
 
 describe("health engine probes", () => {
+  test("reports all explicitly configured engine availability in sorted, safe evidence", () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        zeta: {
+          ...llm,
+          endpoint: "https://private-zeta.example/v1/chat/completions",
+          model: "private-zeta-model",
+          apiKey: "$PRIVATE_ZETA_HEALTH_TOKEN",
+        },
+        alpha: {
+          ...llm,
+          endpoint: "https://private-alpha.example/v1/chat/completions",
+          model: "private-alpha-model",
+        },
+      },
+    };
+
+    const result = runConfiguredEnginesProbe({ loadConfig: () => config, env: {} });
+    expect(result).toEqual({
+      name: "configured-engines",
+      kind: "deterministic",
+      status: "warn",
+      confidence: "high",
+      message: "1 of 2 explicitly configured engines is unavailable.",
+      evidence: {
+        engines: [
+          { engine: "alpha", status: "pass" },
+          { engine: "zeta", status: "warn" },
+        ],
+      },
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("PRIVATE_ZETA_HEALTH_TOKEN");
+    expect(serialized).not.toContain("private-zeta.example");
+    expect(serialized).not.toContain("private-alpha.example");
+    expect(serialized).not.toContain("private-zeta-model");
+    expect(serialized).not.toContain("private-alpha-model");
+  });
+
+  test("returns unknown when there are no explicitly configured engines", () => {
+    const config: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "off" };
+    expect(runConfiguredEnginesProbe({ loadConfig: () => config })).toEqual({
+      name: "configured-engines",
+      kind: "deterministic",
+      status: "unknown",
+      confidence: "high",
+      message: "No engines are explicitly configured.",
+      evidence: { engines: [] },
+    });
+  });
+
+  test("registers aggregate availability after default-llm-engine", () => {
+    const names = HEALTH_CHECKS.map((check) => check.name);
+    expect(names.indexOf("configured-engines")).toBe(names.indexOf("default-llm-engine") + 1);
+    expect(names.indexOf("active-improve-strategy")).toBe(names.indexOf("configured-engines") + 1);
+    expect(HEALTH_CHECKS.find((check) => check.name === "configured-engines")?.channel).toBe("hard");
+  });
+
   test("probes defaults.llmEngine independently from the general default", () => {
     const config: AkmConfig = {
       configVersion: "0.9.0",
