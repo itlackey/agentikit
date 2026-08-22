@@ -555,7 +555,7 @@ describe("workflow engine v3 contracts", () => {
 
   test("freeze preserves merged per-invocation LLM settings and explicit null timeout", () => {
     const parsed = parseWorkflow(
-      "---\ntype: workflow\ndefaults: { engine: direct, timeout: none, llm: { temperature: 0.2, extra_params: { seed: 7 } } }\nsteps:\n  - id: review\n    unit: { llm: { max_tokens: 77, enable_thinking: true } }\n---\n\n## review\n\nReview\n",
+      "---\ntype: workflow\ndefaults: { engine: direct, timeout: none, llm: { temperature: 0.2, extra_params: { seed: 7 }, reasoning_effort: low } }\nsteps:\n  - id: review\n    unit: { llm: { max_tokens: 77, enable_thinking: true, reasoning_effort: none } }\n---\n\n## review\n\nReview\n",
       SOURCE,
     );
     if (!parsed.ok) throw new Error("fixture must parse");
@@ -575,6 +575,7 @@ describe("workflow engine v3 contracts", () => {
             kind: "llm",
             endpoint: "https://example.test/v1/chat/completions",
             model: "qwen",
+            reasoningEffort: "medium",
           },
         },
         defaults: { engine: "direct" },
@@ -587,8 +588,15 @@ describe("workflow engine v3 contracts", () => {
       model: "qwen",
       modelPresent: false,
       timeoutMs: null,
-      llm: { temperature: 0.2, extraParams: { seed: 7 }, maxTokens: 77, enableThinking: true },
+      llm: {
+        temperature: 0.2,
+        extraParams: { seed: 7 },
+        reasoningEffort: "none",
+        maxTokens: 77,
+        enableThinking: true,
+      },
     });
+    expect(frozen.plan.execution?.engines.direct).toMatchObject({ reasoningEffort: "medium" });
     expect(() => decodeWorkflowPlanV3(frozen.plan)).not.toThrow();
   });
 

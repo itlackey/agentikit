@@ -113,6 +113,11 @@ describe("schemas/akm-workflow.json stays in sync with the TS vocabulary", () =>
     expect(extraParams["x-akm-recursivelyForbiddenNormalizedKeys"]).toEqual(EXTRA_PARAMS_CREDENTIAL_KEYS);
   });
 
+  test("LLM overrides expose first-class reasoning_effort", () => {
+    const llm = schema.definitions.llm as { properties?: Record<string, unknown> };
+    expect(llm.properties?.reasoning_effort).toEqual({ type: "string", minLength: 1 });
+  });
+
   test("the workflow schema $refs the shared asset envelope for every envelope key", () => {
     const envelopeKeys = Object.keys(envelope.definitions);
     for (const key of [

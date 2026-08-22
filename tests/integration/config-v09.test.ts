@@ -84,6 +84,29 @@ describe("0.9 config contract", () => {
     });
   });
 
+  test("accepts and resolves first-class reasoningEffort on an LLM engine", () => {
+    const config = {
+      configVersion: "0.9.0" as const,
+      semanticSearchMode: "auto" as const,
+      engines: {
+        fast: {
+          kind: "llm" as const,
+          endpoint: "https://example.test/v1/chat/completions",
+          model: "fast-model",
+          reasoningEffort: "none",
+        },
+      },
+      defaults: { llmEngine: "fast" },
+    };
+    expect(getDefaultLlmConfig(config).reasoningEffort).toBe("none");
+    expect(
+      validateConfigShape({
+        ...config,
+        engines: { fast: { ...config.engines.fast, reasoningEffort: "" } },
+      }).ok,
+    ).toBe(false);
+  });
+
   test("workflow.judgeEngine accepts named LLM or agent engines and rejects unknown names", () => {
     const engines = {
       fast: { kind: "llm" as const, endpoint: "https://example.test/v1/chat/completions", model: "fast-model" },
@@ -158,6 +181,21 @@ describe("0.9 config contract", () => {
           endpoint: "https://example.test/v1/chat/completions",
           model: "test",
           extraParams: { chat_template_kwargs: { enable_thinking: true } },
+        },
+      },
+    });
+    expect(() => loadUserConfig()).toThrow(ConfigError);
+  });
+
+  test("rejects reasoning_effort extraParams overrides", () => {
+    writeConfig({
+      configVersion: "0.9.0",
+      engines: {
+        fast: {
+          kind: "llm",
+          endpoint: "https://example.test/v1/chat/completions",
+          model: "test",
+          extraParams: { reasoning_effort: "high" },
         },
       },
     });

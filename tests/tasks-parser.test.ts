@@ -49,6 +49,7 @@ describe("parseTaskDocument", () => {
       "timeoutMs: null",
       "llm:",
       "  temperature: 0.1",
+      "  reasoningEffort: none",
       "  extraParams:",
       "    seed: 7",
       "",
@@ -59,7 +60,7 @@ describe("parseTaskDocument", () => {
       expect(task.target.engine).toBe("reviewer");
       expect(task.target.model).toBe("claude-sonnet");
       expect(task.target.timeoutMs).toBeNull();
-      expect(task.target.llm).toEqual({ temperature: 0.1, extraParams: { seed: 7 } });
+      expect(task.target.llm).toEqual({ temperature: 0.1, reasoningEffort: "none", extraParams: { seed: 7 } });
       expect(task.target.source.kind).toBe("inline");
       if (task.target.source.kind === "inline") {
         expect(task.target.source.text).toBe("Summarise today's git activity.");

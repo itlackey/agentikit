@@ -78,6 +78,21 @@ describe("engine resolution", () => {
     expect(JSON.stringify(resolved)).not.toContain(process.env.FAST_API_KEY ?? "not-set");
   });
 
+  test("projects first-class reasoning effort through engine and invocation resolution", () => {
+    const configured = {
+      ...config,
+      engines: {
+        ...config.engines,
+        fast: { ...config.engines.fast, reasoningEffort: "high" },
+      },
+    };
+    expect(resolveLlmEngineUse(configured, [{ engine: "fast" }]).connection.reasoningEffort).toBe("high");
+    expect(
+      resolveLlmEngineUse(configured, [{ engine: "fast", llm: { reasoningEffort: "none" } }]).connection
+        .reasoningEffort,
+    ).toBe("none");
+  });
+
   test("resolves direct and SDK fallback models through engine, llm, then wildcard alias tiers", () => {
     const tiered = {
       ...config,
