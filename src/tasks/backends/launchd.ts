@@ -555,17 +555,15 @@ function restoreLaunchdBindings(
   }
   const errors: unknown[] = [];
   let rollbackInventory: SchedulerBackendInspection | undefined;
-  if (expectedCurrent) {
-    try {
-      rollbackInventory = inspectStableLaunchdNamespace(snapshot.nativeIds, context).inspection;
-    } catch (error) {
-      errors.push(error);
-    }
+  try {
+    rollbackInventory = inspectStableLaunchdNamespace(snapshot.nativeIds, context).inspection;
+  } catch (error) {
+    errors.push(error);
   }
   for (const entry of snapshot.entries) {
+    if (!rollbackInventory) continue;
     if (expectedCurrent) {
       try {
-        if (!rollbackInventory) continue;
         const expected = expectedCurrent.find((candidate) => candidate.nativeId === entry.id);
         if (!expected) {
           throw new ConfigError(
@@ -579,10 +577,37 @@ function restoreLaunchdBindings(
         continue;
       }
     }
+    if (entry.loaded && entry.plist === undefined) {
+      try {
+        assertUnrestorableLaunchdSnapshotUnchanged(entry, rollbackInventory.artifacts);
+      } catch (error) {
+        errors.push(error);
+      }
+      continue;
+    }
     restoreLaunchdBindingEntry(entry, context, errors);
   }
   if (errors.length > 0) {
     throw new AggregateError(errors, `Failed to completely restore ${errors.length} launchd scheduler operation(s).`);
+  }
+}
+
+function assertUnrestorableLaunchdSnapshotUnchanged(
+  entry: LaunchdBindingSnapshot["entries"][number],
+  currentArtifacts: readonly SchedulerNativeArtifact[],
+): void {
+  const current = assertSchedulerNativeArtifactCardinality(currentArtifacts, entry.id, 1);
+  const expectedFingerprint = launchdMissingPlistArtifact(entry.id, entry.enabled, entry.loaded).fingerprint;
+  if (
+    current?.nativeId !== entry.id ||
+    current.invocation !== undefined ||
+    current.bindingId !== undefined ||
+    current.fingerprint !== expectedFingerprint
+  ) {
+    throw new ConfigError(
+      `Loaded launchd artifact ${JSON.stringify(entry.id)} has no restorable plist and changed after its snapshot; refusing mutation.`,
+      "INVALID_CONFIG_FILE",
+    );
   }
 }
 
@@ -1028,10 +1053,13 @@ export function parseLaunchdLoadedLabels(output: string): Set<string> | undefine
   }
   const lines = output.replace(/\r\n?/gu, "\n").split("\n");
   const labels = new Set<string>();
+  let akmEntryCount = 0;
   const add = (label: string): boolean => {
     if (!LAUNCHD_AKM_LABEL_RE.test(label)) return false;
+    akmEntryCount += 1;
+    if (akmEntryCount > MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES || labels.has(label)) return false;
     labels.add(label);
-    return labels.size <= MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES;
+    return true;
   };
   const firstContent = lines.findIndex((line) => line.trim() !== "");
   if (firstContent >= 0 && /^PID\s+Status\s+Label$/iu.test(lines[firstContent]!.trim())) {

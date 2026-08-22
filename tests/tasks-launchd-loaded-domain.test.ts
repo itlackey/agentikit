@@ -61,6 +61,25 @@ describe("parseLaunchdLoadedLabels", () => {
     expect([...parseLaunchdLoadedLabels(output)!]).toEqual(["com.akm.task.ping", "com.akm.task.ping."]);
   });
 
+  test("rejects a duplicate AKM label occurrence in launchctl list output", () => {
+    const output = `PID Status Label
+123 0 com.akm.task.ping
+- 0 com.akm.task.ping
+`;
+
+    expect(parseLaunchdLoadedLabels(output)).toBeUndefined();
+  });
+
+  test.each([
+    ["domain table", "gui/501 = {\n  services = {\n    123 0 com.akm.task.ping\n    - 0 com.akm.task.ping\n  }\n}\n"],
+    [
+      "domain dictionary",
+      'gui/501 = {\n  services = {\n    "com.akm.task.ping" = {\n    }\n    "com.akm.task.ping" = {\n    }\n  }\n}\n',
+    ],
+  ])("rejects a duplicate AKM label occurrence in %s output", (_shape, output) => {
+    expect(parseLaunchdLoadedLabels(output)).toBeUndefined();
+  });
+
   test("does not apply domain-table status grammar to launchctl list output", () => {
     expect(parseLaunchdLoadedLabels("PID Status Label\n799 - com.akm.task.ping\n")).toBeUndefined();
     expect([...parseLaunchdLoadedLabels("PID Status Label\n- -9 com.akm.task.failed\n")!]).toEqual([
@@ -132,5 +151,13 @@ describe("parseLaunchdLoadedLabels", () => {
       "\n",
     );
     expect(parseLaunchdLoadedLabels(`PID Status Label\n${excessive}\n`)).toBeUndefined();
+  });
+
+  test("accepts exactly 4096 raw unique AKM entries and rejects a 4097th repeated entry", () => {
+    const maximum = Array.from({ length: 4096 }, (_, index) => `${index + 1} 0 com.akm.task.task-${index}`).join("\n");
+    expect(parseLaunchdLoadedLabels(`PID Status Label\n${maximum}\n`)?.size).toBe(4096);
+
+    const repeatedOverflow = `${maximum}\n4097 0 com.akm.task.task-0`;
+    expect(parseLaunchdLoadedLabels(`PID Status Label\n${repeatedOverflow}\n`)).toBeUndefined();
   });
 });

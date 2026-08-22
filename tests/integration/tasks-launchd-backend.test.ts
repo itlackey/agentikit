@@ -198,6 +198,13 @@ function launchdMutationCalls(calls: readonly string[][]): readonly string[][] {
   return calls.filter((call) => call[1] !== "print" && call[1] !== "print-disabled");
 }
 
+const STABILIZED_LAUNCHD_INSPECTION_EVENTS = [
+  "exec:print",
+  "exec:print-disabled",
+  "exec:print",
+  "exec:print-disabled",
+] as const;
+
 function makeFakeFs(events?: string[]): LaunchdFs & { written: Map<string, string>; readFile(file: string): string } {
   const written = new Map<string, string>();
   return {
@@ -843,6 +850,89 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(snapshot.entries).toEqual([expect.objectContaining({ id: "PING", loaded: true, enabled: true })]);
   });
 
+  test("direct restore leaves an unchanged loaded-only snapshot entry untouched", () => {
+    const { backend, exec } = makeBackend();
+    exec.loadedLabels.add("com.akm.task.ping");
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    exec.calls.length = 0;
+
+    expect(() => backend.restoreBindings?.(snapshot)).not.toThrow();
+    expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test.each([
+    "disappeared",
+    "disabled",
+    "case-peer",
+    "duplicate-peer",
+  ] as const)("direct restore rejects a %s loaded-only snapshot state without mutating it", (change) => {
+    const { backend, exec } = makeBackend();
+    exec.loadedLabels.add("com.akm.task.ping");
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    if (change === "disappeared") exec.loadedLabels.delete("com.akm.task.ping");
+    if (change === "disabled") exec.disabledLabels.add("com.akm.task.ping");
+    if (change === "case-peer") {
+      exec.loadedLabels.delete("com.akm.task.ping");
+      exec.loadedLabels.add("com.akm.task.PING");
+    }
+    if (change === "duplicate-peer") exec.loadedLabels.add("com.akm.task.PING");
+    const loadedBefore = [...exec.loadedLabels].sort();
+    const disabledBefore = [...exec.disabledLabels].sort();
+    exec.calls.length = 0;
+
+    expect(() => backend.restoreBindings?.(snapshot)).toThrow(/restore|cardinality|changed|plist|snapshot/i);
+    expect([...exec.loadedLabels].sort()).toEqual(loadedBefore);
+    expect([...exec.disabledLabels].sort()).toEqual(disabledBefore);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("direct restore aggregates an unrestorable loaded-only mismatch and still restores an independent entry", () => {
+    const { backend, exec, fs } = makeBackend();
+    exec.loadedLabels.add("com.akm.task.ping");
+    const snapshot = backend.snapshotBindings?.(["ping", "second"]);
+    backend.install(qualifiedTask("0 9 * * *", "second"));
+    exec.loadedLabels.delete("com.akm.task.ping");
+    exec.calls.length = 0;
+
+    let caught: unknown;
+    try {
+      backend.restoreBindings?.(snapshot);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toHaveLength(1);
+    expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(false);
+    expect(fs.written.has("/tmp/agents/com.akm.task.second.plist")).toBe(false);
+    expect(exec.loadedLabels.has("com.akm.task.second")).toBe(false);
+    expect(launchdMutationCalls(exec.calls).some((call) => call[2]?.endsWith(".ping"))).toBe(false);
+  });
+
+  test("whole-set transaction preparation rejects an affected loaded-only artifact before mutation", async () => {
+    const stash = sandboxStashDir();
+    try {
+      const tasksDir = path.join(stash.dir, "tasks");
+      fs.mkdirSync(tasksDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(tasksDir, "ping.yml"),
+        'version: 3\nrun: echo ping\nakm:\n  schedule: "0 9 * * *"\n  enabled: true\n',
+        "utf8",
+      );
+      const { backend, exec, fs: launchdFs } = makeBackend();
+      exec.loadedLabels.add("com.akm.task.ping");
+      exec.calls.length = 0;
+
+      await expect(akmTasksSync({ backend })).rejects.toThrow(/owner|collision|artifact|scheduler|existing/i);
+      expect(launchdFs.written.size).toBe(0);
+      expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(true);
+      expect(launchdMutationCalls(exec.calls)).toEqual([]);
+    } finally {
+      stash.cleanup();
+    }
+  });
+
   test("snapshot rollback CAS never clobbers a concurrent same-label plist edit", () => {
     const { backend, exec, fs } = makeBackend();
     const owned = qualifiedTask("0 9 * * *");
@@ -1353,6 +1443,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(priorLoaded);
     expect(exec.disabledLabels.has("com.akm.task.ping")).toBe(!priorEnabled);
     expect(events).toEqual([
+      ...STABILIZED_LAUNCHD_INSPECTION_EVENTS,
       "exec:bootout",
       `write:${file}`,
       ...(priorLoaded ? ["exec:enable", "exec:bootstrap"] : []),
@@ -1374,7 +1465,12 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(fakeFs.written.has("/tmp/agents/com.akm.task.absent.plist")).toBe(false);
     expect(exec.loadedLabels.has("com.akm.task.absent")).toBe(false);
     expect(exec.disabledLabels.has("com.akm.task.absent")).toBe(false);
-    expect(events).toEqual(["exec:bootout", "remove:/tmp/agents/com.akm.task.absent.plist", "exec:enable"]);
+    expect(events).toEqual([
+      ...STABILIZED_LAUNCHD_INSPECTION_EVENTS,
+      "exec:bootout",
+      "remove:/tmp/agents/com.akm.task.absent.plist",
+      "exec:enable",
+    ]);
   });
 
   test("snapshot restore continues with later entries and aggregates a partial failure", () => {
