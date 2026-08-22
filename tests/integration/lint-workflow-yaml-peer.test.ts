@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmLint } from "../../src/commands/lint";
@@ -27,6 +27,13 @@ function write(root: string, relative: string, content: string): string {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content, "utf8");
   return file;
+}
+
+function link(root: string, relative: string, target: string): string {
+  const authored = path.join(root, relative);
+  fs.mkdirSync(path.dirname(authored), { recursive: true });
+  fs.symlinkSync(path.relative(path.dirname(authored), target), authored);
+  return authored;
 }
 
 const VALID_YAML = `name: YAML peer
@@ -200,5 +207,124 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
     });
     expect(result.flagged[0]?.detail).toMatch(/extensionless stem ending in recognized workflow suffix/is);
     expect(result.warnings).toEqual([]);
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "a contained same-format workflow symlink is linted under its authored identity without mutation",
+    async () => {
+      const root = fixtureRoot("akm-lint-yaml-link-valid-");
+      const target = write(root, "support/valid.yml", VALID_YAML);
+      const authored = link(root, "workflows/linked.yml", target);
+      const originalRead = fs.readFileSync;
+      let authoredReads = 0;
+      const readSpy = spyOn(fs, "readFileSync").mockImplementation(((candidate, options) => {
+        if (path.resolve(String(candidate)) === path.resolve(authored)) authoredReads++;
+        return originalRead(candidate, options as never);
+      }) as typeof fs.readFileSync);
+
+      try {
+        const result = await akmLint({ dir: root, typeFilter: "workflows", fix: true });
+
+        expect(result.flagged).toEqual([]);
+        expect(result.warnings).toEqual([]);
+        expect(result.fixed).toEqual([]);
+        expect(authoredReads).toBe(1);
+        expect(fs.lstatSync(authored).isSymbolicLink()).toBe(true);
+        expect(originalRead(target, "utf8")).toBe(VALID_YAML);
+      } finally {
+        readSpy.mockRestore();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "an invalid contained same-format workflow symlink reports one safe source-IR finding under its authored identity",
+    async () => {
+      const root = fixtureRoot("akm-lint-yaml-link-invalid-");
+      const target = write(root, "support/invalid.yml", INVALID_YAML);
+      link(root, "workflows/bad.yml", target);
+
+      const result = await akmLint({ dir: root, typeFilter: "workflows" });
+
+      expect(result.flagged).toHaveLength(1);
+      expect(result.flagged[0]).toMatchObject({
+        file: "workflows/bad.yml",
+        issue: "invalid-workflow-structure",
+        fixed: false,
+        line: 11,
+      });
+      expect(result.flagged[0]?.detail).toContain("actions/checkout@v4");
+      expect(JSON.stringify(result)).not.toContain("AKM_SECRET_BYTES_MUST_NOT_LEAK");
+      expect(fs.lstatSync(path.join(root, "workflows/bad.yml")).isSymbolicLink()).toBe(true);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "dangling, escaping, and format-changing workflow symlinks are one in-band domain error without source reads",
+    async () => {
+      const root = fixtureRoot("akm-lint-yaml-link-domain-");
+      const outside = fixtureRoot("akm-lint-yaml-link-outside-");
+      const outsideTarget = write(outside, "outside.yml", "AKM_OUTSIDE_BYTES_MUST_NOT_LEAK\n");
+      const markdownTarget = write(root, "support/format.md", VALID_MARKDOWN);
+      const dangling = path.join(root, "workflows/broken.yml");
+      fs.mkdirSync(path.dirname(dangling), { recursive: true });
+      fs.symlinkSync("missing.yml", dangling);
+      const escaping = link(root, "workflows/escape.yml", outsideTarget);
+      const formatChanging = link(root, "workflows/format.yml", markdownTarget);
+      const denied = new Set([dangling, escaping, formatChanging].map((candidate) => path.resolve(candidate)));
+      const originalRead = fs.readFileSync;
+      const readSpy = spyOn(fs, "readFileSync").mockImplementation(((candidate, options) => {
+        if (denied.has(path.resolve(String(candidate)))) {
+          throw new Error(`ownership arbitration must not read ${String(candidate)}`);
+        }
+        return originalRead(candidate, options as never);
+      }) as typeof fs.readFileSync);
+
+      try {
+        const result = await akmLint({ dir: root, typeFilter: "workflows", fix: true });
+
+        expect(result.flagged).toHaveLength(3);
+        expect(result.flagged.map(({ file }) => file)).toEqual([
+          "workflows/broken.yml",
+          "workflows/escape.yml",
+          "workflows/format.yml",
+        ]);
+        expect(
+          result.flagged.every(({ issue, fixed }) => issue === "invalid-workflow-structure" && fixed === false),
+        ).toBe(true);
+        expect(result.flagged.map(({ detail }) => detail).join("\n")).toMatch(
+          /cannot be resolved.*outside the bundle root.*different source format/is,
+        );
+        expect(JSON.stringify(result)).not.toContain("AKM_OUTSIDE_BYTES_MUST_NOT_LEAK");
+        expect(result.fixed).toEqual([]);
+        expect(readSpy).not.toHaveBeenCalledWith(outsideTarget, expect.anything());
+      } finally {
+        readSpy.mockRestore();
+      }
+    },
+  );
+
+  test("flat workflow ownership arbitration reads its directory a constant number of times", async () => {
+    const root = fixtureRoot("akm-lint-yaml-linear-");
+    const workflows = path.join(root, "workflows");
+    for (let index = 0; index < 50; index++) {
+      write(root, `workflows/workflow-${String(index).padStart(2, "0")}.yml`, VALID_YAML);
+    }
+    const originalReadDir = fs.readdirSync;
+    let workflowDirectoryReads = 0;
+    const readDirSpy = spyOn(fs, "readdirSync").mockImplementation(((candidate, options) => {
+      if (path.resolve(String(candidate)) === path.resolve(workflows)) workflowDirectoryReads++;
+      return originalReadDir(candidate, options as never);
+    }) as typeof fs.readdirSync);
+
+    try {
+      const result = await akmLint({ dir: root, typeFilter: "workflows" });
+
+      expect(result.flagged).toEqual([]);
+      expect(result.warnings).toEqual([]);
+      expect(workflowDirectoryReads).toBeLessThanOrEqual(2);
+    } finally {
+      readDirSpy.mockRestore();
+    }
   });
 });
