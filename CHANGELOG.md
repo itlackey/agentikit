@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-22
+
 ### Breaking changes & migration
 
 - `improve.strategies.*.processes.triage.judgment` now accepts `true`/`false`
@@ -13,6 +15,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   remain enabled. Unknown object keys are now rejected instead of ignored, so
   correct typos such as `egnine`, `judgement`, or other unrecognized fields
   before upgrading. Use `judgment: false` to disable the tier explicitly.
+
+### Added
+
+- **WP0 — characterization and release contracts:** pinned direct-agent,
+  command, task, workflow-freeze, model-alias, and harness-lowering behavior;
+  added cross-entry-point equivalence fixtures and immutable release-surface
+  gates.
+- **WP1 — shared execution contracts:** introduced adapter-rendered source
+  identity and one resolved-request representation carrying final content,
+  engine/model/inference selection, authorization, runtime settings, source
+  hashes, and structured lowering notices.
+- **WP2 — layered model maps:** ship a versioned installed `models.json`, merge
+  an optional user overlay from the config directory, expand known aliases by
+  engine, pass unknown identifiers through exactly, and provide guarded model
+  map initialization.
+- **WP3 — common cascade and authorization:** resolve far-to-near defaults once,
+  preserve explicit false/zero/empty values, authorize selected tools before
+  dispatch, and expose stable field-level provenance without resolved values.
+- **WP4 — portable command execution:** added canonical
+  `akm command run <ref>`, backed `akm agent --command` with the same executor,
+  implemented one-pass `$ARGUMENTS` substitution, and reject unsupported native
+  template constructs before dispatch.
+- **WP6 — task v3:** added the strict shipped task schema, command/workflow/script
+  targets, closed shell and working-directory rules, portable schedules, and a
+  fail-closed task-v2 migrator with no-write preview, per-file status, backups,
+  validation, and blocked argv-array handling.
+- **WP7 — peer workflow sources and durable v4:** compile Markdown and the
+  approved GitHub-shaped `.yml` subset through source IR v1; new runs atomically
+  persist immutable v4 targets, guarded source reads, symbolic environments,
+  and durable dispatch attempts while stored v3 plans resume unchanged.
+- **WP8 — release diagnostics:** added zero-write, secret-safe command dry-run
+  output, stderr-only verbose provenance, offline `selected-model-aliases` and
+  `configured-engines` health advisories, self-contained migration guidance,
+  and npm tar/install/link release gates.
+
+### Changed
+
+- **WP5 — engine lowering convergence:** direct command/agent execution,
+  improve/proposal dispatch, tasks, and workflows now share the resolved-request
+  boundary and implementation-derived lowerers. Exact model and inference
+  settings reach registered harnesses; unsupported fields produce safe notices,
+  while provider capability rejection remains a runtime result.
+- Scheduled workflow fires re-read the current peer source and create a fresh
+  durable-v4 freeze. Resume remains journaled replay, and crash recovery uses
+  at-least-once attempt semantics with stable reclaim identities.
+- Task scheduler synchronization is transactional across supported adapters and
+  preserves exact ownership, rollback evidence, enabled state, parameters,
+  timeouts, redaction metadata, and resolver overrides.
 
 ## [0.9.1] - 2026-08-18
 
