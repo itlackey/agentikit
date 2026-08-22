@@ -20,6 +20,82 @@ const llm = {
 };
 
 describe("health engine probes", () => {
+  test("shares one availability probe across default, default LLM, and configured projections", () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: { shared: { kind: "agent", platform: "claude" } },
+      defaults: { engine: "shared", llmEngine: "shared" },
+    };
+    let spawnCalls = 0;
+
+    const probe = (
+      healthChecks as unknown as {
+        runHealthEngineProbes?: (deps: {
+          loadConfig: () => AkmConfig;
+          spawnSync: typeof import("node:child_process").spawnSync;
+        }) => {
+          defaultEngine: { name: string; status: string };
+          defaultLlmEngine: { name: string; status: string };
+          configuredEngines: { name: string; status: string; evidence?: unknown };
+        };
+      }
+    ).runHealthEngineProbes;
+    expect(typeof probe).toBe("function");
+    if (!probe) return;
+
+    const result = probe({
+      loadConfig: () => config,
+      spawnSync: (() => {
+        spawnCalls += 1;
+        return { status: 0 };
+      }) as never,
+    });
+
+    expect(spawnCalls).toBe(1);
+    expect(result.defaultEngine).toMatchObject({ name: "default-engine", status: "pass" });
+    expect(result.defaultLlmEngine).toMatchObject({ name: "default-llm-engine", status: "pass" });
+    expect(result.configuredEngines).toMatchObject({
+      name: "configured-engines",
+      status: "pass",
+      evidence: { engines: [{ engine: "shared", status: "pass" }] },
+    });
+  });
+
+  test("sanitizes SDK executable probe exceptions, including a NUL bin", () => {
+    const sentinel = "PRIVATE_SDK_BIN_SENTINEL";
+    const parsed = validateConfigShape({
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        sdk: { kind: "agent", platform: "opencode-sdk", bin: `${sentinel}\0` },
+      },
+      defaults: { engine: "sdk" },
+    });
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.errors));
+
+    const result = runDefaultEngineProbe({
+      loadConfig: () => parsed.value,
+      resolvePackage: () => "/sdk/package.json",
+      spawnSync: (() => {
+        throw new TypeError(`spawn rejected ${sentinel}: raw child output`);
+      }) as never,
+    });
+
+    expect(result).toEqual({
+      name: "default-engine",
+      kind: "deterministic",
+      status: "warn",
+      confidence: "high",
+      message: 'SDK engine "sdk" executable availability could not be checked.',
+      evidence: { engine: "sdk", runtimeKind: "sdk", binaryAvailable: false },
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(sentinel);
+    expect(serialized).not.toContain("raw child output");
+    expect(serialized).not.toContain("NUL");
+  });
+
   test("reports all explicitly configured engine availability in sorted, safe evidence", () => {
     const config: AkmConfig = {
       configVersion: "0.9.0",

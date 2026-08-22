@@ -134,21 +134,24 @@ describe("selected model alias health diagnostics", () => {
   });
 
   test("treats an unknown model identifier as an exact pass-through", () => {
+    const sentinel = "vendor/private-model-v2-SENTINEL";
     const config: AkmConfig = {
       configVersion: "0.9.0",
       semanticSearchMode: "off",
       engines: {
-        gemini: { kind: "agent", platform: "gemini", model: "vendor/private-model-v2" },
+        gemini: { kind: "agent", platform: "gemini", model: sentinel },
       },
     };
 
-    expect(runSelectedModelAliasesProbe({ loadConfig: () => config, installedText })).toMatchObject({
+    const result = runSelectedModelAliasesProbe({ loadConfig: () => config, installedText });
+    expect(result).toMatchObject({
       status: "pass",
       evidence: {
-        checked: [{ engine: "gemini", alias: "vendor/private-model-v2", modelMapKey: "gemini" }],
+        checked: [],
         missing: [],
       },
     });
+    expect(JSON.stringify(result)).not.toContain(sentinel);
   });
 
   test("reports an invalid map generically without echoing parser detail", () => {
