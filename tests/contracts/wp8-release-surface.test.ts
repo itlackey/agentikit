@@ -520,6 +520,207 @@ describe("0.9.2 release surface", () => {
     expect(failures).toEqual([]);
   });
 
+  test("prohibits whole-process environment inheritance for new v4 starts and preserves only stored-v3 compatibility", () => {
+    const failures = [
+      ...missingInSection("docs/reference/workflow-schema.md", /child's environment|environment.*allowlist/i, [
+        [
+          "new v4 starts reject inherit_env",
+          /(?:new|v4)[^.\n]{0,240}(?:reject|forbid)[^.\n]{0,160}inherit_env|inherit_env[^.\n]{0,160}(?:reject|forbid)[^.\n]{0,240}(?:new|v4)/i,
+        ],
+        [
+          "authors use named env bindings or pass_env",
+          /named (?:environment|env) bindings?[^.\n]{0,200}pass_env|pass_env[^.\n]{0,200}named (?:environment|env) bindings?/i,
+        ],
+        [
+          "inherit_env is stored-v3 compatibility only",
+          /inherit_env[^.\n]{0,240}stored[^.\n]{0,120}v3|stored[^.\n]{0,120}v3[^.\n]{0,240}inherit_env/i,
+        ],
+      ]),
+      ...missingInSection("docs/guides/author-workflows.md", /what the command can see|environment/i, [
+        [
+          "new starts reject inherit_env",
+          /(?:new|v4)[^.\n]{0,240}(?:reject|forbid)[^.\n]{0,160}inherit_env|inherit_env[^.\n]{0,160}(?:reject|forbid)[^.\n]{0,240}(?:new|v4)/i,
+        ],
+        [
+          "authors use env bindings and pass_env",
+          /(?:env bindings?|env:)[^.\n]{0,220}pass_env|pass_env[^.\n]{0,220}(?:env bindings?|env:)/i,
+        ],
+      ]),
+      ...missingInSection("docs/guides/run-workflows.md", /security.*workflow sources|executed code/i, [
+        [
+          "new v4 starts reject inherit_env",
+          /(?:new|v4)[^.\n]{0,240}(?:reject|forbid)[^.\n]{0,160}inherit_env|inherit_env[^.\n]{0,160}(?:reject|forbid)[^.\n]{0,240}(?:new|v4)/i,
+        ],
+        [
+          "stored v3 runs resume unchanged",
+          /stored[^.\n]{0,120}v3[^.\n]{0,200}resume[^.\n]{0,120}(?:unchanged|exact)/i,
+        ],
+      ]),
+      ...missingInSection("docs/architecture/testing/manual-testing-checklist.md", /exec \(shell\) units/i, [
+        ["manual check expects new inherit_env refusal", /inherit_env:\s*true[\s\S]{0,500}(?:reject|refus|fail)/i],
+        [
+          "manual check uses named env or pass_env instead",
+          /(?:named (?:environment|env) bindings?|env:)[\s\S]{0,400}pass_env|pass_env[\s\S]{0,400}(?:named (?:environment|env) bindings?|env:)/i,
+        ],
+      ]),
+      ...missingInSection("docs/migration/v0.9.1-to-v0.9.2.md", /workflow compatibility/i, [
+        ["migration calls inherit_env removal breaking", /inherit_env[\s\S]{0,400}(?:breaking|reject|forbid)/i],
+        [
+          "migration preserves stored v3 resume only",
+          /stored[^.\n]{0,160}v3[^.\n]{0,240}resume[^.\n]{0,160}(?:unchanged|exact)/i,
+        ],
+        [
+          "migration directs authors to named bindings or pass_env",
+          /named (?:environment|env) bindings?[^.\n]{0,240}pass_env|pass_env[^.\n]{0,240}named (?:environment|env) bindings?/i,
+        ],
+      ]),
+    ];
+
+    const released = section(read("CHANGELOG.md"), "0.9.2") ?? "";
+    for (const [label, pattern] of [
+      ["CHANGELOG.md: v4 inherit_env breaking note", /inherit_env[\s\S]{0,400}(?:breaking|reject|forbid)/i],
+      [
+        "CHANGELOG.md: named binding/pass_env replacement",
+        /named (?:environment|env) bindings?[\s\S]{0,240}pass_env|pass_env[\s\S]{0,240}named (?:environment|env) bindings?/i,
+      ],
+      [
+        "CHANGELOG.md: stored v3 compatibility only",
+        /stored[^.\n]{0,160}v3[^.\n]{0,240}resume[^.\n]{0,160}(?:unchanged|exact)/i,
+      ],
+    ] satisfies Requirement[]) {
+      if (!pattern.test(released)) failures.push(label);
+    }
+
+    const currentGuidance = [
+      "docs/reference/workflow-schema.md",
+      "docs/guides/author-workflows.md",
+      "docs/guides/run-workflows.md",
+      "docs/architecture/testing/manual-testing-checklist.md",
+    ] as const;
+    const positiveInheritance =
+      /inherit_env(?::\s*true)?[^.\n]{0,180}(?:escape hatch|hands? (?:the )?command|gives? (?:the )?command|opts? (?:all the way )?back|restores? full|whole environment)/i;
+    for (const relative of currentGuidance) {
+      if (positiveInheritance.test(read(relative))) failures.push(`${relative}: positively recommends inherit_env`);
+    }
+
+    expect(failures).toEqual([]);
+  });
+
+  test("pins the task-v3 target matrix and closed script interpreter table", () => {
+    const failures = [
+      ...missingInSection("docs/reference/tasks.md", /files?|schema/i, [
+        [
+          "canonical example uses a workflow when supplying with params",
+          /uses:\s*workflows\/[^\n]+\nwith:\n(?:\s{2,}.+\n)+/i,
+        ],
+      ]),
+      ...missingInSection("docs/reference/tasks.md", /executable|targets?|uses.*run/i, [
+        [
+          "direct command refs reject with",
+          /commands\/[^.\n]{0,240}with[^.\n]{0,160}(?:reject|does not accept|unsupported)/i,
+        ],
+        ["script refs reject with", /scripts\/[^.\n]{0,240}with[^.\n]{0,160}(?:reject|does not accept|unsupported)/i],
+        [
+          "workflow refs alone consume with as params",
+          /workflows\/[^.\n]{0,300}(?:only|alone)[^.\n]{0,160}with[^.\n]{0,160}params|with[^.\n]{0,160}params[^.\n]{0,300}workflows?[^.\n]{0,120}(?:only|alone)/i,
+        ],
+        [
+          "nonempty workflow task env is rejected",
+          /workflow[^.\n]{0,240}(?:non-?empty )?(?:task )?env[^.\n]{0,240}(?:reject|does not accept|cannot consume)/i,
+        ],
+        ["script .sh interpreter", /\.sh[^.\n]{0,80}(?:`?sh`?|POSIX shell)/i],
+        [
+          "script .ts and .js require Bun",
+          /(?:\.ts[^.\n]{0,80}\.js|\.js[^.\n]{0,80}\.ts)[^.\n]{0,120}(?:require|needs?) Bun/i,
+        ],
+        ["script PowerShell interpreter", /\.ps1[^.\n]{0,100}(?:PowerShell|powershell)/i],
+        [
+          "script cmd interpreter",
+          /(?:\.cmd[^.\n]{0,80}\.bat|\.bat[^.\n]{0,80}\.cmd)[^.\n]{0,100}(?:`?cmd`?|Command Prompt)/i,
+        ],
+        ["script Python interpreter", /\.py[^.\n]{0,80}(?:`?python`?|Python)/i],
+        ["script Ruby interpreter", /\.rb[^.\n]{0,80}(?:`?ruby`?|Ruby)/i],
+        ["script Go interpreter", /\.go[^.\n]{0,80}(?:go run|Go)/i],
+        ["script Perl interpreter", /\.pl[^.\n]{0,80}(?:`?perl`?|Perl)/i],
+        ["script PHP interpreter", /\.php[^.\n]{0,80}(?:`?php`?|PHP)/i],
+        ["script Lua interpreter", /\.lua[^.\n]{0,80}(?:`?lua`?|Lua)/i],
+        ["script R interpreter", /\.r[^.\n]{0,80}(?:Rscript|`?rscript`?)/i],
+        ["script Swift interpreter", /\.swift[^.\n]{0,80}(?:`?swift`?|Swift)/i],
+        [
+          "script Kotlin interpreter",
+          /(?:\.kt[^.\n]{0,80}\.kts|\.kts[^.\n]{0,80}\.kt)[^.\n]{0,100}(?:Kotlin|kotlin|kotlinc)/i,
+        ],
+      ]),
+    ];
+    expect(failures).toEqual([]);
+  });
+
+  test("keeps the storage inventory current with source IR, durable plans, attempts, and source peers", () => {
+    const failures = [
+      ...missingInSection("docs/architecture/internals/storage-locations.md", /table.*workflow_documents/i, [
+        ["workflow source IR v1", /source IR (?:version )?1|sourceIrVersion:?\s*1/i],
+        [
+          "peer .md and .yml workflow sources",
+          /(?:peer|both)[^.\n]{0,160}\.md[^.\n]{0,160}\.yml|(?:peer|both)[^.\n]{0,160}\.yml[^.\n]{0,160}\.md/i,
+        ],
+      ]),
+      ...missingInSection("docs/architecture/internals/storage-locations.md", /table.*workflow_runs/i, [
+        [
+          "new starts persist plan IR v4",
+          /new (?:run|start)[^.\n]{0,240}(?:persist|freeze|store)[^.\n]{0,160}(?:plan )?IR v4|(?:plan )?IR v4[^.\n]{0,240}new (?:run|start)/i,
+        ],
+        [
+          "stored v3 plans resume unchanged",
+          /stored[^.\n]{0,160}v3[^.\n]{0,240}resume[^.\n]{0,120}(?:unchanged|exact)/i,
+        ],
+      ]),
+      ...missingInSection("docs/architecture/internals/storage-locations.md", /table.*workflow_run_units/i, [
+        ["links the append-only attempt table", /workflow_run_unit_attempts[^.\n]{0,240}(?:append-only|v4)/i],
+      ]),
+      ...missing("docs/architecture/internals/storage-locations.md", [
+        ["workflow_run_unit_attempts table", /#### Table: `workflow_run_unit_attempts`/],
+        [
+          "attempt table primary key",
+          /workflow_run_unit_attempts[\s\S]{0,2600}PRIMARY KEY[^.\n]{0,160}run_id[^.\n]{0,160}unit_id[^.\n]{0,160}attempt/i,
+        ],
+      ]),
+      ...missingInSection("docs/architecture/internals/storage-locations.md", /primary bundle content/i, [
+        [
+          "task sources are .yml task v3",
+          /tasks\/[^.\n]{0,180}\.yml[^.\n]{0,180}(?:task )?v3|(?:task )?v3[^.\n]{0,180}tasks\/[^.\n]{0,180}\.yml/i,
+        ],
+        [
+          "workflow sources are peer .md and .yml",
+          /workflows\/[^.\n]{0,240}(?:peer|both)[^.\n]{0,160}\.md[^.\n]{0,160}\.yml|workflows\/[^.\n]{0,240}(?:peer|both)[^.\n]{0,160}\.yml[^.\n]{0,160}\.md/i,
+        ],
+      ]),
+    ];
+    expect(failures).toEqual([]);
+  });
+
+  test("documents health status and exit semantics for hard checks and advisories", () => {
+    expect(
+      missing("docs/architecture/internals/health-advisories.md", [
+        [
+          "hard warn produces overall warn and exit 4",
+          /hard[^.\n]{0,160}warn[^.\n]{0,160}(?:overall )?status[^.\n]{0,80}warn[^.\n]{0,160}exit(?: code)?\s*4/i,
+        ],
+        [
+          "hard fail produces overall fail and exit 1",
+          /hard[^.\n]{0,160}fail[^.\n]{0,160}(?:overall )?status[^.\n]{0,80}fail[^.\n]{0,160}exit(?: code)?\s*1/i,
+        ],
+        [
+          "advisory warn does not change overall status",
+          /advisory[^.\n]{0,180}warn[^.\n]{0,220}(?:does not|never)[^.\n]{0,160}(?:change|gate)[^.\n]{0,120}(?:overall )?status/i,
+        ],
+        [
+          "advisory warn does not change exit code",
+          /advisory[^.\n]{0,180}warn[^.\n]{0,220}(?:does not|never)[^.\n]{0,160}(?:change|gate)[^.\n]{0,120}exit(?: code)?/i,
+        ],
+      ]),
+    ).toEqual([]);
+  });
+
   test("documents safe command diagnostics and health checks without claiming value disclosure", () => {
     const failures = [
       ...missingInSection("docs/reference/cli.md", /^command run$/i, [
