@@ -130,9 +130,9 @@ describe("common command invocation preparation", () => {
       sourceLoader: loaderFor(command).loader,
       current: { workspace: "/DO-NOT-LEAK/workspace" },
     });
-    const result = inspectPreparedCommandInvocation?.(prepared) as {
-      provenance: Array<{ field: string; layer: string; kind: string; via: string }>;
-      notices: Array<Record<string, unknown>>;
+    const result = inspectPreparedCommandInvocation?.(prepared) as unknown as {
+      readonly provenance: readonly { field: string; layer: string; kind: string; via: string }[];
+      readonly notices: readonly Record<string, unknown>[];
       [key: string]: unknown;
     };
 
@@ -146,13 +146,15 @@ describe("common command invocation preparation", () => {
     expect(Object.keys(result).sort()).toEqual(
       ["dryRun", "engine", "notices", "ok", "provenance", "schemaVersion", "shape"].sort(),
     );
-    expect(result.provenance.map(({ field }) => field)).toEqual(result.provenance.map(({ field }) => field).toSorted());
+    expect(result.provenance.map(({ field }) => field)).toEqual(
+      [...result.provenance.map(({ field }) => field)].sort(),
+    );
     for (const provenance of result.provenance) {
       expect(Object.keys(provenance).sort()).toEqual(["field", "kind", "layer", "via"]);
     }
     expect(result.notices.length).toBeGreaterThan(0);
     expect(result.notices.map((notice) => JSON.stringify(notice))).toEqual(
-      result.notices.map((notice) => JSON.stringify(notice)).toSorted(),
+      [...result.notices.map((notice) => JSON.stringify(notice))].sort(),
     );
     for (const notice of result.notices) {
       expect(Object.keys(notice).sort()).toEqual(

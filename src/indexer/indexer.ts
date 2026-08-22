@@ -57,7 +57,12 @@ import { resolveSourcesForOrigin } from "../registry/origin-resolve";
  * See the index-consistency ADR (2026-06) for the full analysis.
  */
 import type { Database } from "../storage/database";
-import { closeDatabase, openExistingDatabase, openIndexDatabase } from "../storage/repositories/index-connection";
+import {
+  closeDatabase,
+  openExistingDatabase,
+  openIndexDatabase,
+  openReadonlyExistingDatabase,
+} from "../storage/repositories/index-connection";
 import {
   deleteEntriesByDirAndStash,
   deleteEntriesByDirExceptKeys,
@@ -2648,7 +2653,12 @@ function resolveLookupScope(
  * Resolve index and physical ownership together. The owner detail lets disk
  * show reuse this exact arbitration instead of probing the same source again.
  */
-export async function lookupBundleRefWithResolution(ref: BundleRef): Promise<BundleRefLookupResolution> {
+type LookupDatabaseOpener = (dbPath: string) => Database | undefined;
+
+async function lookupBundleRefWithResolutionUsing(
+  ref: BundleRef,
+  openLookupDatabase: LookupDatabaseOpener,
+): Promise<BundleRefLookupResolution> {
   const sources = await resolveLookupSources();
   if (sources.length === 0) return { entry: null };
 
@@ -2658,7 +2668,7 @@ export async function lookupBundleRefWithResolution(ref: BundleRef): Promise<Bun
   let db: Database | undefined;
   let indexError: unknown;
   try {
-    db = openExistingDatabase(getDbPath());
+    db = openLookupDatabase(getDbPath());
   } catch (error) {
     indexError = error;
   }
@@ -2694,9 +2704,27 @@ export async function lookupBundleRefWithResolution(ref: BundleRef): Promise<Bun
   }
 }
 
+export async function lookupBundleRefWithResolution(ref: BundleRef): Promise<BundleRefLookupResolution> {
+  return lookupBundleRefWithResolutionUsing(ref, openExistingDatabase);
+}
+
 /** Resolve an adapter-owned `[bundle//]conceptId` without interpreting its path as an AKM type. */
 export async function lookupBundleRef(ref: BundleRef): Promise<IndexEntry | null> {
   const resolution = await lookupBundleRefWithResolution(ref);
+  if (resolution.indexError !== undefined) throw resolution.indexError;
+  return resolution.entry;
+}
+
+/**
+ * Resolve one execution source without opening the live index database for
+ * write or allowing SQLite read-lock bookkeeping to touch its SHM file.
+ */
+export async function lookupBundleRefReadonly(ref: BundleRef): Promise<IndexEntry | null> {
+  const resolution = await lookupBundleRefWithResolutionUsing(ref, (dbPath) => {
+    const db = openReadonlyExistingDatabase(dbPath, { isolatedSnapshot: true });
+    if (!db) throw new Error(`Index database not found at ${dbPath}. Run 'akm index' to build it.`);
+    return db;
+  });
   if (resolution.indexError !== undefined) throw resolution.indexError;
   return resolution.entry;
 }

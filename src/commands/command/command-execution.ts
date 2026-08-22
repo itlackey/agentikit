@@ -28,6 +28,7 @@ import {
   NO_ENGINE_REMEDY,
 } from "../../integrations/agent/engine-fallback";
 import {
+  type ExecutionFieldProvenance,
   type ExecutionInvocationKind,
   type ResolvedExecutionPlanV1,
   requireAuthorizedExecutionPlan,
@@ -43,7 +44,11 @@ import type { ResolvedModelMapV1 } from "../../integrations/agent/model-map";
 import type { AgentRunResult } from "../../integrations/agent/spawn";
 import type { chatCompletion } from "../../llm/client";
 import { parseBuiltinCommandAction } from "./builtin-action";
-import { type LoadAdapterExecutionSourceOptions, loadAdapterExecutionSource } from "./execution-source-loader";
+import {
+  type ExecutionSourceLookup,
+  type LoadAdapterExecutionSourceOptions,
+  loadAdapterExecutionSource,
+} from "./execution-source-loader";
 import { applyPortableCommandArguments } from "./portable-template";
 
 export type CommandExecutionSourceLoader = (
@@ -57,6 +62,8 @@ export interface PrepareCommandInvocationOptions {
   readonly config: AkmConfig;
   readonly modelMap?: ResolvedModelMapV1;
   readonly sourceLoader?: CommandExecutionSourceLoader;
+  /** Optional index lookup capability; dry-run supplies a read-only isolated snapshot lookup. */
+  readonly sourceLookup?: ExecutionSourceLookup;
   readonly invocationDefaults?: UnresolvedExecutionDefaults;
   readonly current?: UnresolvedExecutionDefaults;
   readonly authorizeTools?: ToolAuthorizer;
@@ -86,6 +93,31 @@ export interface CommandDispatchResult {
   readonly reason?: string;
   readonly warnings?: readonly string[];
   readonly notices?: readonly Readonly<LoweringNotice>[];
+}
+
+export interface CommandDiagnosticProvenance {
+  readonly field: string;
+  readonly layer: string;
+  readonly kind: ExecutionFieldProvenance["kind"];
+  readonly via: ExecutionFieldProvenance["via"];
+}
+
+export interface CommandDiagnosticNotice {
+  readonly code: string;
+  readonly severity: "info" | "warning";
+  readonly adapter: string;
+  readonly field?: string;
+  readonly message: string;
+}
+
+export interface CommandDryRunResult {
+  readonly schemaVersion: 1;
+  readonly shape: "command-dry-run";
+  readonly ok: true;
+  readonly dryRun: true;
+  readonly engine: string;
+  readonly provenance: readonly Readonly<CommandDiagnosticProvenance>[];
+  readonly notices: readonly Readonly<CommandDiagnosticNotice>[];
 }
 
 export interface DispatchPreparedCommandOptions {
@@ -148,7 +180,10 @@ export async function prepareCommandInvocation(
   let commandDefaults: UnresolvedExecutionDefaults = Object.freeze({});
   let command: ResolvedCommandContent;
   if (action.kind === "stored") {
-    const rendered = await sourceLoader(action.ref, "command", { config: inputConfig });
+    const rendered = await sourceLoader(action.ref, "command", {
+      config: inputConfig,
+      ...(options.sourceLookup ? { lookup: options.sourceLookup } : {}),
+    });
     if (rendered.kind !== "command") throw new TypeError("command source loader returned a non-command source");
     renderedCommand = rendered;
     commandDefaults = rendered.defaults;
@@ -185,7 +220,10 @@ export async function prepareCommandInvocation(
       selectedAgent.source === "command"
         ? qualifyCommandSelectedPersona(selectedAgent.value, renderedCommand)
         : selectedAgent.value;
-    const rendered = await sourceLoader(lookupRef, "persona", { config: inputConfig });
+    const rendered = await sourceLoader(lookupRef, "persona", {
+      config: inputConfig,
+      ...(options.sourceLookup ? { lookup: options.sourceLookup } : {}),
+    });
     if (rendered.kind !== "persona") throw new TypeError("persona source loader returned a non-persona source");
     renderedPersona = rendered;
   }
@@ -205,6 +243,116 @@ export async function prepareCommandInvocation(
     ...(options.current ? { current: options.current } : {}),
     ...(options.modelMap ? { modelMap: options.modelMap } : {}),
     ...(options.authorizeTools ? { authorizeTools: options.authorizeTools } : {}),
+  });
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function diagnosticProvenance(
+  provenance: ResolvedExecutionPlanV1["provenance"],
+): readonly Readonly<CommandDiagnosticProvenance>[] {
+  return Object.freeze(
+    Object.entries(provenance)
+      .sort(([left], [right]) => compareText(left, right))
+      .map(([field, source]) => Object.freeze({ field, layer: source.layer, kind: source.kind, via: source.via })),
+  );
+}
+
+function safeDiagnosticToken(value: string): boolean {
+  return value.length <= 128 && /^[a-z][a-z0-9-]*$/.test(value);
+}
+
+function safeDiagnosticField(value: string | null | undefined): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= 256 &&
+    (/^[A-Za-z][A-Za-z0-9_.-]*$/.test(value) || /^\/[A-Za-z0-9_.~/-]+$/.test(value))
+  );
+}
+
+/** Rebuild a known lowerer notice instead of forwarding its optional details or arbitrary message bytes. */
+function safeDiagnosticNotice(notice: Readonly<LoweringNotice>): Readonly<CommandDiagnosticNotice> | undefined {
+  if (!safeDiagnosticToken(notice.adapter)) return undefined;
+  switch (notice.code) {
+    case "engine-fallback":
+      return Object.freeze({
+        code: "engine-fallback",
+        severity: "info",
+        adapter: "akm",
+        field: "engine",
+        message: "No engine was selected; using the fixed opencode-sdk fallback.",
+      });
+    case "unrecognized-request-notice":
+      return Object.freeze({
+        code: "unrecognized-request-notice",
+        severity: "warning",
+        adapter: "akm",
+        message: "An unrecognized durable execution notice was omitted at the engine lowering boundary.",
+      });
+    case "untranslated-field": {
+      if (!safeDiagnosticField(notice.field)) return undefined;
+      return Object.freeze({
+        code: "untranslated-field",
+        severity: "warning",
+        adapter: notice.adapter,
+        field: notice.field,
+        message: `The ${notice.adapter} lowerer does not translate resolved field ${notice.field}; dispatch will continue optimistically.`,
+      });
+    }
+    case "conversation-prompt-composed":
+      return Object.freeze({
+        code: "conversation-prompt-composed",
+        severity: "warning",
+        adapter: notice.adapter,
+        field: "conversation",
+        message: `The ${notice.adapter} transport has no native multi-message channel; AKM composed the conversation prefix into one deterministic JSON prompt block.`,
+      });
+    case "persona-prompt-composed":
+      return Object.freeze({
+        code: "persona-prompt-composed",
+        severity: "info",
+        adapter: notice.adapter,
+        field: "persona",
+        message: "The selected engine has no native persona channel; AKM composed the persona into the prompt.",
+      });
+    default:
+      return undefined;
+  }
+}
+
+function diagnosticNotices(notices: readonly Readonly<LoweringNotice>[]): readonly Readonly<CommandDiagnosticNotice>[] {
+  return Object.freeze(
+    notices
+      .flatMap((notice) => {
+        const safe = safeDiagnosticNotice(notice);
+        return safe ? [safe] : [];
+      })
+      .sort((left, right) => compareText(JSON.stringify(left), JSON.stringify(right))),
+  );
+}
+
+/**
+ * Authorize and lower a prepared invocation, then project only safe structural
+ * diagnostics. It never acquires a dispatch lease, materializes credentials,
+ * records usage, or exposes request/plan values.
+ */
+export function inspectPreparedCommandInvocation(prepared: PreparedCommandInvocation): CommandDryRunResult {
+  const request = requireAuthorizedExecutionPlan(prepared.plan);
+  const lowered = lowerResolvedExecutionRequest(request, prepared.config);
+  const selectedEngine = request.engine.name;
+  if (!selectedEngine) {
+    throw new ConfigError(`command ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "INVALID_CONFIG_FILE");
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    shape: "command-dry-run",
+    ok: true,
+    dryRun: true,
+    engine: selectedEngine,
+    provenance: diagnosticProvenance(prepared.plan.provenance),
+    notices: diagnosticNotices(lowered.notices),
   });
 }
 
