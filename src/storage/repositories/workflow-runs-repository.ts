@@ -2,13 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { randomUUID } from "node:crypto";
 import { UsageError } from "../../core/errors";
 import { openStateDatabase, withImmediateTransaction } from "../../core/state-db";
 import { borrowScopedStateDb, withStateDbScope } from "../../core/state-db-scope";
 import type { WorkflowRunStatus, WorkflowRunStepStatus } from "../../sources/types";
 import type { Database } from "../database";
 import { resolveStorageLocations } from "../locations";
-import { insertEventOnce } from "./events-repository";
+import { insertEventOnce, insertEventStrict } from "./events-repository";
 
 /**
  * Row shapes for the `workflow_runs` / `workflow_run_steps` tables.
@@ -160,6 +161,78 @@ export interface FinishUnitInput {
    */
   sessionId?: string | null;
   finishedAt: string;
+}
+
+export type WorkflowRunUnitAttemptPhaseV4 = "unit" | "gate";
+export type WorkflowRunUnitAttemptStatusV4 = "running" | "completed" | "failed" | "skipped";
+
+export interface WorkflowRunUnitAttemptRowV4 {
+  run_id: string;
+  unit_id: string;
+  attempt: number;
+  dispatch_id: string;
+  step_id: string;
+  node_id: string;
+  phase: WorkflowRunUnitAttemptPhaseV4;
+  runner: string | null;
+  engine: string | null;
+  model: string | null;
+  input_hash: string;
+  status: WorkflowRunUnitAttemptStatusV4;
+  result_json: string | null;
+  tokens: number | null;
+  failure_reason: string | null;
+  session_id: string | null;
+  worktree_path: string | null;
+  started_at: string;
+  finished_at: string | null;
+  claim_holder: string;
+  claim_expires_at: string;
+}
+
+export interface ReserveUnitAttemptV4Input {
+  runId: string;
+  unitId: string;
+  stepId: string;
+  nodeId: string;
+  parentUnitId?: string | null;
+  phase: WorkflowRunUnitAttemptPhaseV4;
+  runner: string | null;
+  engine: string | null;
+  model: string | null;
+  inputHash: string;
+  worktreePath?: string | null;
+  claimHolder: string;
+  claimExpiresAt: string;
+  now: string;
+}
+
+export interface FinishUnitAttemptV4Input {
+  runId: string;
+  unitId: string;
+  attempt: number;
+  dispatchId: string;
+  claimHolder: string;
+  status: Exclude<WorkflowRunUnitAttemptStatusV4, "running">;
+  resultJson: string | null;
+  tokens: number | null;
+  failureReason: string | null;
+  sessionId?: string | null;
+  finishedAt: string;
+}
+
+export interface WorkflowAttemptAccountingV4 {
+  totalAttempts: number;
+  totalTokens: number;
+  dispatchAttempts: number;
+  dispatchTokens: number;
+  gateAttempts: number;
+  gateTokens: number;
+}
+
+export interface ReserveUnitAttemptV4Result {
+  kind: "reserved" | "existing" | "reclaimed" | "busy";
+  attempt: WorkflowRunUnitAttemptRowV4;
 }
 
 /** Input row for {@link WorkflowRunsRepository.insertRun}. */
@@ -553,6 +626,286 @@ export class WorkflowRunsRepository {
         "UPDATE workflow_runs SET engine_lease_holder = NULL, engine_lease_until = NULL WHERE id = ? AND engine_lease_holder = ? AND status <> 'failed'",
       )
       .run(runId, holder);
+  }
+
+  // ── durable v4 append-only dispatch attempts (migration 022) ─────────────
+
+  getUnitAttempts(runId: string, unitId: string): WorkflowRunUnitAttemptRowV4[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM workflow_run_unit_attempts
+          WHERE run_id = ? AND unit_id = ?
+          ORDER BY attempt`,
+      )
+      .all(runId, unitId) as WorkflowRunUnitAttemptRowV4[];
+  }
+
+  getAttemptAccounting(runId: string): WorkflowAttemptAccountingV4 {
+    const row = this.db
+      .prepare(
+        `SELECT
+           COUNT(*) AS total_attempts,
+           COALESCE(SUM(tokens), 0) AS total_tokens,
+           COALESCE(SUM(CASE WHEN phase = 'unit' THEN 1 ELSE 0 END), 0) AS dispatch_attempts,
+           COALESCE(SUM(CASE WHEN phase = 'unit' THEN COALESCE(tokens, 0) ELSE 0 END), 0) AS dispatch_tokens,
+           COALESCE(SUM(CASE WHEN phase = 'gate' THEN 1 ELSE 0 END), 0) AS gate_attempts,
+           COALESCE(SUM(CASE WHEN phase = 'gate' THEN COALESCE(tokens, 0) ELSE 0 END), 0) AS gate_tokens
+         FROM workflow_run_unit_attempts
+        WHERE run_id = ?`,
+      )
+      .get(runId) as {
+      total_attempts: number;
+      total_tokens: number;
+      dispatch_attempts: number;
+      dispatch_tokens: number;
+      gate_attempts: number;
+      gate_tokens: number;
+    };
+    return {
+      totalAttempts: Number(row.total_attempts),
+      totalTokens: Number(row.total_tokens),
+      dispatchAttempts: Number(row.dispatch_attempts),
+      dispatchTokens: Number(row.dispatch_tokens),
+      gateAttempts: Number(row.gate_attempts),
+      gateTokens: Number(row.gate_tokens),
+    };
+  }
+
+  /**
+   * Reserve or reclaim one v4 external dispatch. The attempt row, legacy
+   * projection, and directly-paired started event share one IMMEDIATE
+   * transaction. Reclaim keeps the stable dispatch id and emits no duplicate
+   * start event: the external effect remains explicitly at-least-once.
+   */
+  reserveUnitAttempt(input: ReserveUnitAttemptV4Input): ReserveUnitAttemptV4Result {
+    return this.immediateTransaction((db) => {
+      const run = db.prepare("SELECT workflow_ref, status FROM workflow_runs WHERE id = ?").get(input.runId) as
+        | { workflow_ref: string; status: string }
+        | undefined;
+      if (!run || run.status !== "active") {
+        throw new UsageError(
+          `Workflow run ${input.runId} is not active; refusing to reserve a durable dispatch attempt.`,
+          "RESOURCE_ALREADY_EXISTS",
+        );
+      }
+
+      const latest = db
+        .prepare(
+          `SELECT * FROM workflow_run_unit_attempts
+            WHERE run_id = ? AND unit_id = ?
+            ORDER BY attempt DESC
+            LIMIT 1`,
+        )
+        .get(input.runId, input.unitId) as WorkflowRunUnitAttemptRowV4 | undefined;
+      if (latest?.status === "running") {
+        const live = latest.claim_expires_at >= input.now;
+        if (live) {
+          return { kind: latest.claim_holder === input.claimHolder ? "existing" : "busy", attempt: latest };
+        }
+        const reclaimed = db
+          .prepare(
+            `UPDATE workflow_run_unit_attempts
+                SET claim_holder = ?, claim_expires_at = ?
+              WHERE run_id = ? AND unit_id = ? AND attempt = ?
+                AND status = 'running' AND dispatch_id = ? AND claim_holder = ?
+                AND claim_expires_at < ?`,
+          )
+          .run(
+            input.claimHolder,
+            input.claimExpiresAt,
+            input.runId,
+            input.unitId,
+            latest.attempt,
+            latest.dispatch_id,
+            latest.claim_holder,
+            input.now,
+          );
+        if (Number(reclaimed.changes) !== 1) {
+          throw new Error(`Durable attempt ${input.unitId} changed while its expired claim was reclaimed.`);
+        }
+        db.prepare(
+          `UPDATE workflow_run_units
+              SET claim_holder = ?, claim_expires_at = ?, last_checkin_at = ?
+            WHERE run_id = ? AND unit_id = ? AND status = 'running'`,
+        ).run(input.claimHolder, input.claimExpiresAt, input.now, input.runId, input.unitId);
+        const attempt = db
+          .prepare(
+            `SELECT * FROM workflow_run_unit_attempts
+              WHERE run_id = ? AND unit_id = ? AND attempt = ?`,
+          )
+          .get(input.runId, input.unitId, latest.attempt) as WorkflowRunUnitAttemptRowV4;
+        return { kind: "reclaimed", attempt };
+      }
+
+      const attemptNumber = (latest?.attempt ?? 0) + 1;
+      const dispatchId = randomUUID();
+      db.prepare(
+        `INSERT INTO workflow_run_unit_attempts (
+           run_id, unit_id, attempt, dispatch_id, step_id, node_id, phase,
+           runner, engine, model, input_hash, status, worktree_path, started_at,
+           claim_holder, claim_expires_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`,
+      ).run(
+        input.runId,
+        input.unitId,
+        attemptNumber,
+        dispatchId,
+        input.stepId,
+        input.nodeId,
+        input.phase,
+        input.runner,
+        input.engine,
+        input.model,
+        input.inputHash,
+        input.worktreePath ?? null,
+        input.now,
+        input.claimHolder,
+        input.claimExpiresAt,
+      );
+      db.prepare(
+        `INSERT INTO workflow_run_units (
+           run_id, unit_id, step_id, node_id, parent_unit_id, phase, runner, engine, model,
+           status, input_hash, worktree_path, started_at, claim_holder, claim_expires_at, attempts
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(run_id, unit_id) DO UPDATE SET
+           step_id = excluded.step_id,
+           node_id = excluded.node_id,
+           parent_unit_id = excluded.parent_unit_id,
+           phase = excluded.phase,
+           runner = excluded.runner,
+           engine = excluded.engine,
+           model = excluded.model,
+           status = 'running',
+           input_hash = excluded.input_hash,
+           worktree_path = excluded.worktree_path,
+           started_at = excluded.started_at,
+           claim_holder = excluded.claim_holder,
+           claim_expires_at = excluded.claim_expires_at,
+           result_json = NULL,
+           tokens = NULL,
+           failure_reason = NULL,
+           session_id = NULL,
+           finished_at = NULL,
+           last_checkin_at = NULL,
+           attempts = excluded.attempts`,
+      ).run(
+        input.runId,
+        input.unitId,
+        input.stepId,
+        input.nodeId,
+        input.parentUnitId ?? null,
+        input.phase,
+        input.runner,
+        input.engine,
+        input.model,
+        input.inputHash,
+        input.worktreePath ?? null,
+        input.now,
+        input.claimHolder,
+        input.claimExpiresAt,
+        attemptNumber,
+      );
+      insertEventStrict(db, {
+        eventType: "workflow_unit_started",
+        ts: input.now,
+        ref: run.workflow_ref,
+        metadata: {
+          runId: input.runId,
+          stepId: input.stepId,
+          unitId: input.unitId,
+          attempt: attemptNumber,
+          dispatchId,
+          phase: input.phase,
+          status: "running",
+        },
+      });
+      const attempt = db
+        .prepare(
+          `SELECT * FROM workflow_run_unit_attempts
+            WHERE run_id = ? AND unit_id = ? AND attempt = ?`,
+        )
+        .get(input.runId, input.unitId, attemptNumber) as WorkflowRunUnitAttemptRowV4;
+      return { kind: "reserved", attempt };
+    });
+  }
+
+  /** Commit one CAS-valid v4 terminal result, known usage, and finish event. */
+  finishUnitAttempt(input: FinishUnitAttemptV4Input): boolean {
+    return this.immediateTransaction((db) => {
+      const changed = db
+        .prepare(
+          `UPDATE workflow_run_unit_attempts
+              SET status = ?, result_json = ?, tokens = ?, failure_reason = ?,
+                  session_id = ?, finished_at = ?
+            WHERE run_id = ? AND unit_id = ? AND attempt = ? AND dispatch_id = ?
+              AND claim_holder = ? AND status = 'running'`,
+        )
+        .run(
+          input.status,
+          input.resultJson,
+          input.tokens,
+          input.failureReason,
+          input.sessionId ?? null,
+          input.finishedAt,
+          input.runId,
+          input.unitId,
+          input.attempt,
+          input.dispatchId,
+          input.claimHolder,
+        );
+      if (Number(changed.changes) !== 1) return false;
+
+      const attempt = db
+        .prepare(
+          `SELECT * FROM workflow_run_unit_attempts
+            WHERE run_id = ? AND unit_id = ? AND attempt = ?`,
+        )
+        .get(input.runId, input.unitId, input.attempt) as WorkflowRunUnitAttemptRowV4;
+      const projection = db
+        .prepare(
+          `UPDATE workflow_run_units
+              SET status = ?, result_json = ?, tokens = ?, failure_reason = ?,
+                  session_id = ?, finished_at = ?
+            WHERE run_id = ? AND unit_id = ? AND status = 'running'
+              AND attempts = ? AND claim_holder = ?`,
+        )
+        .run(
+          input.status,
+          input.resultJson,
+          input.tokens,
+          input.failureReason,
+          input.sessionId ?? null,
+          input.finishedAt,
+          input.runId,
+          input.unitId,
+          input.attempt,
+          input.claimHolder,
+        );
+      if (Number(projection.changes) !== 1) {
+        throw new Error(`Durable attempt ${input.unitId} has no matching live workflow_run_units projection.`);
+      }
+      const run = db.prepare("SELECT workflow_ref FROM workflow_runs WHERE id = ?").get(input.runId) as
+        | { workflow_ref: string }
+        | undefined;
+      if (!run) throw new Error(`Durable attempt ${input.unitId} has no owning workflow run.`);
+      insertEventStrict(db, {
+        eventType: "workflow_unit_finished",
+        ts: input.finishedAt,
+        ref: run.workflow_ref,
+        metadata: {
+          runId: input.runId,
+          stepId: attempt.step_id,
+          unitId: input.unitId,
+          attempt: input.attempt,
+          dispatchId: input.dispatchId,
+          phase: attempt.phase,
+          status: input.status,
+          ...(input.failureReason ? { failureReason: input.failureReason } : {}),
+          ...(input.tokens !== null ? { tokens: input.tokens } : {}),
+        },
+      });
+      return true;
+    });
   }
 
   // ── unit rows (migration 004) ──────────────────────────────────────────────

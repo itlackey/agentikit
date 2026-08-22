@@ -111,6 +111,8 @@ export function frozenSummaryJudge(
       stepId: id.stepId,
       unitId: id.unitId,
       nodeId: gateNodeId(id.stepId),
+      ...(id.attempt !== undefined ? { attempt: id.attempt } : {}),
+      ...(id.dispatchId !== undefined ? { dispatchId: id.dispatchId } : {}),
       prompt: user,
       systemPrompt: system,
       engine,
@@ -131,6 +133,11 @@ export function frozenSummaryJudge(
       ...request,
       ...(sensitiveValues.length > 0 ? { sensitiveValues } : {}),
     });
+    if (outcome.usage && id.recordTokens) {
+      id.recordTokens(
+        (outcome.usage.inputTokens ?? 0) + (outcome.usage.outputTokens ?? 0) + (outcome.usage.reasoningTokens ?? 0),
+      );
+    }
     // Only the common lowerer's own sanitized notices are loggable here. An
     // injected dispatcher is not trusted to supply prompt/body-free messages.
     warnLoweringNotices(lowered.notices);

@@ -839,6 +839,7 @@ async function runStepGateLoop(
         routeUnselected,
         summaryJudge,
         ...(ctx.plan.execution ? { engines: ctx.plan.execution.engines } : {}),
+        planIrVersion: ctx.plan.irVersion,
         signal: options.signal,
         // The judge runs under the DISPATCH signal, so the completion path must
         // see it too: an abort delivered there (a lost lease, a caller Ctrl-C)

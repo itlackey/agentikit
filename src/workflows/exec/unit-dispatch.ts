@@ -23,6 +23,10 @@ export interface UnitDispatchRequest {
   stepId: string;
   unitId: string;
   nodeId: string;
+  /** V4 append-only attempt ordinal. Absent on historical v3 dispatches. */
+  attempt?: number;
+  /** V4 stable external correlation/idempotency key. Absent on v3. */
+  dispatchId?: string;
   /** Fully assembled user prompt. */
   prompt: string;
   /** Optional system prompt, used by frozen workflow gate judges. */

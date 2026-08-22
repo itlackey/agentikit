@@ -40,13 +40,17 @@
  * engine loop's job (`run-workflow.ts` via `completeWorkflowStep`).
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import unitPreambleTemplate from "../../assets/prompts/workflow-unit-preamble.md" with { type: "text" };
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
 import type { LoweringNotice } from "../../execution/resolved-request";
-import { type WorkflowRunUnitRow, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
+import {
+  type WorkflowRunUnitAttemptRowV4,
+  type WorkflowRunUnitRow,
+  withWorkflowRunsRepo,
+} from "../../storage/repositories/workflow-runs-repository";
 import { canonicalJson as canonicalJsonString } from "../ir/plan-hash";
 import type {
   FrozenEngineSnapshot,
@@ -1387,11 +1391,42 @@ export interface GateUnitRef {
   invocation: IrInvocation;
   runner: IrRuntimeKind;
   inputHash: string;
+  /** V4-only append-only attempt protocol. */
+  durableV4?: boolean;
+  claimHolder?: string;
+  durableAttempt?: WorkflowRunUnitAttemptRowV4;
+  tokens?: number;
 }
 
 /** Insert the gate-evaluation unit row (running) just before the judge runs. */
-export async function journalGateEvaluationStart(gate: GateUnitRef): Promise<void> {
+export async function journalGateEvaluationStart(gate: GateUnitRef): Promise<GateUnitRef> {
   const unitId = gateUnitId(gate.stepId, gate.loop);
+  if (gate.durableV4) {
+    const now = new Date().toISOString();
+    const claimHolder = gate.claimHolder ?? `direct:${randomUUID()}`;
+    const reserved = await enqueueUnitWrite(() =>
+      withWorkflowRunsRepo((repo) =>
+        repo.reserveUnitAttempt({
+          runId: gate.runId,
+          unitId,
+          stepId: gate.stepId,
+          nodeId: gateNodeId(gate.stepId),
+          phase: GATE_EVALUATION_PHASE,
+          runner: gate.runner,
+          engine: gate.invocation.engine,
+          model: gate.invocation.model,
+          inputHash: gate.inputHash,
+          claimHolder,
+          claimExpiresAt: new Date(Date.parse(now) + 90_000).toISOString(),
+          now,
+        }),
+      ),
+    );
+    if (reserved.kind === "busy") {
+      throw new UsageError(`Gate ${unitId} has a live durable attempt held by another engine.`);
+    }
+    return { ...gate, claimHolder, durableAttempt: reserved.attempt };
+  }
   await enqueueUnitWrite(() =>
     withWorkflowRunsRepo((repo) =>
       repo.insertUnit({
@@ -1416,6 +1451,7 @@ export async function journalGateEvaluationStart(gate: GateUnitRef): Promise<voi
     ref: gate.workflowRef,
     metadata: { runId: gate.runId, stepId: gate.stepId, unitId },
   });
+  return gate;
 }
 
 /**
@@ -1440,6 +1476,29 @@ export async function journalGateEvaluationFinish(
       ? { complete: false, missing: rejection.missing, feedback: rejection.feedback }
       : { complete: true, missing: [] };
   const status = errored ? ("failed" as const) : ("completed" as const);
+  if (gate.durableAttempt) {
+    const durableAttempt = gate.durableAttempt;
+    const finished = await enqueueUnitWrite(() =>
+      withWorkflowRunsRepo((repo) => {
+        return repo.finishUnitAttempt({
+          runId: gate.runId,
+          unitId,
+          attempt: durableAttempt.attempt,
+          dispatchId: durableAttempt.dispatch_id,
+          claimHolder: durableAttempt.claim_holder,
+          status,
+          resultJson: verdict ? JSON.stringify(verdict) : null,
+          tokens: gate.tokens ?? null,
+          failureReason: errored ? "dispatch_error" : null,
+          finishedAt: new Date().toISOString(),
+        });
+      }),
+    );
+    if (!finished) {
+      throw new UsageError(`Gate ${unitId} no longer owns its durable attempt; refusing a late terminal write.`);
+    }
+    return;
+  }
   await enqueueUnitWrite(() =>
     withWorkflowRunsRepo((repo) =>
       repo.finishUnit({
@@ -1699,6 +1758,8 @@ export interface FinalizeStepInput {
   dispatchSignal?: AbortSignal;
   /** Engine run-lease holder (engine path only); absent on the manual/report path. */
   leaseHolder?: string;
+  /** Persisted executable-plan version; v4 selects append-only gate attempts. */
+  planIrVersion?: number;
 }
 
 export type FinalizeStepResult =
@@ -1897,24 +1958,40 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
             // No engine snapshot means the built-in llm judge.
             runner: gateEngine ? engineRuntimeKind(gateEngine) : ("llm" as const),
             inputHash: createHash("sha256")
+              .update(input.planIrVersion === 4 ? "akm.workflow.gate\0v5\0" : "")
               .update(
                 canonicalJsonString({
-                  hashVersion: 4,
+                  hashVersion: input.planIrVersion === 4 ? 5 : 4,
                   dispatch: identity.dispatch,
                   invocation: identity.invocation,
                   prompt,
                 }),
               )
               .digest("hex"),
+            ...(input.planIrVersion === 4 ? { durableV4: true } : {}),
+            ...(input.leaseHolder !== undefined ? { claimHolder: input.leaseHolder } : {}),
           };
-          await journalGateEvaluationStart(gateUnit);
+          gateUnit = await journalGateEvaluationStart(gateUnit);
         }
         // The judge dispatch must describe the SAME thing the gate row does, so
         // the row identity is threaded down to the dispatcher from right here —
         // the one place that computes it — instead of being re-derived (or, as
         // before, synthesized as a constant "gate"). Both ids come from the same
         // helpers `journalGateEvaluationStart/Finish` use.
-        const identity: JudgeCallIdentity = { runId, stepId, unitId: gateUnitId(stepId, gateLoop) };
+        const identity: JudgeCallIdentity = {
+          runId,
+          stepId,
+          unitId: gateUnitId(stepId, gateLoop),
+          ...(gateUnit?.durableAttempt
+            ? {
+                attempt: gateUnit.durableAttempt.attempt,
+                dispatchId: gateUnit.durableAttempt.dispatch_id,
+                recordTokens: (tokens: number) => {
+                  if (gateUnit) gateUnit.tokens = tokens;
+                },
+              }
+            : {}),
+        };
         let raw: string;
         try {
           raw = await innerJudge(prompt, identity);

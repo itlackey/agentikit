@@ -1008,6 +1008,49 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
       ALTER TABLE asset_outcome ADD COLUMN missing_since INTEGER DEFAULT NULL;
     `,
   },
+
+  // ── Migration 022 — append-only durable workflow dispatch attempts ────────
+  //
+  // `workflow_run_units` remains the compatibility projection used by v3 and
+  // status/reuse readers. V4 writes every external dispatch reservation and
+  // terminal result here so retry/reclaim history, stable dispatch identity,
+  // and known usage cannot be erased by an upsert of that projection row.
+  {
+    id: "022-workflow-unit-attempts",
+    up: `
+      CREATE TABLE workflow_run_unit_attempts (
+        run_id           TEXT NOT NULL,
+        unit_id          TEXT NOT NULL,
+        attempt          INTEGER NOT NULL CHECK (attempt >= 1),
+        dispatch_id      TEXT NOT NULL,
+        step_id          TEXT NOT NULL,
+        node_id          TEXT NOT NULL,
+        phase            TEXT NOT NULL CHECK (phase IN ('unit', 'gate')),
+        runner           TEXT,
+        engine           TEXT,
+        model            TEXT,
+        input_hash       TEXT NOT NULL,
+        status           TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'skipped')),
+        result_json      TEXT,
+        tokens           INTEGER,
+        failure_reason   TEXT,
+        session_id       TEXT,
+        worktree_path    TEXT,
+        started_at       TEXT NOT NULL,
+        finished_at      TEXT,
+        claim_holder     TEXT NOT NULL,
+        claim_expires_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, unit_id, attempt),
+        FOREIGN KEY (run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX idx_workflow_run_unit_attempts_dispatch
+        ON workflow_run_unit_attempts(dispatch_id);
+      CREATE INDEX idx_workflow_run_unit_attempts_run_step
+        ON workflow_run_unit_attempts(run_id, step_id, unit_id, attempt);
+      CREATE INDEX idx_workflow_run_unit_attempts_running_claim
+        ON workflow_run_unit_attempts(run_id, status, claim_expires_at);
+    `,
+  },
 ];
 
 assertMigrationRegistry(STATE_MIGRATIONS);

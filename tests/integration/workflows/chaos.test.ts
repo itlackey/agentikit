@@ -692,7 +692,17 @@ describe("chaos: hostile content — events, clipping, journaled gate feedback",
     expect(result.done).toBe(true);
 
     // Every workflow_unit_* event carries only the whitelisted metadata keys.
-    const allowedKeys = new Set(["runId", "stepId", "unitId", "status", "failureReason", "tokens"]);
+    const allowedKeys = new Set([
+      "runId",
+      "stepId",
+      "unitId",
+      "attempt",
+      "dispatchId",
+      "phase",
+      "status",
+      "failureReason",
+      "tokens",
+    ]);
     const unitEvents = readEvents({}).events.filter((e) => e.eventType.startsWith("workflow_unit_"));
     expect(unitEvents.length).toBeGreaterThan(0);
     for (const ev of unitEvents) {
