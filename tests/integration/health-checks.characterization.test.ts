@@ -114,11 +114,25 @@ describe("health checks characterization (WS9)", () => {
         message: "Installed model defaults are valid; no optional user models.json is present.",
       },
       {
+        name: "selected-model-aliases",
+        kind: "deterministic",
+        status: "unknown",
+        confidence: "high",
+        message: "No configured engines select a model.",
+      },
+      {
         name: "default-llm-engine",
         kind: "deterministic",
         status: "unknown",
         confidence: "high",
         message: "No default LLM engine is configured.",
+      },
+      {
+        name: "configured-engines",
+        kind: "deterministic",
+        status: "unknown",
+        confidence: "high",
+        message: "No engines are explicitly configured.",
       },
       {
         name: "active-improve-strategy",
@@ -267,7 +281,9 @@ describe("health checks characterization (WS9)", () => {
       "active-runs",
       "default-engine",
       "model-map-files",
+      "selected-model-aliases",
       "default-llm-engine",
+      "configured-engines",
       "active-improve-strategy",
     ]);
     expect(result.advisories.map((c) => c.name)).toEqual([

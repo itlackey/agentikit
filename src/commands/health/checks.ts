@@ -9,13 +9,16 @@ import type { SemanticSearchStatus } from "../../indexer/search/semantic-status"
 import type { WhichFn } from "../../integrations/agent/detect";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
+import { executionEngineDefinitionsFromConfig } from "../../integrations/agent/execution-definitions";
 import { resolveModel } from "../../integrations/agent/model-aliases";
 import {
+  type LoadedModelMap,
   type LoadModelMapOptions,
   loadModelMap,
   mergeModelMapLayers,
   parseModelMapLayer,
   readInstalledModelMapText,
+  resolveModelMapAlias,
   userModelMapPath,
 } from "../../integrations/agent/model-map";
 import type { RunnerSpec } from "../../integrations/agent/runner";
@@ -74,6 +77,8 @@ export interface HealthCheckContext {
   sessionLogEntries: SessionLogAdvisory[];
   sessionExtraction: ImproveHealthMetrics["sessionExtraction"];
   autoAccept: ImproveHealthMetrics["autoAccept"];
+  /** Engine availability collected once and shared by its three registry projections. */
+  engineProbes: HealthEngineProbeResults;
 }
 
 /** Which array a check's result is collected into. */
@@ -102,6 +107,17 @@ export interface DefaultEngineProbeDependencies {
   resolvePackage?: (name: string) => string;
   which?: WhichFn;
   env?: NodeJS.ProcessEnv;
+}
+
+export interface SelectedModelAliasesProbeDependencies extends LoadModelMapOptions {
+  loadConfig?: () => AkmConfig;
+  loadModelMap?: (options: LoadModelMapOptions) => LoadedModelMap;
+}
+
+export interface HealthEngineProbeResults {
+  readonly defaultEngine: HealthCheckResult;
+  readonly defaultLlmEngine: HealthCheckResult;
+  readonly configuredEngines: HealthCheckResult;
 }
 
 function credentialAvailable(
@@ -141,8 +157,20 @@ function runConfiguredEngineProbe(
       packageAvailable = false;
     }
     const binary = configuredEngine.bin ?? "opencode";
-    const version = (deps.spawnSync ?? spawnSync)(binary, ["--version"], { encoding: "utf8", timeout: 5_000 });
-    const binaryAvailable = (version.status ?? 1) === 0;
+    let binaryAvailable: boolean;
+    try {
+      const version = (deps.spawnSync ?? spawnSync)(binary, ["--version"], { encoding: "utf8", timeout: 5_000 });
+      binaryAvailable = (version.status ?? 1) === 0;
+    } catch {
+      return {
+        name: checkName,
+        kind: "deterministic",
+        status: "warn",
+        confidence: "high",
+        message: `SDK engine "${engineName}" executable availability could not be checked.`,
+        evidence: { engine: engineName, runtimeKind: "sdk", binaryAvailable: false },
+      };
+    }
     const fallbackEngine = configuredEngine.llmEngine ?? config.defaults?.llmEngine;
     let fallback: Extract<RunnerSpec, { kind: "llm" }> | undefined;
     let fallbackCredential: Extract<RunnerSpec, { kind: "llm" }>["credential"];
@@ -270,6 +298,71 @@ function runConfiguredEngineProbe(
   }
 }
 
+function projectEngineProbe(result: HealthCheckResult, name: string): HealthCheckResult {
+  return result.name === name ? result : { ...result, name };
+}
+
+function projectSelectedEngineProbe(
+  availability: ReadonlyMap<string, HealthCheckResult>,
+  engineName: string,
+  checkName: "default-engine" | "default-llm-engine",
+): HealthCheckResult {
+  const result = availability.get(engineName);
+  if (result) return projectEngineProbe(result, checkName);
+  return {
+    name: checkName,
+    kind: "deterministic",
+    status: "warn",
+    confidence: "high",
+    message: `Engine "${engineName}" availability could not be checked.`,
+    evidence: { engine: engineName },
+  };
+}
+
+function unconfiguredEngineProbe(name: "default-engine" | "default-llm-engine"): HealthCheckResult {
+  return {
+    name,
+    kind: "deterministic",
+    status: "unknown",
+    confidence: "high",
+    message:
+      name === "default-llm-engine" ? "No default LLM engine is configured." : "No default engine is configured.",
+  };
+}
+
+function configuredEnginesProjection(
+  engineNames: readonly string[],
+  availability: ReadonlyMap<string, HealthCheckResult>,
+): HealthCheckResult {
+  if (engineNames.length === 0) {
+    return {
+      name: "configured-engines",
+      kind: "deterministic",
+      status: "unknown",
+      confidence: "high",
+      message: "No engines are explicitly configured.",
+      evidence: { engines: [] },
+    };
+  }
+
+  const engines = engineNames.map((engine) => ({
+    engine,
+    status: availability.get(engine)?.status === "pass" ? ("pass" as const) : ("warn" as const),
+  }));
+  const unavailable = engines.filter((engine) => engine.status === "warn").length;
+  return {
+    name: "configured-engines",
+    kind: "deterministic",
+    status: unavailable === 0 ? "pass" : "warn",
+    confidence: "high",
+    message:
+      unavailable === 0
+        ? `All ${engines.length} explicitly configured engines are available.`
+        : `${unavailable} of ${engines.length} explicitly configured engines ${unavailable === 1 ? "is" : "are"} unavailable.`,
+    evidence: { engines },
+  };
+}
+
 export function runDefaultEngineProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
   // Probe the effective view: an install with no `defaults.engine` but a usable
   // opencode binary DOES have a working default, and reporting otherwise would
@@ -281,6 +374,45 @@ export function runDefaultEngineProbe(deps: DefaultEngineProbeDependencies = {})
 export function runDefaultLlmEngineProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
   const config = deps.loadConfig?.() ?? loadConfig();
   return runConfiguredEngineProbe("default-llm-engine", config.defaults?.llmEngine, config, deps);
+}
+
+/** Probe every explicitly configured engine without exposing connection or model material. */
+export function runConfiguredEnginesProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
+  const config = deps.loadConfig?.() ?? loadConfig();
+  const engineNames = Object.keys(config.engines ?? {}).sort();
+  const availability = new Map(
+    engineNames.map((engine) => [engine, runConfiguredEngineProbe("configured-engine", engine, config, deps)]),
+  );
+  return configuredEnginesProjection(engineNames, availability);
+}
+
+/**
+ * Build the per-health-run availability snapshot. Each distinct selected or
+ * explicitly configured engine is probed once; the three public checks are
+ * projections of that immutable result set.
+ */
+export function runHealthEngineProbes(deps: DefaultEngineProbeDependencies = {}): HealthEngineProbeResults {
+  const configured = deps.loadConfig?.() ?? loadConfig();
+  const effective = withEngineFallback(configured, deps.which).config;
+  const defaultEngineName = effective.defaults?.engine;
+  const defaultLlmEngineName = configured.defaults?.llmEngine;
+  const explicitEngineNames = Object.keys(configured.engines ?? {}).sort();
+  const probeNames = [...new Set([...explicitEngineNames, defaultEngineName, defaultLlmEngineName])]
+    .filter((name): name is string => name !== undefined)
+    .sort();
+  const availability = new Map(
+    probeNames.map((engine) => [engine, runConfiguredEngineProbe("configured-engine", engine, effective, deps)]),
+  );
+
+  return Object.freeze({
+    defaultEngine: defaultEngineName
+      ? projectSelectedEngineProbe(availability, defaultEngineName, "default-engine")
+      : unconfiguredEngineProbe("default-engine"),
+    defaultLlmEngine: defaultLlmEngineName
+      ? projectSelectedEngineProbe(availability, defaultLlmEngineName, "default-llm-engine")
+      : unconfiguredEngineProbe("default-llm-engine"),
+    configuredEngines: configuredEnginesProjection(explicitEngineNames, availability),
+  });
 }
 
 export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
@@ -387,6 +519,73 @@ export function runModelMapProbe(options: LoadModelMapOptions = {}): HealthCheck
 }
 
 /**
+ * Check model selections owned by configured engines against the common model
+ * map. Unknown identifiers are deliberate exact-model pass-throughs; only an
+ * alias known somewhere in the map but absent for the selected engine warns.
+ */
+export function runSelectedModelAliasesProbe(deps: SelectedModelAliasesProbeDependencies = {}): HealthCheckResult {
+  const config = deps.loadConfig?.() ?? loadConfig();
+  const definitions = executionEngineDefinitionsFromConfig(config);
+  const selected = Object.entries(definitions)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([engine, definition]) => {
+      const model = definition.defaults?.model;
+      const modelMapKey = definition.modelMapKey ?? definition.selection.platform ?? definition.selection.name;
+      return typeof model === "string"
+        ? [{ engine, alias: model, modelMapKey, modelCompatibility: definition.modelCompatibility }]
+        : [];
+    });
+  if (selected.length === 0) {
+    return {
+      name: "selected-model-aliases",
+      kind: "deterministic",
+      status: "unknown",
+      confidence: "high",
+      message: "No configured engines select a model.",
+      evidence: { checked: [], missing: [] },
+    };
+  }
+
+  let modelMap: LoadedModelMap;
+  try {
+    modelMap = (deps.loadModelMap ?? loadModelMap)({ env: deps.env, installedText: deps.installedText });
+  } catch {
+    return {
+      name: "selected-model-aliases",
+      kind: "deterministic",
+      status: "unknown",
+      confidence: "high",
+      message: "Configured model selections could not be checked because the model map is invalid.",
+      evidence: { checked: [], missing: [] },
+    };
+  }
+
+  const outcomes = selected.map(({ engine, alias, modelMapKey, modelCompatibility }) => {
+    try {
+      const resolution = resolveModelMapAlias(alias, modelMapKey, modelMap.map, modelCompatibility);
+      return resolution.interpretation === "alias"
+        ? { kind: "alias" as const, evidence: { engine, alias, modelMapKey } }
+        : { kind: "exact" as const };
+    } catch {
+      return { kind: "missing" as const, evidence: { engine, alias, modelMapKey } };
+    }
+  });
+  const checked = outcomes.flatMap((outcome) => (outcome.kind === "exact" ? [] : [outcome.evidence]));
+  const missing = outcomes.flatMap((outcome) => (outcome.kind === "missing" ? [outcome.evidence] : []));
+  return {
+    name: "selected-model-aliases",
+    kind: "deterministic",
+    status: missing.length === 0 ? "pass" : "warn",
+    confidence: "high",
+    message:
+      missing.length === 0
+        ? `All ${selected.length} configured model selections resolve for their selected engines.`
+        : `${missing.length} of ${selected.length} configured model selections ${missing.length === 1 ? "has" : "have"} no mapping for ${missing.length === 1 ? "its" : "their"} selected engine${missing.length === 1 ? "" : "s"}.`,
+    evidence: { checked, missing },
+  };
+}
+
+/**
  * The ordered health-check registry. ORDER IS LOAD-BEARING: `akmHealth`
  * iterates this array and appends to hardChecks/advisories in sequence, so the
  * declaration order below is exactly the emission order (hard checks first in
@@ -475,7 +674,7 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
   {
     name: "default-engine",
     channel: "hard",
-    run: () => runDefaultEngineProbe(),
+    run: (ctx) => ctx.engineProbes.defaultEngine,
   },
   {
     name: "model-map-files",
@@ -483,9 +682,19 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
     run: () => runModelMapProbe(),
   },
   {
+    name: "selected-model-aliases",
+    channel: "hard",
+    run: () => runSelectedModelAliasesProbe(),
+  },
+  {
     name: "default-llm-engine",
     channel: "hard",
-    run: () => runDefaultLlmEngineProbe(),
+    run: (ctx) => ctx.engineProbes.defaultLlmEngine,
+  },
+  {
+    name: "configured-engines",
+    channel: "hard",
+    run: (ctx) => ctx.engineProbes.configuredEngines,
   },
   {
     name: "active-improve-strategy",

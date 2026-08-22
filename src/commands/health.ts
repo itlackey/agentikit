@@ -21,7 +21,7 @@ import type { Database } from "../storage/database";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
 import { queryTaskHistory } from "../storage/repositories/task-history-repository";
 import { collectImproveAdvisories } from "./health/advisories";
-import { HEALTH_CHECKS, type HealthCheckContext } from "./health/checks";
+import { HEALTH_CHECKS, type HealthCheckContext, runHealthEngineProbes } from "./health/checks";
 import {
   buildImproveSkipSummary,
   computeWallTimeStats,
@@ -654,6 +654,8 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
 
     const sessionLogEntries = gatherSessionLogAdvisories(since, now, getExecutionLogCandidatesFn);
 
+    const engineProbes = runHealthEngineProbes();
+
     // Run the ordered health-check registry. Each check projects the shared
     // context computed above into one HealthCheckResult; `channel` routes it to
     // hardChecks or advisories. Declaration order in HEALTH_CHECKS is the
@@ -679,6 +681,7 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
       sessionLogEntries,
       sessionExtraction: improveSummary.sessionExtraction,
       autoAccept: improveSummary.autoAccept,
+      engineProbes,
     };
     for (const check of HEALTH_CHECKS) {
       const result = check.run(checkContext);
