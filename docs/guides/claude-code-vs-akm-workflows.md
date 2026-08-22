@@ -3,17 +3,19 @@
 Most coding assistants, Claude Code included, offer a native way to fan work
 out inside the current session — an in-context script or tool that spawns
 subagents, runs them concurrently, and reports back before the session ends.
-AKM workflows are a different thing: a portable, Markdown-defined procedure
-that any supported agent harness can run, with durable state, retries, gates,
-and resume built in. Neither replaces the other — they solve different
-problems, and the right choice depends on whether the work is a one-off
-inside a session or a procedure worth keeping. Use the table below to pick.
+AKM workflows are a different thing: a portable procedure that any supported
+agent harness can run, with durable state, retries, gates, and resume built
+in. Peer workflow sources are Markdown `.md` and GitHub-shaped YAML `.yml`;
+both adapters lower to source IR version 1. Every new start freezes durable plan IR v4 before execution, while a stored durable-v3 run resumes unchanged.
+Neither replaces the other — they solve different problems, and the right
+choice depends on whether the work is a one-off inside a session or a
+procedure worth keeping. Use the table below to pick.
 
 | Use a session-native workflow when... | Use an AKM workflow when... |
 | --- | --- |
 | Work is temporary and belongs to one active assistant session | The procedure should survive sessions and be shared |
 | The assistant's native orchestration is the main value | Stable inputs, outputs, retries, gates, and resume matter |
-| Tool-specific behavior is acceptable | Portability and a durable Markdown definition matter |
+| Tool-specific behavior is acceptable | Portability and a durable source definition matter |
 | No long-lived run record is needed | Run state and verification need to persist |
 
 For the deep technical dive — representation, execution model, concurrency,

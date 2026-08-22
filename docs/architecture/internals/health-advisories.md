@@ -1,12 +1,13 @@
 # `akm health` advisory → action map
 
-Run `akm health` (add `--json` for machine output). Only hard checks determine
-the authoritative result:
+Run `akm health` (add `--json` for machine output). The authoritative result
+combines hard failures with deterministic warnings across both output
+channels:
 
-- A hard check `warn` sets the overall status to `warn` and exit code 4.
+- Deterministic hard-check and advisory warnings set the overall status to `warn` and exit code 4.
 - A hard check `fail` sets the overall status to `fail` and exit code 1.
-- An advisory `warn` never changes or gates the overall status.
-- An advisory `warn` never changes or gates the exit code.
+- A heuristic (non-deterministic) advisory `warn` does not change or gate the overall status.
+- A heuristic (non-deterministic) advisory `warn` does not change or gate the exit code.
 
 This table is the interpretive key for a second operator: what each named
 advisory measures and whether to act. Some `warn`s below are *adjudicated,

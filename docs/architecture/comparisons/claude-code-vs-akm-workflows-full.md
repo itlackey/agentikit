@@ -7,12 +7,15 @@ layers of the stack: the **Claude Code `Workflow` tool** (the harness-native
 orchestration DSL) and **akm workflows** (`akm workflow …`, the workflow
 subsystem in this repo).
 
-The short version: they are not competitors. An akm workflow is one durable
-markdown asset compiled and executed by the Stable `akm workflow run` command.
-The native engine fans work out to concurrent runner units, retries, gates on
-typed artifacts, and enforces budget ceilings. Execution is native: akm
-dispatches each unit to a configured agent harness (ten are supported) rather
-than asking the calling session to run it.
+The short version: they are not competitors. An akm workflow is a durable
+workflow asset authored in either of two peer source formats, Markdown `.md`
+or GitHub-shaped YAML `.yml`, and executed by the Stable
+`akm workflow run` command. Both adapters compile through source IR version 1.
+Every new start freezes durable plan IR v4 before execution. The native engine
+fans work out to concurrent runner units, retries, gates on typed artifacts,
+and enforces budget ceilings. Execution is native: akm dispatches each unit to
+a configured agent harness (ten are supported) rather than asking the calling
+session to run it.
 
 > **Scope.** This report analyzes akm's own workflow subsystem
 > (`src/workflows/**`, `src/commands/workflow-cli.ts`) against the Claude Code
@@ -161,17 +164,20 @@ the session's normal permission model.
 ## Part B — akm workflows: technical details
 
 This part deliberately stays high-level: `docs/reference/workflows.md` is the
-maintained, exhaustive reference for the unified markdown format, reference
-grammar, gates, budgets, and the run lease. What
-follows is the comparison-relevant subset — read the reference doc for
-anything this section doesn't answer.
+maintained, exhaustive reference for the peer workflow source formats,
+reference grammar, gates, budgets, and the run lease. What follows is the
+comparison-relevant subset — read the reference doc for anything this section
+doesn't answer.
 
-### B.0 One format, one stable execution surface
+### B.0 Peer source formats, one stable execution surface
 
-An akm workflow is one markdown asset addressed as `workflows/<name>`. Its
-frontmatter declares the orchestration graph (`unit`/`map`/`route`, inputs,
-outputs, retries, isolation, and budgets), while `## <step-id>` body sections
-carry unit/map instructions and optional `### gate` rubrics.
+Peer workflow sources are Markdown `.md` and GitHub-shaped YAML `.yml`, both
+addressed as `workflows/<name>`. The Markdown form declares the orchestration
+graph (`unit`/`map`/`route`, inputs, outputs, retries, isolation, and budgets)
+in frontmatter, while `## <step-id>` body sections carry unit/map
+instructions and optional `### gate` rubrics. The YAML form accepts the
+documented local `name`/`on`/`jobs` subset. Both adapters lower into the same
+strict source IR version 1.
 
 `akm workflow run` is the stable, ungated start/resume/execute surface. The
 public `start`/`next`/`complete` lifecycle is removed. `status`, `list`,
@@ -183,29 +189,33 @@ execution path.
 
 ### B.1 Representation
 
-The unified format (`src/assets/workflows/workflow-template.md`, validated
+The Markdown template (`src/assets/workflows/workflow-template.md`, validated
 against `schemas/akm-workflow.json`) keeps machine orchestration in
-frontmatter and human-authorable prose in the body. Bare whole-value
-references (`params.<name>` and `steps.<id>.output.<path>`) wire `map.over`,
+frontmatter and human-authorable prose in the body. The peer `.yml` adapter
+accepts the bounded GitHub-shaped subset documented in
+`docs/reference/workflow-schema.md`. Bare whole-value references
+(`params.<name>` and `steps.<id>.output.<path>`) wire `map.over`,
 `route.input`, and `inputs`; prose is never interpolated. Runtime params, map
 items, and declared input artifacts reach units as attached context.
 
 ### B.2 Parsers & compiled models
 
-`parseWorkflow` (`src/workflows/parser.ts`) parses the frontmatter graph and
-binds body prose into a `WorkflowDocument` (`src/workflows/schema.ts`). It
-accumulates `WorkflowError`s instead of throwing, and every element carries a
-`SourceRef` line span. The IR compiler (`src/workflows/ir/compile.ts`) lowers
-that document into the plan graph (`src/workflows/ir/schema.ts`) executed by
-the engine. Parsed documents cached in `index.db` are
-regenerable; only run state (B.3, below) is not.
+The Markdown and YAML adapters both produce source IR v1 before target
+resolution. For Markdown, `parseWorkflow` (`src/workflows/parser.ts`) parses
+the frontmatter graph and binds body prose into a `WorkflowDocument`
+(`src/workflows/schema.ts`). It accumulates `WorkflowError`s instead of
+throwing, and every element carries a `SourceRef` line span. The IR compiler
+(`src/workflows/ir/compile.ts`) lowers source IR into the durable plan graph
+(`src/workflows/ir/schema.ts`) executed by the engine. Parsed documents
+cached in `index.db` are regenerable; only run state (B.3, below) is not.
 
 ### B.3 Persistence: durable SQLite run state
 
 Run state lives in **`state.db`**
 (`src/storage/repositories/workflow-runs-repository.ts`; the former
 `workflow.db` was folded into `state.db` in the 0.9.0 three-database cutover),
-whose rows are explicitly **non-regenerable**. **Three** tables, not two:
+whose rows are explicitly **non-regenerable**. Four tables carry current run
+state:
 
 - `workflow_runs` — `id`, `workflow_ref`, `workflow_title`, `status`
   (`active|completed|blocked|failed`), `params_json`, `current_step_id`,
@@ -224,10 +234,15 @@ whose rows are explicitly **non-regenerable**. **Three** tables, not two:
   `session_id`, `last_checkin_at`, `attempts`, `claim_holder`/
   `claim_expires_at`. Every dispatched unit journals here;
   only historical runs from the removed manual lifecycle can lack unit rows.
+- `workflow_run_unit_attempts` — the append-only durable-v4 dispatch journal,
+  keyed by `(run_id, unit_id, attempt)`, with a unique `dispatch_id`. Explicit
+  retries append a new attempt; crash reclaim reuses the existing dispatch
+  identity.
 
 Schema evolves through an additive, idempotent migration engine, recorded in
-`schema_migrations`. The three-table shape above is the current baseline
-(`001-initial-schema` in `src/core/state/migrations.ts`); the pre-cutover
+`schema_migrations`. The first three tables above are the current baseline
+(`001-initial-schema` in `src/core/state/migrations.ts`), and
+`022-workflow-unit-attempts` adds the append-only attempt journal. The pre-cutover
 `workflow.db` history that produced it is preserved for reference in
 `scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts` —
 `004-workflow-run-units` (the table itself), `005`/`007` (unit session id /
@@ -236,9 +251,10 @@ run lease), `008`/`009` (unit attempts / claim columns).
 
 ### B.4 Execution model: two surfaces, one memory
 
-**Native `akm workflow run`: akm executes.** The first invocation by ref
-compiles the frontmatter graph and **freezes** the resulting plan on the run
-row (`plan_json`/`plan_hash`); edits to the source file need a new run. The
+**Native `akm workflow run`: akm executes.** A new start by ref compiles source
+IR v1 and freezes the resulting durable plan IR v4 on the run row
+(`plan_json`/`plan_hash`); edits to the source file need a new run. Stored
+durable-v3 plans resume unchanged through their compatibility decoder. The
 command dispatches each step's units to the configured runner (`llm`, `agent`,
 or `sdk`), with:
 
@@ -353,12 +369,12 @@ no aliases. Bare `akm workflow` is a usage error (exit 2).
 
 ## Part C — Side-by-side
 
-akm has one asset format with stable native orchestration and an experimental
-external-driver surface.
+akm has peer `.md` and `.yml` asset source formats with one stable native
+orchestration surface.
 
 | Dimension | Claude Code workflow | akm workflow |
 |---|---|---|
-| **Artifact** | Imperative JS program (`script`) | Unified declarative Markdown asset (`.md`), compiled to a plan graph |
+| **Artifact** | Imperative JS program (`script`) | Declarative workflow asset (`.md` or `.yml`), compiled through source IR v1 to durable plan IR v4 |
 | **Authored by** | The agent, inline, per-task, ephemeral | Human or agent, saved as a reusable bundle asset |
 | **Who executes work** | The harness runs the script; subagents do the work | The native engine, dispatching to a configured harness |
 | **Unit of work** | `agent()` — a fresh LLM subagent context | One dispatch or one `map` item under the engine |
@@ -446,9 +462,9 @@ Concretely, per surface:
 | Parallel? | Yes, by construction | Yes, bounded (B.4) |
 | Self-contained? | Yes — carries its own workers | Yes, when a configured engine is available (or `opencode` is on PATH) |
 | Sandbox | Restricted JS interpreter, no FS for the script itself | None for the shell/agent substrate; optional `isolation: worktree` is not a security boundary |
-| Artifact | Executable script | Managed markdown asset, compiled and frozen |
+| Artifact | Executable script | Managed `.md` or `.yml` workflow asset, compiled and frozen |
 
-The genuinely durable conclusion, restated for 0.9.0: Claude Code is strong
+The genuinely durable conclusion, restated for 0.9.2: Claude Code is strong
 at in-session parallel LLM execution, while akm is strong at durable,
 cross-session procedures. The native engine keeps the second half of that
 trade while buying back some of the first — dispatching units to whichever
@@ -511,8 +527,8 @@ is not implemented today.
 
 ### F.5 Distribute non-akm executable workflow scripts as akm assets
 
-The `workflow` asset type carries akm's unified markdown format. There is no
-mechanism for it to carry or reference an
+The `workflow` asset type carries akm's peer `.md` and `.yml` source formats.
+There is no mechanism for it to carry or reference an
 externally-executable script (a Claude Code `Workflow` tool script, or
 anything else) as an alternate form alongside the runbook, which would let
 akm's package-manager strengths (`add`, search, `curate`, version pinning,
