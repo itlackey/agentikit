@@ -360,6 +360,8 @@ describe("registry pinned production transport", () => {
   });
 
   test("keeps request secrets off argv/env, forces Host, and removes hop-by-hop proxy headers", async () => {
+    const proxyEnvKeys = ["ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"] as const;
+    const proxyEnvBefore = Object.fromEntries(proxyEnvKeys.map((key) => [key, process.env[key]]));
     const observed: Array<{ authorization?: string; host?: string; proxyAuthorization?: string; body: string }> = [];
     const server = http.createServer((request, response) => {
       const chunks: Buffer[] = [];
@@ -447,6 +449,10 @@ describe("registry pinned production transport", () => {
           }
         },
       );
+
+      expect(Object.fromEntries(proxyEnvKeys.map((key) => [key, process.env[key]]))).toEqual(proxyEnvBefore);
+      const localResponse = await fetch(`http://127.0.0.1:${port}/after-proxy-env-restore`);
+      expect(await localResponse.text()).toBe("ok");
     } finally {
       await close(server);
     }
