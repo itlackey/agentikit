@@ -30,24 +30,40 @@ function missing(relative: string, requirements: readonly Requirement[]): string
   return requirements.filter(([, pattern]) => !pattern.test(text)).map(([label]) => `${relative}: ${label}`);
 }
 
-function markdownSection(relative: string, headingPattern: RegExp): string | undefined {
-  const lines = read(relative).split("\n");
-  for (let index = 0; index < lines.length; index += 1) {
-    const match = lines[index]?.match(/^(#{1,6})\s+(.+?)\s*$/);
-    if (!match) continue;
-    const [, hashes = "", title = ""] = match;
-    if (!headingPattern.test(title)) continue;
+function markdownSectionText(markdown: string, headingPattern: RegExp): string | undefined {
+  const lines = markdown.split("\n");
+  const headings: Array<{ index: number; level: number; title: string }> = [];
+  let fence: { marker: "`" | "~"; length: number } | undefined;
 
-    const level = hashes.length;
-    let end = index + 1;
-    while (end < lines.length) {
-      const next = lines[end]?.match(/^(#{1,6})\s+/);
-      if ((next?.[1]?.length ?? Number.POSITIVE_INFINITY) <= level) break;
-      end += 1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fence) {
+      const closing = line.match(/^\s*(`+|~+)\s*$/)?.[1];
+      if (closing?.startsWith(fence.marker) && closing.length >= fence.length) fence = undefined;
+      continue;
     }
-    return lines.slice(index + 1, end).join("\n");
+    if (fenceMatch?.[1]) {
+      const token = fenceMatch[1];
+      fence = { marker: token[0] as "`" | "~", length: token.length };
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.+?)\s*$/);
+    if (!heading?.[1] || !heading[2]) continue;
+    headings.push({ index, level: heading[1].length, title: heading[2] });
   }
-  return undefined;
+
+  const position = headings.findIndex(({ title }) => headingPattern.test(title));
+  if (position < 0) return undefined;
+  const start = headings[position];
+  if (!start) return undefined;
+  const next = headings.slice(position + 1).find(({ level }) => level <= start.level);
+  return lines.slice(start.index + 1, next?.index ?? lines.length).join("\n");
+}
+
+function markdownSection(relative: string, headingPattern: RegExp): string | undefined {
+  return markdownSectionText(read(relative), headingPattern);
 }
 
 function missingInSection(relative: string, heading: RegExp, requirements: readonly Requirement[]): string[] {
@@ -94,6 +110,26 @@ const CURRENT_TRUTH_DOCS = [
 ] as const;
 
 describe("0.9.2 release surface", () => {
+  test("section-scoped documentation checks ignore headings inside fenced examples", () => {
+    const markdown = [
+      "## Real section",
+      "real body",
+      "```markdown",
+      "## Fake backtick heading",
+      "```",
+      "~~~markdown",
+      "## Fake tilde heading",
+      "~~~",
+      "## Next section",
+      "outside body",
+    ].join("\n");
+
+    expect(markdownSectionText(markdown, /fake backtick/i)).toBeUndefined();
+    expect(markdownSectionText(markdown, /fake tilde/i)).toBeUndefined();
+    expect(markdownSectionText(markdown, /real section/i)).toContain("## Fake backtick heading");
+    expect(markdownSectionText(markdown, /real section/i)).not.toContain("outside body");
+  });
+
   test("cuts package and changelog metadata without stranding the #814 migration note", () => {
     const packageJson = JSON.parse(read("package.json")) as { version?: string };
     const changelog = read("CHANGELOG.md");
@@ -135,11 +171,11 @@ describe("0.9.2 release surface", () => {
       ...missing(".github/README.npm.md", [
         [
           "links the packaged task-v3 reference",
-          /github\.com\/itlackey\/akm\/blob\/[^/]+\/docs\/reference\/tasks\.md/i,
+          /\[[^\]]+\]\(https:\/\/github\.com\/itlackey\/akm\/blob\/[^/]+\/docs\/reference\/tasks\.md(?:#[^)]+)?\)/i,
         ],
         [
           "links the packaged 0.9.2 migration guide",
-          /github\.com\/itlackey\/akm\/blob\/[^/]+\/docs\/migration\/v0\.9\.1-to-v0\.9\.2\.md/i,
+          /\[[^\]]+\]\(https:\/\/github\.com\/itlackey\/akm\/blob\/[^/]+\/docs\/migration\/v0\.9\.1-to-v0\.9\.2\.md(?:#[^)]+)?\)/i,
         ],
       ]),
       ...missing("docs/README.md", [
@@ -149,6 +185,59 @@ describe("0.9.2 release surface", () => {
       ...missing("docs/reference/README.md", [["links tasks", /\]\(tasks\.md(?:#[^)]+)?\)/i]]),
       ...missing("docs/migration/README.md", [["links the 0.9.2 guide", /\]\(v0\.9\.1-to-v0\.9\.2\.md(?:#[^)]+)?\)/i]]),
     ];
+    expect(failures).toEqual([]);
+  });
+
+  test("keeps shipped hints, asset taxonomy, and the Markdown schema honest about peer sources", () => {
+    const failures = [
+      ...missing("src/assets/hints/cli-hints-full.md", [
+        [
+          "workflows are peer .md and .yml sources",
+          /(?:peer|both)[^.\n]{0,240}\.md[^.\n]{0,240}\.yml|(?:peer|both)[^.\n]{0,240}\.yml[^.\n]{0,240}\.md/i,
+        ],
+        ["tasks use v3", /(?:task v3|tasks?[^.\n]{0,200}version:\s*3)/i],
+      ]),
+      ...missing("docs/reference/asset-types.md", [
+        [
+          "workflow assets include .md and .yml",
+          /workflows?[^.\n]{0,240}\.md[^.\n]{0,240}\.yml|workflows?[^.\n]{0,240}\.yml[^.\n]{0,240}\.md/i,
+        ],
+      ]),
+    ];
+
+    const hints = read("src/assets/hints/cli-hints-full.md");
+    for (const [label, pattern] of [
+      ["calls workflows unified Markdown", /unified markdown (?:workflows?|assets?)/i],
+      [
+        "claims workflows are Markdown-only",
+        /markdown-only[^.\n]*workflows?|workflows?[^.\n]*markdown-only|workflows live[^\n]{0,200}markdown assets(?![^\n]*\.yml)/i,
+      ],
+      ["advertises retired akm agent --workflow", /akm agent[^\n]*--workflow/i],
+      ["advertises legacy task timeoutMs", /\btimeoutMs\b/],
+    ] satisfies Requirement[]) {
+      if (pattern.test(hints)) failures.push(`src/assets/hints/cli-hints-full.md: ${label}`);
+    }
+
+    const assetTypes = read("docs/reference/asset-types.md");
+    if (
+      /workflows\/[^\n]*\(\.md\)(?![^\n]*\.yml)|workflows?[^.\n]{0,160}\.md[^.\n]{0,80}(?:only|sole)/i.test(assetTypes)
+    ) {
+      failures.push("docs/reference/asset-types.md: describes an md-only workflow surface");
+    }
+
+    const workflowSchema = JSON.parse(read("schemas/akm-workflow.json")) as { description?: string };
+    const schemaDescription = workflowSchema.description ?? "";
+    if (
+      !/(?:this )?frontmatter schema[^.]{0,160}(?:applies to|describes|validates)[^.]{0,120}(?:the )?(?:Markdown|\.md)[^.]{0,40}(?:workflow )?source/i.test(
+        schemaDescription,
+      )
+    ) {
+      failures.push("schemas/akm-workflow.json: description scopes this frontmatter schema to the Markdown source");
+    }
+    if (!/(?:not|never)[^.]{0,160}(?:sole|only)[^.]{0,120}workflow source/i.test(schemaDescription)) {
+      failures.push("schemas/akm-workflow.json: description says Markdown is not the sole workflow source");
+    }
+
     expect(failures).toEqual([]);
   });
 
@@ -232,7 +321,7 @@ describe("0.9.2 release surface", () => {
         ["argv-array manual case", /argv array.*(?:block|manual)|(?:block|manual).*argv array/is],
       ]),
       ...missingInSection("docs/reference/cli.md", /^task$/i, [
-        ["links the canonical task reference", /docs\/reference\/tasks\.md|\]\(tasks\.md(?:#[^)]+)?\)/i],
+        ["links the canonical task reference", /\[[^\]]+\]\(tasks\.md(?:#[^)]+)?\)/i],
         ["names task v3", /task v3/i],
       ]),
       ...missingInSection("docs/reference/supported-formats.md", /task/i, [
@@ -242,7 +331,7 @@ describe("0.9.2 release surface", () => {
         ["adapter task-v3 contract", /akm-task.*(?:version:\s*3|task v3)|(?:version:\s*3|task v3).*akm-task/is],
       ]),
       ...missingInSection("docs/guides/scheduling.md", /task definitions.*scheduler state|task source/i, [
-        ["links the task source reference", /reference\/tasks\.md/i],
+        ["links the task source reference", /\[[^\]]+\]\(\.\.\/reference\/tasks\.md(?:#[^)]+)?\)/i],
         ["names task v3", /task v3/i],
       ]),
     ];
@@ -326,7 +415,10 @@ describe("0.9.2 release surface", () => {
           "authors can choose Markdown or GitHub-shaped YAML",
           /Markdown.*GitHub[- ]shaped YAML|GitHub[- ]shaped YAML.*Markdown/is,
         ],
-        ["YAML subset links to authoritative reference", /reference\/workflow-schema\.md/i],
+        [
+          "YAML subset links to authoritative reference",
+          /\[[^\]]+\]\(\.\.\/reference\/workflow-schema\.md(?:#[^)]+)?\)/i,
+        ],
       ]),
       ...missingInSection("docs/guides/run-workflows.md", /start or continue a run|start.*run/i, [
         ["new starts use v4", /new (?:run|start).*(?:v4|version 4)|(?:v4|version 4).*new (?:run|start)/is],
@@ -355,8 +447,28 @@ describe("0.9.2 release surface", () => {
         ["new starts persist v4", /new (?:run|start).*(?:persist|freeze|create).*v4|v4.*new (?:run|start)/is],
         ["frozen source read set", /source read set|sourceReadSet/i],
         [
-          "resolved target runner cwd executable and git identity",
-          /target.*runner.*(?:cwd|working director).*executable.*git/is,
+          "resolved request is frozen",
+          /(?:frozen|immutable)[^.\n]{0,240}resolved request|resolved request[^.\n]{0,240}(?:frozen|immutable)/i,
+        ],
+        [
+          "resolved target is frozen",
+          /(?:frozen|immutable)[^.\n]{0,240}resolved target|resolved target[^.\n]{0,240}(?:frozen|immutable)/i,
+        ],
+        [
+          "runner selection is frozen",
+          /(?:frozen|immutable)[^.\n]{0,240}runner|runner[^.\n]{0,240}(?:frozen|immutable)/i,
+        ],
+        [
+          "working directory is frozen",
+          /(?:frozen|immutable)[^.\n]{0,240}(?:cwd|working director)|(?:cwd|working director)[^.\n]{0,240}(?:frozen|immutable)/i,
+        ],
+        [
+          "executable is frozen",
+          /(?:frozen|immutable)[^.\n]{0,240}executable|executable[^.\n]{0,240}(?:frozen|immutable)/i,
+        ],
+        [
+          "git identity is frozen",
+          /(?:frozen|immutable)[^.\n]{0,240}git identity|git identity[^.\n]{0,240}(?:frozen|immutable)/i,
         ],
         [
           "environment values are a narrow live exception",
@@ -377,8 +489,16 @@ describe("0.9.2 release surface", () => {
           /v3.*(?:exact|byte[- ]stable|unchanged).*compatibility|compatibility island.*v3/is,
         ],
         [
-          "resume does not re-read source or config",
-          /resume.*does not re-read.*(?:source|config)|(?:source|config).*not re-read.*resume/is,
+          "resume does not re-read authored source",
+          /resume[^.\n]{0,300}(?:does not|never)[^.\n]{0,160}(?:re-read|reread)[^.\n]{0,160}authored (?:workflow )?source|authored (?:workflow )?source[^.\n]{0,300}(?:not|never)[^.\n]{0,160}(?:re-read|reread)[^.\n]{0,160}resume/i,
+        ],
+        [
+          "resume does not re-read config",
+          /resume[^.\n]{0,300}(?:does not|never)[^.\n]{0,160}(?:re-read|reread)[^.\n]{0,160}(?:config|configuration)|(?:config|configuration)[^.\n]{0,300}(?:not|never)[^.\n]{0,160}(?:re-read|reread)[^.\n]{0,160}resume/i,
+        ],
+        [
+          "resume does not re-read the index",
+          /resume[^.\n]{0,300}(?:does not|never)[^.\n]{0,160}(?:re-read|reread)[^.\n]{0,160}(?:asset )?index|(?:asset )?index[^.\n]{0,300}(?:not|never)[^.\n]{0,160}(?:re-read|reread)[^.\n]{0,160}resume/i,
         ],
       ]),
       ...missingInSection("docs/architecture/workflow-engine.md", /durable attempts?|at-least-once/i, [
@@ -428,10 +548,16 @@ describe("0.9.2 release surface", () => {
       ]),
       ...missingInSection(
         "docs/architecture/internals/health-advisories.md",
-        /engine.*model.*advisories|akm health advisory reference/i,
+        /engine.*model.*advisories|akm health.*advisory/i,
         [
-          ["selected-model-aliases check", /selected-model-aliases/],
-          ["configured-engines check", /configured-engines/],
+          [
+            "selected-model-aliases warns when a known selected alias lacks the selected-engine mapping",
+            /selected-model-aliases(?=[\s\S]{0,700}\bwarn)(?=[\s\S]{0,700}(?:known[^.\n]{0,120}selected alias|selected alias[^.\n]{0,120}known))(?=[\s\S]{0,700}missing[^.\n]{0,180}selected engine[^.\n]{0,120}mapping)/i,
+          ],
+          [
+            "configured-engines covers every explicitly configured engine",
+            /configured-engines(?=[\s\S]{0,600}(?:every|each))(?=[\s\S]{0,600}explicitly configured engines?)/i,
+          ],
           [
             "health checks do not make network calls",
             /(?:no|without).*(?:network|provider call)|(?:network|provider call).*(?:never|not)/is,
@@ -456,8 +582,24 @@ describe("0.9.2 release surface", () => {
       ),
       ...missingInSection("docs/reference/data-and-telemetry.md", /dry runs?|diagnostic output/i, [
         [
-          "command dry-run has no writes or usage",
-          /command.*dry-run.*(?:no|without).*(?:write|usage|event)|(?:write|usage|event).*(?:never|not).*command.*dry-run/is,
+          "command dry-run does not mutate authored source",
+          /command[^.\n]{0,120}dry-run[^.\n]{0,300}(?:does not|never|no)[^.\n]{0,200}(?:mutat|writ)[^.\n]{0,120}(?:authored )?source/i,
+        ],
+        [
+          "command dry-run does not mutate durable state",
+          /command[^.\n]{0,120}dry-run[^.\n]{0,300}(?:does not|never|no)[^.\n]{0,200}(?:mutat|writ)[^.\n]{0,120}(?:durable )?state/i,
+        ],
+        [
+          "command dry-run records no usage",
+          /command[^.\n]{0,120}dry-run[^.\n]{0,300}(?:does not|never|no)[^.\n]{0,200}(?:record|emit|create|write)?[^.\n]{0,80}usage/i,
+        ],
+        [
+          "command dry-run emits no events",
+          /command[^.\n]{0,120}dry-run[^.\n]{0,300}(?:does not|never|no)[^.\n]{0,200}(?:record|emit|create|write)?[^.\n]{0,80}events?/i,
+        ],
+        [
+          "command dry-run performs no accounting",
+          /command[^.\n]{0,120}dry-run[^.\n]{0,300}(?:does not|never|no)[^.\n]{0,200}(?:record|perform|create|write)?[^.\n]{0,80}accounting/i,
         ],
       ]),
       ...missingInSection(
