@@ -679,9 +679,9 @@ export class WorkflowRunsRepository {
    */
   reserveUnitAttempt(input: ReserveUnitAttemptV4Input): ReserveUnitAttemptV4Result {
     return this.immediateTransaction((db) => {
-      const run = db.prepare("SELECT workflow_ref, status FROM workflow_runs WHERE id = ?").get(input.runId) as
-        | { workflow_ref: string; status: string }
-        | undefined;
+      const run = db
+        .prepare("SELECT workflow_ref, status, engine_lease_holder FROM workflow_runs WHERE id = ?")
+        .get(input.runId) as { workflow_ref: string; status: string; engine_lease_holder: string | null } | undefined;
       if (!run || run.status !== "active") {
         throw new UsageError(
           `Workflow run ${input.runId} is not active; refusing to reserve a durable dispatch attempt.`,
@@ -698,9 +698,13 @@ export class WorkflowRunsRepository {
         )
         .get(input.runId, input.unitId) as WorkflowRunUnitAttemptRowV4 | undefined;
       if (latest?.status === "running") {
-        const live = latest.claim_expires_at >= input.now;
-        if (live) {
-          return { kind: latest.claim_holder === input.claimHolder ? "existing" : "busy", attempt: latest };
+        if (latest.claim_holder === input.claimHolder) {
+          return { kind: "existing", attempt: latest };
+        }
+        const currentRunLeaseDisplacedClaim = run.engine_lease_holder === input.claimHolder;
+        const expired = latest.claim_expires_at < input.now;
+        if (!expired && !currentRunLeaseDisplacedClaim) {
+          return { kind: "busy", attempt: latest };
         }
         const reclaimed = db
           .prepare(
@@ -708,7 +712,7 @@ export class WorkflowRunsRepository {
                 SET claim_holder = ?, claim_expires_at = ?
               WHERE run_id = ? AND unit_id = ? AND attempt = ?
                 AND status = 'running' AND dispatch_id = ? AND claim_holder = ?
-                AND claim_expires_at < ?`,
+                AND claim_expires_at = ?`,
           )
           .run(
             input.claimHolder,
@@ -718,10 +722,10 @@ export class WorkflowRunsRepository {
             latest.attempt,
             latest.dispatch_id,
             latest.claim_holder,
-            input.now,
+            latest.claim_expires_at,
           );
         if (Number(reclaimed.changes) !== 1) {
-          throw new Error(`Durable attempt ${input.unitId} changed while its expired claim was reclaimed.`);
+          throw new Error(`Durable attempt ${input.unitId} changed while its displaced claim was reclaimed.`);
         }
         db.prepare(
           `UPDATE workflow_run_units
