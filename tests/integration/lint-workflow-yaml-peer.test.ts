@@ -182,4 +182,23 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
     expect(result.flagged).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
+
+  test.each([
+    ["collision.md.yml", VALID_YAML],
+    ["collision.yml.md", VALID_MARKDOWN],
+  ])("a repeated workflow suffix in %s is one in-band ownership finding", async (filename, content) => {
+    const root = fixtureRoot("akm-lint-yaml-nested-suffix-");
+    write(root, `workflows/${filename}`, content);
+
+    const result = await akmLint({ dir: root, typeFilter: "workflows" });
+
+    expect(result.flagged).toHaveLength(1);
+    expect(result.flagged[0]).toMatchObject({
+      file: `workflows/${filename}`,
+      issue: "invalid-workflow-structure",
+      fixed: false,
+    });
+    expect(result.flagged[0]?.detail).toMatch(/extensionless stem ending in recognized workflow suffix/is);
+    expect(result.warnings).toEqual([]);
+  });
 });
