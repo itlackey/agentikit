@@ -6,11 +6,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  HEALTH_CHECKS,
-  runModelMapProbe,
-  runSelectedModelAliasesProbe,
-} from "../src/commands/health/checks";
+import { HEALTH_CHECKS, runModelMapProbe, runSelectedModelAliasesProbe } from "../src/commands/health/checks";
 import type { AkmConfig } from "../src/core/config/config";
 import { runCliCapture } from "./_helpers/cli";
 import { withEnv, withIsolatedAkmStorage } from "./_helpers/sandbox";

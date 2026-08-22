@@ -432,17 +432,19 @@ export function runModelMapProbe(options: LoadModelMapOptions = {}): HealthCheck
  * map. Unknown identifiers are deliberate exact-model pass-throughs; only an
  * alias known somewhere in the map but absent for the selected engine warns.
  */
-export function runSelectedModelAliasesProbe(
-  deps: SelectedModelAliasesProbeDependencies = {},
-): HealthCheckResult {
+export function runSelectedModelAliasesProbe(deps: SelectedModelAliasesProbeDependencies = {}): HealthCheckResult {
   const config = deps.loadConfig?.() ?? loadConfig();
   const definitions = executionEngineDefinitionsFromConfig(config);
-  const checked = Object.entries(definitions)
+  const selected = Object.entries(definitions)
     .sort(([left], [right]) => left.localeCompare(right))
     .flatMap(([engine, definition]) => {
-      const model = definition.defaults.model;
-      return typeof model === "string" ? [{ engine, alias: model, modelMapKey: definition.modelMapKey }] : [];
+      const model = definition.defaults?.model;
+      const modelMapKey = definition.modelMapKey ?? definition.selection.platform ?? definition.selection.name;
+      return typeof model === "string"
+        ? [{ engine, alias: model, modelMapKey, modelCompatibility: definition.modelCompatibility }]
+        : [];
     });
+  const checked = selected.map(({ engine, alias, modelMapKey }) => ({ engine, alias, modelMapKey }));
   if (checked.length === 0) {
     return {
       name: "selected-model-aliases",
@@ -468,13 +470,12 @@ export function runSelectedModelAliasesProbe(
     };
   }
 
-  const missing = checked.filter(({ engine, alias }) => {
-    const definition = definitions[engine];
+  const missing = selected.flatMap(({ engine, alias, modelMapKey, modelCompatibility }) => {
     try {
-      resolveModelMapAlias(alias, definition.modelMapKey, modelMap.map, definition.modelCompatibility);
-      return false;
+      resolveModelMapAlias(alias, modelMapKey, modelMap.map, modelCompatibility);
+      return [];
     } catch {
-      return true;
+      return [{ engine, alias, modelMapKey }];
     }
   });
   return {
