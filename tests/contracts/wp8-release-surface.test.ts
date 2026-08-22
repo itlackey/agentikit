@@ -631,7 +631,7 @@ describe("0.9.2 release surface", () => {
       ["claims task v3 is outstanding", /task[- ]v3[^.\n]*(?:outstanding|unfinished|remain(?:s|ed)? separate)/i],
       ["claims WP6 is unfinished", /WP6[^.\n]*(?:outstanding|unfinished|remain(?:s|ed)? separate)/i],
       ["claims WP7 is unfinished", /WP7[^.\n]*(?:outstanding|unfinished|remain(?:s|ed)? separate)/i],
-      ["claims workflows have one Markdown-only format", /there is \*?\*?one\*?\*? format|one format[^.\n]*Markdown/i],
+      ["claims workflows have one Markdown-only format", /there is \*?\*?one\*?\*? format:\s*no separate YAML/i],
       [
         "claims there is no YAML workflow surface",
         /no separate YAML[^.\n]*(?:workflow|program)|no [`*]*\.ya?ml[^.\n]*workflow/i,
