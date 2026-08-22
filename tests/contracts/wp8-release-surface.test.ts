@@ -786,6 +786,95 @@ describe("0.9.2 release surface", () => {
     expect(failures).toEqual([]);
   });
 
+  test("keeps renderer, warning, stored identity, and v3 comments on the current workflow architecture", () => {
+    const rendererRelative = "src/workflows/renderer.ts";
+    const rendererHeader = read(rendererRelative).split("*/", 1)[0] ?? "";
+    const warningRelative = "src/workflows/exec/param-secrets.ts";
+    const warningSource = read(warningRelative);
+    const warningText = warningSource.slice(
+      warningSource.indexOf("const MOVE_TO_ENV"),
+      warningSource.indexOf("export function detectSecretShapedParams"),
+    );
+    const storageRelative = "docs/architecture/internals/storage-locations.md";
+    const storage = read(storageRelative);
+    const identityRelative = "src/workflows/runtime/agent-identity.ts";
+    const identity = read(identityRelative);
+    const runsRelative = "src/workflows/runtime/runs.ts";
+    const runs = read(runsRelative);
+    const schemaRelative = "src/workflows/ir/schema.ts";
+    const schemaHeader = read(schemaRelative).slice(0, 3_000);
+    const failures = [
+      ...missing(rendererRelative, [
+        [
+          "renderer header says peer .md/.yml compile through compileWorkflowSource and source IR",
+          /peer[\s\S]{0,100}\.md[\s\S]{0,100}\.yml[\s\S]{0,180}compileWorkflowSource[\s\S]{0,160}source IR/i,
+        ],
+      ]),
+      ...missing(warningRelative, [
+        ["warning names native execution context", /native[^.\n]{0,100}(?:unit )?execution context/i],
+        ["warning names workflow run output", /akm workflow run/i],
+        ["warning names workflow status output", /akm workflow status/i],
+      ]),
+      ...missing(storageRelative, [
+        [
+          "stored agent fields are invoking harness/session identity or context",
+          /agent_harness[^\n]{0,120}agent_session_id[^\n]{0,180}invoking harness\/session (?:identity|context)/i,
+        ],
+      ]),
+      ...missing(identityRelative, [
+        ["agent identity is invoking harness/session identity", /invoking harness\/session (?:identity|context)/i],
+      ]),
+      ...missing(runsRelative, [
+        [
+          "run creation stores invoking harness/session identity",
+          /Capture[^.\n]{0,160}invoking harness\/session (?:identity|context)/i,
+        ],
+      ]),
+      ...missing(schemaRelative, [
+        ["v3 is stored compatibility", /stored[^.\n]{0,80}v3[^.\n]{0,120}compatibility/i],
+        [
+          "durable v4 is the current new-start format",
+          /durable[^.\n]{0,80}v4[^.\n]{0,120}current[^.\n]{0,120}new-start/i,
+        ],
+      ]),
+    ];
+
+    for (const [relative, text, label, pattern] of [
+      [rendererRelative, rendererHeader, "renderer does not claim one format", /One format now/i],
+      [
+        rendererRelative,
+        rendererHeader,
+        "renderer does not claim it reads only frontmatter through parseWorkflow",
+        /reads?[^.\n]{0,120}frontmatter[^.\n]{0,160}parseWorkflow|parseWorkflow[^.\n]{0,160}frontmatter/i,
+      ],
+      [warningRelative, warningText, "secret warning does not mention a driver", /\bdrivers?\b/i],
+      [
+        warningRelative,
+        warningText,
+        "secret warning does not mention removed workflow brief",
+        /workflow brief|`brief`/i,
+      ],
+      [storageRelative, storage, "storage does not call agent fields driving identity", /Driving agent identity/i],
+      [
+        identityRelative,
+        identity,
+        "agent identity does not call the invoking identity a driver",
+        /who[^.\n]{0,80}driving[^.\n]{0,80}workflow run|immediate driver/i,
+      ],
+      [
+        runsRelative,
+        runs,
+        "runs does not call the stored harness/session the driver",
+        /agent harness[^.\n]{0,100}driving this run|show who is driving the run/i,
+      ],
+      [schemaRelative, schemaHeader, "v3 is not the only executable persisted format", /only executable persisted/i],
+    ] as const) {
+      if (pattern.test(text)) failures.push(`${relative}: ${label}`);
+    }
+
+    expect(failures).toEqual([]);
+  });
+
   test("states durable-v4 immutability, its narrow live-value exceptions, and at-least-once dispatch truth", () => {
     const failures = [
       ...missingInSection("docs/architecture/workflow-engine.md", /frozen plans?|durable plan/i, [
