@@ -155,6 +155,7 @@ async function commandDispatch(
     action,
     config: context.config,
     invocationKind: "workflow",
+    ...(source.commandMode === "literal" ? { inlineContentMode: "literal" as const } : {}),
     current: executionValues(source, context.asset.sourcePath),
     sourceLoader: (ref, kind) => guardedExecutionSource(ref, kind, context),
   });

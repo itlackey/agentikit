@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import type { AkmConfig } from "../../core/config/config-types";
-import { ConfigError } from "../../core/errors";
+import { ConfigError, UsageError } from "../../core/errors";
 import { cloneExecutionJsonObject } from "../../execution/json";
 import {
   createInlineResolvedCommand,
@@ -62,6 +62,8 @@ export interface PrepareCommandInvocationOptions {
   readonly authorizeTools?: ToolAuthorizer;
   /** Provenance selects the common cascade layer; direct remains the public default. */
   readonly invocationKind?: ExecutionInvocationKind;
+  /** Authored workflow prose is already classified as literal by source IR and must bypass portable templating. */
+  readonly inlineContentMode?: "portable-template" | "literal";
 }
 
 export interface PreparedCommandInvocation {
@@ -157,12 +159,19 @@ export async function prepareCommandInvocation(
       content: applied.content,
     });
   } else {
-    const applied = applyPortableCommandArguments(action.content, action.arguments, "inline command");
-    command = createInlineResolvedCommand({
-      template: applied.template,
-      ...(own(applied, "argumentInput") ? { argumentInput: applied.argumentInput } : {}),
-      content: applied.content,
-    });
+    if (options.inlineContentMode === "literal") {
+      if (action.arguments !== undefined) {
+        throw new UsageError("Literal inline command content cannot declare portable arguments.", "INVALID_FLAG_VALUE");
+      }
+      command = createInlineResolvedCommand({ template: action.content, content: action.content });
+    } else {
+      const applied = applyPortableCommandArguments(action.content, action.arguments, "inline command");
+      command = createInlineResolvedCommand({
+        template: applied.template,
+        ...(own(applied, "argumentInput") ? { argumentInput: applied.argumentInput } : {}),
+        content: applied.content,
+      });
+    }
   }
 
   const selectedAgent = selectAgent(commandDefaults, options.invocationDefaults, options.current);
