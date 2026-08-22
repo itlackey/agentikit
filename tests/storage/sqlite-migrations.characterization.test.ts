@@ -39,9 +39,16 @@ import { openLegacyWorkflowDb } from "../_helpers/legacy-workflow-db";
  * - `schema`: every CREATE statement in sqlite_master, ordered deterministically
  *   by (type, name). Auto-generated internal objects (sqlite_*) are excluded.
  */
+const LINE_SNAPSHOT_SQL_OBJECTS = new Set([
+  "idx_workflow_run_unit_attempts_dispatch",
+  "idx_workflow_run_unit_attempts_run_step",
+  "idx_workflow_run_unit_attempts_running_claim",
+  "workflow_run_unit_attempts",
+]);
+
 function snapshotSchema(db: AkmDatabase): {
   migrations: string[];
-  schema: Array<{ type: string; name: string; sql: string | null }>;
+  schema: Array<{ type: string; name: string; sql: string | readonly string[] | null }>;
 } {
   const migrations = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as Array<{ id: string }>).map(
     (r) => r.id,
@@ -51,7 +58,14 @@ function snapshotSchema(db: AkmDatabase): {
     db
       .prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
       .all() as Array<{ type: string; name: string; sql: string | null }>
-  ).map((r) => ({ type: r.type, name: r.name, sql: r.sql }));
+  ).map((r) => ({
+    type: r.type,
+    name: r.name,
+    // Bun's multiline-string snapshot rendering adds trailing whitespace to
+    // the property label. Preserve the newly added WP7 DDL byte-for-byte as
+    // explicit lines so the committed range remains diff-check clean.
+    sql: r.sql !== null && LINE_SNAPSHOT_SQL_OBJECTS.has(r.name) ? Object.freeze(r.sql.split("\n")) : r.sql,
+  }));
 
   return { migrations, schema };
 }

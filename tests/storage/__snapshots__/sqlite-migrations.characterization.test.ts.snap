@@ -221,26 +221,26 @@ exports[`SQLite migration runner characterization state.db: fresh-DB migration r
     },
     {
       "name": "idx_workflow_run_unit_attempts_dispatch",
-      "sql": 
-"CREATE UNIQUE INDEX idx_workflow_run_unit_attempts_dispatch
-        ON workflow_run_unit_attempts(dispatch_id)"
-,
+      "sql": [
+        "CREATE UNIQUE INDEX idx_workflow_run_unit_attempts_dispatch",
+        "        ON workflow_run_unit_attempts(dispatch_id)",
+      ],
       "type": "index",
     },
     {
       "name": "idx_workflow_run_unit_attempts_run_step",
-      "sql": 
-"CREATE INDEX idx_workflow_run_unit_attempts_run_step
-        ON workflow_run_unit_attempts(run_id, step_id, unit_id, attempt)"
-,
+      "sql": [
+        "CREATE INDEX idx_workflow_run_unit_attempts_run_step",
+        "        ON workflow_run_unit_attempts(run_id, step_id, unit_id, attempt)",
+      ],
       "type": "index",
     },
     {
       "name": "idx_workflow_run_unit_attempts_running_claim",
-      "sql": 
-"CREATE INDEX idx_workflow_run_unit_attempts_running_claim
-        ON workflow_run_unit_attempts(run_id, status, claim_expires_at)"
-,
+      "sql": [
+        "CREATE INDEX idx_workflow_run_unit_attempts_running_claim",
+        "        ON workflow_run_unit_attempts(run_id, status, claim_expires_at)",
+      ],
       "type": "index",
     },
     {
@@ -551,33 +551,33 @@ exports[`SQLite migration runner characterization state.db: fresh-DB migration r
     },
     {
       "name": "workflow_run_unit_attempts",
-      "sql": 
-"CREATE TABLE workflow_run_unit_attempts (
-        run_id           TEXT NOT NULL,
-        unit_id          TEXT NOT NULL,
-        attempt          INTEGER NOT NULL CHECK (attempt >= 1),
-        dispatch_id      TEXT NOT NULL,
-        step_id          TEXT NOT NULL,
-        node_id          TEXT NOT NULL,
-        phase            TEXT NOT NULL CHECK (phase IN ('unit', 'gate')),
-        runner           TEXT,
-        engine           TEXT,
-        model            TEXT,
-        input_hash       TEXT NOT NULL,
-        status           TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'skipped')),
-        result_json      TEXT,
-        tokens           INTEGER,
-        failure_reason   TEXT,
-        session_id       TEXT,
-        worktree_path    TEXT,
-        started_at       TEXT NOT NULL,
-        finished_at      TEXT,
-        claim_holder     TEXT NOT NULL,
-        claim_expires_at TEXT NOT NULL,
-        PRIMARY KEY (run_id, unit_id, attempt),
-        FOREIGN KEY (run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
-      )"
-,
+      "sql": [
+        "CREATE TABLE workflow_run_unit_attempts (",
+        "        run_id           TEXT NOT NULL,",
+        "        unit_id          TEXT NOT NULL,",
+        "        attempt          INTEGER NOT NULL CHECK (attempt >= 1),",
+        "        dispatch_id      TEXT NOT NULL,",
+        "        step_id          TEXT NOT NULL,",
+        "        node_id          TEXT NOT NULL,",
+        "        phase            TEXT NOT NULL CHECK (phase IN ('unit', 'gate')),",
+        "        runner           TEXT,",
+        "        engine           TEXT,",
+        "        model            TEXT,",
+        "        input_hash       TEXT NOT NULL,",
+        "        status           TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'skipped')),",
+        "        result_json      TEXT,",
+        "        tokens           INTEGER,",
+        "        failure_reason   TEXT,",
+        "        session_id       TEXT,",
+        "        worktree_path    TEXT,",
+        "        started_at       TEXT NOT NULL,",
+        "        finished_at      TEXT,",
+        "        claim_holder     TEXT NOT NULL,",
+        "        claim_expires_at TEXT NOT NULL,",
+        "        PRIMARY KEY (run_id, unit_id, attempt),",
+        "        FOREIGN KEY (run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE",
+        "      )",
+      ],
       "type": "table",
     },
     {
