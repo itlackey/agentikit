@@ -186,7 +186,9 @@ describe("durable workflow v4 environment schema", () => {
     expect(unit?.kind).toBe("unit");
     if (!unit || unit.kind !== "unit") return;
     expect(unit.environment as readonly unknown[]).toEqual(environment);
-    expect(unit.environment.some((entry) => entry.kind === "secret")).toBe(false);
+    expect(
+      (unit.environment as unknown as ReadonlyArray<{ kind: string }>).some((entry) => entry.kind === "secret"),
+    ).toBe(false);
   });
 
   test("requires a qualified ref, exact canonical owner, sorted unique keys/token names, and canonical precedence", () => {

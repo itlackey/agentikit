@@ -5,15 +5,23 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
+import { assetPathForName } from "../../core/asset/asset-placement";
 import { parseBundleRef } from "../../core/asset/asset-ref";
+import { isWithin } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
+import { parseEnvRef } from "../../core/env-secret-ref";
 import { UsageError } from "../../core/errors";
 import { type GuardedExecutionSource, GuardedExecutionSourceCollector } from "../../execution/guarded-source";
 import type { ExecutionJsonObject } from "../../execution/json";
 import { canonicalResolvedExecutionRequest } from "../../execution/resolved-request";
+import { deriveInstallations } from "../../indexer/installations";
+import { resolveSourceEntries } from "../../indexer/search/search-source";
 import { prepareInlineExecutionWithRunner } from "../../integrations/agent/inline-execution";
+import { resolveSourcesForOrigin } from "../../registry/origin-resolve";
 import { frozenWorkflowRunner } from "../exec/unit-dispatch";
 import type { WorkflowAsset } from "../runtime/workflow-asset-loader";
+import { freezeWorkflowEnvironment } from "./environment-v4";
 import { compileResolveFreezeWorkflow, type FrozenWorkflow } from "./freeze";
 import { canonicalJson } from "./plan-hash";
 import type { FrozenEngineSnapshot, IrExecSpec, IrUnitNode, WorkflowPlanGraph } from "./schema";
@@ -60,9 +68,9 @@ export function compileResolveFreezeWorkflowV4(
       step.root.kind === "map"
         ? {
             ...step.root,
-            template: freezeUnitV4(step.root.template, v3.plan, asset),
+            template: freezeUnitV4(step.root.template, v3.plan, asset, config, sourceCollector),
           }
-        : freezeUnitV4(step.root, v3.plan, asset);
+        : freezeUnitV4(step.root, v3.plan, asset, config, sourceCollector);
     return { ...step, root };
   });
   const plan = decodeWorkflowPlanV4({
@@ -124,8 +132,14 @@ function sourceSnapshot(source: GuardedExecutionSource): WorkflowPlanGraphV4["so
   });
 }
 
-function freezeUnitV4(unit: IrUnitNode, plan: WorkflowPlanGraph, asset: WorkflowAsset): IrUnitNodeV4 {
-  if (unit.exec) return freezeExecUnit(unit, unit.exec, asset);
+function freezeUnitV4(
+  unit: IrUnitNode,
+  plan: WorkflowPlanGraph,
+  asset: WorkflowAsset,
+  config: AkmConfig,
+  sourceCollector: GuardedExecutionSourceCollector,
+): IrUnitNodeV4 {
+  if (unit.exec) return freezeExecUnit(unit, unit.exec, asset, config, sourceCollector);
   const invocation = unit.invocation;
   if (!invocation) throw new Error(`workflow unit ${unit.id} has neither exec nor invocation material`);
   const engine = plan.execution.engines[invocation.engine];
@@ -141,12 +155,7 @@ function freezeUnitV4(unit: IrUnitNode, plan: WorkflowPlanGraph, asset: Workflow
     ...(projectsInvocationModel ? { model: invocation.model } : {}),
     ...(Object.hasOwn(invocation, "llm") ? { inference: invocation.llm as unknown as ExecutionJsonObject } : {}),
   };
-  if (unit.env && unit.env.length > 0) {
-    throw new UsageError(
-      `Workflow unit ${unit.id} has authored env refs that require the durable symbolic-env freeze boundary.`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
+  const environment = freezeUnitEnvironment(unit.env ?? [], [], config, sourceCollector);
   const prepared = prepareInlineExecutionWithRunner({
     content: unit.instructions,
     runner,
@@ -163,26 +172,24 @@ function freezeUnitV4(unit: IrUnitNode, plan: WorkflowPlanGraph, asset: Workflow
       request: JSON.parse(canonicalResolvedExecutionRequest(prepared.request)),
       runner: prepared.runner,
     }),
-    environment: Object.freeze([]),
+    environment: Object.freeze(environment),
   });
 }
 
-function freezeExecUnit(unit: IrUnitNode, exec: IrExecSpec, asset: WorkflowAsset): IrUnitNodeV4 {
+function freezeExecUnit(
+  unit: IrUnitNode,
+  exec: IrExecSpec,
+  asset: WorkflowAsset,
+  config: AkmConfig,
+  sourceCollector: GuardedExecutionSourceCollector,
+): IrUnitNodeV4 {
   if (exec.inheritEnv) {
     throw new UsageError(
       `Workflow unit ${unit.id} uses inheritEnv, which durable v4 forbids. Use named pass_env or env refs.`,
       "INVALID_FLAG_VALUE",
     );
   }
-  if (unit.env && unit.env.length > 0) {
-    throw new UsageError(
-      `Workflow unit ${unit.id} has authored env refs that require the durable symbolic-env freeze boundary.`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  const environment: FrozenWorkflowEnvironmentBinding[] = (exec.passEnv ?? []).map((name) =>
-    Object.freeze({ kind: "secret" as const, name, environmentVariable: name }),
-  );
+  const environment = freezeUnitEnvironment(unit.env ?? [], exec.passEnv ?? [], config, sourceCollector);
   const cwdIdentity = freezeDirectoryIdentity(asset.sourcePath, exec.cwd);
   const contentHash = createHash("sha256")
     .update("akm.workflow.shell.v1\0")
@@ -193,6 +200,50 @@ function freezeExecUnit(unit: IrUnitNode, exec: IrExecSpec, asset: WorkflowAsset
     frozenTarget: Object.freeze({ kind: "shell" as const, contentHash, cwdIdentity }),
     environment: Object.freeze(environment),
   });
+}
+
+function freezeUnitEnvironment(
+  refs: readonly string[],
+  passThrough: readonly string[],
+  config: AkmConfig,
+  collector: GuardedExecutionSourceCollector,
+): FrozenWorkflowEnvironmentBinding[] {
+  const named: FrozenWorkflowEnvironmentBinding[] = passThrough.map((name) =>
+    Object.freeze({ kind: "pass-through" as const, name }),
+  );
+  if (refs.length === 0) return named;
+  const sources = resolveSourceEntries(undefined, config);
+  const installations = deriveInstallations(sources);
+  return [
+    ...named,
+    ...freezeWorkflowEnvironment(refs, {
+      collector,
+      resolveRef: (input) => {
+        const parsed = parseEnvRef(input);
+        if (parsed.type !== "env") {
+          throw new UsageError(`Expected an env ref; got ${JSON.stringify(input)}.`, "INVALID_FLAG_VALUE");
+        }
+        const candidates = resolveSourcesForOrigin(parsed.origin, sources);
+        for (const source of candidates) {
+          const envRoot = path.join(source.path, "env");
+          const envPath = assetPathForName("env", envRoot, parsed.name);
+          if (!isWithin(envPath, envRoot) || !fs.existsSync(envPath)) continue;
+          const sourceIndex = sources.indexOf(source);
+          const installation = installations[sourceIndex];
+          if (!installation) continue;
+          const adapter = source.adapterId ?? detectAdapterId(source.path);
+          return {
+            ref: `${installation.id}//env/${parsed.name}`,
+            bundle: installation.id,
+            adapter,
+            root: source.path,
+            path: envPath,
+          };
+        }
+        throw new UsageError(`Workflow environment ref ${JSON.stringify(input)} was not found.`, "INVALID_FLAG_VALUE");
+      },
+    }),
+  ];
 }
 
 function fallbackFor(

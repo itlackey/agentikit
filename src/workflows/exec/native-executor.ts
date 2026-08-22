@@ -142,6 +142,7 @@ import {
   withWorkflowRunsConnection,
   withWorkflowRunsRepo,
 } from "../../storage/repositories/workflow-runs-repository";
+import { materializeFrozenWorkflowEnvironment } from "../ir/environment-v4";
 import type { FrozenEngineSnapshot, IrBudget, IrStepPlan } from "../ir/schema";
 import { WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
 // The ONE dispatch redaction contract, shared with the gate-judge path
@@ -548,7 +549,24 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
   // fails the whole step cleanly rather than N units racing into it. Skipped
   // entirely when nothing will dispatch.
   let env: Record<string, string> | undefined;
-  if (willDispatch && template.env && template.env.length > 0) {
+  let sensitiveValues: readonly string[] | undefined;
+  const frozenEnvironment = workUnits[0]?.environment;
+  if (willDispatch && frozenEnvironment && frozenEnvironment.length > 0) {
+    try {
+      const materialized = materializeFrozenWorkflowEnvironment(frozenEnvironment);
+      env = materialized.values;
+      sensitiveValues = materialized.sensitiveValues;
+      for (const audit of materialized.audits) {
+        appendEvent({
+          eventType: audit.eventType,
+          ref: audit.ref,
+          metadata: { keys: audit.keys, secretNames: audit.secretNames },
+        });
+      }
+    } catch (err) {
+      return failedStep(dispatched, `Step "${plan.stepId}" frozen environment preflight failed: ${message(err)}`);
+    }
+  } else if (willDispatch && frozenEnvironment === undefined && template.env && template.env.length > 0) {
     const resolveEnv = ctx.resolveEnv ?? resolveEnvBindings;
     try {
       env = await resolveEnv(template.env);
@@ -608,6 +626,7 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
           plan,
           workUnit,
           env,
+          sensitiveValues,
           ...(worktreeBase !== undefined ? { worktreeBase } : {}),
           ctx,
           signal,
@@ -714,6 +733,8 @@ interface RunUnitInput {
   /** The precomputed work unit (id, resolved prompt + input hash, node metadata) from step-work. */
   workUnit: StepWorkUnit;
   env?: Record<string, string>;
+  /** Current values sampled from v4 symbolic descriptors, for terminal scrub. */
+  sensitiveValues?: readonly string[];
   /** Git repo worktrees are minted from — set exactly when the unit declares `isolation: worktree`. */
   worktreeBase?: string;
   ctx: StepExecutionContext;
@@ -735,7 +756,7 @@ interface RunUnitInput {
 }
 
 async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
-  const { plan, workUnit, env, ctx, dispatcher } = input;
+  const { plan, workUnit, env, sensitiveValues, ctx, dispatcher } = input;
   const unitId = workUnit.unitId;
 
   // Engine/exec presence is a WHOLE-LIST invariant, never a per-unit condition:
@@ -770,6 +791,7 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
     timeoutMs: workUnit.timeoutMs,
     ...(workUnit.schema ? { schema: workUnit.schema } : {}),
     ...(env ? { env } : {}),
+    ...(sensitiveValues ? { sensitiveValues } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   };
 

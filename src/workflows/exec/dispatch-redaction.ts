@@ -29,6 +29,8 @@ import type { UnitDispatcher } from "./unit-dispatch";
 export interface DispatchEngines {
   engine?: FrozenEngineSnapshot;
   fallbackEngine?: Extract<FrozenEngineSnapshot, { kind: "llm" }>;
+  /** Values sampled by a durable-v4 symbolic environment materializer. */
+  sensitiveValues?: readonly string[];
 }
 
 /**
@@ -51,7 +53,7 @@ export function collectWorkflowDispatchSensitiveValues(
   dispatch: DispatchEngines,
   env: Record<string, string> | undefined,
 ): string[] {
-  const values = new Set<string>(Object.values(env ?? {}));
+  const values = new Set<string>([...Object.values(env ?? {}), ...(dispatch.sensitiveValues ?? [])]);
   const addCredential = (engine: FrozenEngineSnapshot | undefined): void => {
     if (!engine) return;
     if (engine.kind === "llm") {

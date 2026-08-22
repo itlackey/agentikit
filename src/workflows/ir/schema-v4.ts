@@ -51,9 +51,28 @@ export interface FrozenWorkflowDirectoryIdentity {
   readonly cwdInode: string;
 }
 
+export interface FrozenWorkflowEnvironmentOwner {
+  readonly bundle: string;
+  readonly adapter: string;
+  readonly requestedRoot: string;
+  readonly realRoot: string;
+  readonly rootPhysicalIdentity: string;
+  readonly requestedPath: string;
+  readonly realPath: string;
+  readonly relativePath: string;
+}
+
 export type FrozenWorkflowEnvironmentBinding =
   | { readonly kind: "literal"; readonly name: string; readonly value: string }
-  | { readonly kind: "secret"; readonly name: string; readonly environmentVariable: string };
+  | { readonly kind: "pass-through"; readonly name: string }
+  | {
+      readonly kind: "env-ref";
+      readonly ref: string;
+      readonly owner: FrozenWorkflowEnvironmentOwner;
+      readonly keys: readonly string[];
+      readonly secretNames: readonly string[];
+      readonly precedence: number;
+    };
 
 export interface FrozenWorkflowCommandTarget {
   readonly kind: "command";
@@ -330,23 +349,106 @@ function decodeEnvironment(value: unknown, unitId: string): FrozenWorkflowEnviro
         fail(`unit ${unitId} literal environment value is secret-shaped`);
       }
       out.push(Object.freeze({ kind: "literal", name: binding.name as string, value: binding.value }));
-    } else if (binding.kind === "secret") {
-      assertKeys(binding, ["kind", "name", "environmentVariable"], `unit ${unitId} environment[${index}]`);
+    } else if (binding.kind === "pass-through") {
+      assertKeys(binding, ["kind", "name"], `unit ${unitId} environment[${index}]`);
       environmentName(binding.name, unitId, index);
-      environmentName(binding.environmentVariable, unitId, index);
+      out.push(Object.freeze({ kind: "pass-through", name: binding.name as string }));
+    } else if (binding.kind === "env-ref") {
+      assertKeys(
+        binding,
+        ["kind", "ref", "owner", "keys", "secretNames", "precedence"],
+        `unit ${unitId} environment[${index}]`,
+      );
+      if (typeof binding.ref !== "string" || !binding.ref.includes("//")) {
+        fail(`unit ${unitId} environment[${index}] env-ref must be fully qualified`);
+      }
+      const owner = decodeEnvironmentOwner(binding.owner, binding.ref, unitId, index);
+      const keys = sortedUniqueStrings(binding.keys, `unit ${unitId} environment[${index}] keys`, (value) =>
+        /^[A-Za-z_][A-Za-z0-9_]*$/.test(value),
+      );
+      const secretNames = sortedUniqueStrings(
+        binding.secretNames,
+        `unit ${unitId} environment[${index}] secretNames`,
+        (value) => /^[A-Za-z0-9_./-]+$/.test(value) && !value.includes(".."),
+      );
+      if (!Number.isSafeInteger(binding.precedence) || (binding.precedence as number) < 0) {
+        fail(`unit ${unitId} environment[${index}] precedence is invalid`);
+      }
       out.push(
         Object.freeze({
-          kind: "secret",
-          name: binding.name as string,
-          environmentVariable: binding.environmentVariable as string,
+          kind: "env-ref",
+          ref: binding.ref,
+          owner,
+          keys: Object.freeze(keys),
+          secretNames: Object.freeze(secretNames),
+          precedence: binding.precedence as number,
         }),
       );
     } else {
       fail(`unit ${unitId} environment[${index}] has unsupported kind`);
     }
-    const name = binding.name as string;
-    if (names.has(name)) fail(`unit ${unitId} environment contains duplicate name ${name}`);
-    names.add(name);
+    if (binding.kind !== "env-ref") {
+      const name = binding.name as string;
+      if (names.has(name)) fail(`unit ${unitId} environment contains duplicate name ${name}`);
+      names.add(name);
+    }
+  }
+  return out;
+}
+
+function decodeEnvironmentOwner(
+  value: unknown,
+  ref: string,
+  unitId: string,
+  index: number,
+): FrozenWorkflowEnvironmentOwner {
+  const label = `unit ${unitId} environment[${index}] owner`;
+  const owner = record(value, label);
+  const fields = [
+    "bundle",
+    "adapter",
+    "requestedRoot",
+    "realRoot",
+    "rootPhysicalIdentity",
+    "requestedPath",
+    "realPath",
+    "relativePath",
+  ] as const;
+  assertKeys(owner, fields, label);
+  for (const field of fields) {
+    if (typeof owner[field] !== "string" || !owner[field]) fail(`${label}.${field} is invalid`);
+  }
+  if (!ref.startsWith(`${owner.bundle as string}//`)) fail(`${label}.bundle does not own env-ref ${ref}`);
+  for (const field of ["requestedRoot", "realRoot", "requestedPath", "realPath"] as const) {
+    if (!path.isAbsolute(owner[field] as string)) fail(`${label}.${field} must be absolute`);
+  }
+  const relativePath = owner.relativePath as string;
+  if (
+    relativePath.includes("\\") ||
+    relativePath === "." ||
+    relativePath.startsWith("../") ||
+    path.isAbsolute(relativePath)
+  ) {
+    fail(`${label}.relativePath is not canonical`);
+  }
+  if (path.resolve(owner.requestedRoot as string, relativePath) !== path.resolve(owner.requestedPath as string)) {
+    fail(`${label}.requestedPath does not match relativePath`);
+  }
+  if (path.resolve(owner.realRoot as string, relativePath) !== path.resolve(owner.realPath as string)) {
+    fail(`${label}.realPath does not match relativePath`);
+  }
+  return Object.freeze(owner as unknown as FrozenWorkflowEnvironmentOwner);
+}
+
+function sortedUniqueStrings(value: unknown, label: string, accepts: (value: string) => boolean): string[] {
+  if (!Array.isArray(value)) fail(`${label} must be an array`);
+  const out: string[] = [];
+  let prior: string | undefined;
+  for (const item of value) {
+    if (typeof item !== "string" || !accepts(item)) fail(`${label} contains an invalid value`);
+    if (prior !== undefined && compareCodePoints(prior, item) >= 0) fail(`${label} must be sorted and unique`);
+    prior = item;
+    out.push(item);
   }
   return out;
 }

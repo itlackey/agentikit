@@ -108,7 +108,7 @@ function commandUnit() {
     },
     environment: [
       { kind: "literal", name: "REGION", value: "us-east-1" },
-      { kind: "secret", name: "API_TOKEN", environmentVariable: "DEPLOY_TOKEN" },
+      { kind: "pass-through", name: "DEPLOY_TOKEN" },
     ],
     onError: "fail",
     isolation: "none",
@@ -428,7 +428,7 @@ describe("durable workflow IR v4 — resolved targets and environment", () => {
     expect(() => decodeWorkflowPlanV4(ambient)).toThrow(/runtime.*environment|environment.*request|live/i);
   });
 
-  test("keeps literal values and symbolic secret bindings distinct without durable secret values", async () => {
+  test("keeps literal values and symbolic pass-through bindings distinct without durable secret values", async () => {
     const { decodeWorkflowPlanV4 } = await import("../../src/workflows/ir/schema-v4");
     const secretValue = "github_pat_012345678901234567890123456789";
     const decoded = decodeWorkflowPlanV4(v4Plan());
@@ -437,7 +437,7 @@ describe("durable workflow IR v4 — resolved targets and environment", () => {
     if (!root || root.kind !== "unit") return;
     expect(root.environment).toEqual([
       { kind: "literal", name: "REGION", value: "us-east-1" },
-      { kind: "secret", name: "API_TOKEN", environmentVariable: "DEPLOY_TOKEN" },
+      { kind: "pass-through", name: "DEPLOY_TOKEN" },
     ]);
     expect(canonicalPlanJson(decoded)).not.toContain(secretValue);
 
@@ -572,7 +572,7 @@ describe("durable workflow IR v4 — v5 work identity", () => {
     const changedEnvFixture = v4Plan();
     rootUnit(changedEnvFixture).environment = [
       { kind: "literal", name: "REGION", value: "eu-west-1" },
-      { kind: "secret", name: "API_TOKEN", environmentVariable: "DEPLOY_TOKEN" },
+      { kind: "pass-through", name: "DEPLOY_TOKEN" },
     ];
     const changedEnv = decodeWorkflowPlanV4(changedEnvFixture);
 
