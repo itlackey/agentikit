@@ -38,7 +38,7 @@ import {
 } from "../resource-limits";
 import type { SourceRef } from "../schema";
 
-/** The only executable persisted workflow plan format. */
+/** Stored plan IR v3 remains executable for compatibility; durable v4 is the current new-start format. */
 export const WORKFLOW_IR_VERSION = 3;
 export type IrOnError = "fail" | "continue";
 export type IrIsolation = "none" | "worktree";

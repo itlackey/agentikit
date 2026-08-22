@@ -75,9 +75,10 @@ function valueLooksSecret(value: string): boolean {
 }
 
 const MOVE_TO_ENV =
-  "Workflow params are copied verbatim into every unit prompt shown to any driver (they are part of the unit " +
-  "input hash and CANNOT be redacted) — move secrets to an env binding (`env:` ref), which `brief` surfaces by " +
-  "name only and never resolves.";
+  "Workflow params are copied verbatim into every native unit execution context and returned in `akm workflow run` and " +
+  "`akm workflow status` output (they are part of the unit input hash and CANNOT be redacted) — move " +
+  "secrets to an env binding (`env:` ref), whose value native execution resolves only at dispatch instead of storing " +
+  "it as a run param.";
 
 /**
  * Scan run params for secret-shaped values. Returns human-readable WARNING

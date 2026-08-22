@@ -3,10 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Show + indexing renderer for the unified workflow asset (workflow-format-
- * unification). One format now: reads the frontmatter+body document via
- * `parseWorkflow` and projects the validated `WorkflowDocument` down to the
- * public `ShowResponse` shape and into search hints for the indexer,
+ * Show + indexing renderer for peer workflow sources. `.md` and `.yml` both
+ * compile through `compileWorkflowSource` into source IR v1, which is projected
+ * down to the public `ShowResponse` shape and into search hints for the indexer,
  * including a compact per-step orchestration summary (engine/model or an exec
  * unit's argv, `map.over` reference, route table) when the step declares one.
  */

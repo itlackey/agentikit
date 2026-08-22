@@ -204,7 +204,7 @@ The resume path neither upgrades them to v4 nor re-reads authored source.
 | `created_at` | TEXT NOT NULL | ISO-8601 |
 | `updated_at` | TEXT NOT NULL | ISO-8601 |
 | `completed_at` | TEXT | ISO-8601; NULL while active |
-| `agent_harness`, `agent_session_id` | TEXT | Driving agent identity, recorded at start (see the check-in mechanism in `docs/reference/workflows.md`) |
+| `agent_harness`, `agent_session_id` | TEXT | Invoking harness/session identity, recorded at start (see the check-in mechanism in `docs/reference/workflows.md`) |
 | `checkin_armed_at` | TEXT | ISO-8601 timestamp; a stall past the check-in window surfaces a `continue` directive on the next poll |
 | `plan_json`, `plan_hash` | TEXT | Frozen executable plan and its integrity hash; current v4 plans include guarded source reads, immutable targets, and symbolic environment bindings |
 | `engine_lease_until`, `engine_lease_holder` | TEXT | Engine concurrency lease bookkeeping for the run |

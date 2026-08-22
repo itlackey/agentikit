@@ -306,7 +306,7 @@ export async function startWorkflowRun(
     const currentStepId = plan.steps[0]?.stepId ?? null;
     const workflowEntryId = resolveWorkflowEntryId(asset.sourcePath, asset.ref, asset.adapterId);
 
-    // Capture the agent harness + session driving this run. Explicit options
+    // Capture the invoking harness/session identity for this run. Explicit options
     // win; otherwise fall back to best-effort environment detection. This is
     // identity-only — no background thread or timer is started here.
     const detected = resolveAgentIdentity();
@@ -1017,7 +1017,8 @@ function toWorkflowRunSummary(run: WorkflowRunRow): WorkflowRunSummary {
     planIrVersion: plan.irVersion,
     executionSupport: plan.support,
     // Surface the engine lease (holder id + expiry — never workflow-authored
-    // content) so `workflow run`/`status` show who is driving the run.
+    // content) so `workflow run`/`status` show which native execution
+    // invocation currently holds the run lease.
     ...(run.engine_lease_holder && run.engine_lease_until
       ? { engineLease: { holder: run.engine_lease_holder, until: run.engine_lease_until } }
       : {}),
