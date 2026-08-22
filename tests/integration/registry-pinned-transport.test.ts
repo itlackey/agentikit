@@ -20,6 +20,8 @@ import { withEnv } from "../_helpers/sandbox";
 const PUBLIC_POLICY = { kind: "public-registry" } as const;
 const FIXTURES = path.resolve(import.meta.dir, "../fixtures/registry-network");
 const TEST_CERT = fs.readFileSync(path.join(FIXTURES, "registry-test-cert.pem"), "utf8");
+const PROXY_ENV_TEST_NAME = "keeps request secrets off argv/env, forces Host, and removes hop-by-hop proxy headers";
+const PROXY_ENV_CHILD = "AKM_TEST_REGISTRY_PROXY_ENV_CHILD";
 
 function nodeExecutablePath(): string {
   const executable = (process.env.PATH ?? "")
@@ -359,7 +361,30 @@ describe("registry pinned production transport", () => {
     }
   });
 
-  test("keeps request secrets off argv/env, forces Host, and removes hop-by-hop proxy headers", async () => {
+  test(PROXY_ENV_TEST_NAME, async () => {
+    if (process.env[PROXY_ENV_CHILD] !== "1") {
+      await runProcess(
+        [
+          process.execPath,
+          "test",
+          "--timeout=120000",
+          "-t",
+          PROXY_ENV_TEST_NAME,
+          path.join(import.meta.dir, "registry-pinned-transport.test.ts"),
+        ],
+        { ...process.env, [PROXY_ENV_CHILD]: "1" },
+      );
+
+      const localServer = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+      try {
+        const localResponse = await fetch(`http://127.0.0.1:${localServer.port}/after-proxy-env-child`);
+        expect(await localResponse.text()).toBe("ok");
+      } finally {
+        localServer.stop(true);
+      }
+      return;
+    }
+
     const proxyEnvKeys = ["ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"] as const;
     const proxyEnvBefore = Object.fromEntries(proxyEnvKeys.map((key) => [key, process.env[key]]));
     const observed: Array<{ authorization?: string; host?: string; proxyAuthorization?: string; body: string }> = [];
@@ -451,8 +476,6 @@ describe("registry pinned production transport", () => {
       );
 
       expect(Object.fromEntries(proxyEnvKeys.map((key) => [key, process.env[key]]))).toEqual(proxyEnvBefore);
-      const localResponse = await fetch(`http://127.0.0.1:${port}/after-proxy-env-restore`);
-      expect(await localResponse.text()).toBe("ok");
     } finally {
       await close(server);
     }
