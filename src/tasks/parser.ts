@@ -430,6 +430,7 @@ function readLlmOverrides(value: unknown, filePath: string): TaskPromptTarget["l
     "extraParams",
     "contextLength",
     "enableThinking",
+    "reasoningEffort",
   ]);
   const unknown = Object.keys(data).filter((key) => !allowed.has(key));
   if (unknown.length)
@@ -449,6 +450,15 @@ function readLlmOverrides(value: unknown, filePath: string): TaskPromptTarget["l
     if (data[key] !== undefined && typeof data[key] !== "boolean") {
       throw new UsageError(`Key "llm.${key}" must be a boolean. File: ${filePath}`, "INVALID_FLAG_VALUE");
     }
+  }
+  if (
+    data.reasoningEffort !== undefined &&
+    (typeof data.reasoningEffort !== "string" || !data.reasoningEffort.trim())
+  ) {
+    throw new UsageError(
+      `Key "llm.reasoningEffort" must be a non-empty string. File: ${filePath}`,
+      "INVALID_FLAG_VALUE",
+    );
   }
   if (data.extraParams !== undefined) {
     const issue = validateExtraParams(data.extraParams)[0];

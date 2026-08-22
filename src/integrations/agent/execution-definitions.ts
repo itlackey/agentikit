@@ -43,6 +43,7 @@ function engineDefaults(engine: EngineConfig): UnresolvedExecutionDefaults {
       extraParams: ownValue(engine, "extraParams"),
       contextLength: ownValue(engine, "contextLength"),
       enableThinking: ownValue(engine, "enableThinking"),
+      reasoningEffort: ownValue(engine, "reasoningEffort"),
     });
     if (Object.keys(inference).length > 0) defaults.inference = inference;
   }
@@ -175,6 +176,7 @@ export function executionEngineDefinitionFromRunner(
       extraParams: ownValue(runner.connection, "extraParams"),
       contextLength: ownValue(runner.connection, "contextLength"),
       enableThinking: ownValue(runner.connection, "enableThinking"),
+      reasoningEffort: ownValue(runner.connection, "reasoningEffort"),
     });
     return Object.freeze({
       engineName,
@@ -221,6 +223,7 @@ export function executionEngineDefinitionFromRunner(
         extraParams: fallbackConnection.extraParams,
         contextLength: fallbackConnection.contextLength,
         enableThinking: fallbackConnection.enableThinking,
+        reasoningEffort: fallbackConnection.reasoningEffort,
       })
     : {};
   return Object.freeze({

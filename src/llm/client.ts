@@ -15,7 +15,7 @@ import { ENV_REFERENCE_PATTERN } from "../core/config/schema/primitives";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
 import { parseJsonResponse } from "../core/parse";
 import { redactErrorBody, redactSensitiveText } from "../core/redaction";
-import { warnVerbose } from "../core/warn";
+import { warn, warnVerbose } from "../core/warn";
 import { DEFAULT_LLM_TIMEOUT_MS } from "../integrations/agent/config";
 import {
   emitLlmUsage,
@@ -356,15 +356,18 @@ async function chatCompletionAttempt(
       : config.provider === "vllm"
         ? { chat_template_kwargs: { enable_thinking: resolvedEnableThinking } }
         : { enable_thinking: resolvedEnableThinking };
+  const reasoningEffortParams =
+    config.reasoningEffort === undefined ? {} : { reasoning_effort: config.reasoningEffort };
 
   const requestBody = JSON.stringify({
     model: config.model,
     messages,
     temperature: options?.temperature ?? config.temperature ?? 0.3,
     ...(resolvedMaxTokens !== undefined ? { max_tokens: resolvedMaxTokens } : {}),
+    ...config.extraParams,
     ...responseFormat,
     ...thinkingParams,
-    ...config.extraParams,
+    ...reasoningEffortParams,
   });
 
   // Wall-clock start for per-attempt usage telemetry (#576). Captured here so the
@@ -493,6 +496,12 @@ async function chatCompletionAttempt(
       finishReason: typeof json.choices?.[0]?.finish_reason === "string" ? json.choices[0].finish_reason : undefined,
       ...extractUsageTokens(json.usage),
     };
+    if (resolvedEnableThinking === false && (terminalFields.reasoningTokens ?? 0) > 0) {
+      warn(
+        `[akm] LLM returned ${terminalFields.reasoningTokens} reasoning tokens despite enableThinking: false; ` +
+          'the provider may not honor that control. Configure reasoningEffort: "none" when the provider supports it.',
+      );
+    }
     const content = (json.choices?.[0]?.message?.content ?? "").trim();
     const reasoning = (json.choices?.[0]?.message?.reasoning_content ?? "").trim();
     const result = redactSensitiveText(content || reasoning, resolvedKey ? [resolvedKey] : []);

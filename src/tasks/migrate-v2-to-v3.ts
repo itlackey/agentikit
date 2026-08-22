@@ -114,6 +114,7 @@ const V2_LLM_KEYS = new Set([
   "extraParams",
   "contextLength",
   "enableThinking",
+  "reasoningEffort",
 ]);
 const SAFE_V2_COMMAND_TOKEN = /^[A-Za-z0-9_./:=+,-]+$/;
 const SHELL_ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -268,6 +269,9 @@ function validateV2Llm(value: unknown): Record<string, unknown> | undefined {
   }
   for (const key of ["supportsJsonSchema", "enableThinking"] as const) {
     if (llm[key] !== undefined && typeof llm[key] !== "boolean") throw new Error(`llm.${key} must be a boolean`);
+  }
+  if (llm.reasoningEffort !== undefined && (typeof llm.reasoningEffort !== "string" || !llm.reasoningEffort.trim())) {
+    throw new Error("llm.reasoningEffort must be a non-empty string");
   }
   if (llm.extraParams !== undefined) {
     const issue = validateExtraParams(llm.extraParams)[0];

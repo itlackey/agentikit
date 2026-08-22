@@ -37,6 +37,7 @@ export interface LlmInvocationOverrides {
   extraParams?: Record<string, unknown>;
   contextLength?: number;
   enableThinking?: boolean;
+  reasoningEffort?: string;
 }
 
 export interface EngineUseConfig {
@@ -60,6 +61,7 @@ export interface LlmEngineConfig {
   extraParams?: Record<string, unknown>;
   contextLength?: number;
   enableThinking?: boolean;
+  reasoningEffort?: string;
 }
 
 export interface AgentEngineConfig {
@@ -224,6 +226,7 @@ function rawLlmConnection(engine: LlmEngineConfig): Record<string, unknown> {
     extraParams: ownValue(engine, "extraParams"),
     contextLength: ownValue(engine, "contextLength"),
     enableThinking: ownValue(engine, "enableThinking"),
+    reasoningEffort: ownValue(engine, "reasoningEffort"),
   };
   for (const key of Object.keys(connection)) {
     if (connection[key] === undefined) delete connection[key];

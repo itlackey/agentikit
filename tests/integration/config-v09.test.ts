@@ -98,7 +98,7 @@ describe("0.9 config contract", () => {
       },
       defaults: { llmEngine: "fast" },
     };
-    expect(getDefaultLlmConfig(config).reasoningEffort).toBe("none");
+    expect(getDefaultLlmConfig(config)?.reasoningEffort).toBe("none");
     expect(
       validateConfigShape({
         ...config,

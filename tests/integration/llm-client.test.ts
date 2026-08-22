@@ -205,9 +205,7 @@ describe("chatCompletion thinking controls", () => {
     );
     try {
       await chatCompletion({ endpoint: url, model: "test-model", enableThinking: false }, messages);
-      expect(warnings).toEqual([
-        expect.stringContaining("returned 17 reasoning tokens despite enableThinking: false"),
-      ]);
+      expect(warnings).toEqual([expect.stringContaining("returned 17 reasoning tokens despite enableThinking: false")]);
     } finally {
       server.stop(true);
     }

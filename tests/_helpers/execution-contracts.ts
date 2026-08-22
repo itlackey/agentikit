@@ -268,6 +268,7 @@ export function projectCurrentWorkflowUnitForTest(plan: WorkflowPlanGraph, stepI
           ...(engine.extraParams ? { extraParams: engine.extraParams } : {}),
           ...(engine.contextLength !== undefined ? { contextLength: engine.contextLength } : {}),
           ...(engine.enableThinking !== undefined ? { enableThinking: engine.enableThinking } : {}),
+          ...(engine.reasoningEffort !== undefined ? { reasoningEffort: engine.reasoningEffort } : {}),
           ...(invocation.llm ?? {}),
         }
       : {};
