@@ -58,10 +58,8 @@ export const WORKFLOW_MAX_EXEC_CWD_LENGTH = 1024;
 /**
  * Max entries in an exec unit's `pass_env:` list.
  *
- * `pass_env` is the "one or two more toolchain variables" escape hatch, not a
- * second way to spell `inherit_env:` — a workflow reaching for more than this
- * many names wants full inheritance and should say so where a reviewer can see
- * it.
+ * `pass_env` is bounded; use explicit named `env:` bindings for a larger set.
+ * New v4 starts do not offer whole-process inheritance.
  */
 export const WORKFLOW_MAX_EXEC_PASS_ENV = 32;
 /**

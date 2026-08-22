@@ -150,7 +150,7 @@ function projectStepDefinitions(document: WorkflowDocument): WorkflowStepDefinit
     const orchestration = summarizeStepOrchestration(step, document.defaults);
     return {
       id: step.id,
-      // No titles anywhere in the unified format — a step IS its id.
+      // No titles in the shared source IR — a step IS its id.
       title: step.id,
       instructions: stepInstructions(step),
       ...(step.gateRubric?.text.trim() ? { completionCriteria: [step.gateRubric.text] } : {}),
@@ -180,7 +180,7 @@ export const workflowMdRenderer: AssetRenderer = {
       action: buildWorkflowAction(ref),
       ...(doc.preamble ? { content: doc.preamble } : {}),
       description: doc.description,
-      // No authored title in the unified format — the asset's human name is
+      // No authored title in the shared source IR — the asset's human name is
       // its `description`/H1 like any other asset; this is its canonical name.
       workflowTitle: name,
       ...(parameters ? { parameters: parameters.map((p) => p.name), workflowParameters: parameters } : {}),

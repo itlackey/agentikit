@@ -31,8 +31,8 @@
  *   - ALLOWLISTED ENVIRONMENT. The child does NOT inherit akm's environment: it
  *     starts EMPTY and receives exactly {@link EXEC_DEFAULT_ENV_PASSTHROUGH}
  *     plus the unit's `exec.passEnv`, then the resolved `env:` bindings, then
- *     the engine-authored `AKM_*` context. `exec.inheritEnv` opts back into full
- *     inheritance. See {@link childEnv}.
+ *     the engine-authored `AKM_*` context. Stored-v3 `exec.inheritEnv` plans
+ *     retain full inheritance for compatibility. See {@link childEnv}.
  *
  * Secrets: `env` values reaching this module are already resolved from `env:`
  * bindings by NAME (`resolveEnvBinding`) — the plan never carries inline secrets
@@ -589,11 +589,11 @@ async function isExistingDirectory(candidate: string): Promise<boolean> {
  *     {@link collectAllowlistedEnv} does it here, so there is one mechanism to
  *     review instead of two.
  *
- * `inheritEnv` is the honest escape hatch for a command that genuinely needs the
- * caller's whole environment. It passes everything through, PATH included —
- * supplemented for scheduler contexts exactly as {@link collectAllowlistedEnv}
- * does it, because the MORE permissive branch must never hand a command a WORSE
- * PATH than the restrictive default does under cron/launchd.
+ * `inheritEnv` remains executable for stored durable-plan v3 compatibility; new
+ * v4 starts reject it. A stored v3 plan carrying it passes everything
+ * through, PATH included — supplemented for scheduler contexts exactly as
+ * {@link collectAllowlistedEnv} does it, because the compatibility branch must
+ * never hand a command a worse PATH than the default does under cron/launchd.
  */
 function childEnv(
   exec: IrExecSpec,

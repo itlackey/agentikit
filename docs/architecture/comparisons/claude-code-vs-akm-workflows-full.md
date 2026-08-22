@@ -336,19 +336,22 @@ failed or blocked run after the underlying issue is corrected.
 
 ### B.8 Check-in: stall nudging without a daemon
 
-Unchanged from before the engine: akm records the driving **agent identity**
-(`agent_harness`, `agent_session_id`) from environment hints
+Unchanged from before the engine: akm records the invoking harness/session
+context (`agent_harness`, `agent_session_id`) from environment hints
 (`src/workflows/runtime/agent-identity.ts`), arms a **check-in** timestamp
 (`checkin_armed_at`) — not a background thread — and on the next `workflow
-status` poll, `evaluateCheckin()`
+status` poll by a supervising observer, `evaluateCheckin()`
 (`src/workflows/runtime/checkin.ts`) compares `now` against
 `max(updated_at, checkin_armed_at)`; past a 90s stall window it surfaces a
-`continue` directive through the normal command output. The design ADR
+`continue` notification through the normal command output. The design ADR
 explicitly rejects a background-thread alternative: "No daemon in a CLI… the
 command loop is already the heartbeat." A parallel, independent check-in
 exists at the *unit* level (`last_checkin_at` marks a long-running unit live
 so a stalled one can be reclaimed) — same no-daemon, pure-timestamp design,
 different granularity.
+
+The supervising observer receives that `continue` notification only while
+polling; akm does not push it in the background.
 
 ### B.9 CLI surface
 
@@ -417,10 +420,10 @@ used to be:
    Code's `agent()` cap and akm's unit scheduler both default to
    `min(16, cores − 2)` — not a coincidence; the engine's CPU-derived default
    was written to match it (B.4).
-8. **Awareness of the driving session** — Claude Code owns the session; akm
+8. **Awareness of the invoking session** — Claude Code owns the session; akm
    *records* it (`CLAUDE_SESSION_ID` → `claude-code`). Under the engine this
    awareness becomes load-bearing, not just descriptive: the run lease (B.5)
-   uses it to arbitrate who is allowed to drive a given run right now.
+   uses it to arbitrate which invocation may hold a given run right now.
 9. **Native dispatch spans harnesses.** akm executes each unit by invoking a
    configured agent CLI — ten harnesses are supported, Claude Code among them —
    so an akm run composes with the same tools without either system embedding
@@ -478,29 +481,29 @@ Claude-Code-specific features, but as harness-agnostic ones:
 
 | Formerly-proposed idea | Status |
 |---|---|
-| A blessed loop pattern for driving an akm run with structured per-step results | **Shipped**, generalized: `akm workflow run` dispatches to any of ten configured harnesses (Part B.4) — not Claude-Code-specific |
+| A blessed loop pattern for invoking an akm run with structured per-step results | **Shipped**, generalized: an invoking agent or orchestrator invokes the native `akm workflow run`, which dispatches to any of ten configured harnesses (Part B.4) — not Claude-Code-specific |
 | Machine-readable, near-live progress instead of polling `status` | **Shipped**: `akm log --run <id> --since '@offset:<id>'` (Part B.6) |
 | Structural (schema) validation of step output, not just an LLM prose judge | **Shipped**: per-unit `output` JSON Schema + typed step artifacts, validated before a gate ever runs (Part B.4/B.7) |
 | An explicit fan-out step type | **Shipped**: `map` steps with `over`/`concurrency`/`reducer` (Part B.4) |
 
 What's genuinely still not built, as of this writing:
 
-### F.1 Correlate an akm run with the driving harness's own run/session id
+### F.1 Correlate an akm run with the invoking harness's own run/session id
 
 `agent-identity.ts` captures `agent_harness`/`agent_session_id` from
 environment hints, and each unit records its harness-native session id
 (Part B.3). Neither captures a *workflow-
 level* id from an external orchestrator (e.g. a Claude Code `Workflow` tool's
-own `runId`) when one is driving an akm run — there is no env-hint or CLI flag
-for it today, so correlating "this akm run was driven by that Claude Code
-workflow invocation" still has to be done by hand (matching timestamps, logs).
+own `runId`) when it invokes an akm run — there is no env-hint or CLI flag for
+it today, so correlating an akm run with its invoking Claude Code workflow
+invocation still has to be done by hand (matching timestamps, logs).
 
-### F.2 Let a stalled run's check-in wake the driver instead of waiting to be polled
+### F.2 Notify a supervising observer instead of waiting for its next poll
 
 The check-in (Part B.8) is still exactly as passive as the ADR mandates: it
 surfaces only on the next `workflow status` poll, never proactively.
 There is no signal-file or other out-of-band mechanism that lets a stalled
-run *notify* a harness capable of receiving one (the ADR's own design
+run *notify* a supervising or polling observer capable of receiving one (the ADR's own design
 contemplates "a best-effort checkin signal file under the run scope" as a
 future extension) — this remains unbuilt.
 
@@ -514,14 +517,14 @@ external-driver protocol is retired; an external agent can invoke
 `akm workflow run` and inspect `status` or `akm log`, but it does not drive an
 alternate akm execution surface.
 
-### F.4 Suppress the check-in when the driving harness already owns liveness
+### F.4 Suppress the check-in when an observer already provides liveness
 
 The check-in fires uniformly for any active run past the stall window
 (`evaluateCheckin`, Part B.8) — it does not special-case a recorded
-`agent_harness` that is known to own its own liveness/orchestration (so
-wouldn't stall the way a free-form chat agent can). This is a small, purely
-local trim on top of the existing check-in logic, not a new subsystem, but it
-is not implemented today.
+invoking harness/session context when an external observer already supplies
+its own liveness/orchestration (so it would not stall the way a free-form chat
+agent can). This is a small, purely local trim on top of the existing check-in
+logic, not a new subsystem, but it is not implemented today.
 
 ### F.5 Distribute non-akm executable workflow scripts as akm assets
 

@@ -78,7 +78,7 @@ export const PROGRAM_RETRY_REASONS = Object.keys(RETRY_REASON_SET) as readonly A
 
 /**
  * Step ids: `[A-Za-z_][A-Za-z0-9_-]*` (also pinned in the JSON Schema) — the
- * ONE id grammar for the unified format (workflow-format-unification, spec
+ * ONE id grammar for the shared source IR (workflow-format-unification, spec
  * §2.2). This is EXACTLY the `<ident>` grammar `readIdent` accepts in
  * `program/expressions.ts` for `steps.<id>.output` references: a
  * letter/underscore first char, then letters/digits/underscores/dashes, and
@@ -124,9 +124,9 @@ export interface ProgramRetry {
  *
  * The child's environment is an ALLOWLIST by default (see
  * `EXEC_DEFAULT_ENV_PASSTHROUGH` in `exec/exec-unit.ts`). `pass_env` extends it
- * with a few named variables; `inherit_env` opts all the way back into the akm
- * process's whole environment. Both live inside `exec:` because the unit-level
- * `env:` key already means something else — a list of env asset binding REFS.
+ * with a few named variables. `inherit_env` remains for stored-v3 compatibility
+ * only; new v4 starts reject it. Both live inside
+ * `exec:` because the unit-level `env:` key means a list of env binding REFS.
  */
 export interface ProgramExec {
   /** argv; `command[0]` is the program, resolved through PATH. Never shell-parsed. */
@@ -135,7 +135,7 @@ export interface ProgramExec {
   cwd?: string;
   /** Extra parent-process env var NAMES copied through on top of the default allowlist. */
   passEnv?: string[];
-  /** `true` = give the child akm's whole environment instead of the allowlist. */
+  /** Stored-v3 compatibility only; new durable-v4 starts reject this field. */
   inheritEnv?: boolean;
 }
 

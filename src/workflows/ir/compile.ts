@@ -74,7 +74,7 @@ export interface WorkflowGateDraft {
 
 export interface WorkflowStepDraft {
   stepId: string;
-  /** Always the step id — the unified format has no titles anywhere (a step IS its id). */
+  /** Always the step id — the shared source IR has no titles (a step IS its id). */
   title: string;
   sequenceIndex: number;
   root?: WorkflowUnitDraft | WorkflowMapDraft;

@@ -32,7 +32,7 @@ export type WorkflowAsset = {
   sourcePath: string;
   adapterId?: string;
   /**
-   * Run-level display title. The unified format carries no authored title
+   * Run-level display title. The shared source IR carries no authored title
    * (workflow-format-unification, spec §2.2) — a step is its id, and the
    * asset's human name is its `description`/H1 like any other asset. This is
    * the asset's canonical name (the file-derived slug), used only for the

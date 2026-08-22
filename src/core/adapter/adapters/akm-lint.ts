@@ -271,7 +271,7 @@ export async function perTypeValidateChecks(args: PerTypeCheckArgs): Promise<Dia
     case "task":
       return taskDiagnostics(relPath, raw, workspaceRoot);
     case "workflow":
-      // Unified workflows are markdown-only; other extensions are not a lint path.
+      // Markdown lint handles `.md`; peer GitHub-shaped `.yml` sources enter through the workflow source adapter.
       return ext === ".md" ? workflowDiagnostics(relPath, raw, body) : [];
     case "memory":
       return memoryDiagnostics(relPath, data, body, ctx);

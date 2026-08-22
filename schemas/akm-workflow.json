@@ -215,7 +215,7 @@
     },
     "exec": {
       "type": "object",
-      "description": "Run a shell command as this unit instead of dispatching to an engine. `command` is an ARGV ARRAY and there is no shell-string form: the child is spawned directly, so shell metacharacters (`;` `|` `&&` `$(…)` `>` `*`) are inert literal argument bytes — the quoting/injection class simply does not exist. Write the interpreter explicitly (e.g. [\"bash\", \"-lc\", \"a | b\"]) when a pipeline is really wanted. stdout is the promoted step artifact with trailing newlines stripped (like shell `$(…)`); when the unit declares an `output` schema, stdout must instead be exactly one JSON value, which is validated against it. A non-zero exit fails the unit with failure reason `non_zero_exit`, honoring `retry:` and `on_error:` like any other unit. The child's environment is an ALLOWLIST by default (PATH, HOME, locale/temp vars, the Windows process-creation essentials) — widen it with `pass_env` or `inherit_env`.",
+      "description": "Run a shell command as this unit instead of dispatching to an engine. `command` is an ARGV ARRAY and there is no shell-string form: the child is spawned directly, so shell metacharacters (`;` `|` `&&` `$(…)` `>` `*`) are inert literal argument bytes — the quoting/injection class simply does not exist. Write the interpreter explicitly (e.g. [\"bash\", \"-lc\", \"a | b\"]) when a pipeline is really wanted. stdout is the promoted step artifact with trailing newlines stripped (like shell `$(…)`); when the unit declares an `output` schema, stdout must instead be exactly one JSON value, which is validated against it. A non-zero exit fails the unit with failure reason `non_zero_exit`, honoring `retry:` and `on_error:` like any other unit. The child's environment is an ALLOWLIST by default (PATH, HOME, locale/temp vars, the Windows process-creation essentials) — widen it only with named `env:` environment bindings or `pass_env`.",
       "required": ["command"],
       "additionalProperties": false,
       "properties": {
@@ -250,7 +250,7 @@
         },
         "inherit_env": {
           "type": "boolean",
-          "description": "Give the command akm's ENTIRE environment instead of the default allowlist. Opt in only when a command genuinely needs the caller's whole environment (a wrapper script, a toolchain with many ambient variables); prefer `pass_env` or `env:` bindings, which keep what the command can see explicit in the frontmatter diff. Dispatch-significant: toggling it changes the unit's input hash."
+          "description": "Stored-v3 compatibility only: existing stored v3 plans may retain this boolean. New v4 starts reject `inherit_env`. Never use it for whole-process environment inheritance in new authoring; prefer named `env:` environment bindings or `pass_env`."
         }
       }
     },

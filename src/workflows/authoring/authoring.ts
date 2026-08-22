@@ -27,7 +27,7 @@ export function getWorkflowTemplate(): string {
 export function buildWorkflowTemplate(name?: string): string {
   if (!name) return DEFAULT_WORKFLOW_TEMPLATE;
 
-  // Only the H1 is customized. Step ids are STRUCTURAL under the unified format
+  // Only the H1 is customized. Step ids are STRUCTURAL in the Markdown authoring form
   // — each appears in `steps[].id`, as a body `## <id>` heading, and possibly in
   // another step's `inputs:` — so rewriting them from a name would have to patch
   // three places consistently to stay parseable. Generic `first-step`/
@@ -49,14 +49,14 @@ function validateWorkflowContent(content: string, sourcePath: string): void {
   }
 }
 
-/** Recognized workflow-program suffixes — creating one is a lint-time usage error (workflow-format-unification). */
+/** Peer YAML is executable, but `akm workflow create` emits the Markdown authoring form only. */
 const YAML_SUFFIX_RE = /\.ya?ml$/i;
 
 export function assertWorkflowMarkdownName(name: string): void {
   if (!YAML_SUFFIX_RE.test(name.trim())) return;
   throw new UsageError(
-    `Workflows are markdown-only now (workflow-format-unification) — "${name}" cannot be created. ` +
-      `Use a plain name (no ".yaml"/".yml" suffix); the orchestration graph lives in the ".md" file's frontmatter.`,
+    `akm workflow create is markdown-only: it emits Markdown and cannot create "${name}". ` +
+      `Use a plain name (no ".yaml"/".yml" suffix), or author a peer GitHub-shaped ".yml" workflow directly.`,
   );
 }
 

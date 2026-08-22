@@ -221,7 +221,7 @@ export type ComputeWorkListResult = { ok: true; list: StepWorkList } | { ok: fal
  *
  * Whole-list failures (missing subgraph, unresolvable / non-array `over`,
  * null or duplicate fan-out items) return `{ ok: false }`. Per-unit resolution
- * cannot fail in the unified format — prose is never scanned for references,
+ * cannot fail in the shared source IR — prose is never scanned for references,
  * and everything that CAN fail (map.over / route.input / inputs:) resolves
  * once per step, failing the whole list above.
  */
@@ -551,7 +551,7 @@ function buildStepWorkUnit(ctx: StepWorkUnitContext, unitId: string, item: unkno
 /**
  * The `AKM_*` context environment an exec unit's child receives.
  *
- * An exec unit's argv is FROZEN and never interpolated (the unified format has
+ * An exec unit's argv is FROZEN and never interpolated (the shared source IR has
  * no substitution language at all), so this is how a fan-out item, the run
  * params, and the step's declared `inputs:` artifacts actually reach a command
  * — as attached environment, exactly as they reach an engine unit as attached

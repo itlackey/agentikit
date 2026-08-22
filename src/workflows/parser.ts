@@ -880,8 +880,8 @@ function parseExec(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
     if (typeof raw.inherit_env !== "boolean") {
       ctx.err(
         [...path, "inherit_env"],
-        `${stepLabel} "exec.inherit_env" must be true or false. true gives the command akm's whole environment ` +
-          `instead of the default allowlist; omit it (or write false) to keep the allowlist.`,
+        `${stepLabel} "exec.inherit_env" must be true or false. The parser retains true only for stored-v3 ` +
+          `compatibility; new v4 starts reject it. Omit it (or write false) to keep the allowlist.`,
       );
     } else if (raw.inherit_env) {
       exec.inheritEnv = true;
@@ -909,7 +909,7 @@ function parseExecPassEnv(ctx: Ctx, raw: unknown, path: Path, stepLabel: string)
     ctx.err(
       path,
       `${stepLabel} "exec.pass_env" must have at most ${WORKFLOW_MAX_EXEC_PASS_ENV} entries. A command needing ` +
-        `more than that wants "inherit_env: true", which says so explicitly.`,
+        `more than that should use explicit named "env:" bindings instead.`,
     );
     return undefined;
   }
