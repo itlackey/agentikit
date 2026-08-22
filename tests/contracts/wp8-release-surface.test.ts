@@ -687,6 +687,105 @@ describe("0.9.2 release surface", () => {
     expect(failures).toEqual([]);
   });
 
+  test("keeps adjacent active source guidance scoped to peer formats and stored-v3 compatibility", () => {
+    const authoringRelative = "src/workflows/authoring/authoring.ts";
+    const authoring = read(authoringRelative);
+    const lintRelative = "src/core/adapter/adapters/akm-lint.ts";
+    const lint = read(lintRelative);
+    const parserRelative = "src/workflows/parser.ts";
+    const parser = read(parserRelative);
+    const limitsRelative = "src/workflows/resource-limits.ts";
+    const limits = read(limitsRelative);
+    const execRelative = "src/workflows/exec/exec-unit.ts";
+    const exec = read(execRelative);
+    const programRelative = "src/workflows/program/schema.ts";
+    const program = read(programRelative);
+    const failures = [
+      ...missing(authoringRelative, [
+        [
+          "create emits Markdown rather than claiming every workflow is Markdown-only",
+          /create[^.\n]{0,120}emits?[^.\n]{0,80}Markdown/i,
+        ],
+      ]),
+      ...missing(lintRelative, [
+        [
+          "the Markdown lint branch is scoped separately from peer GitHub-shaped YAML",
+          /Markdown[^.\n]{0,100}(?:lint|adapter)[^.\n]{0,120}\.md[^.\n]{0,180}peer[^.\n]{0,120}(?:GitHub-shaped|\.yml)/i,
+        ],
+      ]),
+      ...missing(parserRelative, [
+        [
+          "the pass_env limit diagnostic points to named env bindings",
+          /more than[^.\n]{0,160}(?:named|explicit)[^.\n]{0,80}env:[^.\n]{0,80}bindings?/i,
+        ],
+      ]),
+      ...missing(limitsRelative, [
+        [
+          "the pass_env bound points to named env bindings",
+          /pass_env[^.\n]{0,180}(?:named|explicit)[^.\n]{0,80}env:[^.\n]{0,80}bindings?/i,
+        ],
+      ]),
+      ...missing(execRelative, [
+        [
+          "whole-process execution is labeled stored-v3 compatibility",
+          /inheritEnv[^.\n]{0,160}stored[^.\n]{0,80}v3[^.\n]{0,100}compatibility/i,
+        ],
+      ]),
+      ...missing(programRelative, [
+        [
+          "inherit_env in the authoring projection is labeled stored-v3 compatibility",
+          /inherit_env[^.\n]{0,160}stored[^.\n]{0,80}v3[^.\n]{0,100}compatibility/i,
+        ],
+      ]),
+    ];
+
+    for (const [relative, text, label, pattern] of [
+      [authoringRelative, authoring, "does not call workflows Markdown-only", /Workflows are markdown-only/i],
+      [lintRelative, lint, "does not call unified workflows Markdown-only", /Unified workflows are markdown-only/i],
+      [
+        parserRelative,
+        parser,
+        "does not recommend inherit_env when pass_env exceeds its bound",
+        /more than[^.\n]{0,160}(?:wants|use)[^.\n]{0,80}inherit_env/i,
+      ],
+      [
+        limitsRelative,
+        limits,
+        "does not recommend full inheritance above the pass_env bound",
+        /more than[^.\n]{0,160}(?:wants|use)[^.\n]{0,80}(?:full inheritance|inherit_env)/i,
+      ],
+      [execRelative, exec, "does not call inheritEnv an escape hatch", /inheritEnv[^.\n]{0,80}honest escape hatch/i],
+      [
+        execRelative,
+        exec,
+        "does not present inheritEnv as an active opt-in",
+        /inheritEnv[^.\n]{0,80}opts? back into full/i,
+      ],
+      [
+        programRelative,
+        program,
+        "does not present inherit_env as an active whole-environment opt-in",
+        /inherit_env[^.\n]{0,100}opts?[^.\n]{0,100}whole environment/i,
+      ],
+    ] as const) {
+      if (pattern.test(text)) failures.push(`${relative}: ${label}`);
+    }
+
+    for (const relative of [
+      "src/workflows/program/schema.ts",
+      "src/workflows/renderer.ts",
+      "src/workflows/runtime/workflow-asset-loader.ts",
+      "src/workflows/ir/compile.ts",
+      "src/workflows/exec/step-work.ts",
+    ]) {
+      if (/\b(?:the )?unified format\b/i.test(read(relative))) {
+        failures.push(`${relative}: source comment calls peer workflow sources one unified format`);
+      }
+    }
+
+    expect(failures).toEqual([]);
+  });
+
   test("states durable-v4 immutability, its narrow live-value exceptions, and at-least-once dispatch truth", () => {
     const failures = [
       ...missingInSection("docs/architecture/workflow-engine.md", /frozen plans?|durable plan/i, [
