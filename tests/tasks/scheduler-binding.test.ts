@@ -3,7 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
-import { compileTaskSchedulerBindings, compileWorkflowSchedulerBindings } from "../../src/tasks/scheduler-binding";
+import {
+  compileTaskSchedulerBindings,
+  compileWorkflowSchedulerBindings,
+  schedulerNativeBindingId,
+} from "../../src/tasks/scheduler-binding";
 
 describe("secret-free scheduler binding compiler", () => {
   test("preserves the legacy task id at ordinal zero and emits only the public task invocation", () => {
@@ -51,6 +55,28 @@ describe("secret-free scheduler binding compiler", () => {
     });
     expect(binding?.logicalSource.ref).toBe("team//nightly");
     expect(binding?.id).toBe("nightly");
+  });
+
+  test("preserves a nested standalone canonical id in the binding and public invocation", () => {
+    const [binding] = compileTaskSchedulerBindings({
+      id: "sub/deep/nightly",
+      qualifiedRef: "team//sub/deep/nightly",
+      bundleTarget: "team",
+      enabled: true,
+      schedules: [{ cron: "@daily", source: "sub/deep/nightly.yml:akm.schedule", ordinal: 0 }],
+    });
+    expect(binding).toMatchObject({
+      id: "sub/deep/nightly",
+      logicalSource: { kind: "task", ref: "team//sub/deep/nightly" },
+      invocation: ["task", "run", "sub/deep/nightly", "--bundle", "team", "--scheduled"],
+    });
+  });
+
+  test("maps only nested logical ids to a deterministic portable native id", () => {
+    expect(schedulerNativeBindingId("nightly")).toBe("nightly");
+    expect(schedulerNativeBindingId("sub/deep/nightly")).toMatch(/^task-[a-f0-9]{32}$/);
+    expect(schedulerNativeBindingId("sub/deep/nightly")).toBe(schedulerNativeBindingId("sub/deep/nightly"));
+    expect(schedulerNativeBindingId("other/deep/nightly")).not.toBe(schedulerNativeBindingId("sub/deep/nightly"));
   });
 
   test("workflow schedule ids include the qualified ref and ordinal while manual dispatch creates no artifact", () => {

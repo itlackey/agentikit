@@ -930,4 +930,21 @@ describe("schtasks backend transactional install", () => {
     expect(transaction.installedXml()).toBe(priorXml);
     expect(transaction.enabled()).toBe(false);
   });
+
+  test("uses a portable native name while preserving a nested logical invocation", () => {
+    const transaction = transactionBackend();
+    const nested = {
+      ...makeTask("0 9 * * *", "sub/deep/nightly"),
+      logicalSource: { kind: "task" as const, ref: "team//sub/deep/nightly" },
+      invocation: ["task", "run", "sub/deep/nightly", "--bundle", "team", "--scheduled"],
+    };
+
+    transaction.backend.install(nested);
+
+    const create = transaction.calls.find((call) => call[1]?.toLowerCase() === "/create");
+    const taskName = create?.[create.indexOf("/TN") + 1] ?? "";
+    expect(taskName.slice("\\akm\\".length)).not.toContain("/");
+    expect(transaction.installedXml()).toContain("&apos;sub/deep/nightly&apos;");
+    expect(transaction.installedXml()).not.toContain("<URI>\\akm\\sub/deep/nightly</URI>");
+  });
 });

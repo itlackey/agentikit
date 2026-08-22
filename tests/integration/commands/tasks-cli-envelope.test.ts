@@ -158,6 +158,80 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
     }
   });
 
+  test("a real bundle-qualified scheduled invocation preserves a deep akm-task id in history", async () => {
+    const storage = withIsolatedAkmStorage();
+    const bundle = makeSandboxDir("akm-task-deep-component");
+    disposers.push(bundle);
+    try {
+      const componentRoot = "components/scheduled";
+      const taskId = "sub/deep/nightly";
+      const taskRoot = path.join(bundle.dir, componentRoot);
+      fs.mkdirSync(path.join(taskRoot, "sub", "deep"), { recursive: true });
+      fs.writeFileSync(
+        path.join(taskRoot, `${taskId}.yml`),
+        ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+      );
+      saveConfig({
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        defaultBundle: "stash",
+        bundles: {
+          stash: { path: storage.stashDir, writable: true },
+          scheduled: {
+            path: bundle.dir,
+            components: { main: { root: componentRoot, adapter: "akm-task", writable: false } },
+          },
+        },
+      });
+
+      const run = await runCliCapture(["task", "run", taskId, "--bundle", "scheduled", "--scheduled"]);
+      expect(run.code, run.stderr).toBe(0);
+      expect(JSON.parse(run.stdout).result).toMatchObject({ id: taskId, status: "completed" });
+
+      const history = await runCliCapture(["task", "history", "--id", `scheduled//${taskId}`]);
+      expect(history.code, history.stderr).toBe(0);
+      expect(JSON.parse(history.stdout).rows[0]).toMatchObject({ id: taskId, status: "completed" });
+    } finally {
+      storage.cleanup();
+    }
+  });
+
+  test("a standalone task whose first component is tasks keeps that component in runtime identity", async () => {
+    const storage = withIsolatedAkmStorage();
+    const bundle = makeSandboxDir("akm-task-native-prefix-component");
+    disposers.push(bundle);
+    try {
+      const taskId = "tasks/nightly";
+      fs.mkdirSync(path.join(bundle.dir, "tasks"), { recursive: true });
+      fs.writeFileSync(
+        path.join(bundle.dir, `${taskId}.yml`),
+        ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+      );
+      saveConfig({
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        defaultBundle: "stash",
+        bundles: {
+          stash: { path: storage.stashDir, writable: true },
+          scheduled: {
+            path: bundle.dir,
+            components: { main: { root: ".", adapter: "akm-task", writable: false } },
+          },
+        },
+      });
+
+      const run = await runCliCapture(["task", "run", taskId, "--bundle", "scheduled", "--scheduled"]);
+      expect(run.code, run.stderr).toBe(0);
+      expect(JSON.parse(run.stdout).result).toMatchObject({ id: taskId, status: "completed" });
+
+      const history = await runCliCapture(["task", "history", "--id", `scheduled//${taskId}`]);
+      expect(history.code, history.stderr).toBe(0);
+      expect(JSON.parse(history.stdout).rows[0]).toMatchObject({ id: taskId, status: "completed" });
+    } finally {
+      storage.cleanup();
+    }
+  });
+
   test("task add help advertises --prompt as inline text only", async () => {
     const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
     const result = spawnSync("bun", [path.join(repoRoot, "src", "cli.ts"), "task", "add", "--help"], {

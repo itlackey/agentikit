@@ -63,6 +63,16 @@ describe("scheduled task invocation", () => {
     ]);
   });
 
+  test("round-trips a bundle-qualified nested standalone task invocation", () => {
+    const argv = buildScheduledTaskInvocation(["/opt/akm"], "sub/deep/nightly", "/data/context.json", "team").argv;
+    expect(parseScheduledBindingArgv(argv)).toEqual({
+      binding: ["/opt/akm"],
+      contextPath: "/data/context.json",
+      invocation: ["task", "run", "sub/deep/nightly", "--bundle", "team", "--scheduled"],
+      target: "team",
+    });
+  });
+
   test("builds and recognizes the public qualified workflow invocation without hidden scheduler flags", () => {
     const argv = buildScheduledBindingInvocation(["/opt/akm"], "/data/context.json", [
       "workflow",

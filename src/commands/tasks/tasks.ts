@@ -15,8 +15,14 @@ import path from "node:path";
 import { stringify as yamlStringify } from "yaml";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { assetPathForName } from "../../core/asset/asset-placement";
-import { makeBundleRef } from "../../core/asset/asset-ref";
-import { type AssetRef, conceptIdFromTypeName, isFullRefInput, parseRefInput } from "../../core/asset/resolve-ref";
+import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
+import {
+  type AssetRef,
+  conceptIdFromTypeName,
+  isFullRefInput,
+  parseRefInput,
+  typeNameFromConceptId,
+} from "../../core/asset/resolve-ref";
 import { isWithin, resolveStashDir } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import type { AkmConfig } from "../../core/config/config-types";
@@ -53,7 +59,7 @@ import {
 } from "../../tasks/scheduler-invocation";
 import { planSchedulerSync, type SchedulerSyncPlan } from "../../tasks/scheduler-sync";
 import { parseTaskV3Yaml, type TaskV3SourceDocument } from "../../tasks/source-v3";
-import { normaliseTaskId } from "../../tasks/task-id";
+import { normaliseTaskConceptId, normaliseTaskId } from "../../tasks/task-id";
 import { applyAutonomyGate, configuredDirectAutonomyLanes, describeGatedLanes } from "../improve/autonomy-gate";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
 
@@ -340,15 +346,17 @@ export async function akmTasksRun(
 ): Promise<TasksRunResultEnvelope> {
   const parsed = parseTaskRef(id);
   const bundle = resolveTaskReadBundle(parsed.bundle, options.target);
+  const adapterId = bundle.source.adapterId ?? detectAdapterId(bundle.source.path);
+  const resolvedId = taskIdForAdapter(id, parsed.id, adapterId);
   const runOptions = {
     stashDir: bundle.source.path,
     bundleName: bundle.source.name,
-    adapterId: bundle.source.adapterId ?? detectAdapterId(bundle.source.path),
+    adapterId,
     scheduled: options.scheduled === true,
   } as Parameters<typeof runTask>[1] & { bundleName: string };
   // The runner owns the prepare-before-reserve boundary. Invalid source,
   // projectability, and resolver failures therefore create no history row.
-  const result = await runTask(parsed.id, runOptions);
+  const result = await runTask(resolvedId, runOptions);
   const exitCode =
     result.status === "failed" && result.target.kind === "command" && result.detail?.exitCode === 78
       ? 78
@@ -371,8 +379,9 @@ export async function akmTasksHistory(input: {
 }): Promise<TasksHistoryResult> {
   const limit = input.limit !== undefined && input.limit > 0 ? input.limit : 50;
   const parsed = input.id ? parseTaskRef(input.id) : undefined;
-  resolveTaskReadBundle(parsed?.bundle, input.target);
-  const id = parsed?.id;
+  const bundle = resolveTaskReadBundle(parsed?.bundle, input.target);
+  const adapterId = bundle.source.adapterId ?? detectAdapterId(bundle.source.path);
+  const id = parsed && input.id ? taskIdForAdapter(input.id, parsed.id, adapterId) : undefined;
   // History rows are keyed by task id in state.db, not per bundle.
   return { rows: readTaskHistory({ id, limit }) };
 }
@@ -1092,25 +1101,35 @@ export function setEnabledInYaml(yaml: string, enabled: boolean): string {
 // `akm task run` completes.
 export { ConfigError, exitCodeForStatus, NotFoundError, UsageError };
 
-// Accept a bare task id or the canonical `[bundle//]tasks/<id>` ref.
+// Accept a bare task id, native `[bundle//]tasks/<id>`, or a standalone
+// akm-task component-relative concept id such as `[bundle//]sub/nightly`.
 export function parseTaskRef(input: string): { id: string; bundle?: string } {
   const trimmed = input.trim();
-  // Canonical conceptId form: `[bundle//]tasks/<id>`. A `/` unambiguously marks
-  // it — a bare task id can never contain `/` (`validateTaskId` forbids it) — so
-  // route it through the shared parser, which strips any bundle prefix and maps
-  // the `tasks/` stash-subdir back to the `task` type in one place.
   if (trimmed.includes("/")) {
     try {
-      const parsed = parseRefInput(trimmed);
-      if (parsed.type === "task") {
-        const separator = trimmed.indexOf("//");
-        const bundle = separator >= 0 ? trimmed.slice(0, separator) : undefined;
-        return { id: normaliseTaskId(parsed.name), ...(bundle ? { bundle } : {}) };
+      const parsed = parseBundleRef(trimmed);
+      if (parsed.fragment !== undefined) throw new Error("task refs do not accept fragments");
+      const native = typeNameFromConceptId(parsed.conceptId);
+      if (native?.type === "task") {
+        return { id: normaliseTaskId(native.name), ...(parsed.bundle ? { bundle: parsed.bundle } : {}) };
       }
+      if (native !== undefined) throw new Error("known non-task concept");
+      return {
+        id: normaliseTaskConceptId(parsed.conceptId),
+        ...(parsed.bundle ? { bundle: parsed.bundle } : {}),
+      };
     } catch {
       // fall through to the shared error below
     }
-    throw new UsageError(`Expected a task id or tasks/<id> ref, got "${input}".`, "INVALID_FLAG_VALUE");
+    throw new UsageError(
+      `Expected a task id, tasks/<id> ref, or standalone task concept id, got "${input}".`,
+      "INVALID_FLAG_VALUE",
+    );
   }
   return { id: normaliseTaskId(trimmed) };
+}
+
+function taskIdForAdapter(input: string, parsedId: string, adapterId: string): string {
+  if (adapterId !== "akm-task" || !input.trim().includes("/")) return parsedId;
+  return normaliseTaskConceptId(parseBundleRef(input.trim()).conceptId);
 }

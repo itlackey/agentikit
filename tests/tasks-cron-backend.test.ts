@@ -318,6 +318,22 @@ describe("cron backend drift detection", () => {
     expect(backend.expectedSignature?.(targetBinding)).not.toBe(backend.expectedSignature?.(SYNC_TASK));
   });
 
+  test("round-trips a nested logical id through a portable native marker", () => {
+    const exec = memoryExec();
+    const backend = CRON_BACKEND(opts(exec));
+    const nested = {
+      ...SYNC_TASK,
+      id: "sub/deep/nightly",
+      logicalSource: { kind: "task" as const, ref: "team//sub/deep/nightly" },
+      invocation: ["task", "run", "sub/deep/nightly", "--bundle", "team", "--scheduled"],
+    };
+
+    backend.install(nested);
+
+    expect(exec.current()).not.toContain("# akm:task sub/deep/nightly BEGIN");
+    expect(listSync(backend)).toEqual([expect.objectContaining({ id: "sub/deep/nightly", target: "team" })]);
+  });
+
   // 0.9 scheduler ABI respelling (S6): an entry whose invocation no longer
   // parses (missing context descriptor, pre-rename `tasks run` spelling, or
   // any other foreign content between the markers) is an orphan of its

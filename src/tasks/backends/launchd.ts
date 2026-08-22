@@ -31,7 +31,7 @@ import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { type LaunchdTrigger, parseSchedule, translateToLaunchd } from "../schedule";
-import type { SchedulerBinding } from "../scheduler-binding";
+import { type SchedulerBinding, schedulerLogicalBindingId, schedulerNativeBindingId } from "../scheduler-binding";
 import {
   buildScheduledBindingInvocation,
   parseScheduledBindingArgv,
@@ -93,8 +93,9 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
   const akmArgv = options.akmArgv ?? resolveAkmInvocation().argv;
   const scheduledContext = options.scheduledContext ?? resolveScheduledTaskContext();
 
-  const plistPath = (id: string) => path.join(agentsDir, `${LAUNCHD_LABEL_PREFIX}${id}.plist`);
-  const label = (id: string) => `${LAUNCHD_LABEL_PREFIX}${id}`;
+  const plistPath = (id: string) =>
+    path.join(agentsDir, `${LAUNCHD_LABEL_PREFIX}${schedulerNativeBindingId(id)}.plist`);
+  const label = (id: string) => `${LAUNCHD_LABEL_PREFIX}${schedulerNativeBindingId(id)}`;
   const target = (id: string) => `gui/${exec.uid()}/${label(id)}`;
   const pathEnv = () => {
     if (options.envPath === false) return undefined;
@@ -139,7 +140,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
       // launchd refuses to start a job when StandardOutPath/StandardErrorPath
       // points at a non-existent directory; create it before bootstrap.
       fsLike.ensureDir(logDir);
-      const tempFile = path.join(agentsDir, `.${task.id}.${Date.now()}.tmp`);
+      const tempFile = path.join(agentsDir, `.${schedulerNativeBindingId(task.id)}.${Date.now()}.tmp`);
       fsLike.writeFile(tempFile, xml);
       let bootoutCompleted = false;
       let previousWasLoaded = false;
@@ -276,7 +277,10 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
         if (!file.startsWith(LAUNCHD_LABEL_PREFIX) || !file.endsWith(".plist")) continue;
         const id = file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length);
         const installed = extractPlistInvocation(fsLike.readFile(plistPath(id)));
-        refs.push({ id, ...(installed?.target !== undefined ? { target: installed.target } : {}) });
+        refs.push({
+          id: installed ? schedulerLogicalBindingId(id, installed.invocation) : id,
+          ...(installed?.target !== undefined ? { target: installed.target } : {}),
+        });
       }
       return refs;
     },
@@ -351,26 +355,80 @@ function restoreLaunchdBindings(
   if (!isLaunchdBindingSnapshot(snapshot)) {
     throw new ConfigError("Invalid launchd scheduler snapshot.", "INVALID_CONFIG_FILE");
   }
+  const errors: unknown[] = [];
   for (const entry of snapshot.entries) {
+    restoreLaunchdBindingEntry(entry, context, errors);
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, `Failed to completely restore ${errors.length} launchd scheduler operation(s).`);
+  }
+}
+
+function restoreLaunchdBindingEntry(
+  entry: LaunchdBindingSnapshot["entries"][number],
+  context: {
+    exec: LaunchdExec;
+    fsLike: LaunchdFs;
+    agentsDir: string;
+    plistPath: (id: string) => string;
+    target: (id: string) => string;
+    setEnableState: (id: string, enabled: boolean) => void;
+  },
+  errors: unknown[],
+): void {
+  try {
     runOrThrow(context.exec, ["launchctl", "bootout", context.target(entry.id)], {
       isOk: (result) => result.status === 0 || isServiceNotFoundResult(result),
       message: (result) =>
         `launchctl bootout failed while restoring task "${entry.id}": ${result.stderr || result.stdout || "no output"}.`,
     });
-    const file = context.plistPath(entry.id);
+  } catch (error) {
+    errors.push(error);
+    return;
+  }
+
+  const file = context.plistPath(entry.id);
+  let priorFileRestored = false;
+  try {
     if (entry.plist === undefined) {
       if (context.fsLike.exists(file)) context.fsLike.removeFile(file);
     } else {
       context.fsLike.ensureDir(context.agentsDir);
       context.fsLike.writeFile(file, entry.plist);
-      if (entry.loaded) {
+    }
+    priorFileRestored = true;
+  } catch (error) {
+    errors.push(error);
+  }
+
+  if (entry.loaded && entry.plist !== undefined && priorFileRestored) {
+    let overrideCleared = false;
+    try {
+      // A disable override survives bootout. Clear it before bootstrap or
+      // launchd can refuse to register the exact prior loaded definition.
+      context.setEnableState(entry.id, true);
+      overrideCleared = true;
+    } catch (error) {
+      errors.push(error);
+    }
+    if (overrideCleared) {
+      try {
         runOrThrow(context.exec, ["launchctl", "bootstrap", `gui/${context.exec.uid()}`, file], {
           message: (result) =>
             `launchctl bootstrap failed while restoring task "${entry.id}": ${result.stderr || result.stdout || "no output"}.`,
         });
+      } catch (error) {
+        errors.push(error);
       }
     }
+  }
+
+  try {
+    // Apply the prior override last even when an earlier step failed; this is
+    // both the exact state ordering and the best available partial recovery.
     context.setEnableState(entry.id, entry.enabled);
+  } catch (error) {
+    errors.push(error);
   }
 }
 
@@ -395,19 +453,20 @@ function inspectInstalledLaunchdTask(
   // not a hard failure: `list()` omits it so `akmTasksSync` treats the id as
   // "not present" and reinstalls it from the current task file.
   if (!installed) return undefined;
+  const logicalId = schedulerLogicalBindingId(id, installed.invocation);
   const metadata = {
     ...(installed.target !== undefined ? { target: installed.target } : {}),
     binding: installed.binding,
     contextPath: installed.contextPath,
   };
-  if (!disabledLabels) return withInstalledInvocation({ id, ...metadata }, installed.invocation);
+  if (!disabledLabels) return withInstalledInvocation({ id: logicalId, ...metadata }, installed.invocation);
 
   const jobLabel = `${LAUNCHD_LABEL_PREFIX}${id}`;
   try {
     const loaded = exec.run(["launchctl", "print", `gui/${exec.uid()}/${jobLabel}`]);
-    if (loaded.status !== 0) return withInstalledInvocation({ id, ...metadata }, installed.invocation);
+    if (loaded.status !== 0) return withInstalledInvocation({ id: logicalId, ...metadata }, installed.invocation);
   } catch {
-    return withInstalledInvocation({ id, ...metadata }, installed.invocation);
+    return withInstalledInvocation({ id: logicalId, ...metadata }, installed.invocation);
   }
 
   try {
@@ -415,9 +474,12 @@ function inspectInstalledLaunchdTask(
       /<!-- akm-enabled:(?:true|false) -->/,
       `<!-- akm-enabled:${!disabledLabels.has(jobLabel)} -->`,
     );
-    return withInstalledInvocation({ id, signature: normalizeSignature(xml), ...metadata }, installed.invocation);
+    return withInstalledInvocation(
+      { id: logicalId, signature: normalizeSignature(xml), ...metadata },
+      installed.invocation,
+    );
   } catch {
-    return withInstalledInvocation({ id, ...metadata }, installed.invocation);
+    return withInstalledInvocation({ id: logicalId, ...metadata }, installed.invocation);
   }
 }
 
@@ -456,12 +518,13 @@ export function buildPlistXml(
   const invocation = buildScheduledBindingInvocation(akmArgv, contextPath, task.invocation);
   const argv = invocation.argv;
   const programArgs = argv.map((a) => `      <string>${escapeXml(a)}</string>`).join("\n");
-  const logPath = path.join(logDir, `${task.id}.log`);
+  const nativeId = schedulerNativeBindingId(task.id);
+  const logPath = path.join(logDir, `${nativeId}.log`);
   const triggerXml = renderLaunchdTrigger(trigger);
 
   const xml = launchdTemplate
     .replace("<dict>\n", `<dict>\n  <!-- akm-enabled:${task.enabled} -->\n`)
-    .replace("{{LABEL}}", LAUNCHD_LABEL_PREFIX + escapeXml(task.id))
+    .replace("{{LABEL}}", LAUNCHD_LABEL_PREFIX + escapeXml(nativeId))
     .replace("{{PROGRAM_ARGS}}", programArgs)
     .replaceAll("{{LOG_PATH}}", escapeXml(logPath))
     .replace("{{ENV_VARS}}", "")

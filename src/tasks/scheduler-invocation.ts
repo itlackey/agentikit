@@ -9,6 +9,7 @@ import { bundleRefToString, parseBundleRef } from "../core/asset/asset-ref";
 import { resolveStashDir } from "../core/common";
 import { ConfigError } from "../core/errors";
 import { getCacheDir, getConfigDir, getDataDir, getTaskContextDir } from "../core/paths";
+import { normaliseTaskConceptId } from "./task-id";
 
 export const SCHEDULED_TASK_CONTEXT_KEYS = [
   "AKM_BUNDLE_DIR",
@@ -260,6 +261,13 @@ function parsePublicSchedulerInvocation(
   invocation: readonly string[],
 ): { invocation: string[]; target?: string } | undefined {
   if (invocation[0] === "task" && invocation[1] === "run" && invocation[2]) {
+    if (invocation[2].includes("/")) {
+      try {
+        if (normaliseTaskConceptId(invocation[2]) !== invocation[2]) return undefined;
+      } catch {
+        return undefined;
+      }
+    }
     let index = 3;
     let target: string | undefined;
     if (invocation[index] === "--bundle") {

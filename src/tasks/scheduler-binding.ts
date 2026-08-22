@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import { bundleRefToString, parseBundleRef } from "../core/asset/asset-ref";
 import { UsageError } from "../core/errors";
 import type { ScheduleBackend } from "./schedule";
-import { normaliseTaskId } from "./task-id";
+import { normaliseTaskConceptId } from "./task-id";
 
 export type SchedulerLogicalSource = Readonly<{
   kind: "task" | "workflow";
@@ -92,7 +92,7 @@ export interface SchedulerBackend {
 }
 
 export function compileTaskSchedulerBindings(input: CompileTaskSchedulerBindingsInput): readonly SchedulerBinding[] {
-  const id = normaliseTaskId(input.id);
+  const id = normaliseTaskConceptId(input.id);
   const ref = assertQualifiedRef(input.qualifiedRef, "task");
   const invocation = Object.freeze([
     "task",
@@ -134,6 +134,26 @@ export function compileWorkflowSchedulerBindings(
       }),
     ),
   );
+}
+
+/**
+ * Map a logical binding id to the flat portable token persisted by native
+ * schedulers. Existing flat ids are byte-for-byte stable; only standalone
+ * component-relative ids need an encoded native spelling.
+ */
+export function schedulerNativeBindingId(id: string): string {
+  if (!id.includes("/")) return id;
+  const digest = createHash("sha256")
+    .update(JSON.stringify(["nested-task", id]))
+    .digest("hex")
+    .slice(0, 32);
+  return `task-${digest}`;
+}
+
+/** Recover the logical nested task id from its signed public invocation. */
+export function schedulerLogicalBindingId(nativeId: string, invocation: readonly string[]): string {
+  const taskId = invocation[0] === "task" && invocation[1] === "run" ? invocation[2] : undefined;
+  return taskId && schedulerNativeBindingId(taskId) === nativeId ? taskId : nativeId;
 }
 
 function digestBindingId(kind: "task" | "workflow", ref: string, ordinal: number): string {

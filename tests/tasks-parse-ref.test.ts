@@ -26,6 +26,14 @@ describe("parseTaskRef (0.9.0 grammar, D-R3)", () => {
     expect(parseTaskRef("mybundle//tasks/foo")).toEqual({ id: "foo", bundle: "mybundle" });
   });
 
+  test("preserves standalone nested concept ids in short and bundle-qualified forms", () => {
+    expect(parseTaskRef("sub/deep/nightly")).toEqual({ id: "sub/deep/nightly" });
+    expect(parseTaskRef("mybundle//sub/deep/nightly")).toEqual({
+      id: "sub/deep/nightly",
+      bundle: "mybundle",
+    });
+  });
+
   test("trims surrounding whitespace", () => {
     expect(parseTaskRef("  tasks/foo  ")).toEqual({ id: "foo" });
   });

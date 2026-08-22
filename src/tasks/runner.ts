@@ -72,7 +72,7 @@ import {
 } from "./runtime-v3";
 import { parseTaskV3Yaml } from "./source-v3";
 import { STANDALONE_FROZEN_SCRIPT_ARG } from "./standalone-script-entry";
-import { validateTaskId } from "./task-id";
+import { validateTaskConceptId, validateTaskId } from "./task-id";
 
 export type TaskRunStatus = "completed" | "blocked" | "failed" | "disabled" | "active";
 
@@ -151,9 +151,10 @@ export async function runTask(id: string, options: RunTaskOptions): Promise<Task
   const runWorkflowStepsImpl = options.runWorkflowStepsImpl ?? runWorkflowSteps;
   const now = options.now ?? (() => new Date());
   const requestedStartedAt = now();
-  validateTaskId(id);
   const stashDir = options.stashDir;
   const adapterId = options.adapterId ?? detectAdapterId(stashDir);
+  if (adapterId === "akm-task") validateTaskConceptId(id);
+  else validateTaskId(id);
   const taskConceptId = adapterId === "akm" ? `tasks/${id}` : id;
   const owner = resolveAdapterConceptOwner(stashDir, adapterId, taskConceptId);
   if (!owner) {

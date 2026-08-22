@@ -136,12 +136,22 @@ async function compileTaskSources(
   failures: string[],
 ): Promise<void> {
   if (input.adapterId !== "akm" && input.adapterId !== "akm-task") return;
+  const physicalOwners = new Map<string, string>();
   for (const sourcePath of enumerateTaskSources(input, failures)) {
     const relative = toPosix(path.relative(input.sourceRoot, sourcePath));
     const conceptId = relative.slice(0, -4);
-    const id = path.basename(sourcePath, ".yml");
+    const id = input.adapterId === "akm-task" ? conceptId : path.basename(sourcePath, ".yml");
     try {
       assertContainedRegularSource(sourcePath, input.sourceRoot);
+      const physicalIdentity = taskSourcePhysicalIdentity(sourcePath);
+      const priorOwner = physicalOwners.get(physicalIdentity);
+      if (priorOwner !== undefined && priorOwner !== sourcePath) {
+        throw new UsageError(
+          `Task sources ${JSON.stringify(priorOwner)} and ${JSON.stringify(sourcePath)} resolve to the same physical source identity; refusing canonical task identity collision.`,
+          "RESOURCE_ALREADY_EXISTS",
+        );
+      }
+      physicalOwners.set(physicalIdentity, sourcePath);
       const document = parseTaskV3Yaml({
         yaml: fs.readFileSync(sourcePath, "utf8"),
         filePath: sourcePath,
@@ -174,6 +184,12 @@ async function compileTaskSources(
       failures.push(taskFailure(sourcePath, cause));
     }
   }
+}
+
+function taskSourcePhysicalIdentity(file: string): string {
+  const realFile = fs.realpathSync(file);
+  const stat = fs.statSync(realFile);
+  return stat.ino === 0 ? `path:${realFile}` : `inode:${stat.dev}:${stat.ino}`;
 }
 
 function enumerateTaskSources(input: SchedulerSyncPlanInput, failures: string[]): readonly string[] {

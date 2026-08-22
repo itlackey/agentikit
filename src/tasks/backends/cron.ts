@@ -32,7 +32,7 @@ import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { parseSchedule, translateToCron } from "../schedule";
-import type { SchedulerBinding } from "../scheduler-binding";
+import { type SchedulerBinding, schedulerLogicalBindingId, schedulerNativeBindingId } from "../scheduler-binding";
 import {
   buildScheduledBindingInvocation,
   parseScheduledBindingArgv,
@@ -106,18 +106,19 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       assertPortableCronLine(cronLine);
       fsLike.ensureDir(logDir);
       const existing = readCrontab(exec);
-      const block = renderBlock(task.id, cronLine, task.enabled);
-      const next = upsertBlock(existing, task.id, block);
+      const nativeId = schedulerNativeBindingId(task.id);
+      const block = renderBlock(nativeId, cronLine, task.enabled);
+      const next = upsertBlock(existing, nativeId, block);
       replaceCrontab(exec, existing, next);
     },
     uninstall(id: string) {
       const existing = readCrontab(exec);
-      const next = removeBlock(existing, id);
+      const next = removeBlock(existing, schedulerNativeBindingId(id));
       replaceCrontab(exec, existing, next);
     },
     setEnabled(id: string, enabled: boolean) {
       const existing = readCrontab(exec);
-      const next = toggleBlock(existing, id, enabled);
+      const next = toggleBlock(existing, schedulerNativeBindingId(id), enabled);
       replaceCrontab(exec, existing, next);
     },
     list(): InstalledTaskRef[] {
@@ -133,8 +134,9 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
         // task file — going through the normal eligibility/`--rebind` gate
         // exactly like a fresh install.
         if (!installed) continue;
+        const logicalId = schedulerLogicalBindingId(id, installed.invocation);
         const ref: InstalledTaskRef = {
-          id,
+          id: logicalId,
           signature: normalizeSignature(body),
           ...(installed.target !== undefined ? { target: installed.target } : {}),
           binding: installed.binding,
@@ -150,7 +152,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       return listBlocks(existing).map(({ id, body }) => {
         const installed = extractCronInvocation(body);
         return {
-          id,
+          id: installed ? schedulerLogicalBindingId(id, installed.invocation) : id,
           signature: normalizeSignature(body),
           ...(installed?.target !== undefined ? { target: installed.target } : {}),
         };
@@ -200,7 +202,7 @@ export function buildCronLine(
 ): string {
   const spec = parseSchedule(task.cron, "cron");
   const cronExpr = translateToCron(spec);
-  const logPath = path.join(logDir, `${task.id}.log`);
+  const logPath = path.join(logDir, `${schedulerNativeBindingId(task.id)}.log`);
   const invocation = buildScheduledBindingInvocation(akmArgv, contextPath, task.invocation);
   const cmd = invocation.argv.map((part) => quoteForCron(part)).join(" ");
   return `${cronExpr} ${cmd} >> ${quoteForCron(logPath)} 2>&1`;

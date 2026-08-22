@@ -148,6 +148,80 @@ describe("whole-set v3 scheduler sync planning", () => {
     expect(plan.desired[0]?.invocation).toEqual(["task", "run", "nightly", "--bundle", "team", "--scheduled"]);
   });
 
+  test("preserves an arbitrary-depth standalone task concept id through the whole plan", async () => {
+    const componentRoot = root();
+    write(
+      path.join(componentRoot, "sub", "deep", "nightly.yml"),
+      "version: 3\nrun: echo nested\nakm:\n  schedule: '@daily'\n",
+    );
+
+    const plan = await planSchedulerSync({
+      sourceRoot: componentRoot,
+      adapterId: "akm-task",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron",
+      installed: emptyInstalled,
+    });
+
+    expect(plan.desired).toHaveLength(1);
+    expect(plan.desired[0]).toMatchObject({
+      id: "sub/deep/nightly",
+      logicalSource: { kind: "task", ref: "team//sub/deep/nightly" },
+      invocation: ["task", "run", "sub/deep/nightly", "--bundle", "team", "--scheduled"],
+    });
+  });
+
+  test("duplicate standalone basenames retain distinct canonical ids instead of colliding", async () => {
+    const componentRoot = root();
+    write(
+      path.join(componentRoot, "alpha", "nightly.yml"),
+      "version: 3\nrun: echo alpha\nakm:\n  schedule: '@daily'\n",
+    );
+    write(path.join(componentRoot, "beta", "nightly.yml"), "version: 3\nrun: echo beta\nakm:\n  schedule: '@daily'\n");
+
+    const plan = await planSchedulerSync({
+      sourceRoot: componentRoot,
+      adapterId: "akm-task",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron",
+      installed: emptyInstalled,
+    });
+
+    expect(plan.desired.map(({ id }) => id)).toEqual(["alpha/nightly", "beta/nightly"]);
+    expect(plan.desired.map(({ logicalSource }) => logicalSource.ref)).toEqual([
+      "team//alpha/nightly",
+      "team//beta/nightly",
+    ]);
+  });
+
+  test("a true standalone physical-source identity collision rejects before diffing", async () => {
+    const componentRoot = root();
+    const owner = path.join(componentRoot, "alpha", "nightly.yml");
+    const alias = path.join(componentRoot, "beta", "nightly.yml");
+    write(owner, "version: 3\nrun: echo owner\nakm:\n  schedule: '@daily'\n");
+    fs.mkdirSync(path.dirname(alias), { recursive: true });
+    fs.symlinkSync(owner, alias);
+    let signatures = 0;
+
+    await expect(
+      planSchedulerSync({
+        sourceRoot: componentRoot,
+        adapterId: "akm-task",
+        bundleName: "team",
+        bundleTarget: "team",
+        backend: "cron",
+        installed: emptyInstalled,
+        expectedSignature: () => {
+          signatures += 1;
+          return "signature";
+        },
+      }),
+    ).rejects.toThrow(/physical.*identity.*collision|same physical source/i);
+    expect(signatures).toBe(0);
+  });
+
   test("one invalid desired task poisons the whole plan without signature or mutation preparation", async () => {
     const bundleRoot = root();
     write(path.join(bundleRoot, "tasks", "a-valid.yml"), "version: 3\nuses: commands/a\nakm:\n  schedule: '@daily'\n");

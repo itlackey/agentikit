@@ -378,6 +378,22 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     ]);
   });
 
+  test("round-trips a nested logical id through a flat portable label and plist filename", () => {
+    const { backend, fs } = makeBackend();
+    const nested = {
+      ...makeTask("0 9 * * *", "sub/deep/nightly"),
+      logicalSource: { kind: "task" as const, ref: "team//sub/deep/nightly" },
+      invocation: ["task", "run", "sub/deep/nightly", "--bundle", "team", "--scheduled"],
+    };
+
+    backend.install(nested);
+
+    const [file] = [...fs.written.keys()];
+    expect(path.relative("/tmp/agents", file ?? "")).not.toContain("/");
+    expect(fs.readFile(file ?? "")).not.toContain("<string>com.akm.task.sub/deep/nightly</string>");
+    expect(backend.list()).toEqual([expect.objectContaining({ id: "sub/deep/nightly", target: "team" })]);
+  });
+
   test("install temp-writes, unloads, atomically replaces, then bootstraps", () => {
     const events: string[] = [];
     const { backend } = makeBackend(makeFakeExec(events), makeFakeFs(events));
@@ -470,6 +486,97 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
 
     expect(fs.readFile(file)).toBe(priorPlist);
     expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(false);
+  });
+
+  test.each([
+    [true, true, true],
+    [true, true, false],
+    [true, false, true],
+    [true, false, false],
+    [false, true, true],
+    [false, true, false],
+    [false, false, true],
+    [false, false, false],
+  ] as const)("snapshot restore preserves prior enabled=%s loaded=%s after replacement enabled=%s in strict order", (priorEnabled, priorLoaded, replacementEnabled) => {
+    const events: string[] = [];
+    const exec = makeFakeExec(events);
+    const fakeFs = makeFakeFs(events);
+    const { backend } = makeBackend(exec, fakeFs);
+    backend.install({ ...makeTask("0 9 * * *"), enabled: priorEnabled });
+    if (!priorLoaded) exec.loadedLabels.delete("com.akm.task.ping");
+    const file = "/tmp/agents/com.akm.task.ping.plist";
+    const priorPlist = fakeFs.readFile(file);
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+
+    backend.install({ ...makeTask("30 10 * * *"), enabled: replacementEnabled });
+    events.length = 0;
+    backend.restoreBindings?.(snapshot);
+
+    expect(fakeFs.readFile(file)).toBe(priorPlist);
+    expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(priorLoaded);
+    expect(exec.disabledLabels.has("com.akm.task.ping")).toBe(!priorEnabled);
+    expect(events).toEqual([
+      "exec:bootout",
+      `write:${file}`,
+      ...(priorLoaded ? ["exec:enable", "exec:bootstrap"] : []),
+      `exec:${priorEnabled ? "enable" : "disable"}`,
+    ]);
+  });
+
+  test("snapshot restore removes a replacement that was absent and leaves it unloaded", () => {
+    const events: string[] = [];
+    const exec = makeFakeExec(events);
+    const fakeFs = makeFakeFs(events);
+    const { backend } = makeBackend(exec, fakeFs);
+    const snapshot = backend.snapshotBindings?.(["absent"]);
+    backend.install({ ...makeTask("0 9 * * *", "absent"), enabled: false });
+    events.length = 0;
+
+    backend.restoreBindings?.(snapshot);
+
+    expect(fakeFs.written.has("/tmp/agents/com.akm.task.absent.plist")).toBe(false);
+    expect(exec.loadedLabels.has("com.akm.task.absent")).toBe(false);
+    expect(exec.disabledLabels.has("com.akm.task.absent")).toBe(false);
+    expect(events).toEqual(["exec:bootout", "remove:/tmp/agents/com.akm.task.absent.plist", "exec:enable"]);
+  });
+
+  test("snapshot restore continues with later entries and aggregates a partial failure", () => {
+    const exec = makeFakeExec();
+    const fakeFs = makeFakeFs();
+    const { backend } = makeBackend(exec, fakeFs);
+    backend.install({ ...makeTask("0 9 * * *", "first"), enabled: false });
+    backend.install({ ...makeTask("15 9 * * *", "second"), enabled: true });
+    const firstFile = "/tmp/agents/com.akm.task.first.plist";
+    const secondFile = "/tmp/agents/com.akm.task.second.plist";
+    const firstPrior = fakeFs.readFile(firstFile);
+    const secondPrior = fakeFs.readFile(secondFile);
+    const snapshot = backend.snapshotBindings?.(["first", "second"]);
+    backend.install(makeTask("30 10 * * *", "first"));
+    backend.install({ ...makeTask("45 10 * * *", "second"), enabled: false });
+
+    const run = exec.run.bind(exec);
+    let failed = false;
+    exec.run = (args) => {
+      if (!failed && args[1] === "bootout" && args[2]?.endsWith(".first")) {
+        failed = true;
+        return { status: 5, stdout: "", stderr: "injected first restore failure" };
+      }
+      return run(args);
+    };
+
+    let caught: unknown;
+    try {
+      backend.restoreBindings?.(snapshot);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toHaveLength(1);
+    expect(fakeFs.readFile(firstFile)).not.toBe(firstPrior);
+    expect(fakeFs.readFile(secondFile)).toBe(secondPrior);
+    expect(exec.loadedLabels.has("com.akm.task.second")).toBe(true);
+    expect(exec.disabledLabels.has("com.akm.task.second")).toBe(false);
   });
 
   test("uninstall aborts without enabling or deleting after bootout fails", () => {

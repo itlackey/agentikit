@@ -39,7 +39,7 @@ import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { parseSchedule, type SchtasksTrigger, translateToSchtasks } from "../schedule";
-import type { SchedulerBinding } from "../scheduler-binding";
+import { type SchedulerBinding, schedulerLogicalBindingId, schedulerNativeBindingId } from "../scheduler-binding";
 import {
   buildScheduledBindingInvocation,
   parseScheduledBindingArgv,
@@ -99,7 +99,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
   const scheduledContext = options.scheduledContext ?? resolveScheduledTaskContext();
   const defaultContextPath = schedulerContextPath(schedulerContextDescriptor(scheduledContext, process.env.PATH ?? ""));
   const userSid = options.userSid ?? resolveCurrentUserSid(exec);
-  const taskName = (id: string) => `${folder}${id}`;
+  const taskName = (id: string) => `${folder}${schedulerNativeBindingId(id)}`;
 
   return {
     name: "schtasks",
@@ -129,7 +129,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
         previous = { xml: normalizeXmlForUtf16File(query.stdout), enabled };
       }
       fsLike.ensureDir(logDir);
-      const tmpFile = path.join(fsLike.tmpdir(), `akm-task-${task.id}-${Date.now()}.xml`);
+      const tmpFile = path.join(fsLike.tmpdir(), `akm-task-${schedulerNativeBindingId(task.id)}-${Date.now()}.xml`);
       fsLike.writeFile(tmpFile, xml);
       try {
         try {
@@ -224,8 +224,9 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
         // marker id, not a hard failure: omit it so `akmTasksSync` treats the
         // id as "not present" and reinstalls it from the current task file.
         if (!installed) continue;
+        const logicalId = schedulerLogicalBindingId(id, installed.invocation);
         const ref: InstalledTaskRef = {
-          id,
+          id: logicalId,
           ...(signature !== undefined ? { signature } : {}),
           ...(installed.target !== undefined ? { target: installed.target } : {}),
           binding: installed.binding,
@@ -253,7 +254,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
         const signature = installedSignature(query.stdout);
         const installed = extractSchtasksInvocation(query.stdout);
         refs.push({
-          id,
+          id: installed ? schedulerLogicalBindingId(id, installed.invocation) : id,
           ...(signature !== undefined ? { signature } : {}),
           ...(installed?.target !== undefined ? { target: installed.target } : {}),
         });
@@ -322,7 +323,10 @@ function restoreSchtasksBindings(
       });
       continue;
     }
-    const tmpFile = path.join(context.fsLike.tmpdir(), `akm-task-restore-${entry.id}-${Date.now()}.xml`);
+    const tmpFile = path.join(
+      context.fsLike.tmpdir(),
+      `akm-task-restore-${schedulerNativeBindingId(entry.id)}-${Date.now()}.xml`,
+    );
     context.fsLike.writeFile(tmpFile, entry.xml);
     try {
       runOrThrow(context.exec, ["schtasks", "/Create", "/TN", context.taskName(entry.id), "/XML", tmpFile, "/F"], {
@@ -459,9 +463,10 @@ export function buildSchtasksXml(
     options.target,
   );
   const triggerXml = renderSchtasksTrigger(definition.trigger, now);
+  const nativeId = schedulerNativeBindingId(task.id);
 
   return schtasksTemplate
-    .replaceAll("{{TASK_ID}}", escapeXml(task.id))
+    .replaceAll("{{TASK_ID}}", escapeXml(nativeId))
     .replaceAll("{{FOLDER}}", escapeXml(folder))
     .replace("{{SIGNATURE}}", definition.signature)
     .replace("{{TRIGGER_XML}}", triggerXml)
@@ -488,11 +493,12 @@ function buildSchtasksDefinition(
   const script = `${invoke}; exit $LASTEXITCODE`;
   const command = "powershell.exe";
   const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script].map(quoteArg).join(" ");
-  const logPath = path.join(logDir, `${task.id}.log`);
+  const nativeId = schedulerNativeBindingId(task.id);
+  const logPath = path.join(logDir, `${nativeId}.log`);
   // The boundary changes on reinstall, and enabled state can change via /Change.
   // Keep both outside the stored definition fingerprint so no-op sync stays stable.
   const fingerprint = createHash("sha256")
-    .update(JSON.stringify({ folder, id: task.id, trigger, command, args, logPath, userSid }))
+    .update(JSON.stringify({ folder, id: nativeId, trigger, command, args, logPath, userSid }))
     .digest("hex");
   return { trigger, command, args, logPath, signature: `${SIGNATURE_PREFIX}${fingerprint}` };
 }
