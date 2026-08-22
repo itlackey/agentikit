@@ -33,10 +33,11 @@ import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { type LaunchdTrigger, parseSchedule, translateToLaunchd } from "../schedule";
 import {
   assertSchedulerNativeArtifactOwner,
+  assertSchedulerRemovalArtifact,
   type SchedulerBinding,
+  type SchedulerRemovalExpectation,
+  schedulerBindingNativeId,
   schedulerLogicalBindingId,
-  schedulerNativeArtifactOwner,
-  schedulerNativeBindingId,
 } from "../scheduler-binding";
 import {
   buildScheduledBindingInvocation,
@@ -117,7 +118,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
         opts?.contextPath ?? defaultContextPath,
         opts?.target,
       );
-      const nativeId = schedulerNativeBindingId(task.id);
+      const nativeId = schedulerBindingNativeId(task);
       const file = plistPath(nativeId);
       fsLike.ensureDir(agentsDir);
       // launchd refuses to start a job when StandardOutPath/StandardErrorPath
@@ -235,14 +236,45 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
         if (fsLike.exists(tempFile)) fsLike.removeFile(tempFile);
       }
     },
-    uninstall(nativeId: string) {
+    uninstall(nativeId: string, expected?: SchedulerRemovalExpectation) {
+      const file = plistPath(nativeId);
+      if (expected) {
+        if (!fsLike.exists(file)) return;
+        let disabledLabels: Set<string> | undefined;
+        let fingerprint: string | undefined;
+        if (expected.fingerprint !== undefined) {
+          disabledLabels = readDisabledLabels(exec);
+          if (disabledLabels === undefined) {
+            throw new ConfigError(
+              `launchctl print-disabled failed during final removal ownership check for "${label(nativeId)}".`,
+              "INVALID_CONFIG_FILE",
+            );
+          }
+        }
+        // This is the final native artifact read. No external command or
+        // filesystem preparation occurs between this proof and bootout.
+        const currentPlist = fsLike.exists(file) ? fsLike.readFile(file) : undefined;
+        if (currentPlist === undefined) return;
+        if (disabledLabels) {
+          const signedPlist = currentPlist.replace(
+            /<!-- akm-enabled:(?:true|false) -->/,
+            `<!-- akm-enabled:${!disabledLabels.has(label(nativeId))} -->`,
+          );
+          fingerprint = normalizeSignature(signedPlist);
+        }
+        assertSchedulerRemovalArtifact(
+          nativeId,
+          expected,
+          extractPlistInvocation(currentPlist)?.invocation,
+          fingerprint,
+        );
+      }
       runOrThrow(exec, ["launchctl", "bootout", target(nativeId)], {
         isOk: (r) => r.status === 0 || isServiceNotFoundResult(r),
         message: (r) => `launchctl bootout failed (exit ${r.status}): ${r.stderr || r.stdout || "no output"}.`,
       });
       // launchctl disable overrides persist after the plist is removed.
       setEnableState(nativeId, true);
-      const file = plistPath(nativeId);
       if (fsLike.exists(file)) fsLike.removeFile(file);
     },
     setEnabled(nativeId: string, enabled: boolean) {
@@ -274,6 +306,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
           ...(installed?.target !== undefined ? { target: installed.target } : {}),
         };
         Object.defineProperty(ref, "nativeId", { value: id });
+        if (installed) Object.defineProperty(ref, "invocation", { value: Object.freeze([...installed.invocation]) });
         refs.push(ref);
       }
       return refs;
@@ -284,9 +317,17 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
       for (const file of fsLike.list(agentsDir)) {
         if (!file.startsWith(LAUNCHD_LABEL_PREFIX) || !file.endsWith(".plist")) continue;
         const nativeId = file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length);
-        const installed = extractPlistInvocation(fsLike.readFile(plistPath(nativeId)));
-        const owner = installed ? schedulerNativeArtifactOwner(nativeId, installed.invocation) : undefined;
-        artifacts.push({ nativeId, ...owner });
+        const raw = fsLike.readFile(plistPath(nativeId));
+        const installed = extractPlistInvocation(raw);
+        const artifact = installed
+          ? {
+              nativeId,
+              bindingId: schedulerLogicalBindingId(nativeId, installed.invocation),
+              invocation: Object.freeze([...installed.invocation]),
+            }
+          : { nativeId };
+        Object.defineProperty(artifact, "fingerprint", { value: normalizeSignature(raw) });
+        artifacts.push(artifact);
       }
       return artifacts;
     },
@@ -589,7 +630,7 @@ export function buildPlistXml(
   const invocation = buildScheduledBindingInvocation(akmArgv, contextPath, task.invocation);
   const argv = invocation.argv;
   const programArgs = argv.map((a) => `      <string>${escapeXml(a)}</string>`).join("\n");
-  const nativeId = schedulerNativeBindingId(task.id);
+  const nativeId = schedulerBindingNativeId(task);
   const logPath = path.join(logDir, `${nativeId}.log`);
   const triggerXml = renderLaunchdTrigger(trigger);
 

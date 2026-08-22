@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  assertSchedulerNativeArtifactOwner,
   compileTaskSchedulerBindings,
   compileWorkflowSchedulerBindings,
   schedulerNativeBindingId,
@@ -21,6 +22,7 @@ describe("secret-free scheduler binding compiler", () => {
 
     expect(binding).toEqual({
       id: "nightly",
+      nativeId: "nightly",
       logicalSource: { kind: "task", ref: "team//tasks/nightly" },
       cron: "0 2 * * *",
       source: "akm.schedule",
@@ -42,7 +44,9 @@ describe("secret-free scheduler binding compiler", () => {
     });
 
     expect(bindings[0]?.id).toBe("nightly");
+    expect(bindings[0]?.nativeId).toBe("nightly");
     expect(bindings[1]?.id).toMatch(/^task-[a-f0-9]{32}$/);
+    expect(bindings[1]?.nativeId).toBe(bindings[1]?.id);
     expect(bindings[1]?.invocation).toEqual(["task", "run", "nightly", "--scheduled"]);
   });
 
@@ -96,6 +100,7 @@ describe("secret-free scheduler binding compiler", () => {
       expect.stringMatching(/^wf-[a-f0-9]{32}$/),
     ]);
     expect(first[0]?.id).not.toBe(first[1]?.id);
+    expect(first.map(({ nativeId }) => nativeId)).toEqual(first.map(({ id }) => id));
     expect(first[0]?.invocation).toEqual(["workflow", "run", "team//workflows/release"]);
     expect(compileWorkflowSchedulerBindings({ qualifiedRef: "team//workflows/manual", schedules: [] })).toEqual([]);
   });
@@ -113,11 +118,46 @@ describe("secret-free scheduler binding compiler", () => {
       "id",
       "invocation",
       "logicalSource",
+      "nativeId",
       "ordinal",
       "source",
     ]);
     for (const forbidden of ["env", "with", "content", "secret", "resolved", "token-value"]) {
       expect(bytes.toLowerCase()).not.toContain(forbidden);
     }
+  });
+
+  test("owner validation rejects the same task concept from another resolved bundle", () => {
+    const [binding] = compileTaskSchedulerBindings({
+      id: "nightly",
+      qualifiedRef: "team//tasks/nightly",
+      bundleTarget: "team",
+      enabled: true,
+      schedules: [{ cron: "@daily", source: "akm.schedule", ordinal: 0 }],
+    });
+    if (!binding) throw new Error("missing binding");
+
+    expect(() =>
+      assertSchedulerNativeArtifactOwner(binding.id, binding, [
+        "task",
+        "run",
+        "nightly",
+        "--bundle",
+        "other",
+        "--scheduled",
+      ]),
+    ).toThrow(/owner|other|team|invocation/i);
+  });
+
+  test("owner validation rejects a foreign workflow ref under the same native id", () => {
+    const [binding] = compileWorkflowSchedulerBindings({
+      qualifiedRef: "team//workflows/release",
+      schedules: [{ cron: "@daily", source: "on.schedule[0]", ordinal: 0 }],
+    });
+    if (!binding) throw new Error("missing binding");
+
+    expect(() =>
+      assertSchedulerNativeArtifactOwner(binding.id, binding, ["workflow", "run", "other//workflows/release"]),
+    ).toThrow(/owner|other|team|invocation/i);
   });
 });

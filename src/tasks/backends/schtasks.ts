@@ -41,9 +41,11 @@ import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { parseSchedule, type SchtasksTrigger, translateToSchtasks } from "../schedule";
 import {
   assertSchedulerNativeArtifactOwner,
+  assertSchedulerRemovalArtifact,
   type SchedulerBinding,
+  type SchedulerRemovalExpectation,
+  schedulerBindingNativeId,
   schedulerLogicalBindingId,
-  schedulerNativeArtifactOwner,
   schedulerNativeBindingId,
 } from "../scheduler-binding";
 import {
@@ -111,7 +113,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
   return {
     name: "schtasks",
     install(task: SchedulerBinding, opts?: TaskInstallOptions) {
-      const nativeId = schedulerNativeBindingId(task.id);
+      const nativeId = schedulerBindingNativeId(task);
       const xml = normalizeXmlForUtf16File(
         buildSchtasksXml(task, akmArgv, logDir, {
           folderPrefix: folder,
@@ -196,7 +198,21 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
         fsLike.removeFile(tmpFile);
       }
     },
-    uninstall(nativeId: string) {
+    uninstall(nativeId: string, expected?: SchedulerRemovalExpectation) {
+      if (expected) {
+        const current = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(nativeId), "/XML"], {
+          isOk: (result) => result.status === 0 || isMissingTaskResult(result),
+          message: (result) =>
+            `schtasks /Query failed during final removal ownership check (exit ${result.status}): ${result.stderr || result.stdout || "no output"}.`,
+        });
+        if (current.status !== 0) return;
+        assertSchedulerRemovalArtifact(
+          nativeId,
+          expected,
+          extractSchtasksInvocation(current.stdout)?.invocation,
+          installedSignature(current.stdout),
+        );
+      }
       runOrThrow(exec, ["schtasks", "/Delete", "/TN", taskName(nativeId), "/F"], {
         isOk: (r) => r.status === 0 || /cannot find/i.test(r.stderr ?? ""),
         message: (r) => `schtasks /Delete failed: ${r.stderr || r.stdout || "no output"}.`,
@@ -270,6 +286,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
           ...(installed?.target !== undefined ? { target: installed.target } : {}),
         };
         Object.defineProperty(ref, "nativeId", { value: id });
+        if (installed) Object.defineProperty(ref, "invocation", { value: Object.freeze([...installed.invocation]) });
         refs.push(ref);
       }
       return refs;
@@ -289,8 +306,16 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
             `schtasks /Query /XML for "${taskName(nativeId)}" failed (exit ${result.status}): ${result.stderr || result.stdout || "no output"}.`,
         });
         const installed = extractSchtasksInvocation(query.stdout);
-        const owner = installed ? schedulerNativeArtifactOwner(nativeId, installed.invocation) : undefined;
-        artifacts.push({ nativeId, ...owner });
+        const artifact = installed
+          ? {
+              nativeId,
+              bindingId: schedulerLogicalBindingId(nativeId, installed.invocation),
+              invocation: Object.freeze([...installed.invocation]),
+            }
+          : { nativeId };
+        const fingerprint = installedSignature(query.stdout);
+        if (fingerprint !== undefined) Object.defineProperty(artifact, "fingerprint", { value: fingerprint });
+        artifacts.push(artifact);
       }
       return artifacts;
     },
@@ -526,7 +551,7 @@ export function buildSchtasksXml(
     options.target,
   );
   const triggerXml = renderSchtasksTrigger(definition.trigger, now);
-  const nativeId = schedulerNativeBindingId(task.id);
+  const nativeId = schedulerBindingNativeId(task);
 
   return schtasksTemplate
     .replaceAll("{{TASK_ID}}", escapeXml(nativeId))
@@ -556,7 +581,7 @@ function buildSchtasksDefinition(
   const script = `${invoke}; exit $LASTEXITCODE`;
   const command = "powershell.exe";
   const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script].map(quoteArg).join(" ");
-  const nativeId = schedulerNativeBindingId(task.id);
+  const nativeId = schedulerBindingNativeId(task);
   const logPath = path.join(logDir, `${nativeId}.log`);
   // The boundary changes on reinstall, and enabled state can change via /Change.
   // Keep both outside the stored definition fingerprint so no-op sync stays stable.

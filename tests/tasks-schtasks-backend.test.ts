@@ -3,7 +3,11 @@ import { decodeCommandOutput, escapeXml } from "../src/tasks/backends/exec-utils
 import type { SchtasksExec, SchtasksFs } from "../src/tasks/backends/schtasks";
 import { buildSchtasksXml, extractSchtasksTarget, SCHTASKS_BACKEND } from "../src/tasks/backends/schtasks";
 import type { InstalledTaskRef } from "../src/tasks/backends/types";
-import type { SchedulerBinding } from "../src/tasks/scheduler-binding";
+import {
+  compileTaskSchedulerBindings,
+  type SchedulerBinding,
+  schedulerNativeBindingId,
+} from "../src/tasks/scheduler-binding";
 import {
   type ScheduledTaskContext,
   schedulerContextDescriptor,
@@ -803,6 +807,7 @@ describe("schtasks backend transactional install", () => {
   function transactionBackend() {
     const files = new Map<string, string>();
     let installedXml: string | undefined;
+    let installedTaskName: string | undefined;
     let queriedXml: string | undefined;
     let enabled = true;
     let failNextOperation: "create" | "disable" | undefined;
@@ -831,9 +836,17 @@ describe("schtasks backend transactional install", () => {
             ? { status: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified." }
             : { status: 0, stdout: queriedXml ?? installedXml, stderr: "" };
         }
+        if (operation === "/query") {
+          return {
+            status: 0,
+            stdout: installedTaskName ? `"${installedTaskName}","N/A","Ready"\r\n` : "",
+            stderr: "",
+          };
+        }
         if (operation === "/create") {
           const xmlPath = args[args.indexOf("/XML") + 1];
           installedXml = files.get(xmlPath!);
+          installedTaskName = args[args.indexOf("/TN") + 1];
           enabled = installedXml?.match(/<Settings>[\s\S]*?<Enabled>(true|false)<\/Enabled>/)?.[1] !== "false";
           if (failNextOperation === "create") {
             failNextOperation = undefined;
@@ -857,6 +870,7 @@ describe("schtasks backend transactional install", () => {
         }
         if (operation === "/delete") {
           installedXml = undefined;
+          installedTaskName = undefined;
           return { status: 0, stdout: "", stderr: "" };
         }
         throw new Error(`unexpected command: ${JSON.stringify(args)}`);
@@ -873,6 +887,10 @@ describe("schtasks backend transactional install", () => {
       }),
       calls,
       installedXml: () => installedXml,
+      replaceInstalledXml(xml: string) {
+        installedXml = xml;
+        queriedXml = undefined;
+      },
       enabled: () => enabled,
       setQueriedXml(xml: string) {
         queriedXml = xml;
@@ -885,6 +903,80 @@ describe("schtasks backend transactional install", () => {
       },
     };
   }
+
+  const higherOrdinal = () =>
+    compileTaskSchedulerBindings({
+      id: "ping",
+      qualifiedRef: "stash//tasks/ping",
+      enabled: true,
+      schedules: [
+        { cron: "0 1 * * *", source: "akm.schedule[0]", ordinal: 0 },
+        { cron: "0 2 * * *", source: "akm.schedule[1]", ordinal: 1 },
+      ],
+    })[1]!;
+
+  test("round-trips and updates a higher-ordinal binding whose public owner is the base task", () => {
+    const transaction = transactionBackend();
+    const binding = higherOrdinal();
+
+    transaction.backend.install(binding);
+    expect(transaction.backend.list()).toEqual([
+      expect.objectContaining({
+        id: binding.id,
+        nativeId: schedulerNativeBindingId(binding.id),
+        invocation: binding.invocation,
+      }),
+    ]);
+    expect(transaction.backend.listNativeArtifacts?.()).toEqual([
+      {
+        nativeId: schedulerNativeBindingId(binding.id),
+        bindingId: binding.id,
+        invocation: binding.invocation,
+      },
+    ]);
+
+    expect(() => transaction.backend.install(binding)).not.toThrow();
+    const drifted = { ...binding, cron: "30 2 * * *" };
+    expect(() => transaction.backend.install(drifted)).not.toThrow();
+    expect((transaction.backend.list() as Array<{ signature?: string }>)[0]!.signature).toBe(
+      transaction.backend.expectedSignature?.(drifted),
+    );
+  });
+
+  test.each([
+    "foreign",
+    "malformed",
+    "fingerprint",
+  ] as const)("rechecks a higher-ordinal %s owner and fingerprint immediately before uninstall", (replacement) => {
+    const transaction = transactionBackend();
+    const binding = higherOrdinal();
+    transaction.backend.install(binding);
+    const nativeId = schedulerNativeBindingId(binding.id);
+    const expected = {
+      bindingId: binding.id,
+      nativeId,
+      logicalSource: binding.logicalSource,
+      ordinal: binding.ordinal,
+      invocation: binding.invocation,
+      fingerprint: transaction.backend.expectedSignature?.(binding),
+    };
+    const prior = transaction.installedXml();
+    if (!prior) throw new Error("missing installed XML");
+    const swapped =
+      replacement === "foreign"
+        ? prior.replaceAll("&apos;ping&apos;", "&apos;foreign&apos;")
+        : replacement === "malformed"
+          ? prior.replaceAll("&apos;--scheduled&apos;", "&apos;--broken&apos;")
+          : prior.replace("<DaysInterval>1</DaysInterval>", "<DaysInterval>2</DaysInterval>");
+    expect(swapped).not.toBe(prior);
+    transaction.replaceInstalledXml(swapped);
+    const priorCallCount = transaction.calls.length;
+
+    const uninstall = transaction.backend.uninstall as unknown as (id: string, expectation: typeof expected) => void;
+    expect(() => uninstall(nativeId, expected)).toThrow(/changed|owner|malformed|refusing/i);
+    expect(transaction.installedXml()).toBe(swapped);
+    expect(transaction.calls.slice(priorCallCount).some((call) => call[1]?.toLowerCase() === "/delete")).toBe(false);
+  });
 
   test("restores prior queried XML and disabled state when /Create /F fails after replacing it", () => {
     const transaction = transactionBackend();

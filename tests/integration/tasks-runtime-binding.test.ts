@@ -88,6 +88,7 @@ describe("scheduler runtime binding", () => {
             signature: "installed",
             binding: ["/old/node", "/old/dist/akm"],
             contextPath: "/old/context.json",
+            invocation: ["task", "run", "ping", "--scheduled"],
           },
         ],
         expectedSignature: () => "expected",
@@ -132,6 +133,7 @@ describe("scheduler runtime binding", () => {
             signature: "installed",
             binding: ["/old/node", "/old/dist/akm"],
             contextPath: "/old/context.json",
+            invocation: ["task", "run", "ping", "--scheduled"],
           },
         ],
         expectedSignature: () => "expected",
@@ -177,6 +179,7 @@ describe("scheduler runtime binding", () => {
             signature: "installed",
             binding: ["/old/node", "/old/dist/akm"],
             contextPath: "/old/context.json",
+            invocation: ["task", "run", "ping", "--scheduled"],
           },
         ],
         expectedSignature: () => "expected",
@@ -220,6 +223,7 @@ describe("scheduler runtime binding", () => {
             id: "ping",
             binding: ["/old/node", "/old/dist/akm"],
             contextPath: "/old/context.json",
+            invocation: ["task", "run", "ping", "--scheduled"],
           },
         ],
       };
@@ -260,7 +264,14 @@ describe("scheduler runtime binding", () => {
         },
         uninstall() {},
         setEnabled() {},
-        list: () => [{ id: "ping", binding: ["/current/akm"], contextPath: "/current/context.json" }],
+        list: () => [
+          {
+            id: "ping",
+            binding: ["/current/akm"],
+            contextPath: "/current/context.json",
+            invocation: ["task", "run", "ping", "--scheduled"],
+          },
+        ],
       };
 
       await akmTasksSync({

@@ -34,10 +34,11 @@ import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { parseSchedule, translateToCron } from "../schedule";
 import {
   assertSchedulerNativeArtifactOwner,
+  assertSchedulerRemovalArtifact,
   type SchedulerBinding,
+  type SchedulerRemovalExpectation,
+  schedulerBindingNativeId,
   schedulerLogicalBindingId,
-  schedulerNativeArtifactOwner,
-  schedulerNativeBindingId,
 } from "../scheduler-binding";
 import {
   buildScheduledBindingInvocation,
@@ -112,15 +113,25 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       assertPortableCronLine(cronLine);
       fsLike.ensureDir(logDir);
       const existing = readCrontab(exec);
-      const nativeId = schedulerNativeBindingId(task.id);
+      const nativeId = schedulerBindingNativeId(task);
       const prior = listBlocks(existing).find(({ id }) => id === nativeId);
       if (prior) assertSchedulerNativeArtifactOwner(nativeId, task, extractCronInvocation(prior.body)?.invocation);
       const block = renderBlock(nativeId, cronLine, task.enabled);
       const next = upsertBlock(existing, nativeId, block);
       replaceCrontab(exec, existing, next);
     },
-    uninstall(nativeId: string) {
+    uninstall(nativeId: string, expected?: SchedulerRemovalExpectation) {
       const existing = readCrontab(exec);
+      const prior = listBlocks(existing).find(({ id }) => id === nativeId);
+      if (!prior) return;
+      if (expected) {
+        assertSchedulerRemovalArtifact(
+          nativeId,
+          expected,
+          extractCronInvocation(prior.body)?.invocation,
+          normalizeSignature(prior.body),
+        );
+      }
       const next = removeBlock(existing, nativeId);
       replaceCrontab(exec, existing, next);
     },
@@ -166,14 +177,22 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
           ...(installed?.target !== undefined ? { target: installed.target } : {}),
         };
         Object.defineProperty(ref, "nativeId", { value: id });
+        if (installed) Object.defineProperty(ref, "invocation", { value: Object.freeze([...installed.invocation]) });
         return ref;
       });
     },
     listNativeArtifacts() {
       return listBlocks(readCrontab(exec)).map(({ id, body }) => {
         const installed = extractCronInvocation(body);
-        const owner = installed ? schedulerNativeArtifactOwner(id, installed.invocation) : undefined;
-        return { nativeId: id, ...owner };
+        const artifact = installed
+          ? {
+              nativeId: id,
+              bindingId: schedulerLogicalBindingId(id, installed.invocation),
+              invocation: Object.freeze([...installed.invocation]),
+            }
+          : { nativeId: id };
+        Object.defineProperty(artifact, "fingerprint", { value: normalizeSignature(body) });
+        return artifact;
       });
     },
     snapshotBindings(_ids: readonly string[]): CronBindingSnapshot {
@@ -220,7 +239,7 @@ export function buildCronLine(
 ): string {
   const spec = parseSchedule(task.cron, "cron");
   const cronExpr = translateToCron(spec);
-  const logPath = path.join(logDir, `${schedulerNativeBindingId(task.id)}.log`);
+  const logPath = path.join(logDir, `${schedulerBindingNativeId(task)}.log`);
   const invocation = buildScheduledBindingInvocation(akmArgv, contextPath, task.invocation);
   const cmd = invocation.argv.map((part) => quoteForCron(part)).join(" ");
   return `${cronExpr} ${cmd} >> ${quoteForCron(logPath)} 2>&1`;

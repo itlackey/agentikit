@@ -23,7 +23,10 @@ export type SchedulerLogicalSource = Readonly<{
 }>;
 
 export interface SchedulerBinding {
+  /** Stable logical binding identity. Ordinal zero keeps the flat task ABI. */
   readonly id: string;
+  /** Exact portable OS artifact spelling; never recovered from the public owner. */
+  readonly nativeId?: string;
   readonly logicalSource: SchedulerLogicalSource;
   readonly cron: string;
   readonly source: string;
@@ -71,6 +74,7 @@ export interface RebindSchedulerBinding {
   readonly nativeId?: string;
   readonly signature?: string;
   readonly target?: string;
+  readonly invocation?: readonly string[];
 }
 
 export interface SchedulerInstallOptions {
@@ -82,16 +86,29 @@ export interface SchedulerInstallOptions {
 /** Read-only native inventory, including artifacts whose invocation is malformed. */
 export interface SchedulerNativeArtifact {
   readonly nativeId: string;
-  /** Proven only when the stored public invocation parses and matches nativeId. */
-  readonly logicalId?: string;
-  readonly logicalKind?: SchedulerLogicalSource["kind"];
+  /** Exact binding identity recovered from the artifact plus its parsed invocation. */
+  readonly bindingId?: string;
+  /** Exact parsed public CLI tail. Missing means the artifact is unowned/malformed. */
+  readonly invocation?: readonly string[];
+  /** Exact read-only native definition fingerprint when the backend can provide it. */
+  readonly fingerprint?: string;
+}
+
+/** Frozen proof required immediately before deleting a native artifact. */
+export interface SchedulerRemovalExpectation {
+  readonly bindingId: string;
+  readonly nativeId: string;
+  readonly logicalSource: SchedulerLogicalSource;
+  readonly ordinal: number;
+  readonly invocation: readonly string[];
+  readonly fingerprint?: string;
 }
 
 /** Structural backend view used by the command layer without source documents. */
 export interface SchedulerBackend {
   readonly name: ScheduleBackend;
   install(binding: SchedulerBinding, opts?: SchedulerInstallOptions): Promise<void> | void;
-  uninstall(id: string): Promise<void> | void;
+  uninstall(id: string, expected?: SchedulerRemovalExpectation): Promise<void> | void;
   setEnabled(id: string, enabled: boolean): Promise<void> | void;
   list(): Promise<InstalledSchedulerBinding[]> | InstalledSchedulerBinding[];
   listForRebind?(): Promise<RebindSchedulerBinding[]> | RebindSchedulerBinding[];
@@ -114,17 +131,19 @@ export function compileTaskSchedulerBindings(input: CompileTaskSchedulerBindings
     "--scheduled",
   ]);
   return Object.freeze(
-    input.schedules.map((schedule) =>
-      freezeBinding({
-        id: schedule.ordinal === 0 ? id : digestBindingId("task", ref, schedule.ordinal),
+    input.schedules.map((schedule) => {
+      const bindingId = schedule.ordinal === 0 ? id : digestBindingId("task", ref, schedule.ordinal);
+      return freezeBinding({
+        id: bindingId,
+        nativeId: schedulerNativeBindingId(bindingId),
         logicalSource: { kind: "task", ref },
         cron: schedule.cron,
         source: schedule.source,
         ordinal: schedule.ordinal,
         enabled: input.enabled,
         invocation,
-      }),
-    ),
+      });
+    }),
   );
 }
 
@@ -134,17 +153,19 @@ export function compileWorkflowSchedulerBindings(
   const ref = assertQualifiedRef(input.qualifiedRef, "workflow");
   const invocation = Object.freeze(["workflow", "run", ref]);
   return Object.freeze(
-    input.schedules.map((schedule) =>
-      freezeBinding({
-        id: digestBindingId("workflow", ref, schedule.ordinal),
+    input.schedules.map((schedule) => {
+      const bindingId = digestBindingId("workflow", ref, schedule.ordinal);
+      return freezeBinding({
+        id: bindingId,
+        nativeId: bindingId,
         logicalSource: { kind: "workflow", ref },
         cron: schedule.cron,
         source: schedule.source,
         ordinal: schedule.ordinal,
         enabled: true,
         invocation,
-      }),
-    ),
+      });
+    }),
   );
 }
 
@@ -180,9 +201,11 @@ export function schedulerNativeArtifactOwner(
     return { logicalId: nativeId, logicalKind: "workflow" };
   }
   const taskId = invocation[0] === "task" && invocation[1] === "run" ? invocation[2] : undefined;
-  return taskId && schedulerNativeBindingId(taskId) === nativeId
-    ? { logicalId: taskId, logicalKind: "task" }
-    : undefined;
+  if (!taskId) return undefined;
+  return {
+    logicalId: schedulerNativeBindingId(taskId) === nativeId ? taskId : nativeId,
+    logicalKind: "task",
+  };
 }
 
 export function assertSchedulerNativeArtifactOwner(
@@ -190,20 +213,56 @@ export function assertSchedulerNativeArtifactOwner(
   intended: SchedulerBinding,
   invocation: readonly string[] | undefined,
 ): void {
-  const owner = invocation ? schedulerNativeArtifactOwner(nativeId, invocation) : undefined;
-  if (owner?.logicalId === intended.id && owner.logicalKind === intended.logicalSource.kind) return;
-  const description = owner
-    ? `${owner.logicalKind} ${JSON.stringify(owner.logicalId)}`
-    : "an unproven or malformed owner";
+  const intendedNativeId = intended.nativeId ?? schedulerNativeBindingId(intended.id);
+  if (nativeId === intendedNativeId && invocation && sameInvocation(invocation, intended.invocation)) return;
+  const description = invocation ? JSON.stringify(invocation) : "an unproven or malformed invocation";
   throw new UsageError(
-    `Native scheduler artifact ${JSON.stringify(nativeId)} belongs to ${description}, not ${intended.logicalSource.kind} ${JSON.stringify(intended.id)}.`,
+    `Native scheduler artifact ${JSON.stringify(nativeId)} belongs to ${description}, not the exact ${intended.logicalSource.kind} owner ${JSON.stringify(intended.logicalSource.ref)} with binding ${JSON.stringify(intended.id)}.`,
     "RESOURCE_ALREADY_EXISTS",
   );
 }
 
-/** Recover the logical nested task id from its signed public invocation. */
+/** Recover binding identity without treating the native hash as source ownership. */
 export function schedulerLogicalBindingId(nativeId: string, invocation: readonly string[]): string {
   return schedulerLogicalBindingOwner(nativeId, invocation) ?? nativeId;
+}
+
+export function schedulerBindingNativeId(binding: SchedulerBinding): string {
+  return binding.nativeId ?? schedulerNativeBindingId(binding.id);
+}
+
+export function assertSchedulerRemovalArtifact(
+  nativeId: string,
+  expected: SchedulerRemovalExpectation,
+  invocation: readonly string[] | undefined,
+  fingerprint: string | undefined,
+): void {
+  const fingerprintMatches = expected.fingerprint === undefined || expected.fingerprint === fingerprint;
+  if (
+    nativeId === expected.nativeId &&
+    invocation !== undefined &&
+    sameInvocation(invocation, expected.invocation) &&
+    fingerprintMatches
+  ) {
+    return;
+  }
+  throw new UsageError(
+    `Native scheduler artifact ${JSON.stringify(nativeId)} changed owner or fingerprint; refusing to remove an unverified ${expected.logicalSource.kind} owner ${JSON.stringify(expected.logicalSource.ref)}.`,
+    "RESOURCE_ALREADY_EXISTS",
+  );
+}
+
+/** Recover the authored schedule ordinal from the exact source/binding identity. */
+export function schedulerBindingOrdinal(
+  bindingId: string,
+  logicalSource: SchedulerLogicalSource,
+  invocation: readonly string[],
+): number | undefined {
+  if (logicalSource.kind === "task" && bindingId === invocation[2]) return 0;
+  for (let ordinal = 0; ordinal < 4096; ordinal += 1) {
+    if (digestBindingId(logicalSource.kind, logicalSource.ref, ordinal) === bindingId) return ordinal;
+  }
+  return undefined;
 }
 
 function digestBindingId(kind: "task" | "workflow", ref: string, ordinal: number): string {
@@ -229,4 +288,8 @@ function freezeBinding(binding: SchedulerBinding): SchedulerBinding {
     logicalSource: Object.freeze({ ...binding.logicalSource }),
     invocation: Object.freeze([...binding.invocation]),
   });
+}
+
+function sameInvocation(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }

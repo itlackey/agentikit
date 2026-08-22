@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { schedulerNativeBindingId } from "../../src/tasks/scheduler-binding";
 import { planSchedulerSync } from "../../src/tasks/scheduler-sync";
 
 function root(): string {
@@ -58,6 +59,142 @@ describe("whole-set v3 scheduler sync planning", () => {
       { kind: "workflow", ref: "team//workflows/release" },
     ]);
     expect(plan.operations.map(({ kind }) => kind)).toEqual(["install", "install", "install"]);
+  });
+
+  test("a valid multi-schedule task is an exact no-op on its identical second whole-set plan", async () => {
+    const bundleRoot = root();
+    write(
+      path.join(bundleRoot, "tasks", "nightly.yml"),
+      [
+        "version: 3",
+        "run: echo index",
+        "on:",
+        "  schedule:",
+        "    - cron: '0 1 * * *'",
+        "    - cron: '0 2 * * *'",
+        "",
+      ].join("\n"),
+    );
+    const base = {
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron" as const,
+      expectedSignature: (binding: { id: string; cron: string }) => `${binding.id}:${binding.cron}`,
+    };
+    const initial = await planSchedulerSync({ ...base, installed: emptyInstalled });
+    const installed = initial.desired.map((binding) => ({
+      id: binding.id,
+      nativeId: schedulerNativeBindingId(binding.id),
+      binding: ["/opt/akm"],
+      contextPath: "/state/context.json",
+      target: "team",
+      invocation: binding.invocation,
+      signature: `${binding.id}:${binding.cron}`,
+    }));
+    const nativeArtifacts = initial.desired.map((binding) => ({
+      nativeId: schedulerNativeBindingId(binding.id),
+      bindingId: binding.id,
+      invocation: binding.invocation,
+    }));
+
+    const second = await planSchedulerSync({ ...base, installed, nativeArtifacts } as never);
+
+    expect(second.unchanged).toEqual(initial.desired.map(({ id }) => id));
+    expect(second.operations).toEqual([]);
+  });
+
+  test("multi-schedule drift updates only the changed higher ordinal binding", async () => {
+    const bundleRoot = root();
+    const file = path.join(bundleRoot, "tasks", "nightly.yml");
+    const source = (second: string) =>
+      [
+        "version: 3",
+        "run: echo index",
+        "on:",
+        "  schedule:",
+        "    - cron: '0 1 * * *'",
+        `    - cron: '${second}'`,
+        "",
+      ].join("\n");
+    write(file, source("0 2 * * *"));
+    const base = {
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron" as const,
+      expectedSignature: (binding: { id: string; cron: string }) => `${binding.id}:${binding.cron}`,
+    };
+    const initial = await planSchedulerSync({ ...base, installed: emptyInstalled });
+    const installed = initial.desired.map((binding) => ({
+      id: binding.id,
+      nativeId: schedulerNativeBindingId(binding.id),
+      binding: ["/opt/akm"],
+      contextPath: "/state/context.json",
+      target: "team",
+      invocation: binding.invocation,
+      signature: `${binding.id}:${binding.cron}`,
+    }));
+    const nativeArtifacts = initial.desired.map((binding) => ({
+      nativeId: schedulerNativeBindingId(binding.id),
+      bindingId: binding.id,
+      invocation: binding.invocation,
+    }));
+    write(file, source("30 2 * * *"));
+
+    const drift = await planSchedulerSync({ ...base, installed, nativeArtifacts } as never);
+
+    expect(drift.unchanged).toEqual([initial.desired[0]!.id]);
+    expect(drift.updated).toEqual([initial.desired[1]!.id]);
+  });
+
+  test("higher-ordinal removal freezes the exact parsed owner and installed fingerprint", async () => {
+    const bundleRoot = root();
+    const file = path.join(bundleRoot, "tasks", "nightly.yml");
+    write(file, "version: 3\nrun: echo index\non:\n  schedule:\n    - cron: '0 1 * * *'\n    - cron: '0 2 * * *'\n");
+    const base = {
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron" as const,
+      expectedSignature: (binding: { id: string; cron: string }) => `${binding.id}:${binding.cron}`,
+    };
+    const initial = await planSchedulerSync({ ...base, installed: emptyInstalled });
+    const installed = initial.desired.map((binding) => ({
+      id: binding.id,
+      nativeId: schedulerNativeBindingId(binding.id),
+      binding: ["/opt/akm"],
+      contextPath: "/state/context.json",
+      target: "team",
+      invocation: binding.invocation,
+      signature: `${binding.id}:${binding.cron}`,
+    }));
+    const nativeArtifacts = initial.desired.map((binding) => ({
+      nativeId: schedulerNativeBindingId(binding.id),
+      bindingId: binding.id,
+      invocation: binding.invocation,
+    }));
+    write(file, "version: 3\nrun: echo index\non:\n  schedule:\n    - cron: '0 1 * * *'\n");
+
+    const removal = await planSchedulerSync({ ...base, installed, nativeArtifacts } as never);
+    const removed = initial.desired[1];
+    if (!removed) throw new Error("missing higher-ordinal binding");
+    expect(removal.operations).toContainEqual({
+      kind: "remove",
+      id: removed.id,
+      nativeId: schedulerNativeBindingId(removed.id),
+      expected: {
+        bindingId: removed.id,
+        nativeId: schedulerNativeBindingId(removed.id),
+        logicalSource: removed.logicalSource,
+        ordinal: removed.ordinal,
+        invocation: removed.invocation,
+        fingerprint: `${removed.id}:${removed.cron}`,
+      },
+    });
   });
 
   test("accepts the workflow-only tasks target through canonical step authority", async () => {
@@ -272,14 +409,19 @@ describe("whole-set v3 scheduler sync planning", () => {
   test.each([
     ["different logical owner", "task-5f14bc23cb233df4713f2e147b6c077f"],
     ["malformed source-absent owner", undefined],
-  ] as const)("rejects an installed %s at the desired exact native artifact before signatures", async (_label, logicalId) => {
+  ] as const)("rejects an installed %s at the desired exact native artifact before signatures", async (_label, bindingId) => {
     const componentRoot = root();
     write(path.join(componentRoot, "sub", "nightly.yml"), "version: 3\nrun: echo nested\nakm:\n  schedule: '@daily'\n");
     let signatures = 0;
     const nativeArtifacts = [
       {
         nativeId: "task-5f14bc23cb233df4713f2e147b6c077f",
-        ...(logicalId ? { logicalId } : {}),
+        ...(bindingId
+          ? {
+              bindingId,
+              invocation: ["task", "run", bindingId, "--bundle", "team", "--scheduled"],
+            }
+          : {}),
       },
     ];
 
@@ -301,6 +443,44 @@ describe("whole-set v3 scheduler sync planning", () => {
     expect(signatures).toBe(0);
   });
 
+  test("rejects a foreign fully-qualified workflow owner under the same binding and native id", async () => {
+    const bundleRoot = root();
+    write(
+      path.join(bundleRoot, "workflows", "release.yml"),
+      "name: release\non:\n  schedule:\n    - cron: '0 8 * * 1'\njobs:\n  main:\n    runs-on: [self-hosted]\n    steps:\n      - id: release\n        run: echo release\n",
+    );
+    const base = {
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron" as const,
+    };
+    const initial = await planSchedulerSync({ ...base, installed: emptyInstalled });
+    const workflow = initial.desired.find((binding) => binding.logicalSource.kind === "workflow");
+    if (!workflow) throw new Error("missing workflow binding");
+    const foreignInvocation = ["workflow", "run", "team//workflows/other"] as const;
+
+    await expect(
+      planSchedulerSync({
+        ...base,
+        installed: [
+          {
+            id: workflow.id,
+            nativeId: workflow.nativeId,
+            binding: ["/opt/akm"],
+            contextPath: "/state/context.json",
+            target: "team",
+            invocation: foreignInvocation,
+          },
+        ],
+        nativeArtifacts: [
+          { nativeId: workflow.nativeId ?? workflow.id, bindingId: workflow.id, invocation: foreignInvocation },
+        ],
+      }),
+    ).rejects.toThrow(/native scheduler artifact|collision|team\/\/workflows\/other/i);
+  });
+
   test("a proven source-absent nested owner removes by its exact enumerated native id", async () => {
     const componentRoot = root();
     const nativeId = "task-5f14bc23cb233df4713f2e147b6c077f";
@@ -320,11 +500,24 @@ describe("whole-set v3 scheduler sync planning", () => {
       bundleTarget: "team",
       backend: "cron",
       installed: [installed],
-      nativeArtifacts: [{ nativeId, logicalId: "sub/nightly", logicalKind: "task" }],
+      nativeArtifacts: [{ nativeId, bindingId: "sub/nightly", invocation: installed.invocation }],
     });
 
     expect(plan.removed).toEqual(["sub/nightly"]);
-    expect(plan.operations).toEqual([{ kind: "remove", id: "sub/nightly", nativeId }]);
+    expect(plan.operations).toEqual([
+      {
+        kind: "remove",
+        id: "sub/nightly",
+        nativeId,
+        expected: {
+          bindingId: "sub/nightly",
+          nativeId,
+          logicalSource: { kind: "task", ref: "team//sub/nightly" },
+          ordinal: 0,
+          invocation: installed.invocation,
+        },
+      },
+    ]);
   });
 
   test("a true standalone physical-source identity collision rejects before diffing", async () => {

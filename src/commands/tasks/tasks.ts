@@ -44,6 +44,9 @@ import {
   compileTaskSchedulerBindings,
   type SchedulerBinding,
   type SchedulerInstallOptions,
+  type SchedulerRemovalExpectation,
+  schedulerBindingNativeId,
+  schedulerBindingOrdinal,
   schedulerNativeBindingId,
 } from "../../tasks/scheduler-binding";
 import {
@@ -236,7 +239,7 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   const writeAsset = deps.writeAsset ?? writeAssetToSource;
   const deleteAsset = deps.deleteAsset ?? deleteAssetFromSource;
   const commitBoundary = deps.commitBoundary ?? commitWriteTargetBoundary;
-  const { installedAffected, runtimeOpts, canSnapshot, nativeSnapshot, staleInstalledIds } =
+  const { installedAffected, runtimeOpts, canSnapshot, nativeSnapshot, staleInstalledBindings } =
     await prepareTaskAddSchedulerTransaction({
       id,
       installTarget: bundle.installTarget,
@@ -258,9 +261,9 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
       nativeMutationStarted = true;
       await sched.install(binding, runtimeOpts);
     }
-    for (const staleId of staleInstalledIds) {
+    for (const stale of staleInstalledBindings) {
       nativeMutationStarted = true;
-      await sched.uninstall(staleId);
+      await sched.uninstall(stale.nativeId, stale.expected);
     }
     commitBoundary(writeTarget, `Update tasks/${id}`);
   } catch (err) {
@@ -431,6 +434,7 @@ export async function akmTasksSync(
   const allEntries: InstalledTaskRef[] = rawEntries.map((entry) => ({
     ...entry,
     ...(entry.nativeId !== undefined ? { nativeId: entry.nativeId } : {}),
+    ...(entry.invocation !== undefined ? { invocation: Object.freeze([...entry.invocation]) } : {}),
     binding: "binding" in entry ? [...entry.binding] : [],
     contextPath: "contextPath" in entry ? entry.contextPath : "",
   }));
@@ -438,8 +442,9 @@ export async function akmTasksSync(
     ? await sched.listNativeArtifacts()
     : allEntries.map((entry) => ({
         nativeId: entry.nativeId ?? schedulerNativeBindingId(entry.id),
-        logicalId: entry.id,
-        logicalKind: entry.invocation?.[0] === "workflow" ? ("workflow" as const) : ("task" as const),
+        bindingId: entry.id,
+        ...(entry.invocation ? { invocation: Object.freeze([...entry.invocation]) } : {}),
+        ...(entry.signature !== undefined ? { fingerprint: entry.signature } : {}),
       }));
   const common = {
     sourceRoot: stashDir,
@@ -620,7 +625,7 @@ export async function akmTasksDoctor(
 
 async function applySchedulerSyncPlan(backend: TaskBackend, plan: SchedulerSyncPlan): Promise<void> {
   for (const operation of plan.operations) {
-    if (operation.kind === "remove") await backend.uninstall(operation.nativeId);
+    if (operation.kind === "remove") await backend.uninstall(operation.nativeId, operation.expected);
     else await backend.install(operation.binding, operation.options);
   }
 }
@@ -640,17 +645,20 @@ async function prepareTaskAddSchedulerTransaction(input: {
   runtimeOpts: SchedulerInstallOptions | undefined;
   canSnapshot: boolean;
   nativeSnapshot: unknown;
-  staleInstalledIds: readonly string[];
+  staleInstalledBindings: readonly Readonly<{
+    nativeId: string;
+    expected: SchedulerRemovalExpectation;
+  }>[];
 }> {
   const installedEntries = await input.sched.list();
   const nativeArtifacts = input.sched.listNativeArtifacts
     ? await input.sched.listNativeArtifacts()
     : installedEntries.map((entry) => ({
         nativeId: entry.nativeId ?? schedulerNativeBindingId(entry.id),
-        logicalId: entry.id,
-        logicalKind: entry.invocation?.[0] === "workflow" ? ("workflow" as const) : ("task" as const),
+        bindingId: entry.id,
+        ...(entry.invocation ? { invocation: Object.freeze([...entry.invocation]) } : {}),
+        ...(entry.signature !== undefined ? { fingerprint: entry.signature } : {}),
       }));
-  assertSchedulerNativeArtifactOwnership(input.taskBindings, nativeArtifacts);
   for (const binding of input.taskBindings) {
     assertNoForeignSchedule(installedEntries, binding.id, input.installTarget);
   }
@@ -659,6 +667,7 @@ async function prepareTaskAddSchedulerTransaction(input: {
   if (foreignTaskEntry) {
     throw new UsageError(foreignScheduleMessage(input.id, foreignTaskEntry.target), "RESOURCE_ALREADY_EXISTS");
   }
+  assertSchedulerNativeArtifactOwnership(input.taskBindings, nativeArtifacts);
   const desiredIds = new Set(input.taskBindings.map((binding) => binding.id));
   const affectedIds = [
     ...new Set([
@@ -671,8 +680,8 @@ async function prepareTaskAddSchedulerTransaction(input: {
   const installedAffected = installedEntries.filter((entry) => affectedIds.includes(entry.id));
   const affectedNativeIds = [
     ...new Set([
-      ...input.previousBindings.map((binding) => schedulerNativeBindingId(binding.id)),
-      ...input.taskBindings.map((binding) => schedulerNativeBindingId(binding.id)),
+      ...input.previousBindings.map(schedulerBindingNativeId),
+      ...input.taskBindings.map(schedulerBindingNativeId),
       ...installedAffected.map((entry) => entry.nativeId ?? schedulerNativeBindingId(entry.id)),
     ]),
   ];
@@ -704,9 +713,37 @@ async function prepareTaskAddSchedulerTransaction(input: {
     runtimeOpts,
     canSnapshot,
     nativeSnapshot,
-    staleInstalledIds: installedAffected
+    staleInstalledBindings: installedAffected
       .filter((entry) => !desiredIds.has(entry.id))
-      .map((entry) => entry.nativeId ?? schedulerNativeBindingId(entry.id)),
+      .map((entry) => {
+        const invocation = entry.invocation;
+        if (!invocation) {
+          throw new UsageError(
+            `Installed scheduler binding ${JSON.stringify(entry.id)} has no exact parsed owner; refusing removal.`,
+            "RESOURCE_ALREADY_EXISTS",
+          );
+        }
+        const logicalSource = primary.logicalSource;
+        const ordinal = schedulerBindingOrdinal(entry.id, logicalSource, invocation);
+        if (ordinal === undefined) {
+          throw new UsageError(
+            `Installed scheduler binding ${JSON.stringify(entry.id)} has no exact schedule ordinal; refusing removal.`,
+            "RESOURCE_ALREADY_EXISTS",
+          );
+        }
+        const nativeId = entry.nativeId ?? schedulerNativeBindingId(entry.id);
+        return Object.freeze({
+          nativeId,
+          expected: Object.freeze({
+            bindingId: entry.id,
+            nativeId,
+            logicalSource,
+            ordinal,
+            invocation: Object.freeze([...invocation]),
+            ...(entry.signature !== undefined ? { fingerprint: entry.signature } : {}),
+          }),
+        });
+      }),
   };
 }
 
@@ -722,7 +759,17 @@ async function rollbackTaskBindingsWithoutSnapshot(input: {
   for (const binding of input.desired) {
     if (installedBefore.has(binding.id)) continue;
     try {
-      await input.sched.uninstall(schedulerNativeBindingId(binding.id));
+      const nativeId = schedulerBindingNativeId(binding);
+      await input.sched.uninstall(nativeId, {
+        bindingId: binding.id,
+        nativeId,
+        logicalSource: binding.logicalSource,
+        ordinal: binding.ordinal,
+        invocation: binding.invocation,
+        ...(input.sched.expectedSignature
+          ? { fingerprint: input.sched.expectedSignature(binding, input.runtimeOpts) }
+          : {}),
+      });
     } catch (error) {
       input.rollbackErrors.push(error);
     }

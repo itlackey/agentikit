@@ -28,6 +28,9 @@ import {
   type SchedulerBinding,
   type SchedulerInstallOptions,
   type SchedulerNativeArtifact,
+  type SchedulerRemovalExpectation,
+  schedulerBindingNativeId,
+  schedulerBindingOrdinal,
   schedulerNativeArtifactKey,
   schedulerNativeBindingId,
 } from "./scheduler-binding";
@@ -54,7 +57,7 @@ export interface SchedulerSyncPlanInput {
 
 export type SchedulerSyncOperation =
   | Readonly<{ kind: "install" | "update"; binding: SchedulerBinding; options?: SchedulerInstallOptions }>
-  | Readonly<{ kind: "remove"; id: string; nativeId: string }>;
+  | Readonly<{ kind: "remove"; id: string; nativeId: string; expected: SchedulerRemovalExpectation }>;
 
 export interface SchedulerSyncPlan {
   readonly desired: readonly SchedulerBinding[];
@@ -78,8 +81,8 @@ export async function planSchedulerSync(input: SchedulerSyncPlanInput): Promise<
   const desired = await compileDesiredSourceSet(input);
   assertUniqueDesiredIds(desired);
   assertUniqueInstalledIds(input.installed);
-  assertSchedulerNativeArtifactOwnership(desired, nativeArtifactsForPlan(input));
   assertNoForeignIds(desired, input);
+  assertSchedulerNativeArtifactOwnership(desired, nativeArtifactsForPlan(input));
 
   const scopedInstalled = input.installed.filter((entry) => belongsToBundle(entry, input));
   const present = new Map(scopedInstalled.map((entry) => [entry.id, entry] as const));
@@ -112,11 +115,41 @@ export async function planSchedulerSync(input: SchedulerSyncPlanInput): Promise<
     .sort(compareCodePoints);
   for (const id of removed) {
     const current = present.get(id);
+    if (!current?.invocation) {
+      throw nativeArtifactCollision(
+        { nativeId: current?.nativeId ?? schedulerNativeBindingId(id), bindingId: id },
+        { nativeId: current?.nativeId ?? schedulerNativeBindingId(id) },
+      );
+    }
+    const nativeId = exactInstalledNativeId(id, current, nativeArtifactsForPlan(input));
+    const artifact = nativeArtifactsForPlan(input).find(
+      (candidate) => candidate.nativeId === nativeId && candidate.bindingId === id,
+    );
+    const logicalSource = installedLogicalSource(current.invocation, input);
+    const ordinal = schedulerBindingOrdinal(id, logicalSource, current.invocation);
+    if (ordinal === undefined) {
+      throw new UsageError(
+        `Installed scheduler binding ${JSON.stringify(id)} cannot be attributed to an exact schedule ordinal; refusing removal.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
+    }
     operations.push(
       Object.freeze({
         kind: "remove" as const,
         id,
-        nativeId: exactInstalledNativeId(id, current, nativeArtifactsForPlan(input)),
+        nativeId,
+        expected: freezeRemovalExpectation({
+          bindingId: id,
+          nativeId,
+          logicalSource,
+          ordinal,
+          invocation: current.invocation,
+          ...(current.signature !== undefined
+            ? { fingerprint: current.signature }
+            : artifact?.fingerprint !== undefined
+              ? { fingerprint: artifact.fingerprint }
+              : {}),
+        }),
       }),
     );
   }
@@ -136,8 +169,7 @@ function exactInstalledNativeId(
   current: InstalledSchedulerBinding | undefined,
   artifacts: readonly SchedulerNativeArtifact[],
 ): string {
-  const logicalKind = current?.invocation?.[0] === "workflow" ? "workflow" : "task";
-  const exact = artifacts.find((artifact) => artifact.logicalId === logicalId && artifact.logicalKind === logicalKind);
+  const exact = artifacts.find((artifact) => artifact.bindingId === logicalId);
   return exact?.nativeId ?? current?.nativeId ?? schedulerNativeBindingId(logicalId);
 }
 
@@ -146,8 +178,9 @@ function nativeArtifactsForPlan(input: SchedulerSyncPlanInput): readonly Schedul
     input.nativeArtifacts ??
     input.installed.map((entry) => ({
       nativeId: entry.nativeId ?? schedulerNativeBindingId(entry.id),
-      logicalId: entry.id,
-      logicalKind: entry.invocation?.[0] === "workflow" ? ("workflow" as const) : ("task" as const),
+      bindingId: entry.id,
+      ...(entry.invocation ? { invocation: Object.freeze([...entry.invocation]) } : {}),
+      ...(entry.signature !== undefined ? { fingerprint: entry.signature } : {}),
     }))
   );
 }
@@ -156,57 +189,80 @@ export function assertSchedulerNativeArtifactOwnership(
   desired: readonly SchedulerBinding[],
   installed: readonly SchedulerNativeArtifact[],
 ): void {
-  const desiredByKey = new Map<string, { nativeId: string; logicalId: string; logicalKind: "task" | "workflow" }>();
+  const desiredByKey = new Map<string, SchedulerBinding>();
   for (const binding of desired) {
-    const nativeId = schedulerNativeBindingId(binding.id);
+    const nativeId = schedulerBindingNativeId(binding);
     const key = schedulerNativeArtifactKey(nativeId);
     const prior = desiredByKey.get(key);
-    const candidate = { nativeId, logicalId: binding.id, logicalKind: binding.logicalSource.kind };
-    if (
-      prior &&
-      (prior.nativeId !== nativeId || prior.logicalId !== binding.id || prior.logicalKind !== candidate.logicalKind)
-    ) {
-      throw nativeArtifactCollision(prior, candidate);
+    if (prior && !sameDesiredArtifact(prior, binding)) {
+      throw nativeArtifactCollision(desiredArtifact(prior), desiredArtifact(binding));
     }
-    desiredByKey.set(key, candidate);
+    desiredByKey.set(key, binding);
   }
 
   const installedByKey = new Map<string, SchedulerNativeArtifact>();
   for (const artifact of installed) {
     const key = schedulerNativeArtifactKey(artifact.nativeId);
     const prior = installedByKey.get(key);
-    if (
-      prior &&
-      (prior.nativeId !== artifact.nativeId ||
-        prior.logicalId !== artifact.logicalId ||
-        prior.logicalKind !== artifact.logicalKind)
-    ) {
+    if (prior && !sameInstalledArtifact(prior, artifact)) {
       throw nativeArtifactCollision(prior, artifact);
     }
     installedByKey.set(key, artifact);
     const wanted = desiredByKey.get(key);
     if (!wanted) continue;
     if (
-      artifact.nativeId !== wanted.nativeId ||
-      artifact.logicalId !== wanted.logicalId ||
-      artifact.logicalKind !== wanted.logicalKind
+      artifact.nativeId !== schedulerBindingNativeId(wanted) ||
+      artifact.bindingId !== wanted.id ||
+      artifact.invocation === undefined ||
+      !sameInvocation(artifact.invocation, wanted.invocation)
     ) {
-      throw nativeArtifactCollision(wanted, artifact);
+      throw nativeArtifactCollision(desiredArtifact(wanted), artifact);
     }
   }
 }
 
 function nativeArtifactCollision(
-  left: { nativeId: string; logicalId?: string; logicalKind?: "task" | "workflow" },
-  right: { nativeId: string; logicalId?: string; logicalKind?: "task" | "workflow" },
+  left: { nativeId: string; bindingId?: string; invocation?: readonly string[] },
+  right: { nativeId: string; bindingId?: string; invocation?: readonly string[] },
 ): UsageError {
-  const owner = (value: { nativeId: string; logicalId?: string; logicalKind?: "task" | "workflow" }) =>
-    value.logicalId === undefined
+  const owner = (value: { nativeId: string; bindingId?: string; invocation?: readonly string[] }) =>
+    value.bindingId === undefined || value.invocation === undefined
       ? `${JSON.stringify(value.nativeId)} (unproven owner)`
-      : `${value.logicalKind ?? "unknown"} ${JSON.stringify(value.logicalId)}`;
+      : `binding ${JSON.stringify(value.bindingId)} invoking ${JSON.stringify(value.invocation)}`;
   return new UsageError(
     `Native scheduler artifact collision between ${owner(left)} and ${owner(right)}; refusing to overwrite an existing or ambiguous native owner.`,
     "RESOURCE_ALREADY_EXISTS",
+  );
+}
+
+function desiredArtifact(binding: SchedulerBinding): SchedulerNativeArtifact {
+  return {
+    nativeId: schedulerBindingNativeId(binding),
+    bindingId: binding.id,
+    invocation: binding.invocation,
+  };
+}
+
+function sameDesiredArtifact(left: SchedulerBinding, right: SchedulerBinding): boolean {
+  return (
+    schedulerBindingNativeId(left) === schedulerBindingNativeId(right) &&
+    left.id === right.id &&
+    left.logicalSource.kind === right.logicalSource.kind &&
+    left.logicalSource.ref === right.logicalSource.ref &&
+    left.ordinal === right.ordinal &&
+    sameInvocation(left.invocation, right.invocation)
+  );
+}
+
+function sameInstalledArtifact(left: SchedulerNativeArtifact, right: SchedulerNativeArtifact): boolean {
+  return (
+    left.nativeId === right.nativeId &&
+    left.bindingId === right.bindingId &&
+    left.fingerprint === right.fingerprint &&
+    ((left.invocation === undefined && right.invocation === undefined) ||
+      (left.invocation !== undefined &&
+        right.invocation !== undefined &&
+        sameInvocation(left.invocation, right.invocation)))
   );
 }
 
@@ -465,8 +521,42 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+function installedLogicalSource(
+  invocation: readonly string[],
+  input: Pick<SchedulerSyncPlanInput, "adapterId" | "bundleName">,
+): SchedulerBinding["logicalSource"] {
+  if (invocation[0] === "workflow" && invocation[1] === "run" && invocation.length === 3) {
+    return Object.freeze({ kind: "workflow", ref: invocation[2]! });
+  }
+  if (invocation[0] === "task" && invocation[1] === "run" && invocation[2]) {
+    const bundleIndex = invocation.indexOf("--bundle", 3);
+    const bundle = bundleIndex === -1 ? input.bundleName : invocation[bundleIndex + 1];
+    if (!bundle) {
+      throw new UsageError("Installed task invocation has no resolvable bundle owner.", "RESOURCE_ALREADY_EXISTS");
+    }
+    const conceptId = input.adapterId === "akm" ? `tasks/${invocation[2]}` : invocation[2];
+    return Object.freeze({ kind: "task", ref: makeBundleRef(bundle, conceptId) });
+  }
+  throw new UsageError(
+    "Installed scheduler invocation has no exact canonical source owner.",
+    "RESOURCE_ALREADY_EXISTS",
+  );
+}
+
+function freezeRemovalExpectation(expectation: SchedulerRemovalExpectation): SchedulerRemovalExpectation {
+  return Object.freeze({
+    ...expectation,
+    logicalSource: Object.freeze({ ...expectation.logicalSource }),
+    invocation: Object.freeze([...expectation.invocation]),
+  });
+}
+
 function freezeOperation<T extends SchedulerSyncOperation>(operation: T): T {
   return Object.freeze(operation);
+}
+
+function sameInvocation(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function compareCodePoints(left: string, right: string): number {

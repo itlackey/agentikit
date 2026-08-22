@@ -13,7 +13,11 @@ import {
   upsertBlock,
 } from "../src/tasks/backends/cron";
 import type { InstalledTaskRef } from "../src/tasks/backends/types";
-import type { SchedulerBinding } from "../src/tasks/scheduler-binding";
+import {
+  compileTaskSchedulerBindings,
+  type SchedulerBinding,
+  schedulerNativeBindingId,
+} from "../src/tasks/scheduler-binding";
 import {
   type ScheduledTaskContext,
   schedulerContextDescriptor,
@@ -291,6 +295,76 @@ describe("cron backend drift detection", () => {
   // types it as `… | Promise<…>`; resolve through the concrete array shape so
   // indexing stays type-safe.
   const listSync = (b: ReturnType<typeof CRON_BACKEND>): InstalledTaskRef[] => b.list() as InstalledTaskRef[];
+
+  const higherOrdinal = () =>
+    compileTaskSchedulerBindings({
+      id: "ping",
+      qualifiedRef: "stash//tasks/ping",
+      enabled: true,
+      schedules: [
+        { cron: "0 1 * * *", source: "akm.schedule[0]", ordinal: 0 },
+        { cron: "0 2 * * *", source: "akm.schedule[1]", ordinal: 1 },
+      ],
+    })[1]!;
+
+  const removalExpectation = (backend: ReturnType<typeof CRON_BACKEND>, binding: SchedulerBinding) => ({
+    bindingId: binding.id,
+    nativeId: schedulerNativeBindingId(binding.id),
+    logicalSource: binding.logicalSource,
+    ordinal: binding.ordinal,
+    invocation: binding.invocation,
+    fingerprint: backend.expectedSignature?.(binding),
+  });
+
+  test("round-trips and updates a higher-ordinal binding whose public owner is the base task", () => {
+    const backend = CRON_BACKEND(opts(memoryExec()));
+    const binding = higherOrdinal();
+
+    backend.install(binding);
+    expect(listSync(backend)).toEqual([
+      expect.objectContaining({
+        id: binding.id,
+        nativeId: schedulerNativeBindingId(binding.id),
+        invocation: binding.invocation,
+      }),
+    ]);
+    expect(backend.listNativeArtifacts?.()).toEqual([
+      {
+        nativeId: schedulerNativeBindingId(binding.id),
+        bindingId: binding.id,
+        invocation: binding.invocation,
+      },
+    ]);
+
+    expect(() => backend.install(binding)).not.toThrow();
+    const drifted = { ...binding, cron: "30 2 * * *" };
+    expect(() => backend.install(drifted)).not.toThrow();
+    expect(listSync(backend)[0]!.signature).toBe(backend.expectedSignature?.(drifted));
+  });
+
+  test.each([
+    "foreign",
+    "malformed",
+    "fingerprint",
+  ] as const)("rechecks a higher-ordinal %s owner and fingerprint immediately before uninstall", (replacement) => {
+    const exec = memoryExec();
+    const backend = CRON_BACKEND(opts(exec));
+    const binding = higherOrdinal();
+    backend.install(binding);
+    const expectation = removalExpectation(backend, binding);
+    const swapped =
+      replacement === "foreign"
+        ? exec.current().replaceAll(" task run ping --scheduled ", " task run foreign --scheduled ")
+        : replacement === "malformed"
+          ? exec.current().replaceAll(" --scheduled ", " --broken ")
+          : exec.current().replace("0 2 * * *", "5 2 * * *");
+    expect(swapped).not.toBe(exec.current());
+    exec.write(swapped);
+
+    const uninstall = backend.uninstall as unknown as (nativeId: string, expectedOwner: typeof expectation) => void;
+    expect(() => uninstall(expectation.nativeId, expectation)).toThrow(/changed|owner|malformed|refusing/i);
+    expect(exec.current()).toBe(swapped);
+  });
 
   test("list() returns a signature equal to expectedSignature for an installed task", () => {
     const exec = memoryExec();

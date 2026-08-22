@@ -4,7 +4,11 @@ import path from "node:path";
 import { akmTasksSync } from "../../src/commands/tasks/tasks";
 import type { LaunchdExec, LaunchdFs } from "../../src/tasks/backends/launchd";
 import { buildPlistXml, LAUNCHD_BACKEND } from "../../src/tasks/backends/launchd";
-import type { SchedulerBinding } from "../../src/tasks/scheduler-binding";
+import {
+  compileTaskSchedulerBindings,
+  type SchedulerBinding,
+  schedulerNativeBindingId,
+} from "../../src/tasks/scheduler-binding";
 import {
   type ScheduledTaskContext,
   schedulerContextDescriptor,
@@ -349,6 +353,78 @@ describe("LAUNCHD_BACKEND — envPath option", () => {
 });
 
 describe("LAUNCHD_BACKEND lifecycle", () => {
+  const higherOrdinal = () =>
+    compileTaskSchedulerBindings({
+      id: "ping",
+      qualifiedRef: "stash//tasks/ping",
+      enabled: true,
+      schedules: [
+        { cron: "0 1 * * *", source: "akm.schedule[0]", ordinal: 0 },
+        { cron: "0 2 * * *", source: "akm.schedule[1]", ordinal: 1 },
+      ],
+    })[1]!;
+
+  test("round-trips and updates a higher-ordinal binding whose public owner is the base task", () => {
+    const { backend } = makeBackend();
+    const binding = higherOrdinal();
+
+    backend.install(binding);
+    expect(backend.list()).toEqual([
+      expect.objectContaining({
+        id: binding.id,
+        nativeId: schedulerNativeBindingId(binding.id),
+        invocation: binding.invocation,
+      }),
+    ]);
+    expect(backend.listNativeArtifacts?.()).toEqual([
+      {
+        nativeId: schedulerNativeBindingId(binding.id),
+        bindingId: binding.id,
+        invocation: binding.invocation,
+      },
+    ]);
+
+    expect(() => backend.install(binding)).not.toThrow();
+    const drifted = { ...binding, cron: "30 2 * * *" };
+    expect(() => backend.install(drifted)).not.toThrow();
+    expect((backend.list() as Array<{ signature?: string }>)[0]!.signature).toBe(backend.expectedSignature?.(drifted));
+  });
+
+  test.each([
+    "foreign",
+    "malformed",
+    "fingerprint",
+  ] as const)("rechecks a higher-ordinal %s owner and fingerprint immediately before uninstall", (replacement) => {
+    const { backend, exec, fs } = makeBackend();
+    const binding = higherOrdinal();
+    backend.install(binding);
+    const nativeId = schedulerNativeBindingId(binding.id);
+    const file = `/tmp/agents/com.akm.task.${nativeId}.plist`;
+    const expected = {
+      bindingId: binding.id,
+      nativeId,
+      logicalSource: binding.logicalSource,
+      ordinal: binding.ordinal,
+      invocation: binding.invocation,
+      fingerprint: backend.expectedSignature?.(binding),
+    };
+    const prior = fs.readFile(file);
+    const swapped =
+      replacement === "foreign"
+        ? prior.replaceAll("<string>ping</string>", "<string>foreign</string>")
+        : replacement === "malformed"
+          ? prior.replaceAll("<string>--scheduled</string>", "<string>--broken</string>")
+          : prior.replace("<key>Minute</key><integer>0</integer>", "<key>Minute</key><integer>5</integer>");
+    expect(swapped).not.toBe(prior);
+    fs.written.set(file, swapped);
+    exec.calls.length = 0;
+
+    const uninstall = backend.uninstall as unknown as (id: string, expectation: typeof expected) => void;
+    expect(() => uninstall(nativeId, expected)).toThrow(/changed|owner|malformed|refusing/i);
+    expect(fs.readFile(file)).toBe(swapped);
+    expect(exec.calls.some((call) => call[1] === "bootout")).toBe(false);
+  });
+
   test("rejects XML-forbidden control characters before writing the plist", () => {
     const exec = makeFakeExec();
     const fakeFs = makeFakeFs();
