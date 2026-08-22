@@ -199,6 +199,47 @@ describe("prepareTaskV3Execution", () => {
     ).rejects.toThrow(/secret-shaped literal env/i);
   });
 
+  test("injects a platform-safe default shell while preserving an explicit authored shell exactly", async () => {
+    const root = fixtureRoot();
+    const document = source('version: 3\nrun: printf ok\nakm:\n  schedule: "@daily"\n', root);
+    const common = {
+      taskId: "nightly",
+      taskRef: "bundle//tasks/nightly",
+      bundleName: "bundle",
+      bundleRoot: root,
+      config,
+    } as const;
+
+    const posix = await prepareTaskV3Execution(document, { ...common, platform: "linux" });
+    const windows = await prepareTaskV3Execution(document, { ...common, platform: "win32" });
+    const explicit = await prepareTaskV3Execution(
+      source('version: 3\nrun: printf ok\nshell: bash\nakm:\n  schedule: "@daily"\n', root),
+      { ...common, platform: "win32" },
+    );
+
+    expect(posix).toMatchObject({ kind: "shell", shell: "sh" });
+    expect(windows).toMatchObject({ kind: "shell", shell: "powershell" });
+    expect(explicit).toMatchObject({ kind: "shell", shell: "bash" });
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "prepares the canonical physical cwd instead of retaining a live symlink spelling",
+    async () => {
+      const root = fixtureRoot();
+      const physical = path.join(root, "physical-work");
+      const linked = path.join(root, "linked-work");
+      fs.mkdirSync(physical);
+      fs.symlinkSync(physical, linked, "dir");
+
+      const prepared = await prepareTaskV3Execution(
+        source('version: 3\nrun: printf ok\nworking-directory: linked-work\nakm:\n  schedule: "@daily"\n', root),
+        { taskId: "nightly", taskRef: "bundle//tasks/nightly", bundleName: "bundle", bundleRoot: root, config },
+      );
+
+      expect(prepared).toMatchObject({ kind: "shell", cwd: fs.realpathSync.native(physical) });
+    },
+  );
+
   test("qualifies workflow refs to the owning bundle and allows parameters only on that target", async () => {
     const root = fixtureRoot();
     fs.writeFileSync(

@@ -60,6 +60,76 @@ describe("whole-set v3 scheduler sync planning", () => {
     expect(plan.operations.map(({ kind }) => kind)).toEqual(["install", "install", "install"]);
   });
 
+  test("accepts the workflow-only tasks target through canonical step authority", async () => {
+    const bundleRoot = root();
+    write(
+      path.join(bundleRoot, "workflows", "parent.yml"),
+      [
+        "name: parent",
+        "on:",
+        "  schedule:",
+        "    - cron: '0 8 * * 1'",
+        "jobs:",
+        "  main:",
+        "    runs-on: [self-hosted]",
+        "    steps:",
+        "      - id: child",
+        "        uses: tasks/child",
+      ].join("\n"),
+    );
+
+    const plan = await planSchedulerSync({
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron",
+      installed: emptyInstalled,
+    });
+
+    expect(plan.desired).toHaveLength(1);
+    expect(plan.desired[0]?.logicalSource).toEqual({ kind: "workflow", ref: "team//workflows/parent" });
+  });
+
+  test.each([
+    ["nested workflow", "workflows/child", /nested workflow|unsupported/i],
+    ["remote action", "actions/checkout@v4", /remote action|acquisition|unsupported/i],
+  ] as const)("rejects %s before scheduler signatures or mutation preparation", async (_label, uses, message) => {
+    const bundleRoot = root();
+    write(
+      path.join(bundleRoot, "workflows", "parent.yml"),
+      [
+        "name: parent",
+        "on:",
+        "  schedule:",
+        "    - cron: '0 8 * * 1'",
+        "jobs:",
+        "  main:",
+        "    runs-on: [self-hosted]",
+        "    steps:",
+        "      - id: child",
+        `        uses: ${uses}`,
+      ].join("\n"),
+    );
+    let signatures = 0;
+
+    await expect(
+      planSchedulerSync({
+        sourceRoot: bundleRoot,
+        adapterId: "akm",
+        bundleName: "team",
+        bundleTarget: "team",
+        backend: "cron",
+        installed: emptyInstalled,
+        expectedSignature: () => {
+          signatures += 1;
+          return "sig";
+        },
+      }),
+    ).rejects.toThrow(message);
+    expect(signatures).toBe(0);
+  });
+
   test("enumerates a standalone akm-task bundle with qualified logical refs", async () => {
     const bundleRoot = root();
     write(path.join(bundleRoot, "nightly.yml"), "version: 3\nrun: echo yes\nakm:\n  schedule: '@daily'\n");

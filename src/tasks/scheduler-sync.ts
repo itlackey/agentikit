@@ -19,7 +19,6 @@ import {
 import { compileWorkflowSource } from "../workflows/source-ir/compile";
 import { workflowSourceIrToDocument } from "../workflows/source-ir/document";
 import type { WorkflowSourceIrV1 } from "../workflows/source-ir/schema";
-import { classifyWorkflowSourceUses } from "../workflows/source-ir/uses";
 import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "./runtime-v3";
 import { parseSchedule, type ScheduleBackend } from "./schedule";
 import {
@@ -279,19 +278,7 @@ function walkOwnedFiles(root: string, out: string[], failures: string[]): void {
 }
 
 function assertWorkflowProjectable(ir: WorkflowSourceIrV1): void {
-  for (const job of ir.jobs) {
-    for (const step of job.steps) {
-      if (!step.uses) continue;
-      const target = classifyWorkflowSourceUses(step.uses);
-      if (target.kind === "github-action") {
-        throw new UsageError(
-          `${step.source.path}:${step.source.start}: remote GitHub actions are recognized but cannot execute locally in 0.9.2.`,
-          "INVALID_FLAG_VALUE",
-        );
-      }
-    }
-  }
-  workflowSourceIrToDocument(ir, { mode: "runtime" });
+  workflowSourceIrToDocument(ir, { mode: "scheduler" });
 }
 
 function installOptionsFor(

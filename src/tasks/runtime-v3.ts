@@ -32,11 +32,13 @@ import { detectSecretShapedParams } from "../workflows/exec/param-secrets";
 import { compileWorkflowSource } from "../workflows/source-ir/compile";
 import { WorkflowSourceProjectionError, workflowSourceIrToDocument } from "../workflows/source-ir/document";
 import { isInferredSecretName } from "./log-redaction";
+import { isBunStandaloneMain } from "./resolve-akm-bin";
 import type { TaskV3Environment, TaskV3HostShell, TaskV3SourceDocument } from "./source-v3";
 
 export type TaskV3ScriptInterpreter =
   | "sh"
   | "bun"
+  | "bun-standalone"
   | "powershell"
   | "cmd"
   | "python"
@@ -58,6 +60,18 @@ export interface TaskV3PreparedBase {
   readonly redact: readonly string[];
 }
 
+/** Physical directory identity frozen before durable task history begins. */
+export interface PreparedTaskV3DirectoryIdentity {
+  readonly requestedRoot: string;
+  readonly realRoot: string;
+  readonly rootDevice: string;
+  readonly rootInode: string;
+  readonly requestedCwd: string;
+  readonly realCwd: string;
+  readonly cwdDevice: string;
+  readonly cwdInode: string;
+}
+
 export interface PreparedTaskV3Command extends TaskV3PreparedBase {
   readonly kind: "command";
   readonly invocation: PreparedCommandInvocation;
@@ -76,6 +90,7 @@ export interface PreparedTaskV3Shell extends TaskV3PreparedBase {
   readonly command: string;
   readonly shell: TaskV3HostShell;
   readonly cwd: string;
+  readonly cwdIdentity: PreparedTaskV3DirectoryIdentity;
 }
 
 export interface PreparedTaskV3Script extends TaskV3PreparedBase {
@@ -88,6 +103,7 @@ export interface PreparedTaskV3Script extends TaskV3PreparedBase {
   readonly byteLength: number;
   readonly sha256: string;
   readonly cwd: string;
+  readonly cwdIdentity: PreparedTaskV3DirectoryIdentity;
 }
 
 export type PreparedTaskV3Execution =
@@ -111,6 +127,8 @@ export interface PrepareTaskV3ExecutionContext {
     readonly ref: string;
   }) => Promise<string | Readonly<{ file: string; bundleRoot: string }>>;
   readonly readFile?: (file: string) => Uint8Array;
+  /** Platform policy injection used by cross-platform projection tests. */
+  readonly platform?: NodeJS.Platform;
 }
 
 const SCRIPT_INTERPRETERS: Readonly<Record<string, TaskV3ScriptInterpreter>> = Object.freeze({
@@ -246,7 +264,67 @@ function scriptInterpreter(extension: string, ref: string): TaskV3ScriptInterpre
       "INVALID_FLAG_VALUE",
     );
   }
-  return interpreter;
+  if (interpreter !== "bun") return interpreter;
+  if (!process.versions.bun) {
+    throw new UsageError(
+      `Task v3 script target ${JSON.stringify(ref)} requires Bun for ${extension} execution, but this runtime cannot provide it.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  return isBunStandaloneMain() ? "bun-standalone" : "bun";
+}
+
+function isContained(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function directoryStat(directory: string): { device: string; inode: string } {
+  const stat = fs.lstatSync(directory, { bigint: true });
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new UsageError(
+      `Task working directory ${JSON.stringify(directory)} is not a no-follow physical directory.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  return { device: stat.dev.toString(), inode: stat.ino.toString() };
+}
+
+function captureDirectoryIdentity(bundleRoot: string, workingDirectory?: string): PreparedTaskV3DirectoryIdentity {
+  const requestedRoot = path.resolve(bundleRoot);
+  const requestedCwd = workingDirectory ? path.resolve(requestedRoot, workingDirectory) : requestedRoot;
+  try {
+    const realRoot = fs.realpathSync.native(requestedRoot);
+    const realCwd = fs.realpathSync.native(requestedCwd);
+    if (!isContained(realRoot, realCwd)) {
+      throw new UsageError(
+        `Task working directory ${JSON.stringify(workingDirectory ?? ".")} resolves outside its physical bundle root.`,
+        "INVALID_FLAG_VALUE",
+      );
+    }
+    const root = directoryStat(realRoot);
+    const cwd = directoryStat(realCwd);
+    return Object.freeze({
+      requestedRoot,
+      realRoot,
+      rootDevice: root.device,
+      rootInode: root.inode,
+      requestedCwd,
+      realCwd,
+      cwdDevice: cwd.device,
+      cwdInode: cwd.inode,
+    });
+  } catch (cause) {
+    if (cause instanceof UsageError) throw cause;
+    throw new UsageError(
+      `Task working directory ${JSON.stringify(workingDirectory ?? ".")} cannot be physically verified: ${cause instanceof Error ? cause.message : String(cause)}`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+}
+
+function defaultTaskShell(platform: NodeJS.Platform): TaskV3HostShell {
+  return platform === "win32" ? "powershell" : "sh";
 }
 
 function validatePreparedCommand(
@@ -292,14 +370,14 @@ export async function prepareTaskV3Execution(
   const environment = environmentSnapshot(document.env);
   const common = base(document, context, environment);
   if (document.target.kind === "run") {
+    const cwdIdentity = captureDirectoryIdentity(context.bundleRoot, document.target.workingDirectory);
     return Object.freeze({
       ...common,
       kind: "shell" as const,
       command: document.target.run,
-      shell: document.target.shell ?? "sh",
-      cwd: document.target.workingDirectory
-        ? path.resolve(context.bundleRoot, document.target.workingDirectory)
-        : context.bundleRoot,
+      shell: document.target.shell ?? defaultTaskShell(context.platform ?? process.platform),
+      cwd: cwdIdentity.realCwd,
+      cwdIdentity,
     });
   }
 
@@ -373,6 +451,7 @@ export async function prepareTaskV3Execution(
   const extension = path.extname(file).toLowerCase();
   const raw = (context.readFile ?? ((targetPath: string) => fs.readFileSync(targetPath)))(file);
   const bytes = Uint8Array.from(raw);
+  const cwdIdentity = captureDirectoryIdentity(resolved.bundleRoot);
   return Object.freeze({
     ...common,
     kind: "script" as const,
@@ -382,6 +461,7 @@ export async function prepareTaskV3Execution(
     bytesBase64: Buffer.from(bytes).toString("base64"),
     byteLength: bytes.byteLength,
     sha256: createHash("sha256").update(bytes).digest("hex"),
-    cwd: context.bundleRoot,
+    cwd: cwdIdentity.realCwd,
+    cwdIdentity,
   });
 }

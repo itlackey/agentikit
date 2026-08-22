@@ -14,8 +14,9 @@ import {
   type WorkflowSourceJob,
   type WorkflowSourceStep,
 } from "./schema";
+import { classifyWorkflowStepUses } from "./semantics";
 
-export type WorkflowSourceProjectionMode = "display" | "runtime";
+export type WorkflowSourceProjectionMode = "display" | "runtime" | "scheduler";
 
 export class WorkflowSourceProjectionError extends Error {
   constructor(message: string) {
@@ -33,7 +34,7 @@ export function workflowSourceIrToDocument(
   options: { mode: WorkflowSourceProjectionMode },
 ): WorkflowDocument {
   const ir = decodeWorkflowSourceIrV1(input);
-  if (options.mode === "runtime" && ir.jobs.length > 1) {
+  if (options.mode !== "display" && ir.jobs.length > 1) {
     const source = ir.jobs[1]?.source ?? ir.source;
     throw projectionError(
       source,
@@ -68,7 +69,7 @@ function projectStep(
 ): WorkflowStep {
   const id = duplicateIds.has(step.id) ? `${job.id}-${step.id}` : step.id;
   const source = toSourceRef(step.source);
-  if (step.env !== undefined && mode === "runtime") {
+  if (step.env !== undefined && mode !== "display") {
     throw projectionError(
       step.source,
       `Workflow step ${JSON.stringify(step.id)} has literal env values that the current runtime cannot preserve.`,
@@ -124,7 +125,7 @@ function projectDispatch(
   if (step.uses === "akm/command") {
     const action = parseBuiltinCommandAction(step.with);
     if (action.kind === "stored") {
-      if (mode === "runtime") {
+      if (mode !== "display") {
         throw projectionError(
           step.source,
           `Workflow step ${JSON.stringify(step.id)} references stored command ${JSON.stringify(action.ref)}, ` +
@@ -141,7 +142,17 @@ function projectDispatch(
     return { unit, instructions: applied.content };
   }
   if (step.uses !== undefined) {
-    if (mode === "runtime") {
+    // Scheduler planning validates the canonical workflow source and its
+    // 0.9.2 single-job boundary, but it does not lower the workflow into the
+    // legacy document executor. A task target is workflow-only composition
+    // recognized by the shared step classifier; it is deliberately legal in
+    // a scheduled workflow even though task-v3's own uses classifier rejects
+    // it. Nested workflows and remote actions never reach here: the canonical
+    // IR decoder rejects them through this same authority.
+    if (mode === "scheduler" && classifyWorkflowStepUses(step.uses).kind === "task") {
+      return { unit, instructions: `Invoke local target ${step.uses}.` };
+    }
+    if (mode !== "display") {
       throw projectionError(
         step.source,
         `Workflow step ${JSON.stringify(step.id)} uses ${JSON.stringify(step.uses)}, which the current runtime ` +

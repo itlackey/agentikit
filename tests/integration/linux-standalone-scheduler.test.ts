@@ -13,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { STANDALONE_FROZEN_SCRIPT_ARG } from "../../src/tasks/standalone-script-entry";
 import { makeSandboxDir } from "../_helpers/sandbox";
 
 const REQUESTED = process.env.AKM_STANDALONE_SCHEDULER_TESTS === "1";
@@ -158,7 +159,10 @@ test.skipIf(!ENABLED)(
       expectSuccess(doctor, "standalone tasks doctor");
       expect(JSON.parse(doctor.stdout)).toMatchObject({ akm: { argv: [binary], via: "standalone" } });
 
-      const add = run([binary, "task", "add", id, "--schedule", "@daily", "--command", "akm --version"], env);
+      const add = run(
+        [binary, "task", "add", id, "--schedule", "@daily", "--command", "/bin/echo standalone-cron"],
+        env,
+      );
       expectSuccess(add, "standalone tasks add");
       taskAdded = true;
 
@@ -181,8 +185,41 @@ test.skipIf(!ENABLED)(
         }
       ).rows[0];
       expect(row).toMatchObject({ status: "completed", detail: { exitCode: 0 } });
-      expect(fs.readFileSync(row!.log, "utf8")).toContain(candidateVersion as string);
+      expect(fs.readFileSync(row!.log, "utf8")).toContain("standalone-cron");
       expect(fs.readFileSync(taskPath)).toEqual(originalTask);
+
+      fs.mkdirSync(path.join(stashDir, "scripts"), { recursive: true });
+      fs.mkdirSync(path.join(stashDir, "tasks"), { recursive: true });
+      for (const [extension, source, marker] of [
+        [
+          "js",
+          'if (process.argv.length !== 2 || process.argv[1] !== import.meta.path) throw new Error("bad argv"); console.log("standalone-frozen-js")\n',
+          "standalone-frozen-js",
+        ],
+        [
+          "ts",
+          'const marker: string = "standalone-frozen-ts"; if (process.argv.length !== 2 || process.argv[1] !== import.meta.path) throw new Error("bad argv"); console.log(marker)\n',
+          "standalone-frozen-ts",
+        ],
+      ] as const) {
+        const scriptId = `compiled-${extension}`;
+        fs.writeFileSync(path.join(stashDir, "scripts", `${scriptId}.${extension}`), source);
+        fs.writeFileSync(
+          path.join(stashDir, "tasks", `${scriptId}.yml`),
+          `version: 3\nuses: scripts/${scriptId}.${extension}\nakm:\n  schedule: "@daily"\n`,
+        );
+        const scriptRun = run([binary, "task", "run", scriptId, "--bundle", "stash"], env);
+        expectSuccess(scriptRun, `compiled standalone ${extension} task`);
+        const scriptResult = (
+          JSON.parse(scriptRun.stdout) as {
+            result: { status: string; log: string; target: { kind: string; cmd: string[] } };
+          }
+        ).result;
+        expect(scriptResult.status).toBe("completed");
+        expect(scriptResult.target.cmd.slice(0, 2)).toEqual([binary, STANDALONE_FROZEN_SCRIPT_ARG]);
+        expect(fs.readFileSync(scriptResult.log, "utf8")).toContain(marker);
+        expect(fs.existsSync(path.dirname(scriptResult.target.cmd.at(-1) as string))).toBe(false);
+      }
     } finally {
       if (taskAdded) run([binary, "task", "remove", id], env);
       sandbox.cleanup();

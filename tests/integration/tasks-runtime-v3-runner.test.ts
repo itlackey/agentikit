@@ -31,6 +31,25 @@ function logFiles(): string[] {
   return fs.readdirSync(root, { recursive: true }).map(String);
 }
 
+function closedStream(): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.close();
+    },
+  });
+}
+
+function completedSpawn(exitCode: number): ReturnType<SpawnFn> {
+  return {
+    exitCode,
+    exited: Promise.resolve(exitCode),
+    stdout: closedStream(),
+    stderr: closedStream(),
+    stdin: null,
+    kill() {},
+  };
+}
+
 describe("task-v3 runner mutation boundary", () => {
   for (const [label, yaml, message] of [
     ["v2", 'version: 2\nschedule: "@daily"\ncommand: echo legacy\n', "TASK_SCHEMA_VERSION_UNSUPPORTED"],
@@ -217,5 +236,145 @@ describe("task-v3 runner mutation boundary", () => {
     expect(observed?.cmd).toEqual(["zsh", "-c", command]);
     expect(observed?.cwd).toBe(path.join(storage.stashDir, "work"));
     expect(observed?.env).toMatchObject({ COUNT: "0", ENABLED: "false", AKM_EVENT_SOURCE: "task" });
+  });
+
+  test.skipIf(process.platform === "win32").each(["symlink", "ancestor", "bundle-root", "file"] as const)(
+    "%s cwd replacement fails before spawn and never executes outside the prepared physical directory",
+    async (replacement) => {
+      const outside = path.join(storage.root, `outside-${replacement}`);
+      fs.mkdirSync(outside, { recursive: true });
+      const work = path.join(storage.stashDir, "work");
+      const nested = path.join(work, "nested");
+      fs.mkdirSync(nested, { recursive: true });
+      const authoredCwd =
+        replacement === "ancestor" ? "work/nested" : replacement === "bundle-root" ? undefined : "work";
+      writeTask(
+        "cwd-swap",
+        [
+          "version: 3",
+          "run: printf safe",
+          ...(authoredCwd ? [`working-directory: ${authoredCwd}`] : []),
+          "akm:",
+          '  schedule: "@daily"',
+          "",
+        ].join("\n"),
+      );
+      let spawned = false;
+
+      const result = await runTask("cwd-swap", {
+        stashDir: storage.stashDir,
+        bundleName: "fixture",
+        beforeNativeDispatch: () => {
+          if (replacement === "bundle-root") {
+            const original = `${storage.stashDir}-original`;
+            fs.renameSync(storage.stashDir, original);
+            fs.symlinkSync(outside, storage.stashDir, "dir");
+            return;
+          }
+          if (replacement === "ancestor") {
+            fs.renameSync(work, `${work}-original`);
+            fs.symlinkSync(outside, work, "dir");
+            return;
+          }
+          fs.rmSync(work, { recursive: true, force: true });
+          if (replacement === "file") fs.writeFileSync(work, "not a directory");
+          else fs.symlinkSync(outside, work, "dir");
+        },
+        spawnFn: () => {
+          spawned = true;
+          return completedSpawn(0);
+        },
+      });
+
+      expect(spawned).toBe(false);
+      expect(result.status).toBe("failed");
+      expect(fs.readFileSync(result.log, "utf8")).toMatch(/working directory|physical|identity|changed/i);
+    },
+  );
+
+  test.each([
+    ["deleted", undefined],
+    ["replaced", 'console.log("replacement")\n'],
+  ] as const)("frozen JS bytes survive source %s after prepare", async (_label, replacement) => {
+    const scripts = path.join(storage.stashDir, "scripts");
+    fs.mkdirSync(scripts, { recursive: true });
+    const script = path.join(scripts, "frozen.js");
+    const original = 'console.log("original frozen bytes")\n';
+    fs.writeFileSync(script, original);
+    writeTask("frozen-js", 'version: 3\nuses: scripts/frozen.js\nakm:\n  schedule: "@daily"\n');
+    let materializedFile: string | undefined;
+    let sourceMutated = false;
+
+    const result = await runTask("frozen-js", {
+      stashDir: storage.stashDir,
+      bundleName: "fixture",
+      beforeNativeDispatch: () => {
+        if (replacement === undefined) fs.rmSync(script);
+        else fs.writeFileSync(script, replacement);
+        sourceMutated = true;
+      },
+      spawnFn: (cmd) => {
+        materializedFile = cmd.at(-1);
+        expect(materializedFile).toBeTruthy();
+        expect(fs.readFileSync(materializedFile as string, "utf8")).toBe(original);
+        if (process.platform !== "win32") expect(fs.statSync(materializedFile as string).mode & 0o777).toBe(0o700);
+        return completedSpawn(0);
+      },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(sourceMutated).toBe(true);
+    expect(materializedFile).toBeTruthy();
+    expect(fs.existsSync(path.dirname(materializedFile as string))).toBe(false);
+  });
+
+  test.each([
+    "success",
+    "nonzero",
+    "spawn",
+    "timeout",
+  ] as const)("removes the 0700 frozen-script temp tree after %s", async (outcome) => {
+    const scripts = path.join(storage.stashDir, "scripts");
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.writeFileSync(path.join(scripts, "cleanup.ts"), 'console.log("cleanup")\n');
+    writeTask(
+      "cleanup",
+      `version: 3\nuses: scripts/cleanup.ts\nakm:\n  schedule: "@daily"\n  timeout: ${outcome === "timeout" ? 1 : "null"}\n`,
+    );
+    let directory: string | undefined;
+    let settle: ((code: number) => void) | undefined;
+    const spawnFn: SpawnFn = (cmd) => {
+      directory = path.dirname(cmd.at(-1) as string);
+      if (process.platform !== "win32") {
+        expect(fs.statSync(directory).mode & 0o777).toBe(0o700);
+        expect(fs.statSync(cmd.at(-1) as string).mode & 0o777).toBe(0o700);
+      }
+      if (outcome === "spawn") throw new Error("synthetic spawn failure");
+      if (outcome !== "timeout") return completedSpawn(outcome === "success" ? 0 : 9);
+      const proc = {
+        exitCode: null as number | null,
+        exited: new Promise<number>((resolve) => {
+          settle = resolve;
+        }),
+        stdout: closedStream(),
+        stderr: closedStream(),
+        stdin: null,
+        kill() {
+          this.exitCode = 143;
+          settle?.(143);
+        },
+      };
+      return proc;
+    };
+
+    const result = await runTask("cleanup", {
+      stashDir: storage.stashDir,
+      bundleName: "fixture",
+      spawnFn,
+    });
+
+    expect(result.status).toBe(outcome === "success" ? "completed" : "failed");
+    expect(directory).toBeTruthy();
+    expect(fs.existsSync(directory as string)).toBe(false);
   });
 });
