@@ -275,6 +275,40 @@ function validateProfile(value: unknown, path: string): void {
   }
 }
 
+/** Durable runner material may contain ordinary literals, never credential-shaped bytes. */
+function runnerEnvironmentValueLooksSecret(name: string, value: string): boolean {
+  const key = name.toLowerCase();
+  if (
+    [
+      "secret",
+      "token",
+      "password",
+      "passwd",
+      "apikey",
+      "api_key",
+      "api-key",
+      "accesskey",
+      "access_key",
+      "privatekey",
+      "private_key",
+      "credential",
+      "bearer",
+      "client_secret",
+    ].some((hint) => key.includes(hint))
+  ) {
+    return true;
+  }
+  const candidate = value.trim();
+  if (candidate.length < 20 || /\s/.test(candidate)) return false;
+  if (
+    /^(?:sk-|rk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[baprs]-|AKIA|ASIA|AIza|ya29\.|-----BEGIN)/.test(candidate)
+  ) {
+    return true;
+  }
+  const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((pattern) => pattern.test(candidate)).length;
+  return (candidate.length >= 24 && classes >= 3) || (candidate.length >= 32 && /^[A-Za-z0-9+/=_-]+$/.test(candidate));
+}
+
 /** Strictly detach and deep-freeze non-secret runner material before lowering. */
 function snapshotRunnerSpec(
   input: RunnerSpec,
@@ -315,6 +349,21 @@ function snapshotRunnerSpec(
     throw new TypeError("execution runner material.kind must be llm, agent, or sdk");
   }
   return cloned as unknown as RunnerSpec;
+}
+
+/** Strict public decoder for persisted, non-secret runner/transport material. */
+export function decodeFrozenRunnerSpec(input: unknown): RunnerSpec {
+  const runner = snapshotRunnerSpec(input as RunnerSpec);
+  if (runner.kind !== "llm") {
+    for (const [name, value] of Object.entries(runner.profile.env ?? {})) {
+      if (runnerEnvironmentValueLooksSecret(name, value)) {
+        throw new TypeError(
+          "execution runner material.profile.env contains a secret-shaped literal; freeze only symbolic environment names",
+        );
+      }
+    }
+  }
+  return runner;
 }
 
 function lowererEntries(): readonly (readonly [string, AgentRequestLowerer])[] {

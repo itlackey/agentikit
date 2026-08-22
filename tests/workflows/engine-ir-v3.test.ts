@@ -350,7 +350,7 @@ describe("workflow engine v3 contracts", () => {
     const invalid = [
       [{ plan_json: "{malformed", plan_hash: null, plan_ir_version: null, id: "null-version" }, "corrupt-plan"],
       [{ plan_json: "{malformed", plan_hash: null, plan_ir_version: 2, id: "v2" }, "unsupported-version"],
-      [{ plan_json: "{malformed", plan_hash: null, plan_ir_version: 4, id: "future" }, "unsupported-version"],
+      [{ plan_json: "{malformed", plan_hash: null, plan_ir_version: 4, id: "v4-corrupt" }, "corrupt-plan"],
       [{ plan_json: null, plan_hash: null, plan_ir_version: 2, id: "missing-v2" }, "missing-plan"],
       [{ plan_json: "{malformed", plan_hash: null, plan_ir_version: 3, id: "stored-v3" }, "corrupt-plan"],
       [{ plan_json: '{"irVersion":3}', plan_hash: null, plan_ir_version: null, id: "content-v3" }, "corrupt-plan"],

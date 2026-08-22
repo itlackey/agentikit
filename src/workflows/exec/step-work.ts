@@ -60,9 +60,14 @@ import type {
   IrRuntimeKind,
   IrStepPlan,
   IrUnitNode,
-  WorkflowPlanGraph,
 } from "../ir/schema";
 import { engineRuntimeKind } from "../ir/schema";
+import type {
+  ExecutableWorkflowPlan,
+  FrozenWorkflowEnvironmentBinding,
+  FrozenWorkflowTarget,
+  IrUnitNodeV4,
+} from "../ir/schema-v4";
 import {
   type ExpressionScope,
   parseReference,
@@ -162,6 +167,10 @@ export interface StepWorkUnit {
   invocation?: IrInvocation;
   /** Frozen shell command. Present on EXACTLY the `exec` units — mutually exclusive with `invocation`. */
   exec?: IrExecSpec;
+  /** V4-only immutable executable target; absent on compatibility v3 work. */
+  frozenTarget?: FrozenWorkflowTarget;
+  /** V4 literal/symbolic environment projection. */
+  environment?: readonly FrozenWorkflowEnvironmentBinding[];
   /**
    * `AKM_*` context environment for an exec unit's child (run/step/unit ids,
    * params, fan-out item + index, declared inputs) — the argv-array analogue of
@@ -265,8 +274,13 @@ function validateFanOutItems(stepId: string, items: unknown[]): string | undefin
  * goes through here.
  */
 function resolveStepReference(reference: string, scope: ExpressionScope): ResolveReferenceResult {
-  const resolved = resolveReferenceString(reference, scope);
-  const truncated = truncatedReferenceTarget(reference, scope, resolved);
+  // Source adapters may retain GitHub's whole-value `${{ ... }}` spelling.
+  // The persisted decoder still owns canonical v3 syntax; this pure work-list
+  // seam unwraps only an exact whole-value wrapper and never interpolates prose.
+  const exactWrapper = /^\$\{\{\s*([^{}]+?)\s*\}\}$/.exec(reference);
+  const canonicalReference = exactWrapper?.[1] ?? reference;
+  const resolved = resolveReferenceString(canonicalReference, scope);
+  const truncated = truncatedReferenceTarget(canonicalReference, scope, resolved);
   if (!truncated) return resolved;
   return {
     ok: false,
@@ -365,7 +379,8 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
 
   // Content-derived unit identity: compute every id up front (duplicate items
   // were rejected above — identity requires distinct items).
-  const unitIds = items.map((item) => unitIdFor(template.id, item, isFanOut));
+  const v4 = isV4Unit(template);
+  const unitIds = items.map((item) => unitIdFor(template.id, item, isFanOut, v4));
 
   const gateLoop = input.gateLoop ?? 1;
   // An `exec` unit dispatches a child process instead of an engine call, so it
@@ -515,6 +530,7 @@ function buildStepWorkUnit(ctx: StepWorkUnitContext, unitId: string, item: unkno
       : {}),
     ...(frozenInvocation ? { invocation: frozenInvocation } : {}),
     ...(frozenExec ? { exec: frozenExec } : {}),
+    ...(isV4Unit(template) ? { frozenTarget: template.frozenTarget, environment: template.environment } : {}),
     ...(frozenExec ? { execContext: buildExecContextEnv({ ctx, unitId, item, index }) } : {}),
     ...(frozenInvocation?.model ? { model: frozenInvocation.model } : {}),
     timeoutMs: ctx.timeoutMs,
@@ -627,6 +643,28 @@ function buildExecContextEnv(args: {
  * in-flight run is out of scope by design.
  */
 function computeUnitInputHash(ctx: StepWorkUnitContext, item: unknown): string {
+  if (isV4Unit(ctx.template)) {
+    return createHash("sha256")
+      .update("akm.workflow.unit\0v5\0")
+      .update(
+        canonicalJsonString({
+          hashVersion: 5,
+          role: "unit",
+          stepId: ctx.plan.stepId,
+          nodeId: ctx.template.id,
+          template: ctx.template.instructions,
+          item: ctx.isFanOut ? (item ?? null) : null,
+          inputs: ctx.resolvedInputs,
+          params: ctx.input.params,
+          frozenTarget: ctx.template.frozenTarget,
+          environment: ctx.template.environment,
+          schema: ctx.template.schema ?? null,
+          isolation: ctx.template.isolation ?? "none",
+          ...(ctx.input.gateFeedback ? { gateFeedback: ctx.input.gateFeedback } : {}),
+        }),
+      )
+      .digest("hex");
+  }
   const identity = frozenDispatchHashIdentity(ctx.frozenEngine, ctx.frozenInvocation, ctx.input.engines ?? {});
   return createHash("sha256")
     .update(
@@ -725,10 +763,15 @@ export function buildUnitPrompt(input: BuildUnitPromptInput): string {
  * counts with), so identity survives list reordering/regeneration and is
  * independent of item position. Retry attempts stack `~r<n>` on top.
  */
-export function unitIdFor(nodeId: string, item: unknown, isFanOut: boolean): string {
+export function unitIdFor(nodeId: string, item: unknown, isFanOut: boolean, collisionSafe = false): string {
   if (!isFanOut) return `${nodeId}:solo`;
   const canonical = canonicalJson(item) ?? "null";
-  return `${nodeId}:${createHash("sha256").update(canonical).digest("hex").slice(0, 12)}`;
+  const digest = createHash("sha256").update(canonical).digest("hex");
+  return `${nodeId}:${collisionSafe ? digest : digest.slice(0, 12)}`;
+}
+
+function isV4Unit(unit: IrUnitNode): unit is IrUnitNodeV4 {
+  return Object.hasOwn(unit, "frozenTarget") && Object.hasOwn(unit, "environment");
 }
 
 /** Include an SDK fallback in v3 call identity without copying catalog entries onto nodes. */
@@ -885,7 +928,7 @@ function stepTemplate(stepPlan: IrStepPlan): IrUnitNode | undefined {
  * looping step has not advanced, so neither can turn an unreferenced producer
  * into a referenced one mid-invocation).
  */
-export function referencedStepIds(plan: WorkflowPlanGraph): Set<string> {
+export function referencedStepIds(plan: ExecutableWorkflowPlan): Set<string> {
   const referenced = new Set<string>();
   const note = (reference: string): void => {
     const parsed = parseReference(reference);
@@ -1557,7 +1600,7 @@ function assertRouteTargetDeclared(route: IrRouteSpec, stepId: string, selected:
  * targets into the skip set exactly as on the live path.
  */
 export function seedJournaledRouteDecisions(
-  plan: WorkflowPlanGraph,
+  plan: ExecutableWorkflowPlan,
   state: WorkflowNextResult,
   routeSelected: Set<string>,
   routeUnselected: Map<string, RouteSkipInfo>,

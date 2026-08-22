@@ -16,15 +16,15 @@
 
 import { createHash } from "node:crypto";
 import { utf8Bytes, WORKFLOW_MAX_JSON_DEPTH, WORKFLOW_MAX_PLAN_BYTES } from "../resource-limits";
-import { decodeWorkflowPlanV3, type WorkflowPlanGraph } from "./schema";
+import { decodeExecutableWorkflowPlan, type ExecutableWorkflowPlan } from "./schema-v4";
 
 /** sha256 hex of the canonical (recursively sorted-keys) JSON of the plan. */
-export function computePlanHash(plan: WorkflowPlanGraph): string {
+export function computePlanHash(plan: ExecutableWorkflowPlan | unknown): string {
   return createHash("sha256").update(canonicalPlanJson(plan)).digest("hex");
 }
 
 /** The canonical JSON string the hash is computed over (also what to persist). */
-export function canonicalPlanJson(plan: WorkflowPlanGraph | unknown): string {
+export function canonicalPlanJson(plan: ExecutableWorkflowPlan | unknown): string {
   return canonicalJson(plan);
 }
 
@@ -34,7 +34,12 @@ export function canonicalJson(value: unknown): string {
 }
 
 /** Decode, require stored canonical bytes, then verify the stored SHA-256. */
-export function decodeCanonicalPlan(runId: string, planJson: string, planHash: string | null): WorkflowPlanGraph {
+export function decodeCanonicalPlan(
+  runId: string,
+  planJson: string,
+  planHash: string | null,
+  expectedVersion?: number | null,
+): ExecutableWorkflowPlan {
   if (utf8Bytes(planJson) > WORKFLOW_MAX_PLAN_BYTES)
     throw new Error(`Workflow run ${runId} frozen plan exceeds the 2 MiB resource limit.`);
   let parsed: unknown;
@@ -43,7 +48,7 @@ export function decodeCanonicalPlan(runId: string, planJson: string, planHash: s
   } catch {
     throw new Error(`Workflow run ${runId} has corrupt frozen plan JSON.`);
   }
-  const plan = decodeWorkflowPlanV3(parsed);
+  const plan = decodeExecutableWorkflowPlan(parsed, expectedVersion);
   const canonical = canonicalPlanJson(plan);
   if (planJson !== canonical) throw new Error(`Workflow run ${runId} has noncanonical frozen plan JSON.`);
   const actual = computePlanHash(plan);

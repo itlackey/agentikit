@@ -43,7 +43,8 @@
 import { ConfigError } from "../../core/errors";
 import { warn } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
-import type { IrInvocation, WorkflowPlanGraph } from "../ir/schema";
+import type { IrInvocation } from "../ir/schema";
+import type { ExecutableWorkflowPlan } from "../ir/schema-v4";
 import type { JudgeCallIdentity, SummaryJudge } from "../validate-summary";
 import { collectWorkflowDispatchSensitiveValues, withDispatchRedaction } from "./dispatch-redaction";
 import { dispatchFrozenWorkflowExecution, prepareFrozenWorkflowExecution, type UnitDispatcher } from "./unit-dispatch";
@@ -89,7 +90,7 @@ function warnLoweringNotices(...groups: readonly (readonly Readonly<LoweringNoti
 
 /** Build a gate judge from a v3 catalog entry without consulting live config. */
 export function frozenSummaryJudge(
-  plan: WorkflowPlanGraph,
+  plan: ExecutableWorkflowPlan,
   invocation: IrInvocation | null | undefined,
   signal: AbortSignal | undefined,
   dispatcher: UnitDispatcher | undefined,

@@ -19,7 +19,7 @@
 import { UsageError } from "../../core/errors";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
 import { PROGRAM_PARAM_NAME_PATTERN } from "../program/schema";
-import type { WorkflowPlanGraph } from "./schema";
+import type { ExecutableWorkflowPlan } from "./schema-v4";
 
 export interface WorkflowParameterFlag {
   name: string;
@@ -32,7 +32,7 @@ export interface WorkflowParameterFlag {
  * coercion cannot race or drift from the persisted plan's schemas.
  */
 export function materializeWorkflowParameterFlags(
-  plan: WorkflowPlanGraph,
+  plan: ExecutableWorkflowPlan,
   flags: readonly WorkflowParameterFlag[],
 ): Record<string, unknown> {
   if (flags.length === 0) return {};
@@ -169,7 +169,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Returns a flat list of human-readable, path-prefixed error strings (empty =
  * valid). Params the plan does not declare a schema for are not constrained.
  */
-export function validateWorkflowParams(plan: WorkflowPlanGraph, params: Record<string, unknown>): string[] {
+export function validateWorkflowParams(plan: ExecutableWorkflowPlan, params: Record<string, unknown>): string[] {
   const schemas = plan.paramSchemas;
   if (!schemas || Object.keys(schemas).length === 0) return [];
   // Validate the params object as a whole against a synthetic object schema
@@ -193,7 +193,7 @@ export function validateWorkflowParams(plan: WorkflowPlanGraph, params: Record<s
  */
 export function assertRunParamsSatisfyPlan(
   runId: string,
-  plan: WorkflowPlanGraph,
+  plan: ExecutableWorkflowPlan,
   params: Record<string, unknown>,
 ): void {
   const errors = validateWorkflowParams(plan, params);

@@ -13,6 +13,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import type { RunnerSpec } from "../../src/integrations/agent/runner";
 import { computeStepWorkList } from "../../src/workflows/exec/step-work";
 import { canonicalPlanJson, computePlanHash, decodeCanonicalPlan } from "../../src/workflows/ir/plan-hash";
 import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
@@ -349,7 +350,7 @@ describe("durable workflow IR v4 — resolved targets and environment", () => {
   test("strictly freezes runner transport without credential values and binds it to request engine", async () => {
     const { decodeWorkflowPlanV4 } = await import("../../src/workflows/ir/schema-v4");
     const { decodeFrozenRunnerSpec } = await import("../../src/integrations/agent/execution-lowering");
-    const runner = frozenTarget(v4Plan()).runner;
+    const runner = frozenTarget(v4Plan()).runner as RunnerSpec;
     expect(decodeFrozenRunnerSpec(runner)).toEqual(runner);
 
     const withApiKey = v4Plan();

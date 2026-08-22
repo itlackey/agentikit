@@ -74,6 +74,7 @@ import { withWorkflowRunsConnection, withWorkflowRunsRepo } from "../../storage/
 import { assertRunParamsSatisfyPlan, type WorkflowParameterFlag } from "../ir/params";
 import { computePlanHash } from "../ir/plan-hash";
 import { decodeWorkflowPlanV3, type IrStepPlan, type WorkflowPlanGraph } from "../ir/schema";
+import type { ExecutableWorkflowPlan } from "../ir/schema-v4";
 import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
 import { completeWorkflowStep, getNextWorkflowStep, resumeWorkflowRun, type WorkflowNextResult } from "../runtime/runs";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
@@ -526,7 +527,7 @@ async function completedRunResult(runId: string): Promise<RunWorkflowResult> {
 
 function workflowSummaryJudge(
   options: RunWorkflowOptions,
-  plan: WorkflowPlanGraph,
+  plan: ExecutableWorkflowPlan,
   stepPlan: IrStepPlan,
   signal: AbortSignal | undefined,
   owner: { runId: string; stepId: string },
@@ -584,7 +585,7 @@ async function seedRunAccountingFromJournal(runId: string): Promise<{ unitsDispa
 async function loadAuthoritativeRunPlan(
   options: RunWorkflowOptions,
   next: WorkflowNextResult,
-): Promise<WorkflowPlanGraph> {
+): Promise<ExecutableWorkflowPlan> {
   const plan = await loadFrozenPlan(next.run.id);
   if (options.loadPlan) {
     const expected = decodeWorkflowPlanV3(await options.loadPlan(next.run.workflowRef));
@@ -666,7 +667,7 @@ async function recoverGateLoopState(
 interface StepDriveContext {
   options: RunWorkflowOptions;
   next: WorkflowNextResult;
-  plan: WorkflowPlanGraph;
+  plan: ExecutableWorkflowPlan;
   stepPlan: IrStepPlan;
   step: WorkflowRunStepState;
   /** Every prior step's evidence, keyed by step id (live values preferred over rows). */
@@ -1126,7 +1127,7 @@ async function driveRun(
  * Missing and non-current plans fail validation and are never rebuilt from a
  * mutable source asset.
  */
-async function loadFrozenPlan(runId: string): Promise<WorkflowPlanGraph> {
+async function loadFrozenPlan(runId: string): Promise<ExecutableWorkflowPlan> {
   const row = await withWorkflowRunsRepo((repo) => {
     const run = repo.getRunById(runId);
     return run;

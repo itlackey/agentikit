@@ -5,12 +5,17 @@
 import { UsageError } from "../../core/errors";
 import type { WorkflowRunRow, WorkflowRunStepRow } from "../../storage/repositories/workflow-runs-repository";
 import { decodeCanonicalPlan } from "../ir/plan-hash";
-import { WORKFLOW_IR_VERSION, type WorkflowPlanGraph } from "../ir/schema";
+import { type IrRouteSpec, WORKFLOW_IR_VERSION } from "../ir/schema";
+import { type ExecutableWorkflowPlan, WORKFLOW_IR_V4_VERSION } from "../ir/schema-v4";
 
 export type WorkflowExecutionSupport = "supported" | "unsupported-version" | "missing-plan" | "corrupt-plan";
 
 export type ClassifiedWorkflowPlan =
-  | { support: "supported"; plan: WorkflowPlanGraph; irVersion: typeof WORKFLOW_IR_VERSION }
+  | {
+      support: "supported";
+      plan: ExecutableWorkflowPlan;
+      irVersion: typeof WORKFLOW_IR_VERSION | typeof WORKFLOW_IR_V4_VERSION;
+    }
   | { support: "unsupported-version"; irVersion: number; error: string }
   | { support: "missing-plan"; irVersion: number | null; error: string }
   | { support: "corrupt-plan"; irVersion: number | null; error: string };
@@ -33,38 +38,41 @@ export function classifyWorkflowRunPlan(row: {
   if (
     row.plan_ir_version !== null &&
     row.plan_ir_version !== undefined &&
-    row.plan_ir_version !== WORKFLOW_IR_VERSION
+    row.plan_ir_version !== WORKFLOW_IR_VERSION &&
+    row.plan_ir_version !== WORKFLOW_IR_V4_VERSION
   ) {
     return {
       support: "unsupported-version",
       irVersion: row.plan_ir_version,
-      error: `Workflow run ${runId} uses unsupported workflow IR version ${row.plan_ir_version}; this runtime requires version ${WORKFLOW_IR_VERSION}.`,
+      error: `Workflow run ${runId} uses unsupported workflow IR version ${row.plan_ir_version}; this runtime supports versions ${WORKFLOW_IR_VERSION} and ${WORKFLOW_IR_V4_VERSION}.`,
     };
   }
-  if (row.plan_ir_version !== WORKFLOW_IR_VERSION) {
+  if (row.plan_ir_version !== WORKFLOW_IR_VERSION && row.plan_ir_version !== WORKFLOW_IR_V4_VERSION) {
     return {
       support: "corrupt-plan",
       irVersion: null,
-      error: `Workflow run ${runId} does not declare workflow IR version ${WORKFLOW_IR_VERSION}.`,
+      error: `Workflow run ${runId} does not declare a supported workflow IR version.`,
     };
   }
   try {
     return {
       support: "supported",
-      irVersion: WORKFLOW_IR_VERSION,
-      plan: decodeCanonicalPlan(runId, row.plan_json, row.plan_hash),
+      irVersion: row.plan_ir_version,
+      plan: decodeCanonicalPlan(runId, row.plan_json, row.plan_hash, row.plan_ir_version),
     };
   } catch (cause) {
     return {
       support: "corrupt-plan",
-      irVersion: WORKFLOW_IR_VERSION,
+      irVersion: row.plan_ir_version,
       error: cause instanceof Error ? cause.message : String(cause),
     };
   }
 }
 
 /** Reject any operation that requires a valid current frozen plan. */
-export function requireExecutableWorkflowPlan(row: Parameters<typeof classifyWorkflowRunPlan>[0]): WorkflowPlanGraph {
+export function requireExecutableWorkflowPlan(
+  row: Parameters<typeof classifyWorkflowRunPlan>[0],
+): ExecutableWorkflowPlan {
   const classified = classifyWorkflowRunPlan(row);
   if (classified.support === "supported") return classified.plan;
   throw new UsageError(classified.error, "INVALID_JSON_ARGUMENT");
@@ -79,7 +87,7 @@ export interface FrozenStepRowDefinition {
 }
 
 /** Project persisted spine rows from the decoded plan, never from the mutable source asset. */
-export function frozenStepRows(plan: WorkflowPlanGraph): FrozenStepRowDefinition[] {
+export function frozenStepRows(plan: ExecutableWorkflowPlan): FrozenStepRowDefinition[] {
   return plan.steps.map((step) => ({
     stepId: step.stepId,
     stepTitle: step.title,
@@ -95,7 +103,7 @@ export function frozenStepRows(plan: WorkflowPlanGraph): FrozenStepRowDefinition
 
 /** Verify the durable spine still agrees with the decoded/hash-verified plan before any mutation. */
 export function assertWorkflowSpineMatchesPlan(
-  plan: WorkflowPlanGraph,
+  plan: ExecutableWorkflowPlan,
   run: WorkflowRunRow,
   rows: WorkflowRunStepRow[],
 ): void {
@@ -151,7 +159,7 @@ export function assertWorkflowSpineMatchesPlan(
   }
 }
 
-function routeInstructions(route: NonNullable<WorkflowPlanGraph["steps"][number]["route"]>): string {
+function routeInstructions(route: IrRouteSpec): string {
   const branches = Object.entries(route.when)
     .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
     .map(([match, stepId]) => `"${match}" -> ${stepId}`);
