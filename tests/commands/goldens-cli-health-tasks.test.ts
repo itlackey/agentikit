@@ -248,6 +248,42 @@ describe("family B — akm health", () => {
       warn: { exitCode: warn.code, status: warnJson.status },
     });
   });
+
+  test("health — a deterministic advisory warning sets overall warn and exit 4", async () => {
+    const db = openStateDatabase();
+    try {
+      upsertTaskHistory(db, {
+        task_id: "b-advisory-failing-task",
+        status: "failed",
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        failed_at: new Date().toISOString(),
+        log_path: null,
+        target_kind: "prompt",
+        target_ref: null,
+        metadata_json: JSON.stringify({
+          metadataVersion: 2,
+          durationMs: 5,
+          detail: { exitCode: 1 },
+          engine: "opencode",
+        }),
+      });
+    } finally {
+      db.close();
+    }
+
+    const direct = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] });
+    expect(direct.hardChecks.some((check) => check.status === "warn" || check.status === "fail")).toBe(false);
+    expect(direct.advisories.find((check) => check.name === "task-fail-rate")).toMatchObject({
+      kind: "deterministic",
+      status: "warn",
+    });
+    expect(direct).toMatchObject({ ok: true, status: "warn" });
+
+    const cli = await runCli(["health", "--since", "7d", "--format=json"]);
+    expect(cli.code).toBe(4);
+    expect(JSON.parse(cli.stdout)).toMatchObject({ ok: true, status: "warn" });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────

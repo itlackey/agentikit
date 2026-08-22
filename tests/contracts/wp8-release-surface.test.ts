@@ -97,11 +97,13 @@ const CURRENT_TRUTH_DOCS = [
   "docs/reference/workflows.md",
   "docs/reference/workflow-schema.md",
   "docs/guides/author-workflows.md",
+  "docs/guides/claude-code-vs-akm-workflows.md",
   "docs/guides/run-workflows.md",
   "docs/guides/scheduling.md",
   "docs/architecture/adapters.md",
   "docs/architecture/architecture.md",
   "docs/architecture/workflow-engine.md",
+  "docs/architecture/comparisons/claude-code-vs-akm-workflows-full.md",
   "docs/architecture/internals/functional-contract-patterns.md",
   "docs/architecture/internals/health-advisories.md",
   "docs/architecture/internals/storage-locations.md",
@@ -440,6 +442,51 @@ describe("0.9.2 release surface", () => {
     expect(failures).toEqual([]);
   });
 
+  test("keeps both maintained workflow comparisons on the peer-source and durable-v4 contract", () => {
+    const comparisonDocs = [
+      "docs/guides/claude-code-vs-akm-workflows.md",
+      "docs/architecture/comparisons/claude-code-vs-akm-workflows-full.md",
+    ] as const;
+    const failures: string[] = [];
+
+    for (const relative of comparisonDocs) {
+      failures.push(
+        ...missing(relative, [
+          [
+            "peer .md and .yml workflow sources",
+            /(?:peer|both)[^.\n]{0,200}\.md[^.\n]{0,200}\.yml|(?:peer|both)[^.\n]{0,200}\.yml[^.\n]{0,200}\.md/i,
+          ],
+          ["shared source IR v1", /source IR (?:version )?1|sourceIrVersion:?\s*1/i],
+          [
+            "new starts freeze durable plan IR v4",
+            /new (?:run|start)[^.\n]{0,240}(?:freeze|persist|store)[^.\n]{0,180}(?:durable )?(?:plan )?IR v4|(?:durable )?(?:plan )?IR v4[^.\n]{0,240}new (?:run|start)/i,
+          ],
+        ]),
+      );
+
+      const text = read(relative);
+      for (const [label, pattern] of [
+        ["claims workflows are Markdown-defined", /(?:AKM|akm) workflows?[\s\S]{0,160}Markdown-defined/i],
+        [
+          "claims a reusable workflow is one Markdown asset",
+          /(?:workflow|format|artifact)[\s\S]{0,180}(?:one|single)[\s\S]{0,100}Markdown asset|(?:one|single)[\s\S]{0,100}Markdown asset[\s\S]{0,180}workflow/i,
+        ],
+        [
+          "claims the workflow format is unified Markdown",
+          /(?:unified|managed)[\s\S]{0,80}Markdown (?:format|asset)|workflow asset type[\s\S]{0,160}unified Markdown/i,
+        ],
+        [
+          "claims durable definitions are Markdown-only",
+          /durable[\s\S]{0,120}Markdown definition|Markdown-only[\s\S]{0,160}workflow|workflow[\s\S]{0,160}Markdown-only/i,
+        ],
+      ] satisfies Requirement[]) {
+        if (pattern.test(text)) failures.push(relative + ": " + label);
+      }
+    }
+
+    expect(failures).toEqual([]);
+  });
+
   test("states durable-v4 immutability, its narrow live-value exceptions, and at-least-once dispatch truth", () => {
     const failures = [
       ...missingInSection("docs/architecture/workflow-engine.md", /frozen plans?|durable plan/i, [
@@ -702,20 +749,20 @@ describe("0.9.2 release surface", () => {
     expect(
       missing("docs/architecture/internals/health-advisories.md", [
         [
-          "hard warn produces overall warn and exit 4",
-          /hard[^.\n]{0,160}warn[^.\n]{0,160}(?:overall )?status[^.\n]{0,80}warn[^.\n]{0,160}exit(?: code)?\s*4/i,
+          "deterministic hard and advisory warnings produce overall warn and exit 4",
+          /deterministic[^.\n]{0,200}(?:hard[^.\n]{0,100}advisory|advisory[^.\n]{0,100}hard)[^.\n]{0,200}warn[^.\n]{0,160}(?:overall )?status[^.\n]{0,80}warn[^.\n]{0,160}exit(?: code)?\s*4/i,
         ],
         [
           "hard fail produces overall fail and exit 1",
           /hard[^.\n]{0,160}fail[^.\n]{0,160}(?:overall )?status[^.\n]{0,80}fail[^.\n]{0,160}exit(?: code)?\s*1/i,
         ],
         [
-          "advisory warn does not change overall status",
-          /advisory[^.\n]{0,180}warn[^.\n]{0,220}(?:does not|never)[^.\n]{0,160}(?:change|gate)[^.\n]{0,120}(?:overall )?status/i,
+          "heuristic advisory warn does not change overall status",
+          /(?:heuristic|non-deterministic)[^.\n]{0,120}advisory[^.\n]{0,180}warn[^.\n]{0,220}(?:does not|never)[^.\n]{0,160}(?:change|gate)[^.\n]{0,120}(?:overall )?status/i,
         ],
         [
-          "advisory warn does not change exit code",
-          /advisory[^.\n]{0,180}warn[^.\n]{0,220}(?:does not|never)[^.\n]{0,160}(?:change|gate)[^.\n]{0,120}exit(?: code)?/i,
+          "heuristic advisory warn does not change exit code",
+          /(?:heuristic|non-deterministic)[^.\n]{0,120}advisory[^.\n]{0,180}warn[^.\n]{0,220}(?:does not|never)[^.\n]{0,160}(?:change|gate)[^.\n]{0,120}exit(?: code)?/i,
         ],
       ]),
     ).toEqual([]);
