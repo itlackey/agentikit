@@ -24,11 +24,12 @@ import path from "node:path";
 import { type CommandDispatchResult, dispatchPreparedCommandInvocation } from "../commands/command/command-execution";
 import { armAbortDeadline } from "../core/abort-deadline";
 import { shouldSkipUnactivatedTask } from "../core/activation-policy";
+import { detectAdapterId } from "../core/adapter/detect-adapter";
 import { assertNever } from "../core/assert";
 import { makeBundleRef } from "../core/asset/asset-ref";
 import { loadConfig } from "../core/config/config";
 import type { AkmConfig } from "../core/config/config-types";
-import { AkmError, rethrowIfTestIsolationError } from "../core/errors";
+import { AkmError, NotFoundError, rethrowIfTestIsolationError } from "../core/errors";
 import {
   buildTaskRunId,
   insertTaskLogLines,
@@ -43,6 +44,7 @@ import { withStateDb } from "../core/state-db";
 import { runManagedSubprocess, type SpawnFn } from "../core/subprocess";
 import { resolveWriteTarget } from "../core/write-source";
 import type { LoweringNotice } from "../execution/resolved-request";
+import { resolveAdapterConceptOwner } from "../indexer/lookup/adapter-concept-owner";
 import type { RunAgentOptions } from "../integrations/agent";
 import type { DispatchLoweredExecutionOptions } from "../integrations/agent/execution-lowering";
 import type { chatCompletion } from "../llm/client";
@@ -109,6 +111,8 @@ export interface RunTaskOptions {
   stashDir: string;
   /** Durable bundle identity for fully-qualified refs. */
   bundleName?: string;
+  /** Configured adapter for the selected component root. */
+  adapterId?: string;
   /** Override the common command dispatch's agent runner (tests). */
   runAgentImpl?: DispatchLoweredExecutionOptions["runAgent"];
   /**
@@ -149,7 +153,16 @@ export async function runTask(id: string, options: RunTaskOptions): Promise<Task
   const requestedStartedAt = now();
   validateTaskId(id);
   const stashDir = options.stashDir;
-  const filePath = await resolveAssetPath(stashDir, "task", id);
+  const adapterId = options.adapterId ?? detectAdapterId(stashDir);
+  const taskConceptId = adapterId === "akm" ? `tasks/${id}` : id;
+  const owner = resolveAdapterConceptOwner(stashDir, adapterId, taskConceptId);
+  if (!owner) {
+    throw new NotFoundError(
+      `Task ${JSON.stringify(id)} was not found in the configured ${JSON.stringify(adapterId)} component.`,
+      "ASSET_NOT_FOUND",
+    );
+  }
+  const filePath = owner.path;
   const yaml = fs.readFileSync(filePath, "utf8");
   const source = parseTaskV3Yaml({ yaml, filePath, workspaceRoot: stashDir });
   const requiresCommandConfig =
@@ -159,7 +172,7 @@ export async function runTask(id: string, options: RunTaskOptions): Promise<Task
   const bundleName = options.bundleName ?? config.defaultBundle ?? "stash";
   const task = await prepareTaskV3Execution(source, {
     taskId: id,
-    taskRef: makeBundleRef(bundleName, `tasks/${id}`),
+    taskRef: makeBundleRef(bundleName, taskConceptId),
     bundleName,
     bundleRoot: stashDir,
     config,
@@ -268,6 +281,7 @@ function finishDisabledTask(
     fileText: `${line}\n`,
     dbLines: [{ line }],
     redactNames: task.redact,
+    environment: task.environment,
   });
   appendHistory(result, historyReserved);
   return result;
@@ -462,6 +476,7 @@ async function runNativeTask(input: {
     fileText: `${logLines.join("\n")}\n`,
     dbLines,
     redactNames: task.redact,
+    environment: task.environment,
   });
   const status: TaskRunStatus = exitCode === 0 ? "completed" : "failed";
   const result: TaskRunResult = {
@@ -622,6 +637,7 @@ async function runWorkflowTask(input: {
     fileText: log.fileText,
     dbLines: log.dbLines,
     redactNames: task.redact,
+    environment: task.environment,
   });
 
   const result: TaskRunResult = {
@@ -634,7 +650,7 @@ async function runWorkflowTask(input: {
     target: { kind: "workflow", ref: task.ref },
     detail: {
       runId: detail?.id,
-      ...(failure ? { error: failure.message } : {}),
+      ...(failure ? { error: scrubTaskOutput(task, failure.message) } : {}),
     },
   };
   appendHistory(result, historyReserved);
@@ -728,6 +744,7 @@ async function runPreparedCommandTask(input: {
     fileText: log.fileText,
     dbLines: log.dbLines,
     redactNames: task.redact,
+    environment: task.environment,
   });
 
   const status: TaskRunStatus = result.ok ? "completed" : "failed";
@@ -741,8 +758,19 @@ async function runPreparedCommandTask(input: {
     target: { kind: "prompt", engine: engineName },
     detail: result.ok
       ? { exitCode: result.exitCode }
-      : { reason: result.reason, error: result.error, exitCode: result.exitCode },
-    ...(result.notices && result.notices.length > 0 ? { notices: result.notices } : {}),
+      : {
+          reason: result.reason === undefined ? undefined : scrubTaskOutput(task, result.reason),
+          error: result.error === undefined ? undefined : scrubTaskOutput(task, result.error),
+          exitCode: result.exitCode,
+        },
+    ...(result.notices && result.notices.length > 0
+      ? {
+          notices: result.notices.map((notice) => ({
+            ...notice,
+            message: scrubTaskOutput(task, notice.message),
+          })),
+        }
+      : {}),
   };
   appendHistory(out, input.historyReserved);
   return out;
@@ -886,10 +914,14 @@ function streamLines(text: string, stream: TaskLogStream, level: TaskLogLevel): 
  * to "log it anyway with no redaction at all" — `redactCredentialPatterns`
  * still runs unconditionally in the caller.
  */
-function taskLogSensitiveValues(redactNames: readonly string[] | undefined): string[] {
+function taskLogSensitiveValues(
+  redactNames: readonly string[] | undefined,
+  environment?: Readonly<Record<string, string>>,
+): string[] {
+  const env = { ...process.env, ...environment };
   try {
     return collectTaskLogSensitiveValues({
-      env: process.env,
+      env,
       config: loadConfig(),
       declaredNames: redactNames,
     });
@@ -897,12 +929,18 @@ function taskLogSensitiveValues(redactNames: readonly string[] | undefined): str
     rethrowIfTestIsolationError(error);
     // No config — the name heuristic and the task's own `redact:` list still apply.
     try {
-      return collectTaskLogSensitiveValues({ env: process.env, declaredNames: redactNames });
+      return collectTaskLogSensitiveValues({ env, declaredNames: redactNames });
     } catch (fallbackError) {
       rethrowIfTestIsolationError(fallbackError);
       return [];
     }
   }
+}
+
+function scrubTaskOutput(task: PreparedTaskV3Execution, text: string): string {
+  const patterned = redactCredentialPatterns(text);
+  const sensitive = taskLogSensitiveValues(task.redact, task.environment);
+  return sensitive.length > 0 ? redactSensitiveText(patterned, sensitive) : patterned;
 }
 
 function persistRunLog(input: {
@@ -914,6 +952,8 @@ function persistRunLog(input: {
   dbLines: readonly TaskLogLineInput[];
   /** The task's `redact:` names, if any (#755). */
   redactNames?: readonly string[] | undefined;
+  /** Prepared task-local env overrides ambient values of the same name. */
+  environment?: Readonly<Record<string, string>> | undefined;
 }): void {
   // Two arms, and both are needed. `redactCredentialPatterns` catches
   // credential SHAPES nobody listed; the exact-value pass catches configured
@@ -923,7 +963,7 @@ function persistRunLog(input: {
   // exact pass here — the one sink all three target kinds funnel through —
   // covers every arm once rather than per-arm; prompt/workflow runs already
   // scrub upstream, and redaction is idempotent, so the overlap is free.
-  const sensitive = taskLogSensitiveValues(input.redactNames);
+  const sensitive = taskLogSensitiveValues(input.redactNames, input.environment);
   const scrub = (text: string): string =>
     sensitive.length > 0
       ? redactSensitiveText(redactCredentialPatterns(text), sensitive)

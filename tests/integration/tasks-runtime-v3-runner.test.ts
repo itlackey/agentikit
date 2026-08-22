@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { openLogsDatabase, queryTaskLogs } from "../../src/core/logs-db";
 import type { SpawnFn } from "../../src/core/subprocess";
 import { readTaskHistory, runTask } from "../../src/tasks/runner";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
@@ -45,6 +46,24 @@ function completedSpawn(exitCode: number): ReturnType<SpawnFn> {
     exited: Promise.resolve(exitCode),
     stdout: closedStream(),
     stderr: closedStream(),
+    stdin: null,
+    kill() {},
+  };
+}
+
+function outputSpawn(stdout: string, stderr = ""): ReturnType<SpawnFn> {
+  const stream = (text: string) =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (text.length > 0) controller.enqueue(new TextEncoder().encode(text));
+        controller.close();
+      },
+    });
+  return {
+    exitCode: 0,
+    exited: Promise.resolve(0),
+    stdout: stream(stdout),
+    stderr: stream(stderr),
     stdin: null,
     kill() {},
   };
@@ -164,6 +183,53 @@ describe("task-v3 runner mutation boundary", () => {
     expect(logFiles()).toEqual([]);
   });
 
+  test("workflow task env fails closed before history because the workflow start contract has no consumer", async () => {
+    const workflowsDir = path.join(storage.stashDir, "workflows");
+    fs.mkdirSync(workflowsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(workflowsDir, "env-target.yml"),
+      [
+        "name: Env target",
+        "on: { workflow_dispatch: null }",
+        "jobs:",
+        "  main:",
+        "    runs-on: [self-hosted]",
+        "    steps:",
+        "      - id: run",
+        "        run: echo ok",
+        "",
+      ].join("\n"),
+    );
+    writeTask(
+      "workflow-env",
+      [
+        "version: 3",
+        "uses: workflows/env-target",
+        "env:",
+        "  TASK_LOCAL_VALUE: ordinary-local-value",
+        "akm:",
+        '  schedule: "@daily"',
+        "",
+      ].join("\n"),
+    );
+    let dispatched = false;
+
+    await expect(
+      runTask("workflow-env", {
+        stashDir: storage.stashDir,
+        bundleName: "fixture",
+        scheduled: true,
+        runWorkflowStepsImpl: async () => {
+          dispatched = true;
+          throw new Error("must not dispatch");
+        },
+      }),
+    ).rejects.toThrow(/workflow.*env|env.*workflow|cannot preserve/i);
+    expect(dispatched).toBe(false);
+    expect(readTaskHistory({ id: "workflow-env" })).toEqual([]);
+    expect(logFiles()).toEqual([]);
+  });
+
   test("a bundle-qualified script resolves from the named configured bundle", async () => {
     const shared = path.join(storage.root, "shared-bundle");
     fs.mkdirSync(path.join(shared, "scripts"), { recursive: true });
@@ -236,6 +302,45 @@ describe("task-v3 runner mutation boundary", () => {
     expect(observed?.cmd).toEqual(["zsh", "-c", command]);
     expect(observed?.cwd).toBe(path.join(storage.stashDir, "work"));
     expect(observed?.env).toMatchObject({ COUNT: "0", ENABLED: "false", AKM_EVENT_SOURCE: "task" });
+  });
+
+  test("akm.redact resolves a declared name from prepared task env for every durable/output sink", async () => {
+    const secret = "task-local-harbour-lantern";
+    writeTask(
+      "local-redaction",
+      [
+        "version: 3",
+        "run: echo ignored",
+        "env:",
+        `  TASK_LOCAL_VALUE: ${secret}`,
+        "akm:",
+        '  schedule: "@daily"',
+        "  redact: [TASK_LOCAL_VALUE]",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await runTask("local-redaction", {
+      stashDir: storage.stashDir,
+      bundleName: "fixture",
+      scheduled: true,
+      spawnFn: (_cmd, options) => {
+        expect(options.env?.TASK_LOCAL_VALUE).toBe(secret);
+        return outputSpawn(`stdout ${secret}\n`, `stderr ${secret}\n`);
+      },
+    });
+
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(fs.readFileSync(result.log, "utf8")).not.toContain(secret);
+    expect(JSON.stringify(readTaskHistory({ id: "local-redaction" }))).not.toContain(secret);
+    const db = openLogsDatabase();
+    try {
+      const rows = queryTaskLogs(db, { taskId: "local-redaction" });
+      expect(rows.length).toBeGreaterThan(0);
+      expect(JSON.stringify(rows)).not.toContain(secret);
+    } finally {
+      db.close();
+    }
   });
 
   test.skipIf(process.platform === "win32").each(["symlink", "ancestor", "bundle-root", "file"] as const)(

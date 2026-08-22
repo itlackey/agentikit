@@ -290,6 +290,57 @@ function managedPlans(ids: string[]): PreparedSetupTask[] {
 }
 
 describe("task definition preparation", () => {
+  test("setup accepts and preserves every valid schedule in a multi-schedule task", async () => {
+    const storage = withIsolatedAkmStorage();
+    try {
+      writeSandboxConfig({ bundles: { stash: { path: storage.stashDir } }, defaultBundle: "stash" });
+      const taskDir = path.join(storage.stashDir, "tasks");
+      const filePath = path.join(taskDir, "improve.yml");
+      const original = [
+        "version: 3",
+        "run: akm improve",
+        "on:",
+        "  schedule:",
+        "    - cron: '0 1 * * *'",
+        "    - cron: '30 13 * * 1,2,3,4,5'",
+        "akm:",
+        "  enabled: false",
+        "",
+      ].join("\n");
+      fs.mkdirSync(taskDir, { recursive: true });
+      fs.writeFileSync(filePath, original, "utf8");
+
+      const listed = listSetupTaskDefinitions() as Array<{
+        id: string;
+        schedule: string;
+        schedules: readonly string[];
+        enabled: boolean;
+      }>;
+      expect(listed).toEqual([
+        {
+          id: "improve",
+          schedule: "0 1 * * *",
+          schedules: ["0 1 * * *", "30 13 * * 1,2,3,4,5"],
+          enabled: false,
+        },
+      ]);
+
+      const embedded = listEmbeddedTasks().find((task) => task.id === "improve");
+      expect(embedded).toBeDefined();
+      await prepareSetupTaskDefinitions(
+        [{ task: embedded!, schedule: listed[0]!.schedule, enabled: true, installed: true }],
+        { commitBoundary: () => {} },
+      );
+
+      const updated = fs.readFileSync(filePath, "utf8");
+      expect(updated).toContain("enabled: true");
+      expect(updated).toContain("cron: 0 1 * * *");
+      expect(updated).toContain("cron: 30 13 * * 1,2,3,4,5");
+    } finally {
+      storage.cleanup();
+    }
+  });
+
   test("malformed custom tasks fail closed before review and preserve their bytes", async () => {
     const storage = withIsolatedAkmStorage();
     try {

@@ -437,6 +437,41 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(exec.disabledLabels.has("com.akm.task.ping")).toBe(false);
   });
 
+  test("binding snapshots restore exact plist, loaded, enabled, and absent states", () => {
+    const { backend, exec, fs } = makeBackend();
+    const priorTask = { ...makeTask("0 9 * * *"), enabled: false };
+    backend.install(priorTask);
+    const file = "/tmp/agents/com.akm.task.ping.plist";
+    const priorPlist = fs.readFile(file);
+    const snapshot = backend.snapshotBindings?.(["ping", "absent"]);
+
+    backend.install(makeTask("30 10 * * *"));
+    backend.install(makeTask("15 11 * * *", "absent"));
+    backend.restoreBindings?.(snapshot);
+
+    expect(fs.readFile(file)).toBe(priorPlist);
+    expect(fs.written.has("/tmp/agents/com.akm.task.absent.plist")).toBe(false);
+    expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(true);
+    expect(exec.loadedLabels.has("com.akm.task.absent")).toBe(false);
+    expect(exec.disabledLabels.has("com.akm.task.ping")).toBe(true);
+    expect(exec.disabledLabels.has("com.akm.task.absent")).toBe(false);
+  });
+
+  test("binding snapshots preserve a plist whose service was unloaded", () => {
+    const { backend, exec, fs } = makeBackend();
+    backend.install(makeTask("0 9 * * *"));
+    exec.loadedLabels.delete("com.akm.task.ping");
+    const file = "/tmp/agents/com.akm.task.ping.plist";
+    const priorPlist = fs.readFile(file);
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+
+    backend.install(makeTask("30 10 * * *"));
+    backend.restoreBindings?.(snapshot);
+
+    expect(fs.readFile(file)).toBe(priorPlist);
+    expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(false);
+  });
+
   test("uninstall aborts without enabling or deleting after bootout fails", () => {
     const transaction = makeTransactionalBackend();
     transaction.backend.install({ ...makeTask("0 9 * * *"), enabled: false });

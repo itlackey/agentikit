@@ -432,6 +432,12 @@ export async function prepareTaskV3Execution(
     return Object.freeze({ ...common, kind: "command" as const, invocation });
   }
   if (target.kind === "workflow") {
+    if (Object.keys(environment).length > 0) {
+      throw new UsageError(
+        "Task v3 workflow env cannot be consumed by the durable workflow runtime in 0.9.2; remove env or use a command target.",
+        "INVALID_FLAG_VALUE",
+      );
+    }
     const resolved = await resolvedOwnedAsset(qualified, "workflow", context);
     validateWorkflowRuntimeSource(resolved.file, resolved.bundleRoot);
     return Object.freeze({

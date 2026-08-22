@@ -917,4 +917,17 @@ describe("schtasks backend transactional install", () => {
     expect(transaction.installedXml()).toContain('encoding="UTF-16"');
     expect(transaction.installedXml()).not.toContain('encoding="UTF-8"');
   });
+
+  test("binding snapshots restore the queried XML and enabled state exactly", () => {
+    const transaction = transactionBackend();
+    transaction.backend.install(makeTask("0 9 * * *", "ping", false));
+    const priorXml = transaction.installedXml();
+    const snapshot = transaction.backend.snapshotBindings?.(["ping"]);
+
+    transaction.backend.install(makeTask("30 10 * * *", "ping", true));
+    transaction.backend.restoreBindings?.(snapshot);
+
+    expect(transaction.installedXml()).toBe(priorXml);
+    expect(transaction.enabled()).toBe(false);
+  });
 });

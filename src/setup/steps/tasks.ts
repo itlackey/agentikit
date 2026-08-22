@@ -103,6 +103,8 @@ function setTaskV3EnabledInYaml(yaml: string, enabled: boolean): string {
 export interface SetupTaskDefinition {
   id: string;
   schedule: string;
+  /** Every authored schedule, in parser/source order. */
+  schedules?: readonly string[];
   enabled: boolean;
   description?: string;
 }
@@ -137,15 +139,12 @@ export function listSetupTaskDefinitions(): SetupTaskDefinition[] {
         filePath,
         workspaceRoot: target.source.path,
       });
-      if (task.triggers.schedules.length !== 1) {
-        throw new UsageError(
-          `Setup review requires exactly one scheduled binding for task ${JSON.stringify(id)}.`,
-          "INVALID_FLAG_VALUE",
-        );
-      }
+      if (task.triggers.schedules.length === 0) continue;
+      const schedules = task.triggers.schedules.map((schedule) => schedule.cron);
       tasks.push({
         id,
-        schedule: task.triggers.schedules[0]!.cron,
+        schedule: schedules[0]!,
+        schedules: Object.freeze(schedules),
         enabled: task.akm?.enabled !== false,
         ...(task.akm?.description !== undefined ? { description: task.akm.description } : {}),
       });
@@ -194,8 +193,10 @@ export async function prepareSetupTaskDefinitions(
       yaml = yamlStringify(document);
     }
 
-    parseTaskV3Yaml({ yaml, filePath, workspaceRoot: target.source.path });
-    parseSchedule(plan.schedule, backendNameForPlatform());
+    const parsed = parseTaskV3Yaml({ yaml, filePath, workspaceRoot: target.source.path });
+    for (const schedule of parsed.triggers.schedules) {
+      parseSchedule(schedule.cron, backendNameForPlatform());
+    }
     return { filePath, original, yaml, ref: { type: "task" as const, name: plan.task.id } };
   });
   const changed = prepared.filter((entry) => entry.original !== entry.yaml);
@@ -288,7 +289,7 @@ export async function stepScheduledTasks(
       initialValues: preChecked,
       options: embedded.map((task) => {
         const current = byId.get(task.id);
-        const schedule = current?.schedule ?? task.schedule;
+        const schedule = current ? displayTaskSchedules(current) : task.schedule;
         const state = current ? (current.enabled ? "enabled" : "disabled") : "not prepared";
         return {
           value: task.id,
@@ -340,7 +341,7 @@ export async function stepScheduledTasks(
       ),
       ...custom.map(
         (task) =>
-          `${task.id}: ${task.enabled ? "enabled" : "disabled"} | ${task.schedule}${task.description ? ` | ${task.description}` : ""}`,
+          `${task.id}: ${task.enabled ? "enabled" : "disabled"} | ${displayTaskSchedules(task)}${task.description ? ` | ${task.description}` : ""}`,
       ),
     ].join("\n"),
     "Task Schedule Review",
@@ -373,4 +374,8 @@ export async function stepScheduledTasks(
     return;
   }
   p.log.success("Task schedules activated. Verify them with `akm task doctor`.");
+}
+
+function displayTaskSchedules(task: SetupTaskDefinition): string {
+  return task.schedules && task.schedules.length > 0 ? task.schedules.join(", ") : task.schedule;
 }

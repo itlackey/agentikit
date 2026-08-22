@@ -16,7 +16,7 @@ import { stringify as yamlStringify } from "yaml";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { assetPathForName } from "../../core/asset/asset-placement";
 import { makeBundleRef } from "../../core/asset/asset-ref";
-import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
+import { type AssetRef, conceptIdFromTypeName, isFullRefInput, parseRefInput } from "../../core/asset/resolve-ref";
 import { isWithin, resolveStashDir } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import type { AkmConfig } from "../../core/config/config-types";
@@ -125,7 +125,7 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   const targetCount = [Boolean(input.workflow), Boolean(input.prompt), hasCommand].filter(Boolean).length;
   if (targetCount !== 1) {
     throw new UsageError(
-      "Pass exactly one of --workflow <ref>, --prompt <asset-ref|./file.md|text>, or --command <shell-command>.",
+      "Pass exactly one of --workflow <ref>, --prompt <inline-text>, or --command <shell-command>.",
       "INVALID_FLAG_VALUE",
     );
   }
@@ -142,6 +142,7 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   if (hasCommand && (input.engine !== undefined || input.model !== undefined)) {
     throw new UsageError("Command tasks accept --timeout-ms but not --engine or --model.", "INVALID_FLAG_VALUE");
   }
+  if (input.prompt !== undefined) assertInlineTaskPrompt(input.prompt);
 
   // Validate the schedule for the active backend before writing anything.
   // WI-9.10e: the injected backend (tests) carries its own name, so derive it
@@ -198,23 +199,24 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     config: bundle.config,
     resolveAsset: taskProjectionAssetResolver(bundle.config, bundle.bundleName, stashDir),
   });
-  const [taskBinding] = compileTaskSchedulerBindings({
+  const taskBindings = compileTaskSchedulerBindings({
     id,
     qualifiedRef,
     ...(bundle.installTarget ? { bundleTarget: bundle.installTarget } : {}),
     enabled: task.akm?.enabled !== false,
     schedules: task.triggers.schedules,
   });
+  const taskBinding = taskBindings[0];
   if (!taskBinding) throw new UsageError(`Task "${id}" has no schedulable trigger.`, "INVALID_FLAG_VALUE");
 
   const ref = taskAssetRef(id);
   const previousYaml = fs.existsSync(assetPath) ? fs.readFileSync(assetPath, "utf8") : undefined;
-  let previousTask: SchedulerBinding | undefined;
+  let previousBindings: readonly SchedulerBinding[] = [];
   let previousTaskError: unknown;
   if (previousYaml !== undefined) {
     try {
       const previous = parseTaskV3Yaml({ yaml: previousYaml, filePath: assetPath, workspaceRoot: stashDir });
-      [previousTask] = compileTaskSchedulerBindings({
+      previousBindings = compileTaskSchedulerBindings({
         id,
         qualifiedRef: makeBundleRef(bundle.bundleName, `tasks/${id}`),
         ...(bundle.installTarget ? { bundleTarget: bundle.installTarget } : {}),
@@ -229,25 +231,32 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   const writeAsset = deps.writeAsset ?? writeAssetToSource;
   const deleteAsset = deps.deleteAsset ?? deleteAssetFromSource;
   const commitBoundary = deps.commitBoundary ?? commitWriteTargetBoundary;
-  const installedEntries = await sched.list();
-  assertNoForeignSchedule(installedEntries, taskBinding.id, bundle.installTarget);
-  const wasInstalled = previousYaml !== undefined && installedEntries.some((entry) => entry.id === id);
-  const installedEntry = installedEntries.find((entry) => entry.id === id);
-  const runtimeOpts = schedulerInstallOptions(
-    installOpts,
-    installedEntry,
-    deps,
-    installedEntry ? false : input.rebind === true,
-    `create scheduler entry for task "${id}"`,
-  );
+  const { installedAffected, runtimeOpts, canSnapshot, nativeSnapshot, staleInstalledIds } =
+    await prepareTaskAddSchedulerTransaction({
+      id,
+      installTarget: bundle.installTarget,
+      installOpts,
+      taskBindings,
+      previousBindings,
+      previousTaskError,
+      sched,
+      deps,
+      rebind: input.rebind === true,
+    });
   let sourceRestoreArmed = false;
-  let installSucceeded = false;
+  let nativeMutationStarted = false;
 
   try {
     sourceRestoreArmed = true;
     await writeAsset(writeTarget.source, writeTarget.config, ref, yaml);
-    await sched.install(taskBinding, runtimeOpts);
-    installSucceeded = true;
+    for (const binding of taskBindings) {
+      nativeMutationStarted = true;
+      await sched.install(binding, runtimeOpts);
+    }
+    for (const staleId of staleInstalledIds) {
+      nativeMutationStarted = true;
+      await sched.uninstall(staleId);
+    }
     commitBoundary(writeTarget, `Update tasks/${id}`);
   } catch (err) {
     const rollbackErrors: unknown[] = [];
@@ -275,33 +284,21 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
       }
     }
 
-    if (installSucceeded && !wasInstalled) {
+    if (nativeMutationStarted && canSnapshot) {
       try {
-        await sched.uninstall(id);
+        await sched.restoreBindings!(nativeSnapshot);
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
-    } else if (installSucceeded && previousTask) {
-      try {
-        await sched.install(previousTask, runtimeOpts);
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-        try {
-          if (typeof sched.setEnabled !== "function") {
-            throw new Error(`Scheduler backend "${sched.name}" cannot disable task "${id}".`);
-          }
-          await sched.setEnabled(id, false);
-        } catch (disableError) {
-          rollbackErrors.push(disableError);
-          try {
-            await sched.uninstall(id);
-          } catch (uninstallError) {
-            rollbackErrors.push(uninstallError);
-          }
-        }
-      }
-    } else if (installSucceeded && wasInstalled) {
-      rollbackErrors.push(previousTaskError ?? new Error(`Prior task "${id}" could not be restored.`));
+    } else if (nativeMutationStarted) {
+      await rollbackTaskBindingsWithoutSnapshot({
+        sched,
+        desired: taskBindings,
+        previous: previousBindings,
+        installedBefore: installedAffected,
+        runtimeOpts,
+        rollbackErrors,
+      });
     }
 
     if (sourceRestored) {
@@ -346,6 +343,7 @@ export async function akmTasksRun(
   const runOptions = {
     stashDir: bundle.source.path,
     bundleName: bundle.source.name,
+    adapterId: bundle.source.adapterId ?? detectAdapterId(bundle.source.path),
     scheduled: options.scheduled === true,
   } as Parameters<typeof runTask>[1] & { bundleName: string };
   // The runner owns the prepare-before-reserve boundary. Invalid source,
@@ -610,6 +608,101 @@ async function applySchedulerSyncPlan(backend: TaskBackend, plan: SchedulerSyncP
   }
 }
 
+async function prepareTaskAddSchedulerTransaction(input: {
+  id: string;
+  installTarget: string | undefined;
+  installOpts: { target?: string } | undefined;
+  taskBindings: readonly SchedulerBinding[];
+  previousBindings: readonly SchedulerBinding[];
+  previousTaskError: unknown;
+  sched: TaskBackend;
+  deps: TaskMutationDeps;
+  rebind: boolean;
+}): Promise<{
+  installedAffected: readonly InstalledTaskRef[];
+  runtimeOpts: SchedulerInstallOptions | undefined;
+  canSnapshot: boolean;
+  nativeSnapshot: unknown;
+  staleInstalledIds: readonly string[];
+}> {
+  const installedEntries = await input.sched.list();
+  for (const binding of input.taskBindings) {
+    assertNoForeignSchedule(installedEntries, binding.id, input.installTarget);
+  }
+  const taskEntries = installedEntries.filter((entry) => installedEntryRunsTask(entry, input.id));
+  const foreignTaskEntry = taskEntries.find((entry) => !sameBundle(entry.target, input.installTarget));
+  if (foreignTaskEntry) {
+    throw new UsageError(foreignScheduleMessage(input.id, foreignTaskEntry.target), "RESOURCE_ALREADY_EXISTS");
+  }
+  const desiredIds = new Set(input.taskBindings.map((binding) => binding.id));
+  const affectedIds = [
+    ...new Set([
+      input.id,
+      ...input.previousBindings.map((binding) => binding.id),
+      ...input.taskBindings.map((binding) => binding.id),
+      ...taskEntries.map((entry) => entry.id),
+    ]),
+  ];
+  const installedAffected = installedEntries.filter((entry) => affectedIds.includes(entry.id));
+  const primary = input.taskBindings[0];
+  if (!primary) throw new Error("invariant: scheduler transaction has no desired binding");
+  const installedEntry = installedEntries.find((entry) => entry.id === primary.id) ?? installedAffected[0];
+  const runtimeOpts = schedulerInstallOptions(
+    input.installOpts,
+    installedEntry,
+    input.deps,
+    installedEntry ? false : input.rebind,
+    `create scheduler entry for task "${input.id}"`,
+  );
+  const canSnapshot =
+    typeof input.sched.snapshotBindings === "function" && typeof input.sched.restoreBindings === "function";
+  const nativeSnapshot = canSnapshot ? await input.sched.snapshotBindings!(affectedIds) : undefined;
+  if (
+    !canSnapshot &&
+    installedAffected.length > 0 &&
+    (input.previousBindings.length === 0 || input.previousTaskError)
+  ) {
+    throw new ConfigError(
+      `Scheduler backend "${input.sched.name}" cannot transactionally replace the pre-existing native binding for task "${input.id}".`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  return {
+    installedAffected,
+    runtimeOpts,
+    canSnapshot,
+    nativeSnapshot,
+    staleInstalledIds: installedAffected.map((entry) => entry.id).filter((bindingId) => !desiredIds.has(bindingId)),
+  };
+}
+
+async function rollbackTaskBindingsWithoutSnapshot(input: {
+  sched: TaskBackend;
+  desired: readonly SchedulerBinding[];
+  previous: readonly SchedulerBinding[];
+  installedBefore: readonly InstalledTaskRef[];
+  runtimeOpts: SchedulerInstallOptions | undefined;
+  rollbackErrors: unknown[];
+}): Promise<void> {
+  const installedBefore = new Set(input.installedBefore.map((entry) => entry.id));
+  for (const binding of input.desired) {
+    if (installedBefore.has(binding.id)) continue;
+    try {
+      await input.sched.uninstall(binding.id);
+    } catch (error) {
+      input.rollbackErrors.push(error);
+    }
+  }
+  for (const binding of input.previous) {
+    if (!installedBefore.has(binding.id)) continue;
+    try {
+      await input.sched.install(binding, input.runtimeOpts);
+    } catch (error) {
+      input.rollbackErrors.push(error);
+    }
+  }
+}
+
 function prepareSchedulerSyncRuntime(
   base: { target?: string } | undefined,
   deps: { backend?: TaskBackend; schedulerRuntime?: () => PreparedSchedulerRuntime },
@@ -862,6 +955,11 @@ function sameBundle(a: string | undefined, b: string | undefined): boolean {
   return (a ?? undefined) === (b ?? undefined);
 }
 
+function installedEntryRunsTask(entry: InstalledTaskRef, id: string): boolean {
+  const invocation = entry.invocation;
+  return invocation?.[0] === "task" && invocation[1] === "run" && invocation[2] === id;
+}
+
 function foreignScheduleMessage(id: string, existingTarget: string | undefined): string {
   const where = existingTarget === undefined ? "the default bundle" : `bundle "${existingTarget}"`;
   return `Task id "${id}" is already scheduled from ${where}; rename the task or disable the existing one first.`;
@@ -905,7 +1003,7 @@ function renderTaskYaml(input: RenderInput): string {
     if (input.params) obj.with = parseJsonObjectArg(input.params);
   } else if (input.prompt) {
     obj.uses = "akm/command";
-    obj.with = isCanonicalCommandRef(input.prompt) ? { ref: input.prompt } : { content: input.prompt };
+    obj.with = { content: input.prompt };
   } else if (input.command !== undefined) {
     if (Array.isArray(input.command)) {
       throw new UsageError(
@@ -929,12 +1027,16 @@ function renderTaskYaml(input: RenderInput): string {
   return yamlStringify(obj);
 }
 
-function isCanonicalCommandRef(input: string): boolean {
-  try {
-    return parseRefInput(input).type === "command";
-  } catch {
-    return false;
-  }
+function assertInlineTaskPrompt(input: string): void {
+  const value = input.trim();
+  const pathShaped =
+    /^(?:\.{1,2}[\\/]|~[\\/]|[\\/]|[A-Za-z]:[\\/])/.test(value) ||
+    (!/\s/.test(value) && /[\\/]/.test(value) && path.extname(value) !== "");
+  if (!isFullRefInput(value) && !pathShaped) return;
+  throw new UsageError(
+    "--prompt accepts inline text only; asset refs and file paths are not prompt content. Use --workflow or an authored command ref where appropriate.",
+    "INVALID_FLAG_VALUE",
+  );
 }
 
 function parseJsonObjectArg(raw: string): Record<string, unknown> {

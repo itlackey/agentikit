@@ -74,6 +74,12 @@ const DISABLED_PREFIX = "# akm:disabled ";
 const BLOCK_RE = /^# akm:task ([\w.@:_-]+) BEGIN$/;
 const BLOCK_END_RE = /^# akm:task ([\w.@:_-]+) END$/;
 export const PORTABLE_CRON_LINE_LIMIT = 1000;
+const CRON_SNAPSHOT = Symbol("akm-cron-binding-snapshot");
+
+interface CronBindingSnapshot {
+  readonly kind: typeof CRON_SNAPSHOT;
+  readonly crontab: string;
+}
 
 export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
   const exec = options.exec ?? defaultCronExec();
@@ -127,13 +133,15 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
         // task file — going through the normal eligibility/`--rebind` gate
         // exactly like a fresh install.
         if (!installed) continue;
-        refs.push({
+        const ref: InstalledTaskRef = {
           id,
           signature: normalizeSignature(body),
           ...(installed.target !== undefined ? { target: installed.target } : {}),
           binding: installed.binding,
           contextPath: installed.contextPath,
-        });
+        };
+        Object.defineProperty(ref, "invocation", { value: Object.freeze([...installed.invocation]) });
+        refs.push(ref);
       }
       return refs;
     },
@@ -148,6 +156,16 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
         };
       });
     },
+    snapshotBindings(_ids: readonly string[]): CronBindingSnapshot {
+      return Object.freeze({ kind: CRON_SNAPSHOT, crontab: readCrontab(exec) });
+    },
+    restoreBindings(snapshot: unknown) {
+      if (!isCronBindingSnapshot(snapshot)) {
+        throw new ConfigError("Invalid cron scheduler snapshot.", "INVALID_CONFIG_FILE");
+      }
+      const existing = readCrontab(exec);
+      replaceCrontab(exec, existing, snapshot.crontab);
+    },
     expectedSignature(task: SchedulerBinding, opts?: TaskInstallOptions): string {
       const cronLine = buildCronLine(
         task,
@@ -160,6 +178,15 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       return normalizeSignature(cronBlockBody(cronLine, task.enabled));
     },
   };
+}
+
+function isCronBindingSnapshot(value: unknown): value is CronBindingSnapshot {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { kind?: unknown }).kind === CRON_SNAPSHOT &&
+    typeof (value as { crontab?: unknown }).crontab === "string"
+  );
 }
 
 // ── helpers (exported for tests) ────────────────────────────────────────────

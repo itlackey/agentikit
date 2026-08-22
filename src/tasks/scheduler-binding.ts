@@ -59,6 +59,8 @@ export interface InstalledSchedulerBinding {
   readonly contextPath: string;
   readonly signature?: string;
   readonly target?: string;
+  /** Parsed public CLI tail, used to attribute higher-ordinal task bindings. */
+  readonly invocation?: readonly string[];
 }
 
 /** Existing native ownership visible during an explicit destructive rebind. */
@@ -83,6 +85,10 @@ export interface SchedulerBackend {
   list(): Promise<InstalledSchedulerBinding[]> | InstalledSchedulerBinding[];
   listForRebind?(): Promise<RebindSchedulerBinding[]> | RebindSchedulerBinding[];
   expectedSignature?(binding: SchedulerBinding, opts?: SchedulerInstallOptions): string;
+  /** Capture exact native definitions for a command-layer transaction. */
+  snapshotBindings?(ids: readonly string[]): Promise<unknown> | unknown;
+  /** Restore a snapshot returned by this backend's `snapshotBindings`. */
+  restoreBindings?(snapshot: unknown): Promise<void> | void;
 }
 
 export function compileTaskSchedulerBindings(input: CompileTaskSchedulerBindingsInput): readonly SchedulerBinding[] {

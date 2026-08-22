@@ -64,7 +64,7 @@ const tasksAddCommand = defineJsonCommand({
     workflow: { type: "string", description: "Workflow ref to invoke (e.g. workflows/my-flow)" },
     prompt: {
       type: "string",
-      description: "Prompt for the configured agent harness — inline text, an asset ref like agents/foo, or ./path.md",
+      description: "Inline text prompt for the configured agent harness (asset refs and file paths are rejected)",
     },
     command: {
       type: "string",

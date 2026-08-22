@@ -83,6 +83,12 @@ export interface SchtasksBackendOptions {
 
 export const DEFAULT_FOLDER_PREFIX = "\\akm\\";
 const SIGNATURE_PREFIX = "akm:v1:";
+const SCHTASKS_SNAPSHOT = Symbol("akm-schtasks-binding-snapshot");
+
+interface SchtasksBindingSnapshot {
+  readonly kind: typeof SCHTASKS_SNAPSHOT;
+  readonly entries: readonly Readonly<{ id: string; xml?: string; enabled?: boolean }>[];
+}
 
 export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBackend {
   const exec = options.exec ?? defaultSchtasksExec();
@@ -218,13 +224,15 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
         // marker id, not a hard failure: omit it so `akmTasksSync` treats the
         // id as "not present" and reinstalls it from the current task file.
         if (!installed) continue;
-        refs.push({
+        const ref: InstalledTaskRef = {
           id,
           ...(signature !== undefined ? { signature } : {}),
           ...(installed.target !== undefined ? { target: installed.target } : {}),
           binding: installed.binding,
           contextPath: installed.contextPath,
-        });
+        };
+        Object.defineProperty(ref, "invocation", { value: Object.freeze([...installed.invocation]) });
+        refs.push(ref);
       }
       return refs;
     },
@@ -252,6 +260,12 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
       }
       return refs;
     },
+    snapshotBindings(ids: readonly string[]): SchtasksBindingSnapshot {
+      return snapshotSchtasksBindings(ids, exec, taskName);
+    },
+    restoreBindings(snapshot: unknown) {
+      restoreSchtasksBindings(snapshot, { exec, fsLike, taskName });
+    },
     expectedSignature(task: SchedulerBinding, opts?: TaskInstallOptions): string {
       const signature = taskXmlSignature(
         buildSchtasksXml(task, akmArgv, logDir, {
@@ -266,6 +280,73 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
       return signature;
     },
   };
+}
+
+function snapshotSchtasksBindings(
+  ids: readonly string[],
+  exec: SchtasksExec,
+  taskName: (id: string) => string,
+): SchtasksBindingSnapshot {
+  const entries = ids.map((id) => {
+    const query = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(id), "/XML"], {
+      isOk: (result) => result.status === 0 || isMissingTaskResult(result),
+      message: (result) =>
+        `schtasks /Query failed while snapshotting "${taskName(id)}": ${result.stderr || result.stdout || "no output"}.`,
+    });
+    if (query.status !== 0) return Object.freeze({ id });
+    const enabled = taskXmlEnabled(query.stdout);
+    if (enabled === undefined) {
+      throw new ConfigError(
+        `schtasks /Query returned an unreadable definition while snapshotting "${taskName(id)}".`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    return Object.freeze({ id, xml: normalizeXmlForUtf16File(query.stdout), enabled });
+  });
+  return Object.freeze({ kind: SCHTASKS_SNAPSHOT, entries: Object.freeze(entries) });
+}
+
+function restoreSchtasksBindings(
+  snapshot: unknown,
+  context: { exec: SchtasksExec; fsLike: SchtasksFs; taskName: (id: string) => string },
+): void {
+  if (!isSchtasksBindingSnapshot(snapshot)) {
+    throw new ConfigError("Invalid Task Scheduler snapshot.", "INVALID_CONFIG_FILE");
+  }
+  for (const entry of snapshot.entries) {
+    if (entry.xml === undefined) {
+      runOrThrow(context.exec, ["schtasks", "/Delete", "/TN", context.taskName(entry.id), "/F"], {
+        isOk: (result) => result.status === 0 || isMissingTaskResult(result),
+        message: (result) =>
+          `schtasks /Delete failed while restoring "${context.taskName(entry.id)}": ${result.stderr || result.stdout || "no output"}.`,
+      });
+      continue;
+    }
+    const tmpFile = path.join(context.fsLike.tmpdir(), `akm-task-restore-${entry.id}-${Date.now()}.xml`);
+    context.fsLike.writeFile(tmpFile, entry.xml);
+    try {
+      runOrThrow(context.exec, ["schtasks", "/Create", "/TN", context.taskName(entry.id), "/XML", tmpFile, "/F"], {
+        message: (result) =>
+          `schtasks /Create failed while restoring "${context.taskName(entry.id)}": ${result.stderr || result.stdout || "no output"}.`,
+      });
+      const stateFlag = entry.enabled === false ? "/DISABLE" : "/ENABLE";
+      runOrThrow(context.exec, ["schtasks", "/Change", "/TN", context.taskName(entry.id), stateFlag], {
+        message: (result) =>
+          `schtasks /Change ${stateFlag} failed while restoring "${context.taskName(entry.id)}": ${result.stderr || result.stdout || "no output"}.`,
+      });
+    } finally {
+      context.fsLike.removeFile(tmpFile);
+    }
+  }
+}
+
+function isSchtasksBindingSnapshot(value: unknown): value is SchtasksBindingSnapshot {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { kind?: unknown }).kind === SCHTASKS_SNAPSHOT &&
+    Array.isArray((value as { entries?: unknown }).entries)
+  );
 }
 
 /**

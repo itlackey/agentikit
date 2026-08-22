@@ -354,7 +354,7 @@ file plus one `sync` is a complete workflow.
 
 ```sh
 akm task add nightly-improve --schedule "@daily" --command "akm improve --strategy frequent"
-akm task add briefing --schedule "0 9 * * *" --prompt agents/briefer  # Agent-target task
+akm task add briefing --schedule "0 9 * * *" --prompt "Draft the morning briefing"  # Inline command task
 akm task sync                                  # Reconcile task files with the OS scheduler
 akm task sync --rebind                         # Also re-pin the scheduler's akm binary/spelling
 akm task doctor                                # Scheduler binding + runtime eligibility diagnosis

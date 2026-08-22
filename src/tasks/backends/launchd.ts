@@ -73,6 +73,17 @@ export interface LaunchdBackendOptions {
 }
 
 export const LAUNCHD_LABEL_PREFIX = "com.akm.task.";
+const LAUNCHD_SNAPSHOT = Symbol("akm-launchd-binding-snapshot");
+
+interface LaunchdBindingSnapshot {
+  readonly kind: typeof LAUNCHD_SNAPSHOT;
+  readonly entries: readonly Readonly<{
+    id: string;
+    plist?: string;
+    loaded: boolean;
+    enabled: boolean;
+  }>[];
+}
 
 export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBackend {
   const exec = options.exec ?? defaultLaunchdExec();
@@ -269,6 +280,12 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
       }
       return refs;
     },
+    snapshotBindings(ids: readonly string[]): LaunchdBindingSnapshot {
+      return snapshotLaunchdBindings(ids, { exec, fsLike, plistPath, target, label });
+    },
+    restoreBindings(snapshot: unknown) {
+      restoreLaunchdBindings(snapshot, { exec, fsLike, agentsDir, plistPath, target, setEnableState });
+    },
     expectedSignature(task: SchedulerBinding, opts?: TaskInstallOptions): string {
       return normalizeSignature(
         buildPlistXml(
@@ -281,6 +298,89 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
       );
     },
   };
+}
+
+function snapshotLaunchdBindings(
+  ids: readonly string[],
+  context: {
+    exec: LaunchdExec;
+    fsLike: LaunchdFs;
+    plistPath: (id: string) => string;
+    target: (id: string) => string;
+    label: (id: string) => string;
+  },
+): LaunchdBindingSnapshot {
+  const disabledLabels = readDisabledLabels(context.exec);
+  if (disabledLabels === undefined) {
+    throw new ConfigError(
+      "launchctl print-disabled failed; cannot snapshot scheduler bindings.",
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const entries = ids.map((id) => {
+    const file = context.plistPath(id);
+    const plist = context.fsLike.exists(file) ? context.fsLike.readFile(file) : undefined;
+    const loadedResult = context.exec.run(["launchctl", "print", context.target(id)]);
+    if (loadedResult.status !== 0 && !isServiceNotFoundResult(loadedResult)) {
+      throw new ConfigError(
+        `launchctl print failed while snapshotting task "${id}": ${loadedResult.stderr || loadedResult.stdout || "no output"}.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    return Object.freeze({
+      id,
+      ...(plist !== undefined ? { plist } : {}),
+      loaded: loadedResult.status === 0,
+      enabled: !disabledLabels.has(context.label(id)),
+    });
+  });
+  return Object.freeze({ kind: LAUNCHD_SNAPSHOT, entries: Object.freeze(entries) });
+}
+
+function restoreLaunchdBindings(
+  snapshot: unknown,
+  context: {
+    exec: LaunchdExec;
+    fsLike: LaunchdFs;
+    agentsDir: string;
+    plistPath: (id: string) => string;
+    target: (id: string) => string;
+    setEnableState: (id: string, enabled: boolean) => void;
+  },
+): void {
+  if (!isLaunchdBindingSnapshot(snapshot)) {
+    throw new ConfigError("Invalid launchd scheduler snapshot.", "INVALID_CONFIG_FILE");
+  }
+  for (const entry of snapshot.entries) {
+    runOrThrow(context.exec, ["launchctl", "bootout", context.target(entry.id)], {
+      isOk: (result) => result.status === 0 || isServiceNotFoundResult(result),
+      message: (result) =>
+        `launchctl bootout failed while restoring task "${entry.id}": ${result.stderr || result.stdout || "no output"}.`,
+    });
+    const file = context.plistPath(entry.id);
+    if (entry.plist === undefined) {
+      if (context.fsLike.exists(file)) context.fsLike.removeFile(file);
+    } else {
+      context.fsLike.ensureDir(context.agentsDir);
+      context.fsLike.writeFile(file, entry.plist);
+      if (entry.loaded) {
+        runOrThrow(context.exec, ["launchctl", "bootstrap", `gui/${context.exec.uid()}`, file], {
+          message: (result) =>
+            `launchctl bootstrap failed while restoring task "${entry.id}": ${result.stderr || result.stdout || "no output"}.`,
+        });
+      }
+    }
+    context.setEnableState(entry.id, entry.enabled);
+  }
+}
+
+function isLaunchdBindingSnapshot(value: unknown): value is LaunchdBindingSnapshot {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { kind?: unknown }).kind === LAUNCHD_SNAPSHOT &&
+    Array.isArray((value as { entries?: unknown }).entries)
+  );
 }
 
 function inspectInstalledLaunchdTask(
@@ -300,14 +400,14 @@ function inspectInstalledLaunchdTask(
     binding: installed.binding,
     contextPath: installed.contextPath,
   };
-  if (!disabledLabels) return { id, ...metadata };
+  if (!disabledLabels) return withInstalledInvocation({ id, ...metadata }, installed.invocation);
 
   const jobLabel = `${LAUNCHD_LABEL_PREFIX}${id}`;
   try {
     const loaded = exec.run(["launchctl", "print", `gui/${exec.uid()}/${jobLabel}`]);
-    if (loaded.status !== 0) return { id, ...metadata };
+    if (loaded.status !== 0) return withInstalledInvocation({ id, ...metadata }, installed.invocation);
   } catch {
-    return { id, ...metadata };
+    return withInstalledInvocation({ id, ...metadata }, installed.invocation);
   }
 
   try {
@@ -315,14 +415,15 @@ function inspectInstalledLaunchdTask(
       /<!-- akm-enabled:(?:true|false) -->/,
       `<!-- akm-enabled:${!disabledLabels.has(jobLabel)} -->`,
     );
-    return {
-      id,
-      signature: normalizeSignature(xml),
-      ...metadata,
-    };
+    return withInstalledInvocation({ id, signature: normalizeSignature(xml), ...metadata }, installed.invocation);
   } catch {
-    return { id, ...metadata };
+    return withInstalledInvocation({ id, ...metadata }, installed.invocation);
   }
+}
+
+function withInstalledInvocation(ref: InstalledTaskRef, invocation: readonly string[]): InstalledTaskRef {
+  Object.defineProperty(ref, "invocation", { value: Object.freeze([...invocation]) });
+  return ref;
 }
 
 export function extractPlistInvocation(xml: string): ReturnType<typeof parseScheduledBindingArgv> {

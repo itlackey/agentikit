@@ -419,6 +419,23 @@ describe("cron backend drift detection", () => {
     expect(store).not.toContain("45 */6 * * *");
   });
 
+  test("binding snapshots restore the exact whole crontab after multi-binding mutation", () => {
+    const exec = memoryExec("0 1 * * * user-job\n");
+    const backend = CRON_BACKEND(opts(exec));
+    const second = { ...SYNC_TASK, id: "second", invocation: ["task", "run", "second", "--scheduled"] };
+    backend.install(SYNC_TASK);
+    backend.install(second);
+    const prior = exec.current();
+    const snapshot = backend.snapshotBindings?.([SYNC_TASK.id, second.id, "absent"]);
+
+    backend.uninstall(SYNC_TASK.id);
+    backend.install({ ...second, cron: "45 */6 * * *" });
+    backend.restoreBindings?.(snapshot);
+
+    expect(exec.current()).toBe(prior);
+    expect(exec.current()).toStartWith("0 1 * * * user-job\n");
+  });
+
   test("an unterminated block aborts uninstall without writing the crontab", () => {
     const malformed = "# akm:task ping BEGIN\n*/15 * * * * old-command\n0 1 * * * user-job\n";
     let writes = 0;
