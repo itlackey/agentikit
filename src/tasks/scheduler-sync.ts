@@ -4,15 +4,20 @@
 
 /** Pure whole-set scheduler reconciliation planning. */
 
-import { createHash } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 import { loadAdapterExecutionSource } from "../commands/command/execution-source-loader";
 import { makeBundleRef } from "../core/asset/asset-ref";
 import type { AkmConfig } from "../core/config/config-types";
 import { UsageError } from "../core/errors";
 import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../core/recognition-util";
-import { buildFileContext, type FileContext } from "../indexer/walk/file-context";
+import {
+  captureGuardedDirectoryManifest,
+  captureGuardedExecutionSource,
+  type GuardedDirectoryManifest,
+  type GuardedExecutionSource,
+  GuardedExecutionSourceCollector,
+} from "../execution/guarded-source";
+import type { FileContext } from "../indexer/walk/file-context";
 import {
   WorkflowSourceCollisionError,
   WorkflowSourceNameError,
@@ -40,7 +45,7 @@ import {
   schedulerNativeArtifactKey,
   schedulerNativeBindingId,
 } from "./scheduler-binding";
-import { parseTaskV3Yaml, TASK_V3_MAX_SOURCE_BYTES, taskV3SourceErrorDetail } from "./source-v3";
+import { parseTaskV3Yaml, taskV3SourceErrorDetail } from "./source-v3";
 
 export interface SchedulerSyncPlanInput {
   readonly sourceRoot: string;
@@ -92,22 +97,8 @@ export interface SchedulerSourceSnapshot {
   readonly sourceRealPath: string;
   readonly sourcePhysicalIdentity: string;
   readonly sourceDirectoryVersion: string;
-  readonly files: readonly Readonly<{
-    sourcePath: string;
-    relativePath: string;
-    realPath: string;
-    containmentRoot: string;
-    containmentRealPath: string;
-    containmentPhysicalIdentity: string;
-    physicalIdentity: string;
-    size: number;
-    mtimeNs: string;
-    ctimeNs: string;
-    sha256: string;
-    bytesBase64: string;
-    content: string;
-    authored: boolean;
-  }>[];
+  readonly files: readonly GuardedExecutionSource[];
+  readonly directoryManifests: readonly GuardedDirectoryManifest[];
 }
 
 export interface PreparedSchedulerSourceSet {
@@ -132,7 +123,7 @@ export async function planSchedulerSync(input: SchedulerSyncPlanInput): Promise<
 export async function prepareSchedulerSyncSourceSet(
   input: SchedulerSyncPlanInput,
 ): Promise<PreparedSchedulerSourceSet> {
-  const collector = new SchedulerSourceCollector(captureSchedulerSourceSnapshot(input));
+  const collector = new SchedulerSourceCollector(input);
   const desired = await compileDesiredSourceSet(input, collector);
   const sourceSnapshot = collector.snapshot();
   assertSchedulerSourceSnapshot(sourceSnapshot);
@@ -673,108 +664,74 @@ function errorMessage(cause: unknown): string {
 }
 
 export function assertSchedulerSourceSnapshot(snapshot: SchedulerSourceSnapshot): void {
-  const currentAuthored = captureSchedulerSourceSnapshot({
-    sourceRoot: snapshot.sourceRoot,
-    adapterId: snapshot.adapterId,
-  });
-  const expectedAuthored = Object.freeze({
-    ...snapshot,
-    files: Object.freeze(snapshot.files.filter((file) => file.authored)),
-  });
-  const transitiveCurrent = snapshot.files
-    .filter((file) => !file.authored)
-    .map((file) => readGuardedSchedulerSource(file.sourcePath, file.containmentRoot, false));
-  const current = Object.freeze({
-    ...currentAuthored,
-    files: Object.freeze([...currentAuthored.files, ...transitiveCurrent].sort(compareGuardedSources)),
-  });
-  const expected = Object.freeze({
-    ...expectedAuthored,
-    files: Object.freeze(
-      [...expectedAuthored.files, ...snapshot.files.filter((file) => !file.authored)].sort(compareGuardedSources),
-    ),
-  });
-  if (!sameSourceSnapshot(expected, current)) {
+  try {
+    for (const source of snapshot.files) {
+      const current = captureGuardedExecutionSource(source.sourcePath, source.containmentRoot, {
+        authored: source.authored,
+        ...(source.identity ? { identity: source.identity } : {}),
+      });
+      if (JSON.stringify(current) !== JSON.stringify(source)) {
+        throw new Error(`source identity changed: ${source.sourcePath}`);
+      }
+    }
+    for (const manifest of snapshot.directoryManifests) {
+      const current = captureGuardedDirectoryManifest(manifest.directoryPath, manifest.containmentRoot);
+      if (JSON.stringify(current) !== JSON.stringify(manifest)) {
+        throw new Error(`directory manifest changed: ${manifest.directoryPath}`);
+      }
+    }
+  } catch (cause) {
     throw new UsageError(
-      "Scheduler desired source read set changed after projection; refusing native mutation.",
+      `Scheduler desired source read set changed after projection; refusing native mutation: ${errorMessage(cause)}`,
       "RESOURCE_ALREADY_EXISTS",
     );
   }
 }
 
-function captureSchedulerSourceSnapshot(
-  input: Pick<SchedulerSyncPlanInput, "adapterId" | "sourceRoot">,
-): SchedulerSourceSnapshot {
-  const sourceRealPath = fs.realpathSync(input.sourceRoot);
-  const sourceStat = fs.statSync(sourceRealPath, { bigint: true });
-  if (!sourceStat.isDirectory()) {
-    throw new UsageError(`${input.sourceRoot} is not a scheduler source directory.`, "INVALID_FLAG_VALUE");
-  }
-  const candidates: string[] = [];
-  if (input.adapterId === "akm") {
-    const taskRoot = path.join(input.sourceRoot, "tasks");
-    try {
-      for (const entry of fs.readdirSync(taskRoot, { withFileTypes: true })) {
-        if ((entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".yml")) {
-          candidates.push(path.join(taskRoot, entry.name));
-        }
-      }
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
-    }
-    collectSnapshotFiles(path.join(input.sourceRoot, "workflows"), candidates);
-  } else if (input.adapterId === "akm-task") {
-    collectSnapshotFiles(input.sourceRoot, candidates, (file) => file.endsWith(".yml"));
-  } else if (input.adapterId === "akm-workflow") {
-    collectSnapshotFiles(input.sourceRoot, candidates);
-  }
-  const files = candidates
-    .sort(compareCodePoints)
-    .map((file) => readGuardedSchedulerSource(file, input.sourceRoot, true));
-  return Object.freeze({
-    adapterId: input.adapterId,
-    sourceRoot: path.resolve(input.sourceRoot),
-    sourceRealPath,
-    sourcePhysicalIdentity:
-      sourceStat.ino === 0n ? `path:${sourceRealPath}` : `inode:${sourceStat.dev}:${sourceStat.ino}`,
-    sourceDirectoryVersion: `${sourceStat.size}:${sourceStat.mtimeNs}:${sourceStat.ctimeNs}`,
-    files: Object.freeze(files.sort(compareGuardedSources)),
-  });
-}
-
-function collectSnapshotFiles(root: string, out: string[], include: (file: string) => boolean = () => true): void {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(root, { withFileTypes: true });
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw cause;
-  }
-  for (const entry of entries) {
-    const candidate = path.join(root, entry.name);
-    if (entry.isDirectory()) collectSnapshotFiles(candidate, out, include);
-    else if ((entry.isFile() || entry.isSymbolicLink()) && include(candidate)) out.push(candidate);
-  }
-}
-
-function sameSourceSnapshot(left: SchedulerSourceSnapshot, right: SchedulerSourceSnapshot): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 type GuardedSchedulerSource = SchedulerSourceSnapshot["files"][number];
 
 class SchedulerSourceCollector {
-  readonly #base: SchedulerSourceSnapshot;
-  readonly #files = new Map<string, GuardedSchedulerSource>();
+  readonly #adapterId: string;
+  readonly #sourceRoot: string;
+  readonly #collector = new GuardedExecutionSourceCollector();
 
-  constructor(base: SchedulerSourceSnapshot) {
-    this.#base = base;
-    for (const file of base.files) this.#files.set(path.resolve(file.sourcePath), file);
+  constructor(input: Pick<SchedulerSyncPlanInput, "adapterId" | "sourceRoot">) {
+    this.#adapterId = input.adapterId;
+    this.#sourceRoot = path.resolve(input.sourceRoot);
+    const root = this.#collector.trackDirectory(this.#sourceRoot, this.#sourceRoot);
+    const rootDirectories = new Set(
+      root.entries.filter((entry) => entry.kind === "directory").map((entry) => entry.name),
+    );
+    const candidates: string[] = [];
+    if (input.adapterId === "akm") {
+      if (rootDirectories.has("tasks")) {
+        const taskRoot = path.join(this.#sourceRoot, "tasks");
+        const taskManifest = this.#collector.trackDirectory(taskRoot, this.#sourceRoot);
+        for (const entry of taskManifest.entries) {
+          if (entry.kind === "file" && entry.name.endsWith(".yml")) {
+            candidates.push(path.join(taskRoot, entry.name));
+          }
+        }
+      }
+      if (rootDirectories.has("workflows")) {
+        candidates.push(...this.#collector.enumerateTree(path.join(this.#sourceRoot, "workflows"), this.#sourceRoot));
+      }
+    } else if (input.adapterId === "akm-task") {
+      candidates.push(
+        ...this.#collector.enumerateTree(this.#sourceRoot, this.#sourceRoot).filter((file) => file.endsWith(".yml")),
+      );
+    } else if (input.adapterId === "akm-workflow") {
+      candidates.push(...this.#collector.enumerateTree(this.#sourceRoot, this.#sourceRoot));
+    }
+    for (const file of candidates.sort(compareCodePoints)) {
+      this.#collector.capture(file, this.#sourceRoot, { authored: true });
+    }
   }
 
   authoredTaskSources(adapterId: string): readonly GuardedSchedulerSource[] {
-    return [...this.#files.values()]
-      .filter((file) => {
+    return this.#collector
+      .snapshot()
+      .sources.filter((file) => {
         if (!file.authored || !file.relativePath.endsWith(".yml")) return false;
         if (adapterId === "akm-task") return true;
         return path.posix.dirname(file.relativePath) === "tasks";
@@ -783,8 +740,9 @@ class SchedulerSourceCollector {
   }
 
   authoredWorkflowSources(adapterId: string): readonly GuardedSchedulerSource[] {
-    return [...this.#files.values()]
-      .filter((file) => {
+    return this.#collector
+      .snapshot()
+      .sources.filter((file) => {
         if (!file.authored) return false;
         if (adapterId === "akm-workflow") return true;
         return file.relativePath.startsWith("workflows/");
@@ -793,133 +751,45 @@ class SchedulerSourceCollector {
   }
 
   readBytes(file: string, containmentRoot: string): Uint8Array {
-    return Buffer.from(this.#read(file, containmentRoot).bytesBase64, "base64");
+    this.#trackAncestors(file, containmentRoot);
+    return this.#collector.readBytes(file, containmentRoot);
   }
 
   fileContext(root: string, file: string): FileContext {
-    const guarded = this.#read(file, root);
-    const base = buildFileContext(root, file);
-    return {
-      ...base,
-      content: () => guarded.content,
-    };
+    this.#trackAncestors(file, root);
+    return this.#collector.fileContext(root, file);
   }
 
   snapshot(): SchedulerSourceSnapshot {
-    return Object.freeze({
-      ...this.#base,
-      files: Object.freeze([...this.#files.values()].sort(compareGuardedSources)),
-    });
-  }
-
-  #read(file: string, containmentRoot: string): GuardedSchedulerSource {
-    const key = path.resolve(file);
-    const existing = this.#files.get(key);
-    if (existing) return existing;
-    const guarded = readGuardedSchedulerSource(file, containmentRoot, false);
-    this.#files.set(key, guarded);
-    return guarded;
-  }
-}
-
-function readGuardedSchedulerSource(
-  sourcePathInput: string,
-  containmentRootInput: string,
-  authored: boolean,
-): GuardedSchedulerSource {
-  const sourcePath = path.resolve(sourcePathInput);
-  const containmentRoot = path.resolve(containmentRootInput);
-  const lexicalRelative = path.relative(containmentRoot, sourcePath);
-  if (lexicalRelative === "" || lexicalRelative.startsWith("..") || path.isAbsolute(lexicalRelative)) {
-    throw new UsageError(`${sourcePathInput} resolves outside its semantic source root.`, "PATH_ESCAPE_VIOLATION");
-  }
-  const containmentRealPath = fs.realpathSync(containmentRoot);
-  const containmentStat = fs.statSync(containmentRealPath, { bigint: true });
-  if (!containmentStat.isDirectory()) {
-    throw new UsageError(`${containmentRoot} is not a semantic source directory.`, "INVALID_FLAG_VALUE");
-  }
-  const noFollow = "O_NOFOLLOW" in fs.constants ? fs.constants.O_NOFOLLOW : 0;
-  let descriptor: number | undefined;
-  try {
-    descriptor = fs.openSync(sourcePath, fs.constants.O_RDONLY | noFollow);
-    const before = fs.fstatSync(descriptor, { bigint: true });
-    if (!before.isFile()) {
-      throw new UsageError(`${sourcePath} is not a regular scheduler source.`, "INVALID_FLAG_VALUE");
-    }
-    if (before.size > BigInt(TASK_V3_MAX_SOURCE_BYTES)) {
-      throw new UsageError(
-        `${sourcePath} exceeds the 1 MiB (${TASK_V3_MAX_SOURCE_BYTES}-byte) semantic source limit.`,
-        "INVALID_FLAG_VALUE",
-      );
-    }
-    const bytes = fs.readFileSync(descriptor);
-    const after = fs.fstatSync(descriptor, { bigint: true });
-    if (!sameBigIntStat(before, after) || BigInt(bytes.byteLength) !== before.size) {
-      throw new UsageError(`${sourcePath} changed while its guarded bytes were read.`, "RESOURCE_ALREADY_EXISTS");
-    }
-    const realPath = fs.realpathSync(sourcePath);
-    const physicalRelative = path.relative(containmentRealPath, realPath);
-    if (physicalRelative === "" || physicalRelative.startsWith("..") || path.isAbsolute(physicalRelative)) {
-      throw new UsageError(`${sourcePath} resolves outside its semantic source root.`, "PATH_ESCAPE_VIOLATION");
-    }
-    let content: string;
-    try {
-      content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-    } catch {
-      throw new UsageError(`${sourcePath} contains invalid UTF-8 bytes.`, "INVALID_FLAG_VALUE");
-    }
-    return Object.freeze({
-      sourcePath,
-      relativePath: toPosix(path.relative(containmentRoot, sourcePath)),
-      realPath,
-      containmentRoot,
-      containmentRealPath,
-      containmentPhysicalIdentity:
-        containmentStat.ino === 0n
-          ? `path:${containmentRealPath}`
-          : `inode:${containmentStat.dev}:${containmentStat.ino}`,
-      physicalIdentity: before.ino === 0n ? `path:${realPath}` : `inode:${before.dev}:${before.ino}`,
-      size: bytes.byteLength,
-      mtimeNs: String(before.mtimeNs),
-      ctimeNs: String(before.ctimeNs),
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-      bytesBase64: bytes.toString("base64"),
-      content,
-      authored,
-    });
-  } catch (cause) {
-    if (cause instanceof UsageError) throw cause;
-    if ((cause as NodeJS.ErrnoException).code === "ELOOP") {
-      const linked = fs.realpathSync(sourcePath);
-      const relative = path.relative(containmentRealPath, linked);
-      if (relative.startsWith("..") || path.isAbsolute(relative)) {
-        throw new UsageError(
-          `${sourcePath} resolves outside the bundle root through a symbolic source.`,
-          "PATH_ESCAPE_VIOLATION",
-        );
-      }
-      throw new UsageError(
-        `${sourcePath} is a symbolic source with an ambiguous physical identity collision; guarded scheduler reads require a regular no-follow owner.`,
-        "RESOURCE_ALREADY_EXISTS",
-      );
-    }
-    throw new UsageError(
-      `${sourcePath} could not be guarded as a contained regular semantic source: ${errorMessage(cause)}`,
-      "PATH_ESCAPE_VIOLATION",
+    const guarded = this.#collector.snapshot();
+    const root = guarded.directoryManifests.find(
+      (manifest) => manifest.directoryPath === this.#sourceRoot && manifest.containmentRoot === this.#sourceRoot,
     );
-  } finally {
-    if (descriptor !== undefined) fs.closeSync(descriptor);
+    if (!root) throw new Error("scheduler source collector lost its guarded root manifest");
+    return Object.freeze({
+      adapterId: this.#adapterId,
+      sourceRoot: this.#sourceRoot,
+      sourceRealPath: root.realPath,
+      sourcePhysicalIdentity: root.physicalIdentity,
+      sourceDirectoryVersion: root.version,
+      files: Object.freeze([...guarded.sources].sort(compareGuardedSources)),
+      directoryManifests: guarded.directoryManifests,
+    });
   }
-}
 
-function sameBigIntStat(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
-  return (
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs &&
-    left.ctimeNs === right.ctimeNs
-  );
+  #trackAncestors(file: string, containmentRoot: string): void {
+    const root = path.resolve(containmentRoot);
+    const parent = path.dirname(path.resolve(file));
+    const relative = path.relative(root, parent);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) return;
+    this.#collector.trackDirectory(root, root);
+    if (relative === "") return;
+    let current = root;
+    for (const segment of relative.split(path.sep)) {
+      current = path.join(current, segment);
+      this.#collector.trackDirectory(current, root);
+    }
+  }
 }
 
 function compareGuardedSources(left: GuardedSchedulerSource, right: GuardedSchedulerSource): number {
