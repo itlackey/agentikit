@@ -120,6 +120,12 @@ const triageJudgmentErrorMap: z.ZodErrorMap = (issue, ctx) => {
   return { message: ctx.defaultError };
 };
 
+// Judgment is an explicit opt-in surface, so invocation typos must fail closed.
+// Keep the shared override schema lenient for ordinary cross-version config
+// compatibility, while making this nested surface strict. `extraParams`
+// remains the intentional arbitrary provider-parameter escape hatch.
+const triageJudgmentLlmOverridesField = LlmInvocationOverridesSchema.strict();
+
 const triageJudgmentObjectField = z
   .object(
     {
@@ -127,7 +133,7 @@ const triageJudgmentObjectField = z
       engine: engineName.optional(),
       model: nonEmptyString.optional(),
       timeoutMs: z.union([positiveInt, z.null()]).optional(),
-      llm: LlmInvocationOverridesSchema.optional(),
+      llm: triageJudgmentLlmOverridesField.optional(),
     },
     { errorMap: triageJudgmentErrorMap },
   )

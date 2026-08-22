@@ -1432,7 +1432,7 @@
                                     "type": "boolean"
                                   }
                                 },
-                                "additionalProperties": true
+                                "additionalProperties": false
                               }
                             },
                             "additionalProperties": false
@@ -3096,7 +3096,7 @@
                                         "type": "boolean"
                                       }
                                     },
-                                    "additionalProperties": true
+                                    "additionalProperties": false
                                   }
                                 },
                                 "additionalProperties": false
@@ -3758,7 +3758,7 @@
                       "type": "boolean"
                     }
                   },
-                  "additionalProperties": true
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
@@ -4575,7 +4575,7 @@
                               "type": "boolean"
                             }
                           },
-                          "additionalProperties": true
+                          "additionalProperties": false
                         }
                       },
                       "additionalProperties": false

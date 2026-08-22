@@ -198,12 +198,27 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
     throw new UsageError(`Unknown config key: ${dotted}`, "INVALID_FLAG_VALUE", unknownKeyHint(dotted));
   }
 
+  const judgmentObjectPath = isTriageJudgmentPath(path);
   const value =
-    path[0] === "engines" && path.length === 2
-      ? parseObjectPatch(raw, dotted)
-      : symbolicApiKey
-        ? raw
-        : coerceForSchema(schema as z.ZodTypeAny, raw, dotted);
+    judgmentObjectPath && raw === "null"
+      ? undefined
+      : path[0] === "engines" && path.length === 2
+        ? parseObjectPatch(raw, dotted)
+        : symbolicApiKey
+          ? raw
+          : coerceForSchema(schema as z.ZodTypeAny, raw, dotted);
+
+  const existing = path.reduce<unknown>((value, key) => {
+    if (value && typeof value === "object") return (value as Record<string, unknown>)[key];
+    return undefined;
+  }, config);
+  // The judgment leaf normalizes legacy objects by adding `enabled: true`.
+  // Merge a JSON object patch with the existing value before that transform,
+  // otherwise the synthesized default can overwrite an explicit false.
+  const candidate =
+    judgmentObjectPath && isPlainObject(value)
+      ? deepMergeConfig(isPlainObject(existing) ? existing : {}, value)
+      : value;
 
   // Validate the coerced value against the leaf schema. This catches enum
   // mismatches, out-of-range numbers, schema-level shape errors (writable
@@ -216,7 +231,7 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
         ? /^\$[A-Za-z_][A-Za-z0-9_]*$|^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(raw)
           ? { success: true as const, data: value }
           : { success: false as const, error: { issues: [{ path: [], message: `apiKey must be $VAR or \${VAR}` }] } }
-        : (schema as z.ZodTypeAny).safeParse(value);
+        : (schema as z.ZodTypeAny).safeParse(candidate);
   if (!parsed.success) {
     const lines = parsed.error.issues
       .map((i) => {
@@ -227,10 +242,6 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
     throw new UsageError(`Invalid value for ${dotted}:\n${lines}`, "INVALID_FLAG_VALUE");
   }
 
-  const existing = path.reduce<unknown>((value, key) => {
-    if (value && typeof value === "object") return (value as Record<string, unknown>)[key];
-    return undefined;
-  }, config);
   const next = setPath(
     config,
     path,
@@ -252,6 +263,17 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
   }
 
   return next;
+}
+
+function isTriageJudgmentPath(path: Path): boolean {
+  return (
+    path.length === 6 &&
+    path[0] === "improve" &&
+    path[1] === "strategies" &&
+    path[3] === "processes" &&
+    path[4] === "triage" &&
+    path[5] === "judgment"
+  );
 }
 
 /**
