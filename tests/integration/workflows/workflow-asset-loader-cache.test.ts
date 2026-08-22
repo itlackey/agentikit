@@ -223,7 +223,7 @@ jobs:
         return { ok: true, text: "unexpected" };
       },
     }),
-  ).rejects.toThrow(/multi\.yml:7.*multi-job.*source-target resolver/is);
+  ).rejects.toThrow(/multi-job.*durable runtime representation/is);
   expect(dispatches).toBe(0);
   expect((await listWorkflowRuns()).runs).toHaveLength(0);
 });
