@@ -125,7 +125,7 @@ describe("akmTasksSync — schedule drift", () => {
     const exec = memoryExec(
       [
         "# akm:task alpha BEGIN",
-        "*/15 * * * * /opt/akm-0.8/bun /opt/akm-0.8/dist/cli.js tasks run alpha >> /var/log/akm/alpha.log 2>&1",
+        "*/15 * * * * /opt/runtime/bin/node /opt/prefix/node_modules/akm-cli/dist/cli.js tasks run alpha >> /var/log/akm/tasks/logs/alpha.log 2>&1",
         "# akm:task alpha END",
         "",
       ].join("\n"),
@@ -142,7 +142,7 @@ describe("akmTasksSync — schedule drift", () => {
     expect(exec.current()).toContain("task run alpha --bundle");
     expect(exec.current()).toContain("--scheduled");
     expect(exec.current()).not.toContain("tasks run alpha");
-    expect(exec.current()).not.toContain("/opt/akm-0.8");
+    expect(exec.current()).not.toContain("/opt/prefix/node_modules/akm-cli");
   });
 
   test.each([
@@ -175,6 +175,7 @@ describe("akmTasksSync — schedule drift", () => {
     ["pre-command output redirection", "> /tmp/owned /opt/akm-0.8/dist/cli.js"],
     ["pre-command input redirection", "< /tmp/input /opt/akm-0.8/dist/cli.js"],
     ["quoted env/operator prefix", "AKM_HIJACK='x;y' /opt/akm-0.8/dist/cli.js"],
+    ["foreign one-token launcher", "/foreign/tool"],
   ])("does not adopt a non-published 0.8 cron body with %s", async (_label, prefix) => {
     const exec = memoryExec(
       [
