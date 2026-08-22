@@ -126,7 +126,7 @@ export interface PrepareTaskV3ExecutionContext {
     readonly name: string;
     readonly ref: string;
   }) => Promise<string | Readonly<{ file: string; bundleRoot: string }>>;
-  readonly readFile?: (file: string) => Uint8Array;
+  readonly readFile?: (file: string, bundleRoot?: string) => Uint8Array;
   /** Platform policy injection used by cross-platform projection tests. */
   readonly platform?: NodeJS.Platform;
 }
@@ -345,8 +345,12 @@ function validatePreparedCommand(
   return invocation;
 }
 
-function validateWorkflowRuntimeSource(file: string, workspaceRoot: string): void {
-  const source = fs.readFileSync(file, "utf8");
+function validateWorkflowRuntimeSource(
+  file: string,
+  workspaceRoot: string,
+  readFile: (file: string, bundleRoot?: string) => Uint8Array,
+): void {
+  const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(readFile(file, workspaceRoot));
   const compiled = compileWorkflowSource(source, { path: file, workspaceRoot });
   if (!compiled.ok) {
     const detail = compiled.errors.map((error) => `${error.path}:${error.line}: ${error.message}`).join("; ");
@@ -439,7 +443,11 @@ export async function prepareTaskV3Execution(
       );
     }
     const resolved = await resolvedOwnedAsset(qualified, "workflow", context);
-    validateWorkflowRuntimeSource(resolved.file, resolved.bundleRoot);
+    validateWorkflowRuntimeSource(
+      resolved.file,
+      resolved.bundleRoot,
+      context.readFile ?? ((targetPath: string) => fs.readFileSync(targetPath)),
+    );
     return Object.freeze({
       ...common,
       kind: "workflow" as const,
@@ -455,7 +463,7 @@ export async function prepareTaskV3Execution(
   const resolved = await resolvedOwnedAsset(qualified, "script", context);
   const file = resolved.file;
   const extension = path.extname(file).toLowerCase();
-  const raw = (context.readFile ?? ((targetPath: string) => fs.readFileSync(targetPath)))(file);
+  const raw = (context.readFile ?? ((targetPath: string) => fs.readFileSync(targetPath)))(file, resolved.bundleRoot);
   const bytes = Uint8Array.from(raw);
   const cwdIdentity = captureDirectoryIdentity(resolved.bundleRoot);
   return Object.freeze({

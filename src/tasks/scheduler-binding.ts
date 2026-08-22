@@ -226,6 +226,30 @@ export function schedulerNativeArtifactKey(nativeId: string): string {
   return nativeId.toLowerCase().replace(/\.+$/u, "");
 }
 
+export function schedulerNativeArtifactsForKey(
+  artifacts: readonly SchedulerNativeArtifact[],
+  nativeId: string,
+): readonly SchedulerNativeArtifact[] {
+  const key = schedulerNativeArtifactKey(nativeId);
+  return artifacts.filter((artifact) => schedulerNativeArtifactKey(artifact.nativeId) === key);
+}
+
+export function assertSchedulerNativeArtifactCardinality(
+  artifacts: readonly SchedulerNativeArtifact[],
+  nativeId: string,
+  expectedCount: 0 | 1,
+): SchedulerNativeArtifact | undefined {
+  const matches = schedulerNativeArtifactsForKey(artifacts, nativeId);
+  if (matches.length !== expectedCount) {
+    const expectedState = expectedCount === 0 ? "absence" : "one present owner";
+    throw new UsageError(
+      `Native scheduler artifact ${JSON.stringify(nativeId)} changed: normalized cardinality ${matches.length} violates the expected ${expectedState} before mutation.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+  return matches[0];
+}
+
 /** Return a logical owner only when the public invocation proves the mapping. */
 export function schedulerLogicalBindingOwner(nativeId: string, invocation: readonly string[]): string | undefined {
   return schedulerNativeArtifactOwner(nativeId, invocation)?.logicalId;

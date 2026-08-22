@@ -362,6 +362,35 @@ describe("cron backend drift detection", () => {
     expect(exec.current()).toBe(drifted);
   });
 
+  test("direct removal CAS rejects a binding that disappeared after present state was frozen", () => {
+    const exec = memoryExec();
+    const backend = CRON_BACKEND(opts(exec));
+    const owned = targeted(SYNC_TASK, "stash");
+    backend.install(owned);
+    const expected = removalExpectation(backend, owned);
+    exec.write("");
+
+    expect(() => backend.uninstall(expected.nativeId, expected)).toThrow(/changed|missing|present|compare/i);
+    expect(exec.current()).toBe("");
+  });
+
+  test("direct update rejects a second case-equivalent native artifact that appeared after planning", () => {
+    const exec = memoryExec();
+    const backend = CRON_BACKEND(opts(exec));
+    const owned = targeted(SYNC_TASK, "stash");
+    backend.install(owned);
+    const expected = mutationExpectation(owned, "present", backend.expectedSignature?.(owned));
+    const duplicated = `${exec.current()}${exec.current().replaceAll("# akm:task ping", "# akm:task PING")}\n`;
+    exec.write(duplicated);
+    const snapshot = backend.snapshotBindings?.(["ping"]) as { artifacts: readonly unknown[] };
+    expect(snapshot.artifacts).toHaveLength(2);
+
+    expect(() =>
+      (backend.install as (...args: unknown[]) => void)({ ...owned, cron: "45 */6 * * *" }, undefined, expected),
+    ).toThrow(/cardinality|duplicate|collision|exactly one/i);
+    expect(exec.current()).toBe(duplicated);
+  });
+
   test("rejects a forged expected source before any cron backend access", () => {
     let reads = 0;
     let writes = 0;

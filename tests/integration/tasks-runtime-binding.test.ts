@@ -205,7 +205,7 @@ describe("scheduler runtime binding", () => {
     }
   });
 
-  test("add --force never replaces an existing binding", async () => {
+  test("add --force --rebind explicitly replaces an existing runtime binding", async () => {
     const storage = withIsolatedAkmStorage();
     try {
       configureStash(storage.stashDir);
@@ -226,8 +226,8 @@ describe("scheduler runtime binding", () => {
       );
 
       expect(installs[0]).toMatchObject({
-        binding: ["/old/node", "/old/dist/akm"],
-        contextPath: "/old/context.json",
+        binding: ["/new/node", "/new/dist/akm"],
+        contextPath: "/new/context.json",
       });
     } finally {
       storage.cleanup();

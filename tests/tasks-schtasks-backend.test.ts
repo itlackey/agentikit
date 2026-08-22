@@ -829,6 +829,8 @@ describe("schtasks backend transactional install", () => {
     const files = new Map<string, string>();
     let installedXml: string | undefined;
     let installedTaskName: string | undefined;
+    let extraInstalledXml: string | undefined;
+    let extraInstalledTaskName: string | undefined;
     let queriedXml: string | undefined;
     let enabled = true;
     let failNextOperation: "create" | "disable" | undefined;
@@ -853,14 +855,23 @@ describe("schtasks backend transactional install", () => {
         calls.push(args);
         const operation = args[1]?.toLowerCase();
         if (operation === "/query" && args.includes("/XML")) {
-          return installedXml === undefined
+          const queriedName = args[args.indexOf("/TN") + 1];
+          const selectedXml = queriedName === extraInstalledTaskName ? extraInstalledXml : installedXml;
+          return selectedXml === undefined
             ? { status: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified." }
-            : { status: 0, stdout: queriedXml ?? installedXml, stderr: "" };
+            : {
+                status: 0,
+                stdout: queriedName === extraInstalledTaskName ? selectedXml : (queriedXml ?? selectedXml),
+                stderr: "",
+              };
         }
         if (operation === "/query") {
           return {
             status: 0,
-            stdout: installedTaskName ? `"${installedTaskName}","N/A","Ready"\r\n` : "",
+            stdout: [installedTaskName, extraInstalledTaskName]
+              .filter((name): name is string => name !== undefined)
+              .map((name) => `"${name}","N/A","Ready"`)
+              .join("\r\n"),
             stderr: "",
           };
         }
@@ -911,6 +922,15 @@ describe("schtasks backend transactional install", () => {
       replaceInstalledXml(xml: string) {
         installedXml = xml;
         queriedXml = undefined;
+      },
+      clearInstalled() {
+        installedXml = undefined;
+        installedTaskName = undefined;
+        queriedXml = undefined;
+      },
+      addEquivalentArtifact(taskName: string, xml: string) {
+        extraInstalledTaskName = taskName;
+        extraInstalledXml = xml;
       },
       enabled: () => enabled,
       setQueriedXml(xml: string) {
@@ -970,6 +990,48 @@ describe("schtasks backend transactional install", () => {
       ),
     ).toThrow(/changed|fingerprint|compare/i);
     expect(transaction.installedXml()).toBe(drifted);
+  });
+
+  test("direct removal CAS rejects a Task Scheduler binding that disappeared after present state was frozen", () => {
+    const transaction = transactionBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    transaction.backend.install(owned);
+    const expected = {
+      bindingId: owned.id,
+      nativeId: schedulerNativeBindingId(owned.id),
+      logicalSource: owned.logicalSource,
+      ordinal: owned.ordinal,
+      invocation: owned.invocation,
+      fingerprint: transaction.backend.expectedSignature?.(owned),
+    };
+    transaction.clearInstalled();
+
+    expect(() => transaction.backend.uninstall(expected.nativeId, expected)).toThrow(
+      /changed|missing|present|compare/i,
+    );
+    expect(transaction.installedXml()).toBeUndefined();
+  });
+
+  test("direct update rejects a second case-equivalent Task Scheduler artifact that appeared after planning", () => {
+    const transaction = transactionBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    transaction.backend.install(owned);
+    const prior = transaction.installedXml();
+    if (!prior) throw new Error("missing installed XML");
+    transaction.addEquivalentArtifact("\\akm\\PING", prior);
+    const snapshot = transaction.backend.snapshotBindings?.(["ping"]) as { artifacts: readonly unknown[] };
+    expect(snapshot.artifacts).toHaveLength(2);
+    const priorCalls = transaction.calls.length;
+
+    expect(() =>
+      (transaction.backend.install as (...args: unknown[]) => void)(
+        { ...owned, cron: "30 10 * * *" },
+        undefined,
+        mutationExpectation(owned, "present", transaction.backend.expectedSignature?.(owned)),
+      ),
+    ).toThrow(/cardinality|duplicate|collision|exactly one/i);
+    expect(transaction.installedXml()).toBe(prior);
+    expect(transaction.calls.slice(priorCalls).some((call) => call[1]?.toLowerCase() === "/create")).toBe(false);
   });
 
   test("rejects a forged expected Task Scheduler source before scheduler access", () => {

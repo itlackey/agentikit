@@ -181,6 +181,10 @@ function makeFakeExec(events?: string[]): FakeLaunchdExec {
   return exec;
 }
 
+function launchdMutationCalls(calls: readonly string[][]): readonly string[][] {
+  return calls.filter((call) => call[1] !== "print" && call[1] !== "print-disabled");
+}
+
 function makeFakeFs(events?: string[]): LaunchdFs & { written: Map<string, string>; readFile(file: string): string } {
   const written = new Map<string, string>();
   return {
@@ -267,6 +271,11 @@ function makeTransactionalBackend() {
       if (verb === "print-disabled") {
         const entries = [...disabledLabels].map((label) => `\t"${label}" => true`).join("\n");
         return { status: 0, stdout: `disabled services = {\n${entries}${entries ? "\n" : ""}}\n`, stderr: "" };
+      }
+      if (verb === "print") {
+        return activePlist === undefined
+          ? { status: 113, stdout: "", stderr: "Could not find service" }
+          : { status: 0, stdout: `${args[2]} = {}`, stderr: "" };
       }
       if (verb === "bootout" && verb === failNextVerb) {
         failNextVerb = undefined;
@@ -500,6 +509,51 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(exec.calls.some((call) => call[1] === "bootout")).toBe(false);
   });
 
+  test("direct removal CAS rejects a launchd binding that disappeared after present state was frozen", () => {
+    const { backend, exec, fs } = makeBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    backend.install(owned);
+    const nativeId = schedulerNativeBindingId(owned.id);
+    const expected = {
+      bindingId: owned.id,
+      nativeId,
+      logicalSource: owned.logicalSource,
+      ordinal: owned.ordinal,
+      invocation: owned.invocation,
+      fingerprint: backend.expectedSignature?.(owned),
+    };
+    fs.removeFile(`/tmp/agents/com.akm.task.${nativeId}.plist`);
+    exec.loadedLabels.delete(`com.akm.task.${nativeId}`);
+    exec.disabledLabels.delete(`com.akm.task.${nativeId}`);
+
+    expect(() => backend.uninstall(nativeId, expected)).toThrow(/changed|missing|present|compare/i);
+    expect(exec.calls.filter((call) => call[1] === "bootout")).toHaveLength(1);
+  });
+
+  test("direct update rejects a second case-equivalent launchd artifact that appeared after planning", () => {
+    const { backend, exec, fs } = makeBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    backend.install(owned);
+    const file = "/tmp/agents/com.akm.task.ping.plist";
+    const duplicate = "/tmp/agents/com.akm.task.PING.plist";
+    const prior = fs.readFile(file);
+    fs.writeFile(duplicate, prior);
+    exec.calls.length = 0;
+    const snapshot = backend.snapshotBindings?.(["ping"]) as { artifacts: readonly unknown[] };
+    expect(snapshot.artifacts).toHaveLength(2);
+
+    expect(() =>
+      (backend.install as (...args: unknown[]) => void)(
+        { ...owned, cron: "30 10 * * *" },
+        undefined,
+        mutationExpectation(owned, "present", backend.expectedSignature?.(owned)),
+      ),
+    ).toThrow(/cardinality|duplicate|collision|exactly one/i);
+    expect(fs.readFile(file)).toBe(prior);
+    expect(fs.readFile(duplicate)).toBe(prior);
+    expect(exec.calls.some((call) => call[1] === "bootout")).toBe(false);
+  });
+
   test("direct create CAS treats a persistent disabled override without a plist as native state", () => {
     const { backend, exec, fs } = makeBackend();
     const owned = qualifiedTask("0 9 * * *");
@@ -534,7 +588,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     const { backend, exec } = makeBackend();
     backend.install(makeTask("0 9 * * *"));
 
-    expect(exec.calls).toEqual([
+    expect(launchdMutationCalls(exec.calls)).toEqual([
       ["launchctl", "bootout", "gui/501/com.akm.task.ping"],
       ["launchctl", "enable", "gui/501/com.akm.task.ping"],
       ["launchctl", "bootstrap", "gui/501", "/tmp/agents/com.akm.task.ping.plist"],
@@ -614,7 +668,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     const { backend, exec } = makeBackend();
     backend.install({ ...makeTask("0 9 * * *"), enabled: false });
 
-    expect(exec.calls).toEqual([
+    expect(launchdMutationCalls(exec.calls)).toEqual([
       ["launchctl", "bootout", "gui/501/com.akm.task.ping"],
       ["launchctl", "enable", "gui/501/com.akm.task.ping"],
       ["launchctl", "bootstrap", "gui/501", "/tmp/agents/com.akm.task.ping.plist"],
@@ -629,7 +683,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
 
     backend.uninstall("ping");
 
-    expect(exec.calls).toEqual([
+    expect(launchdMutationCalls(exec.calls)).toEqual([
       ["launchctl", "bootout", "gui/501/com.akm.task.ping"],
       ["launchctl", "enable", "gui/501/com.akm.task.ping"],
     ]);
@@ -644,7 +698,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
 
     backend.uninstall("ping");
 
-    expect(exec.calls).toEqual([
+    expect(launchdMutationCalls(exec.calls)).toEqual([
       ["launchctl", "bootout", "gui/501/com.akm.task.ping"],
       ["launchctl", "enable", "gui/501/com.akm.task.ping"],
     ]);
@@ -812,7 +866,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(exec.disabledLabels.has("com.akm.task.second")).toBe(false);
   });
 
-  test("uninstall aborts without enabling or deleting after bootout fails", () => {
+  test("uninstall compensates to the exact prior state after bootout fails", () => {
     const transaction = makeTransactionalBackend();
     transaction.backend.install({ ...makeTask("0 9 * * *"), enabled: false });
     const plistPath = "/tmp/agents/com.akm.task.ping.plist";
@@ -822,9 +876,54 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
 
     expect(() => transaction.backend.uninstall("ping")).toThrow("injected bootout failure");
 
-    expect(transaction.calls).toEqual([["launchctl", "bootout", "gui/501/com.akm.task.ping"]]);
+    expect(launchdMutationCalls(transaction.calls)).toEqual([
+      ["launchctl", "bootout", "gui/501/com.akm.task.ping"],
+      ["launchctl", "bootout", "gui/501/com.akm.task.ping"],
+      ["launchctl", "enable", "gui/501/com.akm.task.ping"],
+      ["launchctl", "bootstrap", "gui/501", "/tmp/agents/com.akm.task.ping.plist"],
+      ["launchctl", "disable", "gui/501/com.akm.task.ping"],
+    ]);
     expect(transaction.fs.readFile(plistPath)).toBe(priorPlist);
     expect(transaction.disabledLabels.has("com.akm.task.ping")).toBe(true);
+  });
+
+  test.each([
+    [true, true, "enable"],
+    [true, false, "enable"],
+    [false, true, "enable"],
+    [false, false, "enable"],
+    [true, true, "delete"],
+    [true, false, "delete"],
+    [false, true, "delete"],
+    [false, false, "delete"],
+  ] as const)("uninstall compensates exact prior enabled=%s loaded=%s state when %s fails", (priorEnabled, priorLoaded, failure) => {
+    const transaction = makeTransactionalBackend();
+    transaction.backend.install({ ...makeTask("0 9 * * *"), enabled: priorEnabled });
+    const plistPath = "/tmp/agents/com.akm.task.ping.plist";
+    const priorPlist = transaction.fs.readFile(plistPath);
+    if (!priorLoaded) {
+      transaction.exec.run(["launchctl", "bootout", "gui/501/com.akm.task.ping"]);
+    }
+    transaction.calls.length = 0;
+    if (failure === "enable") {
+      transaction.failNext("enable");
+    } else {
+      const removeFile = transaction.fs.removeFile.bind(transaction.fs);
+      let failed = false;
+      transaction.fs.removeFile = (file) => {
+        if (!failed && file === plistPath) {
+          failed = true;
+          throw new Error("injected delete failure");
+        }
+        removeFile(file);
+      };
+    }
+
+    expect(() => transaction.backend.uninstall("ping")).toThrow(`injected ${failure} failure`);
+
+    expect(transaction.fs.readFile(plistPath)).toBe(priorPlist);
+    expect(transaction.activePlist()).toBe(priorLoaded ? priorPlist : undefined);
+    expect(transaction.disabledLabels.has("com.akm.task.ping")).toBe(!priorEnabled);
   });
 
   test("log-directory creation failure aborts install before plist or launchctl mutation", () => {

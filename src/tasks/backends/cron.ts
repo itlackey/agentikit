@@ -35,6 +35,7 @@ import { parseSchedule, translateToCron } from "../schedule";
 import {
   assertSchedulerExpectationIdentity,
   assertSchedulerMutationArtifact,
+  assertSchedulerNativeArtifactCardinality,
   assertSchedulerNativeArtifactOwner,
   assertSchedulerRemovalArtifact,
   assertSchedulerRollbackArtifact,
@@ -127,9 +128,18 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       const existing = readCrontab(exec);
       const nativeId = schedulerBindingNativeId(task);
       const blocks = listBlocks(existing);
-      const prior = blocks.find(({ id }) => schedulerNativeArtifactKey(id) === schedulerNativeArtifactKey(nativeId));
+      const matching = blocks.filter(
+        ({ id }) => schedulerNativeArtifactKey(id) === schedulerNativeArtifactKey(nativeId),
+      );
+      const artifacts = matching.map((block) => cronArtifact(block.id, block.body));
+      const priorArtifact = expected
+        ? assertSchedulerNativeArtifactCardinality(artifacts, nativeId, expected.state === "absent" ? 0 : 1)
+        : matching.length > 1
+          ? assertSchedulerNativeArtifactCardinality(artifacts, nativeId, 1)
+          : artifacts[0];
+      const prior = priorArtifact ? matching.find((block) => block.id === priorArtifact.nativeId) : undefined;
       if (expected) {
-        assertSchedulerMutationArtifact(prior ? cronArtifact(prior.id, prior.body) : undefined, expected);
+        assertSchedulerMutationArtifact(priorArtifact, expected);
       } else if (prior) {
         assertSchedulerNativeArtifactOwner(prior.id, task, extractCronInvocation(prior.body)?.invocation);
       }
@@ -140,7 +150,19 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
     uninstall(nativeId: string, expected?: SchedulerRemovalExpectation) {
       if (expected) assertSchedulerExpectationIdentity({ ...expected, state: "present" });
       const existing = readCrontab(exec);
-      const prior = listBlocks(existing).find(({ id }) => id === nativeId);
+      const matching = listBlocks(existing).filter(
+        ({ id }) => schedulerNativeArtifactKey(id) === schedulerNativeArtifactKey(nativeId),
+      );
+      const priorArtifact = expected
+        ? assertSchedulerNativeArtifactCardinality(
+            matching.map((block) => cronArtifact(block.id, block.body)),
+            nativeId,
+            1,
+          )
+        : undefined;
+      const prior = expected
+        ? matching.find((block) => block.id === priorArtifact?.nativeId)
+        : matching.find(({ id }) => id === nativeId);
       if (!prior) return;
       if (expected) {
         assertSchedulerRemovalArtifact(
@@ -184,10 +206,13 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
     snapshotBindings(ids: readonly string[]): CronBindingSnapshot {
       const crontab = readCrontab(exec);
       const inspection = inspectCronState(crontab);
+      const keys = new Set(ids.map(schedulerNativeArtifactKey));
       return Object.freeze({
         kind: CRON_SNAPSHOT,
         nativeIds: Object.freeze([...ids]),
-        artifacts: inspection.artifacts,
+        artifacts: Object.freeze(
+          inspection.artifacts.filter((artifact) => keys.has(schedulerNativeArtifactKey(artifact.nativeId))),
+        ),
         crontab,
       });
     },

@@ -7,13 +7,15 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { loadAdapterExecutionSource } from "../commands/command/execution-source-loader";
 import { makeBundleRef } from "../core/asset/asset-ref";
 import type { AkmConfig } from "../core/config/config-types";
 import { UsageError } from "../core/errors";
-import { canonicalizeWorkflowName } from "../core/recognition-util";
+import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../core/recognition-util";
+import { buildFileContext, type FileContext } from "../indexer/walk/file-context";
 import {
-  resolveUniqueWorkflowSource,
-  type WorkflowSourceFile,
+  WorkflowSourceCollisionError,
+  WorkflowSourceNameError,
   WorkflowSourceRejectionError,
   workflowNameForSourcePath,
 } from "../workflows/source-files";
@@ -23,6 +25,7 @@ import type { WorkflowSourceIrV1 } from "../workflows/source-ir/schema";
 import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "./runtime-v3";
 import { parseSchedule, type ScheduleBackend } from "./schedule";
 import {
+  assertSchedulerNativeArtifactCardinality,
   compileTaskSchedulerBindings,
   compileWorkflowSchedulerBindings,
   type InstalledSchedulerBinding,
@@ -37,7 +40,7 @@ import {
   schedulerNativeArtifactKey,
   schedulerNativeBindingId,
 } from "./scheduler-binding";
-import { parseTaskV3Yaml, taskV3SourceErrorDetail } from "./source-v3";
+import { parseTaskV3Yaml, TASK_V3_MAX_SOURCE_BYTES, taskV3SourceErrorDetail } from "./source-v3";
 
 export interface SchedulerSyncPlanInput {
   readonly sourceRoot: string;
@@ -88,11 +91,22 @@ export interface SchedulerSourceSnapshot {
   readonly sourceRoot: string;
   readonly sourceRealPath: string;
   readonly sourcePhysicalIdentity: string;
+  readonly sourceDirectoryVersion: string;
   readonly files: readonly Readonly<{
+    sourcePath: string;
     relativePath: string;
     realPath: string;
+    containmentRoot: string;
+    containmentRealPath: string;
+    containmentPhysicalIdentity: string;
     physicalIdentity: string;
+    size: number;
+    mtimeNs: string;
+    ctimeNs: string;
     sha256: string;
+    bytesBase64: string;
+    content: string;
+    authored: boolean;
   }>[];
 }
 
@@ -118,16 +132,11 @@ export async function planSchedulerSync(input: SchedulerSyncPlanInput): Promise<
 export async function prepareSchedulerSyncSourceSet(
   input: SchedulerSyncPlanInput,
 ): Promise<PreparedSchedulerSourceSet> {
-  const before = captureSchedulerSourceSnapshot(input);
-  const desired = await compileDesiredSourceSet(input);
-  const after = captureSchedulerSourceSnapshot(input);
-  if (!sameSourceSnapshot(before, after)) {
-    throw new UsageError(
-      "Scheduler desired source read set changed during projection; refusing reconciliation.",
-      "RESOURCE_ALREADY_EXISTS",
-    );
-  }
-  return Object.freeze({ desired, sourceSnapshot: after });
+  const collector = new SchedulerSourceCollector(captureSchedulerSourceSnapshot(input));
+  const desired = await compileDesiredSourceSet(input, collector);
+  const sourceSnapshot = collector.snapshot();
+  assertSchedulerSourceSnapshot(sourceSnapshot);
+  return Object.freeze({ desired, sourceSnapshot });
 }
 
 export function finalizeSchedulerSyncPlan(
@@ -325,7 +334,7 @@ export function assertSchedulerNativeArtifactOwnership(
   for (const artifact of installed) {
     const key = schedulerNativeArtifactKey(artifact.nativeId);
     const prior = installedByKey.get(key);
-    if (prior && !sameInstalledArtifact(prior, artifact)) {
+    if (prior) {
       throw nativeArtifactCollision(prior, artifact);
     }
     installedByKey.set(key, artifact);
@@ -352,9 +361,20 @@ export function assertSchedulerNativeArtifactOwnership(
 }
 
 function assertCoherentInspection(inspection: SchedulerBackendInspection, requireCompleteFingerprint = false): void {
+  const seenNativeKeys = new Set<string>();
+  for (const artifact of inspection.artifacts) {
+    const key = schedulerNativeArtifactKey(artifact.nativeId);
+    if (seenNativeKeys.has(key)) {
+      throw new UsageError(
+        `Scheduler inspection has duplicate normalized native artifact ${JSON.stringify(artifact.nativeId)}; expected cardinality one.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
+    }
+    seenNativeKeys.add(key);
+  }
   for (const installed of inspection.installed) {
     const nativeId = installed.nativeId ?? schedulerNativeBindingId(installed.id);
-    const artifact = inspection.artifacts.find((candidate) => candidate.nativeId === nativeId);
+    const artifact = assertSchedulerNativeArtifactCardinality(inspection.artifacts, nativeId, 1);
     if (
       !artifact ||
       (installed.signature !== undefined &&
@@ -413,23 +433,14 @@ function sameDesiredArtifact(left: SchedulerBinding, right: SchedulerBinding): b
   );
 }
 
-function sameInstalledArtifact(left: SchedulerNativeArtifact, right: SchedulerNativeArtifact): boolean {
-  return (
-    left.nativeId === right.nativeId &&
-    left.bindingId === right.bindingId &&
-    left.fingerprint === right.fingerprint &&
-    ((left.invocation === undefined && right.invocation === undefined) ||
-      (left.invocation !== undefined &&
-        right.invocation !== undefined &&
-        sameInvocation(left.invocation, right.invocation)))
-  );
-}
-
-async function compileDesiredSourceSet(input: SchedulerSyncPlanInput): Promise<readonly SchedulerBinding[]> {
+async function compileDesiredSourceSet(
+  input: SchedulerSyncPlanInput,
+  collector: SchedulerSourceCollector,
+): Promise<readonly SchedulerBinding[]> {
   const bindings: SchedulerBinding[] = [];
   const failures: string[] = [];
-  await compileTaskSources(input, bindings, failures);
-  compileWorkflowSources(input, bindings, failures);
+  await compileTaskSources(input, collector, bindings, failures);
+  compileWorkflowSources(input, collector, bindings, failures);
   if (failures.length > 0) {
     throw new UsageError(
       `Scheduler sync rejected the desired source set before mutation:\n${failures.map((failure) => `- ${failure}`).join("\n")}`,
@@ -441,18 +452,19 @@ async function compileDesiredSourceSet(input: SchedulerSyncPlanInput): Promise<r
 
 async function compileTaskSources(
   input: SchedulerSyncPlanInput,
+  collector: SchedulerSourceCollector,
   out: SchedulerBinding[],
   failures: string[],
 ): Promise<void> {
   if (input.adapterId !== "akm" && input.adapterId !== "akm-task") return;
   const physicalOwners = new Map<string, string>();
-  for (const sourcePath of enumerateTaskSources(input, failures)) {
-    const relative = toPosix(path.relative(input.sourceRoot, sourcePath));
+  for (const guarded of collector.authoredTaskSources(input.adapterId)) {
+    const sourcePath = guarded.sourcePath;
+    const relative = guarded.relativePath;
     const conceptId = relative.slice(0, -4);
     const id = input.adapterId === "akm-task" ? conceptId : path.basename(sourcePath, ".yml");
     try {
-      assertContainedRegularSource(sourcePath, input.sourceRoot);
-      const physicalIdentity = taskSourcePhysicalIdentity(sourcePath);
+      const physicalIdentity = guarded.physicalIdentity;
       const priorOwner = physicalOwners.get(physicalIdentity);
       if (priorOwner !== undefined && priorOwner !== sourcePath) {
         throw new UsageError(
@@ -462,7 +474,7 @@ async function compileTaskSources(
       }
       physicalOwners.set(physicalIdentity, sourcePath);
       const document = parseTaskV3Yaml({
-        yaml: fs.readFileSync(sourcePath, "utf8"),
+        yaml: guarded.content,
         filePath: sourcePath,
         workspaceRoot: input.sourceRoot,
       });
@@ -474,6 +486,16 @@ async function compileTaskSources(
         bundleRoot: input.sourceRoot,
         config: input.config ?? SCHEDULER_PROJECTION_CONFIG,
         ...(input.resolveAsset ? { resolveAsset: input.resolveAsset } : {}),
+        readFile: (file, bundleRoot) => collector.readBytes(file, bundleRoot ?? input.sourceRoot),
+        commandSourceLoader: (ref, kind, options) => {
+          const guardedOptions = {
+            ...options,
+            fileContext: (root: string, file: string) => collector.fileContext(root, file),
+          };
+          return kind === "command"
+            ? loadAdapterExecutionSource(ref, "command", guardedOptions)
+            : loadAdapterExecutionSource(ref, "persona", guardedOptions);
+        },
       });
       const sourceBindings = compileTaskSchedulerBindings({
         id,
@@ -495,48 +517,26 @@ async function compileTaskSources(
   }
 }
 
-function taskSourcePhysicalIdentity(file: string): string {
-  const realFile = fs.realpathSync(file);
-  const stat = fs.statSync(realFile);
-  return stat.ino === 0 ? `path:${realFile}` : `inode:${stat.dev}:${stat.ino}`;
-}
-
-function enumerateTaskSources(input: SchedulerSyncPlanInput, failures: string[]): readonly string[] {
-  const taskRoot = input.adapterId === "akm" ? path.join(input.sourceRoot, "tasks") : input.sourceRoot;
-  if (input.adapterId === "akm-task") {
-    const paths: string[] = [];
-    walkOwnedFiles(taskRoot, paths, failures);
-    return paths.filter((sourcePath) => sourcePath.endsWith(".yml")).sort(compareCodePoints);
-  }
-  try {
-    return fs
-      .readdirSync(taskRoot, { withFileTypes: true })
-      .filter((entry) => (entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".yml"))
-      .map(({ name }) => path.join(taskRoot, name))
-      .sort(compareCodePoints);
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") failures.push(`${taskRoot}: ${errorMessage(cause)}`);
-    return [];
-  }
-}
-
-function compileWorkflowSources(input: SchedulerSyncPlanInput, out: SchedulerBinding[], failures: string[]): void {
+function compileWorkflowSources(
+  input: SchedulerSyncPlanInput,
+  collector: SchedulerSourceCollector,
+  out: SchedulerBinding[],
+  failures: string[],
+): void {
   if (input.adapterId !== "akm" && input.adapterId !== "akm-workflow") return;
-  const lookups = enumerateWorkflowLookups(input, failures);
-  for (const [, authoredName] of lookups) {
-    let source: WorkflowSourceFile | undefined;
+  const lookups = enumerateWorkflowLookups(input, collector, failures);
+  for (const [canonicalName, sources] of lookups) {
     try {
-      source = resolveUniqueWorkflowSource(input.sourceRoot, input.adapterId, authoredName);
-      if (!source)
-        throw new UsageError(`Workflow source ${authoredName} disappeared during sync.`, "INVALID_FLAG_VALUE");
-    } catch (cause) {
-      failures.push(errorMessage(cause));
-      continue;
-    }
-    try {
-      assertContainedRegularSource(source.path, input.sourceRoot);
-      const compiled = compileWorkflowSource(fs.readFileSync(source.path, "utf8"), {
-        path: source.relativePath,
+      if (sources.length > 1) {
+        throw new WorkflowSourceCollisionError(
+          input.adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName,
+          sources.map((source) => source.relativePath),
+        );
+      }
+      const guarded = sources[0];
+      if (!guarded) continue;
+      const compiled = compileWorkflowSource(guarded.content, {
+        path: guarded.relativePath,
         workspaceRoot: input.sourceRoot,
       });
       if (!compiled.ok) {
@@ -548,7 +548,7 @@ function compileWorkflowSources(input: SchedulerSyncPlanInput, out: SchedulerBin
         );
       }
       assertWorkflowProjectable(compiled.ir);
-      const conceptId = input.adapterId === "akm" ? `workflows/${source.canonicalName}` : source.canonicalName;
+      const conceptId = input.adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName;
       const qualifiedRef = makeBundleRef(input.bundleName, conceptId);
       const schedules = compiled.ir.triggers.flatMap((trigger) =>
         trigger.kind === "schedule"
@@ -571,35 +571,34 @@ function compileWorkflowSources(input: SchedulerSyncPlanInput, out: SchedulerBin
   }
 }
 
-function enumerateWorkflowLookups(input: SchedulerSyncPlanInput, failures: string[]): ReadonlyMap<string, string> {
-  const ownershipRoot = input.adapterId === "akm" ? path.join(input.sourceRoot, "workflows") : input.sourceRoot;
-  const authoredPaths: string[] = [];
-  walkOwnedFiles(ownershipRoot, authoredPaths, failures);
-  const lookups = new Map<string, string>();
-  for (const sourcePath of authoredPaths.sort(compareCodePoints)) {
+function enumerateWorkflowLookups(
+  input: SchedulerSyncPlanInput,
+  collector: SchedulerSourceCollector,
+  failures: string[],
+): ReadonlyMap<string, readonly GuardedSchedulerSource[]> {
+  const lookups = new Map<string, GuardedSchedulerSource[]>();
+  for (const guarded of collector.authoredWorkflowSources(input.adapterId)) {
+    const sourcePath = guarded.sourcePath;
     if (path.basename(sourcePath).toLowerCase() === "readme.md") continue;
     const authoredName = workflowNameForSourcePath(input.sourceRoot, input.adapterId, sourcePath);
     if (authoredName === undefined) continue;
+    const extension = path.posix.extname(authoredName).toLowerCase();
+    const stem = authoredName.slice(0, -extension.length).toLowerCase();
+    const nestedSuffix = (WORKFLOW_EXTENSIONS as readonly string[]).find((suffix) => stem.endsWith(suffix));
+    if (nestedSuffix) {
+      failures.push(errorMessage(new WorkflowSourceNameError(guarded.relativePath, nestedSuffix)));
+      continue;
+    }
     const canonicalName = canonicalizeWorkflowName(authoredName);
-    if (!lookups.has(canonicalName)) lookups.set(canonicalName, authoredName);
+    const owners = lookups.get(canonicalName) ?? [];
+    owners.push(guarded);
+    lookups.set(canonicalName, owners);
   }
-  return new Map([...lookups].sort(([left], [right]) => compareCodePoints(left, right)));
-}
-
-function walkOwnedFiles(root: string, out: string[], failures: string[]): void {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(root, { withFileTypes: true });
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return;
-    failures.push(`${root}: ${errorMessage(cause)}`);
-    return;
-  }
-  for (const entry of entries.sort((left, right) => compareCodePoints(left.name, right.name))) {
-    const candidate = path.join(root, entry.name);
-    if (entry.isDirectory()) walkOwnedFiles(candidate, out, failures);
-    else if (entry.isFile() || entry.isSymbolicLink()) out.push(candidate);
-  }
+  return new Map(
+    [...lookups]
+      .sort(([left], [right]) => compareCodePoints(left, right))
+      .map(([name, sources]) => [name, Object.freeze(sources.sort(compareGuardedSources))]),
+  );
 }
 
 function assertWorkflowProjectable(ir: WorkflowSourceIrV1): void {
@@ -664,15 +663,6 @@ function assertUniqueInstalledIds(installed: readonly InstalledSchedulerBinding[
   }
 }
 
-function assertContainedRegularSource(file: string, root: string): void {
-  const realRoot = fs.realpathSync(root);
-  const realFile = fs.realpathSync(file);
-  const relative = path.relative(realRoot, realFile);
-  if (relative.startsWith("..") || path.isAbsolute(relative) || !fs.statSync(realFile).isFile()) {
-    throw new UsageError(`${file} resolves outside the bundle root or is not a regular file.`, "PATH_ESCAPE_VIOLATION");
-  }
-}
-
 function taskFailure(file: string, cause: unknown): string {
   const detail = taskV3SourceErrorDetail(cause);
   return detail === errorMessage(cause) ? `${file}: ${detail}` : detail;
@@ -683,11 +673,28 @@ function errorMessage(cause: unknown): string {
 }
 
 export function assertSchedulerSourceSnapshot(snapshot: SchedulerSourceSnapshot): void {
-  const current = captureSchedulerSourceSnapshot({
+  const currentAuthored = captureSchedulerSourceSnapshot({
     sourceRoot: snapshot.sourceRoot,
     adapterId: snapshot.adapterId,
   });
-  if (!sameSourceSnapshot(snapshot, current)) {
+  const expectedAuthored = Object.freeze({
+    ...snapshot,
+    files: Object.freeze(snapshot.files.filter((file) => file.authored)),
+  });
+  const transitiveCurrent = snapshot.files
+    .filter((file) => !file.authored)
+    .map((file) => readGuardedSchedulerSource(file.sourcePath, file.containmentRoot, false));
+  const current = Object.freeze({
+    ...currentAuthored,
+    files: Object.freeze([...currentAuthored.files, ...transitiveCurrent].sort(compareGuardedSources)),
+  });
+  const expected = Object.freeze({
+    ...expectedAuthored,
+    files: Object.freeze(
+      [...expectedAuthored.files, ...snapshot.files.filter((file) => !file.authored)].sort(compareGuardedSources),
+    ),
+  });
+  if (!sameSourceSnapshot(expected, current)) {
     throw new UsageError(
       "Scheduler desired source read set changed after projection; refusing native mutation.",
       "RESOURCE_ALREADY_EXISTS",
@@ -699,7 +706,7 @@ function captureSchedulerSourceSnapshot(
   input: Pick<SchedulerSyncPlanInput, "adapterId" | "sourceRoot">,
 ): SchedulerSourceSnapshot {
   const sourceRealPath = fs.realpathSync(input.sourceRoot);
-  const sourceStat = fs.statSync(sourceRealPath);
+  const sourceStat = fs.statSync(sourceRealPath, { bigint: true });
   if (!sourceStat.isDirectory()) {
     throw new UsageError(`${input.sourceRoot} is not a scheduler source directory.`, "INVALID_FLAG_VALUE");
   }
@@ -721,24 +728,17 @@ function captureSchedulerSourceSnapshot(
   } else if (input.adapterId === "akm-workflow") {
     collectSnapshotFiles(input.sourceRoot, candidates);
   }
-  const files = candidates.sort(compareCodePoints).map((file) => {
-    const realPath = fs.realpathSync(file);
-    const stat = fs.statSync(realPath);
-    if (!stat.isFile()) throw new UsageError(`${file} is not a regular scheduler source.`, "INVALID_FLAG_VALUE");
-    return Object.freeze({
-      relativePath: toPosix(path.relative(input.sourceRoot, file)),
-      realPath,
-      physicalIdentity: stat.ino === 0 ? `path:${realPath}` : `inode:${stat.dev}:${stat.ino}`,
-      sha256: createHash("sha256").update(fs.readFileSync(realPath)).digest("hex"),
-    });
-  });
+  const files = candidates
+    .sort(compareCodePoints)
+    .map((file) => readGuardedSchedulerSource(file, input.sourceRoot, true));
   return Object.freeze({
     adapterId: input.adapterId,
     sourceRoot: path.resolve(input.sourceRoot),
     sourceRealPath,
     sourcePhysicalIdentity:
-      sourceStat.ino === 0 ? `path:${sourceRealPath}` : `inode:${sourceStat.dev}:${sourceStat.ino}`,
-    files: Object.freeze(files),
+      sourceStat.ino === 0n ? `path:${sourceRealPath}` : `inode:${sourceStat.dev}:${sourceStat.ino}`,
+    sourceDirectoryVersion: `${sourceStat.size}:${sourceStat.mtimeNs}:${sourceStat.ctimeNs}`,
+    files: Object.freeze(files.sort(compareGuardedSources)),
   });
 }
 
@@ -759,6 +759,171 @@ function collectSnapshotFiles(root: string, out: string[], include: (file: strin
 
 function sameSourceSnapshot(left: SchedulerSourceSnapshot, right: SchedulerSourceSnapshot): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+type GuardedSchedulerSource = SchedulerSourceSnapshot["files"][number];
+
+class SchedulerSourceCollector {
+  readonly #base: SchedulerSourceSnapshot;
+  readonly #files = new Map<string, GuardedSchedulerSource>();
+
+  constructor(base: SchedulerSourceSnapshot) {
+    this.#base = base;
+    for (const file of base.files) this.#files.set(path.resolve(file.sourcePath), file);
+  }
+
+  authoredTaskSources(adapterId: string): readonly GuardedSchedulerSource[] {
+    return [...this.#files.values()]
+      .filter((file) => {
+        if (!file.authored || !file.relativePath.endsWith(".yml")) return false;
+        if (adapterId === "akm-task") return true;
+        return path.posix.dirname(file.relativePath) === "tasks";
+      })
+      .sort(compareGuardedSources);
+  }
+
+  authoredWorkflowSources(adapterId: string): readonly GuardedSchedulerSource[] {
+    return [...this.#files.values()]
+      .filter((file) => {
+        if (!file.authored) return false;
+        if (adapterId === "akm-workflow") return true;
+        return file.relativePath.startsWith("workflows/");
+      })
+      .sort(compareGuardedSources);
+  }
+
+  readBytes(file: string, containmentRoot: string): Uint8Array {
+    return Buffer.from(this.#read(file, containmentRoot).bytesBase64, "base64");
+  }
+
+  fileContext(root: string, file: string): FileContext {
+    const guarded = this.#read(file, root);
+    const base = buildFileContext(root, file);
+    return {
+      ...base,
+      content: () => guarded.content,
+    };
+  }
+
+  snapshot(): SchedulerSourceSnapshot {
+    return Object.freeze({
+      ...this.#base,
+      files: Object.freeze([...this.#files.values()].sort(compareGuardedSources)),
+    });
+  }
+
+  #read(file: string, containmentRoot: string): GuardedSchedulerSource {
+    const key = path.resolve(file);
+    const existing = this.#files.get(key);
+    if (existing) return existing;
+    const guarded = readGuardedSchedulerSource(file, containmentRoot, false);
+    this.#files.set(key, guarded);
+    return guarded;
+  }
+}
+
+function readGuardedSchedulerSource(
+  sourcePathInput: string,
+  containmentRootInput: string,
+  authored: boolean,
+): GuardedSchedulerSource {
+  const sourcePath = path.resolve(sourcePathInput);
+  const containmentRoot = path.resolve(containmentRootInput);
+  const lexicalRelative = path.relative(containmentRoot, sourcePath);
+  if (lexicalRelative === "" || lexicalRelative.startsWith("..") || path.isAbsolute(lexicalRelative)) {
+    throw new UsageError(`${sourcePathInput} resolves outside its semantic source root.`, "PATH_ESCAPE_VIOLATION");
+  }
+  const containmentRealPath = fs.realpathSync(containmentRoot);
+  const containmentStat = fs.statSync(containmentRealPath, { bigint: true });
+  if (!containmentStat.isDirectory()) {
+    throw new UsageError(`${containmentRoot} is not a semantic source directory.`, "INVALID_FLAG_VALUE");
+  }
+  const noFollow = "O_NOFOLLOW" in fs.constants ? fs.constants.O_NOFOLLOW : 0;
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(sourcePath, fs.constants.O_RDONLY | noFollow);
+    const before = fs.fstatSync(descriptor, { bigint: true });
+    if (!before.isFile()) {
+      throw new UsageError(`${sourcePath} is not a regular scheduler source.`, "INVALID_FLAG_VALUE");
+    }
+    if (before.size > BigInt(TASK_V3_MAX_SOURCE_BYTES)) {
+      throw new UsageError(
+        `${sourcePath} exceeds the 1 MiB (${TASK_V3_MAX_SOURCE_BYTES}-byte) semantic source limit.`,
+        "INVALID_FLAG_VALUE",
+      );
+    }
+    const bytes = fs.readFileSync(descriptor);
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    if (!sameBigIntStat(before, after) || BigInt(bytes.byteLength) !== before.size) {
+      throw new UsageError(`${sourcePath} changed while its guarded bytes were read.`, "RESOURCE_ALREADY_EXISTS");
+    }
+    const realPath = fs.realpathSync(sourcePath);
+    const physicalRelative = path.relative(containmentRealPath, realPath);
+    if (physicalRelative === "" || physicalRelative.startsWith("..") || path.isAbsolute(physicalRelative)) {
+      throw new UsageError(`${sourcePath} resolves outside its semantic source root.`, "PATH_ESCAPE_VIOLATION");
+    }
+    let content: string;
+    try {
+      content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      throw new UsageError(`${sourcePath} contains invalid UTF-8 bytes.`, "INVALID_FLAG_VALUE");
+    }
+    return Object.freeze({
+      sourcePath,
+      relativePath: toPosix(path.relative(containmentRoot, sourcePath)),
+      realPath,
+      containmentRoot,
+      containmentRealPath,
+      containmentPhysicalIdentity:
+        containmentStat.ino === 0n
+          ? `path:${containmentRealPath}`
+          : `inode:${containmentStat.dev}:${containmentStat.ino}`,
+      physicalIdentity: before.ino === 0n ? `path:${realPath}` : `inode:${before.dev}:${before.ino}`,
+      size: bytes.byteLength,
+      mtimeNs: String(before.mtimeNs),
+      ctimeNs: String(before.ctimeNs),
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      bytesBase64: bytes.toString("base64"),
+      content,
+      authored,
+    });
+  } catch (cause) {
+    if (cause instanceof UsageError) throw cause;
+    if ((cause as NodeJS.ErrnoException).code === "ELOOP") {
+      const linked = fs.realpathSync(sourcePath);
+      const relative = path.relative(containmentRealPath, linked);
+      if (relative.startsWith("..") || path.isAbsolute(relative)) {
+        throw new UsageError(
+          `${sourcePath} resolves outside the bundle root through a symbolic source.`,
+          "PATH_ESCAPE_VIOLATION",
+        );
+      }
+      throw new UsageError(
+        `${sourcePath} is a symbolic source with an ambiguous physical identity collision; guarded scheduler reads require a regular no-follow owner.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
+    }
+    throw new UsageError(
+      `${sourcePath} could not be guarded as a contained regular semantic source: ${errorMessage(cause)}`,
+      "PATH_ESCAPE_VIOLATION",
+    );
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function sameBigIntStat(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function compareGuardedSources(left: GuardedSchedulerSource, right: GuardedSchedulerSource): number {
+  return compareCodePoints(left.sourcePath, right.sourcePath);
 }
 
 function installedLogicalSource(

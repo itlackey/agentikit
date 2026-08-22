@@ -295,7 +295,7 @@ describe("task lifecycle failure handling", () => {
     expect(installed).toEqual(new Map([[prior.id, prior]]));
   });
 
-  test("add --force trusts a rejected install to preserve prior scheduler state and restores only source", async () => {
+  test("add --force quiesces prior scheduler state and restores its exact snapshot after install rejection", async () => {
     const priorYaml = [
       "version: 3",
       "run: echo prior",
@@ -326,11 +326,11 @@ describe("task lifecycle failure handling", () => {
       { schedule: "0 3 * * *", enabled: true },
     ]);
     expect(enabledCalls).toEqual([]);
-    expect(uninstallCalls).toEqual([]);
+    expect(uninstallCalls).toEqual(["nightly"]);
     expect(installed.get("nightly")).toMatchObject({ cron: "0 2 * * *", enabled: false });
   });
 
-  test("add does not uninstall an orphaned prior scheduler entry when replacement install rejects", async () => {
+  test("add quiesces an orphaned prior scheduler entry before replacement and restores it on rejection", async () => {
     const taskPath = path.join(storage.stashDir, "tasks", "orphaned.yml");
     installed.set("orphaned", nativeBinding("orphaned", "0 2 * * *"));
     failInstall = (task) => task.cron === "0 3 * * *";
@@ -349,7 +349,7 @@ describe("task lifecycle failure handling", () => {
     expect(fs.existsSync(taskPath)).toBe(false);
     expect(installCalls.map((task) => task.cron)).toEqual(["0 3 * * *"]);
     expect(enabledCalls).toEqual([]);
-    expect(uninstallCalls).toEqual([]);
+    expect(uninstallCalls).toEqual(["orphaned"]);
     expect(installed.get("orphaned")).toMatchObject({ cron: "0 2 * * *", enabled: true });
   });
 
@@ -377,7 +377,7 @@ describe("task lifecycle failure handling", () => {
 
     expect(snapshotCalls).toEqual([[prior.id]]);
     expect(restoreCalls).toBe(1);
-    expect(uninstallCalls).toEqual([]);
+    expect(uninstallCalls).toEqual(["orphaned-commit"]);
     expect(installed).toEqual(new Map([[prior.id, prior]]));
     expect(fs.existsSync(path.join(storage.stashDir, "tasks", `${prior.id}.yml`))).toBe(false);
   });
@@ -441,7 +441,7 @@ describe("task lifecycle failure handling", () => {
     await akmTasksAdd({ id: "multi", schedule: "0 4 * * *", command: "echo replacement", force: true }, { backend });
 
     expect(new Set(snapshotCalls[0])).toEqual(new Set(priorBindings.map((binding) => binding.id)));
-    expect(uninstallCalls).toEqual(priorBindings.slice(1).map((binding) => binding.id));
+    expect(uninstallCalls).toEqual(priorBindings.map((binding) => binding.id));
     expect([...installed.keys()]).toEqual(["multi"]);
     expect(installed.get("multi")).toMatchObject({ cron: "0 4 * * *", ordinal: 0 });
   });
@@ -484,7 +484,7 @@ describe("task lifecycle failure handling", () => {
     expect(fs.readFileSync(taskPath, "utf8")).toBe(priorYaml);
   });
 
-  test("add --force restores exact prior bytes after a partial source write throws", async () => {
+  test("add --force preserves an unreceipted partial source instead of overwriting a possible racer", async () => {
     const priorYaml = [
       "version: 3",
       "run: echo prior",
@@ -518,13 +518,13 @@ describe("task lifecycle failure handling", () => {
       ),
     ).rejects.toThrow("partial source write failed");
 
-    expect(writeCalls).toBe(2);
-    expect(fs.readFileSync(taskPath, "utf8")).toBe(priorYaml);
+    expect(writeCalls).toBe(1);
+    expect(fs.readFileSync(taskPath, "utf8")).toBe("version: 3\nrun:");
     expect(installCalls).toEqual([]);
     expect(uninstallCalls).toEqual([]);
   });
 
-  test("add removes a newly created partial source file when its write throws", async () => {
+  test("add preserves an unreceipted partial create instead of deleting a possible concurrent owner", async () => {
     const taskPath = path.join(storage.stashDir, "tasks", "partial.yml");
     let deleteCalls = 0;
 
@@ -550,8 +550,8 @@ describe("task lifecycle failure handling", () => {
       ),
     ).rejects.toThrow("partial source write failed");
 
-    expect(deleteCalls).toBe(1);
-    expect(fs.existsSync(taskPath)).toBe(false);
+    expect(deleteCalls).toBe(0);
+    expect(fs.readFileSync(taskPath, "utf8")).toBe("version: 3\nrun:");
     expect(installCalls).toEqual([]);
     expect(uninstallCalls).toEqual([]);
   });
@@ -592,7 +592,7 @@ describe("task lifecycle failure handling", () => {
     expect(uninstallCalls).toEqual([]);
   });
 
-  test("install rejection aggregates source rollback failure without touching a valid prior entry", async () => {
+  test("install rejection leaves prior native state quiesced when source rollback cannot be proven", async () => {
     const priorYaml = `${taskYaml("echo prior", "0 2 * * *")}\n`;
     const taskPath = writeTask("nightly", priorYaml);
     installed.set("nightly", nativeBinding("nightly", "0 2 * * *"));
@@ -629,8 +629,8 @@ describe("task lifecycle failure handling", () => {
     ]);
     expect(installCalls.map((task) => task.cron)).toEqual(["0 3 * * *"]);
     expect(enabledCalls).toEqual([]);
-    expect(uninstallCalls).toEqual([]);
-    expect(installed.get("nightly")).toMatchObject({ cron: "0 2 * * *", enabled: true });
+    expect(uninstallCalls).toEqual(["nightly"]);
+    expect(installed.has("nightly")).toBe(false);
   });
 
   test("commit failure restores the exact prior scheduler snapshot without semantic reinstall", async () => {
@@ -666,7 +666,7 @@ describe("task lifecycle failure handling", () => {
     expect(fs.readFileSync(taskPath, "utf8")).toBe(priorYaml);
     expect(installCalls.map((task) => task.cron)).toEqual(["0 3 * * *"]);
     expect(enabledCalls).toEqual([]);
-    expect(uninstallCalls).toEqual([]);
+    expect(uninstallCalls).toEqual(["nightly"]);
     expect(restoreCalls).toBe(1);
     expect(installed.get("nightly")).toMatchObject({ cron: "0 2 * * *", enabled: true });
   });
@@ -705,7 +705,7 @@ describe("task lifecycle failure handling", () => {
     expect(fs.readFileSync(taskPath, "utf8")).toBe(priorYaml);
     expect(installCalls.map((task) => task.cron)).toEqual(["0 3 * * *"]);
     expect(enabledCalls).toEqual([]);
-    expect(uninstallCalls).toEqual([]);
+    expect(uninstallCalls).toEqual(["nightly"]);
     expect(restoreCalls).toBe(1);
     expect(installed.get("nightly")).toMatchObject({ cron: "0 2 * * *", enabled: true });
   });

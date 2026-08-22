@@ -34,6 +34,7 @@ import { type LaunchdTrigger, parseSchedule, translateToLaunchd } from "../sched
 import {
   assertSchedulerExpectationIdentity,
   assertSchedulerMutationArtifact,
+  assertSchedulerNativeArtifactCardinality,
   assertSchedulerNativeArtifactOwner,
   assertSchedulerRemovalArtifact,
   assertSchedulerRollbackArtifact,
@@ -134,17 +135,25 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
       });
     },
     uninstall(nativeId: string, expected?: SchedulerRemovalExpectation) {
-      const file = plistPath(nativeId);
+      let resolvedNativeId = findLaunchdNativeId(fsLike, agentsDir, nativeId) ?? nativeId;
       if (expected) {
         assertSchedulerExpectationIdentity({ ...expected, state: "present" });
-        const current = readLaunchdArtifactState(findLaunchdNativeId(fsLike, agentsDir, nativeId) ?? nativeId, {
+        const inspection = inspectLaunchdState({ exec, fsLike, agentsDir, plistPath, target, label });
+        const artifact = assertSchedulerNativeArtifactCardinality(inspection.artifacts, nativeId, 1);
+        resolvedNativeId = artifact?.nativeId ?? nativeId;
+        const current = readLaunchdArtifactState(resolvedNativeId, {
           exec,
           fsLike,
           plistPath,
           target,
           label,
         });
-        if (!current) return;
+        if (!current) {
+          throw new ConfigError(
+            `launchd artifact ${JSON.stringify(nativeId)} disappeared after coherent inspection.`,
+            "INVALID_CONFIG_FILE",
+          );
+        }
         assertSchedulerRemovalArtifact(
           current.artifact.nativeId,
           expected,
@@ -152,13 +161,42 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
           current.artifact.fingerprint,
         );
       }
-      runOrThrow(exec, ["launchctl", "bootout", target(nativeId)], {
-        isOk: (r) => r.status === 0 || isServiceNotFoundResult(r),
-        message: (r) => `launchctl bootout failed (exit ${r.status}): ${r.stderr || r.stdout || "no output"}.`,
+      const file = plistPath(resolvedNativeId);
+      const snapshot = snapshotLaunchdBindings([resolvedNativeId], {
+        exec,
+        fsLike,
+        agentsDir,
+        plistPath,
+        target,
+        label,
       });
-      // launchctl disable overrides persist after the plist is removed.
-      setEnableState(nativeId, true);
-      if (fsLike.exists(file)) fsLike.removeFile(file);
+      if (snapshot.artifacts.length === 0) return;
+      try {
+        runOrThrow(exec, ["launchctl", "bootout", target(resolvedNativeId)], {
+          isOk: (r) => r.status === 0 || isServiceNotFoundResult(r),
+          message: (r) => `launchctl bootout failed (exit ${r.status}): ${r.stderr || r.stdout || "no output"}.`,
+        });
+        // launchctl disable overrides persist after the plist is removed.
+        setEnableState(resolvedNativeId, true);
+        if (fsLike.exists(file)) fsLike.removeFile(file);
+      } catch (primaryError) {
+        try {
+          const rollbackExpected = [
+            launchdRollbackExpectationForCurrent(resolvedNativeId, { exec, fsLike, plistPath, target, label }),
+          ];
+          restoreLaunchdBindings(
+            snapshot,
+            { exec, fsLike, agentsDir, plistPath, target, label, setEnableState },
+            rollbackExpected,
+          );
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [primaryError, rollbackError],
+            `${errorMessage(primaryError)}; rollback for launchd removal ${JSON.stringify(nativeId)} was incomplete.`,
+          );
+        }
+        throw primaryError;
+      }
     },
     setEnabled(nativeId: string, enabled: boolean) {
       setEnableState(nativeId, enabled);
@@ -248,15 +286,24 @@ function installLaunchdBinding(
   );
   const nativeId = schedulerBindingNativeId(task);
   const file = plistPath(nativeId);
-  const existingNativeId = findLaunchdNativeId(fsLike, agentsDir, nativeId);
+  fsLike.ensureDir(agentsDir);
+  // launchd refuses to start a job when StandardOutPath/StandardErrorPath
+  // points at a non-existent directory; create it before reading or mutating
+  // launchd state so a local preparation failure has no scheduler side effect.
+  fsLike.ensureDir(logDir);
+  const initialInspection = inspectLaunchdState({ exec, fsLike, agentsDir, plistPath, target, label });
+  const initialArtifact = expected
+    ? assertSchedulerNativeArtifactCardinality(
+        initialInspection.artifacts,
+        nativeId,
+        expected.state === "absent" ? 0 : 1,
+      )
+    : undefined;
+  const existingNativeId = initialArtifact?.nativeId ?? findLaunchdNativeId(fsLike, agentsDir, nativeId);
   const priorState = expected
     ? readLaunchdArtifactState(existingNativeId ?? nativeId, { exec, fsLike, plistPath, target, label })
     : undefined;
   if (expected) assertSchedulerMutationArtifact(priorState?.artifact, expected);
-  fsLike.ensureDir(agentsDir);
-  // launchd refuses to start a job when StandardOutPath/StandardErrorPath
-  // points at a non-existent directory; create it before bootstrap.
-  fsLike.ensureDir(logDir);
   const { previousPlist, previousEnabled } = expected
     ? { previousPlist: priorState?.plist, previousEnabled: priorState?.enabled ?? true }
     : readLaunchdPriorState(fsLike, file, exec, nativeId, label(nativeId), task);
@@ -268,7 +315,13 @@ function installLaunchdBinding(
   let enableStateTouched = false;
   try {
     if (expected) {
-      const finalState = readLaunchdArtifactState(findLaunchdNativeId(fsLike, agentsDir, nativeId) ?? nativeId, {
+      const finalInspection = inspectLaunchdState({ exec, fsLike, agentsDir, plistPath, target, label });
+      const finalArtifact = assertSchedulerNativeArtifactCardinality(
+        finalInspection.artifacts,
+        nativeId,
+        expected.state === "absent" ? 0 : 1,
+      );
+      const finalState = readLaunchdArtifactState(finalArtifact?.nativeId ?? nativeId, {
         exec,
         fsLike,
         plistPath,
@@ -428,7 +481,21 @@ function snapshotLaunchdBindings(
       "INVALID_CONFIG_FILE",
     );
   }
-  const entries = ids.map((id) => {
+  const requestedKeys = new Set(ids.map(schedulerNativeArtifactKey));
+  const enumeratedIds = new Set(ids);
+  if (context.fsLike.exists(context.agentsDir)) {
+    for (const file of context.fsLike.list(context.agentsDir)) {
+      if (!file.startsWith(LAUNCHD_LABEL_PREFIX) || !file.endsWith(".plist")) continue;
+      const nativeId = file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length);
+      if (requestedKeys.has(schedulerNativeArtifactKey(nativeId))) enumeratedIds.add(nativeId);
+    }
+  }
+  for (const serviceLabel of disabledLabels) {
+    if (!serviceLabel.startsWith(LAUNCHD_LABEL_PREFIX)) continue;
+    const nativeId = serviceLabel.slice(LAUNCHD_LABEL_PREFIX.length);
+    if (requestedKeys.has(schedulerNativeArtifactKey(nativeId))) enumeratedIds.add(nativeId);
+  }
+  const entries = [...enumeratedIds].map((id) => {
     const file = context.plistPath(id);
     const plist = context.fsLike.exists(file) ? context.fsLike.readFile(file) : undefined;
     const loadedResult = context.exec.run(["launchctl", "print", context.target(id)]);
@@ -662,6 +729,39 @@ function readLaunchdArtifactState(
       ? launchdMissingPlistArtifact(nativeId, enabled, loaded)
       : launchdArtifact(nativeId, plist, enabled, loaded);
   return Object.freeze({ ...(plist !== undefined ? { plist } : {}), enabled, loaded, artifact });
+}
+
+function launchdRollbackExpectationForCurrent(
+  nativeId: string,
+  context: Parameters<typeof readLaunchdArtifactState>[1],
+): SchedulerRollbackExpectation {
+  const current = readLaunchdArtifactState(nativeId, context);
+  if (!current) {
+    return Object.freeze({ nativeId, allowed: Object.freeze([{ state: "absent" as const }]) });
+  }
+  if (current.artifact.fingerprint === undefined) {
+    throw new ConfigError(
+      `launchd artifact ${JSON.stringify(nativeId)} has no exact rollback fingerprint.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  return Object.freeze({
+    nativeId,
+    allowed: Object.freeze([
+      Object.freeze({
+        state: "present" as const,
+        ...(current.artifact.bindingId !== undefined ? { bindingId: current.artifact.bindingId } : {}),
+        ...(current.artifact.invocation !== undefined
+          ? { invocation: Object.freeze([...current.artifact.invocation]) }
+          : {}),
+        fingerprint: current.artifact.fingerprint,
+      }),
+    ]),
+  });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function launchdMissingPlistArtifact(nativeId: string, enabled: boolean, loaded: boolean): SchedulerNativeArtifact {

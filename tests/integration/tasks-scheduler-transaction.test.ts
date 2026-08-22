@@ -5,12 +5,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { akmTasksSync } from "../../src/commands/tasks/tasks";
+import { akmTasksAdd, akmTasksSync } from "../../src/commands/tasks/tasks";
+import { akmIndex } from "../../src/indexer/indexer";
 import type { TaskBackend } from "../../src/tasks/backends/types";
 import type { ScheduleBackend } from "../../src/tasks/schedule";
 import {
+  assertSchedulerMutationArtifact,
   compileTaskSchedulerBindings,
   type SchedulerBinding,
+  type SchedulerMutationExpectation,
   schedulerBindingNativeId,
   schedulerNativeArtifactKey,
 } from "../../src/tasks/scheduler-binding";
@@ -138,7 +141,7 @@ function fakeBackend(
       for (const nativeId of snapshot.nativeIds) {
         try {
           if (nativeId === rollbackFailureId) throw new Error(`rollback failed for ${nativeId}`);
-          if (concurrentRollbackDriftId !== undefined) {
+          if (guards !== undefined) {
             const current = stored.get(nativeId);
             const guard = guards?.find((candidate) => candidate.nativeId === nativeId);
             if (!guard) throw new Error(`missing rollback CAS guard for ${nativeId}`);
@@ -163,6 +166,20 @@ function fakeBackend(
     },
     install(item: SchedulerBinding, _options?: unknown, expected?: unknown) {
       calls.push(`install:${item.id}:${expected === undefined ? "missing-cas" : "cas"}`);
+      if (expected !== undefined) {
+        const current = stored.get(schedulerBindingNativeId(item));
+        assertSchedulerMutationArtifact(
+          current
+            ? {
+                nativeId: schedulerBindingNativeId(current.binding),
+                bindingId: current.binding.id,
+                invocation: current.binding.invocation,
+                fingerprint: current.fingerprint,
+              }
+            : undefined,
+          expected as SchedulerMutationExpectation,
+        );
+      }
       if (failure?.kind === "install" && failure.id === item.id) {
         if (concurrentRollbackDriftId) {
           const prior = stored.get(concurrentRollbackDriftId);
@@ -204,6 +221,8 @@ beforeEach(() => {
   writeSandboxConfig({
     bundles: { stash: { path: storage.stashDir, writable: true } },
     defaultBundle: "stash",
+    defaults: { engine: "fixture" },
+    engines: { fixture: { kind: "agent", platform: "claude", bin: "/bin/true" } },
   });
   fs.mkdirSync(path.join(storage.stashDir, "tasks"), { recursive: true });
 });
@@ -211,6 +230,218 @@ beforeEach(() => {
 afterEach(() => storage.cleanup());
 
 describe("whole-set scheduler transaction and coherent inspection", () => {
+  test.each([
+    "cron",
+    "launchd",
+    "schtasks",
+  ] as const)("task add uses one coherent %s inspection, an exact snapshot, and create CAS", async (name) => {
+    const backend = fakeBackend(name);
+
+    await akmTasksAdd({ id: "alpha", schedule: "0 1 * * *", command: "echo alpha" }, { backend });
+
+    expect(backend.inspectionCalls).toBe(1);
+    expect(backend.splitReadCalls).toBe(0);
+    expect(backend.snapshotCalls).toBe(1);
+    expect(backend.calls).toEqual(["install:alpha:cas"]);
+  });
+
+  test("task add rejects a backend without coherent inspection before source write", async () => {
+    let sourceWrites = 0;
+    let installs = 0;
+    const backend = {
+      name: "cron",
+      list: () => [],
+      install() {
+        installs += 1;
+      },
+      uninstall() {},
+      setEnabled() {},
+    } as unknown as TaskBackend;
+
+    await expect(
+      akmTasksAdd(
+        { id: "alpha", schedule: "0 1 * * *", command: "echo alpha" },
+        {
+          backend,
+          writeAsset: (async () => {
+            sourceWrites += 1;
+            return {};
+          }) as never,
+        },
+      ),
+    ).rejects.toThrow(/coherent inspection/i);
+    expect(sourceWrites).toBe(0);
+    expect(installs).toBe(0);
+  });
+
+  test.each([
+    "cron",
+    "launchd",
+    "schtasks",
+  ] as const)("task add %s CAS and rollback guard preserve an artifact appearing after snapshot", async (name) => {
+    const backend = fakeBackend(name);
+    const originalSnapshot = backend.snapshotBindings!.bind(backend);
+    const foreign = binding("alpha", "59 23 * * *");
+    backend.snapshotBindings = ((ids: readonly string[]) => {
+      const snapshot = originalSnapshot(ids);
+      backend.stored.set("alpha", { binding: foreign, fingerprint: "foreign-after-snapshot" });
+      return snapshot;
+    }) as never;
+
+    await expect(
+      akmTasksAdd({ id: "alpha", schedule: "0 1 * * *", command: "echo alpha" }, { backend }),
+    ).rejects.toThrow(/changed|rollback|compare|absence|transaction/i);
+
+    expect(backend.stored.get("alpha")?.fingerprint).toBe("foreign-after-snapshot");
+    expect(fs.existsSync(path.join(storage.stashDir, "tasks", "alpha.yml"))).toBe(false);
+    expect(backend.lastRollbackGuards).toBeDefined();
+  });
+
+  test("task add source-commit failure restores with exact backend rollback guards", async () => {
+    const backend = fakeBackend("cron");
+
+    await expect(
+      akmTasksAdd(
+        { id: "alpha", schedule: "0 1 * * *", command: "echo alpha" },
+        {
+          backend,
+          commitBoundary: (() => {
+            throw new Error("source commit failed");
+          }) as never,
+        },
+      ),
+    ).rejects.toThrow("source commit failed");
+
+    expect(backend.calls).toEqual(["install:alpha:cas"]);
+    expect(backend.restoreCalls).toBe(1);
+    expect(backend.lastRollbackGuards?.map(({ nativeId }) => nativeId)).toEqual(["alpha"]);
+    expect(fs.existsSync(path.join(storage.stashDir, "tasks", "alpha.yml"))).toBe(false);
+  });
+
+  test("task add absent-source CAS preserves a concurrent create before publication", async () => {
+    const backend = fakeBackend("cron");
+    const file = path.join(storage.stashDir, "tasks", "alpha.yml");
+    const racer = "version: 3\nrun: echo racer\nakm:\n  schedule: '@hourly'\n";
+
+    await expect(
+      akmTasksAdd(
+        { id: "alpha", schedule: "0 1 * * *", command: "echo desired" },
+        {
+          backend,
+          schedulerRuntime() {
+            fs.writeFileSync(file, racer);
+            return { binding: ["/test/akm"], contextPath: "/test/context.json" };
+          },
+        },
+      ),
+    ).rejects.toThrow(/source|changed|appeared|compare|transaction/i);
+
+    expect(fs.readFileSync(file, "utf8")).toBe(racer);
+    expect(backend.calls).toEqual([]);
+  });
+
+  test.each([
+    false,
+    true,
+  ])("task add rollback preserves a concurrent source owner after transaction publication (force=%s)", async (force) => {
+    const file = path.join(storage.stashDir, "tasks", "alpha.yml");
+    const prior = "version: 3\nrun: echo prior\nakm:\n  schedule: '0 1 * * *'\n";
+    if (force) fs.writeFileSync(file, prior);
+    const previousBinding = binding("alpha", "0 1 * * *");
+    const backend = fakeBackend("cron", force ? [previousBinding] : [], { kind: "install", id: "alpha" });
+    const racer = "version: 3\nrun: echo concurrent\nakm:\n  schedule: '@hourly'\n";
+    const install = backend.install.bind(backend);
+    backend.install = ((...args: Parameters<TaskBackend["install"]>) => {
+      fs.writeFileSync(file, racer);
+      return install(...args);
+    }) as TaskBackend["install"];
+
+    let caught: unknown;
+    try {
+      await akmTasksAdd({ id: "alpha", schedule: "15 1 * * *", command: "echo desired", force }, { backend });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect(String(caught)).toMatch(/rollback|source|transaction/i);
+    expect(fs.readFileSync(file, "utf8")).toBe(racer);
+  });
+
+  test("task add --force updates the primary and removes a stale ordinal with exact CAS", async () => {
+    fs.writeFileSync(
+      path.join(storage.stashDir, "tasks", "alpha.yml"),
+      'version: 3\nrun: echo old\non:\n  schedule:\n    - cron: "0 1 * * *"\n    - cron: "0 2 * * *"\n',
+    );
+    const previous = compileTaskSchedulerBindings({
+      id: "alpha",
+      qualifiedRef: "stash//tasks/alpha",
+      enabled: true,
+      schedules: [
+        { cron: "0 1 * * *", source: "akm.schedule[0]", ordinal: 0 },
+        { cron: "0 2 * * *", source: "akm.schedule[1]", ordinal: 1 },
+      ],
+    });
+    const backend = fakeBackend("cron", previous);
+
+    await akmTasksAdd({ id: "alpha", schedule: "15 1 * * *", command: "echo new", force: true }, { backend });
+
+    expect(backend.calls).toEqual([
+      "remove:alpha:cas",
+      `remove:${schedulerBindingNativeId(previous[1]!)}:cas`,
+      "install:alpha:cas",
+    ]);
+    expect(backend.inspectionCalls).toBe(1);
+    expect(backend.splitReadCalls).toBe(0);
+  });
+
+  test("task add --force source CAS rejects a replacement racer after snapshot before quiescing", async () => {
+    const file = path.join(storage.stashDir, "tasks", "alpha.yml");
+    const prior = taskYaml("echo prior", "0 1 * * *");
+    const racer = taskYaml("echo racer", "59 23 * * *");
+    fs.writeFileSync(file, prior);
+    const backend = fakeBackend("cron", [binding("alpha", "0 1 * * *")]);
+    const snapshot = backend.snapshotBindings!.bind(backend);
+    backend.snapshotBindings = ((ids: readonly string[]) => {
+      const frozen = snapshot(ids);
+      fs.writeFileSync(file, racer);
+      return frozen;
+    }) as never;
+
+    await expect(
+      akmTasksAdd({ id: "alpha", schedule: "15 1 * * *", command: "echo desired", force: true }, { backend }),
+    ).rejects.toThrow(/source|changed|transaction|compare/i);
+
+    expect(fs.readFileSync(file, "utf8")).toBe(racer);
+    expect(backend.calls).toEqual([]);
+  });
+
+  test("task add --force restores old source and bindings when publication writes then throws", async () => {
+    const file = path.join(storage.stashDir, "tasks", "alpha.yml");
+    const prior = taskYaml("echo prior", "0 1 * * *");
+    fs.writeFileSync(file, prior);
+    const oldBinding = binding("alpha", "0 1 * * *");
+    const backend = fakeBackend("cron", [oldBinding]);
+
+    await expect(
+      akmTasksAdd(
+        { id: "alpha", schedule: "15 1 * * *", command: "echo desired", force: true },
+        {
+          backend,
+          writeAsset: (async (_source: unknown, _config: unknown, _ref: unknown, source: string) => {
+            fs.writeFileSync(file, source);
+            throw new Error("injected publication failure");
+          }) as never,
+        },
+      ),
+    ).rejects.toThrow("injected publication failure");
+
+    expect(fs.readFileSync(file, "utf8")).toBe(prior);
+    expect(backend.calls).toEqual(["remove:alpha:cas"]);
+    expect(backend.restoreCalls).toBe(1);
+    expect(backend.stored.get("alpha")?.binding).toEqual(oldBinding);
+  });
+
   test("uses one coherent backend inspection instead of separate list and artifact reads", async () => {
     writeTask("alpha", "echo alpha", "0 1 * * *");
     const backend = fakeBackend("cron");
@@ -242,6 +473,101 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     expect(backend.stored.size).toBe(0);
     expect(backend.snapshotCalls).toBe(0);
     expect(backend.calls).toEqual([]);
+  });
+
+  test("scheduler source CAS includes a transitive script consumed during dry projection", async () => {
+    const script = path.join(storage.stashDir, "scripts", "owned.sh");
+    fs.mkdirSync(path.dirname(script), { recursive: true });
+    fs.writeFileSync(script, "#!/bin/sh\necho original\n");
+    fs.writeFileSync(
+      path.join(storage.stashDir, "tasks", "alpha.yml"),
+      'version: 3\nuses: scripts/owned.sh\nakm:\n  schedule: "0 1 * * *"\n',
+    );
+    const backend = fakeBackend("cron");
+
+    await expect(
+      akmTasksSync({
+        backend,
+        schedulerRuntime() {
+          fs.writeFileSync(script, "#!/bin/sh\necho raced\n");
+          return { binding: ["/test/akm"], contextPath: "/test/context.json" };
+        },
+      }),
+    ).rejects.toThrow(/source|asset|changed|read set|snapshot/i);
+
+    expect(backend.calls).toEqual([]);
+    expect(backend.snapshotCalls).toBe(0);
+  });
+
+  test("scheduler source CAS includes a workflow consumed during dry projection", async () => {
+    const workflow = path.join(storage.stashDir, "workflows", "owned.yml");
+    fs.mkdirSync(path.dirname(workflow), { recursive: true });
+    fs.writeFileSync(
+      workflow,
+      "name: owned\non: { workflow_dispatch: null }\njobs: { main: { runs-on: [self-hosted], steps: [{ run: echo original }] } }\n",
+    );
+    fs.writeFileSync(
+      path.join(storage.stashDir, "tasks", "alpha.yml"),
+      'version: 3\nuses: workflows/owned\nakm:\n  schedule: "0 1 * * *"\n',
+    );
+    const backend = fakeBackend("cron");
+
+    await expect(
+      akmTasksSync({
+        backend,
+        schedulerRuntime() {
+          fs.writeFileSync(
+            workflow,
+            "name: owned\non: { workflow_dispatch: null }\njobs: { main: { runs-on: [self-hosted], steps: [{ run: echo raced }] } }\n",
+          );
+          return { binding: ["/test/akm"], contextPath: "/test/context.json" };
+        },
+      }),
+    ).rejects.toThrow(/source|workflow|changed|read set|snapshot/i);
+
+    expect(backend.calls).toEqual([]);
+    expect(backend.snapshotCalls).toBe(0);
+  });
+
+  test.each([
+    "command",
+    "persona",
+  ] as const)("scheduler source CAS includes a transitive %s consumed during command projection", async (kind) => {
+    const command = path.join(storage.stashDir, "commands", "review.md");
+    const persona = path.join(storage.stashDir, "agents", "reviewer.md");
+    fs.mkdirSync(path.dirname(command), { recursive: true });
+    fs.mkdirSync(path.dirname(persona), { recursive: true });
+    fs.writeFileSync(command, "---\nname: review\ntype: command\n---\nReview exactly.\n");
+    fs.writeFileSync(persona, "---\nname: reviewer\ntype: agent\n---\nBe exact.\n");
+    fs.writeFileSync(
+      path.join(storage.stashDir, "tasks", "alpha.yml"),
+      [
+        "version: 3",
+        "uses: akm/command",
+        "with:",
+        "  ref: commands/review",
+        "akm:",
+        "  agent: agents/reviewer",
+        '  schedule: "0 1 * * *"',
+        "",
+      ].join("\n"),
+    );
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+    const backend = fakeBackend("cron");
+    const raced = kind === "command" ? command : persona;
+
+    await expect(
+      akmTasksSync({
+        backend,
+        schedulerRuntime() {
+          fs.writeFileSync(raced, `---\nname: raced\ntype: ${kind === "command" ? "command" : "agent"}\n---\nRaced.\n`);
+          return { binding: ["/test/akm"], contextPath: "/test/context.json" };
+        },
+      }),
+    ).rejects.toThrow(/source|asset|changed|read set|snapshot/i);
+
+    expect(backend.calls).toEqual([]);
+    expect(backend.snapshotCalls).toBe(0);
   });
 
   test.each([
@@ -392,5 +718,23 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
 
     await expect(akmTasksSync({ backend })).rejects.toThrow(/snapshot and restore/i);
     expect(installs).toBe(0);
+  });
+
+  test("transaction snapshot validation rejects duplicate artifacts for one normalized native key", async () => {
+    const prior = binding("alpha", "0 1 * * *");
+    writeTask("alpha", "echo alpha", "15 1 * * *");
+    const backend = fakeBackend("cron", [prior]);
+    const originalSnapshot = backend.snapshotBindings!.bind(backend);
+    backend.snapshotBindings = ((ids: readonly string[]) => {
+      const snapshot = originalSnapshot(ids) as unknown as FakeSnapshot;
+      return Object.freeze({
+        ...snapshot,
+        artifacts: Object.freeze([...snapshot.artifacts, ...snapshot.artifacts]),
+      });
+    }) as never;
+
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/cardinality|duplicate|exactly one|collision/i);
+    expect(backend.calls).toEqual([]);
+    expect(backend.stored.get("alpha")?.binding.cron).toBe("0 1 * * *");
   });
 });

@@ -42,6 +42,7 @@ import { parseSchedule, type SchtasksTrigger, translateToSchtasks } from "../sch
 import {
   assertSchedulerExpectationIdentity,
   assertSchedulerMutationArtifact,
+  assertSchedulerNativeArtifactCardinality,
   assertSchedulerNativeArtifactOwner,
   assertSchedulerRemovalArtifact,
   assertSchedulerRollbackArtifact,
@@ -135,7 +136,14 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
           ...(opts?.target !== undefined ? { target: opts.target } : {}),
         }),
       );
-      const existingNativeId = expected ? findSchtasksNativeId(exec, folder, nativeId) : nativeId;
+      const initialArtifact = expected
+        ? assertSchedulerNativeArtifactCardinality(
+            inspectSchtasksState(exec, folder, taskName).artifacts,
+            nativeId,
+            expected.state === "absent" ? 0 : 1,
+          )
+        : undefined;
+      const existingNativeId = expected ? initialArtifact?.nativeId : nativeId;
       const query = existingNativeId
         ? runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(existingNativeId), "/XML"], {
             isOk: (r) => r.status === 0 || isMissingTaskResult(r),
@@ -167,7 +175,12 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
       fsLike.writeFile(tmpFile, xml);
       try {
         if (expected) {
-          const finalNativeId = findSchtasksNativeId(exec, folder, nativeId);
+          const finalArtifact = assertSchedulerNativeArtifactCardinality(
+            inspectSchtasksState(exec, folder, taskName).artifacts,
+            nativeId,
+            expected.state === "absent" ? 0 : 1,
+          );
+          const finalNativeId = finalArtifact?.nativeId;
           const current = finalNativeId
             ? runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(finalNativeId), "/XML"], {
                 isOk: (result) => result.status === 0 || isMissingTaskResult(result),
@@ -239,14 +252,25 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
     uninstall(nativeId: string, expected?: SchedulerRemovalExpectation) {
       if (expected) {
         assertSchedulerExpectationIdentity({ ...expected, state: "present" });
-        const current = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(nativeId), "/XML"], {
+        const artifact = assertSchedulerNativeArtifactCardinality(
+          inspectSchtasksState(exec, folder, taskName).artifacts,
+          nativeId,
+          1,
+        );
+        const currentNativeId = artifact?.nativeId ?? nativeId;
+        const current = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(currentNativeId), "/XML"], {
           isOk: (result) => result.status === 0 || isMissingTaskResult(result),
           message: (result) =>
             `schtasks /Query failed during final removal ownership check (exit ${result.status}): ${result.stderr || result.stdout || "no output"}.`,
         });
-        if (current.status !== 0) return;
+        if (current.status !== 0) {
+          throw new ConfigError(
+            `Task Scheduler artifact ${JSON.stringify(nativeId)} disappeared after coherent inspection.`,
+            "INVALID_CONFIG_FILE",
+          );
+        }
         assertSchedulerRemovalArtifact(
-          nativeId,
+          currentNativeId,
           expected,
           extractSchtasksInvocation(current.stdout)?.invocation,
           installedSignature(current.stdout),
@@ -267,31 +291,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
       return [...inspectSchtasksState(exec, folder, taskName).installed] as InstalledTaskRef[];
     },
     listForRebind() {
-      const r = runOrThrow(exec, ["schtasks", "/Query", "/FO", "CSV", "/NH"], {
-        message: (res) => `schtasks /Query failed (exit ${res.status}): ${res.stderr || res.stdout || "no output"}.`,
-      });
-      const refs: Array<{ id: string; signature?: string; target?: string }> = [];
-      for (const line of (r.stdout ?? "").split(/\r?\n/)) {
-        const match = line.match(/^"([^"]+)",/);
-        const name = match?.[1];
-        if (!name?.startsWith(folder)) continue;
-        const id = name.slice(folder.length);
-        const query = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(id), "/XML"], {
-          message: (result) =>
-            `schtasks /Query /XML for "${taskName(id)}" failed (exit ${result.status}): ${result.stderr || result.stdout || "no output"}.`,
-        });
-        const signature = installedSignature(query.stdout);
-        const installed = extractSchtasksInvocation(query.stdout);
-        const ref = {
-          id: installed ? schedulerLogicalBindingId(id, installed.invocation) : id,
-          ...(signature !== undefined ? { signature } : {}),
-          ...(installed?.target !== undefined ? { target: installed.target } : {}),
-        };
-        Object.defineProperty(ref, "nativeId", { value: id });
-        if (installed) Object.defineProperty(ref, "invocation", { value: Object.freeze([...installed.invocation]) });
-        refs.push(ref);
-      }
-      return refs;
+      return listSchtasksForRebind(exec, folder, taskName);
     },
     listNativeArtifacts() {
       return [...inspectSchtasksState(exec, folder, taskName).artifacts];
@@ -300,7 +300,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
       return inspectSchtasksState(exec, folder, taskName);
     },
     snapshotBindings(ids: readonly string[]): SchtasksBindingSnapshot {
-      return snapshotSchtasksBindings(ids, exec, taskName);
+      return snapshotSchtasksBindings(ids, exec, folder, taskName);
     },
     restoreBindings(snapshot: unknown, expectedCurrent?: readonly SchedulerRollbackExpectation[]) {
       restoreSchtasksBindings(snapshot, { exec, fsLike, taskName }, expectedCurrent);
@@ -319,6 +319,38 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
       return signature;
     },
   };
+}
+
+function listSchtasksForRebind(
+  exec: SchtasksExec,
+  folder: string,
+  taskName: (id: string) => string,
+): Array<{ id: string; signature?: string; target?: string }> {
+  const result = runOrThrow(exec, ["schtasks", "/Query", "/FO", "CSV", "/NH"], {
+    message: (query) =>
+      `schtasks /Query failed (exit ${query.status}): ${query.stderr || query.stdout || "no output"}.`,
+  });
+  const refs: Array<{ id: string; signature?: string; target?: string }> = [];
+  for (const line of (result.stdout ?? "").split(/\r?\n/)) {
+    const name = line.match(/^"([^"]+)",/)?.[1];
+    if (!name?.startsWith(folder)) continue;
+    const id = name.slice(folder.length);
+    const query = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(id), "/XML"], {
+      message: (current) =>
+        `schtasks /Query /XML for "${taskName(id)}" failed (exit ${current.status}): ${current.stderr || current.stdout || "no output"}.`,
+    });
+    const signature = installedSignature(query.stdout);
+    const installed = extractSchtasksInvocation(query.stdout);
+    const ref = {
+      id: installed ? schedulerLogicalBindingId(id, installed.invocation) : id,
+      ...(signature !== undefined ? { signature } : {}),
+      ...(installed?.target !== undefined ? { target: installed.target } : {}),
+    };
+    Object.defineProperty(ref, "nativeId", { value: id });
+    if (installed) Object.defineProperty(ref, "invocation", { value: Object.freeze([...installed.invocation]) });
+    refs.push(ref);
+  }
+  return refs;
 }
 
 function inspectSchtasksState(
@@ -365,15 +397,6 @@ function schtasksNativeIds(stdout: string | undefined, folder: string): readonly
   return ids;
 }
 
-function findSchtasksNativeId(exec: SchtasksExec, folder: string, intended: string): string | undefined {
-  const listing = runOrThrow(exec, ["schtasks", "/Query", "/FO", "CSV", "/NH"], {
-    message: (result) =>
-      `schtasks /Query failed during scheduler CAS (exit ${result.status}): ${result.stderr || result.stdout || "no output"}.`,
-  });
-  const key = schedulerNativeArtifactKey(intended);
-  return schtasksNativeIds(listing.stdout, folder).find((nativeId) => schedulerNativeArtifactKey(nativeId) === key);
-}
-
 function schtasksArtifact(nativeId: string, xml: string): SchedulerNativeArtifact {
   const parsed = extractSchtasksInvocation(xml);
   const owner = parsed ? schedulerLogicalBindingOwner(nativeId, parsed.invocation) : undefined;
@@ -392,9 +415,19 @@ function schtasksArtifact(nativeId: string, xml: string): SchedulerNativeArtifac
 function snapshotSchtasksBindings(
   ids: readonly string[],
   exec: SchtasksExec,
+  folder: string,
   taskName: (id: string) => string,
 ): SchtasksBindingSnapshot {
-  const entries: SchtasksBindingSnapshot["entries"] = ids.map((id) => {
+  const listing = runOrThrow(exec, ["schtasks", "/Query", "/FO", "CSV", "/NH"], {
+    message: (result) =>
+      `schtasks /Query failed while snapshotting bindings (exit ${result.status}): ${result.stderr || result.stdout || "no output"}.`,
+  });
+  const requestedKeys = new Set(ids.map(schedulerNativeArtifactKey));
+  const enumeratedIds = new Set(ids);
+  for (const nativeId of schtasksNativeIds(listing.stdout, folder)) {
+    if (requestedKeys.has(schedulerNativeArtifactKey(nativeId))) enumeratedIds.add(nativeId);
+  }
+  const entries: SchtasksBindingSnapshot["entries"] = [...enumeratedIds].map((id) => {
     const query = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(id), "/XML"], {
       isOk: (result) => result.status === 0 || isMissingTaskResult(result),
       message: (result) =>

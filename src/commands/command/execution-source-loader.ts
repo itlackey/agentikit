@@ -22,7 +22,7 @@ import type {
 import { type IndexEntry, lookupBundleRef } from "../../indexer/indexer";
 import { deriveInstallations } from "../../indexer/installations";
 import { resolveEntryContentDir, resolveSourceEntries } from "../../indexer/search/search-source";
-import { buildFileContext } from "../../indexer/walk/file-context";
+import { buildFileContext, type FileContext } from "../../indexer/walk/file-context";
 
 export type ExecutionSourceLookup = (ref: BundleRef) => Promise<IndexEntry | null>;
 
@@ -30,6 +30,8 @@ export interface LoadAdapterExecutionSourceOptions {
   readonly config?: AkmConfig;
   readonly lookup?: ExecutionSourceLookup;
   readonly adapterFor?: (id: string) => BundleAdapter | undefined;
+  /** Guarded execution projection may inject a retained-byte file context. */
+  readonly fileContext?: (stashRoot: string, file: string) => FileContext;
 }
 
 async function defaultLookup(ref: BundleRef): Promise<IndexEntry | null> {
@@ -193,9 +195,10 @@ function assertRenderedIdentity(
   entry: IndexEntry,
   realRoot: string,
   realFile: string,
+  content: string,
 ): void {
   const expectedFile = path.relative(realRoot, realFile).replace(/\\/g, "/");
-  const expectedHash = createHash("sha256").update(fs.readFileSync(realFile, "utf8"), "utf8").digest("hex");
+  const expectedHash = createHash("sha256").update(content, "utf8").digest("hex");
   if (
     source.identity.ref !== entry.itemRef ||
     source.identity.bundle !== entry.bundleId ||
@@ -274,7 +277,8 @@ export async function loadAdapterExecutionSource(
     );
   }
 
-  const rendered = adapter.renderExecutionSource(component, buildFileContext(entry.stashDir, entry.filePath));
+  const fileContext = (options.fileContext ?? buildFileContext)(entry.stashDir, entry.filePath);
+  const rendered = adapter.renderExecutionSource(component, fileContext);
   if (!rendered || rendered.kind !== expectedKind) {
     throw new ConfigError(
       `Bundle adapter ${JSON.stringify(entry.adapterId)} did not render ${JSON.stringify(entry.itemRef)} as a ${expectedKind}.`,
@@ -282,6 +286,6 @@ export async function loadAdapterExecutionSource(
       "Rebuild the index; if the mismatch remains, repair the source file or owning adapter.",
     );
   }
-  assertRenderedIdentity(rendered, entry, realRoot, realFile);
+  assertRenderedIdentity(rendered, entry, realRoot, realFile, fileContext.content());
   return rendered;
 }

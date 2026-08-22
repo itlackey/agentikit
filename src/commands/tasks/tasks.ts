@@ -10,6 +10,7 @@
  * values via `output()`.
  */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { stringify as yamlStringify } from "yaml";
@@ -42,12 +43,12 @@ import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "../.
 import { parseSchedule, SCHEDULE_SUPPORTED_SUBSET_HINT } from "../../tasks/schedule";
 import {
   assertSchedulerMutationArtifact,
+  assertSchedulerNativeArtifactCardinality,
   compileTaskSchedulerBindings,
   type SchedulerBackendInspection,
   type SchedulerBinding,
   type SchedulerInstallOptions,
   type SchedulerMutationExpectation,
-  type SchedulerRemovalExpectation,
   type SchedulerRollbackExpectation,
   type SchedulerRollbackState,
   type SchedulerTransactionSnapshot,
@@ -69,7 +70,7 @@ import {
   prepareSchedulerSyncSourceSet,
   type SchedulerSyncPlan,
 } from "../../tasks/scheduler-sync";
-import { parseTaskV3Yaml, type TaskV3SourceDocument } from "../../tasks/source-v3";
+import { parseTaskV3Yaml, TASK_V3_MAX_SOURCE_BYTES, type TaskV3SourceDocument } from "../../tasks/source-v3";
 import { normaliseTaskConceptId, normaliseTaskId } from "../../tasks/task-id";
 import { applyAutonomyGate, configuredDirectAutonomyLanes, describeGatedLanes } from "../improve/autonomy-gate";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
@@ -134,32 +135,7 @@ export interface PreparedSchedulerRuntime {
 
 export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps = {}): Promise<TasksAddResult> {
   const id = normaliseTaskId(input.id);
-  const hasCommand =
-    input.command !== undefined &&
-    input.command !== null &&
-    !(typeof input.command === "string" && input.command.trim() === "") &&
-    !(Array.isArray(input.command) && input.command.length === 0);
-  const targetCount = [Boolean(input.workflow), Boolean(input.prompt), hasCommand].filter(Boolean).length;
-  if (targetCount !== 1) {
-    throw new UsageError(
-      "Pass exactly one of --workflow <ref>, --prompt <inline-text>, or --command <shell-command>.",
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  // `--timeout-ms` IS valid on a workflow task: it is the whole-run bound the
-  // task runner turns into an abort signal (issue 11), the same one
-  // `akm workflow run --timeout` applies interactively. Engine and model stay
-  // prompt-only — a workflow's engines come from its frozen plan.
-  if (input.workflow && (input.engine !== undefined || input.model !== undefined)) {
-    throw new UsageError(
-      "Workflow tasks accept --params and --timeout-ms; engine and model are prompt-task fields.",
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  if (hasCommand && (input.engine !== undefined || input.model !== undefined)) {
-    throw new UsageError("Command tasks accept --timeout-ms but not --engine or --model.", "INVALID_FLAG_VALUE");
-  }
-  if (input.prompt !== undefined) assertInlineTaskPrompt(input.prompt);
+  assertTaskAddTargetShape(input);
 
   // Validate the schedule for the active backend before writing anything.
   // WI-9.10e: the injected backend (tests) carries its own name, so derive it
@@ -185,6 +161,26 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   if ((fs.existsSync(assetPath) || fs.existsSync(legacyAssetPath)) && !input.force) {
     throw new UsageError(
       `Task "${id}" already exists. Pass --force to overwrite, or delete its file and run \`akm task sync\` first.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+  if (fs.existsSync(legacyAssetPath) && input.force) {
+    throw new UsageError(
+      `Task "${id}" still has a legacy markdown owner. Migrate or remove ${legacyAssetPath} before --force so .md and .yml owners cannot coexist.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+  const sourceExpectation = captureTaskSourceExpectation(assetPath, stashDir);
+  let legacySourceExpectation = captureTaskSourceExpectation(legacyAssetPath, stashDir);
+  if (sourceExpectation.state === "present" && !input.force) {
+    throw new UsageError(
+      `Task "${id}" appeared while add was preparing. Pass --force only after reviewing the current owner.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+  if (legacySourceExpectation.state === "present") {
+    throw new UsageError(
+      `Task "${id}" has a legacy markdown owner. Migrate or remove ${legacyAssetPath} before add so .md and .yml owners cannot coexist.`,
       "RESOURCE_ALREADY_EXISTS",
     );
   }
@@ -227,112 +223,107 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   if (!taskBinding) throw new UsageError(`Task "${id}" has no schedulable trigger.`, "INVALID_FLAG_VALUE");
 
   const ref = taskAssetRef(id);
-  const previousYaml = fs.existsSync(assetPath) ? fs.readFileSync(assetPath, "utf8") : undefined;
-  let previousBindings: readonly SchedulerBinding[] = [];
-  let previousTaskError: unknown;
-  if (previousYaml !== undefined) {
-    try {
-      const previous = parseTaskV3Yaml({ yaml: previousYaml, filePath: assetPath, workspaceRoot: stashDir });
-      previousBindings = compileTaskSchedulerBindings({
-        id,
-        qualifiedRef: makeBundleRef(bundle.bundleName, `tasks/${id}`),
-        ...(bundle.installTarget ? { bundleTarget: bundle.installTarget } : {}),
-        enabled: previous.akm?.enabled !== false,
-        schedules: previous.triggers.schedules,
-      });
-    } catch (err) {
-      previousTaskError = err;
-    }
-  }
   const sched = deps.backend ?? selectBackend();
   const writeAsset = deps.writeAsset ?? writeAssetToSource;
   const deleteAsset = deps.deleteAsset ?? deleteAssetFromSource;
   const commitBoundary = deps.commitBoundary ?? commitWriteTargetBoundary;
-  const { installedAffected, runtimeOpts, canSnapshot, nativeSnapshot, staleInstalledBindings } =
-    await prepareTaskAddSchedulerTransaction({
-      id,
-      installTarget: bundle.installTarget,
-      ownerTarget: bundle.bundleName,
-      installOpts,
-      taskBindings,
-      previousBindings,
-      previousTaskError,
-      sched,
-      deps,
-      rebind: input.rebind === true,
-    });
-  let sourceRestoreArmed = false;
-  let nativeMutationStarted = false;
-
-  try {
-    sourceRestoreArmed = true;
+  const transaction = await prepareTaskAddSchedulerTransaction({
+    id,
+    installTarget: bundle.installTarget,
+    ownerTarget: bundle.bundleName,
+    installOpts,
+    taskBindings,
+    sched,
+    deps,
+    rebind: input.rebind === true,
+  });
+  let writtenSource: TaskSourceExpectation | undefined;
+  let sourcePublished = false;
+  let sourcePublicationAttempted = false;
+  const publishSource = async () => {
+    assertTaskSourceExpectation(sourceExpectation);
+    sourcePublicationAttempted = true;
     await writeAsset(writeTarget.source, writeTarget.config, ref, yaml);
-    for (const binding of taskBindings) {
-      nativeMutationStarted = true;
-      await sched.install(binding, runtimeOpts);
+    const currentLegacySource = captureTaskSourceExpectation(legacyAssetPath, stashDir);
+    if (
+      currentLegacySource.state !== "absent" ||
+      currentLegacySource.rootPhysicalIdentity !== legacySourceExpectation.rootPhysicalIdentity
+    ) {
+      throw new UsageError(
+        `Legacy task source ${JSON.stringify(legacyAssetPath)} changed during publication.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
     }
-    for (const stale of staleInstalledBindings) {
-      nativeMutationStarted = true;
-      await sched.uninstall(stale.nativeId, stale.expected);
+    // Publishing the owned .yml changes the containing directory metadata.
+    // Refresh the still-absent legacy owner expectation only after proving the
+    // physical root stayed the same and no .md owner appeared.
+    legacySourceExpectation = currentLegacySource;
+    writtenSource = captureTaskSourceExpectation(assetPath, stashDir);
+    if (writtenSource.state !== "present" || writtenSource.sha256 !== hashTaskSource(yaml)) {
+      throw new UsageError(
+        `Task source ${JSON.stringify(assetPath)} changed during publication.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
     }
-    commitBoundary(writeTarget, `Update tasks/${id}`);
-  } catch (err) {
-    const rollbackErrors: unknown[] = [];
-    let sourceRestored = false;
-    if (sourceRestoreArmed) {
-      try {
-        if (previousYaml === undefined) {
-          if (fs.existsSync(assetPath)) {
-            await deleteAsset(writeTarget.source, writeTarget.config, ref);
-            sourceRestored = true;
-          }
-        } else {
-          await restoreTaskSourceBytes(
-            writeAsset,
-            writeTarget.source,
-            writeTarget.config,
-            ref,
-            assetPath,
-            previousYaml,
+    sourcePublished = true;
+    transaction.publishRuntime?.();
+  };
+
+  await applySchedulerTransaction(sched, transaction.operations, {
+    initialExpectations: transaction.initialExpectations,
+    assertReadSet: () => {
+      assertTaskSourceExpectation(legacySourceExpectation);
+      if (!sourcePublished) assertTaskSourceExpectation(sourceExpectation);
+    },
+    beforeOperation: async (_operation, index) => {
+      if (index === transaction.publishOperationIndex && !sourcePublished) await publishSource();
+    },
+    afterOperations: () => commitBoundary(writeTarget, `Update tasks/${id}`),
+    rollbackExternal: async () => {
+      if (!sourcePublicationAttempted) return;
+      assertTaskSourceExpectation(legacySourceExpectation);
+      if (!writtenSource) {
+        const current = captureTaskSourceExpectation(assetPath, stashDir);
+        if (sameTaskSourceExpectation(current, sourceExpectation)) return;
+        if (current.state !== "present" || current.sha256 !== hashTaskSource(yaml)) {
+          throw new UsageError(
+            `Task source ${JSON.stringify(assetPath)} has an unowned publication state; refusing rollback over a possible concurrent owner.`,
+            "RESOURCE_ALREADY_EXISTS",
           );
-          sourceRestored = true;
         }
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
+        writtenSource = current;
       }
-    }
-
-    if (nativeMutationStarted && canSnapshot) {
+      assertTaskSourceExpectation(writtenSource);
       try {
-        await sched.restoreBindings!(nativeSnapshot);
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
-    } else if (nativeMutationStarted) {
-      await rollbackTaskBindingsWithoutSnapshot({
-        sched,
-        desired: taskBindings,
-        previous: previousBindings,
-        installedBefore: installedAffected,
-        runtimeOpts,
-        rollbackErrors,
-      });
-    }
-
-    if (sourceRestored) {
-      try {
+        if (sourceExpectation.state === "absent") {
+          await deleteAsset(writeTarget.source, writeTarget.config, ref);
+        } else {
+          await writeAsset(writeTarget.source, writeTarget.config, ref, sourceExpectation.content);
+          const providerRestored = captureTaskSourceExpectation(assetPath, stashDir);
+          if (providerRestored.state !== "present" || providerRestored.sha256 !== sourceExpectation.sha256) {
+            // Provider writers conventionally normalize a trailing newline.
+            // Rollback is byte-exact, so finish the already-owned restore with
+            // the frozen bytes before checking the physical source state.
+            fs.writeFileSync(assetPath, Buffer.from(sourceExpectation.bytesBase64, "base64"));
+          }
+        }
+        assertTaskSourceRestored(sourceExpectation);
         commitBoundary(writeTarget, `Restore tasks/${id}`);
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
+      } catch (cause) {
+        // A write/commit seam may report failure after it has already restored
+        // the exact source bytes. Prove that state before allowing native
+        // rollback; otherwise preserve the possible concurrent source owner.
+        try {
+          assertTaskSourceRestored(sourceExpectation);
+        } catch {
+          throw cause;
+        }
+        throw new TaskSourceRestoredBoundaryError(cause);
       }
-    }
-
-    if (rollbackErrors.length > 0) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new AggregateError([err, ...rollbackErrors], `${message}; rollback for task "${id}" was incomplete.`);
-    }
-    throw err;
-  }
+    },
+    suppressNativeRollbackWhenExternalFails: true,
+    allowNativeRollbackAfterExternalFailure: (error) => error instanceof TaskSourceRestoredBoundaryError,
+  });
 
   return {
     id,
@@ -344,6 +335,33 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     backend,
     target: task.target,
   };
+}
+
+function assertTaskAddTargetShape(input: TasksAddInput): void {
+  const hasCommand =
+    input.command !== undefined &&
+    input.command !== null &&
+    !(typeof input.command === "string" && input.command.trim() === "") &&
+    !(Array.isArray(input.command) && input.command.length === 0);
+  const targetCount = [Boolean(input.workflow), Boolean(input.prompt), hasCommand].filter(Boolean).length;
+  if (targetCount !== 1) {
+    throw new UsageError(
+      "Pass exactly one of --workflow <ref>, --prompt <inline-text>, or --command <shell-command>.",
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  // `--timeout-ms` is the workflow's whole-run bound. Engine and model stay
+  // prompt-only because workflow engines come from the frozen plan.
+  if (input.workflow && (input.engine !== undefined || input.model !== undefined)) {
+    throw new UsageError(
+      "Workflow tasks accept --params and --timeout-ms; engine and model are prompt-task fields.",
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  if (hasCommand && (input.engine !== undefined || input.model !== undefined)) {
+    throw new UsageError("Command tasks accept --timeout-ms but not --engine or --model.", "INVALID_FLAG_VALUE");
+  }
+  if (input.prompt !== undefined) assertInlineTaskPrompt(input.prompt);
 }
 
 export interface TasksRunResultEnvelope {
@@ -651,8 +669,30 @@ async function applySchedulerSyncPlan(
   plan: SchedulerSyncPlan,
   publish?: () => void,
 ): Promise<void> {
-  if (plan.operations.length === 0) return;
-  assertSchedulerSourceSnapshot(plan.sourceSnapshot);
+  await applySchedulerTransaction(backend, plan.operations, {
+    initialExpectations: plan.operations.map((operation) => operation.expected as SchedulerMutationExpectation),
+    assertReadSet: () => assertSchedulerSourceSnapshot(plan.sourceSnapshot),
+    beforeOperation: (_operation, index) => {
+      if (index === 0) publish?.();
+    },
+  });
+}
+
+async function applySchedulerTransaction(
+  backend: TaskBackend,
+  operations: SchedulerSyncPlan["operations"],
+  hooks: {
+    initialExpectations: readonly SchedulerMutationExpectation[];
+    assertReadSet?: () => void;
+    beforeOperation?: (operation: SchedulerSyncPlan["operations"][number], index: number) => void | Promise<void>;
+    afterOperations?: () => void | Promise<void>;
+    rollbackExternal?: () => void | Promise<void>;
+    suppressNativeRollbackWhenExternalFails?: boolean;
+    allowNativeRollbackAfterExternalFailure?: (error: unknown) => boolean;
+  },
+): Promise<void> {
+  if (operations.length === 0) return;
+  hooks.assertReadSet?.();
   if (!backend.snapshotBindings || !backend.restoreBindings) {
     throw new ConfigError(
       `Scheduler backend "${backend.name}" cannot snapshot and restore a whole-set transaction.`,
@@ -661,27 +701,49 @@ async function applySchedulerSyncPlan(
   }
   const nativeIds = [
     ...new Set(
-      plan.operations.map((operation) =>
+      operations.map((operation) =>
         operation.kind === "remove" ? operation.nativeId : schedulerBindingNativeId(operation.binding),
       ),
     ),
   ];
   const snapshot = await backend.snapshotBindings(nativeIds);
-  assertSchedulerTransactionSnapshot(snapshot, nativeIds, plan);
-  const rollbackExpected = schedulerRollbackExpectations(snapshot, plan);
-  assertSchedulerSourceSnapshot(plan.sourceSnapshot);
-  publish?.();
+  assertSchedulerTransactionSnapshot(snapshot, nativeIds, hooks.initialExpectations);
+  const rollbackExpected = schedulerRollbackExpectations(snapshot, operations);
+  hooks.assertReadSet?.();
   try {
-    for (const operation of plan.operations) {
+    for (const [index, operation] of operations.entries()) {
+      hooks.assertReadSet?.();
+      await hooks.beforeOperation?.(operation, index);
       if (operation.kind === "remove") await backend.uninstall(operation.nativeId, operation.expected);
       else await backend.install(operation.binding, operation.options, operation.expected);
     }
+    await hooks.afterOperations?.();
   } catch (primaryError) {
+    let externalRollbackError: unknown;
     try {
-      await backend.restoreBindings(snapshot, rollbackExpected);
-    } catch (rollbackError) {
+      await hooks.rollbackExternal?.();
+    } catch (error) {
+      externalRollbackError = error;
+    }
+    let nativeRollbackError: unknown;
+    const externalStateAllowsNativeRollback =
+      externalRollbackError !== undefined &&
+      hooks.allowNativeRollbackAfterExternalFailure?.(externalRollbackError) === true;
+    if (
+      !(externalRollbackError && hooks.suppressNativeRollbackWhenExternalFails && !externalStateAllowsNativeRollback)
+    ) {
+      try {
+        await backend.restoreBindings(snapshot, rollbackExpected);
+      } catch (error) {
+        nativeRollbackError = error;
+      }
+    }
+    const rollbackErrors = [externalRollbackError, nativeRollbackError].filter(
+      (error): error is NonNullable<typeof error> => error !== undefined,
+    );
+    if (rollbackErrors.length > 0) {
       throw new AggregateError(
-        [primaryError, rollbackError],
+        [primaryError, ...rollbackErrors],
         `Scheduler transaction failed and rollback was incomplete: ${errorMessage(primaryError)}`,
       );
     }
@@ -691,7 +753,7 @@ async function applySchedulerSyncPlan(
 
 function schedulerRollbackExpectations(
   snapshot: SchedulerTransactionSnapshot,
-  plan: SchedulerSyncPlan,
+  operations: SchedulerSyncPlan["operations"],
 ): readonly SchedulerRollbackExpectation[] {
   return Object.freeze(
     snapshot.nativeIds.map((nativeId) => {
@@ -717,16 +779,18 @@ function schedulerRollbackExpectations(
       } else {
         allowed.push(Object.freeze({ state: "absent" as const }));
       }
-      const operation = plan.operations.find((candidate) => {
+      const matchingOperations = operations.filter((candidate) => {
         const operationNativeId =
           candidate.kind === "remove" ? candidate.nativeId : schedulerBindingNativeId(candidate.binding);
         return schedulerNativeArtifactKey(operationNativeId) === schedulerNativeArtifactKey(nativeId);
       });
-      if (operation?.kind === "remove") {
-        if (!allowed.some((state) => state.state === "absent")) {
-          allowed.push(Object.freeze({ state: "absent" as const }));
+      for (const operation of matchingOperations) {
+        if (operation.kind === "remove") {
+          if (!allowed.some((state) => state.state === "absent")) {
+            allowed.push(Object.freeze({ state: "absent" as const }));
+          }
+          continue;
         }
-      } else if (operation) {
         if (operation.resultFingerprint === undefined) {
           throw new ConfigError(
             `Scheduler backend cannot freeze the post-mutation fingerprint for ${JSON.stringify(nativeId)}.`,
@@ -750,7 +814,7 @@ function schedulerRollbackExpectations(
 function assertSchedulerTransactionSnapshot(
   snapshot: SchedulerTransactionSnapshot,
   nativeIds: readonly string[],
-  plan: SchedulerSyncPlan,
+  initialExpectations: readonly SchedulerMutationExpectation[],
 ): void {
   if (
     !snapshot ||
@@ -760,10 +824,23 @@ function assertSchedulerTransactionSnapshot(
   ) {
     throw new ConfigError("Scheduler backend returned an incomplete transaction snapshot.", "INVALID_CONFIG_FILE");
   }
-  for (const operation of plan.operations) {
-    const expected = operation.expected as SchedulerMutationExpectation;
-    const artifact = snapshot.artifacts.find(
-      (candidate) => schedulerNativeArtifactKey(candidate.nativeId) === schedulerNativeArtifactKey(expected.nativeId),
+  const snapshotKeys = snapshot.nativeIds.map(schedulerNativeArtifactKey);
+  const requestedKeys = nativeIds.map(schedulerNativeArtifactKey);
+  if (
+    snapshotKeys.length !== requestedKeys.length ||
+    new Set(snapshotKeys).size !== snapshotKeys.length ||
+    snapshotKeys.some((key) => !requestedKeys.includes(key))
+  ) {
+    throw new ConfigError(
+      "Scheduler backend returned an inexact normalized transaction snapshot set.",
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  for (const expected of initialExpectations) {
+    const artifact = assertSchedulerNativeArtifactCardinality(
+      snapshot.artifacts,
+      expected.nativeId,
+      expected.state === "absent" ? 0 : 1,
     );
     assertSchedulerMutationArtifact(artifact, expected);
   }
@@ -775,30 +852,42 @@ async function prepareTaskAddSchedulerTransaction(input: {
   ownerTarget: string;
   installOpts: { target?: string } | undefined;
   taskBindings: readonly SchedulerBinding[];
-  previousBindings: readonly SchedulerBinding[];
-  previousTaskError: unknown;
   sched: TaskBackend;
   deps: TaskMutationDeps;
   rebind: boolean;
 }): Promise<{
-  installedAffected: readonly InstalledTaskRef[];
   runtimeOpts: SchedulerInstallOptions | undefined;
-  canSnapshot: boolean;
-  nativeSnapshot: unknown;
-  staleInstalledBindings: readonly Readonly<{
-    nativeId: string;
-    expected: SchedulerRemovalExpectation;
-  }>[];
+  publishRuntime?: () => void;
+  operations: SchedulerSyncPlan["operations"];
+  initialExpectations: readonly SchedulerMutationExpectation[];
+  publishOperationIndex: number;
 }> {
-  const installedEntries = await input.sched.list();
-  const nativeArtifacts = input.sched.listNativeArtifacts
-    ? await input.sched.listNativeArtifacts()
-    : installedEntries.map((entry) => ({
-        nativeId: entry.nativeId ?? schedulerNativeBindingId(entry.id),
-        bindingId: entry.id,
-        ...(entry.invocation ? { invocation: Object.freeze([...entry.invocation]) } : {}),
-        ...(entry.signature !== undefined ? { fingerprint: entry.signature } : {}),
-      }));
+  if (!input.sched.inspectBindings) {
+    throw new ConfigError(
+      `Scheduler backend "${input.sched.name}" cannot provide one coherent inspection for transactional add.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  if (!input.sched.snapshotBindings || !input.sched.restoreBindings || !input.sched.expectedSignature) {
+    throw new ConfigError(
+      `Scheduler backend "${input.sched.name}" cannot provide exact snapshot, restore, and signature contracts for transactional add.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const inspection = await input.sched.inspectBindings({ rebind: input.rebind });
+  const installedEntries = [...inspection.installed];
+  const nativeArtifacts = [...inspection.artifacts];
+  const seenNativeKeys = new Set<string>();
+  for (const artifact of nativeArtifacts) {
+    const key = schedulerNativeArtifactKey(artifact.nativeId);
+    if (seenNativeKeys.has(key)) {
+      throw new UsageError(
+        `Scheduler inspection has duplicate normalized native artifact ${JSON.stringify(artifact.nativeId)}.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
+    }
+    seenNativeKeys.add(key);
+  }
   for (const binding of input.taskBindings) {
     assertNoForeignSchedule(installedEntries, binding.id, input.ownerTarget);
   }
@@ -808,120 +897,108 @@ async function prepareTaskAddSchedulerTransaction(input: {
     throw new UsageError(foreignScheduleMessage(input.id, foreignTaskEntry.target), "RESOURCE_ALREADY_EXISTS");
   }
   assertSchedulerNativeArtifactOwnership(input.taskBindings, nativeArtifacts);
-  const desiredIds = new Set(input.taskBindings.map((binding) => binding.id));
-  const affectedIds = [
-    ...new Set([
-      input.id,
-      ...input.previousBindings.map((binding) => binding.id),
-      ...input.taskBindings.map((binding) => binding.id),
-      ...taskEntries.map((entry) => entry.id),
-    ]),
-  ];
-  const installedAffected = installedEntries.filter((entry) => affectedIds.includes(entry.id));
-  const affectedNativeIds = [
-    ...new Set([
-      ...input.previousBindings.map(schedulerBindingNativeId),
-      ...input.taskBindings.map(schedulerBindingNativeId),
-      ...installedAffected.map((entry) => entry.nativeId ?? schedulerNativeBindingId(entry.id)),
-    ]),
-  ];
   const primary = input.taskBindings[0];
   if (!primary) throw new Error("invariant: scheduler transaction has no desired binding");
-  const installedEntry = installedEntries.find((entry) => entry.id === primary.id) ?? installedAffected[0];
-  const runtimeOpts = schedulerInstallOptions(
-    input.installOpts,
-    installedEntry,
-    input.deps,
-    installedEntry ? false : input.rebind,
-    `create scheduler entry for task "${input.id}"`,
-  );
-  const canSnapshot =
-    typeof input.sched.snapshotBindings === "function" && typeof input.sched.restoreBindings === "function";
-  const nativeSnapshot = canSnapshot ? await input.sched.snapshotBindings!(affectedNativeIds) : undefined;
-  if (
-    !canSnapshot &&
-    installedAffected.length > 0 &&
-    (input.previousBindings.length === 0 || input.previousTaskError)
-  ) {
-    throw new ConfigError(
-      `Scheduler backend "${input.sched.name}" cannot transactionally replace the pre-existing native binding for task "${input.id}".`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
-  return {
-    installedAffected,
-    runtimeOpts,
-    canSnapshot,
-    nativeSnapshot,
-    staleInstalledBindings: installedAffected
-      .filter((entry) => !desiredIds.has(entry.id))
-      .map((entry) => {
-        const invocation = entry.invocation;
-        if (!invocation) {
-          throw new UsageError(
-            `Installed scheduler binding ${JSON.stringify(entry.id)} has no exact parsed owner; refusing removal.`,
-            "RESOURCE_ALREADY_EXISTS",
-          );
+  const installedEntry = installedEntries.find((entry) => entry.id === primary.id) ?? taskEntries[0];
+  const preparedRuntime =
+    installedEntry && !input.rebind
+      ? {
+          options: {
+            ...input.installOpts,
+            binding: Object.freeze([...installedEntry.binding]),
+            contextPath: installedEntry.contextPath,
+          },
         }
-        const logicalSource = primary.logicalSource;
-        const ordinal = schedulerBindingOrdinal(entry.id, logicalSource, invocation);
-        if (ordinal === undefined) {
-          throw new UsageError(
-            `Installed scheduler binding ${JSON.stringify(entry.id)} has no exact schedule ordinal; refusing removal.`,
-            "RESOURCE_ALREADY_EXISTS",
-          );
-        }
-        const nativeId = entry.nativeId ?? schedulerNativeBindingId(entry.id);
-        return Object.freeze({
-          nativeId,
-          expected: Object.freeze({
-            bindingId: entry.id,
-            nativeId,
-            logicalSource,
-            ordinal,
-            invocation: Object.freeze([...invocation]),
-            ...(entry.signature !== undefined ? { fingerprint: entry.signature } : {}),
-          }),
-        });
+      : prepareSchedulerSyncRuntime(
+          input.installOpts,
+          input.deps,
+          input.rebind,
+          `create scheduler entry for task "${input.id}"`,
+          [],
+        );
+  const runtimeOpts = preparedRuntime.options;
+  const removals: SchedulerSyncPlan["operations"][number][] = taskEntries.map((entry) => {
+    const invocation = entry.invocation;
+    if (!invocation) {
+      throw new UsageError(
+        `Installed scheduler binding ${JSON.stringify(entry.id)} has no exact parsed owner; refusing replacement.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
+    }
+    const nativeId = entry.nativeId ?? schedulerNativeBindingId(entry.id);
+    const artifact = assertSchedulerNativeArtifactCardinality(nativeArtifacts, nativeId, 1);
+    if (!artifact?.fingerprint || artifact.bindingId !== entry.id) {
+      throw new UsageError(
+        `Installed scheduler binding ${JSON.stringify(entry.id)} has no exact coherent fingerprint.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
+    }
+    const logicalSource = primary.logicalSource;
+    const ordinal = schedulerBindingOrdinal(entry.id, logicalSource, invocation);
+    if (ordinal === undefined) {
+      throw new UsageError(
+        `Installed scheduler binding ${JSON.stringify(entry.id)} has no exact schedule ordinal; refusing replacement.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
+    }
+    return Object.freeze({
+      kind: "remove" as const,
+      id: entry.id,
+      nativeId,
+      expected: Object.freeze({
+        bindingId: entry.id,
+        nativeId,
+        logicalSource,
+        ordinal,
+        invocation: Object.freeze([...invocation]),
+        fingerprint: artifact.fingerprint,
       }),
-  };
-}
-
-async function rollbackTaskBindingsWithoutSnapshot(input: {
-  sched: TaskBackend;
-  desired: readonly SchedulerBinding[];
-  previous: readonly SchedulerBinding[];
-  installedBefore: readonly InstalledTaskRef[];
-  runtimeOpts: SchedulerInstallOptions | undefined;
-  rollbackErrors: unknown[];
-}): Promise<void> {
-  const installedBefore = new Set(input.installedBefore.map((entry) => entry.id));
-  for (const binding of input.desired) {
-    if (installedBefore.has(binding.id)) continue;
-    try {
-      const nativeId = schedulerBindingNativeId(binding);
-      await input.sched.uninstall(nativeId, {
+    });
+  });
+  const installs: SchedulerSyncPlan["operations"][number][] = input.taskBindings.map((binding) => {
+    const nativeId = schedulerBindingNativeId(binding);
+    const resultFingerprint = input.sched.expectedSignature!(binding, runtimeOpts);
+    if (!resultFingerprint) {
+      throw new ConfigError(
+        `Scheduler backend "${input.sched.name}" cannot freeze the post-install fingerprint for ${JSON.stringify(binding.id)}.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    return Object.freeze({
+      kind: "install" as const,
+      binding,
+      expected: Object.freeze({
+        state: "absent" as const,
         bindingId: binding.id,
         nativeId,
         logicalSource: binding.logicalSource,
         ordinal: binding.ordinal,
         invocation: binding.invocation,
-        ...(input.sched.expectedSignature
-          ? { fingerprint: input.sched.expectedSignature(binding, input.runtimeOpts) }
-          : {}),
-      });
-    } catch (error) {
-      input.rollbackErrors.push(error);
-    }
+      }),
+      resultFingerprint,
+      ...(runtimeOpts ? { options: runtimeOpts } : {}),
+    });
+  });
+  const initialByKey = new Map<string, SchedulerMutationExpectation>();
+  for (const removal of removals) {
+    if (removal.kind !== "remove") continue;
+    initialByKey.set(
+      schedulerNativeArtifactKey(removal.nativeId),
+      Object.freeze({ ...removal.expected, state: "present" as const }),
+    );
   }
-  for (const binding of input.previous) {
-    if (!installedBefore.has(binding.id)) continue;
-    try {
-      await input.sched.install(binding, input.runtimeOpts);
-    } catch (error) {
-      input.rollbackErrors.push(error);
-    }
+  for (const install of installs) {
+    if (install.kind === "remove") continue;
+    const key = schedulerNativeArtifactKey(schedulerBindingNativeId(install.binding));
+    if (!initialByKey.has(key)) initialByKey.set(key, install.expected);
   }
+  return Object.freeze({
+    runtimeOpts,
+    ...(preparedRuntime.publish ? { publishRuntime: preparedRuntime.publish } : {}),
+    operations: Object.freeze([...removals, ...installs]),
+    initialExpectations: Object.freeze([...initialByKey.values()]),
+    publishOperationIndex: removals.length,
+  });
 }
 
 function prepareSchedulerSyncRuntime(
@@ -970,28 +1047,6 @@ function warnIneligibleRebind(runtime: PreparedSchedulerRuntime, explicitRebind:
   warnings.push(
     `--rebind bound scheduled tasks to an ineligible ${runtime.kind ?? "unknown"} invocation (${runtime.binding.join(" ")}); scheduled runs will invoke a mutable, unproven binary. Install akm via \`npm install --global akm-cli\` or a standalone release, then re-run \`akm task sync --rebind\`.`,
   );
-}
-
-function schedulerInstallOptions(
-  base: { target?: string } | undefined,
-  installed: InstalledTaskRef | undefined,
-  deps: { backend?: TaskBackend; schedulerRuntime?: () => PreparedSchedulerRuntime },
-  explicitRebind: boolean,
-  operation: string,
-  warnings: string[] = [],
-): { target?: string; binding?: readonly string[]; contextPath?: string } | undefined {
-  if (installed && !explicitRebind) {
-    return {
-      ...base,
-      binding: installed.binding,
-      contextPath: installed.contextPath,
-    };
-  }
-  // Injected backends can own their default runtime unless a resolver is supplied.
-  if (deps.backend && !deps.schedulerRuntime) return base;
-  const runtime = deps.schedulerRuntime?.() ?? prepareSchedulerRuntime(explicitRebind, operation);
-  warnIneligibleRebind(runtime, explicitRebind, warnings);
-  return { ...base, binding: runtime.binding, contextPath: runtime.contextPath };
 }
 
 export function prepareSchedulerRuntime(
@@ -1127,17 +1182,162 @@ function taskAssetRef(id: string): AssetRef {
   return { type: "task", name: id };
 }
 
-async function restoreTaskSourceBytes(
-  writeAsset: typeof writeAssetToSource,
-  source: Parameters<typeof writeAssetToSource>[0],
-  config: Parameters<typeof writeAssetToSource>[1],
-  ref: AssetRef,
-  filePath: string,
-  yaml: string,
-): Promise<void> {
-  await writeAsset(source, config, ref, yaml);
-  // The normal write path adds a trailing newline; rollback restores the raw snapshot exactly.
-  fs.writeFileSync(filePath, yaml, "utf8");
+type TaskSourceExpectation =
+  | Readonly<{
+      state: "absent";
+      filePath: string;
+      rootRealPath: string;
+      rootPhysicalIdentity: string;
+      rootMtimeNs: string;
+      rootCtimeNs: string;
+    }>
+  | Readonly<{
+      state: "present";
+      filePath: string;
+      rootRealPath: string;
+      rootPhysicalIdentity: string;
+      rootMtimeNs: string;
+      rootCtimeNs: string;
+      realPath: string;
+      physicalIdentity: string;
+      size: number;
+      mtimeNs: string;
+      ctimeNs: string;
+      sha256: string;
+      bytesBase64: string;
+      content: string;
+    }>;
+
+function captureTaskSourceExpectation(filePathInput: string, rootInput: string): TaskSourceExpectation {
+  const filePath = path.resolve(filePathInput);
+  const root = path.resolve(rootInput);
+  const lexicalRelative = path.relative(root, filePath);
+  if (lexicalRelative === "" || lexicalRelative.startsWith("..") || path.isAbsolute(lexicalRelative)) {
+    throw new UsageError(`${filePathInput} resolves outside the task source root.`, "PATH_ESCAPE_VIOLATION");
+  }
+  const rootRealPath = fs.realpathSync(root);
+  const rootStat = fs.statSync(rootRealPath, { bigint: true });
+  if (!rootStat.isDirectory()) {
+    throw new UsageError(`${root} is not a task source directory.`, "INVALID_FLAG_VALUE");
+  }
+  const common = {
+    filePath,
+    rootRealPath,
+    rootPhysicalIdentity: rootStat.ino === 0n ? `path:${rootRealPath}` : `inode:${rootStat.dev}:${rootStat.ino}`,
+    rootMtimeNs: String(rootStat.mtimeNs),
+    rootCtimeNs: String(rootStat.ctimeNs),
+  };
+  let descriptor: number | undefined;
+  try {
+    const noFollow = "O_NOFOLLOW" in fs.constants ? fs.constants.O_NOFOLLOW : 0;
+    descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
+    const before = fs.fstatSync(descriptor, { bigint: true });
+    if (!before.isFile()) {
+      throw new UsageError(`${filePath} is not a regular task source.`, "INVALID_FLAG_VALUE");
+    }
+    if (before.size > BigInt(TASK_V3_MAX_SOURCE_BYTES)) {
+      throw new UsageError(
+        `${filePath} exceeds the 1 MiB (${TASK_V3_MAX_SOURCE_BYTES}-byte) task source limit.`,
+        "INVALID_FLAG_VALUE",
+      );
+    }
+    const bytes = fs.readFileSync(descriptor);
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    if (!sameTaskSourceStat(before, after) || BigInt(bytes.byteLength) !== before.size) {
+      throw new UsageError(`${filePath} changed while its guarded bytes were read.`, "RESOURCE_ALREADY_EXISTS");
+    }
+    const realPath = fs.realpathSync(filePath);
+    const physicalRelative = path.relative(rootRealPath, realPath);
+    if (physicalRelative === "" || physicalRelative.startsWith("..") || path.isAbsolute(physicalRelative)) {
+      throw new UsageError(`${filePath} resolves outside the task source root.`, "PATH_ESCAPE_VIOLATION");
+    }
+    let content: string;
+    try {
+      content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      throw new UsageError(`${filePath} contains invalid UTF-8 bytes.`, "INVALID_FLAG_VALUE");
+    }
+    return Object.freeze({
+      state: "present" as const,
+      ...common,
+      realPath,
+      physicalIdentity: before.ino === 0n ? `path:${realPath}` : `inode:${before.dev}:${before.ino}`,
+      size: bytes.byteLength,
+      mtimeNs: String(before.mtimeNs),
+      ctimeNs: String(before.ctimeNs),
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      bytesBase64: bytes.toString("base64"),
+      content,
+    });
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") {
+      return Object.freeze({ state: "absent" as const, ...common });
+    }
+    if (cause instanceof UsageError) throw cause;
+    if ((cause as NodeJS.ErrnoException).code === "ELOOP") {
+      throw new UsageError(`${filePath} must not be a symbolic task source.`, "RESOURCE_ALREADY_EXISTS");
+    }
+    throw new UsageError(
+      `${filePath} could not be guarded as a contained regular task source: ${errorMessage(cause)}`,
+      "PATH_ESCAPE_VIOLATION",
+    );
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function assertTaskSourceExpectation(expected: TaskSourceExpectation): void {
+  const actual = captureTaskSourceExpectation(expected.filePath, expected.rootRealPath);
+  if (!sameTaskSourceExpectation(actual, expected)) {
+    throw new UsageError(
+      `Task source ${JSON.stringify(expected.filePath)} changed after transaction planning.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+}
+
+function sameTaskSourceExpectation(left: TaskSourceExpectation, right: TaskSourceExpectation): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function assertTaskSourceRestored(expected: TaskSourceExpectation): void {
+  const actual = captureTaskSourceExpectation(expected.filePath, expected.rootRealPath);
+  const restored =
+    actual.state === expected.state &&
+    actual.rootPhysicalIdentity === expected.rootPhysicalIdentity &&
+    (actual.state === "absent" ||
+      (expected.state === "present" && actual.sha256 === expected.sha256 && actual.content === expected.content));
+  if (!restored) {
+    throw new UsageError(
+      `Task source ${JSON.stringify(expected.filePath)} could not be restored without replacing a concurrent owner.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+}
+
+class TaskSourceRestoredBoundaryError extends Error {
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super(errorMessage(cause));
+    this.name = "TaskSourceRestoredBoundaryError";
+    this.cause = cause;
+  }
+}
+
+function sameTaskSourceStat(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function hashTaskSource(source: string): string {
+  return createHash("sha256").update(Buffer.from(source, "utf8")).digest("hex");
 }
 
 /**
