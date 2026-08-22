@@ -90,6 +90,9 @@ export interface LaunchdBackendOptions {
 }
 
 export const LAUNCHD_LABEL_PREFIX = "com.akm.task.";
+const MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES = 4 * 1024 * 1024;
+const MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES = 4096;
+const LAUNCHD_AKM_LABEL_RE = /^com\.akm\.task\.[A-Za-z0-9._-]{1,1024}$/u;
 const LAUNCHD_SNAPSHOT = Symbol("akm-launchd-binding-snapshot");
 
 interface LaunchdBindingSnapshot {
@@ -585,37 +588,83 @@ function inspectLaunchdRollbackState(
     label: (id: string) => string;
   },
 ): SchedulerBackendInspection {
+  const first = captureLaunchdRollbackInventoryPass(seedIds, context);
+  const second = captureLaunchdRollbackInventoryPass(seedIds, context);
+  if (first.stabilityKey !== second.stabilityKey) {
+    throw new ConfigError(
+      "The launchd AKM service namespace changed while rollback inventory was being stabilized.",
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  return second.inspection;
+}
+
+function captureLaunchdRollbackInventoryPass(
+  seedIds: readonly string[],
+  context: {
+    exec: LaunchdExec;
+    fsLike: LaunchdFs;
+    agentsDir: string;
+    plistPath: (id: string) => string;
+    target: (id: string) => string;
+    label: (id: string) => string;
+  },
+): Readonly<{ inspection: SchedulerBackendInspection; stabilityKey: string }> {
+  const domain = context.exec.run(["launchctl", "print", `gui/${context.exec.uid()}`]);
+  if (domain.status !== 0) {
+    throw new ConfigError(
+      `launchctl failed to enumerate the loaded user domain during rollback CAS: ${domain.stderr || domain.stdout || "no output"}.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const loadedLabels = parseLaunchdLoadedLabels(domain.stdout);
+  if (loadedLabels === undefined) {
+    throw new ConfigError(
+      "launchctl returned an unsafe, unsupported, or oversized loaded-service inventory during rollback CAS.",
+      "INVALID_CONFIG_FILE",
+    );
+  }
   const disabledLabels = readDisabledLabels(context.exec);
   if (disabledLabels === undefined) {
     throw new ConfigError("launchctl print-disabled failed during rollback CAS inspection.", "INVALID_CONFIG_FILE");
   }
-  const ids = new Set(seedIds);
+  const akmDisabledLabels = [...disabledLabels].filter((label) => label.startsWith(LAUNCHD_LABEL_PREFIX)).sort();
+  const plistEntries: Array<readonly [nativeId: string, raw: string]> = [];
   if (context.fsLike.exists(context.agentsDir)) {
-    for (const file of context.fsLike.list(context.agentsDir)) {
+    for (const file of context.fsLike.list(context.agentsDir).sort()) {
       if (!file.startsWith(LAUNCHD_LABEL_PREFIX) || !file.endsWith(".plist")) continue;
-      ids.add(file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length));
+      const nativeId = file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length);
+      plistEntries.push(Object.freeze([nativeId, context.fsLike.readFile(context.plistPath(nativeId))]));
     }
   }
-  for (const serviceLabel of disabledLabels) {
-    if (serviceLabel.startsWith(LAUNCHD_LABEL_PREFIX)) ids.add(serviceLabel.slice(LAUNCHD_LABEL_PREFIX.length));
+  const ids = new Set(seedIds);
+  for (const [nativeId] of plistEntries) ids.add(nativeId);
+  for (const serviceLabel of loadedLabels) ids.add(serviceLabel.slice(LAUNCHD_LABEL_PREFIX.length));
+  for (const serviceLabel of akmDisabledLabels) ids.add(serviceLabel.slice(LAUNCHD_LABEL_PREFIX.length));
+  if (ids.size > MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES) {
+    throw new ConfigError(
+      `launchd AKM rollback inventory exceeds ${MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES} namespace entries.`,
+      "INVALID_CONFIG_FILE",
+    );
   }
+  const plistByNativeId = new Map(plistEntries);
   const artifacts: SchedulerNativeArtifact[] = [];
   for (const nativeId of [...ids].sort()) {
-    const file = context.plistPath(nativeId);
-    const plist = context.fsLike.exists(file) ? context.fsLike.readFile(file) : undefined;
-    const loadedResult = context.exec.run(["launchctl", "print", context.target(nativeId)]);
-    if (loadedResult.status !== 0 && !isServiceNotFoundResult(loadedResult)) {
-      throw new ConfigError(
-        `launchctl print failed during rollback CAS for task ${JSON.stringify(nativeId)}: ${loadedResult.stderr || loadedResult.stdout || "no output"}.`,
-        "INVALID_CONFIG_FILE",
-      );
-    }
-    const enabled = !disabledLabels.has(context.label(nativeId));
-    const loaded = loadedResult.status === 0;
+    const serviceLabel = context.label(nativeId);
+    const plist = plistByNativeId.get(nativeId);
+    const enabled = !disabledLabels.has(serviceLabel);
+    const loaded = loadedLabels.has(serviceLabel);
     if (plist !== undefined) artifacts.push(launchdArtifact(nativeId, plist, enabled, loaded));
     else if (!enabled || loaded) artifacts.push(launchdMissingPlistArtifact(nativeId, enabled, loaded));
   }
-  return Object.freeze({ installed: Object.freeze([]), artifacts: Object.freeze(artifacts) });
+  return Object.freeze({
+    inspection: Object.freeze({ installed: Object.freeze([]), artifacts: Object.freeze(artifacts) }),
+    stabilityKey: JSON.stringify({
+      loadedLabels: [...loadedLabels].sort(),
+      disabledLabels: akmDisabledLabels,
+      plistEntries,
+    }),
+  });
 }
 
 function restoreLaunchdBindingEntry(
@@ -1007,6 +1056,73 @@ function renderCalendar(calendar: NonNullable<LaunchdTrigger["calendar"]>, inden
 
 function normalizeSignature(xml: string): string {
   return xml.replace(/\r\n/g, "\n").trim();
+}
+
+/** Parse only proven loaded-service labels from bounded launchctl domain/list output. */
+export function parseLaunchdLoadedLabels(output: string): Set<string> | undefined {
+  if (Buffer.byteLength(output, "utf8") > MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES || output.includes("\0")) {
+    return undefined;
+  }
+  const lines = output.replace(/\r\n?/gu, "\n").split("\n");
+  const labels = new Set<string>();
+  const add = (label: string): boolean => {
+    if (!LAUNCHD_AKM_LABEL_RE.test(label)) return false;
+    labels.add(label);
+    return labels.size <= MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES;
+  };
+  const firstContent = lines.findIndex((line) => line.trim() !== "");
+  if (firstContent >= 0 && /^PID\s+Status\s+Label$/iu.test(lines[firstContent]!.trim())) {
+    for (const line of lines.slice(firstContent + 1)) {
+      if (!line.trim()) continue;
+      const row = /^\s*(?:-|\d+)\s+-?\d+\s+(\S+)\s*$/u.exec(line);
+      if (row?.[1]?.startsWith(LAUNCHD_LABEL_PREFIX)) {
+        if (!add(row[1])) return undefined;
+      } else if (line.includes(LAUNCHD_LABEL_PREFIX)) {
+        return undefined;
+      }
+    }
+    return labels;
+  }
+
+  const inlineEmpty = lines.findIndex((line) => /^\s*services\s*=\s*\{\s*\}\s*$/u.test(line));
+  if (inlineEmpty >= 0) {
+    if (lines.some((line, index) => index !== inlineEmpty && line.includes(LAUNCHD_LABEL_PREFIX))) {
+      return undefined;
+    }
+    return labels;
+  }
+  const servicesStart = lines.findIndex((line) => /^\s*services\s*=\s*\{\s*$/u.test(line));
+  if (servicesStart < 0) return undefined;
+  let depth = 1;
+  let servicesEnd = -1;
+  for (let index = servicesStart + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (depth === 1) {
+      const assignment = /^\s*-?\d+\s*=\s*"?([^"\s{}=]+)"?\s*$/u.exec(line);
+      const table = /^\s*(?:-|\d+)\s+-?\d+\s+(\S+)\s*$/u.exec(line);
+      const dictionary = /^\s*"?([^"\s{}=]+)"?\s*=\s*\{\s*$/u.exec(line);
+      const candidate = assignment?.[1] ?? table?.[1] ?? dictionary?.[1];
+      if (candidate?.startsWith(LAUNCHD_LABEL_PREFIX)) {
+        if (!add(candidate)) return undefined;
+      } else if (line.includes(LAUNCHD_LABEL_PREFIX)) {
+        return undefined;
+      }
+    }
+    depth += (line.match(/\{/gu)?.length ?? 0) - (line.match(/\}/gu)?.length ?? 0);
+    if (depth === 0) {
+      servicesEnd = index;
+      break;
+    }
+    if (depth < 0) return undefined;
+  }
+  if (servicesEnd < 0) return undefined;
+  for (const [index, line] of lines.entries()) {
+    if (index >= servicesStart && index <= servicesEnd) continue;
+    if (line.includes(LAUNCHD_LABEL_PREFIX) && !/^\s*"?com\.akm\.task\.[A-Za-z0-9._-]+"?\s*=\s*\{\s*$/u.test(line)) {
+      return undefined;
+    }
+  }
+  return labels;
 }
 
 function readDisabledLabels(exec: LaunchdExec): Set<string> | undefined {

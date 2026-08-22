@@ -131,7 +131,13 @@ type FakeLaunchdExec = LaunchdExec & {
   disabledLabels: Set<string>;
   loadedLabels: Set<string>;
   printDisabledResult?: { status: number; stdout: string; stderr: string };
+  domainPrintResults?: Array<{ status: number; stdout: string; stderr: string }>;
 };
+
+function launchdDomainPrint(labels: readonly string[]): string {
+  const services = labels.map((label, index) => `\t${index + 100} = ${label}`).join("\n");
+  return `gui/501 = {\n\tservices = {\n${services}${services ? "\n" : ""}\t}\n}\n`;
+}
 
 function makeFakeExec(events?: string[]): FakeLaunchdExec {
   const calls: string[][] = [];
@@ -168,6 +174,11 @@ function makeFakeExec(events?: string[]): FakeLaunchdExec {
         return { status: 0, stdout: `disabled services = {\n${entries}${entries ? "\n" : ""}}\n`, stderr: "" };
       }
       if (verb === "print") {
+        if (target === "gui/501") {
+          const next = exec.domainPrintResults?.shift();
+          if (next) return next;
+          return { status: 0, stdout: launchdDomainPrint([...loadedLabels]), stderr: "" };
+        }
         return loadedLabels.has(targetLabel)
           ? { status: 0, stdout: `${target} = {}`, stderr: "" }
           : { status: 113, stdout: "", stderr: "Could not find service" };
@@ -273,6 +284,13 @@ function makeTransactionalBackend() {
         return { status: 0, stdout: `disabled services = {\n${entries}${entries ? "\n" : ""}}\n`, stderr: "" };
       }
       if (verb === "print") {
+        if (args[2] === "gui/501") {
+          return {
+            status: 0,
+            stdout: launchdDomainPrint(activePlist === undefined ? [] : ["com.akm.task.ping"]),
+            stderr: "",
+          };
+        }
         return activePlist === undefined
           ? { status: 113, stdout: "", stderr: "Could not find service" }
           : { status: 0, stdout: `${args[2]} = {}`, stderr: "" };
@@ -829,6 +847,317 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(fs.readFile(file)).toBe(raced);
     expect(fs.readFile(duplicate)).toBe(raced);
     expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("rollback rejects a case-equivalent enabled loaded-only service after removing the exact owner", () => {
+    const { backend, exec, fs } = makeBackend();
+    const prior = qualifiedTask("0 9 * * *");
+    backend.install(prior);
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    backend.uninstall("ping");
+    exec.loadedLabels.add("com.akm.task.PING");
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: prior.id,
+              invocation: prior.invocation,
+              fingerprint: backend.expectedSignature?.(prior),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
+    expect(exec.loadedLabels.has("com.akm.task.PING")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("rollback rejects a trailing-dot enabled loaded-only service after removing the exact owner", () => {
+    const { backend, exec, fs } = makeBackend();
+    const prior = qualifiedTask("0 9 * * *");
+    backend.install(prior);
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    backend.uninstall("ping");
+    exec.loadedLabels.add("com.akm.task.ping.");
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: prior.id,
+              invocation: prior.invocation,
+              fingerprint: backend.expectedSignature?.(prior),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
+    expect(exec.loadedLabels.has("com.akm.task.ping.")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("rollback rejects a trailing-dot enabled loaded-only peer beside a transaction-created owner", () => {
+    const { backend, exec, fs } = makeBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    backend.install(owned);
+    exec.loadedLabels.add("com.akm.task.ping.");
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: owned.id,
+              invocation: owned.invocation,
+              fingerprint: backend.expectedSignature?.(owned),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(true);
+    expect(exec.loadedLabels.has("com.akm.task.ping.")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("rollback rejects a case-equivalent enabled loaded-only peer beside a transaction-created owner", () => {
+    const { backend, exec, fs } = makeBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    backend.install(owned);
+    exec.loadedLabels.add("com.akm.task.PING");
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: owned.id,
+              invocation: owned.invocation,
+              fingerprint: backend.expectedSignature?.(owned),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(true);
+    expect(exec.loadedLabels.has("com.akm.task.PING")).toBe(true);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("rollback fails closed before mutation when the loaded launchd domain cannot be enumerated", () => {
+    const { backend, exec, fs } = makeBackend();
+    const prior = qualifiedTask("0 9 * * *");
+    backend.install(prior);
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    backend.uninstall("ping");
+    exec.domainPrintResults = [{ status: 5, stdout: "", stderr: "injected domain print failure" }];
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    let caught: unknown;
+    try {
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: prior.id,
+              invocation: prior.invocation,
+              fingerprint: backend.expectedSignature?.(prior),
+            },
+          ],
+        },
+      ]);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toHaveLength(1);
+    expect(String(caught)).toMatch(/restore|rollback|enumerat|domain|launchctl|inventory/i);
+    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("rollback fails closed when loaded launchd domain membership changes between stabilization passes", () => {
+    const { backend, exec, fs } = makeBackend();
+    const prior = qualifiedTask("0 9 * * *");
+    backend.install(prior);
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    backend.uninstall("ping");
+    exec.domainPrintResults = [
+      { status: 0, stdout: launchdDomainPrint([]), stderr: "" },
+      { status: 0, stdout: launchdDomainPrint(["com.akm.task.PING"]), stderr: "" },
+    ];
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    let caught: unknown;
+    try {
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: prior.id,
+              invocation: prior.invocation,
+              fingerprint: backend.expectedSignature?.(prior),
+            },
+          ],
+        },
+      ]);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toHaveLength(1);
+    expect(String(caught)).toMatch(/restore|rollback|changed|stable|domain|inventory/i);
+    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("rollback fails closed when launchd plist state changes between stabilization passes", () => {
+    const { backend, exec, fs } = makeBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    backend.install(owned);
+    const file = "/tmp/agents/com.akm.task.ping.plist";
+    const raced = fs.readFile(file).replace("<integer>9</integer>", "<integer>7</integer>");
+    const run = exec.run.bind(exec);
+    let domainPasses = 0;
+    exec.run = (args) => {
+      const result = run(args);
+      if (args[1] === "print" && args[2] === "gui/501" && ++domainPasses === 2) fs.writeFile(file, raced);
+      return result;
+    };
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    let caught: unknown;
+    try {
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: owned.id,
+              invocation: owned.invocation,
+              fingerprint: backend.expectedSignature?.(owned),
+            },
+          ],
+        },
+      ]);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toHaveLength(1);
+    expect(String(caught)).toMatch(/restore|rollback|changed|stable|domain|inventory/i);
+    expect(fs.readFile(file)).toBe(raced);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("rollback preserves a loaded-only peer while restoring an independent safe entry", () => {
+    const { backend, exec, fs } = makeBackend();
+    const ping = qualifiedTask("0 9 * * *");
+    const second = qualifiedTask("15 9 * * *", "second");
+    backend.install(ping);
+    backend.install(second);
+    const snapshot = backend.snapshotBindings?.(["ping", "second"]);
+    backend.uninstall("ping");
+    backend.uninstall("second");
+    exec.loadedLabels.add("com.akm.task.PING");
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: ping.id,
+              invocation: ping.invocation,
+              fingerprint: backend.expectedSignature?.(ping),
+            },
+          ],
+        },
+        {
+          nativeId: "second",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: second.id,
+              invocation: second.invocation,
+              fingerprint: backend.expectedSignature?.(second),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
+    expect(exec.loadedLabels.has("com.akm.task.PING")).toBe(true);
+    expect(fs.written.has("/tmp/agents/com.akm.task.second.plist")).toBe(true);
+    expect(exec.loadedLabels.has("com.akm.task.second")).toBe(true);
   });
 
   test("rollback skips a duplicate launchd key but continues restoring an independent entry", () => {
