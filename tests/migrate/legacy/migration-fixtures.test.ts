@@ -95,9 +95,10 @@ describe("WI-0b.6a — orphan-bearing state.db builder", () => {
       // PRE_CUTOVER_STATE_CEILING, the stable comparison below. The relative
       // `.at(-N)` cross-check is N migrations behind the live tip and shifts
       // by one every time a migration is appended; #733 appended
-      // 021-asset-state-missing-since after the cutover (020), so 019 is now
-      // two behind the tip (`.at(-3)`), not one (`.at(-2)`).
-      expect(currentMigrationCeiling(db)).toBe(STATE_MIGRATIONS.at(-3)?.id);
+      // 021-asset-state-missing-since and WP7 appended
+      // 022-workflow-unit-attempts after the cutover (020), so 019 is now
+      // three behind the tip (`.at(-4)`).
+      expect(currentMigrationCeiling(db)).toBe(STATE_MIGRATIONS.at(-4)?.id);
       expect(currentMigrationCeiling(db)).toBe(PRE_CUTOVER_STATE_CEILING);
 
       const salienceRefs = readRefs(db, "asset_salience").map((r) => r.asset_ref);
@@ -176,9 +177,10 @@ describe("WI-0b.6b — rc-train FROM-state builder", () => {
     // ceiling (019-proposal-fingerprints, one migration behind the WI-8.2
     // cutover 020). The literal is kept and cross-checked both ways; the
     // relative `.at(-N)` cross-check shifts by one on every migration append
-    // — #733 appended 021-asset-state-missing-since after 020, so 019 is now
-    // two behind the live tip (`.at(-3)`), not one (`.at(-2)`).
-    expect(RC_TRAIN_MIGRATION_CEILING).toBe(STATE_MIGRATIONS.at(-3)?.id as string);
+    // — #733 appended 021-asset-state-missing-since and WP7 appended
+    // 022-workflow-unit-attempts after 020, so 019 is now three behind the
+    // live tip (`.at(-4)`).
+    expect(RC_TRAIN_MIGRATION_CEILING).toBe(STATE_MIGRATIONS.at(-4)?.id as string);
     expect(RC_TRAIN_MIGRATION_CEILING).toBe("019-proposal-fingerprints");
     expect(PRE_CUTOVER_STATE_CEILING).toBe("019-proposal-fingerprints");
 

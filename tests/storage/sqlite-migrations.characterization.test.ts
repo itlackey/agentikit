@@ -110,6 +110,9 @@ describe("SQLite migration runner characterization", () => {
         // #733 (Workstream C): additive ADD COLUMN missing_since on both
         // asset_salience and asset_outcome — the orphan-GC grace clock.
         "021-asset-state-missing-since",
+        // WP7 durable v4: append-only unit-attempt reservations, stable
+        // dispatch ids, and terminal usage accounting.
+        "022-workflow-unit-attempts",
       ]);
 
       // The set of durable objects the migrations create.
@@ -130,6 +133,7 @@ describe("SQLite migration runner characterization", () => {
       expect(names).toContain("table:workflow_runs");
       expect(names).toContain("table:workflow_run_steps");
       expect(names).toContain("table:workflow_run_units");
+      expect(names).toContain("table:workflow_run_unit_attempts");
       expect(names).toContain("table:usage_events");
       expect(names).toContain("table:legacy_state");
 
