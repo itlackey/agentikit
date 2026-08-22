@@ -2,11 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { UsageError } from "../../core/errors";
 import { openStateDatabase, withImmediateTransaction } from "../../core/state-db";
 import { borrowScopedStateDb, withStateDbScope } from "../../core/state-db-scope";
 import type { WorkflowRunStatus, WorkflowRunStepStatus } from "../../sources/types";
 import type { Database } from "../database";
 import { resolveStorageLocations } from "../locations";
+import { insertEventOnce } from "./events-repository";
 
 /**
  * Row shapes for the `workflow_runs` / `workflow_run_steps` tables.
@@ -186,6 +188,18 @@ export interface InsertStepInput {
   sequenceIndex: number;
 }
 
+/** Complete, source-CAS-guarded publication envelope for a fresh v4 run. */
+export interface PublishWorkflowRunV4Input {
+  readonly workflowRefs: readonly string[];
+  readonly force?: boolean;
+  readonly run: InsertRunInput;
+  readonly steps: InsertStepInput[];
+  readonly planJson: string;
+  readonly planHash: string;
+  /** Final source/read-set CAS. Runs once under IMMEDIATE before the first write. */
+  readonly revalidateSources: () => void;
+}
+
 /** Filter object for {@link WorkflowRunsRepository.listRuns}. */
 export interface ListRunsFilter {
   scopeKey: string;
@@ -248,7 +262,10 @@ export class WorkflowRunsRepository {
   }
 
   getRunById(runId: string): WorkflowRunRow | undefined {
-    return this.db.prepare("SELECT * FROM workflow_runs WHERE id = ?").get(runId) as WorkflowRunRow | undefined;
+    return (
+      (this.db.prepare("SELECT * FROM workflow_runs WHERE id = ?").get(runId) as WorkflowRunRow | undefined) ??
+      undefined
+    );
   }
 
   getActiveRunRowForScope(
@@ -449,6 +466,40 @@ export class WorkflowRunsRepository {
     this.db
       .prepare("UPDATE workflow_runs SET plan_json = ?, plan_hash = ?, plan_ir_version = ? WHERE id = ?")
       .run(planJson, planHash, planIrVersion, runId);
+  }
+
+  /**
+   * Atomically publish the entire durable-v4 run spine after the final source
+   * CAS. No run row, partial spine, plan attachment, or started event can
+   * escape independently across a crash or statement failure.
+   */
+  publishWorkflowRunV4(input: PublishWorkflowRunV4Input): void {
+    this.immediateTransaction((db) => {
+      input.revalidateSources();
+      if (!input.force) {
+        const existing = this.findActiveRunForScope(input.workflowRefs, input.run.scopeKey);
+        if (existing) {
+          throw new UsageError(
+            `Workflow ${input.run.workflowRef} already has an active run in this scope ` +
+              `(id=${existing.id}, step=${existing.current_step_id ?? "—"}). ` +
+              `Use 'akm workflow run ${input.run.workflowRef}' to resume it or ` +
+              `'akm workflow abandon ${existing.id}' to give up on it.`,
+            "RESOURCE_ALREADY_EXISTS",
+          );
+        }
+      }
+      this.insertRun(input.run);
+      this.insertSteps(input.steps);
+      this.setRunPlan(input.run.id, input.planJson, input.planHash, 4);
+      insertEventOnce(db, {
+        eventType: "workflow_started",
+        ts: input.run.createdAt,
+        ref: input.run.workflowRef,
+        metadata: { runId: input.run.id, status: "active" },
+        idempotencyKey: input.run.id,
+        idempotencyMetadataKey: "runId",
+      });
+    });
   }
 
   // ── engine run lease (migration 006 columns, R2 enforcement) ──────────────

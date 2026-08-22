@@ -11,7 +11,7 @@ import { resolveStorageLocations } from "../../../src/storage/locations";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { computePlanHash } from "../../../src/workflows/ir/plan-hash";
-import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
+import type { ExecutableWorkflowPlan } from "../../../src/workflows/ir/schema-v4";
 import {
   abandonWorkflowRun,
   completeWorkflowStep,
@@ -83,9 +83,9 @@ describe("plan freezing at workflow start (migration 006)", () => {
     expect(row?.plan_json).toBeTruthy();
     expect(row?.plan_hash).toBeTruthy();
 
-    const plan = JSON.parse(row?.plan_json ?? "") as WorkflowPlanGraph;
+    const plan = JSON.parse(row?.plan_json ?? "") as ExecutableWorkflowPlan;
     expect(plan.steps.map((s) => s.stepId)).toEqual(["only-step"]);
-    expect(plan.irVersion).toBe(3);
+    expect(plan.irVersion).toBe(4);
     expect(plan.steps[0]!.root?.kind).toBe("unit");
     expect(plan.execution?.engines["test-agent"]?.kind).toBe("agent");
     expect(computePlanHash(plan)).toBe(row?.plan_hash ?? "");

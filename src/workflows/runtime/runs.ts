@@ -27,10 +27,10 @@ import { getCurrentWorkflowScopeKey } from "../authoring/scope-key";
 import { frozenSummaryJudge } from "../exec/frozen-judge";
 import { detectSecretShapedParams } from "../exec/param-secrets";
 import { collectWorkflowWarnings } from "../ir/compile";
-import { compileResolveFreezeWorkflow } from "../ir/freeze";
+import { compileResolveFreezeWorkflowV4 } from "../ir/freeze-v4";
 import { materializeWorkflowParameterFlags, validateWorkflowParams, type WorkflowParameterFlag } from "../ir/params";
 import { canonicalPlanJson, computePlanHash } from "../ir/plan-hash";
-import { decodeWorkflowPlanV3, type FrozenEngineSnapshot, type IrRuntimeKind, WORKFLOW_IR_VERSION } from "../ir/schema";
+import type { FrozenEngineSnapshot, IrRuntimeKind } from "../ir/schema";
 import {
   clip,
   utf8Bytes,
@@ -269,8 +269,8 @@ export async function startWorkflowRun(
   // persist it on the run row in the same transaction as the insert. Every
   // later invocation executes this snapshot — the asset file is never re-read
   // for an in-flight run; re-planning is an explicit new run.
-  const frozen = compileResolveFreezeWorkflow(asset, loadConfig());
-  const plan = decodeWorkflowPlanV3(frozen.plan);
+  const frozen = compileResolveFreezeWorkflowV4(asset, loadConfig());
+  const plan = frozen.plan;
   if (options?.parameterFlags?.length && Object.keys(params).length > 0) {
     throw new UsageError("Workflow parameters must use either an object or per-parameter flags, not both.");
   }
@@ -324,18 +324,10 @@ export async function startWorkflowRun(
     // re-targeted with a `continue` directive. The agent harness + session id
     // are already resolved above (agentHarness/agentSessionId, from #501).
 
-    repo.immediateTransaction(() => {
-      if (!options?.force) {
-        const existing = repo.findActiveRunForScope(workflowRefs, scopeKey);
-        if (existing) {
-          throw new UsageError(
-            `Workflow ${asset.ref} already has an active run in this scope (id=${existing.id}, step=${existing.current_step_id ?? "—"}). ` +
-              `Use 'akm workflow run ${asset.ref}' to resume it or 'akm workflow abandon ${existing.id}' to give up on it.`,
-            "RESOURCE_ALREADY_EXISTS",
-          );
-        }
-      }
-      repo.insertRun({
+    repo.publishWorkflowRunV4({
+      workflowRefs,
+      ...(options?.force ? { force: true } : {}),
+      run: {
         id: runId,
         workflowRef: asset.ref,
         scopeKey,
@@ -348,21 +340,18 @@ export async function startWorkflowRun(
         agentHarness,
         agentSessionId,
         checkinArmedAt: now,
-      });
-
-      repo.insertSteps(
-        frozenStepRows(plan).map((step) => ({
-          runId,
-          stepId: step.stepId,
-          stepTitle: step.stepTitle,
-          instructions: step.instructions,
-          completionJson: step.completionJson,
-          sequenceIndex: step.sequenceIndex,
-        })),
-      );
-
-      // Same transaction as the insert: a run row never exists without its frozen plan.
-      repo.setRunPlan(runId, planJson, planHash, WORKFLOW_IR_VERSION);
+      },
+      steps: frozenStepRows(plan).map((step) => ({
+        runId,
+        stepId: step.stepId,
+        stepTitle: step.stepTitle,
+        instructions: step.instructions,
+        completionJson: step.completionJson,
+        sequenceIndex: step.sequenceIndex,
+      })),
+      planJson,
+      planHash,
+      revalidateSources: () => frozen.sourceCollector.revalidate(),
     });
 
     const result = await getWorkflowStatus(runId);
@@ -377,16 +366,6 @@ export async function startWorkflowRun(
     // the frozen plan records the engine actually used, so a resume never
     // re-announces a decision it did not make.
     if (frozen.engineAnnouncement) result.warnings = [...(result.warnings ?? []), frozen.engineAnnouncement];
-    // 07 P1-B: emit only the run id + status — NOT the raw workflowTitle (which
-    // comes verbatim from the workflow asset's frontmatter and is therefore
-    // attacker-influenceable). Keeping raw titles out of the events stream
-    // shrinks the injectable footprint for any consumer that re-surfaces events
-    // into agent context.
-    appendEvent({
-      eventType: "workflow_started",
-      ref: asset.ref,
-      metadata: { runId: result.run.id, status: result.run.status },
-    });
     return result;
   });
 }

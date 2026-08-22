@@ -48,12 +48,14 @@ export function decodeCanonicalPlan(
   } catch {
     throw new Error(`Workflow run ${runId} has corrupt frozen plan JSON.`);
   }
+  const canonicalWire = canonicalJson(parsed);
+  if (planJson !== canonicalWire) throw new Error(`Workflow run ${runId} has noncanonical frozen plan JSON.`);
+  const actual = createHash("sha256").update(planJson).digest("hex");
+  if (!planHash || !/^[0-9a-f]{64}$/.test(planHash) || actual !== planHash)
+    throw new Error(`Workflow run ${runId} frozen plan integrity check failed.`);
   const plan = decodeExecutableWorkflowPlan(parsed, expectedVersion);
   const canonical = canonicalPlanJson(plan);
   if (planJson !== canonical) throw new Error(`Workflow run ${runId} has noncanonical frozen plan JSON.`);
-  const actual = computePlanHash(plan);
-  if (!planHash || !/^[0-9a-f]{64}$/.test(planHash) || actual !== planHash)
-    throw new Error(`Workflow run ${runId} frozen plan integrity check failed.`);
   return plan;
 }
 

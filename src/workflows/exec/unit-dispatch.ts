@@ -99,9 +99,11 @@ function frozenLlmConnection(
     : base;
 }
 
-function frozenRunner(
-  request: UnitDispatchRequest & { engine: FrozenEngineSnapshot; invocation: IrInvocation },
-): RunnerSpec {
+export function frozenWorkflowRunner(request: {
+  readonly engine: FrozenEngineSnapshot;
+  readonly invocation: IrInvocation;
+  readonly fallbackEngine?: Extract<FrozenEngineSnapshot, { kind: "llm" }>;
+}): RunnerSpec {
   const { engine, invocation } = request;
   if (invocation.engine !== engine.name) {
     throw new ConfigError(
@@ -175,7 +177,7 @@ export function prepareFrozenWorkflowExecution(
     engine: FrozenEngineSnapshot;
     invocation: IrInvocation;
   };
-  const runner = frozenRunner(engineRequest);
+  const runner = frozenWorkflowRunner(engineRequest);
   // New v3 plans persist source presence. Legacy v3 encoded absence as null
   // and a selected model as a string, so keep that exact compatibility rule.
   const projectsInvocationModel = Object.hasOwn(engineRequest.invocation, "modelPresent")
