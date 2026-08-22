@@ -18,6 +18,9 @@ import {
   GuardedExecutionSourceCollector,
 } from "../execution/guarded-source";
 import type { FileContext } from "../indexer/walk/file-context";
+import { compileResolveFreezeWorkflowV4 } from "../workflows/ir/freeze-v4";
+import { computePlanHash } from "../workflows/ir/plan-hash";
+import type { WorkflowAsset } from "../workflows/runtime/workflow-asset-loader";
 import {
   WorkflowSourceCollisionError,
   WorkflowSourceNameError,
@@ -104,6 +107,15 @@ export interface SchedulerSourceSnapshot {
 export interface PreparedSchedulerSourceSet {
   readonly desired: readonly SchedulerBinding[];
   readonly sourceSnapshot: SchedulerSourceSnapshot;
+  /** Validation/reconciliation evidence only; scheduled fire always freezes a fresh guarded v4 plan. */
+  readonly executableWorkflows: readonly SchedulerExecutableWorkflowEvidence[];
+}
+
+export interface SchedulerExecutableWorkflowEvidence {
+  readonly ref: string;
+  readonly irVersion: 4;
+  readonly planHash: string;
+  readonly sourceReadSet: import("../workflows/ir/schema-v4").WorkflowPlanGraphV4["sourceReadSet"];
 }
 
 const SCHEDULER_PROJECTION_CONFIG: AkmConfig = Object.freeze({
@@ -124,10 +136,14 @@ export async function prepareSchedulerSyncSourceSet(
   input: SchedulerSyncPlanInput,
 ): Promise<PreparedSchedulerSourceSet> {
   const collector = new SchedulerSourceCollector(input);
-  const desired = await compileDesiredSourceSet(input, collector);
+  const compiled = await compileDesiredSourceSet(input, collector);
   const sourceSnapshot = collector.snapshot();
   assertSchedulerSourceSnapshot(sourceSnapshot);
-  return Object.freeze({ desired, sourceSnapshot });
+  return Object.freeze({
+    desired: compiled.desired,
+    sourceSnapshot,
+    executableWorkflows: compiled.executableWorkflows,
+  });
 }
 
 export function finalizeSchedulerSyncPlan(
@@ -427,18 +443,27 @@ function sameDesiredArtifact(left: SchedulerBinding, right: SchedulerBinding): b
 async function compileDesiredSourceSet(
   input: SchedulerSyncPlanInput,
   collector: SchedulerSourceCollector,
-): Promise<readonly SchedulerBinding[]> {
+): Promise<{
+  readonly desired: readonly SchedulerBinding[];
+  readonly executableWorkflows: readonly SchedulerExecutableWorkflowEvidence[];
+}> {
   const bindings: SchedulerBinding[] = [];
+  const executableWorkflows: SchedulerExecutableWorkflowEvidence[] = [];
   const failures: string[] = [];
   await compileTaskSources(input, collector, bindings, failures);
-  compileWorkflowSources(input, collector, bindings, failures);
+  await compileWorkflowSources(input, collector, bindings, executableWorkflows, failures);
   if (failures.length > 0) {
     throw new UsageError(
       `Scheduler sync rejected the desired source set before mutation:\n${failures.map((failure) => `- ${failure}`).join("\n")}`,
       "INVALID_FLAG_VALUE",
     );
   }
-  return Object.freeze(bindings);
+  return Object.freeze({
+    desired: Object.freeze(bindings),
+    executableWorkflows: Object.freeze(
+      executableWorkflows.sort((left, right) => compareCodePoints(left.ref, right.ref)),
+    ),
+  });
 }
 
 async function compileTaskSources(
@@ -508,12 +533,13 @@ async function compileTaskSources(
   }
 }
 
-function compileWorkflowSources(
+async function compileWorkflowSources(
   input: SchedulerSyncPlanInput,
   collector: SchedulerSourceCollector,
   out: SchedulerBinding[],
+  evidence: SchedulerExecutableWorkflowEvidence[],
   failures: string[],
-): void {
+): Promise<void> {
   if (input.adapterId !== "akm" && input.adapterId !== "akm-workflow") return;
   const lookups = enumerateWorkflowLookups(input, collector, failures);
   for (const [canonicalName, sources] of lookups) {
@@ -541,6 +567,27 @@ function compileWorkflowSources(
       assertWorkflowProjectable(compiled.ir);
       const conceptId = input.adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName;
       const qualifiedRef = makeBundleRef(input.bundleName, conceptId);
+      const displayDocument = workflowSourceIrToDocument(compiled.ir, { mode: "display" });
+      const asset: WorkflowAsset = {
+        ref: qualifiedRef,
+        path: guarded.sourcePath,
+        sourcePath: input.sourceRoot,
+        adapterId: input.adapterId,
+        title: canonicalName,
+        steps: [],
+        document: displayDocument,
+      };
+      const frozen = await compileResolveFreezeWorkflowV4(asset, input.config ?? schedulerProjectionConfig(input), {
+        sourceCollector: collector.executionCollector(),
+      });
+      evidence.push(
+        Object.freeze({
+          ref: qualifiedRef,
+          irVersion: 4 as const,
+          planHash: computePlanHash(frozen.plan),
+          sourceReadSet: frozen.plan.sourceReadSet,
+        }),
+      );
       const schedules = compiled.ir.triggers.flatMap((trigger) =>
         trigger.kind === "schedule"
           ? [
@@ -560,6 +607,19 @@ function compileWorkflowSources(
       failures.push(errorMessage(cause));
     }
   }
+}
+
+function schedulerProjectionConfig(input: SchedulerSyncPlanInput): AkmConfig {
+  return Object.freeze({
+    ...SCHEDULER_PROJECTION_CONFIG,
+    defaultBundle: input.bundleName,
+    bundles: {
+      [input.bundleName]: {
+        path: input.sourceRoot,
+        components: { main: { root: ".", adapter: input.adapterId } },
+      },
+    },
+  });
 }
 
 function enumerateWorkflowLookups(
@@ -726,6 +786,10 @@ class SchedulerSourceCollector {
     for (const file of candidates.sort(compareCodePoints)) {
       this.#collector.capture(file, this.#sourceRoot, { authored: true });
     }
+  }
+
+  executionCollector(): GuardedExecutionSourceCollector {
+    return this.#collector;
   }
 
   authoredTaskSources(adapterId: string): readonly GuardedSchedulerSource[] {

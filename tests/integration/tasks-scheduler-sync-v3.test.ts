@@ -354,6 +354,7 @@ describe("whole-set v3 scheduler sync planning", () => {
 
   test("accepts the workflow-only tasks target through canonical step authority", async () => {
     const bundleRoot = root();
+    write(path.join(bundleRoot, "tasks", "child.yml"), "version: 3\nrun: echo child\non:\n  workflow_dispatch: {}\n");
     write(
       path.join(bundleRoot, "workflows", "parent.yml"),
       [
