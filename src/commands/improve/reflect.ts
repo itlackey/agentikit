@@ -832,6 +832,30 @@ const REFLECT_UNSCOPED_JSON_SCHEMA: Record<string, unknown> = {
 const REFLECT_CRITIQUE_PROMPT =
   "Your previous proposal is shown above. Review it critically and provide an improved version that is more specific, actionable, and avoids any issues with the previous attempt. Return only the improved response using the output contract from the original prompt.";
 
+/**
+ * OpenAI-compatible thinking models charge hidden reasoning against
+ * `max_tokens` before they emit the visible response. Reflect asks for a
+ * machine-readable payload and requests `enableThinking: false`, but local
+ * servers do not uniformly honour that flag. Keep visible-content sizing
+ * separate from the allowance that lets an uncooperative thinking model reach
+ * its JSON/frame envelope.
+ *
+ * The 2,048-token allowance exceeds the observed 1,798-token peak that
+ * previously cut direct reflect responses off mid-envelope. It applies to all
+ * bounded direct-LLM calls because a server's thinking behavior is not a
+ * reliable capability signal; the post-processor still enforces the original
+ * content-size policy.
+ */
+const REFLECT_REASONING_TOKEN_HEADROOM = 2_048;
+const REFLECT_RESPONSE_ENVELOPE_CHARS = 500;
+
+function reflectMaxTokensForOutput(maxOutputChars: number | undefined): number | undefined {
+  if (maxOutputChars === undefined) return undefined;
+  // Divide by 3 chars/token (conservative — most models are 3.5–4), retain
+  // space for the JSON/frame wrapper, then reserve independent reasoning room.
+  return Math.ceil((maxOutputChars + REFLECT_RESPONSE_ENVELOPE_CHARS) / 3) + REFLECT_REASONING_TOKEN_HEADROOM;
+}
+
 /** Options for the direct-LLM reflect runner (v2 config path). */
 export interface RunReflectViaLlmOptions {
   /** Reflect prompt text (built by {@link buildReflectPrompt}). */
@@ -1833,10 +1857,7 @@ async function runReflectRefineIterations(args: {
       ...(iterDraftPath ? { draftFilePath: iterDraftPath } : {}),
       ...(outputMode ? { outputMode } : {}),
     });
-    // Convert char ceiling → token cap for the LLM path: divide by 3 chars/token
-    // (conservative — most models are 3.5–4) and add 500-char overhead for the
-    // JSON wrapper and frontmatter block that surround the body in the response.
-    const maxTokensForLlm = maxOutputChars !== undefined ? Math.ceil((maxOutputChars + 500) / 3) : undefined;
+    const maxTokensForLlm = reflectMaxTokensForOutput(maxOutputChars);
 
     let iterResult: AgentRunResult;
     if (runnerIsLlm(runnerSpec)) {
