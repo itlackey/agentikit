@@ -133,8 +133,13 @@ run_step \
 run_step "Package Acceptance" bun scripts/package-install.ts test-package --skip-build
 run_step "Pack Package Candidate" pack_package_candidate
 run_step \
-	"Verify npm candidate model-map asset" \
-	tar -tzf "$PACKAGE_CANDIDATE" package/dist/assets/models.json
+	"Verify npm candidate release surface" \
+	tar -tzf "$PACKAGE_CANDIDATE" \
+	package/dist/assets/models.json \
+	package/docs/reference/tasks.md \
+	package/docs/migration/v0.9.1-to-v0.9.2.md \
+	package/docs/migration/release-notes/0.9.2.md \
+	package/docs/reference/workflow-schema.md
 run_step \
   "Install and Setup Regression Suite" \
   bun test --timeout=120000 tests/setup/ ./tests/integration/setup-run.test.ts tests/integration/install-script.test.ts tests/setup-wizard.test.ts tests/setup-scheduled-tasks.test.ts

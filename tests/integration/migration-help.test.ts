@@ -30,6 +30,8 @@ describe("migration help", () => {
     // and intentionally NOT listed in files[] to avoid duplicate shipment.
     expect(staticFiles).toContain("docs/migration/release-notes");
     expect(staticFiles).toContain("docs/migration/v0.7-to-v0.8.md");
+    expect(staticFiles).toContain("docs/migration/v0.9.1-to-v0.9.2.md");
+    expect(staticFiles).toContain("docs/reference/tasks.md");
     for (const entry of staticFiles) {
       expect(fs.existsSync(path.join(PROJECT_ROOT, entry))).toBe(true);
     }
@@ -42,11 +44,19 @@ describe("migration help", () => {
     expect(bundled.length).toBeGreaterThan(0);
     // Sanity: every known prior release has a note. Adding a new file to
     // docs/migration/release-notes/ should be all it takes to extend this.
-    for (const version of ["0.0.13", "0.1.0", "0.2.0", "0.3.0", "0.5.0", "0.6.0", "0.7.5", "0.9.0"]) {
+    for (const version of ["0.0.13", "0.1.0", "0.2.0", "0.3.0", "0.5.0", "0.6.0", "0.7.5", "0.9.0", "0.9.2"]) {
       expect(bundled).toContain(version);
       const result = renderMigrationHelp(version, undefined);
       expect(result).toContain(`Migration notes for akm v${version}`);
     }
+  });
+
+  test("the 0.9.2 terminal note points task-v2 users at the fail-closed migration", () => {
+    const result = renderMigrationHelp("v0.9.2", undefined);
+    expect(result).toContain("Migration notes for akm v0.9.2");
+    expect(result).toContain("Task v3");
+    expect(result).toContain("akm migrate apply --dry-run");
+    expect(result).toContain("v0.9.1-to-v0.9.2.md");
   });
 
   test("supports latest alias when changelog text is available", () => {
