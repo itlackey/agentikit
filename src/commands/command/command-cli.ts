@@ -5,9 +5,14 @@
 import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../../cli/shared";
 import { loadConfig } from "../../core/config/config";
-import { warn } from "../../core/warn";
+import { isVerbose, setVerbose, warn, warnVerbose } from "../../core/warn";
 import type { UnresolvedExecutionDefaults } from "../../execution/source";
-import { executeCommandInvocation } from "./command-execution";
+import { lookupBundleRefReadonly } from "../../indexer/indexer";
+import {
+  dispatchPreparedCommandInvocation,
+  inspectPreparedCommandInvocation,
+  prepareCommandInvocation,
+} from "./command-execution";
 
 function exactStringArg(args: unknown, key: string): string | undefined {
   const value = (args as Record<string, unknown>)[key];
@@ -38,8 +43,14 @@ export const commandRunCommand = defineJsonCommand({
     model: { type: "string", description: "Override the selected model alias or exact model identifier" },
     "timeout-ms": { type: "string", description: "Override the execution timeout in milliseconds" },
     cwd: { type: "string", description: "Override the execution workspace/current working directory" },
+    "dry-run": {
+      type: "boolean",
+      default: false,
+      description: "Authorize and lower the command, then print safe diagnostics without dispatching or writing state",
+    },
   },
   async run({ args }) {
+    if (args.verbose === true) setVerbose(true);
     const timeoutMs = parsePositiveIntFlag(exactStringArg(args, "timeout-ms"), "--timeout-ms");
     const current: Record<string, unknown> = {};
     const agent = getStringArg(args, "agent");
@@ -53,14 +64,31 @@ export const commandRunCommand = defineJsonCommand({
     if (workspace !== undefined) current.workspace = workspace;
 
     const argumentInput = exactStringArg(args, "arguments");
-    const result = await executeCommandInvocation({
+    const dryRun = args["dry-run"] === true;
+    const prepared = await prepareCommandInvocation({
       action: {
         ref: args.ref,
         ...(argumentInput === undefined ? {} : { arguments: argumentInput }),
       },
       config: loadConfig(),
       current: current as UnresolvedExecutionDefaults,
+      ...(dryRun ? { sourceLookup: lookupBundleRefReadonly } : {}),
     });
+    const diagnostics = dryRun || isVerbose() ? inspectPreparedCommandInvocation(prepared) : undefined;
+    if (dryRun) {
+      output("command-dry-run", diagnostics);
+      return;
+    }
+    if (diagnostics) {
+      warnVerbose(
+        `[akm:command] diagnostics ${JSON.stringify({
+          engine: diagnostics.engine,
+          provenance: diagnostics.provenance,
+          notices: diagnostics.notices,
+        })}`,
+      );
+    }
+    const result = await dispatchPreparedCommandInvocation(prepared);
     for (const message of result.warnings ?? []) warn(message);
     output("agent-result", result);
     if (!result.ok) process.exitCode = EXIT_CODES.GENERAL;

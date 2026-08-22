@@ -28,6 +28,7 @@ const PASSTHROUGH_COMMANDS = [
   "bundle-create",
   "bundle-show",
   "clone",
+  "command-dry-run",
   "config",
   "env-create",
   "env-export",
