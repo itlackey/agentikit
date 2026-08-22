@@ -132,7 +132,9 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       const matching = blocks.filter(
         ({ id }) => schedulerNativeArtifactKey(id) === schedulerNativeArtifactKey(nativeId),
       );
-      const artifacts = matching.map((block) => cronArtifact(block.id, block.body));
+      const artifacts = matching.map((block) =>
+        cronArtifact(block.id, block.body, expected?.state === "legacy-ownerless"),
+      );
       const priorArtifact = expected
         ? assertSchedulerNativeArtifactCardinality(artifacts, nativeId, expected.state === "absent" ? 0 : 1)
         : matching.length > 1
@@ -187,7 +189,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
     listForRebind() {
       const existing = readCrontab(exec);
       return listBlocks(existing).map(({ id, body }) => {
-        const installed = extractCronInvocation(body);
+        const installed = extractCronInvocation(body) ?? extractPublished08CronInvocation(body, id);
         const ref = {
           id: installed ? schedulerLogicalBindingId(id, installed.invocation) : id,
           signature: normalizeSignature(body),
@@ -201,12 +203,12 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
     listNativeArtifacts() {
       return [...inspectCronState(readCrontab(exec)).artifacts];
     },
-    inspectBindings() {
-      return inspectCronState(readCrontab(exec));
+    inspectBindings(options) {
+      return inspectCronState(readCrontab(exec), options?.rebind === true);
     },
     snapshotBindings(ids: readonly string[]): CronBindingSnapshot {
       const crontab = readCrontab(exec);
-      const inspection = inspectCronState(crontab);
+      const inspection = inspectCronState(crontab, true);
       const keys = new Set(ids.map(schedulerNativeArtifactKey));
       return Object.freeze({
         kind: CRON_SNAPSHOT,
@@ -222,7 +224,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
         throw new ConfigError("Invalid cron scheduler snapshot.", "INVALID_CONFIG_FILE");
       }
       const existing = readCrontab(exec);
-      const current = inspectCronState(existing);
+      const current = inspectCronState(existing, true);
       const safeNativeIds: string[] = [];
       const errors: unknown[] = [];
       if (expectedCurrent) {
@@ -277,13 +279,14 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
   };
 }
 
-function inspectCronState(crontab: string): SchedulerBackendInspection {
+function inspectCronState(crontab: string, includePublished08 = false): SchedulerBackendInspection {
   const installed: InstalledTaskRef[] = [];
   const artifacts: SchedulerNativeArtifact[] = [];
   for (const { id, body } of listBlocks(crontab)) {
-    const parsed = extractCronInvocation(body);
+    const parsed =
+      extractCronInvocation(body) ?? (includePublished08 ? extractPublished08CronInvocation(body, id) : undefined);
     const fingerprint = normalizeSignature(body);
-    const artifact = cronArtifact(id, body);
+    const artifact = cronArtifact(id, body, includePublished08);
     artifacts.push(artifact);
     if (!parsed) continue;
     const ref: InstalledTaskRef = {
@@ -300,8 +303,9 @@ function inspectCronState(crontab: string): SchedulerBackendInspection {
   return Object.freeze({ installed: Object.freeze(installed), artifacts: Object.freeze(artifacts) });
 }
 
-function cronArtifact(nativeId: string, body: string): SchedulerNativeArtifact {
-  const parsed = extractCronInvocation(body);
+function cronArtifact(nativeId: string, body: string, includePublished08 = false): SchedulerNativeArtifact {
+  const parsed =
+    extractCronInvocation(body) ?? (includePublished08 ? extractPublished08CronInvocation(body, nativeId) : undefined);
   const owner = parsed ? schedulerLogicalBindingOwner(nativeId, parsed.invocation) : undefined;
   const artifact: SchedulerNativeArtifact = parsed
     ? {
@@ -430,6 +434,36 @@ export function extractCronInvocation(body: string): ReturnType<typeof parseSche
   const redirectIndex = fields.indexOf(">>", commandStart);
   if (redirectIndex === -1) return undefined;
   return parseScheduledBindingArgv(fields.slice(commandStart, redirectIndex));
+}
+
+/**
+ * Recover the exact scheduler argv emitted by published 0.8.x. This parser is
+ * enabled only during an explicit rebind transaction: 0.8 had neither a
+ * context descriptor nor a bundle token, so its marker id plus the terminal
+ * `tasks run <same-id>` tuple is the complete legacy ownership proof.
+ */
+function extractPublished08CronInvocation(
+  body: string,
+  nativeId: string,
+): ReturnType<typeof parseScheduledBindingArgv> {
+  if (body.includes("\n")) return undefined;
+  const line = body.startsWith(DISABLED_PREFIX) ? body.slice(DISABLED_PREFIX.length) : body;
+  const fields = splitCronShellWords(line);
+  if (fields.length < 10) return undefined;
+  let commandStart = 5;
+  while (commandStart < fields.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(fields[commandStart]!)) commandStart += 1;
+  const redirectIndex = fields.indexOf(">>", commandStart);
+  if (redirectIndex !== fields.length - 3 || fields[redirectIndex + 2] !== "2>&1") return undefined;
+  const argv = fields.slice(commandStart, redirectIndex);
+  if (argv.length < 4) return undefined;
+  const invocation = argv.slice(-3);
+  const id = invocation[2];
+  if (invocation[0] !== "tasks" || invocation[1] !== "run" || !id || id !== nativeId) return undefined;
+  return {
+    binding: argv.slice(0, -3),
+    contextPath: "",
+    invocation,
+  };
 }
 
 /** Reverse {@link quoteForCron} for a single whitespace-free token. */

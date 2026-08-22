@@ -1118,9 +1118,29 @@ function authorizeLegacyPrimaryRebinds(
   const authorized: string[] = [];
   for (const entry of inspection.installed) {
     const invocation = entry.invocation;
+    if (entry.target !== undefined || !invocation) continue;
+    const nativeId = entry.nativeId ?? schedulerNativeBindingId(entry.id);
+    const artifact = inspection.artifacts.find((candidate) => candidate.nativeId === nativeId);
     if (
-      entry.target !== undefined ||
-      !invocation ||
+      invocation.length === 3 &&
+      invocation[0] === "tasks" &&
+      invocation[1] === "run" &&
+      invocation[2] === entry.id &&
+      isCanonicalTaskConceptId(entry.id) &&
+      nativeId === schedulerNativeBindingId(entry.id) &&
+      artifact !== undefined &&
+      artifact.bindingId === undefined &&
+      artifact.fingerprint !== undefined &&
+      artifact.invocation !== undefined &&
+      sameArgv(artifact.invocation, invocation)
+    ) {
+      // Published 0.8 cron blocks predate both context descriptors and bundle
+      // tokens. Explicit --rebind plus the exact marker/id/argv tuple is the
+      // only compatibility authorization; near-miss legacy shapes stay foreign.
+      authorized.push(nativeId);
+      continue;
+    }
+    if (
       invocation.length !== 4 ||
       invocation[0] !== "task" ||
       invocation[1] !== "run" ||
@@ -1131,8 +1151,6 @@ function authorizeLegacyPrimaryRebinds(
     try {
       const descriptor = validateSchedulerContextDescriptor(entry.contextPath);
       if (physicalDirectoryIdentity(descriptor.environment.AKM_BUNDLE_DIR) !== selectedIdentity) continue;
-      const nativeId = entry.nativeId ?? schedulerNativeBindingId(entry.id);
-      const artifact = inspection.artifacts.find((candidate) => candidate.nativeId === nativeId);
       if (!artifact || artifact.bindingId !== undefined || artifact.fingerprint === undefined) continue;
       authorized.push(nativeId);
     } catch {
@@ -1141,6 +1159,14 @@ function authorizeLegacyPrimaryRebinds(
     }
   }
   return Object.freeze(authorized);
+}
+
+function isCanonicalTaskConceptId(id: string): boolean {
+  try {
+    return normaliseTaskConceptId(id) === id;
+  } catch {
+    return false;
+  }
 }
 
 function physicalDirectoryIdentity(directory: string): string {

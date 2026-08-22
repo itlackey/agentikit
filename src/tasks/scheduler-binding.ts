@@ -534,10 +534,11 @@ function normalizeRemovalExpectation(expected: SchedulerRemovalExpectation): Sch
 
 function isLegacyTargetlessTaskInvocation(legacy: readonly string[], canonical: readonly string[]): boolean {
   return (
-    legacy.length === 4 &&
-    legacy[0] === "task" &&
-    legacy[1] === "run" &&
-    legacy[2] === canonical[2] &&
-    legacy[3] === "--scheduled"
+    (legacy.length === 4 &&
+      legacy[0] === "task" &&
+      legacy[1] === "run" &&
+      legacy[2] === canonical[2] &&
+      legacy[3] === "--scheduled") ||
+    (legacy.length === 3 && legacy[0] === "tasks" && legacy[1] === "run" && legacy[2] === canonical[2])
   );
 }
