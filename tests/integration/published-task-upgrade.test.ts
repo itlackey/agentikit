@@ -40,6 +40,137 @@ const PUBLISHED_DEFAULT_TASK_IDS = [
 const PUBLISHED_CORE_TASK_IDS = ["improve", "backup"] as const;
 const TASK_IDS = [...CUSTOM_TASK_IDS, ...PUBLISHED_DEFAULT_TASK_IDS, ...PUBLISHED_CORE_TASK_IDS] as const;
 
+function taskV3(...lines: string[]): string {
+  return `${lines.join("\n")}\n`;
+}
+
+const EXPECTED_MIGRATED_TASKS: ReadonlyMap<(typeof TASK_IDS)[number], string> = new Map([
+  [
+    "upgrade-prompt",
+    taskV3(
+      "version: 3",
+      "uses: akm/command",
+      "with:",
+      "  content: Review the published upgrade",
+      "akm:",
+      '  schedule: "@daily"',
+      "  enabled: true",
+      "  engine: legacy-agent",
+    ),
+  ],
+  [
+    "upgrade-workflow",
+    taskV3(
+      "version: 3",
+      "uses: workflows/upgrade-noop",
+      "with:",
+      "  source: published",
+      "akm:",
+      '  schedule: "@daily"',
+      "  enabled: true",
+    ),
+  ],
+  ["upgrade-command", taskV3("version: 3", "run: akm --version", "akm:", '  schedule: "@daily"', "  enabled: true")],
+  ["upgrade-disabled", taskV3("version: 3", "run: akm --version", "akm:", '  schedule: "@daily"', "  enabled: false")],
+  [
+    "upgrade-explicit-improve",
+    taskV3(
+      "version: 3",
+      "run: /opt/retained-0.8/akm improve --profile frequent",
+      "akm:",
+      '  schedule: "@daily"',
+      "  enabled: true",
+    ),
+  ],
+  [
+    "upgrade-global-improve",
+    taskV3(
+      "version: 3",
+      "run: akm --no-quiet --verbose=false improve --strategy frequent",
+      "akm:",
+      '  schedule: "@daily"',
+      "  enabled: true",
+    ),
+  ],
+  [
+    "akm-improve-frequent",
+    taskV3(
+      "version: 3",
+      "run: akm improve --strategy frequent",
+      "akm:",
+      "  schedule: 0 * * * *",
+      "  enabled: true",
+      "  description: Frequent extract + inference pass (every 60 min)",
+    ),
+  ],
+  [
+    "akm-improve-consolidate",
+    taskV3(
+      "version: 3",
+      "run: akm improve --strategy consolidate",
+      "akm:",
+      "  schedule: 0 */4 * * *",
+      "  enabled: true",
+      "  description: Consolidation-only pass (every 4h)",
+    ),
+  ],
+  [
+    "akm-improve-nightly",
+    taskV3(
+      "version: 3",
+      "run: akm improve --strategy thorough",
+      "akm:",
+      "  schedule: 0 2 * * *",
+      "  enabled: true",
+      "  description: Full nightly quality sweep (daily 2am)",
+    ),
+  ],
+  [
+    "akm-improve-catchup",
+    taskV3(
+      "version: 3",
+      "run: akm improve --strategy catchup",
+      "akm:",
+      "  schedule: 0 4 1 1 *",
+      "  enabled: false",
+      "  description: Manual recovery — consolidation + triage drain (run on demand)",
+    ),
+  ],
+  [
+    "akm-graph-refresh-weekly",
+    taskV3(
+      "version: 3",
+      "run: akm improve --strategy graph-refresh",
+      "akm:",
+      "  schedule: 0 3 * * 0",
+      "  enabled: true",
+      "  description: Full-corpus graph rebuild (weekly Sunday 3am)",
+    ),
+  ],
+  [
+    "improve",
+    taskV3(
+      "version: 3",
+      "run: akm improve",
+      "akm:",
+      "  schedule: 0 2 * * *",
+      "  enabled: true",
+      "  description: Run improve pipeline nightly",
+    ),
+  ],
+  [
+    "backup",
+    taskV3(
+      "version: 3",
+      "run: akm db backups",
+      "akm:",
+      "  schedule: 0 3 * * 0",
+      "  enabled: false",
+      "  description: Weekly config/DB backup",
+    ),
+  ],
+]);
+
 interface RunResult {
   status: number;
   stdout: string;
@@ -428,19 +559,11 @@ test.skipIf(!ENABLED)(
         defaults: preparedConfig.defaults,
       });
       const migratedTasks = snapshotTasks(stashDir);
-      for (const definition of migratedTasks.values()) expect(definition).toMatch(/^version: 2$/m);
-      expect(migratedTasks.get("upgrade-workflow")).toContain("workflow: workflows/upgrade-noop");
-      expect(migratedTasks.get("upgrade-prompt")).toContain("engine: legacy-agent");
-      expect(migratedTasks.get("upgrade-prompt")).not.toContain("profile:");
-      expect(migratedTasks.get("upgrade-global-improve")).toContain("--strategy frequent");
-      expect(migratedTasks.get("upgrade-global-improve")).not.toContain("--auto-accept");
-      expect(migratedTasks.get("akm-improve-frequent")).toContain("--strategy frequent");
-      expect(migratedTasks.get("akm-improve-frequent")).not.toContain("--auto-accept");
-      expect(migratedTasks.get("upgrade-explicit-improve")).toContain(
-        "/opt/retained-0.8/akm improve --profile frequent",
-      );
-      expect(migratedTasks.get("backup")).toContain("command: akm db backups");
-      expect(migratedTasks.get("backup")).toContain("enabled: false");
+      for (const id of TASK_IDS) {
+        expect(migratedTasks.get(id), `${id} must migrate to its exact canonical v3 definition`).toBe(
+          EXPECTED_MIGRATED_TASKS.get(id),
+        );
+      }
 
       // Repair path for installations that already ran an earlier 0.9 RC: the
       // config/state cutover is current, but a persisted 0.8 task was not
@@ -581,7 +704,7 @@ test.skipIf(!ENABLED)(
       );
       expect(workflowHistory).toMatchObject({
         status: "completed",
-        target: { kind: "workflow", ref: "workflows/upgrade-noop" },
+        target: { kind: "workflow", ref: "stash//workflows/upgrade-noop" },
       });
       expect(workflowHistory.detail?.runId).toBeTruthy();
       expect(fs.readFileSync(workflowHistory.log, "utf8")).toContain(
@@ -602,7 +725,7 @@ test.skipIf(!ENABLED)(
       expect(fs.readFileSync(manualDisabledHistory.log, "utf8")).toContain(candidatePackage.version);
 
       const scheduledDisabledCommand = generatedDisabledCronCommand(crontab, "upgrade-disabled");
-      expect(scheduledDisabledCommand).toContain("task run upgrade-disabled --scheduled");
+      expect(scheduledDisabledCommand).toContain("task run upgrade-disabled --bundle stash --scheduled");
       const scheduledDisabled = run(["/bin/sh", "-c", scheduledDisabledCommand], {
         ...storageEnv,
         PATH: "/usr/bin:/bin",
