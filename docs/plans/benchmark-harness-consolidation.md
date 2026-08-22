@@ -257,6 +257,10 @@ Each phase ends in a gate that produces a number or a proof, not a refactor.
 
 ## 8. Open decisions — these need your call
 
+> **Live status:** decisions and their consequences are tracked in
+> [`benchmark-harness-decisions.md`](./benchmark-harness-decisions.md).
+> As of 2026-08-22, D1/D2/D4/D6/D7 are decided; the rest remain open.
+
 Ordered by blast radius. Several change what earlier phases emit, so they cannot be deferred past P2.
 
 1. **Do the longitudinal workflows survive?** *(biggest scoping decision)* Harbor gives every trial an isolated container. `evolve` (train → feedback → improve → accept → reindex → eval in pre/post/synthetic arms) and `attribute` (leave-one-out asset masking over a saved report) are **multi-run orchestrations with no Harbor primitive**. Six tasks carry `repeated_failure_group` requiring two tasks in one pass to accumulate feedback against the same asset. Options: Harbor multi-step tasks, orchestrate outside Harbor in akm-bench, or **explicitly kill them**. "akm-bench becomes a thin Harbor wrapper" silently kills both — say which we mean. (There is also a third arm, `synthetic`, in `src/run-config.ts:362`, unaccounted for in this plan.)
