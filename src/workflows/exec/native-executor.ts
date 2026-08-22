@@ -847,15 +847,16 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
     ...(input.signal ? { signal: input.signal } : {}),
   };
 
-  // Bounded retry: attempt 0 journals under the base
-  // journal id (`<unitId>`, or `<unitId>~l<loop>` in a gate loop — computed by
-  // the shared work-list), retry attempt N under `<baseId>~r<N>`. Every attempt
-  // keeps its own row. Retries only fire when the failure reason is in
-  // `retry.on`.
+  // Durable v4 keeps one content-derived unit id across every retry; its
+  // append-only attempt table supplies the 1-based attempt identity. V3 has
+  // no attempt table, so its historical `~r<N>` projection-row ABI stays
+  // byte-for-byte compatible.
   const retry = workUnit.retry;
   const maxAttempts = 1 + Math.max(0, retry?.max ?? 0);
   const journalBaseId = workUnit.journalBaseId;
-  const attemptIdFor = (attempt: number): string => (attempt === 0 ? journalBaseId : `${journalBaseId}~r${attempt}`);
+  const durableV4 = workUnit.frozenTarget !== undefined;
+  const attemptIdFor = (attempt: number): string =>
+    durableV4 || attempt === 0 ? journalBaseId : `${journalBaseId}~r${attempt}`;
 
   // Durable-row reuse — literally the decision executeStepPlan's preflight gate
   // counted, handed down rather than recomputed, so the gate cannot disagree
@@ -924,11 +925,9 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
       ...(input.worktreeBase !== undefined ? { worktreeBase: input.worktreeBase } : {}),
       pendingWorktreeCleanups: input.pendingWorktreeCleanups,
     });
-    // The journal ROW keeps the `~r<n>`/`~l<loop>` attempt id (dispatchJournaledAttempt
-    // wrote it), but the returned outcome's identity in the DURABLE step evidence is
-    // the content-derived BASE id — the suffix is journal bookkeeping the report
-    // surface never sees, so leaking it into evidence.units would diverge the two
-    // surfaces (R4 parity, exposed once the conformance graph compares evidence.units).
+    // V4 already dispatched and journaled the content-derived base id. V3's
+    // projection row may carry `~r<n>`; durable step evidence remains on the
+    // base identity on both plan versions.
     outcome.unitId = unitId;
     // Budget token accounting (addendum R2): every actual dispatch's reported
     // usage counts against the run's max_tokens ceiling; crossing it aborts
