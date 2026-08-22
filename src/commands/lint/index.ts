@@ -156,6 +156,11 @@ interface WorkflowLintOwnership {
   issues: LintIssue[];
 }
 
+interface WorkflowLintCandidate {
+  path: string;
+  authoredName: string;
+}
+
 /**
  * Resolve every canonical workflow through the same workflow-source authority
  * used by index/show/run. Unlike the adapter-wide generic resolver, this
@@ -164,31 +169,37 @@ interface WorkflowLintOwnership {
  * collision is one deterministic finding and neither source is parsed.
  */
 function resolveWorkflowLintOwnership(stashRoot: string, files: readonly string[]): WorkflowLintOwnership {
-  const candidatesByName = new Map<string, string[]>();
+  const candidatesByName = new Map<string, WorkflowLintCandidate[]>();
   for (const file of files) {
     const authoredName = workflowNameForSourcePath(stashRoot, "akm", file);
     if (authoredName === undefined) continue;
     const canonicalName = canonicalizeWorkflowName(authoredName);
     const candidates = candidatesByName.get(canonicalName) ?? [];
-    candidates.push(file);
+    candidates.push({ path: file, authoredName });
     candidatesByName.set(canonicalName, candidates);
   }
 
   const ownedFiles: string[] = [];
   const issues: LintIssue[] = [];
   for (const canonicalName of [...candidatesByName.keys()].sort(compareWorkflowSourceCodePoints)) {
-    const candidates = candidatesByName.get(canonicalName)?.sort(compareWorkflowSourceCodePoints) ?? [];
+    const candidates =
+      candidatesByName
+        .get(canonicalName)
+        ?.sort((left, right) => compareWorkflowSourceCodePoints(left.path, right.path)) ?? [];
+    const representative = candidates[0];
+    if (!representative) continue;
     try {
-      const owner = resolveUniqueWorkflowSource(stashRoot, "akm", canonicalName);
-      if (owner && candidates.some((candidate) => path.resolve(candidate) === path.resolve(owner.path))) {
+      // Pass an authored name so the authority performs the one and only
+      // suffix canonicalization. Passing the grouping key here would strip a
+      // repeated suffix twice and make `name.md.yml` disappear from its domain.
+      const owner = resolveUniqueWorkflowSource(stashRoot, "akm", representative.authoredName);
+      if (owner && candidates.some((candidate) => path.resolve(candidate.path) === path.resolve(owner.path))) {
         ownedFiles.push(owner.path);
       }
     } catch (cause) {
       if (!(cause instanceof WorkflowSourceRejectionError)) throw cause;
-      const first = candidates[0];
-      if (!first) continue;
       issues.push({
-        file: path.relative(stashRoot, first),
+        file: path.relative(stashRoot, representative.path),
         issue: "invalid-workflow-structure",
         detail: cause.message,
         fixed: false,
