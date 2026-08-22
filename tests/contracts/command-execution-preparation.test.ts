@@ -3,10 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
-import * as commandExecution from "../../src/commands/command/command-execution";
 import {
   type CommandExecutionSourceLoader,
   dispatchPreparedCommandInvocation,
+  inspectPreparedCommandInvocation,
   prepareCommandInvocation,
 } from "../../src/commands/command/command-execution";
 import type { ExecutionSourceLookup } from "../../src/commands/command/execution-source-loader";
@@ -112,11 +112,6 @@ describe("common command invocation preparation", () => {
   });
 
   test("projects a deterministic dry-run envelope without resolved values or unsafe notice fields", async () => {
-    const inspectPreparedCommandInvocation = (
-      commandExecution as typeof commandExecution & {
-        inspectPreparedCommandInvocation?: (prepared: unknown) => unknown;
-      }
-    ).inspectPreparedCommandInvocation;
     expect(typeof inspectPreparedCommandInvocation).toBe("function");
 
     const command = rendered("command", "fixture//commands/private", "DO-NOT-LEAK command content", {
@@ -130,7 +125,7 @@ describe("common command invocation preparation", () => {
       sourceLoader: loaderFor(command).loader,
       current: { workspace: "/DO-NOT-LEAK/workspace" },
     });
-    const result = inspectPreparedCommandInvocation?.(prepared) as unknown as {
+    const result = inspectPreparedCommandInvocation(prepared) as unknown as {
       readonly provenance: readonly { field: string; layer: string; kind: string; via: string }[];
       readonly notices: readonly Record<string, unknown>[];
       [key: string]: unknown;
@@ -316,6 +311,7 @@ describe("common command invocation preparation", () => {
         return { status: "denied", policy: "fixture-deny" };
       },
     });
+    expect(() => inspectPreparedCommandInvocation(denied)).toThrow(/authorized|policy|selected tools/i);
     await expect(
       dispatchPreparedCommandInvocation(denied, {
         executeRunner: async () => {

@@ -66,7 +66,10 @@ function treeSnapshot(root: string): string[] {
       const relative = path.relative(root, absolute).replaceAll(path.sep, "/");
       if (entry.isDirectory()) visit(absolute);
       else if (entry.isFile()) {
-        out.push(`${relative}:${createHash("sha256").update(fs.readFileSync(absolute)).digest("hex")}`);
+        const stat = fs.statSync(absolute);
+        out.push(
+          `${relative}:${stat.size}:${stat.mtimeMs}:${createHash("sha256").update(fs.readFileSync(absolute)).digest("hex")}`,
+        );
       }
     }
   };
