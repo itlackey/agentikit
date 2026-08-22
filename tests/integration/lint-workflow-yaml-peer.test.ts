@@ -168,4 +168,18 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
     expect(result.flagged).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
+
+  test("cached and registry peer copies cannot create ownership findings for the real workflow set", async () => {
+    const root = fixtureRoot("akm-lint-yaml-cached-peer-");
+    write(root, "workflows/release.md", VALID_MARKDOWN);
+    write(root, "workflows/.cache/shadow.md", VALID_MARKDOWN);
+    write(root, "workflows/.cache/shadow.yml", INVALID_YAML);
+    write(root, "workflows/registry/mirror.md", VALID_MARKDOWN);
+    write(root, "workflows/registry/mirror.yml", INVALID_YAML);
+
+    const result = await akmLint({ dir: root, typeFilter: "workflows" });
+
+    expect(result.flagged).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
 });
