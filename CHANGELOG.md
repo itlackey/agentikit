@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Breaking changes & migration
 
+- The `inherit_env` option is a breaking removal: new durable-v4 workflow starts reject it.
+  Replace ambient whole-process inheritance with exact named environment bindings and
+  `exec.pass_env` names. A stored v3 plan that already carries the historical
+  flag resumes unchanged as an exact compatibility island, but the flag is no
+  longer valid for new authoring.
 - `improve.strategies.*.processes.triage.judgment` now accepts `true`/`false`
   and honors `enabled` on object values; existing `{}` and configured objects
   remain enabled. Unknown object keys are now rejected instead of ignored, so

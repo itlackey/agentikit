@@ -95,6 +95,12 @@ Created only when `sqlite-vec` is loadable. Columns: `id INTEGER PRIMARY KEY`, `
 
 #### Table: `workflow_documents`
 
+Peer `.md` and `.yml` workflow sources use source IR version 1 before projection into this regenerable index table.
+The table stores the
+validated format-neutral `WorkflowDocument` projection, not executable durable
+run state; `source_path` and `source_hash` bind the projection to its authored
+bytes.
+
 | Column | Type | Notes |
 |---|---|---|
 | `entry_id` | INTEGER PRIMARY KEY | FK → `entries(id)` ON DELETE CASCADE |
@@ -174,12 +180,16 @@ Registry index cache: `registry_url` PK, `fetched_at`, `etag`, `last_modified`, 
 ### Workflow Run State — tables in `$DATA/state.db`
 
 The 0.9.0 cutover folded the former `$DATA/workflow.db` into `state.db`; the
-`workflow_runs` / `workflow_run_steps` / `workflow_run_units` tables documented
-here now live in `state.db` (see the `state.db` section below) and are deleted
-along with the physical `workflow.db` by `akm migrate apply`. WAL mode, foreign
-keys ON. No automatic cleanup — runs persist indefinitely.
+`workflow_runs` / `workflow_run_steps` / `workflow_run_units` /
+`workflow_run_unit_attempts` tables documented here now live in `state.db` (see
+the `state.db` section below) and are deleted along with the physical
+`workflow.db` by `akm migrate apply`. WAL mode, foreign keys ON. No automatic
+cleanup — runs persist indefinitely.
 
 #### Table: `workflow_runs`
+
+New starts persist plan IR v4. Stored v3 plans resume unchanged.
+The resume path neither upgrades them to v4 nor re-reads authored source.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -196,7 +206,7 @@ keys ON. No automatic cleanup — runs persist indefinitely.
 | `completed_at` | TEXT | ISO-8601; NULL while active |
 | `agent_harness`, `agent_session_id` | TEXT | Driving agent identity, recorded at start (see the check-in mechanism in `docs/reference/workflows.md`) |
 | `checkin_armed_at` | TEXT | ISO-8601 timestamp; a stall past the check-in window surfaces a `continue` directive on the next poll |
-| `plan_json`, `plan_hash` | TEXT | Frozen workflow-v3 execution plan (engine caps, exact models, symbolic credentials, concurrency, timeout) and its hash |
+| `plan_json`, `plan_hash` | TEXT | Frozen executable plan and its integrity hash; current v4 plans include guarded source reads, immutable targets, and symbolic environment bindings |
 | `engine_lease_until`, `engine_lease_holder` | TEXT | Engine concurrency lease bookkeeping for the run |
 | `plan_ir_version` | INTEGER | Schema version of `plan_json`'s IR |
 
@@ -222,14 +232,40 @@ Primary key: `(run_id, step_id)`.
 
 #### Table: `workflow_run_units`
 
-Fan-out execution units for workflow-v3 parallel/graph runs (one row per node in
-a run's execution graph), keyed `(run_id, unit_id)` with a FK to `workflow_runs`.
-Columns include `node_id`, `parent_unit_id`, `phase`, `runner`, `model`,
-`status` (`pending`/`running`/`completed`/`failed`/`skipped`), `result_json`,
-`tokens`, `failure_reason`, `worktree_path`, `session_id`, timing columns, and
-per-unit check-in/claim fields (`last_checkin_at`, `attempts`, `claim_holder`,
-`claim_expires_at`, `engine`) mirroring the run-level check-in design. See
-`docs/reference/workflows.md`.
+The compatibility/status projection for execution units (one row per node in a
+run's execution graph), keyed `(run_id, unit_id)` with a FK to `workflow_runs`.
+The `workflow_run_unit_attempts` table is append-only for v4; it receives every
+external reservation and terminal result, while this table remains the
+projection for existing status and stored-v3 readers. Columns include
+`node_id`, `parent_unit_id`, `phase`,
+`runner`, `model`, `status`
+(`pending`/`running`/`completed`/`failed`/`skipped`), `result_json`, `tokens`,
+`failure_reason`, `worktree_path`, `session_id`, timing columns, and per-unit
+check-in/claim fields (`last_checkin_at`, `attempts`, `claim_holder`,
+`claim_expires_at`, `engine`). See `docs/reference/workflows.md`.
+
+#### Table: `workflow_run_unit_attempts`
+
+Append-only durable-v4 external-dispatch journal. Primary key: `(run_id, unit_id, attempt)`.
+`dispatch_id` also has a unique index. A crash
+reclaim keeps the stable dispatch identity for the same attempt; an explicit
+retry appends a new numbered attempt instead of overwriting history.
+
+| Column | Type | Notes |
+|---|---|---|
+| `run_id` | TEXT NOT NULL | FK to `workflow_runs(id)` with cascade delete |
+| `unit_id` | TEXT NOT NULL | Stable v4 unit identity across explicit retries |
+| `attempt` | INTEGER NOT NULL | One-based append-only attempt ordinal |
+| `dispatch_id` | TEXT NOT NULL UNIQUE | Stable identity reused by crash reclaim |
+| `step_id`, `node_id` | TEXT NOT NULL | Owning workflow step and node |
+| `phase` | TEXT NOT NULL | `unit` or `gate` |
+| `runner`, `engine`, `model` | TEXT | Frozen dispatch classification; values may be absent where inapplicable |
+| `input_hash` | TEXT NOT NULL | Integrity/replay identity for the dispatch input |
+| `status` | TEXT NOT NULL | `running`, `completed`, `failed`, or `skipped` |
+| `result_json`, `tokens`, `failure_reason` | mixed | Terminal result, known usage, and safe failure reason |
+| `session_id`, `worktree_path` | TEXT | External session and isolation-worktree evidence |
+| `started_at`, `finished_at` | TEXT | Attempt timing |
+| `claim_holder`, `claim_expires_at` | TEXT NOT NULL | Lease fencing for reclaim and stale-terminal refusal |
 
 ---
 
@@ -444,6 +480,9 @@ One line per memory belief-state transition: `{ appliedAt, ref, parentRef, fromS
 
 All asset files live under `$STASH/` in type-specific subdirectories defined by the `PLACEMENT_SPECS` map in `src/core/asset/asset-placement.ts`:
 
+The `workflows/` directory holds peer `.md` and `.yml` workflow sources. The
+`tasks/` directory holds strict `.yml` task v3 sources.
+
 | Subdirectory | Asset Type | Format |
 |---|---|---|
 | `skills/<name>/SKILL.md` | skill | YAML-FM + Markdown |
@@ -451,14 +490,14 @@ All asset files live under `$STASH/` in type-specific subdirectories defined by 
 | `agents/<name>.md` | agent | YAML-FM + Markdown |
 | `knowledge/<name>.md` | knowledge | YAML-FM + Markdown |
 | `instructions/<name>.md` | instruction | YAML-FM + Markdown |
-| `workflows/<name>.md` | workflow | YAML-FM + Markdown |
+| `workflows/<name>.md` / `workflows/<name>.yml` | workflow | Peer `.md` Markdown and `.yml` GitHub-shaped sources; both compile through source IR v1 |
 | `scripts/<name>.<ext>` | script | sh / ts / js / ps1 etc. |
 | `memories/<name>.md` | memory | YAML-FM + Markdown |
 | `env/<name>.env` | env | `KEY=VALUE` pairs |
 | `secrets/<name>` | secret | raw secret bytes |
 | `facts/<name>.md` | fact | YAML-FM + Markdown |
 | `lessons/<name>.md` | lesson | YAML-FM + Markdown (required: `description`, `when_to_use`) |
-| `tasks/<name>.yml` | task | strict YAML with root `version: 2`; prompt tasks select `engine` (see `docs/migration/v0.8-to-v0.9.md#engine-and-task-assets`) |
+| `tasks/<name>.yml` | task | Strict task v3 YAML source with root `version: 3`; `.yaml` is not recognized |
 | `sessions/<harness>/<session-id>.md` | session | YAML-FM + Markdown; generated by the `extract` pass, not user-authored |
 
 `wikis/<name>/` is a separate convention: a bundle root recognized by the

@@ -1815,8 +1815,12 @@ Environment scope and context:
 
 - [ ] **LOCAL** The child gets the default allowlist only: credentials and cloud
       or CI variables present in akm's own environment are **absent** unless
-      named. `pass_env:` widens it by name; `inherit_env: true` hands over the
-      whole environment verbatim.
+      named. `pass_env:` widens it by name; exact named `env:` bindings provide
+      fixed or secret values.
+- [ ] **CORE** A new durable-v4 start containing `inherit_env: true` is rejected
+      before dispatch and directs the author to named env bindings. Preserve a
+      stored v3 compatibility fixture separately and verify it resumes unchanged;
+      do not use that fixture as current authoring guidance.
 - [ ] **LOCAL** `env:` bindings inject resolved values, and the `AKM_*` context
       is applied *after* them, so a binding cannot shadow it.
 - [ ] **LOCAL** `AKM_RUN_ID`, `AKM_STEP_ID`, `AKM_UNIT_ID`, `AKM_PARAMS`,

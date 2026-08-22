@@ -19,11 +19,9 @@ step fields, and exactly one trigger source:
 ```yaml
 version: 3
 name: Nightly review
-uses: commands/review
+uses: workflows/nightly-review
 with:
   strict: true
-env:
-  REPORT_FORMAT: summary
 akm:
   schedule: "0 4 * * *"
   enabled: true
@@ -58,6 +56,37 @@ Task refs such as `tasks/nightly` are also not executable. Local actions
 (`./action`) are rejected and Docker actions (`docker://image`) are unsupported.
 GitHub expressions are unsupported and rejected before dispatch. Unqualified
 remote actions are rejected too.
+
+The runtime applies this target-by-target field matrix. Validation is strict;
+fields are not silently discarded.
+For `scripts/` asset refs, `with` is rejected before dispatch.
+
+| Target | `with` | task `env` | Interpreter / execution |
+|---|---|---|---|
+| `run` | Rejected; `with` is legal only with `uses` | Allowed | One authored string through the selected closed host `shell` |
+| `akm/command` | Required action object: exactly one of `ref` or `content`, plus optional portable `arguments` | Allowed and passed through the command resolver | Shared command authorization and lowering |
+| `commands/<name>` | Direct command refs: `with` is rejected; use `akm/command` for portable arguments | Allowed and passed through the command resolver | Shared command authorization and lowering |
+| `workflows/<name>` | Of asset refs, workflow refs alone consume `with` as workflow params | A nonempty task `env` is rejected because the durable workflow runtime cannot consume it in 0.9.2 | Fresh durable workflow start |
+| `scripts/<name>.<ext>` | Script refs: `with` is rejected | Allowed for the child process | Closed extension-to-interpreter table below |
+| `owner/repo[/path]@ref` | Not consumed | Not consumed | Recognized spelling, but remote acquisition is rejected in 0.9.2 |
+
+Script refs use this closed table; any other extension fails before dispatch:
+
+| Extensions | Interpreter |
+|---|---|
+| `.sh` | `sh` |
+| `.ts`, `.js` | Bun; JavaScript and TypeScript script targets require Bun (the standalone binary uses its embedded Bun runtime) |
+| `.ps1` | `powershell -NoProfile -NonInteractive -File` |
+| `.cmd`, `.bat` | `cmd /d /s /c` |
+| `.py` | `python` |
+| `.rb` | `ruby` |
+| `.go` | `go run` |
+| `.pl` | `perl` |
+| `.php` | `php` |
+| `.lua` | `lua` |
+| `.r` | `rscript` |
+| `.swift` | `swift` |
+| `.kt`, `.kts` | Kotlin (`kotlin` for `.kt`, `kotlinc -script` for `.kts`) |
 
 `run` is one non-empty shell string. It may specify `shell` from the closed host
 shell table `bash`, `sh`, `zsh`, `pwsh`, `powershell`, or `cmd`. Shell expansion

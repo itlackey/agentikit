@@ -176,10 +176,10 @@ treat package dependencies**:
   workflow file first (`akm show workflows/<name>`) before running it.
 - **Audit before run** for any workflow that touches secrets, deploys to
   production, or writes outside the project tree. Read the `env:` bindings a
-  workflow declares, and read its `exec.pass_env` / `exec.inherit_env` lines —
-  `inherit_env: true` hands that command every environment variable visible to
-  the akm process, including secrets exported by your shell or injected via
-  `akm env run` / `akm secret run`.
+  workflow declares, and read its `exec.pass_env` lines.
+  New v4 starts reject `inherit_env`, while a stored v3 plan resumes unchanged as an exact compatibility island.
+  Authors must use exact named bindings and `pass_env` names; no new start can
+  author the historical flag.
 - **Pin known-good versions** when adding workflow sources from a registry
   or git remote (`akm bundle add github:owner/repo#v1.2.3`), and update
   deliberately rather than via `akm bundle update --all`. A trusted workflow

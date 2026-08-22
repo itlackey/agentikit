@@ -728,7 +728,8 @@ stripped it — the same treatment an agent-harness child gets.
 
 Deliberately **not** on the list: credentials of any kind, cloud/CI variables,
 and the proxy family (`HTTP_PROXY` and friends — proxy URLs routinely embed
-credentials). Reach them with `pass_env:`, an `env:` binding, or `inherit_env:`.
+credentials). Reach a required value with an exact named `env:` binding, or
+name a non-secret per-machine variable with `pass_env:`.
 
 #### `pass_env:` — widen the allowlist by name
 
@@ -747,26 +748,17 @@ a committed *value*, so it cannot carry "whatever this build agent's
 Values passed through this way are **not** redacted from the command's output
 the way `env:` binding values are, so never list a credential here.
 
-#### `inherit_env:` — opt back into full inheritance
+#### Durable v4 forbids `inherit_env`
 
-```yaml
-    unit:
-      exec:
-        command: ["./scripts/deploy.sh"]
-        inherit_env: true
-```
+Every new workflow start freezes a durable v4 plan. V4 rejects
+`inherit_env: true` and any other request for whole-process inheritance; use
+exact named environment bindings and `pass_env:` instead. Both mechanisms are
+dispatch-significant, keep the visible environment surface bounded, and form
+part of the unit's input hash.
 
-`inherit_env: true` gives the command akm's **entire** environment, verbatim —
-what it would see if you had typed it yourself in the shell that ran
-`akm workflow run`. Reach for it when a command genuinely needs the
-caller's whole environment (a wrapper script, a toolchain with many ambient
-variables) and enumerating names would be a losing game. Prefer `pass_env:` or
-`env:` bindings when you can, because those keep what the command can see
-visible in the frontmatter diff.
-
-Both keys are **dispatch-significant**: they change what the command can see,
-so both are part of the unit's input hash. Changing either re-dispatches the
-unit rather than reusing a journaled row produced under the other scope.
+The historical `inherit_env` spelling is stored-v3 compatibility only. Such a
+run resumes unchanged as a compatibility island; it is not a current authoring
+option and is never upgraded into a v4 plan during resume.
 
 ### What `akm show` reports for an exec step
 
@@ -787,8 +779,7 @@ happens. Field presence is the discriminator, the same way `fanOut` marks a
     "exec": {
       "command": ["bun", "run", "test:unit"],
       "cwd": "packages/core",
-      "passEnv": ["CARGO_HOME"],
-      "inheritEnv": true
+      "passEnv": ["CARGO_HOME"]
     }
   }
 }
@@ -801,8 +792,9 @@ happens. Field presence is the discriminator, the same way `fanOut` marks a
   of it is resolved from your environment, from a secret ref, or from a prior
   step's output. Every byte is already visible in the workflow file (and stored
   verbatim in `plan_json`) — which is also why you never inline a secret there.
-- `cwd`, `passEnv` and `inheritEnv` appear only when the unit declares them.
-  `passEnv` is a list of variable **names**; no value is ever projected.
+- `cwd` and `passEnv` appear only when the unit declares them. `passEnv` is a
+  list of variable **names**; no value is ever projected. New v4 plans never
+  carry `inheritEnv`.
 - `timeoutMs` is still reported, because an exec unit really does inherit
   `defaults.timeout` — that number is true for it.
 

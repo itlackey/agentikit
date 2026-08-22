@@ -167,30 +167,30 @@ context variables. Ordinary commands (`bun`, `git`, `make`, `cargo`) work
 unchanged; an unrelated `SOME_OTHER_SERVICE_TOKEN` sitting in the shell that
 ran `akm workflow run` does not reach them.
 
-Two ways to widen it, in order of preference:
+Widen it only by naming what the unit needs:
 
 ```yaml
   - id: build
     unit:
+      env: [env/build]
       exec:
         command: ["cargo", "build", "--release"]
         pass_env: [CARGO_HOME, SCCACHE_DIR]   # a few extra names
-  - id: deploy
-    unit:
-      exec:
-        command: ["./scripts/deploy.sh"]
-        inherit_env: true                      # the whole environment
 ```
 
 `pass_env:` is for a **per-machine** variable an `env:` binding cannot express
 (an env asset stores a committed value; `CARGO_HOME` differs per build agent).
-`inherit_env: true` is the honest all-in escape hatch — use it when
-enumerating names is a losing game, and know that it is visible in the diff.
-Secrets still belong in `env:` bindings: those values are redacted out of
-everything journaled, and `pass_env:` values are not.
+Secrets and fixed values belong in exact named `env:` bindings: those values
+are redacted out of everything journaled, and `pass_env:` values are not.
 
-Both keys are part of the unit's input hash, so flipping either re-runs the
-command instead of reusing a row recorded under the other scope.
+New workflow starts freeze durable v4 plans, and v4 rejects `inherit_env`
+instead of persisting an unbounded ambient environment. Existing stored v3
+plans that already contain the historical flag still resume unchanged; that
+compatibility is not a current authoring option.
+
+Named bindings and `pass_env:` are part of the unit's input hash, so changing
+either re-runs the command instead of reusing a row recorded under another
+scope.
 
 Full list of allowlisted names:
 [Workflow Schema: The child's environment is an allowlist](../reference/workflow-schema.md#the-childs-environment-is-an-allowlist).
@@ -212,8 +212,8 @@ Full list of allowlisted names:
   mean unbounded.
 - **Don't assume your shell's environment.** The child gets an allowlist, not
   an inheritance. If a command fails with "not found" or reads a missing
-  toolchain variable, name it in `pass_env:` (or set `inherit_env: true`) —
-  it is not a bug in the command.
+  toolchain variable, name it in `pass_env:`; use a named `env:` binding for a
+  fixed or secret value. Durable v4 deliberately has no whole-process fallback.
 - **A very chatty command still passes; its artifact just says so.** akm retains
   8 MiB of stdout and 8 MiB of stderr. Past that it keeps draining and discards,
   so the command runs to completion and its exit code decides the step. The
@@ -264,9 +264,9 @@ Full reference: [Workflow Schema: Exec (shell) units](../reference/workflow-sche
 - **Expecting an exec command to inherit your environment.** It gets a default
   allowlist (`PATH`, `HOME`, locale/temp/identity, the Windows essentials) plus
   your `env:` bindings and the `AKM_*` context — nothing else. Widen it with
-  `exec.pass_env:` (a few names) or `exec.inherit_env: true` (all of it).
-  Note `pass_env`/`inherit_env` live inside `exec:`; the unit-level `env:` key
-  means something different — a list of env asset binding refs.
+  `exec.pass_env:` (a few non-secret names). `pass_env` lives inside `exec:`;
+  the unit-level `env:` key is a list of exact env asset binding refs. A new v4
+  start rejects `inherit_env`.
 - **Asking a model to do deterministic work.** "Run the test suite and tell me
   if it passed" is an [exec step](#deterministic-steps-run-a-command-gate-on-it),
   not a prompt.

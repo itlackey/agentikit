@@ -1,10 +1,17 @@
 # `akm health` advisory → action map
 
-Run `akm health` (add `--json` for machine output). Overall exit is non-zero when any
-**hard** check fails; **advisory** checks report `warn`/`unknown` but never gate the exit.
-This table is the interpretive key for a second operator: what each named advisory measures
-and whether to act. Some `warn`s below are *adjudicated, expected* states — treat them as
-"no action" until the referenced condition changes.
+Run `akm health` (add `--json` for machine output). Only hard checks determine
+the authoritative result:
+
+- A hard check `warn` sets the overall status to `warn` and exit code 4.
+- A hard check `fail` sets the overall status to `fail` and exit code 1.
+- An advisory `warn` never changes or gates the overall status.
+- An advisory `warn` never changes or gates the exit code.
+
+This table is the interpretive key for a second operator: what each named
+advisory measures and whether to act. Some `warn`s below are *adjudicated,
+expected* states — treat them as "no action" until the referenced condition
+changes.
 
 | Advisory (name in output) | What it means | Action |
 |---|---|---|
