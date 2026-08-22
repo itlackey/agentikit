@@ -109,6 +109,33 @@ describe("akm proposal drain strategy selector", () => {
       staged: [],
     });
   });
+
+  test("--judgment explicitly overrides a disabled strategy value; config alone never enables standalone drain", async () => {
+    const stashDir = makeStashDir();
+    writeSandboxConfig({
+      configVersion: "0.9.0",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+      engines: { reviewer: { kind: "agent", platform: "pi" } },
+      defaults: { improveStrategy: "explicit-judgment" },
+      improve: {
+        strategies: {
+          "explicit-judgment": {
+            processes: { triage: { enabled: true, judgment: { enabled: false, engine: "reviewer" } } },
+          },
+        },
+      },
+    });
+
+    const configuredOnly = await runCli(["proposal", "drain", "--dry-run", "--format=json"], { stashDir });
+    expect(configuredOnly.status).toBe(0);
+    expect(JSON.parse(configuredOnly.stdout)).toMatchObject({ judgmentEngine: null, judgmentKind: null });
+
+    const explicit = await runCli(["proposal", "drain", "--judgment", "--dry-run", "--format=json"], { stashDir });
+    expect(explicit.status).toBe(0);
+    expect(JSON.parse(explicit.stdout)).toMatchObject({ judgmentEngine: "reviewer", judgmentKind: "agent" });
+  });
 });
 
 function seedProposal(stash: string, ref = "lessons/rg-over-grep") {

@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 import * as healthChecks from "../../src/commands/health/checks";
 import { runDefaultEngineProbe, runDefaultLlmEngineProbe } from "../../src/commands/health/checks";
 import type { AkmConfig } from "../../src/core/config/config";
+import { validateConfigShape } from "../../src/core/config/config-schema";
 
 const llm = {
   kind: "llm" as const,
@@ -216,5 +217,31 @@ describe("health engine probes", () => {
       unavailableProcesses: ["triage.judgment"],
     });
     expect(JSON.stringify(result)).not.toContain("PRIVATE_SDK_FALLBACK_TOKEN");
+  });
+
+  test("disabled triage judgment neither requires credentials nor appears unavailable", () => {
+    const parsed = validateConfigShape({
+      configVersion: "0.9.0",
+      engines: {
+        ready: llm,
+        private: { ...llm, apiKey: "$PRIVATE_DISABLED_JUDGMENT_TOKEN" },
+      },
+      defaults: { llmEngine: "ready", improveStrategy: "disabled-triage-health" },
+      improve: {
+        strategies: {
+          "disabled-triage-health": {
+            processes: { triage: { enabled: true, judgment: { enabled: false, engine: "private" } } },
+          },
+        },
+      },
+    });
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.errors));
+
+    const result = healthChecks.runActiveImproveStrategyProbe({ loadConfig: () => parsed.value, env: {} });
+
+    expect(result.status).toBe("pass");
+    expect(result.message).not.toContain("triage.judgment");
+    expect(result.evidence).toMatchObject({ strategy: "disabled-triage-health", unavailableProcesses: [] });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_DISABLED_JUDGMENT_TOKEN");
   });
 });

@@ -26,6 +26,21 @@ describe("config schema drift pins", () => {
     expect(keys).toContain("contradictionDetection");
   });
 
+  test("triage judgment JSON schema accepts boolean shorthand and only known object keys", () => {
+    const schema = readSchema();
+    const defs = schema.$defs as Record<string, unknown>;
+    const ipc = defs.ImproveProcessConfig as { properties?: Record<string, unknown> };
+    const judgment = ipc.properties?.judgment as {
+      anyOf?: Array<{ type?: string; properties?: Record<string, unknown>; additionalProperties?: boolean }>;
+    };
+    const booleanArm = judgment.anyOf?.find((arm) => arm.type === "boolean");
+    const objectArm = judgment.anyOf?.find((arm) => arm.type === "object");
+
+    expect(booleanArm).toBeDefined();
+    expect(Object.keys(objectArm?.properties ?? {}).sort()).toEqual(["enabled", "engine", "llm", "model", "timeoutMs"]);
+    expect(objectArm?.additionalProperties).toBe(false);
+  });
+
   test("ImproveProfileConfig.processes includes distill + validation entries (0.8.0 unified feedbackDistillation into distill)", () => {
     const schema = readSchema();
     const defs = schema.$defs as Record<string, unknown>;
