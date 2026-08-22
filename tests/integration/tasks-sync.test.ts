@@ -17,8 +17,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { akmTasksSync } from "../../src/commands/tasks/tasks";
 import { CRON_BACKEND, type CronExec, type CronExecResult } from "../../src/tasks/backends/cron";
+import type { SchedulerBinding } from "../../src/tasks/scheduler-binding";
+import { schedulerContextDescriptor, writeSchedulerContextDescriptor } from "../../src/tasks/scheduler-invocation";
 import type { Cleanup } from "../_helpers/sandbox";
-import { sandboxStashDir, sandboxXdgConfigHome, sandboxXdgStateHome } from "../_helpers/sandbox";
+import { makeStashDir, sandboxStashDir, sandboxXdgConfigHome, sandboxXdgStateHome } from "../_helpers/sandbox";
 
 let cleanup: Cleanup = () => {};
 let stashDir = "";
@@ -86,6 +88,79 @@ describe("akmTasksSync — schedule drift", () => {
     expect(second.installed).toEqual([]);
     expect(second.updated).toEqual([]);
     expect(second.unchanged.sort()).toEqual(["alpha", "beta"]);
+    const bundleName = path.basename(stashDir).toLowerCase();
+    expect(exec.current()).toContain(`task run alpha --bundle ${bundleName} --scheduled`);
+    expect(exec.current()).toContain(`task run beta --bundle ${bundleName} --scheduled`);
+  });
+
+  test("treats target-less primary artifacts as legacy ownerless and migrates only with --rebind", async () => {
+    const exec = memoryExec();
+    const backend = backendFor(exec);
+    writeSchedulerContextDescriptor(schedulerContextDescriptor(undefined, ""));
+    const bundleName = path.basename(stashDir).toLowerCase();
+    const legacy: SchedulerBinding = {
+      id: "alpha",
+      nativeId: "alpha",
+      logicalSource: { kind: "task", ref: `${bundleName}//tasks/alpha` },
+      cron: "*/15 * * * *",
+      source: "akm.schedule",
+      ordinal: 0,
+      enabled: true,
+      invocation: ["task", "run", "alpha", "--scheduled"],
+    };
+    backend.install(legacy);
+    writeTask("alpha", "*/15 * * * *");
+    const prior = exec.current();
+
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/legacy|ownerless|rebind|unproven owner/i);
+    expect(exec.current()).toBe(prior);
+
+    const migrated = await akmTasksSync({ backend }, undefined, { rebind: true });
+    expect(migrated.updated).toEqual(["alpha"]);
+    expect(exec.current()).toContain(`task run alpha --bundle ${bundleName} --scheduled`);
+    expect(exec.current()).not.toContain("task run alpha --scheduled");
+  });
+
+  test.each([
+    "missing",
+    "different primary",
+  ] as const)("does not adopt a target-less legacy artifact whose context descriptor is %s", async (descriptorState) => {
+    const exec = memoryExec();
+    const backend = backendFor(exec);
+    const bundleName = path.basename(stashDir).toLowerCase();
+    const legacy: SchedulerBinding = {
+      id: "alpha",
+      nativeId: "alpha",
+      logicalSource: { kind: "task", ref: `${bundleName}//tasks/alpha` },
+      cron: "*/15 * * * *",
+      source: "akm.schedule",
+      ordinal: 0,
+      enabled: true,
+      invocation: ["task", "run", "alpha", "--scheduled"],
+    };
+    const other = makeStashDir();
+    try {
+      const contextPath =
+        descriptorState === "different primary"
+          ? writeSchedulerContextDescriptor({
+              ...schedulerContextDescriptor(undefined, ""),
+              environment: {
+                ...schedulerContextDescriptor(undefined, "").environment,
+                AKM_BUNDLE_DIR: other.dir,
+              },
+            })
+          : undefined;
+      backend.install(legacy, contextPath ? { contextPath } : undefined);
+      writeTask("alpha", "*/15 * * * *");
+      const prior = exec.current();
+
+      await expect(akmTasksSync({ backend }, undefined, { rebind: true })).rejects.toThrow(
+        /legacy|ownerless|unproven owner|native scheduler artifact/i,
+      );
+      expect(exec.current()).toBe(prior);
+    } finally {
+      other.cleanup();
+    }
   });
 
   test("detects a changed schedule and reinstalls it (the bug fix)", async () => {
@@ -104,7 +179,7 @@ describe("akmTasksSync — schedule drift", () => {
     expect(result.installed).toEqual([]);
     // The crontab now carries the new schedule, not the stale one.
     expect(exec.current()).toContain("45 */6 * * * /usr/local/bin/akm --scheduler-context");
-    expect(exec.current()).toContain("task run beta --scheduled");
+    expect(exec.current()).toContain("task run beta --bundle");
     expect(exec.current()).not.toContain("0 2 * * * /usr/local/bin/akm");
   });
 
@@ -119,7 +194,7 @@ describe("akmTasksSync — schedule drift", () => {
     const result = await akmTasksSync({ backend });
     expect(result.updated).toEqual(["alpha"]);
     expect(exec.current()).toContain("# akm:disabled */15 * * * * /usr/local/bin/akm --scheduler-context");
-    expect(exec.current()).toContain("task run alpha --scheduled");
+    expect(exec.current()).toContain("task run alpha --bundle");
   });
 
   test("removes orphaned scheduler entries with no backing file", async () => {

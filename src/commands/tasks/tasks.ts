@@ -41,12 +41,19 @@ import { exitCodeForStatus, readTaskHistory, runTask, type TaskRunResult } from 
 import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "../../tasks/runtime-v3";
 import { parseSchedule, SCHEDULE_SUPPORTED_SUBSET_HINT } from "../../tasks/schedule";
 import {
+  assertSchedulerMutationArtifact,
   compileTaskSchedulerBindings,
+  type SchedulerBackendInspection,
   type SchedulerBinding,
   type SchedulerInstallOptions,
+  type SchedulerMutationExpectation,
   type SchedulerRemovalExpectation,
+  type SchedulerRollbackExpectation,
+  type SchedulerRollbackState,
+  type SchedulerTransactionSnapshot,
   schedulerBindingNativeId,
   schedulerBindingOrdinal,
+  schedulerNativeArtifactKey,
   schedulerNativeBindingId,
 } from "../../tasks/scheduler-binding";
 import {
@@ -57,7 +64,9 @@ import {
 } from "../../tasks/scheduler-invocation";
 import {
   assertSchedulerNativeArtifactOwnership,
-  planSchedulerSync,
+  assertSchedulerSourceSnapshot,
+  finalizeSchedulerSyncPlan,
+  prepareSchedulerSyncSourceSet,
   type SchedulerSyncPlan,
 } from "../../tasks/scheduler-sync";
 import { parseTaskV3Yaml, type TaskV3SourceDocument } from "../../tasks/source-v3";
@@ -243,6 +252,7 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     await prepareTaskAddSchedulerTransaction({
       id,
       installTarget: bundle.installTarget,
+      ownerTarget: bundle.bundleName,
       installOpts,
       taskBindings,
       previousBindings,
@@ -429,8 +439,14 @@ export async function akmTasksSync(
   const stashDir = resolved.source.path;
   const syncTarget = bundleTarget !== undefined && !isPrimaryStashPath(stashDir) ? bundleTarget : undefined;
   const sched = deps.backend ?? selectBackend();
-  const rawEntries: Array<InstalledTaskRef | RebindTaskRef> =
-    options.rebind && sched.listForRebind ? await sched.listForRebind() : await sched.list();
+  if (!sched.inspectBindings) {
+    throw new ConfigError(
+      `Scheduler backend "${sched.name}" cannot provide one coherent inspection for transactional sync.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const inspection = await sched.inspectBindings({ rebind: options.rebind === true });
+  const rawEntries: Array<InstalledTaskRef | RebindTaskRef> = [...inspection.installed];
   const allEntries: InstalledTaskRef[] = rawEntries.map((entry) => ({
     ...entry,
     ...(entry.nativeId !== undefined ? { nativeId: entry.nativeId } : {}),
@@ -438,14 +454,10 @@ export async function akmTasksSync(
     binding: "binding" in entry ? [...entry.binding] : [],
     contextPath: "contextPath" in entry ? entry.contextPath : "",
   }));
-  const nativeArtifacts = sched.listNativeArtifacts
-    ? await sched.listNativeArtifacts()
-    : allEntries.map((entry) => ({
-        nativeId: entry.nativeId ?? schedulerNativeBindingId(entry.id),
-        bindingId: entry.id,
-        ...(entry.invocation ? { invocation: Object.freeze([...entry.invocation]) } : {}),
-        ...(entry.signature !== undefined ? { fingerprint: entry.signature } : {}),
-      }));
+  const nativeArtifacts = inspection.artifacts;
+  const legacyRebindNativeIds = options.rebind
+    ? authorizeLegacyPrimaryRebinds(inspection, stashDir)
+    : Object.freeze([] as string[]);
   const common = {
     sourceRoot: stashDir,
     adapterId: resolved.source.adapterId ?? detectAdapterId(stashDir),
@@ -454,6 +466,8 @@ export async function akmTasksSync(
     backend: sched.name,
     installed: allEntries,
     nativeArtifacts,
+    inspection: Object.freeze({ installed: allEntries, artifacts: nativeArtifacts }),
+    legacyRebindNativeIds,
     rebind: options.rebind === true,
     config,
     resolveAsset: taskProjectionAssetResolver(config, resolved.source.name, stashDir),
@@ -461,7 +475,8 @@ export async function akmTasksSync(
 
   // Pass one validates every desired source, ownership domain, schedule, and
   // installed-id collision before runtime descriptor preparation is possible.
-  const preflight = await planSchedulerSync(common);
+  const preparedSources = await prepareSchedulerSyncSourceSet(common);
+  const preflight = finalizeSchedulerSyncPlan(common, preparedSources);
   const warnings: string[] = [];
   const expectedSignature = sched.expectedSignature?.bind(sched);
   const needsRuntime = preflight.operations.some(
@@ -476,19 +491,27 @@ export async function akmTasksSync(
         warnings,
       )
     : undefined;
-  const plan = await planSchedulerSync({
-    ...common,
-    ...(prepared?.options ? { installOptions: prepared.options } : {}),
-    ...(expectedSignature
-      ? {
-          expectedSignature: (binding: SchedulerBinding, install?: SchedulerInstallOptions) =>
-            expectedSignature(binding, install),
-        }
-      : {}),
-  });
+  const plan = finalizeSchedulerSyncPlan(
+    {
+      ...common,
+      ...(prepared?.options ? { installOptions: prepared.options } : {}),
+      ...(expectedSignature
+        ? {
+            expectedSignature: (binding: SchedulerBinding, install?: SchedulerInstallOptions) =>
+              expectedSignature(binding, install),
+          }
+        : {}),
+    },
+    preparedSources,
+  );
 
-  if (prepared?.publish && plan.operations.some((operation) => operation.kind !== "remove")) prepared.publish();
-  await applySchedulerSyncPlan(sched, plan);
+  await applySchedulerSyncPlan(
+    sched,
+    plan,
+    prepared?.publish && plan.operations.some((operation) => operation.kind !== "remove")
+      ? prepared.publish
+      : undefined,
+  );
   return {
     installed: [...plan.installed],
     updated: [...plan.updated],
@@ -623,16 +646,133 @@ export async function akmTasksDoctor(
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-async function applySchedulerSyncPlan(backend: TaskBackend, plan: SchedulerSyncPlan): Promise<void> {
+async function applySchedulerSyncPlan(
+  backend: TaskBackend,
+  plan: SchedulerSyncPlan,
+  publish?: () => void,
+): Promise<void> {
+  if (plan.operations.length === 0) return;
+  assertSchedulerSourceSnapshot(plan.sourceSnapshot);
+  if (!backend.snapshotBindings || !backend.restoreBindings) {
+    throw new ConfigError(
+      `Scheduler backend "${backend.name}" cannot snapshot and restore a whole-set transaction.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const nativeIds = [
+    ...new Set(
+      plan.operations.map((operation) =>
+        operation.kind === "remove" ? operation.nativeId : schedulerBindingNativeId(operation.binding),
+      ),
+    ),
+  ];
+  const snapshot = await backend.snapshotBindings(nativeIds);
+  assertSchedulerTransactionSnapshot(snapshot, nativeIds, plan);
+  const rollbackExpected = schedulerRollbackExpectations(snapshot, plan);
+  assertSchedulerSourceSnapshot(plan.sourceSnapshot);
+  publish?.();
+  try {
+    for (const operation of plan.operations) {
+      if (operation.kind === "remove") await backend.uninstall(operation.nativeId, operation.expected);
+      else await backend.install(operation.binding, operation.options, operation.expected);
+    }
+  } catch (primaryError) {
+    try {
+      await backend.restoreBindings(snapshot, rollbackExpected);
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [primaryError, rollbackError],
+        `Scheduler transaction failed and rollback was incomplete: ${errorMessage(primaryError)}`,
+      );
+    }
+    throw primaryError;
+  }
+}
+
+function schedulerRollbackExpectations(
+  snapshot: SchedulerTransactionSnapshot,
+  plan: SchedulerSyncPlan,
+): readonly SchedulerRollbackExpectation[] {
+  return Object.freeze(
+    snapshot.nativeIds.map((nativeId) => {
+      const prior = snapshot.artifacts.find(
+        (artifact) => schedulerNativeArtifactKey(artifact.nativeId) === schedulerNativeArtifactKey(nativeId),
+      );
+      const allowed: SchedulerRollbackState[] = [];
+      if (prior) {
+        if (prior.fingerprint === undefined) {
+          throw new ConfigError(
+            `Scheduler backend snapshot for ${JSON.stringify(nativeId)} has no exact fingerprint.`,
+            "INVALID_CONFIG_FILE",
+          );
+        }
+        allowed.push(
+          Object.freeze({
+            state: "present" as const,
+            ...(prior.bindingId !== undefined ? { bindingId: prior.bindingId } : {}),
+            ...(prior.invocation !== undefined ? { invocation: Object.freeze([...prior.invocation]) } : {}),
+            fingerprint: prior.fingerprint,
+          }),
+        );
+      } else {
+        allowed.push(Object.freeze({ state: "absent" as const }));
+      }
+      const operation = plan.operations.find((candidate) => {
+        const operationNativeId =
+          candidate.kind === "remove" ? candidate.nativeId : schedulerBindingNativeId(candidate.binding);
+        return schedulerNativeArtifactKey(operationNativeId) === schedulerNativeArtifactKey(nativeId);
+      });
+      if (operation?.kind === "remove") {
+        if (!allowed.some((state) => state.state === "absent")) {
+          allowed.push(Object.freeze({ state: "absent" as const }));
+        }
+      } else if (operation) {
+        if (operation.resultFingerprint === undefined) {
+          throw new ConfigError(
+            `Scheduler backend cannot freeze the post-mutation fingerprint for ${JSON.stringify(nativeId)}.`,
+            "INVALID_CONFIG_FILE",
+          );
+        }
+        allowed.push(
+          Object.freeze({
+            state: "present" as const,
+            bindingId: operation.binding.id,
+            invocation: Object.freeze([...operation.binding.invocation]),
+            fingerprint: operation.resultFingerprint,
+          }),
+        );
+      }
+      return Object.freeze({ nativeId, allowed: Object.freeze(allowed) });
+    }),
+  );
+}
+
+function assertSchedulerTransactionSnapshot(
+  snapshot: SchedulerTransactionSnapshot,
+  nativeIds: readonly string[],
+  plan: SchedulerSyncPlan,
+): void {
+  if (
+    !snapshot ||
+    !Array.isArray(snapshot.nativeIds) ||
+    !Array.isArray(snapshot.artifacts) ||
+    nativeIds.some((nativeId) => !snapshot.nativeIds.includes(nativeId))
+  ) {
+    throw new ConfigError("Scheduler backend returned an incomplete transaction snapshot.", "INVALID_CONFIG_FILE");
+  }
   for (const operation of plan.operations) {
-    if (operation.kind === "remove") await backend.uninstall(operation.nativeId, operation.expected);
-    else await backend.install(operation.binding, operation.options);
+    const expected = operation.expected as SchedulerMutationExpectation;
+    const artifact = snapshot.artifacts.find(
+      (candidate) => schedulerNativeArtifactKey(candidate.nativeId) === schedulerNativeArtifactKey(expected.nativeId),
+    );
+    assertSchedulerMutationArtifact(artifact, expected);
   }
 }
 
 async function prepareTaskAddSchedulerTransaction(input: {
   id: string;
   installTarget: string | undefined;
+  ownerTarget: string;
   installOpts: { target?: string } | undefined;
   taskBindings: readonly SchedulerBinding[];
   previousBindings: readonly SchedulerBinding[];
@@ -660,10 +800,10 @@ async function prepareTaskAddSchedulerTransaction(input: {
         ...(entry.signature !== undefined ? { fingerprint: entry.signature } : {}),
       }));
   for (const binding of input.taskBindings) {
-    assertNoForeignSchedule(installedEntries, binding.id, input.installTarget);
+    assertNoForeignSchedule(installedEntries, binding.id, input.ownerTarget);
   }
   const taskEntries = installedEntries.filter((entry) => installedEntryRunsTask(entry, input.id));
-  const foreignTaskEntry = taskEntries.find((entry) => !sameBundle(entry.target, input.installTarget));
+  const foreignTaskEntry = taskEntries.find((entry) => !sameBundle(entry.target, input.ownerTarget));
   if (foreignTaskEntry) {
     throw new UsageError(foreignScheduleMessage(input.id, foreignTaskEntry.target), "RESOURCE_ALREADY_EXISTS");
   }
@@ -898,6 +1038,47 @@ function groupInstalledBindings(
   return [...groups.values()].map((group) => ({ ...group, taskIds: group.taskIds.sort() }));
 }
 
+function authorizeLegacyPrimaryRebinds(
+  inspection: SchedulerBackendInspection,
+  selectedBundleRoot: string,
+): readonly string[] {
+  const selectedIdentity = physicalDirectoryIdentity(selectedBundleRoot);
+  const authorized: string[] = [];
+  for (const entry of inspection.installed) {
+    const invocation = entry.invocation;
+    if (
+      entry.target !== undefined ||
+      !invocation ||
+      invocation.length !== 4 ||
+      invocation[0] !== "task" ||
+      invocation[1] !== "run" ||
+      invocation[3] !== "--scheduled"
+    ) {
+      continue;
+    }
+    try {
+      const descriptor = validateSchedulerContextDescriptor(entry.contextPath);
+      if (physicalDirectoryIdentity(descriptor.environment.AKM_BUNDLE_DIR) !== selectedIdentity) continue;
+      const nativeId = entry.nativeId ?? schedulerNativeBindingId(entry.id);
+      const artifact = inspection.artifacts.find((candidate) => candidate.nativeId === nativeId);
+      if (!artifact || artifact.bindingId !== undefined || artifact.fingerprint === undefined) continue;
+      authorized.push(nativeId);
+    } catch {
+      // Target-less artifacts without a valid matching historical descriptor
+      // remain ownerless. The planner will reject rather than adopt them.
+    }
+  }
+  return Object.freeze(authorized);
+}
+
+function physicalDirectoryIdentity(directory: string): string {
+  const real = fs.realpathSync(directory);
+  const stat = fs.statSync(real);
+  if (!stat.isDirectory())
+    throw new ConfigError(`${directory} is not a scheduler bundle directory.`, "INVALID_CONFIG_FILE");
+  return stat.ino === 0 ? `path:${real}` : `inode:${stat.dev}:${stat.ino}`;
+}
+
 function inspectInstalledBinding(entry: InstalledTaskRef, invocation: TasksDoctorResult["akm"]): string[] {
   const status: string[] = [];
   const binding = entry.binding;
@@ -1044,6 +1225,10 @@ function installedEntryRunsTask(entry: InstalledTaskRef, id: string): boolean {
 function foreignScheduleMessage(id: string, existingTarget: string | undefined): string {
   const where = existingTarget === undefined ? "the default bundle" : `bundle "${existingTarget}"`;
   return `Task id "${id}" is already scheduled from ${where}; rename the task or disable the existing one first.`;
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 /**

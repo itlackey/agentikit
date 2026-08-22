@@ -179,16 +179,15 @@ describe("bundle-targeted tasks via --bundle", () => {
     expect(cronBody(exec.current(), "bar")).toBeDefined();
   });
 
-  test("default bundle / no --bundle yields a byte-identical cron line (no --bundle token)", async () => {
+  test("default bundle always carries its canonical owner in the public cron invocation", async () => {
     const result = await akmTasksAdd({ id: "baz", schedule: "@daily", command: "true" }, { backend: cron() });
     expect(result.bundleDir).toBe(iso.stashDir);
 
     const body = cronBody(exec.current(), "baz");
     expect(body).toBeDefined();
-    expect(body).not.toContain("--bundle");
-    expect(body).toContain("task run baz --scheduled");
+    expect(body).toContain("task run baz --bundle stash --scheduled");
 
-    // Byte-for-byte equal to the pre-0.9 no-target rendering.
+    // New artifacts always persist the resolved primary owner explicitly.
     const task: SchedulerBinding = {
       id: "baz",
       logicalSource: { kind: "task", ref: "stash//tasks/baz" },
@@ -196,7 +195,7 @@ describe("bundle-targeted tasks via --bundle", () => {
       source: "akm.schedule",
       ordinal: 0,
       enabled: true,
-      invocation: ["task", "run", "baz", "--scheduled"],
+      invocation: ["task", "run", "baz", "--bundle", "stash", "--scheduled"],
     };
     const expectedLine = buildCronLine(
       task,
@@ -206,7 +205,7 @@ describe("bundle-targeted tasks via --bundle", () => {
     );
     expect(body).toBe(expectedLine);
 
-    // Adding with --bundle stash (the DEFAULT bundle by name) is also byte-identical.
+    // Adding with --bundle stash (the DEFAULT bundle by name) is byte-identical.
     fs.rmSync(path.join(iso.stashDir, "tasks", "baz.yml"));
     exec = memoryExec();
     await akmTasksAdd({ id: "baz", schedule: "@daily", command: "true", target: "stash" }, { backend: cron() });

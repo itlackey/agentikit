@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { schedulerNativeBindingId } from "../../src/tasks/scheduler-binding";
+import { compileTaskSchedulerBindings, schedulerNativeBindingId } from "../../src/tasks/scheduler-binding";
 import { planSchedulerSync } from "../../src/tasks/scheduler-sync";
 
 function root(): string {
@@ -187,6 +187,7 @@ describe("whole-set v3 scheduler sync planning", () => {
       id: removed.id,
       nativeId: schedulerNativeBindingId(removed.id),
       expected: {
+        state: "present",
         bindingId: removed.id,
         nativeId: schedulerNativeBindingId(removed.id),
         logicalSource: removed.logicalSource,
@@ -195,6 +196,160 @@ describe("whole-set v3 scheduler sync planning", () => {
         fingerprint: `${removed.id}:${removed.cron}`,
       },
     });
+  });
+
+  test("freezes exact absence and exact prior CAS state on every planned mutation", async () => {
+    const bundleRoot = root();
+    write(
+      path.join(bundleRoot, "tasks", "create.yml"),
+      "version: 3\nrun: echo create\nakm:\n  schedule: '0 1 * * *'\n",
+    );
+    write(
+      path.join(bundleRoot, "tasks", "update.yml"),
+      "version: 3\nrun: echo update\nakm:\n  schedule: '0 2 * * *'\n",
+    );
+    const existing = compileTaskSchedulerBindings({
+      id: "update",
+      qualifiedRef: "team//tasks/update",
+      enabled: true,
+      schedules: [{ cron: "30 2 * * *", source: "akm.schedule", ordinal: 0 }],
+    })[0]!;
+    const installed = {
+      id: existing.id,
+      nativeId: existing.nativeId,
+      binding: ["/opt/akm"],
+      contextPath: "/state/context.json",
+      target: "team",
+      invocation: existing.invocation,
+      signature: "installed-fingerprint",
+    };
+
+    const plan = await planSchedulerSync({
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      backend: "cron",
+      installed: [installed],
+      nativeArtifacts: [
+        {
+          nativeId: existing.nativeId!,
+          bindingId: existing.id,
+          invocation: existing.invocation,
+          fingerprint: "installed-fingerprint",
+        },
+      ],
+      expectedSignature: (item) => `desired:${item.id}:${item.cron}`,
+    });
+
+    const create = plan.operations.find((operation) => operation.kind === "install");
+    const update = plan.operations.find((operation) => operation.kind === "update");
+    expect(create).toMatchObject({
+      expected: {
+        state: "absent",
+        bindingId: "create",
+        nativeId: "create",
+        logicalSource: { kind: "task", ref: "team//tasks/create" },
+        ordinal: 0,
+        invocation: ["task", "run", "create", "--bundle", "team", "--scheduled"],
+      },
+    });
+    expect(update).toMatchObject({
+      expected: {
+        state: "present",
+        bindingId: "update",
+        nativeId: "update",
+        logicalSource: { kind: "task", ref: "team//tasks/update" },
+        ordinal: 0,
+        invocation: ["task", "run", "update", "--bundle", "team", "--scheduled"],
+        fingerprint: "installed-fingerprint",
+      },
+    });
+  });
+
+  test("rejects incoherent installed and native fingerprints instead of planning a false no-op", async () => {
+    const bundleRoot = root();
+    write(
+      path.join(bundleRoot, "tasks", "nightly.yml"),
+      "version: 3\nrun: echo nightly\nakm:\n  schedule: '0 1 * * *'\n",
+    );
+    const [desired] = compileTaskSchedulerBindings({
+      id: "nightly",
+      qualifiedRef: "team//tasks/nightly",
+      enabled: true,
+      schedules: [{ cron: "0 1 * * *", source: "akm.schedule", ordinal: 0 }],
+    });
+    if (!desired) throw new Error("missing binding");
+
+    await expect(
+      planSchedulerSync({
+        sourceRoot: bundleRoot,
+        adapterId: "akm",
+        bundleName: "team",
+        backend: "cron",
+        installed: [
+          {
+            id: desired.id,
+            nativeId: desired.nativeId,
+            binding: ["/opt/akm"],
+            contextPath: "/state/context.json",
+            target: "team",
+            invocation: desired.invocation,
+            signature: "stale-list-fingerprint",
+          },
+        ],
+        nativeArtifacts: [
+          {
+            nativeId: desired.nativeId!,
+            bindingId: desired.id,
+            invocation: desired.invocation,
+            fingerprint: "newer-native-fingerprint",
+          },
+        ],
+        expectedSignature: () => "stale-list-fingerprint",
+      }),
+    ).rejects.toThrow(/coherent|fingerprint|changed/i);
+  });
+
+  test("a production coherent inspection cannot omit the native fingerprint behind a listed no-op", async () => {
+    const bundleRoot = root();
+    write(
+      path.join(bundleRoot, "tasks", "nightly.yml"),
+      "version: 3\nrun: echo nightly\nakm:\n  schedule: '0 1 * * *'\n",
+    );
+    const [desired] = compileTaskSchedulerBindings({
+      id: "nightly",
+      qualifiedRef: "team//tasks/nightly",
+      enabled: true,
+      schedules: [{ cron: "0 1 * * *", source: "akm.schedule", ordinal: 0 }],
+    });
+    if (!desired) throw new Error("missing binding");
+    const installed = {
+      id: desired.id,
+      nativeId: desired.nativeId,
+      binding: ["/opt/akm"],
+      contextPath: "/state/context.json",
+      target: "team",
+      invocation: desired.invocation,
+      signature: "desired-fingerprint",
+    };
+    const artifact = {
+      nativeId: desired.nativeId!,
+      bindingId: desired.id,
+      invocation: desired.invocation,
+    };
+
+    await expect(
+      planSchedulerSync({
+        sourceRoot: bundleRoot,
+        adapterId: "akm",
+        bundleName: "team",
+        backend: "cron",
+        installed: [installed],
+        nativeArtifacts: [artifact],
+        inspection: { installed: [installed], artifacts: [artifact] },
+        expectedSignature: () => "desired-fingerprint",
+      }),
+    ).rejects.toThrow(/coherent|fingerprint|changed/i);
   });
 
   test("accepts the workflow-only tasks target through canonical step authority", async () => {
@@ -491,6 +646,7 @@ describe("whole-set v3 scheduler sync planning", () => {
       contextPath: "/data/context.json",
       target: "team",
       invocation: ["task", "run", "sub/nightly", "--bundle", "team", "--scheduled"],
+      signature: "installed-fingerprint",
     };
 
     const plan = await planSchedulerSync({
@@ -500,7 +656,14 @@ describe("whole-set v3 scheduler sync planning", () => {
       bundleTarget: "team",
       backend: "cron",
       installed: [installed],
-      nativeArtifacts: [{ nativeId, bindingId: "sub/nightly", invocation: installed.invocation }],
+      nativeArtifacts: [
+        {
+          nativeId,
+          bindingId: "sub/nightly",
+          invocation: installed.invocation,
+          fingerprint: "installed-fingerprint",
+        },
+      ],
     });
 
     expect(plan.removed).toEqual(["sub/nightly"]);
@@ -510,11 +673,13 @@ describe("whole-set v3 scheduler sync planning", () => {
         id: "sub/nightly",
         nativeId,
         expected: {
+          state: "present",
           bindingId: "sub/nightly",
           nativeId,
           logicalSource: { kind: "task", ref: "team//sub/nightly" },
           ordinal: 0,
           invocation: installed.invocation,
+          fingerprint: "installed-fingerprint",
         },
       },
     ]);

@@ -41,6 +41,27 @@ function makeTask(schedule: string, id = "ping", enabled = true): SchedulerBindi
   };
 }
 
+function qualifiedTask(schedule: string, id = "ping", enabled = true): SchedulerBinding {
+  return {
+    ...makeTask(schedule, id, enabled),
+    nativeId: schedulerNativeBindingId(id),
+    logicalSource: { kind: "task", ref: `stash//tasks/${id}` },
+    invocation: ["task", "run", id, "--bundle", "stash", "--scheduled"],
+  };
+}
+
+function mutationExpectation(binding: SchedulerBinding, state: "absent" | "present", fingerprint?: string) {
+  return {
+    state,
+    bindingId: binding.id,
+    nativeId: binding.nativeId ?? schedulerNativeBindingId(binding.id),
+    logicalSource: binding.logicalSource,
+    ordinal: binding.ordinal,
+    invocation: binding.invocation,
+    ...(fingerprint !== undefined ? { fingerprint } : {}),
+  };
+}
+
 function localDate(year: number, month: number, day: number, hour: number, minute: number, second: number): Date {
   return new Date(year, month - 1, day, hour, minute, second);
 }
@@ -915,6 +936,58 @@ describe("schtasks backend transactional install", () => {
       ],
     })[1]!;
 
+  test("direct create CAS rejects a Task Scheduler artifact that appeared after frozen absence", () => {
+    const transaction = transactionBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    transaction.backend.install(owned);
+    const prior = transaction.installedXml();
+
+    expect(() =>
+      (transaction.backend.install as (...args: unknown[]) => void)(
+        { ...owned, cron: "30 10 * * *" },
+        undefined,
+        mutationExpectation(owned, "absent"),
+      ),
+    ).toThrow(/changed|absence|exists|compare|owner/i);
+    expect(transaction.installedXml()).toBe(prior);
+  });
+
+  test("direct update CAS rejects same-owner XML drift after planning", () => {
+    const transaction = transactionBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    transaction.backend.install(owned);
+    const artifact = (transaction.backend.listNativeArtifacts?.() as Array<{ fingerprint?: string }>)[0];
+    const installed = transaction.installedXml();
+    if (!installed) throw new Error("missing installed XML");
+    transaction.replaceInstalledXml(installed.replace("T09:00:00", "T08:00:00"));
+    const drifted = transaction.installedXml();
+
+    expect(() =>
+      (transaction.backend.install as (...args: unknown[]) => void)(
+        { ...owned, cron: "30 10 * * *" },
+        undefined,
+        mutationExpectation(owned, "present", artifact?.fingerprint),
+      ),
+    ).toThrow(/changed|fingerprint|compare/i);
+    expect(transaction.installedXml()).toBe(drifted);
+  });
+
+  test("rejects a forged expected Task Scheduler source before scheduler access", () => {
+    const transaction = transactionBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    const forged = {
+      ...mutationExpectation(owned, "absent"),
+      logicalSource: { kind: "task", ref: "other//tasks/ping" },
+      invocation: ["task", "run", "ping", "--bundle", "other", "--scheduled"],
+    };
+
+    expect(() => (transaction.backend.install as (...args: unknown[]) => void)(owned, undefined, forged)).toThrow(
+      /expectation|identity|binding|source/i,
+    );
+    expect(transaction.calls).toEqual([]);
+    expect(transaction.installedXml()).toBeUndefined();
+  });
+
   test("round-trips and updates a higher-ordinal binding whose public owner is the base task", () => {
     const transaction = transactionBackend();
     const binding = higherOrdinal();
@@ -1030,6 +1103,41 @@ describe("schtasks backend transactional install", () => {
 
     expect(transaction.installedXml()).toBe(priorXml);
     expect(transaction.enabled()).toBe(false);
+  });
+
+  test("snapshot rollback CAS never clobbers a concurrent same-name XML edit", () => {
+    const transaction = transactionBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    const snapshot = transaction.backend.snapshotBindings?.(["ping"]);
+    transaction.backend.install(owned);
+    const installed = transaction.installedXml();
+    if (!installed) throw new Error("missing installed XML");
+    const concurrent = installed.replace("T09:00:00", "T07:00:00");
+    transaction.replaceInstalledXml(concurrent);
+    transaction.calls.length = 0;
+    const restore = transaction.backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: owned.id,
+              invocation: owned.invocation,
+              fingerprint: transaction.backend.expectedSignature?.(owned),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/restore|rollback|changed|concurrent|fingerprint/i);
+    expect(transaction.installedXml()).toBe(concurrent);
+    expect(transaction.calls.some((call) => call[1]?.toLowerCase() === "/delete")).toBe(false);
   });
 
   test("uses a portable native name while preserving a nested logical invocation", () => {

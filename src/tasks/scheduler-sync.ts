@@ -4,6 +4,7 @@
 
 /** Pure whole-set scheduler reconciliation planning. */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { makeBundleRef } from "../core/asset/asset-ref";
@@ -25,8 +26,10 @@ import {
   compileTaskSchedulerBindings,
   compileWorkflowSchedulerBindings,
   type InstalledSchedulerBinding,
+  type SchedulerBackendInspection,
   type SchedulerBinding,
   type SchedulerInstallOptions,
+  type SchedulerMutationExpectation,
   type SchedulerNativeArtifact,
   type SchedulerRemovalExpectation,
   schedulerBindingNativeId,
@@ -46,6 +49,10 @@ export interface SchedulerSyncPlanInput {
   readonly installed: readonly InstalledSchedulerBinding[];
   /** Complete read-only backend inventory, including malformed artifacts. */
   readonly nativeArtifacts?: readonly SchedulerNativeArtifact[];
+  /** One coherent backend read. Production mutation paths always provide this. */
+  readonly inspection?: SchedulerBackendInspection;
+  /** Exact legacy artifacts authorized after physical primary-context verification. */
+  readonly legacyRebindNativeIds?: readonly string[];
   /** Frozen config used only while projecting command targets. */
   readonly config?: AkmConfig;
   /** Bundle-aware local asset resolver used while freezing workflow/script targets. */
@@ -56,7 +63,14 @@ export interface SchedulerSyncPlanInput {
 }
 
 export type SchedulerSyncOperation =
-  | Readonly<{ kind: "install" | "update"; binding: SchedulerBinding; options?: SchedulerInstallOptions }>
+  | Readonly<{
+      kind: "install" | "update";
+      binding: SchedulerBinding;
+      expected: SchedulerMutationExpectation;
+      /** Exact native fingerprint this operation is expected to produce. */
+      resultFingerprint?: string;
+      options?: SchedulerInstallOptions;
+    }>
   | Readonly<{ kind: "remove"; id: string; nativeId: string; expected: SchedulerRemovalExpectation }>;
 
 export interface SchedulerSyncPlan {
@@ -66,6 +80,25 @@ export interface SchedulerSyncPlan {
   readonly removed: readonly string[];
   readonly unchanged: readonly string[];
   readonly operations: readonly SchedulerSyncOperation[];
+  readonly sourceSnapshot: SchedulerSourceSnapshot;
+}
+
+export interface SchedulerSourceSnapshot {
+  readonly adapterId: string;
+  readonly sourceRoot: string;
+  readonly sourceRealPath: string;
+  readonly sourcePhysicalIdentity: string;
+  readonly files: readonly Readonly<{
+    relativePath: string;
+    realPath: string;
+    physicalIdentity: string;
+    sha256: string;
+  }>[];
+}
+
+export interface PreparedSchedulerSourceSet {
+  readonly desired: readonly SchedulerBinding[];
+  readonly sourceSnapshot: SchedulerSourceSnapshot;
 }
 
 const SCHEDULER_PROJECTION_CONFIG: AkmConfig = Object.freeze({
@@ -78,13 +111,47 @@ const SCHEDULER_PROJECTION_CONFIG: AkmConfig = Object.freeze({
  * This function performs no writes and invokes no backend mutation method.
  */
 export async function planSchedulerSync(input: SchedulerSyncPlanInput): Promise<SchedulerSyncPlan> {
-  const desired = await compileDesiredSourceSet(input);
-  assertUniqueDesiredIds(desired);
-  assertUniqueInstalledIds(input.installed);
-  assertNoForeignIds(desired, input);
-  assertSchedulerNativeArtifactOwnership(desired, nativeArtifactsForPlan(input));
+  const prepared = await prepareSchedulerSyncSourceSet(input);
+  return finalizeSchedulerSyncPlan(input, prepared);
+}
 
-  const scopedInstalled = input.installed.filter((entry) => belongsToBundle(entry, input));
+export async function prepareSchedulerSyncSourceSet(
+  input: SchedulerSyncPlanInput,
+): Promise<PreparedSchedulerSourceSet> {
+  const before = captureSchedulerSourceSnapshot(input);
+  const desired = await compileDesiredSourceSet(input);
+  const after = captureSchedulerSourceSnapshot(input);
+  if (!sameSourceSnapshot(before, after)) {
+    throw new UsageError(
+      "Scheduler desired source read set changed during projection; refusing reconciliation.",
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+  return Object.freeze({ desired, sourceSnapshot: after });
+}
+
+export function finalizeSchedulerSyncPlan(
+  input: SchedulerSyncPlanInput,
+  prepared: PreparedSchedulerSourceSet,
+): SchedulerSyncPlan {
+  const inspection = inspectionForPlan(input);
+  const coherentInput: SchedulerSyncPlanInput = {
+    ...input,
+    installed: inspection.installed,
+    nativeArtifacts: inspection.artifacts,
+  };
+  const desired = prepared.desired;
+  assertUniqueDesiredIds(desired);
+  assertCoherentInspection(inspection, input.inspection !== undefined);
+  assertUniqueInstalledIds(coherentInput.installed);
+  assertNoForeignIds(desired, coherentInput);
+  assertSchedulerNativeArtifactOwnership(
+    desired,
+    inspection.artifacts,
+    new Set(coherentInput.legacyRebindNativeIds ?? []),
+  );
+
+  const scopedInstalled = coherentInput.installed.filter((entry) => belongsToBundle(entry, coherentInput));
   const present = new Map(scopedInstalled.map((entry) => [entry.id, entry] as const));
   const installed: string[] = [];
   const updated: string[] = [];
@@ -93,19 +160,51 @@ export async function planSchedulerSync(input: SchedulerSyncPlanInput): Promise<
 
   for (const binding of desired) {
     const current = present.get(binding.id);
-    const options = installOptionsFor(input, current);
+    const options = installOptionsFor(coherentInput, current);
+    const resultFingerprint = coherentInput.expectedSignature?.(binding, options);
     if (!current) {
       installed.push(binding.id);
-      operations.push(freezeOperation({ kind: "install", binding, ...(options ? { options } : {}) }));
+      operations.push(
+        freezeOperation({
+          kind: "install",
+          binding,
+          expected: freezeMutationExpectation(expectationForBinding(binding, "absent")),
+          ...(resultFingerprint !== undefined ? { resultFingerprint } : {}),
+          ...(options ? { options } : {}),
+        }),
+      );
       continue;
     }
-    const expected = input.expectedSignature?.(binding, options);
-    if (current.signature !== undefined && expected !== undefined && current.signature === expected) {
+    if (current.signature !== undefined && resultFingerprint !== undefined && current.signature === resultFingerprint) {
       unchanged.push(binding.id);
       continue;
     }
+    const artifact = exactInstalledArtifact(binding.id, current, inspection.artifacts);
+    const legacy = artifact !== undefined && artifact.bindingId === undefined;
+    const priorFingerprint = artifact?.fingerprint ?? current.signature;
+    if (artifact === undefined || priorFingerprint === undefined) {
+      throw new UsageError(
+        `Installed scheduler binding ${JSON.stringify(binding.id)} has no exact native fingerprint; refusing update.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
+    }
     updated.push(binding.id);
-    operations.push(freezeOperation({ kind: "update", binding, ...(options ? { options } : {}) }));
+    operations.push(
+      freezeOperation({
+        kind: "update",
+        binding,
+        expected: freezeMutationExpectation(
+          expectationForBinding(
+            binding,
+            legacy ? "legacy-ownerless" : "present",
+            priorFingerprint,
+            legacy ? current.invocation : undefined,
+          ),
+        ),
+        ...(resultFingerprint !== undefined ? { resultFingerprint } : {}),
+        ...(options ? { options } : {}),
+      }),
+    );
   }
 
   const desiredIds = new Set(desired.map(({ id }) => id));
@@ -121,11 +220,18 @@ export async function planSchedulerSync(input: SchedulerSyncPlanInput): Promise<
         { nativeId: current?.nativeId ?? schedulerNativeBindingId(id) },
       );
     }
-    const nativeId = exactInstalledNativeId(id, current, nativeArtifactsForPlan(input));
-    const artifact = nativeArtifactsForPlan(input).find(
+    const nativeId = exactInstalledNativeId(id, current, inspection.artifacts);
+    const artifact = inspection.artifacts.find(
       (candidate) => candidate.nativeId === nativeId && candidate.bindingId === id,
     );
-    const logicalSource = installedLogicalSource(current.invocation, input);
+    const priorFingerprint = current.signature ?? artifact?.fingerprint;
+    if (!artifact || priorFingerprint === undefined) {
+      throw new UsageError(
+        `Installed scheduler binding ${JSON.stringify(id)} has no exact native fingerprint; refusing removal.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
+    }
+    const logicalSource = installedLogicalSource(current.invocation, coherentInput);
     const ordinal = schedulerBindingOrdinal(id, logicalSource, current.invocation);
     if (ordinal === undefined) {
       throw new UsageError(
@@ -139,16 +245,13 @@ export async function planSchedulerSync(input: SchedulerSyncPlanInput): Promise<
         id,
         nativeId,
         expected: freezeRemovalExpectation({
+          state: "present",
           bindingId: id,
           nativeId,
           logicalSource,
           ordinal,
           invocation: current.invocation,
-          ...(current.signature !== undefined
-            ? { fingerprint: current.signature }
-            : artifact?.fingerprint !== undefined
-              ? { fingerprint: artifact.fingerprint }
-              : {}),
+          fingerprint: priorFingerprint,
         }),
       }),
     );
@@ -161,6 +264,7 @@ export async function planSchedulerSync(input: SchedulerSyncPlanInput): Promise<
     removed: Object.freeze(removed),
     unchanged: Object.freeze(unchanged),
     operations: Object.freeze(operations),
+    sourceSnapshot: prepared.sourceSnapshot,
   });
 }
 
@@ -171,6 +275,18 @@ function exactInstalledNativeId(
 ): string {
   const exact = artifacts.find((artifact) => artifact.bindingId === logicalId);
   return exact?.nativeId ?? current?.nativeId ?? schedulerNativeBindingId(logicalId);
+}
+
+function exactInstalledArtifact(
+  bindingId: string,
+  current: InstalledSchedulerBinding,
+  artifacts: readonly SchedulerNativeArtifact[],
+): SchedulerNativeArtifact | undefined {
+  const nativeId = current.nativeId ?? schedulerNativeBindingId(bindingId);
+  return artifacts.find(
+    (artifact) =>
+      artifact.nativeId === nativeId && (artifact.bindingId === bindingId || artifact.bindingId === undefined),
+  );
 }
 
 function nativeArtifactsForPlan(input: SchedulerSyncPlanInput): readonly SchedulerNativeArtifact[] {
@@ -185,9 +301,14 @@ function nativeArtifactsForPlan(input: SchedulerSyncPlanInput): readonly Schedul
   );
 }
 
+function inspectionForPlan(input: SchedulerSyncPlanInput): SchedulerBackendInspection {
+  return input.inspection ?? Object.freeze({ installed: input.installed, artifacts: nativeArtifactsForPlan(input) });
+}
+
 export function assertSchedulerNativeArtifactOwnership(
   desired: readonly SchedulerBinding[],
   installed: readonly SchedulerNativeArtifact[],
+  allowedLegacyNativeIds: ReadonlySet<string> = new Set(),
 ): void {
   const desiredByKey = new Map<string, SchedulerBinding>();
   for (const binding of desired) {
@@ -211,12 +332,50 @@ export function assertSchedulerNativeArtifactOwnership(
     const wanted = desiredByKey.get(key);
     if (!wanted) continue;
     if (
+      allowedLegacyNativeIds.has(artifact.nativeId) &&
+      artifact.nativeId === schedulerBindingNativeId(wanted) &&
+      artifact.bindingId === undefined &&
+      artifact.invocation !== undefined &&
+      isTargetlessLegacyInvocationFor(artifact.invocation, wanted.invocation)
+    ) {
+      continue;
+    }
+    if (
       artifact.nativeId !== schedulerBindingNativeId(wanted) ||
       artifact.bindingId !== wanted.id ||
       artifact.invocation === undefined ||
       !sameInvocation(artifact.invocation, wanted.invocation)
     ) {
       throw nativeArtifactCollision(desiredArtifact(wanted), artifact);
+    }
+  }
+}
+
+function assertCoherentInspection(inspection: SchedulerBackendInspection, requireCompleteFingerprint = false): void {
+  for (const installed of inspection.installed) {
+    const nativeId = installed.nativeId ?? schedulerNativeBindingId(installed.id);
+    const artifact = inspection.artifacts.find((candidate) => candidate.nativeId === nativeId);
+    if (
+      !artifact ||
+      (installed.signature !== undefined &&
+        (artifact.fingerprint !== undefined
+          ? installed.signature !== artifact.fingerprint
+          : requireCompleteFingerprint)) ||
+      (artifact.bindingId !== undefined && artifact.bindingId !== installed.id)
+    ) {
+      throw new UsageError(
+        `Scheduler inspection is not coherent for ${JSON.stringify(nativeId)}: installed and native fingerprints differ.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
+    }
+    if (
+      installed.invocation !== undefined &&
+      (artifact.invocation === undefined || !sameInvocation(installed.invocation, artifact.invocation))
+    ) {
+      throw new UsageError(
+        `Scheduler inspection is not coherent for ${JSON.stringify(nativeId)}: installed and native owners differ.`,
+        "RESOURCE_ALREADY_EXISTS",
+      );
     }
   }
 }
@@ -463,7 +622,9 @@ function installOptionsFor(
 
 function belongsToBundle(entry: InstalledSchedulerBinding, input: SchedulerSyncPlanInput): boolean {
   if (entry.target === input.bundleName || entry.target === input.bundleTarget) return true;
-  return entry.target === undefined && input.bundleTarget === undefined;
+  if (entry.target !== undefined) return false;
+  const nativeId = entry.nativeId ?? schedulerNativeBindingId(entry.id);
+  return input.legacyRebindNativeIds?.includes(nativeId) === true;
 }
 
 function assertNoForeignIds(desired: readonly SchedulerBinding[], input: SchedulerSyncPlanInput): void {
@@ -521,6 +682,85 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+export function assertSchedulerSourceSnapshot(snapshot: SchedulerSourceSnapshot): void {
+  const current = captureSchedulerSourceSnapshot({
+    sourceRoot: snapshot.sourceRoot,
+    adapterId: snapshot.adapterId,
+  });
+  if (!sameSourceSnapshot(snapshot, current)) {
+    throw new UsageError(
+      "Scheduler desired source read set changed after projection; refusing native mutation.",
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+}
+
+function captureSchedulerSourceSnapshot(
+  input: Pick<SchedulerSyncPlanInput, "adapterId" | "sourceRoot">,
+): SchedulerSourceSnapshot {
+  const sourceRealPath = fs.realpathSync(input.sourceRoot);
+  const sourceStat = fs.statSync(sourceRealPath);
+  if (!sourceStat.isDirectory()) {
+    throw new UsageError(`${input.sourceRoot} is not a scheduler source directory.`, "INVALID_FLAG_VALUE");
+  }
+  const candidates: string[] = [];
+  if (input.adapterId === "akm") {
+    const taskRoot = path.join(input.sourceRoot, "tasks");
+    try {
+      for (const entry of fs.readdirSync(taskRoot, { withFileTypes: true })) {
+        if ((entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".yml")) {
+          candidates.push(path.join(taskRoot, entry.name));
+        }
+      }
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+    }
+    collectSnapshotFiles(path.join(input.sourceRoot, "workflows"), candidates);
+  } else if (input.adapterId === "akm-task") {
+    collectSnapshotFiles(input.sourceRoot, candidates, (file) => file.endsWith(".yml"));
+  } else if (input.adapterId === "akm-workflow") {
+    collectSnapshotFiles(input.sourceRoot, candidates);
+  }
+  const files = candidates.sort(compareCodePoints).map((file) => {
+    const realPath = fs.realpathSync(file);
+    const stat = fs.statSync(realPath);
+    if (!stat.isFile()) throw new UsageError(`${file} is not a regular scheduler source.`, "INVALID_FLAG_VALUE");
+    return Object.freeze({
+      relativePath: toPosix(path.relative(input.sourceRoot, file)),
+      realPath,
+      physicalIdentity: stat.ino === 0 ? `path:${realPath}` : `inode:${stat.dev}:${stat.ino}`,
+      sha256: createHash("sha256").update(fs.readFileSync(realPath)).digest("hex"),
+    });
+  });
+  return Object.freeze({
+    adapterId: input.adapterId,
+    sourceRoot: path.resolve(input.sourceRoot),
+    sourceRealPath,
+    sourcePhysicalIdentity:
+      sourceStat.ino === 0 ? `path:${sourceRealPath}` : `inode:${sourceStat.dev}:${sourceStat.ino}`,
+    files: Object.freeze(files),
+  });
+}
+
+function collectSnapshotFiles(root: string, out: string[], include: (file: string) => boolean = () => true): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw cause;
+  }
+  for (const entry of entries) {
+    const candidate = path.join(root, entry.name);
+    if (entry.isDirectory()) collectSnapshotFiles(candidate, out, include);
+    else if ((entry.isFile() || entry.isSymbolicLink()) && include(candidate)) out.push(candidate);
+  }
+}
+
+function sameSourceSnapshot(left: SchedulerSourceSnapshot, right: SchedulerSourceSnapshot): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function installedLogicalSource(
   invocation: readonly string[],
   input: Pick<SchedulerSyncPlanInput, "adapterId" | "bundleName">,
@@ -549,6 +789,43 @@ function freezeRemovalExpectation(expectation: SchedulerRemovalExpectation): Sch
     logicalSource: Object.freeze({ ...expectation.logicalSource }),
     invocation: Object.freeze([...expectation.invocation]),
   });
+}
+
+function expectationForBinding(
+  binding: SchedulerBinding,
+  state: SchedulerMutationExpectation["state"],
+  fingerprint?: string,
+  legacyInvocation?: readonly string[],
+): SchedulerMutationExpectation {
+  return {
+    state,
+    bindingId: binding.id,
+    nativeId: schedulerBindingNativeId(binding),
+    logicalSource: binding.logicalSource,
+    ordinal: binding.ordinal,
+    invocation: binding.invocation,
+    ...(fingerprint !== undefined ? { fingerprint } : {}),
+    ...(legacyInvocation !== undefined ? { legacyInvocation } : {}),
+  };
+}
+
+function freezeMutationExpectation(expectation: SchedulerMutationExpectation): SchedulerMutationExpectation {
+  return Object.freeze({
+    ...expectation,
+    logicalSource: Object.freeze({ ...expectation.logicalSource }),
+    invocation: Object.freeze([...expectation.invocation]),
+    ...(expectation.legacyInvocation ? { legacyInvocation: Object.freeze([...expectation.legacyInvocation]) } : {}),
+  });
+}
+
+function isTargetlessLegacyInvocationFor(legacy: readonly string[], canonical: readonly string[]): boolean {
+  return (
+    legacy.length === 4 &&
+    legacy[0] === "task" &&
+    legacy[1] === "run" &&
+    legacy[2] === canonical[2] &&
+    legacy[3] === "--scheduled"
+  );
 }
 
 function freezeOperation<T extends SchedulerSyncOperation>(operation: T): T {

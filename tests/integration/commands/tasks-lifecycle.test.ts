@@ -8,7 +8,12 @@ import path from "node:path";
 import { akmTasksAdd, akmTasksSync, setEnabledInYaml } from "../../../src/commands/tasks/tasks";
 import type { TaskBackend } from "../../../src/tasks/backends/types";
 import type { ScheduleBackend } from "../../../src/tasks/schedule";
-import { compileTaskSchedulerBindings, type SchedulerBinding } from "../../../src/tasks/scheduler-binding";
+import {
+  compileTaskSchedulerBindings,
+  type InstalledSchedulerBinding,
+  type SchedulerBinding,
+  type SchedulerNativeArtifact,
+} from "../../../src/tasks/scheduler-binding";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
@@ -32,25 +37,32 @@ function nativeBinding(id: string, cron: string, enabled = true): SchedulerBindi
     source: "akm.schedule",
     ordinal: 0,
     enabled,
-    invocation: ["task", "run", id, "--scheduled"],
+    invocation: ["task", "run", id, "--bundle", "stash", "--scheduled"],
   };
 }
 
-const backend = {
+function backendSignature(task: SchedulerBinding): string {
+  return JSON.stringify([task.cron, task.enabled, task.invocation]);
+}
+
+const backend: TaskBackend & {
+  snapshotBindings(ids: readonly string[]): unknown;
+  restoreBindings(snapshot: unknown): void;
+} = {
   get name() {
     return backendName;
   },
-  install(task) {
+  install(task: SchedulerBinding) {
     installCalls.push(task);
     if (failInstall?.(task)) throw new Error(`install failed for ${task.id}`);
     installed.set(task.id, task);
   },
-  uninstall(id) {
+  uninstall(id: string) {
     uninstallCalls.push(id);
     if (uninstallError || failUninstall?.(id)) throw uninstallError ?? new Error(`uninstall failed for ${id}`);
     installed.delete(id);
   },
-  setEnabled(id, enabled) {
+  setEnabled(id: string, enabled: boolean) {
     enabledCalls.push({ id, enabled });
     if (setEnabledError) throw setEnabledError;
     const task = installed.get(id);
@@ -63,24 +75,50 @@ const backend = {
         id,
         binding: ["/test/akm"],
         contextPath: "/test/context.json",
+        ...(stored?.invocation.includes("--bundle")
+          ? { target: stored.invocation[stored.invocation.indexOf("--bundle") + 1] }
+          : {}),
         ...(stored ? { invocation: stored.invocation } : {}),
+        ...(stored ? { signature: backendSignature(stored) } : {}),
       };
     });
   },
+  listNativeArtifacts() {
+    return [...installed.entries()].map(([id, stored]) => ({
+      nativeId: id,
+      ...(stored ? { bindingId: stored.id, invocation: stored.invocation, fingerprint: backendSignature(stored) } : {}),
+    }));
+  },
+  expectedSignature(task: SchedulerBinding) {
+    return backendSignature(task);
+  },
+  inspectBindings() {
+    return {
+      installed: backend.list() as InstalledSchedulerBinding[],
+      artifacts: backend.listNativeArtifacts!() as SchedulerNativeArtifact[],
+    };
+  },
   snapshotBindings(ids: readonly string[]) {
     snapshotCalls.push([...ids]);
-    return ids.map((id) => ({ id, present: installed.has(id), binding: installed.get(id) }));
+    return {
+      nativeIds: [...ids],
+      artifacts: (backend.listNativeArtifacts!() as SchedulerNativeArtifact[]).filter((artifact) =>
+        ids.includes(artifact.nativeId),
+      ),
+      entries: ids.map((id) => ({ id, present: installed.has(id), binding: installed.get(id) })),
+    };
   },
-  restoreBindings(snapshot: Array<{ id: string; present: boolean; binding: SchedulerBinding | undefined }>) {
+  restoreBindings(snapshot: unknown) {
     restoreCalls += 1;
-    for (const entry of snapshot) {
+    for (const entry of (
+      snapshot as {
+        entries: Array<{ id: string; present: boolean; binding: SchedulerBinding | undefined }>;
+      }
+    ).entries) {
       if (entry.present) installed.set(entry.id, entry.binding);
       else installed.delete(entry.id);
     }
   },
-} as TaskBackend & {
-  snapshotBindings(ids: readonly string[]): unknown;
-  restoreBindings(snapshot: unknown): void;
 };
 
 function writeTask(id: string, yaml: string): string {
@@ -716,7 +754,7 @@ describe("task lifecycle failure handling", () => {
     expect(result.installed).toEqual(["backup"]);
     expect(result.skipped).toEqual([]);
     expect(installCalls[0]?.logicalSource).toEqual({ kind: "task", ref: "stash//tasks/backup" });
-    expect(installCalls[0]?.invocation).toEqual(["task", "run", "backup", "--scheduled"]);
+    expect(installCalls[0]?.invocation).toEqual(["task", "run", "backup", "--bundle", "stash", "--scheduled"]);
   });
 
   test("add rejects argv arrays instead of silently joining them", async () => {

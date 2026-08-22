@@ -33,12 +33,21 @@ import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { parseSchedule, translateToCron } from "../schedule";
 import {
+  assertSchedulerExpectationIdentity,
+  assertSchedulerMutationArtifact,
   assertSchedulerNativeArtifactOwner,
   assertSchedulerRemovalArtifact,
+  assertSchedulerRollbackArtifact,
+  type SchedulerBackendInspection,
   type SchedulerBinding,
+  type SchedulerMutationExpectation,
+  type SchedulerNativeArtifact,
   type SchedulerRemovalExpectation,
+  type SchedulerRollbackExpectation,
   schedulerBindingNativeId,
   schedulerLogicalBindingId,
+  schedulerLogicalBindingOwner,
+  schedulerNativeArtifactKey,
 } from "../scheduler-binding";
 import {
   buildScheduledBindingInvocation,
@@ -85,6 +94,8 @@ const CRON_SNAPSHOT = Symbol("akm-cron-binding-snapshot");
 
 interface CronBindingSnapshot {
   readonly kind: typeof CRON_SNAPSHOT;
+  readonly nativeIds: readonly string[];
+  readonly artifacts: readonly SchedulerNativeArtifact[];
   readonly crontab: string;
 }
 
@@ -99,7 +110,8 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
 
   return {
     name: "cron",
-    install(task: SchedulerBinding, opts?: TaskInstallOptions) {
+    install(task: SchedulerBinding, opts?: TaskInstallOptions, expected?: SchedulerMutationExpectation) {
+      if (expected) assertSchedulerExpectationIdentity(expected, task);
       // Create the log directory before writing the crontab line — cron
       // appends with `>>` and the surrounding shell will fail the entire
       // entry if the parent directory doesn't exist.
@@ -114,13 +126,19 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       fsLike.ensureDir(logDir);
       const existing = readCrontab(exec);
       const nativeId = schedulerBindingNativeId(task);
-      const prior = listBlocks(existing).find(({ id }) => id === nativeId);
-      if (prior) assertSchedulerNativeArtifactOwner(nativeId, task, extractCronInvocation(prior.body)?.invocation);
+      const blocks = listBlocks(existing);
+      const prior = blocks.find(({ id }) => schedulerNativeArtifactKey(id) === schedulerNativeArtifactKey(nativeId));
+      if (expected) {
+        assertSchedulerMutationArtifact(prior ? cronArtifact(prior.id, prior.body) : undefined, expected);
+      } else if (prior) {
+        assertSchedulerNativeArtifactOwner(prior.id, task, extractCronInvocation(prior.body)?.invocation);
+      }
       const block = renderBlock(nativeId, cronLine, task.enabled);
       const next = upsertBlock(existing, nativeId, block);
       replaceCrontab(exec, existing, next);
     },
     uninstall(nativeId: string, expected?: SchedulerRemovalExpectation) {
+      if (expected) assertSchedulerExpectationIdentity({ ...expected, state: "present" });
       const existing = readCrontab(exec);
       const prior = listBlocks(existing).find(({ id }) => id === nativeId);
       if (!prior) return;
@@ -141,31 +159,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       replaceCrontab(exec, existing, next);
     },
     list(): InstalledTaskRef[] {
-      const existing = readCrontab(exec);
-      const refs: InstalledTaskRef[] = [];
-      for (const { id, body } of listBlocks(existing)) {
-        const installed = extractCronInvocation(body);
-        // An invocation that no longer parses (e.g. a pre-0.9 `tasks run`
-        // entry surviving the scheduler-ABI respelling, or any other
-        // foreign/malformed line between our markers) is an orphan of its
-        // marker id, not a hard failure: omit it here so `akmTasksSync`
-        // treats the id as "not present" and reinstalls it from the current
-        // task file — going through the normal eligibility/`--rebind` gate
-        // exactly like a fresh install.
-        if (!installed) continue;
-        const logicalId = schedulerLogicalBindingId(id, installed.invocation);
-        const ref: InstalledTaskRef = {
-          id: logicalId,
-          signature: normalizeSignature(body),
-          ...(installed.target !== undefined ? { target: installed.target } : {}),
-          binding: installed.binding,
-          contextPath: installed.contextPath,
-        };
-        Object.defineProperty(ref, "nativeId", { value: id });
-        Object.defineProperty(ref, "invocation", { value: Object.freeze([...installed.invocation]) });
-        refs.push(ref);
-      }
-      return refs;
+      return [...inspectCronState(readCrontab(exec)).installed] as InstalledTaskRef[];
     },
     listForRebind() {
       const existing = readCrontab(exec);
@@ -182,28 +176,61 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       });
     },
     listNativeArtifacts() {
-      return listBlocks(readCrontab(exec)).map(({ id, body }) => {
-        const installed = extractCronInvocation(body);
-        const artifact = installed
-          ? {
-              nativeId: id,
-              bindingId: schedulerLogicalBindingId(id, installed.invocation),
-              invocation: Object.freeze([...installed.invocation]),
-            }
-          : { nativeId: id };
-        Object.defineProperty(artifact, "fingerprint", { value: normalizeSignature(body) });
-        return artifact;
+      return [...inspectCronState(readCrontab(exec)).artifacts];
+    },
+    inspectBindings() {
+      return inspectCronState(readCrontab(exec));
+    },
+    snapshotBindings(ids: readonly string[]): CronBindingSnapshot {
+      const crontab = readCrontab(exec);
+      const inspection = inspectCronState(crontab);
+      return Object.freeze({
+        kind: CRON_SNAPSHOT,
+        nativeIds: Object.freeze([...ids]),
+        artifacts: inspection.artifacts,
+        crontab,
       });
     },
-    snapshotBindings(_ids: readonly string[]): CronBindingSnapshot {
-      return Object.freeze({ kind: CRON_SNAPSHOT, crontab: readCrontab(exec) });
-    },
-    restoreBindings(snapshot: unknown) {
+    restoreBindings(snapshot: unknown, expectedCurrent?: readonly SchedulerRollbackExpectation[]) {
       if (!isCronBindingSnapshot(snapshot)) {
         throw new ConfigError("Invalid cron scheduler snapshot.", "INVALID_CONFIG_FILE");
       }
       const existing = readCrontab(exec);
-      replaceCrontab(exec, existing, snapshot.crontab);
+      const current = inspectCronState(existing);
+      if (expectedCurrent) {
+        const errors: unknown[] = [];
+        for (const nativeId of snapshot.nativeIds) {
+          try {
+            const expected = expectedCurrent.find((candidate) => candidate.nativeId === nativeId);
+            if (!expected) {
+              throw new ConfigError(
+                `Missing cron rollback expectation for ${JSON.stringify(nativeId)}.`,
+                "INVALID_CONFIG_FILE",
+              );
+            }
+            assertSchedulerRollbackArtifact(
+              current.artifacts.find(
+                (artifact) => schedulerNativeArtifactKey(artifact.nativeId) === schedulerNativeArtifactKey(nativeId),
+              ),
+              expected,
+            );
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+        if (errors.length > 0) {
+          throw new AggregateError(errors, "Cron rollback CAS rejected one or more changed native artifacts.");
+        }
+      }
+      const priorBlocks = new Map(listBlocks(snapshot.crontab).map((block) => [block.id, block] as const));
+      let restored = existing;
+      for (const nativeId of snapshot.nativeIds) {
+        const prior = priorBlocks.get(nativeId);
+        restored = prior
+          ? upsertBlock(restored, nativeId, [BEGIN(nativeId), prior.body, END(nativeId)].join("\n"))
+          : removeBlock(restored, nativeId);
+      }
+      replaceCrontab(exec, existing, restored);
     },
     expectedSignature(task: SchedulerBinding, opts?: TaskInstallOptions): string {
       const cronLine = buildCronLine(
@@ -217,6 +244,43 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       return normalizeSignature(cronBlockBody(cronLine, task.enabled));
     },
   };
+}
+
+function inspectCronState(crontab: string): SchedulerBackendInspection {
+  const installed: InstalledTaskRef[] = [];
+  const artifacts: SchedulerNativeArtifact[] = [];
+  for (const { id, body } of listBlocks(crontab)) {
+    const parsed = extractCronInvocation(body);
+    const fingerprint = normalizeSignature(body);
+    const artifact = cronArtifact(id, body);
+    artifacts.push(artifact);
+    if (!parsed) continue;
+    const ref: InstalledTaskRef = {
+      id: schedulerLogicalBindingId(id, parsed.invocation),
+      signature: fingerprint,
+      ...(parsed.target !== undefined ? { target: parsed.target } : {}),
+      binding: parsed.binding,
+      contextPath: parsed.contextPath,
+    };
+    Object.defineProperty(ref, "nativeId", { value: id });
+    Object.defineProperty(ref, "invocation", { value: Object.freeze([...parsed.invocation]) });
+    installed.push(ref);
+  }
+  return Object.freeze({ installed: Object.freeze(installed), artifacts: Object.freeze(artifacts) });
+}
+
+function cronArtifact(nativeId: string, body: string): SchedulerNativeArtifact {
+  const parsed = extractCronInvocation(body);
+  const owner = parsed ? schedulerLogicalBindingOwner(nativeId, parsed.invocation) : undefined;
+  const artifact: SchedulerNativeArtifact = parsed
+    ? {
+        nativeId,
+        ...(owner !== undefined ? { bindingId: owner } : {}),
+        invocation: Object.freeze([...parsed.invocation]),
+      }
+    : { nativeId };
+  Object.defineProperty(artifact, "fingerprint", { value: normalizeSignature(body) });
+  return artifact;
 }
 
 function isCronBindingSnapshot(value: unknown): value is CronBindingSnapshot {

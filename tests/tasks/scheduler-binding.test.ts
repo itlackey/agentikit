@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  assertSchedulerExpectationIdentity,
   assertSchedulerNativeArtifactOwner,
   compileTaskSchedulerBindings,
   compileWorkflowSchedulerBindings,
@@ -32,7 +33,7 @@ describe("secret-free scheduler binding compiler", () => {
     });
   });
 
-  test("gives additional task schedules collision-resistant ids without changing ordinal zero", () => {
+  test("gives additional task schedules collision-resistant ids and always proves the resolved bundle", () => {
     const bindings = compileTaskSchedulerBindings({
       id: "nightly",
       qualifiedRef: "team//tasks/nightly",
@@ -47,7 +48,8 @@ describe("secret-free scheduler binding compiler", () => {
     expect(bindings[0]?.nativeId).toBe("nightly");
     expect(bindings[1]?.id).toMatch(/^task-[a-f0-9]{32}$/);
     expect(bindings[1]?.nativeId).toBe(bindings[1]?.id);
-    expect(bindings[1]?.invocation).toEqual(["task", "run", "nightly", "--scheduled"]);
+    expect(bindings[0]?.invocation).toEqual(["task", "run", "nightly", "--bundle", "team", "--scheduled"]);
+    expect(bindings[1]?.invocation).toEqual(["task", "run", "nightly", "--bundle", "team", "--scheduled"]);
   });
 
   test("accepts a qualified standalone akm-task concept without inventing a tasks/ prefix", () => {
@@ -159,5 +161,31 @@ describe("secret-free scheduler binding compiler", () => {
     expect(() =>
       assertSchedulerNativeArtifactOwner(binding.id, binding, ["workflow", "run", "other//workflows/release"]),
     ).toThrow(/owner|other|team|invocation/i);
+  });
+
+  test.each([
+    ["binding id", { bindingId: "forged" }],
+    ["ordinal", { ordinal: 1 }],
+    ["qualified source", { logicalSource: { kind: "task" as const, ref: "other//tasks/nightly" } }],
+    ["public invocation", { invocation: ["task", "run", "nightly", "--bundle", "other", "--scheduled"] }],
+  ] as const)("rejects a forged %s before a backend can use the expectation", (_label, override) => {
+    const [binding] = compileTaskSchedulerBindings({
+      id: "nightly",
+      qualifiedRef: "team//tasks/nightly",
+      enabled: true,
+      schedules: [{ cron: "0 2 * * *", source: "akm.schedule", ordinal: 0 }],
+    });
+    if (!binding) throw new Error("missing binding");
+    const expected = {
+      state: "absent" as const,
+      bindingId: binding.id,
+      nativeId: schedulerNativeBindingId(binding.id),
+      logicalSource: binding.logicalSource,
+      ordinal: binding.ordinal,
+      invocation: binding.invocation,
+      ...override,
+    };
+
+    expect(() => assertSchedulerExpectationIdentity(expected)).toThrow(/forged|inconsistent|match|source/i);
   });
 });

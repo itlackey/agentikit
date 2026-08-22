@@ -316,6 +316,82 @@ describe("cron backend drift detection", () => {
     fingerprint: backend.expectedSignature?.(binding),
   });
 
+  const mutationExpectation = (binding: SchedulerBinding, state: "absent" | "present", fingerprint?: string) => ({
+    state,
+    bindingId: binding.id,
+    nativeId: schedulerNativeBindingId(binding.id),
+    logicalSource: binding.logicalSource,
+    ordinal: binding.ordinal,
+    invocation: binding.invocation,
+    ...(fingerprint !== undefined ? { fingerprint } : {}),
+  });
+
+  test("direct create CAS rejects an artifact that appeared after absence was frozen", () => {
+    const exec = memoryExec();
+    const backend = CRON_BACKEND(opts(exec));
+    const owned = targeted(SYNC_TASK, "stash");
+    backend.install(owned);
+    const prior = exec.current();
+
+    expect(() =>
+      (backend.install as (...args: unknown[]) => void)(
+        { ...owned, cron: "45 */6 * * *" },
+        undefined,
+        mutationExpectation(owned, "absent"),
+      ),
+    ).toThrow(/changed|absence|exists|compare|owner/i);
+    expect(exec.current()).toBe(prior);
+  });
+
+  test("direct update CAS rejects same-owner byte drift after planning", () => {
+    const exec = memoryExec();
+    const backend = CRON_BACKEND(opts(exec));
+    const owned = targeted(SYNC_TASK, "stash");
+    backend.install(owned);
+    const fingerprint = backend.expectedSignature?.(owned);
+    exec.write(exec.current().replace("*/15 * * * *", "7 * * * *"));
+    const drifted = exec.current();
+
+    expect(() =>
+      (backend.install as (...args: unknown[]) => void)(
+        { ...owned, cron: "45 */6 * * *" },
+        undefined,
+        mutationExpectation(owned, "present", fingerprint),
+      ),
+    ).toThrow(/changed|fingerprint|compare/i);
+    expect(exec.current()).toBe(drifted);
+  });
+
+  test("rejects a forged expected source before any cron backend access", () => {
+    let reads = 0;
+    let writes = 0;
+    const backend = CRON_BACKEND({
+      ...opts({
+        read() {
+          reads += 1;
+          return { status: 0, stdout: "", stderr: "" };
+        },
+        write() {
+          writes += 1;
+          return { status: 0, stdout: "", stderr: "" };
+        },
+      }),
+      fs: { ensureDir() {} },
+    });
+    const owned = targeted(SYNC_TASK, "stash");
+    const forged = {
+      ...mutationExpectation(owned, "absent"),
+      logicalSource: { kind: "task", ref: "other//tasks/ping" },
+      invocation: ["task", "run", "ping", "--bundle", "other", "--scheduled"],
+    };
+
+    expect(() => (backend.install as (...args: unknown[]) => void)(owned, undefined, forged)).toThrow(
+      /expectation|identity|binding|source/i,
+    );
+    expect(reads).toBe(0);
+    expect(writes).toBe(0);
+  });
+
   test("round-trips and updates a higher-ordinal binding whose public owner is the base task", () => {
     const backend = CRON_BACKEND(opts(memoryExec()));
     const binding = higherOrdinal();
@@ -354,7 +430,9 @@ describe("cron backend drift detection", () => {
     const expectation = removalExpectation(backend, binding);
     const swapped =
       replacement === "foreign"
-        ? exec.current().replaceAll(" task run ping --scheduled ", " task run foreign --scheduled ")
+        ? exec
+            .current()
+            .replaceAll(" task run ping --bundle stash --scheduled ", " task run foreign --bundle stash --scheduled ")
         : replacement === "malformed"
           ? exec.current().replaceAll(" --scheduled ", " --broken ")
           : exec.current().replace("0 2 * * *", "5 2 * * *");
@@ -534,6 +612,38 @@ describe("cron backend drift detection", () => {
 
     expect(exec.current()).toBe(prior);
     expect(exec.current()).toStartWith("0 1 * * * user-job\n");
+  });
+
+  test("snapshot rollback CAS never clobbers a concurrent same-native cron edit", () => {
+    const exec = memoryExec();
+    const backend = CRON_BACKEND(opts(exec));
+    const owned = targeted(SYNC_TASK, "stash");
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    backend.install(owned);
+    const concurrent = exec.current().replace("*/15 * * * *", "7 * * * *");
+    exec.write(concurrent);
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: owned.id,
+              invocation: owned.invocation,
+              fingerprint: backend.expectedSignature?.(owned),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/rollback|changed|concurrent|fingerprint/i);
+    expect(exec.current()).toBe(concurrent);
   });
 
   test("an unterminated block aborts uninstall without writing the crontab", () => {

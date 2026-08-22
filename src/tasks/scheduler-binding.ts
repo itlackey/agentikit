@@ -94,42 +94,80 @@ export interface SchedulerNativeArtifact {
   readonly fingerprint?: string;
 }
 
-/** Frozen proof required immediately before deleting a native artifact. */
-export interface SchedulerRemovalExpectation {
+export interface SchedulerBackendInspection {
+  readonly installed: readonly InstalledSchedulerBinding[];
+  readonly artifacts: readonly SchedulerNativeArtifact[];
+}
+
+export interface SchedulerTransactionSnapshot {
+  readonly nativeIds: readonly string[];
+  readonly artifacts: readonly SchedulerNativeArtifact[];
+}
+
+/** One exact native state a transaction itself may have produced before rollback. */
+export type SchedulerRollbackState =
+  | Readonly<{ state: "absent" }>
+  | Readonly<{
+      state: "present";
+      bindingId?: string;
+      invocation?: readonly string[];
+      fingerprint: string;
+    }>;
+
+/** CAS guard that prevents rollback from overwriting a concurrent native edit. */
+export interface SchedulerRollbackExpectation {
+  readonly nativeId: string;
+  readonly allowed: readonly SchedulerRollbackState[];
+}
+
+/** Frozen compare-and-swap proof required by every scheduler mutation. */
+export interface SchedulerMutationExpectation {
+  readonly state: "absent" | "present" | "legacy-ownerless";
   readonly bindingId: string;
   readonly nativeId: string;
   readonly logicalSource: SchedulerLogicalSource;
   readonly ordinal: number;
   readonly invocation: readonly string[];
   readonly fingerprint?: string;
+  /** Exact old target-less task invocation, authorized only by explicit rebind. */
+  readonly legacyInvocation?: readonly string[];
 }
+
+/** Compatibility spelling for remove callers; new plans always set state=present. */
+export type SchedulerRemovalExpectation = Omit<SchedulerMutationExpectation, "state"> & {
+  readonly state?: "present";
+};
 
 /** Structural backend view used by the command layer without source documents. */
 export interface SchedulerBackend {
   readonly name: ScheduleBackend;
-  install(binding: SchedulerBinding, opts?: SchedulerInstallOptions): Promise<void> | void;
+  install(
+    binding: SchedulerBinding,
+    opts?: SchedulerInstallOptions,
+    expected?: SchedulerMutationExpectation,
+  ): Promise<void> | void;
   uninstall(id: string, expected?: SchedulerRemovalExpectation): Promise<void> | void;
   setEnabled(id: string, enabled: boolean): Promise<void> | void;
   list(): Promise<InstalledSchedulerBinding[]> | InstalledSchedulerBinding[];
   listForRebind?(): Promise<RebindSchedulerBinding[]> | RebindSchedulerBinding[];
   listNativeArtifacts?(): Promise<SchedulerNativeArtifact[]> | SchedulerNativeArtifact[];
+  /** One coherent inventory derived from one raw native state read. */
+  inspectBindings?(options?: {
+    readonly rebind?: boolean;
+  }): Promise<SchedulerBackendInspection> | SchedulerBackendInspection;
   expectedSignature?(binding: SchedulerBinding, opts?: SchedulerInstallOptions): string;
   /** Capture exact native definitions for a command-layer transaction. */
-  snapshotBindings?(ids: readonly string[]): Promise<unknown> | unknown;
+  snapshotBindings?(ids: readonly string[]): Promise<SchedulerTransactionSnapshot> | SchedulerTransactionSnapshot;
   /** Restore a snapshot returned by this backend's `snapshotBindings`. */
-  restoreBindings?(snapshot: unknown): Promise<void> | void;
+  restoreBindings?(snapshot: unknown, expectedCurrent?: readonly SchedulerRollbackExpectation[]): Promise<void> | void;
 }
 
 export function compileTaskSchedulerBindings(input: CompileTaskSchedulerBindingsInput): readonly SchedulerBinding[] {
   const id = normaliseTaskConceptId(input.id);
   const ref = assertQualifiedRef(input.qualifiedRef, "task");
-  const invocation = Object.freeze([
-    "task",
-    "run",
-    id,
-    ...(input.bundleTarget ? ["--bundle", input.bundleTarget] : []),
-    "--scheduled",
-  ]);
+  const bundle = parseBundleRef(ref).bundle;
+  if (!bundle) throw new Error("invariant: qualified scheduler task ref lost its bundle");
+  const invocation = Object.freeze(["task", "run", id, "--bundle", bundle, "--scheduled"]);
   return Object.freeze(
     input.schedules.map((schedule) => {
       const bindingId = schedule.ordinal === 0 ? id : digestBindingId("task", ref, schedule.ordinal);
@@ -201,7 +239,8 @@ export function schedulerNativeArtifactOwner(
     return { logicalId: nativeId, logicalKind: "workflow" };
   }
   const taskId = invocation[0] === "task" && invocation[1] === "run" ? invocation[2] : undefined;
-  if (!taskId) return undefined;
+  const bundleIndex = invocation.indexOf("--bundle", 3);
+  if (!taskId || bundleIndex === -1 || !invocation[bundleIndex + 1]) return undefined;
   return {
     logicalId: schedulerNativeBindingId(taskId) === nativeId ? taskId : nativeId,
     logicalKind: "task",
@@ -237,19 +276,153 @@ export function assertSchedulerRemovalArtifact(
   invocation: readonly string[] | undefined,
   fingerprint: string | undefined,
 ): void {
-  const fingerprintMatches = expected.fingerprint === undefined || expected.fingerprint === fingerprint;
+  const normalized = normalizeRemovalExpectation(expected);
+  assertSchedulerExpectationIdentity(normalized);
+  const fingerprintMatches = normalized.fingerprint === undefined || normalized.fingerprint === fingerprint;
   if (
-    nativeId === expected.nativeId &&
+    nativeId === normalized.nativeId &&
     invocation !== undefined &&
-    sameInvocation(invocation, expected.invocation) &&
+    sameInvocation(invocation, normalized.invocation) &&
     fingerprintMatches
   ) {
     return;
   }
   throw new UsageError(
-    `Native scheduler artifact ${JSON.stringify(nativeId)} changed owner or fingerprint; refusing to remove an unverified ${expected.logicalSource.kind} owner ${JSON.stringify(expected.logicalSource.ref)}.`,
+    `Native scheduler artifact ${JSON.stringify(nativeId)} changed owner or fingerprint; refusing to remove an unverified ${normalized.logicalSource.kind} owner ${JSON.stringify(normalized.logicalSource.ref)}.`,
     "RESOURCE_ALREADY_EXISTS",
   );
+}
+
+export function assertSchedulerExpectationIdentity(
+  expected: SchedulerMutationExpectation,
+  binding?: SchedulerBinding,
+): void {
+  const identity = canonicalSchedulerIdentity(expected.logicalSource, expected.ordinal, expected.invocation);
+  if (
+    identity.bindingId !== expected.bindingId ||
+    identity.nativeId !== expected.nativeId ||
+    !sameInvocation(identity.invocation, expected.invocation) ||
+    (binding !== undefined &&
+      (binding.id !== expected.bindingId ||
+        schedulerBindingNativeId(binding) !== expected.nativeId ||
+        binding.ordinal !== expected.ordinal ||
+        binding.logicalSource.kind !== expected.logicalSource.kind ||
+        binding.logicalSource.ref !== expected.logicalSource.ref ||
+        !sameInvocation(binding.invocation, expected.invocation)))
+  ) {
+    throw new UsageError(
+      "Scheduler mutation expectation has a forged or inconsistent binding identity.",
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  if (expected.state === "absent" && (expected.fingerprint !== undefined || expected.legacyInvocation !== undefined)) {
+    throw new UsageError("An absent scheduler expectation cannot carry prior artifact state.", "INVALID_FLAG_VALUE");
+  }
+  if (expected.state === "present" && expected.legacyInvocation !== undefined) {
+    throw new UsageError("A present scheduler expectation cannot carry a legacy owner.", "INVALID_FLAG_VALUE");
+  }
+  if (expected.state === "legacy-ownerless") {
+    if (
+      !expected.legacyInvocation ||
+      !isLegacyTargetlessTaskInvocation(expected.legacyInvocation, expected.invocation)
+    ) {
+      throw new UsageError(
+        "Legacy scheduler rebind expectation is not an exact target-less task owner.",
+        "INVALID_FLAG_VALUE",
+      );
+    }
+  }
+}
+
+export function assertSchedulerMutationArtifact(
+  artifact: SchedulerNativeArtifact | undefined,
+  expected: SchedulerMutationExpectation,
+): void {
+  assertSchedulerExpectationIdentity(expected);
+  if (expected.state === "absent") {
+    if (artifact === undefined) return;
+  } else if (
+    artifact !== undefined &&
+    artifact.nativeId === expected.nativeId &&
+    (expected.state === "legacy-ownerless" || artifact.bindingId === expected.bindingId) &&
+    artifact.invocation !== undefined &&
+    sameInvocation(
+      artifact.invocation,
+      expected.state === "legacy-ownerless" ? expected.legacyInvocation! : expected.invocation,
+    ) &&
+    expected.fingerprint !== undefined &&
+    artifact.fingerprint === expected.fingerprint
+  ) {
+    return;
+  }
+  throw new UsageError(
+    `Native scheduler artifact ${JSON.stringify(expected.nativeId)} changed from its frozen ${expected.state} state; refusing mutation.`,
+    "RESOURCE_ALREADY_EXISTS",
+  );
+}
+
+export function assertSchedulerRollbackArtifact(
+  artifact: SchedulerNativeArtifact | undefined,
+  expected: SchedulerRollbackExpectation,
+): void {
+  const matches = expected.allowed.some((state) => {
+    if (state.state === "absent") return artifact === undefined;
+    if (!artifact || artifact.nativeId !== expected.nativeId) return false;
+    if (artifact.fingerprint !== state.fingerprint || artifact.bindingId !== state.bindingId) return false;
+    return state.invocation === undefined
+      ? artifact.invocation === undefined
+      : artifact.invocation !== undefined && sameInvocation(artifact.invocation, state.invocation);
+  });
+  if (matches) return;
+  throw new UsageError(
+    `Native scheduler artifact ${JSON.stringify(expected.nativeId)} changed after the transaction began; refusing rollback over a concurrent owner or fingerprint.`,
+    "RESOURCE_ALREADY_EXISTS",
+  );
+}
+
+export function canonicalSchedulerIdentity(
+  logicalSource: SchedulerLogicalSource,
+  ordinal: number,
+  invocation: readonly string[],
+): Readonly<{ bindingId: string; nativeId: string; invocation: readonly string[] }> {
+  const parsed = parseBundleRef(logicalSource.ref);
+  if (!parsed.bundle || parsed.fragment !== undefined || bundleRefToString(parsed) !== logicalSource.ref) {
+    throw new UsageError("Scheduler expectation requires one canonical fully-qualified source.", "INVALID_FLAG_VALUE");
+  }
+  if (!Number.isSafeInteger(ordinal) || ordinal < 0) {
+    throw new UsageError("Scheduler expectation ordinal must be a non-negative integer.", "INVALID_FLAG_VALUE");
+  }
+  if (logicalSource.kind === "workflow") {
+    const canonicalInvocation = ["workflow", "run", logicalSource.ref];
+    if (!sameInvocation(invocation, canonicalInvocation)) {
+      throw new UsageError(
+        "Workflow scheduler expectation invocation does not match its qualified source.",
+        "INVALID_FLAG_VALUE",
+      );
+    }
+    const bindingId = digestBindingId("workflow", logicalSource.ref, ordinal);
+    return Object.freeze({ bindingId, nativeId: bindingId, invocation: Object.freeze(canonicalInvocation) });
+  }
+  const taskId = invocation[0] === "task" && invocation[1] === "run" ? invocation[2] : undefined;
+  if (!taskId || normaliseTaskConceptId(taskId) !== taskId) {
+    throw new UsageError("Task scheduler expectation has an invalid public task id.", "INVALID_FLAG_VALUE");
+  }
+  const canonicalInvocation = ["task", "run", taskId, "--bundle", parsed.bundle, "--scheduled"];
+  if (!sameInvocation(invocation, canonicalInvocation)) {
+    throw new UsageError(
+      "Task scheduler expectation invocation does not match its qualified source.",
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  if (parsed.conceptId !== taskId && parsed.conceptId !== `tasks/${taskId}`) {
+    throw new UsageError("Task scheduler expectation id does not match its qualified source.", "INVALID_FLAG_VALUE");
+  }
+  const bindingId = ordinal === 0 ? taskId : digestBindingId("task", logicalSource.ref, ordinal);
+  return Object.freeze({
+    bindingId,
+    nativeId: schedulerNativeBindingId(bindingId),
+    invocation: Object.freeze(canonicalInvocation),
+  });
 }
 
 /** Recover the authored schedule ordinal from the exact source/binding identity. */
@@ -292,4 +465,18 @@ function freezeBinding(binding: SchedulerBinding): SchedulerBinding {
 
 function sameInvocation(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function normalizeRemovalExpectation(expected: SchedulerRemovalExpectation): SchedulerMutationExpectation {
+  return { ...expected, state: "present" };
+}
+
+function isLegacyTargetlessTaskInvocation(legacy: readonly string[], canonical: readonly string[]): boolean {
+  return (
+    legacy.length === 4 &&
+    legacy[0] === "task" &&
+    legacy[1] === "run" &&
+    legacy[2] === canonical[2] &&
+    legacy[3] === "--scheduled"
+  );
 }
