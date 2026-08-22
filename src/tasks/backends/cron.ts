@@ -38,7 +38,7 @@ import {
   assertSchedulerNativeArtifactCardinality,
   assertSchedulerNativeArtifactOwner,
   assertSchedulerRemovalArtifact,
-  assertSchedulerRollbackArtifact,
+  assertSchedulerRollbackArtifactCardinality,
   type SchedulerBackendInspection,
   type SchedulerBinding,
   type SchedulerMutationExpectation,
@@ -222,8 +222,9 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       }
       const existing = readCrontab(exec);
       const current = inspectCronState(existing);
+      const safeNativeIds: string[] = [];
+      const errors: unknown[] = [];
       if (expectedCurrent) {
-        const errors: unknown[] = [];
         for (const nativeId of snapshot.nativeIds) {
           try {
             const expected = expectedCurrent.find((candidate) => candidate.nativeId === nativeId);
@@ -233,29 +234,33 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
                 "INVALID_CONFIG_FILE",
               );
             }
-            assertSchedulerRollbackArtifact(
-              current.artifacts.find(
-                (artifact) => schedulerNativeArtifactKey(artifact.nativeId) === schedulerNativeArtifactKey(nativeId),
-              ),
-              expected,
-            );
+            assertSchedulerRollbackArtifactCardinality(current.artifacts, expected);
+            safeNativeIds.push(nativeId);
           } catch (error) {
             errors.push(error);
           }
         }
-        if (errors.length > 0) {
-          throw new AggregateError(errors, "Cron rollback CAS rejected one or more changed native artifacts.");
-        }
+      } else {
+        safeNativeIds.push(...snapshot.nativeIds);
       }
       const priorBlocks = new Map(listBlocks(snapshot.crontab).map((block) => [block.id, block] as const));
       let restored = existing;
-      for (const nativeId of snapshot.nativeIds) {
+      for (const nativeId of safeNativeIds) {
         const prior = priorBlocks.get(nativeId);
         restored = prior
           ? upsertBlock(restored, nativeId, [BEGIN(nativeId), prior.body, END(nativeId)].join("\n"))
           : removeBlock(restored, nativeId);
       }
-      replaceCrontab(exec, existing, restored);
+      if (restored !== existing) {
+        try {
+          replaceCrontab(exec, existing, restored);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length > 0) {
+        throw new AggregateError(errors, "Cron rollback CAS rejected one or more changed native artifacts.");
+      }
     },
     expectedSignature(task: SchedulerBinding, opts?: TaskInstallOptions): string {
       const cronLine = buildCronLine(

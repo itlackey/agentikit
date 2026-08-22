@@ -675,6 +675,124 @@ describe("cron backend drift detection", () => {
     expect(exec.current()).toBe(concurrent);
   });
 
+  test("rollback rejects a case-equivalent cron peer beside a transaction-created artifact", () => {
+    const exec = memoryExec();
+    const backend = CRON_BACKEND(opts(exec));
+    const owned = targeted(SYNC_TASK, "stash");
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    backend.install(owned);
+    const duplicated = `${exec.current()}${exec.current().replaceAll("# akm:task ping", "# akm:task PING")}`;
+    exec.write(duplicated);
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: owned.id,
+              invocation: owned.invocation,
+              fingerprint: backend.expectedSignature?.(owned),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(exec.current()).toBe(duplicated);
+  });
+
+  test("rollback rejects a trailing-dot cron peer beside a transaction-updated artifact", () => {
+    const exec = memoryExec();
+    const backend = CRON_BACKEND(opts(exec));
+    const prior = targeted(SYNC_TASK, "stash");
+    backend.install(prior);
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    const updated = { ...prior, cron: "45 */6 * * *" };
+    backend.install(updated);
+    const duplicated = `${exec.current()}${exec.current().replaceAll("# akm:task ping", "# akm:task ping.")}`;
+    exec.write(duplicated);
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            {
+              state: "present",
+              bindingId: updated.id,
+              invocation: updated.invocation,
+              fingerprint: backend.expectedSignature?.(updated),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(exec.current()).toBe(duplicated);
+  });
+
+  test("rollback continues past one duplicate key and restores independent native IDs", () => {
+    const exec = memoryExec();
+    const backend = CRON_BACKEND(opts(exec));
+    const ping = targeted(SYNC_TASK, "stash");
+    const second = targeted(
+      { ...SYNC_TASK, id: "second", invocation: ["task", "run", "second", "--scheduled"] },
+      "stash",
+    );
+    const snapshot = backend.snapshotBindings?.(["ping", "second"]);
+    backend.install(ping);
+    const pingBlock = exec.current();
+    backend.install(second);
+    exec.write(`${exec.current()}${pingBlock.replaceAll("# akm:task ping", "# akm:task PING")}`);
+    const raced = exec.current();
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: ping.id,
+              invocation: ping.invocation,
+              fingerprint: backend.expectedSignature?.(ping),
+            },
+          ],
+        },
+        {
+          nativeId: "second",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: second.id,
+              invocation: second.invocation,
+              fingerprint: backend.expectedSignature?.(second),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(exec.current()).not.toContain("# akm:task second BEGIN");
+    expect(exec.current()).toContain("# akm:task ping BEGIN");
+    expect(exec.current()).toContain("# akm:task PING BEGIN");
+    expect(raced).toContain("# akm:task second BEGIN");
+  });
+
   test("an unterminated block aborts uninstall without writing the crontab", () => {
     const malformed = "# akm:task ping BEGIN\n*/15 * * * * old-command\n0 1 * * * user-job\n";
     let writes = 0;

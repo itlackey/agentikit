@@ -404,6 +404,27 @@ export function assertSchedulerRollbackArtifact(
   );
 }
 
+/**
+ * Validate a rollback target from one complete native inventory. Rollback
+ * guards may allow either the transaction-written state or the prior state,
+ * but neither state permits two portable-key-equivalent artifacts.
+ */
+export function assertSchedulerRollbackArtifactCardinality(
+  artifacts: readonly SchedulerNativeArtifact[],
+  expected: SchedulerRollbackExpectation,
+): SchedulerNativeArtifact | undefined {
+  const matches = schedulerNativeArtifactsForKey(artifacts, expected.nativeId);
+  if (matches.length > 1) {
+    throw new UsageError(
+      `Native scheduler artifact ${JSON.stringify(expected.nativeId)} changed after the transaction began: normalized rollback cardinality ${matches.length} exceeds one.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+  const artifact = matches[0];
+  assertSchedulerRollbackArtifact(artifact, expected);
+  return artifact;
+}
+
 export function canonicalSchedulerIdentity(
   logicalSource: SchedulerLogicalSource,
   ordinal: number,

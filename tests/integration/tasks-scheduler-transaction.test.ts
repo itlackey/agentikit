@@ -368,6 +368,113 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     expect(fs.readFileSync(file, "utf8")).toBe(racer);
   });
 
+  test.each(
+    (["cron", "launchd", "schtasks"] as const).flatMap((name) => [[name, false] as const, [name, true] as const]),
+  )("task add %s rejects a successful final native mutation that races its published source (force=%s)", async (name, force) => {
+    const file = path.join(storage.stashDir, "tasks", "alpha.yml");
+    const prior = taskYaml("echo prior", "0 1 * * *");
+    if (force) fs.writeFileSync(file, prior);
+    const backend = fakeBackend(name, force ? [binding("alpha", "0 1 * * *")] : []);
+    const racer = taskYaml("echo racer", "59 23 * * *");
+    const install = backend.install.bind(backend);
+    backend.install = ((...args: Parameters<TaskBackend["install"]>) => {
+      const result = install(...args);
+      fs.writeFileSync(file, racer);
+      return result;
+    }) as TaskBackend["install"];
+
+    let caught: unknown;
+    try {
+      await akmTasksAdd({ id: "alpha", schedule: "15 1 * * *", command: "echo desired", force }, { backend });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect(String(caught)).toMatch(/source|changed|rollback|transaction/i);
+    expect(fs.readFileSync(file, "utf8")).toBe(racer);
+    expect(backend.restoreCalls).toBe(0);
+  });
+
+  test.each([
+    "cron",
+    "launchd",
+    "schtasks",
+  ] as const)("task sync %s rejects source deletion after its successful final install and rolls native state back", async (name) => {
+    writeTask("alpha", "echo alpha", "0 1 * * *");
+    const file = path.join(storage.stashDir, "tasks", "alpha.yml");
+    const backend = fakeBackend(name);
+    const install = backend.install.bind(backend);
+    backend.install = ((...args: Parameters<TaskBackend["install"]>) => {
+      const result = install(...args);
+      fs.rmSync(file);
+      return result;
+    }) as TaskBackend["install"];
+
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/source|changed|read set|snapshot/i);
+
+    expect(fs.existsSync(file)).toBe(false);
+    expect(backend.stored.size).toBe(0);
+    expect(backend.restoreCalls).toBe(1);
+  });
+
+  test.each([
+    "cron",
+    "launchd",
+    "schtasks",
+  ] as const)("task sync %s revalidates a multi-schedule source after its successful middle install", async (name) => {
+    const file = path.join(storage.stashDir, "tasks", "alpha.yml");
+    fs.writeFileSync(
+      file,
+      'version: 3\nrun: echo alpha\non:\n  schedule:\n    - cron: "0 1 * * *"\n    - cron: "0 2 * * *"\n',
+    );
+    const backend = fakeBackend(name);
+    const raced = taskYaml("echo raced", "59 23 * * *");
+    const install = backend.install.bind(backend);
+    let installs = 0;
+    backend.install = ((...args: Parameters<TaskBackend["install"]>) => {
+      const result = install(...args);
+      installs += 1;
+      if (installs === 1) fs.writeFileSync(file, raced);
+      return result;
+    }) as TaskBackend["install"];
+
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/source|changed|read set|snapshot/i);
+
+    expect(backend.stored.size).toBe(0);
+    expect(backend.restoreCalls).toBe(1);
+  });
+
+  test.each([
+    "cron",
+    "launchd",
+    "schtasks",
+  ] as const)("task add %s revalidates its mutation receipt after the final commit boundary", async (name) => {
+    const file = path.join(storage.stashDir, "tasks", "alpha.yml");
+    const racer = taskYaml("echo commit-racer", "59 23 * * *");
+    const backend = fakeBackend(name);
+    let caught: unknown;
+
+    try {
+      await akmTasksAdd(
+        { id: "alpha", schedule: "0 1 * * *", command: "echo desired" },
+        {
+          backend,
+          commitBoundary() {
+            fs.writeFileSync(file, racer);
+          },
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect(String(caught)).toMatch(/source|changed|rollback|transaction/i);
+    expect(fs.readFileSync(file, "utf8")).toBe(racer);
+    expect(backend.restoreCalls).toBe(0);
+  });
+
   test("task add --force updates the primary and removes a stale ordinal with exact CAS", async () => {
     fs.writeFileSync(
       path.join(storage.stashDir, "tasks", "alpha.yml"),

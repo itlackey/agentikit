@@ -37,7 +37,7 @@ import {
   assertSchedulerNativeArtifactCardinality,
   assertSchedulerNativeArtifactOwner,
   assertSchedulerRemovalArtifact,
-  assertSchedulerRollbackArtifact,
+  assertSchedulerRollbackArtifactCardinality,
   type SchedulerBackendInspection,
   type SchedulerBinding,
   type SchedulerMutationExpectation,
@@ -542,9 +542,18 @@ function restoreLaunchdBindings(
     throw new ConfigError("Invalid launchd scheduler snapshot.", "INVALID_CONFIG_FILE");
   }
   const errors: unknown[] = [];
+  let rollbackInventory: SchedulerBackendInspection | undefined;
+  if (expectedCurrent) {
+    try {
+      rollbackInventory = inspectLaunchdRollbackState(snapshot.nativeIds, context);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
   for (const entry of snapshot.entries) {
     if (expectedCurrent) {
       try {
+        if (!rollbackInventory) continue;
         const expected = expectedCurrent.find((candidate) => candidate.nativeId === entry.id);
         if (!expected) {
           throw new ConfigError(
@@ -552,11 +561,7 @@ function restoreLaunchdBindings(
             "INVALID_CONFIG_FILE",
           );
         }
-        const current = readLaunchdArtifactState(
-          findLaunchdNativeId(context.fsLike, context.agentsDir, entry.id) ?? entry.id,
-          context,
-        );
-        assertSchedulerRollbackArtifact(current?.artifact, expected);
+        assertSchedulerRollbackArtifactCardinality(rollbackInventory.artifacts, expected);
       } catch (error) {
         errors.push(error);
         continue;
@@ -567,6 +572,50 @@ function restoreLaunchdBindings(
   if (errors.length > 0) {
     throw new AggregateError(errors, `Failed to completely restore ${errors.length} launchd scheduler operation(s).`);
   }
+}
+
+function inspectLaunchdRollbackState(
+  seedIds: readonly string[],
+  context: {
+    exec: LaunchdExec;
+    fsLike: LaunchdFs;
+    agentsDir: string;
+    plistPath: (id: string) => string;
+    target: (id: string) => string;
+    label: (id: string) => string;
+  },
+): SchedulerBackendInspection {
+  const disabledLabels = readDisabledLabels(context.exec);
+  if (disabledLabels === undefined) {
+    throw new ConfigError("launchctl print-disabled failed during rollback CAS inspection.", "INVALID_CONFIG_FILE");
+  }
+  const ids = new Set(seedIds);
+  if (context.fsLike.exists(context.agentsDir)) {
+    for (const file of context.fsLike.list(context.agentsDir)) {
+      if (!file.startsWith(LAUNCHD_LABEL_PREFIX) || !file.endsWith(".plist")) continue;
+      ids.add(file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length));
+    }
+  }
+  for (const serviceLabel of disabledLabels) {
+    if (serviceLabel.startsWith(LAUNCHD_LABEL_PREFIX)) ids.add(serviceLabel.slice(LAUNCHD_LABEL_PREFIX.length));
+  }
+  const artifacts: SchedulerNativeArtifact[] = [];
+  for (const nativeId of [...ids].sort()) {
+    const file = context.plistPath(nativeId);
+    const plist = context.fsLike.exists(file) ? context.fsLike.readFile(file) : undefined;
+    const loadedResult = context.exec.run(["launchctl", "print", context.target(nativeId)]);
+    if (loadedResult.status !== 0 && !isServiceNotFoundResult(loadedResult)) {
+      throw new ConfigError(
+        `launchctl print failed during rollback CAS for task ${JSON.stringify(nativeId)}: ${loadedResult.stderr || loadedResult.stdout || "no output"}.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    const enabled = !disabledLabels.has(context.label(nativeId));
+    const loaded = loadedResult.status === 0;
+    if (plist !== undefined) artifacts.push(launchdArtifact(nativeId, plist, enabled, loaded));
+    else if (!enabled || loaded) artifacts.push(launchdMissingPlistArtifact(nativeId, enabled, loaded));
+  }
+  return Object.freeze({ installed: Object.freeze([]), artifacts: Object.freeze(artifacts) });
 }
 
 function restoreLaunchdBindingEntry(

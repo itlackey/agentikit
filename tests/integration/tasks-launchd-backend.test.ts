@@ -760,6 +760,128 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(exec.calls.some((call) => call[1] === "bootout")).toBe(false);
   });
 
+  test("rollback rejects a case-equivalent plist beside a transaction-created launchd artifact", () => {
+    const { backend, exec, fs } = makeBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    backend.install(owned);
+    const file = "/tmp/agents/com.akm.task.ping.plist";
+    const duplicate = "/tmp/agents/com.akm.task.PING.plist";
+    fs.writeFile(duplicate, fs.readFile(file));
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: owned.id,
+              invocation: owned.invocation,
+              fingerprint: backend.expectedSignature?.(owned),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(fs.readFile(file)).toBe(fs.readFile(duplicate));
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("rollback rejects a trailing-dot plist peer beside a transaction-updated launchd artifact", () => {
+    const { backend, exec, fs } = makeBackend();
+    const prior = qualifiedTask("0 9 * * *");
+    backend.install(prior);
+    const snapshot = backend.snapshotBindings?.(["ping"]);
+    const updated = { ...prior, cron: "30 10 * * *" };
+    backend.install(updated);
+    const file = "/tmp/agents/com.akm.task.ping.plist";
+    const duplicate = "/tmp/agents/com.akm.task.ping..plist";
+    fs.writeFile(duplicate, fs.readFile(file));
+    const raced = fs.readFile(file);
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            {
+              state: "present",
+              bindingId: updated.id,
+              invocation: updated.invocation,
+              fingerprint: backend.expectedSignature?.(updated),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(fs.readFile(file)).toBe(raced);
+    expect(fs.readFile(duplicate)).toBe(raced);
+    expect(launchdMutationCalls(exec.calls)).toEqual([]);
+  });
+
+  test("rollback skips a duplicate launchd key but continues restoring an independent entry", () => {
+    const { backend, exec, fs } = makeBackend();
+    const ping = qualifiedTask("0 9 * * *");
+    const second = qualifiedTask("15 9 * * *", "second");
+    const snapshot = backend.snapshotBindings?.(["ping", "second"]);
+    backend.install(ping);
+    backend.install(second);
+    const pingFile = "/tmp/agents/com.akm.task.ping.plist";
+    const duplicate = "/tmp/agents/com.akm.task.PING.plist";
+    const secondFile = "/tmp/agents/com.akm.task.second.plist";
+    fs.writeFile(duplicate, fs.readFile(pingFile));
+    exec.calls.length = 0;
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: ping.id,
+              invocation: ping.invocation,
+              fingerprint: backend.expectedSignature?.(ping),
+            },
+          ],
+        },
+        {
+          nativeId: "second",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: second.id,
+              invocation: second.invocation,
+              fingerprint: backend.expectedSignature?.(second),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(fs.written.has(pingFile)).toBe(true);
+    expect(fs.written.has(duplicate)).toBe(true);
+    expect(fs.written.has(secondFile)).toBe(false);
+    expect(launchdMutationCalls(exec.calls).some((call) => call[2]?.endsWith(".second"))).toBe(true);
+  });
+
   test("binding snapshots preserve a plist whose service was unloaded", () => {
     const { backend, exec, fs } = makeBackend();
     backend.install(makeTask("0 9 * * *"));

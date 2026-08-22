@@ -237,7 +237,7 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     deps,
     rebind: input.rebind === true,
   });
-  let writtenSource: TaskSourceExpectation | undefined;
+  let sourceMutationReceipt: Extract<TaskSourceExpectation, { state: "present" }> | undefined;
   let sourcePublished = false;
   let sourcePublicationAttempted = false;
   const publishSource = async () => {
@@ -258,13 +258,14 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     // Refresh the still-absent legacy owner expectation only after proving the
     // physical root stayed the same and no .md owner appeared.
     legacySourceExpectation = currentLegacySource;
-    writtenSource = captureTaskSourceExpectation(assetPath, stashDir);
-    if (writtenSource.state !== "present" || writtenSource.sha256 !== hashTaskSource(yaml)) {
+    const publishedSource = captureTaskSourceExpectation(assetPath, stashDir);
+    if (publishedSource.state !== "present" || publishedSource.sha256 !== hashTaskSource(yaml)) {
       throw new UsageError(
         `Task source ${JSON.stringify(assetPath)} changed during publication.`,
         "RESOURCE_ALREADY_EXISTS",
       );
     }
+    sourceMutationReceipt = publishedSource;
     sourcePublished = true;
     transaction.publishRuntime?.();
   };
@@ -273,7 +274,14 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     initialExpectations: transaction.initialExpectations,
     assertReadSet: () => {
       assertTaskSourceExpectation(legacySourceExpectation);
-      if (!sourcePublished) assertTaskSourceExpectation(sourceExpectation);
+      if (sourcePublished) {
+        if (!sourceMutationReceipt) {
+          throw new ConfigError("Published task source lost its transaction receipt.", "INVALID_CONFIG_FILE");
+        }
+        assertTaskSourceExpectation(sourceMutationReceipt);
+      } else {
+        assertTaskSourceExpectation(sourceExpectation);
+      }
     },
     beforeOperation: async (_operation, index) => {
       if (index === transaction.publishOperationIndex && !sourcePublished) await publishSource();
@@ -282,7 +290,7 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     rollbackExternal: async () => {
       if (!sourcePublicationAttempted) return;
       assertTaskSourceExpectation(legacySourceExpectation);
-      if (!writtenSource) {
+      if (!sourceMutationReceipt) {
         const current = captureTaskSourceExpectation(assetPath, stashDir);
         if (sameTaskSourceExpectation(current, sourceExpectation)) return;
         if (current.state !== "present" || current.sha256 !== hashTaskSource(yaml)) {
@@ -291,9 +299,9 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
             "RESOURCE_ALREADY_EXISTS",
           );
         }
-        writtenSource = current;
+        sourceMutationReceipt = current;
       }
-      assertTaskSourceExpectation(writtenSource);
+      assertTaskSourceExpectation(sourceMutationReceipt);
       try {
         if (sourceExpectation.state === "absent") {
           await deleteAsset(writeTarget.source, writeTarget.config, ref);
@@ -691,7 +699,12 @@ async function applySchedulerTransaction(
     allowNativeRollbackAfterExternalFailure?: (error: unknown) => boolean;
   },
 ): Promise<void> {
-  if (operations.length === 0) return;
+  if (operations.length === 0) {
+    hooks.assertReadSet?.();
+    await hooks.afterOperations?.();
+    hooks.assertReadSet?.();
+    return;
+  }
   hooks.assertReadSet?.();
   if (!backend.snapshotBindings || !backend.restoreBindings) {
     throw new ConfigError(
@@ -714,10 +727,14 @@ async function applySchedulerTransaction(
     for (const [index, operation] of operations.entries()) {
       hooks.assertReadSet?.();
       await hooks.beforeOperation?.(operation, index);
+      hooks.assertReadSet?.();
       if (operation.kind === "remove") await backend.uninstall(operation.nativeId, operation.expected);
       else await backend.install(operation.binding, operation.options, operation.expected);
+      hooks.assertReadSet?.();
     }
+    hooks.assertReadSet?.();
     await hooks.afterOperations?.();
+    hooks.assertReadSet?.();
   } catch (primaryError) {
     let externalRollbackError: unknown;
     try {

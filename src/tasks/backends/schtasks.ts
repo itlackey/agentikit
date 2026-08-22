@@ -45,7 +45,7 @@ import {
   assertSchedulerNativeArtifactCardinality,
   assertSchedulerNativeArtifactOwner,
   assertSchedulerRemovalArtifact,
-  assertSchedulerRollbackArtifact,
+  assertSchedulerRollbackArtifactCardinality,
   type SchedulerBackendInspection,
   type SchedulerBinding,
   type SchedulerMutationExpectation,
@@ -303,7 +303,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
       return snapshotSchtasksBindings(ids, exec, folder, taskName);
     },
     restoreBindings(snapshot: unknown, expectedCurrent?: readonly SchedulerRollbackExpectation[]) {
-      restoreSchtasksBindings(snapshot, { exec, fsLike, taskName }, expectedCurrent);
+      restoreSchtasksBindings(snapshot, { exec, fsLike, folder, taskName }, expectedCurrent);
     },
     expectedSignature(task: SchedulerBinding, opts?: TaskInstallOptions): string {
       const signature = taskXmlSignature(
@@ -456,16 +456,25 @@ function snapshotSchtasksBindings(
 
 function restoreSchtasksBindings(
   snapshot: unknown,
-  context: { exec: SchtasksExec; fsLike: SchtasksFs; taskName: (id: string) => string },
+  context: { exec: SchtasksExec; fsLike: SchtasksFs; folder: string; taskName: (id: string) => string },
   expectedCurrent?: readonly SchedulerRollbackExpectation[],
 ): void {
   if (!isSchtasksBindingSnapshot(snapshot)) {
     throw new ConfigError("Invalid Task Scheduler snapshot.", "INVALID_CONFIG_FILE");
   }
   const errors: unknown[] = [];
+  let rollbackInventory: SchedulerBackendInspection | undefined;
+  if (expectedCurrent) {
+    try {
+      rollbackInventory = inspectSchtasksState(context.exec, context.folder, context.taskName);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
   for (const entry of snapshot.entries) {
     try {
       if (expectedCurrent) {
+        if (!rollbackInventory) continue;
         const expected = expectedCurrent.find((candidate) => candidate.nativeId === entry.id);
         if (!expected) {
           throw new ConfigError(
@@ -473,15 +482,7 @@ function restoreSchtasksBindings(
             "INVALID_CONFIG_FILE",
           );
         }
-        const query = runOrThrow(context.exec, ["schtasks", "/Query", "/TN", context.taskName(entry.id), "/XML"], {
-          isOk: (result) => result.status === 0 || isMissingTaskResult(result),
-          message: (result) =>
-            `schtasks /Query failed during rollback CAS for "${context.taskName(entry.id)}": ${result.stderr || result.stdout || "no output"}.`,
-        });
-        assertSchedulerRollbackArtifact(
-          query.status === 0 ? schtasksArtifact(entry.id, normalizeXmlForUtf16File(query.stdout)) : undefined,
-          expected,
-        );
+        assertSchedulerRollbackArtifactCardinality(rollbackInventory.artifacts, expected);
       }
       restoreSchtasksEntry(entry, context);
     } catch (error) {

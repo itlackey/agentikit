@@ -1202,6 +1202,77 @@ describe("schtasks backend transactional install", () => {
     expect(transaction.calls.some((call) => call[1]?.toLowerCase() === "/delete")).toBe(false);
   });
 
+  test("rollback rejects a case-equivalent task beside a transaction-created Task Scheduler artifact", () => {
+    const transaction = transactionBackend();
+    const owned = qualifiedTask("0 9 * * *");
+    const snapshot = transaction.backend.snapshotBindings?.(["ping"]);
+    transaction.backend.install(owned);
+    const installed = transaction.installedXml();
+    if (!installed) throw new Error("missing installed XML");
+    transaction.addEquivalentArtifact("\\akm\\PING", installed);
+    transaction.calls.length = 0;
+    const restore = transaction.backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: owned.id,
+              invocation: owned.invocation,
+              fingerprint: transaction.backend.expectedSignature?.(owned),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(
+      transaction.calls.some((call) => ["/create", "/delete", "/change"].includes(call[1]?.toLowerCase() ?? "")),
+    ).toBe(false);
+  });
+
+  test("rollback rejects a trailing-dot task peer beside a transaction-updated Task Scheduler artifact", () => {
+    const transaction = transactionBackend();
+    const prior = qualifiedTask("0 9 * * *");
+    transaction.backend.install(prior);
+    const snapshot = transaction.backend.snapshotBindings?.(["ping"]);
+    const updated = { ...prior, cron: "30 10 * * *" };
+    transaction.backend.install(updated);
+    const installed = transaction.installedXml();
+    if (!installed) throw new Error("missing installed XML");
+    transaction.addEquivalentArtifact("\\akm\\ping.", installed);
+    transaction.calls.length = 0;
+    const restore = transaction.backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            {
+              state: "present",
+              bindingId: updated.id,
+              invocation: updated.invocation,
+              fingerprint: transaction.backend.expectedSignature?.(updated),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(
+      transaction.calls.some((call) => ["/create", "/delete", "/change"].includes(call[1]?.toLowerCase() ?? "")),
+    ).toBe(false);
+  });
+
   test("uses a portable native name while preserving a nested logical invocation", () => {
     const transaction = transactionBackend();
     const nested = {
