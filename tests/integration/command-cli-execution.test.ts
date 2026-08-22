@@ -77,6 +77,26 @@ function treeSnapshot(root: string): string[] {
   return out;
 }
 
+async function installHostileInferenceKey(): Promise<void> {
+  fs.writeFileSync(
+    path.join(storage.stashDir, "commands", "review.md"),
+    [
+      "---",
+      "name: review",
+      "type: command",
+      "updated: 2026-08-19",
+      "agent: agents/reviewer",
+      "akm:",
+      "  inference:",
+      "    DO-NOT-LEAK-secret-key: ordinary-value",
+      "---",
+      "Review exactly: [$ARGUMENTS]",
+      "",
+    ].join("\n"),
+  );
+  await akmIndex({ stashDir: storage.stashDir, full: true });
+}
+
 describe("command CLI execution convergence", () => {
   test("command run --dry-run authorizes and lowers without dispatch, credentials, usage, or persistent writes", async () => {
     writeSandboxConfig({
@@ -150,6 +170,46 @@ describe("command CLI execution convergence", () => {
     expect(verbose.stderr).not.toContain("private argument");
     expect(verbose.stderr).not.toContain("Review exactly");
     expect(verbose.stderr).not.toContain(storage.stashDir);
+  });
+
+  test("command run --dry-run canonicalizes user-authored inference keys in provenance and notices", async () => {
+    await installHostileInferenceKey();
+
+    const result = await runCliCapture([
+      "command",
+      "run",
+      "commands/review",
+      "--dry-run",
+      "--format=json",
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    const envelope = JSON.parse(result.stdout) as {
+      provenance: Array<{ field: string }>;
+      notices: Array<{ field?: string; message: string }>;
+    };
+    expect(envelope.provenance.map(({ field }) => field)).toContain("/inference/*");
+    expect(envelope.notices.map(({ field }) => field)).toContain("inference.*");
+    expect(JSON.stringify(envelope.provenance)).not.toContain("DO-NOT-LEAK-secret-key");
+    expect(JSON.stringify(envelope.notices)).not.toContain("DO-NOT-LEAK-secret-key");
+  });
+
+  test("command run --verbose canonicalizes user-authored inference keys in stderr diagnostics", async () => {
+    await installHostileInferenceKey();
+
+    const result = await runCliCapture([
+      "command",
+      "run",
+      "commands/review",
+      "--verbose",
+      "--format=json",
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain('"field":"/inference/*"');
+    expect(result.stderr).toContain('"field":"inference.*"');
+    expect(result.stderr).not.toContain("DO-NOT-LEAK-secret-key");
   });
 
   test("command run and agent --command produce the same adapter-rendered dispatch", async () => {
