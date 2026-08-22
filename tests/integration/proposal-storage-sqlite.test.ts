@@ -22,6 +22,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import { importLegacyProposalsIntoState } from "../../scripts/akm-migrate/migrate/legacy/proposal-fs-import";
 import {
   akmProposalAccept,
@@ -119,6 +120,7 @@ function startProposalWorker<T>(payload: Record<string, unknown>): WorkerHandle<
   fs.writeFileSync(
     scriptPath,
     `
+      import { parentPort } from "node:worker_threads";
       import {
         archiveProposal,
         createProposal,
@@ -126,15 +128,16 @@ function startProposalWorker<T>(payload: Record<string, unknown>): WorkerHandle<
         recordGateDecision,
       } from ${JSON.stringify(moduleHref)};
 
-      self.onmessage = (event) => {
-        const { signalBuffer, action, payload } = event.data;
+      if (!parentPort) throw new Error("Proposal worker requires a parent port");
+      parentPort.on("message", (message) => {
+        const { signalBuffer, action, payload } = message;
         const signal = new Int32Array(signalBuffer);
-        postMessage({ type: "ready" });
+        parentPort.postMessage({ type: "ready" });
         Atomics.wait(signal, 0, 0);
 
         if (action === "create") {
           const result = createProposal(payload.stashDir, payload.input, { dbPath: payload.dbPath });
-          postMessage({
+          parentPort.postMessage({
             type: "result",
             result: isProposalSkipped(result)
               ? { kind: "skipped", reason: result.reason, existingProposalId: result.existingProposalId ?? null }
@@ -147,20 +150,20 @@ function startProposalWorker<T>(payload: Record<string, unknown>): WorkerHandle<
           const updated = archiveProposal(payload.stashDir, payload.id, payload.status, payload.reason, {
             dbPath: payload.dbPath,
           });
-          postMessage({ type: "result", result: { kind: "archived", status: updated.status } });
+          parentPort.postMessage({ type: "result", result: { kind: "archived", status: updated.status } });
           return;
         }
 
         if (action === "gate") {
           const updated = recordGateDecision(payload.stashDir, payload.id, payload.decision, { dbPath: payload.dbPath });
-          postMessage({ type: "result", result: { kind: "gate", updated: updated !== undefined } });
+          parentPort.postMessage({ type: "result", result: { kind: "gate", updated: updated !== undefined } });
         }
-      };
+      });
     `,
     "utf8",
   );
 
-  const worker = new Worker(pathToFileURL(scriptPath).href, { type: "module" });
+  const worker = new Worker(pathToFileURL(scriptPath));
   const signal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
   let resolveReady: (() => void) | undefined;
   let resolveResult: ((value: T) => void) | undefined;
@@ -173,18 +176,18 @@ function startProposalWorker<T>(payload: Record<string, unknown>): WorkerHandle<
     rejectResult = reject;
   });
 
-  worker.addEventListener("message", (event) => {
-    if (event.data?.type === "ready") {
+  worker.on("message", (message) => {
+    if (message?.type === "ready") {
       resolveReady?.();
       return;
     }
-    if (event.data?.type === "result") {
-      resolveResult?.(event.data.result as T);
+    if (message?.type === "result") {
+      resolveResult?.(message.result as T);
       void worker.terminate();
     }
   });
-  worker.addEventListener("error", (event) => {
-    rejectResult?.(event.error ?? new Error(event.message));
+  worker.once("error", (error) => {
+    rejectResult?.(error);
     void worker.terminate();
   });
   worker.postMessage({ signalBuffer: signal.buffer, ...payload });
