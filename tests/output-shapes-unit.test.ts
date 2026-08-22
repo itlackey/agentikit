@@ -38,6 +38,22 @@ describe("pickFields", () => {
   });
 });
 
+describe("command dry-run output shape", () => {
+  test("registers the already-safe canonical envelope without reshaping it", () => {
+    const result = {
+      schemaVersion: 1,
+      shape: "command-dry-run",
+      ok: true,
+      dryRun: true,
+      engine: "reviewer",
+      provenance: [{ field: "engine", layer: "installation-defaults", kind: "installation", via: "explicit" }],
+      notices: [],
+    };
+
+    expect(shapeForCommand("command-dry-run", result, "full")).toEqual(result);
+  });
+});
+
 describe("truncateDescription", () => {
   test("returns short descriptions unchanged", () => {
     expect(truncateDescription("hello", 100)).toBe("hello");

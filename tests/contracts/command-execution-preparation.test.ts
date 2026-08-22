@@ -3,11 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
+import * as commandExecution from "../../src/commands/command/command-execution";
 import {
   type CommandExecutionSourceLoader,
   dispatchPreparedCommandInvocation,
   prepareCommandInvocation,
 } from "../../src/commands/command/command-execution";
+import type { ExecutionSourceLookup } from "../../src/commands/command/execution-source-loader";
 import type { AkmConfig } from "../../src/core/config/config-types";
 import { canonicalResolvedExecutionRequest } from "../../src/execution/resolved-request";
 import { type AdapterRenderedExecutionSource, createAdapterRenderedExecutionSource } from "../../src/execution/source";
@@ -86,6 +88,82 @@ function projectedWithoutStoredIdentity(value: string): Record<string, unknown> 
 }
 
 describe("common command invocation preparation", () => {
+  test("threads one explicit source lookup through command and persona rendering", async () => {
+    const command = rendered("command", "fixture//commands/review", "Review this.", {
+      agent: "agents/reviewer",
+    });
+    const persona = rendered("persona", "fixture//agents/reviewer", "You are a reviewer.");
+    const seen: Array<ExecutionSourceLookup | undefined> = [];
+    const sourceLookup: ExecutionSourceLookup = async () => null;
+    const sourceLoader: CommandExecutionSourceLoader = async (_ref, kind, options) => {
+      seen.push(options?.lookup);
+      return (kind === "command" ? command : persona) as never;
+    };
+
+    await prepareCommandInvocation({
+      action: { ref: "fixture//commands/review" },
+      config,
+      modelMap,
+      sourceLoader,
+      sourceLookup,
+    } as Parameters<typeof prepareCommandInvocation>[0] & { sourceLookup: ExecutionSourceLookup });
+
+    expect(seen).toEqual([sourceLookup, sourceLookup]);
+  });
+
+  test("projects a deterministic dry-run envelope without resolved values or unsafe notice fields", async () => {
+    const inspectPreparedCommandInvocation = (
+      commandExecution as typeof commandExecution & {
+        inspectPreparedCommandInvocation?: (prepared: unknown) => unknown;
+      }
+    ).inspectPreparedCommandInvocation;
+    expect(typeof inspectPreparedCommandInvocation).toBe("function");
+
+    const command = rendered("command", "fixture//commands/private", "DO-NOT-LEAK command content", {
+      model: "reasoning",
+      inference: { vendorUnknown: "DO-NOT-LEAK inference value" },
+    });
+    const prepared = await prepareCommandInvocation({
+      action: { ref: "fixture//commands/private" },
+      config,
+      modelMap,
+      sourceLoader: loaderFor(command).loader,
+      current: { workspace: "/DO-NOT-LEAK/workspace" },
+    });
+    const result = inspectPreparedCommandInvocation?.(prepared) as {
+      provenance: Array<{ field: string; layer: string; kind: string; via: string }>;
+      notices: Array<Record<string, unknown>>;
+      [key: string]: unknown;
+    };
+
+    expect(result).toMatchObject({
+      schemaVersion: 1,
+      shape: "command-dry-run",
+      ok: true,
+      dryRun: true,
+      engine: "reviewer",
+    });
+    expect(Object.keys(result).sort()).toEqual(
+      ["dryRun", "engine", "notices", "ok", "provenance", "schemaVersion", "shape"].sort(),
+    );
+    expect(result.provenance.map(({ field }) => field)).toEqual(result.provenance.map(({ field }) => field).toSorted());
+    for (const provenance of result.provenance) {
+      expect(Object.keys(provenance).sort()).toEqual(["field", "kind", "layer", "via"]);
+    }
+    expect(result.notices.length).toBeGreaterThan(0);
+    expect(result.notices.map((notice) => JSON.stringify(notice))).toEqual(
+      result.notices.map((notice) => JSON.stringify(notice)).toSorted(),
+    );
+    for (const notice of result.notices) {
+      expect(Object.keys(notice).sort()).toEqual(
+        [...(notice.field === undefined ? [] : ["field"]), "adapter", "code", "message", "severity"].sort(),
+      );
+    }
+    const encoded = JSON.stringify(result);
+    expect(encoded).not.toContain("DO-NOT-LEAK");
+    expect(encoded).not.toContain("claude-reasoning-exact");
+  });
+
   test("loads command/persona through adapters, applies exact arguments, then resolves cascade and authorization", async () => {
     const command = rendered("command", "fixture//commands/review", "Review [$ARGUMENTS].", {
       agent: "agents/reviewer",

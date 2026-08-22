@@ -20,11 +20,13 @@ describe("canonical command CLI surface", () => {
     const run = (commandCommand as unknown as DynamicCommand).subCommands?.run;
     expect(run?.args?.ref).toMatchObject({ type: "positional", required: true });
     expect(run?.args?.arguments).toMatchObject({ type: "string" });
+    expect(run?.args?.["dry-run"]).toMatchObject({ type: "boolean", default: false });
   });
 
   test("keeps agent --command as a compatibility surface with the same exact argument flag", () => {
     const args = (agentCommand as unknown as DynamicCommand).args;
     expect(args?.command).toMatchObject({ type: "string" });
     expect(args?.arguments).toMatchObject({ type: "string" });
+    expect(args?.["dry-run"]).toBeUndefined();
   });
 });
