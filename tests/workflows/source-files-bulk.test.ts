@@ -84,8 +84,18 @@ describe("bulk workflow source ownership deduplicates authored paths", () => {
 
     expect(forward).toEqual(reverse);
     expect(forward).toEqual([
-      { canonicalName: "alpha", sourcePaths: ["workflows/alpha.yml"], source: "workflows/alpha.yml" },
-      { canonicalName: "beta", sourcePaths: ["workflows/beta.yml"], source: "workflows/beta.yml" },
+      {
+        canonicalName: "alpha",
+        sourcePaths: ["workflows/alpha.yml"],
+        source: "workflows/alpha.yml",
+        rejection: undefined,
+      },
+      {
+        canonicalName: "beta",
+        sourcePaths: ["workflows/beta.yml"],
+        source: "workflows/beta.yml",
+        rejection: undefined,
+      },
     ]);
     expect(resolveUniqueWorkflowSource(root, "akm", "alpha")).toMatchObject({ relativePath: forward[0]?.source });
     expect(resolveUniqueWorkflowSource(root, "akm", "beta")).toMatchObject({ relativePath: forward[1]?.source });

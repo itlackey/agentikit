@@ -276,19 +276,28 @@ export function resolveWorkflowSourceDomains(
   }
 
   const candidatesByName = new Map<string, WorkflowSourceCandidate[]>();
+  const seenAuthoredPaths = new Set<string>();
   for (const sourcePath of sourcePaths) {
-    const authoredName = workflowNameForSourcePath(authoredRoot, adapterId, sourcePath);
+    // A full walk can legitimately feed the same authored file through more
+    // than one lexical spelling (or a caller may repeat it verbatim). Collapse
+    // only the normalized AUTHORED path here: distinct symlink/case-variant
+    // paths must remain separate ownership candidates even when they resolve to
+    // the same physical inode.
+    const normalizedSourcePath = path.resolve(sourcePath);
+    if (seenAuthoredPaths.has(normalizedSourcePath)) continue;
+    seenAuthoredPaths.add(normalizedSourcePath);
+    const authoredName = workflowNameForSourcePath(authoredRoot, adapterId, normalizedSourcePath);
     if (authoredName === undefined) continue;
     const canonicalName = canonicalizeWorkflowName(authoredName);
     if (!isSafeRelativeName(canonicalName)) continue;
-    const extension = path.extname(sourcePath);
+    const extension = path.extname(normalizedSourcePath);
     const lowerExtension = extension.toLowerCase();
     if (!(WORKFLOW_EXTENSIONS as readonly string[]).includes(lowerExtension)) continue;
     const candidate: WorkflowSourceCandidate = {
-      path: path.resolve(sourcePath),
-      relativePath: toPosix(path.relative(authoredRoot, path.resolve(sourcePath))),
+      path: normalizedSourcePath,
+      relativePath: toPosix(path.relative(authoredRoot, normalizedSourcePath)),
       lowerExtension,
-      extensionlessStem: path.basename(sourcePath).slice(0, -extension.length),
+      extensionlessStem: path.basename(normalizedSourcePath).slice(0, -extension.length),
     };
     const domain = candidatesByName.get(canonicalName) ?? [];
     domain.push(candidate);
