@@ -169,6 +169,32 @@ describe("akmTasksSync — schedule drift", () => {
   });
 
   test.each([
+    ["semicolon command chain", "/opt/akm-0.8/dist/cli.js ; /bin/foreign"],
+    ["and command chain", "/opt/akm-0.8/dist/cli.js && /bin/foreign"],
+    ["pipeline", "/opt/akm-0.8/dist/cli.js | /bin/foreign"],
+    ["pre-command output redirection", "> /tmp/owned /opt/akm-0.8/dist/cli.js"],
+    ["pre-command input redirection", "< /tmp/input /opt/akm-0.8/dist/cli.js"],
+    ["quoted env/operator prefix", "AKM_HIJACK='x;y' /opt/akm-0.8/dist/cli.js"],
+  ])("does not adopt a non-published 0.8 cron body with %s", async (_label, prefix) => {
+    const exec = memoryExec(
+      [
+        "# akm:task alpha BEGIN",
+        `*/15 * * * * ${prefix} tasks run alpha >> /var/log/akm/alpha.log 2>&1`,
+        "# akm:task alpha END",
+        "",
+      ].join("\n"),
+    );
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+    const prior = exec.current();
+
+    await expect(akmTasksSync({ backend }, undefined, { rebind: true })).rejects.toThrow(
+      /native scheduler artifact|unproven owner/i,
+    );
+    expect(exec.current()).toBe(prior);
+  });
+
+  test.each([
     "missing",
     "different primary",
   ] as const)("does not adopt a target-less legacy artifact whose context descriptor is %s", async (descriptorState) => {
