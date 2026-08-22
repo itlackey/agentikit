@@ -304,6 +304,77 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
     },
   );
 
+  test.skipIf(process.platform === "win32")(
+    "a contained symlink and canonical peer produce one deterministic collision without reading either source",
+    async () => {
+      const root = fixtureRoot("akm-lint-yaml-link-collision-");
+      const target = write(root, "support/dual.yml", INVALID_YAML);
+      const linked = link(root, "workflows/dual.yml", target);
+      const markdown = write(root, "workflows/dual.md", VALID_MARKDOWN);
+      const denied = new Set([linked, markdown].map((candidate) => path.resolve(candidate)));
+      const originalRead = fs.readFileSync;
+      const readSpy = spyOn(fs, "readFileSync").mockImplementation(((candidate, options) => {
+        if (denied.has(path.resolve(String(candidate)))) {
+          throw new Error(`ownership arbitration must not read ${String(candidate)}`);
+        }
+        return originalRead(candidate, options as never);
+      }) as typeof fs.readFileSync);
+
+      try {
+        const result = await akmLint({ dir: root, typeFilter: "workflows", fix: true });
+
+        expect(result.flagged).toHaveLength(1);
+        expect(result.flagged[0]).toMatchObject({
+          file: "workflows/dual.md",
+          issue: "invalid-workflow-structure",
+          fixed: false,
+        });
+        expect(result.flagged[0]?.detail).toMatch(/multiple workflow source files.*dual\.md.*dual\.yml/is);
+        expect(JSON.stringify(result)).not.toContain("AKM_SECRET_BYTES_MUST_NOT_LEAK");
+        expect(result.fixed).toEqual([]);
+      } finally {
+        readSpy.mockRestore();
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "a workflow symlink directory is never traversed or read as an authored source",
+    async () => {
+      const root = fixtureRoot("akm-lint-yaml-link-directory-");
+      const targetDir = path.join(root, "support/linked-directory");
+      const sentinel = write(root, "support/linked-directory/hidden.yml", INVALID_YAML);
+      const authoredDir = path.join(root, "workflows/linked-directory");
+      fs.mkdirSync(path.dirname(authoredDir), { recursive: true });
+      fs.symlinkSync(path.relative(path.dirname(authoredDir), targetDir), authoredDir, "dir");
+      const originalRead = fs.readFileSync;
+      const readSpy = spyOn(fs, "readFileSync").mockImplementation(((candidate, options) => {
+        if (path.resolve(String(candidate)) === path.resolve(sentinel)) {
+          throw new Error(`workflow collection must not read ${sentinel}`);
+        }
+        return originalRead(candidate, options as never);
+      }) as typeof fs.readFileSync);
+      const originalReadDir = fs.readdirSync;
+      const traversed = new Set<string>();
+      const readDirSpy = spyOn(fs, "readdirSync").mockImplementation(((candidate, options) => {
+        traversed.add(path.resolve(String(candidate)));
+        return originalReadDir(candidate, options as never);
+      }) as typeof fs.readdirSync);
+
+      try {
+        const result = await akmLint({ dir: root, typeFilter: "workflows" });
+
+        expect(result.flagged).toEqual([]);
+        expect(result.warnings).toEqual([]);
+        expect(traversed.has(path.resolve(authoredDir))).toBe(false);
+        expect(traversed.has(path.resolve(targetDir))).toBe(false);
+      } finally {
+        readDirSpy.mockRestore();
+        readSpy.mockRestore();
+      }
+    },
+  );
+
   test("flat workflow ownership arbitration reads its directory a constant number of times", async () => {
     const root = fixtureRoot("akm-lint-yaml-linear-");
     const workflows = path.join(root, "workflows");
