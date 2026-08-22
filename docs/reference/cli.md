@@ -574,7 +574,7 @@ Subcommands:
 
 | Subcommand | Description |
 | --- | --- |
-| `create <name>` | Validate and write a unified markdown workflow under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
+| `create <name>` | Validate and write a Markdown workflow under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
 | `run <run-id\|ref>` | Stable canonical start/resume/execute command. A ref starts a run or continues the active run in the current scope; a run id continues that exact active run. Executes until completion, failure, verification rejection, interruption, or an explicit limit |
 | `status <run-id\|ref>` | Show the full run state, including all step statuses. `--units` also lists per-unit rows from the run journal (diagnostics only) |
 | `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`) |
@@ -675,10 +675,10 @@ akm workflow create ship --path release          # writes workflows/release/ship
 | Flag | Description |
 | --- | --- |
 | `--path <dir>` | Relative subdirectory under `workflows/` to place the workflow in. The filename comes from `<name>`. |
-| `--from <file>` | Import and validate a unified markdown workflow from an existing file |
+| `--from <file>` | Import and validate a Markdown workflow from an existing file |
 | `--force` | Overwrite an existing workflow. Requires `--from` or `--reset`. |
 | `--reset` | Explicitly replace an existing workflow with a fresh template (use with `--force`) |
-| `--print` | Print the unified markdown template without creating anything |
+| `--print` | Print the Markdown template without creating anything |
 
 `--force` requires either `--from <file>` (replace from a source file) or
 `--reset` (explicitly acknowledge you are overwriting in place). Without one of
@@ -1954,7 +1954,7 @@ stale paths, and broken refs — in body text and in
 `dangerous-env-key` findings for env files (the same key set `akm bundle add`
 enforces — see [Dangerous env key audit](#dangerous-env-key-audit) — but
 non-blocking here; `lint` only warns). `--type workflows` structurally parses
-and compiles unified markdown workflows; errors surface as
+and compiles peer Markdown and GitHub-shaped YAML workflows; errors surface as
 `invalid-workflow-structure` findings (0.9.0: this is the only
 structural-validation surface now that `akm workflow validate` is gone).
 

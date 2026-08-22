@@ -13,15 +13,75 @@ detail.
 - For operating a run day to day (`run`, `status`, `resume`, `abandon`), see
   [Running Workflows](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md).
 
-## One format
+## Source formats and shared IR
 
-A workflow is an ordinary AKM markdown asset — the same envelope as every
-other type, OKF-conformant frontmatter plus a markdown body — whose
-frontmatter carries the entire orchestration graph (params, and how each step
-dispatches, fans out, routes, and gates) and whose body carries each step's
+Peer workflow sources include Markdown `.md` and GitHub-shaped YAML `.yml`.
+`.yaml` is not supported or recognized as a workflow source. Both adapters
+compile into the same strict source IR version 1 (`sourceIrVersion: 1`) before
+target resolution and durable freezing.
+
+The shipped `schemas/akm-workflow.json` frontmatter schema applies to and
+validates the Markdown source only. Markdown is not the sole or only workflow
+source; the GitHub-shaped YAML adapter has its own bounded parser and shares
+the source-IR decoder and semantic authorities.
+
+### Markdown source
+
+A Markdown workflow is an ordinary AKM asset — the same envelope as every
+other Markdown type, OKF-conformant frontmatter plus a body — whose
+frontmatter carries the orchestration graph (params, and how each step
+dispatches, fans out, routes, and gates). Its body carries each step's
 instructions and gate rubric under plain headings, joined to the frontmatter
-by step id. There is **one** format: no separate YAML "program" surface, no
-`.yaml`/`.yml` workflow files.
+by step id. The remainder of this page's frontmatter/body sections document
+that Markdown authoring format.
+
+## GitHub-shaped YAML subset
+
+A complete valid `on` plus `jobs` document is one workflow asset.
+It never creates a duplicate or second task asset. The root vocabulary is exactly
+`name`, `on`, and `jobs`:
+
+```yaml
+name: Local checks
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+jobs:
+  checks:
+    runs-on: [self-hosted]
+    steps:
+      - id: lint
+        run: bun run lint
+      - id: review
+        uses: akm/command
+        with:
+          ref: commands/review
+```
+
+The accepted 0.9.2 subset is deliberately closed:
+
+- `on` accepts five-field `schedule` entries and an empty or null
+  `workflow_dispatch`; workflow_dispatch inputs are unsupported.
+- Service events are rejected.
+  A rejected service event creates no watcher and no polling daemon.
+- Each job requires exactly `runs-on: [self-hosted]`. `name`, `needs`, and
+  `steps` are the remaining job fields.
+- Each step requires `id` and exactly one `uses` or `run`; optional fields are
+  `name`, `with`, `env`, `shell`, and contained `working-directory`.
+- A `run` accepts only token-safe local command tokens.
+  Shell expansion and operators are unsupported and rejected, even when a host shell is named.
+- `uses` delegates to the task-v3 ref classifier. `akm/command`, command,
+  script, and task composition are local targets.
+  Local actions and Docker actions are unsupported and rejected (including `./` and `docker://`); remote actions are rejected
+  because acquisition is out of scope; nested workflows are unsupported.
+- GitHub expressions and contexts are unsupported and rejected anywhere in
+  the parsed tree.
+
+Multi-job documents are dependency-validated, indexed, and displayable, but
+cannot execute in 0.9.2 because the runtime boundary is single-job execution.
+The runtime refuses instead of flattening `needs` or fabricating job
+semantics.
 
 ## Frontmatter keys
 

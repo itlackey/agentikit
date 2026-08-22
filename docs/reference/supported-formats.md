@@ -44,6 +44,8 @@ The `akm-task` adapter and native AKM task directory use the same strict
 `version: 3` task-v3 contract. An `akm-task` source is `.yml` only; `.yaml` is
 diagnosed but never indexed, scheduled, or executed. See [Tasks](tasks.md).
 
+## Workflow formats
+
 Workflow sources are the one intentional peer-format case inside the native
 AKM workspace: workflows may be `.md` or `.yml`, and both compile to the same
 source IR. Task sources remain `.yml` only and require task v3. See

@@ -92,7 +92,7 @@ akm import - --name scratch-notes < notes.md   # Import stdin as a knowledge doc
 akm import https://example.com/docs/auth       # Fetch one URL and import it as knowledge
 akm import ./doc.md --target my-other-bundle    # Route import to a named writable bundle source
 akm workflow create ship-release               # Create a workflow asset in the bundle
-akm lint --type workflows                      # Parse and compile every unified markdown workflow; list every error
+akm lint --type workflows                      # Parse and compile every .md/.yml workflow source; list every error
 akm workflow run workflows/ship-release        # Start or resume and execute the workflow
 akm feedback skills/code-review --positive     # Record that an asset helped
 akm feedback agents/reviewer --negative --reason "wrong framework" # Record why an asset missed the mark

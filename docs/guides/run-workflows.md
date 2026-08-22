@@ -19,6 +19,10 @@ current project directory (nearest `.akm/config.json`, git root, bundle root,
 or current directory), so the same workflow can run independently in separate
 projects.
 
+Every new run/start compiles source IR v1 and freezes durable plan v4 before
+publishing the run. Markdown `.md` and GitHub-shaped `.yml` refs use the same
+freeze path.
+
 ```sh
 akm workflow run workflows/ship-release --version 1.2.3
 akm workflow run workflows/review --changed_files a.ts --changed_files b.ts
@@ -111,6 +115,11 @@ resumed. Use `akm workflow list` to find runs by status. Once resumed,
 `akm workflow run <run-id>` continues it — already-journaled units are reused
 rather than replayed (see
 [Architecture: Resume is journaled replay](../architecture/workflow-engine.md#resume-is-journaled-replay)).
+
+Persisted v3 plans retain exact resume compatibility: a v3 run resumes
+unchanged through its versioned decoder and is not rewritten or normalized to
+v4. Resume consumes the journaled plan and attempts; it does not re-read the
+authored workflow, configuration, or current index.
 
 ## Abandon a run
 

@@ -1,7 +1,7 @@
 # Author's Guide: Writing Workflows
 
-This guide walks through writing and testing a workflow definition: the
-markdown structure, a minimal complete example, common authoring mistakes,
+This guide walks through writing and testing a workflow definition: choosing a
+source format, the Markdown structure, a minimal complete example, common authoring mistakes,
 and how to verify gates and outputs before you publish. It assumes you
 already know what a workflow is; for the exhaustive, exact-syntax reference
 — every frontmatter key, the reference grammar, gates, and outputs — see
@@ -10,21 +10,28 @@ it's written, see [Running Workflows](../guides/run-workflows.md).
 
 ## Start from the template
 
-A workflow is an ordinary AKM markdown asset — OKF-conformant frontmatter
-plus a markdown body — whose frontmatter carries the orchestration graph
-(params, and how each step dispatches, fans out, routes, and gates) and whose
-body carries each step's instructions and gate rubric under plain headings,
-joined to the frontmatter by step id. There is **one** format: no separate
-YAML "program" surface, no `.yaml`/`.yml` workflow files.
+Authors can choose peer Markdown or GitHub-shaped YAML sources. Markdown is
+the full AKM authoring format: OKF-conformant frontmatter carries the
+orchestration graph and its body carries instructions and gate rubrics.
+GitHub-shaped YAML is a strict local subset for interoperability. Read the
+[authoritative YAML subset](../reference/workflow-schema.md#github-shaped-yaml-subset)
+before translating an Actions-shaped file; AKM does not accept arbitrary
+GitHub semantics. `.yaml` is not recognized—use `.yml`.
 
-Use `akm workflow create --print` to print a valid starter, then edit it and
-register it with `akm workflow create`:
+Use `akm workflow create --print` to print a valid Markdown starter, then edit
+it and register it with `akm workflow create`. Author a YAML source directly
+under `workflows/<name>.yml` and validate either source with `akm lint`:
 
 ```sh
 akm workflow create my-release --print   # Print the template, without writing
 akm workflow create my-release --from ./my-release.md
 akm lint --type workflows                # Check for structural errors before using it
 ```
+
+Both formats compile to source IR version 1. Choose Markdown for maps, routes,
+gates, typed artifacts, and prose-rich agent instructions. Choose the bounded
+YAML subset for a single local self-hosted job made of token-safe `run` and
+supported local `uses` steps.
 
 ## A minimal complete example
 

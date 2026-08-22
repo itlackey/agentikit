@@ -15,18 +15,46 @@ commands that drive a run, see [Running Workflows](../guides/run-workflows.md).
 
 ## Frozen plans
 
-The first `akm workflow run <ref>` compiles the workflow and freezes the
-resulting plan on the run row (`plan_json` + `plan_hash`). **A run executes
-the plan compiled at creation; edits to the source file need a new run** — the
-file is never re-read for an in-flight run, so `run` and `resume` retain the
-same workflow no matter what changed on disk. Orchestration decisions are
-pure functions of the frozen plan, run params, and journaled unit results.
+The first `akm workflow run <ref>` compiles either peer source format through
+source IR v1. Every new run/start creates and atomically publishes durable
+plan IR v4 on the run row (`plan_json` + `plan_hash`); a new start never emits
+v3.
 
-The run also freezes its exact models, execution limits, parameter snapshot,
-and verifier selection at creation, so none of those can drift under an
-in-flight run either.
+The v4 durable plan includes a guarded, canonical `sourceReadSet` covering the
+workflow and every command/persona/task/script source it owns. Each entry
+records logical and physical identity, content hash, and containment evidence,
+so aliases, replacements, and source races fail before publication.
+
+Dispatch-significant material is immutable. The resolved request is frozen,
+the resolved target is frozen, and runner selection is frozen.
+Working directory (`cwd`) identity is frozen.
+Executable identity is frozen. Git identity and its commit OID are frozen.
+Exact models, inference, tools and authorization,
+execution limits, parameter snapshots, command/script bytes, and verifier
+selection therefore cannot drift under an in-flight run.
+
+Workflow environment asset values are the narrow live-value exception within
+authored workflow inputs.
+The environment owner key set and secret-token topology are frozen.
+Literal values remain frozen. Pass-through bindings
+materialize at dispatch from the current process, and env/secret references
+materialize their current values only after owner/topology checks. Durable
+plans never store secret values or enable whole-process `inheritEnv`.
+
+**A run executes the plan compiled at creation; edits to source need a new
+run.** Orchestration decisions are pure functions of the frozen plan, run
+params, and journaled results.
 
 ## Resume is journaled replay
+
+Durable plan v3 is an exact compatibility island. Its decoder and canonical
+bytes remain unchanged; a stored v3 row resumes as v3 rather than being
+rewritten, refrozen, or normalized to v4.
+
+Resume never re-reads authored workflow source. Resume never re-reads config
+or configuration. Resume never re-reads the asset index. It validates the
+persisted plan version and consumes only frozen dispatch inputs plus journaled
+attempts and results.
 
 Every dispatched unit is journaled with a content-derived identity — the step
 id plus a hash of the unit's frozen instructions, its item (for a map unit),
@@ -39,6 +67,19 @@ divergence** error naming the unit — it never silently re-runs work whose
 inputs changed under it. (Divergence means the program produced different
 data for the "same" unit across invocations — a nondeterminism bug worth
 surfacing, not papering over.)
+
+## Durable attempts and at-least-once dispatch
+
+Workflow dispatch is at-least-once. Every unit has a stable content-derived
+unit id and an append-only sequence of attempts.
+A crash reclaim reuses the same stable dispatchId for the interrupted attempt.
+An explicit retry gets a new dispatchId under one stable unit id and increments the attempt number.
+
+The run lease and attempt claim fence stale completions after ownership changes,
+but they cannot prove whether an external process completed immediately before
+a crash. An ambiguous crash outcome may re-run and can produce a duplicate
+side effect. Workflow actions should be idempotent or use the stable dispatch
+identity as their own deduplication key.
 
 ## One engine drives a run (the run lease)
 
