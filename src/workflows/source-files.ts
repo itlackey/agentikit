@@ -42,6 +42,16 @@ interface WorkflowSourceCandidateInspection {
   issues: WorkflowSourceRejectionError[];
 }
 
+export interface WorkflowSourceDomainResolution {
+  canonicalName: string;
+  /** Authored, bundle-relative candidate paths in deterministic order. */
+  sourcePaths: readonly string[];
+  /** Present only when this canonical domain has exactly one valid owner. */
+  source?: WorkflowSourceFile;
+  /** Present when any candidate is invalid or multiple valid owners collide. */
+  rejection?: WorkflowSourceRejectionError;
+}
+
 export abstract class WorkflowSourceRejectionError extends UsageError {
   readonly sourcePaths: readonly string[];
 
@@ -216,9 +226,6 @@ export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, n
 
   const basename = path.basename(canonicalName);
   const candidates: WorkflowSourceCandidate[] = [];
-  const sources: WorkflowSourceFile[] = [];
-  const issues: WorkflowSourceRejectionError[] = [];
-
   for (const entry of entries) {
     if (!entry.isFile() && !entry.isSymbolicLink()) continue;
     const extension = path.extname(entry.name);
@@ -236,22 +243,116 @@ export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, n
   }
 
   candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
+  const { sources, issues } = inspectWorkflowSourceDomain(candidates, canonicalName, realRoot);
+
+  if (issues.length > 0) {
+    throw workflowSourceDomainError(adapterId, canonicalName, candidates, sources, issues);
+  }
+  return sources;
+}
+
+/**
+ * Resolve a pre-enumerated set of authored workflow candidates in one batch.
+ *
+ * Callers that already walked a component (for example full lint/index scans)
+ * must use this surface instead of point-resolving every canonical ref and
+ * re-reading the same parent directory once per workflow. Candidate
+ * inspection, symlink containment/format rules, nested-suffix rejection, and
+ * collision construction remain shared with {@link listWorkflowSourceFiles}.
+ */
+export function resolveWorkflowSourceDomains(
+  sourceRoot: string,
+  adapterId: string,
+  sourcePaths: readonly string[],
+): WorkflowSourceDomainResolution[] {
+  if (adapterId !== "akm" && adapterId !== "akm-workflow") return [];
+
+  const authoredRoot = path.resolve(sourceRoot);
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(authoredRoot);
+  } catch {
+    return [];
+  }
+
+  const candidatesByName = new Map<string, WorkflowSourceCandidate[]>();
+  for (const sourcePath of sourcePaths) {
+    const authoredName = workflowNameForSourcePath(authoredRoot, adapterId, sourcePath);
+    if (authoredName === undefined) continue;
+    const canonicalName = canonicalizeWorkflowName(authoredName);
+    if (!isSafeRelativeName(canonicalName)) continue;
+    const extension = path.extname(sourcePath);
+    const lowerExtension = extension.toLowerCase();
+    if (!(WORKFLOW_EXTENSIONS as readonly string[]).includes(lowerExtension)) continue;
+    const candidate: WorkflowSourceCandidate = {
+      path: path.resolve(sourcePath),
+      relativePath: toPosix(path.relative(authoredRoot, path.resolve(sourcePath))),
+      lowerExtension,
+      extensionlessStem: path.basename(sourcePath).slice(0, -extension.length),
+    };
+    const domain = candidatesByName.get(canonicalName) ?? [];
+    domain.push(candidate);
+    candidatesByName.set(canonicalName, domain);
+  }
+
+  const resolutions: WorkflowSourceDomainResolution[] = [];
+  for (const canonicalName of [...candidatesByName.keys()].sort(comparePaths)) {
+    const candidates = candidatesByName.get(canonicalName) ?? [];
+    candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
+    const { sources, issues } = inspectWorkflowSourceDomain(candidates, canonicalName, realRoot);
+    const sourcePaths = candidates.map((candidate) => candidate.relativePath);
+    if (issues.length > 0) {
+      resolutions.push({
+        canonicalName,
+        sourcePaths,
+        rejection: workflowSourceDomainError(adapterId, canonicalName, candidates, sources, issues),
+      });
+      continue;
+    }
+    if (sources.length > 1) {
+      resolutions.push({
+        canonicalName,
+        sourcePaths,
+        rejection: new WorkflowSourceCollisionError(
+          adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName,
+          sources.map((source) => source.relativePath),
+        ),
+      });
+      continue;
+    }
+    resolutions.push({ canonicalName, sourcePaths, source: sources[0] });
+  }
+  return resolutions;
+}
+
+function inspectWorkflowSourceDomain(
+  candidates: readonly WorkflowSourceCandidate[],
+  canonicalName: string,
+  realRoot: string,
+): { sources: WorkflowSourceFile[]; issues: WorkflowSourceRejectionError[] } {
+  const sources: WorkflowSourceFile[] = [];
+  const issues: WorkflowSourceRejectionError[] = [];
   for (const candidate of candidates) {
     const inspection = inspectWorkflowSourceCandidate(candidate, canonicalName, realRoot);
     if (inspection.source) sources.push(inspection.source);
     issues.push(...inspection.issues);
   }
+  return { sources, issues };
+}
 
-  if (issues.length > 0) {
-    const displayedName = adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName;
-    throw new WorkflowSourceDomainError(
-      displayedName,
-      candidates.map((candidate) => candidate.relativePath),
-      issues,
-      sources.map((source) => source.relativePath),
-    );
-  }
-  return sources;
+function workflowSourceDomainError(
+  adapterId: string,
+  canonicalName: string,
+  candidates: readonly WorkflowSourceCandidate[],
+  sources: readonly WorkflowSourceFile[],
+  issues: readonly WorkflowSourceRejectionError[],
+): WorkflowSourceDomainError {
+  return new WorkflowSourceDomainError(
+    adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName,
+    candidates.map((candidate) => candidate.relativePath),
+    issues,
+    sources.map((source) => source.relativePath),
+  );
 }
 
 function inspectWorkflowSourceCandidate(

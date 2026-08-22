@@ -27,15 +27,10 @@ import type { AkmConfig } from "../../core/config/config";
 import { loadConfig, primaryBundlePath } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import type { FileChange } from "../../core/file-change";
-import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import { warn } from "../../core/warn";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import { TASK_EXTENSION, TASK_NEAR_MISS_EXTENSION, taskExtensionDetail } from "../../tasks/schema";
-import {
-  resolveUniqueWorkflowSource,
-  WorkflowSourceRejectionError,
-  workflowNameForSourcePath,
-} from "../../workflows/source-files";
+import { resolveWorkflowSourceDomains } from "../../workflows/source-files";
 import { compareWorkflowSourceCodePoints } from "../../workflows/source-ir/ordering";
 import { runBaseChecks } from "./base-linter";
 import { checkEnvForDangerousKeys } from "./env-key-rules";
@@ -137,14 +132,14 @@ function collectWorkflowFiles(dir: string): string[] {
   for (const entry of fs
     .readdirSync(dir, { withFileTypes: true })
     .sort((left, right) => compareWorkflowSourceCodePoints(left.name, right.name))) {
-    if (entry.name === ".git" || entry.isSymbolicLink()) continue;
+    if (entry.name === ".git") continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === ".cache" || entry.name === "registry") continue;
       results.push(...collectWorkflowFiles(full));
       continue;
     }
-    if (!entry.isFile()) continue;
+    if (!entry.isFile() && !entry.isSymbolicLink()) continue;
     const extension = path.extname(entry.name).toLowerCase();
     if (extension === ".md" || extension === ".yml") results.push(full);
   }
@@ -156,55 +151,29 @@ interface WorkflowLintOwnership {
   issues: LintIssue[];
 }
 
-interface WorkflowLintCandidate {
-  path: string;
-  authoredName: string;
-}
-
 /**
- * Resolve every canonical workflow through the same workflow-source authority
- * used by index/show/run. Unlike the adapter-wide generic resolver, this
- * bounded lookup visits only the canonical source's parent directory, so a
- * full workflow lint does not rescan the whole bundle once per asset. A
- * collision is one deterministic finding and neither source is parsed.
+ * Resolve the already-enumerated candidates through the same workflow-source
+ * authority used by index/show/run. The bulk surface inspects every canonical
+ * domain without re-reading its parent directory once per workflow. A rejected
+ * domain produces one deterministic finding and none of its sources is parsed.
  */
 function resolveWorkflowLintOwnership(stashRoot: string, files: readonly string[]): WorkflowLintOwnership {
-  const candidatesByName = new Map<string, WorkflowLintCandidate[]>();
-  for (const file of files) {
-    const authoredName = workflowNameForSourcePath(stashRoot, "akm", file);
-    if (authoredName === undefined) continue;
-    const canonicalName = canonicalizeWorkflowName(authoredName);
-    const candidates = candidatesByName.get(canonicalName) ?? [];
-    candidates.push({ path: file, authoredName });
-    candidatesByName.set(canonicalName, candidates);
-  }
-
   const ownedFiles: string[] = [];
   const issues: LintIssue[] = [];
-  for (const canonicalName of [...candidatesByName.keys()].sort(compareWorkflowSourceCodePoints)) {
-    const candidates =
-      candidatesByName
-        .get(canonicalName)
-        ?.sort((left, right) => compareWorkflowSourceCodePoints(left.path, right.path)) ?? [];
-    const representative = candidates[0];
-    if (!representative) continue;
-    try {
-      // Pass an authored name so the authority performs the one and only
-      // suffix canonicalization. Passing the grouping key here would strip a
-      // repeated suffix twice and make `name.md.yml` disappear from its domain.
-      const owner = resolveUniqueWorkflowSource(stashRoot, "akm", representative.authoredName);
-      if (owner && candidates.some((candidate) => path.resolve(candidate.path) === path.resolve(owner.path))) {
-        ownedFiles.push(owner.path);
-      }
-    } catch (cause) {
-      if (!(cause instanceof WorkflowSourceRejectionError)) throw cause;
-      issues.push({
-        file: path.relative(stashRoot, representative.path),
-        issue: "invalid-workflow-structure",
-        detail: cause.message,
-        fixed: false,
-      });
+  for (const resolution of resolveWorkflowSourceDomains(stashRoot, "akm", files)) {
+    if (resolution.source) {
+      ownedFiles.push(resolution.source.path);
+      continue;
     }
+    if (!resolution.rejection) continue;
+    const representative = resolution.sourcePaths[0];
+    if (!representative) continue;
+    issues.push({
+      file: representative,
+      issue: "invalid-workflow-structure",
+      detail: resolution.rejection.message,
+      fixed: false,
+    });
   }
   return { files: ownedFiles.sort(compareWorkflowSourceCodePoints), issues };
 }
@@ -223,9 +192,9 @@ function resolveWorkflowLintOwnership(stashRoot: string, files: readonly string[
 // its OWN configured/detected adapter's `validate()` — the single definition
 // of that format's rules, shared with the (now also wired, advisory-only)
 // change-transaction pre-commit gate in `commands/proposal/repository.ts`.
-// This is intentionally the ONLY branch this module adds: the `akm` sweep
-// below is completely untouched (pinned by the goldens/test suite —
-// CRITICAL: akm findings/`--fix` must not move).
+// The adapter-dispatch work intentionally stays outside the `akm` sweep below.
+// The sweep's workflow branch separately supports authoritative peer `.md` and
+// `.yml` sources while preserving the pinned Markdown findings/`--fix` bytes.
 
 /**
  * Case-insensitive SUFFIX match against an adapter's declared `extensions`

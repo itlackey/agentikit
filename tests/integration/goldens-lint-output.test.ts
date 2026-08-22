@@ -48,7 +48,7 @@
  *      directory-level `missing-skill-md` check `akmLint()` runs once per
  *      subdirectory before the per-file loop.
  *
- * ## RE-BASELINED for workflow-format-unification (one workflow form now)
+ * ## RE-BASELINED when the legacy YAML workflow-program format was retired
  *
  * The two-workflow-form split this golden used to capture — `workflowMd`
  * (a real `lintAssetFile` dispatch) vs `workflowProgramYaml` (a SEPARATE
@@ -56,18 +56,20 @@
  * lint dispatch never saw `.yaml` files) — is gone along with the YAML
  * program format itself (spec §3: "the YAML program as a distinct on-disk
  * format" is deleted; `src/workflows/program/parser.ts` and
- * `isWorkflowProgramPath` no longer exist). `WORKFLOW_EXTENSIONS` shrinks to
- * `.md` (`src/core/recognition-util.ts`), and `akmLint()`'s workflows walk
- * collects only `.md` files (`lint/index.ts`: "workflows, one markdown format
- * now, is .md"). `tests/fixtures/stashes/all-types/workflows/` now holds a
- * single fixture (`all-types-workflow.md`, converted to the unified
- * frontmatter+body format; `all-types-workflow-program.yaml` deleted), and
- * `workflow` is captured as an ordinary `perType` entry alongside the other 13
- * types — no more special-cased `LintContext` construction, no more second
- * `result`/`correctnessCheck` field. The `perType` key set shrinks from 14
- * (with the workflow split counted as 2) to 13 real types +
- * `lintDirectoryIssues` on `skill`; the fixture stash itself shrinks from 15
- * files to 14 (one per `ASSET_SPECS_INTERNAL` type).
+ * `isWorkflowProgramPath` no longer exist). This fixture consequently holds a
+ * single Markdown workflow (`all-types-workflow.md`) and captures it as an
+ * ordinary `perType` entry rather than retaining the deleted program parser's
+ * separate `result`/`correctnessCheck` field. The `perType` key set shrank from
+ * 14 (with the historical workflow split counted as 2) to 13 real types plus
+ * `lintDirectoryIssues` on `skill`; the fixture stash shrank from 15 files to
+ * 14 (one per `ASSET_SPECS_INTERNAL` type).
+ *
+ * Workflows now again have two PEER sources, but the YAML peer is the bounded
+ * GitHub-shaped source-IR format at `.yml`, not the retired workflow-program
+ * `.yaml` format. The real `akmLint()` sweep enumerates and arbitrates both
+ * `.md` and `.yml`; YAML bypasses Markdown base/stub checks and compiles through
+ * the shared source-IR frontend. Dedicated YAML lint contracts cover that path,
+ * while this all-types fixture intentionally continues to exercise Markdown.
  *
  * ## Determinism
  *
@@ -102,7 +104,7 @@ const LINT_GOLDEN_PATH = "tests/fixtures/goldens/lint/all-types.json";
 // this alongside any re-capture; the fixture is generated from it.
 const HEAD_SHA = "2d0e39c5a253b869bc51267403e66a1fd0c6daf6";
 
-/** [type key, stash subdir, relPath] for all 14 `ASSET_SPECS_INTERNAL` types (workflow is one form now). */
+/** [type key, stash subdir, relPath] for all 14 `ASSET_SPECS_INTERNAL` types (using the Markdown workflow peer). */
 const ALL_TYPE_CASES: Array<[type: string, subdir: string, relPath: string]> = [
   ["skill", "skills", "skills/all-types-skill/SKILL.md"],
   ["command", "commands", "commands/all-types-command.md"],
@@ -122,9 +124,11 @@ const ALL_TYPE_CASES: Array<[type: string, subdir: string, relPath: string]> = [
 /**
  * Build a `LintContext` for `relPath`, using the EXACT construction
  * `src/commands/lint/index.ts`'s `akmLint()` per-file loop uses: `tasks` is
- * parsed as plain YAML (no frontmatter fence), everything else (workflows
- * included — one markdown format now) via `parseFrontmatter`. `fix` is always
- * `false` — this suite never mutates the fixture stash.
+ * parsed as plain YAML (no frontmatter fence), while every other fixture in
+ * THIS table (including its Markdown workflow peer) uses `parseFrontmatter`.
+ * A workflow `.yml` peer bypasses this direct helper and is compiled by the
+ * real sweep through source-IR. `fix` is always `false` here — this suite never
+ * mutates the fixture stash.
  */
 function buildLintContext(subdir: string, relPath: string): LintContext {
   const filePath = path.join(STASH_ROOT, relPath);
@@ -177,7 +181,7 @@ describe("lint parity: all 14 all-types fixture assets lint clean via the consol
     expect(issues).toEqual([]);
   });
 
-  test("workflow lints clean via the CLI's real dispatch (one markdown form now)", () => {
+  test("the Markdown workflow peer lints clean via the CLI-owned per-file dispatch", () => {
     const { issues } = lintOneType("workflows", "workflows/all-types-workflow.md");
     expect(issues).toEqual([]);
   });
