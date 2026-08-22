@@ -165,11 +165,16 @@ describe("exec unit — environment scope (`inherit_env` / `pass_env`)", () => {
     expect(errors[0]!.message).toContain(message);
   });
 
-  test("an over-long pass_env is rejected and points at `inherit_env`", () => {
+  test("an over-long pass_env is rejected and points at exact named `env:` bindings", () => {
     const tooMany = JSON.stringify(Array.from({ length: WORKFLOW_MAX_EXEC_PASS_ENV + 1 }, (_, i) => `VAR_${i}`));
     const errors = parseErrors(doc([...EXEC_STEP, `        pass_env: ${tooMany}`]));
-    expect(errors[0]!.message).toContain(`at most ${WORKFLOW_MAX_EXEC_PASS_ENV} entries`);
-    expect(errors[0]!.message).toContain("inherit_env: true");
+    const message = errors[0]!.message;
+    expect(message).toBe(
+      `Step "work" "exec.pass_env" must have at most ${WORKFLOW_MAX_EXEC_PASS_ENV} entries. ` +
+        `A command needing more than that should use explicit named "env:" bindings instead.`,
+    );
+    expect(message).not.toContain("inherit_env: true");
+    expect(message).not.toContain("VAR_0");
   });
 
   test("a bad value is anchored to ITS OWN line, not the document or the step", () => {
