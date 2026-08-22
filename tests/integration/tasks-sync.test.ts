@@ -149,11 +149,9 @@ describe("akmTasksSync — schedule drift", () => {
     expect(exec.current()).toBe("");
   });
 
-  // 0.9 scheduler ABI respelling (S6): a persisted invocation that no longer
-  // parses (missing context descriptor, or the pre-rename `tasks run`
-  // spelling below) is an orphan of its marker id, not a hard failure — sync
-  // reinstalls it from the current task file instead of crashing.
-  test("reinstalls a persisted scheduler invocation without a context descriptor", async () => {
+  // A malformed native artifact does not prove its logical owner. Even when
+  // its marker resembles the desired task, sync must not overwrite it.
+  test("preserves and rejects a scheduler invocation without a context descriptor", async () => {
     const exec = memoryExec(
       [
         "# akm:task alpha BEGIN",
@@ -164,14 +162,13 @@ describe("akmTasksSync — schedule drift", () => {
     );
     const backend = backendFor(exec);
     writeTask("alpha", "*/15 * * * *", false);
+    const prior = exec.current();
 
-    const result = await akmTasksSync({ backend });
-    expect(result.installed).toEqual(["alpha"]);
-    expect(exec.current()).toContain("--scheduler-context");
-    expect(exec.current()).toContain("task run alpha");
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/native scheduler artifact|unproven owner/i);
+    expect(exec.current()).toBe(prior);
   });
 
-  test("reinstalls a pre-rename `tasks run` invocation as an orphan of its marker id", async () => {
+  test("preserves and rejects a pre-rename `tasks run` artifact with unproven ownership", async () => {
     const exec = memoryExec(
       [
         "# akm:task alpha BEGIN",
@@ -182,11 +179,10 @@ describe("akmTasksSync — schedule drift", () => {
     );
     const backend = backendFor(exec);
     writeTask("alpha", "*/15 * * * *", true);
+    const prior = exec.current();
 
-    const result = await akmTasksSync({ backend });
-    expect(result.installed).toEqual(["alpha"]);
-    expect(exec.current()).toContain("task run alpha");
-    expect(exec.current()).not.toContain("tasks run alpha");
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/native scheduler artifact|unproven owner/i);
+    expect(exec.current()).toBe(prior);
   });
 
   test("a failed replacement leaves the prior native definition active", async () => {

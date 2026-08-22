@@ -44,6 +44,12 @@ export function validateTaskId(id: string): string {
       "INVALID_FLAG_VALUE",
     );
   }
+  if (id.endsWith(".")) {
+    throw new UsageError(
+      `Task id "${id}" is invalid. Trailing periods are not portable across native schedulers.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
   if (WINDOWS_RESERVED_DEVICE_RE.test(id)) {
     throw new UsageError(
       `Task id "${id}" uses a reserved Windows device name. Choose a different task id.`,

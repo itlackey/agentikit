@@ -39,7 +39,13 @@ import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { parseSchedule, type SchtasksTrigger, translateToSchtasks } from "../schedule";
-import { type SchedulerBinding, schedulerLogicalBindingId, schedulerNativeBindingId } from "../scheduler-binding";
+import {
+  assertSchedulerNativeArtifactOwner,
+  type SchedulerBinding,
+  schedulerLogicalBindingId,
+  schedulerNativeArtifactOwner,
+  schedulerNativeBindingId,
+} from "../scheduler-binding";
 import {
   buildScheduledBindingInvocation,
   parseScheduledBindingArgv,
@@ -50,6 +56,7 @@ import {
 } from "../scheduler-invocation";
 import {
   type BackendExec,
+  type ExecResult,
   escapeXml,
   type NodeFs,
   nodeExec,
@@ -99,11 +106,12 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
   const scheduledContext = options.scheduledContext ?? resolveScheduledTaskContext();
   const defaultContextPath = schedulerContextPath(schedulerContextDescriptor(scheduledContext, process.env.PATH ?? ""));
   const userSid = options.userSid ?? resolveCurrentUserSid(exec);
-  const taskName = (id: string) => `${folder}${schedulerNativeBindingId(id)}`;
+  const taskName = (nativeId: string) => `${folder}${nativeId}`;
 
   return {
     name: "schtasks",
     install(task: SchedulerBinding, opts?: TaskInstallOptions) {
+      const nativeId = schedulerNativeBindingId(task.id);
       const xml = normalizeXmlForUtf16File(
         buildSchtasksXml(task, akmArgv, logDir, {
           folderPrefix: folder,
@@ -113,32 +121,34 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
           ...(opts?.target !== undefined ? { target: opts.target } : {}),
         }),
       );
-      const query = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(task.id), "/XML"], {
+      const query = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(nativeId), "/XML"], {
         isOk: (r) => r.status === 0 || isMissingTaskResult(r),
         message: (r) => `schtasks /Query failed (exit ${r.status}): ${r.stderr || r.stdout || "no output"}.`,
       });
       let previous: { xml: string; enabled: boolean } | undefined;
       if (query.status === 0) {
+        assertSchedulerNativeArtifactOwner(nativeId, task, extractSchtasksInvocation(query.stdout)?.invocation);
         const enabled = taskXmlEnabled(query.stdout);
         if (enabled === undefined) {
           throw new ConfigError(
-            `schtasks /Query returned an unreadable definition for "${taskName(task.id)}"; refusing to replace it.`,
+            `schtasks /Query returned an unreadable definition for "${taskName(nativeId)}"; refusing to replace it.`,
             "INVALID_CONFIG_FILE",
           );
         }
         previous = { xml: normalizeXmlForUtf16File(query.stdout), enabled };
       }
       fsLike.ensureDir(logDir);
-      const tmpFile = path.join(fsLike.tmpdir(), `akm-task-${schedulerNativeBindingId(task.id)}-${Date.now()}.xml`);
+      const tmpFile = path.join(fsLike.tmpdir(), `akm-task-${nativeId}-${Date.now()}.xml`);
       fsLike.writeFile(tmpFile, xml);
       try {
+        assertSchtasksArtifactUnchanged(exec, taskName(nativeId), query, nativeId, task);
         try {
           // /F forces overwrite if a task with the same name exists.
-          runOrThrow(exec, ["schtasks", "/Create", "/TN", taskName(task.id), "/XML", tmpFile, "/F"], {
+          runOrThrow(exec, ["schtasks", "/Create", "/TN", taskName(nativeId), "/XML", tmpFile, "/F"], {
             message: (r) => `schtasks /Create failed (exit ${r.status}): ${r.stderr || r.stdout || "no output"}.`,
           });
           if (!task.enabled) {
-            runOrThrow(exec, ["schtasks", "/Change", "/TN", taskName(task.id), "/DISABLE"], {
+            runOrThrow(exec, ["schtasks", "/Change", "/TN", taskName(nativeId), "/DISABLE"], {
               message: (r) => `schtasks /Change /DISABLE failed: ${r.stderr || r.stdout || "no output"}.`,
             });
           }
@@ -146,7 +156,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
           const rollbackErrors: unknown[] = [];
           if (previous === undefined) {
             try {
-              const remove = exec.run(["schtasks", "/Delete", "/TN", taskName(task.id), "/F"]);
+              const remove = exec.run(["schtasks", "/Delete", "/TN", taskName(nativeId), "/F"]);
               if (remove.status !== 0 && !isMissingTaskResult(remove)) {
                 rollbackErrors.push(
                   new ConfigError(
@@ -161,11 +171,11 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
           } else {
             try {
               fsLike.writeFile(tmpFile, previous.xml);
-              runOrThrow(exec, ["schtasks", "/Create", "/TN", taskName(task.id), "/XML", tmpFile, "/F"], {
+              runOrThrow(exec, ["schtasks", "/Create", "/TN", taskName(nativeId), "/XML", tmpFile, "/F"], {
                 message: (r) => `schtasks /Create during rollback failed: ${r.stderr || r.stdout || "no output"}.`,
               });
               const stateFlag = previous.enabled ? "/ENABLE" : "/DISABLE";
-              runOrThrow(exec, ["schtasks", "/Change", "/TN", taskName(task.id), stateFlag], {
+              runOrThrow(exec, ["schtasks", "/Change", "/TN", taskName(nativeId), stateFlag], {
                 message: (r) =>
                   `schtasks /Change ${stateFlag} during rollback failed: ${r.stderr || r.stdout || "no output"}.`,
               });
@@ -186,15 +196,15 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
         fsLike.removeFile(tmpFile);
       }
     },
-    uninstall(id: string) {
-      runOrThrow(exec, ["schtasks", "/Delete", "/TN", taskName(id), "/F"], {
+    uninstall(nativeId: string) {
+      runOrThrow(exec, ["schtasks", "/Delete", "/TN", taskName(nativeId), "/F"], {
         isOk: (r) => r.status === 0 || /cannot find/i.test(r.stderr ?? ""),
         message: (r) => `schtasks /Delete failed: ${r.stderr || r.stdout || "no output"}.`,
       });
     },
-    setEnabled(id: string, enabled: boolean) {
+    setEnabled(nativeId: string, enabled: boolean) {
       const flag = enabled ? "/ENABLE" : "/DISABLE";
-      runOrThrow(exec, ["schtasks", "/Change", "/TN", taskName(id), flag], {
+      runOrThrow(exec, ["schtasks", "/Change", "/TN", taskName(nativeId), flag], {
         message: (r) => `schtasks /Change ${flag} failed: ${r.stderr || r.stdout || "no output"}.`,
       });
     },
@@ -232,6 +242,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
           binding: installed.binding,
           contextPath: installed.contextPath,
         };
+        Object.defineProperty(ref, "nativeId", { value: id });
         Object.defineProperty(ref, "invocation", { value: Object.freeze([...installed.invocation]) });
         refs.push(ref);
       }
@@ -253,13 +264,35 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
         });
         const signature = installedSignature(query.stdout);
         const installed = extractSchtasksInvocation(query.stdout);
-        refs.push({
+        const ref = {
           id: installed ? schedulerLogicalBindingId(id, installed.invocation) : id,
           ...(signature !== undefined ? { signature } : {}),
           ...(installed?.target !== undefined ? { target: installed.target } : {}),
-        });
+        };
+        Object.defineProperty(ref, "nativeId", { value: id });
+        refs.push(ref);
       }
       return refs;
+    },
+    listNativeArtifacts() {
+      const r = runOrThrow(exec, ["schtasks", "/Query", "/FO", "CSV", "/NH"], {
+        message: (res) => `schtasks /Query failed (exit ${res.status}): ${res.stderr || res.stdout || "no output"}.`,
+      });
+      const artifacts = [];
+      for (const line of (r.stdout ?? "").split(/\r?\n/)) {
+        const match = line.match(/^"([^"]+)",/);
+        const name = match?.[1];
+        if (!name?.startsWith(folder)) continue;
+        const nativeId = name.slice(folder.length);
+        const query = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(nativeId), "/XML"], {
+          message: (result) =>
+            `schtasks /Query /XML for "${taskName(nativeId)}" failed (exit ${result.status}): ${result.stderr || result.stdout || "no output"}.`,
+        });
+        const installed = extractSchtasksInvocation(query.stdout);
+        const owner = installed ? schedulerNativeArtifactOwner(nativeId, installed.invocation) : undefined;
+        artifacts.push({ nativeId, ...owner });
+      }
+      return artifacts;
     },
     snapshotBindings(ids: readonly string[]): SchtasksBindingSnapshot {
       return snapshotSchtasksBindings(ids, exec, taskName);
@@ -418,6 +451,36 @@ function parsePowerShellSingleQuotedArgs(script: string, start: number): string[
     argv.push(value);
   }
   return argv;
+}
+
+/** Close the read/prepare-to-/Create ownership race at the native boundary. */
+function assertSchtasksArtifactUnchanged(
+  exec: SchtasksExec,
+  nativeTaskName: string,
+  previous: ExecResult,
+  nativeId: string,
+  task: SchedulerBinding,
+): void {
+  // This runs outside install's rollback region: no scheduler mutation has
+  // occurred, so a raced owner must remain untouched rather than be restored
+  // from the stale first read.
+  const current = runOrThrow(exec, ["schtasks", "/Query", "/TN", nativeTaskName, "/XML"], {
+    isOk: (result) => result.status === 0 || isMissingTaskResult(result),
+    message: (result) =>
+      `schtasks /Query failed during final ownership check (exit ${result.status}): ${result.stderr || result.stdout || "no output"}.`,
+  });
+  const changed =
+    current.status !== previous.status ||
+    (current.status === 0 && normalizeXmlForUtf16File(current.stdout) !== normalizeXmlForUtf16File(previous.stdout));
+  if (changed) {
+    throw new ConfigError(
+      `schtasks task "${nativeTaskName}" changed while it was being prepared; refusing to replace an unverified owner.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  if (current.status === 0) {
+    assertSchedulerNativeArtifactOwner(nativeId, task, extractSchtasksInvocation(current.stdout)?.invocation);
+  }
 }
 
 // ── XML builder (exported for tests) ────────────────────────────────────────

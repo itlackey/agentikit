@@ -73,6 +73,19 @@ describe("scheduled task invocation", () => {
     });
   });
 
+  test.each([
+    "bad%id",
+    "bad.yml",
+    "bad.",
+    "bad\u0001id",
+  ])("rejects every invalid flat public task invocation id %p", (taskId) => {
+    const argv = ["/opt/akm", "--scheduler-context", "/data/context.json", "task", "run", taskId, "--scheduled"];
+    expect(parseScheduledBindingArgv(argv)).toBeUndefined();
+    expect(() => buildScheduledTaskInvocation(["/opt/akm"], taskId, "/data/context.json")).toThrow(
+      "Invalid scheduler invocation",
+    );
+  });
+
   test("builds and recognizes the public qualified workflow invocation without hidden scheduler flags", () => {
     const argv = buildScheduledBindingInvocation(["/opt/akm"], "/data/context.json", [
       "workflow",

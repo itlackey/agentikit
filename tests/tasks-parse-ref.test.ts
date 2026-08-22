@@ -19,11 +19,11 @@ describe("parseTaskRef (0.9.0 grammar, D-R3)", () => {
   });
 
   test("accepts the canonical short conceptId `tasks/<id>`", () => {
-    expect(parseTaskRef("tasks/foo")).toEqual({ id: "foo" });
+    expect(parseTaskRef("tasks/foo")).toEqual({ id: "tasks/foo" });
   });
 
   test("accepts a bundle-qualified `[bundle//]tasks/<id>`", () => {
-    expect(parseTaskRef("mybundle//tasks/foo")).toEqual({ id: "foo", bundle: "mybundle" });
+    expect(parseTaskRef("mybundle//tasks/foo")).toEqual({ id: "tasks/foo", bundle: "mybundle" });
   });
 
   test("preserves standalone nested concept ids in short and bundle-qualified forms", () => {
@@ -35,7 +35,7 @@ describe("parseTaskRef (0.9.0 grammar, D-R3)", () => {
   });
 
   test("trims surrounding whitespace", () => {
-    expect(parseTaskRef("  tasks/foo  ")).toEqual({ id: "foo" });
+    expect(parseTaskRef("  tasks/foo  ")).toEqual({ id: "tasks/foo" });
   });
 
   test("rejects the retired legacy `task:<id>` colon grammar", () => {
@@ -50,7 +50,13 @@ describe("parseTaskRef (0.9.0 grammar, D-R3)", () => {
     expect(usage.code).toBe("INVALID_FLAG_VALUE");
   });
 
-  test("REJECTS a non-task conceptId", () => {
-    expect(() => parseTaskRef("knowledge/foo")).toThrow(UsageError);
+  test("parses native-looking concept ids syntactically before adapter projection", () => {
+    expect(parseTaskRef("knowledge/foo")).toEqual({ id: "knowledge/foo" });
+    expect(parseTaskRef("commands/deep/nightly")).toEqual({ id: "commands/deep/nightly" });
+  });
+
+  test("validates every segment of a syntactically parsed task concept id", () => {
+    expect(() => parseTaskRef("commands/bad%id")).toThrow(UsageError);
+    expect(() => parseTaskRef("bad%id")).toThrow(UsageError);
   });
 });

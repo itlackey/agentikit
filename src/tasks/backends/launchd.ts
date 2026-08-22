@@ -31,7 +31,13 @@ import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { type LaunchdTrigger, parseSchedule, translateToLaunchd } from "../schedule";
-import { type SchedulerBinding, schedulerLogicalBindingId, schedulerNativeBindingId } from "../scheduler-binding";
+import {
+  assertSchedulerNativeArtifactOwner,
+  type SchedulerBinding,
+  schedulerLogicalBindingId,
+  schedulerNativeArtifactOwner,
+  schedulerNativeBindingId,
+} from "../scheduler-binding";
 import {
   buildScheduledBindingInvocation,
   parseScheduledBindingArgv,
@@ -93,23 +99,11 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
   const akmArgv = options.akmArgv ?? resolveAkmInvocation().argv;
   const scheduledContext = options.scheduledContext ?? resolveScheduledTaskContext();
 
-  const plistPath = (id: string) =>
-    path.join(agentsDir, `${LAUNCHD_LABEL_PREFIX}${schedulerNativeBindingId(id)}.plist`);
-  const label = (id: string) => `${LAUNCHD_LABEL_PREFIX}${schedulerNativeBindingId(id)}`;
-  const target = (id: string) => `gui/${exec.uid()}/${label(id)}`;
-  const pathEnv = () => {
-    if (options.envPath === false) return undefined;
-    if (typeof options.envPath === "string") return options.envPath;
-    return process.env.PATH ?? "";
-  };
-  const defaultContextPath = schedulerContextPath(schedulerContextDescriptor(scheduledContext, pathEnv() ?? ""));
-
-  const setEnableState = (id: string, enabled: boolean) => {
-    const verb = enabled ? "enable" : "disable";
-    runOrThrow(exec, ["launchctl", verb, target(id)], {
-      message: (r) => `launchctl ${verb} failed: ${r.stderr || r.stdout || "no output"}.`,
-    });
-  };
+  const plistPath = (nativeId: string) => path.join(agentsDir, `${LAUNCHD_LABEL_PREFIX}${nativeId}.plist`);
+  const label = (nativeId: string) => `${LAUNCHD_LABEL_PREFIX}${nativeId}`;
+  const target = (nativeId: string) => `gui/${exec.uid()}/${label(nativeId)}`;
+  const defaultContextPath = launchdDefaultContextPath(options, scheduledContext);
+  const setEnableState = (nativeId: string, enabled: boolean) => setLaunchdEnableState(exec, target(nativeId), enabled);
 
   return {
     name: "launchd",
@@ -123,31 +117,29 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
         opts?.contextPath ?? defaultContextPath,
         opts?.target,
       );
-      const file = plistPath(task.id);
-      const previousPlist = fsLike.exists(file) ? fsLike.readFile(file) : undefined;
-      let previousEnabled = true;
-      if (previousPlist !== undefined) {
-        const disabledLabels = readDisabledLabels(exec);
-        if (disabledLabels === undefined) {
-          throw new ConfigError(
-            `launchctl print-disabled failed; cannot safely replace existing task "${task.id}".`,
-            "INVALID_CONFIG_FILE",
-          );
-        }
-        previousEnabled = !disabledLabels.has(label(task.id));
-      }
+      const nativeId = schedulerNativeBindingId(task.id);
+      const file = plistPath(nativeId);
       fsLike.ensureDir(agentsDir);
       // launchd refuses to start a job when StandardOutPath/StandardErrorPath
       // points at a non-existent directory; create it before bootstrap.
       fsLike.ensureDir(logDir);
-      const tempFile = path.join(agentsDir, `.${schedulerNativeBindingId(task.id)}.${Date.now()}.tmp`);
+      const { previousPlist, previousEnabled } = readLaunchdPriorState(
+        fsLike,
+        file,
+        exec,
+        nativeId,
+        label(nativeId),
+        task,
+      );
+      const tempFile = path.join(agentsDir, `.${nativeId}.${Date.now()}.tmp`);
       fsLike.writeFile(tempFile, xml);
       let bootoutCompleted = false;
       let previousWasLoaded = false;
       let fileReplaced = false;
       let enableStateTouched = false;
       try {
-        const bootout = runOrThrow(exec, ["launchctl", "bootout", target(task.id)], {
+        assertLaunchdArtifactUnchanged(fsLike, file, previousPlist, nativeId, label(nativeId), task);
+        const bootout = runOrThrow(exec, ["launchctl", "bootout", target(nativeId)], {
           isOk: (r) => r.status === 0 || isServiceNotFoundResult(r),
           message: (r) => `launchctl bootout failed (exit ${r.status}): ${r.stderr || r.stdout || "no output"}.`,
         });
@@ -158,13 +150,13 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
         // A disable override survives bootout and plist replacement. Clear it
         // before bootstrap, then apply the desired state after registration.
         enableStateTouched = true;
-        setEnableState(task.id, true);
+        setEnableState(nativeId, true);
         runOrThrow(exec, ["launchctl", "bootstrap", `gui/${exec.uid()}`, file], {
           message: (r) => `launchctl bootstrap failed (exit ${r.status}): ${r.stderr || r.stdout || "no output"}.`,
           hint: "Ensure `launchctl` is available; on macOS it is part of the base system.",
         });
         if (!task.enabled) {
-          setEnableState(task.id, false);
+          setEnableState(nativeId, false);
         }
       } catch (err) {
         if (!bootoutCompleted) throw err;
@@ -173,7 +165,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
         if (fileReplaced) {
           let replacementUnloaded = false;
           try {
-            const rollbackBootout = exec.run(["launchctl", "bootout", target(task.id)]);
+            const rollbackBootout = exec.run(["launchctl", "bootout", target(nativeId)]);
             replacementUnloaded = rollbackBootout.status === 0 || isServiceNotFoundResult(rollbackBootout);
             if (!replacementUnloaded) {
               rollbackErrors.push(
@@ -204,7 +196,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
 
         if (previousPlist !== undefined && previousWasLoaded && priorFileRestored) {
           try {
-            setEnableState(task.id, true);
+            setEnableState(nativeId, true);
             const restore = exec.run(["launchctl", "bootstrap", `gui/${exec.uid()}`, file]);
             if (restore.status !== 0) {
               rollbackErrors.push(
@@ -219,14 +211,14 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
           }
           if (!previousEnabled) {
             try {
-              setEnableState(task.id, false);
+              setEnableState(nativeId, false);
             } catch (rollbackError) {
               rollbackErrors.push(rollbackError);
             }
           }
         } else if (enableStateTouched) {
           try {
-            setEnableState(task.id, previousPlist === undefined || previousEnabled);
+            setEnableState(nativeId, previousPlist === undefined || previousEnabled);
           } catch (rollbackError) {
             rollbackErrors.push(rollbackError);
           }
@@ -243,18 +235,18 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
         if (fsLike.exists(tempFile)) fsLike.removeFile(tempFile);
       }
     },
-    uninstall(id: string) {
-      runOrThrow(exec, ["launchctl", "bootout", target(id)], {
+    uninstall(nativeId: string) {
+      runOrThrow(exec, ["launchctl", "bootout", target(nativeId)], {
         isOk: (r) => r.status === 0 || isServiceNotFoundResult(r),
         message: (r) => `launchctl bootout failed (exit ${r.status}): ${r.stderr || r.stdout || "no output"}.`,
       });
       // launchctl disable overrides persist after the plist is removed.
-      setEnableState(id, true);
-      const file = plistPath(id);
+      setEnableState(nativeId, true);
+      const file = plistPath(nativeId);
       if (fsLike.exists(file)) fsLike.removeFile(file);
     },
-    setEnabled(id: string, enabled: boolean) {
-      setEnableState(id, enabled);
+    setEnabled(nativeId: string, enabled: boolean) {
+      setEnableState(nativeId, enabled);
     },
     list(): InstalledTaskRef[] {
       if (!fsLike.exists(agentsDir)) return [];
@@ -277,12 +269,26 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
         if (!file.startsWith(LAUNCHD_LABEL_PREFIX) || !file.endsWith(".plist")) continue;
         const id = file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length);
         const installed = extractPlistInvocation(fsLike.readFile(plistPath(id)));
-        refs.push({
+        const ref = {
           id: installed ? schedulerLogicalBindingId(id, installed.invocation) : id,
           ...(installed?.target !== undefined ? { target: installed.target } : {}),
-        });
+        };
+        Object.defineProperty(ref, "nativeId", { value: id });
+        refs.push(ref);
       }
       return refs;
+    },
+    listNativeArtifacts() {
+      if (!fsLike.exists(agentsDir)) return [];
+      const artifacts = [];
+      for (const file of fsLike.list(agentsDir)) {
+        if (!file.startsWith(LAUNCHD_LABEL_PREFIX) || !file.endsWith(".plist")) continue;
+        const nativeId = file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length);
+        const installed = extractPlistInvocation(fsLike.readFile(plistPath(nativeId)));
+        const owner = installed ? schedulerNativeArtifactOwner(nativeId, installed.invocation) : undefined;
+        artifacts.push({ nativeId, ...owner });
+      }
+      return artifacts;
     },
     snapshotBindings(ids: readonly string[]): LaunchdBindingSnapshot {
       return snapshotLaunchdBindings(ids, { exec, fsLike, plistPath, target, label });
@@ -459,14 +465,14 @@ function inspectInstalledLaunchdTask(
     binding: installed.binding,
     contextPath: installed.contextPath,
   };
-  if (!disabledLabels) return withInstalledInvocation({ id: logicalId, ...metadata }, installed.invocation);
+  if (!disabledLabels) return withInstalledInvocation({ id: logicalId, ...metadata }, installed.invocation, id);
 
   const jobLabel = `${LAUNCHD_LABEL_PREFIX}${id}`;
   try {
     const loaded = exec.run(["launchctl", "print", `gui/${exec.uid()}/${jobLabel}`]);
-    if (loaded.status !== 0) return withInstalledInvocation({ id: logicalId, ...metadata }, installed.invocation);
+    if (loaded.status !== 0) return withInstalledInvocation({ id: logicalId, ...metadata }, installed.invocation, id);
   } catch {
-    return withInstalledInvocation({ id: logicalId, ...metadata }, installed.invocation);
+    return withInstalledInvocation({ id: logicalId, ...metadata }, installed.invocation, id);
   }
 
   try {
@@ -477,15 +483,80 @@ function inspectInstalledLaunchdTask(
     return withInstalledInvocation(
       { id: logicalId, signature: normalizeSignature(xml), ...metadata },
       installed.invocation,
+      id,
     );
   } catch {
-    return withInstalledInvocation({ id: logicalId, ...metadata }, installed.invocation);
+    return withInstalledInvocation({ id: logicalId, ...metadata }, installed.invocation, id);
   }
 }
 
-function withInstalledInvocation(ref: InstalledTaskRef, invocation: readonly string[]): InstalledTaskRef {
+function withInstalledInvocation(
+  ref: InstalledTaskRef,
+  invocation: readonly string[],
+  nativeId: string,
+): InstalledTaskRef {
+  Object.defineProperty(ref, "nativeId", { value: nativeId });
   Object.defineProperty(ref, "invocation", { value: Object.freeze([...invocation]) });
   return ref;
+}
+
+function launchdDefaultContextPath(options: LaunchdBackendOptions, scheduledContext: ScheduledTaskContext): string {
+  const pathEnv =
+    options.envPath === false
+      ? undefined
+      : typeof options.envPath === "string"
+        ? options.envPath
+        : (process.env.PATH ?? "");
+  return schedulerContextPath(schedulerContextDescriptor(scheduledContext, pathEnv ?? ""));
+}
+
+function setLaunchdEnableState(exec: LaunchdExec, nativeTarget: string, enabled: boolean): void {
+  const verb = enabled ? "enable" : "disable";
+  runOrThrow(exec, ["launchctl", verb, nativeTarget], {
+    message: (result) => `launchctl ${verb} failed: ${result.stderr || result.stdout || "no output"}.`,
+  });
+}
+
+function readLaunchdPriorState(
+  fsLike: LaunchdFs,
+  file: string,
+  exec: LaunchdExec,
+  nativeId: string,
+  nativeLabel: string,
+  task: SchedulerBinding,
+): { previousPlist: string | undefined; previousEnabled: boolean } {
+  const previousPlist = fsLike.exists(file) ? fsLike.readFile(file) : undefined;
+  if (previousPlist === undefined) return { previousPlist, previousEnabled: true };
+  assertSchedulerNativeArtifactOwner(nativeId, task, extractPlistInvocation(previousPlist)?.invocation);
+  const disabledLabels = readDisabledLabels(exec);
+  if (disabledLabels === undefined) {
+    throw new ConfigError(
+      `launchctl print-disabled failed; cannot safely replace existing task "${task.id}".`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  return { previousPlist, previousEnabled: !disabledLabels.has(nativeLabel) };
+}
+
+/** Close the read/prepare-to-bootout ownership race at the native boundary. */
+function assertLaunchdArtifactUnchanged(
+  fsLike: LaunchdFs,
+  file: string,
+  previousPlist: string | undefined,
+  nativeId: string,
+  nativeLabel: string,
+  task: SchedulerBinding,
+): void {
+  const currentPlist = fsLike.exists(file) ? fsLike.readFile(file) : undefined;
+  if (currentPlist !== previousPlist) {
+    throw new ConfigError(
+      `launchd task "${nativeLabel}" changed while it was being prepared; refusing to replace an unverified owner.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  if (currentPlist !== undefined) {
+    assertSchedulerNativeArtifactOwner(nativeId, task, extractPlistInvocation(currentPlist)?.invocation);
+  }
 }
 
 export function extractPlistInvocation(xml: string): ReturnType<typeof parseScheduledBindingArgv> {

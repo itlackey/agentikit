@@ -55,6 +55,8 @@ export interface CompileWorkflowSchedulerBindingsInput {
 /** Existing native definition as exposed to the whole-set planner. */
 export interface InstalledSchedulerBinding {
   readonly id: string;
+  /** Exact backend artifact spelling enumerated from the native scheduler. */
+  readonly nativeId?: string;
   readonly binding: readonly string[];
   readonly contextPath: string;
   readonly signature?: string;
@@ -66,6 +68,7 @@ export interface InstalledSchedulerBinding {
 /** Existing native ownership visible during an explicit destructive rebind. */
 export interface RebindSchedulerBinding {
   readonly id: string;
+  readonly nativeId?: string;
   readonly signature?: string;
   readonly target?: string;
 }
@@ -76,6 +79,14 @@ export interface SchedulerInstallOptions {
   readonly contextPath?: string;
 }
 
+/** Read-only native inventory, including artifacts whose invocation is malformed. */
+export interface SchedulerNativeArtifact {
+  readonly nativeId: string;
+  /** Proven only when the stored public invocation parses and matches nativeId. */
+  readonly logicalId?: string;
+  readonly logicalKind?: SchedulerLogicalSource["kind"];
+}
+
 /** Structural backend view used by the command layer without source documents. */
 export interface SchedulerBackend {
   readonly name: ScheduleBackend;
@@ -84,6 +95,7 @@ export interface SchedulerBackend {
   setEnabled(id: string, enabled: boolean): Promise<void> | void;
   list(): Promise<InstalledSchedulerBinding[]> | InstalledSchedulerBinding[];
   listForRebind?(): Promise<RebindSchedulerBinding[]> | RebindSchedulerBinding[];
+  listNativeArtifacts?(): Promise<SchedulerNativeArtifact[]> | SchedulerNativeArtifact[];
   expectedSignature?(binding: SchedulerBinding, opts?: SchedulerInstallOptions): string;
   /** Capture exact native definitions for a command-layer transaction. */
   snapshotBindings?(ids: readonly string[]): Promise<unknown> | unknown;
@@ -150,10 +162,48 @@ export function schedulerNativeBindingId(id: string): string {
   return `task-${digest}`;
 }
 
+/** Portable collision key for scheduler namespaces with Windows semantics. */
+export function schedulerNativeArtifactKey(nativeId: string): string {
+  return nativeId.toLowerCase().replace(/\.+$/u, "");
+}
+
+/** Return a logical owner only when the public invocation proves the mapping. */
+export function schedulerLogicalBindingOwner(nativeId: string, invocation: readonly string[]): string | undefined {
+  return schedulerNativeArtifactOwner(nativeId, invocation)?.logicalId;
+}
+
+export function schedulerNativeArtifactOwner(
+  nativeId: string,
+  invocation: readonly string[],
+): { logicalId: string; logicalKind: SchedulerLogicalSource["kind"] } | undefined {
+  if (invocation[0] === "workflow" && invocation[1] === "run") {
+    return { logicalId: nativeId, logicalKind: "workflow" };
+  }
+  const taskId = invocation[0] === "task" && invocation[1] === "run" ? invocation[2] : undefined;
+  return taskId && schedulerNativeBindingId(taskId) === nativeId
+    ? { logicalId: taskId, logicalKind: "task" }
+    : undefined;
+}
+
+export function assertSchedulerNativeArtifactOwner(
+  nativeId: string,
+  intended: SchedulerBinding,
+  invocation: readonly string[] | undefined,
+): void {
+  const owner = invocation ? schedulerNativeArtifactOwner(nativeId, invocation) : undefined;
+  if (owner?.logicalId === intended.id && owner.logicalKind === intended.logicalSource.kind) return;
+  const description = owner
+    ? `${owner.logicalKind} ${JSON.stringify(owner.logicalId)}`
+    : "an unproven or malformed owner";
+  throw new UsageError(
+    `Native scheduler artifact ${JSON.stringify(nativeId)} belongs to ${description}, not ${intended.logicalSource.kind} ${JSON.stringify(intended.id)}.`,
+    "RESOURCE_ALREADY_EXISTS",
+  );
+}
+
 /** Recover the logical nested task id from its signed public invocation. */
 export function schedulerLogicalBindingId(nativeId: string, invocation: readonly string[]): string {
-  const taskId = invocation[0] === "task" && invocation[1] === "run" ? invocation[2] : undefined;
-  return taskId && schedulerNativeBindingId(taskId) === nativeId ? taskId : nativeId;
+  return schedulerLogicalBindingOwner(nativeId, invocation) ?? nativeId;
 }
 
 function digestBindingId(kind: "task" | "workflow", ref: string, ordinal: number): string {

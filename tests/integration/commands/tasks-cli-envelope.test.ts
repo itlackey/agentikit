@@ -97,6 +97,48 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
     expect(JSON.parse(stdout).result.status).toBe("completed");
   });
 
+  test("native akm projects only bare or tasks/<id> refs and rejects other native-looking dirs", async () => {
+    const stash = makeStashDir();
+    fs.writeFileSync(
+      path.join(stash, "tasks", "nightly.yml"),
+      ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+    );
+
+    const canonical = await runCli(["task", "run", "tasks/nightly"], stash);
+    expect(canonical.status, canonical.stderr).toBe(0);
+    expect(JSON.parse(canonical.stdout).result.id).toBe("nightly");
+
+    const ambiguous = await runCli(["task", "run", "commands/nightly"], stash);
+    expect(ambiguous.status).toBe(2);
+    expect(JSON.parse(ambiguous.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
+  });
+
+  test("a non-task component adapter cannot claim a task-shaped public ref", async () => {
+    const storage = withIsolatedAkmStorage();
+    const bundle = makeSandboxDir("akm-workflow-component");
+    disposers.push(bundle);
+    try {
+      saveConfig({
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        defaultBundle: "stash",
+        bundles: {
+          stash: { path: storage.stashDir, writable: true },
+          workflows: {
+            path: bundle.dir,
+            components: { main: { root: ".", adapter: "akm-workflow", writable: false } },
+          },
+        },
+      });
+
+      const result = await runCliCapture(["task", "run", "tasks/nightly", "--bundle", "workflows", "--scheduled"]);
+      expect(result.code).toBe(2);
+      expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
+    } finally {
+      storage.cleanup();
+    }
+  });
+
   test("a backend-generated invocation uses its captured stash and skips the disabled task", async () => {
     const capturedStash = makeStashDir();
     const ambientStash = makeStashDir();
@@ -203,6 +245,46 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
     try {
       const taskId = "tasks/nightly";
       fs.mkdirSync(path.join(bundle.dir, "tasks"), { recursive: true });
+      fs.writeFileSync(
+        path.join(bundle.dir, `${taskId}.yml`),
+        ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+      );
+      saveConfig({
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        defaultBundle: "stash",
+        bundles: {
+          stash: { path: storage.stashDir, writable: true },
+          scheduled: {
+            path: bundle.dir,
+            components: { main: { root: ".", adapter: "akm-task", writable: false } },
+          },
+        },
+      });
+
+      const run = await runCliCapture(["task", "run", taskId, "--bundle", "scheduled", "--scheduled"]);
+      expect(run.code, run.stderr).toBe(0);
+      expect(JSON.parse(run.stdout).result).toMatchObject({ id: taskId, status: "completed" });
+
+      const history = await runCliCapture(["task", "history", "--id", `scheduled//${taskId}`]);
+      expect(history.code, history.stderr).toBe(0);
+      expect(JSON.parse(history.stdout).rows[0]).toMatchObject({ id: taskId, status: "completed" });
+    } finally {
+      storage.cleanup();
+    }
+  });
+
+  test.each([
+    "commands/nightly",
+    "scripts/deep/nightly",
+    "workflows/release/nightly",
+    "knowledge/ops/nightly",
+  ])("a standalone native-looking concept %s round-trips through CLI and history", async (taskId) => {
+    const storage = withIsolatedAkmStorage();
+    const bundle = makeSandboxDir("akm-task-native-looking-component");
+    disposers.push(bundle);
+    try {
+      fs.mkdirSync(path.dirname(path.join(bundle.dir, `${taskId}.yml`)), { recursive: true });
       fs.writeFileSync(
         path.join(bundle.dir, `${taskId}.yml`),
         ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),

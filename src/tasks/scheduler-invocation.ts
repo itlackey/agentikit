@@ -261,12 +261,10 @@ function parsePublicSchedulerInvocation(
   invocation: readonly string[],
 ): { invocation: string[]; target?: string } | undefined {
   if (invocation[0] === "task" && invocation[1] === "run" && invocation[2]) {
-    if (invocation[2].includes("/")) {
-      try {
-        if (normaliseTaskConceptId(invocation[2]) !== invocation[2]) return undefined;
-      } catch {
-        return undefined;
-      }
+    try {
+      if (normaliseTaskConceptId(invocation[2]) !== invocation[2]) return undefined;
+    } catch {
+      return undefined;
     }
     let index = 3;
     let target: string | undefined;

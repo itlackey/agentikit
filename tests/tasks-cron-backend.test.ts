@@ -108,17 +108,16 @@ describe("cron backend helpers", () => {
   });
 
   test("buildCronLine escapes cron percent syntax even inside POSIX shell quotes", () => {
-    const task = { ...TASK, id: "ping%done", invocation: ["task", "run", "ping%done", "--scheduled"] as const };
     const line = buildCronLine(
-      task,
+      TASK,
       ["/opt/100% ready/akm's bin"],
       "/var/log/100% ready",
       contextPath("/opt/100% tools/bin:/usr/bin"),
     );
     expect(line).not.toContain("PATH=");
     expect(line).toContain("'/opt/100'\\%' ready/akm'\\''s bin'");
-    expect(line).toContain("task run ping\\%done");
-    expect(line).toContain("'/var/log/100'\\%' ready/ping'\\%'done.log'");
+    expect(line).toContain("task run ping");
+    expect(line).toContain("'/var/log/100'\\%' ready/ping.log'");
   });
 
   test("buildCronLine rejects newline injection from every interpolated input", () => {
@@ -332,6 +331,15 @@ describe("cron backend drift detection", () => {
 
     expect(exec.current()).not.toContain("# akm:task sub/deep/nightly BEGIN");
     expect(listSync(backend)).toEqual([expect.objectContaining({ id: "sub/deep/nightly", target: "team" })]);
+
+    const colliding = {
+      ...SYNC_TASK,
+      id: "task-b0117b892c35999ceb4d5386f8609932",
+      logicalSource: { kind: "task" as const, ref: "team//task-b0117b892c35999ceb4d5386f8609932" },
+      invocation: ["task", "run", "task-b0117b892c35999ceb4d5386f8609932", "--bundle", "team", "--scheduled"],
+    };
+    expect(() => backend.install(colliding)).toThrow(/native scheduler artifact|different logical owner/i);
+    expect(listSync(backend)).toEqual([expect.objectContaining({ id: "sub/deep/nightly", target: "team" })]);
   });
 
   // 0.9 scheduler ABI respelling (S6): an entry whose invocation no longer
@@ -349,7 +357,9 @@ describe("cron backend drift detection", () => {
       ].join("\n"),
     );
 
-    expect(CRON_BACKEND(opts(exec)).list()).toEqual([]);
+    const backend = CRON_BACKEND(opts(exec));
+    expect(backend.list()).toEqual([]);
+    expect(backend.listNativeArtifacts?.()).toEqual([{ nativeId: "ping" }]);
   });
 
   test("expectedSignature changes when the schedule changes (drift is detectable)", () => {

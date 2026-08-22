@@ -196,6 +196,137 @@ describe("whole-set v3 scheduler sync planning", () => {
     ]);
   });
 
+  test("rejects logical ids whose exact native scheduler artifacts collide before signatures", async () => {
+    const componentRoot = root();
+    write(path.join(componentRoot, "sub", "nightly.yml"), "version: 3\nrun: echo nested\nakm:\n  schedule: '@daily'\n");
+    write(
+      path.join(componentRoot, "task-5f14bc23cb233df4713f2e147b6c077f.yml"),
+      "version: 3\nrun: echo flat\nakm:\n  schedule: '@daily'\n",
+    );
+    let signatures = 0;
+
+    await expect(
+      planSchedulerSync({
+        sourceRoot: componentRoot,
+        adapterId: "akm-task",
+        bundleName: "team",
+        bundleTarget: "team",
+        backend: "cron",
+        installed: emptyInstalled,
+        expectedSignature: () => {
+          signatures += 1;
+          return "signature";
+        },
+      }),
+    ).rejects.toThrow(/native scheduler artifact|collision/i);
+    expect(signatures).toBe(0);
+  });
+
+  test.each([
+    ["case folding", "Nightly", "nightly"],
+  ] as const)("rejects portable native artifact collisions caused by %s", async (_label, first, second) => {
+    const componentRoot = root();
+    write(path.join(componentRoot, `${first}.yml`), "version: 3\nrun: echo first\nakm:\n  schedule: '@daily'\n");
+    write(path.join(componentRoot, `${second}.yml`), "version: 3\nrun: echo second\nakm:\n  schedule: '@daily'\n");
+    let signatures = 0;
+
+    await expect(
+      planSchedulerSync({
+        sourceRoot: componentRoot,
+        adapterId: "akm-task",
+        bundleName: "team",
+        bundleTarget: "team",
+        backend: "schtasks",
+        installed: emptyInstalled,
+        expectedSignature: () => {
+          signatures += 1;
+          return "signature";
+        },
+      }),
+    ).rejects.toThrow(/native scheduler artifact|collision/i);
+    expect(signatures).toBe(0);
+  });
+
+  test("rejects a single logical/native id ending in a period before signatures", async () => {
+    const componentRoot = root();
+    write(path.join(componentRoot, "nightly..yml"), "version: 3\nrun: echo unsafe\nakm:\n  schedule: '@daily'\n");
+    let signatures = 0;
+
+    await expect(
+      planSchedulerSync({
+        sourceRoot: componentRoot,
+        adapterId: "akm-task",
+        bundleName: "team",
+        bundleTarget: "team",
+        backend: "schtasks",
+        installed: emptyInstalled,
+        expectedSignature: () => {
+          signatures += 1;
+          return "signature";
+        },
+      }),
+    ).rejects.toThrow(/period|portable|native scheduler artifact/i);
+    expect(signatures).toBe(0);
+  });
+
+  test.each([
+    ["different logical owner", "task-5f14bc23cb233df4713f2e147b6c077f"],
+    ["malformed source-absent owner", undefined],
+  ] as const)("rejects an installed %s at the desired exact native artifact before signatures", async (_label, logicalId) => {
+    const componentRoot = root();
+    write(path.join(componentRoot, "sub", "nightly.yml"), "version: 3\nrun: echo nested\nakm:\n  schedule: '@daily'\n");
+    let signatures = 0;
+    const nativeArtifacts = [
+      {
+        nativeId: "task-5f14bc23cb233df4713f2e147b6c077f",
+        ...(logicalId ? { logicalId } : {}),
+      },
+    ];
+
+    await expect(
+      planSchedulerSync({
+        sourceRoot: componentRoot,
+        adapterId: "akm-task",
+        bundleName: "team",
+        bundleTarget: "team",
+        backend: "cron",
+        installed: emptyInstalled,
+        nativeArtifacts,
+        expectedSignature: () => {
+          signatures += 1;
+          return "signature";
+        },
+      } as never),
+    ).rejects.toThrow(/native scheduler artifact|collision|unproven owner/i);
+    expect(signatures).toBe(0);
+  });
+
+  test("a proven source-absent nested owner removes by its exact enumerated native id", async () => {
+    const componentRoot = root();
+    const nativeId = "task-5f14bc23cb233df4713f2e147b6c077f";
+    const installed = {
+      id: "sub/nightly",
+      nativeId,
+      binding: ["/opt/akm"],
+      contextPath: "/data/context.json",
+      target: "team",
+      invocation: ["task", "run", "sub/nightly", "--bundle", "team", "--scheduled"],
+    };
+
+    const plan = await planSchedulerSync({
+      sourceRoot: componentRoot,
+      adapterId: "akm-task",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron",
+      installed: [installed],
+      nativeArtifacts: [{ nativeId, logicalId: "sub/nightly", logicalKind: "task" }],
+    });
+
+    expect(plan.removed).toEqual(["sub/nightly"]);
+    expect(plan.operations).toEqual([{ kind: "remove", id: "sub/nightly", nativeId }]);
+  });
+
   test("a true standalone physical-source identity collision rejects before diffing", async () => {
     const componentRoot = root();
     const owner = path.join(componentRoot, "alpha", "nightly.yml");

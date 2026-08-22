@@ -16,13 +16,7 @@ import { stringify as yamlStringify } from "yaml";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { assetPathForName } from "../../core/asset/asset-placement";
 import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
-import {
-  type AssetRef,
-  conceptIdFromTypeName,
-  isFullRefInput,
-  parseRefInput,
-  typeNameFromConceptId,
-} from "../../core/asset/resolve-ref";
+import { type AssetRef, conceptIdFromTypeName, isFullRefInput, parseRefInput } from "../../core/asset/resolve-ref";
 import { isWithin, resolveStashDir } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import type { AkmConfig } from "../../core/config/config-types";
@@ -50,6 +44,7 @@ import {
   compileTaskSchedulerBindings,
   type SchedulerBinding,
   type SchedulerInstallOptions,
+  schedulerNativeBindingId,
 } from "../../tasks/scheduler-binding";
 import {
   schedulerContextDescriptor,
@@ -57,7 +52,11 @@ import {
   validateSchedulerContextDescriptor,
   writeSchedulerContextDescriptor,
 } from "../../tasks/scheduler-invocation";
-import { planSchedulerSync, type SchedulerSyncPlan } from "../../tasks/scheduler-sync";
+import {
+  assertSchedulerNativeArtifactOwnership,
+  planSchedulerSync,
+  type SchedulerSyncPlan,
+} from "../../tasks/scheduler-sync";
 import { parseTaskV3Yaml, type TaskV3SourceDocument } from "../../tasks/source-v3";
 import { normaliseTaskConceptId, normaliseTaskId } from "../../tasks/task-id";
 import { applyAutonomyGate, configuredDirectAutonomyLanes, describeGatedLanes } from "../improve/autonomy-gate";
@@ -347,7 +346,7 @@ export async function akmTasksRun(
   const parsed = parseTaskRef(id);
   const bundle = resolveTaskReadBundle(parsed.bundle, options.target);
   const adapterId = bundle.source.adapterId ?? detectAdapterId(bundle.source.path);
-  const resolvedId = taskIdForAdapter(id, parsed.id, adapterId);
+  const resolvedId = taskIdForAdapter(parsed.id, adapterId);
   const runOptions = {
     stashDir: bundle.source.path,
     bundleName: bundle.source.name,
@@ -381,7 +380,7 @@ export async function akmTasksHistory(input: {
   const parsed = input.id ? parseTaskRef(input.id) : undefined;
   const bundle = resolveTaskReadBundle(parsed?.bundle, input.target);
   const adapterId = bundle.source.adapterId ?? detectAdapterId(bundle.source.path);
-  const id = parsed && input.id ? taskIdForAdapter(input.id, parsed.id, adapterId) : undefined;
+  const id = parsed ? taskIdForAdapter(parsed.id, adapterId) : undefined;
   // History rows are keyed by task id in state.db, not per bundle.
   return { rows: readTaskHistory({ id, limit }) };
 }
@@ -431,9 +430,17 @@ export async function akmTasksSync(
     options.rebind && sched.listForRebind ? await sched.listForRebind() : await sched.list();
   const allEntries: InstalledTaskRef[] = rawEntries.map((entry) => ({
     ...entry,
+    ...(entry.nativeId !== undefined ? { nativeId: entry.nativeId } : {}),
     binding: "binding" in entry ? [...entry.binding] : [],
     contextPath: "contextPath" in entry ? entry.contextPath : "",
   }));
+  const nativeArtifacts = sched.listNativeArtifacts
+    ? await sched.listNativeArtifacts()
+    : allEntries.map((entry) => ({
+        nativeId: entry.nativeId ?? schedulerNativeBindingId(entry.id),
+        logicalId: entry.id,
+        logicalKind: entry.invocation?.[0] === "workflow" ? ("workflow" as const) : ("task" as const),
+      }));
   const common = {
     sourceRoot: stashDir,
     adapterId: resolved.source.adapterId ?? detectAdapterId(stashDir),
@@ -441,6 +448,7 @@ export async function akmTasksSync(
     ...(syncTarget ? { bundleTarget: syncTarget } : {}),
     backend: sched.name,
     installed: allEntries,
+    nativeArtifacts,
     rebind: options.rebind === true,
     config,
     resolveAsset: taskProjectionAssetResolver(config, resolved.source.name, stashDir),
@@ -612,7 +620,7 @@ export async function akmTasksDoctor(
 
 async function applySchedulerSyncPlan(backend: TaskBackend, plan: SchedulerSyncPlan): Promise<void> {
   for (const operation of plan.operations) {
-    if (operation.kind === "remove") await backend.uninstall(operation.id);
+    if (operation.kind === "remove") await backend.uninstall(operation.nativeId);
     else await backend.install(operation.binding, operation.options);
   }
 }
@@ -635,6 +643,14 @@ async function prepareTaskAddSchedulerTransaction(input: {
   staleInstalledIds: readonly string[];
 }> {
   const installedEntries = await input.sched.list();
+  const nativeArtifacts = input.sched.listNativeArtifacts
+    ? await input.sched.listNativeArtifacts()
+    : installedEntries.map((entry) => ({
+        nativeId: entry.nativeId ?? schedulerNativeBindingId(entry.id),
+        logicalId: entry.id,
+        logicalKind: entry.invocation?.[0] === "workflow" ? ("workflow" as const) : ("task" as const),
+      }));
+  assertSchedulerNativeArtifactOwnership(input.taskBindings, nativeArtifacts);
   for (const binding of input.taskBindings) {
     assertNoForeignSchedule(installedEntries, binding.id, input.installTarget);
   }
@@ -653,6 +669,13 @@ async function prepareTaskAddSchedulerTransaction(input: {
     ]),
   ];
   const installedAffected = installedEntries.filter((entry) => affectedIds.includes(entry.id));
+  const affectedNativeIds = [
+    ...new Set([
+      ...input.previousBindings.map((binding) => schedulerNativeBindingId(binding.id)),
+      ...input.taskBindings.map((binding) => schedulerNativeBindingId(binding.id)),
+      ...installedAffected.map((entry) => entry.nativeId ?? schedulerNativeBindingId(entry.id)),
+    ]),
+  ];
   const primary = input.taskBindings[0];
   if (!primary) throw new Error("invariant: scheduler transaction has no desired binding");
   const installedEntry = installedEntries.find((entry) => entry.id === primary.id) ?? installedAffected[0];
@@ -665,7 +688,7 @@ async function prepareTaskAddSchedulerTransaction(input: {
   );
   const canSnapshot =
     typeof input.sched.snapshotBindings === "function" && typeof input.sched.restoreBindings === "function";
-  const nativeSnapshot = canSnapshot ? await input.sched.snapshotBindings!(affectedIds) : undefined;
+  const nativeSnapshot = canSnapshot ? await input.sched.snapshotBindings!(affectedNativeIds) : undefined;
   if (
     !canSnapshot &&
     installedAffected.length > 0 &&
@@ -681,7 +704,9 @@ async function prepareTaskAddSchedulerTransaction(input: {
     runtimeOpts,
     canSnapshot,
     nativeSnapshot,
-    staleInstalledIds: installedAffected.map((entry) => entry.id).filter((bindingId) => !desiredIds.has(bindingId)),
+    staleInstalledIds: installedAffected
+      .filter((entry) => !desiredIds.has(entry.id))
+      .map((entry) => entry.nativeId ?? schedulerNativeBindingId(entry.id)),
   };
 }
 
@@ -697,7 +722,7 @@ async function rollbackTaskBindingsWithoutSnapshot(input: {
   for (const binding of input.desired) {
     if (installedBefore.has(binding.id)) continue;
     try {
-      await input.sched.uninstall(binding.id);
+      await input.sched.uninstall(schedulerNativeBindingId(binding.id));
     } catch (error) {
       input.rollbackErrors.push(error);
     }
@@ -1101,19 +1126,14 @@ export function setEnabledInYaml(yaml: string, enabled: boolean): string {
 // `akm task run` completes.
 export { ConfigError, exitCodeForStatus, NotFoundError, UsageError };
 
-// Accept a bare task id, native `[bundle//]tasks/<id>`, or a standalone
-// akm-task component-relative concept id such as `[bundle//]sub/nightly`.
+// Parse only the bundle/ref syntax here. Whether a concept is a task is an
+// adapter-specific decision made after resolving the selected bundle.
 export function parseTaskRef(input: string): { id: string; bundle?: string } {
   const trimmed = input.trim();
   if (trimmed.includes("/")) {
     try {
       const parsed = parseBundleRef(trimmed);
       if (parsed.fragment !== undefined) throw new Error("task refs do not accept fragments");
-      const native = typeNameFromConceptId(parsed.conceptId);
-      if (native?.type === "task") {
-        return { id: normaliseTaskId(native.name), ...(parsed.bundle ? { bundle: parsed.bundle } : {}) };
-      }
-      if (native !== undefined) throw new Error("known non-task concept");
       return {
         id: normaliseTaskConceptId(parsed.conceptId),
         ...(parsed.bundle ? { bundle: parsed.bundle } : {}),
@@ -1121,15 +1141,22 @@ export function parseTaskRef(input: string): { id: string; bundle?: string } {
     } catch {
       // fall through to the shared error below
     }
-    throw new UsageError(
-      `Expected a task id, tasks/<id> ref, or standalone task concept id, got "${input}".`,
-      "INVALID_FLAG_VALUE",
-    );
+    throw new UsageError(`Expected a syntactically valid task concept id, got "${input}".`, "INVALID_FLAG_VALUE");
   }
   return { id: normaliseTaskId(trimmed) };
 }
 
-function taskIdForAdapter(input: string, parsedId: string, adapterId: string): string {
-  if (adapterId !== "akm-task" || !input.trim().includes("/")) return parsedId;
-  return normaliseTaskConceptId(parseBundleRef(input.trim()).conceptId);
+function taskIdForAdapter(parsedId: string, adapterId: string): string {
+  if (adapterId === "akm-task") return normaliseTaskConceptId(parsedId);
+  if (adapterId === "akm") {
+    if (!parsedId.includes("/")) return normaliseTaskId(parsedId);
+    if (parsedId.startsWith("tasks/") && !parsedId.slice("tasks/".length).includes("/")) {
+      return normaliseTaskId(parsedId.slice("tasks/".length));
+    }
+    throw new UsageError(
+      `The native akm adapter accepts only a bare task id or tasks/<id>, got "${parsedId}".`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  throw new UsageError(`Bundle adapter "${adapterId}" does not define task runtime identity.`, "INVALID_FLAG_VALUE");
 }

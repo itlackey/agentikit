@@ -392,6 +392,42 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(path.relative("/tmp/agents", file ?? "")).not.toContain("/");
     expect(fs.readFile(file ?? "")).not.toContain("<string>com.akm.task.sub/deep/nightly</string>");
     expect(backend.list()).toEqual([expect.objectContaining({ id: "sub/deep/nightly", target: "team" })]);
+
+    const colliding = {
+      ...makeTask("0 9 * * *", "task-b0117b892c35999ceb4d5386f8609932"),
+      logicalSource: { kind: "task" as const, ref: "team//task-b0117b892c35999ceb4d5386f8609932" },
+      invocation: ["task", "run", "task-b0117b892c35999ceb4d5386f8609932", "--bundle", "team", "--scheduled"],
+    };
+    expect(() => backend.install(colliding)).toThrow(/native scheduler artifact|different logical owner/i);
+    expect(backend.list()).toEqual([expect.objectContaining({ id: "sub/deep/nightly", target: "team" })]);
+  });
+
+  test("rechecks the exact plist owner after preparing the temp file and before bootout", () => {
+    const exec = makeFakeExec();
+    const fs = makeFakeFs();
+    const { backend } = makeBackend(exec, fs);
+    const nested = {
+      ...makeTask("0 9 * * *", "sub/deep/nightly"),
+      logicalSource: { kind: "task" as const, ref: "team//sub/deep/nightly" },
+      invocation: ["task", "run", "sub/deep/nightly", "--bundle", "team", "--scheduled"],
+    };
+    backend.install(nested);
+    const finalFile = [...fs.written.keys()].find((file) => !path.basename(file).startsWith("."));
+    if (!finalFile) throw new Error("missing installed plist");
+
+    const writeFile = fs.writeFile.bind(fs);
+    let swapAtTempWrite = true;
+    fs.writeFile = (file, content) => {
+      writeFile(file, content);
+      if (swapAtTempWrite && path.basename(file).startsWith(".")) {
+        swapAtTempWrite = false;
+        fs.written.set(finalFile, fs.readFile(finalFile).replaceAll("sub/deep/nightly", "other-owner"));
+      }
+    };
+    exec.calls.length = 0;
+
+    expect(() => backend.install({ ...nested, cron: "30 10 * * *" })).toThrow(/changed.*refusing/i);
+    expect(exec.calls.some((call) => call[1] === "bootout")).toBe(false);
   });
 
   test("install temp-writes, unloads, atomically replaces, then bootstraps", () => {
@@ -660,6 +696,7 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
     );
 
     expect(backend.list()).toEqual([]);
+    expect(backend.listNativeArtifacts?.()).toEqual([{ nativeId: "ping" }]);
   });
 
   test("no-op comparison reads a stable signature from the actual launchd enabled state", () => {

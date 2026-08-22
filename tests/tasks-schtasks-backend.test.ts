@@ -357,6 +357,7 @@ describe("schtasks bundle attribution", () => {
 
     expect(extractSchtasksTarget(xml)).toBeUndefined();
     expect(backend.list()).toEqual([]);
+    expect(backend.listNativeArtifacts?.()).toEqual([{ nativeId: "ping" }]);
   });
 });
 
@@ -805,10 +806,15 @@ describe("schtasks backend transactional install", () => {
     let queriedXml: string | undefined;
     let enabled = true;
     let failNextOperation: "create" | "disable" | undefined;
+    let swapAfterTempWrite: string | undefined;
     const calls: string[][] = [];
     const fs: SchtasksFs = {
       writeFile(file, content) {
         files.set(file, content);
+        if (swapAfterTempWrite !== undefined) {
+          installedXml = swapAfterTempWrite;
+          swapAfterTempWrite = undefined;
+        }
       },
       removeFile(file) {
         files.delete(file);
@@ -870,6 +876,9 @@ describe("schtasks backend transactional install", () => {
       enabled: () => enabled,
       setQueriedXml(xml: string) {
         queriedXml = xml;
+      },
+      swapOwnerAfterNextTempWrite(xml: string) {
+        swapAfterTempWrite = xml;
       },
       failNext(operation: "create" | "disable") {
         failNextOperation = operation;
@@ -946,5 +955,30 @@ describe("schtasks backend transactional install", () => {
     expect(taskName.slice("\\akm\\".length)).not.toContain("/");
     expect(transaction.installedXml()).toContain("&apos;sub/deep/nightly&apos;");
     expect(transaction.installedXml()).not.toContain("<URI>\\akm\\sub/deep/nightly</URI>");
+
+    const colliding = {
+      ...makeTask("0 9 * * *", "task-b0117b892c35999ceb4d5386f8609932"),
+      logicalSource: { kind: "task" as const, ref: "team//task-b0117b892c35999ceb4d5386f8609932" },
+      invocation: ["task", "run", "task-b0117b892c35999ceb4d5386f8609932", "--bundle", "team", "--scheduled"],
+    };
+    expect(() => transaction.backend.install(colliding)).toThrow(/native scheduler artifact|different logical owner/i);
+    expect(transaction.installedXml()).toContain("&apos;sub/deep/nightly&apos;");
+  });
+
+  test("rechecks the exact task owner after the temp XML write and before /Create /F", () => {
+    const transaction = transactionBackend();
+    const nested = {
+      ...makeTask("0 9 * * *", "sub/deep/nightly"),
+      logicalSource: { kind: "task" as const, ref: "team//sub/deep/nightly" },
+      invocation: ["task", "run", "sub/deep/nightly", "--bundle", "team", "--scheduled"],
+    };
+    transaction.backend.install(nested);
+    const prior = transaction.installedXml();
+    if (!prior) throw new Error("missing installed XML");
+    transaction.swapOwnerAfterNextTempWrite(prior.replaceAll("sub/deep/nightly", "other-owner"));
+    const priorCallCount = transaction.calls.length;
+
+    expect(() => transaction.backend.install({ ...nested, cron: "30 10 * * *" })).toThrow(/changed.*refusing/i);
+    expect(transaction.calls.slice(priorCallCount).some((call) => call[1]?.toLowerCase() === "/create")).toBe(false);
   });
 });
