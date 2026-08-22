@@ -121,6 +121,105 @@ describe("akmTasksSync — schedule drift", () => {
     expect(exec.current()).not.toContain("task run alpha --scheduled");
   });
 
+  test("adopts an exact published 0.8 cron artifact only with --rebind", async () => {
+    const exec = memoryExec(
+      [
+        "# akm:task alpha BEGIN",
+        "*/15 * * * * /opt/runtime/bin/node /opt/prefix/node_modules/akm-cli/dist/cli.js tasks run alpha >> /var/log/akm/tasks/logs/alpha.log 2>&1",
+        "# akm:task alpha END",
+        "",
+      ].join("\n"),
+    );
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+    const prior = exec.current();
+
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/native scheduler artifact|unproven owner/i);
+    expect(exec.current()).toBe(prior);
+
+    const migrated = await akmTasksSync({ backend }, undefined, { rebind: true });
+    expect(migrated.updated).toEqual(["alpha"]);
+    expect(exec.current()).toContain("task run alpha --bundle");
+    expect(exec.current()).toContain("--scheduled");
+    expect(exec.current()).not.toContain("tasks run alpha");
+    expect(exec.current()).not.toContain("/opt/prefix/node_modules/akm-cli");
+  });
+
+  test.each([
+    ["standalone akm", "/usr/local/bin/akm", "/var/cache/akm/tasks/logs/alpha.log"],
+    [
+      "canonically quoted node launcher",
+      "'/opt/runtime root/bin/node' '/opt/package root/node_modules/akm-cli/dist/cli.js'",
+      "'/var/cache root/akm/tasks/logs/alpha.log'",
+    ],
+  ])("adopts the published 0.8 %s renderer shape", async (_label, launcher, logPath) => {
+    const exec = memoryExec(
+      [
+        "# akm:task alpha BEGIN",
+        `*/15 * * * * ${launcher} tasks run alpha >> ${logPath} 2>&1`,
+        "# akm:task alpha END",
+        "",
+      ].join("\n"),
+    );
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+
+    const migrated = await akmTasksSync({ backend }, undefined, { rebind: true });
+    expect(migrated.updated).toEqual(["alpha"]);
+    expect(exec.current()).toContain("task run alpha --bundle");
+    expect(exec.current()).not.toContain("tasks run alpha");
+  });
+
+  test.each([
+    "tasks run beta",
+    "tasks run alpha --scheduled",
+    "tasks run alpha extra",
+  ])("does not adopt a near-miss published cron invocation: %s", async (invocation) => {
+    const exec = memoryExec(
+      [
+        "# akm:task alpha BEGIN",
+        `*/15 * * * * /opt/akm-0.8/dist/cli.js ${invocation} >> /var/log/akm/alpha.log 2>&1`,
+        "# akm:task alpha END",
+        "",
+      ].join("\n"),
+    );
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+    const prior = exec.current();
+
+    await expect(akmTasksSync({ backend }, undefined, { rebind: true })).rejects.toThrow(
+      /native scheduler artifact|unproven owner/i,
+    );
+    expect(exec.current()).toBe(prior);
+  });
+
+  test.each([
+    ["semicolon command chain", "/opt/akm-0.8/dist/cli.js ; /bin/foreign"],
+    ["and command chain", "/opt/akm-0.8/dist/cli.js && /bin/foreign"],
+    ["pipeline", "/opt/akm-0.8/dist/cli.js | /bin/foreign"],
+    ["pre-command output redirection", "> /tmp/owned /opt/akm-0.8/dist/cli.js"],
+    ["pre-command input redirection", "< /tmp/input /opt/akm-0.8/dist/cli.js"],
+    ["quoted env/operator prefix", "AKM_HIJACK='x;y' /opt/akm-0.8/dist/cli.js"],
+    ["foreign one-token launcher", "/foreign/tool"],
+  ])("does not adopt a non-published 0.8 cron body with %s", async (_label, prefix) => {
+    const exec = memoryExec(
+      [
+        "# akm:task alpha BEGIN",
+        `*/15 * * * * ${prefix} tasks run alpha >> /var/log/akm/alpha.log 2>&1`,
+        "# akm:task alpha END",
+        "",
+      ].join("\n"),
+    );
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+    const prior = exec.current();
+
+    await expect(akmTasksSync({ backend }, undefined, { rebind: true })).rejects.toThrow(
+      /native scheduler artifact|unproven owner/i,
+    );
+    expect(exec.current()).toBe(prior);
+  });
+
   test.each([
     "missing",
     "different primary",
