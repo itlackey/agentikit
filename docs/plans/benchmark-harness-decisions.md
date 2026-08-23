@@ -19,9 +19,9 @@ can be checked against it without re-litigating.
 | D7 | Cross-task accumulation policy | **DECIDED** | P2 |
 | D8 | Which upstream memory harness `akm-eval` adapts | OPEN | P6 |
 | D9 | Judge-model cost budget | OPEN | P6 |
-| D10 | Slice / fixture delivery / token budgets / masking | OPEN | P3 |
+| D10 | Slice / fixture delivery / token budgets / masking | **DECIDED (by implementation)** | P3 |
 | D11 | Ownership of `akm-plugins/evals` | OPEN | — |
-| D12 | Harbor version pin | OPEN | P2 |
+| D12 | Harbor version pin | **DECIDED + implemented** | P2 |
 
 ---
 
@@ -144,20 +144,25 @@ for 5×10 trials on gpt-5-mini; LongMemEval-V2 defaults to a gpt-5.2
 medium-reasoning judge; BEAM-10M ingest is likely the single most expensive item
 in the suite. **D7 triples the coding-benchmark side.** Force a number before P6.
 
-### D10 — Corpus mechanics *(blocks P3)*
-Four sub-decisions, all mechanical but none free:
-- **Slice representation** — Harbor has no slice primitive; `-i`/`-x` glob on task
-  *name* only. Two `registry.json` DatasetSpecs (`akm-train@1.0` / `akm-eval@1.0`)
-  is the versioned-reproducible option.
-- **Fixture delivery** — 7 bundles across 46 tasks: one shared base image with an
-  env var selecting which, vs per-task `environment/` COPY, vs `--skill`.
-- **Token budgets** — all 46 tasks declare `budget.tokens`; Harbor has no token or
-  cost budget, only `[agent].timeout_sec`. Drop the concept, or keep it in
-  `[metadata]` and enforce post-hoc. Do not leave implicit: "budget" currently
-  reads as enforced.
-- **Attribution masking** — N generated task variants (changes `task_checksum`,
-  so they become different tasks) vs env-var-driven masking consumed by an
-  in-container setup step. D1 makes this an orchestrator concern.
+### D10 — Corpus mechanics: decided by implementation (2026-08-23)
+
+All four sub-decisions were settled during the P3 conversion:
+- **Slices** — two `registry.json` DatasetSpecs: `akm-tasks-train@1.0` (27) and
+  `akm-tasks-eval@1.0` (19), disjoint, union = the full corpus; the flat
+  `harbor/tasks/` dir also resolves via `-p` (46 incl. the reference task).
+- **Fixture delivery** — the AkmOpenCode agent uploads `harbor/stashes/` once
+  and the container-side seed step selects the stash named by the task's
+  `[environment].env.AKM_TASK_STASH`; unknown names abort setup loudly. Task
+  environments stay arm-neutral (zero akm/opencode/node in any Dockerfile).
+  Benchmark metadata lives in `harbor/stashes-meta/` (never uploaded), and the
+  agent additionally purges non-directory entries from the uploaded root
+  in-container — a stray answer-key file cannot become an arm-asymmetric
+  channel.
+- **Token budgets** — carried in `[metadata]` (`budget_tokens`, `budget_wall_ms`),
+  not enforced by Harbor; the analysis layer reads per-trial token totals and
+  can report violations post-hoc.
+- **Attribution masking** — an orchestrator concern under D1; not expressed in
+  task format.
 
 ### D11 — Ownership of `akm-plugins/evals`
 A third eval surface neither repo covers: tier2 deterministic plugin metrics
@@ -166,17 +171,51 @@ so it does not overlap akm-bench, but ownership and CI wiring need a call. Note
 `evals/README.md:50` claims a git-ref pairwise A/B mode that **does not exist** in
 `tier3/runner.ts` — a doc/code mismatch to fix or drop.
 
-### D12 — Harbor version pin *(blocks P2)*
-Every Harbor behavior this plan leans on is **internal, not a documented
-contract**: `[metadata]` exclusion from results, agent-then-verifier ordering,
-reward-file parsing, one-level `-p` scanning, `opencode_config` deep-merge. All
-read at **v0.22.0 / commit `39b8587`**. Pin that version and add a CI check that
-re-verifies these behaviors on bump.
+### D12 — Harbor version pin: decided and implemented (2026-08-23)
+
+Harbor is pinned to **0.22.0** (`akm-bench/harbor/requirements.txt`), and
+`akm-bench/bin/check-harbor-contract` executes **14 assertions** over the
+internal behaviors the stack depends on (trial_results exclusion, pass@k k-set,
+exclude-after-include log filtering, result.json naming, config deep-merge
+layering, metadata exclusion from results, agent-log sync ordering, reward-file
+parsing, one-level task scanning, provider/model splitting, trial-dir layout,
+XDG log path, and sync-before-populate ordering). Run it on every Harbor bump;
+a failure names exactly which load-bearing behavior moved. Not yet wired into
+CI (see Open questions below).
+
+---
+
+## Open questions raised by implementation (2026-08-23)
+
+- **Baseline-arm "skill" pointers**: 11 shipped workspace READMEs (drillbit x7,
+  inkwell x4) keep legacy-verbatim "Consult the `<domain>` skill" prose. Both
+  arms see it, as under the legacy driver, but the baseline arm cannot access
+  any skill. Deleting would change difficulty vs the legacy corpus - corpus
+  owner call (docs/corpus-conversion.md section 10.4).
+- **Retired ref spelling as graded content**: 3 workflow-compliance tasks grade
+  the literal `akm-show-ref: skill:opencode` (0.7 grammar). Legacy-faithful and
+  verifier-consistent, but akm 0.9.1 rejects that spelling live - changing it
+  means changing verifier + instruction together.
+- **akm-cli in-process pin hole**: probe 7b makes the exec-path candidate-2
+  bypass fail loudly, but the plugin's in-process tools import akm-cli directly
+  and remain uncovered; the stronger npm-overrides mitigation is documented in
+  docs/harbor-p0.md but NOT implemented. Latent until a newer 0.9.x publishes.
+- **CI wiring**: akm-bench CI does not run the harbor pytest suite, the
+  contract check, or the analysis tests - and `bun run check` was already red
+  on main before this work (legacy src/ typecheck + 5 pre-existing
+  tests/leakage.test.ts failures against fixtures/corpus). Nothing new is
+  CI-gated until this is addressed.
+- **One unindexable legacy asset**: `workflow:configure-inkwell-service` fails
+  akm 0.9.1 workflow schema validation and is absent from the inkwell stash
+  index (recorded in harbor/stashes-meta/gold-ref-map.json).
 
 ---
 
 ## Changelog
 
+- **2026-08-23** - D10 and D12 decided by implementation (P1-P3 landed on
+  akm-bench `claude/harbor-akm-agent-p0`); five new open questions recorded
+  from the implementation gates.
 - **2026-08-22** — D1, D2, D4 (provisional), D6, D7 decided. D2 was settled by the
   instruction to implement the Harbor agent. D7 chose three arms over the
   recommended two, which adds the shared-volume requirement and raises D9's cost.
