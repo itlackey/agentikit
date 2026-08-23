@@ -12,10 +12,10 @@ can be checked against it without re-litigating.
 | --- | --- | --- | --- |
 | D1 | Longitudinal workflows (`evolve`, `attribute`) | **DECIDED** | P7 |
 | D2 | How akm reaches the trial container | **DECIDED** | P0 |
-| D3 | Network policy for the akm arm | OPEN | P2 |
+| D3 | Network policy for the akm arm | **PARTIALLY RESOLVED** | P2 |
 | D4 | Canonical reward shape | **DECIDED (provisional)** | P3 |
 | D5 | Where workflow-compliance is scored | OPEN | P4 |
-| D6 | Cold-start library content | **DECIDED** | P2 |
+| D6 | Cold-start library content | **DECIDED + built** | P2 |
 | D7 | Cross-task accumulation policy | **DECIDED** | P2 |
 | D8 | Which upstream memory harness `akm-eval` adapts | OPEN | P6 |
 | D9 | Judge-model cost budget | OPEN | P6 |
@@ -76,7 +76,15 @@ metrics actually need.
 - Anything richer than pass/fail is invisible in Harbor's artifacts and depends
   entirely on our artifact join. That join must exist before P4 can revisit this.
 
-### D6 — Cold-start library: a hand-authored generic SWE skills bundle
+### D6 — Cold-start library: BUILT (2026-08-23)
+
+Shipped as `akm-bench/harbor/treatment-library/`: 26 assets (knowledge 20,
+skills 3, lessons 3), contamination-free, retrieval-verified against real
+akm 0.9.1, wired into both A/B job yamls' akm-static arms. Seed
+expectations in the agent self-check are now derived from the configured
+library. The original decision text follows.
+
+### D6 (original) — a hand-authored generic SWE skills bundle
 
 ~20–40 assets of general software-engineering practice (debugging, test running,
 git, build systems, common CLI tooling). Contamination-free, reusable across both
@@ -116,13 +124,18 @@ retrieval value from learning value.
 
 ## Open
 
-### D3 — Network policy for the akm arm *(blocks P2)*
-opencode resolves `plugin: ["akm-opencode"]` from npm **at session start**, and
-terminal-bench 2.x tasks commonly restrict egress. Pre-install at image build
-(offline-safe, couples the image to a plugin version) vs allow
-`registry.npmjs.org` through the policy (changes the environment relative to
-baseline — itself a confound). Needs a call once P0 shows whether the runtime
-install actually works inside a task container.
+### D3 — Network policy: partially resolved by implementation (2026-08-23)
+
+The agent pre-installs and cache-warms everything at install() time, so a
+session-start npm fetch is only needed when the warm boot failed (and the
+self-check aborts setup in that case). Residual: install() itself needs npm
+egress, and whether TB2/SWE-bench task network policies permit it is a
+first-live-run question. A related finding closed the in-process pin hole:
+live npm probing showed opencode installs plugins under
+`~/.cache/opencode/packages/`, making the documented config-dir overrides
+file INERT - the effective fix (shipped) is a post-warm-boot realign step
+that force-reinstalls the pinned akm-cli into the plugin's hoisted tree,
+plus probe 7c verifying the hoisted package version.
 
 ### D5 — Where workflow-compliance is scored *(blocks P4)*
 In-container `tests/test.sh` — which **can** read `/logs/agent/trajectory.json`
@@ -205,6 +218,23 @@ CI (see Open questions below).
   on main before this work (legacy src/ typecheck + 5 pre-existing
   tests/leakage.test.ts failures against fixtures/corpus). Nothing new is
   CI-gated until this is addressed.
+- **RESOLVED (2026-08-23): LongMemEval retrieval is now wired** through
+  MemoryBackend.search() with real retrieval metrics vs evidence session ids;
+  the inert-arm warning became a regression tripwire. The A/B config is now
+  meaningful.
+- **VALIDITY RISK - natural-language query shape vs akm's conjunctive-AND
+  FTS** (measured independently in BOTH gates): akm FTS is an implicit AND
+  over every query token with no stopword removal, so sentence-shaped
+  queries ("how do I run just one failing test quickly") return zero hits
+  while keyword/hint-shaped queries hit rank 1. The treatment library
+  compensates with question-form searchHints (0/8 -> 7/8 rank-1), and
+  akm-eval discloses zero-hit rates in every artifact - but if the MODEL
+  issues sentence-shaped akm_search queries mid-benchmark, the treatment arm
+  sees mostly empty results and a null result becomes attributable to query
+  shape rather than akm's value. Pre-run lever: the akm-opencode plugin's
+  tool description (how it steers query phrasing) - that lives in
+  akm-plugins, outside these branches. An OR/fuzzy search mode in akm
+  itself is the deeper fix.
 - **LongMemEval retrieval is not yet wired through the memory backend** (D8):
   the akm backend and the three-variant A/B config landed, but the longmemeval
   pipeline feeds full haystack context to the model and never calls
@@ -232,6 +262,7 @@ CI (see Open questions below).
 
 ## Changelog
 
+- **2026-08-23 (final)** - D6 built and wired; D3 partially resolved; in-process akm-cli pin hole closed via realign (overrides file proven inert); LongMemEval wiring landed; CI green on all three PRs' gated jobs; the FTS query-shape validity risk recorded from both gates.
 - **2026-08-23 (later)** - P5/P6 landed on akm-eval `claude/memory-eval-refactor`; four further open items recorded (longmemeval retrieval wiring, evaluator provenance, judgedPass naming, opencode-config retention).
 - **2026-08-23** - D10 and D12 decided by implementation (P1-P3 landed on
   akm-bench `claude/harbor-akm-agent-p0`); five new open questions recorded
