@@ -205,6 +205,25 @@ CI (see Open questions below).
   on main before this work (legacy src/ typecheck + 5 pre-existing
   tests/leakage.test.ts failures against fixtures/corpus). Nothing new is
   CI-gated until this is addressed.
+- **LongMemEval retrieval is not yet wired through the memory backend** (D8):
+  the akm backend and the three-variant A/B config landed, but the longmemeval
+  pipeline feeds full haystack context to the model and never calls
+  MemoryBackend.search(). Until the adapter routes retrieval through the
+  backend, its akm arm is inert - now disclosed by an unconditional warning
+  stamped into result.json/summary.md, but the wiring itself is the remaining
+  P6 work before longmemeval-akm-ab is worth judge budget. locomo's akm arm IS
+  live (queries the backend, reports zero-hit rates and ceiling metadata).
+- **longmemeval evaluator provenance**: scripts/longmemeval-evaluator.py is a
+  repo-local reimplementation of the upstream rubric, not a pinned shell-out
+  to LongMemEval's evaluate_qa.py as plan section 5.5 recommends. A real LLM
+  judge (policy-compliant) but without upstream commit provenance.
+- **locomo judgedPass naming**: the value is upstream LoCoMo's mean token-F1
+  (correct metric, no judge involved) carried in a schema field named
+  "judgedPass" - rename or annotate before publishing cross-pack tables.
+- **src/opencode-config.ts kept** (deviation from brief section 5.1's delete):
+  still used by the opencode runner for memory packs; its plugin-stripping
+  comment now states the honest scope. Revisit only if the opencode runner
+  itself is retired.
 - **One unindexable legacy asset**: `workflow:configure-inkwell-service` fails
   akm 0.9.1 workflow schema validation and is absent from the inkwell stash
   index (recorded in harbor/stashes-meta/gold-ref-map.json).
@@ -213,6 +232,7 @@ CI (see Open questions below).
 
 ## Changelog
 
+- **2026-08-23 (later)** - P5/P6 landed on akm-eval `claude/memory-eval-refactor`; four further open items recorded (longmemeval retrieval wiring, evaluator provenance, judgedPass naming, opencode-config retention).
 - **2026-08-23** - D10 and D12 decided by implementation (P1-P3 landed on
   akm-bench `claude/harbor-akm-agent-p0`); five new open questions recorded
   from the implementation gates.
