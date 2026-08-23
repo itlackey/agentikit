@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-22
+
 ### Breaking changes & migration
 
 - **Node.js 22 is no longer supported by the npm package.** `akm-cli` now
@@ -13,11 +15,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   optional and preferred for execution after that bootstrap; the standalone
   binary remains runtime-free. Upgrade Node before installing or running the
   npm package.
-
-## [0.9.2] - 2026-08-22
-
-### Breaking changes & migration
-
 - The `inherit_env` option is a breaking removal: new durable-v4 workflow starts reject it.
   Replace ambient whole-process inheritance with exact named environment bindings and
   `exec.pass_env` names. A stored v3 plan that already carries the historical
