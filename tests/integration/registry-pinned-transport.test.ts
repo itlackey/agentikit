@@ -489,7 +489,7 @@ describe("registry pinned production transport", () => {
     ).rejects.toEqual(
       expect.objectContaining({
         code: "REGISTRY_PINNED_TRANSPORT",
-        message: expect.stringContaining("requires Node.js >= 22"),
+        message: expect.stringContaining("requires Node.js >= 24"),
       }),
     );
   });
@@ -691,7 +691,7 @@ describe("registry pinned production transport", () => {
       expect(failure).toMatchObject({
         ok: false,
         code: "REGISTRY_PINNED_TRANSPORT",
-        message: expect.stringContaining("requires Node.js >= 22 on PATH"),
+        message: expect.stringContaining("requires Node.js >= 24 on PATH"),
         resolverCalled: false,
       });
     } finally {
