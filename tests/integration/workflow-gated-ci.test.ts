@@ -103,8 +103,8 @@ describe("gated CI workflow", () => {
       HF_HOME: "${{ github.workspace }}/.ci-cache/huggingface",
       NODE_USE_ENV_PROXY: "1",
     });
-    const setupNode = job.steps?.find((step) => step.uses === "actions/setup-node@v4");
-    expect(setupNode?.with).toMatchObject({ "node-version": "24" });
+    const setupNode = job.steps?.find((step) => step.uses === "actions/setup-node@v5");
+    expect(setupNode?.with).toMatchObject({ "node-version": 24 });
     const restore = getStep(job, "Restore HuggingFace model cache");
     expect(restore.uses).toBe("actions/cache/restore@v5");
     expect(restore.with).toMatchObject({

@@ -64,6 +64,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
       - run: bun install --frozen-lockfile
       - run: bun test --timeout=1200000 tests/migrate/legacy/cutover-rekey-property-gate.test.ts tests/workflows/engine-ir-v3.test.ts
         env:

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import YAML from "yaml";
 
 const ROOT = path.resolve(import.meta.dir, "../..");
 const CURRENT_RUNTIME_DOCS = [
@@ -24,8 +25,30 @@ const BUN_DOCKERFILES = [
   "tests/docker/Dockerfile.ubuntu-bun",
 ];
 
+interface WorkflowStep {
+  if?: string;
+  run?: string;
+  uses?: string;
+  with?: Record<string, unknown>;
+}
+
+interface WorkflowJob {
+  steps?: WorkflowStep[];
+}
+
+interface Workflow {
+  jobs?: Record<string, WorkflowJob>;
+}
+
 function read(relativePath: string): string {
   return fs.readFileSync(path.join(ROOT, relativePath), "utf8");
+}
+
+function runsBunInstall(run: string | undefined): boolean {
+  return (run ?? "").split("\n").some((line) => {
+    const command = line.trimStart();
+    return !command.startsWith("#") && /(?:^|&&|\|\||;)\s*bun\s+install(?:\s|$)/.test(command);
+  });
 }
 
 describe("Node 24 runtime minimum contract", () => {
@@ -38,6 +61,47 @@ describe("Node 24 runtime minimum contract", () => {
     expect(nodeSmoke).toContain("node-version: 24");
     expect(nodeSmoke).not.toContain("matrix:");
     expect(nodeSmoke).not.toContain('"22"');
+  });
+
+  test("selects Node 24 with setup-node v5 before every workflow Bun install", () => {
+    const workflowsDirectory = path.join(ROOT, ".github", "workflows");
+    const coveredInstallJobs: string[] = [];
+
+    for (const filename of fs
+      .readdirSync(workflowsDirectory)
+      .filter((file) => /\.ya?ml$/.test(file))
+      .sort()) {
+      const workflow = YAML.parse(fs.readFileSync(path.join(workflowsDirectory, filename), "utf8")) as Workflow;
+
+      for (const [jobId, job] of Object.entries(workflow.jobs ?? {})) {
+        for (const [index, step] of (job.steps ?? []).entries()) {
+          if (!runsBunInstall(step.run)) continue;
+
+          const label = `${filename}#${jobId}`;
+          coveredInstallJobs.push(label);
+          const nodeSetup = [...(job.steps ?? [])]
+            .slice(0, index)
+            .reverse()
+            .find((candidate) => candidate.uses?.startsWith("actions/setup-node@"));
+
+          expect(nodeSetup, `${label} must select Node before bun install`).toBeDefined();
+          expect(nodeSetup?.uses, `${label} must use setup-node v5`).toBe("actions/setup-node@v5");
+          expect(String(nodeSetup?.with?.["node-version"]), `${label} must use Node 24`).toBe("24");
+          expect(nodeSetup?.if, `${label} must not conditionally select Node`).toBeUndefined();
+        }
+      }
+    }
+
+    expect(coveredInstallJobs.sort()).toEqual([
+      "akm-eval-smoke.yml#smoke",
+      "ci.yml#check",
+      "ci.yml#node-smoke",
+      "ci.yml#slow-gated-tests",
+      "gated-ci.yml#docker-install",
+      "gated-ci.yml#native-scheduler",
+      "gated-ci.yml#semantic-search",
+      "release.yml#release",
+    ]);
   });
 
   test("uses Node 24 in every Bun-install Docker builder while retaining the Ubuntu 22 OS image", () => {
@@ -70,8 +134,8 @@ describe("Node 24 runtime minimum contract", () => {
       expect(document, relativePath).not.toMatch(/(?:Node(?:\.js)?|node:)[^\n]{0,80}(?:>=|≥)\s*22/i);
     }
 
-    const unreleased = read("CHANGELOG.md").split("## [0.9.2]", 1)[0] ?? "";
-    expect(unreleased).toContain("Node.js >= 24");
-    expect(unreleased).toContain("Node.js 22");
+    const changelog = read("CHANGELOG.md");
+    expect(changelog).toContain("Node.js >= 24");
+    expect(changelog).toContain("Node.js 22");
   });
 });
