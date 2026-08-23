@@ -822,7 +822,9 @@ describe("tasks parity", () => {
         ).toBe(true);
         const crontab = fs.readFileSync(fakeCrontab, "utf8");
         expect(crontab).toContain(launcher);
-        const scheduled = nodeSpawnSync("/bin/sh", ["-c", generatedCronCommand(crontab, id)], {
+        const scheduledCommand = generatedCronCommand(crontab, id);
+        const scheduledLog = path.join(nodeEnv.XDG_CACHE_HOME!, "akm", "tasks", "logs", `${id}.log`);
+        const scheduled = nodeSpawnSync("/bin/sh", ["-c", scheduledCommand], {
           env: schedulerProcessEnv,
           encoding: "utf8",
           timeout: 120_000,
@@ -830,7 +832,7 @@ describe("tasks parity", () => {
         });
         expect(
           scheduled.status,
-          `generated Node scheduler command\nstdout:\n${scheduled.stdout}\nstderr:\n${scheduled.stderr}`,
+          `generated Node scheduler command\ncommand:\n${scheduledCommand}\ncrontab:\n${crontab}\nstdout:\n${scheduled.stdout}\nstderr:\n${scheduled.stderr}\nlog:\n${fs.existsSync(scheduledLog) ? fs.readFileSync(scheduledLog, "utf8") : "<missing>"}`,
         ).toBe(0);
 
         const history = launcherRun(["task", "history", "--id", id, "--limit", "1"]);
