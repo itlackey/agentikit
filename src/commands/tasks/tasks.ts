@@ -20,6 +20,7 @@ import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { type AssetRef, conceptIdFromTypeName, isFullRefInput, parseRefInput } from "../../core/asset/resolve-ref";
 import { isWithin, resolveStashDir } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
+import { resolveConfiguredSources } from "../../core/config/config-sources";
 import type { AkmConfig } from "../../core/config/config-types";
 import { IMPROVE_AUTONOMY_CONFIG_KEY, isImproveAutonomyEnabled } from "../../core/config/experimental";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
@@ -1432,9 +1433,14 @@ function resolveTaskReadBundle(refBundle: string | undefined, flagBundle: string
   }
   const selector = flagBundle ?? refBundle;
   const config = loadConfig();
-  const resolved = selector
-    ? resolveWriteTarget(config, selector, { requireWritable: false })
-    : resolveWorkingStashTarget(config, { requireWritable: false });
+  let resolved: ResolvedWriteTarget;
+  if (!selector) {
+    resolved = resolveWorkingStashTarget(config, { requireWritable: false });
+  } else {
+    const configured = resolveConfiguredSources(config).some((source) => source.name === selector);
+    const implicit = configured ? undefined : resolveImplicitScheduledBundleTarget(config, selector);
+    resolved = implicit ?? resolveWriteTarget(config, selector, { requireWritable: false });
+  }
   if (refBundle && resolved.source.name !== refBundle) {
     throw new UsageError(
       `Task ref bundle ${JSON.stringify(refBundle)} does not match the resolved source.`,
@@ -1442,6 +1448,27 @@ function resolveTaskReadBundle(refBundle: string | undefined, flagBundle: string
     );
   }
   return resolved;
+}
+
+/**
+ * New scheduler bindings always carry a canonical `--bundle <owner>` token,
+ * including an env-selected working stash. That stash need not be persisted in
+ * config (CI, one-shot tools, and fresh installs commonly use only
+ * AKM_BUNDLE_DIR), so its scheduled child must accept precisely its derived
+ * owner name after the scheduler context restores the environment.
+ *
+ * This is intentionally narrower than an unknown-bundle fallback: a configured
+ * source always wins, and an unconfigured selector is accepted only when it is
+ * exactly the current env-selected working stash identity.
+ */
+function resolveImplicitScheduledBundleTarget(config: AkmConfig, selector: string): ResolvedWriteTarget | undefined {
+  if (!process.env.AKM_BUNDLE_DIR?.trim()) return undefined;
+  try {
+    const working = resolveWorkingStashTarget(config, { requireWritable: false });
+    return working.source.name === selector ? working : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** True when `candidate` resolves to the same directory as the primary stash. */

@@ -18,8 +18,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { akmTasksAdd, akmTasksSync } from "../../../src/commands/tasks/tasks";
-import { saveConfig } from "../../../src/core/config/config";
+import { akmTasksAdd, akmTasksRun, akmTasksSync } from "../../../src/commands/tasks/tasks";
+import { resetConfigCache, saveConfig } from "../../../src/core/config/config";
 import { buildCronLine, CRON_BACKEND, type CronExec, type CronExecResult } from "../../../src/tasks/backends/cron";
 import type { SchedulerBinding } from "../../../src/tasks/scheduler-binding";
 import {
@@ -210,5 +210,20 @@ describe("bundle-targeted tasks via --bundle", () => {
     exec = memoryExec();
     await akmTasksAdd({ id: "baz", schedule: "@daily", command: "true", target: "stash" }, { backend: cron() });
     expect(cronBody(exec.current(), "baz")).toBe(expectedLine);
+  });
+
+  test("a scheduled canonical owner resolves an environment-only working stash", async () => {
+    fs.rmSync(path.join(iso.configDir, "akm", "config.json"));
+    resetConfigCache();
+
+    await akmTasksAdd({ id: "implicit-owner", schedule: "@daily", command: "true" }, { backend: cron() });
+
+    const result = await akmTasksRun("implicit-owner", { target: "stash", scheduled: true });
+    expect(result.exitCode).toBe(0);
+    expect(result.result.status).toBe("completed");
+
+    await expect(akmTasksRun("implicit-owner", { target: "other" })).rejects.toMatchObject({
+      code: "INVALID_FLAG_VALUE",
+    });
   });
 });
