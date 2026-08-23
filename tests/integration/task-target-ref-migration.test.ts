@@ -34,6 +34,16 @@ beforeEach(() => {
 
 afterEach(() => storage.cleanup());
 
+/**
+ * Fixture modes are part of the migration contract. `writeFileSync` applies
+ * the host umask, so set the requested mode explicitly before asserting that
+ * migration and restore preserve it.
+ */
+function writeTaskFixture(filePath: string, source: string, mode: number): void {
+  fs.writeFileSync(filePath, source, { mode });
+  fs.chmodSync(filePath, mode);
+}
+
 function seedMigration(
   workflowRef: string,
   createWorkflow = true,
@@ -62,7 +72,7 @@ function seedMigration(
   if (createWorkflow) fs.writeFileSync(path.join(storage.stashDir, "workflows", "upgrade-noop.md"), "# Noop\n");
   const taskPath = path.join(storage.stashDir, "tasks", "upgrade-workflow.yml");
   const taskSource = `schedule: "@daily"\nworkflow: ${workflowRef}\nparams: '{"source":"published"}'\nenabled: true\n`;
-  fs.writeFileSync(taskPath, taskSource, { mode: 0o640 });
+  writeTaskFixture(taskPath, taskSource, 0o640);
   return { prepared, taskPath, taskSource };
 }
 
@@ -81,7 +91,7 @@ test("migrate apply previews, backs up, restores, and emits strict v3 for persis
   const { prepared, taskPath, taskSource } = seedMigration("workflow:upgrade-noop");
   const currentTaskPath = path.join(storage.stashDir, "tasks", "manual-current.yml");
   const currentTask = 'version: 2\nschedule: "@daily"\nworkflow: workflows/upgrade-noop\nenabled: true\n';
-  fs.writeFileSync(currentTaskPath, currentTask, { mode: 0o660 });
+  writeTaskFixture(currentTaskPath, currentTask, 0o660);
 
   const preview = await runCliCapture(["migrate", "apply", "--dry-run", "--config", prepared]);
   expect(preview.code, preview.stderr).toBe(0);
@@ -233,7 +243,7 @@ test("the main migration backup verifier and restore accept only its declared v2
   const taskPath = path.join(storage.stashDir, "tasks", "recoverable-v2.yml");
   const before = "version: 2\nschedule: '@daily'\ncommand: akm index\n";
   fs.mkdirSync(path.dirname(taskPath), { recursive: true });
-  fs.writeFileSync(taskPath, before, { mode: 0o664 });
+  writeTaskFixture(taskPath, before, 0o664);
 
   const applied = await runCliCapture(["migrate", "apply"]);
   expect(applied.code, applied.stderr).toBe(0);
@@ -275,7 +285,7 @@ test("explicit restore resumes after the middle task and recovers exact first/mi
   const middle = originals[1];
   const last = originals[2];
   if (!first || !middle || !last) throw new Error("expected first, middle, and last restore tasks");
-  for (const item of originals) fs.writeFileSync(item.filePath, item.source, { mode: item.mode });
+  for (const item of originals) writeTaskFixture(item.filePath, item.source, item.mode);
 
   const applied = await runCliCapture(["migrate", "apply"]);
   expect(applied.code, applied.stderr).toBe(0);
@@ -417,7 +427,7 @@ test.skipIf(process.platform === "win32")(
     fs.symlinkSync(physicalParent, alias, "dir");
     const lexicalTask = path.join(alias, "catalog", "tasks", "inside.yml");
     const original = "version: 2\nschedule: '@daily'\ncommand: akm index\n";
-    fs.writeFileSync(lexicalTask, original, { mode: 0o640 });
+    writeTaskFixture(lexicalTask, original, 0o640);
     const physicalTask = fs.realpathSync(lexicalTask);
     fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
     fs.writeFileSync(
