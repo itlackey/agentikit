@@ -58,8 +58,8 @@ describe("Node 24 runtime minimum contract", () => {
       "tests/release-check.sh",
     ]) {
       const source = read(relativePath);
-      expect(source, relativePath).toContain(">= 24");
-      expect(source, relativePath).not.toContain(">= 22");
+      expect(source, relativePath).toMatch(/>=\s*24/);
+      expect(source, relativePath).not.toMatch(/>=\s*22/);
     }
   });
 
@@ -67,11 +67,11 @@ describe("Node 24 runtime minimum contract", () => {
     for (const relativePath of CURRENT_RUNTIME_DOCS) {
       const document = read(relativePath);
       expect(document, relativePath).toMatch(/(?:Node(?:\.js)?|node:)[^\n]{0,80}(?:>=|≥)\s*24|Node\.js\s+24\+/i);
-      expect(document, relativePath).not.toMatch(/(?:Node(?:\.js)?|node:)[^\n]*22/i);
+      expect(document, relativePath).not.toMatch(/(?:Node(?:\.js)?|node:)[^\n]{0,80}(?:>=|≥)\s*22/i);
     }
 
     const unreleased = read("CHANGELOG.md").split("## [0.9.2]", 1)[0] ?? "";
     expect(unreleased).toContain("Node.js >= 24");
-    expect(unreleased).toContain("Node 22");
+    expect(unreleased).toContain("Node.js 22");
   });
 });

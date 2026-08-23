@@ -291,7 +291,7 @@ async function requestWithNodeHelper(
 function resolveNodeExecutable(override: string | null | undefined): string {
   if (override === null) {
     throw new RegistryPinnedTransportError(
-      "Pinned registry networking under Bun requires Node.js >= 22 on PATH; no Node executable is available",
+      "Pinned registry networking under Bun requires Node.js >= 24 on PATH; no Node executable is available",
     );
   }
   const candidates =
@@ -310,11 +310,11 @@ function resolveNodeExecutable(override: string | null | undefined): string {
       if (override === undefined && !isSupportedNodeExecutable(resolved)) continue;
       return resolved;
     } catch {
-      // Try the next PATH entry. The helper itself enforces Node >= 22.
+      // Try the next PATH entry. The helper itself enforces Node >= 24.
     }
   }
   throw new RegistryPinnedTransportError(
-    "Pinned registry networking under Bun requires Node.js >= 22 on PATH. Install Node.js or run akm with Node.",
+    "Pinned registry networking under Bun requires Node.js >= 24 on PATH. Install Node.js or run akm with Node.",
   );
 }
 
@@ -330,15 +330,15 @@ function isSupportedNodeExecutable(executable: string): boolean {
   if (result.error || result.status !== 0) return false;
   const match = /^v(\d+)\./.exec(result.stdout.trim());
   const major = match?.[1];
-  return major !== undefined && Number.parseInt(major, 10) >= 22;
+  return major !== undefined && Number.parseInt(major, 10) >= 24;
 }
 
 function assertNodeRuntimeVersion(): void {
   if (process.versions.bun) return;
   const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
-  if (!Number.isInteger(major) || major < 22) {
+  if (!Number.isInteger(major) || major < 24) {
     throw new RegistryPinnedTransportError(
-      `Pinned registry networking requires Node.js >= 22; found ${process.versions.node}`,
+      `Pinned registry networking requires Node.js >= 24; found ${process.versions.node}`,
     );
   }
 }
