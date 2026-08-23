@@ -80,6 +80,15 @@ LLM endpoints must be complete `http://` or `https://` chat-completions URLs
 ending in `/chat/completions`, without userinfo, query, or fragment. API keys
 are symbolic only: `$VAR` or `${VAR}`. AKM resolves them only at dispatch.
 
+An LLM engine may set `reasoningEffort` to a non-empty provider-supported
+value such as `"none"`, `"low"`, or `"high"`. AKM sends it as the top-level
+OpenAI-compatible `reasoning_effort` parameter alongside the existing
+`enableThinking` control, because providers do not all honor the same thinking
+switch. `reasoning_effort` is AKM-owned and cannot be set through
+`extraParams`. If a response reports reasoning tokens despite
+`enableThinking: false`, AKM emits a runtime warning so an ineffective provider
+control is visible.
+
 An agent engine may set `bin`, `args`, `workspace`, `model`, `timeoutMs`, and
 `modelAliases`. Only `platform: "opencode-sdk"` may set `llmEngine`; it names
 the LLM engine used as that SDK engine's fallback connection.

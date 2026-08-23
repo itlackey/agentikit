@@ -111,5 +111,6 @@ export const LlmInvocationOverridesSchema = z
     extraParams: ExtraParamsSchema.optional(),
     contextLength: positiveInt.optional(),
     enableThinking: z.boolean().optional(),
+    reasoningEffort: nonEmptyString.optional(),
   })
   .passthrough();

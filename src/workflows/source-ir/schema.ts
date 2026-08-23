@@ -652,7 +652,15 @@ function validateLlm(value: unknown, location: string): void {
   const llm = record(value, location);
   keys(
     llm,
-    ["temperature", "maxTokens", "supportsJsonSchema", "extraParams", "contextLength", "enableThinking"],
+    [
+      "temperature",
+      "maxTokens",
+      "supportsJsonSchema",
+      "extraParams",
+      "contextLength",
+      "enableThinking",
+      "reasoningEffort",
+    ],
     location,
   );
   if (llm.temperature !== undefined && typeof llm.temperature !== "number") {
@@ -665,6 +673,12 @@ function validateLlm(value: unknown, location: string): void {
   }
   for (const key of ["supportsJsonSchema", "enableThinking"] as const) {
     if (llm[key] !== undefined && typeof llm[key] !== "boolean") fail(`${location}.${key} must be a boolean`);
+  }
+  if (
+    llm.reasoningEffort !== undefined &&
+    (typeof llm.reasoningEffort !== "string" || llm.reasoningEffort.trim() === "")
+  ) {
+    fail(`${location}.reasoningEffort must be a non-empty string`);
   }
   if (llm.extraParams !== undefined) {
     const extra = record(llm.extraParams, `${location}.extraParams`);

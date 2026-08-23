@@ -1,7 +1,9 @@
 import { describe, expect, jest, setSystemTime, test } from "bun:test";
 import type { LlmConnectionConfig } from "../../src/core/config/config";
 import { parseEmbeddedJsonResponse, parseJsonResponse } from "../../src/core/parse";
+import { _setWarnSinkForTests } from "../../src/core/warn";
 import { chatCompletion, LlmCallError, probeLlmCapabilities, redactErrorBody } from "../../src/llm/client";
+import { overrideSeam } from "../_helpers/seams";
 
 function createRequestServer(respond: (body: Record<string, unknown>) => Response): {
   url: string;
@@ -96,6 +98,30 @@ describe("chatCompletion thinking controls", () => {
     }
   });
 
+  test("sends first-class reasoning_effort alongside the provider thinking control", async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const { url, server } = createRequestServer((body) => {
+      requestBody = body;
+      return Response.json({ choices: [{ message: { content: "ok" } }] });
+    });
+    try {
+      await chatCompletion(
+        { endpoint: url, model: "test-model", provider: "vllm", reasoningEffort: "none" },
+        messages,
+        { enableThinking: false },
+      );
+      expect(requestBody).toEqual({
+        model: "test-model",
+        messages,
+        temperature: 0.3,
+        chat_template_kwargs: { enable_thinking: false },
+        reasoning_effort: "none",
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("rejects an extraParams chat_template_kwargs override before dispatch", async () => {
     let requestCount = 0;
     const { url, server } = createRequestServer(() => {
@@ -121,6 +147,30 @@ describe("chatCompletion thinking controls", () => {
     }
   });
 
+  test("rejects an extraParams reasoning_effort override before dispatch", async () => {
+    let requestCount = 0;
+    const { url, server } = createRequestServer(() => {
+      requestCount++;
+      return Response.json({ choices: [{ message: { content: "ok" } }] });
+    });
+    try {
+      await expect(
+        chatCompletion(
+          {
+            endpoint: url,
+            model: "test-model",
+            reasoningEffort: "none",
+            extraParams: { reasoning_effort: "high" },
+          },
+          messages,
+        ),
+      ).rejects.toThrow("reasoning_effort is protected by AKM");
+      expect(requestCount).toBe(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("preserves the top-level control for non-vLLM providers", async () => {
     let requestBody: Record<string, unknown> | undefined;
     const { url, server } = createRequestServer((body) => {
@@ -137,6 +187,25 @@ describe("chatCompletion thinking controls", () => {
         temperature: 0.3,
         enable_thinking: false,
       });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("warns when enableThinking false is ignored by a provider", async () => {
+    const warnings: string[] = [];
+    overrideSeam(_setWarnSinkForTests, (level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    const { url, server } = createRequestServer(() =>
+      Response.json({
+        choices: [{ message: { content: "ok" } }],
+        usage: { completion_tokens_details: { reasoning_tokens: 17 } },
+      }),
+    );
+    try {
+      await chatCompletion({ endpoint: url, model: "test-model", enableThinking: false }, messages);
+      expect(warnings).toEqual([expect.stringContaining("returned 17 reasoning tokens despite enableThinking: false")]);
     } finally {
       server.stop(true);
     }

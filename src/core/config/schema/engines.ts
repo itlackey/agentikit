@@ -62,6 +62,7 @@ export const LlmConnectionConfigSchema = z
     extraParams: ExtraParamsSchema.optional(),
     contextLength: positiveInt.optional(),
     enableThinking: z.boolean().optional(),
+    reasoningEffort: nonEmptyString.optional(),
   })
   .passthrough();
 
@@ -90,6 +91,7 @@ const LlmEngineSchema = z
     extraParams: ExtraParamsSchema.optional(),
     contextLength: positiveInt.optional(),
     enableThinking: z.boolean().optional(),
+    reasoningEffort: nonEmptyString.optional(),
   })
   .passthrough()
   .superRefine((value, ctx) => {
@@ -126,6 +128,7 @@ const AgentEngineSchema = z
       "extraParams",
       "contextLength",
       "enableThinking",
+      "reasoningEffort",
     ]) {
       if (key in value)
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is not valid on an agent engine` });

@@ -34,6 +34,7 @@ const ENGINE: FrozenLlmEngine = {
   extraParams: { seed: 7, nested: { base: true } },
   contextLength: 16_384,
   enableThinking: false,
+  reasoningEffort: "none",
   concurrency: 1,
 };
 
@@ -144,6 +145,7 @@ describe("workflow frozen execution lowers through the resolved boundary", () =>
         extraParams: { seed: 7, nested: { base: true, invocation: true } },
         contextLength: 16_384,
         enableThinking: false,
+        reasoningEffort: "none",
         timeoutMs: 0,
       },
       messages: [

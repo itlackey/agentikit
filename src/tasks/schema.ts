@@ -181,6 +181,7 @@ export interface TaskPromptTarget {
     extraParams?: Record<string, unknown>;
     contextLength?: number;
     enableThinking?: boolean;
+    reasoningEffort?: string;
   };
 }
 

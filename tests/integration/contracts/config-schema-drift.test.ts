@@ -50,6 +50,7 @@ describe("config schema drift pins", () => {
       "enableThinking",
       "extraParams",
       "maxTokens",
+      "reasoningEffort",
       "supportsJsonSchema",
       "temperature",
     ]);

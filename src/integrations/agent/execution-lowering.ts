@@ -574,6 +574,7 @@ const LLM_INFERENCE_CONNECTION_FIELDS = new Set([
   "extraParams",
   "contextLength",
   "enableThinking",
+  "reasoningEffort",
 ]);
 
 function projectLlmRunner(
@@ -589,6 +590,7 @@ function projectLlmRunner(
     "extraParams",
     "contextLength",
     "enableThinking",
+    "reasoningEffort",
   ]) {
     delete connection[key];
   }

@@ -336,6 +336,7 @@ function addSnapshot(config: AkmConfig, name: string, target: Record<string, Fro
       ...(engine.extraParams ? { extraParams: engine.extraParams } : {}),
       ...(engine.contextLength !== undefined ? { contextLength: engine.contextLength } : {}),
       ...(engine.enableThinking !== undefined ? { enableThinking: engine.enableThinking } : {}),
+      ...(engine.reasoningEffort !== undefined ? { reasoningEffort: engine.reasoningEffort } : {}),
     };
     target[name] = snapshot;
     return;

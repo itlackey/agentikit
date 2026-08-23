@@ -1338,6 +1338,7 @@ function parseLlmOverrides(ctx: Ctx, raw: unknown, path: Path, label: string): L
     "extra_params",
     "context_length",
     "enable_thinking",
+    "reasoning_effort",
   ];
   checkUnknownKeys(ctx, raw, path, keys, label);
   const result: LlmInvocationOverrides = {};
@@ -1378,6 +1379,11 @@ function parseLlmOverrides(ctx: Ctx, raw: unknown, path: Path, label: string): L
   if (raw.enable_thinking !== undefined) {
     if (typeof raw.enable_thinking === "boolean") result.enableThinking = raw.enable_thinking;
     else ctx.err([...path, "enable_thinking"], `${label}.enable_thinking must be a boolean.`);
+  }
+  if (raw.reasoning_effort !== undefined) {
+    if (typeof raw.reasoning_effort === "string" && raw.reasoning_effort.trim().length > 0) {
+      result.reasoningEffort = raw.reasoning_effort;
+    } else ctx.err([...path, "reasoning_effort"], `${label}.reasoning_effort must be a non-empty string.`);
   }
   return Object.keys(result).length > 0 ? result : undefined;
 }

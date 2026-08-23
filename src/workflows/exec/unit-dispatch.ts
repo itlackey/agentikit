@@ -106,6 +106,7 @@ function frozenLlmConnection(
     ...(snapshot.extraParams ? { extraParams: snapshot.extraParams } : {}),
     ...(snapshot.contextLength !== undefined ? { contextLength: snapshot.contextLength } : {}),
     ...(snapshot.enableThinking !== undefined ? { enableThinking: snapshot.enableThinking } : {}),
+    ...(snapshot.reasoningEffort !== undefined ? { reasoningEffort: snapshot.reasoningEffort } : {}),
   };
   return invocation.llm
     ? (deepMergeConfig(base, invocation.llm as Record<string, unknown>) as LlmConnectionConfig)

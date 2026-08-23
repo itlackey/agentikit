@@ -132,6 +132,7 @@ export interface FrozenLlmEngine {
   extraParams?: Record<string, unknown>;
   contextLength?: number;
   enableThinking?: boolean;
+  reasoningEffort?: string;
 }
 
 export interface FrozenAgentEngine {
@@ -367,6 +368,7 @@ function validateEngine(
         "extraParams",
         "contextLength",
         "enableThinking",
+        "reasoningEffort",
       ],
       `LLM engine ${key}`,
     );
@@ -396,6 +398,12 @@ function validateEngine(
       fail(`LLM engine ${key} supportsJsonSchema must be boolean`);
     if (engine.enableThinking !== undefined && typeof engine.enableThinking !== "boolean")
       fail(`LLM engine ${key} enableThinking must be boolean`);
+    if (
+      engine.reasoningEffort !== undefined &&
+      (typeof engine.reasoningEffort !== "string" || engine.reasoningEffort.trim() === "")
+    ) {
+      fail(`LLM engine ${key} reasoningEffort must be a non-empty string`);
+    }
     if (engine.extraParams !== undefined) {
       const issue = validateExtraParams(engine.extraParams)[0];
       if (issue) fail(formatExtraParamsIssue(`LLM engine ${key} extraParams`, issue));
@@ -789,7 +797,15 @@ function validateLlmOverrides(value: unknown, hooks: WorkflowPlanValidationHooks
   if (!isRecord(value)) fail("invocation.llm must be an object");
   assertKeys(
     value,
-    ["temperature", "maxTokens", "supportsJsonSchema", "extraParams", "contextLength", "enableThinking"],
+    [
+      "temperature",
+      "maxTokens",
+      "supportsJsonSchema",
+      "extraParams",
+      "contextLength",
+      "enableThinking",
+      "reasoningEffort",
+    ],
     "invocation.llm",
   );
   validateOptionalFiniteNumber(value.temperature, "invocation.llm.temperature");
@@ -799,6 +815,12 @@ function validateLlmOverrides(value: unknown, hooks: WorkflowPlanValidationHooks
     fail("invocation.llm.supportsJsonSchema must be boolean");
   if (value.enableThinking !== undefined && typeof value.enableThinking !== "boolean")
     fail("invocation.llm.enableThinking must be boolean");
+  if (
+    value.reasoningEffort !== undefined &&
+    (typeof value.reasoningEffort !== "string" || value.reasoningEffort.trim() === "")
+  ) {
+    fail("invocation.llm.reasoningEffort must be a non-empty string");
+  }
   if (value.extraParams !== undefined) {
     const issue = validateExtraParams(value.extraParams)[0];
     if (issue) fail(formatExtraParamsIssue("invocation.llm.extraParams", issue));
