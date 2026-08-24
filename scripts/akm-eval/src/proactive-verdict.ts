@@ -44,6 +44,7 @@
 import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { isCanonicalIndexGeneration } from "../../../src/storage/repositories/index-entry-schema";
 import { resolveDataDir, resolveEvalsRoot, resolveStashDir } from "./sources/paths";
 import {
   assertMatchingSuiteFingerprints,
@@ -599,7 +600,10 @@ function main(): number {
   if (indexAvailable) {
     const idb = new Database(opts.indexDb, { readonly: true });
     try {
-      const entryRows = idb.query(`SELECT item_ref FROM entries WHERE item_ref IS NOT NULL`).all() as Array<{
+      if (!isCanonicalIndexGeneration(idb)) {
+        throw new Error("index database lacks the current canonical entries schema; rebuild it with `akm index --full`");
+      }
+      const entryRows = idb.query(`SELECT item_ref FROM entries`).all() as Array<{
         item_ref: string;
       }>;
       for (const row of entryRows) {

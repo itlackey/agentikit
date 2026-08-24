@@ -34,6 +34,7 @@
 import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { isCanonicalIndexGeneration } from "../../../src/storage/repositories/index-entry-schema";
 import { resolveDataDir } from "./sources/paths";
 import { normalizeRef } from "./lib/ref-normalize";
 
@@ -509,12 +510,17 @@ function main(): number {
   }
 
   const indexDb = new Database(opts.indexDb, { readonly: true });
-  const currentRefs = new Set(
-    (indexDb.query("SELECT item_ref FROM entries WHERE item_ref IS NOT NULL").all() as Array<{ item_ref: string }>).map(
-      (row) => row.item_ref,
-    ),
-  );
-  indexDb.close();
+  let currentRefs: Set<string>;
+  try {
+    if (!isCanonicalIndexGeneration(indexDb)) {
+      throw new Error("index database lacks the current canonical entries schema; rebuild it with `akm index --full`");
+    }
+    currentRefs = new Set(
+      (indexDb.query("SELECT item_ref FROM entries").all() as Array<{ item_ref: string }>).map((row) => row.item_ref),
+    );
+  } finally {
+    indexDb.close();
+  }
 
   const db = new Database(opts.stateDb, { readonly: true });
   let candidates: QueryCandidate[];

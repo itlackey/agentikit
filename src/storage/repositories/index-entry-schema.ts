@@ -43,6 +43,16 @@ interface ColumnFingerprint {
   notNull: number;
   defaultValue: string | null;
   primaryKeyPosition: number;
+  hidden: number;
+}
+
+interface IndexColumnFingerprint {
+  sequence: number;
+  cid: number;
+  name: string | null;
+  descending: number;
+  collation: string | null;
+  key: number;
 }
 
 interface IndexFingerprint {
@@ -50,7 +60,7 @@ interface IndexFingerprint {
   unique: number;
   origin: string;
   partial: number;
-  columns: Array<string | null>;
+  columns: IndexColumnFingerprint[];
 }
 
 interface EntrySchemaFingerprint {
@@ -68,25 +78,150 @@ export interface EntrySchemaInspectionDatabase {
 
 const CANONICAL_ENTRY_SCHEMA_FINGERPRINT: EntrySchemaFingerprint = {
   columns: [
-    { cid: 0, name: "id", type: "INTEGER", notNull: 0, defaultValue: null, primaryKeyPosition: 1 },
-    { cid: 1, name: "item_ref", type: "TEXT", notNull: 1, defaultValue: null, primaryKeyPosition: 0 },
-    { cid: 2, name: "bundle_id", type: "TEXT", notNull: 1, defaultValue: null, primaryKeyPosition: 0 },
-    { cid: 3, name: "component_id", type: "TEXT", notNull: 1, defaultValue: null, primaryKeyPosition: 0 },
-    { cid: 4, name: "concept_id", type: "TEXT", notNull: 1, defaultValue: null, primaryKeyPosition: 0 },
-    { cid: 5, name: "adapter_id", type: "TEXT", notNull: 1, defaultValue: null, primaryKeyPosition: 0 },
-    { cid: 6, name: "type", type: "TEXT", notNull: 1, defaultValue: null, primaryKeyPosition: 0 },
-    { cid: 7, name: "file_path", type: "TEXT", notNull: 1, defaultValue: null, primaryKeyPosition: 0 },
-    { cid: 8, name: "content_hash", type: "TEXT", notNull: 0, defaultValue: null, primaryKeyPosition: 0 },
-    { cid: 9, name: "document_json", type: "TEXT", notNull: 1, defaultValue: null, primaryKeyPosition: 0 },
-    { cid: 10, name: "search_text", type: "TEXT", notNull: 1, defaultValue: null, primaryKeyPosition: 0 },
-    { cid: 11, name: "derived_from", type: "TEXT", notNull: 0, defaultValue: null, primaryKeyPosition: 0 },
+    { cid: 0, name: "id", type: "INTEGER", notNull: 0, defaultValue: null, primaryKeyPosition: 1, hidden: 0 },
+    {
+      cid: 1,
+      name: "item_ref",
+      type: "TEXT",
+      notNull: 1,
+      defaultValue: null,
+      primaryKeyPosition: 0,
+      hidden: 0,
+    },
+    {
+      cid: 2,
+      name: "bundle_id",
+      type: "TEXT",
+      notNull: 1,
+      defaultValue: null,
+      primaryKeyPosition: 0,
+      hidden: 0,
+    },
+    {
+      cid: 3,
+      name: "component_id",
+      type: "TEXT",
+      notNull: 1,
+      defaultValue: null,
+      primaryKeyPosition: 0,
+      hidden: 0,
+    },
+    {
+      cid: 4,
+      name: "concept_id",
+      type: "TEXT",
+      notNull: 1,
+      defaultValue: null,
+      primaryKeyPosition: 0,
+      hidden: 0,
+    },
+    {
+      cid: 5,
+      name: "adapter_id",
+      type: "TEXT",
+      notNull: 1,
+      defaultValue: null,
+      primaryKeyPosition: 0,
+      hidden: 0,
+    },
+    { cid: 6, name: "type", type: "TEXT", notNull: 1, defaultValue: null, primaryKeyPosition: 0, hidden: 0 },
+    {
+      cid: 7,
+      name: "file_path",
+      type: "TEXT",
+      notNull: 1,
+      defaultValue: null,
+      primaryKeyPosition: 0,
+      hidden: 0,
+    },
+    {
+      cid: 8,
+      name: "content_hash",
+      type: "TEXT",
+      notNull: 0,
+      defaultValue: null,
+      primaryKeyPosition: 0,
+      hidden: 0,
+    },
+    {
+      cid: 9,
+      name: "document_json",
+      type: "TEXT",
+      notNull: 1,
+      defaultValue: null,
+      primaryKeyPosition: 0,
+      hidden: 0,
+    },
+    {
+      cid: 10,
+      name: "search_text",
+      type: "TEXT",
+      notNull: 1,
+      defaultValue: null,
+      primaryKeyPosition: 0,
+      hidden: 0,
+    },
+    {
+      cid: 11,
+      name: "derived_from",
+      type: "TEXT",
+      notNull: 0,
+      defaultValue: null,
+      primaryKeyPosition: 0,
+      hidden: 0,
+    },
   ],
   indexes: [
-    { name: "idx_entries_bundle", unique: 0, origin: "c", partial: 0, columns: ["bundle_id"] },
-    { name: "idx_entries_derived_from", unique: 0, origin: "c", partial: 0, columns: ["derived_from"] },
-    { name: "idx_entries_file_path", unique: 0, origin: "c", partial: 0, columns: ["file_path"] },
-    { name: "idx_entries_type", unique: 0, origin: "c", partial: 0, columns: ["type"] },
-    { name: "sqlite_autoindex_entries_1", unique: 1, origin: "u", partial: 0, columns: ["item_ref"] },
+    {
+      name: "idx_entries_bundle",
+      unique: 0,
+      origin: "c",
+      partial: 0,
+      columns: [
+        { sequence: 0, cid: 2, name: "bundle_id", descending: 0, collation: "BINARY", key: 1 },
+        { sequence: 1, cid: -1, name: null, descending: 0, collation: "BINARY", key: 0 },
+      ],
+    },
+    {
+      name: "idx_entries_derived_from",
+      unique: 0,
+      origin: "c",
+      partial: 0,
+      columns: [
+        { sequence: 0, cid: 11, name: "derived_from", descending: 0, collation: "BINARY", key: 1 },
+        { sequence: 1, cid: -1, name: null, descending: 0, collation: "BINARY", key: 0 },
+      ],
+    },
+    {
+      name: "idx_entries_file_path",
+      unique: 0,
+      origin: "c",
+      partial: 0,
+      columns: [
+        { sequence: 0, cid: 7, name: "file_path", descending: 0, collation: "BINARY", key: 1 },
+        { sequence: 1, cid: -1, name: null, descending: 0, collation: "BINARY", key: 0 },
+      ],
+    },
+    {
+      name: "idx_entries_type",
+      unique: 0,
+      origin: "c",
+      partial: 0,
+      columns: [
+        { sequence: 0, cid: 6, name: "type", descending: 0, collation: "BINARY", key: 1 },
+        { sequence: 1, cid: -1, name: null, descending: 0, collation: "BINARY", key: 0 },
+      ],
+    },
+    {
+      name: "sqlite_autoindex_entries_1",
+      unique: 1,
+      origin: "u",
+      partial: 0,
+      columns: [
+        { sequence: 0, cid: 1, name: "item_ref", descending: 0, collation: "BINARY", key: 1 },
+        { sequence: 1, cid: -1, name: null, descending: 0, collation: "BINARY", key: 0 },
+      ],
+    },
   ],
 };
 
@@ -96,13 +231,14 @@ function sqlString(value: string): string {
 
 export function readEntrySchemaFingerprint(db: EntrySchemaInspectionDatabase): EntrySchemaFingerprint {
   const columns = (
-    db.prepare("PRAGMA table_info(entries)").all() as Array<{
+    db.prepare("PRAGMA table_xinfo(entries)").all() as Array<{
       cid: number;
       name: string;
       type: string;
       notnull: number;
       dflt_value: string | null;
       pk: number;
+      hidden: number;
     }>
   ).map((column) => ({
     cid: Number(column.cid),
@@ -111,6 +247,7 @@ export function readEntrySchemaFingerprint(db: EntrySchemaInspectionDatabase): E
     notNull: Number(column.notnull),
     defaultValue: column.dflt_value === null ? null : String(column.dflt_value),
     primaryKeyPosition: Number(column.pk),
+    hidden: Number(column.hidden),
   }));
 
   const indexes = (
@@ -127,13 +264,24 @@ export function readEntrySchemaFingerprint(db: EntrySchemaInspectionDatabase): E
       origin: index.origin,
       partial: Number(index.partial),
       columns: (
-        db.prepare(`PRAGMA index_info(${sqlString(index.name)})`).all() as Array<{
+        db.prepare(`PRAGMA index_xinfo(${sqlString(index.name)})`).all() as Array<{
           seqno: number;
+          cid: number;
           name: string | null;
+          desc: number;
+          coll: string | null;
+          key: number;
         }>
       )
         .sort((left, right) => Number(left.seqno) - Number(right.seqno))
-        .map((column) => column.name),
+        .map((column) => ({
+          sequence: Number(column.seqno),
+          cid: Number(column.cid),
+          name: column.name,
+          descending: Number(column.desc),
+          collation: column.coll,
+          key: Number(column.key),
+        })),
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
 
