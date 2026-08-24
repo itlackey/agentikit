@@ -21,7 +21,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { recognizeMatch } from "../../core/adapter/recognize-match";
-import { adapterForId } from "../../core/adapter/registry";
 import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
 import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
@@ -39,8 +38,7 @@ import type { LoweringNotice } from "../../execution/resolved-request";
 import { hasGraphData } from "../../indexer/db/graph-db";
 import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
 import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction";
-import { lookupBundleRef, lookupBundleRefWithResolution } from "../../indexer/indexer";
-import { AdapterConceptOwnershipError } from "../../indexer/lookup/adapter-concept-owner";
+import { lookupBundleRef } from "../../indexer/indexer";
 import type { StashEntryScope } from "../../indexer/passes/metadata";
 import { ensurePrimaryIndexForRead, resolveReadSources } from "../../indexer/read-preflight";
 import {
@@ -71,11 +69,11 @@ import type { ShowDetailLevel, ShowResponse } from "../../sources/types";
 import { getCurrentWorkflowScopeKey } from "../../workflows/authoring/scope-key";
 import { buildWorkflowAction } from "../../workflows/renderer";
 import { getActiveWorkflowRun } from "../../workflows/runtime/runs";
-import { WorkflowSourceIdentityError, WorkflowSourceRejectionError } from "../../workflows/source-files";
 
 /**
- * Unified show: queries the local FTS5 index, then falls back to on-disk
- * type-dir resolution if the index has no row. Spec §6.2; no remote provider
+ * Unified show: queries the local FTS5 index, then reads that row's file path.
+ * A physical owner can arbitrate collisions during lookup, but show never
+ * renders an asset without an indexed row. Spec §6.2; no provider or disk
  * fallback.
  *
  * When `detail` is `"brief"` or `"summary"`, the response omits
@@ -241,29 +239,10 @@ export async function showLocal(input: {
 
   const allSourceDirs = searchSources.map((s) => s.path);
 
-  let indexedEntry: Awaited<ReturnType<typeof lookupBundleRef>> = null;
-  let physicalAssetPath: string | undefined;
-  try {
-    const resolution = await lookupBundleRefWithResolution(parsed);
-    indexedEntry = resolution.entry;
-    physicalAssetPath = resolution.owner?.path;
-  } catch (err) {
-    rethrowIfTestIsolationError(err);
-    if (
-      err instanceof AdapterConceptOwnershipError ||
-      err instanceof WorkflowSourceRejectionError ||
-      err instanceof WorkflowSourceIdentityError
-    ) {
-      throw err;
-    }
-    indexedEntry = null;
-  }
-  const resolvedAssetPath = indexedEntry?.filePath ?? physicalAssetPath;
-  const assetPath = resolvedAssetPath ?? undefined;
-  const displayType = indexedEntry?.type ?? assetParts?.type ?? "asset";
-  const displayName = indexedEntry?.name ?? assetParts?.name ?? parsed.conceptId;
+  const indexedEntry = await lookupBundleRef(parsed);
+  const assetPath = indexedEntry?.filePath;
 
-  if (!assetPath && parsed.bundle && searchSources.length === 0) {
+  if (!indexedEntry && parsed.bundle && searchSources.length === 0) {
     const installCmd = `akm bundle add ${parsed.bundle}`;
     throw new NotFoundError(
       `Stash asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
@@ -271,7 +250,7 @@ export async function showLocal(input: {
     );
   }
 
-  if (!assetPath) {
+  if (!indexedEntry) {
     const unsupportedExtension = existingUnsupportedScriptExtension(assetParts, searchSources);
     if (unsupportedExtension !== undefined) {
       const displayExtension = unsupportedExtension || "no extension";
@@ -284,19 +263,17 @@ export async function showLocal(input: {
     }
   }
 
-  if (!assetPath) {
+  if (!indexedEntry || !assetPath) {
     throw new NotFoundError(
       `Stash asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
         "Check the name with `akm search` or verify the asset exists in your stash.",
     );
   }
 
-  if (indexedEntry) {
-    try {
-      fs.accessSync(assetPath, fs.constants.R_OK);
-    } catch (error) {
-      throwIndexedPathNotFound(error, input.ref);
-    }
+  try {
+    fs.accessSync(assetPath, fs.constants.R_OK);
+  } catch (error) {
+    throwIndexedPathNotFound(error, input.ref);
   }
 
   const source = findSourceForPath(assetPath, allSources);
@@ -310,19 +287,15 @@ export async function showLocal(input: {
   }
 
   const fileCtx = buildFileContext(sourceStashDir, assetPath);
-  const diskEntry = !indexedEntry && source ? recognizeDiskEntry(source, fileCtx, parsed.conceptId) : null;
-  const presentationEntry = indexedEntry ?? diskEntry;
-  const presentedName = presentationEntry?.name ?? displayName;
-  const indexedRenderer = presentationEntry ? rendererForIndexedEntry(presentationEntry, fileCtx) : undefined;
+  const presentedName = indexedEntry.name;
+  const indexedRenderer = rendererForIndexedEntry(indexedEntry, fileCtx);
   let response: ShowResponse;
   try {
-    if (presentationEntry && indexedRenderer === null) {
-      response = buildIndexedProjectionResponse(presentationEntry, assetPath, parsed.fragment);
+    if (indexedRenderer === null) {
+      response = buildIndexedProjectionResponse(indexedEntry, assetPath, parsed.fragment);
     } else {
       const match =
-        presentationEntry && typeof indexedRenderer === "string"
-          ? indexedMatch(presentationEntry, indexedRenderer)
-          : recognizeMatch(fileCtx);
+        typeof indexedRenderer === "string" ? indexedMatch(indexedEntry, indexedRenderer) : recognizeMatch(fileCtx);
       if (!match) {
         throw new UsageError(
           `Could not display asset "${makeBundleRef(parsed.bundle, parsed.conceptId)}" — unsupported file type or unrecognized layout`,
@@ -337,7 +310,7 @@ export async function showLocal(input: {
         );
       }
 
-      const renderBundle = indexedEntry ? indexedEntry.bundleId : source?.registryId;
+      const renderBundle = indexedEntry.bundleId;
       const renderDefaultBundle =
         config.defaultBundle ?? (source?.path === allSources[0]?.path ? renderBundle : undefined);
       const renderCtx = buildRenderContext(fileCtx, match, allSourceDirs, renderBundle, renderDefaultBundle);
@@ -353,22 +326,19 @@ export async function showLocal(input: {
       }
     }
   } catch (error) {
-    if (indexedEntry) throwIndexedPathNotFound(error, input.ref);
-    throw error;
+    throwIndexedPathNotFound(error, input.ref);
   }
-  if (presentationEntry) {
-    response.type = presentationEntry.type;
-    response.name = presentationEntry.name;
-  }
+  response.type = indexedEntry.type;
+  response.name = indexedEntry.name;
   const isPrimaryStash = source !== undefined && source.path === allSources[0]?.path;
   const canonicalRef = displayRef(
     {
-      type: presentationEntry?.type ?? displayType,
+      type: indexedEntry.type,
       name: presentedName,
-      conceptId: presentationEntry?.conceptId,
-      bundleId: indexedEntry ? indexedEntry.bundleId : source?.registryId,
+      conceptId: indexedEntry.conceptId,
+      bundleId: indexedEntry.bundleId,
     },
-    config.defaultBundle ?? (isPrimaryStash ? indexedEntry?.bundleId : undefined),
+    config.defaultBundle ?? (isPrimaryStash ? indexedEntry.bundleId : undefined),
   );
   if (response.type === "workflow") response.action = buildWorkflowAction(canonicalRef);
   // 07 P1-D: provenance-aware toolPolicy CEILING. An agent's self-declared
@@ -591,31 +561,6 @@ function throwIndexedPathNotFound(error: unknown, ref: string): never {
 }
 
 type IndexedEntry = NonNullable<Awaited<ReturnType<typeof lookupBundleRef>>>;
-
-function recognizeDiskEntry(source: SearchSource, file: FileContext, fallbackConceptId: string): IndexedEntry | null {
-  const adapterId = source.adapterId ?? detectAdapterId(source.path);
-  const adapter = adapterForId(adapterId);
-  if (!adapter) return null;
-  const bundleId = source.registryId ?? "stash";
-  const document = adapter.recognize(
-    { id: bundleId, adapter: adapterId, root: source.path, writable: source.writable === true },
-    file,
-  );
-  if (!document) return null;
-  const conceptId = document.conceptId ?? fallbackConceptId;
-  return {
-    entryKey: `${source.path}:${document.type}:${document.name}`,
-    filePath: file.absPath,
-    stashDir: source.path,
-    type: document.type,
-    name: document.name,
-    adapterId,
-    document,
-    itemRef: document.ref ?? makeBundleRef(bundleId, conceptId),
-    bundleId,
-    conceptId,
-  };
-}
 
 /** `null` selects adapter-owned projection; a string selects a core renderer. */
 function rendererForIndexedEntry(entry: IndexedEntry, _file: FileContext): string | null | undefined {

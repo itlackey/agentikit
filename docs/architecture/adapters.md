@@ -121,7 +121,7 @@ incrementality.
 `readCandidates` is intentionally distinct from both `extensions` and
 `placeNew`: extensions are non-exhaustive walk hints, while placement is a
 write-normalization policy. Read candidates preserve canonical directory
-manifests (for example `skills/<name>/SKILL.md`) so lookup, disk show, and workflow runtime share one
+manifests (for example `skills/<name>/SKILL.md`) so lookup, index-backed show, and workflow runtime share one
 physical-owner decision. Each candidate carries its canonical concept identity,
 so a byte-denying ownership probe never has to infer identity from the query.
 When an adapter accepts noncanonical authored placements that cannot be

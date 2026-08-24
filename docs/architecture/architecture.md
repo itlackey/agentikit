@@ -170,13 +170,14 @@ Local show flow (`src/commands/read/show.ts`):
 1. parse `[bundle//]conceptId`
 2. `lookup(ref)` by indexed `item_ref` and materialized source root
 3. return the indexed canonical ref and read `file_path` from disk
-4. fall back to on-disk type-dir traversal only when the index has no row
-   (covers the "indexed yet?" gap before `akm index` runs)
+4. report not-found when no index row resolves; physical ownership can prevent
+   a lower-priority source from retargeting a ref, but never authorizes a
+   direct file read
 5. apply generic Markdown content/fragment presentation for OKF, or the owning
    adapter's progressively enhanced native presentation
 
-There is **no remote provider fallback**. The fallback is local disk traversal,
-not a provider read.
+There is **no provider or local-disk fallback** for asset refs. The file is
+read only after an indexed row resolves it.
 
 ### Local access metadata
 

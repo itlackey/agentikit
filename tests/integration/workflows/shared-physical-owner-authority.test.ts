@@ -118,7 +118,7 @@ describe("shared adapter physical-owner authority", () => {
     "missing",
     "incomplete",
     "stale",
-  ] as const)("loose AKM smart-Markdown remains the first owner with a %s row", async (state) => {
+  ] as const)("loose AKM smart-Markdown preserves the first owner with a %s row without bypassing the index", async (state) => {
     const early = fixture(`early-loose-command-${state}`, "akm");
     const later = fixture(`later-loose-command-${state}`, "akm-workflow");
     const earlyPath = write(early.root, "same.md", "Use $ARGUMENTS exactly.\n");
@@ -130,14 +130,15 @@ describe("shared adapter physical-owner authority", () => {
     const found = await lookupBundleRef(parseBundleRef("commands/same"));
     if (state === "complete") expect(found).toMatchObject({ filePath: earlyPath, conceptId: "commands/same" });
     else expect(found).toBeNull();
-    expect((await showLocal({ ref: "commands/same" })).path).toBe(earlyPath);
+    if (state === "complete") expect((await showLocal({ ref: "commands/same" })).path).toBe(earlyPath);
+    else await expect(showLocal({ ref: "commands/same" })).rejects.toThrow(/not found/i);
     expect(await lookupBundleRef(parseBundleRef("later//commands/same"))).toMatchObject({ filePath: laterPath });
   });
 
-  test("show reuses lookup's physical-owner resolution instead of probing the source twice", async () => {
+  test("show rejects a missing index row after one physical-owner probe", async () => {
     const early = fixture("early-single-owner-pass", "opencode");
     const later = fixture("later-single-owner-pass", "akm-workflow");
-    const earlyPath = write(early.root, "skills/once/SKILL.md", skill("once"));
+    write(early.root, "skills/once/SKILL.md", skill("once"));
     write(later.root, "skills/once.md", getWorkflowTemplate());
     configure(early, later);
     await akmIndex({ stashDir: early.root, full: true });
@@ -145,7 +146,7 @@ describe("shared adapter physical-owner authority", () => {
 
     const candidateSpy = spyOn(opencodeAdapter, "readCandidates");
     try {
-      expect((await showLocal({ ref: "skills/once" })).path).toBe(earlyPath);
+      await expect(showLocal({ ref: "skills/once" })).rejects.toThrow(/not found/i);
       expect(candidateSpy).toHaveBeenCalledTimes(1);
     } finally {
       candidateSpy.mockRestore();
@@ -203,17 +204,17 @@ describe("shared adapter physical-owner authority", () => {
     ".MARKDOWN",
     ".TXT",
     ".TEXT",
-  ])("generic-files canonical document owner covers %s with a missing row", async (extension) => {
+  ])("generic-files canonical document owner covers %s with a missing row without rendering it", async (extension) => {
     const early = fixture(`early-generic-${extension.slice(1)}`, "generic-files");
     const later = fixture(`later-generic-${extension.slice(1)}`, "akm-workflow");
-    const earlyPath = write(early.root, `docs/format${extension}`, "# generic document\n");
+    write(early.root, `docs/format${extension}`, "# generic document\n");
     const laterPath = write(later.root, "docs/format.md", getWorkflowTemplate());
     configure(early, later);
     await akmIndex({ stashDir: early.root, full: true });
     mutateEntry("early//docs/format", "missing", "");
 
     expect(await lookupBundleRef(parseBundleRef("docs/format"))).toBeNull();
-    expect((await showLocal({ ref: "docs/format" })).path).toBe(earlyPath);
+    await expect(showLocal({ ref: "docs/format" })).rejects.toThrow(/not found/i);
     expect(await lookupBundleRef(parseBundleRef("later//docs/format"))).toMatchObject({ filePath: laterPath });
   });
 
@@ -234,7 +235,8 @@ describe("shared adapter physical-owner authority", () => {
     const found = await lookupBundleRef(parseBundleRef("env/default"));
     if (state === "complete") expect(found).toMatchObject({ filePath: earlyPath, conceptId: "env/default" });
     else expect(found).toBeNull();
-    expect((await showLocal({ ref: "env/default" })).path).toBe(earlyPath);
+    if (state === "complete") expect((await showLocal({ ref: "env/default" })).path).toBe(earlyPath);
+    else await expect(showLocal({ ref: "env/default" })).rejects.toThrow(/not found/i);
   });
 
   test("a nested tool skill manifest cannot claim a deeper queried concept", async () => {
@@ -289,7 +291,7 @@ describe("shared adapter physical-owner authority", () => {
 
   test.each(
     toolDirShapes,
-  )("disk lookup/show honors %s read placement %s without bytes", async (adapter, conceptId, relativePath, content) => {
+  )("physical-owner lookup honors %s read placement %s without rendering unindexed bytes", async (adapter, conceptId, relativePath, content) => {
     const early = fixture(`early-${adapter}-${conceptId.replaceAll("/", "-")}`, adapter);
     const later = fixture(`later-${adapter}-${conceptId.replaceAll("/", "-")}`, adapter);
     const earlyPath = write(early.root, relativePath, content);
@@ -304,13 +306,13 @@ describe("shared adapter physical-owner authority", () => {
     } finally {
       readSpy.mockRestore();
     }
-    expect((await showLocal({ ref: conceptId })).path).toBe(earlyPath);
+    await expect(showLocal({ ref: conceptId })).rejects.toThrow(/not found/i);
     expect(await lookupBundleRef(parseBundleRef(`later//${conceptId}`))).toMatchObject({ filePath: laterPath });
   });
 
   test.each(
     nonExtensionHintShapes,
-  )("disk lookup/show honors %s authoritative placement %s without bytes", async (adapter, conceptId, relativePath, content) => {
+  )("physical-owner lookup honors %s authoritative placement %s without rendering unindexed bytes", async (adapter, conceptId, relativePath, content) => {
     const early = fixture(`early-${adapter}-${conceptId.replaceAll("/", "-")}`, adapter);
     const later = fixture(`later-${adapter}-${conceptId.replaceAll("/", "-")}`, "akm-workflow");
     const earlyPath = write(early.root, relativePath, content);
@@ -325,7 +327,7 @@ describe("shared adapter physical-owner authority", () => {
     } finally {
       readSpy.mockRestore();
     }
-    expect((await showLocal({ ref: conceptId })).path).toBe(earlyPath);
+    await expect(showLocal({ ref: conceptId })).rejects.toThrow(/not found/i);
     expect(await lookupBundleRef(parseBundleRef(`later//${conceptId}`))).toMatchObject({ filePath: laterPath });
   });
 
@@ -334,7 +336,7 @@ describe("shared adapter physical-owner authority", () => {
     "missing",
     "incomplete",
     "stale",
-  ] as const)("complete/missing/incomplete/stale first rows preserve the canonical read owner: %s", async (state) => {
+  ] as const)("complete/missing/incomplete/stale first rows preserve the canonical owner without bypassing the index: %s", async (state) => {
     const early = fixture(`early-row-${state}`, "opencode");
     const later = fixture(`later-row-${state}`, "opencode");
     const earlyPath = write(early.root, "skills/row-owner/SKILL.md", skill("row-owner"));
@@ -346,7 +348,8 @@ describe("shared adapter physical-owner authority", () => {
     const found = await lookupBundleRef(parseBundleRef("skills/row-owner"));
     if (state === "complete") expect(found).toMatchObject({ filePath: earlyPath });
     else expect(found).toBeNull();
-    expect((await showLocal({ ref: "skills/row-owner" })).path).toBe(earlyPath);
+    if (state === "complete") expect((await showLocal({ ref: "skills/row-owner" })).path).toBe(earlyPath);
+    else await expect(showLocal({ ref: "skills/row-owner" })).rejects.toThrow(/not found/i);
   });
 
   test.each([

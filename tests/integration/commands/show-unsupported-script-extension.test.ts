@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { showLocal } from "../../../src/commands/read/show";
 import { resetConfigCache } from "../../../src/core/config/config";
+import { akmIndex } from "../../../src/indexer/indexer";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
@@ -53,6 +54,7 @@ describe("show unsupported AKM script extension diagnostics", () => {
     "primary//scripts/readme.txt",
   ])("reports an existing unsupported canonical script path for %s", async (ref) => {
     write(storage.stashDir, "scripts/readme.txt", "UNSUPPORTED_SCRIPT_SENTINEL\n");
+    await akmIndex({ stashDir: storage.stashDir, full: true });
 
     const error = await captureShowError(ref);
 
@@ -62,6 +64,7 @@ describe("show unsupported AKM script extension diagnostics", () => {
 
   test("matches an unsupported extension case-insensitively while requiring the exact authored spelling", async () => {
     write(storage.stashDir, "scripts/report.TxT", "MIXED_CASE_SENTINEL\n");
+    await akmIndex({ stashDir: storage.stashDir, full: true });
 
     const exact = await captureShowError("scripts/report.TxT");
     const wrongCase = await captureShowError("scripts/report.txt");
@@ -73,6 +76,7 @@ describe("show unsupported AKM script extension diagnostics", () => {
 
   test("keeps bare names and absent unsupported-looking canonical paths on the normal not-found path", async () => {
     write(storage.stashDir, "scripts/readme.txt", "BARE_NAME_SENTINEL\n");
+    await akmIndex({ stashDir: storage.stashDir, full: true });
 
     for (const ref of ["readme.txt", "scripts/absent.txt", "primary//scripts/absent.TXT"]) {
       const error = await captureShowError(ref);
@@ -87,6 +91,7 @@ describe("show unsupported AKM script extension diagnostics", () => {
   ])("leaves supported script extension resolution unchanged for %s", async (ref) => {
     const authored = ref.endsWith(".SH") ? "scripts/deploy.SH" : "scripts/deploy.sh";
     const scriptPath = write(storage.stashDir, authored, "#!/bin/sh\necho supported\n");
+    await akmIndex({ stashDir: storage.stashDir, full: true });
 
     await expect(showLocal({ ref })).resolves.toMatchObject({
       type: "script",
@@ -96,6 +101,7 @@ describe("show unsupported AKM script extension diagnostics", () => {
 
   test("does not read an unsupported script body to choose or render the diagnostic", async () => {
     const scriptPath = write(storage.stashDir, "scripts/private.txt", "SECRET_BODY_MUST_NOT_LEAK\n");
+    await akmIndex({ stashDir: storage.stashDir, full: true });
     const originalReadFileSync = fs.readFileSync;
     const readSpy = spyOn(fs, "readFileSync").mockImplementation(((candidate, options) => {
       if (path.resolve(String(candidate)) === path.resolve(scriptPath)) {
@@ -118,6 +124,7 @@ describe("show unsupported AKM script extension diagnostics", () => {
     const outsidePath = write(storage.root, "outside/private.txt", "OUTSIDE_SCRIPT_SENTINEL\n");
     const authoredPath = path.join(storage.stashDir, "scripts", "private.txt");
     fs.symlinkSync(outsidePath, authoredPath);
+    await akmIndex({ stashDir: storage.stashDir, full: true });
 
     const error = await captureShowError("scripts/private.txt");
 
@@ -151,6 +158,7 @@ describe("show unsupported scripts and first-owner arbitration", () => {
       },
     });
     resetConfigCache();
+    await akmIndex({ stashDir: early, full: true });
 
     await expect(showLocal({ ref: "scripts/readme.txt" })).resolves.toMatchObject({
       path: earlyPath,

@@ -429,7 +429,7 @@ jobs:
     });
   });
 
-  test("invalid owned YAML is not indexed and show surfaces its source-located portable-template diagnostic", async () => {
+  test("invalid owned YAML is not indexed and show does not parse an unindexed file", async () => {
     const invalidPath = path.join(stashDir, "workflows", "invalid-template.yml");
     writeFile(
       invalidPath,
@@ -449,7 +449,7 @@ jobs:
 
     expect(await lookupBundleRef(parseBundleRef("workflows/invalid-template"))).toBeNull();
     await expect(akmShowUnified({ ref: "workflows/invalid-template", skipLogging: true })).rejects.toThrow(
-      /invalid-template\.yml:10.*unsupported portable template construct/is,
+      /not found/i,
     );
   });
 

@@ -2636,8 +2636,8 @@ function resolveLookupScope(
 }
 
 /**
- * Resolve index and physical ownership together. The owner detail lets disk
- * show reuse this exact arbitration instead of probing the same source again.
+ * Resolve index and physical ownership together. Ownership preserves
+ * installation-priority arbitration even when a row is missing or stale.
  */
 type LookupDatabaseOpener = (dbPath: string) => Database | undefined;
 

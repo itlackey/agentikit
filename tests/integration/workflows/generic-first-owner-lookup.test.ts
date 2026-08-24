@@ -86,7 +86,6 @@ describe("generic lookup/show installation-priority ownership", () => {
       conceptId: "skills/physical-owner",
       relativePath: "skills/physical-owner/SKILL.md",
       content: skillDocument("physical-owner", "EARLY_AKM_SKILL"),
-      diskShow: true,
     },
     {
       label: "an AKM secret with an unlisted extension",
@@ -94,7 +93,6 @@ describe("generic lookup/show installation-priority ownership", () => {
       conceptId: "secrets/physical-owner.key",
       relativePath: "secrets/physical-owner.key",
       content: "EARLY_AKM_KEY_SECRET",
-      diskShow: true,
     },
     {
       label: "an AKM extensionless secret",
@@ -102,7 +100,6 @@ describe("generic lookup/show installation-priority ownership", () => {
       conceptId: "secrets/physical-owner",
       relativePath: "secrets/physical-owner",
       content: "EARLY_AKM_EXTENSIONLESS_SECRET",
-      diskShow: true,
     },
     {
       label: "the AKM default environment alias",
@@ -110,7 +107,6 @@ describe("generic lookup/show installation-priority ownership", () => {
       conceptId: "env/default",
       relativePath: "env/.env",
       content: "PHYSICAL_OWNER_ENV=early",
-      diskShow: true,
     },
     {
       label: "an Agent Skills package directory",
@@ -118,9 +114,8 @@ describe("generic lookup/show installation-priority ownership", () => {
       conceptId: "physical-owner",
       relativePath: "physical-owner/SKILL.md",
       content: skillDocument("physical-owner", "EARLY_AGENT_SKILL"),
-      diskShow: false,
     },
-  ])("a missing first index row still stops at $label", async (shape) => {
+  ])("a missing first index row still stops at $label without rendering its physical file", async (shape) => {
     const early = fixture(`early-${shape.adapter}-${shape.conceptId.replaceAll("/", "-")}`, shape.adapter);
     const later = fixture(`later-${shape.adapter}-${shape.conceptId.replaceAll("/", "-")}`, shape.adapter);
     const earlyPath = write(early.root, shape.relativePath, shape.content);
@@ -147,9 +142,7 @@ describe("generic lookup/show installation-priority ownership", () => {
       readSpy.mockRestore();
     }
     await expect(showByRef(shape.conceptId)).rejects.toThrow(/not found/i);
-    if (shape.diskShow) {
-      expect((await showLocal({ ref: shape.conceptId })).path).toBe(earlyPath);
-    }
+    await expect(showLocal({ ref: shape.conceptId })).rejects.toThrow(/not found/i);
     expect(await lookupBundleRef(parseBundleRef(`later//${shape.conceptId}`))).toMatchObject({
       filePath: laterPath,
       adapterId: shape.adapter,
@@ -237,12 +230,7 @@ describe("generic lookup/show installation-priority ownership", () => {
 
     deleteIndexEntry("early//workflows/same");
     expect(await lookupBundleRef(parseBundleRef("workflows/same"))).toBeNull();
-    expect(await showLocal({ ref: "workflows/same" })).toMatchObject({
-      path: earlyPath,
-      type: "knowledge",
-      name: "EARLY_OKF_OWNER",
-      ref: "workflows/same",
-    });
+    await expect(showLocal({ ref: "workflows/same" })).rejects.toThrow(/not found/i);
 
     const stateBeforeRuntimeRejection = fs.readFileSync(getStateDbPath());
     await expect(loadWorkflowAsset("workflows/same")).rejects.toThrow(
@@ -281,13 +269,7 @@ describe("generic lookup/show installation-priority ownership", () => {
     expect((await showLocal({ ref: "workflows/same" })).content).toContain("EARLY_INSULATED_OWNER");
     deleteIndexEntry("early//workflows/same");
     expect(await lookupBundleRef(parseBundleRef("workflows/same"))).toBeNull();
-    expect(await showLocal({ ref: "workflows/same" })).toMatchObject({
-      path: earlyPath,
-      type: "knowledge",
-      name: "EARLY_INSULATED_OWNER",
-      ref: "workflows/same",
-      content: expect.stringContaining("EARLY_INSULATED_OWNER"),
-    });
+    await expect(showLocal({ ref: "workflows/same" })).rejects.toThrow(/not found/i);
     const stateBeforeRuntimeRejection = fs.readFileSync(getStateDbPath());
     await expect(loadWorkflowAsset("workflows/same")).rejects.toThrow(/adapter "okf"/i);
     expect(fs.readFileSync(getStateDbPath())).toEqual(stateBeforeRuntimeRejection);
