@@ -21,7 +21,7 @@ import type {
 } from "../sources/types";
 import { projectExecCore } from "./program/schema";
 import { compileWorkflowSource } from "./source-ir/compile";
-import { workflowShellCommand } from "./source-ir/program";
+import { sourceStepInstructions, workflowShellCommand } from "./source-ir/program";
 import type { WorkflowSourceIrV1, WorkflowSourceStep, WorkflowSourceUnit } from "./source-ir/schema";
 
 function shellQuote(value: string): string {
@@ -53,7 +53,8 @@ function loadSourceIr(ctx: RenderContext): WorkflowSourceIrV1 {
  * a non-empty instructions string).
  */
 function stepInstructions(step: WorkflowSourceStep): string {
-  if (step.instructions) return step.instructions;
+  const instructions = sourceStepInstructions(step);
+  if (instructions) return instructions;
   if (step.route) {
     const branches = step.route.branches.map((b) => `"${b.match}" -> ${b.stepId}`);
     if (step.route.defaultStepId !== undefined) branches.push(`default -> ${step.route.defaultStepId}`);
