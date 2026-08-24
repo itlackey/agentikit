@@ -4,11 +4,11 @@
 
 /**
  * The low-level exhaustive dispatch seam for the {@link RunnerSpec} transport
- * union (`llm | agent | sdk`). User/model work normally reaches this function
- * only after `ResolvedExecutionRequestV1` preparation and engine-owned
- * lowering; `dispatchLoweredExecutionRequest` supplies the direct-LLM handler.
- * A prompt-free interactive native-agent launch is the narrow payload-free
- * exception.
+ * union (`llm | agent | sdk`). User/model work reaches this function only
+ * after `ResolvedExecutionRequestV1` preparation and engine-owned lowering;
+ * `dispatchLoweredExecutionRequest` supplies the direct-LLM handler. A
+ * prompt-free native launch crosses the explicit payload-free interactive
+ * lowerer in that same shared layer.
  *
  * Agent and SDK arms use the shared profile runners. The LLM arm deliberately
  * requires a handler because structured callers own their parse/fallback

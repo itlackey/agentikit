@@ -12,7 +12,8 @@
  * When no prompt, agent selector, or model is given, the
  * native agent is launched interactively with no dispatch payload.
  *
- * Every noninteractive arm uses the canonical command invocation path.
+ * Every noninteractive arm uses the canonical command invocation path. The
+ * prompt-free arm uses the shared payload-free interactive execution lowerer.
  */
 
 import type { AkmConfig } from "../../core/config/config";
@@ -26,9 +27,7 @@ import {
   NO_ENGINE_REMEDY,
   withEngineFallback,
 } from "../../integrations/agent/engine-fallback";
-import { resolveEngine } from "../../integrations/agent/engine-resolution";
-import { executeRunner } from "../../integrations/agent/runner-dispatch";
-import type { AgentRunResult } from "../../integrations/agent/spawn";
+import { executeInteractiveAgentInvocation } from "../../integrations/agent/execution-lowering";
 import { executeCommandInvocation, type PrepareCommandInvocationOptions } from "../command/command-execution";
 
 export interface AkmAgentDispatchOptions {
@@ -49,6 +48,7 @@ export interface AkmAgentDispatchOptions {
 
 export interface AkmAgentDispatchSeams {
   readonly executeCommand?: (options: PrepareCommandInvocationOptions) => Promise<AkmAgentDispatchResult>;
+  readonly executeInteractive?: typeof executeInteractiveAgentInvocation;
 }
 
 export interface AkmAgentDispatchResult {
@@ -138,32 +138,20 @@ export async function akmAgentDispatch(
   if (engineAnnouncement) warn(engineAnnouncement);
   if (!engineName)
     throw new UsageError(`agent ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "MISSING_REQUIRED_ARGUMENT");
-  const runner = resolveEngine(engineName, agentConfig);
-  if (runner.kind === "llm") {
-    throw new UsageError(
-      `Engine "${engineName}" is an LLM engine; akm agent requires an agent engine.`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  const profile = runner.profile;
-
-  // This is the sole intentional low-level exemption: an interactive native
-  // launch contains no prompt/model/tool work and therefore has no resolved
-  // execution request or platform dispatch payload to lower.
-  const stdio = runner.kind !== "sdk" ? ("interactive" as const) : profile.stdio;
-  const runOptions = {
-    stdio,
-    parseOutput: "text" as const,
+  const executeInteractive = seams.executeInteractive ?? executeInteractiveAgentInvocation;
+  const execution = await executeInteractive({
+    config: agentConfig,
+    engine: engineName,
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-    ...(options.cwd ? { cwd: options.cwd } : {}),
-  };
-  const result: AgentRunResult = await executeRunner(runner, "", runOptions);
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+  });
+  const result = execution.result;
 
   return {
     schemaVersion: 2 as const,
     ok: result.ok,
     shape: "agent-result",
-    engine: engineName,
+    engine: execution.engine,
     exitCode: result.exitCode,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",

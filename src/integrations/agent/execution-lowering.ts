@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import type { AkmConfig, LlmConnectionConfig } from "../../core/config/config-types";
-import { ConfigError } from "../../core/errors";
+import { ConfigError, UsageError } from "../../core/errors";
 import { cloneExecutionJsonObject } from "../../execution/json";
 import { EXECUTION_MAX_TIMEOUT_MS } from "../../execution/limits";
 import { assertSnapshotKeys, snapshotStrictRecord } from "../../execution/record";
@@ -63,6 +63,35 @@ export interface LoweredLlmExecutionRequest extends LoweredExecutionBase {
 }
 
 export type LoweredExecutionRequest = LoweredAgentExecutionRequest | LoweredLlmExecutionRequest;
+
+/**
+ * Prompt-free native launches are not commands and therefore do not fabricate
+ * an empty {@link ResolvedExecutionRequestV1}. They still cross the same
+ * engine-owned resolution, symbolic-runner snapshot, lease, and dispatch
+ * layer as command/workflow execution.
+ */
+export interface InteractiveAgentInvocationOptions {
+  readonly config: AkmConfig;
+  readonly engine: string;
+  readonly timeoutMs?: number;
+  readonly cwd?: string;
+}
+
+export interface InteractiveAgentInvocationSeams {
+  readonly runAgent?: RunnerSeams["runAgent"];
+  readonly runSdk?: RunnerSeams["runSdk"];
+}
+
+interface LoweredInteractiveAgentExecution {
+  readonly engine: string;
+  readonly runner: Extract<RunnerSpec, { kind: "agent" | "sdk" }>;
+  readonly options: Readonly<RunAgentOptions>;
+}
+
+export interface InteractiveAgentInvocationResult {
+  readonly engine: string;
+  readonly result: AgentRunResult;
+}
 
 const loweredExecutionInstances = new WeakSet<object>();
 
@@ -741,6 +770,49 @@ function lowerLlm(
   });
 }
 
+/** The sole live-config engine resolver used by every current execution mode. */
+function resolveSnapshotRunner(engine: string, config: AkmConfig): RunnerSpec {
+  return snapshotRunnerSpec(resolveEngine(engine, config));
+}
+
+/**
+ * Lower one payload-free interactive launch. The input vocabulary is closed:
+ * there is deliberately no command, prompt, model, tool, or arbitrary env.
+ */
+function lowerInteractiveAgentExecution(input: InteractiveAgentInvocationOptions): LoweredInteractiveAgentExecution {
+  if (typeof input.engine !== "string" || input.engine.length === 0) {
+    throw new TypeError("interactive agent execution input.engine must be a non-empty string");
+  }
+  if (input.timeoutMs !== undefined) {
+    validateTimeout(input.timeoutMs, "interactive agent execution input.timeoutMs");
+  }
+  if (input.cwd !== undefined && typeof input.cwd !== "string") {
+    throw new TypeError("interactive agent execution input.cwd must be a string");
+  }
+
+  const runner = resolveSnapshotRunner(input.engine, snapshotConfig(input.config));
+  if (runner.kind === "llm") {
+    throw new UsageError(
+      `Engine "${input.engine}" is an LLM engine; akm agent requires an agent engine.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+
+  const options = Object.freeze(
+    sterileRecord({
+      stdio: runner.kind === "sdk" ? runner.profile.stdio : ("interactive" as const),
+      parseOutput: "text" as const,
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+    }),
+  ) as Readonly<RunAgentOptions>;
+  return Object.freeze({
+    engine: input.engine,
+    runner,
+    options,
+  });
+}
+
 /**
  * The one optimistic lowering boundary. Authorization and request-brand
  * validation precede config, registry, credential, and transport work.
@@ -751,7 +823,7 @@ export function lowerResolvedExecutionRequest(
 ): LoweredExecutionRequest {
   const request = requireAuthorizedRequest(input);
   const frozenConfig = snapshotConfig(config);
-  const base = snapshotRunnerSpec(resolveEngine(request.engine.name, frozenConfig));
+  const base = resolveSnapshotRunner(request.engine.name, frozenConfig);
   requireRunnerShape(request, base);
   return base.kind === "llm" ? lowerLlm(request, base) : lowerAgent(request, base);
 }
@@ -808,6 +880,44 @@ export function redactWithLoweredExecutionDispatchLease(lease: LoweredExecutionD
   return redactWithRunnerDispatchLease(lease, value);
 }
 
+/** One raw runner symbol reference for every shared execution dispatch mode. */
+function runnerDispatcher(candidate?: typeof executeRunner): typeof executeRunner {
+  return candidate ?? executeRunner;
+}
+
+async function dispatchLoweredInteractiveAgentExecution(
+  lowered: LoweredInteractiveAgentExecution,
+  seams: InteractiveAgentInvocationSeams,
+): Promise<AgentRunResult> {
+  const lease = acquireRunnerDispatchLease(lowered.runner, process.env);
+  try {
+    return await runnerDispatcher()(
+      lowered.runner,
+      "",
+      lowered.options,
+      {
+        ...(seams.runAgent ? { runAgent: seams.runAgent } : {}),
+        ...(seams.runSdk ? { runSdk: seams.runSdk } : {}),
+      },
+      lease,
+    );
+  } finally {
+    disposeRunnerDispatchLease(lease);
+  }
+}
+
+/** Resolve, lower, and dispatch one native interactive agent invocation. */
+export async function executeInteractiveAgentInvocation(
+  input: InteractiveAgentInvocationOptions,
+  seams: InteractiveAgentInvocationSeams = {},
+): Promise<InteractiveAgentInvocationResult> {
+  const lowered = lowerInteractiveAgentExecution(input);
+  return {
+    engine: lowered.engine,
+    result: await dispatchLoweredInteractiveAgentExecution(lowered, seams),
+  };
+}
+
 /** Dispatch a previously lowered request without re-resolving any model, ref, or persona. */
 export async function dispatchLoweredExecutionRequest(
   lowered: LoweredExecutionRequest,
@@ -825,7 +935,7 @@ export async function dispatchLoweredExecutionRequest(
     throw new TypeError("lowered execution dispatch options.onRetryAttempt must be a function");
   }
   const usesDefaultRunner = strictOptions.executeRunner === undefined;
-  const run = strictOptions.executeRunner ?? executeRunner;
+  const run = runnerDispatcher(strictOptions.executeRunner);
   const operationalSnapshot = snapshotStrictRecord(
     strictOptions.runOptions ?? {},
     "lowered execution operational options",

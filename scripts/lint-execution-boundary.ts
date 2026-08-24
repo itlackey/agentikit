@@ -102,22 +102,6 @@ export const EXECUTION_BOUNDARY_TARGETS: readonly ExecutionBoundaryTarget[] = Ob
 const PERMANENT_EXECUTION_BOUNDARY_ALLOWLIST: readonly ExecutionBoundaryAllowRule[] = Object.freeze([
   {
     operation: "engine.resolve",
-    file: "src/commands/agent/agent-dispatch.ts",
-    enclosing: "akmAgentDispatch",
-    maxReferences: 1,
-    exact: true,
-    rationale: "prompt-free interactive agent launch has no user/model work to lower",
-  },
-  {
-    operation: "runner.execute",
-    file: "src/commands/agent/agent-dispatch.ts",
-    enclosing: "akmAgentDispatch",
-    maxReferences: 1,
-    exact: true,
-    rationale: "prompt-free interactive agent launch has no dispatch payload",
-  },
-  {
-    operation: "engine.resolve",
     file: "src/commands/health/checks.ts",
     enclosing: "runConfiguredEngineProbe",
     maxReferences: 2,
@@ -127,18 +111,18 @@ const PERMANENT_EXECUTION_BOUNDARY_ALLOWLIST: readonly ExecutionBoundaryAllowRul
   {
     operation: "engine.resolve",
     file: "src/integrations/agent/execution-lowering.ts",
-    enclosing: "lowerResolvedExecutionRequest",
+    enclosing: "resolveSnapshotRunner",
     maxReferences: 1,
     exact: true,
-    rationale: "the single live lowering authority resolves symbolic runner material once",
+    rationale: "the single live lowering authority resolves symbolic runner material for every execution mode",
   },
   {
     operation: "runner.execute",
     file: "src/integrations/agent/execution-lowering.ts",
-    enclosing: "dispatchLoweredExecutionRequest",
+    enclosing: "runnerDispatcher",
     maxReferences: 1,
     exact: true,
-    rationale: "registry-produced lowering dispatch authority",
+    rationale: "one shared registry-produced lowering dispatch authority",
   },
   {
     operation: "llm.chat",

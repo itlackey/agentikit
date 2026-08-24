@@ -34,21 +34,24 @@ describe("akmAgentDispatch engine capability", () => {
       defaults: { engine: "native" },
     };
     const calls: unknown[] = [];
-    const result = await akmAgentDispatch({ agentConfig: config, engine: "native", timeoutMs: 0, cwd: "" }, {
-      executeInteractive: async (input: unknown) => {
-        calls.push(input);
-        return {
-          engine: "native",
-          result: {
-            ok: true,
-            exitCode: 0,
-            stdout: "",
-            stderr: "",
-            durationMs: 1,
-          },
-        };
+    const result = await akmAgentDispatch(
+      { agentConfig: config, engine: "native", timeoutMs: 0, cwd: "" },
+      {
+        executeInteractive: async (input) => {
+          calls.push(input);
+          return {
+            engine: "native",
+            result: {
+              ok: true,
+              exitCode: 0,
+              stdout: "",
+              stderr: "",
+              durationMs: 1,
+            },
+          };
+        },
       },
-    } as never);
+    );
 
     expect(calls).toEqual([{ config, engine: "native", timeoutMs: 0, cwd: "" }]);
     expect(result).toMatchObject({ ok: true, engine: "native", exitCode: 0 });
