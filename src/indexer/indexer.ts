@@ -64,10 +64,10 @@ import {
   openReadonlyExistingDatabase,
 } from "../storage/repositories/index-connection";
 import {
+  deleteEntriesByBundle,
   deleteEntriesByDirAndBundle,
   deleteEntriesByDirExceptRefs,
   deleteEntriesByIds,
-  deleteEntriesBySourceRoot,
   deleteUsageEventsByEntryIds,
   findEntryIdByRef,
   getAllEntries,
@@ -87,7 +87,6 @@ import {
 } from "../storage/repositories/index-llm-cache-repository";
 import {
   deleteIndexDirState,
-  deleteIndexDirStatesByStashDir,
   deleteMeta,
   getMeta,
   setMeta,
@@ -301,49 +300,76 @@ export function getDefaultLlmConcurrency(llmConfig?: LlmConnectionConfig): numbe
 
 // ── Phase functions ──────────────────────────────────────────────────────────
 
+interface IndexSourceOwner {
+  bundleId: string;
+  sourceRoot: string;
+}
+
+function sourceOwners(sources: readonly SearchSource[]): IndexSourceOwner[] {
+  const installations = deriveInstallations([...sources]);
+  return sources.flatMap((source, index) => {
+    const installation = installations[index];
+    return installation ? [{ bundleId: installation.id, sourceRoot: path.resolve(source.path) }] : [];
+  });
+}
+
+function parseStoredSourceOwners(raw: string | undefined): IndexSourceOwner[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      !Array.isArray(parsed) ||
+      parsed.some(
+        (owner) =>
+          typeof owner !== "object" ||
+          owner === null ||
+          typeof (owner as Record<string, unknown>).bundleId !== "string" ||
+          typeof (owner as Record<string, unknown>).sourceRoot !== "string",
+      )
+    ) {
+      warn("index_meta sourceOwners value is invalid — treating as empty");
+      return [];
+    }
+    return parsed.map((owner) => {
+      const stored = owner as { bundleId: string; sourceRoot: string };
+      return { bundleId: stored.bundleId, sourceRoot: path.resolve(stored.sourceRoot) };
+    });
+  } catch {
+    warn("index_meta sourceOwners value is corrupt JSON — treating as empty");
+    return [];
+  }
+}
+
 /**
  * Source cache phase: ensure git stash caches are up to date and purge orphaned
  * entries from removed sources (incremental only).
  */
 async function runSourceCachePhase(ctx: IndexRunContext): Promise<void> {
-  const { db, config, sourceDirs, isIncremental, full } = ctx;
+  const { db, isIncremental, full, sources } = ctx;
 
   if (isIncremental && !full) {
-    // Purge entries from stash dirs that have been removed since the last run
-    // (e.g. after `akm remove`) so orphaned entries don't linger.
-    const prevStashDirsJson = getMeta(db, "stashDirs");
-    if (prevStashDirsJson) {
-      let prevStashDirs: string[] = [];
-      try {
-        const parsed: unknown = JSON.parse(prevStashDirsJson);
-        if (Array.isArray(parsed)) {
-          prevStashDirs = parsed.filter((d): d is string => typeof d === "string");
-        } else {
-          warn("index_meta stashDirs value is not an array — treating as empty");
-        }
-      } catch {
-        warn("index_meta stashDirs value is corrupt JSON — treating as empty");
-      }
-      const currentSet = new Set(sourceDirs);
-      for (const dir of prevStashDirs) {
-        if (!currentSet.has(dir)) {
-          ctx.hadRemovedSources = true;
-          ctx.removedSourceDirs.push(dir);
-        }
+    const currentByBundle = new Map(sourceOwners(sources).map((owner) => [owner.bundleId, owner]));
+    for (const previous of parseStoredSourceOwners(getMeta(db, "sourceOwners"))) {
+      const current = currentByBundle.get(previous.bundleId);
+      if (!current || current.sourceRoot !== previous.sourceRoot) {
+        ctx.hadRemovedSources = true;
+        ctx.removedSources.push({
+          ...previous,
+          removeBundleEntries: current === undefined,
+        });
       }
     }
   }
   // Source caches are hydrated before akmIndex() calls this phase; nothing
   // further to do here. The flag is exposed on ctx for runWalkPhase().
-  void config;
 }
 
 function applyRemovedSources(ctx: IndexRunContext): void {
   if (!ctx.scanComplete) return;
-  for (const dir of ctx.removedSourceDirs) {
-    deleteEntriesBySourceRoot(ctx.db, dir);
-    deleteIndexDirStatesByStashDir(ctx.db, dir);
-    deleteStoredGraph(ctx.db, dir);
+  const currentRoots = new Set(sourceOwners(ctx.sources).map((owner) => owner.sourceRoot));
+  for (const removed of ctx.removedSources) {
+    if (removed.removeBundleEntries) deleteEntriesByBundle(ctx.db, removed.bundleId);
+    if (!currentRoots.has(removed.sourceRoot)) deleteStoredGraph(ctx.db, removed.sourceRoot);
   }
 }
 
@@ -510,6 +536,7 @@ async function runFinalizePhase(
     setMeta(db, "builtAt", new Date().toISOString());
     setMeta(db, "stashDir", stashDir);
     setMeta(db, "stashDirs", JSON.stringify(sourceDirs));
+    setMeta(db, "sourceOwners", JSON.stringify(sourceOwners(sources)));
   }
   setMeta(db, "hasEmbeddings", embeddingResult.success ? "1" : "0");
 
@@ -824,7 +851,7 @@ function createIndexRunContext(options: CreateIndexRunContextOptions): IndexRunC
     isIncremental,
     builtAtMs,
     hadRemovedSources: false,
-    removedSourceDirs: [],
+    removedSources: [],
     scanComplete: true,
     scannedDirs: 0,
     skippedDirs: 0,

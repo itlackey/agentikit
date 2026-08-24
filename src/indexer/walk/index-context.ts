@@ -49,6 +49,14 @@ export interface IndexVerification {
   vecAvailable: boolean;
 }
 
+/** Canonical configured owner that disappeared or moved since the last complete scan. */
+export interface RemovedIndexSource {
+  bundleId: string;
+  sourceRoot: string;
+  /** False when the same bundle id remains configured at a different root. */
+  removeBundleEntries: boolean;
+}
+
 /** Progress event emitted during indexing. Mirrors IndexProgressEvent in indexer.ts. */
 export interface IndexPhaseEvent {
   phase: "summary" | "preflight" | "scan" | "llm" | "embeddings" | "fts" | "finalize" | "verify";
@@ -91,8 +99,8 @@ export interface IndexRunContext {
   builtAtMs: number;
   /** Whether sources were removed since the last run (triggers orphan cleanup). */
   hadRemovedSources: boolean;
-  /** Prior source roots to remove only after every current source scans completely. */
-  removedSourceDirs: string[];
+  /** Prior canonical owners to remove only after every current source scans completely. */
+  removedSources: RemovedIndexSource[];
   /** Whether every configured component produced a trustworthy source snapshot. */
   scanComplete: boolean;
 

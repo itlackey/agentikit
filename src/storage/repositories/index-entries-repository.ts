@@ -437,19 +437,6 @@ export function deleteEntriesByBundle(db: Database, bundleId: string): void {
   })();
 }
 
-/** Delete entries whose materialized file belongs to one physical source root. */
-export function deleteEntriesBySourceRoot(db: Database, sourceRoot: string): void {
-  const root = path.resolve(sourceRoot);
-  db.transaction(() => {
-    const rows = db.prepare("SELECT id, file_path FROM entries").all() as Array<{ id: number; file_path: string }>;
-    const owned = rows.filter((row) => {
-      const file = path.resolve(row.file_path);
-      return file === root || file.startsWith(`${root}${path.sep}`);
-    });
-    deleteEntryRows(db, owned);
-  })();
-}
-
 /**
  * Diff-persist orphan delete: remove every entry under `dirPath` whose durable
  * `item_ref` is not in `keepRefs`.
