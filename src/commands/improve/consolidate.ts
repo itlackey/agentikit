@@ -19,6 +19,8 @@ import { parseSinceToIsoLenient } from "../../core/time";
 import { warn, warnVerbose } from "../../core/warn";
 import { type ResolvedWriteTarget, resolveWriteTarget } from "../../core/write-source";
 import type { LoweringNotice } from "../../execution/resolved-request";
+import { deriveInstallations } from "../../indexer/installations";
+import { resolveSourceEntries } from "../../indexer/search/search-source";
 import {
   disposeLoweredExecutionDispatchLease,
   type LoweredExecutionDispatchLease,
@@ -767,6 +769,38 @@ export interface ConsolidationPoolSnapshot {
   memories: MemoryEntry[];
 }
 
+interface ConsolidationSourceOwner {
+  bundleId: string;
+  sourceRoot: string;
+  excludedSourceRoots: ReadonlySet<string>;
+}
+
+function resolveConsolidationSourceOwner(
+  opts: AkmConsolidateOptions,
+  stashDir: string,
+): ConsolidationSourceOwner | undefined {
+  const targetRoot = path.resolve(opts.writeTarget?.source.path ?? stashDir);
+  try {
+    const sources = resolveSourceEntries(stashDir, opts.config);
+    const installations = deriveInstallations(sources);
+    const targetIndex = sources.findIndex((source) => path.resolve(source.path) === targetRoot);
+    const target = installations[targetIndex];
+    if (!target) return undefined;
+    return {
+      bundleId: target.id,
+      sourceRoot: targetRoot,
+      excludedSourceRoots: new Set(
+        sources
+          .filter((_, index) => index !== targetIndex)
+          .map((source) => path.resolve(source.path))
+          .filter((sourceRoot) => sourceRoot.startsWith(`${targetRoot}${path.sep}`)),
+      ),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Read and narrow the exact pool the live pass consumes, without embedding,
  * LLM, proposal, event, or asset writes. Used by both preview and execution.
@@ -778,7 +812,8 @@ export function inspectConsolidationPool(
   access?: { readOnly?: boolean },
 ): ConsolidationPoolSnapshot {
   const readOnly = access?.readOnly === true;
-  let memories = loadMemoriesForSource(opts.writeTarget?.source.path, stashDir, warnings, readOnly);
+  const sourceOwner = resolveConsolidationSourceOwner(opts, stashDir);
+  let memories = loadMemoriesForSource(sourceOwner, warnings, readOnly);
   const staleCount = memories.filter((memory) => !fs.existsSync(memory.filePath)).length;
   if (staleCount > 0) {
     warnings.push(
@@ -1818,8 +1853,7 @@ export function narrowToIncrementalCandidates(
 }
 
 function loadMemoriesForSource(
-  source: string | undefined,
-  stashDir: string,
+  source: ConsolidationSourceOwner | undefined,
   warnings: string[],
   readOnly: boolean,
 ): MemoryEntry[] {
@@ -1831,12 +1865,7 @@ function loadMemoriesForSource(
     if (!db) throw new Error("index unavailable");
     const entries: DbIndexedEntry[] = getAllEntries(db, "memory");
     memories = entries
-      .filter((e) => {
-        if (!source) return true;
-        const root = path.resolve(source);
-        const file = path.resolve(e.filePath);
-        return file === root || file.startsWith(`${root}${path.sep}`);
-      })
+      .filter((entry) => source !== undefined && entry.bundleId === source.bundleId)
       .filter((e) => isConsolidationEligibleMemoryName(e.entry.name))
       // Skip stale DB entries whose file was deleted by a prior run but not yet
       // re-indexed. Without this guard the deleted file's ref appears in chunks
@@ -1849,7 +1878,7 @@ function loadMemoriesForSource(
         filePath: e.filePath,
         description: e.entry.description ?? "",
         tags: e.entry.tags ?? [],
-        stashDir: source ?? stashDir,
+        stashDir: source?.sourceRoot ?? "",
       }));
   } catch {
     memories = [];
@@ -1857,10 +1886,10 @@ function loadMemoriesForSource(
     if (db) closeDatabase(db);
   }
 
-  if (memories.length === 0) {
+  if (memories.length === 0 && source) {
     // DB fallback: walk filesystem
-    const memoriesDir = path.join(source ?? stashDir, "memories");
-    const fsStashDir = source ?? stashDir;
+    const memoriesDir = path.join(source.sourceRoot, "memories");
+    const fsStashDir = source.sourceRoot;
     if (fs.existsSync(memoriesDir)) {
       const pending = [memoriesDir];
       while (pending.length > 0) {
@@ -1868,6 +1897,7 @@ function loadMemoriesForSource(
         for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
           const filePath = path.join(current, entry.name);
           if (entry.isDirectory()) {
+            if (source.excludedSourceRoots.has(path.resolve(filePath))) continue;
             pending.push(filePath);
             continue;
           }

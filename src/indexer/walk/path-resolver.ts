@@ -9,12 +9,13 @@ import { type AssetRef, parseRefInput } from "../../core/asset/resolve-ref";
 import { isWithin } from "../../core/common";
 import { resolveSourcesForOrigin } from "../../registry/origin-resolve";
 import { lookup } from "../indexer";
+import { deriveInstallations } from "../installations";
 import { resolveSourceEntries } from "../search/search-source";
 
 export interface ResolveAssetPathOptions {
   stashDir?: string;
   mode?: "index-only" | "index-first" | "disk-only";
-  writableDirSet?: ReadonlySet<string>;
+  writableBundleIds?: ReadonlySet<string>;
   directoryIndexNames?: readonly string[];
   preserveDirectNameFallback?: boolean;
   honorOrigin?: boolean;
@@ -74,8 +75,10 @@ function resolveViaDisk(ref: AssetRef, options: ResolveAssetPathOptions): string
   }
   const directoryIndexNames = options.directoryIndexNames ?? ["SKILL.md"];
   const preserveDirectNameFallback = options.preserveDirectNameFallback ?? true;
-  for (const source of sources) {
-    if (options.writableDirSet && !options.writableDirSet.has(path.resolve(source.path))) continue;
+  const installations = deriveInstallations(sources);
+  for (const [index, source] of sources.entries()) {
+    const bundleId = installations[index]?.id;
+    if (options.writableBundleIds && (!bundleId || !options.writableBundleIds.has(bundleId))) continue;
     const candidates = buildDiskCandidates(source.path, ref, preserveDirectNameFallback);
     for (const candidate of candidates) {
       if (!fs.existsSync(candidate)) continue;

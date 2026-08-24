@@ -127,6 +127,15 @@ export function deriveInstallations(sources: SearchSource[]): BundleInstallation
   return installations;
 }
 
+/** Canonical bundle ids whose configured component policy permits mutation. */
+export function deriveWritableBundleIds(sources: SearchSource[]): Set<string> {
+  return new Set(
+    deriveInstallations(sources)
+      .filter((installation) => installation.components.some((component) => component.writable === true))
+      .map((installation) => installation.id),
+  );
+}
+
 /**
  * Derive the durable `EntryProvenance` for an indexed entry (Chunk-5 flip
  * §14.4): `conceptId` is the D-R2 qualified `<stash-subdir>/<name>` spelling

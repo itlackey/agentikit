@@ -234,9 +234,7 @@ describe("getRetrievalCounts", () => {
       lastUsedAt: "2026-06-01T00:00:00.000Z",
     });
 
-    const recency = (
-      getLastUseMsByRef as unknown as (database: AkmDatabase, refs: string[], stashDir: string) => Map<string, number>
-    )(db, ["skills/duplicate"], selectedRoot);
+    const recency = getLastUseMsByRef(db, [{ ref: "skills/duplicate", itemRef: "selected//skills/duplicate" }]);
 
     expect(recency.get("skills/duplicate")).toBe(Date.parse("2026-01-01T00:00:00.000Z"));
   });

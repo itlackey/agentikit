@@ -4,7 +4,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { isSourceWriteActivated } from "../../core/activation-policy";
 import { isWithin, resolveStashDir } from "../../core/common";
 import type { AkmConfig, SourceConfigEntry } from "../../core/config/config";
 import { bundleComponentConfig, bundlesToSourceEntries, getSources, loadConfig } from "../../core/config/config";
@@ -222,15 +221,6 @@ export function resolveEntryContentDir(entry: SourceConfigEntry): string | undef
  */
 export function resolveAllStashDirs(overrideStashDir?: string): string[] {
   return resolveSourceEntries(overrideStashDir).map((s) => s.path);
-}
-
-/**
- * Return the resolved absolute paths of all writable stash sources.
- */
-export function getWritableStashDirs(overrideStashDir?: string, existingConfig?: AkmConfig): string[] {
-  return resolveSourceEntries(overrideStashDir, existingConfig)
-    .filter((s) => isSourceWriteActivated(s))
-    .map((s) => s.path);
 }
 
 /**

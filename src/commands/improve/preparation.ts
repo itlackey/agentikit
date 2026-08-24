@@ -1855,7 +1855,7 @@ function fetchRetrievalSignals(args: {
   eventsCtx?: EventsContext;
   persist: boolean;
 }): { retrievalCounts: Map<string, number>; lastUseMsForProactive: Map<string, number> } {
-  const { options, primaryStashDir, signalFiltered, noFeedbackCandidates, eventsCtx, persist } = args;
+  const { options, signalFiltered, noFeedbackCandidates, eventsCtx, persist } = args;
   // Retrieval counts for the zero-feedback pool, hoisted so the Layer-2
   // proactive-maintenance selector below can reuse them without a second DB pass.
   // Also fetch lastUseMs here for the proactive-maintenance recency term (plan §WS-1
@@ -1894,11 +1894,7 @@ function fetchRetrievalSignals(args: {
         { path: eventsCtx?.dbPath, borrowed: eventsCtx?.db },
       );
     }
-    lastUseMsForProactive = getLastUseMsByRef(
-      dbForRetrieval,
-      noFeedbackCandidates.map((r) => r.ref),
-      primaryStashDir,
-    );
+    lastUseMsForProactive = getLastUseMsByRef(dbForRetrieval, noFeedbackCandidates);
   } catch (err) {
     rethrowIfTestIsolationError(err);
     // best-effort: if DB unavailable, retrievalCounts/lastUseMsForProactive stay empty
@@ -2190,11 +2186,7 @@ function scoreSalience(args: {
       ? openExistingDatabase()
       : openReadonlyExistingDatabase(undefined, { isolatedSnapshot: true });
     if (dbForSalience) {
-      lastUseMsByRef = getLastUseMsByRef(
-        dbForSalience,
-        mergedRefs.map((r) => r.ref),
-        primaryStashDir,
-      );
+      lastUseMsByRef = getLastUseMsByRef(dbForSalience, mergedRefs);
     }
   } catch (err) {
     rethrowIfTestIsolationError(err);

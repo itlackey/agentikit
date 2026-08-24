@@ -25,12 +25,13 @@ import {
   runGraphExtractionPass,
 } from "../../indexer/graph/graph-extraction";
 import { withIndexWriterLease } from "../../indexer/index-writer-lock";
+import { deriveWritableBundleIds } from "../../indexer/installations";
 import {
   collectPendingMemories,
   type MemoryInferenceResult,
   runMemoryInferencePass,
 } from "../../indexer/passes/memory-inference";
-import { getWritableStashDirs, resolveSourceEntries } from "../../indexer/search/search-source";
+import { resolveSourceEntries } from "../../indexer/search/search-source";
 import { isProcessEnabled } from "../../llm/feature-gate";
 import { withLlmStage } from "../../llm/usage-telemetry";
 import type { Database } from "../../storage/database";
@@ -1245,9 +1246,9 @@ export async function runGraphExtractionMaintenancePass(
       if (!graphExtractionFullScan) {
         candidatePaths = new Set<string>();
         if (primaryStashDir && touchedRefs.size > 0) {
-          const writableDirSet = new Set(getWritableStashDirs(primaryStashDir).map((d) => path.resolve(d)));
+          const writableBundleIds = deriveWritableBundleIds(resolveSourceEntries(primaryStashDir));
           const resolved = await Promise.all(
-            [...touchedRefs].map((ref) => findAssetFilePath(ref, primaryStashDir, writableDirSet).catch(() => null)),
+            [...touchedRefs].map((ref) => findAssetFilePath(ref, primaryStashDir, writableBundleIds).catch(() => null)),
           );
           for (const p of resolved) {
             if (typeof p === "string" && p.length > 0) candidatePaths.add(p);

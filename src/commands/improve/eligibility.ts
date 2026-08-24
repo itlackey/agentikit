@@ -13,8 +13,8 @@ import { type EventsContext, readEvents } from "../../core/events";
 import type { ImproveEligibleRef, ImproveIndexSnapshot } from "../../core/improve-types";
 import { isPathAbsent } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
-import { deriveInstallations } from "../../indexer/installations";
-import { getWritableStashDirs, resolveSourceEntries } from "../../indexer/search/search-source";
+import { deriveInstallations, deriveWritableBundleIds } from "../../indexer/installations";
+import { resolveSourceEntries } from "../../indexer/search/search-source";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
 import type { Database } from "../../storage/database";
 import {
@@ -176,8 +176,19 @@ async function collectEligibleRefsFromIndex(
   configOverride?: AkmConfig,
 ): ReturnType<typeof collectEligibleRefs> {
   const config = configOverride ?? loadConfig();
+  let sources: ReturnType<typeof resolveSourceEntries>;
+  try {
+    sources = resolveSourceEntries(stashDir, config);
+  } catch {
+    return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+  }
+  if (sources.length === 0) {
+    return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+  }
+  const installations = deriveInstallations(sources);
+  const writableBundleIds = deriveWritableBundleIds(sources);
+
   if (scope.mode === "ref" && scope.value) {
-    const writableDirs = new Set(getWritableStashDirs(stashDir, config).map((dir) => path.resolve(dir)));
     let db: Database | undefined;
     try {
       db = openEligibilityDb(readOnly);
@@ -191,12 +202,7 @@ async function collectEligibleRefsFromIndex(
       }
       const indexSnapshot = describeIndexSnapshot(readOnly, "ready");
       const entries = getAllEntries(db);
-      const entriesByItemRef = new Map(
-        entries.flatMap((entry) =>
-          entry.bundleId && entry.conceptId ? [[`${entry.bundleId}//${entry.conceptId}`, entry] as const] : [],
-        ),
-      );
-      const installations = deriveInstallations(resolveSourceEntries(stashDir, config));
+      const entriesByItemRef = new Map(entries.map((entry) => [entry.itemRef, entry] as const));
       const resolved = resolveRef(scope.value, {
         defaultBundle: config.defaultBundle,
         bundles: installations.map((installation) => ({
@@ -216,12 +222,13 @@ async function collectEligibleRefsFromIndex(
         }
         throw new NotFoundError(`Asset not found in the selected writable source: ${scope.value}`, "ASSET_NOT_FOUND");
       }
-      if (!isEntryInScope(indexed.filePath, stashDir) || !isEntryInWritableSource(indexed.filePath, writableDirs)) {
+      if (!writableBundleIds.has(indexed.bundleId)) {
         return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [], indexSnapshot };
       }
-      const itemRef = `${indexed.bundleId}//${indexed.conceptId}`;
       return {
-        plannedRefs: [{ ref: indexed.conceptId, itemRef, reason: "scope-ref", filePath: indexed.filePath }],
+        plannedRefs: [
+          { ref: indexed.conceptId, itemRef: indexed.itemRef, reason: "scope-ref", filePath: indexed.filePath },
+        ],
         memorySummary: {
           eligible: indexed.entry.type === "memory" ? 1 : 0,
           derived: indexed.entry.type === "memory" && indexed.entry.name.endsWith(".derived") ? 1 : 0,
@@ -252,26 +259,6 @@ async function collectEligibleRefsFromIndex(
     }
   }
 
-  let sources: ReturnType<typeof resolveSourceEntries>;
-  try {
-    sources = resolveSourceEntries(stashDir, config);
-  } catch {
-    return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
-  }
-  if (sources.length === 0) {
-    return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
-  }
-
-  // Only operate on writable sources — never mutate read-only registry caches
-  // or remote stashes that the user did not mark writable.
-  let writableDirs: string[];
-  try {
-    writableDirs = getWritableStashDirs(stashDir, config);
-  } catch {
-    writableDirs = sources.slice(0, 1).map((s) => s.path); // fallback: primary only
-  }
-  const writableDirSet = new Set(writableDirs.map((d) => path.resolve(d)));
-
   let db: Database | undefined;
   try {
     db = openEligibilityDb(readOnly);
@@ -284,12 +271,9 @@ async function collectEligibleRefsFromIndex(
       };
     }
     const indexSnapshot = describeIndexSnapshot(readOnly, "ready");
-    const entries = getAllEntries(db, scope.mode === "type" ? scope.value : undefined).filter((indexed) => {
-      // First apply the existing stashDir-scope filter (no-op when stashDir is unset).
-      if (!isEntryInScope(indexed.filePath, stashDir)) return false;
-      // Then restrict to writable sources only.
-      return isEntryInWritableSource(indexed.filePath, writableDirSet);
-    });
+    const entries = getAllEntries(db, scope.mode === "type" ? scope.value : undefined).filter((indexed) =>
+      writableBundleIds.has(indexed.bundleId),
+    );
     const planned = new Map<string, ImproveEligibleRef>();
     const strategyFiltered = new Map<string, ImproveEligibleRef>();
     let memoryEligible = 0;
@@ -308,7 +292,7 @@ async function collectEligibleRefsFromIndex(
       }
       // Derive the durable item_ref from indexed provenance without another query.
       // A provenance-free row uses the short conceptId ref for improve state.
-      const itemRef = indexed.bundleId && indexed.conceptId ? `${indexed.bundleId}//${indexed.conceptId}` : undefined;
+      const itemRef = indexed.itemRef;
       const isDerived = indexed.entry.name.endsWith(".derived");
       // `.derived` memories are LLM-inferred and intentionally skip reflect
       // (see the synthetic `derived-memory-reflect-skipped` branch in the
@@ -376,30 +360,6 @@ async function collectEligibleRefsFromIndex(
   } finally {
     if (db) closeDatabase(db);
   }
-}
-
-export function isEntryInScope(filePath: string, stashDir?: string): boolean {
-  if (!stashDir) return true;
-  const resolvedFilePath = path.resolve(filePath);
-  const resolvedScopeStashDir = path.resolve(stashDir);
-  return (
-    resolvedFilePath === resolvedScopeStashDir || resolvedFilePath.startsWith(`${resolvedScopeStashDir}${path.sep}`)
-  );
-}
-
-/**
- * Return true when the indexed entry belongs to one of the writable source
- * directories. Entries from read-only registry caches or remote stashes that
- * the user has not marked writable must never enter the improve/distill loop.
- */
-export function isEntryInWritableSource(filePath: string, writableDirSet: Set<string>): boolean {
-  const resolvedFilePath = path.resolve(filePath);
-  for (const writableDir of writableDirSet) {
-    if (resolvedFilePath === writableDir || resolvedFilePath.startsWith(`${writableDir}${path.sep}`)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 export function memoryCleanupParentRef(
@@ -657,12 +617,12 @@ export function buildUtilityMap(refs: ImproveEligibleRef[], readOnly = false): M
 export async function findAssetFilePath(
   ref: string,
   stashDir?: string,
-  writableDirSet?: Set<string>,
+  writableBundleIds?: Set<string>,
 ): Promise<string | null> {
   return resolveAssetPath(ref, {
     stashDir,
     mode: "disk-only",
-    writableDirSet,
+    writableBundleIds,
     directoryIndexNames: ["SKILL.md"],
     preserveDirectNameFallback: true,
     honorOrigin: true,
