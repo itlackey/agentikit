@@ -45,7 +45,18 @@ if (process.argv[2] === STANDALONE_FROZEN_SCRIPT_ARG) {
   const executable = process.argv[0] ?? process.execPath;
   process.argv.splice(0, process.argv.length, executable, file);
   delete process.env.AKM_STANDALONE_ENTRY;
-  await import(pathToFileURL(file).href);
+  // Dynamic import normally leaves import.meta.main false because this
+  // standalone wrapper remains Bun's entry module. Temporarily make the
+  // frozen snapshot the runtime's main path so conventional Bun scripts using
+  // `if (import.meta.main)` retain their normal entry-module semantics.
+  const originalMain = Bun.main;
+  if (!Reflect.set(Bun, "main", file))
+    throw new Error("Unable to set the standalone frozen script as Bun's main module.");
+  try {
+    await import(pathToFileURL(file).href);
+  } finally {
+    Reflect.set(Bun, "main", originalMain);
+  }
 } else if (process.env.AKM_MIGRATE_ENTRY === "1") {
   // Consume the marker so commands the migrator itself shells out to never
   // see it, and a re-entrant `akm` child dispatches normally.
