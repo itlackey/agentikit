@@ -26,7 +26,7 @@ import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { extractSection, markdownFragmentSlugs } from "../../core/asset/markdown";
 import { displayRef, typeNameFromConceptId } from "../../core/asset/resolve-ref";
-import { META_DIR, type MetaRef, parseMetaRef, resolveMetaFilePath } from "../../core/asset/stash-meta";
+import { META_DIR, type MetaRef, parseMetaRef, readMetaFile } from "../../core/asset/stash-meta";
 import { asNonEmptyString, isWithin } from "../../core/common";
 import { getIndexPassConfig, loadConfig } from "../../core/config/config";
 import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
@@ -164,17 +164,16 @@ async function showStashMeta(metaRef: MetaRef): Promise<ShowResponse> {
 
   const config = loadConfig();
   for (const source of sources) {
-    const filePath = resolveMetaFilePath(source.path, metaRef.name);
-    if (!filePath) continue;
-    const content = fs.readFileSync(filePath, "utf8");
-    const editable = isEditable(filePath, config, allSources);
+    const metaFile = readMetaFile(source.path, metaRef.name);
+    if (!metaFile) continue;
+    const editable = isEditable(metaFile.path, config, allSources);
     appendEvent({ eventType: "show", ref: `meta:${metaRef.name}`, metadata: { type: "meta", name: metaRef.name } });
     return {
       type: "meta",
       name: metaRef.name,
-      path: filePath,
+      path: metaFile.path,
       ref: `meta:${metaRef.name}`,
-      content,
+      content: metaFile.content,
       origin: source.registryId ?? null,
       editable,
     } as ShowResponse;

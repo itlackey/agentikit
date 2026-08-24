@@ -17,6 +17,8 @@ function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+const testSymlink = process.platform === "win32" ? test.skip : test;
+
 describe("parseMetaRef", () => {
   test("recognizes bare and named meta refs, with and without origin", () => {
     expect(parseMetaRef("meta")).toEqual({ origin: undefined, name: META_DEFAULT_NAME });
@@ -63,7 +65,7 @@ describe("resolveMetaFilePath", () => {
     expect(() => resolveMetaFilePath(root, "../../etc/passwd")).toThrow(UsageError);
   });
 
-  test("rejects a meta file symlink that escapes the bundle", () => {
+  testSymlink("rejects a meta file symlink that escapes the bundle", () => {
     const outsideDir = makeTempDir("akm-meta-outside-file-");
     try {
       const outsidePath = path.join(outsideDir, "outside.md");
@@ -76,7 +78,7 @@ describe("resolveMetaFilePath", () => {
     }
   });
 
-  test("rejects symlinked meta roots and intermediate directories", () => {
+  testSymlink("rejects symlinked meta roots and intermediate directories", () => {
     const outsideDir = makeTempDir("akm-meta-outside-tree-");
     try {
       fs.writeFileSync(path.join(outsideDir, "about.md"), "OUTSIDE_META_TREE");

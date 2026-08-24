@@ -13,6 +13,7 @@ import { seedLockEntries } from "../../_helpers/lockfile";
 import { type Cleanup, sandboxStashDir, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
+const testSymlink = process.platform === "win32" ? test.skip : test;
 
 function createTmpDir(prefix = "akm-show-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -72,7 +73,7 @@ describe("akmShow stash .meta convention", () => {
     expect(result.content).toContain("The stash.");
   });
 
-  test("never reads a meta symlink outside the working stash", async () => {
+  testSymlink("never reads a meta symlink outside the working stash", async () => {
     const outsideDir = createTmpDir("akm-show-meta-outside-");
     const outsidePath = path.join(outsideDir, "secret.md");
     writeFile(outsidePath, "OUTSIDE_META_SECRET");
