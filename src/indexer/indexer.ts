@@ -1840,9 +1840,9 @@ async function indexEntries(
   // Source roots feed the #624-P1 zero-document preflight (a full-rebuild wipe
   // is suppressed when the scan is empty because roots are unreadable).
   const sourceRoots = allSourceEntries.map((s) => s.path);
-  // Chunk-5 Step 2 (spec §14.4): map each source root → its durable bundle id so
-  // the writer can persist `item_ref = <bundle>//<conceptId>` and the component/
-  // adapter provenance alongside the legacy columns. `deriveInstallations`
+  // Map each source root → its durable bundle id so the writer can persist
+  // `item_ref = <bundle>//<conceptId>` and canonical component/adapter
+  // provenance. `deriveInstallations`
   // preserves source order, so a positional zip yields the SAME bundle id the
   // dispatched `adapter.recognize` emits as `IndexDocument.ref` for that root.
   const installations = deriveInstallations(allSourceEntries);

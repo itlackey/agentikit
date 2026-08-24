@@ -346,7 +346,7 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   // result for each asset so that subsequent `akm index --enrich` runs can
   // skip the LLM call when the body hasn't changed. The cache is keyed by
   // a stable asset_ref string (e.g. the absolute file path for graph/memory
-  // passes, or `entryKey:passId` for the metadata-enhance pass).
+  // passes, or `itemRef:passId` for the metadata-enhance pass).
   // Entries are cleaned up when assets are removed or --re-enrich is used.
   db.exec(`
     CREATE TABLE IF NOT EXISTS llm_enrichment_cache (

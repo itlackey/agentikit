@@ -317,14 +317,10 @@ describe("#624-P1 graph re-key on (stash_root, file_path, body_hash)", () => {
   });
 
   // AC#5 — version + graph-schema lock --------------------------------------
-  // The graph re-key is migrated via a TARGETED graph-only path, NOT a DB_VERSION
-  // bump. index.db has no nuclear drop-and-rebuild path (a DB_VERSION mismatch is
-  // a forensic stamp only now), so the graph migration fires on schema shape and
-  // never wipes the index regardless of DB_VERSION. DB_VERSION is 20 (chunk-8
-  // Step 2 / §14.4 additive column bump); GRAPH_SCHEMA_VERSION 4 marks the new
-  // graph shape.
-  test("AC#5: DB_VERSION is 20 (§14.4 bump, still no nuclear wipe), GRAPH_SCHEMA_VERSION is 4, graph DDL is the new shape", () => {
-    expect(DB_VERSION).toBe(20);
+  // DB_VERSION 21 is the canonical entries generation boundary; graph schema
+  // version 4 remains the current independently keyed graph shape.
+  test("AC#5: DB_VERSION is 21, GRAPH_SCHEMA_VERSION is 4, graph DDL is the current shape", () => {
+    expect(DB_VERSION).toBe(21);
     expect(GRAPH_SCHEMA_VERSION).toBe(4);
 
     const db = openIndexDatabase(tmpDbPath());
