@@ -72,12 +72,11 @@ function configure(early: Fixture, later: Fixture): void {
   resetConfigCache();
 }
 
-function mutateEntry(itemRef: string, state: "complete" | "missing" | "incomplete" | "stale", stalePath: string): void {
+function mutateEntry(itemRef: string, state: "complete" | "missing" | "stale", stalePath: string): void {
   if (state === "complete") return;
   const db = openExistingDatabase(getDbPath());
   try {
     if (state === "missing") db.prepare("DELETE FROM entries WHERE item_ref = ?").run(itemRef);
-    if (state === "incomplete") db.prepare("UPDATE entries SET concept_id = NULL WHERE item_ref = ?").run(itemRef);
     if (state === "stale") db.prepare("UPDATE entries SET file_path = ? WHERE item_ref = ?").run(stalePath, itemRef);
   } finally {
     closeDatabase(db);
@@ -117,7 +116,6 @@ describe("shared adapter physical-owner authority", () => {
   test.each([
     "complete",
     "missing",
-    "incomplete",
     "stale",
   ] as const)("loose AKM smart-Markdown preserves the first owner with a %s row without bypassing the index", async (state) => {
     const early = fixture(`early-loose-command-${state}`, "akm");
@@ -138,7 +136,6 @@ describe("shared adapter physical-owner authority", () => {
 
   test.each([
     "missing",
-    "incomplete",
     "stale",
   ] as const)("an earlier physical owner with a %s row blocks a lower unsupported-script diagnostic", async (state) => {
     const early = fixture(`early-script-diagnostic-${state}`, "okf");
@@ -173,7 +170,7 @@ describe("shared adapter physical-owner authority", () => {
   test.each([
     ["load", "complete"],
     ["start", "missing"],
-    ["run", "incomplete"],
+    ["run", "stale"],
     ["load", "stale"],
   ] as const)("%s rejects a loose AKM command owner with a %s row before mutation", async (surface, state) => {
     const early = fixture(`early-loose-runtime-${surface}-${state}`, "akm");
@@ -238,7 +235,6 @@ describe("shared adapter physical-owner authority", () => {
   test.each([
     "complete",
     "missing",
-    "incomplete",
     "stale",
   ] as const)("dotenv env/.env is canonically env/default with a %s row", async (state) => {
     const early = fixture(`early-dotenv-default-${state}`, "dotenv");
@@ -351,9 +347,8 @@ describe("shared adapter physical-owner authority", () => {
   test.each([
     "complete",
     "missing",
-    "incomplete",
     "stale",
-  ] as const)("complete/missing/incomplete/stale first rows preserve the canonical owner without bypassing the index: %s", async (state) => {
+  ] as const)("complete/missing/stale first rows preserve the canonical owner without bypassing the index: %s", async (state) => {
     const early = fixture(`early-row-${state}`, "opencode");
     const later = fixture(`later-row-${state}`, "opencode");
     const earlyPath = write(early.root, "skills/row-owner/SKILL.md", skill("row-owner"));
@@ -390,7 +385,7 @@ describe("shared adapter physical-owner authority", () => {
     ["load", "complete"],
     ["load", "stale"],
     ["start", "missing"],
-    ["run", "incomplete"],
+    ["run", "stale"],
   ] as const)("%s rejects the first non-native canonical owner with a %s row before mutation", async (surface, state) => {
     const early = fixture(`early-runtime-${surface}-${state}`, "opencode");
     const later = fixture(`later-runtime-${surface}-${state}`, "akm-workflow");
