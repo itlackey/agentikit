@@ -31,7 +31,6 @@ export { copilotResultExtractor } from "./result-extractor";
 export class CopilotHarness extends BaseHarness {
   readonly id = "copilot" as const;
   readonly displayName = "GitHub Copilot CLI";
-  readonly aliases = [] as const;
   readonly agentBuilder = copilotBuilder;
   readonly resultExtractor = copilotResultExtractor;
   // ── Workflow-engine descriptor (plan §"Capability matrix", P2) ────────────

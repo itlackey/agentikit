@@ -308,7 +308,7 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // captured — but persistent and queryable.
   //
   // Indexed (query) columns:
-  //   harness          TEXT     — harness name (claude-code, opencode, ...).
+  //   harness          TEXT     — harness name (claude, opencode, ...).
   //   session_id       TEXT     — platform-native session identifier.
   //   processed_at     TEXT     — ISO-8601 UTC; when extract last ran on this session.
   //   session_ended_at TEXT     — session.endedAt at processing time. When a

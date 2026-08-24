@@ -33,7 +33,7 @@ describe("evaluateCheckin (#506 — file-signal check-in, no background thread)"
         status: "active",
         updatedAt: base,
         checkinArmedAt: base,
-        agentHarness: "claude-code",
+        agentHarness: "claude",
         agentSessionId: "sess-1",
       },
       baseMs + CHECKIN_STALL_MS + 5_000,
@@ -41,7 +41,7 @@ describe("evaluateCheckin (#506 — file-signal check-in, no background thread)"
     expect(directive).not.toBeNull();
     expect(directive?.signal).toBe("continue");
     expect(directive?.directive).toContain("CONTINUE");
-    expect(directive?.agentHarness).toBe("claude-code");
+    expect(directive?.agentHarness).toBe("claude");
     expect(directive?.agentSessionId).toBe("sess-1");
     expect(directive?.idleMs).toBe(CHECKIN_STALL_MS + 5_000);
   });

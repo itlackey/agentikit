@@ -1009,7 +1009,6 @@ describe("#800 effective dry-run planner", () => {
           endedAt: Date.now(),
         },
       ],
-      readEvents: () => [],
       readSession: () => {
         readCalls += 1;
         throw new Error("dry-run dispatched extraction");
@@ -1066,7 +1065,6 @@ describe("#800 effective dry-run planner", () => {
       const harness: SessionLogHarness = {
         name: provider.name,
         isAvailable: () => true,
-        readEvents: (input) => provider.readEvents(input),
         listSessions: (input) => provider.listSessions({ ...input, location: opencodeDir }),
         readSession: (ref) => provider.readSession(ref),
       };

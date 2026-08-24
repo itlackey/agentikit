@@ -7,7 +7,7 @@
  *
  * Holds only what the concrete providers genuinely share: safe stat'ing,
  * recursive directory walking, the mtime-filtered file→summary listing loop,
- * the flat JSONL/log line→event scan, and conditional-spread assembly of
+ * and conditional-spread assembly of
  * {@link SessionSummary} refs stamped with the provider's runtime name.
  * Everything platform-specific — file layouts, metadata peeking, SQLite
  * stores, message flattening — stays in the subclasses.
@@ -15,23 +15,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { SessionData, SessionEvent, SessionLogHarness, SessionRef, SessionSummary } from "./types";
-
-/**
- * Loosely-typed shape of one parsed log/JSONL entry as probed by the flat
- * {@link AbstractSessionLogProvider.logLineEvents} scan. Every property is
- * checked defensively at runtime — the type exists only so per-provider
- * selectors can express their field fallbacks without casts.
- */
-export interface LooseLogEntry {
-  message?: { content?: unknown };
-  content?: unknown;
-  text?: unknown;
-  timestamp?: unknown;
-  session_id?: unknown;
-  sessionId?: unknown;
-  role?: unknown;
-}
+import type { SessionData, SessionLogHarness, SessionRef, SessionSummary } from "./types";
 
 export abstract class AbstractSessionLogProvider implements SessionLogHarness {
   /** Runtime identity stamped onto every emitted event/ref. */
@@ -40,7 +24,6 @@ export abstract class AbstractSessionLogProvider implements SessionLogHarness {
   /** Root whose existence signals this harness has logs on this machine. */
   protected abstract availabilityRoot(): string;
 
-  abstract readEvents(input: { sinceMs: number }): Iterable<SessionEvent>;
   abstract listSessions(input?: { sinceMs?: number; location?: string; isolatedSnapshot?: boolean }): SessionSummary[];
   abstract readSession(ref: SessionRef): SessionData;
 
@@ -118,38 +101,5 @@ export abstract class AbstractSessionLogProvider implements SessionLogHarness {
       // Root missing or unreadable — return what we have.
     }
     return summaries.sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
-  }
-
-  /**
-   * The legacy flat line scan shared by both providers' `readEvents`: parse
-   * each line as JSON, pull text/session-id through the per-provider
-   * selectors, skip entries whose text is missing or under 10 chars, and
-   * fall back to the file mtime when the entry carries no numeric timestamp.
-   */
-  protected *logLineEvents(input: {
-    lines: Iterable<string>;
-    filePath: string;
-    fallbackTsMs: number;
-    selectText: (entry: LooseLogEntry | undefined) => unknown;
-    selectSessionId: (entry: LooseLogEntry | undefined) => unknown;
-  }): Generator<SessionEvent> {
-    for (const line of input.lines) {
-      try {
-        const entry = JSON.parse(line) as LooseLogEntry | undefined;
-        const text = input.selectText(entry);
-        if (typeof text !== "string" || text.length < 10) continue;
-        const sessionId = input.selectSessionId(entry);
-        yield {
-          harness: this.name,
-          text,
-          ts: typeof entry?.timestamp === "number" ? entry.timestamp : input.fallbackTsMs,
-          sessionId: typeof sessionId === "string" ? sessionId : undefined,
-          role: typeof entry?.role === "string" ? (entry.role as SessionEvent["role"]) : "unknown",
-          filePath: input.filePath,
-        };
-      } catch {
-        // skip malformed lines
-      }
-    }
   }
 }

@@ -5,7 +5,7 @@
 //
 // Each test scaffolds a temp directory mirroring the real platform layout
 // (Claude Code: ~/.claude/projects/<project>/<id>.jsonl; opencode:
-// <base>/storage/session/<projectId>/<id>.json + <base>/storage/message/<id>/*).
+// OpenCode coverage uses the sole supported opencode.db layout.
 // No system home is touched.
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -105,7 +105,7 @@ describe("ClaudeCodeProvider.listSessions", () => {
 
     const aSummary = sessions.find((s) => s.sessionId === "session-aaa");
     expect(aSummary).toBeDefined();
-    expect(aSummary?.harness).toBe("claude-code");
+    expect(aSummary?.harness).toBe("claude");
     expect(aSummary?.title).toBe("Refactor auth");
     expect(aSummary?.projectHint).toBe("-home-user-project-a");
     expect(aSummary?.startedAt).toBe(Date.parse("2026-05-26T10:00:00.000Z"));
@@ -183,10 +183,10 @@ describe("ClaudeCodeProvider.readSession", () => {
     if (!summary) throw new Error("test fixture missing session summary");
     const data = provider.readSession(summary);
 
-    expect(data.ref.harness).toBe("claude-code");
+    expect(data.ref.harness).toBe("claude");
     expect(data.ref.title).toBe("Debugging deploy");
     expect(data.events.length).toBeGreaterThanOrEqual(3);
-    expect(data.events.every((e) => e.harness === "claude-code")).toBe(true);
+    expect(data.events.every((e) => e.harness === "claude")).toBe(true);
     // Inline-ref extraction sees the tool_use input flattened as `[tool:Bash] {...}`
     expect(data.inlineRefs).toHaveLength(1);
     expect(data.inlineRefs[0]).toMatchObject({ kind: "remember", text: "deploy needs VPN" });
@@ -210,157 +210,6 @@ describe("ClaudeCodeProvider.readSession", () => {
 });
 
 // ── OpenCodeProvider ────────────────────────────────────────────────────────
-
-function writeOpenCodeSession(
-  base: string,
-  projectId: string,
-  sessionId: string,
-  meta: object,
-  messages: object[],
-): void {
-  const sessionDir = path.join(base, "storage", "session", projectId);
-  const msgDir = path.join(base, "storage", "message", sessionId);
-  fs.mkdirSync(sessionDir, { recursive: true });
-  fs.mkdirSync(msgDir, { recursive: true });
-  fs.writeFileSync(path.join(sessionDir, `${sessionId}.json`), JSON.stringify(meta));
-  for (const msg of messages) {
-    const msgRecord = msg as Record<string, unknown>;
-    const id = (msgRecord.id as string) ?? `msg_${Math.random().toString(36).slice(2)}`;
-    fs.writeFileSync(path.join(msgDir, `${id}.json`), JSON.stringify(msg));
-  }
-}
-
-describe("OpenCodeProvider.listSessions", () => {
-  test("lists sessions from storage/session/<projectId>/", () => {
-    const base = makeTempDir("akm-opencode-list-");
-    writeOpenCodeSession(
-      base,
-      "proj-aaa",
-      "ses_one",
-      {
-        id: "ses_one",
-        title: "First session",
-        directory: "/home/user/proj-aaa",
-        time: { created: 1700000000000, updated: 1700001000000 },
-      },
-      [],
-    );
-    writeOpenCodeSession(
-      base,
-      "proj-bbb",
-      "ses_two",
-      {
-        id: "ses_two",
-        title: "Second session",
-        directory: "/home/user/proj-bbb",
-        time: { created: 1700002000000, updated: 1700003000000 },
-      },
-      [],
-    );
-
-    const provider = new OpenCodeProvider();
-    const sessions = provider.listSessions({ location: base });
-    expect(sessions).toHaveLength(2);
-    const one = sessions.find((s) => s.sessionId === "ses_one");
-    expect(one).toMatchObject({
-      harness: "opencode",
-      title: "First session",
-      projectHint: "/home/user/proj-aaa",
-      startedAt: 1700000000000,
-      endedAt: 1700001000000,
-    });
-  });
-
-  test("returns empty array when storage/session does not exist", () => {
-    const base = makeTempDir("akm-opencode-empty-");
-    const provider = new OpenCodeProvider();
-    expect(provider.listSessions({ location: base })).toEqual([]);
-  });
-
-  test("filters by sinceMs based on session file mtime", () => {
-    const base = makeTempDir("akm-opencode-since-");
-    writeOpenCodeSession(
-      base,
-      "p",
-      "ses_recent",
-      { id: "ses_recent", title: "x", time: { created: Date.now(), updated: Date.now() } },
-      [],
-    );
-    writeOpenCodeSession(base, "p", "ses_old", { id: "ses_old", title: "x", time: { created: 0, updated: 0 } }, []);
-    const oldPath = path.join(base, "storage", "session", "p", "ses_old.json");
-    const past = new Date("2019-01-01").getTime() / 1000;
-    fs.utimesSync(oldPath, past, past);
-
-    const provider = new OpenCodeProvider();
-    const sessions = provider.listSessions({ location: base, sinceMs: new Date("2026-05-01").getTime() });
-    expect(sessions.map((s) => s.sessionId)).toEqual(["ses_recent"]);
-  });
-});
-
-describe("OpenCodeProvider.readSession", () => {
-  test("reads messages from storage/message/<sessionId>/ with summary content", () => {
-    const base = makeTempDir("akm-opencode-read-");
-    writeOpenCodeSession(
-      base,
-      "proj",
-      "ses_full",
-      {
-        id: "ses_full",
-        title: "Real session",
-        directory: "/home/user/proj",
-        time: { created: 1700000000000, updated: 1700010000000 },
-      },
-      [
-        {
-          id: "msg_a",
-          sessionID: "ses_full",
-          role: "user",
-          time: { created: 1700000100000 },
-          summary: { title: `Need to debug; will run akm remember "auth uses JWT now"` },
-        },
-        {
-          id: "msg_b",
-          sessionID: "ses_full",
-          role: "assistant",
-          time: { created: 1700000200000 },
-          summary: { title: "Done. Suggested a fix." },
-        },
-      ],
-    );
-
-    const provider = new OpenCodeProvider();
-    const summary = provider.listSessions({ location: base })[0];
-    expect(summary).toBeDefined();
-    if (!summary) throw new Error("test fixture missing session summary");
-    const data = provider.readSession(summary);
-
-    expect(data.ref.harness).toBe("opencode");
-    expect(data.ref.title).toBe("Real session");
-    expect(data.events).toHaveLength(2);
-    // Events sorted ascending by ts so the inline ref appears in the first message
-    expect(data.events[0]?.text).toContain("auth uses JWT");
-    expect(data.inlineRefs).toHaveLength(1);
-    expect(data.inlineRefs[0]).toMatchObject({ kind: "remember", text: "auth uses JWT now" });
-  });
-
-  test("returns empty events when message directory is missing", () => {
-    const base = makeTempDir("akm-opencode-nomsg-");
-    // Session metadata exists but no message dir
-    const sessionDir = path.join(base, "storage", "session", "p");
-    fs.mkdirSync(sessionDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(sessionDir, "ses_orphan.json"),
-      JSON.stringify({ id: "ses_orphan", time: { created: 1700000000000, updated: 1700000000000 } }),
-    );
-    const provider = new OpenCodeProvider();
-    const summary = provider.listSessions({ location: base })[0];
-    expect(summary).toBeDefined();
-    if (!summary) throw new Error("test fixture missing session summary");
-    const data = provider.readSession(summary);
-    expect(data.events).toEqual([]);
-    expect(data.inlineRefs).toEqual([]);
-  });
-});
 
 // ── OpenCodeProvider — SQLite (`opencode.db`) layout ─────────────────────────
 
@@ -463,16 +312,8 @@ describe("OpenCodeProvider.listSessions (opencode.db)", () => {
     });
   });
 
-  test("prefers opencode.db over the legacy JSON layout when both exist", () => {
-    const base = makeTempDir("akm-opencode-db-pref-");
-    // Legacy JSON session that must be ignored once the DB is present.
-    writeOpenCodeSession(
-      base,
-      "proj",
-      "ses_legacy",
-      { id: "ses_legacy", title: "legacy", time: { created: 1, updated: 1 } },
-      [],
-    );
+  test("uses the sole opencode.db session store", () => {
+    const base = makeTempDir("akm-opencode-db-only-");
     writeOpenCodeDb(base, [
       { id: "ses_db", title: "db", directory: "/d", created: 1700000000000, updated: 1700001000000, messages: [] },
     ]);

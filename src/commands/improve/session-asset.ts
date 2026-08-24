@@ -29,7 +29,6 @@ import { stashDirFor } from "../../core/asset/asset-placement";
 import { assembleAsset } from "../../core/asset/asset-serialize";
 import { conceptIdFromTypeName } from "../../core/asset/resolve-ref";
 import { recordWrittenPath } from "../../core/write-provenance";
-import { normalizeHarnessId } from "../../integrations/harnesses";
 import type { SessionData, SessionEvent } from "../../integrations/session-logs/types";
 
 /**
@@ -189,7 +188,7 @@ export function sessionMeetsDurationGate(data: SessionData, minDurationMinutes: 
  * `cat <log_path>` hint, which is always correct for a file-backed log.
  */
 export function buildSessionAccessInstructions(harness: string, logPath: string): string {
-  const canonical = normalizeHarnessId(harness);
+  const canonical = harness;
   if (canonical === "claude") {
     return [
       `Read with: cat ${logPath}`,
@@ -213,7 +212,7 @@ function isoOrUndefined(ms: number | undefined): string | undefined {
 
 /** Default session-name slug: `<harness>-session-<yyyy-mm-dd>-<shortId>`. */
 export function buildSessionAssetName(harness: string, sessionId: string, startedAtMs?: number): string {
-  const canonical = normalizeHarnessId(harness);
+  const canonical = harness;
   const datePart = isoOrUndefined(startedAtMs)?.slice(0, 10) ?? "unknown-date";
   const shortId = sessionId.slice(0, 8);
   return `${canonical}-session-${datePart}-${shortId}`;
@@ -234,7 +233,7 @@ export function buildSessionAssetContent(
   const name = buildSessionAssetName(harness, ref.sessionId, ref.startedAt);
   const logPath = ref.filePath;
 
-  const baseTags = ["session", normalizeHarnessId(harness)];
+  const baseTags = ["session", harness];
   const extraTags = (summary.tags ?? []).filter((t) => typeof t === "string" && t.trim().length > 0);
   const tags = Array.from(new Set([...baseTags, ...extraTags]));
 
@@ -266,7 +265,7 @@ export function buildSessionAssetContent(
 /** Resolve `<stash>/sessions/<harness>/<session-id>.md`. */
 export function resolveSessionAssetPath(stashDir: string, harness: string, sessionId: string): string {
   const dir = stashDirFor("session") ?? "sessions";
-  return path.join(stashDir, dir, normalizeHarnessId(harness), `${sessionId}.md`);
+  return path.join(stashDir, dir, harness, `${sessionId}.md`);
 }
 
 export interface WriteSessionAssetResult {
@@ -312,7 +311,7 @@ export async function writeSessionAsset(
     // Canonical 0.9.0 conceptId (`sessions/<harness>/<id>`, D-R3) — the same
     // spelling the xrefs / usage-event readers now expect. Historical
     // `session:<harness>/<id>` rows persist un-migrated and are tolerated.
-    ref: conceptIdFromTypeName("session", `${normalizeHarnessId(harness)}/${sessionId}`),
+    ref: conceptIdFromTypeName("session", `${harness}/${sessionId}`),
     logPath: data.ref.filePath,
   };
 }

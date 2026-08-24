@@ -91,7 +91,7 @@ function parseClaudeEvent(
   }
   if (!text || text.length < 1) return undefined;
   return {
-    harness: "claude-code",
+    harness: "claude",
     text,
     ts,
     sessionId,
@@ -103,43 +103,13 @@ function parseClaudeEvent(
 /**
  * Claude Code native session-log reader.
  *
- * id-normalization note (#563): the canonical harness id is `'claude'`, but
- * the provider's `name` — which is STAMPED onto every {@link SessionEvent} /
- * {@link SessionRef} (`harness: this.name`), used as the extracted-session
- * dedup key, and embedded in `session:<harness>:<id>` proposal refs — stays
- * `'claude-code'` (the harness runtimeId). Changing it would silently break
- * round-tripping of already-persisted session-tracking rows and refs. Registry
- * lookups normalize `'claude-code'` → `'claude'` via the #562 bridge
- * (`getHarness`), and the `--type` flag accepts both, so the canonical id and
- * the persisted runtime string coexist without drift.
+ * Events, refs, extraction keys, and the harness registry all use `claude`.
  */
 export class ClaudeCodeProvider extends AbstractSessionLogProvider implements SessionLogHarness {
-  // Runtime identity (NOT the canonical id) — see class doc. Equals
-  // HARNESS_BY_ID.get("claude").runtimeId.
-  readonly name = "claude-code";
+  readonly name = "claude";
 
   protected availabilityRoot(): string {
     return claudeProjectsDir();
-  }
-
-  *readEvents(input: { sinceMs: number }): Iterable<SessionEvent> {
-    try {
-      for (const jsonlPath of this.#walkJsonl(claudeProjectsDir())) {
-        const stat = fs.statSync(jsonlPath);
-        if (stat.mtimeMs < input.sinceMs) continue;
-
-        const lines = fs.readFileSync(jsonlPath, "utf8").split("\n").filter(Boolean);
-        yield* this.logLineEvents({
-          lines,
-          filePath: jsonlPath,
-          fallbackTsMs: stat.mtimeMs,
-          selectText: (entry) => entry?.message?.content ?? entry?.content ?? "",
-          selectSessionId: (entry) => entry?.session_id,
-        });
-      }
-    } catch {
-      return;
-    }
   }
 
   listSessions(input: { sinceMs?: number; location?: string; isolatedSnapshot?: boolean } = {}): SessionSummary[] {

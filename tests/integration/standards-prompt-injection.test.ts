@@ -53,7 +53,7 @@ const memoryEntry = (name: string): any => ({
 const sessionData = () =>
   ({
     ref: {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_test",
       filePath: "/tmp/test.jsonl",
       startedAt: Date.parse("2026-06-21T10:00:00.000Z"),

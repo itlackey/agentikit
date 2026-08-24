@@ -219,15 +219,13 @@ describe("engine resolution", () => {
     expect(resolveDispatchModel({ model: "provider/exact" }, lowered.profile, "opencode-sdk")).toBe("provider/exact");
   });
 
-  test("canonicalizes a harness alias before agent model lowering", () => {
-    const resolved = resolveEngine("legacy-claude", {
-      engines: {
-        "legacy-claude": { kind: "agent", platform: "claude-code", model: "sonnet" },
-      },
-    });
-    if (resolved.kind !== "agent") throw new Error("fixture must lower to an agent");
-    expect(resolved.profile.platform).toBe("claude");
-    expect(resolved.profile.bin).toBe("claude");
-    expect(resolved.profile.model).toBe("sonnet");
+  test("rejects non-canonical harness ids", () => {
+    expect(() =>
+      resolveEngine("invalid-claude", {
+        engines: {
+          "invalid-claude": { kind: "agent", platform: "claude-code" as "claude", model: "sonnet" },
+        },
+      }),
+    ).toThrow(/cannot dispatch agents/);
   });
 });

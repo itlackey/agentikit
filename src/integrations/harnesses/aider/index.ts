@@ -30,7 +30,6 @@ export { aiderResultExtractor } from "./result-extractor";
 export class AiderHarness extends BaseHarness {
   readonly id = "aider" as const;
   readonly displayName = "Aider";
-  readonly aliases = [] as const;
   readonly agentBuilder = aiderBuilder;
   readonly resultExtractor = aiderResultExtractor;
   // ── Workflow-engine descriptor (plan §"Capability matrix", P2) ────────────

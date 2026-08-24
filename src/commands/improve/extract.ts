@@ -6,7 +6,7 @@
  * `akm extract` — session-insight extractor.
  *
  * Replaces the akm-plugin session-checkpoint hook with an on-demand extractor
- * that reads native session files (claude-code JSONL, opencode storage tree)
+ * that reads native session files (claude JSONL, opencode storage tree)
  * through the {@link SessionLogHarness} registry, pre-filters noise, and asks
  * a bounded in-tree LLM to produce candidate memory/lesson/knowledge proposals
  * for content the agent did NOT preserve via inline `akm remember`/`akm feedback`.
@@ -56,7 +56,6 @@ import {
   type LoweredExecutionDispatchLease,
 } from "../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../integrations/agent/runner";
-import { normalizeHarnessId } from "../../integrations/harnesses";
 import { getAvailableHarnesses } from "../../integrations/session-logs";
 import { preFilterSession } from "../../integrations/session-logs/pre-filter";
 import type { SessionData, SessionLogHarness, SessionRef, SessionSummary } from "../../integrations/session-logs/types";
@@ -203,7 +202,7 @@ function acquireExtractSessionLock(lockPath: string): { proceed: boolean; owners
 // ── Options + Result envelopes ──────────────────────────────────────────────
 
 export interface AkmExtractOptions {
-  /** Harness name (e.g. "claude-code", "opencode"). Required. */
+  /** Harness name (e.g. "claude", "opencode"). Required. */
   type: string;
   /** Override the harness's default session-discovery location. */
   location?: string;
@@ -408,15 +407,7 @@ export function parseSinceArg(value: string | undefined, now: number = Date.now(
  */
 function resolveHarness(type: string, harnesses?: SessionLogHarness[]): SessionLogHarness | undefined {
   const pool = harnesses ?? getAvailableHarnesses();
-  // #563 id-normalization bridge: a provider's `name` is its runtime id (e.g.
-  // the Claude provider is "claude-code"), but the canonical harness id is
-  // "claude". Normalize BOTH the requested `--type` and each provider name to
-  // canonical before comparing, so `--type claude` and `--type claude-code`
-  // both resolve to the Claude provider. Behaviour fix: previously only the
-  // exact runtime string ("claude-code") matched; the canonical "claude" used
-  // everywhere else (agent profiles, config schema) silently found nothing.
-  const wanted = normalizeHarnessId(type);
-  return pool.find((h) => normalizeHarnessId(h.name) === wanted);
+  return pool.find((h) => h.name === type);
 }
 
 /**
@@ -1653,10 +1644,7 @@ function emitExtractTriageEvent(args: {
 export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtractResult> {
   const startMs = Date.now();
   if (!options.type || options.type.trim() === "") {
-    throw new UsageError(
-      "--type is required. Pass a harness name (e.g. --type claude-code).",
-      "MISSING_REQUIRED_ARGUMENT",
-    );
+    throw new UsageError("--type is required. Pass a harness name (e.g. --type claude).", "MISSING_REQUIRED_ARGUMENT");
   }
 
   const config = options.config ?? loadConfig();

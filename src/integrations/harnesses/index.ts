@@ -91,22 +91,8 @@ HARNESS_REGISTRY.forEach((h, i) => {
   }
 });
 
-/** Lookup by canonical id. */
+/** Lookup by the one supported harness id. */
 export const HARNESS_BY_ID: ReadonlyMap<string, AkmHarness> = new Map(HARNESS_REGISTRY.map((h) => [h.id, h]));
-
-/**
- * Lookup by canonical id OR any alias OR runtime id — the normalization bridge
- * resolver. Both 'claude' and 'claude-code' map to the Claude harness.
- */
-const HARNESS_BY_ANY_ID: ReadonlyMap<string, AkmHarness> = (() => {
-  const m = new Map<string, AkmHarness>();
-  for (const h of HARNESS_REGISTRY as readonly AkmHarness[]) {
-    m.set(h.id, h);
-    if (h.runtimeId) m.set(h.runtimeId, h);
-    for (const a of h.aliases) m.set(a, h);
-  }
-  return m;
-})();
 
 /**
  * Canonical, ordered list of valid harness / platform ids. The Zod
@@ -133,23 +119,10 @@ export const CONFIG_IMPORTER_HARNESSES = HARNESS_REGISTRY.filter((h) => h.capabi
 export const DETECTION_HARNESSES = HARNESS_REGISTRY.filter((h) => h.capabilities.detection);
 
 /**
- * Resolve any id form (canonical id, alias, or runtime id) to the harness
- * descriptor, or `undefined` if unknown.
+ * Resolve an exact harness id to its descriptor, or `undefined` if unknown.
  */
 export function getHarness(id: string): AkmHarness | undefined {
-  return HARNESS_BY_ANY_ID.get(id);
-}
-
-/**
- * id normalization bridge — alias → canonical.
- *
- * Maps any known alias/runtime id to its canonical persisted id (e.g.
- * 'claude-code' → 'claude'). Unknown ids pass through unchanged so callers can
- * still validate them. This is what keeps existing persisted configs that say
- * 'claude-code' working against the canonical 'claude' registry.
- */
-export function normalizeHarnessId(id: string): string {
-  return HARNESS_BY_ANY_ID.get(id)?.id ?? id;
+  return HARNESS_BY_ID.get(id);
 }
 
 /**
@@ -162,21 +135,7 @@ export function normalizeHarnessId(id: string): string {
  * capable.
  */
 export function defaultProfileName(detected: string): string | undefined {
-  const h = HARNESS_BY_ANY_ID.get(detected);
+  const h = HARNESS_BY_ID.get(detected);
   if (!h?.capabilities.agentDispatch) return undefined;
   return h.id;
-}
-
-/**
- * id normalization bridge — canonical → runtime identity.
- *
- * Maps a canonical id to the string a harness reports at runtime / in its
- * session logs (e.g. 'claude' → 'claude-code'). Used by workflow run
- * attribution and the session-logs provider name so the persisted runtime
- * identity stays stable. Falls back to the canonical id when the harness has no
- * distinct runtime identity.
- */
-export function denormalizeRuntimeIdentity(id: string): string {
-  const h = HARNESS_BY_ANY_ID.get(id);
-  return h?.runtimeId ?? h?.id ?? id;
 }

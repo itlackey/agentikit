@@ -421,7 +421,7 @@ used to be:
    `min(16, cores − 2)` — not a coincidence; the engine's CPU-derived default
    was written to match it (B.4).
 8. **Awareness of the invoking session** — Claude Code owns the session; akm
-   *records* it (`CLAUDE_SESSION_ID` → `claude-code`). Under the engine this
+   *records* it (`CLAUDE_SESSION_ID` → `claude`). Under the engine this
    awareness becomes load-bearing, not just descriptive: the run lease (B.5)
    uses it to arbitrate which invocation may hold a given run right now.
 9. **Native dispatch spans harnesses.** akm executes each unit by invoking a

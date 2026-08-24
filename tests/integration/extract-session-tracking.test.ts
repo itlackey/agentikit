@@ -97,7 +97,7 @@ function configEnabled(stashDir: string): AkmConfig {
 function fakeSession(id: string, endedAt: number, opts: { text?: string; title?: string } = {}): SessionData {
   return {
     ref: {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: id,
       filePath: `/tmp/fake/${id}.jsonl`,
       startedAt: endedAt - 3600_000,
@@ -106,7 +106,7 @@ function fakeSession(id: string, endedAt: number, opts: { text?: string; title?:
     },
     events: [
       {
-        harness: "claude-code",
+        harness: "claude",
         text: opts.text ?? "user: explain how the auth pipeline currently issues JWTs",
         ts: endedAt - 1000_000,
         sessionId: id,
@@ -121,9 +121,8 @@ function fakeSession(id: string, endedAt: number, opts: { text?: string; title?:
 function makeHarness(sessions: SessionData[]): SessionLogHarness {
   const summaries: SessionSummary[] = sessions.map((s) => s.ref);
   return {
-    name: "claude-code",
+    name: "claude",
     isAvailable: () => true,
-    *readEvents() {},
     listSessions: (input?: { sinceMs?: number }) => summaries.filter((s) => (s.endedAt ?? 0) >= (input?.sinceMs ?? 0)),
     readSession: (ref: SessionRef): SessionData => {
       const found = sessions.find((s) => s.ref.sessionId === ref.sessionId);
@@ -228,13 +227,11 @@ describe("hashSessionContent", () => {
     // Single event containing what looks like a second event vs. two real events
     // must NOT collide.
     const single = fakeSession("ses_forge_a", 1_000_000);
-    single.events = [
-      { harness: "claude-code", text: "first\nassistant\nsecond", role: "user", sessionId: "ses_forge_a" },
-    ];
+    single.events = [{ harness: "claude", text: "first\nassistant\nsecond", role: "user", sessionId: "ses_forge_a" }];
     const split = fakeSession("ses_forge_b", 1_000_000);
     split.events = [
-      { harness: "claude-code", text: "first", role: "user", sessionId: "ses_forge_b" },
-      { harness: "claude-code", text: "second", role: "assistant", sessionId: "ses_forge_b" },
+      { harness: "claude", text: "first", role: "user", sessionId: "ses_forge_b" },
+      { harness: "claude", text: "second", role: "assistant", sessionId: "ses_forge_b" },
     ];
     expect(hashSessionContent(single)).not.toBe(hashSessionContent(split));
   });
@@ -251,7 +248,7 @@ describe("extract_sessions_seen — state.db round-trip", () => {
     const db = openInMem();
     const endedAt = Date.now();
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_a",
       processedAt: "2026-05-26T10:00:00.000Z",
       sessionEndedAt: endedAt,
@@ -263,7 +260,7 @@ describe("extract_sessions_seen — state.db round-trip", () => {
       contentHash: "H",
     });
 
-    const row = getExtractedSession(db, "claude-code", "ses_a");
+    const row = getExtractedSession(db, "claude", "ses_a");
     expect(row).toBeDefined();
     expect(row?.session_id).toBe("ses_a");
     expect(row?.outcome).toBe("candidates_queued");
@@ -280,7 +277,7 @@ describe("extract_sessions_seen — state.db round-trip", () => {
   test("upsert is INSERT-OR-REPLACE (latest content_hash wins, incl. back to null)", () => {
     const db = openInMem();
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_b",
       processedAt: "2026-05-25T00:00:00.000Z",
       outcome: "no_candidates",
@@ -288,9 +285,9 @@ describe("extract_sessions_seen — state.db round-trip", () => {
       proposalCount: 0,
       contentHash: "H",
     });
-    expect(getExtractedSession(db, "claude-code", "ses_b")?.content_hash).toBe("H");
+    expect(getExtractedSession(db, "claude", "ses_b")?.content_hash).toBe("H");
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_b",
       processedAt: "2026-05-26T00:00:00.000Z",
       outcome: "candidates_queued",
@@ -298,7 +295,7 @@ describe("extract_sessions_seen — state.db round-trip", () => {
       proposalCount: 3,
       contentHash: null,
     });
-    const row = getExtractedSession(db, "claude-code", "ses_b");
+    const row = getExtractedSession(db, "claude", "ses_b");
     expect(row?.outcome).toBe("candidates_queued");
     expect(row?.processed_at).toBe("2026-05-26T00:00:00.000Z");
     expect(row?.candidate_count).toBe(3);
@@ -316,9 +313,9 @@ describe("extract_sessions_seen — state.db round-trip", () => {
         (harness, session_id, processed_at, session_ended_at, outcome,
          candidate_count, proposal_count, rationale, source_run, metadata_json)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run("claude-code", "ses_legacy", "2026-05-01T00:00:00.000Z", null, "no_candidates", 0, 0, null, null, "{}");
+    `).run("claude", "ses_legacy", "2026-05-01T00:00:00.000Z", null, "no_candidates", 0, 0, null, null, "{}");
 
-    const row = getExtractedSession(db, "claude-code", "ses_legacy");
+    const row = getExtractedSession(db, "claude", "ses_legacy");
     expect(row).toBeDefined();
     expect(row?.content_hash).toBeNull();
     db.close();
@@ -327,7 +324,7 @@ describe("extract_sessions_seen — state.db round-trip", () => {
   test("getExtractedSessionsMap returns a Map keyed by sessionId, filtered to the harness", () => {
     const db = openInMem();
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_a",
       processedAt: "x",
       outcome: "no_candidates",
@@ -336,7 +333,7 @@ describe("extract_sessions_seen — state.db round-trip", () => {
       contentHash: "H",
     });
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_b",
       processedAt: "x",
       outcome: "no_candidates",
@@ -354,10 +351,10 @@ describe("extract_sessions_seen — state.db round-trip", () => {
       contentHash: "H",
     });
 
-    const claudeMap = getExtractedSessionsMap(db, "claude-code", ["ses_a", "ses_b", "ses_missing"]);
+    const claudeMap = getExtractedSessionsMap(db, "claude", ["ses_a", "ses_b", "ses_missing"]);
     expect(claudeMap.size).toBe(2);
-    expect(claudeMap.get("ses_a")?.harness).toBe("claude-code");
-    expect(claudeMap.get("ses_b")?.harness).toBe("claude-code");
+    expect(claudeMap.get("ses_a")?.harness).toBe("claude");
+    expect(claudeMap.get("ses_b")?.harness).toBe("claude");
     expect(claudeMap.has("ses_missing")).toBe(false);
 
     const opencodeMap = getExtractedSessionsMap(db, "opencode", ["ses_a", "ses_b"]);
@@ -370,7 +367,7 @@ describe("extract_sessions_seen — state.db round-trip", () => {
 
   test("getExtractedSessionsMap returns empty map when sessionIds is empty", () => {
     const db = openInMem();
-    expect(getExtractedSessionsMap(db, "claude-code", []).size).toBe(0);
+    expect(getExtractedSessionsMap(db, "claude", []).size).toBe(0);
     db.close();
   });
 });
@@ -388,7 +385,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
     const matchingHash = hashSessionContent(session);
     const db = openStateDatabase(":memory:");
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_seen",
       processedAt: new Date(liveEndedAt - 1_000).toISOString(),
       // Deliberately divergent recorded ended-at to prove timestamps don't gate.
@@ -401,7 +398,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
 
     let chatCalls = 0;
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([session])],
@@ -427,7 +424,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
     const freshHash = hashSessionContent(session);
     const db = openStateDatabase(":memory:");
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_updated",
       processedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
       outcome: "no_candidates",
@@ -438,7 +435,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
 
     let chatCalls = 0;
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([session])],
@@ -451,7 +448,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
 
     expect(chatCalls).toBe(1);
     expect(result.sessionsProcessed).toBe(1);
-    expect(getExtractedSession(db, "claude-code", "ses_updated")?.content_hash).toBe(freshHash);
+    expect(getExtractedSession(db, "claude", "ses_updated")?.content_hash).toBe(freshHash);
     db.close();
   });
 
@@ -462,7 +459,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
     const session = fakeSession("ses_backfill", Date.now());
     const db = openStateDatabase(":memory:");
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_backfill",
       processedAt: new Date(Date.now() - 60_000).toISOString(),
       outcome: "no_candidates",
@@ -479,7 +476,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
 
     // First run: backfill → processed.
     const first = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([session])],
@@ -488,12 +485,12 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
     });
     expect(first.sessionsProcessed).toBe(1);
     expect(chatCalls).toBe(1);
-    const backfilled = getExtractedSession(db, "claude-code", "ses_backfill")?.content_hash;
+    const backfilled = getExtractedSession(db, "claude", "ses_backfill")?.content_hash;
     expect(backfilled).toBe(hashSessionContent(session));
 
     // Second run: unchanged content → skipped, no further chat().
     const second = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([session])],
@@ -515,7 +512,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
     const session = fakeSession("ses_force", Date.now());
     const db = openStateDatabase(":memory:");
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_force",
       processedAt: new Date(Date.now() - 1_000).toISOString(),
       outcome: "no_candidates",
@@ -527,7 +524,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
 
     let chatCalls = 0;
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_force",
       stashDir: stash,
       config: configEnabled(stash),
@@ -550,7 +547,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
     const session = fakeSession("ses_forced", Date.now());
     const db = openStateDatabase(":memory:");
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_forced",
       processedAt: new Date(Date.now() - 1_000).toISOString(),
       outcome: "no_candidates",
@@ -561,7 +558,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
 
     let chatCalls = 0;
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([session])],
@@ -584,7 +581,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
     const db = openStateDatabase(":memory:");
 
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([session])],
@@ -592,7 +589,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
       chat: async () => JSON.stringify({ candidates: [], rationale_if_empty: "nothing durable in session" }),
     });
 
-    const row = getExtractedSession(db, "claude-code", "ses_record");
+    const row = getExtractedSession(db, "claude", "ses_record");
     expect(row).toBeDefined();
     expect(row?.outcome).toBe("no_candidates");
     expect(row?.candidate_count).toBe(0);
@@ -607,7 +604,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
     const db = openStateDatabase(":memory:");
 
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([session])],
@@ -616,7 +613,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
       chat: async () => JSON.stringify({ candidates: [] }),
     });
 
-    expect(getExtractedSession(db, "claude-code", "ses_dry")).toBeUndefined();
+    expect(getExtractedSession(db, "claude", "ses_dry")).toBeUndefined();
     db.close();
   });
 
@@ -626,7 +623,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
     const db = openStateDatabase(":memory:");
 
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([session])],
@@ -635,7 +632,7 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
       chat: async () => JSON.stringify({ candidates: [] }),
     });
 
-    expect(getExtractedSession(db, "claude-code", "ses_notrack")).toBeUndefined();
+    expect(getExtractedSession(db, "claude", "ses_notrack")).toBeUndefined();
     db.close();
   });
 });
@@ -668,7 +665,7 @@ describe("countNewExtractCandidates — row-presence approximation", () => {
     const session = fakeSession("ses_nullhash", Date.now());
     const db = openStateDatabase(":memory:");
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_nullhash",
       processedAt: new Date().toISOString(),
       outcome: "no_candidates",
@@ -690,7 +687,7 @@ describe("countNewExtractCandidates — row-presence approximation", () => {
     const session = fakeSession("ses_hashed", Date.now());
     const db = openStateDatabase(":memory:");
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_hashed",
       processedAt: new Date().toISOString(),
       outcome: "no_candidates",
@@ -712,7 +709,7 @@ describe("countNewExtractCandidates — row-presence approximation", () => {
 describe("getLastExtractRunAt", () => {
   test("returns null when the harness has never been extracted", () => {
     const db = openStateDatabase(":memory:");
-    expect(getLastExtractRunAt(db, "claude-code")).toBeNull();
+    expect(getLastExtractRunAt(db, "claude")).toBeNull();
     db.close();
   });
 
@@ -725,7 +722,7 @@ describe("getLastExtractRunAt", () => {
       ["ses_b", newer],
     ] as const) {
       upsertExtractedSession(db, {
-        harness: "claude-code",
+        harness: "claude",
         sessionId: sid,
         processedAt: at,
         outcome: "no_candidates",
@@ -744,7 +741,7 @@ describe("getLastExtractRunAt", () => {
       proposalCount: 0,
       contentHash: "h",
     });
-    expect(getLastExtractRunAt(db, "claude-code")).toBe(Date.parse(newer));
+    expect(getLastExtractRunAt(db, "claude")).toBe(Date.parse(newer));
     db.close();
   });
 });
@@ -761,7 +758,7 @@ describe("akmExtract — default since (watermark)", () => {
     const recent = fakeSession("ses_1h", withinFloor);
 
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([old, recent])],
@@ -780,7 +777,7 @@ describe("akmExtract — default since (watermark)", () => {
     // Establish a watermark: the last recorded run was 10 days ago.
     const tenDaysAgo = Date.now() - 10 * 24 * 60 * 60 * 1000;
     upsertExtractedSession(db, {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_prior_run",
       processedAt: new Date(tenDaysAgo).toISOString(),
       outcome: "no_candidates",
@@ -794,7 +791,7 @@ describe("akmExtract — default since (watermark)", () => {
     const session = fakeSession("ses_5d", fiveDaysAgo);
 
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([session])],
@@ -818,13 +815,13 @@ describe("akmExtract — per-session lock", () => {
     const session = fakeSession("ses_locked", Date.now());
 
     // Pre-create the lock held by THIS (live) process at the path akmExtract derives.
-    const lockPath = path.join(stateDir, "extract-locks", "extract-claude-code-ses_locked.lock");
+    const lockPath = path.join(stateDir, "extract-locks", "extract-claude-ses_locked.lock");
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     expect(tryAcquireLockSync(lockPath, String(process.pid))).toBeDefined();
 
     let chatCalls = 0;
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([session])],
@@ -848,7 +845,7 @@ describe("akmExtract — per-session lock", () => {
     const session = fakeSession("ses_free", Date.now());
 
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([session])],
@@ -858,7 +855,7 @@ describe("akmExtract — per-session lock", () => {
 
     expect(result.sessionsProcessed).toBe(1);
     // Lock released → a fresh acquire succeeds.
-    const lockPath = path.join(stateDir, "extract-locks", "extract-claude-code-ses_free.lock");
+    const lockPath = path.join(stateDir, "extract-locks", "extract-claude-ses_free.lock");
     expect(tryAcquireLockSync(lockPath, String(process.pid))).toBeDefined();
   });
 });
@@ -877,7 +874,7 @@ describe("akmExtract — R4 transient outcomes stay retryable (null content_hash
     const db = openStateDatabase(":memory:");
 
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeHarness([session])],
@@ -890,7 +887,7 @@ describe("akmExtract — R4 transient outcomes stay retryable (null content_hash
     });
 
     expect(result.sessions[0]?.skipReason).toBe("llm_unavailable");
-    const row = getExtractedSession(db, "claude-code", "ses_llm_down");
+    const row = getExtractedSession(db, "claude", "ses_llm_down");
     expect(row).toBeDefined();
     expect(row?.content_hash).toBeNull();
     db.close();
@@ -910,7 +907,7 @@ describe("akmExtract — R4 transient outcomes stay retryable (null content_hash
 
     let chatCalls = 0;
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config,
       harnesses: [makeHarness([session])],
@@ -924,7 +921,7 @@ describe("akmExtract — R4 transient outcomes stay retryable (null content_hash
     // Triaged out before the LLM call: no chat, skipReason triaged_out.
     expect(chatCalls).toBe(0);
     expect(result.sessions[0]?.skipReason).toBe("triaged_out");
-    const row = getExtractedSession(db, "claude-code", "ses_triaged");
+    const row = getExtractedSession(db, "claude", "ses_triaged");
     expect(row).toBeDefined();
     expect(row?.content_hash).toBeNull();
     db.close();

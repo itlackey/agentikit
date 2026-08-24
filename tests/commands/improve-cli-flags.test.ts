@@ -26,7 +26,7 @@ describe("standalone extract CLI engine boundary", () => {
       "proposal",
       "extract",
       "--type",
-      "claude-code",
+      "claude",
       "--engine",
       "fast",
       "--strategy",

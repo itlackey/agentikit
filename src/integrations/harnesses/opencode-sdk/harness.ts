@@ -35,7 +35,6 @@ import { BaseHarness } from "../types";
 export class OpencodeSdkHarness extends BaseHarness {
   readonly id = "opencode-sdk" as const;
   readonly displayName = "OpenCode SDK";
-  readonly aliases = [] as const;
   // ── Workflow-engine descriptor (plan §"Capability matrix", P2) ────────────
   // Embedded-SDK dispatch on this machine ⇒ local-runner (the matrix's
   // "local (sdk/cli)" row, SDK half).

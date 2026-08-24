@@ -2130,16 +2130,16 @@ session extraction — it replaces the legacy session-checkpoint hook and runs
 independently of the improve-stage extract toggle (see `improve` above).
 
 ```sh
-akm proposal extract --type claude-code --session-id <id>
-akm proposal extract --type claude-code --since 24h
+akm proposal extract --type claude --session-id <id>
+akm proposal extract --type claude --since 24h
 akm proposal extract --type opencode --since 7d --dry-run
 akm proposal extract --auto                 # iterate every available harness
-akm proposal extract --type claude-code --location /custom/path --session-id <id>
+akm proposal extract --type claude --location /custom/path --session-id <id>
 ```
 
 | Flag | Description |
 | --- | --- |
-| `--type <harness>` | Harness name (`claude-code`, `opencode`). Required unless `--auto`. |
+| `--type <harness>` | Harness name (`claude`, `opencode`). Required unless `--auto`. |
 | `--session-id <id>` | Process only this session ID. When absent, discover sessions via `--since`. |
 | `--location <path>` | Override the harness's default session-discovery location. |
 | `--since <cutoff>` | Discovery cutoff. ISO timestamp or duration (`24h`, `7d`, `30m`). Default `24h`. |

@@ -11,7 +11,7 @@ import type { SessionData, SessionEvent } from "../src/integrations/session-logs
 
 function makeData(events: SessionEvent[]): SessionData {
   return {
-    ref: { harness: "claude-code", sessionId: "test", filePath: "/tmp/test.jsonl" },
+    ref: { harness: "claude", sessionId: "test", filePath: "/tmp/test.jsonl" },
     events,
     inlineRefs: [],
   };
@@ -19,7 +19,7 @@ function makeData(events: SessionEvent[]): SessionData {
 
 function event(overrides: Partial<SessionEvent>): SessionEvent {
   return {
-    harness: "claude-code",
+    harness: "claude",
     text: "default text body that is at least ten characters long",
     ts: 1700000000000,
     sessionId: "test",
@@ -62,7 +62,7 @@ describe("preFilterSession — drop rules", () => {
       event({ text: `[tool:Bash] akm feedback knowledge/auth --positive --note "saved time"` }),
       event({ text: "[tool:Bash] akm accept abc123" }),
       event({ text: "[tool:Bash] akm reject xyz789 --reason 'duplicate'" }),
-      event({ text: "[tool:Bash] akm extract --type claude-code --session-id foo" }),
+      event({ text: "[tool:Bash] akm extract --type claude --session-id foo" }),
       event({ text: "[tool:Bash] akm import ./doc.md" }),
     ];
     const result = preFilterSession(makeData(events));
@@ -79,7 +79,7 @@ describe("preFilterSession — drop rules", () => {
     expect(result.stats.droppedByRule["akm-readonly-show"]).toBe(1);
   });
 
-  test("drops claude-code local-command-caveat preamble", () => {
+  test("drops claude local-command-caveat preamble", () => {
     const result = preFilterSession(
       makeData([
         event({

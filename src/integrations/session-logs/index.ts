@@ -31,7 +31,7 @@ export type {
 // therefore one registry entry, never an edit here.
 //
 // Ordered by canonical id so the pre-derivation provider order
-// ([claude-code, opencode] — visible in e.g. `extract --auto` result order)
+// ([claude, opencode] — visible in e.g. `extract --auto` result order)
 // is preserved deterministically, independent of HARNESS_REGISTRY declaration
 // order (which is pinned for JSON-schema enum stability).
 //
@@ -47,10 +47,7 @@ const HARNESSES: SessionLogHarness[] = [...SESSION_LOG_HARNESSES]
   .sort((a, b) => a.id.localeCompare(b.id))
   .map((h) => h.sessionLogProvider());
 
-// Reverse invariant (kept from #562): every derived provider's runtime `name`
-// — a plain string the provider implementation sets independently of the
-// harness registry (e.g. `ClaudeCodeProvider`'s `"claude-code"`) — must
-// resolve back, via the id-normalization bridge, to a registry harness whose
+// Every derived provider's `name` must exactly identify a registry harness whose
 // `sessionLogs` capability is set. This is NOT expressible as a compile-time
 // type constraint: `SessionLogHarness.name` is a runtime string with no
 // static link to the `AkmHarness` that produced it, so a typo'd or
@@ -131,9 +128,8 @@ export function aggregateSessionEvents(events: Iterable<SessionEvent>): SessionL
  * Extracted as a pure function (harnesses injected) so it is unit-testable
  * without touching the real on-disk session-log locations.
  *
- * `maxSessionsPerHarness` bounds the rich path: `readSession()` reads each
- * session file IN FULL (unlike the legacy flat scan, which only touched files
- * with mtime ≥ sinceMs and skipped non-string content). On a machine with a
+ * `maxSessionsPerHarness` bounds the path: `readSession()` reads each
+ * session file in full. On a machine with a
  * deep `~/.claude/projects` history a 30-day window can hold hundreds of
  * multi-MB session files, and reading+parsing every one in full made the
  * health command (`akm health`, which calls this synchronously) blow past its
@@ -151,16 +147,9 @@ export function collectSessionEvents(
   const events: SessionEvent[] = [];
   for (const harness of harnesses) {
     try {
-      // Rich path: enumerate sessions cheaply, then read each one's full
-      // structured event stream. Falls back to readEvents if listSessions
-      // surfaces nothing (e.g. a harness that wired readSession but whose
-      // listSessions returns empty on this machine) so we never regress
-      // coverage relative to the legacy scan.
+      // Enumerate sessions cheaply, then read each one's full structured event
+      // stream. There is no parallel flat-log parser.
       const summaries = harness.listSessions({ sinceMs });
-      if (summaries.length === 0) {
-        events.push(...harness.readEvents({ sinceMs }));
-        continue;
-      }
       // summaries are newest-first; bound the full-file reads (see doc above).
       for (const summary of summaries.slice(0, maxSessionsPerHarness)) {
         try {

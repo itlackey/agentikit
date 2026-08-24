@@ -30,7 +30,6 @@ export { codexResultExtractor } from "./result-extractor";
 export class CodexHarness extends BaseHarness {
   readonly id = "codex" as const;
   readonly displayName = "OpenAI Codex CLI";
-  readonly aliases = [] as const;
   readonly agentBuilder = codexBuilder;
   readonly resultExtractor = codexResultExtractor;
   // ── Workflow-engine descriptor (plan §"Capability matrix", P2) ────────────

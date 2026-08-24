@@ -26,21 +26,12 @@ function getOpenCodeBaseDir(): string {
 }
 
 /**
- * Opencode storage layouts:
+ * Opencode session storage:
  *
  *   SQLite (current, observed 2026-06): `<base>/opencode.db` — a Drizzle-managed
  *   database with `session` / `message` / `part` tables. Message text lives in
  *   `part` rows (`data` JSON, `type: "text"`); `message.data` holds role/timing.
- *   This is the layout current opencode builds write; it is preferred whenever
- *   `opencode.db` exists.
- *
- *   JSON files (legacy, observed 2026-05): `<base>/storage/session/<projectId>/
- *   <sessionId>.json` (metadata) + `<base>/storage/message/<sessionId>/
- *   <messageId>.json` (one per message). Read only when `opencode.db` is absent.
- *
- * Older builds wrote logs directly into `<base>/log/` and `<base>/*.log`;
- * those are still scanned by {@link OpenCodeProvider.readEvents} for
- * backward compatibility with the existing failure-pattern aggregator.
+ *   This is the sole supported layout.
  */
 
 /** Filename of opencode's SQLite session store, relative to its base dir. */
@@ -59,140 +50,16 @@ export class OpenCodeProvider extends AbstractSessionLogProvider implements Sess
     return path.join(base, OPENCODE_DB_FILENAME);
   }
 
-  *readEvents(input: { sinceMs: number }): Iterable<SessionEvent> {
-    // Legacy behavior: stream raw log lines from the top-level dir and `log/`
-    // subdirectory. Kept to keep `getExecutionLogCandidates` working without
-    // a coordinated change to its caller. New code should use
-    // {@link listSessions} + {@link readSession} instead.
-    const candidates = [this.#baseDir, path.join(this.#baseDir, "log")];
-    for (const dir of candidates) {
-      if (!fs.existsSync(dir)) continue;
-      try {
-        for (const file of fs.readdirSync(dir)) {
-          const full = path.join(dir, file);
-          const stat = this.statSafe(full);
-          if (!stat?.isFile()) continue;
-          if (stat.mtimeMs < input.sinceMs) continue;
-          if (!file.endsWith(".json") && !file.endsWith(".jsonl") && !file.endsWith(".log")) continue;
-
-          const content = fs.readFileSync(full, "utf8");
-          const lines = content.includes("\n") ? content.split("\n") : [content];
-          yield* this.logLineEvents({
-            lines,
-            filePath: full,
-            fallbackTsMs: stat.mtimeMs,
-            selectText: (entry) => entry?.content ?? entry?.message ?? entry?.text ?? "",
-            selectSessionId: (entry) => entry?.sessionId,
-          });
-        }
-      } catch {
-        // unreadable dir — skip
-      }
-    }
-  }
-
   listSessions(input: { sinceMs?: number; location?: string; isolatedSnapshot?: boolean } = {}): SessionSummary[] {
     const base = input.location ?? this.#baseDir;
     const sinceMs = input.sinceMs ?? 0;
     const dbPath = this.#dbPath(base);
-    if (fs.existsSync(dbPath)) return this.#listSessionsFromDb(dbPath, sinceMs, input.isolatedSnapshot ?? false);
-    const sessionRoot = path.join(base, "storage", "session");
-    if (!fs.existsSync(sessionRoot)) return [];
-    return this.listSessionsFromFiles({
-      sinceMs,
-      enumerate: () => this.#legacySessionFiles(sessionRoot),
-      summarize: (filePath, stat) => this.#legacySessionSummary(filePath, stat),
-    });
-  }
-
-  /** Legacy JSON layout: `<sessionRoot>/<projectId>/<sessionId>.json`. */
-  *#legacySessionFiles(sessionRoot: string): Generator<string> {
-    for (const projectId of fs.readdirSync(sessionRoot)) {
-      const projectDir = path.join(sessionRoot, projectId);
-      if (!this.statSafe(projectDir)?.isDirectory()) continue;
-      for (const file of fs.readdirSync(projectDir)) {
-        if (!file.endsWith(".json")) continue;
-        yield path.join(projectDir, file);
-      }
-    }
-  }
-
-  /** Summarize one legacy session metadata file; `undefined` when unreadable. */
-  #legacySessionSummary(filePath: string, stat: fs.Stats): SessionSummary | undefined {
-    let meta: Record<string, unknown> | undefined;
-    try {
-      meta = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
-    } catch {
-      return undefined;
-    }
-    const time = (meta?.time as Record<string, unknown> | undefined) ?? undefined;
-    return this.sessionRef({
-      sessionId: typeof meta?.id === "string" ? meta.id : path.basename(filePath, ".json"),
-      filePath,
-      startedAt: typeof time?.created === "number" ? time.created : stat.ctimeMs,
-      endedAt: typeof time?.updated === "number" ? time.updated : stat.mtimeMs,
-      // Fallback is the project directory name (the legacy layout's projectId).
-      projectHint: typeof meta?.directory === "string" ? meta.directory : path.basename(path.dirname(filePath)),
-      title: typeof meta?.title === "string" ? meta.title : undefined,
-    });
+    if (!fs.existsSync(dbPath)) return [];
+    return this.#listSessionsFromDb(dbPath, sinceMs, input.isolatedSnapshot ?? false);
   }
 
   readSession(ref: SessionRef): SessionData {
-    if (path.basename(ref.filePath) === OPENCODE_DB_FILENAME) return this.#readSessionFromDb(ref);
-    let meta: Record<string, unknown> = {};
-    try {
-      meta = JSON.parse(fs.readFileSync(ref.filePath, "utf8")) as Record<string, unknown>;
-    } catch {
-      // metadata missing — proceed with empty defaults
-    }
-    const time = (meta.time as Record<string, unknown> | undefined) ?? undefined;
-    const startedAt = typeof time?.created === "number" ? time.created : undefined;
-    const endedAt = typeof time?.updated === "number" ? time.updated : undefined;
-    const title = typeof meta.title === "string" ? meta.title : undefined;
-    const projectHint = typeof meta.directory === "string" ? meta.directory : undefined;
-
-    const events: SessionEvent[] = [];
-    const inlineRefs: InlineRefMention[] = [];
-
-    // Resolve message directory: <baseDir>/storage/message/<sessionId>/
-    const inferredBase = this.#inferBaseFromSessionPath(ref.filePath) ?? this.#baseDir;
-    const msgDir = path.join(inferredBase, "storage", "message", ref.sessionId);
-    if (fs.existsSync(msgDir)) {
-      try {
-        const files = fs.readdirSync(msgDir).filter((f) => f.endsWith(".json"));
-        for (const file of files) {
-          const full = path.join(msgDir, file);
-          let msg: Record<string, unknown> | undefined;
-          try {
-            msg = JSON.parse(fs.readFileSync(full, "utf8")) as Record<string, unknown>;
-          } catch {
-            continue;
-          }
-          if (!msg) continue;
-          const evt = this.#messageToEvent(msg, ref.sessionId, full);
-          if (evt) {
-            events.push(evt);
-            inlineRefs.push(...extractInlineRefMentions(evt.text, evt.ts));
-          }
-        }
-      } catch {
-        // unreadable msg dir — skip
-      }
-    }
-    events.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
-
-    return {
-      ref: this.sessionRef({
-        sessionId: ref.sessionId,
-        filePath: ref.filePath,
-        startedAt,
-        endedAt,
-        projectHint,
-        title,
-      }),
-      events,
-      inlineRefs,
-    };
+    return this.#readSessionFromDb(ref);
   }
 
   /**
@@ -339,56 +206,5 @@ export class OpenCodeProvider extends AbstractSessionLogProvider implements Sess
     } finally {
       db.close();
     }
-  }
-
-  /**
-   * Derive opencode base dir from a session metadata file path so a caller
-   * passing a custom `--location` can still find the message dir.
-   * Layout: `<base>/storage/session/<projectId>/<id>.json` → base.
-   */
-  #inferBaseFromSessionPath(filePath: string): string | undefined {
-    // Walk up: <id>.json → <projectId> → session → storage → <base>
-    const dir = path.dirname(filePath);
-    const parts = dir.split(path.sep);
-    if (parts.length < 3) return undefined;
-    const last = parts[parts.length - 1];
-    const sndLast = parts[parts.length - 2];
-    const thirdLast = parts[parts.length - 3];
-    if (sndLast !== "session" || thirdLast !== "storage" || !last) return undefined;
-    return parts.slice(0, parts.length - 3).join(path.sep);
-  }
-
-  #messageToEvent(msg: Record<string, unknown>, sessionId: string, filePath: string): SessionEvent | undefined {
-    const time = (msg.time as Record<string, unknown> | undefined) ?? undefined;
-    const ts = typeof time?.created === "number" ? time.created : typeof msg.timestamp === "number" ? msg.timestamp : 0;
-    const role = typeof msg.role === "string" ? (msg.role as SessionEvent["role"]) : "unknown";
-    // Opencode message bodies live in summary.title / summary.diffs[].before/after /
-    // parts (referenced from storage/part/<msg-id>/). For listing+extraction
-    // purposes the summary block is sufficient — it's what the platform itself
-    // surfaces as the message preview.
-    const summary = msg.summary as Record<string, unknown> | undefined;
-    const parts: string[] = [];
-    if (typeof summary?.title === "string") parts.push(summary.title);
-    if (Array.isArray(summary?.parts)) {
-      for (const p of summary.parts as unknown[]) {
-        if (typeof p === "string") parts.push(p);
-        else if (p && typeof p === "object") {
-          const text = (p as Record<string, unknown>).text;
-          if (typeof text === "string") parts.push(text);
-        }
-      }
-    }
-    // content field for some opencode versions
-    if (typeof msg.content === "string") parts.push(msg.content);
-    const text = parts.join("\n").trim();
-    if (text.length < 1) return undefined;
-    return {
-      harness: this.name,
-      text,
-      ts: ts || undefined,
-      sessionId,
-      role,
-      filePath,
-    };
   }
 }

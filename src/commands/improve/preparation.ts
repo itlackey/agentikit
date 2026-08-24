@@ -674,7 +674,7 @@ async function runSessionExtractPass(args: {
   const warnings: string[] = [];
   // Phase 0.4 — session-extract pass.
   //
-  // Reads native session files (claude-code JSONL, opencode storage tree)
+  // Reads native session files (claude JSONL, opencode storage tree)
   // through the SessionLogHarness registry, pre-filters noise, and asks a
   // bounded in-tree LLM to produce candidate memory/lesson/knowledge
   // proposals for content the agent did NOT preserve via inline `akm remember`

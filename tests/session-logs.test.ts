@@ -15,10 +15,10 @@ describe("session log aggregation", () => {
 
   test("deduplicates repeated failure patterns across harnesses", () => {
     const events: SessionEvent[] = [
-      { harness: "claude-code", text: "Error: build failed on deploy" },
+      { harness: "claude", text: "Error: build failed on deploy" },
       { harness: "opencode", text: "error: build failed on deploy" },
       { harness: "opencode", text: "error: build failed on deploy" },
-      { harness: "claude-code", text: "all good now" },
+      { harness: "claude", text: "all good now" },
     ];
 
     const entries = aggregateSessionEvents(events);
@@ -26,18 +26,13 @@ describe("session log aggregation", () => {
     expect(entries[0]).toMatchObject({
       topic: "error: build failed on deploy",
       frequency: 3,
-      source: "claude-code,opencode",
+      source: "claude,opencode",
       isFailurePattern: true,
     });
   });
 
   test("collectSessionEvents surfaces structured readSession content to the candidate path (#568)", () => {
-    // The richer readSession pipeline exposes structured tool-call content that
-    // the legacy flat readEvents scan dropped. Here readEvents yields only a
-    // single bland line (no failure pattern), while readSession yields the
-    // structured `[tool_result]` blocks that reveal a repeated failure. Promoting
-    // the pipeline to readSession is what makes the failure pattern visible to
-    // health advisories — that is the behaviour #568 fixes.
+    // The readSession pipeline exposes structured tool-call content.
     const summaries: SessionSummary[] = [
       { harness: "rich", sessionId: "s1", filePath: "/sessions/s1.jsonl", endedAt: 2 },
     ];
@@ -52,10 +47,6 @@ describe("session log aggregation", () => {
     const richHarness: SessionLogHarness = {
       name: "rich",
       isAvailable: () => true,
-      // Legacy scan loses the structured tool content — only a bland status line.
-      *readEvents() {
-        yield { harness: "rich", text: "session started normally" };
-      },
       listSessions: () => summaries,
       readSession: () => richSession,
     };
@@ -70,24 +61,15 @@ describe("session log aggregation", () => {
     expect(entries[0]?.source).toBe("rich");
   });
 
-  test("collectSessionEvents falls back to readEvents when listSessions is empty", () => {
-    // A readSession-capable harness whose listSessions returns nothing on this
-    // machine must still contribute via the flat scan — never regress coverage.
-    const fallbackHarness: SessionLogHarness = {
-      name: "fallback",
+  test("collectSessionEvents returns no events when no sessions are listed", () => {
+    const harness: SessionLogHarness = {
+      name: "empty",
       isAvailable: () => true,
-      *readEvents() {
-        yield { harness: "fallback", text: "exception thrown during build" };
-        yield { harness: "fallback", text: "exception thrown during build" };
-      },
       listSessions: () => [],
-      readSession: (ref) => ({ ref: { ...ref, harness: "fallback" }, events: [], inlineRefs: [] }),
+      readSession: () => {
+        throw new Error("readSession must not run without a listed session");
+      },
     };
-
-    const sinceMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const entries = aggregateSessionEvents(collectSessionEvents([fallbackHarness], sinceMs));
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.frequency).toBe(2);
-    expect(entries[0]?.source).toBe("fallback");
+    expect(collectSessionEvents([harness], Date.now() - 60_000)).toEqual([]);
   });
 });

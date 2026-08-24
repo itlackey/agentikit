@@ -197,7 +197,7 @@ purged produces no commit at all. The run reports its journal as
 ### Session extraction
 
 `akm proposal extract` is the standalone entry point for mining coding-agent
-session transcripts (`--type claude-code`, `--type opencode`, or `--auto` to
+session transcripts (`--type claude`, `--type opencode`, or `--auto` to
 iterate every harness with a detectable session-log location) into proposals.
 It replaced the legacy session-checkpoint hook and runs independently of
 whether a strategy's own `processes.extract` stage is enabled — the shipped

@@ -268,7 +268,7 @@ describe("health checks characterization (WS9)", () => {
     appendEvent({ eventType: "improve_invoked", ref: "improve:all:all", metadata: { dryRun: false } });
 
     const sessionLogs: SessionLogEntry[] = [
-      { topic: "boom failed", frequency: 3, source: "claude-code", isFailurePattern: true },
+      { topic: "boom failed", frequency: 3, source: "claude", isFailurePattern: true },
     ];
     const result = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => sessionLogs });
 

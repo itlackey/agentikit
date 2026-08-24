@@ -31,7 +31,7 @@
  *
  * @module workflows/agent-identity
  */
-import { denormalizeRuntimeIdentity, HARNESS_REGISTRY } from "../../integrations/harnesses";
+import { HARNESS_REGISTRY } from "../../integrations/harnesses";
 
 export interface AgentIdentity {
   harness: string | null;
@@ -91,10 +91,7 @@ export function resolveAgentIdentity(env: NodeJS.ProcessEnv = process.env): Agen
     // (OPENCODE_SESSION_ID + CODEX_SANDBOX) attributes to opencode.
     for (const marker of SESSION_MARKERS) {
       if (firstNonEmpty(env, marker.envKeys)) {
-        // Report the harness's RUNTIME identity (e.g. canonical 'claude' →
-        // 'claude-code') via the registry's #562 bridge so the persisted
-        // runtime string can't drift.
-        harness = denormalizeRuntimeIdentity(marker.harnessId);
+        harness = marker.harnessId;
         break;
       }
     }
@@ -106,7 +103,7 @@ export function resolveAgentIdentity(env: NodeJS.ProcessEnv = process.env): Agen
     // but they carry no session id, so sessionId stays null below.
     for (const marker of PRESENCE_MARKERS) {
       if (firstNonEmpty(env, marker.envKeys)) {
-        harness = denormalizeRuntimeIdentity(marker.harnessId);
+        harness = marker.harnessId;
         break;
       }
     }

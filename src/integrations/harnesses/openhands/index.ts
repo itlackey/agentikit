@@ -30,7 +30,6 @@ export { openhandsResultExtractor } from "./result-extractor";
 export class OpenhandsHarness extends BaseHarness {
   readonly id = "openhands" as const;
   readonly displayName = "OpenHands";
-  readonly aliases = [] as const;
   readonly agentBuilder = openhandsBuilder;
   readonly resultExtractor = openhandsResultExtractor;
   // ── Workflow-engine descriptor (plan §"Capability matrix", P2) ────────────

@@ -30,7 +30,6 @@ export { geminiResultExtractor } from "./result-extractor";
 export class GeminiHarness extends BaseHarness {
   readonly id = "gemini" as const;
   readonly displayName = "Gemini CLI";
-  readonly aliases = [] as const;
   readonly agentBuilder = geminiBuilder;
   readonly resultExtractor = geminiResultExtractor;
   // ── Workflow-engine descriptor (plan §"Capability matrix", P2) ────────────

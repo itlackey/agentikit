@@ -339,7 +339,7 @@ akm proposal reject <id> --reason "..."                 # Archive with a reason
 akm proposal revert <id>                                # Restore the pre-promotion content
 akm proposal new <type> <name> --task "..."             # Agent-author a NEW asset as a proposal
 akm proposal extract --auto                             # Mine native session files into proposals
-akm proposal extract --type claude-code                 # Restrict extraction to one harness
+akm proposal extract --type claude                 # Restrict extraction to one harness
 ```
 
 The flat verbs `akm proposals` / `akm show proposal` / `akm accept` /

@@ -65,7 +65,7 @@ afterEach(() => {
 // ─────────────────────────────────────────────────────────────────────────
 
 describe("family E — extract --since", () => {
-  test("extract --type claude-code --since 24h/30m/7d/<ISO>/garbage/5M --dry-run", async () => {
+  test("extract --type claude --since 24h/30m/7d/<ISO>/garbage/5M --dry-run", async () => {
     writeSandboxConfig({
       semanticSearchMode: "off",
       engines: { "test-llm": { kind: "llm", endpoint: "http://localhost:1/v1/chat/completions", model: "test-model" } },
@@ -90,7 +90,7 @@ describe("family E — extract --since", () => {
           "proposal",
           "extract",
           "--type",
-          "claude-code",
+          "claude",
           "--since",
           since,
           "--location",

@@ -16,7 +16,7 @@
  *
  * id normalization: OpenCode's canonical id (`'opencode'`) is also its runtime
  * identity and session-log provider name — there is no historical split (unlike
- * Claude Code's 'claude' vs 'claude-code'), so no alias bridge is needed.
+ * Claude Code's 'claude' vs 'claude'), so no alias bridge is needed.
  */
 
 import type { SessionLogHarness } from "../../session-logs/types";
@@ -37,7 +37,6 @@ export { OpenCodeProvider } from "./session-log";
 export class OpencodeHarness extends BaseHarness {
   readonly id = "opencode" as const;
   readonly displayName = "OpenCode";
-  readonly aliases = [] as const;
   // Home-relative config dir scanned by `akm setup` (#567). OpenCode has a
   // session-log provider, so offering it as a stash source is functional.
   readonly setupDetectionDir = ".config/opencode";
