@@ -192,10 +192,13 @@ const CURRENT_ENTRY_COLUMNS = [
  * graph extraction, and enrichment caches from current sources/state.
  */
 function rebuildIncompatibleIndexGeneration(db: Database): void {
-  if (!tableExists(db, "entries")) return;
-
   const version = getMeta(db, "version");
-  const columns = (db.prepare("PRAGMA table_info(entries)").all() as Array<{ name: string }>).map((row) => row.name);
+  const hasEntries = tableExists(db, "entries");
+  if (!hasEntries && version === undefined) return;
+
+  const columns = hasEntries
+    ? (db.prepare("PRAGMA table_info(entries)").all() as Array<{ name: string }>).map((row) => row.name)
+    : [];
   const currentShape =
     columns.length === CURRENT_ENTRY_COLUMNS.length &&
     columns.every((column, index) => column === CURRENT_ENTRY_COLUMNS[index]);
@@ -227,7 +230,7 @@ function rebuildIncompatibleIndexGeneration(db: Database): void {
     db.exec("DROP TABLE IF EXISTS utility_scores");
     db.exec("DROP TABLE IF EXISTS llm_enrichment_cache");
     db.exec("DROP TABLE IF EXISTS index_dir_state");
-    db.exec("DROP TABLE entries");
+    db.exec("DROP TABLE IF EXISTS entries");
     db.exec("DELETE FROM index_meta");
   })();
 
