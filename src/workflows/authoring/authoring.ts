@@ -33,7 +33,7 @@ export function buildWorkflowTemplate(name?: string): string {
   // three places consistently to stay parseable. Generic `first-step`/
   // `second-step` are the author's to rename.
   const customized = renderWorkflowTemplate(humanizeWorkflowName(name));
-  validateWorkflowContent(customized, `<template:${name}>`);
+  validateWorkflowContent(customized, `<template:${name}>.md`);
   return customized;
 }
 
