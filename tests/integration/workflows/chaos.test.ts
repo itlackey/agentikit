@@ -847,7 +847,7 @@ describe("chaos: hostile content — secret env VALUES never reach a durable sur
     // as descriptor metadata only; the whole computed structure contains no
     // secret value.
     const preWork = fullWorkList(await frozenPlan(runId), 0, runId, {});
-    const envBinding = preWork.units[0]!.environment[0];
+    const envBinding = preWork.units[0]?.environment[0];
     expect(envBinding?.kind).toBe("env-ref");
     expect(envBinding?.kind === "env-ref" ? envBinding.ref : "").toMatch(/(?:^|\/{2})env\/leak$/);
     expect(JSON.stringify(preWork)).not.toContain(FAKE_SECRET);

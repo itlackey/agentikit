@@ -43,7 +43,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import unitPreambleTemplate from "../../assets/prompts/workflow-unit-preamble.md" with { type: "text" };
 import { UsageError } from "../../core/errors";
-import { appendEvent } from "../../core/events";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import {
