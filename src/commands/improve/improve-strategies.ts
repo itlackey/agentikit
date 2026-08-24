@@ -115,6 +115,8 @@ export interface ResolvedImproveProcess {
 
 /** Complete immutable process behavior for one improve invocation. */
 export interface ResolvedImprovePlan {
+  /** Immutable config snapshot used to re-enter canonical named-engine lowering. */
+  config: Readonly<AkmConfig>;
   strategy: Readonly<SelectedStrategy>;
   processes: Readonly<Record<ImproveProcessName, ResolvedImproveProcess>>;
   triageJudgment: RunnerSpec | null;
@@ -232,6 +234,7 @@ function buildImprovePlan(
     }),
   });
   return Object.freeze({
+    config: cloneAndFreeze(config),
     strategy: frozenStrategy,
     processes: frozenProcesses,
     triageJudgment: triageJudgment ? cloneAndFreeze(triageJudgment) : null,

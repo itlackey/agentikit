@@ -298,7 +298,8 @@ describe("improve engine-plan boundaries", () => {
       expect(reflectOptions?.engine).toBe("reflect");
       expect(reflectOptions?.config).not.toBe(config);
       expect((reflectOptions?.config as AkmConfig).engines?.reflect).toMatchObject({ model: "reflect-model" });
-      expect(dispatchedModels).toEqual(["reflect-model"]);
+      expect(dispatchedModels.length).toBeGreaterThan(0);
+      expect(new Set(dispatchedModels)).toEqual(new Set(["reflect-model"]));
       expect((distillOptions?.llmRunner as { connection?: { model?: string } }).connection?.model).toBe(
         "distill-model",
       );

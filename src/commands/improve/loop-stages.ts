@@ -71,6 +71,7 @@ import type {
 } from "./improve-run-types";
 import { type ResolvedImprovePlan, shouldSkipRef } from "./improve-strategies";
 import type { applyMemoryCleanup } from "./memory/memory-improve";
+import type { AkmReflectOptions } from "./reflect";
 import { recordNoOp, resetConsecutiveNoOps } from "./salience";
 import { errMessage, refSlug } from "./shared";
 import { bareImproveRef, durableImproveRef } from "./source-identity";
@@ -306,7 +307,9 @@ async function runLoopReflectPass(
       // O-1 (#364): pass remaining budget as timeoutMs so the agent spawn is
       // bounded by the wall-clock deadline rather than the default per-profile timeout.
       const reflectBudgetMs = env.remainingBudgetMs();
-      // Use the runner frozen in the invocation plan; no leaf re-resolution.
+      // Re-enter canonical named-engine lowering with the config snapshot frozen
+      // into the invocation plan. The loop never injects a RunnerSpec seam and
+      // never observes later mutations to the caller's config object.
       const reflectProfileRunner = resolvedPlan.processes.reflect.runner;
       const reflectCallArgs = {
         ref: planned.ref,
@@ -316,7 +319,8 @@ async function runLoopReflectPass(
         task: options.task,
         // Active strategy supplies non-engine process tuning.
         ...(improveProfile ? { improveProfile } : {}),
-        config: options.config,
+        config: resolvedPlan.config as AkmConfig,
+        ...(reflectProfileRunner?.engine ? { engine: reflectProfileRunner.engine } : {}),
         ...(primaryStashDir ? { stashDir: primaryStashDir } : {}),
         ...(options.sourceName && primaryStashDir
           ? { target: { source: options.sourceName, root: primaryStashDir } }
@@ -328,13 +332,12 @@ async function runLoopReflectPass(
         lowValueFilter: improveProfile.processes?.reflect?.lowValueFilter?.enabled === true,
         ...(reflectBudgetMs > 0 ? { timeoutMs: reflectBudgetMs } : {}),
         signal: budgetSignal,
-        runner: reflectProfileRunner ?? null,
         // R25: reflect's event emits reuse the run's long-lived state.db handle.
         eventsCtx: env.eventsCtx,
         // Attribution: carry the eligibility lane so reflect stamps it on
         // the reflect_invoked event and the persisted proposal.
         ...(planned.eligibilitySource ? { eligibilitySource: planned.eligibilitySource } : {}),
-      };
+      } satisfies AkmReflectOptions;
       const reflectResult: AkmReflectResult = await withLlmStage("reflect", () => reflectFn(reflectCallArgs), {
         engine: resolvedPlan.processes.reflect.runner?.engine,
         process: "reflect",
