@@ -81,7 +81,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   state migration now has an explicit safety classification; migration 002's
   row-preserving table rebuild remains automatic, while migration 018 requires
   a successful `akm upgrade` and a verified sibling SQLite snapshot created
-  immediately before its immutable SQL runs.
+  immediately before its immutable SQL runs. The ledger recheck, WAL-inclusive
+  snapshot, and 018 transaction now share one writer-exclusion window; fresh
+  files and randomized backup paths are atomically reserved and inode-verified.
 
 ## [0.9.1] - 2026-08-18
 

@@ -268,9 +268,15 @@ an ordinary managed open stops at that boundary and directs the operator to
 consistent sibling snapshot with `VACUUM INTO`, fsyncs it, requires
 `PRAGMA quick_check` to report `ok`, and only then admits migration 018. The
 snapshot is named
-`state.db.pre-018-drop-dead-lane-schema.<UTC-digits>.bak`. Fresh databases may
-cross the historical cleanup while bootstrapping because no operator state
-predates it. Unknown or divergent ledgers fail closed.
+`state.db.pre-018-drop-dead-lane-schema.<UTC-digits>.<UUID>.bak`. Its randomized
+pathname is atomically reserved and held by descriptor; symlink, inode, and
+ownership replacement fail closed. It remains owner-only while SQLite writes
+and verifies it, then receives permissions no broader than `state.db`. One
+`BEGIN IMMEDIATE` window spans the locked ledger recheck, WAL-inclusive
+snapshot, migration 018 DDL, and ledger insert. Fresh-database privilege comes
+only from an atomically created file whose inode remains owned by that open;
+an existing or replaced path cannot inherit it. Unknown or divergent ledgers
+fail closed.
 
 This is one narrow released-ledger gate, not a general database backup,
 restore, or cutover framework. Created on first durable state write.
