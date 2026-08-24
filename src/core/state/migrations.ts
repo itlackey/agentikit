@@ -1080,7 +1080,7 @@ export interface RunStateMigrationsOptions {
   freshDatabase?: boolean;
   /** Revalidates that the path still names the fresh file atomically reserved by this open. */
   verifyFreshDatabaseOwnership?: () => void;
-  /** An existing file whose preflight proved that `schema_migrations` is absent. */
+  /** An existing file whose preflight found no applied IDs, with the ledger absent or empty. */
   existingUnversionedDatabase?: boolean;
   /** Narrow intent owned by the successful `akm upgrade` post-install step. */
   allowHistoricalDestructiveStateUpgrade?: boolean;
@@ -1099,6 +1099,32 @@ export interface RunStateMigrationsOptions {
  * Called automatically by `openStateDatabase()`.
  */
 export function runMigrations(db: Database, options?: RunStateMigrationsOptions): void {
+  const initialMigration = STATE_MIGRATIONS[0];
+  if (!initialMigration) throw new Error("State migration registry has no initial migration.");
+  let existingUnversionedSnapshotPrepared = false;
+
+  const prepareExistingUnversionedState = (lockedDb: Database): void => {
+    if (existingUnversionedSnapshotPrepared) return;
+    if (!options?.existingUnversionedDatabase) {
+      throw new Error("Refusing state.db initialization because its migration ledger disappeared after preflight.");
+    }
+    if (!options.allowHistoricalDestructiveStateUpgrade) {
+      throw new Error(
+        "Refusing to migrate an existing unversioned state.db during an ordinary managed open. " +
+          "Run `akm upgrade --force` to snapshot it before migration 001.",
+      );
+    }
+    const ledger = assertMigrationLedger(lockedDb, STATE_MIGRATIONS);
+    if (ledger.migrationIds.length !== 0) {
+      throw new Error("Refusing an existing unversioned state.db whose migration ledger changed after preflight.");
+    }
+    if (!options.beforeExistingUnversionedStateMigration) {
+      throw new Error("An existing unversioned state.db requires a verified pre-migration safety-copy hook.");
+    }
+    options.beforeExistingUnversionedStateMigration(initialMigration);
+    existingUnversionedSnapshotPrepared = true;
+  };
+
   runSqliteMigrations(db, STATE_MIGRATIONS, {
     beforeLedgerInitializationLocked(lockedDb) {
       if (options?.freshDatabase) {
@@ -1108,22 +1134,7 @@ export function runMigrations(db: Database, options?: RunStateMigrationsOptions)
         options.verifyFreshDatabaseOwnership();
         return;
       }
-      if (!options?.existingUnversionedDatabase) {
-        throw new Error("Refusing state.db initialization because its migration ledger disappeared after preflight.");
-      }
-      if (!options.allowHistoricalDestructiveStateUpgrade) {
-        throw new Error(
-          "Refusing to migrate an existing unversioned state.db during an ordinary managed open. " +
-            "Run `akm upgrade --force` to snapshot it before migration 001.",
-        );
-      }
-      assertMigrationLedger(lockedDb, STATE_MIGRATIONS);
-      const initialMigration = STATE_MIGRATIONS[0];
-      if (!initialMigration) throw new Error("State migration registry has no initial migration.");
-      if (!options.beforeExistingUnversionedStateMigration) {
-        throw new Error("An existing unversioned state.db requires a verified pre-migration safety-copy hook.");
-      }
-      options.beforeExistingUnversionedStateMigration(initialMigration);
+      prepareExistingUnversionedState(lockedDb);
     },
     beforeMigrationLocked(migration, lockedDb) {
       if (options?.freshDatabase) {
@@ -1131,6 +1142,9 @@ export function runMigrations(db: Database, options?: RunStateMigrationsOptions)
           throw new Error("A fresh state.db migration requires verified file ownership.");
         }
         options.verifyFreshDatabaseOwnership();
+      }
+      if (options?.existingUnversionedDatabase && migration.id === initialMigration.id) {
+        prepareExistingUnversionedState(lockedDb);
       }
       if (getStateMigrationSafety(migration.id) !== "historical-destructive" || options?.freshDatabase) return;
       // The writer lock closes the window between this exact-prefix decision,

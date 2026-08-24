@@ -34,9 +34,10 @@
  * never applied by an ordinary managed open. The successful `akm upgrade` path
  * must first create and verify a sibling `VACUUM INTO` snapshot, then supplies
  * the narrow explicit intent that admits 018. A pre-existing file with no
- * migration ledger is also rejected without writes; explicit upgrade snapshots
- * its exact inode before creating the ledger or applying migration 001. Unknown
- * and divergent ledgers fail closed.
+ * applied migration IDs (whether the ledger table is absent or empty) is also
+ * rejected without writes; explicit upgrade snapshots its exact inode before
+ * creating the ledger or applying migration 001. Unknown and divergent ledgers
+ * fail closed.
  *
  * Normal automatic schema evolution uses:
  *   - ALTER TABLE … ADD COLUMN <name> <type> DEFAULT <value>
@@ -66,7 +67,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { type Database, openDatabase, type SqlValue } from "../storage/database";
-import { assertMigrationLedger, migrationLedgerExists } from "../storage/engines/sqlite-migrations";
+import { assertMigrationLedger } from "../storage/engines/sqlite-migrations";
 import { openManagedDatabase, withManagedDb } from "../storage/managed-db";
 import { acquireMaintenanceActivitySync } from "./maintenance-barrier";
 import { getDataDir } from "./paths";
@@ -428,8 +429,8 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
       try {
         assertStateDatabaseSource(existingSource);
         preflight.exec("PRAGMA busy_timeout = 30000");
-        assertMigrationLedger(preflight, STATE_MIGRATIONS);
-        existingUnversionedDatabase = !migrationLedgerExists(preflight);
+        const ledger = assertMigrationLedger(preflight, STATE_MIGRATIONS);
+        existingUnversionedDatabase = ledger.migrationIds.length === 0;
         if (existingUnversionedDatabase && !options?.allowHistoricalDestructiveStateUpgrade) {
           throw new Error(
             "Refusing to migrate an existing unversioned state.db during an ordinary managed open. " +
