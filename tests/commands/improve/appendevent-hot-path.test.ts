@@ -53,6 +53,7 @@ beforeEach(() => {
       semanticSearchMode: "off",
       bundles: { stash: { path: storage.stashDir, writable: true } },
       defaultBundle: "stash",
+      defaults: { engine: "test-improve-llm" },
     }),
   );
 });
@@ -132,14 +133,19 @@ describe("appendEvent hot path — reflect", () => {
       content:
         "---\ndescription: hot-path pin lesson\nwhen_to_use: when pinning the appendEvent fast path\n---\n\nBody.\n",
     });
+    let chatCalled = false;
     await akmReflect({
       ref: "lessons/hot-path-pin",
       stashDir: storage.stashDir,
       assetContent: "",
-      chat: async () => payload,
+      chat: async () => {
+        chatCalled = true;
+        return payload;
+      },
       eventsCtx,
     });
 
+    expect(chatCalled).toBe(true);
     const types = eventsIn(injected.dbPath).map((r) => r.eventType);
     expect(types).toContain("reflect_invoked");
     expect(types).toContain("reflect_completed");
