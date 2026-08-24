@@ -182,7 +182,18 @@ Protocol:
 2. Decide the change and predict its effect **before** touching eval.
 3. Measure on **eval** rarely — ideally once per meaningful plugin change.
    Today's `+0.228 [0.070, 0.404]` at 28.1% engagement is the pre-registered
-   baseline.
+   baseline. **SUPERSEDED as of akm-bench `0578025`** — see the note below.
+
+> **The eval baseline was invalidated on purpose, once.** Fixing akm-bench#6
+> tightened the verifiers of **11 of the 19 eval-slice tasks** (5 drillbit +
+> 6 inkwell). The task LIST is unchanged, but the scoring is not, so the
+> `+0.228 [0.070, 0.404]` figure is no longer comparable to anything measured
+> after that commit. That was the right trade — a correct verifier beats a
+> comparable-but-wrong one, and the old one scored an invented
+> `drillbit backup configure ...` as a pass — but it means the NEXT eval run
+> re-establishes the baseline rather than testing against it. Since both arms
+> are always re-run together, the new run is internally valid on its own; only
+> the cross-run comparison is lost.
 4. **Always re-run both arms together.** The baseline moves too when opencode,
    the corpus, or the harness changes; comparing a new treatment against a
    stored baseline silently confounds.
