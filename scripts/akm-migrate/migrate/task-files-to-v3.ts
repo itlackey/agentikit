@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-/** Filesystem boundary for the pure task-v2 to task-v3 planner. */
+/** Filesystem boundary for the pure legacy-task to task-v3 planner. */
 
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -11,14 +11,14 @@ import { MAX_LOCAL_METADATA_BYTES, readTextFileWithLimit } from "../../../src/co
 import { ConfigError } from "../../../src/core/errors";
 import { fsyncDirectoryPortable } from "./durable-fs";
 import {
-  type TaskV2ToV3Changed,
-  type TaskV2ToV3FileInput,
-  type TaskV2ToV3FilesystemIdentity,
-  type TaskV2ToV3MigrationPlan,
-} from "../../../src/tasks/migrate-v2-to-v3";
+  type TaskToV3Changed,
+  type TaskToV3FileInput,
+  type TaskToV3FilesystemIdentity,
+  type TaskToV3MigrationPlan,
+} from "./task-to-v3";
 import { parseTaskV3Yaml } from "../../../src/tasks/source-v3";
 
-export interface TaskV2ToV3Root {
+export interface TaskToV3Root {
   readonly bundleId: string;
   readonly root: string;
   /** Physical owner whose identity and containment fence nested components. */
@@ -28,7 +28,7 @@ export interface TaskV2ToV3Root {
   readonly layout?: "akm-stash" | "akm-task";
 }
 
-export interface ApplyTaskV2ToV3Options {
+export interface ApplyTaskToV3Options {
   readonly backupRoot: string;
   /** Verified main-backup declaration used by the production apply/resume path. */
   readonly backupManifest?: TaskMigrationBackupManifest;
@@ -46,9 +46,9 @@ export interface TaskMigrationBackupEntry {
   readonly mode: number;
   readonly beforeHash: string;
   readonly finalHash: string;
-  readonly sourceIdentity: TaskV2ToV3FilesystemIdentity;
-  readonly componentRootIdentity: TaskV2ToV3FilesystemIdentity;
-  readonly bundleRootIdentity: TaskV2ToV3FilesystemIdentity;
+  readonly sourceIdentity: TaskToV3FilesystemIdentity;
+  readonly componentRootIdentity: TaskToV3FilesystemIdentity;
+  readonly bundleRootIdentity: TaskToV3FilesystemIdentity;
 }
 
 export interface TaskMigrationBackupManifest {
@@ -59,7 +59,7 @@ export interface TaskMigrationBackupManifest {
   readonly files: readonly TaskMigrationBackupEntry[];
 }
 
-export interface AppliedTaskV2ToV3Plan {
+export interface AppliedTaskToV3Plan {
   readonly generation: string;
   readonly changed: readonly string[];
   readonly alreadyApplied: readonly string[];
@@ -80,7 +80,7 @@ interface TaskMigrationRecoveryJournal {
 }
 
 function migrationError(detail: string): ConfigError {
-  return new ConfigError(`Task-v2 to task-v3 migration failed: ${detail}`, "INVALID_CONFIG_FILE");
+  return new ConfigError(`Task migration to v3 failed: ${detail}`, "INVALID_CONFIG_FILE");
 }
 
 function contained(root: string, candidate: string): boolean {
@@ -101,7 +101,7 @@ function lstatIfPresent(filePath: string): fs.Stats | undefined {
   }
 }
 
-function physicalIdentity(filePath: string, expectedKind: "file" | "directory"): TaskV2ToV3FilesystemIdentity {
+function physicalIdentity(filePath: string, expectedKind: "file" | "directory"): TaskToV3FilesystemIdentity {
   const stat = fs.lstatSync(filePath, { bigint: true });
   if (stat.isSymbolicLink() || (expectedKind === "file" ? !stat.isFile() : !stat.isDirectory())) {
     throw migrationError(`${filePath} must remain a real ${expectedKind}.`);
@@ -117,7 +117,7 @@ function physicalIdentity(filePath: string, expectedKind: "file" | "directory"):
 
 function inspectRegularFile(filePath: string): {
   readonly bytes: Buffer;
-  readonly identity: TaskV2ToV3FilesystemIdentity;
+  readonly identity: TaskToV3FilesystemIdentity;
   readonly mode: number;
 } {
   const identity = physicalIdentity(filePath, "file");
@@ -132,7 +132,7 @@ function inspectRegularFile(filePath: string): {
   return Object.freeze({ bytes, identity: afterIdentity, mode });
 }
 
-function sameIdentity(left: TaskV2ToV3FilesystemIdentity, right: TaskV2ToV3FilesystemIdentity): boolean {
+function sameIdentity(left: TaskToV3FilesystemIdentity, right: TaskToV3FilesystemIdentity): boolean {
   return (
     left.realPath === right.realPath &&
     left.device === right.device &&
@@ -141,15 +141,15 @@ function sameIdentity(left: TaskV2ToV3FilesystemIdentity, right: TaskV2ToV3Files
   );
 }
 
-function sameFileIdentity(left: TaskV2ToV3FilesystemIdentity, right: TaskV2ToV3FilesystemIdentity): boolean {
+function sameFileIdentity(left: TaskToV3FilesystemIdentity, right: TaskToV3FilesystemIdentity): boolean {
   return sameIdentity(left, right) && left.changeTimeNs === right.changeTimeNs;
 }
 
-function physicalTaskIdentityKey(identity: TaskV2ToV3FilesystemIdentity): string {
+function physicalTaskIdentityKey(identity: TaskToV3FilesystemIdentity): string {
   return `${identity.device}:${identity.inode}`;
 }
 
-function sourceIdentityKey(file: TaskV2ToV3MigrationPlan["files"][number]): string {
+function sourceIdentityKey(file: TaskToV3MigrationPlan["files"][number]): string {
   const sourcePath = file.inspectionIdentity?.file.realPath;
   if (!sourcePath) throw migrationError(`${file.filePath} has no canonical physical source identity.`);
   return sourcePath;
@@ -169,11 +169,11 @@ function accessibleForWrite(filePath: string): boolean {
 }
 
 function walkTaskFiles(
-  root: TaskV2ToV3Root,
-  rootIdentity: TaskV2ToV3FilesystemIdentity,
-  bundleRootIdentity: TaskV2ToV3FilesystemIdentity,
+  root: TaskToV3Root,
+  rootIdentity: TaskToV3FilesystemIdentity,
+  bundleRootIdentity: TaskToV3FilesystemIdentity,
   tasksDir: string,
-  out: TaskV2ToV3FileInput[],
+  out: TaskToV3FileInput[],
 ): void {
   const realRoot = rootIdentity.realPath;
   const realTasks = fs.realpathSync(tasksDir);
@@ -221,8 +221,8 @@ function walkTaskFiles(
 }
 
 /** Read the complete `.yml` task set under each bundle without writing. */
-export function inspectTaskV2ToV3Files(roots: readonly TaskV2ToV3Root[]): TaskV2ToV3FileInput[] {
-  const inputs: TaskV2ToV3FileInput[] = [];
+export function inspectTaskToV3Files(roots: readonly TaskToV3Root[]): TaskToV3FileInput[] {
+  const inputs: TaskToV3FileInput[] = [];
   const identities = new Map<string, string>();
   for (const root of [...roots].sort((left, right) => compareStrings(left.bundleId, right.bundleId))) {
     const bundleRootPath = root.bundleRoot ?? root.root;
@@ -363,7 +363,7 @@ function prepareBackupDirectory(backupRoot: string): string {
   return directory;
 }
 
-function expectedBackupMetadata(change: TaskV2ToV3Changed): Buffer {
+function expectedBackupMetadata(change: TaskToV3Changed): Buffer {
   return Buffer.from(
     `${JSON.stringify({ schemaVersion: 1, source: change.filePath, mode: change.mode, beforeHash: change.beforeHash }, null, 2)}\n`,
   );
@@ -375,7 +375,7 @@ function verifyRegularFile(filePath: string, expected: Buffer, label: string): v
   if (!fs.readFileSync(filePath).equals(expected)) throw migrationError(`${label} ${filePath} failed byte verification.`);
 }
 
-function ensureBackup(backupRoot: string, change: TaskV2ToV3Changed): string {
+function ensureBackup(backupRoot: string, change: TaskToV3Changed): string {
   prepareBackupDirectory(backupRoot);
   const backupPath = taskMigrationBackupPath(backupRoot, change.filePath);
   if (fs.existsSync(backupPath)) {
@@ -397,12 +397,12 @@ function ensureBackup(backupRoot: string, change: TaskV2ToV3Changed): string {
 
 interface SourceSnapshot {
   readonly bytes: Buffer;
-  readonly identity: TaskV2ToV3FilesystemIdentity;
+  readonly identity: TaskToV3FilesystemIdentity;
 }
 
 function readPlannedSource(
-  file: TaskV2ToV3MigrationPlan["files"][number],
-  expectedFileIdentity?: TaskV2ToV3FilesystemIdentity,
+  file: TaskToV3MigrationPlan["files"][number],
+  expectedFileIdentity?: TaskToV3FilesystemIdentity,
 ): SourceSnapshot {
   sourceIdentityKey(file);
   const plannedIdentity = file.inspectionIdentity;
@@ -464,7 +464,7 @@ function readPlannedSource(
   return Object.freeze({ bytes, identity: afterIdentity });
 }
 
-function validatePlannedV3(file: TaskV2ToV3Changed, bytes: Buffer): void {
+function validatePlannedV3(file: TaskToV3Changed, bytes: Buffer): void {
   parseTaskV3Yaml({
     yaml: bytes.toString("utf8"),
     filePath: file.filePath,
@@ -480,7 +480,7 @@ function relativeBackupPath(backupRoot: string, absolute: string): string {
   return path.relative(backupRoot, absolute).replaceAll("\\", "/");
 }
 
-function entryForChange(backupRoot: string, change: TaskV2ToV3Changed): TaskMigrationBackupEntry {
+function entryForChange(backupRoot: string, change: TaskToV3Changed): TaskMigrationBackupEntry {
   const identities = change.inspectionIdentity;
   if (!identities || !change.containmentRoot) {
     throw migrationError(`${change.filePath} has no stable filesystem provenance for backup.`);
@@ -501,7 +501,7 @@ function entryForChange(backupRoot: string, change: TaskV2ToV3Changed): TaskMigr
 
 function manifestEntryForFile(
   manifest: TaskMigrationBackupManifest,
-  file: TaskV2ToV3Changed,
+  file: TaskToV3Changed,
 ): TaskMigrationBackupEntry {
   const sourcePath = sourceIdentityKey(file);
   const entry = manifest.files.find((candidate) => candidate.sourcePath === sourcePath);
@@ -510,8 +510,8 @@ function manifestEntryForFile(
 }
 
 function sameFilesystemIdentity(
-  left: TaskV2ToV3FilesystemIdentity,
-  right: TaskV2ToV3FilesystemIdentity,
+  left: TaskToV3FilesystemIdentity,
+  right: TaskToV3FilesystemIdentity,
 ): boolean {
   return (
     left.realPath === right.realPath &&
@@ -522,10 +522,10 @@ function sameFilesystemIdentity(
 }
 
 function assertPlanMatchesBackupManifest(
-  plan: TaskV2ToV3MigrationPlan,
+  plan: TaskToV3MigrationPlan,
   manifest: TaskMigrationBackupManifest,
 ): void {
-  const changes = plan.files.filter((file): file is TaskV2ToV3Changed => file.status === "changed");
+  const changes = plan.files.filter((file): file is TaskToV3Changed => file.status === "changed");
   if (changes.length !== manifest.files.length) {
     throw migrationError("main-backup task declarations do not match the authorized plan file set.");
   }
@@ -660,13 +660,13 @@ function assertTaskBackupEntryShape(entry: TaskMigrationBackupEntry): void {
  */
 export function createTaskMigrationBackup(
   backupRoot: string,
-  plan: TaskV2ToV3MigrationPlan,
+  plan: TaskToV3MigrationPlan,
   operationId: string,
 ): TaskMigrationBackupManifest | undefined {
   if (!/^[A-Za-z0-9._-]+$/.test(operationId)) throw migrationError("backup operation id is invalid.");
   const blocked = plan.files.filter((file) => file.status === "blocked");
   if (blocked.length > 0) throw migrationError(`cannot back up blocked plan ${plan.generation}.`);
-  const changes = plan.files.filter((file): file is TaskV2ToV3Changed => file.status === "changed");
+  const changes = plan.files.filter((file): file is TaskToV3Changed => file.status === "changed");
   if (changes.length === 0) return undefined;
 
   // Whole-plan source fence precedes the first task-backup artifact.
@@ -790,14 +790,14 @@ export function verifyTaskMigrationBackup(backupRoot: string, manifest: TaskMigr
 export function taskMigrationPlanFromBackup(
   backupRoot: string,
   manifest: TaskMigrationBackupManifest,
-): TaskV2ToV3MigrationPlan {
+): TaskToV3MigrationPlan {
   verifyTaskMigrationBackup(backupRoot, manifest);
-  const outcomes = manifest.files.map((entry): TaskV2ToV3Changed => {
+  const outcomes = manifest.files.map((entry): TaskToV3Changed => {
     const before = fs.readFileSync(path.join(backupRoot, entry.backupPath));
     const after = fs.readFileSync(path.join(backupRoot, entry.finalPath));
     return Object.freeze({
       status: "changed" as const,
-      reason: "v2-task-converted" as const,
+      reason: "task-converted" as const,
       filePath: entry.sourcePath,
       before,
       beforeHash: entry.beforeHash,
@@ -828,7 +828,7 @@ export function restoreTaskMigrationBackup(
   testHooks: Readonly<{ afterPublish?: (filePath: string) => void }> = {},
 ): void {
   const plan = taskMigrationPlanFromBackup(backupRoot, manifest);
-  const pending: Array<{ change: TaskV2ToV3Changed; identity: TaskV2ToV3FilesystemIdentity }> = [];
+  const pending: Array<{ change: TaskToV3Changed; identity: TaskToV3FilesystemIdentity }> = [];
   for (const file of plan.files) {
     if (file.status !== "changed") continue;
     const current = readPlannedSource(file);
@@ -861,10 +861,10 @@ export function restoreTaskMigrationBackup(
  * the first write; each source is then backed up immediately before its atomic
  * replacement. A later failure compensates replacements made in this call.
  */
-export function applyTaskV2ToV3MigrationPlan(
-  plan: TaskV2ToV3MigrationPlan,
-  options: ApplyTaskV2ToV3Options,
-): AppliedTaskV2ToV3Plan {
+export function applyTaskToV3MigrationPlan(
+  plan: TaskToV3MigrationPlan,
+  options: ApplyTaskToV3Options,
+): AppliedTaskToV3Plan {
   const blocked = plan.files.filter((file) => file.status === "blocked");
   if (blocked.length > 0) {
     throw migrationError(
@@ -921,9 +921,9 @@ export function applyTaskV2ToV3MigrationPlan(
   }
 
   const replaced: Array<{
-    change: TaskV2ToV3Changed;
+    change: TaskToV3Changed;
     backupPath: string;
-    publishedIdentity?: TaskV2ToV3FilesystemIdentity;
+    publishedIdentity?: TaskToV3FilesystemIdentity;
   }> = [];
   try {
     for (const file of plan.files) {
@@ -972,7 +972,7 @@ export function applyTaskV2ToV3MigrationPlan(
           }
         },
         onPublished: () => {
-          let publishedIdentity: TaskV2ToV3FilesystemIdentity | undefined;
+          let publishedIdentity: TaskToV3FilesystemIdentity | undefined;
           try {
             publishedIdentity = physicalIdentity(file.filePath, "file");
           } finally {

@@ -25,12 +25,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { planTaskToV3File } from "../../../scripts/akm-migrate/migrate/task-to-v3";
 import { resolveImproveScope } from "../../../src/commands/improve/eligibility";
 import { resetConfigCache } from "../../../src/core/config/config";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { resolveAssetPath } from "../../../src/indexer/walk/path-resolver";
 import { type ProposalRow, proposalRowToProposal } from "../../../src/storage/repositories/proposals-repository";
-import { planTaskV2ToV3File } from "../../../src/tasks/migrate-v2-to-v3";
 // Trigger source-provider self-registration.
 import "../../../src/sources/providers/index";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
@@ -131,7 +131,7 @@ describe("Q-07 / D11 — opaque adapter conceptIds at the ref-consuming commands
 
   test("task migration recognizes the opaque ref and blocks because task-v3 has no generic asset target", () => {
     const filePath = path.join(storage.stashDir, "tasks", "opaque-prompt-source.yml");
-    const outcome = planTaskV2ToV3File({
+    const outcome = planTaskToV3File({
       filePath,
       bytes: Buffer.from('version: 2\nschedule: "@daily"\nprompt: adversarial//tables/customers\n', "utf8"),
       mode: 0o644,

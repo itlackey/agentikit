@@ -17,8 +17,8 @@ import {
   restoreTaskMigrationBackup,
   type TaskMigrationBackupManifest,
   verifyTaskMigrationBackup,
-} from "./migrate/task-v2-to-v3-files";
-import type { TaskV2ToV3MigrationPlan } from "../../src/tasks/migrate-v2-to-v3";
+} from "./migrate/task-files-to-v3";
+import type { TaskToV3MigrationPlan } from "./migrate/task-to-v3";
 import { MAX_CONFIG_FILE_BYTES, MAX_LOCAL_METADATA_BYTES, readTextFileWithLimit, writeFileAtomic } from "../../src/core/common";
 import { resetConfigCache } from "../../src/core/config/config";
 import { parseConfigText, withConfigLock } from "../../src/core/config/config-io";
@@ -375,7 +375,7 @@ function newRunId(): string {
 export interface CreateMigrationBackupOptions {
   allowCorruptIndex?: boolean;
   operationId?: string;
-  taskPlan?: TaskV2ToV3MigrationPlan;
+  taskPlan?: TaskToV3MigrationPlan;
 }
 
 function createMigrationBackupUnlocked(options: CreateMigrationBackupOptions = {}): MigrationBackupResult {

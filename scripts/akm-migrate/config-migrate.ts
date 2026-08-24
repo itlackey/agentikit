@@ -71,20 +71,20 @@ import {
 } from "./migrate/legacy/three-db-cutover";
 import { FROZEN_WORKFLOW_MIGRATIONS } from "./migrate/legacy/workflow-migrations-bodies";
 import {
-  applyTaskV2ToV3MigrationPlan,
-  inspectTaskV2ToV3Files,
+  applyTaskToV3MigrationPlan,
+  inspectTaskToV3Files,
   taskMigrationPlanFromBackup,
   type TaskMigrationBackupManifest,
-  type TaskV2ToV3Root,
-} from "./migrate/task-v2-to-v3-files";
+  type TaskToV3Root,
+} from "./migrate/task-files-to-v3";
 import { fsyncDirectoryPortable } from "./migrate/durable-fs";
 import {
-  planTaskV2ToV3File,
-  taskV2ToV3PlanFromOutcomes,
-  type TaskV2ToV3FileOutcome,
-  type TaskV2ToV3FileInput,
-  type TaskV2ToV3MigrationPlan,
-} from "../../src/tasks/migrate-v2-to-v3";
+  planTaskToV3File,
+  taskToV3PlanFromOutcomes,
+  type TaskToV3FileOutcome,
+  type TaskToV3FileInput,
+  type TaskToV3MigrationPlan,
+} from "./migrate/task-to-v3";
 import {
   assertNoArtifactReplacementBlockers,
   ensureMigrationBackupWithConfigLockHeld,
@@ -504,7 +504,7 @@ function taskV3RootsFromConfig(
   config: AkmConfig,
   pathResolutionBase: string,
   migrationLockEntries: readonly LockfileEntry[],
-): TaskV2ToV3Root[] {
+): TaskToV3Root[] {
   const sources = new Map((bundlesToSourceEntries(config) ?? []).map((source) => [source.name, source]));
   return cutoverStashRootsFromConfig(config, migrationLockEntries, [], pathResolutionBase).flatMap((root) => {
     if (!root.bundleId) return [];
@@ -555,44 +555,42 @@ function planTaskV3MigrationForConfig(
   pathResolutionBase: string,
   migrationLockEntries: readonly LockfileEntry[],
   legacyPlan?: TaskTargetRefMigrationPlan,
-): TaskV2ToV3MigrationPlan {
+): TaskToV3MigrationPlan {
   const rewrites = new Map((legacyPlan?.rewrites ?? []).map((rewrite) => [path.resolve(rewrite.filePath), rewrite]));
-  const inputs = inspectTaskV2ToV3Files(taskV3RootsFromConfig(config, pathResolutionBase, migrationLockEntries));
-  const outcomes = inputs.map((input): TaskV2ToV3FileOutcome => {
+  const inputs = inspectTaskToV3Files(taskV3RootsFromConfig(config, pathResolutionBase, migrationLockEntries));
+  const outcomes = inputs.map((input): TaskToV3FileOutcome => {
     const projected = rewrites.get(path.resolve(input.filePath));
-    if (!projected) return planTaskV2ToV3File(input);
+    if (!projected) return planTaskToV3File(input);
     if (!projected.before.equals(input.bytes) || projected.mode !== input.mode) {
       throw new ConfigError(
         `Legacy task projection for ${input.filePath} does not match the inspected original source generation.`,
         "INVALID_CONFIG_FILE",
       );
     }
-    const converted = planTaskV2ToV3File({ ...input, bytes: projected.after });
     const original = Buffer.from(input.bytes);
     const beforeHash = createHash("sha256").update(original).digest("hex");
-    if (converted.status !== "changed") {
-      return Object.freeze({
-        ...converted,
-        before: original,
-        beforeHash,
-        mode: input.mode,
-        ...(input.inspectionIdentity ? { inspectionIdentity: input.inspectionIdentity } : {}),
-      });
-    }
+    const after = Buffer.from(projected.after);
     return Object.freeze({
-      ...converted,
-      // The v1 -> v2 representation is a pure in-memory projection. The one
-      // durable plan and its recovery provenance always begin at actual bytes.
+      status: "changed" as const,
+      // Legacy normalization exists only inside the migration boundary. The
+      // one durable plan maps actual source bytes directly to final task v3.
+      filePath: input.filePath,
       before: original,
       beforeHash,
       mode: input.mode,
+      writable: input.writable,
+      ...(input.onDiskWritable !== undefined ? { onDiskWritable: input.onDiskWritable } : {}),
+      ...(input.containmentRoot ? { containmentRoot: input.containmentRoot } : {}),
       ...(input.inspectionIdentity ? { inspectionIdentity: input.inspectionIdentity } : {}),
+      reason: "task-converted" as const,
+      after,
+      afterHash: createHash("sha256").update(after).digest("hex"),
     });
   });
-  return taskV2ToV3PlanFromOutcomes(outcomes);
+  return taskToV3PlanFromOutcomes(outcomes);
 }
 
-function summarizeTaskV3Migration(plan: TaskV2ToV3MigrationPlan): TaskV3MigrationSummary {
+function summarizeTaskV3Migration(plan: TaskToV3MigrationPlan): TaskV3MigrationSummary {
   const files = plan.files.map((file) => ({
     filePath: file.filePath,
     status: file.status,
@@ -611,7 +609,7 @@ function summarizeTaskV3Migration(plan: TaskV2ToV3MigrationPlan): TaskV3Migratio
   };
 }
 
-function taskV3Blockers(plan: TaskV2ToV3MigrationPlan): string[] {
+function taskV3Blockers(plan: TaskToV3MigrationPlan): string[] {
   return plan.files.flatMap((file) =>
     file.status === "blocked"
       ? [
@@ -676,7 +674,7 @@ function buildMigrationPlan(
   if (active.error) blockers.push(active.error);
   if (restorePending) blockers.push(`Restore recovery is pending at ${getMigrationRestoreJournalPath()}.`);
 
-  let taskV3Plan: TaskV2ToV3MigrationPlan | undefined;
+  let taskV3Plan: TaskToV3MigrationPlan | undefined;
   if (blockers.length === 0 && target.config) {
     try {
       const pathResolutionBase = active.sentinel?.pathResolutionBase ?? process.cwd();
@@ -1111,9 +1109,9 @@ function loadOrCreateCutoverRefMap(
 function repairCurrentData(
   config: AkmConfig,
   sentinel: ApplySentinel,
-  taskV3Plan: TaskV2ToV3MigrationPlan,
+  taskV3Plan: TaskToV3MigrationPlan,
   taskBackup?: TaskMigrationBackupManifest,
-): TaskV2ToV3MigrationPlan {
+): TaskToV3MigrationPlan {
   if (countLegacyStateRefs(getStateDbPathInDataDir()) > 0) {
     const refMap = loadCompletedStateRefMap();
     assertLegacyStateRefsRepairable(getStateDbPathInDataDir(), refMap);
@@ -1137,7 +1135,7 @@ function repairCurrentData(
     throw new ConfigError(`Migration is blocked: ${blockers.join(" ")}`, "INVALID_CONFIG_FILE");
   }
 
-  applyTaskV2ToV3MigrationPlan(taskV3Plan, {
+  applyTaskToV3MigrationPlan(taskV3Plan, {
     backupRoot: sentinel.backupPath,
     ...(taskBackup ? { backupManifest: taskBackup } : {}),
   });
@@ -1147,9 +1145,9 @@ function repairCurrentData(
 function runFullMigration(
   config: AkmConfig,
   sentinel: ApplySentinel,
-  taskV3Plan: TaskV2ToV3MigrationPlan,
+  taskV3Plan: TaskToV3MigrationPlan,
   taskBackup?: TaskMigrationBackupManifest,
-): TaskV2ToV3MigrationPlan {
+): TaskToV3MigrationPlan {
   const roots = cutoverStashRootsFromConfig(
     config,
     sentinel.migrationLockEntries,
@@ -1252,7 +1250,7 @@ function requireSemanticCompletion(config: AkmConfig, sentinel: ApplySentinel, f
   if (fullMigration && !fs.existsSync(completedCutoverRefMapPath())) {
     blockers.push("the completed cutover ref map is missing");
   }
-  let taskV3Plan: TaskV2ToV3MigrationPlan | undefined;
+  let taskV3Plan: TaskToV3MigrationPlan | undefined;
   try {
     const remainingLegacyTasks = planTaskTargetRefMigration(
       config,
@@ -1516,7 +1514,7 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
         const taskOnly = isTaskOnlyRepair(backup.manifest);
         const postCutoverState = isPostCutoverStateMigration(backup.manifest);
         const fullMigration = !taskOnly && !postCutoverState;
-        let appliedTaskV3Plan: TaskV2ToV3MigrationPlan;
+        let appliedTaskV3Plan: TaskToV3MigrationPlan;
         if (taskOnly) {
           appliedTaskV3Plan = repairCurrentData(target, sentinel, plannedTaskV3, backup.manifest.taskMigration);
         } else if (postCutoverState) {

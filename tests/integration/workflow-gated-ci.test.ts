@@ -109,7 +109,7 @@ describe("gated CI workflow", () => {
     expect(restore.uses).toBe("actions/cache/restore@v5");
     expect(restore.with).toMatchObject({
       path: "${{ github.workspace }}/.ci-cache/huggingface",
-      key: "akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'src/vendor/huggingface-transformers/transformers.node.mjs', 'package.json', 'bun.lock') }}-v3",
+      key: "akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'scripts/copy-assets.ts', 'package.json', 'bun.lock') }}-v3",
     });
 
     const save = getStep(job, "Save HuggingFace model cache from trusted schedule");
@@ -118,7 +118,7 @@ describe("gated CI workflow", () => {
     expect(save.if).toContain("github.ref_name == github.event.repository.default_branch");
     expect(save.with).toMatchObject({
       path: "${{ github.workspace }}/.ci-cache/huggingface",
-      key: "akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'src/vendor/huggingface-transformers/transformers.node.mjs', 'package.json', 'bun.lock') }}-v3",
+      key: "akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'scripts/copy-assets.ts', 'package.json', 'bun.lock') }}-v3",
     });
     expect(JSON.stringify(job)).not.toContain('"uses":"actions/cache@v5"');
     expect(JSON.stringify(job)).toContain("tests/integration/semantic-search-e2e.test.ts");

@@ -16,7 +16,7 @@ const AKM_GLOBAL_BOOLEAN_OPTIONS = new Set([
 ]);
 const AKM_GLOBAL_VALUE_OPTIONS = new Set(["--format", "--output", "--detail", "--shape"]);
 
-/** Lower the complete permissive 0.8 task shape into strict on-disk v2. */
+/** Normalize the complete permissive 0.8 task shape for direct v3 conversion. */
 export function normalizeLegacyTask(data: Record<string, unknown>): Record<string, unknown> {
   const normalized: Record<string, unknown> = { version: 2 };
   for (const key of ["schedule", "workflow", "prompt", "command", "name", "description", "when_to_use"] as const) {

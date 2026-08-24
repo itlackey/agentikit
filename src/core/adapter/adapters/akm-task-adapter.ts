@@ -31,8 +31,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
-import { TASK_EXTENSION, TASK_NEAR_MISS_EXTENSION, taskExtensionDetail } from "../../../tasks/schema";
-import { parseTaskV3Yaml, taskV3SourceErrorDetail } from "../../../tasks/source-v3";
+import {
+  parseTaskV3Yaml,
+  TASK_EXTENSION,
+  TASK_NEAR_MISS_EXTENSION,
+  taskExtensionDetail,
+  taskV3SourceErrorDetail,
+} from "../../../tasks/source-v3";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";

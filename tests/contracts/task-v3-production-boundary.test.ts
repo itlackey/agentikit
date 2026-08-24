@@ -9,7 +9,7 @@ import ts from "typescript";
 
 const ROOT = path.resolve(import.meta.dir, "../..");
 const SRC = path.join(ROOT, "src");
-const LEGACY_IMPORT_ALLOWLIST = new Set(["src/tasks/migrate-v2-to-v3.ts", "src/tasks/parser.ts"]);
+const TASK_V2_MIGRATOR = "scripts/akm-migrate/migrate/task-to-v3.ts";
 
 function sourceFiles(directory = SRC): string[] {
   const out: string[] = [];
@@ -27,7 +27,7 @@ function relative(file: string): string {
 
 function legacyRuntimeImports(fileName: string): string[] {
   const rel = relative(fileName);
-  if (LEGACY_IMPORT_ALLOWLIST.has(rel)) return [];
+  if (rel === TASK_V2_MIGRATOR) return [];
   const source = fs.readFileSync(fileName, "utf8");
   const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const violations: string[] = [];
@@ -49,8 +49,13 @@ function legacyRuntimeImports(fileName: string): string[] {
 }
 
 describe("task-v3 production boundary", () => {
-  test("legacy v2 parser/document stay migration-only and task dispatch stays on the common boundary", () => {
+  test("task v2 has one migration-only reader and no parallel parser/schema modules", () => {
+    expect(fs.existsSync(path.join(SRC, "tasks", "parser.ts"))).toBe(false);
+    expect(fs.existsSync(path.join(SRC, "tasks", "schema.ts"))).toBe(false);
+    expect(fs.existsSync(path.join(SRC, "tasks", "migrate-v2-to-v3.ts"))).toBe(false);
     expect(sourceFiles().flatMap(legacyRuntimeImports)).toEqual([]);
+    const migrator = fs.readFileSync(path.join(ROOT, TASK_V2_MIGRATOR), "utf8");
+    expect(migrator).not.toMatch(/from\s+["']\.\/(?:parser|schema)["']/);
   });
 
   test("the runner prepares v3 before reserving durable history", () => {

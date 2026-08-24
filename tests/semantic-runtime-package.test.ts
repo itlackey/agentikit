@@ -7,14 +7,11 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { isBuiltin } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { gte, valid } from "semver";
-import { materializeVendoredTransformers, sanitizeVendoredTransformers } from "../scripts/vendor-transformers";
 
 const ROOT = path.resolve(import.meta.dir, "..");
-const RUNTIME_DIR = path.join(ROOT, "src", "vendor", "huggingface-transformers");
-const RUNTIME_FILE = path.join(RUNTIME_DIR, "transformers.node.mjs");
-const LICENSE_FILE = path.join(RUNTIME_DIR, "LICENSE");
-const PROVENANCE_FILE = path.join(RUNTIME_DIR, "README.akm.md");
+const REMOVED_VENDOR_DIR = path.join(ROOT, "src", "vendor", "huggingface-transformers");
 
 const TRANSFORMERS_VERSION = "4.2.0";
 const TRANSFORMERS_RUNTIME_SHA256 = "4932ec78a6b136d97d09a12093afb476530d9aa099dbaf1f9822ad56bfe2bc3d";
@@ -37,14 +34,25 @@ function packageJson(): PackageJson {
   return JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")) as PackageJson;
 }
 
+function upstreamRuntime(): { runtime: string; license: string; manifest: string } {
+  const runtime = fileURLToPath(import.meta.resolve("@huggingface/transformers"));
+  const packageRoot = path.resolve(path.dirname(runtime), "..");
+  return {
+    runtime,
+    license: path.join(packageRoot, "LICENSE"),
+    manifest: path.join(packageRoot, "package.json"),
+  };
+}
+
 describe("published local-semantic runtime contract", () => {
-  test("owns exact cross-platform runtime dependencies instead of publishing the vulnerable Transformers manifest", () => {
+  test("uses Transformers only as an exact external build input and owns published runtime dependencies", () => {
     const pkg = packageJson();
     const optional = pkg.optionalDependencies ?? {};
 
-    for (const section of [pkg.dependencies, pkg.devDependencies, optional]) {
+    for (const section of [pkg.dependencies, optional]) {
       expect(section).not.toHaveProperty("@huggingface/transformers");
     }
+    expect(pkg.devDependencies?.["@huggingface/transformers"]).toBe(TRANSFORMERS_VERSION);
 
     // The unmodified Transformers Node distribution imports the bare name
     // `onnxruntime-node`. Resolve that name to the official, platform-neutral
@@ -59,28 +67,21 @@ describe("published local-semantic runtime contract", () => {
     expect(gte(sharpVersion, "0.35.0")).toBe(true);
   });
 
-  test("stores a push-safe source and materializes the byte-exact upstream Transformers distribution", () => {
-    expect(fs.existsSync(RUNTIME_FILE)).toBe(true);
-    expect(fs.existsSync(LICENSE_FILE)).toBe(true);
-    expect(fs.existsSync(PROVENANCE_FILE)).toBe(true);
-    const source = fs.readFileSync(RUNTIME_FILE, "utf8");
-    expect(source).toMatch(/\["mistral3", "[A-Za-z0-9_-]{16}" \+ "[A-Za-z0-9_-]{16}"\]/);
-    expect(source).not.toMatch(/\["mistral3", "[A-Za-z0-9_-]{32}"\]/);
-    const materialized = materializeVendoredTransformers(source);
-    expect(createHash("sha256").update(materialized).digest("hex")).toBe(TRANSFORMERS_RUNTIME_SHA256);
-    expect(sanitizeVendoredTransformers(materialized)).toBe(source);
-    expect(sha256(LICENSE_FILE)).toBe(TRANSFORMERS_LICENSE_SHA256);
-
-    const provenance = fs.readFileSync(PROVENANCE_FILE, "utf8");
-    expect(provenance).toContain(`@huggingface/transformers@${TRANSFORMERS_VERSION}`);
-    expect(provenance).toContain(TRANSFORMERS_RUNTIME_SHA256);
-    expect(provenance).toContain("Apache-2.0");
-    expect(provenance).toContain("unmodified");
-    expect(provenance).toContain("https://registry.npmjs.org/@huggingface/transformers/-/transformers-4.2.0.tgz");
+  test("keeps upstream Transformers outside src and verifies the exact external package bytes", () => {
+    expect(fs.existsSync(REMOVED_VENDOR_DIR)).toBe(false);
+    const upstream = upstreamRuntime();
+    expect(path.basename(upstream.runtime)).toBe("transformers.node.mjs");
+    expect(sha256(upstream.runtime)).toBe(TRANSFORMERS_RUNTIME_SHA256);
+    expect(sha256(upstream.license)).toBe(TRANSFORMERS_LICENSE_SHA256);
+    expect(JSON.parse(fs.readFileSync(upstream.manifest, "utf8"))).toMatchObject({
+      name: "@huggingface/transformers",
+      version: TRANSFORMERS_VERSION,
+      license: "Apache-2.0",
+    });
   });
 
-  test("the vendored Node distribution has only the exact external runtime dependencies AKM owns", () => {
-    const source = fs.readFileSync(RUNTIME_FILE, "utf8");
+  test("the external Node build input has only the exact published runtime dependencies AKM owns", () => {
+    const source = fs.readFileSync(upstreamRuntime().runtime, "utf8");
     const imports = [...source.matchAll(/^import\s+.+?\s+from\s+["']([^"']+)["'];?$/gm)].map(
       (match) => match[1] as string,
     );
@@ -126,12 +127,11 @@ describe("published local-semantic runtime contract", () => {
     );
   });
 
-  test("the development lock no longer retains vulnerable Transformers, native ORT, adm-zip, or sharp ranges", () => {
+  test("the lock pins the external build input while consumer runtime dependencies remain controlled", () => {
     const lock = fs.readFileSync(path.join(ROOT, "bun.lock"), "utf8");
-    expect(lock).not.toContain('"@huggingface/transformers"');
+    expect(lock).toContain(`"@huggingface/transformers": "${TRANSFORMERS_VERSION}"`);
+    expect(lock).toContain(`"@huggingface/transformers": ["@huggingface/transformers@${TRANSFORMERS_VERSION}"`);
     expect(lock).not.toContain('"onnxruntime-node": ["onnxruntime-node@');
-    expect(lock).not.toContain("adm-zip@");
-    expect(lock).not.toContain("sharp@0.34.");
     expect(lock).toContain('"onnxruntime-node": "npm:onnxruntime-web@1.24.3"');
     expect(lock).toContain('"onnxruntime-node": ["onnxruntime-web@1.24.3"');
   });

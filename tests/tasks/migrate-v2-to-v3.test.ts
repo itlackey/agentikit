@@ -8,10 +8,10 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
-  planTaskV2ToV3File,
-  planTaskV2ToV3Migration,
-  type TaskV2ToV3FileInput,
-} from "../../src/tasks/migrate-v2-to-v3";
+  planTaskToV3File,
+  planTaskToV3Migration,
+  type TaskToV3FileInput,
+} from "../../scripts/akm-migrate/migrate/task-to-v3";
 import { parseTaskV3Yaml, TASK_V3_MAX_SOURCE_BYTES } from "../../src/tasks/source-v3";
 import {
   assertFixtureBytesUnchanged,
@@ -28,12 +28,12 @@ interface Manifest {
 
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")) as Manifest;
 
-function input(file: string): TaskV2ToV3FileInput {
+function input(file: string): TaskToV3FileInput {
   const filePath = path.join(ROOT, file);
   return { filePath, bytes: fs.readFileSync(filePath), mode: 0o640, writable: true };
 }
 
-function memoryInput(yaml: string, overrides: Partial<TaskV2ToV3FileInput> = {}): TaskV2ToV3FileInput {
+function memoryInput(yaml: string, overrides: Partial<TaskToV3FileInput> = {}): TaskToV3FileInput {
   return {
     filePath: "/bundle/tasks/memory.yml",
     bytes: Buffer.from(yaml),
@@ -47,10 +47,10 @@ describe("pure task v2 to v3 migration planner", () => {
   test("converts every deterministic fixture and validates the emitted bytes through the production v3 parser", () => {
     const before = captureFixtureBytes(ROOT);
     for (const entry of manifest.deterministic) {
-      const outcome = planTaskV2ToV3File(input(entry.file));
+      const outcome = planTaskToV3File(input(entry.file));
       expect(outcome.status, entry.file).toBe("changed");
       if (outcome.status !== "changed") throw new Error(`expected changed: ${entry.file}`);
-      expect(outcome.reason).toBe("v2-task-converted");
+      expect(outcome.reason).toBe("task-converted");
       expect(outcome.before.equals(fs.readFileSync(path.join(ROOT, entry.file)))).toBe(true);
       const parsed = parseTaskV3Yaml({ yaml: outcome.after.toString("utf8"), filePath: outcome.filePath });
       expect(parsed.version).toBe(3);
@@ -60,10 +60,10 @@ describe("pure task v2 to v3 migration planner", () => {
   });
 
   test("maps inline prompt, command ref, workflow params, and safe command strings to the exact v3 spellings", () => {
-    const inline = planTaskV2ToV3File(input("deterministic/prompt-inline-full.yml"));
-    const commandRef = planTaskV2ToV3File(input("deterministic/prompt-command-ref.yml"));
-    const workflow = planTaskV2ToV3File(input("deterministic/workflow-ref-full.yml"));
-    const run = planTaskV2ToV3File(input("deterministic/command-string.yml"));
+    const inline = planTaskToV3File(input("deterministic/prompt-inline-full.yml"));
+    const commandRef = planTaskToV3File(input("deterministic/prompt-command-ref.yml"));
+    const workflow = planTaskToV3File(input("deterministic/workflow-ref-full.yml"));
+    const run = planTaskToV3File(input("deterministic/command-string.yml"));
     for (const outcome of [inline, commandRef, workflow, run]) {
       if (outcome.status !== "changed") throw new Error(`expected changed ${outcome.filePath}`);
     }
@@ -123,7 +123,7 @@ describe("pure task v2 to v3 migration planner", () => {
   test("blocks every ambiguous fixture with its stable catalog reason and leaves bytes untouched", () => {
     const before = captureFixtureBytes(ROOT);
     for (const entry of manifest.blocked) {
-      const outcome = planTaskV2ToV3File(input(entry.file));
+      const outcome = planTaskToV3File(input(entry.file));
       expect(outcome.status, entry.file).toBe("blocked");
       expect(outcome.reason, entry.file).toBe(entry.reasonCode);
       expect(outcome.before.equals(fs.readFileSync(path.join(ROOT, entry.file))), entry.file).toBe(true);
@@ -140,7 +140,7 @@ describe("pure task v2 to v3 migration planner", () => {
     "echo ok",
     "custom-tool arg",
   ])("blocks v2 command text whose literal argv would acquire shell semantics: %s", (command) => {
-    const outcome = planTaskV2ToV3File(
+    const outcome = planTaskToV3File(
       memoryInput(`version: 2\nschedule: '@daily'\ncommand: ${JSON.stringify(command)}\n`),
     );
     expect(outcome.status).toBe("blocked");
@@ -148,7 +148,7 @@ describe("pure task v2 to v3 migration planner", () => {
   });
 
   test("keeps explicit executable paths in the provable argv-compatible command subset", () => {
-    const outcome = planTaskV2ToV3File(memoryInput("version: 2\nschedule: '@daily'\ncommand: ./tools/check --exact\n"));
+    const outcome = planTaskToV3File(memoryInput("version: 2\nschedule: '@daily'\ncommand: ./tools/check --exact\n"));
     expect(outcome.status).toBe("changed");
     if (outcome.status !== "changed") throw new Error(outcome.detail ?? outcome.reason);
     expect(parseYaml(outcome.after.toString("utf8"))).toMatchObject({ run: "./tools/check --exact" });
@@ -161,19 +161,19 @@ describe("pure task v2 to v3 migration planner", () => {
       { filePath: "/z/already.yml", bytes: alreadyV3, mode: 0o600, writable: true },
       input("blocked/command-argv.yml"),
     ];
-    const first = planTaskV2ToV3Migration(files);
-    const second = planTaskV2ToV3Migration([...files].reverse());
+    const first = planTaskToV3Migration(files);
+    const second = planTaskToV3Migration([...files].reverse());
     expect(first.generation).toMatch(/^[a-f0-9]{64}$/);
     expect(second).toEqual(first);
     expect(first.files.map(({ status, reason }) => [status, reason])).toEqual([
       ["blocked", "argv-array-has-no-portable-shell-string"],
-      ["changed", "v2-task-converted"],
+      ["changed", "task-converted"],
       ["skipped", "already-v3"],
     ]);
   });
 
-  test("delegates v2 legality to the production v2 parser instead of silently dropping target-illegal fields", () => {
-    const outcome = planTaskV2ToV3File(
+  test("the sole v2 migration reader rejects target-illegal fields instead of dropping them", () => {
+    const outcome = planTaskToV3File(
       memoryInput("version: 2\nschedule: '@daily'\nworkflow: workflows/release\nengine: must-not-be-dropped\n"),
     );
     expect(outcome).toMatchObject({ status: "blocked", reason: "invalid-v2-task" });
@@ -181,7 +181,7 @@ describe("pure task v2 to v3 migration planner", () => {
   });
 
   test("preserves authored empty params and v2 null/duplicate normalization exactly", () => {
-    const outcome = planTaskV2ToV3File(
+    const outcome = planTaskToV3File(
       memoryInput(
         [
           "version: 2",
@@ -207,7 +207,7 @@ describe("pure task v2 to v3 migration planner", () => {
   });
 
   test("rejects oversized and deeply nested v2 YAML at the source boundary before conversion", () => {
-    const oversized = planTaskV2ToV3File(
+    const oversized = planTaskToV3File(
       memoryInput(`version: 2\nschedule: '@daily'\nprompt: hello\n#${"x".repeat(TASK_V3_MAX_SOURCE_BYTES)}`),
     );
     expect(oversized).toMatchObject({ status: "blocked", reason: "invalid-task-yaml" });
@@ -215,7 +215,7 @@ describe("pure task v2 to v3 migration planner", () => {
 
     let nested = "leaf: value\n";
     for (let index = 0; index < 70; index += 1) nested = `level${index}:\n${nested.replace(/^/gm, "  ")}`;
-    const deep = planTaskV2ToV3File(
+    const deep = planTaskToV3File(
       memoryInput(
         `version: 2\nschedule: '@daily'\nworkflow: workflows/release\nparams:\n${nested.replace(/^/gm, "  ")}`,
       ),
@@ -230,7 +230,7 @@ describe("pure task v2 to v3 migration planner", () => {
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), "akm-v3-outside-"));
     fs.symlinkSync(outside, path.join(root, "escape"), "dir");
     try {
-      const outcome = planTaskV2ToV3File(
+      const outcome = planTaskToV3File(
         memoryInput("version: 3\nrun: echo exact\nworking-directory: escape\nakm:\n  schedule: '@daily'\n", {
           filePath: path.join(root, "task.yml"),
           containmentRoot: root,
@@ -246,13 +246,13 @@ describe("pure task v2 to v3 migration planner", () => {
 
   test("generation commits to mode/configured and on-disk writability while duplicate paths fail closed", () => {
     const source = memoryInput("version: 2\nschedule: '@daily'\ncommand: akm index\n");
-    const normal = planTaskV2ToV3Migration([source]);
-    const differentMode = planTaskV2ToV3Migration([{ ...source, mode: 0o600 }]);
-    const readOnly = planTaskV2ToV3Migration([{ ...source, writable: false }]);
-    const diskReadOnly = planTaskV2ToV3Migration([{ ...source, onDiskWritable: false }]);
+    const normal = planTaskToV3Migration([source]);
+    const differentMode = planTaskToV3Migration([{ ...source, mode: 0o600 }]);
+    const readOnly = planTaskToV3Migration([{ ...source, writable: false }]);
+    const diskReadOnly = planTaskToV3Migration([{ ...source, onDiskWritable: false }]);
     expect(differentMode.generation).not.toBe(normal.generation);
     expect(readOnly.generation).not.toBe(normal.generation);
     expect(diskReadOnly.generation).not.toBe(normal.generation);
-    expect(() => planTaskV2ToV3Migration([source, { ...source }])).toThrow(/duplicate|file path/i);
+    expect(() => planTaskToV3Migration([source, { ...source }])).toThrow(/duplicate|file path/i);
   });
 });

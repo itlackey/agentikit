@@ -101,7 +101,7 @@ interface TransformersModule {
 
 export type TransformersLoader = () => Promise<TransformersModule>;
 
-const TRANSFORMERS_RUNTIME_URL = new URL(
+const PACKAGED_TRANSFORMERS_RUNTIME_URL = new URL(
   "../../vendor/huggingface-transformers/transformers.node.mjs",
   import.meta.url,
 );
@@ -109,8 +109,15 @@ const ORT_WEB_PACKAGE_NAME = "onnxruntime-web";
 const ORT_WEB_PACKAGE_VERSION = "1.24.3";
 const LOCAL_WASM_MAX_THREADS = 4;
 
+function resolveTransformersRuntimeUrl(): URL {
+  if (fs.existsSync(fileURLToPath(PACKAGED_TRANSFORMERS_RUNTIME_URL))) {
+    return PACKAGED_TRANSFORMERS_RUNTIME_URL;
+  }
+  return new URL(import.meta.resolve("@huggingface/transformers"));
+}
+
 const realTransformersLoader: TransformersLoader = () =>
-  import(TRANSFORMERS_RUNTIME_URL.href) as Promise<TransformersModule>;
+  import(resolveTransformersRuntimeUrl().href) as Promise<TransformersModule>;
 
 let transformersLoader: TransformersLoader = realTransformersLoader;
 
@@ -394,13 +401,13 @@ function shouldRetryWithoutExplicitDtype(error: unknown): boolean {
 }
 
 /**
- * Check whether AKM's vendored Transformers asset and all three exact optional
+ * Check whether AKM's materialized Transformers asset and all three exact optional
  * runtime packages can be resolved without loading WASM or a model.
  */
 export function isTransformersAvailable(): boolean {
   if (isCompiledBinary()) return false;
   try {
-    if (!fs.existsSync(fileURLToPath(TRANSFORMERS_RUNTIME_URL))) return false;
+    if (!fs.existsSync(fileURLToPath(resolveTransformersRuntimeUrl()))) return false;
     resolveLocalWasmRuntimeFiles();
     resolveModule("onnxruntime-common", getDirname(import.meta.url));
     resolveModule("sharp", getDirname(import.meta.url));

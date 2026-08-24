@@ -2,25 +2,29 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-/** Pure, byte-producing task-v2 to task-v3 migration planner. */
+/** Pure, byte-producing legacy-task to task-v3 migration planner. */
 
 import crypto from "node:crypto";
 import path from "node:path";
 import { LineCounter, parseDocument, stringify as stringifyYaml } from "yaml";
-import { bundleRefToString, parseBundleRef } from "../core/asset/asset-ref";
-import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
-import { WORKFLOW_ENV_VAR_NAME_PATTERN, WORKFLOW_MAX_RETRIES } from "../workflows/resource-limits";
-import { parseTaskDocument } from "./parser";
-import { TASK_MAX_REDACT_NAMES, TASK_MAX_TIMEOUT_MS } from "./schema";
+import { bundleRefToString, parseBundleRef } from "../../../src/core/asset/asset-ref";
+import { formatExtraParamsIssue, validateExtraParams } from "../../../src/core/extra-params";
+import {
+  WORKFLOW_ENV_VAR_NAME_PATTERN,
+  WORKFLOW_MAX_EXEC_PASS_ENV,
+  WORKFLOW_MAX_RETRIES,
+  WORKFLOW_MAX_TIMEOUT_MS,
+} from "../../../src/workflows/resource-limits";
 import {
   assertBoundedTaskYamlDocument,
   classifyTaskV3Uses,
   parseTaskV3Yaml,
   TASK_V3_MAX_SOURCE_BYTES,
   type TaskV3UsesTarget,
-} from "./source-v3";
+} from "../../../src/tasks/source-v3";
+import { validateTaskId } from "../../../src/tasks/task-id";
 
-export interface TaskV2ToV3FileInput {
+export interface TaskToV3FileInput {
   readonly filePath: string;
   readonly bytes: Buffer;
   readonly mode: number;
@@ -30,10 +34,10 @@ export interface TaskV2ToV3FileInput {
   /** Physical bundle/component root recorded by the filesystem inspector. */
   readonly containmentRoot?: string;
   /** Physical identities captured by the filesystem inspector for drift fencing. */
-  readonly inspectionIdentity?: TaskV2ToV3InspectionIdentity;
+  readonly inspectionIdentity?: TaskToV3InspectionIdentity;
 }
 
-export interface TaskV2ToV3FilesystemIdentity {
+export interface TaskToV3FilesystemIdentity {
   readonly realPath: string;
   readonly device: string;
   readonly inode: string;
@@ -43,14 +47,14 @@ export interface TaskV2ToV3FilesystemIdentity {
   readonly changeTimeNs: string;
 }
 
-export interface TaskV2ToV3InspectionIdentity {
-  readonly file: TaskV2ToV3FilesystemIdentity;
-  readonly root: TaskV2ToV3FilesystemIdentity;
+export interface TaskToV3InspectionIdentity {
+  readonly file: TaskToV3FilesystemIdentity;
+  readonly root: TaskToV3FilesystemIdentity;
   /** Stable owning bundle identity when `root` is a nested component. */
-  readonly bundleRoot?: TaskV2ToV3FilesystemIdentity;
+  readonly bundleRoot?: TaskToV3FilesystemIdentity;
 }
 
-interface TaskV2ToV3OutcomeBase {
+interface TaskToV3OutcomeBase {
   readonly filePath: string;
   readonly before: Buffer;
   readonly beforeHash: string;
@@ -58,33 +62,33 @@ interface TaskV2ToV3OutcomeBase {
   readonly writable: boolean;
   readonly onDiskWritable?: boolean;
   readonly containmentRoot?: string;
-  readonly inspectionIdentity?: TaskV2ToV3InspectionIdentity;
+  readonly inspectionIdentity?: TaskToV3InspectionIdentity;
   readonly reason: string;
   readonly detail?: string;
 }
 
-export interface TaskV2ToV3Changed extends TaskV2ToV3OutcomeBase {
+export interface TaskToV3Changed extends TaskToV3OutcomeBase {
   readonly status: "changed";
-  readonly reason: "v2-task-converted";
+  readonly reason: "task-converted";
   readonly after: Buffer;
   readonly afterHash: string;
 }
 
-export interface TaskV2ToV3Skipped extends TaskV2ToV3OutcomeBase {
+export interface TaskToV3Skipped extends TaskToV3OutcomeBase {
   readonly status: "skipped";
   readonly reason: "already-v3";
 }
 
-export interface TaskV2ToV3Blocked extends TaskV2ToV3OutcomeBase {
+export interface TaskToV3Blocked extends TaskToV3OutcomeBase {
   readonly status: "blocked";
 }
 
-export type TaskV2ToV3FileOutcome = TaskV2ToV3Changed | TaskV2ToV3Skipped | TaskV2ToV3Blocked;
+export type TaskToV3FileOutcome = TaskToV3Changed | TaskToV3Skipped | TaskToV3Blocked;
 
-export interface TaskV2ToV3MigrationPlan {
+export interface TaskToV3MigrationPlan {
   readonly schemaVersion: 1;
   readonly generation: string;
-  readonly files: readonly TaskV2ToV3FileOutcome[];
+  readonly files: readonly TaskToV3FileOutcome[];
 }
 
 const V2_KEYS = new Set([
@@ -105,6 +109,16 @@ const V2_KEYS = new Set([
   "maxSteps",
   "maxRetries",
   "llm",
+  "redact",
+]);
+const V2_SHARED_KEYS = new Set([
+  "version",
+  "name",
+  "description",
+  "when_to_use",
+  "tags",
+  "schedule",
+  "enabled",
   "redact",
 ]);
 const V2_LLM_KEYS = new Set([
@@ -147,7 +161,7 @@ function hash(bytes: Uint8Array): string {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
-function base(input: TaskV2ToV3FileInput): Omit<TaskV2ToV3OutcomeBase, "reason"> {
+function base(input: TaskToV3FileInput): Omit<TaskToV3OutcomeBase, "reason"> {
   const inspectionIdentity = input.inspectionIdentity
     ? Object.freeze({
         file: Object.freeze({ ...input.inspectionIdentity.file }),
@@ -169,7 +183,7 @@ function base(input: TaskV2ToV3FileInput): Omit<TaskV2ToV3OutcomeBase, "reason">
   };
 }
 
-function blocked(input: TaskV2ToV3FileInput, reason: string, detail?: string): TaskV2ToV3Blocked {
+function blocked(input: TaskToV3FileInput, reason: string, detail?: string): TaskToV3Blocked {
   return Object.freeze({ status: "blocked" as const, ...base(input), reason, ...(detail ? { detail } : {}) });
 }
 
@@ -194,7 +208,7 @@ function optionalString(value: unknown, label: string): string | undefined {
   return exactString(value, label);
 }
 
-function parseV2Yaml(input: TaskV2ToV3FileInput): { data: Record<string, unknown>; source: string } {
+function parseLegacyTaskYaml(input: TaskToV3FileInput): { data: Record<string, unknown>; source: string } {
   if (input.bytes.byteLength > TASK_V3_MAX_SOURCE_BYTES) {
     throw new Error(`task YAML exceeds the 1 MiB (${TASK_V3_MAX_SOURCE_BYTES}-byte) source resource limit`);
   }
@@ -238,20 +252,26 @@ function validateCommonV2(data: Record<string, unknown>): void {
     if (
       !Number.isInteger(data.timeoutMs) ||
       (data.timeoutMs as number) < 1 ||
-      (data.timeoutMs as number) > TASK_MAX_TIMEOUT_MS
+      (data.timeoutMs as number) > WORKFLOW_MAX_TIMEOUT_MS
     ) {
-      throw new Error(`timeoutMs must be null or an integer from 1 through ${TASK_MAX_TIMEOUT_MS}`);
+      throw new Error(`timeoutMs must be null or an integer from 1 through ${WORKFLOW_MAX_TIMEOUT_MS}`);
     }
   }
   if (data.redact !== undefined && data.redact !== null) {
     if (
       !Array.isArray(data.redact) ||
-      data.redact.length > TASK_MAX_REDACT_NAMES ||
+      data.redact.length > WORKFLOW_MAX_EXEC_PASS_ENV ||
       data.redact.some((entry) => typeof entry !== "string" || !WORKFLOW_ENV_VAR_NAME_PATTERN.test(entry))
     ) {
       throw new Error("redact must contain only bounded environment variable names");
     }
   }
+}
+
+function validateTargetFields(data: Record<string, unknown>, allowed: readonly string[]): void {
+  const targetFields = new Set([...allowed, "workflow", "prompt", "command"]);
+  const invalid = Object.keys(data).filter((key) => !V2_SHARED_KEYS.has(key) && !targetFields.has(key));
+  if (invalid.length > 0) throw new Error(`field(s) not valid for this target: ${invalid.join(", ")}`);
 }
 
 function validateV2Llm(value: unknown): Record<string, unknown> | undefined {
@@ -336,7 +356,7 @@ function promptSourceKind(raw: string): "file" | "agent" | "command" | "other-re
   }
 }
 
-function migratedObject(data: Record<string, unknown>): Record<string, unknown> | TaskV2ToV3Blocked["reason"] {
+function migratedObject(data: Record<string, unknown>): Record<string, unknown> | TaskToV3Blocked["reason"] {
   validateCommonV2(data);
   const targets = ["workflow", "prompt", "command"].filter(
     (key) => Object.hasOwn(data, key) && data[key] !== null && data[key] !== "",
@@ -347,6 +367,7 @@ function migratedObject(data: Record<string, unknown>): Record<string, unknown> 
   const akm = commonAkm(data);
 
   if (targets[0] === "workflow") {
+    validateTargetFields(data, ["params", "timeoutMs", "maxSteps", "maxRetries"]);
     const ref = exactString(data.workflow, "workflow", true).trim();
     let target: TaskV3UsesTarget;
     try {
@@ -377,6 +398,7 @@ function migratedObject(data: Record<string, unknown>): Record<string, unknown> 
     }
     addSharedNonPromptOverrides(data, akm);
   } else if (targets[0] === "prompt") {
+    validateTargetFields(data, ["engine", "model", "timeoutMs", "llm"]);
     const prompt = exactString(data.prompt, "prompt", true).trim();
     const kind = promptSourceKind(prompt);
     if (kind === "file") return "dynamic-file-read-cannot-be-inlined-without-changing-semantics";
@@ -389,6 +411,7 @@ function migratedObject(data: Record<string, unknown>): Record<string, unknown> 
     }
     addRuntimeOverrides(data, akm);
   } else {
+    validateTargetFields(data, ["timeoutMs"]);
     if (Array.isArray(data.command)) return "argv-array-has-no-portable-shell-string";
     const command = exactString(data.command, "command", true).trim();
     if (/['"\\]/.test(command)) return "shell-quoting-changes-v2-whitespace-split-semantics";
@@ -411,29 +434,14 @@ function isReason(value: Record<string, unknown> | string): value is string {
   return typeof value === "string";
 }
 
-/** Plan exactly one source file without touching disk. */
-export function planTaskV2ToV3File(input: TaskV2ToV3FileInput): TaskV2ToV3FileOutcome {
-  let data: Record<string, unknown>;
-  let source: string;
-  try {
-    ({ data, source } = parseV2Yaml(input));
-  } catch (cause) {
-    return blocked(input, "invalid-task-yaml", cause instanceof Error ? cause.message : String(cause));
+/** Convert one already-normalized legacy record directly to final task v3. */
+export function planLegacyTaskDataToV3(
+  input: TaskToV3FileInput,
+  data: Record<string, unknown>,
+): TaskToV3FileOutcome {
+  if (data.version !== 2) {
+    return blocked(input, "unsupported-task-version", `expected normalized legacy version 2, got ${String(data.version)}`);
   }
-  if (data.version === 3) {
-    try {
-      parseTaskV3Yaml({
-        yaml: source,
-        filePath: input.filePath,
-        ...(input.containmentRoot ? { workspaceRoot: input.containmentRoot } : {}),
-      });
-      return Object.freeze({ status: "skipped" as const, ...base(input), reason: "already-v3" as const });
-    } catch (cause) {
-      return blocked(input, "invalid-v3-task", cause instanceof Error ? cause.message : String(cause));
-    }
-  }
-  if (data.version !== 2)
-    return blocked(input, "unsupported-task-version", `expected version 2 or 3, got ${String(data.version)}`);
   if (!input.writable || input.onDiskWritable === false) {
     return blocked(
       input,
@@ -442,7 +450,7 @@ export function planTaskV2ToV3File(input: TaskV2ToV3FileInput): TaskV2ToV3FileOu
     );
   }
   try {
-    parseTaskDocument({ yaml: source, filePath: input.filePath, id: path.basename(input.filePath, ".yml") });
+    validateTaskId(path.basename(input.filePath, ".yml"));
   } catch (cause) {
     return blocked(input, "invalid-v2-task", cause instanceof Error ? cause.message : String(cause));
   }
@@ -466,15 +474,42 @@ export function planTaskV2ToV3File(input: TaskV2ToV3FileInput): TaskV2ToV3FileOu
   return Object.freeze({
     status: "changed" as const,
     ...base(input),
-    reason: "v2-task-converted" as const,
+    reason: "task-converted" as const,
     after,
     afterHash: hash(after),
   });
 }
 
-function generationFor(files: readonly TaskV2ToV3FileOutcome[]): string {
+/** Plan exactly one source file without touching disk. */
+export function planTaskToV3File(input: TaskToV3FileInput): TaskToV3FileOutcome {
+  let data: Record<string, unknown>;
+  let source: string;
+  try {
+    ({ data, source } = parseLegacyTaskYaml(input));
+  } catch (cause) {
+    return blocked(input, "invalid-task-yaml", cause instanceof Error ? cause.message : String(cause));
+  }
+  if (data.version === 3) {
+    try {
+      parseTaskV3Yaml({
+        yaml: source,
+        filePath: input.filePath,
+        ...(input.containmentRoot ? { workspaceRoot: input.containmentRoot } : {}),
+      });
+      return Object.freeze({ status: "skipped" as const, ...base(input), reason: "already-v3" as const });
+    } catch (cause) {
+      return blocked(input, "invalid-v3-task", cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+  if (data.version !== 2) {
+    return blocked(input, "unsupported-task-version", `expected version 2 or 3, got ${String(data.version)}`);
+  }
+  return planLegacyTaskDataToV3(input, data);
+}
+
+function generationFor(files: readonly TaskToV3FileOutcome[]): string {
   const digest = crypto.createHash("sha256");
-  digest.update("akm-task-v2-to-v3-plan-v1\0");
+  digest.update("akm-task-to-v3-plan-v1\0");
   for (const file of files) {
     digest.update(file.filePath);
     digest.update("\0");
@@ -501,7 +536,7 @@ function generationFor(files: readonly TaskV2ToV3FileOutcome[]): string {
 }
 
 /** Build/fingerprint a plan from already-derived immutable outcomes. */
-export function taskV2ToV3PlanFromOutcomes(outcomes: readonly TaskV2ToV3FileOutcome[]): TaskV2ToV3MigrationPlan {
+export function taskToV3PlanFromOutcomes(outcomes: readonly TaskToV3FileOutcome[]): TaskToV3MigrationPlan {
   const files = [...outcomes].sort((left, right) =>
     left.filePath < right.filePath ? -1 : left.filePath > right.filePath ? 1 : 0,
   );
@@ -516,16 +551,16 @@ export function taskV2ToV3PlanFromOutcomes(outcomes: readonly TaskV2ToV3FileOutc
 }
 
 /** Plan a complete, stable file set. Input order cannot change the result. */
-export function planTaskV2ToV3Migration(inputs: readonly TaskV2ToV3FileInput[]): TaskV2ToV3MigrationPlan {
+export function planTaskToV3Migration(inputs: readonly TaskToV3FileInput[]): TaskToV3MigrationPlan {
   const sorted = [...inputs].sort((left, right) =>
     left.filePath < right.filePath ? -1 : left.filePath > right.filePath ? 1 : 0,
   );
-  let previous: TaskV2ToV3FileInput | undefined;
+  let previous: TaskToV3FileInput | undefined;
   for (const current of sorted) {
     if (previous && path.resolve(previous.filePath) === path.resolve(current.filePath)) {
       throw new Error(`duplicate task migration file path: ${current.filePath}`);
     }
     previous = current;
   }
-  return taskV2ToV3PlanFromOutcomes(sorted.map(planTaskV2ToV3File));
+  return taskToV3PlanFromOutcomes(sorted.map(planTaskToV3File));
 }

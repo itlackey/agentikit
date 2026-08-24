@@ -7,14 +7,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  applyTaskV2ToV3MigrationPlan,
+  applyTaskToV3MigrationPlan,
   createTaskMigrationBackup,
-  inspectTaskV2ToV3Files,
+  inspectTaskToV3Files,
   restoreTaskMigrationBackup,
   taskMigrationBackupPath,
   verifyTaskMigrationBackup,
-} from "../../scripts/akm-migrate/migrate/task-v2-to-v3-files";
-import { planTaskV2ToV3Migration } from "../../src/tasks/migrate-v2-to-v3";
+} from "../../scripts/akm-migrate/migrate/task-files-to-v3";
+import { planTaskToV3Migration } from "../../scripts/akm-migrate/migrate/task-to-v3";
 
 const SAFE = "version: 2\nschedule: '@daily'\nenabled: false\ncommand: akm index --full\n";
 const BLOCKED = "version: 2\nschedule: '@daily'\ncommand: [printf, '%s', value]\n";
@@ -33,7 +33,7 @@ describe("durable task v2 to v3 migration application", () => {
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
     try {
       const beforeRoot = snapshot(root);
-      const inputs = inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]);
+      const inputs = inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]);
       const identity = inputs[0]?.inspectionIdentity;
       expect(identity?.root.realPath).toBe(fs.realpathSync(root));
       expect(identity?.file.realPath).toBe(fs.realpathSync(task));
@@ -41,9 +41,9 @@ describe("durable task v2 to v3 migration application", () => {
       expect(typeof identity?.root.inode).toBe("string");
       expect(typeof identity?.file.device).toBe("string");
       expect(typeof identity?.file.inode).toBe("string");
-      const preview = planTaskV2ToV3Migration(inputs);
+      const preview = planTaskToV3Migration(inputs);
       expect(snapshot(root)).toEqual(beforeRoot);
-      const applied = applyTaskV2ToV3MigrationPlan(preview, { backupRoot });
+      const applied = applyTaskToV3MigrationPlan(preview, { backupRoot });
       expect(applied.generation).toBe(preview.generation);
       expect(applied.changed).toEqual([task]);
       expect(fs.readFileSync(task, "utf8")).toContain("version: 3");
@@ -71,15 +71,15 @@ describe("durable task v2 to v3 migration application", () => {
     fs.writeFileSync(lexicalTask, SAFE, { mode: 0o640 });
     const physicalTask = fs.realpathSync(lexicalTask);
     try {
-      const plan = planTaskV2ToV3Migration(
-        inspectTaskV2ToV3Files([{ bundleId: "inside-alias", root: lexicalComponent, bundleRoot, writable: true }]),
+      const plan = planTaskToV3Migration(
+        inspectTaskToV3Files([{ bundleId: "inside-alias", root: lexicalComponent, bundleRoot, writable: true }]),
       );
       const manifest = createTaskMigrationBackup(backupRoot, plan, "inside-alias-operation");
       if (!manifest) throw new Error("expected a task backup manifest");
       expect(manifest.files.map((entry) => entry.sourcePath)).toEqual([physicalTask]);
 
       expect(() =>
-        applyTaskV2ToV3MigrationPlan(plan, {
+        applyTaskToV3MigrationPlan(plan, {
           backupRoot,
           backupManifest: manifest,
           testHooks: {
@@ -96,9 +96,7 @@ describe("durable task v2 to v3 migration application", () => {
         files: [{ sourcePath: physicalTask, state: "backed-up" }],
       });
 
-      expect(applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest }).changed).toEqual([
-        lexicalTask,
-      ]);
+      expect(applyTaskToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest }).changed).toEqual([lexicalTask]);
       expect(() => verifyTaskMigrationBackup(backupRoot, manifest)).not.toThrow();
       expect(JSON.parse(fs.readFileSync(path.join(backupRoot, manifest.recoveryPath), "utf8"))).toMatchObject({
         files: [{ sourcePath: physicalTask, state: "published" }],
@@ -126,7 +124,7 @@ describe("durable task v2 to v3 migration application", () => {
     const identity = fs.lstatSync(first, { bigint: true });
     const detail = `duplicate physical task identity ${identity.dev}:${identity.ino} is referenced by ${first} and ${second}`;
     try {
-      expect(() => inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }])).toThrow(detail);
+      expect(() => inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }])).toThrow(detail);
       expect(snapshot(root)).toEqual(before);
       expect(fs.existsSync(backupRoot)).toBe(false);
     } finally {
@@ -145,7 +143,7 @@ describe("durable task v2 to v3 migration application", () => {
     const beforeRoot = snapshot(root);
     const beforeOutside = snapshot(outside);
     try {
-      expect(() => inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }])).toThrow(
+      expect(() => inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }])).toThrow(
         /hard link|link count|exactly one/i,
       );
       expect(snapshot(root)).toEqual(beforeRoot);
@@ -165,7 +163,7 @@ describe("durable task v2 to v3 migration application", () => {
     const outsideAlias = path.join(outside, "safe-alias.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
     try {
-      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+      const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
       expect(
         (plan.files[0]?.inspectionIdentity?.file as unknown as { linkCount?: string } | undefined)?.linkCount,
       ).toBe("1");
@@ -193,7 +191,7 @@ describe("durable task v2 to v3 migration application", () => {
     const outsideAlias = path.join(outside, "safe-alias.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
     try {
-      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+      const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
       const plannedIdentity = plan.files[0]?.inspectionIdentity?.file;
       if (!plannedIdentity) throw new Error("expected a planned task identity");
       fs.linkSync(task, outsideAlias);
@@ -223,7 +221,7 @@ describe("durable task v2 to v3 migration application", () => {
     const outsideAlias = path.join(outside, "safe-alias.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
     try {
-      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+      const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
       const manifest = createTaskMigrationBackup(backupRoot, plan, "publish-hardlink-operation");
       if (!manifest) throw new Error("expected a task backup manifest");
       fs.linkSync(task, outsideAlias);
@@ -231,7 +229,7 @@ describe("durable task v2 to v3 migration application", () => {
       const beforeOutside = snapshot(outside);
       const beforeBackup = snapshot(backupRoot);
 
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
         /hard link|link count|identity|drift/i,
       );
       expect(() => restoreTaskMigrationBackup(backupRoot, manifest)).toThrow(/hard link|link count|identity|drift/i);
@@ -254,7 +252,7 @@ describe("durable task v2 to v3 migration application", () => {
     const outsideAlias = path.join(outside, "safe-alias.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
     try {
-      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+      const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
       const manifest = createTaskMigrationBackup(backupRoot, plan, "transient-publish-hardlink-operation");
       if (!manifest) throw new Error("expected a task backup manifest");
       const declaredIdentity = manifest.files[0]?.sourceIdentity;
@@ -267,7 +265,7 @@ describe("durable task v2 to v3 migration application", () => {
       const beforeOutside = snapshot(outside);
       const beforeBackup = snapshot(backupRoot);
 
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
         /identity|drift|change/i,
       );
       // Explicit restore is already satisfied by the original bytes, so it is
@@ -293,7 +291,7 @@ describe("durable task v2 to v3 migration application", () => {
       const outsideAlias = path.join(outside, "safe-alias.yml");
       fs.writeFileSync(task, SAFE, { mode: 0o640 });
       try {
-        const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+        const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
         const manifest = createTaskMigrationBackup(backupRoot, plan, `hook-hardlink-${transient}`);
         if (!manifest) throw new Error("expected a task backup manifest");
         const entry = manifest.files[0];
@@ -303,7 +301,7 @@ describe("durable task v2 to v3 migration application", () => {
         const beforeFinal = fs.readFileSync(path.join(backupRoot, entry.finalPath));
 
         expect(() =>
-          applyTaskV2ToV3MigrationPlan(plan, {
+          applyTaskToV3MigrationPlan(plan, {
             backupRoot,
             backupManifest: manifest,
             testHooks: {
@@ -349,7 +347,7 @@ describe("durable task v2 to v3 migration application", () => {
     const detail = `duplicate physical task identity ${identity.dev}:${identity.ino} is referenced by ${first} and ${second}`;
     try {
       expect(() =>
-        inspectTaskV2ToV3Files([
+        inspectTaskToV3Files([
           { bundleId: "a-stash", root, bundleRoot: root, writable: true },
           {
             bundleId: "z-alias-component",
@@ -375,7 +373,7 @@ describe("durable task v2 to v3 migration application", () => {
     fs.writeFileSync(firstPath, SAFE, { mode: 0o640 });
     fs.writeFileSync(secondPath, SAFE.replace("@daily", "@hourly"), { mode: 0o640 });
     try {
-      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+      const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
       const manifest = createTaskMigrationBackup(backupRoot, plan, "duplicate-manifest-operation");
       if (!manifest) throw new Error("expected a task backup manifest");
       const [first, second] = manifest.files;
@@ -409,7 +407,7 @@ describe("durable task v2 to v3 migration application", () => {
     const task = path.join(root, "tasks", "safe.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
     try {
-      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+      const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
       const manifest = createTaskMigrationBackup(backupRoot, plan, "identity-provenance-operation");
       if (!manifest) throw new Error("expected a task backup manifest");
       const entry = manifest.files[0];
@@ -440,7 +438,7 @@ describe("durable task v2 to v3 migration application", () => {
       };
       const beforeRoot = snapshot(root);
       const beforeBackup = snapshot(backupRoot);
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: drifted })).toThrow(
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot, backupManifest: drifted })).toThrow(
         /provenance|authorized plan/i,
       );
       expect(snapshot(root)).toEqual(beforeRoot);
@@ -460,8 +458,8 @@ describe("durable task v2 to v3 migration application", () => {
     fs.writeFileSync(blocked, BLOCKED);
     try {
       const before = snapshot(root);
-      const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot })).toThrow(/blocked|argv/i);
+      const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot })).toThrow(/blocked|argv/i);
       expect(snapshot(root)).toEqual(before);
       expect(fs.existsSync(backupRoot)).toBe(false);
     } finally {
@@ -474,11 +472,11 @@ describe("durable task v2 to v3 migration application", () => {
     const backupRoot = path.join(root, "backups");
     const task = path.join(root, "tasks", "safe.yml");
     fs.writeFileSync(task, SAFE);
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     const drift = `${SAFE}# drift\n`;
     fs.writeFileSync(task, drift);
     try {
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot })).toThrow(/drift|changed after/i);
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot })).toThrow(/drift|changed after/i);
       expect(fs.readFileSync(task, "utf8")).toBe(drift);
       expect(fs.existsSync(backupRoot)).toBe(false);
     } finally {
@@ -491,10 +489,10 @@ describe("durable task v2 to v3 migration application", () => {
     const backupRoot = path.join(root, "backups");
     const task = path.join(root, "tasks", "safe.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     try {
       fs.chmodSync(task, 0o600);
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot })).toThrow(/mode|drift/i);
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot })).toThrow(/mode|drift/i);
       expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
       expect(fs.existsSync(backupRoot)).toBe(false);
 
@@ -503,7 +501,7 @@ describe("durable task v2 to v3 migration application", () => {
         const real = path.join(root, "real.yml");
         fs.renameSync(task, real);
         fs.symlinkSync(real, task);
-        expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot })).toThrow(/symbolic|regular file|drift/i);
+        expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot })).toThrow(/symbolic|regular file|drift/i);
         expect(fs.readFileSync(real, "utf8")).toBe(SAFE);
         expect(fs.existsSync(backupRoot)).toBe(false);
       }
@@ -518,12 +516,12 @@ describe("durable task v2 to v3 migration application", () => {
     const task = path.join(root, "tasks", "safe.yml");
     const displaced = path.join(root, "tasks", "displaced.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     fs.renameSync(task, displaced);
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
     try {
       expect(fs.lstatSync(task).ino).not.toBe(fs.lstatSync(displaced).ino);
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot })).toThrow(/identity|inode|drift/i);
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot })).toThrow(/identity|inode|drift/i);
       expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
       expect(fs.existsSync(backupRoot)).toBe(false);
     } finally {
@@ -537,13 +535,13 @@ describe("durable task v2 to v3 migration application", () => {
     const task = path.join(root, "tasks", "safe.yml");
     const displaced = path.join(root, "tasks", "displaced.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     const manifest = createTaskMigrationBackup(backupRoot, plan, "not-started-identity-operation");
     if (!manifest) throw new Error("expected a task backup manifest");
     fs.renameSync(task, displaced);
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
     try {
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
         /identity|inode|drift/i,
       );
       expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
@@ -560,12 +558,12 @@ describe("durable task v2 to v3 migration application", () => {
     const backupRoot = `${root}-backups`;
     const task = path.join(root, "tasks", "safe.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     fs.renameSync(root, displacedRoot);
     fs.mkdirSync(path.join(root, "tasks"), { recursive: true });
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
     try {
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot })).toThrow(/root.*identity|identity.*root|drift/i);
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot })).toThrow(/root.*identity|identity.*root|drift/i);
       expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
       expect(fs.existsSync(backupRoot)).toBe(false);
     } finally {
@@ -582,19 +580,19 @@ describe("durable task v2 to v3 migration application", () => {
     const second = path.join(root, "tasks", "b.yml");
     fs.writeFileSync(first, SAFE);
     fs.writeFileSync(second, SAFE.replace("@daily", "@hourly"));
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     const secondBackup = taskMigrationBackupPath(backupRoot, second);
     fs.mkdirSync(path.dirname(secondBackup), { recursive: true });
     fs.writeFileSync(secondBackup, "wrong pre-existing backup");
     try {
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot })).toThrow(/backup/i);
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot })).toThrow(/backup/i);
       expect(fs.readFileSync(first, "utf8")).toBe(SAFE);
       expect(fs.readFileSync(second, "utf8")).toBe(SAFE.replace("@daily", "@hourly"));
       expect(fs.readFileSync(taskMigrationBackupPath(backupRoot, first), "utf8")).toBe(SAFE);
 
       fs.unlinkSync(secondBackup);
-      const retry = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
-      expect(applyTaskV2ToV3MigrationPlan(retry, { backupRoot }).changed).toEqual([first, second]);
+      const retry = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
+      expect(applyTaskToV3MigrationPlan(retry, { backupRoot }).changed).toEqual([first, second]);
       expect(fs.readFileSync(first, "utf8")).toContain("version: 3");
       expect(fs.readFileSync(second, "utf8")).toContain("version: 3");
     } finally {
@@ -609,7 +607,7 @@ describe("durable task v2 to v3 migration application", () => {
     const task = path.join(root, "tasks", "safe.yml");
     const concurrent = "# concurrent owner edit\n";
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     const options = {
       backupRoot,
       testHooks: {
@@ -618,11 +616,11 @@ describe("durable task v2 to v3 migration application", () => {
           fs.writeFileSync(filePath, concurrent, { mode: 0o640 });
         },
       },
-    } as Parameters<typeof applyTaskV2ToV3MigrationPlan>[1] & {
+    } as Parameters<typeof applyTaskToV3MigrationPlan>[1] & {
       testHooks: { afterPublish(filePath: string): void };
     };
     try {
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, options)).toThrow(/compensation|concurrent|recover|backup/i);
+      expect(() => applyTaskToV3MigrationPlan(plan, options)).toThrow(/compensation|concurrent|recover|backup/i);
       expect(fs.readFileSync(task, "utf8")).toBe(concurrent);
       expect(fs.readFileSync(taskMigrationBackupPath(backupRoot, task), "utf8")).toBe(SAFE);
     } finally {
@@ -640,7 +638,7 @@ describe("durable task v2 to v3 migration application", () => {
       return filePath;
     });
     const before = new Map(tasks.map((filePath) => [filePath, fs.readFileSync(filePath)]));
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     const publishedAndRestored: string[] = [];
     const realRenameSync = fs.renameSync;
     const rename = spyOn(fs, "renameSync").mockImplementation((oldPath, newPath) => {
@@ -649,7 +647,7 @@ describe("durable task v2 to v3 migration application", () => {
     });
     try {
       expect(() =>
-        applyTaskV2ToV3MigrationPlan(plan, {
+        applyTaskToV3MigrationPlan(plan, {
           backupRoot,
           testHooks: {
             afterPublish(filePath) {
@@ -685,13 +683,13 @@ describe("durable task v2 to v3 migration application", () => {
           return filePath;
         });
         const before = new Map(tasks.map((filePath) => [filePath, fs.readFileSync(filePath)]));
-        const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+        const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
         const manifest = createTaskMigrationBackup(backupRoot, plan, "fault-matrix-operation");
         if (!manifest) throw new Error("expected a task backup manifest");
         const target = tasks[position];
         try {
           expect(() =>
-            applyTaskV2ToV3MigrationPlan(plan, {
+            applyTaskToV3MigrationPlan(plan, {
               backupRoot,
               backupManifest: manifest,
               testHooks: {
@@ -713,7 +711,7 @@ describe("durable task v2 to v3 migration application", () => {
             expect(fs.readFileSync(filePath).equals(before.get(filePath) ?? Buffer.alloc(0))).toBe(true);
           }
 
-          const retry = applyTaskV2ToV3MigrationPlan(plan, {
+          const retry = applyTaskToV3MigrationPlan(plan, {
             backupRoot,
             backupManifest: manifest,
           });
@@ -732,7 +730,7 @@ describe("durable task v2 to v3 migration application", () => {
     const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
     const task = path.join(root, "tasks", "safe.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     const manifest = createTaskMigrationBackup(backupRoot, plan, "directory-fsync-operation");
     if (!manifest) throw new Error("expected a task backup manifest");
     const realOpenSync = fs.openSync;
@@ -745,12 +743,12 @@ describe("durable task v2 to v3 migration application", () => {
       return realOpenSync(filePath, flags, mode);
     });
     try {
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
         /directory fsync|restored/i,
       );
       expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
       open.mockRestore();
-      expect(applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest }).changed).toEqual([task]);
+      expect(applyTaskToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest }).changed).toEqual([task]);
       expect(fs.readFileSync(task, "utf8")).toContain("version: 3");
     } finally {
       open.mockRestore();
@@ -764,7 +762,7 @@ describe("durable task v2 to v3 migration application", () => {
     const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
     const task = path.join(root, "tasks", "safe.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     const manifest = createTaskMigrationBackup(backupRoot, plan, "source-fsync-operation");
     if (!manifest) throw new Error("expected a task backup manifest");
     const tempDescriptors = new Set<number>();
@@ -784,13 +782,13 @@ describe("durable task v2 to v3 migration application", () => {
       return realFsyncSync(descriptor);
     });
     try {
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest })).toThrow(
         /source fsync|restored/i,
       );
       expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
       open.mockRestore();
       fsync.mockRestore();
-      expect(applyTaskV2ToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest }).changed).toEqual([task]);
+      expect(applyTaskToV3MigrationPlan(plan, { backupRoot, backupManifest: manifest }).changed).toEqual([task]);
     } finally {
       open.mockRestore();
       fsync.mockRestore();
@@ -804,7 +802,7 @@ describe("durable task v2 to v3 migration application", () => {
     const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-main-backup-"));
     const task = path.join(root, "tasks", "safe.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     const manifest = createTaskMigrationBackup(backupRoot, plan, "corruption-operation");
     if (!manifest) throw new Error("expected a task backup manifest");
     const entry = manifest.files[0];
@@ -837,7 +835,7 @@ describe("durable task v2 to v3 migration application", () => {
     const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-backup-"));
     const task = path.join(root, "tasks", "safe.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     const realOpenSync = fs.openSync;
     const open = spyOn(fs, "openSync").mockImplementation((filePath, flags, mode) => {
       if (flags === "r" && fs.statSync(filePath).isDirectory()) {
@@ -846,7 +844,7 @@ describe("durable task v2 to v3 migration application", () => {
       return realOpenSync(filePath, flags, mode);
     });
     try {
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot })).not.toThrow();
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot })).not.toThrow();
       expect(fs.readFileSync(task, "utf8")).toContain("version: 3");
     } finally {
       open.mockRestore();
@@ -860,14 +858,14 @@ describe("durable task v2 to v3 migration application", () => {
     const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-backup-"));
     const task = path.join(root, "tasks", "safe.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     const change = plan.files[0];
     if (change?.status !== "changed") throw new Error("expected changed task");
     const backup = taskMigrationBackupPath(backupRoot, task);
     fs.mkdirSync(path.dirname(backup), { recursive: true });
     fs.writeFileSync(backup, change.before, { mode: 0o600 });
     try {
-      const applied = applyTaskV2ToV3MigrationPlan(plan, { backupRoot });
+      const applied = applyTaskToV3MigrationPlan(plan, { backupRoot });
       expect(applied.changed).toEqual([task]);
       const metadata = JSON.parse(fs.readFileSync(`${backup}.json`, "utf8"));
       expect(metadata).toEqual({
@@ -888,14 +886,14 @@ describe("durable task v2 to v3 migration application", () => {
     const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-v3-backup-"));
     const task = path.join(root, "tasks", "safe.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
-    const plan = planTaskV2ToV3Migration(inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }]));
+    const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }]));
     const backup = taskMigrationBackupPath(backupRoot, task);
     const target = path.join(backupRoot, "attacker-controlled");
     fs.mkdirSync(path.dirname(backup), { recursive: true });
     fs.writeFileSync(target, SAFE);
     fs.symlinkSync(target, backup);
     try {
-      expect(() => applyTaskV2ToV3MigrationPlan(plan, { backupRoot })).toThrow(/backup|symbolic/i);
+      expect(() => applyTaskToV3MigrationPlan(plan, { backupRoot })).toThrow(/backup|symbolic/i);
       expect(fs.readFileSync(task, "utf8")).toBe(SAFE);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -911,9 +909,9 @@ describe("durable task v2 to v3 migration application", () => {
     fs.symlinkSync(path.join(outside, "tasks"), path.join(root, "tasks"), "dir");
     fs.writeFileSync(path.join(outside, "tasks", "x.yml"), SAFE);
     try {
-      expect(() => inspectTaskV2ToV3Files([{ bundleId: "stash", root, writable: true }])).toThrow(/symbolic|symlink/i);
-      const readOnly = inspectTaskV2ToV3Files([{ bundleId: "vendor", root: outside, writable: false }]);
-      const plan = planTaskV2ToV3Migration(readOnly);
+      expect(() => inspectTaskToV3Files([{ bundleId: "stash", root, writable: true }])).toThrow(/symbolic|symlink/i);
+      const readOnly = inspectTaskToV3Files([{ bundleId: "vendor", root: outside, writable: false }]);
+      const plan = planTaskToV3Migration(readOnly);
       expect(plan.files).toHaveLength(1);
       expect(plan.files[0]).toMatchObject({ status: "blocked", reason: "read-only-source" });
     } finally {
@@ -931,10 +929,10 @@ describe("durable task v2 to v3 migration application", () => {
     fs.rmSync(path.join(root, "tasks"), { recursive: true, force: true });
     fs.symlinkSync(path.join(parent, "missing-tasks"), path.join(root, "tasks"), "dir");
     try {
-      expect(() => inspectTaskV2ToV3Files([{ bundleId: "dangling-root", root: danglingRoot, writable: true }])).toThrow(
+      expect(() => inspectTaskToV3Files([{ bundleId: "dangling-root", root: danglingRoot, writable: true }])).toThrow(
         /symbolic|real directory|symlink/i,
       );
-      expect(() => inspectTaskV2ToV3Files([{ bundleId: "dangling-tasks", root, writable: true }])).toThrow(
+      expect(() => inspectTaskToV3Files([{ bundleId: "dangling-tasks", root, writable: true }])).toThrow(
         /symbolic|task.*directory|symlink/i,
       );
     } finally {
@@ -948,9 +946,7 @@ describe("durable task v2 to v3 migration application", () => {
     const task = path.join(root, "tasks", "disk-read-only.yml");
     fs.writeFileSync(task, SAFE, { mode: 0o444 });
     try {
-      const plan = planTaskV2ToV3Migration(
-        inspectTaskV2ToV3Files([{ bundleId: "writable-config", root, writable: true }]),
-      );
+      const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "writable-config", root, writable: true }]));
       expect(plan.files).toMatchObject([{ filePath: task, status: "blocked", reason: "read-only-source" }]);
     } finally {
       fs.chmodSync(task, 0o640);
@@ -966,9 +962,7 @@ describe("durable task v2 to v3 migration application", () => {
     fs.writeFileSync(task, SAFE, { mode: 0o640 });
     fs.chmodSync(tasksDir, 0o555);
     try {
-      const plan = planTaskV2ToV3Migration(
-        inspectTaskV2ToV3Files([{ bundleId: "writable-config", root, writable: true }]),
-      );
+      const plan = planTaskToV3Migration(inspectTaskToV3Files([{ bundleId: "writable-config", root, writable: true }]));
       expect(plan.files).toMatchObject([{ filePath: task, status: "blocked", reason: "read-only-source" }]);
     } finally {
       fs.chmodSync(tasksDir, 0o755);
@@ -982,10 +976,10 @@ describe("durable task v2 to v3 migration application", () => {
     fs.writeFileSync(task, SAFE);
     fs.writeFileSync(path.join(root, "README.md"), "# ignored\n");
     try {
-      const inputs = inspectTaskV2ToV3Files([{ bundleId: "standalone", root, writable: true, layout: "akm-task" }]);
+      const inputs = inspectTaskToV3Files([{ bundleId: "standalone", root, writable: true, layout: "akm-task" }]);
       expect(inputs.map((input) => input.filePath)).toEqual([task]);
-      expect(planTaskV2ToV3Migration(inputs).files).toMatchObject([
-        { filePath: task, status: "changed", reason: "v2-task-converted" },
+      expect(planTaskToV3Migration(inputs).files).toMatchObject([
+        { filePath: task, status: "changed", reason: "task-converted" },
       ]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

@@ -2,16 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import {
-  applyTaskTargetRefMigration,
-  planTaskTargetRefMigration,
-} from "../../../scripts/akm-migrate/migrate/legacy/task-target-ref-migration";
+import { planTaskTargetRefMigration } from "../../../scripts/akm-migrate/migrate/legacy/task-target-ref-migration";
 import type { AkmConfig } from "../../../src/core/config/config";
 import { getLockfilePath } from "../../../src/core/paths";
-import { parseTaskDocument } from "../../../src/tasks/parser";
+import { parseTaskV3Yaml } from "../../../src/tasks/source-v3";
 import { makeSandboxDir, sandboxXdgDataHome } from "../../_helpers/sandbox";
 
 function configFor(
@@ -33,7 +30,7 @@ function writeBundle(root: string, workflow: string, tasks: Record<string, strin
   for (const [name, yaml] of Object.entries(tasks)) fs.writeFileSync(path.join(root, "tasks", `${name}.yml`), yaml);
 }
 
-test("plans and atomically rewrites legacy v1 tasks to strict v2", () => {
+test("plans legacy v1 tasks directly to strict v3 without writing", () => {
   const sandbox = makeSandboxDir("akm-task-target-migration-unit");
   try {
     const legacy = [
@@ -62,19 +59,17 @@ test("plans and atomically rewrites legacy v1 tasks to strict v2", () => {
     expect(plan.rewrites).toHaveLength(1);
     expect(plan.rewrites[0]).toMatchObject({ from: "workflow:ship", to: "workflows/ship" });
 
-    expect(applyTaskTargetRefMigration(plan)).toBe(1);
     const migratedPath = path.join(sandbox.dir, "tasks", "legacy.yml");
-    expect(
-      parseTaskDocument({ yaml: fs.readFileSync(migratedPath, "utf8"), filePath: migratedPath, id: "legacy" }),
-    ).toMatchObject({
-      version: 2,
-      schedule: "@daily",
-      enabled: true,
-      target: { kind: "workflow", ref: "workflows/ship", params: { channel: "stable" } },
+    const rewrite = plan.rewrites[0];
+    if (!rewrite) throw new Error("expected a planned v3 rewrite");
+    expect(parseTaskV3Yaml({ yaml: rewrite.after.toString("utf8"), filePath: migratedPath })).toMatchObject({
+      version: 3,
+      target: { kind: "uses", uses: { kind: "workflow", ref: "workflows/ship" }, with: { channel: "stable" } },
+      akm: { schedule: "@daily", enabled: true },
     });
     expect(fs.readFileSync(path.join(sandbox.dir, "tasks", "current.yml"), "utf8")).toBe(current);
     expect(fs.readFileSync(path.join(sandbox.dir, "tasks", "manual-v2-legacy.yml"), "utf8")).toBe(manualV2Legacy);
-    expect(planTaskTargetRefMigration(configFor({ stash: { path: sandbox.dir } })).rewrites).toEqual([]);
+    expect(fs.readFileSync(migratedPath, "utf8")).toBe(legacy);
   } finally {
     sandbox.cleanup();
   }
@@ -186,28 +181,25 @@ test("moves prompt and command compatibility into the v1 task migration", () => 
 
     const plan = planTaskTargetRefMigration(configFor({ stash: { path: sandbox.dir, writable: true } }));
     expect(plan.rewrites).toHaveLength(4);
-    expect(applyTaskTargetRefMigration(plan)).toBe(4);
-
     const read = (id: string) => {
       const filePath = path.join(sandbox.dir, "tasks", `${id}.yml`);
-      return parseTaskDocument({ yaml: fs.readFileSync(filePath, "utf8"), filePath, id });
+      const rewrite = plan.rewrites.find((candidate) => candidate.filePath === filePath);
+      if (!rewrite) throw new Error(`missing planned rewrite for ${id}`);
+      return parseTaskV3Yaml({ yaml: rewrite.after.toString("utf8"), filePath });
     };
     expect(read("prompt")).toMatchObject({
-      version: 2,
-      tags: ["review", "daily"],
-      target: { kind: "prompt", engine: "reviewer" },
+      version: 3,
+      target: { kind: "uses", uses: { kind: "builtin-command", ref: "akm/command" } },
+      akm: { tags: ["review", "daily"], engine: "reviewer" },
     });
-    expect(read("improve").target).toEqual({
-      kind: "command",
-      cmd: ["akm", "improve", "--strategy", "frequent", "--limit", "5"],
-    });
-    expect(read("explicit").target).toEqual({
-      kind: "command",
-      cmd: ["/opt/retained-0.8/akm", "improve", "--profile", "frequent", "--auto-accept", "safe"],
+    expect(read("improve").target).toMatchObject({ kind: "run", run: "akm improve --strategy frequent --limit 5" });
+    expect(read("explicit").target).toMatchObject({
+      kind: "run",
+      run: "/opt/retained-0.8/akm improve --profile frequent --auto-accept safe",
     });
     expect(read("backup")).toMatchObject({
-      enabled: false,
-      target: { kind: "command", cmd: ["akm", "db", "backups"] },
+      target: { kind: "run", run: "akm db backups" },
+      akm: { enabled: false },
     });
   } finally {
     sandbox.cleanup();
@@ -246,7 +238,6 @@ test("resolves targets from a lock-materialized read-only bundle without rewriti
     );
     expect(plan.rewrites).toHaveLength(1);
     expect(plan.rewrites[0]).toMatchObject({ to: "team//workflows/ship" });
-    expect(applyTaskTargetRefMigration(plan)).toBe(1);
     expect(fs.readFileSync(path.join(materialized, "tasks", "read-only.yml"), "utf8")).toBe(readOnlyTask);
   } finally {
     dataHome.cleanup();
@@ -304,106 +295,6 @@ test("rejects invalid UTF-8 task bytes before planning a rewrite", () => {
       /invalid UTF-8/i,
     );
   } finally {
-    sandbox.cleanup();
-  }
-});
-
-test("loops partial writes and propagates file-sync failures without replacing the task", () => {
-  const sandbox = makeSandboxDir("akm-task-target-durable-write-unit");
-  try {
-    const before = 'schedule: "@daily"\nworkflow: workflow:ship\n';
-    writeBundle(sandbox.dir, "ship", { ship: before });
-    const taskPath = path.join(sandbox.dir, "tasks", "ship.yml");
-    const plan = planTaskTargetRefMigration(configFor({ stash: { path: sandbox.dir, writable: true } }));
-    const after = plan.rewrites[0]!.after;
-
-    const originalWrite = fs.writeSync;
-    let shortened = false;
-    spyOn(fs, "writeSync").mockImplementation(((fd: number, buffer: Uint8Array, offset: number, length: number) => {
-      const actualLength = shortened ? length : Math.max(1, Math.floor(length / 2));
-      shortened = true;
-      return originalWrite(fd, buffer, offset, actualLength);
-    }) as typeof fs.writeSync);
-    expect(applyTaskTargetRefMigration(plan)).toBe(1);
-    expect(shortened).toBe(true);
-    expect(fs.readFileSync(taskPath, "utf8")).toBe(after.toString("utf8"));
-
-    fs.writeFileSync(taskPath, before);
-    const retryPlan = planTaskTargetRefMigration(configFor({ stash: { path: sandbox.dir, writable: true } }));
-    spyOn(fs, "fsyncSync").mockImplementation((fd) => {
-      if (!fs.fstatSync(fd).isDirectory()) throw new Error("injected file fsync failure");
-    });
-    expect(() => applyTaskTargetRefMigration(retryPlan)).toThrow("injected file fsync failure");
-    expect(fs.readFileSync(taskPath, "utf8")).toBe(before);
-  } finally {
-    sandbox.cleanup();
-  }
-});
-
-test("retries a failed parent-directory sync after the replacement is already present", () => {
-  const sandbox = makeSandboxDir("akm-task-target-directory-sync-unit");
-  try {
-    writeBundle(sandbox.dir, "ship", { ship: 'schedule: "@daily"\nworkflow: workflow:ship\n' });
-    const taskPath = path.join(sandbox.dir, "tasks", "ship.yml");
-    const plan = planTaskTargetRefMigration(configFor({ stash: { path: sandbox.dir, writable: true } }));
-    const after = plan.rewrites[0]!.after;
-    const originalFsync = fs.fsyncSync;
-    let directorySyncAttempts = 0;
-    spyOn(fs, "fsyncSync").mockImplementation((fd) => {
-      if (fs.fstatSync(fd).isDirectory()) {
-        directorySyncAttempts += 1;
-        if (directorySyncAttempts === 1) throw new Error("injected parent fsync failure");
-      }
-      return originalFsync(fd);
-    });
-
-    expect(() => applyTaskTargetRefMigration(plan)).toThrow("injected parent fsync failure");
-    expect(fs.readFileSync(taskPath, "utf8")).toBe(after.toString("utf8"));
-    expect(applyTaskTargetRefMigration(plan)).toBe(0);
-    expect(directorySyncAttempts).toBe(2);
-  } finally {
-    sandbox.cleanup();
-  }
-});
-
-test("tolerates unsupported parent-directory fsync through the shared portable durability helper", () => {
-  const sandbox = makeSandboxDir("akm-task-target-portable-directory-sync-unit");
-  try {
-    writeBundle(sandbox.dir, "ship", { ship: 'schedule: "@daily"\nworkflow: workflow:ship\n' });
-    const taskPath = path.join(sandbox.dir, "tasks", "ship.yml");
-    const plan = planTaskTargetRefMigration(configFor({ stash: { path: sandbox.dir, writable: true } }));
-    const originalFsync = fs.fsyncSync;
-    let unsupportedDirectorySyncs = 0;
-    spyOn(fs, "fsyncSync").mockImplementation((fd) => {
-      if (fs.fstatSync(fd).isDirectory()) {
-        unsupportedDirectorySyncs += 1;
-        throw Object.assign(new Error("directory fsync unsupported"), { code: "EINVAL" });
-      }
-      return originalFsync(fd);
-    });
-
-    expect(() => applyTaskTargetRefMigration(plan)).not.toThrow();
-    expect(unsupportedDirectorySyncs).toBeGreaterThan(0);
-    expect(fs.readFileSync(taskPath, "utf8")).toContain("version: 2");
-  } finally {
-    sandbox.cleanup();
-  }
-});
-
-test.skipIf(process.platform === "win32")("preserves the task YAML mode independently of the process umask", () => {
-  const sandbox = makeSandboxDir("akm-task-target-mode-unit");
-  const previousUmask = process.umask();
-  try {
-    writeBundle(sandbox.dir, "ship", { ship: 'schedule: "@daily"\nworkflow: workflow:ship\n' });
-    const taskPath = path.join(sandbox.dir, "tasks", "ship.yml");
-    fs.chmodSync(taskPath, 0o664);
-    const plan = planTaskTargetRefMigration(configFor({ stash: { path: sandbox.dir, writable: true } }));
-
-    process.umask(0o077);
-    expect(applyTaskTargetRefMigration(plan)).toBe(1);
-    expect(fs.statSync(taskPath).mode & 0o777).toBe(0o664);
-  } finally {
-    process.umask(previousUmask);
     sandbox.cleanup();
   }
 });

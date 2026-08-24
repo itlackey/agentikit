@@ -115,7 +115,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ github.workspace }}/.ci-cache/huggingface
-          key: akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'src/vendor/huggingface-transformers/transformers.node.mjs', 'package.json', 'bun.lock') }}-v3
+          key: akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'scripts/copy-assets.ts', 'package.json', 'bun.lock') }}-v3
           restore-keys: |
             akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-
       - name: Run semantic search end to end with real embeddings
@@ -132,7 +132,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ github.workspace }}/.ci-cache/huggingface
-          key: akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'src/vendor/huggingface-transformers/transformers.node.mjs', 'package.json', 'bun.lock') }}-v3
+          key: akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'scripts/copy-assets.ts', 'package.json', 'bun.lock') }}-v3
 
   docker-install:
     name: Gated / Docker Install

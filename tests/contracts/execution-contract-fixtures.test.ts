@@ -8,8 +8,6 @@ import { opencodeAdapter } from "../../src/core/adapter/adapters/opencode-adapte
 import type { BundleAdapter } from "../../src/core/adapter/bundle-adapter";
 import type { BundleComponent } from "../../src/core/adapter/types";
 import { buildFileContext } from "../../src/indexer/walk/file-context";
-import { parseTaskDocument } from "../../src/tasks/parser";
-import type { TaskDocument } from "../../src/tasks/schema";
 import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
 import {
   assertFixtureBytesUnchanged,
@@ -23,21 +21,6 @@ interface NativeManifestEntry {
   kind: "agent" | "command";
   path: string;
   conceptId: string;
-}
-
-interface TaskManifestEntry {
-  id: string;
-  file: string;
-  sourceKind: string;
-  targetKind: string;
-  preserves: string[];
-  expectedParsed: Record<string, unknown>;
-}
-
-interface BlockedTaskManifestEntry {
-  id: string;
-  file: string;
-  reasonCode: string;
 }
 
 interface WorkflowManifest {
@@ -64,7 +47,6 @@ interface PortableWorkflowProjection {
 }
 
 const NATIVE_ROOT = path.join(EXECUTION_CONTRACT_FIXTURES, "native");
-const TASK_ROOT = path.join(EXECUTION_CONTRACT_FIXTURES, "tasks/v2");
 const WORKFLOW_ROOT = path.join(EXECUTION_CONTRACT_FIXTURES, "workflows");
 
 function readJson<T>(file: string): T {
@@ -84,20 +66,6 @@ function fixtureFiles(root: string, extensions: ReadonlySet<string>): string[] {
   };
   visit(root);
   return result.sort();
-}
-
-function taskContractProjection(task: TaskDocument): Record<string, unknown> {
-  return {
-    schedule: task.schedule,
-    enabled: task.enabled,
-    target: task.target,
-    ...(task.name !== undefined ? { name: task.name } : {}),
-    ...(task.description !== undefined ? { description: task.description } : {}),
-    ...(task.when_to_use !== undefined ? { when_to_use: task.when_to_use } : {}),
-    ...(task.tags !== undefined ? { tags: task.tags } : {}),
-    ...(task.timeoutMs !== undefined ? { timeoutMs: task.timeoutMs } : {}),
-    ...(task.redact !== undefined ? { redact: task.redact } : {}),
-  };
 }
 
 describe("execution-contract native fixtures", () => {
@@ -158,133 +126,6 @@ describe("execution-contract native fixtures", () => {
     for (const adapter of Object.keys(adapters) as NativeManifestEntry["adapter"][]) {
       assertFixtureBytesUnchanged(path.join(NATIVE_ROOT, adapter), rootBytes[adapter]);
     }
-  });
-});
-
-describe("task-v2 migration fixture catalog", () => {
-  const manifest = readJson<{
-    schemaVersion: 1;
-    sourceSchemaVersion: 2;
-    deterministic: TaskManifestEntry[];
-    blocked: BlockedTaskManifestEntry[];
-  }>(path.join(TASK_ROOT, "manifest.json"));
-
-  test("every purpose-built task parses under the current v2 reader and is classified for migration", () => {
-    const before = captureFixtureBytes(TASK_ROOT);
-    const catalogFiles = [...manifest.deterministic, ...manifest.blocked].map(({ file }) => file).sort();
-
-    expect(manifest.schemaVersion).toBe(1);
-    expect(manifest.sourceSchemaVersion).toBe(2);
-    expect(catalogFiles).toEqual(fixtureFiles(TASK_ROOT, new Set([".yml"])));
-    expect(new Set(manifest.blocked.map(({ reasonCode }) => reasonCode)).size).toBe(manifest.blocked.length);
-
-    expect(
-      Object.fromEntries(
-        manifest.deterministic.map(({ id, sourceKind, targetKind, preserves }) => [
-          id,
-          { sourceKind, targetKind, preserves },
-        ]),
-      ),
-    ).toEqual({
-      "prompt-inline-full": {
-        sourceKind: "prompt-inline",
-        targetKind: "anonymous-command-content",
-        preserves: [
-          "schedule",
-          "enabled",
-          "name",
-          "description",
-          "when_to_use",
-          "tags",
-          "engine",
-          "model",
-          "timeoutMs",
-          "llm",
-          "redact",
-        ],
-      },
-      "prompt-command-ref": {
-        sourceKind: "prompt-command-ref",
-        targetKind: "command-ref",
-        preserves: ["schedule", "enabled", "engine", "model", "timeoutMs"],
-      },
-      "prompt-inline-agent": {
-        sourceKind: "prompt-inline",
-        targetKind: "anonymous-command-content",
-        preserves: ["schedule", "enabled", "engine", "model", "timeoutMs"],
-      },
-      "command-string": {
-        sourceKind: "command-string-safe-token-sequence",
-        targetKind: "shell-run",
-        preserves: ["schedule", "enabled", "timeoutMs", "redact"],
-      },
-      "workflow-ref-full": {
-        sourceKind: "workflow-ref",
-        targetKind: "workflow-ref",
-        preserves: ["schedule", "enabled", "params", "timeoutMs", "maxSteps", "maxRetries", "redact"],
-      },
-    });
-
-    for (const entry of manifest.deterministic) {
-      const filePath = path.join(TASK_ROOT, entry.file);
-      const task = parseTaskDocument({
-        yaml: fs.readFileSync(filePath, "utf8"),
-        filePath,
-        id: entry.id,
-      });
-      expect(task.version, entry.file).toBe(2);
-      expect(task.source.path).toBe(filePath);
-      expect(taskContractProjection(task), entry.file).toEqual(entry.expectedParsed);
-    }
-
-    for (const entry of manifest.blocked) {
-      const filePath = path.join(TASK_ROOT, entry.file);
-      const task = parseTaskDocument({
-        yaml: fs.readFileSync(filePath, "utf8"),
-        filePath,
-        id: entry.id,
-      });
-      expect(task.version, entry.file).toBe(2);
-      expect(task.source.path).toBe(filePath);
-    }
-
-    const preserved = new Set(manifest.deterministic.flatMap(({ preserves }) => preserves));
-    for (const required of ["schedule", "enabled", "engine", "model", "llm", "params", "timeoutMs", "redact"]) {
-      expect(preserved.has(required), `missing preservation fixture for ${required}`).toBe(true);
-    }
-    assertFixtureBytesUnchanged(TASK_ROOT, before);
-  });
-
-  test("NON-NORMATIVE: blocked cases pin why current v2 input cannot be rewritten mechanically", () => {
-    const parse = (file: string, id: string) => {
-      const filePath = path.join(TASK_ROOT, file);
-      return parseTaskDocument({ yaml: fs.readFileSync(filePath, "utf8"), filePath, id });
-    };
-
-    expect(parse("blocked/command-argv.yml", "command-argv").target).toEqual({
-      kind: "command",
-      cmd: ["printf", "%s\n", "hello world"],
-    });
-    expect(parse("blocked/command-shell-operators.yml", "command-shell-operators").target).toEqual({
-      kind: "command",
-      cmd: ["echo", "before", "&&", "echo", "after"],
-    });
-    expect(parse("blocked/command-shell-quoting.yml", "command-shell-quoting").target).toEqual({
-      kind: "command",
-      cmd: ["printf", '"%s\\n"', '"hello', 'world"'],
-    });
-    expect(parse("blocked/prompt-agent-ref.yml", "prompt-agent-ref").target).toMatchObject({
-      kind: "prompt",
-      source: { kind: "asset", ref: "agents/contract-reviewer" },
-    });
-    expect(parse("blocked/prompt-non-command-ref.yml", "prompt-non-command-ref").target).toMatchObject({
-      kind: "prompt",
-      source: { kind: "asset", ref: "knowledge/contract-notes" },
-    });
-    expect(parse("blocked/prompt-relative-file.yml", "prompt-relative-file").target).toMatchObject({
-      kind: "prompt",
-      source: { kind: "file", path: "./prompts/review.txt" },
-    });
   });
 });
 

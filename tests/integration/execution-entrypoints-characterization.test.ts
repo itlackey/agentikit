@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { planTaskToV3File } from "../../scripts/akm-migrate/migrate/task-to-v3";
 import { akmAgentDispatch } from "../../src/commands/agent/agent-dispatch";
 import { parseRefInput } from "../../src/core/asset/resolve-ref";
 import type { AkmConfig } from "../../src/core/config/config";
@@ -9,7 +10,6 @@ import { akmIndex, lookup } from "../../src/indexer/indexer";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
 import type { RunAgentOptions } from "../../src/integrations/agent/spawn";
-import { planTaskV2ToV3File } from "../../src/tasks/migrate-v2-to-v3";
 import { runTask } from "../../src/tasks/runner";
 import { runCliCapture } from "../_helpers/cli";
 import {
@@ -80,7 +80,7 @@ function installFixture(source: string, destination: string): void {
 }
 
 function installMigratedTaskFixture(source: string, destination: string): void {
-  const outcome = planTaskV2ToV3File({
+  const outcome = planTaskToV3File({
     filePath: source,
     bytes: fs.readFileSync(source),
     mode: 0o600,
@@ -426,7 +426,7 @@ describe("retired task-v2 execution observations", () => {
   test("an agent-shaped v2 prompt ref is migration-only and blocks instead of becoming command work", () => {
     const fixtureBytes = captureFixtureBytes(NATIVE_ROOT);
     const source = path.join(TASK_ROOT, "blocked/prompt-agent-ref.yml");
-    const outcome = planTaskV2ToV3File({
+    const outcome = planTaskToV3File({
       filePath: source,
       bytes: fs.readFileSync(source),
       mode: 0o600,

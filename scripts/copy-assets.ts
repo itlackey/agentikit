@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { createHash } from "node:crypto";
 import { chmodSync } from "node:fs";
 // Build-time asset step:
 //   1. Mirror src/assets/ → dist/assets/ after tsc.
@@ -14,12 +15,17 @@ import { chmodSync } from "node:fs";
 //      globally-installed npm users can run them without
 //      `../src/...` import paths breaking (#469). Bun and Node must never run
 //      each other's target because their runtime dependencies differ.
-//   4. Mirror audited third-party runtime assets under src/vendor/ →
-//      dist/vendor/. Every vendored package must carry its upstream license
-//      and provenance beside the copied bytes.
-import { mkdir } from "node:fs/promises";
+//   4. Materialize audited third-party runtime assets from exact external
+//      build inputs into dist/vendor/. They are build inputs, not source code
+//      or consumer dependencies.
+import { mkdir, readFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
-import { materializeVendoredTransformers } from "./vendor-transformers";
+import { fileURLToPath } from "node:url";
+import semanticRuntimeProvenance from "./semantic-runtime-provenance.md" with { type: "text" };
+
+const TRANSFORMERS_VERSION = "4.2.0";
+const TRANSFORMERS_RUNTIME_SHA256 = "4932ec78a6b136d97d09a12093afb476530d9aa099dbaf1f9822ad56bfe2bc3d";
+const TRANSFORMERS_LICENSE_SHA256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30";
 
 const assetGlob = new Bun.Glob("src/assets/**/*");
 for await (const src of assetGlob.scan(".")) {
@@ -28,16 +34,47 @@ for await (const src of assetGlob.scan(".")) {
   await Bun.write(dest, Bun.file(src));
 }
 
-const vendorGlob = new Bun.Glob("src/vendor/**/*");
-for await (const src of vendorGlob.scan(".")) {
-  const dest = src.replace(/^src\/vendor\//, "dist/vendor/");
-  await mkdir(dirname(dest), { recursive: true });
-  if (src === "src/vendor/huggingface-transformers/transformers.node.mjs") {
-    await Bun.write(dest, materializeVendoredTransformers(await Bun.file(src).text()));
-  } else {
-    await Bun.write(dest, Bun.file(src));
-  }
+const transformersRuntime = fileURLToPath(import.meta.resolve("@huggingface/transformers"));
+const transformersPackageDir = dirname(dirname(transformersRuntime));
+const transformersLicense = `${transformersPackageDir}/LICENSE`;
+const transformersManifest = JSON.parse(await Bun.file(`${transformersPackageDir}/package.json`).text()) as {
+  license?: string;
+  name?: string;
+  version?: string;
+};
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
+
+async function verifyExternalBuildInput(file: string, expectedSha256: string): Promise<Uint8Array> {
+  const bytes = await readFile(file);
+  const actualSha256 = sha256(bytes);
+  if (actualSha256 !== expectedSha256) {
+    throw new Error(`External semantic build input hash mismatch for ${basename(file)}: ${actualSha256}`);
+  }
+  return bytes;
+}
+
+if (
+  transformersManifest.name !== "@huggingface/transformers" ||
+  transformersManifest.version !== TRANSFORMERS_VERSION ||
+  transformersManifest.license !== "Apache-2.0"
+) {
+  throw new Error(`Unexpected external semantic build input: ${JSON.stringify(transformersManifest)}`);
+}
+
+const transformersDest = "dist/vendor/huggingface-transformers";
+await mkdir(transformersDest, { recursive: true });
+await Bun.write(
+  `${transformersDest}/transformers.node.mjs`,
+  await verifyExternalBuildInput(transformersRuntime, TRANSFORMERS_RUNTIME_SHA256),
+);
+await Bun.write(
+  `${transformersDest}/LICENSE`,
+  await verifyExternalBuildInput(transformersLicense, TRANSFORMERS_LICENSE_SHA256),
+);
+await Bun.write(`${transformersDest}/README.akm.md`, semanticRuntimeProvenance);
 
 // Module-local YAML templates may be imported `with { type: "text" }` and
 // live NEXT TO the module that uses them rather than under src/assets/.

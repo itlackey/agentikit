@@ -11,22 +11,20 @@
  * uses an atomic write. An interrupted batch is safely re-planned and resumed.
  */
 
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isMap, parseDocument, stringify as stringifyYaml } from "yaml";
+import { isMap, parseDocument } from "yaml";
 import { bundlesToSourceEntries } from "../../../../src/core/config/config";
 import type { AkmConfig, BundleConfigEntry } from "../../../../src/core/config/config-types";
 import { ConfigError } from "../../../../src/core/errors";
 import { resolveWritable } from "../../../../src/core/write-source";
 import { resolveEntryContentDir } from "../../../../src/indexer/search/search-source";
 import type { LockfileEntry } from "../../../../src/integrations/lockfile";
-import { parseTaskDocument } from "../../../../src/tasks/parser";
+import { planLegacyTaskDataToV3 } from "../task-to-v3";
 import { classifyRefGrammar, legacyConceptId, parseAssetRef } from "../legacy-ref-grammar";
 import { warn } from "../../../../src/core/warn";
 import { normalizeLegacyTask } from "./legacy-task-normalize";
-import { fsyncDirectoryPortable } from "../durable-fs";
 import {
   canonicalizeWorkflowName,
   type LegacySource,
@@ -53,7 +51,6 @@ export interface TaskTargetRefRewrite {
 
 export interface TaskTargetRefMigrationPlan {
   rewrites: TaskTargetRefRewrite[];
-  durabilityPaths: string[];
   /**
    * v1 task files found in read-only bundles. The migration NEVER rewrites a
    * read-only bundle (lock-materialized git/npm caches would be clobbered by
@@ -226,18 +223,20 @@ function planTaskFile(
     }
   }
 
-  const after = Buffer.from(stringifyYaml(normalized));
-  try {
-    parseTaskDocument({ yaml: after.toString("utf8"), filePath, id: path.basename(filePath, ".yml") });
-  } catch (error) {
-    throw migrationError(filePath, `the converted v2 task is invalid (${error instanceof Error ? error.message : String(error)}).`);
+  const mode = fs.lstatSync(filePath).mode & 0o777;
+  const migrated = planLegacyTaskDataToV3({ filePath, bytes: before, mode, writable: true }, normalized);
+  if (migrated.status !== "changed") {
+    throw migrationError(
+      filePath,
+      `the legacy task cannot be converted directly to task v3 (${migrated.reason}${migrated.detail ? `: ${migrated.detail}` : ""}).`,
+    );
   }
   return {
     filePath,
     ...(from !== undefined && to !== undefined ? { from, to } : {}),
     before,
-    after,
-    mode: fs.lstatSync(filePath).mode & 0o777,
+    after: migrated.after,
+    mode,
   };
 }
 
@@ -249,7 +248,6 @@ export function planTaskTargetRefMigration(
 ): TaskTargetRefMigrationPlan {
   const bundles = bundlesFromConfig(config, pathResolutionBase, migrationLockEntries);
   const rewrites: TaskTargetRefRewrite[] = [];
-  const durabilityPaths: string[] = [];
   const readOnlyLegacyTasks: Array<{ bundleId: string; files: string[] }> = [];
   for (const bundle of bundles) {
     if (!bundle.writable) {
@@ -300,7 +298,7 @@ export function planTaskTargetRefMigration(
       if (rewrite) rewrites.push(rewrite);
     }
   }
-  return { rewrites, durabilityPaths, readOnlyLegacyTasks };
+  return { rewrites, readOnlyLegacyTasks };
 }
 
 /**
@@ -333,53 +331,4 @@ function legacyTaskFilesIn(bundle: MigrationBundle): string[] {
     }
   }
   return legacy;
-}
-
-function syncParentDirectory(filePath: string): void {
-  fsyncDirectoryPortable(path.dirname(filePath));
-}
-
-function writeTaskFileDurably(target: string, content: Buffer, mode: number): void {
-  const temp = `${target}.tmp-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
-  let renamed = false;
-  try {
-    const fd = fs.openSync(temp, "wx", mode);
-    try {
-      fs.fchmodSync(fd, mode);
-      let offset = 0;
-      while (offset < content.byteLength) {
-        const written = fs.writeSync(fd, content, offset, content.byteLength - offset);
-        if (written <= 0) throw new Error(`Could not make progress writing task migration temp file ${temp}.`);
-        offset += written;
-      }
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(temp, target);
-    renamed = true;
-    syncParentDirectory(target);
-  } catch (error) {
-    if (!renamed) fs.rmSync(temp, { force: true });
-    throw error;
-  }
-}
-
-/** Apply a preflighted plan with exact-byte fencing and durable atomic writes. */
-export function applyTaskTargetRefMigration(plan: TaskTargetRefMigrationPlan): number {
-  let rewritten = 0;
-  for (const rewrite of plan.rewrites) {
-    const current = fs.readFileSync(rewrite.filePath);
-    if (current.equals(rewrite.after)) {
-      syncParentDirectory(rewrite.filePath);
-      continue;
-    }
-    if (!current.equals(rewrite.before)) {
-      throw migrationError(rewrite.filePath, "the task changed after migration preflight; it was left untouched.");
-    }
-    writeTaskFileDurably(rewrite.filePath, rewrite.after, rewrite.mode);
-    rewritten++;
-  }
-  for (const filePath of plan.durabilityPaths) syncParentDirectory(filePath);
-  return rewritten;
 }

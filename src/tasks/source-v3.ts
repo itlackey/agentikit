@@ -29,6 +29,8 @@ import {
 } from "../workflows/resource-limits";
 
 export const TASK_V3_SCHEMA_VERSION = 3 as const;
+export const TASK_EXTENSION = ".yml";
+export const TASK_NEAR_MISS_EXTENSION = ".yaml";
 export const TASK_V3_MAX_SOURCE_BYTES = 1024 * 1024;
 export const TASK_V3_MAX_JSON_DEPTH = 64;
 export const TASK_V3_MAX_JSON_NODES = 10_000;
@@ -50,6 +52,15 @@ export function taskV2UnsupportedError(filePath: string, id?: string): UsageErro
     `TASK_SCHEMA_VERSION_UNSUPPORTED: ${label} uses task schema version 2, which normal execution does not accept. File: ${filePath}`,
     "TASK_SCHEMA_VERSION_UNSUPPORTED",
     TASK_V2_MIGRATION_HINT,
+  );
+}
+
+/** Explain why the near-miss `.yaml` spelling is not a task source. */
+export function taskExtensionDetail(relPath: string): string {
+  const base = relPath.replace(/\.yaml$/i, "");
+  return (
+    `task file uses the ${TASK_NEAR_MISS_EXTENSION} extension; akm recognizes tasks only as ` +
+    `${TASK_EXTENSION}, so this file is never indexed or scheduled — rename it to ${base}${TASK_EXTENSION}.`
   );
 }
 

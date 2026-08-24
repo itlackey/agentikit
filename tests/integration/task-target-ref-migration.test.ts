@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { planTaskTargetRefMigration } from "../../scripts/akm-migrate/migrate/legacy/task-target-ref-migration";
-import { taskMigrationBackupPath } from "../../scripts/akm-migrate/migrate/task-v2-to-v3-files";
+import { taskMigrationBackupPath } from "../../scripts/akm-migrate/migrate/task-files-to-v3";
 import {
   getMigrationApplyJournalPath,
   getMigrationRestoreJournalPath,
