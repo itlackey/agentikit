@@ -51,7 +51,8 @@ export async function akmAdd(input: {
     return addWebsiteSource(ref, stashDir, input.name, input.options);
   }
 
-  // Detect local directory refs and route them to stashes[] instead of installed[]
+  // Local directories become filesystem bundles; registry refs use the
+  // registry-backed bundle installer below.
   try {
     const parsed = parseRegistryRef(ref);
     if (parsed.source === "local") {

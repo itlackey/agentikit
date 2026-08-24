@@ -187,7 +187,7 @@ export interface ReflectPromptInput {
   /**
    * When provided, the agent is instructed to write the improved content
    * directly to this path using its file tools. No stdout JSON is expected.
-   * When absent, the agent returns a JSON payload via stdout (legacy path).
+   * When absent, the configured engine returns the structured JSON payload.
    */
   draftFilePath?: string;
   /**
@@ -515,7 +515,7 @@ export interface ProposePromptInput {
   /**
    * When provided, the agent is instructed to write the new asset content
    * directly to this path using its file tools. No stdout JSON is expected.
-   * When absent, the agent returns a JSON payload via stdout (legacy path).
+   * When absent, the configured engine returns the structured JSON payload.
    */
   draftFilePath?: string;
 }

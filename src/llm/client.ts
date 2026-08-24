@@ -324,9 +324,8 @@ async function chatCompletionAttempt(
     if (issue) throw new Error(formatExtraParamsIssue("LLM extraParams", issue));
   }
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  // Resolve ONLY a whole-string env reference. Every live caller already hands
-  // us the materialized credential (materializeLlmConnection / materializeFrozenLlm
-  // resolve `$VAR` upstream, and engine config REQUIRES the symbolic form), so
+  // Resolve ONLY a whole-string env reference. The execution boundary normally
+  // hands us a materialized credential after resolving `$VAR` upstream, so
   // re-running the substitution over a literal key mangled any credential
   // containing `$` — `sk-live$ecret` lost everything from the `$` onward, and
   // the request failed with an opaque 401. The narrow check keeps the symbolic

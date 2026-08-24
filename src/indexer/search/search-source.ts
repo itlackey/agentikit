@@ -43,9 +43,8 @@ export interface SearchSource {
  *   2. The configured `defaultBundle`, after component-root validation.
  *   3. Remaining configured bundles in installation-priority order.
  *
- * Replaces the previous four-pass loop that walked `stashes[]` separately
- * for each provider kind. Disabled entries (`enabled: false`) are filtered
- * after deduplication. Missing configured roots remain in the result so the
+ * Disabled entries (`enabled: false`) are filtered after deduplication.
+ * Missing configured roots remain in the result so the
  * indexer can classify their scan as incomplete instead of mistaking them for
  * removed sources.
  */
