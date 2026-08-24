@@ -275,8 +275,15 @@ and verifies it, then receives permissions no broader than `state.db`. One
 `BEGIN IMMEDIATE` window spans the locked ledger recheck, WAL-inclusive
 snapshot, migration 018 DDL, and ledger insert. Fresh-database privilege comes
 only from an atomically created file whose inode remains owned by that open;
-an existing or replaced path cannot inherit it. Unknown or divergent ledgers
-fail closed.
+an existing or replaced path cannot inherit it. An existing file with no
+ledger is rejected without writes by ordinary commands. Explicit upgrade binds
+the exact source inode, writes and verifies a
+`state.db.pre-001-initial-schema.<UTC-digits>.<UUID>.bak` copy before ledger
+creation or migration 001, then attempts the current migrations. Snapshot
+source and target SQLite connections use descriptor-bound paths where the
+platform permits pathname replacement and fail closed if that binding is not
+available. Failed reserved backup paths are reported and retained, never
+removed by check-then-unlink cleanup. Unknown or divergent ledgers fail closed.
 
 This is one narrow released-ledger gate, not a general database backup,
 restore, or cutover framework. Created on first durable state write.

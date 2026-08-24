@@ -33,8 +33,10 @@
  * table rebuild. Released migration 018 contains destructive cleanup DDL and is
  * never applied by an ordinary managed open. The successful `akm upgrade` path
  * must first create and verify a sibling `VACUUM INTO` snapshot, then supplies
- * the narrow explicit intent that admits 018. Unknown and divergent ledgers fail
- * closed.
+ * the narrow explicit intent that admits 018. A pre-existing file with no
+ * migration ledger is also rejected without writes; explicit upgrade snapshots
+ * its exact inode before creating the ledger or applying migration 001. Unknown
+ * and divergent ledgers fail closed.
  *
  * Normal automatic schema evolution uses:
  *   - ALTER TABLE … ADD COLUMN <name> <type> DEFAULT <value>
