@@ -257,6 +257,29 @@ describe("runProposalQualityCase — windowed validationPassRate", () => {
     expect(result.passed).toBe(false);
     expect(result.skipped).toBeUndefined();
   });
+
+  test("requires current state.db instead of reading the retired proposal filesystem", async () => {
+    const f = freshFixture();
+    const legacyDir = path.join(f.stashRoot, ".akm", "proposals", "legacy-proposal");
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(legacyDir, "proposal.json"),
+      JSON.stringify({
+        id: "legacy-proposal",
+        ref: "lessons/legacy",
+        status: "pending",
+        source: "improve",
+        createdAt: "2026-05-21T10:00:00.000Z",
+        updatedAt: "2026-05-21T10:00:00.000Z",
+      }),
+    );
+
+    const result = await runProposalQualityCase(makeCase({ since: null }), makeContext(f));
+
+    expect(result.passed).toBe(false);
+    expect(result.errors).toEqual(["proposal-quality requires the current state.db proposal queue"]);
+    expect(result.metrics).toEqual({});
+  });
 });
 
 describe("runProposalQualityCase — deterministic clock injection (ctx.runStartedAt)", () => {
