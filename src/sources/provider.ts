@@ -67,7 +67,7 @@ export interface SyncOptions {
   /**
    * Secret resolver for provider kinds whose refresh needs credentials
    * (today: the website provider's X fetcher). Absent means environment
-   * variables only — the documented, backward-compatible default.
+   * variables only — the documented default.
    */
   secrets?: SecretResolver;
   /**

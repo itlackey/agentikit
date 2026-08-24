@@ -11,7 +11,7 @@
  * `ensureWebsiteMirror` must supply `resolveSecret`.
  *
  * The `secrets?: SecretResolver` option is deliberately optional — an absent
- * resolver means "environment variables only", the backward-compatible read
+ * resolver means "environment variables only", the documented read
  * path. But a caller that MATERIALIZES sources (clones/pulls/re-fetches, i.e.
  * does not pass `materialize: false`) and omits `secrets` silently reverts a
  * website source's X fetcher to `X_BEARER_TOKEN`-only — the exact

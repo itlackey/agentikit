@@ -128,7 +128,7 @@ async function preflightProposalDispatch(
   });
 }
 
-/** Resolve, lower, and dispatch the already-rendered legacy proposal prompt. */
+/** Resolve, lower, and dispatch the already-rendered proposal prompt. */
 async function dispatchProposalPrompt(
   prompt: string,
   config: AkmConfig,
@@ -258,7 +258,7 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
     draftFilePath: resolvedDraftPath,
   });
 
-  // 3. Preserve the fully-authored legacy prompt as the terminal user content;
+  // 3. Preserve the fully-authored prompt as the terminal user content;
   // no synthetic persona, conversation turn, schema, or tool selection is
   // introduced while it crosses the shared resolved/lowered boundary.
   const dispatch = await dispatchProposalPrompt(prompt, config, options, () =>
