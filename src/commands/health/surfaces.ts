@@ -26,10 +26,8 @@ import type { HealthCheckResult } from "./types";
  * `binary-config-skew` (08-F3): warn when config.json carries a configVersion
  * NEWER than (or unorderable against) this binary's CURRENT_CONFIG_VERSION —
  * i.e. a newer/foreign akm wrote the shared config and this install is stale.
- * That is exactly the state where auto-migration is skipped (downgrade
- * protection) and the proven multi-install incident class begins. Silent for
- * same/older versions (auto-migration handles those) and unreadable configs
- * (config loading surfaces its own errors).
+ * That is the proven multi-install incident class. Silent for current or older
+ * versions and unreadable configs (config loading surfaces its own errors).
  */
 export function collectConfigSkewAdvisory(configPath: string): HealthCheckResult | undefined {
   let raw: Record<string, unknown>;
@@ -52,8 +50,8 @@ export function collectConfigSkewAdvisory(configPath: string): HealthCheckResult
     confidence: "high",
     message:
       `config.json has configVersion ${JSON.stringify(onDisk)} but this binary knows ${CURRENT_CONFIG_VERSION} — ` +
-      "a newer akm wrote the shared config, so this install is stale and auto-migration is skipped " +
-      "(downgrade protection). Upgrade this install; do not keep a stale binary against the shared config/DBs.",
+      "a newer akm wrote the shared config, so this install is stale. Upgrade this install; do not keep a stale " +
+      "binary against the shared config/DBs.",
     evidence: { onDiskConfigVersion: onDisk, binaryConfigVersion: CURRENT_CONFIG_VERSION },
   };
 }

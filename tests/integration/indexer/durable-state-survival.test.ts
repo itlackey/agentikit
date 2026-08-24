@@ -7,11 +7,9 @@
  * under the new item_ref keys (spec §11.4 — usage/feedback rows must never be
  * lost across a reindex).
  *
- * Post-Chunk-8 WI-8.5c: the one-time legacy→item_ref re-key is owned by the
- * migration cutover (020-three-db-cutover), so index finalize only RELINKS —
- * every stored `entry_ref` is already the fully-qualified `bundle//conceptId`
- * item_ref spelling. This pins that a rebuild (which nulls entry ids) re-resolves
- * them from the durable `entry_ref` and preserves the retrieval/feedback counts.
+ * Index finalize only relinks current item refs. This pins that a rebuild
+ * (which nulls entry ids) re-resolves them from durable `entry_ref` and
+ * preserves retrieval and feedback counts.
  */
 
 import { afterEach, beforeEach, expect, test } from "bun:test";

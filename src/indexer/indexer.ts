@@ -471,14 +471,9 @@ async function runFinalizePhase(
   });
   ctx.timing.tFtsEnd = Date.now();
 
-  // Re-link detached usage_events and recompute utility scores. The one-time
-  // §11.4 legacy→item_ref re-key is owned by the migration cutover
-  // (020-three-db-cutover) now, so index finalize only re-resolves entry_ids
-  // (idempotent) — every stored `entry_ref` is already the item_ref spelling.
-  //
-  // Chunk-8 WI-8.3: usage_events lives in state.db now (index.db no longer holds
-  // it), so these cross-DB passes take both handles — entries in `db` (index.db),
-  // usage_events in the loaned state.db.
+  // Re-link state.db usage events to the regenerated index and recompute the
+  // derived utility cache. Stored refs already use the current item-ref grammar,
+  // so this idempotent pass only restores derived entry ids.
   const mutateState = (stateDb: Database, stateSchema?: string): void => {
     onProgress({ phase: "finalize", message: "Relinking usage events." });
     relinkUsageEvents(db, stateDb, { sources, defaultStashDir: stashDir, stateSchema });

@@ -193,8 +193,8 @@ export const GLOBAL_OUTPUT_ARGS = {
     alias: "q",
     description:
       "Suppress non-essential stderr output (banners, spinners, progress info) (global flag). " +
-      "Safety-critical output is never suppressed: errors, destructive-action confirmation prompts, " +
-      "and auto-migration banners always appear regardless of --quiet.",
+      "Safety-critical output is never suppressed: errors and destructive-action confirmation prompts " +
+      "always appear regardless of --quiet.",
     default: false,
   },
   verbose: {

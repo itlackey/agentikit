@@ -6,12 +6,12 @@
  * Pure I/O helpers for AKM config files.
  *
  * No knowledge of the AkmConfig shape — these functions just read JSON(C) text
- * from disk and write JSON text back atomically. Validation and migration live
- * in `./config.ts` and `./config-migrate.ts`.
+ * from disk and write JSON text back atomically. Current-schema validation lives
+ * in `./config.ts`; older config shapes are rejected.
  *
  * Split out so the load path is testable without touching the filesystem
  * (`parseConfigText` is pure), and so a single atomic write path serves
- * `saveConfig`, the migrate command, and the setup wizard (#464.c).
+ * `saveConfig` and the setup wizard (#464.c).
  */
 import fs from "node:fs";
 import path from "node:path";

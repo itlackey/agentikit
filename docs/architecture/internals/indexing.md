@@ -137,9 +137,8 @@ this is a purpose summary:
 | `graph_extraction_queue` | lazy, priority-ordered backlog of files awaiting graph extraction |
 
 `usage_events` (search/show/feedback telemetry) and workflow runtime state
-both live in `state.db`, not `index.db` — the three-DB cutover (Chunk-8
-WI-8.3) moved `usage_events` out of the regenerable index and folded the
-former `workflow.db` into `state.db`.
+both live in `state.db`, not `index.db`, so rebuildable search state remains
+separate from durable runtime state.
 
 ## Schema Versioning
 

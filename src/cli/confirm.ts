@@ -33,8 +33,8 @@
  *
  * ## Safety exemptions
  *
- * `--quiet` NEVER suppresses the confirmation prompt — it is safety-critical
- * output. The auto-migration banner is similarly exempt from `--quiet`.
+ * `--quiet` NEVER suppresses the confirmation prompt because it is
+ * safety-critical output.
  */
 
 import { UsageError } from "../core/errors";

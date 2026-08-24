@@ -41,23 +41,13 @@ import { isVecAvailable, purgeEmbeddings } from "./index-vec-repository";
 // regenerable derived cache, so an `akm index` rebuild repopulates the new
 // columns on any DB opened at an older version.
 //
-// v18→v19 (Chunk-5 flip F4c, spec §11.4): `entries.item_ref` becomes THE durable
-// identity — its lookup index is upgraded to UNIQUE (every indexed row now
-// carries item_ref; NULLs are distinct in a SQLite UNIQUE index, so write-back
-// stragglers coexist). The durable state keyed off refs (`usage_events.entry_ref`)
-// is re-keyed onto item_ref by the one-time §11.4 migration cutover
-// (020-three-db-cutover) with orphan quarantine in `legacy_state`. The index is
-// regenerable, so a rebuild is an acceptable fallback if the UNIQUE upgrade finds
-// a duplicate on a partially-migrated DB.
+// v18→v19: `entries.item_ref` becomes the durable identity and its lookup index
+// is upgraded to UNIQUE. The index is regenerable, so a rebuild is an acceptable
+// fallback if a partially-written derived cache cannot satisfy the constraint.
 //
-// v19→v20 (Chunk-8 WI-8.3, three-DB merge): index.db STOPS owning `usage_events`
-// + `legacy_state`. Both are durable, non-regenerable state and now live in
-// state.db (folded by state migration 020; the cutover rescues the old index.db
-// rows across). index.db is a regenerable cache, so dropping their DDL from the
-// schema path needs no migration — a rebuild simply no longer re-creates them.
-// STANDARD REBUILD NOTE: after this bump, any index.db opened at v19 is rebuilt
-// from the stash on the next `akm index`; usage_events/legacy_state are read
-// exclusively from state.db thereafter.
+// v19→v20: durable `usage_events` belongs to state.db. index.db is a regenerable
+// cache and never owns durable telemetry. Migration 020 remains immutable ledger
+// history; no current runtime cutover or quarantine path depends on it.
 //
 // Reader/writer repoint progress (spec §3.3 "single clean shape"): the `entries`
 // upsert (index-entries-repository `getUpsertStmts`) uses the UNIQUE `item_ref`
@@ -324,9 +314,8 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
     `);
   }
 
-  // usage_events + legacy_state moved to state.db (Chunk-8 WI-8.3, DB_VERSION
-  // v20). index.db no longer creates them; usage_events writers/readers open
-  // state.db. utility_scores (a regenerable index.db cache) stays here.
+  // usage_events lives in state.db. utility_scores remains a regenerable
+  // index.db cache.
 
   // Utility scores table (aggregated per-entry utility metrics)
   db.exec(`

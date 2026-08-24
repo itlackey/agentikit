@@ -11,15 +11,13 @@ import { relinkUsageEvents } from "../../../src/storage/repositories/index-entri
 /**
  * Focused tests for {@link relinkUsageEvents}.
  *
- * Post-Chunk-8 WI-8.5c: every `usage_events.entry_ref` is the fully-qualified
- * `bundle//conceptId` item_ref spelling (the one-time legacy→item_ref re-key is
- * owned by the migration cutover). The relink re-resolves detached rows through
- * the canonical `findEntryIdByRef` resolver, which keys on the durable
- * `entries.item_ref`. Bare durable refs are ignored.
+ * Every `usage_events.entry_ref` is the fully-qualified `bundle//conceptId`
+ * item-ref spelling. Relinking resolves detached rows through the canonical
+ * `findEntryIdByRef` resolver; bare durable refs are ignored.
  */
 describe("relinkUsageEvents", () => {
-  // Chunk-8 WI-8.3: usage_events lives in state.db; `entries` in index.db. The
-  // relink now spans both handles.
+  // usage_events lives in state.db while entries lives in index.db, so relink
+  // spans both handles.
   let indexDb: AkmDatabase;
   let stateDb: AkmDatabase;
 

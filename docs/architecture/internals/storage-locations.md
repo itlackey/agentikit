@@ -321,8 +321,8 @@ Indexes: `idx_task_history_task` on `task_id`, `idx_task_history_started` on `st
 
 #### Table: `usage_events`
 
-Moved here from `index.db` at the three-DB cutover (Chunk-8 WI-8.3) — durable,
-non-regenerable telemetry does not belong in a rebuildable derived cache.
+Durable, non-regenerable telemetry lives in `state.db`, not the rebuildable
+derived index.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -333,20 +333,19 @@ non-regenerable telemetry does not belong in a rebuildable derived cache.
 | `entry_ref` | TEXT | Stable ref string (survives entry ID changes across index rebuilds) |
 | `signal` | TEXT | Feedback signal: `positive` or `negative` |
 | `metadata` | TEXT | JSON free-form metadata |
-| `source` | TEXT NOT NULL DEFAULT 'user' | Provenance: `user`, `improve`, `task`, `audit`, or `unknown`. The SQL default is retained in the cutover schema; runtime writers always pass an explicit value. |
+| `source` | TEXT NOT NULL DEFAULT 'user' | Provenance: `user`, `improve`, `task`, `audit`, or `unknown`. Runtime writers always pass an explicit value. |
 | `created_at` | TEXT NOT NULL | ISO-8601 |
 
 Indexes: `idx_usage_events_entry`, `idx_usage_events_type`, `idx_usage_events_ref`, `idx_usage_events_source`.
 
-Preserved across `index.db` schema changes and full rebuilds. `relinkUsageEvents()` re-associates rows to new entry IDs via `entry_ref` after a full rebuild.
-Pre-provenance rows rescued during the three-DB cutover are explicitly stored as
-`unknown`, never promoted to user demand by the historical SQL default.
+Preserved across `index.db` schema changes and full rebuilds. `relinkUsageEvents()`
+re-associates rows to new entry IDs via `entry_ref` after a full rebuild.
 
 #### Table: `legacy_state`
 
-Orphan quarantine archive populated by the one-time three-DB-cutover ref-rekey
-migration (§11.4): rows from durable state keyed off a ref that could not be
-re-keyed onto `item_ref` land here instead of being silently dropped.
+Historical table installed by released state migration 020. The migration SQL
+and ledger id remain immutable for existing databases; current runtime code has
+no reader, writer, or cutover path for this table.
 
 ---
 

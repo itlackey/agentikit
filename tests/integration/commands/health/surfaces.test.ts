@@ -41,7 +41,7 @@ describe("collectConfigSkewAdvisory (08-F3)", () => {
     expect(adv?.status).toBe("warn");
   });
 
-  test("silent when configVersion matches or predates the binary (auto-migration handles it)", () => {
+  test("silent when configVersion matches or predates the binary", () => {
     const dir = makeTempDir("akm-surfaces-skew-");
     const configPath = path.join(dir, "config.json");
     fs.writeFileSync(configPath, JSON.stringify({ configVersion: "0.8.0" }));
