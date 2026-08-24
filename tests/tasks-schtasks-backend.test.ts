@@ -13,6 +13,12 @@ import {
   schedulerContextDescriptor,
   schedulerContextPath,
 } from "../src/tasks/scheduler-invocation";
+import {
+  type SchedulerArtifactDrift,
+  type SchedulerBackendContractDriver,
+  type SchedulerNormalizedPeer,
+  schedulerBackendConformance,
+} from "./_helpers/scheduler-backend-conformance";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
   AKM_BUNDLE_DIR: "C:\\Users\\Akm User\\O'Brien & notes",
@@ -825,8 +831,10 @@ describe("schtasks backend install validation", () => {
 });
 
 describe("schtasks backend transactional install", () => {
-  function transactionBackend() {
+  function transactionBackend(scheduledContext: ScheduledTaskContext = SCHEDULED_CONTEXT) {
     const files = new Map<string, string>();
+    let fsAccesses = 0;
+    let fsMutations = 0;
     let installedXml: string | undefined;
     let installedTaskName: string | undefined;
     let extraInstalledXml: string | undefined;
@@ -838,6 +846,8 @@ describe("schtasks backend transactional install", () => {
     const calls: string[][] = [];
     const fs: SchtasksFs = {
       writeFile(file, content) {
+        fsAccesses += 1;
+        fsMutations += 1;
         files.set(file, content);
         if (swapAfterTempWrite !== undefined) {
           installedXml = swapAfterTempWrite;
@@ -845,6 +855,8 @@ describe("schtasks backend transactional install", () => {
         }
       },
       removeFile(file) {
+        fsAccesses += 1;
+        fsMutations += 1;
         files.delete(file);
       },
       tmpdir: () => "C:/tmp",
@@ -914,7 +926,7 @@ describe("schtasks backend transactional install", () => {
         fs,
         akmArgv: ["C:/akm.exe"],
         logDir: "C:/log",
-        scheduledContext: SCHEDULED_CONTEXT,
+        scheduledContext,
         userSid: USER_SID,
       }),
       calls,
@@ -942,8 +954,73 @@ describe("schtasks backend transactional install", () => {
       failNext(operation: "create" | "disable") {
         failNextOperation = operation;
       },
+      captureState() {
+        return {
+          installedXml,
+          installedTaskName,
+          extraInstalledXml,
+          extraInstalledTaskName,
+          enabled,
+          files: [...files.entries()].sort(([left], [right]) => left.localeCompare(right)),
+        };
+      },
+      resetActivity() {
+        calls.length = 0;
+        fsAccesses = 0;
+        fsMutations = 0;
+      },
+      accessCount: () => calls.length + fsAccesses,
+      mutationCount: () =>
+        fsMutations +
+        calls.filter((call) => ["/create", "/delete", "/change"].includes(call[1]?.toLowerCase() ?? "")).length,
     };
   }
+
+  function schtasksContractDriver(scheduledContext = SCHEDULED_CONTEXT): SchedulerBackendContractDriver {
+    const transaction = transactionBackend(scheduledContext);
+    const nativeId = (binding: SchedulerBinding) => binding.nativeId ?? schedulerNativeBindingId(binding.id);
+
+    return {
+      backend: transaction.backend,
+      captureState: transaction.captureState,
+      clearArtifact: () => transaction.clearInstalled(),
+      driftArtifact(binding, drift: SchedulerArtifactDrift) {
+        const prior = transaction.installedXml();
+        if (!prior) throw new Error(`missing Task Scheduler XML fixture for ${binding.id}`);
+        const next =
+          drift === "foreign"
+            ? prior.replaceAll("&apos;ping&apos;", "&apos;foreign&apos;")
+            : drift === "malformed"
+              ? prior.replaceAll("&apos;--scheduled&apos;", "&apos;--broken&apos;")
+              : prior.replace("<DaysInterval>1</DaysInterval>", "<DaysInterval>2</DaysInterval>");
+        if (next === prior) throw new Error(`failed to drift Task Scheduler fixture for ${drift}`);
+        transaction.replaceInstalledXml(next);
+      },
+      addNormalizedPeer(binding, peer: SchedulerNormalizedPeer) {
+        const id = nativeId(binding);
+        const xml = transaction.installedXml();
+        if (!xml) throw new Error(`missing Task Scheduler XML fixture for ${binding.id}`);
+        transaction.addEquivalentArtifact(`\\akm\\${peer === "case" ? id.toUpperCase() : `${id}.`}`, xml);
+      },
+      currentFingerprint(binding) {
+        const artifact = (
+          transaction.backend.listNativeArtifacts?.() as Array<{ nativeId: string; fingerprint?: string }>
+        ).find((candidate) => candidate.nativeId === nativeId(binding));
+        if (!artifact?.fingerprint) throw new Error(`missing Task Scheduler fingerprint fixture for ${binding.id}`);
+        return artifact.fingerprint;
+      },
+      resetActivity: transaction.resetActivity,
+      accessCount: transaction.accessCount,
+      mutationCount: transaction.mutationCount,
+    };
+  }
+
+  schedulerBackendConformance({
+    name: "schtasks",
+    scheduledContext: SCHEDULED_CONTEXT,
+    movedContext: { ...SCHEDULED_CONTEXT, AKM_STATE_DIR: "C:\\Users\\Akm User\\moved-state" },
+    create: schtasksContractDriver,
+  });
 
   const higherOrdinal = () =>
     compileTaskSchedulerBindings({
