@@ -239,13 +239,19 @@ export function upgradeHistoricalStateDatabase(dbPath = getStateDbPath()): Histo
   if (!fs.existsSync(dbPath)) return { upgraded: false };
 
   let safetyCopyPath: string | undefined;
-  const db = openStateDatabase(dbPath, {
-    allowHistoricalDestructiveStateUpgrade: true,
-    onHistoricalStateSafetyCopy(copyPath) {
-      safetyCopyPath = copyPath;
-    },
-  });
-  db.close();
+  try {
+    const db = openStateDatabase(dbPath, {
+      allowHistoricalDestructiveStateUpgrade: true,
+      onHistoricalStateSafetyCopy(copyPath) {
+        safetyCopyPath = copyPath;
+      },
+    });
+    db.close();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const recovery = safetyCopyPath ? ` Verified safety copy: ${safetyCopyPath}.` : "";
+    throw new Error(`${detail}${recovery}`);
+  }
   return safetyCopyPath ? { upgraded: true, safetyCopyPath } : { upgraded: false };
 }
 

@@ -12,8 +12,7 @@ import {
   STATE_MIGRATION_SAFETY_BY_ID,
   STATE_MIGRATIONS,
 } from "../../src/core/state/migrations";
-import * as stateDbModule from "../../src/core/state-db";
-import { openStateDatabase } from "../../src/core/state-db";
+import { openStateDatabase, upgradeHistoricalStateDatabase } from "../../src/core/state-db";
 import { openDatabase } from "../../src/storage/database";
 import { runMigrations } from "../../src/storage/engines/sqlite-migrations";
 
@@ -93,6 +92,7 @@ describe("state.db automatic migration boundary", () => {
     const file = statePath();
     const before018 = STATE_MIGRATIONS.slice(0, migrationIndex("018-drop-dead-lane-schema"));
     const seeded = openDatabase(file);
+    seeded.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0");
     runMigrations(seeded, before018);
     seeded
       .prepare("INSERT INTO consolidation_judged (entry_key, content_hash, judged_at, outcome) VALUES (?, ?, ?, ?)")
@@ -126,22 +126,15 @@ describe("state.db automatic migration boundary", () => {
     const file = statePath();
     const before018 = STATE_MIGRATIONS.slice(0, migrationIndex("018-drop-dead-lane-schema"));
     const seeded = openDatabase(file);
+    seeded.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0");
     runMigrations(seeded, before018);
     seeded
       .prepare("INSERT INTO consolidation_judged (entry_key, content_hash, judged_at, outcome) VALUES (?, ?, ?, ?)")
       .run("memories/recoverable", "recover-me", "2026-08-24T01:00:00.000Z", "actioned");
-    seeded.close();
+    expect(fs.existsSync(`${file}-wal`)).toBe(true);
 
-    const upgradeHistoricalStateDatabase = (
-      stateDbModule as typeof stateDbModule & {
-        upgradeHistoricalStateDatabase: (dbPath: string) => {
-          upgraded: boolean;
-          safetyCopyPath?: string;
-        };
-      }
-    ).upgradeHistoricalStateDatabase;
-    expect(upgradeHistoricalStateDatabase).toBeFunction();
     const result = upgradeHistoricalStateDatabase(file);
+    seeded.close();
 
     expect(result.upgraded).toBe(true);
     expect(result.safetyCopyPath).toStartWith(`${file}.pre-018-drop-dead-lane-schema.`);

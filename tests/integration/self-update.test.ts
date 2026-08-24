@@ -552,7 +552,7 @@ describe("performUpgrade", () => {
         installMethod: "npm",
       },
       { skipPostUpgrade: true },
-      { upgradeHistoricalStateDatabase } as never,
+      { upgradeHistoricalStateDatabase },
     );
 
     expect(result.upgraded).toBe(true);
