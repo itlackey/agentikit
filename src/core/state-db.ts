@@ -98,11 +98,15 @@ function safetyCopyTimestamp(): string {
   return new Date().toISOString().replaceAll(/[^0-9]/g, "");
 }
 
-interface OwnedFileReservation {
+interface FileIdentityHandle {
   path: string;
   fd: number;
   identity: fs.BigIntStats;
 }
+
+type OwnedFileReservation = FileIdentityHandle;
+
+type StateDatabaseSource = FileIdentityHandle;
 
 function noFollowFlag(): number {
   return process.platform !== "win32" && typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
@@ -142,39 +146,62 @@ function assertOwnedFileReservation(reservation: OwnedFileReservation, label: st
   return pathStat;
 }
 
-function descriptorAlias(reservation: OwnedFileReservation): string | undefined {
+function assertStateDatabaseSource(source: StateDatabaseSource): fs.BigIntStats {
+  const descriptorStat = fs.fstatSync(source.fd, { bigint: true });
+  let pathStat: fs.BigIntStats;
+  try {
+    pathStat = fs.lstatSync(source.path, { bigint: true });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`state.db source inode verification failed because its path disappeared: ${detail}`);
+  }
+  if (
+    pathStat.isSymbolicLink() ||
+    !pathStat.isFile() ||
+    !descriptorStat.isFile() ||
+    !samePhysicalFile(source.identity, descriptorStat) ||
+    !samePhysicalFile(descriptorStat, pathStat) ||
+    descriptorStat.uid !== source.identity.uid ||
+    pathStat.uid !== source.identity.uid
+  ) {
+    throw new Error("state.db source ownership/inode verification failed: its path is a symlink or was replaced.");
+  }
+  return descriptorStat;
+}
+
+function descriptorAlias(handle: FileIdentityHandle): string | undefined {
   const candidates =
     process.platform === "linux"
-      ? [`/proc/self/fd/${reservation.fd}`]
+      ? [`/proc/self/fd/${handle.fd}`, `/dev/fd/${handle.fd}`]
       : process.platform === "win32"
         ? []
-        : [`/dev/fd/${reservation.fd}`];
+        : [`/dev/fd/${handle.fd}`];
   for (const candidate of candidates) {
     try {
       const stat = fs.statSync(candidate, { bigint: true });
-      if (samePhysicalFile(reservation.identity, stat)) return candidate;
+      if (samePhysicalFile(handle.identity, stat)) return candidate;
     } catch {
-      // The held descriptor still protects identity; use the verified pathname
-      // on platforms without a SQLite-openable descriptor alias.
+      // The caller verifies the pathname immediately around SQLite open on
+      // platforms without a SQLite-openable descriptor alias.
     }
   }
   return undefined;
 }
 
-function closeReservation(reservation: OwnedFileReservation): void {
-  try {
-    fs.closeSync(reservation.fd);
-  } catch {
-    // Preserve the authoritative operation failure.
-  }
+function sqliteBoundFilePath(handle: FileIdentityHandle, label: string): string {
+  const alias = descriptorAlias(handle);
+  if (alias) return alias;
+  // SQLite's Windows VFS keeps an open database pathname from being replaced;
+  // the caller still performs identity checks immediately around every open.
+  if (process.platform === "win32") return handle.path;
+  throw new Error(`${label} cannot be bound to its held inode: this platform has no descriptor-backed path.`);
 }
 
-function unlinkReservationIfStillOwned(reservation: OwnedFileReservation): void {
+function closeFileIdentity(handle: FileIdentityHandle): void {
   try {
-    assertOwnedFileReservation(reservation, "Reserved state.db safety copy");
-    fs.unlinkSync(reservation.path);
+    fs.closeSync(handle.fd);
   } catch {
-    // Never remove a pathname that no longer names the inode this attempt made.
+    // Preserve the authoritative operation failure.
   }
 }
 
@@ -204,14 +231,39 @@ function reserveFreshStateDatabase(dbPath: string): OwnedFileReservation | undef
   }
 }
 
+function openExistingStateDatabaseSource(dbPath: string): StateDatabaseSource {
+  let fd: number;
+  try {
+    fd = fs.openSync(dbPath, fs.constants.O_RDONLY | noFollowFlag());
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not bind the existing state.db source inode: ${detail}`);
+  }
+  try {
+    const source: StateDatabaseSource = {
+      path: dbPath,
+      fd,
+      identity: fs.fstatSync(fd, { bigint: true }),
+    };
+    assertStateDatabaseSource(source);
+    return source;
+  } catch (error) {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // Preserve the source identity failure.
+    }
+    throw error;
+  }
+}
+
 function reserveHistoricalSafetyCopy(
-  dbPath: string,
+  source: StateDatabaseSource,
   migrationId: string,
 ): { reservation: OwnedFileReservation; finalMode: number } {
-  const sourceStat = fs.statSync(dbPath, { bigint: true });
-  if (!sourceStat.isFile()) throw new Error("state.db is not a regular file");
+  const sourceStat = assertStateDatabaseSource(source);
   const finalMode = Number(sourceStat.mode & 0o600n);
-  const prefix = `${dbPath}.pre-${migrationId}.${safetyCopyTimestamp()}`;
+  const prefix = `${source.path}.pre-${migrationId}.${safetyCopyTimestamp()}`;
 
   for (let attempt = 0; attempt < 32; attempt += 1) {
     const candidate = `${prefix}.${randomUUID()}.bak`;
@@ -239,13 +291,16 @@ function reserveHistoricalSafetyCopy(
       assertOwnedFileReservation(reservation, "Reserved state.db safety copy");
       return { reservation, finalMode };
     } catch (error) {
-      if (reservation) unlinkReservationIfStillOwned(reservation);
       try {
         fs.closeSync(fd);
       } catch {
         // Preserve the reservation/ownership failure.
       }
-      throw error;
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Could not secure reserved state.db safety-copy path ${candidate}: ${detail}. ` +
+          "The reserved pathname was not removed.",
+      );
     }
   }
   throw new Error("Could not reserve a unique randomized state.db safety-copy path after 32 attempts.");
@@ -267,16 +322,19 @@ function fsyncDirectory(directory: string): void {
  * committed WAL content in one consistent sibling database; a raw file copy
  * would not.
  */
-function createHistoricalStateSafetyCopy(dbPath: string, migrationId: string): string {
-  const { reservation, finalMode } = reserveHistoricalSafetyCopy(dbPath, migrationId);
+function createHistoricalStateSafetyCopy(source: StateDatabaseSource, migrationId: string): string {
+  const { reservation, finalMode } = reserveHistoricalSafetyCopy(source, migrationId);
   let reader: Database | undefined;
   try {
     assertOwnedFileReservation(reservation, "Reserved state.db safety copy");
+    assertStateDatabaseSource(source);
     // The migration connection already holds BEGIN IMMEDIATE. A distinct
-    // read-only connection can snapshot the committed WAL view without trying
-    // to VACUUM from inside that transaction.
-    reader = openDatabase(dbPath, { readonly: true });
-    reader.prepare("VACUUM INTO ?").run(descriptorAlias(reservation) ?? reservation.path);
+    // read-only connection bound to the held source inode can snapshot the
+    // committed WAL view without trying to VACUUM from inside that transaction.
+    reader = openDatabase(sqliteBoundFilePath(source, "state.db snapshot source"), { readonly: true });
+    assertStateDatabaseSource(source);
+    reader.prepare("VACUUM INTO ?").run(sqliteBoundFilePath(reservation, "Reserved state.db safety-copy target"));
+    assertStateDatabaseSource(source);
     reader.close();
     reader = undefined;
 
@@ -284,7 +342,9 @@ function createHistoricalStateSafetyCopy(dbPath: string, migrationId: string): s
     fs.fsyncSync(reservation.fd);
     assertOwnedFileReservation(reservation, "Reserved state.db safety copy");
 
-    const verified = openDatabase(descriptorAlias(reservation) ?? reservation.path, { readonly: true });
+    const verified = openDatabase(sqliteBoundFilePath(reservation, "Reserved state.db safety-copy target"), {
+      readonly: true,
+    });
     try {
       const quickCheck = verified.prepare("PRAGMA quick_check").get() as Record<string, unknown> | undefined;
       if (!quickCheck || Object.values(quickCheck)[0] !== "ok") {
@@ -299,7 +359,7 @@ function createHistoricalStateSafetyCopy(dbPath: string, migrationId: string): s
     fs.fsyncSync(reservation.fd);
     assertOwnedFileReservation(reservation, "Reserved state.db safety copy");
     fsyncDirectory(path.dirname(reservation.path));
-    closeReservation(reservation);
+    closeFileIdentity(reservation);
     return reservation.path;
   } catch (error) {
     try {
@@ -307,10 +367,12 @@ function createHistoricalStateSafetyCopy(dbPath: string, migrationId: string): s
     } catch {
       // Preserve the snapshot/verification failure below.
     }
-    unlinkReservationIfStillOwned(reservation);
-    closeReservation(reservation);
+    closeFileIdentity(reservation);
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Could not create a verified state.db safety copy before ${migrationId}: ${detail}`);
+    throw new Error(
+      `Could not create a verified state.db safety copy before ${migrationId}: ${detail}. ` +
+        `The reserved safety-copy pathname was not removed: ${reservation.path}`,
+    );
   }
 }
 
@@ -348,6 +410,7 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
   const isCanonical = path.resolve(resolvedPath) === path.resolve(canonicalPath);
   const releaseActivity = isCanonical ? acquireMaintenanceActivitySync("state-db") : undefined;
   let freshReservation: OwnedFileReservation | undefined;
+  let existingSource: StateDatabaseSource | undefined;
   let openedDb: Database | undefined;
   let existingUnversionedDatabase = false;
   let stateSafetyCopyCreated = false;
@@ -355,8 +418,13 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
     fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
     freshReservation = reserveFreshStateDatabase(resolvedPath);
     if (!freshReservation) {
-      const preflight = openDatabase(resolvedPath, { readonly: true });
+      existingSource = openExistingStateDatabaseSource(resolvedPath);
+      assertStateDatabaseSource(existingSource);
+      const preflight = openDatabase(sqliteBoundFilePath(existingSource, "Existing state.db preflight"), {
+        readonly: true,
+      });
       try {
+        assertStateDatabaseSource(existingSource);
         preflight.exec("PRAGMA busy_timeout = 30000");
         assertMigrationLedger(preflight, STATE_MIGRATIONS);
         existingUnversionedDatabase = !migrationLedgerExists(preflight);
@@ -371,9 +439,13 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
       }
     }
     const ownedFresh = freshReservation;
+    const boundSource = existingSource;
+    if (boundSource) assertStateDatabaseSource(boundSource);
     openedDb = openManagedDatabase({
-      path: resolvedPath,
-      init: (db) =>
+      path: boundSource ? sqliteBoundFilePath(boundSource, "Managed state.db writer") : resolvedPath,
+      pragmas: { dataDir: path.dirname(resolvedPath) },
+      init: (db) => {
+        if (boundSource) assertStateDatabaseSource(boundSource);
         runMigrations(db, {
           freshDatabase: !!ownedFresh,
           verifyFreshDatabaseOwnership: ownedFresh
@@ -383,7 +455,8 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
           allowHistoricalDestructiveStateUpgrade: options?.allowHistoricalDestructiveStateUpgrade,
           beforeExistingUnversionedStateMigration: options?.allowHistoricalDestructiveStateUpgrade
             ? (migration) => {
-                const safetyCopyPath = createHistoricalStateSafetyCopy(resolvedPath, migration.id);
+                if (!boundSource) throw new Error("An existing unversioned state.db has no bound source inode.");
+                const safetyCopyPath = createHistoricalStateSafetyCopy(boundSource, migration.id);
                 stateSafetyCopyCreated = true;
                 options.onHistoricalStateSafetyCopy?.(safetyCopyPath);
               }
@@ -391,16 +464,23 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
           beforeHistoricalDestructiveMigration: options?.allowHistoricalDestructiveStateUpgrade
             ? (migration) => {
                 if (stateSafetyCopyCreated) return;
-                const safetyCopyPath = createHistoricalStateSafetyCopy(resolvedPath, migration.id);
+                if (!boundSource) throw new Error("Historical state migration has no bound source inode.");
+                const safetyCopyPath = createHistoricalStateSafetyCopy(boundSource, migration.id);
                 stateSafetyCopyCreated = true;
                 options.onHistoricalStateSafetyCopy?.(safetyCopyPath);
               }
             : undefined,
-        }),
+        });
+      },
     });
+    if (existingSource) {
+      assertStateDatabaseSource(existingSource);
+      closeFileIdentity(existingSource);
+      existingSource = undefined;
+    }
     if (freshReservation) {
       assertOwnedFileReservation(freshReservation, "Fresh state.db");
-      closeReservation(freshReservation);
+      closeFileIdentity(freshReservation);
       freshReservation = undefined;
     }
     const db = openedDb;
@@ -433,7 +513,8 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
         // Preserve the open/migration ownership failure.
       }
     }
-    if (freshReservation) closeReservation(freshReservation);
+    if (existingSource) closeFileIdentity(existingSource);
+    if (freshReservation) closeFileIdentity(freshReservation);
     releaseActivity?.();
     throw error;
   }
