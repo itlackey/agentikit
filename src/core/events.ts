@@ -49,16 +49,8 @@ export type EventType =
   | "update"
   | "remember"
   | "import"
-  /**
-   * Emitted by `akm sync` (git-backed stash commit/push). Renamed from the
-   * legacy "save" spelling in 0.9.0 to match the command name — see
-   * CHANGELOG. `readEvents` below still accepts "save" as a read-only
-   * synonym so historical rows and `akm log --type save` keep working; only
-   * writes moved to "sync".
-   */
+  /** Emitted by `akm sync` (git-backed stash commit/push). */
   | "sync"
-  /** @deprecated 0.9.0 — legacy spelling of {@link "sync"}. No longer written; still readable (see SAVE_SYNC_EVENT_TYPE_ALIASES). */
-  | "save"
   | "feedback"
   // Proposal substrate (#225). `promoted` and `rejected` are emitted by the
   // `akm proposal accept` / `akm proposal reject` flows. The `*_invoked`
@@ -330,18 +322,6 @@ export interface ReadEventsResult {
 }
 
 /**
- * 0.9.0 breaking change (owner ruling 12): `akm sync` used to persist
- * `eventType: "save"`; it now writes `"sync"` instead (matching the command
- * name). Existing `state.db` rows — and any user script running
- * `akm log --type save` — still carry the old spelling. Rather than
- * rewriting historical rows (a migration users never asked for, on data we
- * don't get to touch at rest), reads treat the two names as synonyms: asking
- * for either "save" or "sync" returns rows written under both names. Only
- * the WRITE path (sources-cli.ts's `runSyncBody`) changed.
- */
-const SAVE_SYNC_EVENT_TYPE_ALIASES = new Set(["save", "sync"]);
-
-/**
  * Read all events matching the filter. Returns a `nextOffset` that callers
  * can persist between processes for monotonic resumption.
  */
@@ -370,12 +350,7 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
   }
 
   try {
-    // A "save"/"sync" query can't be expressed as a single SQL `event_type =
-    // ?` match (see SAVE_SYNC_EVENT_TYPE_ALIASES above), so widen the SQL
-    // filter to "no type filter" for that one case and apply the alias match
-    // client-side alongside the existing tag post-filter below.
-    const typeIsAliased = options.type !== undefined && SAVE_SYNC_EVENT_TYPE_ALIASES.has(options.type);
-    // D-38: a JS-side post-filter (the type alias above, or the tag filters
+    // D-38: a JS-side post-filter (the tag filters
     // below) runs AFTER the SQL read, so a SQL-level LIMIT applied before it
     // could drop rows the post-filter would have kept out anyway, silently
     // returning fewer than `limit` (or the wrong — oldest-in-the-SQL-window —
@@ -384,10 +359,7 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
     // pre-existing behavior) and apply `limit` ourselves, below, AFTER the
     // post-filter runs.
     const needsPostFilter =
-      typeIsAliased ||
-      (options.excludeTags?.length ?? 0) > 0 ||
-      (options.includeTags?.length ?? 0) > 0 ||
-      options.runId !== undefined;
+      (options.excludeTags?.length ?? 0) > 0 || (options.includeTags?.length ?? 0) > 0 || options.runId !== undefined;
     const pushLimitToSql = options.limit !== undefined && !needsPostFilter;
     let rawEvents: EventEnvelope[];
     let nextId: number;
@@ -395,7 +367,7 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
       ({ events: rawEvents, nextId } = readStateEvents(db, {
         sinceId: options.sinceOffset,
         since: options.since,
-        type: typeIsAliased ? undefined : options.type,
+        type: options.type,
         ref: options.ref,
         ...(pushLimitToSql ? { limit: options.limit } : {}),
       }));
@@ -407,7 +379,6 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
     }
 
     const filtered = rawEvents.filter((envelope) => {
-      if (typeIsAliased && !SAVE_SYNC_EVENT_TYPE_ALIASES.has(envelope.eventType)) return false;
       if (options.runId !== undefined && envelope.metadata?.runId !== options.runId) return false;
       // Apply tag filters after the indexed state.db read.
       const tags = (envelope.metadata?.tags as string[] | undefined) ?? [];

@@ -10,10 +10,7 @@
  * https://opencode.ai/docs/{commands,agents,skills,rules}/): a root `AGENTS.md`
  * → `instruction`, `commands/*.md` → `command`, `agents/*.md` → `agent`,
  * `skills/<name>/SKILL.md` → `skill`, and ABSTAINS on `opencode.json` runtime
- * config. Per open-question-6 (RESOLVED, accept BOTH forms) the SINGULAR
- * `command/`/`agent/`/`skill/` dirs are accepted as backwards-compat aliases on
- * READ (the conceptId preserves the on-disk spelling, e.g. `command/legacy`);
- * WRITES normalize to the canonical plural (handled in the shared codec).
+ * config. Only OpenCode's canonical plural tool directories are accepted.
  *
  * All behavior lives in the shared tool-dir codec ({@link makeToolDirAdapter});
  * this module supplies only the `.opencode` layout + the install-time probe.
@@ -33,13 +30,13 @@ const LAYOUT: ToolDirLayout = {
   componentId: ".opencode",
   instructionFile: "AGENTS.md",
   instructionConceptId: "AGENTS",
-  commandDirs: new Set(["commands", "command"]),
-  agentDirs: new Set(["agents", "agent"]),
-  skillDirs: new Set(["skills", "skill"]),
+  commandDirs: new Set(["commands"]),
+  agentDirs: new Set(["agents"]),
+  skillDirs: new Set(["skills"]),
 };
 
 const CONFIG_FILES = ["opencode.json", "opencode.jsonc"];
-const TOOL_DIRS = ["commands", "command", "agents", "agent", "skills", "skill"];
+const TOOL_DIRS = ["commands", "agents", "skills"];
 
 function fileExists(p: string): boolean {
   try {

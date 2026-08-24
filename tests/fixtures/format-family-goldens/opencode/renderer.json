@@ -19,14 +19,6 @@
       "renderer": "command-md",
       "action": "akm show sample-opencode//commands/test -> fill placeholders and dispatch"
     },
-    "command/legacy.md": {
-      "type": "command",
-      "ref": "sample-opencode//command/legacy",
-      "label": "Command",
-      "renderer": "command-md",
-      "action": "akm show sample-opencode//command/legacy -> fill placeholders and dispatch",
-      "note": "Singular-dir alias (open question 6 RESOLVED) — presentation is keyed on the open `type` (command), so it renders identically to the plural commands/test.md; only the ref/conceptId differ (command/ vs commands/)."
-    },
     "agents/explorer.md": {
       "type": "agent",
       "ref": "sample-opencode//agents/explorer",

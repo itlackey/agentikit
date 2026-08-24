@@ -210,11 +210,8 @@ const AKM_SKILL_DIRS: ReadonlySet<string> = new Set(["skills"]);
  * (matching the per-subdir call). `file`/`detail` mirror the live check exactly
  * (relDir + `no SKILL.md in <relDir>/`).
  *
- * `skillDirs` defaults to the akm-native `skills/` placement dir. The tool-dir
- * adapters pass their OWN accepted spellings, because opencode also accepts the
- * singular `skill/` alias on read (`opencode-adapter.ts` LAYOUT) — with the
- * gate hardcoded to `"skills"`, an identical manifest-less package went flagged
- * under `skills/` and unflagged under `skill/` (issue #774).
+ * `skillDirs` defaults to the akm-native `skills/` placement dir. Tool-dir
+ * adapters pass their own canonical placement directory.
  */
 export async function skillDirectoryDiagnostics(
   relPath: string,

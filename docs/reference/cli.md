@@ -1316,7 +1316,7 @@ akm log --run <run-id>                       # Only events for one workflow run
 | Flag | Description |
 | --- | --- |
 | `--since` | Lower bound. Accepts ISO 8601, epoch ms, or `@offset:<id>` for a durable row-id cursor that survives across processes. |
-| `--type` | Filter by event type. Common values include `add`, `remove`, `update`, `remember`, `import`, `sync`, `feedback`, `promoted`, `rejected`, `propose_invoked`, `reflect_invoked`, `distill_invoked`, `select`, and `improve_skipped`. `sync` and the legacy `save` are synonyms on read, so `--type save` still returns rows written before the 0.9.0 rename as well as new ones. |
+| `--type` | Filter by event type. Common values include `add`, `remove`, `update`, `remember`, `import`, `sync`, `feedback`, `promoted`, `rejected`, `propose_invoked`, `reflect_invoked`, `distill_invoked`, `select`, and `improve_skipped`. |
 | `--ref` | Filter by asset ref (`[bundle//]conceptId`). |
 | `--run` | Filter to one workflow run's events (`metadata.runId`) — the replacement for the dropped `akm workflow watch <run-id>`. Poll with `--since '@offset:<id>'` for a live tail; there is no daemon. |
 | `--limit` | Return only the most recent N events matching every other filter. Default: unlimited. |

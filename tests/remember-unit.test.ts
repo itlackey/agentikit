@@ -28,8 +28,8 @@ describe("parseDuration", () => {
     expect(() => parseDuration("d30")).toThrow(/Invalid --expires/);
   });
 
-  test("trims whitespace and accepts uppercase units", () => {
-    expect(parseDuration(" 7D ")).toBe(7 * 24 * 60 * 60 * 1000);
+  test("trims whitespace and rejects noncanonical uppercase units", () => {
+    expect(() => parseDuration(" 7D ")).toThrow(/Invalid --expires/);
   });
 });
 

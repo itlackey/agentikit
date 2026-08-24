@@ -171,26 +171,6 @@ describe("appendEvent / readEvents", () => {
     expect(filtered.events[0]?.ref).toBe("memories/a");
   });
 
-  test("--type 'save' and --type 'sync' are synonyms (0.9.0 save→sync rename)", () => {
-    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
-    const ctx = { dbPath };
-    // A row written before the 0.9.0 rename (legacy spelling)...
-    appendEvent({ eventType: "save", metadata: { name: null } }, ctx);
-    // ...and a row written by the renamed `akm sync` (current spelling).
-    appendEvent({ eventType: "sync", metadata: { name: null } }, ctx);
-    // An unrelated event type must not be swept in by the alias.
-    appendEvent({ eventType: "remember", ref: "memory:a" }, ctx);
-
-    const bySave = readEvents({ type: "save" }, ctx);
-    expect(bySave.events.map((e) => e.eventType).sort()).toEqual(["save", "sync"]);
-
-    const bySync = readEvents({ type: "sync" }, ctx);
-    expect(bySync.events.map((e) => e.eventType).sort()).toEqual(["save", "sync"]);
-
-    const byOther = readEvents({ type: "remember" }, ctx);
-    expect(byOther.events.map((e) => e.eventType)).toEqual(["remember"]);
-  });
-
   // D-38: `akm log list --limit` was documented (docs/reference/data-and-telemetry.md)
   // but silently ignored — citty swallows unrecognized flags, and there was no
   // limiting mechanism anywhere in the read path (no `--limit` arg on the
@@ -258,22 +238,6 @@ describe("appendEvent / readEvents", () => {
 
     const result = readEvents({ includeTags: ["keep"], limit: 2 }, ctx);
     expect(result.events.map((e) => e.ref)).toEqual(["memory:tagged-1", "memory:tagged-2"]);
-  });
-
-  test("--limit combined with the save/sync type alias post-filter still returns N matches", () => {
-    // Same hazard as the tag case above, but for the type-alias post-filter
-    // (SAVE_SYNC_EVENT_TYPE_ALIASES): a SQL-level LIMIT can't be expressed
-    // for "save" OR "sync" in one predicate, so it must not be pushed down
-    // here either.
-    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
-    const ctx = { dbPath };
-    appendEvent({ eventType: "save" }, ctx);
-    appendEvent({ eventType: "remember", ref: "memory:noise-1" }, ctx);
-    appendEvent({ eventType: "sync" }, ctx);
-    appendEvent({ eventType: "remember", ref: "memory:noise-2" }, ctx);
-
-    const result = readEvents({ type: "save", limit: 2 }, ctx);
-    expect(result.events.map((e) => e.eventType)).toEqual(["save", "sync"]);
   });
 
   test("akmEventsList echoes `limit` in the envelope only when it was passed", () => {

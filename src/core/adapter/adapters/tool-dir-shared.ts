@@ -9,10 +9,8 @@
  * open AKM `type` vocabulary (spec §6/§7): a root instruction file
  * (CLAUDE.md / AGENTS.md) → `instruction`, `commands/*.md` → `command`,
  * `agents/*.md` → `agent`, `skills/<name>/SKILL.md` → `skill` (item = the dir).
- * They differ only in three parameters carried on {@link ToolDirLayout}:
+ * They differ only in two parameters carried on {@link ToolDirLayout}:
  *   - the instruction basename + its concept id,
- *   - the accepted subdir spellings (opencode accepts the SINGULAR
- *     `command/`/`agent/`/`skill/` aliases per open-question-6, claude does not),
  *   - the adapter id + component id.
  *
  * The SKILL.md codec is shared with the `agent-skills` adapter as functions
@@ -84,11 +82,11 @@ export interface ToolDirLayout {
   instructionFile: string;
   /** conceptId for the root instruction file (CLAUDE / AGENTS). */
   instructionConceptId: string;
-  /** Accepted `command` subdir spellings (plural canonical + optional singular alias). */
+  /** Accepted canonical command directory. */
   commandDirs: ReadonlySet<string>;
-  /** Accepted `agent` subdir spellings. */
+  /** Accepted canonical agent directory. */
   agentDirs: ReadonlySet<string>;
-  /** Accepted `skill` subdir spellings. */
+  /** Accepted canonical skill directory. */
   skillDirs: ReadonlySet<string>;
 }
 
@@ -196,7 +194,7 @@ export function placeNewToolDir(layout: ToolDirLayout, c: BundleComponent, conce
   return path.join(c.root, `${posix}.md`);
 }
 
-/** List native read spellings without normalizing OpenCode's singular aliases. */
+/** List native read spellings. */
 export function readCandidatesToolDir(layout: ToolDirLayout, c: BundleComponent, conceptId: string) {
   const posix = toPosix(conceptId);
   if (posix === layout.instructionConceptId) {
@@ -259,8 +257,7 @@ export async function validateToolDir(
     // The one coded skill check (missing-skill-md) fires on ANY change under a
     // `<skillDir>/<name>/…` package (self-gated + deduped), even a bundled
     // resource — mirrors the akm adapter's per-change SkillLinter.lintDirectory
-    // pass. `layout.skillDirs` is passed so opencode's singular `skill/` alias
-    // is checked identically to `skills/` (issue #774).
+    // pass.
     diagnostics.push(...(await skillDirectoryDiagnostics(relPath, seenSkillDirs, ctx, layout.skillDirs)));
 
     const cls = classify(change.path, layout);

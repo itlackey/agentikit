@@ -120,9 +120,8 @@ incrementality.
 
 `readCandidates` is intentionally distinct from both `extensions` and
 `placeNew`: extensions are non-exhaustive walk hints, while placement is a
-write-normalization policy. Read candidates preserve accepted aliases and
-directory manifests (for example OpenCode's singular `skill/` and
-`<name>/SKILL.md`) so lookup, disk show, and workflow runtime share one
+write-normalization policy. Read candidates preserve canonical directory
+manifests (for example `skills/<name>/SKILL.md`) so lookup, disk show, and workflow runtime share one
 physical-owner decision. Each candidate carries its canonical concept identity,
 so a byte-denying ownership probe never has to infer identity from the query.
 When an adapter accepts noncanonical authored placements that cannot be
@@ -224,10 +223,8 @@ they actually work:
   package's own resource dirs (`pdf-processing/reference/`) are part of the
   item, not candidate packages, and are never considered.
 - **`claude`/`opencode` share one codec** (`tool-dir-shared.ts`) and differ
-  only in instruction filename, accepted subdirectory spellings, and
-  adapter/component ids. `missing-skill-md` is gated on each layout's own
-  accepted spellings, so opencode's singular `skill/` alias is checked
-  exactly like `skills/`.
+  only in instruction filename and adapter/component ids. Both accept only
+  the canonical plural tool directories.
 - **`dotenv` redaction is a hard, adapter-level contract.** No frontmatter
   `type:` override can bypass it: `env` entries surface only key names,
   `secret` entries surface only the file name, never content. A `.env`

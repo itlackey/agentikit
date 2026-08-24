@@ -336,15 +336,15 @@ describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
     expect(shown.content).toContain('schedule: "@daily"');
   });
 
-  test("OpenCode singular command and instruction paths keep their indexed native types", async () => {
+  test("OpenCode command and instruction paths keep their indexed native types", async () => {
     await indexAdapterBundle("opencode-fixture", copyFixtureToTmp(OPENCODE_ROOT), "opencode", true);
 
-    const command = await akmShowUnified({ ref: "opencode-fixture//command/legacy", skipLogging: true });
+    const command = await akmShowUnified({ ref: "opencode-fixture//commands/test", skipLogging: true });
     const indexedInstruction = await lookupBundleRef(parseBundleRef("opencode-fixture//AGENTS"));
     const instruction = await akmShowUnified({ ref: "opencode-fixture//AGENTS", skipLogging: true });
 
-    expect(command).toMatchObject({ type: "command", name: "legacy", ref: "opencode-fixture//command/legacy" });
-    expect(command.template).toContain("Run the legacy migration");
+    expect(command).toMatchObject({ type: "command", name: "test", ref: "opencode-fixture//commands/test" });
+    expect(command.template).toContain("Run the tests");
     expect(indexedInstruction?.document?.ownsPresentation).toBe(true);
     expect(instruction).toMatchObject({ type: "instruction", name: "AGENTS", ref: "opencode-fixture//AGENTS" });
     expect(instruction.content).toContain("# Sample AGENTS.md");

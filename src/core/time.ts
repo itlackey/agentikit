@@ -26,23 +26,20 @@ const MONTH_MS = 30 * DAY_MS;
  *
  * The grammar is intentionally uniform across the whole CLI:
  *   - `m` = MINUTES, `M` = MONTHS (30-day approximation)
- *   - `h`/`H` = hours, `d`/`D` = days
+ *   - `h` = hours, `d` = days
  *
  * Matching is CASE-SENSITIVE (see {@link parseDuration}), which is what lets
  * `m` and `M` mean different things. Historically `akm health --since` and
  * `remember --expires` read a case-insensitive `m` as MONTHS while
  * `consolidate` / `--window-compare` read it as MINUTES; that split is now
  * resolved in favour of the conventional `m`=minutes, with `M` reserved for
- * months. Upper-case `H`/`D` aliases are retained so specs that previously
- * relied on the old case-insensitive parsers (e.g. `"7D"`) keep working.
+ * months.
  */
 export const DURATION_UNITS: Readonly<Record<string, number>> = {
   m: MINUTE_MS,
   M: MONTH_MS,
   h: HOUR_MS,
-  H: HOUR_MS,
   d: DAY_MS,
-  D: DAY_MS,
 };
 
 /**

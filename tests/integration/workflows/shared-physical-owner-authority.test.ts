@@ -99,11 +99,8 @@ const toolDirShapes = [
   ["claude", "skills/audit", "skills/audit/SKILL.md", skill("audit")],
   ["claude", "CLAUDE", "CLAUDE.md", "# instructions"],
   ["opencode", "commands/deploy", "commands/deploy.md", "# deploy"],
-  ["opencode", "command/legacy", "command/legacy.md", "# legacy"],
   ["opencode", "agents/reviewer", "agents/reviewer.md", "# reviewer"],
-  ["opencode", "agent/legacy", "agent/legacy.md", "# legacy"],
   ["opencode", "skills/audit", "skills/audit/SKILL.md", skill("audit")],
-  ["opencode", "skill/legacy", "skill/legacy/SKILL.md", skill("legacy")],
   ["opencode", "AGENTS", "AGENTS.md", "# instructions"],
 ] as const;
 
@@ -140,15 +137,15 @@ describe("shared adapter physical-owner authority", () => {
   test("show reuses lookup's physical-owner resolution instead of probing the source twice", async () => {
     const early = fixture("early-single-owner-pass", "opencode");
     const later = fixture("later-single-owner-pass", "akm-workflow");
-    const earlyPath = write(early.root, "skill/once/SKILL.md", skill("once"));
-    write(later.root, "skill/once.md", getWorkflowTemplate());
+    const earlyPath = write(early.root, "skills/once/SKILL.md", skill("once"));
+    write(later.root, "skills/once.md", getWorkflowTemplate());
     configure(early, later);
     await akmIndex({ stashDir: early.root, full: true });
-    mutateEntry("early//skill/once", "missing", "");
+    mutateEntry("early//skills/once", "missing", "");
 
     const candidateSpy = spyOn(opencodeAdapter, "readCandidates");
     try {
-      expect((await showLocal({ ref: "skill/once" })).path).toBe(earlyPath);
+      expect((await showLocal({ ref: "skills/once" })).path).toBe(earlyPath);
       expect(candidateSpy).toHaveBeenCalledTimes(1);
     } finally {
       candidateSpy.mockRestore();
@@ -337,19 +334,19 @@ describe("shared adapter physical-owner authority", () => {
     "missing",
     "incomplete",
     "stale",
-  ] as const)("complete/missing/incomplete/stale first rows preserve the singular read owner: %s", async (state) => {
+  ] as const)("complete/missing/incomplete/stale first rows preserve the canonical read owner: %s", async (state) => {
     const early = fixture(`early-row-${state}`, "opencode");
     const later = fixture(`later-row-${state}`, "opencode");
-    const earlyPath = write(early.root, "skill/row-owner/SKILL.md", skill("row-owner"));
-    write(later.root, "skill/row-owner/SKILL.md", skill("row-owner"));
+    const earlyPath = write(early.root, "skills/row-owner/SKILL.md", skill("row-owner"));
+    write(later.root, "skills/row-owner/SKILL.md", skill("row-owner"));
     configure(early, later);
     await akmIndex({ stashDir: early.root, full: true });
-    mutateEntry("early//skill/row-owner", state, path.join(early.root, "stale", "SKILL.md"));
+    mutateEntry("early//skills/row-owner", state, path.join(early.root, "stale", "SKILL.md"));
 
-    const found = await lookupBundleRef(parseBundleRef("skill/row-owner"));
+    const found = await lookupBundleRef(parseBundleRef("skills/row-owner"));
     if (state === "complete") expect(found).toMatchObject({ filePath: earlyPath });
     else expect(found).toBeNull();
-    expect((await showLocal({ ref: "skill/row-owner" })).path).toBe(earlyPath);
+    expect((await showLocal({ ref: "skills/row-owner" })).path).toBe(earlyPath);
   });
 
   test.each([
@@ -374,14 +371,14 @@ describe("shared adapter physical-owner authority", () => {
     ["load", "stale"],
     ["start", "missing"],
     ["run", "incomplete"],
-  ] as const)("%s rejects the first non-native singular owner with a %s row before mutation", async (surface, state) => {
+  ] as const)("%s rejects the first non-native canonical owner with a %s row before mutation", async (surface, state) => {
     const early = fixture(`early-runtime-${surface}-${state}`, "opencode");
     const later = fixture(`later-runtime-${surface}-${state}`, "akm-workflow");
-    const earlyPath = write(early.root, "skill/runtime-owner/SKILL.md", skill("runtime-owner"));
-    const laterPath = write(later.root, "skill/runtime-owner.md", getWorkflowTemplate());
+    const earlyPath = write(early.root, "skills/runtime-owner/SKILL.md", skill("runtime-owner"));
+    const laterPath = write(later.root, "skills/runtime-owner.md", getWorkflowTemplate());
     configure(early, later);
     await akmIndex({ stashDir: early.root, full: true });
-    mutateEntry("early//skill/runtime-owner", state, path.join(early.root, "stale", "SKILL.md"));
+    mutateEntry("early//skills/runtime-owner", state, path.join(early.root, "stale", "SKILL.md"));
     await listWorkflowRuns();
     const stateBefore = fs.readFileSync(getStateDbPath());
     let dispatches = 0;
@@ -390,11 +387,11 @@ describe("shared adapter physical-owner authority", () => {
     try {
       const operation =
         surface === "load"
-          ? loadWorkflowAsset("skill/runtime-owner")
+          ? loadWorkflowAsset("skills/runtime-owner")
           : surface === "start"
-            ? startWorkflowRun("skill/runtime-owner")
+            ? startWorkflowRun("skills/runtime-owner")
             : runWorkflowSteps({
-                target: "skill/runtime-owner",
+                target: "skills/runtime-owner",
                 summaryJudge: null,
                 dispatcher: async () => {
                   dispatches++;
@@ -408,6 +405,6 @@ describe("shared adapter physical-owner authority", () => {
     expect(dispatches).toBe(0);
     expect(fs.readFileSync(getStateDbPath())).toEqual(stateBefore);
     expect((await listWorkflowRuns()).runs).toHaveLength(0);
-    expect((await loadWorkflowAsset("later//skill/runtime-owner")).path).toBe(laterPath);
+    expect((await loadWorkflowAsset("later//skills/runtime-owner")).path).toBe(laterPath);
   });
 });

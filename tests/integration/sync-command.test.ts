@@ -162,7 +162,7 @@ describe("akm sync", () => {
     expect(log.stdout).toContain("test commit");
   });
 
-  test("persists eventType 'sync' (0.9.0 rename from legacy 'save')", async () => {
+  test("persists eventType 'sync'", async () => {
     const stashDir = makeTempDir("akm-save-eventtype-");
     initGitRepo(stashDir);
     fs.mkdirSync(path.join(stashDir, "skills"), { recursive: true });
@@ -176,7 +176,7 @@ describe("akm sync", () => {
     // Everything that depends on the sandboxed XDG_STATE_HOME — running the
     // command AND reading state.db back — must happen inside the same
     // withEnv scope; env is restored the moment the callback returns.
-    const { syncEvents, legacyQueryEvents } = await withEnv(
+    const syncEvents = await withEnv(
       {
         AKM_BUNDLE_DIR: stashDir,
         XDG_CACHE_HOME: xdgCache,
@@ -188,21 +188,11 @@ describe("akm sync", () => {
         const result = await runCliCapture(["sync", "-m", "eventtype probe"]);
         expect(result.code).toBe(0);
         const dbPath = getStateDbPath();
-        return {
-          syncEvents: readEvents({}, { dbPath }).events,
-          // Read side: querying the legacy "save" name must still find the
-          // row (synonym — see SAVE_SYNC_EVENT_TYPE_ALIASES in
-          // src/core/events.ts), so a script still running
-          // `akm log --type save` does not silently go empty.
-          legacyQueryEvents: readEvents({ type: "save" }, { dbPath }).events,
-        };
+        return readEvents({}, { dbPath }).events;
       },
     );
 
-    // Write side: `akm sync` now persists "sync", never the legacy "save".
     expect(syncEvents.some((e) => e.eventType === "sync")).toBe(true);
-    expect(syncEvents.some((e) => e.eventType === "save")).toBe(false);
-    expect(legacyQueryEvents.some((e) => e.eventType === "sync")).toBe(true);
   });
 
   test("uses timestamp message when -m is omitted", async () => {
