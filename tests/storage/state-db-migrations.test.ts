@@ -123,6 +123,26 @@ describe("state.db automatic migration boundary", () => {
     db.close();
   });
 
+  test("SQLite in-memory opens never create or reuse a filesystem state.db", () => {
+    const literalMemoryPath = path.resolve(":memory:");
+    expect(fs.existsSync(literalMemoryPath)).toBe(false);
+
+    const first = openStateDatabase(":memory:");
+    first.exec("CREATE TABLE memory_probe (value TEXT NOT NULL); INSERT INTO memory_probe VALUES ('first')");
+    first.close();
+
+    expect(fs.existsSync(literalMemoryPath)).toBe(false);
+
+    const second = openStateDatabase(":memory:");
+    expect(second.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
+      count: STATE_MIGRATIONS.length,
+    });
+    expect(() => second.prepare("SELECT value FROM memory_probe").get()).toThrow(/no such table/i);
+    second.close();
+
+    expect(fs.existsSync(literalMemoryPath)).toBe(false);
+  });
+
   test("an existing database without a migration ledger is rejected without writing a byte", () => {
     const file = statePath();
     const seeded = openDatabase(file);
