@@ -84,6 +84,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import ts from "typescript";
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -430,46 +431,106 @@ function usesSanctionedWrapper(src: string): boolean {
   );
 }
 
+const DESTRUCTIVE_FILE_CALLS = new Set(["rm", "rmdir", "rmSync", "rmdirSync"]);
+
+/** Return the dotted identifier path for a call target, ignoring TS wrappers. */
+function expressionPath(expression: ts.Expression): string[] | undefined {
+  if (ts.isIdentifier(expression)) return [expression.text];
+  if (ts.isPropertyAccessExpression(expression)) {
+    const owner = expressionPath(expression.expression);
+    return owner ? [...owner, expression.name.text] : undefined;
+  }
+  if (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
+  ) {
+    return expressionPath(expression.expression);
+  }
+  return undefined;
+}
+
+function callName(call: ts.CallExpression): string | undefined {
+  return expressionPath(call.expression)?.at(-1);
+}
+
+/**
+ * Whether an expression resolves to a fixed path beneath `os.homedir()`.
+ * A `mkdtempSync` call owns its unguessable leaf, so its arguments are an
+ * intentional boundary: the real-home prefix used to create that leaf does
+ * not make later removal of the returned unique directory dangerous.
+ */
+function derivesFromRealHome(node: ts.Node, realHomePaths: ReadonlySet<string>): boolean {
+  if (ts.isCallExpression(node)) {
+    if (callName(node) === "mkdtempSync") return false;
+    if (expressionPath(node.expression)?.join(".") === "os.homedir") return true;
+  }
+  if (ts.isIdentifier(node) && realHomePaths.has(node.text)) return true;
+
+  let derives = false;
+  ts.forEachChild(node, (child) => {
+    if (!derives && derivesFromRealHome(child, realHomePaths)) derives = true;
+  });
+  return derives;
+}
+
+function findRealHomeDeleteCalls(filePath: string, src: string): ts.CallExpression[] {
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    src,
+    ts.ScriptTarget.Latest,
+    true,
+    filePath.endsWith(".js") ? ts.ScriptKind.JS : ts.ScriptKind.TS,
+  );
+  const declarations: ts.VariableDeclaration[] = [];
+  const calls: ts.CallExpression[] = [];
+
+  const collect = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) declarations.push(node);
+    if (ts.isCallExpression(node)) calls.push(node);
+    ts.forEachChild(node, collect);
+  };
+  collect(sourceFile);
+
+  // Resolve simple local aliases to a fixed point so `const child =
+  // path.join(parent, ...)` is caught even when the declaration spans lines.
+  const realHomePaths = new Set<string>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const declaration of declarations) {
+      const name = (declaration.name as ts.Identifier).text;
+      const initializer = declaration.initializer;
+      if (!initializer || realHomePaths.has(name) || !derivesFromRealHome(initializer, realHomePaths)) continue;
+      realHomePaths.add(name);
+      changed = true;
+    }
+  }
+
+  return calls.filter((call) => {
+    if (!DESTRUCTIVE_FILE_CALLS.has(callName(call) ?? "")) return false;
+    const target = call.arguments[0];
+    return target ? derivesFromRealHome(target, realHomePaths) : false;
+  });
+}
+
 function lintFile(filePath: string): Violation[] {
   const rel = path.relative(repoRoot, filePath).replace(/\\/g, "/");
   const src = fs.readFileSync(filePath, "utf8");
   const violations: Violation[] = [];
 
   // ── Rule 8: destructive cleanup rooted in the real home directory ─────────
-  // `os.homedir()` is process/runtime state, not the harnessed HOME env value.
-  // Track simple local declarations (including multiline conditional paths)
-  // that derive a fixed path from it, then reject recursive removal of that
-  // identifier. This intentionally targets the proven dangerous shape rather
-  // than banning read-only homedir probes or unique mkdtemp-owned fixtures.
-  {
-    const realHomePaths = new Set<string>();
-    const declaration = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*?);/g;
-    for (const match of src.matchAll(declaration)) {
-      const name = match[1]!;
-      const expression = match[2]!;
-      const derivesFromHome =
-        /\bos\.homedir\s*\(\s*\)/.test(expression) ||
-        [...realHomePaths].some((candidate) => new RegExp(`\\b${candidate}\\b`).test(expression));
-      if (derivesFromHome && !/\bmkdtempSync\s*\(/.test(expression)) realHomePaths.add(name);
-    }
-
-    const lines = src.split("\n");
-    const destructivePrefix = String.raw`\b(?:(?:fs\.)?(?:rmSync|rmdirSync|rm|rmdir)|fs\.promises\.(?:rm|rmdir))`;
-    const destructiveCall = new RegExp(`${destructivePrefix}\\s*\\(\\s*([A-Za-z_$][\\w$]*)\\b`);
-    const inlineHomeDelete = new RegExp(`${destructivePrefix}\\s*\\([^\\n]*\\bos\\.homedir\\s*\\(\\s*\\)`);
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]!;
-      if (/^\s*(\/\/|\*)/.test(line)) continue;
-      const match = line.match(destructiveCall);
-      if (!inlineHomeDelete.test(line) && (!match || !realHomePaths.has(match[1]!))) continue;
-      violations.push({
-        file: rel,
-        rule: "real-home-delete",
-        detail:
-          "destructive cleanup targets a fixed path derived from os.homedir(); use a unique os.tmpdir()/sandbox-owned root and never remove a real application directory",
-        line: i + 1,
-      });
-    }
+  for (const call of findRealHomeDeleteCalls(filePath, src)) {
+    const sourceFile = call.getSourceFile();
+    violations.push({
+      file: rel,
+      rule: "real-home-delete",
+      detail:
+        "destructive cleanup targets a fixed path derived from os.homedir(); use a unique os.tmpdir()/sandbox-owned root and never remove a real application directory",
+      line: sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile)).line + 1,
+    });
   }
 
   // ── Rule 1: mkdtempSync + AKM env var ──────────────────────────────────────

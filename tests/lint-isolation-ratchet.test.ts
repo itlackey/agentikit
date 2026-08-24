@@ -181,15 +181,9 @@ describe("lint-tests-isolation allowlist ratchet", () => {
         ].join("\n"),
       );
 
-      expect(lintFile(inlineFixture)).toEqual([
-        expect.objectContaining({ rule: "real-home-delete", line: 4 }),
-      ]);
-      expect(lintFile(promisesFixture)).toEqual([
-        expect.objectContaining({ rule: "real-home-delete", line: 10 }),
-      ]);
-      expect(lintFile(namedFixture)).toEqual([
-        expect.objectContaining({ rule: "real-home-delete", line: 4 }),
-      ]);
+      expect(lintFile(inlineFixture)).toEqual([expect.objectContaining({ rule: "real-home-delete", line: 4 })]);
+      expect(lintFile(promisesFixture)).toEqual([expect.objectContaining({ rule: "real-home-delete", line: 10 })]);
+      expect(lintFile(namedFixture)).toEqual([expect.objectContaining({ rule: "real-home-delete", line: 4 })]);
     } finally {
       fs.rmSync(fixtureDir, { recursive: true, force: true });
     }
@@ -213,7 +207,7 @@ describe("lint-tests-isolation allowlist ratchet", () => {
           "  ownedFixture,",
           "  { recursive: true, force: true },",
           ");",
-          "const sandboxed = path.join(os.tmpdir(), \"tool-sandbox\");",
+          'const sandboxed = path.join(os.tmpdir(), "tool-sandbox");',
           "fs." + "rmSync(sandboxed, { recursive: true, force: true });",
         ].join("\n"),
       );
