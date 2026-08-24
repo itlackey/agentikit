@@ -12,6 +12,7 @@ import {
   readCurrentRecombineEntries,
 } from "../../scripts/akm-eval/src/recombine-analyzer";
 import { resolveDataDir } from "../../scripts/akm-eval/src/sources/paths";
+import { DB_VERSION } from "../../src/storage/repositories/index-schema";
 import fixture from "../fixtures/akm-eval/recombine-analyzer.json";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..");
@@ -450,6 +451,8 @@ function buildDbFixture(): DbFixture {
   const stateDb = path.join(dataDir, "state.db");
   const index = new Database(indexDb);
   index.exec(`
+    CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO index_meta (key, value) VALUES ('version', '${DB_VERSION}');
     CREATE TABLE entries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       item_ref TEXT NOT NULL UNIQUE,
@@ -464,6 +467,10 @@ function buildDbFixture(): DbFixture {
       search_text TEXT NOT NULL,
       derived_from TEXT
     );
+    CREATE INDEX idx_entries_bundle ON entries(bundle_id);
+    CREATE INDEX idx_entries_type ON entries(type);
+    CREATE INDEX idx_entries_file_path ON entries(file_path);
+    CREATE INDEX idx_entries_derived_from ON entries(derived_from);
     CREATE TABLE graph_files (
       stash_root TEXT NOT NULL,
       file_path TEXT NOT NULL,
@@ -604,6 +611,41 @@ describe("akm-eval recombine analyzer CLI read-only boundary", () => {
       );
       INSERT INTO entries VALUES
         (1, 'ignored-entry-key', '/stash', '/stash/memories/a.md', '{"name":"a","type":"memory","tags":["auth"]}', 'memory');
+    `);
+    db.close();
+    const before = digestTree(root);
+
+    const result = Bun.spawnSync([WRAPPER, "--index-db", indexDb, "--format", "json"], {
+      cwd: REPO_ROOT,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stdout.toString()).toBe("");
+    expect(result.stderr.toString()).toContain("current canonical entries schema");
+    expect(digestTree(root)).toEqual(before);
+  });
+
+  test("refuses a stamped exact-name entries table without the canonical constraints", () => {
+    const root = tempDir();
+    const indexDb = path.join(root, "index.db");
+    const db = new Database(indexDb);
+    db.exec(`
+      CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO index_meta (key, value) VALUES ('version', '${DB_VERSION}');
+      CREATE TABLE entries (
+        id, item_ref, bundle_id, component_id, concept_id, adapter_id,
+        type, file_path, content_hash, document_json, search_text, derived_from
+      );
+      CREATE INDEX idx_entries_bundle ON entries(bundle_id);
+      CREATE INDEX idx_entries_type ON entries(type);
+      CREATE INDEX idx_entries_file_path ON entries(file_path);
+      CREATE INDEX idx_entries_derived_from ON entries(derived_from);
+      INSERT INTO entries VALUES
+        (1, 'team//memories/hostile', 'team', 'team', 'memories/hostile', 'akm',
+         'memory', '/stash/memories/hostile.md', NULL,
+         '{"name":"hostile","type":"memory","tags":["auth"]}', 'hostile', NULL);
     `);
     db.close();
     const before = digestTree(root);

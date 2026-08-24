@@ -25,6 +25,45 @@ const CURRENT_ENTRY_COLUMNS: string[] = [
   "derived_from",
 ];
 
+const CURRENT_ENTRY_COLUMN_CONTRACT = [
+  { name: "id", type: "INTEGER", notnull: 0, pk: 1 },
+  { name: "item_ref", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "bundle_id", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "component_id", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "concept_id", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "adapter_id", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "type", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "file_path", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "content_hash", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "document_json", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "search_text", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "derived_from", type: "TEXT", notnull: 0, pk: 0 },
+];
+
+const CANONICAL_ENTRIES_DDL = `
+  CREATE TABLE entries (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_ref      TEXT NOT NULL UNIQUE,
+    bundle_id     TEXT NOT NULL,
+    component_id  TEXT NOT NULL,
+    concept_id    TEXT NOT NULL,
+    adapter_id    TEXT NOT NULL,
+    type          TEXT NOT NULL,
+    file_path     TEXT NOT NULL,
+    content_hash  TEXT,
+    document_json TEXT NOT NULL,
+    search_text   TEXT NOT NULL,
+    derived_from  TEXT
+  );
+`;
+
+const CANONICAL_ENTRY_INDEXES_DDL = `
+  CREATE INDEX idx_entries_bundle ON entries(bundle_id);
+  CREATE INDEX idx_entries_type ON entries(type);
+  CREATE INDEX idx_entries_file_path ON entries(file_path);
+  CREATE INDEX idx_entries_derived_from ON entries(derived_from);
+`;
+
 function withTempIndex(run: (dbPath: string) => void): void {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-current-index-schema-"));
   try {
@@ -40,6 +79,64 @@ function entryColumns(dbPath: string): string[] {
     return (db.prepare("PRAGMA table_info(entries)").all() as Array<{ name: string }>).map((row) => row.name);
   } finally {
     db.close();
+  }
+}
+
+function seedStampedEntriesSchema(dbPath: string, entriesDdl: string, indexesDdl = ""): void {
+  const db = openDatabase(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO index_meta (key, value) VALUES ('version', '${DB_VERSION}');
+      ${entriesDdl}
+      ${indexesDdl}
+    `);
+    db.prepare(
+      `INSERT INTO entries
+         (id, item_ref, bundle_id, component_id, concept_id, adapter_id, type,
+          file_path, content_hash, document_json, search_text, derived_from)
+       VALUES (1, 'stash//memories/hostile', 'stash', 'stash', 'memories/hostile',
+               'akm', 'memory', '/tmp/hostile.md', NULL,
+               '{"name":"hostile","type":"memory"}', 'hostile', NULL)`,
+    ).run();
+  } finally {
+    db.close();
+  }
+}
+
+function expectCanonicalGenerationRebuilt(dbPath: string): void {
+  const db = openIndexDatabase(dbPath);
+  try {
+    expect((db.prepare("SELECT COUNT(*) AS count FROM entries").get() as { count: number }).count).toBe(0);
+    const columns = db.prepare("PRAGMA table_info(entries)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+    }>;
+    expect(columns.map(({ name, type, notnull, pk }) => ({ name, type, notnull, pk }))).toEqual(
+      CURRENT_ENTRY_COLUMN_CONTRACT,
+    );
+
+    const indexes = db.prepare("PRAGMA index_list(entries)").all() as Array<{
+      name: string;
+      unique: number;
+    }>;
+    const indexColumns = new Map(
+      indexes.map((index) => [
+        index.name,
+        (db.prepare(`PRAGMA index_info('${index.name}')`).all() as Array<{ name: string }>).map((row) => row.name),
+      ]),
+    );
+    expect(indexes.some((index) => index.unique === 1 && indexColumns.get(index.name)?.join(",") === "item_ref")).toBe(
+      true,
+    );
+    expect(indexColumns.get("idx_entries_bundle")).toEqual(["bundle_id"]);
+    expect(indexColumns.get("idx_entries_type")).toEqual(["type"]);
+    expect(indexColumns.get("idx_entries_file_path")).toEqual(["file_path"]);
+    expect(indexColumns.get("idx_entries_derived_from")).toEqual(["derived_from"]);
+  } finally {
+    closeDatabase(db);
   }
 }
 
@@ -113,6 +210,52 @@ describe("canonical derived-index entry schema", () => {
       }
 
       expect(entryColumns(dbPath)).toEqual(CURRENT_ENTRY_COLUMNS);
+    });
+  });
+
+  test("exact column names cannot disguise missing types, NOT NULL constraints, or the primary key", () => {
+    withTempIndex((dbPath) => {
+      seedStampedEntriesSchema(
+        dbPath,
+        `CREATE TABLE entries (
+          id, item_ref, bundle_id, component_id, concept_id, adapter_id,
+          type, file_path, content_hash, document_json, search_text, derived_from
+        );`,
+        CANONICAL_ENTRY_INDEXES_DDL,
+      );
+      expectCanonicalGenerationRebuilt(dbPath);
+    });
+  });
+
+  test("a stamped exact-name schema without UNIQUE(item_ref) is rebuilt", () => {
+    withTempIndex((dbPath) => {
+      seedStampedEntriesSchema(
+        dbPath,
+        CANONICAL_ENTRIES_DDL.replace("item_ref      TEXT NOT NULL UNIQUE", "item_ref      TEXT NOT NULL"),
+        CANONICAL_ENTRY_INDEXES_DDL,
+      );
+      expectCanonicalGenerationRebuilt(dbPath);
+    });
+  });
+
+  test("a stamped exact-name schema missing required lookup indexes is rebuilt instead of repaired in place", () => {
+    withTempIndex((dbPath) => {
+      seedStampedEntriesSchema(dbPath, CANONICAL_ENTRIES_DDL);
+      expectCanonicalGenerationRebuilt(dbPath);
+    });
+  });
+
+  test("required index names on the wrong columns cannot pass the generation fingerprint", () => {
+    withTempIndex((dbPath) => {
+      seedStampedEntriesSchema(
+        dbPath,
+        CANONICAL_ENTRIES_DDL,
+        `CREATE INDEX idx_entries_bundle ON entries(type);
+         CREATE INDEX idx_entries_type ON entries(bundle_id);
+         CREATE INDEX idx_entries_file_path ON entries(concept_id);
+         CREATE INDEX idx_entries_derived_from ON entries(search_text);`,
+      );
+      expectCanonicalGenerationRebuilt(dbPath);
     });
   });
 });

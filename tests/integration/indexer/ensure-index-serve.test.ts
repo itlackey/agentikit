@@ -22,6 +22,7 @@ import path from "node:path";
 import { getDbPath } from "../../../src/core/paths";
 import { ensureIndex } from "../../../src/indexer/ensure-index";
 import * as indexerModule from "../../../src/indexer/indexer";
+import { openDatabase } from "../../../src/storage/database";
 import { closeDatabase, openExistingDatabase } from "../../../src/storage/repositories/index-connection";
 import { getIndexedFilePaths } from "../../../src/storage/repositories/index-entries-repository";
 import {
@@ -48,6 +49,39 @@ function indexedPaths(): Set<string> {
     return getIndexedFilePaths(db);
   } finally {
     closeDatabase(db);
+  }
+}
+
+function replaceWithPopulatedV17Index(): void {
+  const dbPath = getDbPath();
+  for (const candidate of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) fs.rmSync(candidate, { force: true });
+  const legacy = openDatabase(dbPath);
+  try {
+    legacy.exec(`
+      CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO index_meta (key, value) VALUES
+        ('version', '17'),
+        ('stashDir', '${stashDir.replaceAll("'", "''")}'),
+        ('stashDirs', '${JSON.stringify([stashDir]).replaceAll("'", "''")}');
+      CREATE TABLE entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_key TEXT NOT NULL UNIQUE,
+        dir_path TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        stash_dir TEXT NOT NULL,
+        entry_json TEXT NOT NULL,
+        search_text TEXT NOT NULL,
+        entry_type TEXT NOT NULL
+      );
+      INSERT INTO entries
+        (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type)
+      VALUES
+        ('legacy:memory:first', '${path.join(stashDir, "memories").replaceAll("'", "''")}',
+         '${path.join(stashDir, "memories", "first.md").replaceAll("'", "''")}',
+         '${stashDir.replaceAll("'", "''")}', '{"name":"first","type":"memory"}', 'first', 'memory');
+    `);
+  } finally {
+    legacy.close();
   }
 }
 
@@ -89,6 +123,29 @@ describe("ensureIndex read-path (background mode)", () => {
     const spy = spyOn(indexerModule, "akmIndex").mockRejectedValueOnce(new Error("boom"));
     expect(await ensureIndex(stashDir)).toBe(false);
     spy.mockRestore();
+  });
+
+  test("openExistingDatabase refuses a populated pre-current generation", () => {
+    replaceWithPopulatedV17Index();
+    expect(() => {
+      const db = openExistingDatabase(getDbPath());
+      closeDatabase(db);
+    }).toThrow(/canonical|incompatible|akm index/i);
+  });
+
+  test("a populated pre-current generation rebuilds from materialized sources before serving", async () => {
+    replaceWithPopulatedV17Index();
+
+    expect(await ensureIndex(stashDir)).toBe(true);
+    expect(indexedPaths()).toContain(path.join(stashDir, "memories", "first.md"));
+
+    const db = openExistingDatabase(getDbPath());
+    try {
+      const row = db.prepare("SELECT item_ref FROM entries LIMIT 1").get() as { item_ref: string } | undefined;
+      expect(row?.item_ref).toContain("//memories/first");
+    } finally {
+      closeDatabase(db);
+    }
   });
 });
 
