@@ -14,7 +14,6 @@
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { bundleRefToString, parseBundleRef } from "../../../src/core/asset/asset-ref";
-import { classifyRefGrammar, legacyRefToBundleRef } from "../../akm-migrate/migrate/legacy-ref-grammar";
 
 export type ConsolidationFidelityLabel = "lossy" | "safe";
 
@@ -301,18 +300,12 @@ export function loadConsolidationFidelityManifest(
   return parseConsolidationFidelityManifest(JSON.parse(fs.readFileSync(manifestPath, "utf8")));
 }
 
-/**
- * Normalize direct provenance through the canonical current parser and frozen
- * legacy migrator. Export fragments are not direct participant identities.
- */
+/** Normalize a current direct-provenance ref. Export fragments are not participant identities. */
 export function normalizeDirectProvenance(raw: string): string | undefined {
   if (typeof raw !== "string" || raw.length > CONSOLIDATION_ORACLE_LIMITS.provenanceRefChars) return undefined;
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
   try {
-    if (classifyRefGrammar(trimmed) === "legacy") {
-      return bundleRefToString(legacyRefToBundleRef(trimmed));
-    }
     const parsed = parseBundleRef(trimmed);
     if (parsed.fragment !== undefined) return undefined;
     return bundleRefToString(parsed);

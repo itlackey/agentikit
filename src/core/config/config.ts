@@ -5,7 +5,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ConfigError } from "../errors";
-import { assertNoPendingMigrationOperation } from "../migration-operation";
 import {
   acquireConfigLock,
   backupExistingConfig,
@@ -125,7 +124,6 @@ export function resetConfigCache(): void {
 }
 
 export function loadUserConfig(): AkmConfig {
-  assertNoPendingMigrationOperation();
   const configPath = getConfigPath();
 
   let stat: fs.Stats;
@@ -194,7 +192,6 @@ export function loadUserConfig(): AkmConfig {
  * never between the final generation check and index commit.
  */
 export function acquireConfigReadFence(): { config: AkmConfig; release: () => void } {
-  assertNoPendingMigrationOperation();
   const release = acquireConfigLock();
   try {
     cachedConfig = undefined;
@@ -283,13 +280,11 @@ export function saveConfig(config: AkmConfig): void {
 }
 
 function saveConfigReal(config: AkmConfig): void {
-  assertNoPendingMigrationOperation();
   cachedConfig = undefined;
   const configPath = getConfigPath();
   const dir = path.dirname(configPath);
   fs.mkdirSync(dir, { recursive: true });
   withConfigLock(() => {
-    assertNoPendingMigrationOperation();
     const validated = validateCompleteConfig(config);
     backupExistingConfig(configPath);
     writeConfigAtomic(configPath, sanitizeConfigForWrite(validated));
@@ -321,11 +316,9 @@ export function mutateConfig(
   mutate: (current: AkmConfig) => AkmConfig,
   options?: { absentNoop?: boolean },
 ): ConfigMutationResult {
-  assertNoPendingMigrationOperation();
   cachedConfig = undefined;
   const configPath = getConfigPath();
   return withConfigLock(() => {
-    assertNoPendingMigrationOperation();
     const text = readConfigText(configPath);
     if (text === undefined && options?.absentNoop) {
       return { config: { ...DEFAULT_CONFIG }, written: false };
@@ -351,12 +344,10 @@ export async function mutateConfigWithPrecommit<T>(
   mutate: (current: AkmConfig) => AkmConfig,
   precommit: (next: AkmConfig) => Promise<T>,
 ): Promise<ConfigMutationResult & { precommit: T }> {
-  assertNoPendingMigrationOperation();
   cachedConfig = undefined;
   const configPath = getConfigPath();
   const release = acquireConfigLock();
   try {
-    assertNoPendingMigrationOperation();
     const text = readConfigText(configPath);
     const current =
       text === undefined ? ({ ...DEFAULT_CONFIG } as AkmConfig) : parseAndValidateConfigText(text, configPath);

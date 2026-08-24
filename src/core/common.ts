@@ -349,19 +349,18 @@ function readStashDirFromConfig(): string | undefined {
       }
       return bundlePath;
     }
-    // Retired pre-cutover shape with no usable bundles path: refuse with the
-    // migrate hint (matches the schema's hard-reject, config-schema.ts) instead
-    // of silently resolving the old key.
+    // Retired pre-cutover shapes are not runtime inputs. Refuse them instead
+    // of silently resolving old keys.
     for (const key of ["stashDir", "sources", "installed"]) {
       if (key in raw && raw[key] !== undefined) {
         throw new ConfigError(
-          `${key} is the retired pre-cutover source shape; run \`akm-migrate apply\` to convert it to bundles`,
+          `${key} is not supported; configure the current bundles shape`,
           "INVALID_CONFIG_FILE",
         );
       }
     }
   } catch (err) {
-    // A retired-shape refusal must reach the caller; genuine missing/invalid
+    // An unsupported-shape refusal must reach the caller; genuine missing/invalid
     // config (read or JSON-parse failure) falls through to the platform default.
     if (err instanceof ConfigError) throw err;
   }

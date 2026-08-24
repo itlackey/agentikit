@@ -9,22 +9,10 @@ directory. Project `.akm/config.json` files are not merged.
 
 A present configuration file must set `configVersion` to exactly `"0.9.0"`.
 Missing, older, newer, numeric, and malformed versions are rejected by ordinary
-commands without rewriting the file. `akm migrate status` reports config and
-database state independently; it exits nonzero when migration is blocked.
-`akm migrate apply` installs an operator-prepared 0.9 config and applies pending
-database migrations, but it never guesses profile-to-engine mappings. See [the
-migration guide](../migration/v0.8-to-v0.9.md) before editing an existing
-installation.
-
-Canonical config and durable database access fail closed while a restore or
-migration-apply operation is incomplete. Use `akm migrate status` to inspect it
-and `akm migrate apply` to retry; do not delete migration control files manually.
-
-AKM 0.8 does not provide these migration commands. To cross from 0.8 to 0.9,
-prepare the target and an independent filesystem backup first, install or stage
-the 0.9 binary manually, then invoke that new binary with `migrate apply
---config`. Do not use `upgrade --migration-config` from 0.8; that installed 0.8
-code cannot enforce safeguards introduced by 0.9.
+commands without rewriting the file. Pre-0.9 config and database layouts are
+not runtime inputs and are not migrated by `akm upgrade`. Configure the current
+schema directly. The standalone migrator exists only for explicit task v2 to
+task v3 conversion.
 
 ```jsonc
 {

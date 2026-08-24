@@ -10,8 +10,7 @@
  * `type:name` ref grammar. The 0.9.0 canonical ref is `[bundle//]conceptId`
  * with a subdir-qualified conceptId (`skills/x`, `memories/x`, ...); the legacy
  * `type:name` spelling is dead in all teaching material (ref-grammar decision
- * D-R2). Unlike `lint-test-ref-literals.ts` (a shrink-only ceiling over the test
- * corpus), this gate fails on the FIRST dead-grammar token - shipped assets are
+ * D-R2). This gate fails on the FIRST dead-grammar token - shipped assets are
  * read by agents and must never model the retired grammar.
  *
  *   bun scripts/lint-shipped-assets.ts            # gate (exit 1 on any dead token)

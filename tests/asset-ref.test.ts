@@ -9,12 +9,8 @@ import {
 
 // ── Bundle-scoped ref grammar (0.9.0, spec §11.1) ────────────────────────────
 //
-// The `[bundle//]conceptId[#fragment]` grammar is the SOLE ref grammar after
-// the Chunk-5 flip closed (F5). `type` is no longer part of identity; the ref
-// is a bundle-scoped path id. The pre-0.9.0 `[origin//]type:name` grammar and
-// its `parseAssetRef`/`makeAssetRef`/`refToString` API were deleted here and
-// relocated to `scripts/akm-migrate/migrate/legacy-ref-grammar.ts` (Chunk-8 content migration
-// + the §11.4 re-key). The grammar-invariant intents that survived — name
+// `[bundle//]conceptId[#fragment]` is the only ref grammar. `type` is not part
+// of identity; the ref is a bundle-scoped path id. The invariant intents — name
 // validation (empty / null-byte / absolute / traversal / drive-letter),
 // backslash normalization, origin↔bundle boundary, and round-trip — are all
 // preserved below against the surviving bundle API.

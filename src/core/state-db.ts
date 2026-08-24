@@ -76,7 +76,6 @@ import { type Database, openDatabase, type SqlValue } from "../storage/database"
 import { assertCurrentMigrationLedger, assertMigrationLedger } from "../storage/engines/sqlite-migrations";
 import { openManagedDatabase, withManagedDb } from "../storage/managed-db";
 import { acquireMaintenanceActivitySync } from "./maintenance-barrier";
-import { assertNoPendingMigrationOperation } from "./migration-operation";
 import { getDataDir } from "./paths";
 import { runMigrations, STATE_MIGRATIONS } from "./state/migrations";
 
@@ -124,10 +123,8 @@ export function openStateDatabase(dbPath?: string): Database {
   const canonicalPath = getStateDbPath();
   const resolvedPath = dbPath ?? canonicalPath;
   const isCanonical = path.resolve(resolvedPath) === path.resolve(canonicalPath);
-  if (isCanonical) assertNoPendingMigrationOperation();
   const releaseActivity = isCanonical ? acquireMaintenanceActivitySync("state-db") : undefined;
   try {
-    if (isCanonical) assertNoPendingMigrationOperation();
     const existed = fs.existsSync(resolvedPath);
     if (existed) {
       const preflight = openDatabase(resolvedPath, { readonly: true });

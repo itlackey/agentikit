@@ -378,7 +378,7 @@ Indexes: `idx_task_logs_ts` on `ts`, `idx_task_logs_task_id` on `task_id`, `idx_
 
 ### `$CACHE/events.jsonl` — **Replaced by `events` table in `$DATA/state.db`**
 
-The JSONL file at `$CACHE/events.jsonl` is no longer written by akm. Existing files can be migrated using `scripts/migrate-storage.ts`.
+The JSONL file at `$CACHE/events.jsonl` is no longer read or written by akm.
 
 **Wire format (one object per line, historical reference):**
 ```json

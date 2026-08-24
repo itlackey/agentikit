@@ -2551,7 +2551,6 @@ jq -e '
 | `akm.lock` | Preserve corrupt bytes; mutation fails before config/cache/index changes |
 | `index.db` | Regenerable after evidence capture: remove/quarantine, then full index |
 | `state.db` | Non-regenerable; never delete as repair; restore verified backup |
-| migration sentinel | Never edit/delete manually; status then resume apply/restore |
 | transaction journal | Stop writers, retain evidence, use domain recovery |
 | Git source cache | Staged swap for read-only sources; writable checkout policy is explicit |
 | npm/website cache | Must preserve prior complete generation or report a known failing gate |
@@ -2570,24 +2569,14 @@ jq -e '
 
 ```sh
 bun test --timeout=120000 \
-  tests/integration/migration-lifecycle-regression.test.ts \
-  tests/integration/migration-config-generation.test.ts \
-  tests/integration/migration-apply-crash.test.ts \
-  tests/integration/migration-backup.test.ts \
   tests/integration/migrate-format.test.ts \
+  tests/migrate/task-v2-to-v3-files.test.ts \
+  tests/tasks/migrate-v2-to-v3.test.ts \
   tests/integration/config-recovery-concurrency.test.ts \
   tests/integration/file-lock.test.ts \
   tests/integration/index-writer-lock.test.ts \
   tests/integration/index-writer-lock-crossproc.test.ts \
   tests/integration/proposal-durable-recovery.test.ts
-```
-
-Legacy migration property gate:
-
-```sh
-AKM_RUN_SLOW_TESTS=1 \
-  bun test --timeout=1200000 \
-  tests/migrate/legacy/cutover-rekey-property-gate.test.ts
 ```
 
 ---

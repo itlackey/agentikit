@@ -2,22 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-/**
- * Unit tests for the F1 ref-resolution layer (ref-grammar decision D-R1/D-R4/
- * D-R5): `resolveRef` and the transient dual-grammar input dispatch/translation.
- *
- * These exercise NEW-grammar behavior only — the old suite never speaks it, so
- * every branch here is net-new coverage per the additive-stage contract.
- */
+/** Unit tests for the current bundle-ref resolution layer. */
 
 import { describe, expect, test } from "bun:test";
-// The legacy grammar + dual-grammar shims now live in the Chunk-8 migrate home.
-import {
-  classifyRefGrammar,
-  legacyConceptId,
-  legacyRefToBundleRef,
-  parseAssetRef,
-} from "../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import {
   conceptIdFromTypeName,
   displayRef,
@@ -121,49 +108,8 @@ describe("resolveRef", () => {
   });
 });
 
-// ── classifyRefGrammar (D-R5 charset dispatch) ──────────────────────────────
-
-describe("classifyRefGrammar", () => {
-  test("bare conceptId (no // no :) → bundle grammar", () => {
-    expect(classifyRefGrammar("skills/code-review")).toBe("bundle");
-    expect(classifyRefGrammar("knowledge/http-caching")).toBe("bundle");
-  });
-
-  test("legal-slug prefix + colon-free tail → bundle grammar", () => {
-    expect(classifyRefGrammar("personal//skills/code-review")).toBe("bundle");
-    expect(classifyRefGrammar("team-catalog//workflows/release")).toBe("bundle");
-  });
-
-  test("bare type:name → legacy grammar", () => {
-    expect(classifyRefGrammar("skill:code-review")).toBe("legacy");
-    expect(classifyRefGrammar("knowledge:guide.md")).toBe("legacy");
-  });
-
-  test("tricky both-// -and-: shapes classify as LEGACY", () => {
-    // Illegal slug prefixes (contain / : .) → legacy.
-    expect(classifyRefGrammar("owner/repo//skill:code-review")).toBe("legacy");
-    expect(classifyRefGrammar("npm:@scope/pkg//skill:x")).toBe("legacy");
-    expect(classifyRefGrammar("github:owner/repo#v1//script:lint.sh")).toBe("legacy");
-    // Legal slug prefix but a colon in the tail → legacy.
-    expect(classifyRefGrammar("local//skill:code-review")).toBe("legacy");
-  });
-});
-
-// ── D-R2 static-table translation ───────────────────────────────────────────
-
-describe("legacyConceptId / typeNameFromConceptId", () => {
-  test("type:name → <stash-subdir>/name via the static placement table", () => {
-    expect(legacyConceptId("skill", "code-review")).toBe("skills/code-review");
-    expect(legacyConceptId("knowledge", "guide")).toBe("knowledge/guide");
-    expect(legacyConceptId("script", "db/migrate/run.sh")).toBe("scripts/db/migrate/run.sh");
-    expect(legacyConceptId("workflow", "release")).toBe("workflows/release");
-  });
-
-  test("foreign type with no placement subdir keeps the bare name", () => {
-    expect(legacyConceptId("madeuptype", "thing")).toBe("thing");
-  });
-
-  test("typeNameFromConceptId is the inverse for known stash subdirs", () => {
+describe("typeNameFromConceptId", () => {
+  test("projects known stash subdirectories into type/name values", () => {
     expect(typeNameFromConceptId("skills/code-review")).toEqual({ type: "skill", name: "code-review" });
     expect(typeNameFromConceptId("scripts/db/migrate/run.sh")).toEqual({ type: "script", name: "db/migrate/run.sh" });
     expect(typeNameFromConceptId("workflows/release")).toEqual({ type: "workflow", name: "release" });
@@ -173,29 +119,16 @@ describe("legacyConceptId / typeNameFromConceptId", () => {
     expect(typeNameFromConceptId("no-slash-here")).toBeUndefined();
     expect(typeNameFromConceptId("notatype/thing")).toBeUndefined();
   });
-
-  test("legacyRefToBundleRef maps a registryId origin to the bundle slug", () => {
-    // A registry origin is a legal slug → becomes the bundle id (D-R5 rule 2).
-    expect(legacyRefToBundleRef("mycatalog//skill:review")).toEqual({
-      bundle: "mycatalog",
-      conceptId: "skills/review",
-    });
-    // local/stash origins are not stored bundle ids → stays short.
-    expect(legacyRefToBundleRef("local//skill:review")).toEqual({ bundle: undefined, conceptId: "skills/review" });
-    expect(legacyRefToBundleRef("skill:review")).toEqual({ bundle: undefined, conceptId: "skills/review" });
-  });
 });
 
 // ── parseRefInput (F1b input-boundary parser) ───────────────────────────────
 
 describe("parseRefInput", () => {
-  test("new-grammar bare conceptId → same AssetRef an origin-less type:name yields", () => {
-    // The whole point: a re-keyed literal resolves to the SAME value-object the
-    // old spelling did, so every downstream consumer is unaffected.
-    expect(parseRefInput("skills/code-review")).toEqual(parseAssetRef("skill:code-review"));
-    expect(parseRefInput("knowledge/guide")).toEqual(parseAssetRef("knowledge:guide"));
-    expect(parseRefInput("scripts/db/migrate/run.sh")).toEqual(parseAssetRef("script:db/migrate/run.sh"));
-    expect(parseRefInput("workflows/release")).toEqual(parseAssetRef("workflow:release"));
+  test("bare concept ids project to type/name values", () => {
+    expect(parseRefInput("skills/code-review")).toEqual({ type: "skill", name: "code-review" });
+    expect(parseRefInput("knowledge/guide")).toEqual({ type: "knowledge", name: "guide" });
+    expect(parseRefInput("scripts/db/migrate/run.sh")).toEqual({ type: "script", name: "db/migrate/run.sh" });
+    expect(parseRefInput("workflows/release")).toEqual({ type: "workflow", name: "release" });
   });
 
   test("new-grammar bundle-qualified → bundle becomes the AssetRef origin", () => {

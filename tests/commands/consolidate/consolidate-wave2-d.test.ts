@@ -10,70 +10,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { parseAssetRef } from "../../../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import { setConfigValue } from "../../../src/commands/config-cli";
 import type { AkmConfig } from "../../../src/core/config/config";
 import { ConfigError, NotFoundError, UsageError } from "../../../src/core/errors";
-
-// ── #15: parseAssetRef — MISSING_REQUIRED_ARGUMENT code ────────────────────
-
-describe("parseAssetRef error codes (#15)", () => {
-  test("empty ref throws UsageError with MISSING_REQUIRED_ARGUMENT", () => {
-    try {
-      parseAssetRef("");
-      throw new Error("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(UsageError);
-      expect((err as UsageError).code).toBe("MISSING_REQUIRED_ARGUMENT");
-    }
-  });
-
-  test("ref without colon throws UsageError with MISSING_REQUIRED_ARGUMENT", () => {
-    try {
-      parseAssetRef("foo");
-      throw new Error("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(UsageError);
-      expect((err as UsageError).code).toBe("MISSING_REQUIRED_ARGUMENT");
-    }
-  });
-
-  // Chunk 1.5 opened the type token: a foreign/unknown type like "badtype"
-  // no longer throws (it round-trips as ordinary ref data). Only the
-  // deliberately-removed deny-list (`tool`/`vault`, D1.5-6) still does, so
-  // this regression guard is retargeted to one of those instead of being
-  // deleted outright — #15's real contract ("a REJECTED ref throws
-  // UsageError/MISSING_REQUIRED_ARGUMENT", not "any non-canonical type
-  // throws") still holds.
-  test("ref with a deny-listed (deliberately-removed) type throws UsageError with MISSING_REQUIRED_ARGUMENT", () => {
-    try {
-      parseAssetRef("tool:name");
-      throw new Error("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(UsageError);
-      expect((err as UsageError).code).toBe("MISSING_REQUIRED_ARGUMENT");
-    }
-  });
-
-  test("ref with a foreign/unknown type is accepted as an open token (chunk 1.5) — does not throw", () => {
-    const ref = parseAssetRef("badtype:name");
-    expect(ref.type).toBe("badtype");
-    expect(ref.name).toBe("name");
-  });
-
-  test("valid ref parses correctly", () => {
-    const ref = parseAssetRef("skill:deploy");
-    expect(ref.type).toBe("skill");
-    expect(ref.name).toBe("deploy");
-  });
-
-  test("MISSING_REQUIRED_ARGUMENT has a hint in errors.ts", () => {
-    const err = new UsageError("test", "MISSING_REQUIRED_ARGUMENT");
-    expect(err.hint()).toBeDefined();
-    // 0.9.0 grammar (D-R3): the hint teaches [bundle//]conceptId, never type:name.
-    expect(err.hint()).toMatch(/\[bundle\/\/\]conceptId/);
-  });
-});
 
 // #13's "error class exit-code classification" describe block was DELETED
 // here (D2, Phase 2 triage): all 4 tests asserted only `err.name` and

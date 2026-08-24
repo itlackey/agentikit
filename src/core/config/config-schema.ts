@@ -145,14 +145,11 @@ export const AkmConfigShape = {
 export const AkmConfigBaseSchema = z.object(AkmConfigShape).passthrough();
 
 /**
- * Per-key overrides for the retired `stashDir`/`sources`/`installed` source-
- * shape rejection below. Keys without an entry fall back to the shared
- * "retired pre-cutover source shape" message, which already names the
- * replacement (bundles) and the migration command.
+ * Per-key overrides for unsupported pre-cutover source shapes.
  */
 const RETIRED_SOURCE_SHAPE_KEY_MESSAGES: Record<string, string> = {
   stashDir:
-    "stashDir is retired in 0.9; the stash path now comes from `bundles`. Run `akm-migrate apply` to convert a pre-0.9 config, or see `akm config path --all` / `akm info`.",
+    "stashDir is not supported; configure `bundles`, or use `akm config path --all` / `akm info` to inspect current paths.",
 };
 
 export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => {
@@ -176,20 +173,15 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
       message: "bindings is not supported in 0.9.0 (Tier B); it is neither emitted nor accepted",
     });
   }
-  // 0.9.0 config-shape cutover (spec §10.1): the retired `stashDir`/`sources`/
-  // `installed` trio is HARD-REJECTED at load whenever present — `bundles` +
-  // `defaultBundle` fully supersede it. A pre-cutover config never loads through
-  // this validated path; the migrator ({@link migrateConfigSourcesToBundles})
-  // normalizes old→bundles BEFORE validation, and `inspectConfig` classifies an
-  // old-shape-alone config "old" (migration-eligible) via that same normalize.
+  // Only the current source shape enters the runtime. There is no config
+  // compatibility path; `bundles` + `defaultBundle` fully supersede these keys.
   for (const key of ["stashDir", "sources", "installed"]) {
     if (key in raw && raw[key] !== undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: [key],
         message:
-          RETIRED_SOURCE_SHAPE_KEY_MESSAGES[key] ??
-          `${key} is the retired pre-cutover source shape; run \`akm-migrate apply\` to convert it to bundles`,
+          RETIRED_SOURCE_SHAPE_KEY_MESSAGES[key] ?? `${key} is not supported; configure the current bundles shape`,
       });
     }
   }

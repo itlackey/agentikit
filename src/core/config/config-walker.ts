@@ -465,8 +465,8 @@ function unsetPath(config: Record<string, unknown>, path: Path): Record<string, 
  */
 const RETIRED_KEY_HINTS: Record<string, string> = {
   stashDir: "stashDir was removed in 0.9; get the stash path from `akm config path --all` or `akm info`.",
-  sources: "sources was replaced by bundles in 0.9; run `akm-migrate apply` on a pre-0.9 config to convert it.",
-  installed: "installed was replaced by bundles in 0.9; run `akm-migrate apply` on a pre-0.9 config to convert it.",
+  sources: "sources is not supported; configure `bundles` instead.",
+  installed: "installed is not supported; configure `bundles` instead.",
   wikiName: "the wiki subsystem was removed in 0.9; wikis are ordinary knowledge assets now — see `akm import`.",
   wiki: "the wiki subsystem was removed in 0.9; wikis are ordinary knowledge assets now — see `akm import`.",
   llm: "llm was replaced by named engines configuration in 0.9; configure `engines` instead.",

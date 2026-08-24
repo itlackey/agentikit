@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { stringify as stringifyYaml } from "yaml";
-import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { buildTaskRunId, openLogsDatabase, queryTaskLogs, type TaskLogRow } from "../../src/core/logs-db";
 import { openStateDatabase } from "../../src/core/state-db";
 import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
@@ -66,7 +65,6 @@ beforeEach(() => {
   // Pair AKM_BUNDLE_DIR with AKM_STATE_DIR so the test-isolation guard in
   // src/core/paths.ts (getDataDir) stays inert.
   process.env.AKM_STATE_DIR = stateDir;
-  createMigrationBackup();
 });
 
 afterEach(() => {

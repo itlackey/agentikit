@@ -254,8 +254,8 @@ describe("loadConfig", () => {
     );
 
     expect(() => loadConfig()).toThrow(ConfigError);
-    expect(() => loadConfig()).toThrow(/sources is the retired pre-cutover source shape/);
-    expect(() => loadConfig()).toThrow(/akm-migrate apply/);
+    expect(() => loadConfig()).toThrow(/sources is not supported/);
+    expect(() => loadConfig()).toThrow(/configure the current bundles shape/);
   });
 
   test("hard-rejects the retired `installed[]` key (0.9.0 cutover)", () => {
@@ -279,12 +279,10 @@ describe("loadConfig", () => {
     );
 
     expect(() => loadConfig()).toThrow(ConfigError);
-    expect(() => loadConfig()).toThrow(/installed is the retired pre-cutover source shape/);
+    expect(() => loadConfig()).toThrow(/installed is not supported/);
   });
 
-  // Mitigation item 3: `stashDir` gets a per-key message pointing at its
-  // replacement (bundles / akm-migrate apply) instead of only the generic
-  // "retired pre-cutover source shape" sentence shared by sources/installed.
+  // `stashDir` gets a per-key message pointing at its current replacement.
   test("hard-rejects the retired `stashDir` key with a stashDir-specific message", () => {
     writeRawConfig(
       getConfigPath(),
@@ -295,9 +293,9 @@ describe("loadConfig", () => {
     );
 
     expect(() => loadConfig()).toThrow(ConfigError);
-    expect(() => loadConfig()).toThrow(/stashDir is retired in 0\.9/);
+    expect(() => loadConfig()).toThrow(/stashDir is not supported/);
     expect(() => loadConfig()).toThrow(/bundles/);
-    expect(() => loadConfig()).toThrow(/akm-migrate apply/);
+    expect(() => loadConfig()).toThrow(/configure `bundles`/);
   });
 });
 

@@ -36,7 +36,7 @@ function splitToolStdout(stdout: string): { progress: string[]; resultLine?: str
  * `--format json` (the default) is therefore the only format whose BYTES can
  * change here (pretty-printed via `output()` instead of the child's compact
  * `JSON.stringify`) — every value stays identical, which is what the
- * migration-lifecycle integration tests assert via `JSON.parse`.
+ * task-migration integration tests assert via `JSON.parse`.
  */
 async function runMigrateSubcommand(command: "migrate-status" | "migrate-apply", args: string[]): Promise<void> {
   const result = await runMigrationTool(args);

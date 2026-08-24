@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { parseAssetRef } from "../../scripts/akm-migrate/migrate/legacy-ref-grammar";
+import { parseRefInput } from "../../src/core/asset/resolve-ref";
 import {
   captureGitPathSnapshot,
   captureGitPublication,
@@ -181,7 +181,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
     await writeAssetToSource(
       target.source,
       target.config,
-      parseAssetRef("memory:operation-owned"),
+      parseRefInput("memories/operation-owned"),
       "---\ndescription: Operation-owned memory\n---\n\nAsset body.\n",
     );
     commitWriteTargetBoundary(target, "exact operation paths", { push: false });

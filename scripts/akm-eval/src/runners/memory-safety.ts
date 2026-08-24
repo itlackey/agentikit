@@ -145,10 +145,6 @@ export async function runMemorySafetyCase(c: EvalCase, ctx: EvalContext): Promis
   const sandbox = createSandbox({ fixture: fixtureAbs, prefix: "akm-eval-mem-", inheritEnv: true });
   try {
     const cli = makeAkmCli(ctx.akmBin, sandbox.env, { record: ctx.recording });
-    const backup = cli.createMigrationBackup();
-    if (backup.status !== 0) {
-      return errorResult(c, `akm-migrate backup failed (exit ${backup.status}): ${backup.stderr.trim()}`, start);
-    }
     const configDir = path.join(sandbox.stashDir, ".akm");
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(

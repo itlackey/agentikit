@@ -5,7 +5,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { shouldBypassConfigStartup } from "../../src/cli";
 import { buildTaskRunId, openLogsDatabase, queryTaskLogs } from "../../src/core/logs-db";
 import { openStateDatabase } from "../../src/core/state-db";
@@ -31,7 +30,6 @@ beforeEach(() => {
   tasksDir = path.join(storage.stashDir, "tasks");
   logDir = path.join(storage.cacheDir, "akm", "tasks", "logs");
   fs.mkdirSync(tasksDir, { recursive: true });
-  createMigrationBackup();
 });
 
 afterEach(() => {

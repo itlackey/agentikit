@@ -118,7 +118,6 @@ import { taskCommand } from "./commands/tasks/tasks-cli";
 import { workflowCommand } from "./commands/workflow-cli";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config/config";
 import { UsageError, type UsageErrorCode } from "./core/errors";
-import { assertNoPendingMigrationOperation } from "./core/migration-operation";
 import { getConfigPath } from "./core/paths";
 import { DURATION_UNITS, parseDuration } from "./core/time";
 import { plainize } from "./core/tty";
@@ -1014,7 +1013,6 @@ async function runCli(): Promise<void> {
   // rather than letting the raw exception escape with a stack trace.
   try {
     applyEarlyStderrFlags(process.argv);
-    if (isTaskRunWithId(process.argv)) assertNoPendingMigrationOperation();
     const bypassConfig = shouldBypassConfigStartup(process.argv);
     initOutputMode(process.argv, bypassConfig ? (DEFAULT_CONFIG.output ?? {}) : (loadConfig().output ?? {}));
   } catch (error: unknown) {

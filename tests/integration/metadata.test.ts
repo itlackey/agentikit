@@ -2,12 +2,6 @@ import { afterAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-// The legacy `.stash.json` sidecar reader/writer moved to the migrator home
-// (Chunk-5 flip scope-B); alias to the old local names to keep the bodies intact.
-import {
-  readLegacyStashOverrides as loadStashFile,
-  writeLegacyStashFile as writeStashFile,
-} from "../../scripts/akm-migrate/migrate/legacy/legacy-stash-json";
 import { resetConfigCache } from "../../src/core/config/config";
 import {
   applyCuratedFrontmatter,
@@ -19,7 +13,6 @@ import {
   fileNameToDescription,
   type IndexDocument,
   isEnrichmentComplete,
-  type StashFile,
   validateStashEntry,
 } from "../../src/indexer/passes/metadata";
 import { recognizeStashEntries } from "../../src/indexer/scan/drain-dir";
@@ -46,85 +39,6 @@ function writeFile(filePath: string, content = "") {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content);
 }
-
-// ── loadStashFile ───────────────────────────────────────────────────────────
-
-test("loadStashFile reads valid .stash.json", () => {
-  const dir = tmpDir();
-  const stash: StashFile = {
-    entries: [
-      {
-        name: "docker-build",
-        type: "script",
-        description: "build docker images",
-        tags: ["docker", "build"],
-        filename: "docker-build.ts",
-      },
-    ],
-  };
-  writeFile(path.join(dir, ".stash.json"), JSON.stringify(stash));
-
-  const result = loadStashFile(dir);
-  expect(result).not.toBeNull();
-  expect(result?.entries).toHaveLength(1);
-  expect(result!.entries[0]!.name).toBe("docker-build");
-  expect(result!.entries[0]!.description).toBe("build docker images");
-  expect(result!.entries[0]!.tags).toEqual(["docker", "build"]);
-});
-
-test("loadStashFile returns null for missing file", () => {
-  const dir = tmpDir();
-  expect(loadStashFile(dir)).toBeNull();
-});
-
-test("loadStashFile returns null for invalid JSON", () => {
-  const dir = tmpDir();
-  writeFile(path.join(dir, ".stash.json"), "not json");
-  expect(loadStashFile(dir)).toBeNull();
-});
-
-test("loadStashFile returns null for missing entries array", () => {
-  const dir = tmpDir();
-  writeFile(path.join(dir, ".stash.json"), '{"foo": "bar"}');
-  expect(loadStashFile(dir)).toBeNull();
-});
-
-test("loadStashFile parses intent field", () => {
-  const dir = tmpDir();
-  const stash: StashFile = {
-    entries: [
-      {
-        name: "deploy",
-        type: "script",
-        intent: { when: "user needs to deploy", input: "service name", output: "deployment status" },
-        filename: "deploy.sh",
-      },
-    ],
-  };
-  writeFile(path.join(dir, ".stash.json"), JSON.stringify(stash));
-
-  const result = loadStashFile(dir);
-  expect(result!.entries[0]!.intent).toEqual({
-    when: "user needs to deploy",
-    input: "service name",
-    output: "deployment status",
-  });
-});
-
-// ── writeStashFile ──────────────────────────────────────────────────────────
-
-test("writeStashFile persists .stash.json to disk", () => {
-  const dir = tmpDir();
-  const stash: StashFile = {
-    entries: [{ name: "test", type: "script", quality: "generated" }],
-  };
-  writeStashFile(dir, stash);
-
-  const raw = fs.readFileSync(path.join(dir, ".stash.json"), "utf8");
-  const parsed = JSON.parse(raw);
-  expect(parsed.entries[0].name).toBe("test");
-  expect(parsed.entries[0].quality).toBe("generated");
-});
 
 // ── validateStashEntry ──────────────────────────────────────────────────────
 
@@ -354,42 +268,6 @@ test("validateStashEntry normalizes usage array", () => {
   });
   expect(result).not.toBeNull();
   expect(result?.usage).toEqual(["First step", "Second step"]);
-});
-
-test("loadStashFile parses usage field", () => {
-  const dir = tmpDir();
-  const stash: StashFile = {
-    entries: [
-      {
-        name: "git-diff",
-        type: "script",
-        usage: ["Run after fetching main", "Use --stat for quick output"],
-        filename: "run.ts",
-      },
-    ],
-  };
-  writeFile(path.join(dir, ".stash.json"), JSON.stringify(stash));
-
-  const result = loadStashFile(dir);
-  expect(result!.entries[0]!.usage).toEqual(["Run after fetching main", "Use --stat for quick output"]);
-});
-
-test("loadStashFile parses searchHints field", () => {
-  const dir = tmpDir();
-  const stash: StashFile = {
-    entries: [
-      {
-        name: "git-diff",
-        type: "script",
-        searchHints: ["summarize git commits", "explain what changed"],
-        filename: "run.ts",
-      },
-    ],
-  };
-  writeFile(path.join(dir, ".stash.json"), JSON.stringify(stash));
-
-  const result = loadStashFile(dir);
-  expect(result!.entries[0]!.searchHints).toEqual(["summarize git commits", "explain what changed"]);
 });
 
 // ── recognize populates searchHints ─────────────────────────────────────────
@@ -730,19 +608,6 @@ test("validateStashEntry whitelists category (SPEC-6)", () => {
   expect(entryCategory(bad)).toBeUndefined();
 });
 
-test("loadStashFile preserves category on entries (SPEC-6 whitelist round-trip)", () => {
-  const dir = tmpDir();
-  writeFile(
-    path.join(dir, ".stash.json"),
-    JSON.stringify({
-      entries: [{ name: "active-projects", type: "fact", category: "meta", filename: "active-projects.md" }],
-    }),
-  );
-  const result = loadStashFile(dir);
-  expect(result).not.toBeNull();
-  expect(entryCategory(result?.entries[0])).toBe("meta");
-});
-
 test("recognize populates entry.category from fact frontmatter (SPEC-6 end-to-end)", async () => {
   const factsRoot = path.join(tmpDir(), "facts");
   const file = path.join(factsRoot, "conventions", "organization.md");
@@ -939,30 +804,6 @@ test("recognize merges directory tokens into package.json-keyword tags for neste
   expect(stash.entries).toHaveLength(1);
   expect(stash.entries[0]!.name).toBe("tools/run.ts");
   expect(sortedTags(stash.entries[0])).toEqual(["diff", "git", "tools"]);
-});
-
-test("loadStashFile keeps literal tags for nested-name entries — no dir-token merge (SPEC-2)", () => {
-  // .stash.json-declared entries are hand-curated manifests: the SPEC-2 merge
-  // applies only to file-derived entries via recognize. A nested ref
-  // subpath in a declared entry's name must NOT grow directory tokens.
-  const dir = tmpDir();
-  const stash: StashFile = {
-    entries: [
-      {
-        name: "projectA/deploy",
-        type: "script",
-        description: "deploy projectA services",
-        tags: ["auth"],
-        filename: "deploy.sh",
-      },
-    ],
-  };
-  writeFile(path.join(dir, ".stash.json"), JSON.stringify(stash));
-
-  const result = loadStashFile(dir);
-  expect(result?.entries).toHaveLength(1);
-  expect(result!.entries[0]!.name).toBe("projectA/deploy");
-  expect(result!.entries[0]!.tags).toEqual(["auth"]);
 });
 
 test("multi-token directory segments tokenize like extractTagsFromPath in the merge (SPEC-2)", async () => {

@@ -12,7 +12,6 @@
  * gate over a data-dir / DB / lock / managed-asset path turned a permission
  * fault into a confident wrong answer:
  *
- *   - the migration-recovery gate silently CLEARING (`assertNoPendingMigrationOperation`)
  *   - the lockfile write paths reading `[]` and then OVERWRITING the operator's
  *     lock records with it
  *   - `--clean` DELETING index rows for files it merely cannot look at
@@ -32,7 +31,6 @@ import { collectEligibleRefs } from "../../src/commands/improve/eligibility";
 import { akmListSources } from "../../src/commands/sources/installed-stashes";
 import { type AkmConfig, saveConfig } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
-import { assertNoPendingMigrationOperation, getMigrationApplyJournalPath } from "../../src/core/migration-operation";
 import { getDataDir, getDbPath } from "../../src/core/paths";
 import { getStateDbPath } from "../../src/core/state-db";
 import { _setWarnSinkForTests } from "../../src/core/warn";
@@ -96,45 +94,6 @@ function stashConfig(stashDir: string): AkmConfig {
     defaultWriteTarget: "stash",
   } as AkmConfig;
 }
-
-// ── The migration-recovery gate ─────────────────────────────────────────────
-
-describe("assertNoPendingMigrationOperation fails closed on an unreadable journal (#791)", () => {
-  test("an unreadable journal refuses canonical DB access instead of clearing the gate", () => {
-    const journalPath = getMigrationApplyJournalPath();
-    makeUnresolvablePath(path.dirname(journalPath), path.basename(journalPath));
-
-    // Pre-sweep this returned normally: `existsSync` said `false`, so the guard
-    // concluded "no recovery pending" and let akm open the canonical databases
-    // on top of a possibly half-applied migration.
-    let raised: unknown;
-    try {
-      assertNoPendingMigrationOperation();
-    } catch (error) {
-      raised = error;
-    }
-    expect(raised).toBeInstanceOf(ConfigError);
-    expect((raised as ConfigError).code).toBe("DATA_DIR_UNREADABLE");
-    expect((raised as Error).message).toContain(journalPath);
-    expect((raised as Error).message).toContain("ELOOP");
-  });
-
-  test("absent still clears the gate and a real pending journal still reports as pending", () => {
-    expect(() => assertNoPendingMigrationOperation()).not.toThrow();
-
-    const journalPath = getMigrationApplyJournalPath();
-    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
-    fs.writeFileSync(journalPath, "{}");
-    let raised: unknown;
-    try {
-      assertNoPendingMigrationOperation();
-    } catch (error) {
-      raised = error;
-    }
-    expect((raised as ConfigError).code).toBe("INVALID_CONFIG_FILE");
-    expect((raised as Error).message).toMatch(/recovery is pending/);
-  });
-});
 
 // ── The lockfile write paths ────────────────────────────────────────────────
 

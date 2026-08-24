@@ -943,25 +943,9 @@ Upgrade `akm` itself to the latest release. Standalone binaries are downloaded,
 checksummed, and staged before replacement; npm, Bun, and pnpm global installs
 use their package manager.
 
-For contract-capable releases, upgrade treats migration and indexing as
-separate steps. It runs migration preflight before installation, migration apply
-after installation, and rebuilds the derived index only after migration
-succeeds. Standalone upgrades retain the previous binary until migration apply
-completes. If apply fails, the new binary stays installed and the previous binary
-remains beside it for operator recovery; the executable is never rolled back
-independently of durable state.
-
-A binary that predates the `migrate` command and `--migration-config` cannot
-enforce guards implemented in a release that is not installed yet, so
-self-update cannot safely cross that boundary; install or stage the new
-binary manually instead and run its `akm migrate apply` command. See
-[docs/migration/](../migration/) for version-specific upgrade guides.
-
-For contract-capable upgrades, the old/current binary's preflight inspects only its
-current artifact state and never parses the future prepared config. The prepared
-config is then checked by the staged standalone binary's `migrate status` before
-replacement and passed to the newly installed binary's apply command. A failed
-staged preflight removes the stage and leaves the old executable untouched.
+Upgrade replaces the installed program and then rebuilds the derived index.
+It does not run legacy config, database, or workflow migration paths. Standalone
+downloads use a temporary rollback copy only during atomic executable replacement.
 
 Standalone downloads are streamed directly to the staged file while SHA-256 is
 computed, with a 256 MiB binary limit. Release/checksum metadata is capped at
@@ -971,15 +955,13 @@ computed, with a 256 MiB binary limit. Release/checksum metadata is capped at
 akm upgrade              # Download and replace the running binary
 akm upgrade --check      # Check for updates without installing
 akm upgrade --force      # Force upgrade even if already on latest
-akm upgrade --migration-config ./prepared-config.json  # Contract-capable releases only
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--check` | Check for updates without installing |
 | `--force` | Force upgrade even if on latest version |
-| `--skip-post-upgrade` | Skip only the post-migration index rebuild; migration preflight and apply still run |
-| `--migration-config` | On contract-capable upgrades, operator-prepared config passed only to the new binary's migration apply; not a path for crossing from a pre-`migrate` binary |
+| `--skip-post-upgrade` | Skip the post-upgrade index rebuild |
 
 Checksum verification is not optional and has no flag. If a release's
 `checksums.txt` is genuinely unreachable, the recovery hatch is the
