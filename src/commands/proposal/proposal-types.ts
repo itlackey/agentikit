@@ -276,7 +276,7 @@ export interface Proposal {
    *
    * Present on every persisted proposal created by the current runtime.
    */
-  proposedTarget?: {
+  proposedTarget: {
     source: string;
     root: string;
   };
@@ -343,16 +343,6 @@ export interface Proposal {
    * `"unknown"`) and on human-initiated sources that have no eligibility lane.
    */
   eligibilitySource?: EligibilitySource;
-  /**
-   * Present only when this `Proposal` was reconstructed by the lenient
-   * decoder ({@link proposalRowToProposalLenient}) used on terminal-status
-   * (reject/archive) read paths: one entry per field that failed strict
-   * decoding and was degraded to a safe placeholder instead of throwing.
-   * Absent for every proposal decoded via the strict path
-   * ({@link proposalRowToProposal}), which remains the default everywhere
-   * else. Never populated at write time — read-path diagnostic only.
-   */
-  decodeWarnings?: string[];
 }
 
 // ── Validator-shared types ───────────────────────────────────────────────────

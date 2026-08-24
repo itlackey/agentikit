@@ -48,7 +48,6 @@ import {
 } from "./migrate/legacy/config-source-migration";
 import { type ContentMigrationReport, runContentMigration } from "./migrate/legacy/content-migration";
 import { getLegacyWorkflowDbPath } from "./migrate/legacy/legacy-paths";
-import { importLegacyProposalsIntoState } from "./migrate/legacy/proposal-fs-import";
 import {
   planTaskTargetRefMigration,
   type TaskTargetRefMigrationPlan,
@@ -995,27 +994,9 @@ function runContentMigrationStep(sentinel: ApplySentinel, roots: readonly Cutove
     roots,
   );
   const renameMap = reservedRenameRefMap(report.reservedRenames, roots);
-  const proposalRoots = roots.flatMap((root) =>
-    root.bundleId
-      ? [
-          {
-            path: root.path,
-            bundleId: root.bundleId,
-            ...(root.legacyBundleId ? { legacyBundleId: root.legacyBundleId } : {}),
-            ...(root.registryId ? { registryId: root.registryId } : {}),
-          },
-        ]
-      : [],
-  );
   persistContentMigrationReport(report);
   if (renameMap.size > 0) rekeyStateDb(getStateDbPathInDataDir(), renameMap);
-  report.legacyProposalsImported = importLegacyProposalsIntoState(
-    getStateDbPathInDataDir(),
-    proposalRoots,
-    renameMap,
-  );
-  persistContentMigrationReport(report);
-  if (report.sidecarsFolded > 0 || report.reservedRenames.length > 0 || report.legacyProposalsImported > 0) {
+  if (report.sidecarsFolded > 0 || report.reservedRenames.length > 0) {
     console.log(JSON.stringify({ event: "content-migration", operationId: sentinel.operationId, ...report }));
   }
 }

@@ -40,10 +40,6 @@
  * yet. Fold #3 was ADDED to this step (not a second migration) after folds #1/#2
  * shipped in-branch — the module's READ behavior (the frozen sidecar reader) is
  * unchanged; only the rewrite/fold set grew. Post-release this file is frozen.
- * The pre-0.9 filesystem-proposal import (`proposal-fs-import.ts`) is a sibling
- * transform wired in `config-migrate.ts`; its count rides
- * the {@link ContentMigrationReport} (`legacyProposalsImported`) — this module
- * defaults it to 0 since the fold itself only rewrites on-disk shapes.
  *
  * This module is migrator-only and imports the frozen sidecar reader
  * ({@link readLegacyStashOverrides}) plus core leaves; it is never on a live
@@ -91,17 +87,6 @@ export interface ContentMigrationReport {
    * already in `memories/<name>` (or any non-`memory:` `source`) is not counted.
    */
   sourceBackrefsRewritten: number;
-  /**
-   * Pre-0.9.0 filesystem proposals (`<stash>/.akm/proposals/`) imported into the
-   * migrated state.db `proposals` table. Populated by the migrate-apply step
-   * (`config-migrate.ts` folds in the {@link importLegacyProposalsIntoState}
-   * count), NOT by {@link runContentMigration}, which only rewrites the on-disk
-   * shapes above — the proposal import needs the migrated state.db handle, so it
-   * runs as a sibling additive step in the same apply and reports its count here.
-   * Idempotent: a second apply re-inserts nothing (INSERT OR IGNORE on UUID), so
-   * it reports 0.
-   */
-  legacyProposalsImported: number;
   /** Mandatory disposition for every sidecar that could not be fully folded. */
   sidecarReports: Array<{ path: string; status: "malformed" | "partial"; detail: string }>;
 }
@@ -158,7 +143,6 @@ function emptyReport(): ContentMigrationReport {
     entriesSkipped: 0,
     reservedRenames: [],
     sourceBackrefsRewritten: 0,
-    legacyProposalsImported: 0,
     sidecarReports: [],
   };
 }

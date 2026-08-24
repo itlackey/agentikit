@@ -143,7 +143,8 @@ describe("#584: index.db handle is closed before reindexFn runs", () => {
           createdAt: "2026-06-11T00:00:00.000Z",
           updatedAt: "2026-06-11T00:00:00.000Z",
           payload: { content: "# stub reflect" },
-          changes: [{ path: "", after: "# stub reflect", op: "update" }],
+          changes: [{ path: "lessons/proposal.md", after: "# stub reflect", op: "update" }],
+          proposedTarget: { source: "stash", root: "/tmp/stash" },
         },
       }),
       distillFn: async (o) => ({

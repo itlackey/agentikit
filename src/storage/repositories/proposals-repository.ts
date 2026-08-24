@@ -240,10 +240,8 @@ export function proposalRowToProposal(row: ProposalRow): Proposal {
   }
   validatePresentMetadata(meta);
 
-  const changes = Object.hasOwn(meta, "changes")
-    ? storedToChanges(meta.changes, row.content)
-    : [{ path: "", op: "update" as const, after: row.content }];
-  const proposedTarget = Object.hasOwn(meta, "proposedTarget") ? currentProposalTarget(meta.proposedTarget) : undefined;
+  const changes = storedToChanges(meta.changes, row.content);
+  const proposedTarget = currentProposalTarget(meta.proposedTarget);
   return {
     id: row.id,
     ref: currentProposalRef(row.ref),
@@ -257,7 +255,7 @@ export function proposalRowToProposal(row: ProposalRow): Proposal {
       ...(frontmatter !== undefined ? { frontmatter } : {}),
     },
     changes,
-    ...(proposedTarget !== undefined ? { proposedTarget } : {}),
+    proposedTarget,
     ...(typeof meta.beforeHash === "string" ? { beforeHash: meta.beforeHash } : {}),
     ...(meta.review !== undefined ? { review: meta.review as Proposal["review"] } : {}),
     ...(typeof meta.confidence === "number" ? { confidence: meta.confidence } : {}),
@@ -267,120 +265,6 @@ export function proposalRowToProposal(row: ProposalRow): Proposal {
     ...(typeof meta.eligibilitySource === "string"
       ? { eligibilitySource: meta.eligibilitySource as Proposal["eligibilitySource"] }
       : {}),
-  };
-}
-
-/**
- * Lenient counterpart to {@link proposalRowToProposal} for the terminal-status
- * (reject/archive) read paths (repository.ts `archiveProposal` /
- * `rejectProposalDurably`). Those paths must succeed even on legacy rows
- * minted before a field was required — e.g. 0.8-era rows missing
- * `proposedTarget` and/or carrying empty/missing `changes[].path` metadata —
- * so an operator can reject them instead of resorting to manual SQL.
- *
- * Per-field decode failures are swallowed: the offending field degrades to a
- * safe placeholder (matching the strict decoder's own "no changes recorded"
- * fallback) and the failure is appended to `decodeWarnings` instead of
- * throwing. `id` / `status` / timestamps / `source` are trusted verbatim (the
- * schema guarantees they're non-null strings). The strict decoder remains the
- * default everywhere else, including every other read of a `pending` or
- * `accepted` proposal (accept/revert must keep failing exactly as today on a
- * malformed row).
- */
-export function proposalRowToProposalLenient(row: ProposalRow): Proposal {
-  const warnings: string[] = [];
-
-  let meta: Record<string, unknown> = {};
-  try {
-    const parsed: unknown = JSON.parse(row.metadata_json);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      throw new Error("metadata_json must contain an object.");
-    }
-    meta = parsed as Record<string, unknown>;
-    validatePresentMetadata(meta);
-  } catch (error) {
-    warnings.push(
-      `metadata_json is invalid (${error instanceof Error ? error.message : String(error)}); optional fields dropped.`,
-    );
-    meta = {};
-  }
-
-  let frontmatter: Record<string, unknown> | undefined;
-  if (row.frontmatter_json !== null) {
-    try {
-      const parsed: unknown = JSON.parse(row.frontmatter_json);
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        throw new Error("frontmatter_json must contain an object.");
-      }
-      frontmatter = parsed as Record<string, unknown>;
-    } catch (error) {
-      warnings.push(
-        `frontmatter_json is invalid (${error instanceof Error ? error.message : String(error)}); frontmatter dropped.`,
-      );
-    }
-  }
-
-  let ref: string;
-  try {
-    ref = currentProposalRef(row.ref);
-  } catch (error) {
-    warnings.push(
-      `ref is invalid (${error instanceof Error ? error.message : String(error)}); keeping the raw stored value.`,
-    );
-    ref = row.ref;
-  }
-
-  let changes: FileChange[];
-  try {
-    changes = Object.hasOwn(meta, "changes")
-      ? storedToChanges(meta.changes, row.content)
-      : [{ path: "", op: "update" as const, after: row.content }];
-  } catch (error) {
-    warnings.push(
-      `changes metadata is invalid (${error instanceof Error ? error.message : String(error)}); degraded to a single placeholder change.`,
-    );
-    changes = [{ path: "", op: "update" as const, after: row.content }];
-  }
-
-  let proposedTarget: Proposal["proposedTarget"];
-  if (Object.hasOwn(meta, "proposedTarget")) {
-    try {
-      proposedTarget = currentProposalTarget(meta.proposedTarget);
-    } catch (error) {
-      warnings.push(`proposedTarget is invalid (${error instanceof Error ? error.message : String(error)}); omitted.`);
-    }
-  } else {
-    warnings.push("proposedTarget is missing (pre-WI-6.2 legacy row).");
-  }
-
-  if (!["pending", "accepted", "rejected", "reverted"].includes(row.status)) {
-    warnings.push(`status "${row.status}" is not a recognized value.`);
-  }
-
-  return {
-    id: row.id,
-    ref,
-    status: row.status as Proposal["status"],
-    source: row.source,
-    ...(typeof meta.sourceRun === "string" ? { sourceRun: meta.sourceRun } : {}),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    payload: {
-      content: row.content,
-      ...(frontmatter !== undefined ? { frontmatter } : {}),
-    },
-    changes,
-    ...(proposedTarget !== undefined ? { proposedTarget } : {}),
-    ...(typeof meta.beforeHash === "string" ? { beforeHash: meta.beforeHash } : {}),
-    ...(meta.review !== undefined ? { review: meta.review as Proposal["review"] } : {}),
-    ...(typeof meta.confidence === "number" ? { confidence: meta.confidence } : {}),
-    ...(meta.gateDecision !== undefined ? { gateDecision: meta.gateDecision as Proposal["gateDecision"] } : {}),
-    ...(typeof meta.backupContent === "string" ? { backupContent: meta.backupContent } : {}),
-    ...(meta.acceptedTarget !== undefined ? { acceptedTarget: meta.acceptedTarget as Proposal["acceptedTarget"] } : {}),
-    ...(typeof meta.eligibilitySource === "string"
-      ? { eligibilitySource: meta.eligibilitySource as Proposal["eligibilitySource"] }
-      : {}),
-    ...(warnings.length > 0 ? { decodeWarnings: warnings } : {}),
   };
 }
 
@@ -497,12 +381,7 @@ export function listStateProposals(
        FROM proposals ${where} ORDER BY created_at ASC, rowid ASC`,
     )
     .all(...(params as SqlValue[])) as ProposalRow[];
-  // Archived rows (accepted/rejected/reverted) decode leniently so a
-  // terminal-status row that was rejected via the lenient path (or predates
-  // a required field) remains listable — a strict throw here would defeat
-  // the point of tolerating it at reject/archive time. Pending rows keep the
-  // strict decoder; nothing about the live queue changes here.
-  return rows.map((row) => (row.status === "pending" ? proposalRowToProposal(row) : proposalRowToProposalLenient(row)));
+  return rows.map(proposalRowToProposal);
 }
 
 /**
@@ -515,19 +394,6 @@ export function getStateProposal(db: Database, id: string, stashDir?: string): P
        FROM proposals WHERE id = ?${stashDir ? " AND stash_dir = ?" : ""}`;
   const row = (stashDir ? db.prepare(sql).get(id, stashDir) : db.prepare(sql).get(id)) as ProposalRow | undefined;
   return row ? proposalRowToProposal(row) : undefined;
-}
-
-/**
- * Lenient counterpart to {@link getStateProposal} — used ONLY by the
- * terminal-status (reject/archive) read paths in repository.ts that must
- * tolerate a malformed row (see {@link proposalRowToProposalLenient}).
- */
-export function getStateProposalLenient(db: Database, id: string, stashDir?: string): Proposal | undefined {
-  const sql = `SELECT id, stash_dir, ref, status, source, created_at, updated_at,
-              content, frontmatter_json, metadata_json
-       FROM proposals WHERE id = ?${stashDir ? " AND stash_dir = ?" : ""}`;
-  const row = (stashDir ? db.prepare(sql).get(id, stashDir) : db.prepare(sql).get(id)) as ProposalRow | undefined;
-  return row ? proposalRowToProposalLenient(row) : undefined;
 }
 
 /**

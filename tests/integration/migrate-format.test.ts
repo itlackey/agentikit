@@ -27,23 +27,14 @@ function seedLegacyInstall(storage: ReturnType<typeof withIsolatedAkmStorage>) {
   openLegacyWorkflowDb(getLegacyWorkflowDbPath()).close();
 }
 
-/** Write one pre-0.9.0 `<stash>/.akm/proposals/<id>/proposal.json` — triggers the
- * "content-migration" progress-event line during `migrate apply` (see
- * `runContentMigrationStep`/`importLegacyProposalsIntoState`,
- * `scripts/akm-migrate/config-migrate.ts`). */
-function writeLegacyProposal(stashDir: string, id: string): void {
-  const dir = `${stashDir}/.akm/proposals/${id}`;
+function writeContentMigrationFixture(stashDir: string): void {
+  const dir = `${stashDir}/memories`;
   fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(`${dir}/note.md`, "---\ndescription: generated\n---\n\nNote body.\n", "utf8");
   fs.writeFileSync(
-    `${dir}/proposal.json`,
+    `${dir}/.stash.json`,
     `${JSON.stringify({
-      id,
-      ref: "lessons/legacy-pending",
-      status: "pending",
-      source: "reflect",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      updatedAt: "2026-01-01T00:00:00.000Z",
-      payload: { content: "Prefer rg over grep for code search.\n" },
+      entries: [{ name: "note", type: "memory", filename: "note.md", description: "curated" }],
     })}\n`,
     "utf8",
   );
@@ -120,8 +111,7 @@ test("migrate apply --format text prints a real progress-event line verbatim ahe
   const storage = withIsolatedAkmStorage();
   try {
     seedLegacyInstall(storage);
-    fs.mkdirSync(`${storage.stashDir}/lessons`, { recursive: true });
-    writeLegacyProposal(storage.stashDir, "11111111-1111-4111-8111-111111111111");
+    writeContentMigrationFixture(storage.stashDir);
     const prepared = `${storage.root}/prepared.json`;
     fs.writeFileSync(
       prepared,
@@ -142,8 +132,8 @@ test("migrate apply --format text prints a real progress-event line verbatim ahe
     const eventLineIndex = lines.findIndex((line) => line.includes('"event":"content-migration"'));
     expect(eventLineIndex).toBeGreaterThanOrEqual(0);
     expect(() => JSON.parse(lines[eventLineIndex] as string)).not.toThrow();
-    const parsedEvent = JSON.parse(lines[eventLineIndex] as string) as { legacyProposalsImported: number };
-    expect(parsedEvent.legacyProposalsImported).toBe(1);
+    const parsedEvent = JSON.parse(lines[eventLineIndex] as string) as { sidecarsFolded: number };
+    expect(parsedEvent.sidecarsFolded).toBe(1);
 
     const resultGlyphIndex = lines.findIndex((line) => line.includes("current"));
     expect(resultGlyphIndex).toBeGreaterThan(eventLineIndex);

@@ -363,29 +363,11 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
 
   // ── Migration 005 — proposal_fs_imports ─────────────────────────────────────
   //
-  // One-shot ledger for the legacy filesystem→SQLite proposal import (#578).
-  //
-  // VESTIGIAL as of the Chunk-8 fold: the legacy `proposal.json` import moved
-  // OUT of the live per-operation path and INTO the one-time migrator
-  // (`scripts/akm-migrate/migrate/legacy/proposal-fs-import.ts`, wired through
-  // `akm-migrate apply`),
-  // whose idempotency is INSERT OR IGNORE on the proposal UUID plus migrate-apply's
-  // incomplete sentinel — it no longer reads or writes this ledger. The CREATE TABLE
-  // stays because migration IDs are append-only: removing a released migration
-  // would make the schema_migrations ledger of an
-  // already-migrated rc database stop being an exact ordered prefix, and the
-  // runner would refuse to open it. The empty table is harmless.
-  //
-  // Original purpose (pre-fold): the first proposal operation against a stash
-  // imported any legacy `proposal.json` files (INSERT OR IGNORE) and recorded
-  // the stash here so later invocations skipped the directory walk.
-  //
-  // Indexed (query) columns:
-  //   stash_dir    TEXT PK  — absolute stash root the import ran against.
-  //
-  // Non-indexed columns:
-  //   imported_at    TEXT     — ISO-8601 UTC; when the import completed.
-  //   imported_count INTEGER  — rows actually inserted by the import.
+  // Released migration history is immutable. The filesystem proposal importer
+  // has been deleted from the current runtime, but existing databases can
+  // already contain this ledger id and table. Keeping the inert DDL here lets
+  // their migration prefix validate and lets fresh databases reproduce the
+  // same ordered schema history without restoring the importer.
   {
     id: "005-proposal-fs-imports",
     up: `
