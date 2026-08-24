@@ -285,14 +285,10 @@ const ALLOWED_FILES = new Set<string>([
   "tests/integration/tasks-runner.test.ts",
   "tests/integration/workflows/checkin-surfacing.test.ts",
   "tests/integration/workflows/complete-summary.test.ts",
-  "tests/integration/workflows/conformance/conformance.test.ts",
   "tests/integration/workflows/gate-artifacts.test.ts",
   "tests/integration/workflows/indexer-rejection.test.ts",
   "tests/integration/workflows/native-executor.test.ts",
-  "tests/integration/workflows/run-units.test.ts",
   "tests/integration/workflows/status-units.test.ts",
-  "tests/integration/workflows/step-work.test.ts",
-  "tests/integration/worktree-isolation.test.ts",
 ]);
 
 /**
@@ -342,8 +338,11 @@ const SPAWN_ALLOWED = new Set<string>([]);
  * (`workflows/brief`, `workflows/report`, `workflows/conformance/driver-parity`)
  * were deleted with the protocol itself, so their grandfathered entries went
  * with them. Ratchet lowered in the same change, per the shrink-only rule.
+ *
+ * 65 → 61: four workflow-v3/duplicate-engine suites were deleted during the
+ * v4-only runtime convergence, so their isolation exemptions were removed too.
  */
-export const ALLOWLIST_RATCHET_BASELINE = 65;
+export const ALLOWLIST_RATCHET_BASELINE = 61;
 
 /** Live size of the combined grandfather allowlist (all rule sets). */
 export function combinedAllowlistSize(): number {
