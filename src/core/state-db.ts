@@ -411,6 +411,23 @@ function createHistoricalStateSafetyCopy(source: StateDatabaseSource, migrationI
 export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOptions): Database {
   const canonicalPath = getStateDbPath();
   const resolvedPath = dbPath ?? canonicalPath;
+  // `:memory:` is a SQLite connection identity, not a filesystem pathname.
+  // Never pass it through the durable-file reservation/inode/snapshot path:
+  // doing so creates a literal `:memory:` file and makes later in-process
+  // opens look like an unversioned durable database. Each in-memory handle is
+  // fresh and cannot be path-swapped, so the ownership proof is intrinsically
+  // satisfied for this explicit test/internal seam.
+  if (resolvedPath === ":memory:") {
+    return openManagedDatabase({
+      path: resolvedPath,
+      pragmas: { dataDir: path.dirname(resolvedPath) },
+      init: (db) =>
+        runMigrations(db, {
+          freshDatabase: true,
+          verifyFreshDatabaseOwnership: () => {},
+        }),
+    });
+  }
   const isCanonical = path.resolve(resolvedPath) === path.resolve(canonicalPath);
   const releaseActivity = isCanonical ? acquireMaintenanceActivitySync("state-db") : undefined;
   let freshReservation: OwnedFileReservation | undefined;
