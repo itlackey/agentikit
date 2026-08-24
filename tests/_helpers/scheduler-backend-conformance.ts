@@ -149,11 +149,13 @@ export function schedulerBackendConformance(adapter: SchedulerBackendContractAda
       const binding = qualifiedSchedulerTask("0 9 * * *");
       install(driver.backend, binding);
       const prior = driver.captureState();
+      driver.resetActivity();
 
       expect(() =>
         install(driver.backend, { ...binding, cron: "30 10 * * *" }, mutationExpectation(binding, "absent")),
       ).toThrow(/changed|absence|exists|compare|owner/i);
       expect(driver.captureState()).toEqual(prior);
+      expect(driver.mutationCount()).toBe(0);
     });
 
     test("update CAS rejects same-owner native-definition drift", () => {
@@ -163,6 +165,7 @@ export function schedulerBackendConformance(adapter: SchedulerBackendContractAda
       const fingerprint = driver.currentFingerprint(binding);
       driver.driftArtifact(binding, "fingerprint");
       const drifted = driver.captureState();
+      driver.resetActivity();
 
       expect(() =>
         install(
@@ -172,6 +175,7 @@ export function schedulerBackendConformance(adapter: SchedulerBackendContractAda
         ),
       ).toThrow(/changed|fingerprint|compare/i);
       expect(driver.captureState()).toEqual(drifted);
+      expect(driver.mutationCount()).toBe(0);
     });
 
     test("removal CAS rejects a binding that disappeared after frozen presence", () => {
@@ -181,9 +185,11 @@ export function schedulerBackendConformance(adapter: SchedulerBackendContractAda
       const expected = removalExpectation(binding, driver.currentFingerprint(binding));
       driver.clearArtifact(binding);
       const absent = driver.captureState();
+      driver.resetActivity();
 
       expect(() => uninstall(driver.backend, expected)).toThrow(/changed|missing|present|compare/i);
       expect(driver.captureState()).toEqual(absent);
+      expect(driver.mutationCount()).toBe(0);
     });
 
     test("update rejects a case-equivalent peer that appeared after planning", () => {
