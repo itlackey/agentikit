@@ -244,19 +244,20 @@ function normalizeSchemaSql(value: string | null | undefined): string | null {
 export function readEntrySchemaFingerprint(db: EntrySchemaInspectionDatabase): EntrySchemaFingerprint {
   const tableRow = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entries'").get() as
     | { sql: string | null }
+    | null
     | undefined;
   const sqliteSequenceTable =
-    db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'").get() !==
-    undefined;
+    db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'").get() !=
+    null;
   const maxId = Number(
     (db.prepare("SELECT COALESCE(MAX(id), 0) AS maxId FROM entries").get() as { maxId: number }).maxId,
   );
   const sequenceRow = sqliteSequenceTable
-    ? (db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'entries'").get() as { seq: number } | undefined)
+    ? (db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'entries'").get() as { seq: number } | null | undefined)
     : undefined;
   const sqliteSequenceValid =
     sqliteSequenceTable &&
-    (maxId === 0 ? sequenceRow === undefined || Number(sequenceRow.seq) >= 0 : Number(sequenceRow?.seq) >= maxId);
+    (maxId === 0 ? sequenceRow == null || Number(sequenceRow.seq) >= 0 : Number(sequenceRow?.seq) >= maxId);
   const columns = (
     db.prepare("PRAGMA table_xinfo(entries)").all() as Array<{
       cid: number;
