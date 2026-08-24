@@ -585,6 +585,23 @@ describe("runTask — command target", () => {
     expect(shellText).toContain(command.slice(1).map(shellWord).join(" "));
   });
 
+  test.skipIf(process.platform === "win32")(
+    "executes a bare akm run task when the scheduler PATH omits the installation",
+    async () => {
+      writeTask(
+        "bare-current-install",
+        ["version: 3", "run: akm --version", "akm:", '  schedule: "@daily"', ""].join("\n"),
+      );
+
+      const result = await withEnv({ PATH: "/usr/bin:/bin" }, () =>
+        runTask("bare-current-install", { stashDir, logDir, scheduled: true }),
+      );
+
+      expect(result.status).toBe("completed");
+      expect(fs.readFileSync(result.log, "utf8")).toContain("exit_code=0");
+    },
+  );
+
   test("executes an explicitly selected akm path without replacing it", async () => {
     const vendorDir = path.join(tmpRoot, "vendor");
     const executable = path.join(vendorDir, process.platform === "win32" ? "akm.exe" : "akm");

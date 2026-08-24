@@ -61,6 +61,7 @@ import {
 import { runWorkflowSteps } from "../workflows/exec/run-workflow";
 import { cleanupFrozenScript, frozenScriptCommand, materializeFrozenScript } from "./frozen-script";
 import { collectTaskLogSensitiveValues } from "./log-redaction";
+import { resolveAkmInvocation } from "./resolve-akm-bin";
 import {
   type PreparedTaskV3Command,
   type PreparedTaskV3Execution,
@@ -69,6 +70,7 @@ import {
   type PreparedTaskV3Workflow,
   prepareTaskV3Execution,
 } from "./runtime-v3";
+import { scheduledTaskContextEnv } from "./scheduler-invocation";
 import { parseTaskV3Yaml } from "./source-v3";
 import { validateTaskConceptId, validateTaskId } from "./task-id";
 
@@ -175,6 +177,9 @@ export async function runTask(id: string, options: RunTaskOptions): Promise<Task
     bundleName,
     bundleRoot: stashDir,
     config,
+    // Agent profiles build child env from an allowlist, so freeze the closed
+    // scheduler-restored AKM directory context before command preparation.
+    ...(options.scheduled ? { schedulerContext: scheduledTaskContextEnv() } : {}),
     resolveAsset: async ({ bundle, type, name }) => {
       if (bundle === bundleName) {
         return { file: await resolveAssetPath(stashDir, type, name), bundleRoot: stashDir };
@@ -289,18 +294,49 @@ function finishDisabledTask(
 // ── shell and frozen-script targets ─────────────────────────────────────────
 
 function shellCommand(task: PreparedTaskV3Shell): string[] {
+  const command = resolveLeadingBareAkmCommand(task.command, task.shell);
   switch (task.shell) {
     case "sh":
     case "bash":
     case "zsh":
-      return [task.shell, "-c", task.command];
+      return [task.shell, "-c", command];
     case "pwsh":
     case "powershell":
-      return [task.shell, "-NoProfile", "-NonInteractive", "-Command", task.command];
+      return [task.shell, "-NoProfile", "-NonInteractive", "-Command", command];
     case "cmd":
-      return ["cmd", "/d", "/s", "/c", task.command];
+      return ["cmd", "/d", "/s", "/c", command];
     default:
       return assertNever(task.shell, "shellCommand");
+  }
+}
+
+/**
+ * Bind an unambiguous leading bare `akm` (including the task-v2 migrator's
+ * quoted form) to this installation. Explicit paths and arbitrary shell
+ * fragments remain author-controlled.
+ */
+function resolveLeadingBareAkmCommand(command: string, shell: PreparedTaskV3Shell["shell"]): string {
+  const leadingBareAkm = /^(\s*)(?:akm(?:\.exe)?|'akm(?:\.exe)?'|"akm(?:\.exe)?")(?=$|[\s;|&])/i;
+  if (!leadingBareAkm.test(command)) return command;
+  const invocation = resolveAkmInvocation()
+    .argv.map((part) => quoteShellArgument(part, shell))
+    .join(" ");
+  return command.replace(leadingBareAkm, (_match, leadingWhitespace: string) => `${leadingWhitespace}${invocation}`);
+}
+
+function quoteShellArgument(value: string, shell: PreparedTaskV3Shell["shell"]): string {
+  switch (shell) {
+    case "sh":
+    case "bash":
+    case "zsh":
+      return `'${value.replaceAll("'", `'"'"'`)}'`;
+    case "pwsh":
+    case "powershell":
+      return `'${value.replaceAll("'", "''")}'`;
+    case "cmd":
+      return `"${value.replaceAll('"', '""')}"`;
+    default:
+      return assertNever(shell, "quoteShellArgument");
   }
 }
 

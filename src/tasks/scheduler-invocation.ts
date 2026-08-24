@@ -21,6 +21,20 @@ export const SCHEDULED_TASK_CONTEXT_KEYS = [
 
 type ScheduledTaskContextKey = (typeof SCHEDULED_TASK_CONTEXT_KEYS)[number];
 
+/**
+ * The AKM directory context currently restored from a scheduler descriptor.
+ * Child environments that are built from an allowlist must forward this
+ * closed set explicitly so nested AKM commands stay in the same installation.
+ */
+export function scheduledTaskContextEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of SCHEDULED_TASK_CONTEXT_KEYS) {
+    const value = env[key];
+    if (value) out[key] = value;
+  }
+  return out;
+}
+
 export type ScheduledTaskContext = Record<ScheduledTaskContextKey, string>;
 
 export interface ScheduledTaskContextDescriptor {

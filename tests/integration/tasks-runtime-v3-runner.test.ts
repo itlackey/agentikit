@@ -148,7 +148,7 @@ describe("task-v3 runner mutation boundary", () => {
 
     await expect(
       runTask("multi", { stashDir: storage.stashDir, bundleName: "fixture", scheduled: true }),
-    ).rejects.toThrow(/single-job|multi-job/i);
+    ).rejects.toThrow(/exactly one source-IR job/i);
     expect(readTaskHistory({ id: "multi" })).toEqual([]);
     expect(logFiles()).toEqual([]);
   });

@@ -34,6 +34,7 @@ import { compileWorkflowPlan } from "../workflows/ir/compile";
 import { compileWorkflowSource } from "../workflows/source-ir/compile";
 import { isInferredSecretName } from "./log-redaction";
 import { isBunStandaloneMain } from "./resolve-akm-bin";
+import { SCHEDULED_TASK_CONTEXT_KEYS } from "./scheduler-invocation";
 import type { TaskV3Environment, TaskV3HostShell, TaskV3SourceDocument } from "./source-v3";
 
 export type TaskV3ScriptInterpreter =
@@ -110,6 +111,12 @@ export interface PrepareTaskV3ExecutionContext {
   readonly bundleName: string;
   readonly bundleRoot: string;
   readonly config: AkmConfig;
+  /**
+   * Scheduler-restored directory values to freeze into nested agent dispatch.
+   * Only the closed AKM directory-key set is accepted; arbitrary operational
+   * environment overrides remain outside the immutable command request.
+   */
+  readonly schedulerContext?: Readonly<Partial<Record<(typeof SCHEDULED_TASK_CONTEXT_KEYS)[number], string>>>;
   readonly prepareCommand?: typeof prepareCommandInvocation;
   readonly commandSourceLoader?: PrepareCommandInvocationOptions["sourceLoader"];
   readonly resolveAsset?: (input: {
@@ -159,6 +166,23 @@ function environmentSnapshot(environment: TaskV3Environment | undefined): Readon
       );
     }
     Object.defineProperty(out, key, { value, enumerable: true, configurable: false, writable: false });
+  }
+  return Object.freeze(out);
+}
+
+/** Merge source env with the authoritative, closed scheduler directory context. */
+function commandEnvironmentSnapshot(
+  environment: Readonly<Record<string, string>>,
+  schedulerContext: PrepareTaskV3ExecutionContext["schedulerContext"],
+): Readonly<Record<string, string>> {
+  const out = Object.create(null) as Record<string, string>;
+  for (const key of Object.keys(environment)) {
+    Object.defineProperty(out, key, { value: environment[key], enumerable: true, configurable: true, writable: true });
+  }
+  for (const key of SCHEDULED_TASK_CONTEXT_KEYS) {
+    const value = schedulerContext?.[key];
+    if (!value) continue;
+    Object.defineProperty(out, key, { value, enumerable: true, configurable: true, writable: true });
   }
   return Object.freeze(out);
 }
@@ -324,6 +348,7 @@ export async function prepareTaskV3Execution(
   context: PrepareTaskV3ExecutionContext,
 ): Promise<PreparedTaskV3Execution> {
   const environment = environmentSnapshot(document.env);
+  const commandEnvironment = commandEnvironmentSnapshot(environment, context.schedulerContext);
   const common = base(document, context, environment);
   if (document.target.kind === "run") {
     const cwdIdentity = captureDirectoryIdentity(context.bundleRoot, document.target.workingDirectory);
@@ -359,7 +384,7 @@ export async function prepareTaskV3Execution(
         action,
         config: context.config,
         invocationKind: "task",
-        current: currentExecutionValues(document, context, environment),
+        current: currentExecutionValues(document, context, commandEnvironment),
         ...(context.commandSourceLoader ? { sourceLoader: context.commandSourceLoader } : {}),
       }),
       context,
@@ -380,7 +405,7 @@ export async function prepareTaskV3Execution(
         action: { ref: qualified },
         config: context.config,
         invocationKind: "task",
-        current: currentExecutionValues(document, context, environment),
+        current: currentExecutionValues(document, context, commandEnvironment),
         ...(context.commandSourceLoader ? { sourceLoader: context.commandSourceLoader } : {}),
       }),
       context,
