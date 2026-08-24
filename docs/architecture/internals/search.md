@@ -55,34 +55,13 @@ search automatically retries with prefix matching (appending `*` to tokens of
 ### 2. Semantic (vector)
 
 Cosine similarity between query embedding and stored entry embeddings.
-Requires an embedding model — either AKM's package-owned local Transformers.js
-runtime (default model `bge-small-en-v1.5`) or a remote OpenAI-compatible
-endpoint.
-
-The npm/Bun package includes an unmodified, provenance-checked Transformers.js
-4.2.0 Node distribution. Its exact optional runtime dependencies use the
-official ONNX Runtime Web 1.24.3 Node/WASM build and sharp 0.35.3. The ONNX
-package is installed under the `onnxruntime-node` alias expected by the
-upstream distribution, but contains no native archive installer and supports
-the same runtime on every Node/Bun platform. AKM points its WASM factory and
-binary at absolute files inside the installed package, disables the upstream
-CDN cache path, and caps the pool at four threads (or the host's available
-parallelism when lower).
-
-This choice is intentionally portable and vulnerability-free, not
-performance-equivalent to native ONNX acceleration. A Linux x64 / Node 24
-comparison on 2026-08-19 against native ONNX Runtime 1.23.2, with the same
-cached BGE model, measured roughly
-0.56–0.65 s WASM startup versus 0.25–0.27 s native startup, and 0.11–0.15 s
-versus 0.03–0.05 s for a warm batch of 32 short texts. Those numbers are an
-indicative development-host measurement, not a cross-platform guarantee.
-Users who need native/GPU-class throughput can configure a remote embedding
-endpoint. Under Bun, installing with `--omit=optional` keeps storage-backed CLI
-commands operational while local semantic search reports `blocked`. Under
-Node.js the same flag also omits AKM's optional `better-sqlite3` driver, so
-storage-backed commands fail with an actionable driver error; reinstall without
-the flag or run the package under Bun. Standalone binaries likewise remain
-keyword-only because they do not ship optional runtime packages.
+Requires an embedding model — either the declared external
+`@huggingface/transformers` dependency (default model
+`bge-small-en-v1.5`) or a remote OpenAI-compatible endpoint. AKM imports the
+package directly and does not copy, wrap, alias, or hash a second runtime under
+`src/` or `dist/`. Dependency installation and platform support remain the
+upstream package manager's responsibility. Users who need a different runtime
+or native/GPU-class throughput can configure a remote embedding endpoint.
 
 An LRU cache (100 entries) avoids redundant embedding computation for repeated
 queries.

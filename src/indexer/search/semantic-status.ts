@@ -159,8 +159,7 @@ export function classifySemanticFailure(message: string): SemanticSearchReason {
   if (
     lower.includes("transformers") ||
     lower.includes("missing-package") ||
-    lower.includes("optional local embedding runtime") ||
-    lower.includes("local embedding runtime is unavailable")
+    lower.includes("local embedding dependency is unavailable")
   ) {
     return "missing-package";
   }

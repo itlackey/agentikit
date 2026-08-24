@@ -156,14 +156,10 @@ sets the same path and restores it from a model/source-identified Actions
 cache. Candidate tags and manual runs are restore-only; only the scheduled
 default-branch run may save a cache entry.
 
-The same gate packs AKM, performs normal npm installs in clean external and
-global prefixes plus a rooted `bun add` consumer install, audits the installed
-consumer trees, verifies the vendored runtime and packaged WASM hashes, and
-runs real offline semantic index/search round-trips through the npm-installed
-Node launcher and Bun-installed launcher. `--omit=optional` is covered
-separately: Bun must remain usable with semantic status `blocked`, while Node
-must fail storage-backed commands with the documented actionable
-`better-sqlite3` error because that flag omits the Node database driver too.
+The same gate runs real semantic index/search round-trips against the declared
+external dependency. Package acceptance separately verifies the ordinary npm
+package surface; there is no installed-consumer compatibility architecture or
+copied semantic runtime to audit.
 
 ### What to test explicitly
 

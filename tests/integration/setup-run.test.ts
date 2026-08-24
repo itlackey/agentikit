@@ -453,14 +453,14 @@ describe("runSetupWizard", () => {
     expect(readSavedConfig().semanticSearchMode).toBe("auto");
   });
 
-  test("warns specifically when the package-owned local runtime is missing during setup prep", async () => {
+  test("warns specifically when the Transformers dependency is missing during setup prep", async () => {
     installSetupSeams();
     // The faked availability result exercises the warn-and-report path. Setup
     // must never mutate the package installation to add dependencies.
     setupState.checkEmbeddingResult = {
       available: false,
       reason: "missing-package",
-      message: "AKM's optional local embedding runtime is unavailable.",
+      message: "The @huggingface/transformers dependency is unavailable.",
     };
 
     promptState.selects.push("default", "none", "done", "json", "brief", "skip", "none");
@@ -469,7 +469,7 @@ describe("runSetupWizard", () => {
 
     await runSetupWizard();
 
-    expect(promptState.logs.some((entry) => entry.includes("Reinstall akm-cli without `--omit=optional`"))).toBe(true);
+    expect(promptState.logs.some((entry) => entry.includes("Reinstall akm-cli"))).toBe(true);
     expect(readSavedConfig().semanticSearchMode).toBe("auto");
   });
 

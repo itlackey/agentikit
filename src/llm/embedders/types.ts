@@ -14,7 +14,7 @@ export type EmbeddingVector = number[];
 
 /**
  * Common embedder interface implemented by both the local
- * (AKM's vendored Transformers.js runtime) and remote (OpenAI-compatible) embedders.
+ * (@huggingface/transformers) and remote (OpenAI-compatible) embedders.
  *
  * Both methods are required: query paths use `embed()`, indexer paths use
  * `embedBatch()` for throughput.

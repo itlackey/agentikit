@@ -1,8 +1,5 @@
 import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import fs from "node:fs";
-import { availableParallelism } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { EmbeddingConnectionConfig } from "../../src/core/config/config";
 import { setQuiet } from "../../src/core/warn";
 import {
@@ -378,45 +375,6 @@ describe("local embedder pipeline setup", () => {
       await embed("offline model");
       expect(transformersEnv.allowRemoteModels).toBe(false);
     });
-  });
-
-  test("bounds worker threads and pins packaged local WASM paths without a CDN fallback", async () => {
-    const wasm: {
-      numThreads?: number;
-      wasmPaths?: string | { mjs: string | URL; wasm: string | URL };
-    } = {};
-    const transformersEnv = {
-      backends: { onnx: { wasm } },
-      cacheDir: null,
-      useWasmCache: true,
-    };
-    overrideSeam(_setTransformersLoaderForTests, async () => ({
-      env: transformersEnv,
-      pipeline: async () => async () => ({ data: createLocalVector() }),
-    }));
-
-    await embed("local wasm only");
-
-    expect(transformersEnv.useWasmCache).toBe(false);
-    expect(wasm.numThreads).toBe(Math.max(1, Math.min(4, availableParallelism())));
-    expect(typeof wasm.wasmPaths).toBe("object");
-    const paths = wasm.wasmPaths as { mjs: string | URL; wasm: string | URL };
-    expect(String(paths.mjs).startsWith("file:")).toBe(true);
-    expect(String(paths.mjs)).not.toContain("cdn.jsdelivr.net");
-    expect(String(paths.wasm)).not.toMatch(/^https?:/);
-    expect(fs.existsSync(fileURLToPath(paths.mjs))).toBe(true);
-    expect(fs.existsSync(String(paths.wasm))).toBe(true);
-  });
-
-  test("fails closed when the vendored runtime cannot accept packaged WASM paths", async () => {
-    const pipelineMock = mock(async () => async () => ({ data: createLocalVector() }));
-    overrideSeam(_setTransformersLoaderForTests, async () => ({
-      env: { cacheDir: null },
-      pipeline: pipelineMock,
-    }));
-
-    await expect(embed("no CDN fallback")).rejects.toThrow("required local ONNX WASM configuration");
-    expect(pipelineMock).not.toHaveBeenCalled();
   });
 
   test("requests fp32 dtype for local embeddings", async () => {

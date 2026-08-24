@@ -2916,9 +2916,7 @@ AKM_DOCKER_TESTS=1 bun test tests/integration/docker-install.test.ts
       info/list, and incremental indexing. It does not prove npm pack, published
       artifact, installer, self-upgrade, ARM, macOS, or Windows.
 - [ ] **[RELEASE]** Cross-compile five exact standalone names; run each on native
-      OS/architecture, verify embedded version, and prove local semantic model is
-      unavailable because standalone binaries do not include the package's
-      optional local embedding runtime.
+      OS/architecture and verify the embedded version and supported command surface.
 - [ ] **[RELEASE]** `checksums.txt` covers exactly five binaries and both
       installers. The npm tarball is compared separately because it is generated
       later.

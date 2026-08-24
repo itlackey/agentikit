@@ -122,7 +122,6 @@ jobs:
         run: >-
           bun test --timeout=900000
           tests/integration/semantic-search-e2e.test.ts
-          tests/integration/semantic-package-install-e2e.test.ts
       - name: Save HuggingFace model cache from trusted schedule
         if: >-
           success() &&

@@ -365,8 +365,8 @@ describe("classifySemanticFailure", () => {
     expect(classifySemanticFailure("Error: missing-package detected")).toBe("missing-package");
   });
 
-  test("package-owned local runtime unavailable → missing-package", () => {
-    expect(classifySemanticFailure("AKM's optional local embedding runtime is unavailable")).toBe("missing-package");
+  test("declared Transformers dependency unavailable → missing-package", () => {
+    expect(classifySemanticFailure("The @huggingface/transformers dependency is unavailable")).toBe("missing-package");
   });
 
   // Model download

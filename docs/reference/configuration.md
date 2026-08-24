@@ -311,14 +311,11 @@ This is distinct from `searchMode: "keyword"`, which is the normal result when
 semantic search is disabled or has not been built. A read-only sandbox that
 cannot record best-effort usage telemetry does not by itself mark search as
 degraded.
-The npm/Bun package owns its local Transformers.js/ONNX Web dependencies as
-optionals. If the package was installed with `--omit=optional`, reinstall it
-without that flag or configure a remote `embedding.endpoint`; setup does not
-mutate a global installation to add runtime packages.
-Under Bun, an omitted local embedding runtime degrades to keyword search with
-semantic status `blocked`. Under Node.js, `--omit=optional` also removes the
-optional `better-sqlite3` database driver, so storage-backed commands require a
-normal reinstall or execution under Bun before they can reach that status.
+The npm/Bun package declares `@huggingface/transformers` as a normal dependency.
+AKM imports that external package directly; it does not carry a copied runtime
+under `src/` or `dist/`. If the dependency is unavailable, reinstall `akm-cli`
+or configure a remote `embedding.endpoint`. Setup does not mutate a global
+installation to add runtime packages.
 The default is `"off"` so a bare or headless install (`akm bundle create`, `--yes`,
 `--config`) never silently downloads the local embedding model on first
 index.

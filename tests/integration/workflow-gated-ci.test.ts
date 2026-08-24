@@ -122,7 +122,6 @@ describe("gated CI workflow", () => {
     });
     expect(JSON.stringify(job)).not.toContain('"uses":"actions/cache@v5"');
     expect(JSON.stringify(job)).toContain("tests/integration/semantic-search-e2e.test.ts");
-    expect(JSON.stringify(job)).toContain("tests/integration/semantic-package-install-e2e.test.ts");
     expect(JSON.stringify(job)).toContain("--timeout=900000");
 
     const semanticTest = fs.readFileSync(
@@ -131,19 +130,6 @@ describe("gated CI workflow", () => {
     );
     expect(semanticTest).toContain('path.resolve(import.meta.dir, "../..", ".ci-cache", "huggingface")');
     expect(semanticTest).not.toContain('path.join(process.env.HOME ?? "/tmp", ".cache", "huggingface")');
-    const packageTest = fs.readFileSync(
-      path.join(root, "tests", "integration", "semantic-package-install-e2e.test.ts"),
-      "utf8",
-    );
-    expect(packageTest).toContain('"--foreground-scripts"');
-    expect(packageTest).toContain('"--prefix"');
-    expect(packageTest).toContain("const bunInstall = run(");
-    expect(packageTest).toContain('"--trust"');
-    expect(packageTest).toContain("ort-wasm-simd-threaded.wasm");
-    expect(packageTest).toContain("expect(nodeResult.status).toBe(70)");
-    expect(packageTest).toContain('nodeResult.stderr).toContain("better-sqlite3")');
-    expect(packageTest).toContain('NODE_USE_ENV_PROXY: "1"');
-    expect(packageTest).toContain("npm lifecycle scripts disabled");
     expect(fs.readFileSync(path.join(root, ".gitignore"), "utf8")).toContain(".ci-cache/");
   });
 

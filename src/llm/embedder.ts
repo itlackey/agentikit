@@ -64,7 +64,7 @@ export function _setEmbedderForTests(fakes?: EmbedderOverridesForTests): void {
 }
 
 /**
- * Check whether AKM's vendored Transformers asset and optional runtime are available.
+ * Check whether the external Transformers dependency is available.
  * Delegating wrapper around `./embedders/local`'s probe so tests can swap it
  * via {@link _setEmbedderForTests}.
  */
@@ -260,7 +260,7 @@ export async function checkEmbeddingAvailability(
     return {
       available: false,
       reason: "missing-package",
-      message: "AKM's optional local embedding runtime is unavailable.",
+      message: "The @huggingface/transformers dependency is unavailable.",
     };
   }
   try {

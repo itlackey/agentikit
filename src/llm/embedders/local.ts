@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Local Transformers.js embedder backed by AKM's audited runtime asset.
+ * Local embedder backed by the external @huggingface/transformers package.
  *
  * Encapsulates the transformer pipeline lifecycle as instance state on a
  * `LocalEmbedder` so tests can construct fresh instances without leaking
@@ -11,13 +11,9 @@
  * shared instance for the production code path.
  */
 
-import fs from "node:fs";
-import { availableParallelism } from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import { getCacheDir } from "../../core/paths";
 import { warn } from "../../core/warn";
-import { getDirname, resolveModule } from "../../runtime";
 import type { Embedder, EmbeddingVector } from "./types";
 
 /**
@@ -67,27 +63,14 @@ function isBatchTensor(v: unknown): v is TransformerBatchTensor {
 }
 
 // ── Test seam ────────────────────────────────────────────────────────────────
-// Swap-and-restore override for the dynamic vendored Transformers.js import.
+// Swap-and-restore override for the dynamic Transformers.js import.
 // Inert in production; only tests install fakes, via tests/_helpers/seams.ts
 // (which restores them automatically). See docs/architecture/specs/di-seams-plan.md.
 
-interface TransformersWasmPaths {
-  mjs: string | URL;
-  wasm: string | URL;
-}
-
 interface TransformersEnvironment {
   allowRemoteModels?: boolean;
-  backends?: {
-    onnx?: {
-      wasm?: {
-        numThreads?: number;
-        wasmPaths?: string | TransformersWasmPaths;
-      };
-    };
-  };
+  backends?: unknown;
   cacheDir?: string | null;
-  useWasmCache?: boolean;
 }
 
 function isEnabledEnvironmentFlag(value: string | undefined): boolean {
@@ -101,23 +84,8 @@ interface TransformersModule {
 
 export type TransformersLoader = () => Promise<TransformersModule>;
 
-const PACKAGED_TRANSFORMERS_RUNTIME_URL = new URL(
-  "../../vendor/huggingface-transformers/transformers.node.mjs",
-  import.meta.url,
-);
-const ORT_WEB_PACKAGE_NAME = "onnxruntime-web";
-const ORT_WEB_PACKAGE_VERSION = "1.24.3";
-const LOCAL_WASM_MAX_THREADS = 4;
-
-function resolveTransformersRuntimeUrl(): URL {
-  if (fs.existsSync(fileURLToPath(PACKAGED_TRANSFORMERS_RUNTIME_URL))) {
-    return PACKAGED_TRANSFORMERS_RUNTIME_URL;
-  }
-  return new URL(import.meta.resolve("@huggingface/transformers"));
-}
-
 const realTransformersLoader: TransformersLoader = () =>
-  import(resolveTransformersRuntimeUrl().href) as Promise<TransformersModule>;
+  import("@huggingface/transformers") as Promise<TransformersModule>;
 
 let transformersLoader: TransformersLoader = realTransformersLoader;
 
@@ -144,73 +112,6 @@ const LOCAL_BATCH_SIZE = 32;
  */
 function resolveLocalModelName(overrideModel?: string): string {
   return overrideModel || DEFAULT_LOCAL_MODEL;
-}
-
-/**
- * Detect whether `bun build --compile` produced the running executable. Used
- * to choose the only actionable remediation: a standalone has no package tree
- * to repair, while an npm/Bun package install can restore omitted optionals.
- * See #482.
- */
-function isCompiledBinary(): boolean {
-  // scripts/akm-standalone.ts sets this marker before importing the CLI. It is
-  // definitive; `Bun.embeddedFiles` exists (as an empty array) in ordinary Bun
-  // processes too and therefore cannot distinguish a global Bun install.
-  if (process.env.AKM_STANDALONE_ENTRY === "1") return true;
-  const exec = (process.execPath || "").toLowerCase();
-  if (/(?:^|[\\/])akm(?:-[^\\/]+)?(?:\.exe)?$/.test(exec)) return true;
-  return false;
-}
-
-interface LocalWasmRuntimeFiles {
-  factory: string;
-  wasm: string;
-}
-
-/**
- * Resolve and verify the exact official ONNX Web package installed under the
- * `onnxruntime-node` npm alias. Returning explicit local files prevents the
- * vendored Transformers distribution from falling back to jsDelivr.
- */
-function resolveLocalWasmRuntimeFiles(): LocalWasmRuntimeFiles {
-  const entry = resolveModule("onnxruntime-node", getDirname(import.meta.url));
-  const distDir = path.dirname(entry);
-  const packageFile = path.resolve(distDir, "..", "package.json");
-  const manifest = JSON.parse(fs.readFileSync(packageFile, "utf8")) as { name?: unknown; version?: unknown };
-  if (manifest.name !== ORT_WEB_PACKAGE_NAME || manifest.version !== ORT_WEB_PACKAGE_VERSION) {
-    throw new Error(
-      `Unexpected local ONNX runtime ${String(manifest.name)}@${String(manifest.version)}; ` +
-        `expected ${ORT_WEB_PACKAGE_NAME}@${ORT_WEB_PACKAGE_VERSION}.`,
-    );
-  }
-
-  const factory = path.join(distDir, "ort-wasm-simd-threaded.mjs");
-  const wasm = path.join(distDir, "ort-wasm-simd-threaded.wasm");
-  if (!fs.existsSync(factory) || !fs.existsSync(wasm)) {
-    throw new Error(`The installed ${ORT_WEB_PACKAGE_NAME} runtime is missing its packaged WASM files.`);
-  }
-  return { factory, wasm };
-}
-
-function configureLocalWasmRuntime(env: TransformersEnvironment | undefined): void {
-  const wasmConfig = env?.backends?.onnx?.wasm;
-  if (!env || !wasmConfig) {
-    throw new Error("The vendored Transformers runtime is missing its required local ONNX WASM configuration.");
-  }
-
-  const files = resolveLocalWasmRuntimeFiles();
-  // Transformers' cache helper fetches URL-shaped WASM locations. Disable it
-  // for the packaged Node runtime: ONNX loads the ESM factory by file URL and
-  // reads the WASM bytes from the absolute filesystem path directly.
-  env.useWasmCache = false;
-  // Respect small/cgroup-limited hosts while bounding ORT's worker pool on
-  // large machines. ONNX uses `numThreads - 1` workers, so this permits at
-  // most three workers and becomes worker-free on a one-CPU host.
-  wasmConfig.numThreads = Math.max(1, Math.min(LOCAL_WASM_MAX_THREADS, availableParallelism()));
-  wasmConfig.wasmPaths = {
-    mjs: pathToFileURL(files.factory),
-    wasm: files.wasm,
-  };
 }
 
 export class LocalEmbedder implements Embedder {
@@ -337,26 +238,11 @@ export class LocalEmbedder implements Embedder {
               mod.env.allowRemoteModels = false;
             }
           }
-          configureLocalWasmRuntime(mod.env);
           pipeline = mod.pipeline;
         } catch (importError) {
           const msg = importError instanceof Error ? importError.message : String(importError);
           if (/Cannot find (?:module|package)|MODULE_NOT_FOUND|ERR_MODULE_NOT_FOUND|Cannot resolve/i.test(msg)) {
-            // #482: the prebuilt binary build is invoked with
-            // `bun install --omit optional` (release.yml), so binary users
-            // can NEVER load package-owned optional runtime dependencies.
-            // Telling them to add a package is a dead-end — there is no
-            // mutable install target.
-            // Detect the binary execution path and give the only working
-            // remediation: switch to the npm/Bun install of akm-cli, or
-            // turn off semantic search.
-            const isBinary = isCompiledBinary();
-            const hint = isBinary
-              ? "You are running the prebuilt akm binary, which does not include optional local embedding dependencies. " +
-                "To enable semantic search, install akm-cli via Bun: `curl -fsSL https://bun.sh/install | bash && bun install -g akm-cli`. " +
-                "To keep using the binary, set `semanticSearchMode: off` in your config and use keyword-only FTS."
-              : "Reinstall akm-cli without `--omit=optional` so its local embedding runtime is present.";
-            throw new Error(`Semantic search requires AKM's optional local embedding runtime. ${hint}`);
+            throw new Error("Semantic search requires @huggingface/transformers. Reinstall akm-cli.");
           }
           throw new Error(`Failed to load embedding runtime: ${msg}. Check platform compatibility.`);
         }
@@ -401,16 +287,12 @@ function shouldRetryWithoutExplicitDtype(error: unknown): boolean {
 }
 
 /**
- * Check whether AKM's materialized Transformers asset and all three exact optional
- * runtime packages can be resolved without loading WASM or a model.
+ * Check whether the declared Transformers dependency can be resolved without
+ * loading a model.
  */
 export function isTransformersAvailable(): boolean {
-  if (isCompiledBinary()) return false;
   try {
-    if (!fs.existsSync(fileURLToPath(resolveTransformersRuntimeUrl()))) return false;
-    resolveLocalWasmRuntimeFiles();
-    resolveModule("onnxruntime-common", getDirname(import.meta.url));
-    resolveModule("sharp", getDirname(import.meta.url));
+    import.meta.resolve("@huggingface/transformers");
     return true;
   } catch {
     return false;
