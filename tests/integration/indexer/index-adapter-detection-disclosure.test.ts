@@ -85,7 +85,7 @@ test("akmIndex discloses an auto-detected, newly-persisted bundle adapter in the
   expect(component?.adapter).toBe(result.configUpdated?.detectedAdapters.team);
 });
 
-test("akmIndex rejects obsolete durable state before changing config or index.db", async () => {
+test("akmIndex automatically advances a known additive state prefix before indexing", async () => {
   writeSandboxConfig({
     semanticSearchMode: "off",
     bundles: {
@@ -100,17 +100,14 @@ test("akmIndex rejects obsolete durable state before changing config or index.db
   const state = openDatabaseFinalizing(statePath);
   runSqliteMigrations(state, STATE_MIGRATIONS.slice(0, -1));
   state.close();
-  const configBefore = fs.readFileSync(getConfigPath());
+  await expect(akmIndex({ stashDir: storage.stashDir, full: true })).resolves.toMatchObject({ totalEntries: 0 });
 
-  await expect(akmIndex({ stashDir: storage.stashDir, full: true })).rejects.toThrow(/obsolete.*migrate apply/i);
-
-  expect(fs.readFileSync(getConfigPath())).toEqual(configBefore);
-  expect(fs.existsSync(getDbPath())).toBe(false);
-  const unchanged = openDatabaseFinalizing(statePath, { readonly: true });
-  expect((unchanged.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(
-    STATE_MIGRATIONS.length - 1,
+  expect(fs.existsSync(getDbPath())).toBe(true);
+  const advanced = openDatabaseFinalizing(statePath, { readonly: true });
+  expect((advanced.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(
+    STATE_MIGRATIONS.length,
   );
-  unchanged.close();
+  advanced.close();
 });
 
 test("akmIndex does not re-report a bundle whose adapter is already configured", async () => {

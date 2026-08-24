@@ -51,24 +51,21 @@ describe("raw recovery startup", () => {
   });
 
   test("top-level migrate status is wired through the real CLI process", async () => {
-    fs.writeFileSync(getConfigPath(), '{"configVersion":"0.8.0"}\n');
-    const prepared = path.join(path.dirname(getConfigPath()), "prepared-0.9.json");
-    fs.writeFileSync(prepared, '{"configVersion":"0.9.0"}\n');
+    const stash = path.join(process.env.HOME as string, "task-migrate-source");
+    const task = path.join(stash, "tasks", "legacy.yml");
+    fs.mkdirSync(path.dirname(task), { recursive: true });
+    const taskV2 = "version: 2\nschedule: '@daily'\ncommand: /bin/echo ok\n";
+    fs.writeFileSync(task, taskV2);
+    fs.writeFileSync(
+      getConfigPath(),
+      `${JSON.stringify({
+        configVersion: "0.9.0",
+        bundles: { primary: { path: stash, writable: true } },
+        defaultBundle: "primary",
+      })}\n`,
+    );
 
-    const blockedChild = Bun.spawn(["bun", "src/cli.ts", "migrate", "status"], {
-      cwd: path.resolve(import.meta.dir, "../.."),
-      env: { ...process.env },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [blockedExit, blockedStdout] = await Promise.all([
-      blockedChild.exited,
-      new Response(blockedChild.stdout).text(),
-    ]);
-    expect(blockedExit).toBe(1);
-    expect(JSON.parse(blockedStdout)).toMatchObject({ status: "blocked" });
-
-    const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "status", "--config", prepared], {
+    const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "status"], {
       cwd: path.resolve(import.meta.dir, "../.."),
       env: { ...process.env },
       stdout: "pipe",
@@ -80,7 +77,8 @@ describe("raw recovery startup", () => {
       new Response(child.stderr).text(),
     ]);
     expect(exitCode, stderr).toBe(0);
-    expect(JSON.parse(stdout)).toMatchObject({ status: "ready" });
+    expect(JSON.parse(stdout)).toMatchObject({ status: "ready", taskV3Migration: { changed: 1, blocked: 0 } });
+    expect(fs.readFileSync(task, "utf8")).toBe(taskV2);
   });
 
   test("setup rejects legacy config before creating the stash or backup", async () => {

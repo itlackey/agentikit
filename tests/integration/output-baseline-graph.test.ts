@@ -28,26 +28,6 @@ function writeConfig(configDir: string, config: Record<string, unknown>): void {
   fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
-// `akm backup` was removed from the CLI in 0.9.0 (R-029); the recovery bundle
-// is created via the standalone akm-migrate entry point instead.
-const MIGRATE = path.join(__dirname, "..", "..", "scripts", "akm-migrate.ts");
-
-function ensureFreshRecoveryBundle(stashDir: string, dirs: Required<CliEnvDirs>): void {
-  const result = spawnSync("bun", [MIGRATE, "backup", "--for", "0.9.0"], {
-    encoding: "utf8",
-    timeout: 30_000,
-    env: {
-      ...process.env,
-      AKM_BUNDLE_DIR: stashDir,
-      XDG_CACHE_HOME: dirs.xdgCache,
-      XDG_CONFIG_HOME: dirs.xdgConfig,
-      XDG_DATA_HOME: dirs.xdgData,
-      XDG_STATE_HOME: dirs.xdgState,
-    },
-  });
-  expect(result.status).toBe(0);
-}
-
 interface CliEnvDirs {
   xdgCache: string;
   xdgConfig: string;
@@ -70,7 +50,6 @@ function runCli(stashDir: string, args: string[], config?: Record<string, unknow
   const xdgData = envDirs?.xdgData ?? makeTempDir("akm-output-data-");
   const xdgState = envDirs?.xdgState ?? makeTempDir("akm-output-state-");
   const dirs = { xdgCache, xdgConfig, xdgData, xdgState };
-  if (config) ensureFreshRecoveryBundle(stashDir, dirs);
   if (config) writeConfig(xdgConfig, config);
   const result = spawnSync("bun", [CLI, ...args], {
     encoding: "utf8",
@@ -99,7 +78,6 @@ async function runCliAsync(stashDir: string, args: string[], config?: Record<str
   // blocked/offline fetch emits "Embedding generation failed" on stderr,
   // tripping the stderr-cleanliness check below. This test suite pins output
   // shapes, not semantic ranking.
-  ensureFreshRecoveryBundle(stashDir, dirs);
   writeConfig(xdgConfig, { configVersion: "0.9.0", semanticSearchMode: "off", ...(config ?? {}) });
 
   const child = spawn("bun", ["--preload", REGISTRY_FIXTURE_PRELOAD, CLI, ...args], {
