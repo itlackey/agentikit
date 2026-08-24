@@ -320,7 +320,6 @@ async function runLoopReflectPass(
         // Active strategy supplies non-engine process tuning.
         ...(improveProfile ? { improveProfile } : {}),
         config: resolvedPlan.config as AkmConfig,
-        ...(reflectProfileRunner?.engine ? { engine: reflectProfileRunner.engine } : {}),
         ...(primaryStashDir ? { stashDir: primaryStashDir } : {}),
         ...(options.sourceName && primaryStashDir
           ? { target: { source: options.sourceName, root: primaryStashDir } }
