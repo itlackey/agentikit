@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { STATE_MIGRATIONS } from "../../src/core/state/migrations";
+import * as stateDbModule from "../../src/core/state-db";
 import { openStateDatabase } from "../../src/core/state-db";
 import { openDatabase } from "../../src/storage/database";
 import { runMigrations } from "../../src/storage/engines/sqlite-migrations";
@@ -115,6 +116,60 @@ describe("state.db automatic migration boundary", () => {
     });
     inspected.close();
     expect(fs.readdirSync(path.dirname(file)).filter((name) => name.includes("pre-018"))).toEqual([]);
+  });
+
+  test("the explicit state upgrade creates and verifies a sibling pre-018 safety copy before applying 018", () => {
+    const file = statePath();
+    const before018 = STATE_MIGRATIONS.slice(0, migrationIndex("018-drop-dead-lane-schema"));
+    const seeded = openDatabase(file);
+    runMigrations(seeded, before018);
+    seeded
+      .prepare("INSERT INTO consolidation_judged (entry_key, content_hash, judged_at, outcome) VALUES (?, ?, ?, ?)")
+      .run("memories/recoverable", "recover-me", "2026-08-24T01:00:00.000Z", "actioned");
+    seeded.close();
+
+    const upgradeHistoricalStateDatabase = (
+      stateDbModule as typeof stateDbModule & {
+        upgradeHistoricalStateDatabase: (dbPath: string) => {
+          upgraded: boolean;
+          safetyCopyPath?: string;
+        };
+      }
+    ).upgradeHistoricalStateDatabase;
+    expect(upgradeHistoricalStateDatabase).toBeFunction();
+    const result = upgradeHistoricalStateDatabase(file);
+
+    expect(result.upgraded).toBe(true);
+    expect(result.safetyCopyPath).toStartWith(`${file}.pre-018-drop-dead-lane-schema.`);
+    expect(result.safetyCopyPath).toEndWith(".bak");
+
+    const current = openDatabase(file, { readonly: true });
+    expect((current.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(
+      STATE_MIGRATIONS.length,
+    );
+    expect(
+      (
+        current
+          .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'consolidation_judged'")
+          .get() as { count: number }
+      ).count,
+    ).toBe(0);
+    current.close();
+
+    const safetyCopy = openDatabase(result.safetyCopyPath as string, { readonly: true });
+    expect(safetyCopy.prepare("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
+    expect(
+      safetyCopy.prepare("SELECT entry_key, content_hash FROM consolidation_judged").get() as {
+        entry_key: string;
+        content_hash: string;
+      },
+    ).toEqual({ entry_key: "memories/recoverable", content_hash: "recover-me" });
+    expect(
+      (safetyCopy.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count,
+    ).toBe(before018.length);
+    safetyCopy.close();
+
+    expect(upgradeHistoricalStateDatabase(file)).toEqual({ upgraded: false });
   });
 
   test("released 002 and 018 migration SQL remains byte-for-byte immutable", () => {

@@ -533,6 +533,36 @@ describe("performUpgrade", () => {
     expect(spawnSyncSpy).toHaveBeenCalledTimes(2);
   });
 
+  test("a successful upgrade explicitly prepares historical state even when the index rebuild is skipped", async () => {
+    const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
+      status: 0,
+      stdout: "",
+      stderr: "",
+    } as never);
+    const upgradeHistoricalStateDatabase = mock(() => ({
+      upgraded: true,
+      safetyCopyPath: "/data/state.db.pre-018-drop-dead-lane-schema.20260824T010000000Z.bak",
+    }));
+
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.14",
+        updateAvailable: true,
+        installMethod: "npm",
+      },
+      { skipPostUpgrade: true },
+      { upgradeHistoricalStateDatabase } as never,
+    );
+
+    expect(result.upgraded).toBe(true);
+    expect(upgradeHistoricalStateDatabase).toHaveBeenCalledTimes(1);
+    expect(result.postUpgrade?.ok).toBe(true);
+    expect(result.postUpgrade?.skipped).toBe(true);
+    expect(result.postUpgrade?.message).toContain("state.db.pre-018-drop-dead-lane-schema");
+    expect(spawnSyncSpy).toHaveBeenCalledTimes(2);
+  });
+
   test("captures post-upgrade failure without failing the upgrade", async () => {
     let call = 0;
     const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockImplementation((() => {
