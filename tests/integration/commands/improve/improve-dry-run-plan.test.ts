@@ -199,7 +199,7 @@ describe("#800 effective dry-run planner", () => {
     expect(snapshotTree(storage.root)).toEqual(before);
   });
 
-  test("legacy index schema produces an explicit empty snapshot without migration", async () => {
+  test("legacy index schema is rejected without migration", async () => {
     const storage = isolatedStorage();
     const config = plannerConfig();
     writeSkill(storage.stashDir, "unindexed", "This asset intentionally has no current index row.");
@@ -212,14 +212,11 @@ describe("#800 effective dry-run planner", () => {
     legacyDb.close();
     const before = snapshotTree(storage.root);
 
-    const result = await akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true });
-
-    expect(result.plan?.snapshot).toEqual({
-      status: "incompatible",
-      reason: "index.db has no entries table; dry-run uses an empty snapshot and does not migrate it",
+    await expect(
+      akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true }),
+    ).rejects.toMatchObject({
+      code: "INDEX_SCHEMA_INCOMPATIBLE",
     });
-    expect(result.plan?.candidates).toEqual({ rawInScope: 0, selected: 0, effective: 0 });
-    expect(result.plannedRefs).toEqual([]);
     expect(snapshotTree(storage.root)).toEqual(before);
   });
 
@@ -239,10 +236,11 @@ describe("#800 effective dry-run planner", () => {
       expect(fs.existsSync(`${dbPath}-shm`)).toBe(true);
       const before = snapshotTree(storage.root);
 
-      const result = await akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true });
-
-      expect(result.plan?.snapshot.status).toBe("incompatible");
-      expect(result.plan?.snapshot.reason).toMatch(/no entries table.*empty snapshot/i);
+      await expect(
+        akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true }),
+      ).rejects.toMatchObject({
+        code: "INDEX_SCHEMA_INCOMPATIBLE",
+      });
       expect(snapshotTree(storage.root)).toEqual(before);
     } finally {
       legacyDb.close();
