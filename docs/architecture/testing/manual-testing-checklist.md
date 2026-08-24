@@ -2977,8 +2977,6 @@ bun run release:check
       unit, integration, then Docker.
 - [ ] **[RELEASE]** Every gated file reports executed tests. Skip-docker is
       partial unless a separate exact-commit matrix transcript exists.
-- [ ] **[RELEASE]** Run slow migration/workflow property gates separately with
-      `AKM_RUN_SLOW_TESTS=1` and their 20-minute timeout.
 - [ ] **[RELEASE]** Cut the changelog BEFORE triggering the workflow: bump
       `package.json` `version`, rename `## [Unreleased]` to
       `## [<version>] - <YYYY-MM-DD>`, and leave a fresh empty `## [Unreleased]`

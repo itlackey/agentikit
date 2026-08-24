@@ -126,8 +126,8 @@ findings, and belong with the clusters above:
 
 | Finding | Disposition | Evidence at HEAD |
 | --- | --- | --- |
-| RUNTIME-01 | fixed | `tests/migrate/legacy/cutover-rekey-property-gate.test.ts:42,67` gates the 1000-seed gate behind `AKM_RUN_SLOW_TESTS === "1"`; run on every push by the `slow-gated-tests` job at `.github/workflows/ci.yml:53-64`; `6c92d96a` (unit target 312s → 18s) |
-| RUNTIME-02 | fixed | `tests/workflows/engine-ir-v3.test.ts:36,716` gates the 10k-item expansion behind the same flag; same CI job; `6c92d96a` |
+| RUNTIME-01 | retired | The three-database cutover architecture and its 1000-seed property suite were deleted in the 0.9.2 convergence. The dedicated CI job was removed with it; `tests/contracts/ci-test-paths.test.ts` rejects future workflow references to missing test files. |
+| RUNTIME-02 | retired | Workflow plan v3 execution and its map-expansion suite were deleted in favor of the one durable-v4 engine. Current v4 source, freeze, scheduler, and durability suites run in the normal unit/integration targets. |
 | RUNTIME-03 | fixed | The real `npm pack`/`install --global` test moved to `tests/integration/package-install.test.ts`; `tests/package-install.test.ts:5-12` records that everything remaining is injected-fake logic; `6c92d96a` |
 | RUNTIME-04 | fixed | The one call site of the spawning default path moved to `tests/integration/fixtures/stashes/load.test.ts`; the unit file at `tests/fixtures/stashes/load.test.ts:7-16` documents that it never spawns; `d37f6b5c` |
 | RUNTIME-05 | fixed | `tests/integration/source-source.test.ts:607-635` uses a mocked `ensureWebsiteMirror` and a `.test` host; the note at `:612-622` explains why `.invalid` never reached the path at all; `d7594c6c` |

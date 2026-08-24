@@ -108,9 +108,9 @@ function dockerRun(variant: string): { ok: boolean; output: string } {
 // Docker install tests are heavyweight (build images + download deps per container).
 // They only run when explicitly requested via AKM_DOCKER_TESTS=1 to avoid
 // hammering the network on every `bun test` invocation. Strict "1" match — not
-// `!!process.env...` — matches the `=== "1"` convention used by every other
-// opt-in gate in this repo (e.g. AKM_RUN_SLOW_TESTS, AKM_SEMANTIC_TESTS-style
-// gates); a loose truthy check would treat `AKM_DOCKER_TESTS=0` as enabled.
+// `!!process.env...` — matches the strict convention used by the other current
+// opt-in gates (for example AKM_SEMANTIC_TESTS); a loose truthy check would
+// treat `AKM_DOCKER_TESTS=0` as enabled.
 const DOCKER_TESTS_ENABLED = process.env.AKM_DOCKER_TESTS === "1";
 
 // dockerAvailable()/bunAvailable() each spawn a subprocess (docker info has a
