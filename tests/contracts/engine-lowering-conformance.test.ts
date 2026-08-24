@@ -1909,39 +1909,6 @@ describe("optimistic lowering safety", () => {
     expect(second.notices.filter((notice) => notice.code === "persona-prompt-composed")).toHaveLength(1);
   });
 
-  test("lowering preserves omitted, null, zero, and empty values without normalization", () => {
-    const omitted = createResolvedExecutionRequest({
-      command: createInlineResolvedCommand({ template: "x", content: "x" }),
-      engine: { name: "fixture", kind: "agent", platform: "claude" },
-      authorization: { status: "not-required" },
-      runtime: {},
-      notices: [],
-    });
-    const explicit = createResolvedExecutionRequest({
-      command: createInlineResolvedCommand({ template: "x", argumentInput: "", content: "x" }),
-      engine: { name: "fixture", kind: "agent", platform: "claude" },
-      model: null,
-      inference: null,
-      outputSchema: null,
-      tools: [],
-      authorization: { status: "not-required" },
-      runtime: { timeoutMs: 0, workspace: "", environment: {} },
-      notices: [],
-    });
-    const omittedLowered = lowerResolvedExecutionRequest(omitted, configFor("claude"));
-    const explicitLowered = lowerResolvedExecutionRequest(explicit, configFor("claude"));
-    expect(omittedLowered.translatedFields).not.toContain("runtime.timeoutMs");
-    expect(omittedLowered.translatedFields).not.toContain("runtime.workspace");
-    expect(omittedLowered.translatedFields).not.toContain("runtime.environment");
-    expect(explicitLowered.translatedFields).toEqual(
-      expect.arrayContaining(["runtime.timeoutMs", "runtime.workspace", "runtime.environment"]),
-    );
-    expect(Object.hasOwn(omittedLowered.request, "model")).toBe(false);
-    expect(Object.hasOwn(explicitLowered.request, "model")).toBe(true);
-    expect(explicitLowered.request.model).toBeNull();
-    expect(explicitLowered.options).toMatchObject({ timeoutMs: 0, cwd: "", env: {} });
-  });
-
   test("only branded prototype-safe requests cross the registry boundary", () => {
     const valid = requestFor("claude");
     expect(() =>

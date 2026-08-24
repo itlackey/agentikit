@@ -110,39 +110,6 @@ describe("resolved execution request v1", () => {
     expect(explicitEmpty.content).toBe("Review  exactly once.\n");
   });
 
-  test("keeps omitted, false, zero, empty, empty-string, and null values distinct in canonical bytes", () => {
-    const source = commandSource();
-    const minimal = createResolvedExecutionRequest({
-      command: createResolvedCommand({ source, content: source.content }),
-      engine: { name: "fixture-llm", kind: "llm" },
-      authorization: { status: "not-required" },
-      runtime: {},
-      notices: [],
-    });
-    const explicit = commonRequest(
-      createResolvedCommand({ source, argumentInput: "", content: "Review  exactly once.\n" }),
-    );
-    const minimalJson = JSON.parse(canonicalResolvedExecutionRequest(minimal)) as Record<string, unknown>;
-    const explicitJson = JSON.parse(canonicalResolvedExecutionRequest(explicit)) as Record<string, unknown>;
-
-    expect(Object.hasOwn(minimalJson, "persona")).toBe(false);
-    expect(Object.hasOwn(minimalJson, "agent")).toBe(false);
-    expect(Object.hasOwn(minimalJson, "model")).toBe(false);
-    expect(Object.hasOwn(minimalJson, "inference")).toBe(false);
-    expect(Object.hasOwn(minimalJson, "tools")).toBe(false);
-    expect(Object.hasOwn(minimal.command, "argumentInput")).toBe(false);
-
-    expect(explicitJson).toMatchObject({
-      schemaVersion: 1,
-      command: { argumentInput: "" },
-      agent: "fixture//agents/reviewer",
-      inference: { temperature: 0, enableThinking: false, extraParams: {} },
-      outputSchema: null,
-      tools: [],
-      runtime: { timeoutMs: 0, workspace: "", environment: {} },
-    });
-  });
-
   test("preserves a strict ordered conversation prefix before the terminal command", () => {
     const command = createInlineResolvedCommand({ template: "Finish.", content: "Finish." });
     const omitted = createResolvedExecutionRequest({

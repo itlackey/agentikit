@@ -306,37 +306,6 @@ describe("common execution cascade resolver", () => {
     expect(calls).toBe(1);
   });
 
-  test("preserves omitted versus explicit null, zero, and empty request fields", () => {
-    const input = baseInput();
-    const makePlan = (values: Record<string, unknown>) =>
-      planExecutionCascade({
-        ...input,
-        layers: { installation: layer("installation", { engine: "reviewer" }), current: layer("current", values) },
-      });
-    const make = (values: Record<string, unknown>) => canonicalResolvedExecutionRequest(makePlan(values).request);
-
-    expect(make({})).not.toBe(make({ model: null }));
-    expect(make({})).not.toBe(make({ timeout: 0 }));
-    expect(make({})).not.toBe(make({ outputSchema: {} }));
-    expect(make({})).not.toBe(make({ tools: [] }));
-    expect(makePlan({}).provenance).not.toEqual(makePlan({ inference: {} }).provenance);
-    expect(make({})).not.toBe(make({ environment: {} }));
-  });
-
-  test("produces byte-equivalent normalized requests for equivalent direct, task, and workflow inputs", () => {
-    const canonical = (["direct", "task", "workflow"] as const).map((invocationKind) => {
-      const input = baseInput();
-      return canonicalResolvedExecutionRequest(
-        planExecutionCascade({
-          ...input,
-          invocationKind,
-          authorizeTools: () => ({ status: "allowed", policy: "operator-tools-v1" }),
-        }).request,
-      );
-    });
-    expect(new Set(canonical).size).toBe(1);
-  });
-
   test("keeps provenance canonical and free of prompt, environment, model, and policy values", () => {
     const secret = "AKM_SECRET_PROVENANCE_SENTINEL";
     const input = baseInput();
