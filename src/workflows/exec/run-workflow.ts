@@ -255,7 +255,7 @@ async function runWorkflowAttempt(
   });
   // Version/canonical/hash validation precedes every executable mutation,
   // including lease acquisition. Historical rows remain inspectable/abandonable.
-  if (!next.done && !options.loadPlan) {
+  if (!next.done) {
     await withWorkflowRunsRepo((repo) => {
       const row = repo.getRunById(next.run.id);
       if (!row) throw new UsageError(`Workflow run ${next.run.id} was not found.`);
