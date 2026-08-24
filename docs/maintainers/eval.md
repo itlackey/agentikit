@@ -38,6 +38,30 @@ Outputs land under `<stash>/.akm/evals/runs/<eval-run-id>/`:
 By default the runner reads from `$AKM_BUNDLE_DIR` (falling back to
 `~/akm`). Override with `--stash <path>` per invocation.
 
+## Immutable installation snapshots
+
+`akm-eval-snapshot` captures one full installation input before either twin
+evaluation arm is materialized:
+
+```sh
+scripts/akm-eval/bin/akm-eval-snapshot capture \
+  --out "$HOME/.cache/akm-eval/snapshots/baseline" \
+  --producer-version "0.9.2" \
+  --producer-commit "$(git rev-parse HEAD)"
+
+scripts/akm-eval/bin/akm-eval-snapshot verify \
+  "$HOME/.cache/akm-eval/snapshots/baseline"
+```
+
+Capture copies configured bundle roots, `config.json`, the canonical current
+`index.db`, and `state.db` into a private schema-v2 manifest. It rewrites
+path-bearing database state to snapshot-relative bundle roots and fails closed
+on mutable sources, links, executable files, secret-bearing paths, unsafe
+permissions, or a noncanonical derived index. The snapshot can contain
+sensitive historical metadata and belongs only on trusted private storage.
+`akm-eval-twin` materializes separate control and treatment copies from it; the
+tool does not restore or replace a live AKM installation.
+
 ## What it measures
 
 `EvalCaseType` (`scripts/akm-eval/src/types.ts`) declares nine case types.
@@ -455,15 +479,13 @@ giving a natural A/B without having to stand up a parallel environment.
   from `state.db` `reflect_invoked`/`distill_invoked`/`promoted` history and
   the `entries` catalog.
 
-The 0.9 cutover rewrites legacy refs in the pilot treatment file through the
-same frozen old-ref map used for durable state. This required filesystem step
-runs only after config/database cutover verification and remains under a
-forward-recovery journal until it succeeds. Runtime eval ref parsing accepts
-only current `[bundle//]conceptId[#fragment]` refs; it does not reinterpret
-legacy `type:name` strings, including nested forms where a colon precedes the
-concept ID's first path separator. Colons remain valid in later concept path
-segments and fragments. Treatment-file replacement fsyncs both the file and
-its parent directory before the journal advances to `pilot-applied`.
+The pilot treatment file is measurement input, not a migration surface. Runtime
+eval ref parsing accepts only current `[bundle//]conceptId[#fragment]` refs and
+does not reinterpret or rewrite legacy `type:name` strings, including nested
+forms where a colon precedes the concept ID's first path separator. Colons
+remain valid in later concept path segments and fragments. Replace stale pilot
+entries explicitly before evaluation; the toolkit does not mutate this input or
+keep recovery state for it.
 
 ### 1. Real-query retrieval suite
 

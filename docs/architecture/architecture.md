@@ -256,15 +256,14 @@ remember/import.
 path escape hatch: it bypasses managed target resolution and cannot be
 combined with `--bundle`.
 
-### Improve durable-state transition
+### Improve durable-state identity
 
-Improve state written after the source-identity cutover uses
-`source//conceptId` keys. Pre-cutover bare feedback, proposal-cursor, salience,
-and convergence rows are read as a fallback only when the selected source root
-equals the configured historical `stashDir`. A qualified row takes precedence.
-Named sources at any other root never read bare rows, preventing a duplicate ref
-from inheriting the local bundle's history. New writes are always qualified, so
-the fallback naturally becomes irrelevant as local assets accumulate new state.
+Improve readers and writers use one current key for each asset. A resolved
+indexed entry uses its fully qualified `item_ref`; a direct or provenance-free
+ref uses its current concept ID. There is no alternate root-based key, bare alias
+merge, or second state lookup. This prevents a duplicate concept in another
+installation from inheriting unrelated feedback, proposal-cursor, salience, or
+convergence state.
 
 Retrieval demand is scoped separately through usage-event entry IDs and selected
 source roots, with qualified refs covering detached events. Improve never merges
@@ -277,8 +276,9 @@ whose proposal queue is read or adjudicated; it does not override the proposal's
 write destination. Qualified proposals and unqualified proposals created in a
 configured secondary queue record the destination source name and materialized
 root. Diff, accept, and revert use that binding by default and reject an explicit
-`--target` that resolves elsewhere. Historical unbound proposals retain the
-normal write-target fallback.
+`--target` that resolves elsewhere. An unbound short proposal requires either
+an explicit `--target` or an authenticated `--queue` context; it does not
+inherit a default write target.
 
 ---
 
@@ -314,10 +314,10 @@ source.
 ## Workflow Runtime State
 
 Workflow definitions live in `workflows/`, but workflow run state is separate
-durable runtime state. The 0.9.0 cutover folded the former `workflow.db` into
-`state.db`: the `workflow_runs` / `workflow_run_steps` / `workflow_run_units`
-tables now live in `state.db` alongside events, tasks, and proposals, so akm
-keeps three databases (`state.db`, `index.db`, `logs.db`), not four.
+durable runtime state. `workflow_runs`, `workflow_run_steps`,
+`workflow_run_units`, and `workflow_run_unit_attempts` live in `state.db`
+alongside events, tasks, and proposals. `index.db` remains rebuildable search
+state, while `logs.db` stores task/run log lines.
 
 - workflow discovery and search use the shared asset index
 - workflow run records survive index rebuilds
@@ -414,7 +414,7 @@ Lowering notices are fixed, secret-free records (`code`, `severity`,
 `details`). They never copy prompt content, environment values, credential
 values, or provider error bodies. Command, task, improve, proposal, index, and
 current workflow execution surfaces carry these records in live result or
-diagnostic output. Current workflow result/evidence journal writers
+diagnostic output. Current persisted workflow result/evidence fields
 deliberately exclude them; no future persistence ownership is implied here.
 
 LLM and SDK-fallback credentials remain symbolic descriptors in engine
@@ -497,16 +497,14 @@ directs operators to the explicit preview/apply migrator. Task-v3 command,
 workflow, script, and shell targets use the common resolved/lowered execution
 boundary. Historical task-run metadata remains readable.
 
-Migration restore holds a global maintenance barrier from its final blocker
-check through artifact replacement. Index writers, improve/extract process
-locks, lockfile writers, workflow lease claims, and every canonical `state.db`
-or `workflow.db` handle register under the same barrier before starting. State
-and workflow handles retain their activity registration until close, so task,
-event, proposal, workflow-run, and other durable-state access cannot overlap
-artifact replacement. Restore's own read-only workflow blocker scan uses the
-barrier it already owns rather than recursively registering an activity. Scoped
-barrier ownership is reentrant for nested repository opens in the same sync or
-async execution context; unrelated work and child processes remain excluded.
+Long-lived mutable operations coordinate start ownership through one maintenance
+barrier. Index writers, improve/extract process locks, lockfile writers, and
+workflow lease claims acquire their own lock or lease while holding that short
+barrier section, then release the barrier for the operation's duration.
+Canonical `state.db` handles register an activity the same way and retain that
+activity until close, covering task, event, proposal, workflow-run, and other
+durable-state access. Scoped barrier ownership is reentrant for nested
+repository opens in the same synchronous or asynchronous execution context.
 
 ---
 

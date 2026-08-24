@@ -246,7 +246,7 @@ check-in/claim fields (`last_checkin_at`, `attempts`, `claim_holder`,
 
 #### Table: `workflow_run_unit_attempts`
 
-Append-only durable-v4 external-dispatch journal. Primary key: `(run_id, unit_id, attempt)`.
+Append-only durable-v4 external-dispatch attempt ledger. Primary key: `(run_id, unit_id, attempt)`.
 `dispatch_id` also has a unique index. A crash
 reclaim keeps the stable dispatch identity for the same attempt; an explicit
 retry appends a new numbered attempt instead of overwriting history.

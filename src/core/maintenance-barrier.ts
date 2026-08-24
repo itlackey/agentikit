@@ -13,9 +13,9 @@ import { getMaintenanceBarrierPath } from "./paths";
 const heldBarrierContext = new AsyncLocalStorage<{ active: boolean }>();
 
 /**
- * Serialize restore with the short critical section that creates every
- * long-lived AKM lock or workflow lease. The long operation keeps its own
- * lock/lease; this barrier is released immediately after acquisition.
+ * Serialize the short critical section that creates each long-lived AKM lock,
+ * lease, or state activity. The operation keeps its own ownership record; this
+ * barrier is released immediately after acquisition.
  */
 export function tryAcquireMaintenanceBarrier(): (() => void) | undefined {
   const lockPath = getMaintenanceBarrierPath();
@@ -106,7 +106,7 @@ function withMaintenanceStartBarrierSyncWait<T>(run: () => T): T {
   }
 }
 
-/** Register a long-lived operation atomically with restore's blocker scan. */
+/** Register a long-lived state operation atomically with other start acquisitions. */
 export async function acquireMaintenanceActivity(name: string): Promise<() => void> {
   return withMaintenanceStartBarrierAsync(async () => {
     const directory = path.join(path.dirname(getMaintenanceBarrierPath()), "maintenance-activities");
