@@ -276,8 +276,9 @@ and verifies it, then receives permissions no broader than `state.db`. One
 snapshot, migration 018 DDL, and ledger insert. Fresh-database privilege comes
 only from an atomically created file whose inode remains owned by that open;
 an existing or replaced path cannot inherit it. An existing file with no
-ledger is rejected without writes by ordinary commands. Explicit upgrade binds
-the exact source inode, writes and verifies a
+applied migration IDs—whether the ledger table is absent or empty—is rejected
+without writes by ordinary commands. Explicit upgrade binds the exact source
+inode, writes and verifies a
 `state.db.pre-001-initial-schema.<UTC-digits>.<UUID>.bak` copy before ledger
 creation or migration 001, then attempts the current migrations. Snapshot
 source and target SQLite connections use descriptor-bound paths where the

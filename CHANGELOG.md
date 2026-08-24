@@ -84,10 +84,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   immediately before its immutable SQL runs. The ledger recheck, WAL-inclusive
   snapshot, and 018 transaction now share one writer-exclusion window; fresh
   files and randomized backup paths are atomically reserved and inode-verified.
-  Pre-existing unversioned files are rejected without writes by ordinary opens
-  and snapshotted before migration 001 by explicit upgrade. Snapshot source and
-  target handles are inode-bound, and failed reserved paths are retained rather
-  than removed by raced cleanup.
+  Pre-existing unversioned files—including an absent or empty migration
+  ledger—are rejected without writes by ordinary opens and snapshotted before
+  migration 001 by explicit upgrade. Snapshot source and target handles are
+  inode-bound, and failed reserved paths are retained rather than removed by
+  raced cleanup.
 
 ## [0.9.1] - 2026-08-18
 
