@@ -20,13 +20,21 @@ akm uses four XDG-compliant directories. Durable data (`index.db`, `state.db`, `
 
 ## SQLite Databases
 
+Managed SQLite openers apply a `busy_timeout` of 30,000 ms. Journal mode is
+selected by `AKM_SQLITE_JOURNAL_MODE` (`WAL`, `DELETE`, or `TRUNCATE`) and
+defaults to WAL. When that default is used on a detected network filesystem,
+AKM falls back to DELETE; rollback-journal modes also set `synchronous = FULL`.
+Read-only existing-index handles apply the same busy timeout without mutating
+journal mode. Foreign-key policy is called out per database below.
+
 ### `$DATA/index.db` — Main Search Index
 
 Schema managed by `ensureSchema()` (`src/storage/repositories/index-schema.ts`).
 The current derived generation is exactly v21: `index_meta.version` and the
-complete canonical `entries` fingerprint must both match. WAL mode,
-`busy_timeout = 5000 ms`, foreign keys ON. Optionally loads the `sqlite-vec`
-extension for fast ANN (approximate nearest-neighbour) vector search.
+complete canonical `entries` fingerprint must both match. It uses the shared
+opening pragma policy above with foreign keys ON and optionally loads the
+`sqlite-vec` extension for fast ANN (approximate nearest-neighbour) vector
+search.
 
 Opened by:
 - `openIndexDatabase()` — managed schema initialization and generation rebuild,
@@ -182,9 +190,10 @@ Registry index cache. TTL is enforced by `getRegistryIndexCache()`.
 ### Workflow Run State — tables in `$DATA/state.db`
 
 `workflow_runs`, `workflow_run_steps`, `workflow_run_units`, and
-`workflow_run_unit_attempts` live in `state.db`. WAL mode and foreign keys are
-enabled. There is no separate workflow database or workflow-storage migration
-path. Runs persist until an explicit retention policy removes them.
+`workflow_run_unit_attempts` live in `state.db`. They use `state.db`'s shared
+journal-mode/busy-timeout policy with foreign keys enabled. There is no separate
+workflow database or workflow-storage migration path. Runs persist until an
+explicit retention policy removes them.
 
 #### Table: `workflow_runs`
 
@@ -271,8 +280,9 @@ retry appends a new numbered attempt instead of overwriting history.
 
 ### `$DATA/state.db` — Migration-safe Durable State Database
 
-WAL mode, foreign keys ON. The immutable Flyway-pattern ledger has an explicit
-safety classification for every migration ID. Additive migrations and released
+Uses the shared journal-mode/busy-timeout policy with foreign keys ON. The
+immutable Flyway-pattern ledger has an explicit safety classification for every
+migration ID. Additive migrations and released
 migration 002's verified data-preserving `task_history` rebuild run
 automatically. Released migration 018's dead-lane table/column drops do not:
 an ordinary managed open stops at that boundary and directs the operator to
@@ -395,7 +405,14 @@ no reader, writer, or cutover path for this table.
 
 ### `$DATA/logs.db` — Task/Run Log Lines
 
-Separate SQLite database from `state.db` (`src/core/logs-db.ts`, `getLogsDbPath()`). WAL mode, `busy_timeout = 30000 ms`, foreign keys OFF. Structured replacement for grepping the per-run flat log files under `$CACHE/tasks/logs/<task-id>/<ISO-ts>.log` (that per-run text file is still written as a transitional human-readable tail). Can grow large in practice — live installs have been observed at roughly 1 GB — because every scheduled task run appends its stdout/stderr lines here with no default cap on total size (only an age-based purge, see below).
+Separate SQLite database from `state.db` (`src/core/logs-db.ts`,
+`getLogsDbPath()`). Uses the shared journal-mode/busy-timeout policy with
+foreign keys OFF. Structured replacement for grepping the per-run flat log
+files under `$CACHE/tasks/logs/<task-id>/<ISO-ts>.log` (that per-run text file
+is still written as a transitional human-readable tail). Can grow large in
+practice — live installs have been observed at roughly 1 GB — because every
+scheduled task run appends its stdout/stderr lines here with no default cap on
+total size (only an age-based purge, see below).
 
 #### Table: `task_logs`
 
