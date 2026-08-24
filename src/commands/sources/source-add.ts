@@ -65,10 +65,7 @@ export async function akmAdd(input: {
   return addRegistryStash(ref, stashDir, input.writable);
 }
 
-/**
- * Add a local directory as a filesystem bundle (spec §10.1) — replaces the
- * retired `sources[]` filesystem entry.
- */
+/** Add a local directory as a filesystem bundle. */
 async function addLocalSource(
   ref: string,
   sourcePath: string,

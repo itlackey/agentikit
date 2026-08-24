@@ -604,10 +604,9 @@ describe("ensureSourceCaches", () => {
     }
   });
 
-  test("reads from sources[] not stashes[] — website entries in sources[] are processed", async () => {
-    // A config where sources[] has a website entry and stashes is undefined.
-    // Mock the mirror (no network) and verify it's actually invoked for a
-    // sources[]-only config, matching the neighbouring tests in this describe.
+  test("processes website bundles through the provider sync loop", async () => {
+    // Mock the mirror (no network) and verify the current website bundle is
+    // projected into a provider and synchronized.
     //
     // RUNTIME-05: the URL must NOT be under the `.invalid` TLD. `.invalid` is
     // rejected synchronously by assertWebsiteRequestUrl

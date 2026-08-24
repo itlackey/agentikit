@@ -70,9 +70,8 @@ export const RegistryConfigEntrySchema = z
 
 // ── Bundles (0.9.0 config-shape cutover, spec §10.1 / D-R5) ─────────────────
 //
-// `bundles` + `defaultBundle` are the 0.9.0 desired-configuration shape that
-// supersedes the pre-cutover `stashDir` / `sources[]` / `installed[]` trio. Each
-// bundle entry carries ONE source descriptor (`path` | `git` | `website` | `npm`
+// `bundles` + `defaultBundle` are the desired-configuration shape. Each bundle
+// entry carries ONE source descriptor (`path` | `git` | `website` | `npm`
 // — mirroring today's source types), an optional `writable`, an optional
 // `registryId` locator (the original registry install id, preserved verbatim so
 // a non-slug-legal id like `github:owner/repo` is not lost when its slug-legal

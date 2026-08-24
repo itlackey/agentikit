@@ -175,8 +175,8 @@ export function resolveEntryContentDir(entry: SourceConfigEntry): string | undef
   // and writes agree on where content is); the localRoot is the already-walkable
   // content root (installed sources are extracted to their content dir), so no
   // content/-subdir step is applied. Fall back to the provider path logic when no
-  // lock entry exists (e.g. a git bundle migrated from a `sources[]` url, whose
-  // provider re-derives the mirror path).
+  // lock entry exists (for example while a configured source is being
+  // materialized for the first time).
   const localRoot = lockContentRootFor(entry.name, entry.type);
   if (localRoot != null) return localRoot;
 
@@ -333,7 +333,7 @@ export async function ensureSourceCaches(
   // provider and call `sync()`. Every cache-backed kind (git, website, npm)
   // refreshes the same way — a bad source warns and is skipped without
   // aborting the others. The git content/-subdir layout convention stays in
-  // resolveEntryContentDir. NEW shape reads `bundles`; old shape reads sources[].
+  // resolveEntryContentDir. Provider projection comes only from `bundles`.
   //
   // DISTINCTION (deliberately NOT lock-first): refresh derives the PROVIDER's
   // own cache path to git-pull/re-materialize INTO — that derived path is where

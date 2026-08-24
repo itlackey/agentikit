@@ -461,8 +461,8 @@ function normalizeLimit(limit?: number): number {
  *   - `local` (default) — search the local stash index only
  *   - `registry`        — search remote registries only
  *   - `all`             — search local and registries
- *   - Any named source from `config.sources[].name` — filters stash results to
- *     that single source only. The named-source path is detected and resolved
+ *   - Any named configured bundle — filters local results to that bundle only.
+ *     The named-source path is detected and resolved
  *     inside `akmSearch`; this function returns the raw name so the caller can
  *     pass it through to `akmSearch` which accepts `SearchSource | string`.
  *
