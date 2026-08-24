@@ -93,4 +93,40 @@ describe("lint-tests-isolation allowlist ratchet", () => {
       fs.rmSync(fixtureDir, { recursive: true, force: true });
     }
   });
+
+  test("rejects async and inline destructive real-home cleanup", () => {
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-isolation-lint-real-home-variants-"));
+    try {
+      const asyncFixture = path.join(fixtureDir, "async-dangerous.test.ts");
+      fs.writeFileSync(
+        asyncFixture,
+        [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          "const realStore = path.join(os." + 'homedir(), ".local", "share", "tool");',
+          "await fs.promises." + "rm(realStore, { recursive: true, force: true });",
+        ].join("\n"),
+      );
+      const inlineFixture = path.join(fixtureDir, "inline-dangerous.test.ts");
+      fs.writeFileSync(
+        inlineFixture,
+        [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          "fs." + 'rmSync(path.join(os.' + 'homedir(), ".config", "tool"), { recursive: true, force: true });',
+        ].join("\n"),
+      );
+
+      expect(lintFile(asyncFixture)).toEqual([
+        expect.objectContaining({ rule: "real-home-delete", line: 5 }),
+      ]);
+      expect(lintFile(inlineFixture)).toEqual([
+        expect.objectContaining({ rule: "real-home-delete", line: 4 }),
+      ]);
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
 });
