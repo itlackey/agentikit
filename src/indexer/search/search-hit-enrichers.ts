@@ -13,6 +13,7 @@ import { attachSearchHitAttribution } from "./search-attribution";
 export interface SearchHitContext {
   type: string;
   stashDir: string;
+  bundleId: string;
   rendererRegistry: RendererRegistry;
   /**
    * Optional open DB connection. Required for enrichers that perform DB
@@ -76,7 +77,7 @@ export const derivedMemoryEnricher: SearchHitEnricher = {
     // column now stores this same conceptId grammar (Group-C item 2 flip — the
     // metadata producer + this consumer move together).
     const parentRef = `memories/${hit.name}`;
-    const derived = getDerivedForParent(ctx.db, parentRef, ctx.stashDir);
+    const derived = getDerivedForParent(ctx.db, parentRef, ctx.bundleId);
     if (!derived) return;
 
     // Swap description / searchHints / tags from the derived child.

@@ -1833,7 +1833,9 @@ function loadMemoriesForSource(
     memories = entries
       .filter((e) => {
         if (!source) return true;
-        return path.resolve(e.stashDir) === path.resolve(source);
+        const root = path.resolve(source);
+        const file = path.resolve(e.filePath);
+        return file === root || file.startsWith(`${root}${path.sep}`);
       })
       .filter((e) => isConsolidationEligibleMemoryName(e.entry.name))
       // Skip stale DB entries whose file was deleted by a prior run but not yet
@@ -1847,7 +1849,7 @@ function loadMemoriesForSource(
         filePath: e.filePath,
         description: e.entry.description ?? "",
         tags: e.entry.tags ?? [],
-        stashDir: e.stashDir,
+        stashDir: source ?? stashDir,
       }));
   } catch {
     memories = [];

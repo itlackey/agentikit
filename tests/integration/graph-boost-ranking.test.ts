@@ -230,7 +230,6 @@ function buildFixture(): void {
       },
     ];
     for (const e of entries) {
-      const entryKey = `${stashDir}:${e.entry.type}:${e.entry.name}`;
       const searchText = buildSearchText(e.entry);
       // Seed the durable bundle-adapter identity (item_ref/concept_id/bundle_id)
       // that the graph-boost reader now resolves the related-ref from. The
@@ -241,7 +240,7 @@ function buildFixture(): void {
         e.entry.type,
         e.entry.name,
       );
-      upsertEntry(db, entryKey, e.dirPath, e.filePath, stashDir, e.entry, searchText, provenance);
+      upsertEntry(db, e.filePath, e.entry, searchText, provenance);
     }
     rebuildFts(db);
     setMeta(db, "stashDir", stashDir);
@@ -707,10 +706,7 @@ describe("listRelatedPathsForFile (SQL-backed)", () => {
       const target: IndexDocument = { name: "target", type: kType };
       upsertEntry(
         db,
-        `${root}:${kType}:target`,
-        path.dirname(targetPath),
         targetPath,
-        root,
         target,
         buildSearchText(target),
         deriveEntryProvenance({ bundleId: "team-kb", componentId: "team-kb", adapterId: "akm" }, kType, "target"),
@@ -720,10 +716,7 @@ describe("listRelatedPathsForFile (SQL-backed)", () => {
       const neighbor: IndexDocument = { name: legacyName, type: kType };
       upsertEntry(
         db,
-        `${root}:${kType}:${legacyName}`,
-        path.dirname(neighborPath),
         neighborPath,
-        root,
         neighbor,
         buildSearchText(neighbor),
         // Canonical durable identity diverges from the entry_key's name.

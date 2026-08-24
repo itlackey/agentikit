@@ -5,16 +5,16 @@ import { type EntryRow, rowToIndexedEntry } from "../src/storage/repositories/in
 function row(overrides: Partial<EntryRow> = {}): EntryRow {
   return {
     id: 1,
-    entry_key: "/stash:knowledge:guide",
-    dir_path: "/stash/knowledge",
-    file_path: "/stash/knowledge/guide.md",
-    stash_dir: "/stash",
-    entry_json: JSON.stringify({ type: "knowledge", name: "guide" }),
-    search_text: "guide",
     item_ref: "team//knowledge/guide",
     bundle_id: "team",
+    component_id: "team",
     concept_id: "knowledge/guide",
     adapter_id: "akm",
+    type: "knowledge",
+    file_path: "/stash/knowledge/guide.md",
+    content_hash: null,
+    document_json: JSON.stringify({ type: "knowledge", name: "guide" }),
+    search_text: "guide",
     ...overrides,
   };
 }
@@ -29,17 +29,15 @@ describe("rowToIndexedEntry provenance", () => {
     });
   });
 
-  test("rejects rows without canonical provenance", () => {
+  test("rejects corrupt current document JSON", () => {
     const warnings: string[] = [];
     _setWarnSinkForTests((level, args) => {
       if (level === "warn") warnings.push(args.map(String).join(" "));
     });
     try {
-      expect(
-        rowToIndexedEntry(row({ item_ref: null, bundle_id: null, concept_id: null, adapter_id: null }), "test"),
-      ).toBeNull();
+      expect(rowToIndexedEntry(row({ document_json: "{" }), "test")).toBeNull();
       expect(warnings).toHaveLength(1);
-      expect(warnings[0]).toContain("missing indexed provenance");
+      expect(warnings[0]).toContain("corrupt document_json");
     } finally {
       _setWarnSinkForTests(undefined);
     }

@@ -141,12 +141,10 @@ export async function indexWrittenAssets(
               .prepare(
                 `SELECT id FROM entries
                   WHERE file_path = ?
-                    AND (
-                      (bundle_id = ? AND (adapter_id = ? OR adapter_id IS NULL))
-                      OR (bundle_id IS NULL AND stash_dir = ?)
-                    )`,
+                    AND bundle_id = ?
+                    AND adapter_id = ?`,
               )
-              .all(file, component.id, component.adapter, stashDir) as Array<{ id: number }>;
+              .all(file, component.id, component.adapter) as Array<{ id: number }>;
             for (const row of rows) unindexableEntryIds.add(row.id);
           }
           for (const conceptId of rejectedConceptIds) {
@@ -155,7 +153,7 @@ export async function indexWrittenAssets(
               .prepare(
                 `SELECT id FROM entries
                   WHERE bundle_id = ? AND adapter_id = ?
-                    AND entry_type = 'workflow'
+                    AND type = 'workflow'
                     AND (concept_id = ? OR item_ref = ?)`,
               )
               .all(component.id, component.adapter, conceptId, itemRef) as Array<{ id: number }>;
@@ -163,7 +161,6 @@ export async function indexWrittenAssets(
           }
           deleteEntriesByIds(db, [...unindexableEntryIds]);
           for (const { file, entry, conceptId, contentHash } of pairs) {
-            const entryKey = `${stashDir}:${entry.type}:${entry.name}`;
             let entryWithSize = entry;
             try {
               entryWithSize = { ...entry, fileSize: fs.statSync(file).size };
@@ -179,17 +176,7 @@ export async function indexWrittenAssets(
               entry.name,
               conceptId,
             );
-            upsertEntry(
-              db,
-              entryKey,
-              path.dirname(file),
-              file,
-              stashDir,
-              entryWithSize,
-              buildSearchText(entry),
-              provenance,
-              contentHash,
-            );
+            upsertEntry(db, file, entryWithSize, buildSearchText(entry), provenance, contentHash);
           }
           if (pairs.length > 0 || unindexable.size > 0) rebuildFts(db, { incremental: true });
         })();

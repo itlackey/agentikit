@@ -15,10 +15,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-
 import type { AkmConfig, LlmConnectionConfig } from "../../src/core/config/config";
 import { loadStoredGraphSnapshot } from "../../src/indexer/db/graph-db";
 import type { GraphExtractionResult } from "../../src/indexer/graph/graph-extraction";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import { buildSearchText } from "../../src/indexer/search/search-fields";
 import type { GraphExtraction } from "../../src/llm/graph-extract";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
@@ -157,7 +157,6 @@ afterAll(() => {
 function writeMemory(name: string, body: string): void {
   const content = `---\ntitle: ${name}\n---\n\n${body}\n`;
   const filePath = path.join(tmpStash, "memories", `${name}.md`);
-  const dirPath = path.dirname(filePath);
   fs.writeFileSync(filePath, content, "utf8");
   // Schema v2: graph_files.entry_id FKs entries.id. Seed a minimal entry so
   // replaceStoredGraph can resolve this file_path to an entry_id.
@@ -174,15 +173,12 @@ function writeMemory(name: string, body: string): void {
     const db = openIndexDatabase(path.join(tmpStash, dbName));
     try {
       const entry = { name, type: "memory", filename: `${name}.md` };
-      upsertEntry(
-        db,
-        `${tmpStash}:memory:${name}`,
-        dirPath,
-        filePath,
-        tmpStash,
-        entry as Parameters<typeof upsertEntry>[5],
-        buildSearchText(entry as Parameters<typeof buildSearchText>[0]),
+      const provenance = deriveEntryProvenance(
+        { bundleId: "stash", componentId: "stash", adapterId: "akm" },
+        entry.type,
+        name,
       );
+      upsertEntry(db, filePath, entry, buildSearchText(entry), provenance);
     } finally {
       closeDatabase(db);
     }

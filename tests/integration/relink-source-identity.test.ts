@@ -107,13 +107,11 @@ test("full reindex relinks duplicate usage only to its qualified source and scop
   expect(quarantined).toEqual([]);
   expect(
     getRetrievalCounts(db, stateDb2, ["memories/duplicate"], {
-      stashDir: teamDir,
       sourceName: "team",
     }).get("memories/duplicate"),
   ).toBe(1);
   expect(
     getRetrievalCounts(db, stateDb2, ["memories/duplicate"], {
-      stashDir,
       sourceName: "stash",
     }).get("memories/duplicate"),
   ).toBe(1);

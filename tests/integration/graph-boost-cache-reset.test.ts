@@ -31,6 +31,7 @@ import { deleteStoredGraph, replaceStoredGraph } from "../../src/indexer/db/grap
 import { loadGraphBoostContext, resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
 import { GRAPH_FILE_SCHEMA_VERSION } from "../../src/indexer/graph/graph-extraction";
 import type { GraphFile } from "../../src/indexer/graph/graph-types";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import { buildSearchText } from "../../src/indexer/search/search-fields";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
@@ -75,7 +76,7 @@ function assetFilePath(): string {
 }
 
 function ensureAssetIndexed(): void {
-  // The graph storage joins by `entries.entry_key`, so a graph row can only
+  // The graph storage joins through the canonical indexed file path, so a graph row can only
   // be persisted for an asset that exists as an indexed entry. Write the
   // asset file and upsert a single entry once — subsequent installGraph()
   // calls just update the graph rows in place.
@@ -94,8 +95,12 @@ function ensureAssetIndexed(): void {
       filename: "alpha.md",
       description: "Graph-boost cache-reset fixture.",
     };
-    const entryKey = `${stashDir}:${entry.type}:${entry.name}`;
-    upsertEntry(db, entryKey, path.dirname(assetPath), assetPath, stashDir, entry, buildSearchText(entry));
+    const provenance = deriveEntryProvenance(
+      { bundleId: "stash", componentId: "stash", adapterId: "akm" },
+      entry.type,
+      entry.name,
+    );
+    upsertEntry(db, assetPath, entry, buildSearchText(entry), provenance);
     setMeta(db, "stashDir", stashDir);
     setMeta(db, "builtAt", new Date().toISOString());
     setMeta(db, "stashDirs", JSON.stringify([stashDir]));

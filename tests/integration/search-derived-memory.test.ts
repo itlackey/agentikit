@@ -160,14 +160,13 @@ function buildFixture(): void {
       },
     ];
     for (const e of entries) {
-      const entryKey = `${stashDir}:${e.entry.type}:${e.entry.name}`;
       const searchText = buildSearchText(e.entry);
       const provenance = deriveEntryProvenance(
         { bundleId: "stash", componentId: "stash", adapterId: "akm" },
         e.entry.type,
         e.entry.name,
       );
-      upsertEntry(db, entryKey, e.dirPath, e.filePath, stashDir, e.entry, searchText, provenance);
+      upsertEntry(db, e.filePath, e.entry, searchText, provenance);
     }
     rebuildFts(db);
     setMeta(db, "stashDir", stashDir);

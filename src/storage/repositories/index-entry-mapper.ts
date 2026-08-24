@@ -7,7 +7,7 @@
  *
  * Centralizes the one canonical `entries` SELECT column list and the
  * JSON-parse-guarded row → {@link DbIndexedEntry} mapping that several queries
- * used to reimplement. Corrupt `entry_json` rows are skipped (warn once) rather
+ * used to reimplement. Corrupt `document_json` rows are skipped (warn once) rather
  * than crashing the caller.
  *
  * Relocated from `src/indexer/db/entry-mapper.ts` (WI-5a): it now imports the
@@ -29,55 +29,50 @@ import type { DbIndexedEntry } from "./index-entry-types";
  * current indexed provenance.
  */
 export const ENTRY_COLUMNS =
-  "id, entry_key, dir_path, file_path, stash_dir, entry_json, search_text, item_ref, concept_id, bundle_id, adapter_id";
+  "id, item_ref, bundle_id, component_id, concept_id, adapter_id, type, file_path, content_hash, document_json, search_text";
 
 /** A raw row selected via {@link ENTRY_COLUMNS}. */
 export type EntryRow = {
   id: number;
-  entry_key: string;
-  dir_path: string;
-  file_path: string;
-  stash_dir: string;
-  entry_json: string;
-  search_text: string;
   /** Canonical durable `<bundle>//<concept-id>` ref. */
-  item_ref: string | null;
+  item_ref: string;
+  bundle_id: string;
+  component_id: string;
   /** Durable OKF concept id (`item_ref` tail). */
-  concept_id: string | null;
-  /** Durable bundle id (`item_ref` head). */
-  bundle_id: string | null;
+  concept_id: string;
   /** Owning adapter. */
-  adapter_id: string | null;
+  adapter_id: string;
+  type: string;
+  file_path: string;
+  content_hash: string | null;
+  document_json: string;
+  search_text: string;
 };
 
 /**
- * Map one raw `entries` row to a {@link DbIndexedEntry}, parsing `entry_json`.
+ * Map one raw `entries` row to a {@link DbIndexedEntry}, parsing `document_json`.
  * Returns `null` (and warns, tagged with `context`) when the JSON is corrupt so
  * callers can skip the row instead of crashing.
  */
 export function rowToIndexedEntry(row: EntryRow, context: string): DbIndexedEntry | null {
   let entry: IndexDocument;
   try {
-    entry = JSON.parse(row.entry_json) as IndexDocument;
+    entry = JSON.parse(row.document_json) as IndexDocument;
   } catch {
-    warn(`[db] ${context}: skipping entry id=${row.id} — corrupt entry_json`);
-    return null;
-  }
-  if (!row.item_ref || !row.concept_id || !row.bundle_id || !row.adapter_id) {
-    warn(`[db] ${context}: skipping entry id=${row.id} — missing indexed provenance`);
+    warn(`[db] ${context}: skipping entry id=${row.id} — corrupt document_json`);
     return null;
   }
   return {
     id: row.id,
-    entryKey: row.entry_key,
-    dirPath: row.dir_path,
     filePath: row.file_path,
-    stashDir: row.stash_dir,
     entry,
     searchText: row.search_text,
     itemRef: row.item_ref,
     conceptId: row.concept_id,
     bundleId: row.bundle_id,
+    componentId: row.component_id,
     adapterId: row.adapter_id,
+    type: row.type,
+    ...(row.content_hash ? { contentHash: row.content_hash } : {}),
   };
 }

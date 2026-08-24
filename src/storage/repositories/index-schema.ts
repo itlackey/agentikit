@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * index.db schema, version stamps, and targeted migrations, kept in the
+ * index.db schema, version stamps, and targeted graph migrations, kept in the
  * storage layer. This isolates the one genuinely risky area (schema
  * evolution) from the CRUD/FTS/vector queries.
  *
@@ -20,50 +20,16 @@ import { isVecAvailable, purgeEmbeddings } from "./index-vec-repository";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-// NOTE: schema changes are additive. DB_VERSION is a forensic stamp only — it
-// no longer gates any destructive path (the old nuclear drop-and-rebuild was
-// removed; index.db's idempotent CREATE … IF NOT EXISTS schema converges any
-// older/partial DB forward without dropping data). Graph re-keying uses a
-// TARGETED, graph-only migration (migrateGraphFilesSchema) — the model for any
-// incompatible change: migrate in place, never wipe the whole index.
+// index.db is a regenerable cache. Incompatible entry-schema changes advance
+// this generation and discard only derived index tables; durable state remains
+// in state.db. Current readers and writers therefore target exactly one schema
+// and never carry live compatibility SQL for previous generations.
 //
-// v17→v18 (Chunk-5 Step 2, spec §14.4): the `entries` table gains the durable
-// bundle-adapter identity/provenance columns — `item_ref` (`<bundle>//<concept
-// -id>` canonical stored spelling), `bundle_id`/`component_id`/`concept_id`/
-// `adapter_id` provenance, `type` (open token), and `content_hash`/`document
-// _json`. They land ADDITIVELY ALONGSIDE the legacy `entry_key`/`dir_path`/
-// `stash_dir`/`entry_json`/`entry_type` columns (dev-time transitional shape):
-// the writer populates the identity/provenance columns while every reader still
-// keys on the legacy columns, so the battery stays green while the reader
-// repoint + ref-grammar flip land incrementally. The legacy columns + this
-// coexistence are removed once every reader is repointed onto `item_ref`
-// (spec §3.3 — single clean shape, no dual read-path). The index is a
-// regenerable derived cache, so an `akm index` rebuild repopulates the new
-// columns on any DB opened at an older version.
-//
-// v18→v19: `entries.item_ref` becomes the durable identity and its lookup index
-// is upgraded to UNIQUE. The index is regenerable, so a rebuild is an acceptable
-// fallback if a partially-written derived cache cannot satisfy the constraint.
-//
-// v19→v20: durable `usage_events` belongs to state.db. index.db is a regenerable
-// cache and never owns durable telemetry. Migration 020 remains immutable ledger
-// history; no current runtime cutover or quarantine path depends on it.
-//
-// Reader/writer repoint progress (spec §3.3 "single clean shape"): the `entries`
-// upsert (index-entries-repository `getUpsertStmts`) uses the UNIQUE `item_ref`
-// as its PRIMARY conflict target, and the graph-boost related-ref reader
-// (`listRelatedPathsForFile`) resolves the user-facing ref from
-// `concept_id`/`item_ref` instead of stripping `entry_key`. The legacy
-// `entry_key`/`dir_path`/`stash_dir`/`entry_type`/`entry_json` columns are NOT
-// yet removable: they retain live consumers outside this module — `entry_key`
-// (mv-cli re-key, usage-event legacy resolution, index-entry-mapper, the LLM
-// cache), `entry_json` (the row payload every reader decodes), `entry_type`
-// (FTS + workflow loader), `stash_dir`/`dir_path` (scan/delete/utility scoping).
-// The upsert therefore keeps `entry_key` as a NULL-item_ref-safe SECOND conflict
-// target (the LLM metadata-enhance re-upsert still writes existing rows with a
-// NULL item_ref) and degrades to it entirely when the item_ref index is the
-// non-unique fallback. Both are deletable once every remaining reader repoints.
-export const DB_VERSION = 20;
+// v20→v21: remove the transitional entry_key/dir_path/stash_dir/entry_json/
+// entry_type columns. item_ref is the sole conflict key; document_json is the
+// sole stored document projection; bundle provenance and file_path provide the
+// current identity and materialized read path.
+export const DB_VERSION = 21;
 export const EMBEDDING_DIM = 384;
 // #624-P1: graph_files re-keyed to (stash_root, file_path, body_hash). Bumped 3→4
 // as a marker; the actual migration is the targeted drop in migrateGraphFilesSchema.
@@ -204,6 +170,70 @@ function ensureGraphTables(db: Database): void {
   `);
 }
 
+const CURRENT_ENTRY_COLUMNS = [
+  "id",
+  "item_ref",
+  "bundle_id",
+  "component_id",
+  "concept_id",
+  "adapter_id",
+  "type",
+  "file_path",
+  "content_hash",
+  "document_json",
+  "search_text",
+  "derived_from",
+] as const;
+
+/**
+ * Cross the incompatible entry-schema boundary by discarding the derived index
+ * generation. No row conversion or dual-schema compatibility is attempted:
+ * the next index run rebuilds entries, FTS, embeddings, utility aggregates,
+ * graph extraction, and enrichment caches from current sources/state.
+ */
+function rebuildIncompatibleIndexGeneration(db: Database): void {
+  if (!tableExists(db, "entries")) return;
+
+  const version = getMeta(db, "version");
+  const columns = (db.prepare("PRAGMA table_info(entries)").all() as Array<{ name: string }>).map((row) => row.name);
+  const currentShape =
+    columns.length === CURRENT_ENTRY_COLUMNS.length &&
+    columns.every((column, index) => column === CURRENT_ENTRY_COLUMNS[index]);
+  if (version === String(DB_VERSION) && currentShape) return;
+
+  let vecResetPending = false;
+  try {
+    db.exec("DROP TABLE IF EXISTS entries_vec");
+  } catch {
+    // A vec0 table cannot be dropped while sqlite-vec is unavailable. It does
+    // not reference entries, so leave a marker and drop it on the first later
+    // open where the extension is available.
+    vecResetPending = true;
+  }
+
+  db.transaction(() => {
+    db.exec("DROP TABLE IF EXISTS graph_file_relations_legacy");
+    db.exec("DROP TABLE IF EXISTS graph_file_entities_legacy");
+    db.exec("DROP TABLE IF EXISTS graph_files_legacy");
+    db.exec("DROP TABLE IF EXISTS graph_file_relations");
+    db.exec("DROP TABLE IF EXISTS graph_file_entities");
+    db.exec("DROP TABLE IF EXISTS graph_files");
+    db.exec("DROP TABLE IF EXISTS graph_extraction_queue");
+    db.exec("DROP TABLE IF EXISTS graph_meta");
+    db.exec("DROP TABLE IF EXISTS entries_fts_dirty");
+    db.exec("DROP TABLE IF EXISTS entries_fts");
+    db.exec("DROP TABLE IF EXISTS embeddings");
+    db.exec("DROP TABLE IF EXISTS utility_scores_scoped");
+    db.exec("DROP TABLE IF EXISTS utility_scores");
+    db.exec("DROP TABLE IF EXISTS llm_enrichment_cache");
+    db.exec("DROP TABLE IF EXISTS index_dir_state");
+    db.exec("DROP TABLE entries");
+    db.exec("DELETE FROM index_meta");
+  })();
+
+  if (vecResetPending) setMeta(db, "vecResetPending", "1");
+}
+
 export function ensureSchema(db: Database, embeddingDim: number | undefined): void {
   // Create meta table first so we can check version
   db.exec(`
@@ -213,45 +243,28 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
     );
   `);
 
-  // index.db is a fully regenerable derived cache, so its schema is built
-  // idempotently below: every table is CREATE … IF NOT EXISTS and column
-  // additions go through guarded ALTERs (ensureDerivedFromColumn) and targeted
-  // migrations (migrateGraphFilesSchema / migrateGraphDataFromLegacy). Opening a
-  // database with an older or partial schema converges it forward WITHOUT ever
-  // dropping data — there is intentionally no "nuclear drop the whole index on a
-  // DB_VERSION mismatch" path (a destructive design the regenerable index never
-  // needed, and whose pre-drop data-dir backup it required). A genuinely
-  // incompatible change is handled by an additive/targeted migration; the few
-  // derived tables that ever must be rebuilt are regenerated by `akm index`.
+  rebuildIncompatibleIndexGeneration(db);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS entries (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      entry_key   TEXT NOT NULL UNIQUE,
-      dir_path    TEXT NOT NULL,
-      file_path   TEXT NOT NULL,
-      stash_dir   TEXT NOT NULL,
-      entry_json  TEXT NOT NULL,
-      search_text TEXT NOT NULL,
-      entry_type  TEXT NOT NULL,
-      derived_from TEXT,
-      -- Chunk-5 Step 2 / DB v18 (spec 14.4): bundle-adapter identity + provenance,
-      -- ADDITIVE alongside the legacy columns above. item_ref is the durable
-      -- <bundle>//<concept-id> spelling; nullable during the transition so a
-      -- pre-repoint reader path never trips a NOT NULL on a partially-migrated row.
-      item_ref     TEXT,
-      bundle_id    TEXT,
-      component_id TEXT,
-      concept_id   TEXT,
-      adapter_id   TEXT,
-      type         TEXT,
-      content_hash TEXT,
-      document_json TEXT
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_ref      TEXT NOT NULL UNIQUE,
+      bundle_id     TEXT NOT NULL,
+      component_id  TEXT NOT NULL,
+      concept_id    TEXT NOT NULL,
+      adapter_id    TEXT NOT NULL,
+      type          TEXT NOT NULL,
+      file_path     TEXT NOT NULL,
+      content_hash  TEXT,
+      document_json TEXT NOT NULL,
+      search_text   TEXT NOT NULL,
+      derived_from  TEXT
     );
 
-    CREATE INDEX IF NOT EXISTS idx_entries_dir ON entries(dir_path);
-    CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type);
+    CREATE INDEX IF NOT EXISTS idx_entries_bundle ON entries(bundle_id);
+    CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(type);
     CREATE INDEX IF NOT EXISTS idx_entries_file_path ON entries(file_path);
+    CREATE INDEX IF NOT EXISTS idx_entries_derived_from ON entries(derived_from);
   `);
 
   // Workflow source is compiled directly into source IR at each command
@@ -260,34 +273,7 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   // index.db is derived state, so remove the obsolete table on every open.
   db.exec("DROP TABLE IF EXISTS workflow_documents");
 
-  // v18: backfill the bundle-adapter identity/provenance columns on databases
-  // created against a pre-v18 binary (partial schema) — same PRAGMA-then-ALTER
-  // guard pattern as `ensureDerivedFromColumn`. Runs BEFORE the item_ref index
-  // so the CREATE INDEX below never references a not-yet-added column.
-  ensureBundleRefColumns(db);
-  // v19 (F4c, spec §11.4): item_ref is THE durable identity — its index is
-  // UNIQUE. Every indexed row now carries item_ref; SQLite treats NULLs as
-  // distinct in a UNIQUE index, so NULL-item_ref write-back stragglers coexist.
-  // A pre-v19 DB carries a NON-unique `idx_entries_item_ref`, so drop-then-create.
-  ensureUniqueItemRefIndex(db);
-
-  // Phase 5A / DB v17: backfill `derived_from` column + index on databases
-  // that were created at v17 fresh OR carry a partial v17 schema (a DB whose
-  // `index_meta.version` was bumped to 17 but whose `entries` table still
-  // lacks the column — this happens when a previous v17 binary opened a
-  // pre-v17 DB without taking the upgrade path because no version mismatch
-  // was seen at boot). The PRAGMA-then-ALTER guard runs unconditionally so
-  // both fresh and partial schemas converge. The CREATE INDEX for
-  // `derived_from` MUST run after this helper so we never reference a
-  // column that has not yet been added on partial schemas.
-  ensureDerivedFromColumn(db);
-
-  // Set version immediately after table creation so a crash before the end of
-  // ensureSchema() does not leave the database in a versionless state on next open.
-  const versionAfterCreate = getMeta(db, "version");
-  if (!versionAfterCreate) {
-    setMeta(db, "version", String(DB_VERSION));
-  }
+  setMeta(db, "version", String(DB_VERSION));
 
   // BLOB-based embedding storage (always available, no sqlite-vec needed)
   db.exec(`
@@ -415,6 +401,13 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
     );
   `);
 
+  // If a generation rebuild could not drop a vec0 table while the extension
+  // was unavailable, finish that reset as soon as vec0 can be loaded again.
+  if (isVecAvailable(db) && getMeta(db, "vecResetPending") === "1") {
+    db.exec("DROP TABLE IF EXISTS entries_vec");
+    setMeta(db, "vecResetPending", "0");
+  }
+
   // sqlite-vec table
   //
   // Dimension contract:
@@ -477,87 +470,6 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   // Registry index cache table — caches remote registry index documents so
   // `akm search` does not hit the network on every invocation.
   db.exec(REGISTRY_INDEX_CACHE_DDL);
-}
-
-/**
- * Phase 5A / DB v17 schema guard.
- *
- * Ensures the `entries.derived_from` column + index exist on the open
- * connection. Called from `ensureSchema()` after the entries CREATE so that
- * legacy databases (created against a pre-v17 binary) still gain the new column
- * without data loss. Idempotent: a `PRAGMA table_info` lookup gates the ALTER.
- */
-function ensureDerivedFromColumn(db: Database): void {
-  bestEffort(() => {
-    const cols = db.prepare("PRAGMA table_info(entries)").all() as Array<{ name: string }>;
-    const hasColumn = cols.some((c) => c.name === "derived_from");
-    if (!hasColumn) {
-      db.exec("ALTER TABLE entries ADD COLUMN derived_from TEXT");
-    }
-    // Index creation is idempotent on its own; safe to call unconditionally.
-    db.exec("CREATE INDEX IF NOT EXISTS idx_entries_derived_from ON entries(derived_from)");
-  }, "entries table may not exist on a brand-new DB before CREATE — caller is responsible");
-}
-
-/**
- * Chunk-5 Step 2 / DB v18 schema guard.
- *
- * Ensures the bundle-adapter identity/provenance columns exist on the open
- * `entries` table. Called from `ensureSchema()` after the entries CREATE so a
- * legacy database (created against a pre-v18 binary) gains the new columns
- * without a rebuild. All columns are nullable and added ADDITIVELY — the
- * writer populates `item_ref`/`bundle_id`/`component_id`/`concept_id`/
- * `adapter_id`/`type` while readers still key on the legacy columns. Idempotent:
- * a `PRAGMA table_info` lookup gates each ALTER.
- */
-function ensureBundleRefColumns(db: Database): void {
-  bestEffort(() => {
-    const cols = db.prepare("PRAGMA table_info(entries)").all() as Array<{ name: string }>;
-    const have = new Set(cols.map((c) => c.name));
-    const additive: Array<[string, string]> = [
-      ["item_ref", "TEXT"],
-      ["bundle_id", "TEXT"],
-      ["component_id", "TEXT"],
-      ["concept_id", "TEXT"],
-      ["adapter_id", "TEXT"],
-      ["type", "TEXT"],
-      ["content_hash", "TEXT"],
-      ["document_json", "TEXT"],
-    ];
-    for (const [name, sqlType] of additive) {
-      if (!have.has(name)) db.exec(`ALTER TABLE entries ADD COLUMN ${name} ${sqlType}`);
-    }
-  }, "entries table may not exist on a brand-new DB before CREATE — caller is responsible");
-}
-
-/**
- * Chunk-5 flip F4c / DB v19 schema guard.
- *
- * Upgrade `entries.item_ref`'s lookup index to UNIQUE (item_ref is now THE
- * durable identity — spec §11.4). A pre-v19 DB has a NON-unique
- * `idx_entries_item_ref`, so we DROP-then-CREATE (a `CREATE UNIQUE INDEX IF NOT
- * EXISTS` under the same name would no-op against the existing non-unique index).
- * SQLite treats NULLs as distinct in a UNIQUE index. Duplicate durable identities
- * are an invalid index and fail the schema open rather than enabling a dual-key
- * fallback.
- */
-function ensureUniqueItemRefIndex(db: Database): void {
-  // Probe before mutating. This ran unconditionally on EVERY open as two
-  // separate autocommit statements, so there was always a window in which the
-  // index did not exist — a concurrent open (registry-cache search, indexer,
-  // improve) could DROP between the other's DROP and CREATE and then fail with
-  // "index idx_entries_item_ref already exists", or serve a query with no index
-  // at all. A DB whose index is already UNIQUE needs no work.
-  const existing = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_entries_item_ref'")
-    .get() as { sql: string | null } | undefined;
-  if (existing?.sql && /\bUNIQUE\b/i.test(existing.sql)) return;
-  // Pre-v19 (non-unique index) or absent: convert atomically so a racing open
-  // sees either the old index or the new one, never neither.
-  db.transaction(() => {
-    db.exec("DROP INDEX IF EXISTS idx_entries_item_ref");
-    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_item_ref ON entries(item_ref)");
-  })();
 }
 
 /**

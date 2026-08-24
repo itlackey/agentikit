@@ -135,10 +135,7 @@ describe("getRetrievalCounts", () => {
     const stashDir = "/tmp/utility-source";
     const entryId = upsertEntry(
       db,
-      `${stashDir}:skill:probe`,
-      `${stashDir}/skills`,
       `${stashDir}/skills/probe.md`,
-      stashDir,
       { type: "skill", name: "probe" } as never,
       "probe",
       deriveEntryProvenance({ bundleId: "utility", componentId: "utility", adapterId: "akm" }, "skill", "probe"),
@@ -161,10 +158,7 @@ describe("getRetrievalCounts", () => {
     const stashDir = "/tmp/utility-omitted-source";
     const entryId = upsertEntry(
       db,
-      `${stashDir}:skill:probe`,
-      `${stashDir}/skills`,
       `${stashDir}/skills/probe.md`,
-      stashDir,
       { type: "skill", name: "probe" } as never,
       "probe",
       deriveEntryProvenance({ bundleId: "omitted", componentId: "omitted", adapterId: "akm" }, "skill", "probe"),
@@ -213,20 +207,14 @@ describe("getRetrievalCounts", () => {
     const otherRoot = "/tmp/other-source";
     const selectedId = upsertEntry(
       db,
-      `${selectedRoot}:skill:duplicate`,
-      `${selectedRoot}/skills`,
       `${selectedRoot}/skills/duplicate.md`,
-      selectedRoot,
       { type: "skill", name: "duplicate" } as never,
       "selected",
       deriveEntryProvenance({ bundleId: "selected", componentId: "selected", adapterId: "akm" }, "skill", "duplicate"),
     );
     const otherId = upsertEntry(
       db,
-      `${otherRoot}:skill:duplicate`,
-      `${otherRoot}/skills`,
       `${otherRoot}/skills/duplicate.md`,
-      otherRoot,
       { type: "skill", name: "duplicate" } as never,
       "other",
       deriveEntryProvenance({ bundleId: "other", componentId: "other", adapterId: "akm" }, "skill", "duplicate"),

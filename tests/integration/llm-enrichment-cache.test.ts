@@ -64,6 +64,7 @@ const { computeBodyHash, getLlmCacheEntry, upsertLlmCacheEntry, clearStaleCacheE
 const { openIndexDatabase, closeDatabase } = await import("../../src/storage/repositories/index-connection");
 const { upsertEntry } = await import("../../src/storage/repositories/index-entries-repository");
 const { loadStoredGraphSnapshot } = await import("../../src/indexer/db/graph-db");
+const { deriveEntryProvenance } = await import("../../src/indexer/installations");
 const { buildSearchText } = await import("../../src/indexer/search/search-fields");
 
 function memoryInferenceOptions() {
@@ -140,12 +141,10 @@ function writeFile(rel: string, frontmatter: Record<string, unknown>, body: stri
     try {
       upsertEntry(
         db,
-        `${tmpStash}:${type}:${name}`,
-        path.dirname(filePath),
         filePath,
-        tmpStash,
-        entry as Parameters<typeof upsertEntry>[5],
+        entry,
         buildSearchText(entry as Parameters<typeof buildSearchText>[0]),
+        deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, type, name),
       );
     } catch {
       /* db may be closed in some teardown paths */

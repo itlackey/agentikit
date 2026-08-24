@@ -14,7 +14,6 @@ import { resolveAdapterConceptOwner } from "../../indexer/lookup/adapter-concept
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import type { WorkflowParameter, WorkflowStepDefinition } from "../../sources/types";
 import { withIndexDb } from "../../storage/repositories/index-db";
-import { workflowNameForConceptId } from "../source-files";
 import { compileWorkflowSource } from "../source-ir/compile";
 import { sourceStepInstructions } from "../source-ir/program";
 import type { WorkflowSourceIrV1, WorkflowSourceStep } from "../source-ir/schema";
@@ -145,20 +144,23 @@ function ownsNativeWorkflowRuntime(source: SearchSource): boolean {
  * Resolve the `entries.id` for an indexed workflow, or null when the index
  * database does not yet exist or has no matching entry.
  */
-export function resolveWorkflowEntryId(sourcePath: string, ref: string, adapterId?: string): number | null {
+export function resolveWorkflowEntryId(_sourcePath: string, ref: string, adapterId?: string): number | null {
   if (!fs.existsSync(getDbPath())) return null;
 
-  const entryKey = workflowEntryKey(sourcePath, ref, adapterId);
+  const parsed = parseBundleRef(ref);
+  if (!parsed.bundle) throw new UsageError(`Expected a bundle-qualified workflow ref, got "${ref}".`);
+  const itemRef = makeBundleRef(parsed.bundle, parsed.conceptId);
   return withIndexDb((db) => {
     const row = db
       .prepare(
         `SELECT id
          FROM entries
-         WHERE entry_type = 'workflow'
-            AND entry_key = ?
+         WHERE type = 'workflow'
+           AND item_ref = ?
+           ${adapterId ? "AND adapter_id = ?" : ""}
           LIMIT 1`,
       )
-      .get(entryKey) as { id: number } | undefined;
+      .get(itemRef, ...(adapterId ? [adapterId] : [])) as { id: number } | undefined;
     return row?.id ?? null;
   });
 }
@@ -171,16 +173,6 @@ function compileWorkflowSourceFromDisk(assetPath: string, workspaceRoot: string)
     throw new UsageError(`Workflow source has ${result.errors.length} error(s):\n${details}`);
   }
   return result.ir;
-}
-
-function workflowEntryKey(sourcePath: string, ref: string, adapterId?: string): string {
-  const bundleRef = parseBundleRef(ref);
-  if ((adapterId ?? detectAdapterId(sourcePath)) === "akm-workflow") {
-    return `${sourcePath}:concept:${bundleRef.conceptId}`;
-  }
-  const name = workflowNameForConceptId("akm", bundleRef.conceptId);
-  if (!name) throw new UsageError(`Expected a workflow ref, got "${ref}".`);
-  return `${sourcePath}:workflow:${name}`;
 }
 
 function projectAsset(

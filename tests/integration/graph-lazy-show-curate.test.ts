@@ -21,6 +21,7 @@ import path from "node:path";
 
 import type { AkmConfig } from "../../src/core/config/config";
 import * as graphDb from "../../src/indexer/db/graph-db";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import { buildSearchText } from "../../src/indexer/search/search-fields";
 import type { SearchSource } from "../../src/indexer/search/search-source";
 import type { Database } from "../../src/storage/database";
@@ -188,15 +189,13 @@ function writeMemory(slug: string, body: string): string {
   fs.writeFileSync(filePath, `---\ntype: memory\n---\n\n${body}\n`, "utf8");
   const db = openIndexDatabase(dbPath());
   try {
-    const entry = { name: slug, type: "memory", filename: `${slug}.md` } as Parameters<typeof upsertEntry>[5];
+    const entry = { name: slug, type: "memory", filename: `${slug}.md` };
     upsertEntry(
       db,
-      `${tmpStash}:memory:${slug}`,
-      path.dirname(filePath),
       filePath,
-      tmpStash,
       entry,
       buildSearchText(entry as Parameters<typeof buildSearchText>[0]),
+      deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, "memory", slug),
     );
   } finally {
     closeDatabase(db);

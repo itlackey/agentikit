@@ -1889,7 +1889,6 @@ function fetchRetrievalSignals(args: {
           const allCandidateRefs = [...new Set([...signalFiltered, ...noFeedbackCandidates].map((r) => r.ref))];
           retrievalCounts = getRetrievalCounts(dbForRetrievalIndex, stateDb, allCandidateRefs, {
             sourceName: options.sourceName,
-            stashDir: primaryStashDir,
           });
         },
         { path: eventsCtx?.dbPath, borrowed: eventsCtx?.db },

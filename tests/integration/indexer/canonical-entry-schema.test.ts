@@ -10,7 +10,7 @@ import { openDatabase } from "../../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
 import { DB_VERSION } from "../../../src/storage/repositories/index-schema";
 
-const CURRENT_ENTRY_COLUMNS = [
+const CURRENT_ENTRY_COLUMNS: string[] = [
   "id",
   "item_ref",
   "bundle_id",
@@ -23,7 +23,7 @@ const CURRENT_ENTRY_COLUMNS = [
   "document_json",
   "search_text",
   "derived_from",
-] as const;
+];
 
 function withTempIndex(run: (dbPath: string) => void): void {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-current-index-schema-"));

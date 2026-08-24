@@ -18,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import * as graphExtraction from "../../src/indexer/graph/graph-extraction";
 import { collectEligibleFiles } from "../../src/indexer/graph/graph-extraction";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
 
@@ -61,9 +62,13 @@ afterEach(() => {
  */
 function seedEntryWithUtility(absPath: string, utility: number | null): number {
   const name = path.basename(absPath, path.extname(absPath));
-  const dirPath = path.dirname(absPath);
-  const entry = { name, type: "memory", filename: path.basename(absPath) } as Parameters<typeof upsertEntry>[5];
-  const id = upsertEntry(db, `${stash.dir}:memory:${name}`, dirPath, absPath, stash.dir, entry, name);
+  const entry = { name, type: "memory", filename: path.basename(absPath) };
+  const provenance = deriveEntryProvenance(
+    { bundleId: "stash", componentId: "stash", adapterId: "akm" },
+    entry.type,
+    name,
+  );
+  const id = upsertEntry(db, absPath, entry, name, provenance);
   if (utility != null) {
     db.prepare(
       `INSERT INTO utility_scores (entry_id, utility) VALUES (?, ?)

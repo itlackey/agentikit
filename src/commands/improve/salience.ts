@@ -499,7 +499,8 @@ export function getLastUseMsByRef(indexDb: IndexDatabase, refs: string[], stashD
   const selectedRoot = stashDir ? path.resolve(stashDir) : undefined;
   const idToRef = new Map<number, string>();
   for (const indexed of allEntries) {
-    if (selectedRoot && path.resolve(indexed.stashDir) !== selectedRoot) continue;
+    const indexedPath = path.resolve(indexed.filePath);
+    if (selectedRoot && indexedPath !== selectedRoot && !indexedPath.startsWith(`${selectedRoot}${path.sep}`)) continue;
     // In-memory correlation key, NOT a durable write: it must match the caller's
     // `refs` (the `ImproveEligibleRef.ref`, now the SHORT conceptId — Chunk-8
     // WI-8.5c flipped the candidate-ref spelling to match the display flip).

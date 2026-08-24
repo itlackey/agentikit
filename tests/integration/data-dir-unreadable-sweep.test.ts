@@ -319,8 +319,6 @@ describe("a rename does not silently drop usage history it cannot reach (#791)",
       // rewrite was skipped without a word and the rename reported success.
       expect(() =>
         rekeyEntryInPlace(db, {
-          oldEntryKey: `${stashDir}:knowledge:note`,
-          newEntryKey: `${stashDir}:knowledge:renamed`,
           newName: "renamed",
           newFilePath: path.join(stashDir, "knowledge", "renamed.md"),
           oldRef: oldRef as string,

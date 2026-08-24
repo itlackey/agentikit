@@ -11,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { _setWarnSinkForTests } from "../../src/core/warn";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import type { Database } from "../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
@@ -54,7 +55,12 @@ afterEach(() => {
 });
 
 function insertEntry(db: Database, key: string, entry: IndexDocument, searchText: string): number {
-  return upsertEntry(db, key, "/test/dir", `/test/dir/${key}.ts`, "/test/stash", entry, searchText);
+  const provenance = deriveEntryProvenance(
+    { bundleId: "test-bundle", componentId: "test-bundle", adapterId: "akm" },
+    entry.type,
+    key,
+  );
+  return upsertEntry(db, `/test/dir/${key}.ts`, entry, searchText, provenance);
 }
 
 describe("runFtsQuery error handling", () => {

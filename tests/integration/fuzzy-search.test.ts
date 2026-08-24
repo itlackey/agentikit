@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import type { Database } from "../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
@@ -60,7 +61,6 @@ function insertTestEntry(
   opts?: {
     dirPath?: string;
     filePath?: string;
-    stashDir?: string;
     description?: string;
     searchText?: string;
     type?: IndexDocument["type"];
@@ -68,14 +68,18 @@ function insertTestEntry(
 ): number {
   const type = opts?.type ?? "skill";
   const entry = makeEntry({ name: key, type, description: opts?.description ?? `Description for ${key}` });
+  const dirPath = opts?.dirPath ?? "/test/dir";
+  const provenance = deriveEntryProvenance(
+    { bundleId: "test-bundle", componentId: "test-bundle", adapterId: "akm" },
+    type,
+    key,
+  );
   return upsertEntry(
     db,
-    key,
-    opts?.dirPath ?? "/test/dir",
-    opts?.filePath ?? `/test/dir/${key}.ts`,
-    opts?.stashDir ?? "/test/stash",
+    opts?.filePath ?? path.join(dirPath, `${key}.ts`),
     entry,
     opts?.searchText ?? `${key} ${entry.description}`,
+    provenance,
   );
 }
 

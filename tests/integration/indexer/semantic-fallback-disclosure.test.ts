@@ -47,10 +47,7 @@ test("query-embedding failure preserves FTS results and returns one sanitized ft
     try {
       const entryId = upsertEntry(
         db,
-        "knowledge/deploy-guide",
-        storage.stashDir,
         `${storage.stashDir}/knowledge/deploy-guide.md`,
-        storage.stashDir,
         { type: "knowledge", name: "deploy-guide", description: "deploy applications safely" } as IndexDocument,
         "deploy-guide deploy applications safely",
         deriveEntryProvenance(

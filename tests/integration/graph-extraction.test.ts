@@ -20,6 +20,7 @@ import path from "node:path";
 import type { AkmConfig } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
 import { enqueueGraphExtraction, loadStoredGraphSnapshot, replaceStoredGraph } from "../../src/indexer/db/graph-db";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import { buildSearchText } from "../../src/indexer/search/search-fields";
 import type { SearchSource } from "../../src/indexer/search/search-source";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
@@ -176,7 +177,6 @@ function writeFile(rel: string, frontmatter: Record<string, unknown>, body: stri
   const typeDir = rel.split("/")[0] ?? "";
   const type = typeDir === "memories" ? "memory" : typeDir === "knowledge" ? "knowledge" : typeDir;
   const name = path.basename(rel, path.extname(rel));
-  const dirPath = path.dirname(filePath);
   const entry = {
     name,
     type,
@@ -187,12 +187,10 @@ function writeFile(rel: string, frontmatter: Record<string, unknown>, body: stri
   try {
     upsertEntry(
       db,
-      `${tmpStash}:${type}:${name}`,
-      dirPath,
       filePath,
-      tmpStash,
-      entry as Parameters<typeof upsertEntry>[5],
+      entry,
       buildSearchText(entry as Parameters<typeof buildSearchText>[0]),
+      deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, type, name),
     );
   } finally {
     closeDatabase(db);

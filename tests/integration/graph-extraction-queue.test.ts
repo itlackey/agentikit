@@ -22,6 +22,7 @@ import * as graphDb from "../../src/indexer/db/graph-db";
 import { loadGraphFilesOnly, replaceStoredGraph } from "../../src/indexer/db/graph-db";
 import * as graphExtraction from "../../src/indexer/graph/graph-extraction";
 import type { GraphFile } from "../../src/indexer/graph/graph-types";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { Database } from "../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
@@ -136,8 +137,13 @@ function makeEligibleMemory(slug: string, body: string): string {
   fs.mkdirSync(memDir, { recursive: true });
   const absPath = path.join(memDir, `${slug}.md`);
   fs.writeFileSync(absPath, `---\ntype: memory\n---\n${body}\n`);
-  const entry = { name: slug, type: "memory", filename: `${slug}.md` } as Parameters<typeof upsertEntry>[5];
-  upsertEntry(db, `${stash.dir}:memory:${slug}`, memDir, absPath, stash.dir, entry, slug);
+  const entry = { name: slug, type: "memory", filename: `${slug}.md` };
+  const provenance = deriveEntryProvenance(
+    { bundleId: "stash", componentId: "stash", adapterId: "akm" },
+    entry.type,
+    slug,
+  );
+  upsertEntry(db, absPath, entry, slug, provenance);
   return absPath;
 }
 

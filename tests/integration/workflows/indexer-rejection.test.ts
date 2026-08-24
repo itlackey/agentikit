@@ -78,16 +78,16 @@ do A
 
 test("indexer admits a valid workflow through the shared source compiler", async () => {
   const stashDir = tmpStash();
-  writeWorkflow(stashDir, "good", VALID_WORKFLOW);
+  const goodPath = writeWorkflow(stashDir, "good", VALID_WORKFLOW);
 
   const result = await akmIndex({ stashDir, full: true });
   expect(result.totalEntries).toBe(1);
 
   const db = openIndexDatabase();
   try {
-    const row = db
-      .prepare("SELECT file_path FROM entries WHERE entry_type = 'workflow' AND entry_key LIKE ?")
-      .get(`${stashDir}:workflow:%`) as { file_path: string } | undefined;
+    const row = db.prepare("SELECT file_path FROM entries WHERE type = 'workflow' AND file_path = ?").get(goodPath) as
+      | { file_path: string }
+      | undefined;
     expect(row).toBeDefined();
     if (!row) return;
     expect(row.file_path).toContain("good.md");
@@ -98,7 +98,7 @@ test("indexer admits a valid workflow through the shared source compiler", async
 
 test("indexer rejects broken workflows and surfaces every error in IndexResponse.warnings", async () => {
   const stashDir = tmpStash();
-  writeWorkflow(stashDir, "good", VALID_WORKFLOW);
+  const goodPath = writeWorkflow(stashDir, "good", VALID_WORKFLOW);
   const brokenPath = writeWorkflow(stashDir, "bad", BROKEN_WORKFLOW);
 
   // Use captureStderr to prevent the noise-gate summary warn() from leaking
@@ -116,10 +116,10 @@ test("indexer rejects broken workflows and surfaces every error in IndexResponse
 
   const db = openIndexDatabase();
   try {
-    const goodRow = db.prepare("SELECT 1 FROM entries WHERE entry_key = ?").get(`${stashDir}:workflow:good`);
+    const goodRow = db.prepare("SELECT 1 FROM entries WHERE file_path = ?").get(goodPath);
     expect(goodRow).toBeDefined();
 
-    const badRow = db.prepare("SELECT 1 FROM entries WHERE entry_key = ?").get(`${stashDir}:workflow:bad`);
+    const badRow = db.prepare("SELECT 1 FROM entries WHERE file_path = ?").get(brokenPath);
     expect(badRow).toBeFalsy();
   } finally {
     closeDatabase(db);

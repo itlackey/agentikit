@@ -64,17 +64,17 @@ import {
   openReadonlyExistingDatabase,
 } from "../storage/repositories/index-connection";
 import {
-  deleteEntriesByDirAndStash,
-  deleteEntriesByDirExceptKeys,
+  deleteEntriesByDirAndBundle,
+  deleteEntriesByDirExceptRefs,
   deleteEntriesByIds,
-  deleteEntriesByStashDir,
+  deleteEntriesBySourceRoot,
   deleteUsageEventsByEntryIds,
   findEntryIdByRef,
   getAllEntries,
   getEmbeddableEntryCount,
   getEntryCount,
-  getIndexedDirPathsByStashDir,
-  getIndexedStashDirsByDir,
+  getIndexedBundleIdsByDir,
+  getIndexedDirPathsByBundleId,
   relinkUsageEvents,
   upsertEntry,
 } from "../storage/repositories/index-entries-repository";
@@ -341,7 +341,7 @@ async function runSourceCachePhase(ctx: IndexRunContext): Promise<void> {
 function applyRemovedSources(ctx: IndexRunContext): void {
   if (!ctx.scanComplete) return;
   for (const dir of ctx.removedSourceDirs) {
-    deleteEntriesByStashDir(ctx.db, dir);
+    deleteEntriesBySourceRoot(ctx.db, dir);
     deleteIndexDirStatesByStashDir(ctx.db, dir);
     deleteStoredGraph(ctx.db, dir);
   }
@@ -619,7 +619,7 @@ export function reconcileBodyOpeningIndexState(
  * reported instead.
  */
 function runCleanPass(db: Database, dryRun: boolean): IndexCleanResult {
-  const allEntries = db.prepare("SELECT id, entry_key AS ref, file_path AS path FROM entries").all() as {
+  const allEntries = db.prepare("SELECT id, item_ref AS ref, file_path AS path FROM entries").all() as {
     id: number;
     ref: string;
     path: string;
@@ -1185,11 +1185,11 @@ function groupFileContextsByDir(fileContexts: FileContext[]): Map<string, FileCo
 function sourceSnapshotRemovals(
   db: Database,
   currentStashDir: string,
+  bundleId: string,
   currentDirs: ReadonlySet<string>,
-  allIndexedDirsBySource?: ReadonlyMap<string, ReadonlySet<string>>,
+  allIndexedDirsByBundle?: ReadonlyMap<string, ReadonlySet<string>>,
 ): Array<DirRecord & { reason: DirScanReason }> {
-  const indexedDirs =
-    allIndexedDirsBySource?.get(path.resolve(currentStashDir)) ?? getIndexedDirPathsByStashDir(db, currentStashDir);
+  const indexedDirs = allIndexedDirsByBundle?.get(bundleId) ?? getIndexedDirPathsByBundleId(db, bundleId);
   return [...indexedDirs]
     .map((dirPath) => path.resolve(dirPath))
     .filter((dirPath) => !currentDirs.has(dirPath))
@@ -1268,19 +1268,24 @@ function buildSourceScanPlans(
   // A full, globally-complete run uses the atomic table wipe below. Every
   // other run reconciles only sources that produced trustworthy snapshots.
   if (reconcileMissingDirs && (isIncremental || !allComplete)) {
-    const allIndexedDirsBySource = !isIncremental ? new Map<string, Set<string>>() : undefined;
-    if (allIndexedDirsBySource) {
+    const allIndexedDirsByBundle = !isIncremental ? new Map<string, Set<string>>() : undefined;
+    if (allIndexedDirsByBundle) {
       for (const entry of getAllEntries(db)) {
-        const sourceRoot = path.resolve(entry.stashDir);
-        const dirs = allIndexedDirsBySource.get(sourceRoot) ?? new Set<string>();
-        dirs.add(path.resolve(entry.dirPath));
-        allIndexedDirsBySource.set(sourceRoot, dirs);
+        const dirs = allIndexedDirsByBundle.get(entry.bundleId) ?? new Set<string>();
+        dirs.add(path.dirname(path.resolve(entry.filePath)));
+        allIndexedDirsByBundle.set(entry.bundleId, dirs);
       }
     }
     for (const plan of plans) {
       if (!plan.walkComplete || !plan.adapter) continue;
       const currentDirs = new Set([...plan.dirGroups.keys()].map((dirPath) => path.resolve(dirPath)));
-      for (const removal of sourceSnapshotRemovals(db, plan.currentStashDir, currentDirs, allIndexedDirsBySource)) {
+      for (const removal of sourceSnapshotRemovals(
+        db,
+        plan.currentStashDir,
+        plan.component.id,
+        currentDirs,
+        allIndexedDirsByBundle,
+      )) {
         addRemoval(plan, removal.dirPath, removal.currentStashDir);
       }
     }
@@ -1293,14 +1298,16 @@ function buildSourceScanPlans(
   // The first configured source that exposes a physical directory owns it.
   // Remove rows left by a prior owner even when both adapters are identical.
   const claimedDirs = new Set<string>();
+  const sourcePathByBundle = new Map(plans.map((plan) => [plan.component.id, plan.currentStashDir] as const));
   for (const plan of plans) {
     for (const dirPath of plan.dirGroups.keys()) {
       const resolvedDir = path.resolve(dirPath);
       if (claimedDirs.has(resolvedDir)) continue;
       claimedDirs.add(resolvedDir);
-      for (const priorOwner of getIndexedStashDirsByDir(db, dirPath)) {
-        if (path.resolve(priorOwner) !== path.resolve(plan.currentStashDir)) {
-          addRemoval(plan, dirPath, priorOwner);
+      for (const priorOwnerBundle of getIndexedBundleIdsByDir(db, dirPath)) {
+        if (priorOwnerBundle !== plan.component.id) {
+          const priorOwnerPath = sourcePathByBundle.get(priorOwnerBundle);
+          if (priorOwnerPath) addRemoval(plan, dirPath, priorOwnerPath);
         }
       }
     }
@@ -1670,8 +1677,12 @@ function persistDirRecords(
       remove,
       pruneMissing,
     } of dirRecords) {
+      const bundle = bundleByRoot.get(path.resolve(currentStashDir));
+      if (!bundle) throw new Error(`Missing bundle provenance for indexed source ${currentStashDir}`);
       if (remove) {
-        const removedIds = deleteEntriesByDirAndStash(db, dirPath, currentStashDir, { cleanupUsageEvents: false });
+        const removedIds = deleteEntriesByDirAndBundle(db, dirPath, bundle.bundleId, {
+          cleanupUsageEvents: false,
+        });
         addEntryIds(deletedUsageEntryIds, removedIds);
         deleteIndexDirState(db, dirPath);
         continue;
@@ -1692,16 +1703,14 @@ function persistDirRecords(
       // Diff-persist (F4a M-core-2, spec §14.2): upsert the current file set
       // FIRST (ON CONFLICT preserving `entries.id` so embeddings / utility /
       // usage stay attached to unchanged rows), tracking every upserted
-      // `entry_key`, then prune only the DEPARTED rows below. Replaces the old
+      // durable `item_ref`, then prune only the departed rows below. Replaces the old
       // `deleteEntriesByDir` truncate-and-reinsert (which discarded ids).
-      const keptEntryKeys = new Set<string>();
+      const keptItemRefs = new Set<string>();
 
       let persistedRows = 0;
       let dedupedRows = 0;
 
       if (stash) {
-        const bundle = bundleByRoot.get(path.resolve(currentStashDir));
-        if (!bundle) throw new Error(`Missing bundle provenance for indexed source ${currentStashDir}`);
         const ownerIdentity = bundle.bundleId;
         for (const entry of stash.entries) {
           const entryPath = entry.filename ? path.join(dirPath, entry.filename) : null;
@@ -1724,11 +1733,6 @@ function persistDirRecords(
           }
           indexedAssetIdentities.add(identityKey);
 
-          const entryKey =
-            bundle?.adapterId !== "akm" && adapterConceptId
-              ? `${currentStashDir}:concept:${adapterConceptId}`
-              : `${currentStashDir}:${entry.type}:${entry.name}`;
-          keptEntryKeys.add(entryKey);
           const searchText = buildSearchText(entry);
           const entryWithSize = attachFileSize(entry, entryPath);
           // content_hash = doc.hash from the drain, keyed by the recognized
@@ -1736,18 +1740,9 @@ function persistDirRecords(
           const contentHash = hashByFile?.get(entryPath);
 
           const provenance = deriveEntryProvenance(bundle, entry.type, entry.name, adapterConceptId);
+          keptItemRefs.add(provenance.itemRef);
 
-          upsertEntry(
-            db,
-            entryKey,
-            dirPath,
-            entryPath,
-            currentStashDir,
-            entryWithSize,
-            searchText,
-            provenance,
-            contentHash,
-          );
+          upsertEntry(db, entryPath, entryWithSize, searchText, provenance, contentHash);
           persistedRows++;
         }
 
@@ -1765,7 +1760,7 @@ function persistDirRecords(
       if (pruneMissing !== false) {
         addEntryIds(
           deletedUsageEntryIds,
-          deleteEntriesByDirExceptKeys(db, dirPath, currentStashDir, keptEntryKeys, { cleanupUsageEvents: false }),
+          deleteEntriesByDirExceptRefs(db, dirPath, bundle.bundleId, keptItemRefs, { cleanupUsageEvents: false }),
         );
       }
 
@@ -2021,7 +2016,10 @@ async function enhanceDirsWithLlm(
         });
         lastProgressAt = Date.now();
         const targetStash: StashFile = { entries: entriesToEnhance };
-        const entryKeys = entriesToEnhance.map((e) => `${currentStashDir}:${e.type}:${e.name}`);
+        const itemRefs = entriesToEnhance.map((entry) => {
+          const entryPath = entry.filename ? path.join(dirPath, entry.filename) : files[0] || dirPath;
+          return indexedProvenanceForFile(db, entryPath).itemRef;
+        });
         let enhanced: StashFile;
         try {
           enhanced = await enhanceStashWithLlm(
@@ -2031,7 +2029,7 @@ async function enhanceDirsWithLlm(
             summary,
             enrichSignal,
             db,
-            entryKeys,
+            itemRefs,
             config,
             (event) => {
               completedEntries++;
@@ -2064,19 +2062,9 @@ async function enhanceDirsWithLlm(
         db.transaction(() => {
           for (const entry of enhanced.entries) {
             const entryPath = entry.filename ? path.join(dirPath, entry.filename) : files[0] || dirPath;
-            const entryKey = `${currentStashDir}:${entry.type}:${entry.name}`;
             const searchText = buildSearchText(entry);
             const provenance = indexedProvenanceForFile(db, entryPath);
-            upsertEntry(
-              db,
-              entryKey,
-              dirPath,
-              entryPath,
-              currentStashDir,
-              attachFileSize(entry, entryPath),
-              searchText,
-              provenance,
-            );
+            upsertEntry(db, entryPath, attachFileSize(entry, entryPath), searchText, provenance);
           }
         })();
         completedDirs++;
@@ -2190,7 +2178,7 @@ async function generateEmbeddingsForDb(
         const batchNum = Math.floor(i / EMBED_BATCH_SIZE) + 1;
         const chars = texts[i]!.length;
         const tokens = estimateTokenCount(texts[i]!);
-        const ref = allEntries[i]!.entryKey.split(":").slice(1).join(":"); // strip stashDir prefix
+        const ref = allEntries[i]!.itemRef;
         warnVerbose(`[embed] ${ref} (${chars} chars, est. ${tokens} tokens) → batch ${batchNum}/${totalBatches}`);
       }
     }
@@ -2448,7 +2436,7 @@ async function enhanceStashWithLlm(
   summary: LlmEnhancementSummary,
   signal?: AbortSignal,
   db?: Database,
-  entryKeys?: string[],
+  itemRefs?: string[],
   akmConfig?: AkmConfig,
   onEntryDone?: (event: { entryName: string; outcome: "cache-hit" | "llm" | "failed" | "skipped" }) => void,
   onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void,
@@ -2479,11 +2467,12 @@ async function enhanceStashWithLlm(
         }
 
         // Incremental cache: skip LLM call when file body is unchanged. The
-        // cache key is the entry_key (stashDir:type:name) which is stable
-        // across index runs.
+        // Cache metadata enrichment by the canonical durable item ref.
         const cacheBody = fileContent ?? `${entry.name}\n${entry.description ?? ""}`;
         const bodyHash = computeBodyHash(cacheBody);
-        const cacheKey = entryKeys?.[idx] ?? `${entry.type}:${entry.name}`;
+        const cacheKey = itemRefs?.[idx] ?? entry.ref;
+
+        if (!cacheKey) throw new Error(`Missing canonical item ref for enrichment entry ${entry.name}.`);
 
         if (db) {
           const cached = getLlmCacheEntry(db, cacheKey, bodyHash);
@@ -2597,7 +2586,7 @@ export interface IndexEntry {
   filePath: string;
   /** Source root (the directory the walker rooted at). */
   stashDir: string;
-  /** Raw entry_key from the entries table — `${stashDir}:${type}:${name}`. */
+  /** Canonical durable item ref (retained under this field for older callers). */
   entryKey: string;
   /** Asset type (skill, command, knowledge, ...). */
   type: string;
@@ -2647,6 +2636,9 @@ async function lookupBundleRefWithResolutionUsing(
 ): Promise<BundleRefLookupResolution> {
   const sources = await resolveLookupSources();
   if (sources.length === 0) return { entry: null };
+  const bundleBySourcePath = new Map(
+    deriveInstallations(sources).map((installation, index) => [path.resolve(sources[index]!.path), installation.id]),
+  );
 
   const { candidateSources, qualified } = resolveLookupScope(ref.bundle, sources);
   if (candidateSources.length === 0) return { entry: null };
@@ -2664,9 +2656,10 @@ async function lookupBundleRefWithResolutionUsing(
       const owner = resolveAdapterConceptOwner(source.path, adapterId, ref.conceptId);
       const lookupConceptId = owner?.conceptId ?? ref.conceptId;
       const inputRef = makeBundleRef(qualified ? ref.bundle : undefined, lookupConceptId);
-      const id = db ? findEntryIdByRef(db, inputRef, source.path) : undefined;
+      const sourceBundleId = bundleBySourcePath.get(path.resolve(source.path));
+      const id = db && sourceBundleId ? findEntryIdByRef(db, inputRef, sourceBundleId) : undefined;
       if (id !== undefined && owner && db) {
-        const entry = readLookupEntry(db, id, ref.conceptId);
+        const entry = readLookupEntry(db, id, ref.conceptId, source.path);
         if (entry) {
           if (owner.workflowSource) {
             assertIndexedWorkflowSourceIdentity(inputRef, entry.filePath, owner.workflowSource);
@@ -2715,37 +2708,35 @@ export async function lookupBundleRefReadonly(ref: BundleRef): Promise<IndexEntr
   return resolution.entry;
 }
 
-function readLookupEntry(db: Database, id: number, fallbackConceptId: string): IndexEntry | null {
+function readLookupEntry(db: Database, id: number, fallbackConceptId: string, sourceRoot: string): IndexEntry | null {
   const row = db
     .prepare(
-      "SELECT entry_key AS entryKey, file_path AS filePath, stash_dir AS stashDir, entry_type AS type, " +
-        "entry_json AS entryJson, item_ref AS itemRef, bundle_id AS bundleId, concept_id AS conceptId, " +
+      "SELECT file_path AS filePath, type, document_json AS documentJson, " +
+        "item_ref AS itemRef, bundle_id AS bundleId, concept_id AS conceptId, " +
         "adapter_id AS adapterId FROM entries WHERE id = ?",
     )
     .get(id) as
     | {
-        entryKey: string;
         filePath: string;
-        stashDir: string;
         type: string;
-        entryJson: string;
-        itemRef: string | null;
-        bundleId: string | null;
-        conceptId: string | null;
-        adapterId: string | null;
+        documentJson: string;
+        itemRef: string;
+        bundleId: string;
+        conceptId: string;
+        adapterId: string;
       }
     | undefined;
-  if (!row?.itemRef || !row.bundleId || !row.conceptId || !row.adapterId) return null;
+  if (!row) return null;
   let document: IndexDocument | undefined;
   try {
-    document = JSON.parse(row.entryJson) as IndexDocument;
+    document = JSON.parse(row.documentJson) as IndexDocument;
   } catch {
     // Corrupt optional projection does not erase the durable path identity.
   }
   return {
-    entryKey: row.entryKey,
+    entryKey: row.itemRef,
     filePath: row.filePath,
-    stashDir: row.stashDir,
+    stashDir: sourceRoot,
     type: row.type,
     name: document?.name ?? fallbackConceptId.split("/").pop() ?? fallbackConceptId,
     adapterId: row.adapterId,

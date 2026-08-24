@@ -330,7 +330,7 @@ export function computeCycleMetrics(
     const fingerprint = contentFingerprint(e.entry);
     contentHashes.add(normHash(fingerprint));
     if ((e.entry.generation ?? 0) > maxGeneration) overGeneration++;
-    learningTexts.push({ key: e.entryKey, text: fingerprint });
+    learningTexts.push({ key: e.itemRef, text: fingerprint });
   }
 
   // Deterministic diversity sample: sort by entryKey, take every ⌈N/cap⌉-th row.

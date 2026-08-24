@@ -216,10 +216,7 @@ async function collectEligibleRefsFromIndex(
         }
         throw new NotFoundError(`Asset not found in the selected writable source: ${scope.value}`, "ASSET_NOT_FOUND");
       }
-      if (
-        !isEntryInScope(indexed.stashDir, indexed.filePath, stashDir) ||
-        !isEntryInWritableSource(indexed.stashDir, indexed.filePath, writableDirs)
-      ) {
+      if (!isEntryInScope(indexed.filePath, stashDir) || !isEntryInWritableSource(indexed.filePath, writableDirs)) {
         return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [], indexSnapshot };
       }
       const itemRef = `${indexed.bundleId}//${indexed.conceptId}`;
@@ -289,9 +286,9 @@ async function collectEligibleRefsFromIndex(
     const indexSnapshot = describeIndexSnapshot(readOnly, "ready");
     const entries = getAllEntries(db, scope.mode === "type" ? scope.value : undefined).filter((indexed) => {
       // First apply the existing stashDir-scope filter (no-op when stashDir is unset).
-      if (!isEntryInScope(indexed.stashDir, indexed.filePath, stashDir)) return false;
+      if (!isEntryInScope(indexed.filePath, stashDir)) return false;
       // Then restrict to writable sources only.
-      return isEntryInWritableSource(indexed.stashDir, indexed.filePath, writableDirSet);
+      return isEntryInWritableSource(indexed.filePath, writableDirSet);
     });
     const planned = new Map<string, ImproveEligibleRef>();
     const strategyFiltered = new Map<string, ImproveEligibleRef>();
@@ -381,15 +378,12 @@ async function collectEligibleRefsFromIndex(
   }
 }
 
-export function isEntryInScope(entryStashDir: string, filePath: string, stashDir?: string): boolean {
+export function isEntryInScope(filePath: string, stashDir?: string): boolean {
   if (!stashDir) return true;
-  const resolvedEntryStashDir = path.resolve(entryStashDir);
   const resolvedFilePath = path.resolve(filePath);
   const resolvedScopeStashDir = path.resolve(stashDir);
   return (
-    resolvedEntryStashDir === resolvedScopeStashDir ||
-    resolvedEntryStashDir.startsWith(`${resolvedScopeStashDir}${path.sep}`) ||
-    resolvedFilePath.startsWith(`${resolvedScopeStashDir}${path.sep}`)
+    resolvedFilePath === resolvedScopeStashDir || resolvedFilePath.startsWith(`${resolvedScopeStashDir}${path.sep}`)
   );
 }
 
@@ -398,15 +392,10 @@ export function isEntryInScope(entryStashDir: string, filePath: string, stashDir
  * directories. Entries from read-only registry caches or remote stashes that
  * the user has not marked writable must never enter the improve/distill loop.
  */
-export function isEntryInWritableSource(entryStashDir: string, filePath: string, writableDirSet: Set<string>): boolean {
-  const resolvedEntryStashDir = path.resolve(entryStashDir);
+export function isEntryInWritableSource(filePath: string, writableDirSet: Set<string>): boolean {
   const resolvedFilePath = path.resolve(filePath);
   for (const writableDir of writableDirSet) {
-    if (
-      resolvedEntryStashDir === writableDir ||
-      resolvedEntryStashDir.startsWith(`${writableDir}${path.sep}`) ||
-      resolvedFilePath.startsWith(`${writableDir}${path.sep}`)
-    ) {
+    if (resolvedFilePath === writableDir || resolvedFilePath.startsWith(`${writableDir}${path.sep}`)) {
       return true;
     }
   }

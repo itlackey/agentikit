@@ -664,7 +664,7 @@ async function loadAndScoreInputSalience(args: {
     const indexDb = openReadonlyExistingDatabase(getDbPath(), { isolatedSnapshot: true });
     if (indexDb) {
       try {
-        const allRefs = getAllEntries(indexDb).map((e) => e.entryKey);
+        const allRefs = getAllEntries(indexDb).map((e) => e.itemRef);
         existingRefVocabulary = buildRefVocabulary(allRefs);
       } finally {
         closeDatabase(indexDb);

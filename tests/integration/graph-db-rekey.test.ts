@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import path from "node:path";
 import * as graphDb from "../../src/indexer/db/graph-db";
 import { loadStoredGraphSnapshot, replaceStoredGraph } from "../../src/indexer/db/graph-db";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import {
   deleteEntriesByIds,
@@ -72,15 +73,8 @@ const STASH = "/tmp/akm-rekey-stash";
 /** Insert a minimal entries row for a file so it is not treated as an orphan. */
 function seedEntry(db: Database, filePath: string, name: string, type = "memory"): number {
   const entry = { name, type, filename: path.basename(filePath) };
-  return upsertEntry(
-    db,
-    `${STASH}:${type}:${name}`,
-    path.dirname(filePath),
-    filePath,
-    STASH,
-    entry as Parameters<typeof upsertEntry>[5],
-    buildSearchText(entry as Parameters<typeof buildSearchText>[0]),
-  );
+  const provenance = deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, type, name);
+  return upsertEntry(db, filePath, entry, buildSearchText(entry), provenance);
 }
 
 function fileNode(

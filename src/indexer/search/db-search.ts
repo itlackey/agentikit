@@ -1074,6 +1074,7 @@ export async function buildDbHit(input: {
   await enrichSearchHit(hit, {
     type: input.entry.type,
     stashDir: entryStashDir,
+    bundleId: input.bundleId,
     rendererRegistry,
     db: input.db,
   });

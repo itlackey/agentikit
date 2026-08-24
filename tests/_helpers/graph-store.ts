@@ -21,7 +21,6 @@ export function seedStoredGraph(graph: GraphFile, dbPath: string): void {
   try {
     for (const file of graph.files) {
       const name = path.basename(file.path, path.extname(file.path));
-      const dirPath = path.dirname(file.path);
       const entry = { name, type: file.type, filename: path.basename(file.path) };
       try {
         // Seed the durable bundle-adapter identity (item_ref/concept_id/bundle_id)
@@ -32,16 +31,7 @@ export function seedStoredGraph(graph: GraphFile, dbPath: string): void {
           file.type,
           name,
         );
-        upsertEntry(
-          db,
-          `${graph.stashRoot}:${file.type}:${name}`,
-          dirPath,
-          file.path,
-          graph.stashRoot,
-          entry as Parameters<typeof upsertEntry>[5],
-          buildSearchText(entry as Parameters<typeof buildSearchText>[0]),
-          provenance,
-        );
+        upsertEntry(db, file.path, entry, buildSearchText(entry), provenance);
       } catch {
         /* entry may already exist with a different key — fall through */
       }

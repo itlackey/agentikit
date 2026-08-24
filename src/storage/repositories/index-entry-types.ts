@@ -19,13 +19,8 @@
 import type { IndexDocument } from "../../indexer/passes/metadata";
 
 /**
- * Chunk-5 Step 2 (spec §14.4): the durable bundle-adapter identity + provenance
- * a writer attaches to an `entries` row, persisted to the additive `item_ref`/
- * `bundle_id`/`component_id`/`concept_id`/`adapter_id` columns. Optional on the
- * write path during the transition — a caller that cannot yet derive the bundle
- * (e.g. the write-back fast-path) passes `undefined` and the columns stay NULL
- * until the next full `akm index` repopulates them. `item_ref` is the canonical
- * `<bundle>//<concept-id>` stored spelling (§1.3), equal to `IndexDocument.ref`.
+ * Durable bundle-adapter identity attached to every current `entries` row.
+ * `item_ref` is the canonical `<bundle>//<concept-id>` stored spelling (§1.3).
  */
 export interface EntryProvenance {
   itemRef: string;
@@ -38,10 +33,7 @@ export interface EntryProvenance {
 /** A fully-materialised indexed entry mapped from an `entries` row. */
 export interface DbIndexedEntry {
   id: number;
-  entryKey: string;
-  dirPath: string;
   filePath: string;
-  stashDir: string;
   entry: IndexDocument;
   searchText: string;
   /** Canonical durable ref from `entries.item_ref`. */
@@ -54,7 +46,10 @@ export interface DbIndexedEntry {
    */
   conceptId: string;
   bundleId: string;
+  componentId: string;
   adapterId: string;
+  type: string;
+  contentHash?: string;
 }
 
 /** One FTS5 search hit joined back to its `entries` row. */
@@ -70,11 +65,10 @@ export interface DbSearchResult {
    * read path so salience keys on durable identity. Null provenance marks an
    * invalid indexed row.
    */
-  itemRef?: string | null;
-  /** Indexed provenance used when `item_ref` is temporarily NULL. */
-  bundleId?: string | null;
-  conceptId?: string | null;
-  adapterId?: string | null;
+  itemRef: string;
+  bundleId: string;
+  conceptId: string;
+  adapterId: string;
 }
 
 /** One nearest-neighbour hit from the vector index (id + L2 distance). */
@@ -92,21 +86,17 @@ export interface IndexDirState {
   updatedAt: string;
 }
 
-/** A raw `(file_path, entry_json)` pair from the `entries` table. */
+/** A raw `(file_path, document_json)` pair from the `entries` table. */
 export interface EntryRefRow {
   file_path: string;
-  entry_json: string;
+  document_json: string;
 }
 
 /** Parameters for `rekeyEntryInPlace`. */
 export interface RekeyEntryOptions {
-  /** Current `entry_key` of the row to re-key (`<stashDir>:<type>:<oldName>`). */
-  oldEntryKey: string;
-  /** New `entry_key` after the rename (`<stashDir>:<type>:<newName>`). */
-  newEntryKey: string;
-  /** New canonical asset name, written into `entry_json.name`. */
+  /** New canonical asset name, written into `document_json.name`. */
   newName: string;
-  /** Absolute path of the renamed file (feeds `file_path` / `dir_path`). */
+  /** Absolute path of the renamed file. */
   newFilePath: string;
   /**
    * Old canonical conceptId. Together with {@link newRef} this drives the
@@ -126,7 +116,7 @@ export interface RekeyEntryOptions {
   /**
    * For memory `.derived` twins: the base memory's new conceptId, written into
    * the `derived_from` column and
-   * `entry_json.derivedFrom`. Omit to leave both untouched.
+   * `document_json.derivedFrom`. Omit to leave both untouched.
    */
   newDerivedFrom?: string;
 }
@@ -135,8 +125,6 @@ export interface RekeyEntryOptions {
 export interface RetrievalCountOptions {
   /** Configured source identity persisted in qualified usage refs. */
   sourceName?: string;
-  /** Selected source root used to validate usage-event entry IDs. */
-  stashDir?: string;
 }
 
 /** Aggregated per-entry utility metrics. */

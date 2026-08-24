@@ -74,7 +74,7 @@ function indexedRows(): Array<{ bundleId: string; filePath: string; ref: string 
   if (!db) return [];
   try {
     return getAllEntries(db)
-      .map((row) => ({ bundleId: row.bundleId, filePath: row.filePath, ref: row.entryKey }))
+      .map((row) => ({ bundleId: row.bundleId, filePath: row.filePath, ref: row.itemRef }))
       .sort((a, b) => a.filePath.localeCompare(b.filePath));
   } finally {
     closeDatabase(db);
