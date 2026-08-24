@@ -91,4 +91,28 @@ describe("canonical derived-index entry schema", () => {
       expect(entryColumns(dbPath)).toEqual(CURRENT_ENTRY_COLUMNS);
     });
   });
+
+  test("a stale partial generation is rebuilt even when entries is missing", () => {
+    withTempIndex((dbPath) => {
+      const stale = openDatabase(dbPath);
+      stale.exec(`
+        CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO index_meta (key, value) VALUES ('version', '${DB_VERSION - 1}');
+        CREATE TABLE llm_enrichment_cache (legacy_payload TEXT NOT NULL);
+      `);
+      stale.close();
+
+      const current = openIndexDatabase(dbPath);
+      try {
+        const columns = (
+          current.prepare("PRAGMA table_info(llm_enrichment_cache)").all() as Array<{ name: string }>
+        ).map((row) => row.name);
+        expect(columns).toEqual(["asset_ref", "cache_variant", "body_hash", "result_json", "updated_at"]);
+      } finally {
+        closeDatabase(current);
+      }
+
+      expect(entryColumns(dbPath)).toEqual(CURRENT_ENTRY_COLUMNS);
+    });
+  });
 });
