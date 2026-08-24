@@ -234,7 +234,10 @@ describe("lint-tests-isolation allowlist ratchet", () => {
           '    ".config",',
           '    "tool",',
           "  );",
-          "  return root;",
+          "  fs." + "rmSync(",
+          "    root,",
+          "    { recursive: true, force: true },",
+          "  );",
           "}",
           "function cleanOwnedFixture() {",
           "  const root = fs.mkdtempSync(",
@@ -248,7 +251,9 @@ describe("lint-tests-isolation allowlist ratchet", () => {
         ].join("\n"),
       );
 
-      expect(lintFile(fixturePath).filter((violation) => violation.rule === "real-home-delete")).toEqual([]);
+      expect(lintFile(fixturePath).filter((violation) => violation.rule === "real-home-delete")).toEqual([
+        expect.objectContaining({ line: 10 }),
+      ]);
     } finally {
       fs.rmSync(fixtureDir, { recursive: true, force: true });
     }
@@ -278,10 +283,16 @@ describe("lint-tests-isolation allowlist ratchet", () => {
           "  paths.owned,",
           "  { recursive: true, force: true },",
           ");",
+          "fs." + "rmSync(",
+          "  paths.inspected,",
+          "  { recursive: true, force: true },",
+          ");",
         ].join("\n"),
       );
 
-      expect(lintFile(fixturePath).filter((violation) => violation.rule === "real-home-delete")).toEqual([]);
+      expect(lintFile(fixturePath).filter((violation) => violation.rule === "real-home-delete")).toEqual([
+        expect.objectContaining({ line: 18 }),
+      ]);
     } finally {
       fs.rmSync(fixtureDir, { recursive: true, force: true });
     }

@@ -401,6 +401,16 @@ interface Violation {
   envVars?: string[];
 }
 
+interface RealHomeAnalysisContext {
+  checker: ts.TypeChecker;
+  resolving: Set<ts.Symbol>;
+}
+
+interface SymbolDerivation {
+  derives: boolean;
+  propertyBinding: boolean;
+}
+
 /**
  * Find every AKM/XDG/HOME env var that is *assigned* (not merely deleted or
  * compared) anywhere in the source. Returns the var name + 1-based line.
@@ -462,57 +472,136 @@ function callName(call: ts.CallExpression): string | undefined {
  * intentional boundary: the real-home prefix used to create that leaf does
  * not make later removal of the returned unique directory dangerous.
  */
-function derivesFromRealHome(node: ts.Node, realHomePaths: ReadonlySet<string>): boolean {
+function derivesFromRealHome(node: ts.Node, context: RealHomeAnalysisContext): boolean {
   if (ts.isCallExpression(node)) {
     if (callName(node) === "mkdtempSync") return false;
     if (expressionPath(node.expression)?.join(".") === "os.homedir") return true;
   }
-  if (ts.isIdentifier(node) && realHomePaths.has(node.text)) return true;
+
+  // Resolve an object property by its own declaration. Inspecting the receiver
+  // would taint every sibling when only one property points beneath the real
+  // home (for example, `{ inspected: realHome, owned: uniqueTmp }`).
+  if (ts.isPropertyAccessExpression(node)) {
+    const property = context.checker.getSymbolAtLocation(node.name);
+    if (property) {
+      const resolution = derivesFromSymbol(property, context);
+      if (resolution.propertyBinding) return resolution.derives;
+    }
+  }
+
+  if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)) {
+    const property = context.checker.getTypeAtLocation(node.expression).getProperty(node.argumentExpression.text);
+    if (property) {
+      const resolution = derivesFromSymbol(property, context);
+      if (resolution.propertyBinding) return resolution.derives;
+    }
+  }
+
+  if (ts.isIdentifier(node)) {
+    const binding = context.checker.getSymbolAtLocation(node);
+    if (binding) return derivesFromSymbol(binding, context).derives;
+  }
 
   let derives = false;
   ts.forEachChild(node, (child) => {
-    if (!derives && derivesFromRealHome(child, realHomePaths)) derives = true;
+    if (!derives && derivesFromRealHome(child, context)) derives = true;
   });
   return derives;
 }
 
-function findRealHomeDeleteCalls(filePath: string, src: string): ts.CallExpression[] {
-  const sourceFile = ts.createSourceFile(
-    filePath,
-    src,
-    ts.ScriptTarget.Latest,
-    true,
-    filePath.endsWith(".js") ? ts.ScriptKind.JS : ts.ScriptKind.TS,
+function initializerOf(declaration: ts.Declaration): ts.Expression | undefined {
+  if (
+    ts.isVariableDeclaration(declaration) ||
+    ts.isPropertyAssignment(declaration) ||
+    ts.isPropertyDeclaration(declaration) ||
+    ts.isParameter(declaration) ||
+    ts.isBindingElement(declaration)
+  ) {
+    return declaration.initializer;
+  }
+  return undefined;
+}
+
+function isPropertyBinding(declaration: ts.Declaration): boolean {
+  return (
+    ts.isPropertyAssignment(declaration) ||
+    ts.isShorthandPropertyAssignment(declaration) ||
+    ts.isPropertyDeclaration(declaration) ||
+    ts.isMethodDeclaration(declaration) ||
+    ts.isGetAccessorDeclaration(declaration) ||
+    ts.isSetAccessorDeclaration(declaration)
   );
-  const declarations: ts.VariableDeclaration[] = [];
+}
+
+function derivesFromSymbol(symbol: ts.Symbol, context: RealHomeAnalysisContext): SymbolDerivation {
+  if (context.resolving.has(symbol)) return { derives: false, propertyBinding: false };
+  context.resolving.add(symbol);
+
+  let derives = false;
+  let propertyBinding = false;
+  try {
+    for (const declaration of symbol.declarations ?? []) {
+      propertyBinding ||= isPropertyBinding(declaration);
+
+      if (ts.isShorthandPropertyAssignment(declaration)) {
+        const value = context.checker.getShorthandAssignmentValueSymbol(declaration);
+        if (value && derivesFromSymbol(value, context).derives) derives = true;
+      }
+
+      const initializer = initializerOf(declaration);
+      if (initializer && derivesFromRealHome(initializer, context)) derives = true;
+    }
+  } finally {
+    context.resolving.delete(symbol);
+  }
+  return { derives, propertyBinding };
+}
+
+function parseForRealHomeAnalysis(
+  filePath: string,
+  src: string,
+): { checker: ts.TypeChecker; sourceFile: ts.SourceFile } {
+  const canonicalPath = path.resolve(filePath);
+  const scriptKind = filePath.endsWith(".js") ? ts.ScriptKind.JS : ts.ScriptKind.TS;
+  const compilerOptions: ts.CompilerOptions = {
+    allowJs: true,
+    checkJs: false,
+    module: ts.ModuleKind.ESNext,
+    noLib: true,
+    noResolve: true,
+    target: ts.ScriptTarget.Latest,
+  };
+  const sourceFile = ts.createSourceFile(canonicalPath, src, ts.ScriptTarget.Latest, true, scriptKind);
+  const host = ts.createCompilerHost(compilerOptions, true);
+  host.fileExists = (candidate) => path.resolve(candidate) === canonicalPath;
+  host.readFile = (candidate) => (path.resolve(candidate) === canonicalPath ? src : undefined);
+  host.getSourceFile = (candidate) => (path.resolve(candidate) === canonicalPath ? sourceFile : undefined);
+
+  const program = ts.createProgram({ rootNames: [canonicalPath], options: compilerOptions, host });
+  const boundSourceFile = program.getSourceFile(canonicalPath);
+  if (!boundSourceFile) throw new Error(`failed to parse isolation lint target: ${filePath}`);
+  return { checker: program.getTypeChecker(), sourceFile: boundSourceFile };
+}
+
+function findRealHomeDeleteCalls(filePath: string, src: string): ts.CallExpression[] {
+  // `homedir` must be present for the exact `os.homedir()` hazard. Avoid
+  // constructing a TypeScript Program for the overwhelming majority of tests.
+  if (!src.includes("homedir")) return [];
+
+  const { checker, sourceFile } = parseForRealHomeAnalysis(filePath, src);
   const calls: ts.CallExpression[] = [];
 
   const collect = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) declarations.push(node);
     if (ts.isCallExpression(node)) calls.push(node);
     ts.forEachChild(node, collect);
   };
   collect(sourceFile);
-
-  // Resolve simple local aliases to a fixed point so `const child =
-  // path.join(parent, ...)` is caught even when the declaration spans lines.
-  const realHomePaths = new Set<string>();
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const declaration of declarations) {
-      const name = (declaration.name as ts.Identifier).text;
-      const initializer = declaration.initializer;
-      if (!initializer || realHomePaths.has(name) || !derivesFromRealHome(initializer, realHomePaths)) continue;
-      realHomePaths.add(name);
-      changed = true;
-    }
-  }
+  const context: RealHomeAnalysisContext = { checker, resolving: new Set() };
 
   return calls.filter((call) => {
     if (!DESTRUCTIVE_FILE_CALLS.has(callName(call) ?? "")) return false;
     const target = call.arguments[0];
-    return target ? derivesFromRealHome(target, realHomePaths) : false;
+    return target ? derivesFromRealHome(target, context) : false;
   });
 }
 
