@@ -43,8 +43,7 @@ export function shouldWarnOnPlainHttp(ref: string): boolean {
 
 /**
  * Audit a freshly-installed stash for dangerous env keys and decide whether the
- * install must be blocked. Kept as the compatibility wrapper imported by the
- * install regression suite; the scanner and decision policy are shared with
+ * install must be blocked. The scanner and decision policy are shared with
  * `bundle update` in dangerous-env-audit.ts.
  */
 export async function auditInstalledStashForDangerousKeys(opts: {

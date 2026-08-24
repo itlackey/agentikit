@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Backward-compatible facade for the embedder module.
+ * Semantic embedding entry point.
  *
  * The implementation has been split into:
  * - `./embedders/types`  — `EmbeddingVector`, `Embedder`, `EmbeddingCheckResult`
@@ -13,10 +13,8 @@
  * - `./embedders/cache`  — LRU `embedCache`, `clearEmbeddingCache`,
  *                          `embedCacheKey`
  *
- * This module wires them together: it picks the right implementation from the
- * (optional) embedding config, applies the cache layer, and re-exports the
- * existing public API so call sites (`db-search.ts`, `indexer.ts`, `db.ts`,
- * `setup.ts`, `semantic-status.ts`, tests) keep working unmodified.
+ * This module picks the configured implementation and owns the shared cache
+ * and local model lifetime.
  *
  * Tests can construct fresh `LocalEmbedder` / `RemoteEmbedder` instances
  * directly from their submodules to avoid module-level state pollution.
@@ -37,7 +35,7 @@ import {
 import { hasRemoteEndpoint, RemoteEmbedder } from "./embedders/remote";
 import type { EmbeddingCheckResult, EmbeddingVector } from "./embedders/types";
 
-// ── Re-exports (public API) ─────────────────────────────────────────────────
+// ── Shared exports ──────────────────────────────────────────────────────────
 
 export { clearEmbeddingCache } from "./embedders/cache";
 export { _setTransformersLoaderForTests, DEFAULT_LOCAL_MODEL } from "./embedders/local";
@@ -204,8 +202,7 @@ export async function embedBatch(
 
 // `cosineSimilarity` was moved to `./embedders/types.ts` so importers
 // (notably `db.ts`) can pull the math function without dragging in this
-// facade and its Transformers.js import chain. Re-export
-// preserves the existing public API.
+// module and its Transformers.js import chain.
 export { cosineSimilarity } from "./embedders/types";
 
 // ── Model ID resolution ─────────────────────────────────────────────────────

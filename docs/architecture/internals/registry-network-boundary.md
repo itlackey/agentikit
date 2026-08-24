@@ -13,19 +13,17 @@ same checks for every redirect hop. Cross-origin redirects drop
 | `src/registry/providers/static-index.ts` | Configured static index | Public HTTP(S) only |
 | `src/registry/providers/skills-sh.ts` | Configured API base plus `/api/search` | Public HTTP(S) only |
 | `src/setup/registry-stash-loader.ts` | Setup registry index | Public HTTP(S) only |
-| `src/registry/resolve.ts` | npm package metadata | Public npm registry, or the explicit `AKM_NPM_REGISTRY` compatibility policy below |
+| `src/registry/resolve.ts` | npm package metadata | Public npm registry, or the explicit `AKM_NPM_REGISTRY` mirror policy below |
 | `src/registry/resolve.ts` | GitHub commit, release, repository, and default-branch metadata | Fixed `https://api.github.com`; redirects rejected |
 | `src/sources/providers/provider-utils.ts` via `npm.ts` | npm tarball selected by registry metadata | Exact metadata origin plus the npm network policy; redirects revalidated |
 
 There are no other direct `fetch`, `fetchWithRetry`, raw HTTP(S), Undici, or
 socket request calls under `src/registry/**`. The only raw transports are
 `src/registry/pinned-transport.ts` and its self-contained one-request helper,
-`src/registry/pinned-request-helper.ts`. An AST architecture test resolves
-imports, namespace and destructured aliases, dynamic imports, global fetch
-forms, and raw HTTP/HTTPS/HTTP2/socket call sites across that tree and the two
-registry consumers outside it. This is a ratchet for those network
-capabilities; it does not claim to prove the absence of every possible future
-subprocess-based transport.
+`src/registry/pinned-request-helper.ts`. A compact architecture contract pins
+the exact boundary consumers and raw-transport owner. Behavioral integration
+tests cover address validation, redirects, credential stripping, DNS pinning,
+helper isolation, streaming, timeouts, and cancellation at that boundary.
 
 Git and GitHub bundle materialization uses the `git` executable rather than the
 HTTP boundary. GitHub shorthand is converted to the fixed `github.com`
@@ -51,7 +49,7 @@ redirect target.
 The fixed GitHub policy only permits `https://api.github.com` and rejects all
 redirects. This prevents a GitHub token from moving to another origin.
 
-`AKM_NPM_REGISTRY` is the sole private-network compatibility exception. Setting
+`AKM_NPM_REGISTRY` is the sole private-network mirror exception. Setting
 it explicitly permits private or loopback answers only for that configured npm
 mirror's exact origin. Registry metadata must begin artifact download at that
 same scheme, host, and port; a same-host downgrade or alternate port is not a
