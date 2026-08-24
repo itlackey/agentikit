@@ -146,7 +146,7 @@ describe("WP7 scheduler desired-set durable v4 RED", () => {
         "        run: echo second",
         "",
       ].join("\n"),
-      /exactly one job|single-job|multi-job|cannot project/i,
+      /exactly one (?:source-IR )?job|single-job|multi-job|cannot project/i,
     ],
     [
       "nested workflow",

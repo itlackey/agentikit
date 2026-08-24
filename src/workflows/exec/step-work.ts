@@ -160,8 +160,6 @@ export interface StepWorkUnit {
   /** Resolved timeout (unit override else engine default); null = no timeout. */
   timeoutMs: number | null;
   schema?: Record<string, unknown>;
-  /** Env binding asset refs (NAMES only — never resolved values). */
-  env?: string[];
   retry?: IrRetry;
   onError: IrOnError;
   isolation?: IrIsolation;
