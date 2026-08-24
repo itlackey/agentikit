@@ -125,4 +125,102 @@ describe("lint-tests-isolation allowlist ratchet", () => {
       fs.rmSync(fixtureDir, { recursive: true, force: true });
     }
   });
+
+  test("rejects formatter-normal multiline destructive real-home cleanup", () => {
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-isolation-lint-real-home-multiline-"));
+    try {
+      const inlineFixture = path.join(fixtureDir, "multiline-inline-dangerous.test.ts");
+      fs.writeFileSync(
+        inlineFixture,
+        [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          "fs." + "rmSync(",
+          "  path.join(",
+          "    os." + "homedir(),",
+          '    ".config",',
+          '    "tool",',
+          "  ),",
+          "  { recursive: true, force: true },",
+          ");",
+        ].join("\n"),
+      );
+
+      const promisesFixture = path.join(fixtureDir, "multiline-promises-dangerous.test.ts");
+      fs.writeFileSync(
+        promisesFixture,
+        [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          "const realStore = path.join(",
+          "  os." + "homedir(),",
+          '  ".local",',
+          '  "share",',
+          '  "tool",',
+          ");",
+          "await fs.promises." + "rm(",
+          "  realStore,",
+          "  { recursive: true, force: true },",
+          ");",
+        ].join("\n"),
+      );
+
+      const namedFixture = path.join(fixtureDir, "multiline-named-dangerous.test.ts");
+      fs.writeFileSync(
+        namedFixture,
+        [
+          'import { rmSync } from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          "rm" + "Sync(",
+          "  path.join(os." + 'homedir(), ".cache", "tool"),',
+          "  { recursive: true, force: true },",
+          ");",
+        ].join("\n"),
+      );
+
+      expect(lintFile(inlineFixture)).toEqual([
+        expect.objectContaining({ rule: "real-home-delete", line: 4 }),
+      ]);
+      expect(lintFile(promisesFixture)).toEqual([
+        expect.objectContaining({ rule: "real-home-delete", line: 10 }),
+      ]);
+      expect(lintFile(namedFixture)).toEqual([
+        expect.objectContaining({ rule: "real-home-delete", line: 4 }),
+      ]);
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  test("allows multiline read-only and uniquely owned home-derived fixtures", () => {
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-isolation-lint-real-home-safe-"));
+    const safeFixture = path.join(fixtureDir, "multiline-safe.test.ts");
+    try {
+      fs.writeFileSync(
+        safeFixture,
+        [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          "const realHome = os." + "homedir();",
+          "const ownedFixture = fs.mkdtempSync(",
+          '  path.join(realHome, "tool-owned-"),',
+          ");",
+          "fs." + "rmSync(",
+          "  ownedFixture,",
+          "  { recursive: true, force: true },",
+          ");",
+          "const sandboxed = path.join(os.tmpdir(), \"tool-sandbox\");",
+          "fs." + "rmSync(sandboxed, { recursive: true, force: true });",
+        ].join("\n"),
+      );
+
+      expect(lintFile(safeFixture).filter((violation) => violation.rule === "real-home-delete")).toEqual([]);
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
 });
