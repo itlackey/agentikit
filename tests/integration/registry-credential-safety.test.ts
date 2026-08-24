@@ -484,8 +484,7 @@ describe("registry credential-bearing URL mutation boundaries", () => {
 
     for (const argv of invocations) {
       const result = await runCliCapture(argv);
-      expect(result.code).not.toBe(0);
-      expect(result.code).not.toBe(70);
+      expect(result.code).toBe(2);
       expect(result.stderr.toLowerCase()).toContain("credential");
       expectCredentialsAbsent(result.stdout);
       expectCredentialsAbsent(result.stderr);
@@ -813,6 +812,8 @@ describe("registry URLs are safe in plain, structured, and health projections", 
   });
 
   test("the error sanitizer scans nested URL starts and delimiter-heavy userinfo", () => {
+    expect(formatRegistryUrl(STRICT_TOP_AND_MIXED_LAYER_URL)).toBe("(invalid registry URL)");
+
     for (const unsafe of ADVERSARIAL_CREDENTIAL_URLS) {
       expectCredentialsAbsent(redactCredentialBearingUrls(`request failed for ${unsafe}`));
       expectCredentialsAbsent(formatRegistryUrl(unsafe));
