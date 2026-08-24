@@ -2,16 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-/**
- * Meta-test for the shrink-only allowlist ratchet in
- * `scripts/lint-tests-isolation.ts`.
- *
- * The grandfather allowlist (Rule-1 `ALLOWED_FILES` + Rule-2
- * `ENV_ASSIGN_ALLOWED` + Rule-5 `SPAWN_ALLOWED`) may only ever get SMALLER as
- * files migrate onto the `withIsolatedAkmStorage` composite. The exact-size
- * check prevents growth, while the path check prevents a deleted test from
- * leaving behind a stale exemption that a later file could inherit.
- */
+/** Shrink-only allowlist and conservative real-home operation boundary contract. */
 
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -205,6 +196,18 @@ const REAL_HOME_OPERATION_LEDGER = [
       "const homeTwice = homeOnce;",
       "eraseTwice(homeTwice());",
     ),
+  ),
+  safe(
+    "property-owner-alias-budget-safe",
+    defaultImports("const files = fs;", "const erase = files.rmSync;", "erase(os.homedir());"),
+  ),
+  safe(
+    "binding-alias-budget-safe",
+    defaultImports("const { rmSync: once } = fs;", "const twice = once;", "twice(os.homedir());"),
+  ),
+  safe(
+    "binding-owner-alias-budget-safe",
+    defaultImports("const files = fs;", "const { rmSync: erase } = files;", "erase(os.homedir());"),
   ),
 ] as const;
 
