@@ -24,6 +24,36 @@ describe("akm agent CLI help", () => {
 });
 
 describe("akmAgentDispatch engine capability", () => {
+  test("delegates prompt-free native launch through the shared interactive execution boundary", async () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        native: { kind: "agent", platform: "claude", bin: "/bin/true" },
+      },
+      defaults: { engine: "native" },
+    };
+    const calls: unknown[] = [];
+    const result = await akmAgentDispatch({ agentConfig: config, engine: "native", timeoutMs: 0, cwd: "" }, {
+      executeInteractive: async (input: unknown) => {
+        calls.push(input);
+        return {
+          engine: "native",
+          result: {
+            ok: true,
+            exitCode: 0,
+            stdout: "",
+            stderr: "",
+            durationMs: 1,
+          },
+        };
+      },
+    } as never);
+
+    expect(calls).toEqual([{ config, engine: "native", timeoutMs: 0, cwd: "" }]);
+    expect(result).toMatchObject({ ok: true, engine: "native", exitCode: 0 });
+  });
+
   test("delegates noninteractive prompt/persona work through the same canonical invocation", async () => {
     const calls: unknown[] = [];
     const result = await akmAgentDispatch(
