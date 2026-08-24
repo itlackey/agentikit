@@ -21,7 +21,6 @@ import {
   acquireLoweredExecutionDispatchLease,
   dispatchLoweredExecutionRequest,
   disposeLoweredExecutionDispatchLease,
-  listExecutionLowerers,
   lowerResolvedExecutionRequest,
   lowerResolvedExecutionRequestWithRunner,
   redactWithLoweredExecutionDispatchLease,
@@ -704,10 +703,6 @@ describe("resolved execution lowerer registry", () => {
     }
   });
 
-  test("is structurally complete for every harness plus direct LLM", () => {
-    expect(listExecutionLowerers()).toEqual([...HARNESS_REGISTRY.map((harness) => harness.id), "llm"]);
-  });
-
   test.each([
     ...CLI_HARNESSES,
     "opencode-sdk",
@@ -981,7 +976,6 @@ describe("optimistic lowering safety", () => {
     const lowered = lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
     if (!("messages" in lowered)) throw new Error("fixture must use direct LLM lowering");
     expect(lowered.messages).toEqual([...conversation, { role: "user", content: "Repair it." }]);
-
   });
 
   test("does not rerun legacy model aliases while resolving live transport material", () => {

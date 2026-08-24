@@ -17,7 +17,7 @@ import { stringify as yamlStringify } from "yaml";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { assetPathForName } from "../../core/asset/asset-placement";
 import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
-import { type AssetRef, conceptIdFromTypeName, isFullRefInput, parseRefInput } from "../../core/asset/resolve-ref";
+import { type AssetRef, conceptIdFromTypeName, isFullRefInput } from "../../core/asset/resolve-ref";
 import { isWithin, resolveStashDir } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { resolveConfiguredSources } from "../../core/config/config-sources";
@@ -37,11 +37,7 @@ import {
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveAssetPath } from "../../sources/resolve";
 import { backendNameForPlatform, selectBackend } from "../../tasks/backends";
-import type {
-  InstalledSchedulerBinding,
-  RebindSchedulerBinding,
-  SchedulerBackend,
-} from "../../tasks/backends/types";
+import type { InstalledSchedulerBinding, RebindSchedulerBinding, SchedulerBackend } from "../../tasks/backends/types";
 import { type ResolvedAkmInvocation, resolveAkmInvocation } from "../../tasks/resolve-akm-bin";
 import { exitCodeForStatus, readTaskHistory, runTask, type TaskRunResult } from "../../tasks/runner";
 import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "../../tasks/runtime-v3";
@@ -50,7 +46,6 @@ import {
   assertSchedulerMutationArtifact,
   assertSchedulerNativeArtifactCardinality,
   compileTaskSchedulerBindings,
-  type SchedulerBackendInspection,
   type SchedulerBinding,
   type SchedulerInstallOptions,
   type SchedulerMutationExpectation,
@@ -158,34 +153,16 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   if (!isWithin(assetPath, typeRoot)) {
     throw new UsageError(`Resolved task path escapes the stash: "${id}".`, "PATH_ESCAPE_VIOLATION");
   }
-  // Pre-0.8.0 tasks were markdown; the 0.8.0 cutover moved them to pure YAML
-  // (see the tasks dir rule in src/indexer/walk/matchers.ts). A leftover
-  // `<id>.md` still names the same task, so creating `<id>.yml` beside it
-  // must collide loudly rather than silently minting a duplicate.
-  const legacyAssetPath = path.join(typeRoot, `${id}.md`);
-  if ((fs.existsSync(assetPath) || fs.existsSync(legacyAssetPath)) && !input.force) {
+  if (fs.existsSync(assetPath) && !input.force) {
     throw new UsageError(
       `Task "${id}" already exists. Pass --force to overwrite, or delete its file and run \`akm task sync\` first.`,
       "RESOURCE_ALREADY_EXISTS",
     );
   }
-  if (fs.existsSync(legacyAssetPath) && input.force) {
-    throw new UsageError(
-      `Task "${id}" still has a legacy markdown owner. Migrate or remove ${legacyAssetPath} before --force so .md and .yml owners cannot coexist.`,
-      "RESOURCE_ALREADY_EXISTS",
-    );
-  }
   const sourceExpectation = captureTaskSourceExpectation(assetPath, stashDir);
-  let legacySourceExpectation = captureTaskSourceExpectation(legacyAssetPath, stashDir);
   if (sourceExpectation.state === "present" && !input.force) {
     throw new UsageError(
       `Task "${id}" appeared while add was preparing. Pass --force only after reviewing the current owner.`,
-      "RESOURCE_ALREADY_EXISTS",
-    );
-  }
-  if (legacySourceExpectation.state === "present") {
-    throw new UsageError(
-      `Task "${id}" has a legacy markdown owner. Migrate or remove ${legacyAssetPath} before add so .md and .yml owners cannot coexist.`,
       "RESOURCE_ALREADY_EXISTS",
     );
   }
@@ -249,20 +226,6 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     assertTaskSourceExpectation(sourceExpectation);
     sourcePublicationAttempted = true;
     await writeAsset(writeTarget.source, writeTarget.config, ref, yaml);
-    const currentLegacySource = captureTaskSourceExpectation(legacyAssetPath, stashDir);
-    if (
-      currentLegacySource.state !== "absent" ||
-      currentLegacySource.rootPhysicalIdentity !== legacySourceExpectation.rootPhysicalIdentity
-    ) {
-      throw new UsageError(
-        `Legacy task source ${JSON.stringify(legacyAssetPath)} changed during publication.`,
-        "RESOURCE_ALREADY_EXISTS",
-      );
-    }
-    // Publishing the owned .yml changes the containing directory metadata.
-    // Refresh the still-absent legacy owner expectation only after proving the
-    // physical root stayed the same and no .md owner appeared.
-    legacySourceExpectation = currentLegacySource;
     const publishedSource = captureTaskSourceExpectation(assetPath, stashDir);
     if (publishedSource.state !== "present" || publishedSource.sha256 !== hashTaskSource(yaml)) {
       throw new UsageError(
@@ -278,7 +241,6 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   await applySchedulerTransaction(sched, transaction.operations, {
     initialExpectations: transaction.initialExpectations,
     assertReadSet: () => {
-      assertTaskSourceExpectation(legacySourceExpectation);
       if (sourcePublished) {
         if (!sourceMutationReceipt) {
           throw new ConfigError("Published task source lost its transaction receipt.", "INVALID_CONFIG_FILE");
@@ -294,7 +256,6 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     afterOperations: () => commitBoundary(writeTarget, `Update tasks/${id}`),
     rollbackExternal: async () => {
       if (!sourcePublicationAttempted) return;
-      assertTaskSourceExpectation(legacySourceExpectation);
       if (!sourceMutationReceipt) {
         const current = captureTaskSourceExpectation(assetPath, stashDir);
         if (sameTaskSourceExpectation(current, sourceExpectation)) return;

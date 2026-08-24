@@ -48,14 +48,4 @@ describe("AkmConfig loader — agent engines", () => {
     expect(cfg.engines?.claude).toMatchObject({ kind: "agent", platform: "claude", args: ["--print"] });
     expect(cfg.engines?.opencode).toMatchObject({ kind: "agent", platform: "opencode", bin: "opencode-cli" });
   });
-
-  test("missing defaults.engine is rejected without selecting an arbitrary agent engine", async () => {
-    const { loadUserConfig, resetConfigCache } = await import("../../../src/core/config/config");
-    const { resolveDefaultEngine } = await import("../../../src/integrations/agent/engine-resolution");
-    const { ConfigError } = await import("../../../src/core/errors");
-    resetConfigCache();
-    const cfg = loadUserConfig();
-    expect(cfg.defaults?.engine).toBeUndefined();
-    expect(() => resolveDefaultEngine(cfg)).toThrow(ConfigError);
-  });
 });

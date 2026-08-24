@@ -10,7 +10,6 @@ import {
   cloneExecutionJsonObject,
   type ExecutionJsonObject,
   type ExecutionJsonValue,
-  sortExecutionJson,
 } from "../../execution/json";
 import { EXECUTION_MAX_TIMEOUT_MS } from "../../execution/limits";
 import {
@@ -20,7 +19,6 @@ import {
   snapshotStrictRecord,
 } from "../../execution/record";
 import {
-  canonicalResolvedExecutionRequest,
   cloneResolvedCommandContent,
   cloneResolvedPersonaContent,
   createResolvedExecutionRequest,
@@ -840,18 +838,4 @@ export function requireAuthorizedExecutionPlan(plan: ResolvedExecutionPlanV1): R
     );
   }
   return plan.request;
-}
-
-export function canonicalResolvedExecutionPlan(plan: ResolvedExecutionPlanV1): string {
-  if (!planInstances.has(plan) || !Object.isFrozen(plan)) {
-    throw new TypeError("execution plan must be constructed by the common cascade resolver");
-  }
-  const wire: Record<string, unknown> = {
-    schemaVersion: plan.schemaVersion,
-    invocationKind: plan.invocationKind,
-    request: JSON.parse(canonicalResolvedExecutionRequest(plan.request)),
-    provenance: plan.provenance,
-  };
-  if (own(plan, "selectedAgent")) wire.selectedAgent = plan.selectedAgent;
-  return JSON.stringify(sortExecutionJson(wire as ExecutionJsonObject));
 }

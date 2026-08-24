@@ -12,11 +12,8 @@ import { type GithubWorkflowSourceOptions, parseGithubWorkflowSource } from "./g
 import { sourceFailureResult, type WorkflowSourceCompileResult, WorkflowSourceFailure } from "./result";
 import {
   decodeWorkflowSourceIrV1,
-  type WorkflowSourceEnvironmentValue,
   type WorkflowSourceExtensionValue,
   type WorkflowSourceIrV1,
-  type WorkflowSourceJsonValue,
-  type WorkflowSourceScalar,
   type WorkflowSourceSpan,
   type WorkflowSourceStep,
 } from "./schema";
@@ -146,56 +143,6 @@ export function compileWorkflowSource(
   };
 }
 
-/**
- * Stable portable bytes exclude source spans and owner extensions by design.
- * Those fields remain explicit on the full IR but cannot change portable
- * semantics or make two equivalent authoring formats compare differently.
- */
-export function canonicalPortableWorkflowSourceBytes(ir: WorkflowSourceIrV1): string {
-  const decoded = decodeWorkflowSourceIrV1(ir);
-  return JSON.stringify(
-    stableJson({
-      schemaVersion: 1,
-      name: decoded.name,
-      ...(decoded.params ? { params: decoded.params } : {}),
-      ...(decoded.defaults ? { defaults: decoded.defaults } : {}),
-      ...(decoded.budget ? { budget: decoded.budget } : {}),
-      triggers: decoded.triggers.map((trigger) =>
-        trigger.kind === "workflow_dispatch" ? "workflow_dispatch" : { schedule: trigger.cron },
-      ),
-      jobs: decoded.jobs.map((job) => ({
-        id: job.id,
-        needs: [...job.needs],
-        steps: job.steps.map(portableStep),
-      })),
-    }),
-  );
-}
-
-function portableStep(step: WorkflowSourceStep): Record<string, unknown> {
-  const out: Record<string, unknown> = {
-    id: step.id,
-    kind:
-      step.route !== undefined ? "route" : step.exec !== undefined ? "exec" : step.run !== undefined ? "run" : "uses",
-    ...(step.run !== undefined ? { run: step.run } : {}),
-    ...(step.uses !== undefined ? { uses: step.uses } : {}),
-    ...(step.commandMode !== undefined ? { commandMode: step.commandMode } : {}),
-    ...(step.exec !== undefined ? { exec: step.exec } : {}),
-  };
-  if (step.name !== undefined && step.name !== step.id) out.name = step.name;
-  if (step.with !== undefined) out.with = sortedRecord(step.with);
-  if (step.env !== undefined) out.env = sortedRecord(step.env);
-  if (step.shell !== undefined) out.shell = step.shell;
-  if (step.workingDirectory !== undefined) out["working-directory"] = step.workingDirectory;
-  if (step.unit !== undefined) out.unit = step.unit;
-  if (step.map !== undefined) out.map = step.map;
-  if (step.route !== undefined) out.route = step.route;
-  if (step.inputs !== undefined) out.inputs = [...step.inputs];
-  if (step.output !== undefined) out.output = step.output;
-  if (step.gate !== undefined) out.gate = step.gate;
-  return out;
-}
-
 function markdownStep(step: MarkdownWorkflowStep, filePath: string): WorkflowSourceStep {
   const source = step.source ?? { path: filePath, start: 1, end: 1 };
   const dispatchUnit = step.map?.unit ?? step.unit;
@@ -276,30 +223,10 @@ function wholeSourceSpan(source: string, filePath: string): WorkflowSourceSpan {
   return { path: filePath, start: 1, end: Math.max(1, source.split(/\r?\n/).length) };
 }
 
-function sortedRecord<T extends WorkflowSourceScalar | WorkflowSourceEnvironmentValue>(
-  value: Record<string, T>,
-): Record<string, T> {
-  return Object.fromEntries(
-    Object.entries(value).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
-  );
-}
-
 function jsonClone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function jsonExtension(value: unknown): WorkflowSourceExtensionValue {
   return JSON.parse(JSON.stringify(value)) as WorkflowSourceExtensionValue;
-}
-
-function stableJson(value: unknown): WorkflowSourceJsonValue {
-  if (Array.isArray(value)) return value.map(stableJson);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-        .map(([key, item]) => [key, stableJson(item)]),
-    );
-  }
-  return value as WorkflowSourceJsonValue;
 }

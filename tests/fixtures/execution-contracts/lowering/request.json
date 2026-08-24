@@ -1,7 +1,0 @@
-{
-  "schemaVersion": 1,
-  "prompt": "Review the execution contract.",
-  "systemPrompt": "You are a read-only contract reviewer.",
-  "model": "fixture/exact-model",
-  "tools": ["Read", "Grep"]
-}

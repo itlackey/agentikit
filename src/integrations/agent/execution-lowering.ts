@@ -388,11 +388,6 @@ function lowererEntries(): readonly (readonly [string, AgentRequestLowerer])[] {
 
 const AGENT_LOWERERS: ReadonlyMap<string, AgentRequestLowerer> = new Map(lowererEntries());
 
-/** Stable structural registry inventory: one implementation per harness, then direct LLM. */
-export function listExecutionLowerers(): readonly string[] {
-  return Object.freeze([...AGENT_LOWERERS.keys(), "llm"]);
-}
-
 function requireRunnerShape(request: ResolvedExecutionRequestV1, runner: RunnerSpec): void {
   if (!own(runner, "engine") || runner.engine !== request.engine.name) {
     throw new ConfigError(

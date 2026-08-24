@@ -11,7 +11,6 @@ import {
 } from "../../src/execution/resolved-request";
 import { createAdapterRenderedExecutionSource } from "../../src/execution/source";
 import {
-  canonicalResolvedExecutionPlan,
   type ExecutionCascadeLayerInput,
   type ExecutionEngineDefinition,
   planExecutionCascade,
@@ -320,11 +319,7 @@ describe("common execution cascade resolver", () => {
     expect(make({})).not.toBe(make({ timeout: 0 }));
     expect(make({})).not.toBe(make({ outputSchema: {} }));
     expect(make({})).not.toBe(make({ tools: [] }));
-    // An empty inference overlay does not erase farther leaf defaults, but its
-    // explicit presence remains visible in the plan's container provenance.
-    expect(canonicalResolvedExecutionPlan(makePlan({}))).not.toBe(
-      canonicalResolvedExecutionPlan(makePlan({ inference: {} })),
-    );
+    expect(makePlan({}).provenance).not.toEqual(makePlan({ inference: {} }).provenance);
     expect(make({})).not.toBe(make({ environment: {} }));
   });
 
@@ -360,7 +355,6 @@ describe("common execution cascade resolver", () => {
     const provenance = JSON.stringify(plan.provenance);
     expect(provenance).not.toContain(secret);
     expect(provenance).not.toContain("Run review");
-    expect(canonicalResolvedExecutionPlan(plan)).toBe(canonicalResolvedExecutionPlan(plan));
   });
 
   test("removes provenance for nested inference leaves replaced by a nearer scalar", () => {
@@ -393,7 +387,6 @@ describe("common execution cascade resolver", () => {
     });
     expect(omitted.request.engine.name).toBe("opencode-sdk");
     expect(cleared.request.engine.name).toBe("opencode-sdk");
-    expect(canonicalResolvedExecutionPlan(cleared)).not.toBe(canonicalResolvedExecutionPlan(omitted));
     expect(cleared.provenance["engine.requested"]).toEqual({
       layer: "command",
       kind: "command",

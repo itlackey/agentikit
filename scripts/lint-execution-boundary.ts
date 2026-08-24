@@ -83,11 +83,6 @@ export const EXECUTION_BOUNDARY_TARGETS: readonly ExecutionBoundaryTarget[] = Ob
     exportName: "resolveEngineTransportMaterial",
   },
   {
-    operation: "engine.resolve-default",
-    file: "src/integrations/agent/engine-resolution.ts",
-    exportName: "resolveDefaultEngine",
-  },
-  {
     operation: "engine.require-llm",
     file: "src/integrations/agent/engine-resolution.ts",
     exportName: "requireLlmConfig",

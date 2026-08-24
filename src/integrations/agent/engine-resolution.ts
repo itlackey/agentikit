@@ -437,13 +437,6 @@ export function resolveEngineTransportMaterial(name: string, config: EngineResol
   return lowerAgentEngine(name, engine, config, false);
 }
 
-export function resolveDefaultEngine(config: EngineResolutionConfig): RunnerSpec {
-  const defaults = ownValue(config, "defaults");
-  const name = defaults ? ownValue(defaults, "engine") : undefined;
-  if (!name) throw new ConfigError("No default engine is configured.", "INVALID_CONFIG_FILE");
-  return resolveEngine(name, config);
-}
-
 // ── AkmConfig convenience wrappers (moved from core/config/config.ts, WI-9.8
 // KILL 3, D.3 edge A) ────────────────────────────────────────────────────────
 //

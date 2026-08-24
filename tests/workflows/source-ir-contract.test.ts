@@ -3,11 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
-import {
-  canonicalPortableWorkflowSourceBytes,
-  compileGithubWorkflowSource,
-  compileMarkdownWorkflowSource,
-} from "../../src/workflows/source-ir/compile";
+import { compileGithubWorkflowSource, compileMarkdownWorkflowSource } from "../../src/workflows/source-ir/compile";
 import { sourceStepInstructions, sourceStepProgramUnit } from "../../src/workflows/source-ir/program";
 import { decodeWorkflowSourceIrV1, type WorkflowSourceIrV1 } from "../../src/workflows/source-ir/schema";
 
@@ -45,6 +41,39 @@ function replaceOnlyDecodedStep(
   const job = ir.jobs[0];
   if (!job) throw new Error("decoded source-IR fixture must contain one job");
   job.steps[0] = step;
+}
+
+function canonicalPortableWorkflowSourceBytes(ir: WorkflowSourceIrV1): string {
+  const decoded = decodeWorkflowSourceIrV1(ir);
+  const portable = {
+    schemaVersion: 1,
+    name: decoded.name,
+    ...(decoded.params ? { params: decoded.params } : {}),
+    ...(decoded.defaults ? { defaults: decoded.defaults } : {}),
+    ...(decoded.budget ? { budget: decoded.budget } : {}),
+    triggers: decoded.triggers.map((trigger) =>
+      trigger.kind === "workflow_dispatch" ? "workflow_dispatch" : { schedule: trigger.cron },
+    ),
+    jobs: decoded.jobs.map((job) => ({
+      id: job.id,
+      needs: [...job.needs],
+      steps: job.steps.map((step) => {
+        const { source: _source, extensions: _extensions, instructions: _instructions, ...body } = step;
+        return body;
+      }),
+    })),
+  };
+  const stable = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(stable)
+      : value !== null && typeof value === "object"
+        ? Object.fromEntries(
+            Object.entries(value)
+              .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+              .map(([key, item]) => [key, stable(item)]),
+          )
+        : value;
+  return JSON.stringify(stable(portable));
 }
 
 const VALID_HEADER = `name: Local contract

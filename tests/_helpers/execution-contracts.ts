@@ -11,7 +11,6 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { ResolvedExecutionRequestV1 } from "../../src/execution/resolved-request";
-import type { WorkflowPlanGraphV4 } from "../../src/workflows/ir/schema-v4";
 
 export const EXECUTION_CONTRACT_FIXTURES = path.join(import.meta.dir, "../fixtures/execution-contracts");
 
@@ -202,15 +201,6 @@ export function projectResolvedExecutionRequestForTest(request: ResolvedExecutio
     environment: request.runtime.environment ?? undefined,
     notices: request.notices,
   };
-}
-
-/** Project one current frozen agent/LLM workflow unit into the same test shape. */
-export function projectCurrentWorkflowUnitForTest(plan: WorkflowPlanGraphV4, stepId: string): TestResolvedRequestInput {
-  const step = plan.steps.find((candidate) => candidate.stepId === stepId);
-  if (!step?.root || step.root.kind !== "unit" || step.root.frozenTarget.kind !== "command") {
-    throw new Error(`workflow step ${stepId} is not an engine unit`);
-  }
-  return projectResolvedExecutionRequestForTest(step.root.frozenTarget.request);
 }
 
 /** Stable JSON helper for lowering snapshots and fixture catalogs. */
