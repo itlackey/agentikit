@@ -29,7 +29,7 @@ import type { LoweringNotice } from "../../../execution/resolved-request";
 import type { LoweredExecutionDispatchLease } from "../../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../../integrations/agent/runner";
 import type { ChatCompletionOptions, ChatMessage } from "../../../llm/client";
-import { callStructured, structuredLlmRunnerFromConnection } from "../../../llm/structured-call";
+import { callStructured } from "../../../llm/structured-call";
 import type { EligibilitySource } from "../../proposal/proposal-types";
 import { isProposalSkipped, type Proposal, type ProposalsContext } from "../../proposal/repository";
 import { assessMemoryKnowledgePromotionCandidate, type MemoryPromotionAssessment } from "../distill-promotion-policy";
@@ -60,8 +60,6 @@ export interface PromoteMemoryContext {
   /** Preferred production path: exact symbolic runner selected for distill. */
   llmRunner?: Extract<RunnerSpec, { kind: "llm" }>;
   lease?: LoweredExecutionDispatchLease;
-  /** Legacy non-secret connection seam retained for isolated tests. */
-  llmConfig?: LlmConnectionConfig;
   signal?: AbortSignal;
   chat?: (config: LlmConnectionConfig, messages: ChatMessage[], options?: ChatCompletionOptions) => Promise<string>;
   stash: string;
@@ -132,7 +130,7 @@ export function memoryKnowledgePromotionRequiresDispatch(
   ctx: PromoteMemoryContext,
   plan: MemoryKnowledgePromotionPlan,
 ): boolean {
-  const hasRunner = Boolean(ctx.llmRunner || ctx.llmConfig);
+  const hasRunner = Boolean(ctx.llmRunner);
   return (
     (Boolean(plan.existingKnowledgeContent) && hasRunner) ||
     (ctx.strategy?.processes?.distill?.qualityGate?.enabled ?? true)
@@ -159,7 +157,7 @@ async function resolveKnowledgePromotionContent(
   let resolvedPromotionContent = baseContent;
   const existingKnowledgeContent = plan.existingKnowledgeContent;
 
-  const runner = ctx.llmRunner ?? (ctx.llmConfig ? structuredLlmRunnerFromConnection(ctx.llmConfig) : undefined);
+  const runner = ctx.llmRunner;
 
   if (existingKnowledgeContent && runner) {
     // Existing content found: call LLM for contradiction-resolution merge.
@@ -309,7 +307,6 @@ export async function promoteMemoryToKnowledge(
       ...(similarLessons.length > 0 ? { similarLessons } : {}),
       ...(ctx.llmRunner ? { llmRunner: ctx.llmRunner } : {}),
       ...(ctx.lease ? { lease: ctx.lease } : {}),
-      ...(!ctx.llmRunner && ctx.llmConfig ? { llmConfig: ctx.llmConfig } : {}),
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       ...(ctx.onNotices ? { onNotices: ctx.onNotices } : {}),
     });
@@ -353,9 +350,7 @@ export async function promoteMemoryToKnowledge(
       ref: promotion.knowledgeRef,
       source: "distill",
       // §23.6 fingerprint model-id term (WI-6.4).
-      ...(ctx.llmRunner?.connection.model || ctx.llmConfig?.model
-        ? { modelId: ctx.llmRunner?.connection.model ?? ctx.llmConfig?.model }
-        : {}),
+      ...(ctx.llmRunner?.connection.model ? { modelId: ctx.llmRunner.connection.model } : {}),
       ...(ctx.sourceRun !== undefined ? { sourceRun: ctx.sourceRun } : {}),
       payload: {
         content: resolvedPromotionContent,

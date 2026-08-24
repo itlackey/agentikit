@@ -19,7 +19,6 @@ import { assembleAsset } from "../../core/asset/asset-serialize";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { parseRefInput } from "../../core/asset/resolve-ref";
 import { authoringRulesForType } from "../../core/authoring-rules";
-import type { LlmConnectionConfig } from "../../core/config/config";
 import { ConfigError } from "../../core/errors";
 import { appendEvent, readEvents } from "../../core/events";
 import { parseEmbeddedJsonResponse } from "../../core/parse";
@@ -30,11 +29,7 @@ import { resolveAssetPath } from "../../indexer/walk/path-resolver";
 import { disposeLoweredExecutionDispatchLease } from "../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import type { ChatMessage, chatCompletion } from "../../llm/client";
-import {
-  callStructured,
-  preflightStructuredLlmRunner,
-  structuredLlmRunnerFromConnection,
-} from "../../llm/structured-call";
+import { callStructured, preflightStructuredLlmRunner } from "../../llm/structured-call";
 import { createProposal, isProposalSkipped } from "../proposal/repository";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -72,8 +67,6 @@ export interface SchemaRepairOptions {
   startMs: number;
   /** Budget deadline in ms since epoch. */
   budgetMs: number;
-  /** Legacy/test-only non-secret connection. Production passes llmRunner. */
-  llmConfig?: LlmConnectionConfig;
   /** Pre-resolved symbolic LLM runner supplied by the improve plan. */
   llmRunner?: Extract<RunnerSpec, { kind: "llm" }>;
   /** Stash directory for proposal-queue writes. Required: schema-repair never writes directly. */
@@ -213,8 +206,7 @@ export async function runSchemaRepairPass(
     isLessonCandidateFn = defaultIsLessonCandidate,
     chatFn,
   } = options;
-  const llmRunner =
-    options.llmRunner ?? (options.llmConfig ? structuredLlmRunnerFromConnection(options.llmConfig) : null);
+  const llmRunner = options.llmRunner ?? null;
   if (!llmRunner) throw new Error("runSchemaRepairPass requires a resolved LLM runner");
 
   if (!stashDir) {

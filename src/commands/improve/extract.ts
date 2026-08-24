@@ -61,11 +61,7 @@ import { getAvailableHarnesses } from "../../integrations/session-logs";
 import { preFilterSession } from "../../integrations/session-logs/pre-filter";
 import type { SessionData, SessionLogHarness, SessionRef, SessionSummary } from "../../integrations/session-logs/types";
 import type { ChatMessage } from "../../llm/client";
-import {
-  callStructured,
-  preflightStructuredLlmRunner,
-  structuredLlmRunnerFromConnection,
-} from "../../llm/structured-call";
+import { callStructured, preflightStructuredLlmRunner } from "../../llm/structured-call";
 import { sha256Hex } from "../../runtime";
 import type { Database } from "../../storage/database";
 import {
@@ -225,9 +221,7 @@ export interface AkmExtractOptions {
   stashDir?: string;
   /** Override config (test seam). */
   config?: AkmConfig;
-  /** Pre-resolved connection supplied by the improve invocation plan. */
-  llmConfig?: LlmProfileConfig;
-  /** Preferred production path when no complete standalone plan is supplied. */
+  /** Current symbolic runner when no complete standalone plan is supplied. */
   llmRunner?: ExtractLlmRunner;
   /** Complete standalone invocation plan, resolved once at the CLI boundary. */
   resolvedPlan?: ResolvedExtractPlan;
@@ -1388,15 +1382,12 @@ function resolveExtractRunConfig(
 
   // Improve supplies its invocation-owned symbolic runner. Standalone extract
   // resolves the selected process engine through the shared execution planner.
-  // The connection-only branch is a non-secret compatibility seam for tests.
   let llmRunner: ExtractLlmRunner | null | undefined;
   if (options.resolvedPlan) {
     llmRunner = options.resolvedPlan.runner;
     onNotices(options.resolvedPlan.notices ?? []);
   } else if (options.llmRunner) {
     llmRunner = options.llmRunner;
-  } else if (options.llmConfig) {
-    llmRunner = structuredLlmRunnerFromConnection(options.llmConfig);
   } else {
     const resolved = resolveImproveLlmExecution({
       config,
@@ -1420,9 +1411,7 @@ function resolveExtractRunConfig(
       ? (options.timeoutMs ?? null)
       : Object.hasOwn(llmRunner, "timeoutMs")
         ? (llmRunner.timeoutMs ?? null)
-        : options.llmConfig && Object.hasOwn(options.llmConfig, "timeoutMs")
-          ? (options.llmConfig.timeoutMs ?? null)
-          : 600_000;
+        : 600_000;
   // Pre-filter budget — process config can raise it for large-context models.
   const maxTotalChars = typeof extractProcess?.maxTotalChars === "number" ? extractProcess.maxTotalChars : undefined;
   // #595/#596 — minimum raw session size; sessions below it skip the LLM call

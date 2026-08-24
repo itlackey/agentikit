@@ -66,29 +66,6 @@ export type LlmErrorClass = "context_limit" | "html" | "other";
 export type StructuredLlmRunner = Extract<RunnerSpec, { kind: "llm" }>;
 
 /**
- * Compatibility adapter for callers that already own a non-secret connection
- * object. Production config paths should retain the credential descriptor and
- * pass a {@link StructuredLlmRunner}; a materialized API key cannot safely be
- * moved back across the authorization boundary.
- */
-export function structuredLlmRunnerFromConnection(
-  config: ChatCompletionConfig,
-  engine = config.provider ?? "inline-llm",
-): StructuredLlmRunner {
-  if (config.apiKey !== undefined) {
-    throw new TypeError("callStructured requires symbolic runner credentials, not a materialized apiKey");
-  }
-  const connection = { ...config };
-  delete connection.timeoutMs;
-  return {
-    kind: "llm",
-    engine,
-    connection,
-    ...(Object.hasOwn(config, "timeoutMs") ? { timeoutMs: config.timeoutMs ?? null } : {}),
-  };
-}
-
-/**
  * Classify a thrown LLM error into one of the three buckets. This is the single
  * home for the `isContextSizeError -> html -> other` ladder that was previously
  * inlined at every call site.
@@ -166,11 +143,6 @@ export interface CallStructuredOptions<T> {
   runner?: StructuredLlmRunner;
   /** Operation-scoped credential capability shared across related calls. */
   lease?: LoweredExecutionDispatchLease;
-  /**
-   * Legacy/test-only non-secret connection adapter. Omit in production and
-   * pass `runner` instead.
-   */
-  config?: ChatCompletionConfig;
   /** Additional exact invocation fields (notably tools) for the current call. */
   current?: UnresolvedExecutionDefaults;
   /** Operator tool-policy seam; evaluated during preparation before lowering. */
@@ -282,7 +254,7 @@ export async function callStructured<T>(opts: CallStructuredOptions<T>): Promise
     });
   }
 
-  const runner = opts.runner ?? (opts.config ? structuredLlmRunnerFromConnection(opts.config) : undefined);
+  const runner = opts.runner;
   if (!runner) throw new TypeError("callStructured requires a resolved LLM runner");
   const terminal = requireTerminalUserMessage(messages);
 

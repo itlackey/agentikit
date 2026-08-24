@@ -68,7 +68,7 @@ describe("callStructured contract", () => {
     const result = await callStructured<{ ok: boolean; raw?: string }>({
       feature: "memory_inference",
       akmConfig: GATED,
-      config: PROFILE,
+      runner: runner(),
       messages: MESSAGES,
       request: { chat: async () => '{"value":42}' },
       parse: (raw) => {
@@ -87,7 +87,7 @@ describe("callStructured contract", () => {
     const result = await callStructured<{ ok: boolean }>({
       feature: "memory_inference",
       akmConfig: GATED,
-      config: PROFILE,
+      runner: runner(),
       messages: MESSAGES,
       // Fake chat yields an empty string; `parse` owns the `!raw` decision and
       // returns the fallback.
@@ -105,7 +105,7 @@ describe("callStructured contract", () => {
     const result = await callStructured<string>({
       feature: "memory_inference",
       akmConfig: GATED,
-      config: PROFILE,
+      runner: runner(),
       messages: MESSAGES,
       request: {
         chat: async () => {
@@ -131,7 +131,7 @@ describe("callStructured contract", () => {
     const result = await callStructured<string>({
       feature: "memory_inference",
       akmConfig: GATED,
-      config: PROFILE,
+      runner: runner(),
       messages: MESSAGES,
       request: {
         chat: async () => {
@@ -157,7 +157,7 @@ describe("callStructured contract", () => {
     const result = await callStructured<string>({
       feature: "memory_inference",
       akmConfig: GATED,
-      config: PROFILE,
+      runner: runner(),
       messages: MESSAGES,
       request: {
         chat: async () => {
@@ -181,7 +181,7 @@ describe("callStructured contract", () => {
     const promise = callStructured<string>({
       feature: "metadata_enhance",
       akmConfig: undefined, // UNGATED: run directly, propagate errors
-      config: PROFILE,
+      runner: runner(),
       messages: MESSAGES,
       request: {
         chat: async () => {
@@ -206,7 +206,7 @@ describe("callStructured contract", () => {
     await callStructured<string>({
       feature: "memory_inference",
       akmConfig: GATED,
-      config: PROFILE,
+      runner: runner(),
       messages: MESSAGES,
       request: {
         onRetryAttempt,
@@ -231,7 +231,7 @@ describe("callStructured contract", () => {
       feature: "distill",
       akmConfig: GATED,
       enabled: true,
-      config: PROFILE,
+      runner: runner(),
       messages: MESSAGES,
       request: {
         chat: async () => {
@@ -253,7 +253,7 @@ describe("callStructured contract", () => {
     const result = await callStructured<string>({
       feature: "distill",
       akmConfig: GATED,
-      config: PROFILE,
+      runner: runner(),
       messages: MESSAGES,
       request: {
         chat: async () => {
@@ -306,7 +306,7 @@ describe("callStructured contract", () => {
     await callStructured<string>({
       feature: "memory_inference",
       akmConfig: GATED,
-      config: PROFILE,
+      runner: runner(),
       messages: MESSAGES,
       request: {
         maxTokens: 1234,
@@ -333,7 +333,7 @@ describe("callStructured contract", () => {
     await callStructured<string>({
       feature: "memory_inference",
       akmConfig: GATED,
-      config: PROFILE,
+      runner: runner(),
       messages: MESSAGES,
       request: {
         chat: async (_config, _messages, options) => {
@@ -351,7 +351,7 @@ describe("callStructured contract", () => {
     await callStructured<string>({
       feature: "memory_inference",
       akmConfig: GATED,
-      config: PROFILE,
+      runner: runner(),
       messages: MESSAGES,
       request: {
         timeoutMs: undefined,

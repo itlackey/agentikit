@@ -19,7 +19,7 @@
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import type { AkmConfig, LlmConnectionConfig } from "../../src/core/config/config";
-import { structuredLlmRunnerFromConnection } from "../../src/llm/structured-call";
+import { testLlmRunner } from "../_helpers/llm-runner";
 
 // ── Local LLM server ─────────────────────────────────────────────────────────
 
@@ -67,7 +67,7 @@ const SAMPLE_CONNECTION: LlmConnectionConfig = {
   endpoint: `http://localhost:${llmServer.port}/v1/chat/completions`,
   model: "llama3.2",
 };
-const SAMPLE_LLM = structuredLlmRunnerFromConnection(SAMPLE_CONNECTION, "test-graph-extraction");
+const SAMPLE_LLM = testLlmRunner(SAMPLE_CONNECTION, "test-graph-extraction");
 
 const AKM_CFG_WITH_GATE: AkmConfig = {
   configVersion: "0.9.0",

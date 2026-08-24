@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { LlmConnectionConfig } from "../../src/core/config/config";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { type EnhancedMetadata, type EnhanceMetadataOutcome, enhanceMetadata } from "../../src/llm/metadata-enhance";
-import { structuredLlmRunnerFromConnection } from "../../src/llm/structured-call";
+import { testLlmRunner } from "../_helpers/llm-runner";
 
 /** Assert a genuine-success outcome and return the enriched metadata payload. */
 function enrichedMetadata(outcome: EnhanceMetadataOutcome): EnhancedMetadata {
@@ -11,7 +11,7 @@ function enrichedMetadata(outcome: EnhanceMetadataOutcome): EnhancedMetadata {
 }
 
 function runnerFor(config: LlmConnectionConfig) {
-  return structuredLlmRunnerFromConnection(config, "test-metadata-enhance");
+  return testLlmRunner(config, "test-metadata-enhance");
 }
 
 // These tests verify the LLM module's response parsing logic.

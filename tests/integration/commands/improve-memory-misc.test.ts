@@ -11,6 +11,7 @@ import { akmIndex } from "../../../src/indexer/indexer";
 import { writeMemory } from "../../_helpers/assets";
 import { makeProposal } from "../../_helpers/factories";
 import { withTestImproveLlm } from "../../_helpers/improve-config";
+import { testLlmRunner } from "../../_helpers/llm-runner";
 import { mutateScopedEnv, withEnv } from "../../_helpers/sandbox";
 
 const tempDirs: string[] = [];
@@ -686,7 +687,7 @@ describe("M-3: schema-repair routes through proposal queue (#387)", () => {
       startMs: Date.now(),
       budgetMs: 30_000,
       stashDir,
-      llmConfig: { endpoint: "http://localhost/v1/chat", model: "test" },
+      llmRunner: testLlmRunner({ endpoint: "http://localhost/v1/chat", model: "test" }),
       findFilePath: async () => memFile,
       isLessonCandidateFn: () => false,
       chatFn: async () => JSON.stringify({ description: "Authentication guide for the service." }),
@@ -814,7 +815,7 @@ describe("M-3: schema-repair routes through proposal queue (#387)", () => {
       runSchemaRepairPass([{ ref: "memories/auth2", reason: "missing description" }], {
         startMs: Date.now(),
         budgetMs: 30_000,
-        llmConfig: { endpoint: "http://localhost/v1/chat", model: "test" },
+        llmRunner: testLlmRunner({ endpoint: "http://localhost/v1/chat", model: "test" }),
         findFilePath: async () => memFile,
         isLessonCandidateFn: () => false,
         chatFn: async () => JSON.stringify({ description: "Auth content description." }),

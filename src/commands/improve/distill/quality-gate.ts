@@ -26,7 +26,7 @@ import type { LoweredExecutionDispatchLease } from "../../../integrations/agent/
 import type { RunnerSpec } from "../../../integrations/agent/runner";
 import type { ChatCompletionOptions, ChatMessage } from "../../../llm/client";
 import type { LlmFeatureKey } from "../../../llm/feature-gate";
-import { callStructured, structuredLlmRunnerFromConnection } from "../../../llm/structured-call";
+import { callStructured } from "../../../llm/structured-call";
 import type { EligibilitySource } from "../../proposal/proposal-types";
 import { akmSearch } from "../../read/search";
 import { scoreEncodingSalience } from "../encoding-salience";
@@ -188,7 +188,7 @@ export function buildReflectJudgePrompt(candidateContent: string, sourceContent:
 
 type QualityJudgeResult = { pass: boolean; score: number; reason: string; reviewNeeded?: boolean };
 type QualityJudgeChat = (
-  llmConfig: LlmConnectionConfig,
+  connection: LlmConnectionConfig,
   messages: ChatMessage[],
   options?: ChatCompletionOptions,
 ) => Promise<string>;
@@ -200,8 +200,6 @@ export interface QualityJudgeOptions {
   /** The caller already froze judge selection; absence of llmRunner must fail closed without re-resolution. */
   runnerSelectionFrozen?: true;
   lease?: LoweredExecutionDispatchLease;
-  /** Legacy non-secret connection seam retained for isolated tests. */
-  llmConfig?: LlmConnectionConfig;
   timeoutMs?: number | null;
   signal?: AbortSignal;
   onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
@@ -215,13 +213,11 @@ async function runQualityJudge(
   options: QualityJudgeOptions = {},
 ): Promise<QualityJudgeResult> {
   const resolvedDefault =
-    !options.runnerSelectionFrozen && !options.llmRunner && !options.llmConfig
+    !options.runnerSelectionFrozen && !options.llmRunner
       ? resolveImproveLlmExecution({ config, processName: `${feature}-judge` })
       : null;
   if (resolvedDefault) options.onNotices?.(resolvedDefault.notices);
-  const runner =
-    options.llmRunner ??
-    (options.llmConfig ? structuredLlmRunnerFromConnection(options.llmConfig) : resolvedDefault?.runner);
+  const runner = options.llmRunner ?? resolvedDefault?.runner;
   if (!runner) {
     return { pass: false, score: -1, reason: "no LLM configured — cannot judge, failing closed" };
   }

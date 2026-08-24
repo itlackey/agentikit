@@ -56,7 +56,7 @@ import { parseFrontmatter, writeSalienceToFrontmatter } from "../../core/asset/f
 import { stripMarkdownFences } from "../../core/asset/markdown";
 import { conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { authoringRulesForType } from "../../core/authoring-rules";
-import type { AkmConfig, ImproveProfileConfig, LlmConnectionConfig } from "../../core/config/config";
+import type { AkmConfig, ImproveProfileConfig } from "../../core/config/config";
 import { getImproveProcessConfig, loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent, type EventsContext, readEvents } from "../../core/events";
@@ -75,11 +75,7 @@ import {
 } from "../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import type { ChatMessage, chatCompletion } from "../../llm/client";
-import {
-  callStructured,
-  preflightStructuredLlmRunner,
-  structuredLlmRunnerFromConnection,
-} from "../../llm/structured-call";
+import { callStructured, preflightStructuredLlmRunner } from "../../llm/structured-call";
 import { closeDatabase, openReadonlyExistingDatabase } from "../../storage/repositories/index-connection";
 import { getAllEntries } from "../../storage/repositories/index-entries-repository";
 import type { EligibilitySource } from "../proposal/proposal-types";
@@ -174,9 +170,7 @@ export interface AkmDistillOptions {
   stashDir?: string;
   /** Override the loaded config (test seam). */
   config?: AkmConfig;
-  /** Pre-resolved connection supplied by the improve invocation plan. */
-  llmConfig?: LlmConnectionConfig | null;
-  /** Preferred production path: the exact symbolic runner frozen by the improve plan. */
+  /** Exact symbolic runner frozen by the improve plan. */
   llmRunner?: Extract<RunnerSpec, { kind: "llm" }> | null;
   /** Shared improve deadline signal for generation and quality judging. */
   signal?: AbortSignal;
@@ -795,23 +789,18 @@ async function prepareDistillExecution(args: {
   const collectNotices = (notices: readonly Readonly<LoweringNotice>[]): void => {
     for (const notice of notices) executionNotices.set(JSON.stringify(notice), notice);
   };
-  const resolvedExecution =
-    !Object.hasOwn(options, "llmRunner") && !Object.hasOwn(options, "llmConfig")
-      ? resolveImproveLlmExecution({
-          config,
-          profile: options.improveProfile,
-          process: getImproveProcessConfig("distill", options.improveProfile),
-          processName: "distill",
-        })
-      : null;
+  const resolvedExecution = !Object.hasOwn(options, "llmRunner")
+    ? resolveImproveLlmExecution({
+        config,
+        profile: options.improveProfile,
+        process: getImproveProcessConfig("distill", options.improveProfile),
+        processName: "distill",
+      })
+    : null;
   if (resolvedExecution) collectNotices(resolvedExecution.notices);
   const distillRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined = Object.hasOwn(options, "llmRunner")
     ? (options.llmRunner ?? undefined)
-    : Object.hasOwn(options, "llmConfig")
-      ? options.llmConfig
-        ? structuredLlmRunnerFromConnection(options.llmConfig)
-        : undefined
-      : resolvedExecution?.runner;
+    : resolvedExecution?.runner;
   const withNotices = (result: AkmDistillResult): AkmDistillResult =>
     executionNotices.size > 0 ? { ...result, notices: Object.freeze([...executionNotices.values()]) } : result;
   const lookup = options.lookupFn ?? ((ref: string) => defaultLookup(ref, stash));

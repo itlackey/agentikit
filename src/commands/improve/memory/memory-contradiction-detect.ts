@@ -39,17 +39,13 @@ import fs from "node:fs";
 import path from "node:path";
 import contradictionJudgeTemplate from "../../../assets/prompts/contradiction-judge.md" with { type: "text" };
 import { mutateFrontmatter, parseFrontmatter } from "../../../core/asset/frontmatter";
-import type { AkmConfig, ImproveProfileConfig, LlmConnectionConfig } from "../../../core/config/config";
+import type { AkmConfig, ImproveProfileConfig } from "../../../core/config/config";
 import { parseEmbeddedJsonResponse } from "../../../core/parse";
 import type { LoweringNotice } from "../../../execution/resolved-request";
 import { disposeLoweredExecutionDispatchLease } from "../../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../../integrations/agent/runner";
-import type { ChatMessage, chatCompletion } from "../../../llm/client";
-import {
-  callStructured,
-  preflightStructuredLlmRunner,
-  structuredLlmRunnerFromConnection,
-} from "../../../llm/structured-call";
+import type { chatCompletion } from "../../../llm/client";
+import { callStructured, preflightStructuredLlmRunner } from "../../../llm/structured-call";
 import { resolveImproveLlmExecution } from "../execution";
 import { isDerivedMemory, memoryIdentityRef, resolveParentRef } from "./derived-ref";
 
@@ -206,7 +202,6 @@ export async function detectAndWriteContradictions(
   config: AkmConfig,
   chat?: typeof chatCompletion,
   strategy?: ImproveProfileConfig,
-  resolvedLlmConfig?: LlmConnectionConfig | null,
   resolvedRunner?: Extract<RunnerSpec, { kind: "llm" }> | null,
 ): Promise<ContradictionDetectionResult> {
   const result: ContradictionDetectionResult = {
@@ -219,7 +214,7 @@ export async function detectAndWriteContradictions(
 
   const noticesByKey = new Map<string, Readonly<LoweringNotice>>();
   const resolvedExecution =
-    resolvedRunner === undefined && resolvedLlmConfig === undefined
+    resolvedRunner === undefined
       ? resolveImproveLlmExecution({
           config,
           profile: strategy,
@@ -229,12 +224,7 @@ export async function detectAndWriteContradictions(
       : null;
   for (const notice of resolvedExecution?.notices ?? []) noticesByKey.set(JSON.stringify(notice), notice);
 
-  const contradictionRunner =
-    resolvedRunner === null || resolvedLlmConfig === null
-      ? undefined
-      : (resolvedRunner ??
-        (resolvedLlmConfig ? structuredLlmRunnerFromConnection(resolvedLlmConfig) : undefined) ??
-        resolvedExecution?.runner);
+  const contradictionRunner = resolvedRunner === null ? undefined : (resolvedRunner ?? resolvedExecution?.runner);
   if (!contradictionRunner) return result;
 
   // Collect derived memories grouped by parent.

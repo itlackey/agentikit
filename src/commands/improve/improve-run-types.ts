@@ -288,7 +288,7 @@ export interface ConsolidationPassResult {
  * Mutable improve-loop state: the (WI-9.10) unification of the deleted
  * legacy dual-context interface onto the minted {@link RunContext}. `ctx`
  * carries every run-scoped, immutable DI seam (stashDir, config, eventsCtx,
- * proposalsCtx, chat, getLlmConfig, sourceRun, dryRun, signal, now, asset IO
+ * proposalsCtx, chat, getLlmRunner, sourceRun, dryRun, signal, now, asset IO
  * — see `./run-context`); the fields below are the improve-loop-specific
  * state that `RunContext` does not model — an immutable run snapshot plus
  * the mutable per-run accumulators the loop folds into as it walks

@@ -61,13 +61,13 @@ let warnCalls: string[] = [];
 
 const { enhanceMetadata } = await import("../../src/llm/metadata-enhance");
 const { _setChatCompletionForTests, isContextSizeError, LlmCallError } = await import("../../src/llm/client");
-const { structuredLlmRunnerFromConnection } = await import("../../src/llm/structured-call");
 const { _setWarnSinkForTests } = await import("../../src/core/warn");
+const { testLlmRunner } = await import("../_helpers/llm-runner");
 const { overrideSeam } = await import("../_helpers/seams");
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
-const LLM_CONFIG = structuredLlmRunnerFromConnection(
+const LLM_CONFIG = testLlmRunner(
   { endpoint: "http://localhost:0", model: "test-model", timeoutMs: 5_000 } as LlmConnectionConfig,
   "test-metadata-enhance",
 );

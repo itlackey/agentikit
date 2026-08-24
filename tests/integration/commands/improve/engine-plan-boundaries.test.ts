@@ -236,7 +236,6 @@ describe("improve engine-plan boundaries", () => {
           config,
           eventsCtx: {},
           proposalsCtx: {},
-          getLlmConfig: () => null,
           sourceRun: "test-run",
           dryRun: false,
         }),

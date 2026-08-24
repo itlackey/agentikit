@@ -44,7 +44,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
-import type { LlmConnectionConfig } from "../../core/config/config-types";
 import type { EventsContext } from "../../core/events";
 import { recordWrittenPath } from "../../core/write-provenance";
 import type { RunnerSpec } from "../../integrations/agent/runner";
@@ -83,8 +82,6 @@ export interface RunContext {
   readonly chat?: RunContextChatFn;
   /** Resolve the run's symbolic LLM runner lazily (null when unconfigured). */
   readonly getLlmRunner: () => Extract<RunnerSpec, { kind: "llm" }> | null;
-  /** Legacy non-secret connection seam retained for isolated compatibility tests. */
-  readonly getLlmConfig: () => LlmConnectionConfig | null;
   /** Stable run id stamped onto automated proposals + events (PROV-DM). */
   readonly sourceRun: string;
   /** When true, mutating side effects are suppressed. */
@@ -130,7 +127,6 @@ export interface RunContextInit {
   /** Test-only transport override. Production leaves this absent. */
   chat?: RunContextChatFn;
   getLlmRunner?: () => Extract<RunnerSpec, { kind: "llm" }> | null;
-  getLlmConfig?: () => LlmConnectionConfig | null;
   sourceRun: string;
   dryRun: boolean;
   signal?: AbortSignal;
@@ -148,7 +144,6 @@ interface RunContextCarriers {
   proposalsCtx: ProposalsContext;
   chat?: RunContextChatFn;
   getLlmRunner: () => Extract<RunnerSpec, { kind: "llm" }> | null;
-  getLlmConfig: () => LlmConnectionConfig | null;
   sourceRun: string;
   dryRun: boolean;
   signal?: AbortSignal;
@@ -171,7 +166,6 @@ function buildRunContext(carriers: RunContextCarriers, memo: Map<string, string>
     proposalsCtx: carriers.proposalsCtx,
     chat: carriers.chat,
     getLlmRunner: carriers.getLlmRunner,
-    getLlmConfig: carriers.getLlmConfig,
     sourceRun: carriers.sourceRun,
     dryRun: carriers.dryRun,
     signal: carriers.signal,
@@ -215,7 +209,6 @@ export function createRunContext(init: RunContextInit): RunContext {
     proposalsCtx: init.proposalsCtx,
     chat: init.chat,
     getLlmRunner: init.getLlmRunner ?? (() => null),
-    getLlmConfig: init.getLlmConfig ?? (() => null),
     sourceRun: init.sourceRun,
     dryRun: init.dryRun,
     signal: init.signal,

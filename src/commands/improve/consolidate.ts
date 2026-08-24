@@ -25,11 +25,7 @@ import {
 } from "../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { cosineSimilarity, embedBatch, resolveEmbeddingModelId } from "../../llm/embedder";
-import {
-  callStructured,
-  preflightStructuredLlmRunner,
-  structuredLlmRunnerFromConnection,
-} from "../../llm/structured-call";
+import { callStructured, preflightStructuredLlmRunner } from "../../llm/structured-call";
 import type { Database } from "../../storage/database";
 import { getBodyEmbeddings, upsertBodyEmbeddings } from "../../storage/repositories/embeddings-repository";
 import {
@@ -87,9 +83,7 @@ export interface AkmConsolidateOptions {
   task?: string; // extra guidance appended to the system prompt
   stashDir?: string;
   config?: AkmConfig;
-  /** Pre-resolved connection supplied by the improve invocation plan. */
-  llmConfig?: import("../../core/config/config").LlmConnectionConfig | null;
-  /** Preferred production path: exact symbolic runner frozen by the improve plan. */
+  /** Exact symbolic runner frozen by the improve plan. */
   llmRunner?: Extract<RunnerSpec, { kind: "llm" }> | null;
   /** Internal diagnostics sink for resolved/lowered dispatches. */
   onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
@@ -539,9 +533,6 @@ function consolidateRunnerFromOptions(
   config: AkmConfig,
 ): Extract<RunnerSpec, { kind: "llm" }> | undefined {
   if (Object.hasOwn(opts, "llmRunner")) return opts.llmRunner ?? undefined;
-  if (Object.hasOwn(opts, "llmConfig")) {
-    return opts.llmConfig ? structuredLlmRunnerFromConnection(opts.llmConfig) : undefined;
-  }
   const resolved = resolveConsolidateLlmRunner(config, opts.improveProfile);
   if (resolved) opts.onNotices?.(resolved.notices);
   return resolved?.runner;
@@ -639,13 +630,8 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
   // called with the default, seam-less ProposalsContext — see
   // emitPromotionProposal below), so both get the safe empty-object default,
   // behaviorally identical to `undefined` (EventsContext/ProposalsContext
-  // fields are all optional-chained by their consumers). `getLlmConfig`
-  // mirrors `planConsolidation`'s own resolution (`resolveConsolidateLlmConfig`)
-  // verbatim but lazily and independently — nothing calls `ctx.getLlmConfig`
-  // yet this stage, so this never duplicates real work, only the (pure,
-  // side-effect-free) resolution logic if invoked. consolidate has no `chat`
-  // seam (it drives the LLM directly via the HTTP client path, never through
-  // the engine-owned dispatch seam), so no transport default is installed.
+  // fields are all optional-chained by their consumers). LLM work uses the
+  // already-frozen symbolic runner through the shared dispatch seam.
   const runContext: RunContext = createRunContext({
     stashDir,
     config,

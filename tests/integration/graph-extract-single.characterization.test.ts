@@ -32,7 +32,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { LlmConnectionConfig } from "../../src/core/config/config";
 import { isQuiet, setQuiet } from "../../src/core/warn";
-import { structuredLlmRunnerFromConnection } from "../../src/llm/structured-call";
+import { testLlmRunner } from "../_helpers/llm-runner";
 
 // ── Local LLM server (fake chat/LLM seam) ────────────────────────────────────
 
@@ -81,7 +81,7 @@ const SAMPLE_CONNECTION: LlmConnectionConfig = {
   // Keep the timeout small but non-zero; no test path relies on timing.
   timeoutMs: 5000,
 };
-const SAMPLE_LLM = structuredLlmRunnerFromConnection(SAMPLE_CONNECTION, "test-graph-extraction");
+const SAMPLE_LLM = testLlmRunner(SAMPLE_CONNECTION, "test-graph-extraction");
 
 // graph_extraction defaults to enabled when the feature key is absent.
 const AKM_CFG = {
