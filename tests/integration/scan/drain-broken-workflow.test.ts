@@ -10,8 +10,7 @@
  * workflow would silently index through the raw recognize path. The live
  * pipeline dropped it via the renderer contributor's throw → skip-with-warning.
  * `drainDirDocuments` restores that drop: it re-runs the workflow parser and
- * drops the entry with a `Skipped workflow …` warning, while caching the valid
- * workflow's parsed document for the `workflow_documents` side-table upsert.
+ * drops the entry with a `Skipped workflow …` warning.
  *
  * This pins the GAP directly (recognize alone does NOT drop; the drain does),
  * complementing the end-to-end coverage in
@@ -29,7 +28,6 @@ import { resetAdapterRegistryForTests } from "../../../src/core/adapter/registry
 import type { BundleComponent } from "../../../src/core/adapter/types";
 import { drainDirDocuments } from "../../../src/indexer/scan/drain-dir";
 import { buildFileContext } from "../../../src/indexer/walk/file-context";
-import { takeWorkflowDocument } from "../../../src/workflows/runtime/document-cache";
 
 beforeAll(() => {
   resetAdapterRegistryForTests();
@@ -128,14 +126,6 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
     // one's is not (it never became an entry).
     expect(drained.hashByFile.get(goodPath)).toBeDefined();
     expect(drained.hashByFile.get(badPath)).toBeUndefined();
-
-    // The valid workflow's parsed document is cached for the persist-time
-    // workflow_documents write (same side channel the live contributor used).
-    const entry = drained.entries[0];
-    if (!entry) throw new Error("Expected one valid workflow entry");
-    const cached = takeWorkflowDocument(entry);
-    expect(cached).toBeDefined();
-    expect(cached?.steps.map((s) => s.id)).toEqual(["validate"]);
   });
 
   test.each([
@@ -162,13 +152,6 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
       expect(drained.warnings).toHaveLength(1);
       expect(drained.warnings[0]).toContain(badPath);
       expect(drained.warnings[0]).toContain("Remote action acquisition");
-      const entry = drained.entries[0];
-      if (!entry) throw new Error("valid YAML workflow must survive drain");
-      const cached = takeWorkflowDocument(entry);
-      expect(cached?.steps[0]?.unit?.exec).toEqual({
-        command: ["sh", "-c", "echo ok"],
-        cwd: "packages/cli",
-      });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -9,7 +9,7 @@
  *   • macOS   → launchd (per-user LaunchAgent)
  *   • Windows → schtasks.exe / Task Scheduler
  *
- * Each backend implements {@link TaskBackend}; selection is a one-line
+ * Each backend implements {@link SchedulerBackend}; selection is a one-line
  * platform check. Tests inject a fake `platform` to exercise non-host
  * code paths.
  */
@@ -18,7 +18,7 @@ import type { ScheduleBackend } from "../schedule";
 import { CRON_BACKEND, type CronBackendOptions } from "./cron";
 import { LAUNCHD_BACKEND, type LaunchdBackendOptions } from "./launchd";
 import { SCHTASKS_BACKEND, type SchtasksBackendOptions } from "./schtasks";
-import type { TaskBackend } from "./types";
+import type { SchedulerBackend } from "./types";
 
 export interface SelectBackendOptions {
   platform?: NodeJS.Platform;
@@ -28,12 +28,12 @@ export interface SelectBackendOptions {
 }
 
 // WI-9.10e: the former `_setBackendsForTests` module-mutation seam was retired.
-// Tests inject a fake `TaskBackend` directly via the `deps.backend` parameter
+// Tests inject a fake `SchedulerBackend` directly via the `deps.backend` parameter
 // the `akm task` mutation entries already accept (the backend carries its own
 // `name`), so no module-level override binding is needed. `selectBackend`'s
 // `options.platform` covers the platform-steering the seam's second override
 // used to provide.
-export function selectBackend(options: SelectBackendOptions = {}): TaskBackend {
+export function selectBackend(options: SelectBackendOptions = {}): SchedulerBackend {
   const platform = options.platform ?? process.platform;
   switch (platform) {
     case "win32":

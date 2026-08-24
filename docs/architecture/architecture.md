@@ -550,7 +550,7 @@ async execution context; unrelated work and child processes remain excluded.
 | `src/output/shapes/`, `src/output/text/` | JSON-envelope and text-output registries per command (#490) — a parallel concern to `src/output/renderers.ts`'s per-asset-type `show` renderers, which is still live and self-registering, not replaced |
 | `src/workflows/authoring/` | workflow authoring + scope-key helpers |
 | `src/workflows/runtime/runs.ts` | workflow run persistence (raw SQL lives in `src/storage/repositories/workflow-runs-repository.ts`) |
-| `src/workflows/runtime/` | run lifecycle: runs, checkin, document-cache, agent-identity |
+| `src/workflows/runtime/` | run lifecycle: runs, checkin, agent-identity |
 | `src/llm/client.ts` | OpenAI-compatible chat completions client (stateless, single request/response) |
 | `src/llm/index-passes.ts` | per-pass LLM config resolution for `akm index` |
 | `src/llm/memory-infer.ts` | atomic-fact split helper (selected through `improve.strategies.<name>.processes.memoryInference`) |

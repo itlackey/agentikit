@@ -77,7 +77,6 @@ import {
   getIndexedStashDirsByDir,
   relinkUsageEvents,
   upsertEntry,
-  upsertWorkflowDocument,
 } from "../storage/repositories/index-entries-repository";
 import type { EntryProvenance } from "../storage/repositories/index-entry-types";
 import { rebuildFts } from "../storage/repositories/index-fts-repository";
@@ -105,7 +104,6 @@ import {
   upsertEmbedding,
   warnIfVecMissing,
 } from "../storage/repositories/index-vec-repository";
-import { takeWorkflowDocument } from "../workflows/runtime/document-cache";
 import { assertIndexedWorkflowSourceIdentity, WorkflowSourceIdentityError } from "../workflows/source-files";
 import { deleteStoredGraph } from "./db/graph-db";
 import { withIndexWriterLease } from "./index-writer-lock";
@@ -1744,7 +1742,7 @@ function persistDirRecords(
 
           const provenance = deriveEntryProvenance(bundle, entry.type, entry.name, adapterConceptId);
 
-          const entryId = upsertEntry(
+          upsertEntry(
             db,
             entryKey,
             dirPath,
@@ -1756,13 +1754,6 @@ function persistDirRecords(
             contentHash,
           );
           persistedRows++;
-
-          if (entry.type === "workflow") {
-            const doc = takeWorkflowDocument(entry);
-            if (doc) {
-              upsertWorkflowDocument(db, entryId, doc, fs.readFileSync(entryPath));
-            }
-          }
         }
 
         // Collect dirs needing LLM enhancement during the first walk.

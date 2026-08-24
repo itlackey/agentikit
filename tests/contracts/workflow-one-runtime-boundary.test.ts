@@ -87,10 +87,16 @@ describe("one workflow source and runtime architecture", () => {
     expect(jsonSchema).not.toContain("inherit_env");
   });
 
-  test("the old document is display-only and cannot feed execution or scheduling", () => {
-    const projection = read("src/workflows/source-ir/document.ts");
-    expect(projection).toContain('type WorkflowSourceProjectionMode = "display"');
-    expect(projection).not.toContain('"runtime"');
-    expect(projection).not.toContain('"scheduler"');
+  test("source IR feeds display and indexing without a second persisted workflow model", () => {
+    const renderer = read("src/workflows/renderer.ts");
+    const metadata = read("src/core/adapter/adapters/akm-metadata.ts");
+    const schema = read("src/storage/repositories/index-schema.ts");
+
+    expect(fs.existsSync(path.join(ROOT, "src/workflows/source-ir/document.ts"))).toBe(false);
+    expect(fs.existsSync(path.join(ROOT, "src/workflows/runtime/document-cache.ts"))).toBe(false);
+    expect(renderer).toContain("WorkflowSourceIrV1");
+    expect(metadata).toContain("sourceStepInstructions");
+    expect(schema).toContain('DROP TABLE IF EXISTS workflow_documents');
+    expect(schema).not.toContain("CREATE TABLE IF NOT EXISTS workflow_documents");
   });
 });

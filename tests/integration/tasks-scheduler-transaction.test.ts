@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { akmTasksAdd, akmTasksSync } from "../../src/commands/tasks/tasks";
 import { akmIndex } from "../../src/indexer/indexer";
-import type { TaskBackend } from "../../src/tasks/backends/types";
+import type { SchedulerBackend } from "../../src/tasks/backends/types";
 import type { ScheduleBackend } from "../../src/tasks/schedule";
 import {
   assertSchedulerMutationArtifact,
@@ -65,7 +65,7 @@ function fakeBackend(
   failure?: Readonly<{ kind: "install" | "uninstall"; id: string }>,
   rollbackFailureId?: string,
   concurrentRollbackDriftId?: string,
-): TaskBackend & {
+): SchedulerBackend & {
   stored: Map<string, StoredBinding>;
   calls: string[];
   inspectionCalls: number;
@@ -195,7 +195,7 @@ function fakeBackend(
       stored.delete(nativeId);
     },
     setEnabled() {},
-  } as unknown as TaskBackend & {
+  } as unknown as SchedulerBackend & {
     stored: Map<string, StoredBinding>;
     calls: string[];
     inspectionCalls: number;
@@ -256,7 +256,7 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
       },
       uninstall() {},
       setEnabled() {},
-    } as unknown as TaskBackend;
+    } as unknown as SchedulerBackend;
 
     await expect(
       akmTasksAdd(
@@ -351,10 +351,10 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     const backend = fakeBackend("cron", force ? [previousBinding] : [], { kind: "install", id: "alpha" });
     const racer = "version: 3\nrun: echo concurrent\nakm:\n  schedule: '@hourly'\n";
     const install = backend.install.bind(backend);
-    backend.install = ((...args: Parameters<TaskBackend["install"]>) => {
+    backend.install = ((...args: Parameters<SchedulerBackend["install"]>) => {
       fs.writeFileSync(file, racer);
       return install(...args);
-    }) as TaskBackend["install"];
+    }) as SchedulerBackend["install"];
 
     let caught: unknown;
     try {
@@ -377,11 +377,11 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     const backend = fakeBackend(name, force ? [binding("alpha", "0 1 * * *")] : []);
     const racer = taskYaml("echo racer", "59 23 * * *");
     const install = backend.install.bind(backend);
-    backend.install = ((...args: Parameters<TaskBackend["install"]>) => {
+    backend.install = ((...args: Parameters<SchedulerBackend["install"]>) => {
       const result = install(...args);
       fs.writeFileSync(file, racer);
       return result;
-    }) as TaskBackend["install"];
+    }) as SchedulerBackend["install"];
 
     let caught: unknown;
     try {
@@ -405,11 +405,11 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     const file = path.join(storage.stashDir, "tasks", "alpha.yml");
     const backend = fakeBackend(name);
     const install = backend.install.bind(backend);
-    backend.install = ((...args: Parameters<TaskBackend["install"]>) => {
+    backend.install = ((...args: Parameters<SchedulerBackend["install"]>) => {
       const result = install(...args);
       fs.rmSync(file);
       return result;
-    }) as TaskBackend["install"];
+    }) as SchedulerBackend["install"];
 
     await expect(akmTasksSync({ backend })).rejects.toThrow(/source|changed|read set|snapshot/i);
 
@@ -432,12 +432,12 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     const raced = taskYaml("echo raced", "59 23 * * *");
     const install = backend.install.bind(backend);
     let installs = 0;
-    backend.install = ((...args: Parameters<TaskBackend["install"]>) => {
+    backend.install = ((...args: Parameters<SchedulerBackend["install"]>) => {
       const result = install(...args);
       installs += 1;
       if (installs === 1) fs.writeFileSync(file, raced);
       return result;
-    }) as TaskBackend["install"];
+    }) as SchedulerBackend["install"];
 
     await expect(akmTasksSync({ backend })).rejects.toThrow(/source|changed|read set|snapshot/i);
 
@@ -801,7 +801,7 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
       },
       uninstall() {},
       setEnabled() {},
-    } as unknown as TaskBackend;
+    } as unknown as SchedulerBackend;
 
     await expect(akmTasksSync({ backend })).rejects.toThrow(/coherent inspection/i);
     expect(installs).toBe(0);
@@ -821,7 +821,7 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
       },
       uninstall() {},
       setEnabled() {},
-    } as unknown as TaskBackend;
+    } as unknown as SchedulerBackend;
 
     await expect(akmTasksSync({ backend })).rejects.toThrow(/snapshot and restore/i);
     expect(installs).toBe(0);

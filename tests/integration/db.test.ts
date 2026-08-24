@@ -131,6 +131,23 @@ describe("Schema", () => {
     }
   });
 
+  test("openIndexDatabase removes the obsolete workflow document cache", () => {
+    const dbPath = tmpDbPath();
+    let db = openIndexDatabase(dbPath);
+    db.exec("CREATE TABLE workflow_documents (entry_id INTEGER PRIMARY KEY, document_json TEXT NOT NULL)");
+    closeDatabase(db);
+
+    db = openIndexDatabase(dbPath);
+    try {
+      const row = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workflow_documents'")
+        .get();
+      expect(row).toBeNull();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
   test("openIndexDatabase with a stale version marker preserves data (no nuclear drop)", () => {
     const dbPath = tmpDbPath();
 

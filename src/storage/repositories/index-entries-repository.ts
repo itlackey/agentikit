@@ -916,30 +916,6 @@ export function getEntryRefRowsForStashRoot(db: Database, stashRoot: string): En
 // ── Indexer-phase helpers (moved from indexer.ts) ────────────────────────────
 
 /**
- * Upsert a workflow document record for an indexed entry.
- * Persists the parsed workflow AST as JSON alongside a FNV-1a hash of the
- * source content for future incremental fast-paths.
- */
-export function upsertWorkflowDocument(
-  db: Database,
-  entryId: number,
-  doc: import("../../workflows/schema").WorkflowDocument,
-  content: Buffer,
-): void {
-  const sourceHash = computeSourceHash(content);
-  db.prepare(
-    `INSERT INTO workflow_documents (entry_id, schema_version, document_json, source_path, source_hash, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(entry_id) DO UPDATE SET
-       schema_version = excluded.schema_version,
-       document_json = excluded.document_json,
-       source_path = excluded.source_path,
-       source_hash = excluded.source_hash,
-       updated_at = excluded.updated_at`,
-  ).run(entryId, doc.schemaVersion, JSON.stringify(doc), doc.source.path, sourceHash, new Date().toISOString());
-}
-
-/**
  * Compute a cheap FNV-1a hash of a buffer for source-identity tracking.
  * Not security-sensitive; used as an incremental fast-path skip key.
  */

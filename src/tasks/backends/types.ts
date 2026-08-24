@@ -19,12 +19,3 @@ export type {
   SchedulerBackend,
   SchedulerInstallOptions,
 } from "../scheduler-binding";
-
-/** @deprecated Compatibility spellings; native backends now consume scheduler bindings. */
-export type InstalledTaskRef = import("../scheduler-binding").InstalledSchedulerBinding;
-/** @deprecated Compatibility spelling. */
-export type RebindTaskRef = import("../scheduler-binding").RebindSchedulerBinding;
-/** @deprecated Compatibility spelling. */
-export type TaskInstallOptions = import("../scheduler-binding").SchedulerInstallOptions;
-/** @deprecated Compatibility spelling. */
-export type TaskBackend = import("../scheduler-binding").SchedulerBackend;

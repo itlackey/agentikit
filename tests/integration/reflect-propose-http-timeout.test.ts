@@ -9,6 +9,7 @@ import path from "node:path";
 import { runReflectViaLlm } from "../../src/commands/improve/reflect";
 import { akmPropose } from "../../src/commands/proposal/propose";
 import type { AkmConfig } from "../../src/core/config/config";
+import type { RunnerSpec } from "../../src/integrations/agent/runner";
 
 const cleanups: Array<() => void> = [];
 
@@ -42,11 +43,18 @@ const validSkill = JSON.stringify({
   content: "---\ndescription: Exercise direct HTTP timeout forwarding\n---\n\nUse the direct transport.\n",
 });
 
+function directRunner(
+  connection: Extract<RunnerSpec, { kind: "llm" }>["connection"],
+  timeoutMs?: number | null,
+): Extract<RunnerSpec, { kind: "llm" }> {
+  return { kind: "llm", engine: "direct", connection, ...(timeoutMs !== undefined ? { timeoutMs } : {}) };
+}
+
 test("reflect forwards a 1ms normalized timeout to the direct HTTP transport", async () => {
   const server = delayedServer("late", 50);
   const result = await runReflectViaLlm({
     prompt: "reflect",
-    connection: { endpoint: `http://localhost:${server.port}`, model: "test-model" },
+    runner: directRunner({ endpoint: `http://localhost:${server.port}`, model: "test-model" }),
     timeoutMs: 1,
     iteration: 0,
     outputMode: "json_schema",
@@ -68,7 +76,7 @@ test("reflect explicit null disables the direct HTTP timer", async () => {
   );
   const result = await runReflectViaLlm({
     prompt: "reflect",
-    connection: { endpoint: `http://localhost:${server.port}`, model: "test-model", timeoutMs: 1 },
+    runner: directRunner({ endpoint: `http://localhost:${server.port}`, model: "test-model" }, 1),
     timeoutMs: null,
     iteration: 0,
     outputMode: "json_schema",

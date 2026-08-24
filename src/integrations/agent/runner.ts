@@ -25,15 +25,15 @@ export type ProcessSection = "improve" | "index" | "search" | string;
 export type RunnerSpec =
   | {
       kind: "llm";
-      engine?: string;
+      engine: string;
       connection: LlmConnectionConfig;
       credential?: CredentialDescriptor;
       timeoutMs?: number | null;
     }
-  | { kind: "agent"; engine?: string; profile: AgentProfile; timeoutMs?: number | null }
+  | { kind: "agent"; engine: string; profile: AgentProfile; timeoutMs?: number | null }
   | {
       kind: "sdk";
-      engine?: string;
+      engine: string;
       profile: AgentProfile;
       fallbackConnection?: LlmConnectionConfig;
       fallbackCredential?: CredentialDescriptor;
@@ -47,18 +47,11 @@ export type DispatchedLlmRunner = Omit<Extract<RunnerSpec, { kind: "llm" }>, "co
 
 /** Resolve the current credential value for one frozen LLM runner at dispatch. */
 export function materializeLlmRunnerConnection(runner: Extract<RunnerSpec, { kind: "llm" }>): LlmConnectionConfig {
-  const connectionWithLegacyTimeout = runner.connection as LlmConnectionConfig;
-  const timeoutMs =
-    runner.timeoutMs !== undefined
-      ? runner.timeoutMs
-      : Object.hasOwn(connectionWithLegacyTimeout, "timeoutMs")
-        ? (connectionWithLegacyTimeout.timeoutMs ?? null)
-        : null;
   return materializeLlmConnection({
-    engine: runner.engine ?? "unnamed",
+    engine: runner.engine,
     connection: runner.connection,
     ...(runner.credential ? { credential: runner.credential } : {}),
-    timeoutMs,
+    timeoutMs: runner.timeoutMs ?? null,
   });
 }
 
@@ -67,19 +60,12 @@ export function materializeLlmRunnerConnectionWithCredential(
   runner: Extract<RunnerSpec, { kind: "llm" }>,
   credentialValue: string | undefined,
 ): LlmConnectionConfig {
-  const connectionWithLegacyTimeout = runner.connection as LlmConnectionConfig;
-  const timeoutMs =
-    runner.timeoutMs !== undefined
-      ? runner.timeoutMs
-      : Object.hasOwn(connectionWithLegacyTimeout, "timeoutMs")
-        ? (connectionWithLegacyTimeout.timeoutMs ?? null)
-        : null;
   return materializeLlmConnectionWithCredential(
     {
-      engine: runner.engine ?? "unnamed",
+      engine: runner.engine,
       connection: runner.connection,
       ...(runner.credential ? { credential: runner.credential } : {}),
-      timeoutMs,
+      timeoutMs: runner.timeoutMs ?? null,
     },
     credentialValue,
   );

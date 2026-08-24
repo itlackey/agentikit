@@ -91,7 +91,7 @@ export interface TaskRunResult {
   log: string;
   target:
     | { kind: "workflow"; ref: string }
-    | { kind: "prompt"; engine: string | null; legacyProfile?: string }
+    | { kind: "prompt"; engine: string | null }
     | { kind: "command"; cmd?: string[] }
     | { kind: "unknown" };
   /** Workflow run id (for workflow targets) or agent reason/error (for prompt targets). */
@@ -1106,13 +1106,7 @@ function taskHistoryRowToResult(
       : row.target_kind === "command"
         ? { kind: "command" }
         : row.target_kind === "prompt"
-          ? meta.metadataVersion === 1
-            ? {
-                kind: "prompt",
-                engine: null,
-                ...(meta.legacyProfile !== undefined ? { legacyProfile: meta.legacyProfile } : {}),
-              }
-            : { kind: "prompt", engine: meta.engine ?? null }
+          ? { kind: "prompt", engine: meta.engine ?? null }
           : { kind: "unknown" };
 
   return {

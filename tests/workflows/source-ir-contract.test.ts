@@ -8,7 +8,6 @@ import {
   compileGithubWorkflowSource,
   compileMarkdownWorkflowSource,
 } from "../../src/workflows/source-ir/compile";
-import { workflowSourceIrToDocument } from "../../src/workflows/source-ir/document";
 import { sourceStepInstructions, sourceStepProgramUnit } from "../../src/workflows/source-ir/program";
 import { decodeWorkflowSourceIrV1, type WorkflowSourceIrV1 } from "../../src/workflows/source-ir/schema";
 
@@ -589,7 +588,6 @@ Review $ARGUMENTS and \${{ github.sha }} literally.
     const result = github(source);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(workflowSourceIrToDocument(result.ir, { mode: "display" }).steps).toHaveLength(1);
     expect(result.ir.jobs[0]?.steps).toHaveLength(1);
   });
 
@@ -692,10 +690,7 @@ jobs:
 `);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(workflowSourceIrToDocument(result.ir, { mode: "display" }).steps.map(({ id }) => id)).toEqual([
-      "build",
-      "deploy",
-    ]);
+    expect(result.ir.jobs.flatMap((job) => job.steps.map(({ id }) => id))).toEqual(["build", "deploy"]);
     const compiled = compileWorkflowPlan(result.ir, "multi");
     expect(compiled.ok).toBe(false);
     if (!compiled.ok) expect(compiled.errors[0]?.message).toContain("exactly one source-IR job");

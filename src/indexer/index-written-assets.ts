@@ -29,14 +29,8 @@ import { isPathAbsent } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { warn, warnVerbose } from "../core/warn";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
-import {
-  deleteEntriesByIds,
-  getEntryCount,
-  upsertEntry,
-  upsertWorkflowDocument,
-} from "../storage/repositories/index-entries-repository";
+import { deleteEntriesByIds, getEntryCount, upsertEntry } from "../storage/repositories/index-entries-repository";
 import { rebuildFts } from "../storage/repositories/index-fts-repository";
-import { takeWorkflowDocument } from "../workflows/runtime/document-cache";
 import { withIndexWriterLease } from "./index-writer-lock";
 import { deriveEntryProvenance, deriveInstallations } from "./installations";
 import type { IndexDocument } from "./passes/metadata";
@@ -128,10 +122,8 @@ export async function indexWrittenAssets(
         for (const rejectedPath of drained.rejectedPaths) unindexable.add(rejectedPath);
         for (const conceptId of drained.rejectedConceptIds) rejectedConceptIds.add(conceptId);
         const entry = drained.entries[0];
-        // Workflows also carry a workflow_documents side-table upsert — handled
-        // below, mirroring the full walk — since `akm mv` rewrites citer files
-        // that can be workflows. A broken workflow drains to zero entries (like
-        // the old skip-with-warning) and is treated as unindexable.
+        // A broken workflow drains to zero entries and is treated as
+        // unindexable; valid peer sources have already compiled to source IR.
         const conceptId = drained.conceptIdByFile.get(ctx.absPath);
         if (entry && conceptId)
           pairs.push({ file, entry, conceptId, contentHash: drained.hashByFile.get(ctx.absPath) });
@@ -187,7 +179,7 @@ export async function indexWrittenAssets(
               entry.name,
               conceptId,
             );
-            const entryId = upsertEntry(
+            upsertEntry(
               db,
               entryKey,
               path.dirname(file),
@@ -198,13 +190,6 @@ export async function indexWrittenAssets(
               provenance,
               contentHash,
             );
-            if (entry.type === "workflow") {
-              // Same contract as the full walk (indexer.ts): the renderer cached
-              // the parsed document during metadata generation; persist it so the
-              // workflow runtime never sees an entry without its document.
-              const doc = takeWorkflowDocument(entry);
-              if (doc) upsertWorkflowDocument(db, entryId, doc, fs.readFileSync(file));
-            }
           }
           if (pairs.length > 0 || unindexable.size > 0) rebuildFts(db, { incremental: true });
         })();

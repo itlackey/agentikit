@@ -93,22 +93,6 @@ function denyAssetRead(assetPath: string): ReturnType<typeof spyOn> {
   }) as typeof fs.readFileSync);
 }
 
-function workflowDocumentSnapshot(): Array<Record<string, unknown>> {
-  const db = openExistingDatabase(getDbPath());
-  try {
-    return db
-      .prepare(
-        `SELECT entry_id AS entryId, schema_version AS schemaVersion, document_json AS documentJson,
-                source_path AS sourcePath, source_hash AS sourceHash
-           FROM workflow_documents
-          ORDER BY entry_id`,
-      )
-      .all() as Array<Record<string, unknown>>;
-  } finally {
-    closeDatabase(db);
-  }
-}
-
 const toolDirShapes = [
   ["claude", "commands/deploy", "commands/deploy.md", "# deploy"],
   ["claude", "agents/reviewer", "agents/reviewer.md", "# reviewer"],
@@ -186,7 +170,6 @@ describe("shared adapter physical-owner authority", () => {
     mutateEntry("early//commands/same", state, path.join(early.root, "stale", "same.md"));
     await listWorkflowRuns();
     const stateBefore = fs.readFileSync(getStateDbPath());
-    const cacheBefore = workflowDocumentSnapshot();
     let dispatches = 0;
 
     const readSpy = denyAssetRead(earlyPath);
@@ -210,7 +193,6 @@ describe("shared adapter physical-owner authority", () => {
     }
     expect(dispatches).toBe(0);
     expect(fs.readFileSync(getStateDbPath())).toEqual(stateBefore);
-    expect(workflowDocumentSnapshot()).toEqual(cacheBefore);
     expect((await listWorkflowRuns()).runs).toHaveLength(0);
     expect((await loadWorkflowAsset("later//commands/same")).path).toBe(laterPath);
   });
@@ -282,7 +264,6 @@ describe("shared adapter physical-owner authority", () => {
     expect((await loadWorkflowAsset("later//collision")).path).toBe(laterPath);
     await listWorkflowRuns();
     const stateBefore = fs.readFileSync(getStateDbPath());
-    const cacheBefore = workflowDocumentSnapshot();
     let dispatches = 0;
 
     const markdownSpy = denyAssetRead(markdown);
@@ -306,7 +287,6 @@ describe("shared adapter physical-owner authority", () => {
     }
     expect(dispatches).toBe(0);
     expect(fs.readFileSync(getStateDbPath())).toEqual(stateBefore);
-    expect(workflowDocumentSnapshot()).toEqual(cacheBefore);
     expect((await listWorkflowRuns()).runs).toHaveLength(0);
   });
 

@@ -59,7 +59,7 @@ import {
   schedulerContextPath,
 } from "../scheduler-invocation";
 import { type BackendExec, escapeXml, type NodeFs, nodeExec, nodeFs, runOrThrow } from "./exec-utils";
-import type { InstalledTaskRef, TaskBackend, TaskInstallOptions } from "./types";
+import type { InstalledSchedulerBinding, SchedulerBackend, SchedulerInstallOptions } from "./types";
 
 export type LaunchdExec = BackendExec<{ uid(): number }>;
 
@@ -127,7 +127,7 @@ interface LaunchdRestorePlanEntry {
   readonly noOp: boolean;
 }
 
-export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBackend {
+export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): SchedulerBackend {
   const exec = options.exec ?? defaultLaunchdExec();
   const fsLike = options.fs ?? defaultLaunchdFs();
   const agentsDir = options.agentsDir ?? defaultAgentsDir();
@@ -143,7 +143,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
 
   return {
     name: "launchd",
-    install(task: SchedulerBinding, opts?: TaskInstallOptions, expected?: SchedulerMutationExpectation) {
+    install(task: SchedulerBinding, opts?: SchedulerInstallOptions, expected?: SchedulerMutationExpectation) {
       installLaunchdBinding(task, opts, expected, {
         exec,
         fsLike,
@@ -238,10 +238,10 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
     setEnabled(nativeId: string, enabled: boolean) {
       setEnableState(nativeId, enabled);
     },
-    list(): InstalledTaskRef[] {
+    list(): InstalledSchedulerBinding[] {
       return [
         ...inspectLaunchdState({ exec, fsLike, agentsDir, plistPath, target, label }).installed,
-      ] as InstalledTaskRef[];
+      ] as InstalledSchedulerBinding[];
     },
     listForRebind() {
       const namespace = inspectStableLaunchdNamespace([], { exec, fsLike, agentsDir, plistPath, target, label });
@@ -276,7 +276,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
         expectedCurrent,
       );
     },
-    expectedSignature(task: SchedulerBinding, opts?: TaskInstallOptions): string {
+    expectedSignature(task: SchedulerBinding, opts?: SchedulerInstallOptions): string {
       return launchdFingerprint(
         buildPlistXml(
           task,
@@ -294,7 +294,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
 
 function installLaunchdBinding(
   task: SchedulerBinding,
-  opts: TaskInstallOptions | undefined,
+  opts: SchedulerInstallOptions | undefined,
   expected: SchedulerMutationExpectation | undefined,
   context: {
     exec: LaunchdExec;
@@ -844,7 +844,7 @@ function captureLaunchdNamespacePass(
     entries.push(Object.freeze({ nativeId, ...(plist !== undefined ? { plist } : {}), enabled, loaded, artifact }));
   }
   const artifacts = entries.map((entry) => entry.artifact);
-  const installed: InstalledTaskRef[] = [];
+  const installed: InstalledSchedulerBinding[] = [];
   for (const entry of entries) {
     if (entry.plist === undefined) continue;
     const parsed = extractPlistInvocation(entry.plist);
@@ -1081,10 +1081,10 @@ function launchdFingerprint(raw: string, enabled: boolean, loaded: boolean): str
 }
 
 function withInstalledInvocation(
-  ref: InstalledTaskRef,
+  ref: InstalledSchedulerBinding,
   invocation: readonly string[],
   nativeId: string,
-): InstalledTaskRef {
+): InstalledSchedulerBinding {
   Object.defineProperty(ref, "nativeId", { value: nativeId });
   Object.defineProperty(ref, "invocation", { value: Object.freeze([...invocation]) });
   return ref;

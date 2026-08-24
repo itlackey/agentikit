@@ -82,6 +82,10 @@ function fakeLlmConnection(): LlmProfileConfig {
   };
 }
 
+function fakeLlmRunner(): Extract<RunnerSpec, { kind: "llm" }> {
+  return { kind: "llm", engine: "test-llm", connection: fakeLlmConnection() };
+}
+
 const EMPTY_FRAMED_PATCH_LINE = 'AKM_REFLECT_FRONTMATTER_PATCH: {"description":null,"when_to_use":null}';
 
 beforeEach(() => {
@@ -286,7 +290,7 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
 
     const result = await runReflectViaLlm({
       prompt: "test prompt",
-      connection: fakeLlmConnection(),
+      runner: fakeLlmRunner(),
       iteration: 0,
       outputMode: "json_schema",
       responseSchema: REFLECT_JSON_SCHEMA,
@@ -305,7 +309,7 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
     let chatCalls = 0;
     const result = await runReflectViaLlm({
       prompt: "test prompt",
-      connection: fakeLlmConnection(),
+      runner: fakeLlmRunner(),
       iteration: 0,
       outputMode: "json_schema",
       responseSchema: REFLECT_JSON_SCHEMA,
@@ -334,7 +338,7 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
     });
     await runReflectViaLlm({
       prompt: "test prompt",
-      connection: fakeLlmConnection(),
+      runner: fakeLlmRunner(),
       iteration: 0,
       outputMode: "json_schema",
     });
@@ -347,7 +351,7 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
       let received: number | null | undefined;
       await runReflectViaLlm({
         prompt: "test prompt",
-        connection: fakeLlmConnection(),
+        runner: fakeLlmRunner(),
         iteration: 0,
         outputMode: "json_schema",
         timeoutMs,

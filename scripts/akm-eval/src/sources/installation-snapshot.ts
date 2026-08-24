@@ -723,7 +723,6 @@ function rewriteIndexDatabasePaths(
     ["entries", "dir_path"],
     ["entries", "file_path"],
     ["entries", "stash_dir"],
-    ["workflow_documents", "source_path"],
     ["graph_meta", "stash_root"],
     ["graph_files", "stash_root"],
     ["graph_files", "file_path"],
@@ -741,7 +740,6 @@ function rewriteIndexDatabasePaths(
   for (const [table, column] of [
     ["entries", "entry_json"],
     ["entries", "document_json"],
-    ["workflow_documents", "document_json"],
   ] as const) {
     rewriteJsonColumn(database, table, column, mapValue, write);
   }

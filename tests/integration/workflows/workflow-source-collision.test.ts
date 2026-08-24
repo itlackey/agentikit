@@ -105,25 +105,11 @@ function writeCollision(fixture: CollisionFixture, extensions: [string, string] 
   fs.writeFileSync(path.join(fixture.ownedDir, `collision${extensions[1]}`), yamlWorkflow());
 }
 
-function indexSnapshot(): {
-  entries: number;
-  documents: number;
-  documentRows: Array<Record<string, unknown>>;
-} {
-  if (!fs.existsSync(getDbPath())) return { entries: 0, documents: 0, documentRows: [] };
+function indexSnapshot(): number {
+  if (!fs.existsSync(getDbPath())) return 0;
   const db = openIndexDatabase();
   try {
-    const entries = (db.prepare("SELECT COUNT(*) AS count FROM entries").get() as { count: number }).count;
-    const documents = (db.prepare("SELECT COUNT(*) AS count FROM workflow_documents").get() as { count: number }).count;
-    const documentRows = db
-      .prepare(
-        `SELECT entry_id AS entryId, schema_version AS schemaVersion, document_json AS documentJson,
-                source_path AS sourcePath, source_hash AS sourceHash
-           FROM workflow_documents
-          ORDER BY entry_id`,
-      )
-      .all() as Array<Record<string, unknown>>;
-    return { entries, documents, documentRows };
+    return (db.prepare("SELECT COUNT(*) AS count FROM entries").get() as { count: number }).count;
   } finally {
     closeDatabase(db);
   }
@@ -247,7 +233,7 @@ describe("workflow source canonical-ref collisions", () => {
     expect(indexed.warnings).toEqual([
       expect.stringMatching(/multiple workflow source files.*collision\.md.*collision\.yml/is),
     ]);
-    expect(indexSnapshot()).toMatchObject({ entries: 0, documents: 0 });
+    expect(indexSnapshot()).toBe(0);
   });
 
   test("preserves an authored symlink path and rejects a symlink that changes source format", async () => {
@@ -275,7 +261,7 @@ describe("workflow source canonical-ref collisions", () => {
       code: "INVALID_FLAG_VALUE",
       message: expect.stringMatching(/collision\.md.*target\.yml.*different source format/is),
     });
-    expect(indexSnapshot()).toMatchObject({ entries: 0, documents: 0 });
+    expect(indexSnapshot()).toBe(0);
     expect((await listWorkflowRuns()).runs).toHaveLength(0);
   });
 
@@ -287,7 +273,7 @@ describe("workflow source canonical-ref collisions", () => {
     expect(indexed.warnings).toEqual([
       expect.stringMatching(/multiple workflow source files.*collision\.md.*collision\.yml/is),
     ]);
-    expect(indexSnapshot()).toMatchObject({ entries: 0, documents: 0 });
+    expect(indexSnapshot()).toBe(0);
 
     await expect(lookupBundleRef(parseBundleRef(fixture.canonicalRef))).rejects.toMatchObject({
       code: "RESOURCE_ALREADY_EXISTS",
@@ -295,7 +281,7 @@ describe("workflow source canonical-ref collisions", () => {
     await expect(akmShowUnified({ ref: fixture.canonicalRef, skipLogging: true })).rejects.toMatchObject({
       code: "RESOURCE_ALREADY_EXISTS",
     });
-    expect(indexSnapshot()).toMatchObject({ entries: 0, documents: 0 });
+    expect(indexSnapshot()).toBe(0);
   });
 
   test.each(
@@ -306,7 +292,7 @@ describe("workflow source canonical-ref collisions", () => {
     fs.writeFileSync(markdownPath, markdownWorkflow("cached-markdown"));
     await akmIndex({ stashDir: fixture.root, full: true });
     const before = indexSnapshot();
-    expect(before).toMatchObject({ entries: 1, documents: 1 });
+    expect(before).toBe(1);
 
     fs.writeFileSync(path.join(fixture.ownedDir, "collision.yml"), yamlWorkflow("late-yaml"));
     let dispatches = 0;
@@ -339,12 +325,12 @@ describe("workflow source canonical-ref collisions", () => {
     const yamlPath = path.join(fixture.ownedDir, "collision.yml");
     fs.writeFileSync(markdownPath, markdownWorkflow("first"));
     await akmIndex({ stashDir: fixture.root, full: true });
-    expect(indexSnapshot()).toMatchObject({ entries: 1, documents: 1 });
+    expect(indexSnapshot()).toBe(1);
 
     fs.writeFileSync(yamlPath, yamlWorkflow("second"));
     expect(await indexWrittenAssets(fixture.root, [yamlPath], { bundleId: "ordinary-bundle" })).toBe(true);
 
-    expect(indexSnapshot()).toMatchObject({ entries: 0, documents: 0 });
+    expect(indexSnapshot()).toBe(0);
     await expect(lookupBundleRef(parseBundleRef(fixture.canonicalRef))).rejects.toMatchObject({
       code: "RESOURCE_ALREADY_EXISTS",
     });

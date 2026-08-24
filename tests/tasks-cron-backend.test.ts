@@ -12,7 +12,7 @@ import {
   toggleBlock,
   upsertBlock,
 } from "../src/tasks/backends/cron";
-import type { InstalledTaskRef } from "../src/tasks/backends/types";
+import type { InstalledSchedulerBinding } from "../src/tasks/backends/types";
 import {
   compileTaskSchedulerBindings,
   type SchedulerBinding,
@@ -291,10 +291,11 @@ describe("cron backend drift detection", () => {
     envPath: false as const,
     scheduledContext: SCHEDULED_CONTEXT,
   });
-  // The cron backend's list() is synchronous, but the TaskBackend interface
+  // The cron backend's list() is synchronous, but the SchedulerBackend interface
   // types it as `… | Promise<…>`; resolve through the concrete array shape so
   // indexing stays type-safe.
-  const listSync = (b: ReturnType<typeof CRON_BACKEND>): InstalledTaskRef[] => b.list() as InstalledTaskRef[];
+  const listSync = (b: ReturnType<typeof CRON_BACKEND>): InstalledSchedulerBinding[] =>
+    b.list() as InstalledSchedulerBinding[];
 
   const higherOrdinal = () =>
     compileTaskSchedulerBindings({

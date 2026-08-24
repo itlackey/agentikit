@@ -264,6 +264,12 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
     CREATE INDEX IF NOT EXISTS idx_entries_file_path ON entries(file_path);
   `);
 
+  // Workflow source is compiled directly into source IR at each command
+  // boundary. The former workflow_documents cache duplicated that IR in a
+  // second persisted representation and was never used by current execution.
+  // index.db is derived state, so remove the obsolete table on every open.
+  db.exec("DROP TABLE IF EXISTS workflow_documents");
+
   // v18: backfill the bundle-adapter identity/provenance columns on databases
   // created against a pre-v18 binary (partial schema) — same PRAGMA-then-ALTER
   // guard pattern as `ensureDerivedFromColumn`. Runs BEFORE the item_ref index
@@ -285,23 +291,6 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   // `derived_from` MUST run after this helper so we never reference a
   // column that has not yet been added on partial schemas.
   ensureDerivedFromColumn(db);
-
-  // Validated WorkflowDocument JSON, one row per indexed workflow entry.
-  // Pure index data — fully rebuilt on each `akm index`. ON DELETE CASCADE
-  // means clearing entries (full rebuild or per-dir delete) drops these too.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS workflow_documents (
-      entry_id        INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
-      schema_version  INTEGER NOT NULL,
-      document_json   TEXT NOT NULL,
-      source_path     TEXT NOT NULL,
-      source_hash     TEXT NOT NULL,
-      updated_at      TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_workflow_documents_source_path
-      ON workflow_documents(source_path);
-  `);
 
   // Set version immediately after table creation so a crash before the end of
   // ensureSchema() does not leave the database in a versionless state on next open.

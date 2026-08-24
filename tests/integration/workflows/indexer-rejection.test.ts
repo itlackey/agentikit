@@ -76,7 +76,7 @@ steps:
 do A
 `;
 
-test("indexer admits valid workflows and writes their JSON to workflow_documents", async () => {
+test("indexer admits a valid workflow through the shared source compiler", async () => {
   const stashDir = tmpStash();
   writeWorkflow(stashDir, "good", VALID_WORKFLOW);
 
@@ -86,27 +86,11 @@ test("indexer admits valid workflows and writes their JSON to workflow_documents
   const db = openIndexDatabase();
   try {
     const row = db
-      .prepare(
-        `SELECT wd.document_json, wd.schema_version, wd.source_path
-           FROM workflow_documents wd
-           JOIN entries e ON e.id = wd.entry_id
-          WHERE e.entry_type = 'workflow' AND e.entry_key LIKE ?`,
-      )
-      .get(`${stashDir}:workflow:%`) as
-      | { document_json: string; schema_version: number; source_path: string }
-      | undefined;
+      .prepare("SELECT file_path FROM entries WHERE entry_type = 'workflow' AND entry_key LIKE ?")
+      .get(`${stashDir}:workflow:%`) as { file_path: string } | undefined;
     expect(row).toBeDefined();
     if (!row) return;
-    // WORKFLOW_SCHEMA_VERSION bumped 1 -> 2 for the unified format (spec §2.2).
-    expect(row.schema_version).toBe(2);
-    expect(row.source_path).toContain("good.md");
-    const doc = JSON.parse(row.document_json);
-    // No titles anywhere in the unified format (spec §2.2) — the asset's
-    // human name is its `description`, not a parsed H1.
-    expect(doc.description).toBe("Ship Release");
-    expect(doc.steps).toHaveLength(1);
-    expect(doc.steps[0].instructions.text).toContain("Confirm release notes");
-    expect(doc.steps[0].source.start).toBeGreaterThan(0);
+    expect(row.file_path).toContain("good.md");
   } finally {
     closeDatabase(db);
   }
@@ -132,22 +116,10 @@ test("indexer rejects broken workflows and surfaces every error in IndexResponse
 
   const db = openIndexDatabase();
   try {
-    const goodRow = db
-      .prepare(
-        `SELECT 1 FROM workflow_documents wd
-           JOIN entries e ON e.id = wd.entry_id
-          WHERE e.entry_key = ?`,
-      )
-      .get(`${stashDir}:workflow:good`);
+    const goodRow = db.prepare("SELECT 1 FROM entries WHERE entry_key = ?").get(`${stashDir}:workflow:good`);
     expect(goodRow).toBeDefined();
 
-    const badRow = db
-      .prepare(
-        `SELECT 1 FROM workflow_documents wd
-           JOIN entries e ON e.id = wd.entry_id
-          WHERE e.entry_key = ?`,
-      )
-      .get(`${stashDir}:workflow:bad`);
+    const badRow = db.prepare("SELECT 1 FROM entries WHERE entry_key = ?").get(`${stashDir}:workflow:bad`);
     expect(badRow).toBeFalsy();
   } finally {
     closeDatabase(db);

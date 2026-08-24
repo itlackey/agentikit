@@ -61,7 +61,7 @@ import type { IndexDocument } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseTaskV3Yaml } from "../../../tasks/source-v3";
 import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
-import { workflowSourceIrToDocument } from "../../../workflows/source-ir/document";
+import { sourceStepInstructions } from "../../../workflows/source-ir/program";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { TocHeading } from "../../asset/markdown";
 import { parseMarkdownToc } from "../../asset/markdown";
@@ -307,17 +307,17 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
       try {
         const result = compileWorkflowSource(file.content(), { path: file.relPath, workspaceRoot: file.stashRoot });
         if (!result.ok) return out;
-        const doc = workflowSourceIrToDocument(result.ir, { mode: "display" });
+        const sourceIr = result.ir;
         const hints = new Set<string>();
-        if (doc.preamble) hints.add(doc.preamble);
-        for (const step of doc.steps) {
+        if (sourceIr.preamble) hints.add(sourceIr.preamble);
+        for (const step of sourceIr.jobs.flatMap((job) => job.steps)) {
           hints.add(step.id);
-          if (step.instructions) hints.add(step.instructions.text);
-          if (step.gateRubric) hints.add(step.gateRubric.text);
+          hints.add(sourceStepInstructions(step));
+          if (step.gate?.rubric) hints.add(step.gate.rubric);
         }
         out.searchHints = Array.from(hints).filter(Boolean);
-        if (doc.params) {
-          const parameters = Object.entries(doc.params).map(([name, schema]) => {
+        if (sourceIr.params) {
+          const parameters = Object.entries(sourceIr.params).map(([name, schema]) => {
             const description = schema.description;
             return { name, ...(typeof description === "string" && description ? { description } : {}) };
           });

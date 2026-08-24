@@ -19,10 +19,10 @@ import type {
   WorkflowStepDefinition,
   WorkflowStepOrchestrationSummary,
 } from "../sources/types";
-import { type ProgramDefaults, projectExecCore } from "./program/schema";
-import type { WorkflowDocument, WorkflowStep } from "./schema";
+import { projectExecCore } from "./program/schema";
 import { compileWorkflowSource } from "./source-ir/compile";
-import { workflowSourceIrToDocument } from "./source-ir/document";
+import { workflowShellCommand } from "./source-ir/program";
+import type { WorkflowSourceIrV1, WorkflowSourceStep, WorkflowSourceUnit } from "./source-ir/schema";
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -39,9 +39,9 @@ function deriveName(ctx: RenderContext): string {
   return ext > 0 ? ctx.relPath.slice(0, ext) : ctx.relPath;
 }
 
-function loadDocument(ctx: RenderContext): WorkflowDocument {
+function loadSourceIr(ctx: RenderContext): WorkflowSourceIrV1 {
   const result = compileWorkflowSource(ctx.content(), { path: ctx.relPath, workspaceRoot: ctx.stashRoot });
-  if (result.ok) return workflowSourceIrToDocument(result.ir, { mode: "display" });
+  if (result.ok) return result.ir;
   const summary = result.errors.map((e) => `${e.path}:${e.line} — ${e.message}`).join("\n");
   throw new UsageError(`Workflow has errors:\n${summary}`);
 }
@@ -52,8 +52,8 @@ function loadDocument(ctx: RenderContext): WorkflowDocument {
  * routing table stands in when it declares no section (the spine still needs
  * a non-empty instructions string).
  */
-function stepInstructions(step: WorkflowStep): string {
-  if (step.instructions) return step.instructions.text;
+function stepInstructions(step: WorkflowSourceStep): string {
+  if (step.instructions) return step.instructions;
   if (step.route) {
     const branches = step.route.branches.map((b) => `"${b.match}" -> ${b.stepId}`);
     if (step.route.defaultStepId !== undefined) branches.push(`default -> ${step.route.defaultStepId}`);
@@ -63,9 +63,9 @@ function stepInstructions(step: WorkflowStep): string {
 }
 
 /** Project the `params` block into the flat `WorkflowParameter` list. */
-function projectParameters(document: WorkflowDocument): WorkflowParameter[] | undefined {
-  if (!document.params) return undefined;
-  const parameters = Object.entries(document.params).map(([name, schema]) => {
+function projectParameters(sourceIr: WorkflowSourceIrV1): WorkflowParameter[] | undefined {
+  if (!sourceIr.params) return undefined;
+  const parameters = Object.entries(sourceIr.params).map(([name, schema]) => {
     const description = schema.description;
     return { name, ...(typeof description === "string" && description !== "" ? { description } : {}) };
   });
@@ -103,11 +103,18 @@ function projectParameters(document: WorkflowDocument): WorkflowParameter[] | un
  * `instructions` this same projection already carries whole.
  */
 function summarizeStepOrchestration(
-  step: WorkflowStep,
-  defaults: ProgramDefaults | undefined,
+  step: WorkflowSourceStep,
+  defaults: WorkflowSourceUnit | undefined,
 ): WorkflowStepOrchestrationSummary | undefined {
-  const unit = step.unit ?? step.map?.unit;
-  const exec = unit?.exec;
+  const unit = step.unit;
+  const exec = step.exec
+    ? step.exec
+    : step.run !== undefined
+      ? {
+          command: workflowShellCommand(step.shell ?? "sh", step.run),
+          ...(step.workingDirectory ? { cwd: step.workingDirectory } : {}),
+        }
+      : undefined;
   const engine = exec ? undefined : (unit?.engine ?? defaults?.engine);
   const model = exec ? undefined : (unit?.model ?? defaults?.model);
   const timeoutMs = unit?.timeoutMs !== undefined ? unit.timeoutMs : defaults?.timeoutMs;
@@ -144,16 +151,20 @@ function summarizeStepOrchestration(
   return Object.keys(summary).length > 0 ? summary : undefined;
 }
 
-function projectStepDefinitions(document: WorkflowDocument): WorkflowStepDefinition[] {
-  return document.steps.map((step) => {
-    const orchestration = summarizeStepOrchestration(step, document.defaults);
+function projectStepDefinitions(sourceIr: WorkflowSourceIrV1): WorkflowStepDefinition[] {
+  const flattened = sourceIr.jobs.flatMap((job) => job.steps.map((step) => ({ jobId: job.id, step })));
+  const counts = new Map<string, number>();
+  for (const { step } of flattened) counts.set(step.id, (counts.get(step.id) ?? 0) + 1);
+  return flattened.map(({ jobId, step }, sequenceIndex) => {
+    const id = (counts.get(step.id) ?? 0) > 1 ? `${jobId}-${step.id}` : step.id;
+    const orchestration = summarizeStepOrchestration(step, sourceIr.defaults);
     return {
-      id: step.id,
+      id,
       // No titles in the shared source IR — a step IS its id.
       title: step.id,
       instructions: stepInstructions(step),
-      ...(step.gateRubric?.text.trim() ? { completionCriteria: [step.gateRubric.text] } : {}),
-      sequenceIndex: step.sequenceIndex,
+      ...(step.gate?.rubric?.trim() ? { completionCriteria: [step.gate.rubric] } : {}),
+      sequenceIndex,
       ...(orchestration ? { orchestration } : {}),
     };
   });
@@ -164,26 +175,26 @@ export const workflowMdRenderer: AssetRenderer = {
 
   buildShowResponse(ctx: RenderContext): ShowResponse {
     const name = deriveName(ctx);
-    const doc = loadDocument(ctx);
+    const sourceIr = loadSourceIr(ctx);
     // WI-8.5b (display flip): the `akm workflow run <ref>` action is DISPLAY
     // output — its spelling follows the D-R5 display rule (`displayRef`). A
     // primary/default-bundle workflow renders the SHORT conceptId
     // (`workflows/<name>`); a named source qualifies it as
     // (`<bundle>//workflows/<name>`).
     const ref = displayRef({ type: "workflow", name, bundleId: ctx.origin }, ctx.defaultBundle);
-    const parameters = projectParameters(doc);
+    const parameters = projectParameters(sourceIr);
     return {
       type: "workflow",
       name,
       path: ctx.absPath,
       action: buildWorkflowAction(ref),
-      ...(doc.preamble ? { content: doc.preamble } : {}),
-      description: doc.description,
+      ...(sourceIr.preamble ? { content: sourceIr.preamble } : {}),
+      description: sourceIr.description,
       // No authored title in the shared source IR — the asset's human name is
       // its `description`/H1 like any other asset; this is its canonical name.
       workflowTitle: name,
       ...(parameters ? { parameters: parameters.map((p) => p.name), workflowParameters: parameters } : {}),
-      steps: projectStepDefinitions(doc),
+      steps: projectStepDefinitions(sourceIr),
     };
   },
 };

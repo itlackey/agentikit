@@ -60,7 +60,7 @@ import {
   schedulerContextPath,
 } from "../scheduler-invocation";
 import { type NodeFs, nodeFs, throwIfNotOk } from "./exec-utils";
-import type { InstalledTaskRef, TaskBackend, TaskInstallOptions } from "./types";
+import type { InstalledSchedulerBinding, SchedulerBackend, SchedulerInstallOptions } from "./types";
 
 export type CronExecResult = { status: number; stdout: string; stderr: string };
 
@@ -101,7 +101,7 @@ interface CronBindingSnapshot {
   readonly crontab: string;
 }
 
-export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
+export function CRON_BACKEND(options: CronBackendOptions = {}): SchedulerBackend {
   const exec = options.exec ?? defaultCronExec();
   const fsLike = options.fs ?? nodeFs();
   const logDir = options.logDir ?? getTaskLogDir();
@@ -112,7 +112,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
 
   return {
     name: "cron",
-    install(task: SchedulerBinding, opts?: TaskInstallOptions, expected?: SchedulerMutationExpectation) {
+    install(task: SchedulerBinding, opts?: SchedulerInstallOptions, expected?: SchedulerMutationExpectation) {
       if (expected) assertSchedulerExpectationIdentity(expected, task);
       // Create the log directory before writing the crontab line — cron
       // appends with `>>` and the surrounding shell will fail the entire
@@ -181,8 +181,8 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       const next = toggleBlock(existing, nativeId, enabled);
       replaceCrontab(exec, existing, next);
     },
-    list(): InstalledTaskRef[] {
-      return [...inspectCronState(readCrontab(exec)).installed] as InstalledTaskRef[];
+    list(): InstalledSchedulerBinding[] {
+      return [...inspectCronState(readCrontab(exec)).installed] as InstalledSchedulerBinding[];
     },
     listForRebind() {
       const existing = readCrontab(exec);
@@ -263,7 +263,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
         throw new AggregateError(errors, "Cron rollback CAS rejected one or more changed native artifacts.");
       }
     },
-    expectedSignature(task: SchedulerBinding, opts?: TaskInstallOptions): string {
+    expectedSignature(task: SchedulerBinding, opts?: SchedulerInstallOptions): string {
       const cronLine = buildCronLine(
         task,
         [...(opts?.binding ?? akmArgv)],
@@ -278,7 +278,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
 }
 
 function inspectCronState(crontab: string): SchedulerBackendInspection {
-  const installed: InstalledTaskRef[] = [];
+  const installed: InstalledSchedulerBinding[] = [];
   const artifacts: SchedulerNativeArtifact[] = [];
   for (const { id, body } of listBlocks(crontab)) {
     const parsed = extractCronInvocation(body);
@@ -286,7 +286,7 @@ function inspectCronState(crontab: string): SchedulerBackendInspection {
     const artifact = cronArtifact(id, body);
     artifacts.push(artifact);
     if (!parsed) continue;
-    const ref: InstalledTaskRef = {
+    const ref: InstalledSchedulerBinding = {
       id: schedulerLogicalBindingId(id, parsed.invocation),
       signature: fingerprint,
       ...(parsed.target !== undefined ? { target: parsed.target } : {}),

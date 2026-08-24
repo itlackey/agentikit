@@ -2,15 +2,15 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmTasksAdd, akmTasksDoctor, akmTasksSync, prepareSchedulerRuntime } from "../../src/commands/tasks/tasks";
-import type { TaskBackend, TaskInstallOptions } from "../../src/tasks/backends/types";
+import type { SchedulerBackend, SchedulerInstallOptions } from "../../src/tasks/backends/types";
 import { schedulerContextDescriptor, writeSchedulerContextDescriptor } from "../../src/tasks/scheduler-invocation";
 import { withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 function completeSchedulerBackend(options: {
   binding: readonly string[];
   contextPath: string;
-  onInstall?: (installOptions: TaskInstallOptions | undefined) => void;
-}): TaskBackend {
+  onInstall?: (installOptions: SchedulerInstallOptions | undefined) => void;
+}): SchedulerBackend {
   const invocation = ["task", "run", "ping", "--bundle", "stash", "--scheduled"] as const;
   const installed = {
     id: "ping",
@@ -111,7 +111,7 @@ describe("scheduler runtime binding", () => {
     try {
       configureStash(storage.stashDir);
       writeTask(storage.stashDir);
-      const installs: Array<TaskInstallOptions | undefined> = [];
+      const installs: Array<SchedulerInstallOptions | undefined> = [];
       const backend = completeSchedulerBackend({
         binding: ["/old/node", "/old/dist/akm"],
         contextPath: "/old/context.json",
@@ -210,7 +210,7 @@ describe("scheduler runtime binding", () => {
     try {
       configureStash(storage.stashDir);
       writeTask(storage.stashDir);
-      const installs: Array<TaskInstallOptions | undefined> = [];
+      const installs: Array<SchedulerInstallOptions | undefined> = [];
       const backend = completeSchedulerBackend({
         binding: ["/old/node", "/old/dist/akm"],
         contextPath: "/old/context.json",
@@ -245,7 +245,7 @@ describe("scheduler runtime binding", () => {
         path.join(storage.stashDir, "tasks", "ping.yml"),
         'version: 3\nrun: echo ping\nakm:\n  schedule: "@daily"\n  enabled: false\n',
       );
-      const installs: Array<TaskInstallOptions | undefined> = [];
+      const installs: Array<SchedulerInstallOptions | undefined> = [];
       const backend = completeSchedulerBackend({
         binding: ["/current/akm"],
         contextPath: "/current/context.json",
@@ -277,7 +277,7 @@ describe("scheduler runtime binding", () => {
         fs.readFileSync(tamperedContextPath, "utf8").replace("/tampered", "/modified"),
         { mode: 0o600 },
       );
-      const backend: TaskBackend = {
+      const backend: SchedulerBackend = {
         name: "cron",
         install() {},
         uninstall() {},
@@ -327,7 +327,7 @@ describe("scheduler runtime binding", () => {
         process.execPath,
         path.join(process.cwd(), "tests", "integration", "tasks-runtime-binding.test.ts"),
       ];
-      const backend: TaskBackend = {
+      const backend: SchedulerBackend = {
         name: "cron",
         install() {},
         uninstall() {},

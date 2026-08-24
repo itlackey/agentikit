@@ -93,22 +93,12 @@ Used by JS cosine-similarity fallback when `sqlite-vec` is absent.
 
 Created only when `sqlite-vec` is loadable. Columns: `id INTEGER PRIMARY KEY`, `embedding FLOAT[<dim>]`. Dropped and recreated if embedding dimension changes.
 
-#### Table: `workflow_documents`
+#### Workflow source indexing
 
-Peer `.md` and `.yml` workflow sources use source IR version 1 before projection into this regenerable index table.
-The table stores the
-validated format-neutral `WorkflowDocument` projection, not executable durable
-run state; `source_path` and `source_hash` bind the projection to its authored
-bytes.
-
-| Column | Type | Notes |
-|---|---|---|
-| `entry_id` | INTEGER PRIMARY KEY | FK → `entries(id)` ON DELETE CASCADE |
-| `schema_version` | INTEGER NOT NULL | Workflow schema version |
-| `document_json` | TEXT NOT NULL | Parsed `WorkflowDocument` AST |
-| `source_path` | TEXT NOT NULL | Bundle directory path |
-| `source_hash` | TEXT NOT NULL | FNV-1a hash of raw file bytes (incremental skip key) |
-| `updated_at` | TEXT NOT NULL | ISO-8601 |
+Peer `.md` and `.yml` workflow sources compile directly to source IR version 1.
+The index stores the ordinary normalized `entries` row and metadata derived from
+that IR; there is no workflow-specific AST cache or parallel persisted source
+representation. Executable durable plans belong only to `state.db`.
 
 #### Table: `index_dir_state`
 

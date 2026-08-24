@@ -982,15 +982,6 @@ describe("optimistic lowering safety", () => {
     if (!("messages" in lowered)) throw new Error("fixture must use direct LLM lowering");
     expect(lowered.messages).toEqual([...conversation, { role: "user", content: "Repair it." }]);
 
-    const { engine: _legacyOmission, ...legacyRunner } = runner;
-    const legacy = prepareInlineExecutionWithRunner({
-      content: "Legacy frozen work.",
-      runner: legacyRunner,
-      invocationKind: "workflow",
-    });
-    expect(legacy.request.engine.name).toBe("llm");
-    expect(legacy.runner.engine).toBe("llm");
-    expect(() => lowerResolvedExecutionRequestWithRunner(legacy.request, legacy.runner)).not.toThrow();
   });
 
   test("does not rerun legacy model aliases while resolving live transport material", () => {
@@ -1687,8 +1678,6 @@ describe("optimistic lowering safety", () => {
         connection: { ...base.connection, provider: "different-provider" },
       }),
     ).toThrow(/provider|platform/i);
-    const { engine: _engine, ...unbound } = base;
-    expect(() => lowerResolvedExecutionRequestWithRunner(request, unbound)).toThrow(/engine.*name|identity|bound/i);
   });
 
   test("unsupported fields produce deterministic secret-free notices and runtime rejection still dispatches", async () => {

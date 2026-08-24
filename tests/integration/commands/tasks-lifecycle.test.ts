@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmTasksAdd, akmTasksSync, setEnabledInYaml } from "../../../src/commands/tasks/tasks";
-import type { TaskBackend } from "../../../src/tasks/backends/types";
+import type { SchedulerBackend } from "../../../src/tasks/backends/types";
 import type { ScheduleBackend } from "../../../src/tasks/schedule";
 import {
   compileTaskSchedulerBindings,
@@ -45,7 +45,7 @@ function backendSignature(task: SchedulerBinding): string {
   return JSON.stringify([task.cron, task.enabled, task.invocation]);
 }
 
-const backend: TaskBackend & {
+const backend: SchedulerBackend & {
   snapshotBindings(ids: readonly string[]): unknown;
   restoreBindings(snapshot: unknown): void;
 } = {

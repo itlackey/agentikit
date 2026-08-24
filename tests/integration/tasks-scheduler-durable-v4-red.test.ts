@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { akmTasksSync } from "../../src/commands/tasks/tasks";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
-import type { TaskBackend } from "../../src/tasks/backends/types";
+import type { SchedulerBackend } from "../../src/tasks/backends/types";
 import { type PreparedSchedulerSourceSet, prepareSchedulerSyncSourceSet } from "../../src/tasks/scheduler-sync";
 import { startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
@@ -74,7 +74,7 @@ function recordingBackend() {
     },
     list: () => [],
     setEnabled() {},
-  } as unknown as TaskBackend;
+  } as unknown as SchedulerBackend;
   return { backend, calls };
 }
 

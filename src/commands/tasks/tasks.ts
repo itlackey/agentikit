@@ -37,7 +37,11 @@ import {
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveAssetPath } from "../../sources/resolve";
 import { backendNameForPlatform, selectBackend } from "../../tasks/backends";
-import type { InstalledTaskRef, RebindTaskRef, TaskBackend } from "../../tasks/backends/types";
+import type {
+  InstalledSchedulerBinding,
+  RebindSchedulerBinding,
+  SchedulerBackend,
+} from "../../tasks/backends/types";
 import { type ResolvedAkmInvocation, resolveAkmInvocation } from "../../tasks/resolve-akm-bin";
 import { exitCodeForStatus, readTaskHistory, runTask, type TaskRunResult } from "../../tasks/runner";
 import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "../../tasks/runtime-v3";
@@ -119,7 +123,7 @@ export interface TasksAddResult {
 }
 
 export interface TaskMutationDeps {
-  backend?: TaskBackend;
+  backend?: SchedulerBackend;
   writeAsset?: typeof writeAssetToSource;
   deleteAsset?: typeof deleteAssetFromSource;
   commitBoundary?: typeof commitWriteTargetBoundary;
@@ -457,7 +461,7 @@ export interface TasksSyncResult {
  * (or `sync --bundle` on a bundle whose task files are already present).
  */
 export async function akmTasksSync(
-  deps: { backend?: TaskBackend; schedulerRuntime?: () => PreparedSchedulerRuntime } = {},
+  deps: { backend?: SchedulerBackend; schedulerRuntime?: () => PreparedSchedulerRuntime } = {},
   bundleTarget?: string,
   options: { rebind?: boolean } = {},
 ): Promise<TasksSyncResult> {
@@ -473,8 +477,8 @@ export async function akmTasksSync(
     );
   }
   const inspection = await sched.inspectBindings({ rebind: options.rebind === true });
-  const rawEntries: Array<InstalledTaskRef | RebindTaskRef> = [...inspection.installed];
-  const allEntries: InstalledTaskRef[] = rawEntries.map((entry) => ({
+  const rawEntries: Array<InstalledSchedulerBinding | RebindSchedulerBinding> = [...inspection.installed];
+  const allEntries: InstalledSchedulerBinding[] = rawEntries.map((entry) => ({
     ...entry,
     ...(entry.nativeId !== undefined ? { nativeId: entry.nativeId } : {}),
     ...(entry.invocation !== undefined ? { invocation: Object.freeze([...entry.invocation]) } : {}),
@@ -585,7 +589,7 @@ export interface TasksDoctorResult {
 }
 
 export async function akmTasksDoctor(
-  deps: { backend?: TaskBackend; resolveInvocation?: typeof resolveAkmInvocation } = {},
+  deps: { backend?: SchedulerBackend; resolveInvocation?: typeof resolveAkmInvocation } = {},
 ): Promise<TasksDoctorResult> {
   const warnings: string[] = [];
   let invocation: { argv: string[]; via: string; kind?: string; eligible?: boolean } = {
@@ -601,7 +605,7 @@ export async function akmTasksDoctor(
   const skipNativeInspection = process.env.BUN_TEST === "1" && !deps.backend;
   const sched = deps.backend ?? (skipNativeInspection ? undefined : selectBackend());
   const backend = sched?.name ?? backendNameForPlatform();
-  let installed: InstalledTaskRef[] = [];
+  let installed: InstalledSchedulerBinding[] = [];
   if (skipNativeInspection) {
     warnings.push("Native scheduler inspection is skipped inside the bun test harness.");
   } else {
@@ -670,7 +674,7 @@ export async function akmTasksDoctor(
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 async function applySchedulerSyncPlan(
-  backend: TaskBackend,
+  backend: SchedulerBackend,
   plan: SchedulerSyncPlan,
   publish?: () => void,
 ): Promise<void> {
@@ -684,7 +688,7 @@ async function applySchedulerSyncPlan(
 }
 
 async function applySchedulerTransaction(
-  backend: TaskBackend,
+  backend: SchedulerBackend,
   operations: SchedulerSyncPlan["operations"],
   hooks: {
     initialExpectations: readonly SchedulerMutationExpectation[];
@@ -866,7 +870,7 @@ async function prepareTaskAddSchedulerTransaction(input: {
   ownerTarget: string;
   installOpts: { target?: string } | undefined;
   taskBindings: readonly SchedulerBinding[];
-  sched: TaskBackend;
+  sched: SchedulerBackend;
   deps: TaskMutationDeps;
   rebind: boolean;
 }): Promise<{
@@ -1017,7 +1021,7 @@ async function prepareTaskAddSchedulerTransaction(input: {
 
 function prepareSchedulerSyncRuntime(
   base: { target?: string } | undefined,
-  deps: { backend?: TaskBackend; schedulerRuntime?: () => PreparedSchedulerRuntime },
+  deps: { backend?: SchedulerBackend; schedulerRuntime?: () => PreparedSchedulerRuntime },
   explicitRebind: boolean,
   operation: string,
   warnings: string[],
@@ -1084,7 +1088,7 @@ export function prepareSchedulerRuntime(
 }
 
 function groupInstalledBindings(
-  entries: readonly InstalledTaskRef[],
+  entries: readonly InstalledSchedulerBinding[],
   invocation: TasksDoctorResult["akm"],
 ): TasksDoctorResult["bindings"] {
   const groups = new Map<string, TasksDoctorResult["bindings"][number]>();
@@ -1107,7 +1111,7 @@ function groupInstalledBindings(
   return [...groups.values()].map((group) => ({ ...group, taskIds: group.taskIds.sort() }));
 }
 
-function inspectInstalledBinding(entry: InstalledTaskRef, invocation: TasksDoctorResult["akm"]): string[] {
+function inspectInstalledBinding(entry: InstalledSchedulerBinding, invocation: TasksDoctorResult["akm"]): string[] {
   const status: string[] = [];
   const binding = entry.binding;
   if (
@@ -1416,7 +1420,7 @@ function sameBundle(a: string | undefined, b: string | undefined): boolean {
   return (a ?? undefined) === (b ?? undefined);
 }
 
-function installedEntryRunsTask(entry: InstalledTaskRef, id: string): boolean {
+function installedEntryRunsTask(entry: InstalledSchedulerBinding, id: string): boolean {
   const invocation = entry.invocation;
   return invocation?.[0] === "task" && invocation[1] === "run" && invocation[2] === id;
 }
@@ -1436,7 +1440,7 @@ function errorMessage(cause: unknown): string {
  * only one bundle at a time — a collision is a hard error, not an auto-rename.
  */
 function assertNoForeignSchedule(
-  entries: readonly InstalledTaskRef[],
+  entries: readonly InstalledSchedulerBinding[],
   id: string,
   installTarget: string | undefined,
 ): void {

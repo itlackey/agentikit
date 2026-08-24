@@ -77,7 +77,7 @@ import {
   normalizeXmlForUtf16File,
   runOrThrow,
 } from "./exec-utils";
-import type { InstalledTaskRef, TaskBackend, TaskInstallOptions } from "./types";
+import type { InstalledSchedulerBinding, SchedulerBackend, SchedulerInstallOptions } from "./types";
 
 export type SchtasksExec = BackendExec;
 
@@ -112,7 +112,7 @@ interface SchtasksBindingSnapshot {
   readonly entries: readonly Readonly<{ id: string; xml?: string; enabled?: boolean }>[];
 }
 
-export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBackend {
+export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): SchedulerBackend {
   const exec = options.exec ?? defaultSchtasksExec();
   const fsLike = options.fs ?? defaultSchtasksFs();
   const akmArgv = options.akmArgv ?? resolveAkmInvocation().argv;
@@ -125,7 +125,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
 
   return {
     name: "schtasks",
-    install(task: SchedulerBinding, opts?: TaskInstallOptions, expected?: SchedulerMutationExpectation) {
+    install(task: SchedulerBinding, opts?: SchedulerInstallOptions, expected?: SchedulerMutationExpectation) {
       if (expected) assertSchedulerExpectationIdentity(expected, task);
       const nativeId = schedulerBindingNativeId(task);
       const xml = normalizeXmlForUtf16File(
@@ -288,8 +288,8 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
         message: (r) => `schtasks /Change ${flag} failed: ${r.stderr || r.stdout || "no output"}.`,
       });
     },
-    list(): InstalledTaskRef[] {
-      return [...inspectSchtasksState(exec, folder, taskName).installed] as InstalledTaskRef[];
+    list(): InstalledSchedulerBinding[] {
+      return [...inspectSchtasksState(exec, folder, taskName).installed] as InstalledSchedulerBinding[];
     },
     listForRebind() {
       return listSchtasksForRebind(exec, folder, taskName);
@@ -306,7 +306,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
     restoreBindings(snapshot: unknown, expectedCurrent?: readonly SchedulerRollbackExpectation[]) {
       restoreSchtasksBindings(snapshot, { exec, fsLike, folder, taskName }, expectedCurrent);
     },
-    expectedSignature(task: SchedulerBinding, opts?: TaskInstallOptions): string {
+    expectedSignature(task: SchedulerBinding, opts?: SchedulerInstallOptions): string {
       const signature = taskXmlSignature(
         buildSchtasksXml(task, akmArgv, logDir, {
           folderPrefix: folder,
@@ -363,7 +363,7 @@ function inspectSchtasksState(
     message: (result) =>
       `schtasks /Query failed (exit ${result.status}): ${result.stderr || result.stdout || "no output"}.`,
   });
-  const installed: InstalledTaskRef[] = [];
+  const installed: InstalledSchedulerBinding[] = [];
   const artifacts: SchedulerNativeArtifact[] = [];
   for (const nativeId of schtasksNativeIds(listing.stdout, folder)) {
     const query = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(nativeId), "/XML"], {
@@ -374,7 +374,7 @@ function inspectSchtasksState(
     artifacts.push(artifact);
     const parsed = extractSchtasksInvocation(query.stdout);
     if (!parsed) continue;
-    const ref: InstalledTaskRef = {
+    const ref: InstalledSchedulerBinding = {
       id: schedulerLogicalBindingId(nativeId, parsed.invocation),
       ...(artifact.fingerprint !== undefined ? { signature: artifact.fingerprint } : {}),
       ...(parsed.target !== undefined ? { target: parsed.target } : {}),

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { decodeCommandOutput, escapeXml } from "../src/tasks/backends/exec-utils";
 import type { SchtasksExec, SchtasksFs } from "../src/tasks/backends/schtasks";
 import { buildSchtasksXml, extractSchtasksTarget, SCHTASKS_BACKEND } from "../src/tasks/backends/schtasks";
-import type { InstalledTaskRef } from "../src/tasks/backends/types";
+import type { InstalledSchedulerBinding } from "../src/tasks/backends/types";
 import {
   compileTaskSchedulerBindings,
   type SchedulerBinding,
@@ -404,8 +404,8 @@ describe("schtasks backend signatures", () => {
     };
   }
 
-  const listSync = (backend: ReturnType<typeof SCHTASKS_BACKEND>): InstalledTaskRef[] =>
-    backend.list() as InstalledTaskRef[];
+  const listSync = (backend: ReturnType<typeof SCHTASKS_BACKEND>): InstalledSchedulerBinding[] =>
+    backend.list() as InstalledSchedulerBinding[];
 
   test("list returns the installed signature expected for an unchanged task", () => {
     const task = makeTask("*/5 * * * *");

@@ -19,18 +19,13 @@
  *    `parseWorkflow` on drained workflow docs and DROP
  *    the entry with the same `Skipped workflow …` warning
  *    ({@link buildMetadataSkipWarning}), so the workflow-skip summary counts it.
- *  - **Workflow-document side-table (workflow-md only).** The valid parsed
- *    `WorkflowDocument` is handed to the persist layer through the same
- *    `document-cache` side channel the live renderer contributor used, keyed by
- *    the reconstructed entry — so `takeWorkflowDocument(entry)` in the persist
- *    loop writes the `workflow_documents` row exactly as before.
  *
  * `doc.hash` (= sha256 of the file content) is surfaced per recognized file so
  * the persist layer can populate the `content_hash` column (item 2). It is keyed
  * by the file's absolute path rather than by the entry object.
  *
- * Pure of DB/global state beyond the workflow-document side channel; a new leaf
- * (nothing imports it back), so it joins no import cycle.
+ * Pure of DB/global state; a new leaf (nothing imports it back), so it joins no
+ * import cycle.
  */
 
 import path from "node:path";
@@ -38,14 +33,12 @@ import { akmAdapter } from "../../core/adapter/adapters/akm-adapter";
 import type { BundleAdapter } from "../../core/adapter/bundle-adapter";
 import type { BundleComponent, IndexDocument } from "../../core/adapter/types";
 import { canonicalizeWorkflowName } from "../../core/recognition-util";
-import { cacheWorkflowDocument } from "../../workflows/runtime/document-cache";
 import {
   resolveUniqueWorkflowSource,
   WorkflowSourceRejectionError,
   workflowNameForSourcePath,
 } from "../../workflows/source-files";
 import { compileWorkflowSource } from "../../workflows/source-ir/compile";
-import { workflowSourceIrToDocument } from "../../workflows/source-ir/document";
 import { buildMetadataSkipWarning, type StashFile } from "../passes/metadata";
 import { buildFileContext, type FileContext } from "../walk/file-context";
 import { indexDocumentToStashEntry } from "./doc-to-entry";
@@ -131,7 +124,7 @@ export function drainDirDocuments(
     const entry = indexDocumentToStashEntry(doc);
     // Workflow docs: drop-with-warning if broken; otherwise cache a lossless
     // runtime projection when the current executor can represent the source.
-    const dropWarning = handleWorkflowDoc(doc, entry, file, component.root);
+    const dropWarning = handleWorkflowDoc(doc, file, component.root);
     if (dropWarning !== null) {
       warnings.push(dropWarning);
       continue;
@@ -173,16 +166,10 @@ export function recognizeStashEntries(stashRoot: string, files: string[]): Stash
 
 /**
  * If `doc` is a workflow, re-parse it: return a `Skipped workflow …` drop
- * warning when it is broken, or cache the parsed markdown `WorkflowDocument`
- * (Markdown or GitHub-shaped YAML) and return `null` when valid. Non-workflow
- * docs return `null` immediately.
+ * warning when it is broken, or return `null` when it compiles to shared source
+ * IR. Non-workflow docs return `null` immediately.
  */
-function handleWorkflowDoc(
-  doc: IndexDocument,
-  entry: IndexDocument,
-  file: FileContext,
-  workspaceRoot: string,
-): string | null {
+function handleWorkflowDoc(doc: IndexDocument, file: FileContext, workspaceRoot: string): string | null {
   if (
     doc.type !== "workflow" ||
     (doc.adapterId !== "akm" && doc.adapterId !== "akm-workflow") ||
@@ -193,7 +180,6 @@ function handleWorkflowDoc(
 
   const result = compileWorkflowSource(file.content(), { path: file.relPath, workspaceRoot });
   if (!result.ok) return workflowDropWarning(file, result.errors);
-  cacheWorkflowDocument(entry, workflowSourceIrToDocument(result.ir, { mode: "display" }));
   return null;
 }
 

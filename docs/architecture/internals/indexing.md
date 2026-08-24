@@ -112,7 +112,7 @@ skipped unless the caller explicitly requests re-enrichment.
 ## Database Tables
 
 `index.db`'s schema (`ensureSchema()`,
-`src/storage/repositories/index-schema.ts`) creates 17 tables (2 of them
+`src/storage/repositories/index-schema.ts`) creates 16 tables (2 of them
 virtual). Full column-level detail lives in
 [Storage Locations](storage-locations.md#dataindexdb--main-search-index);
 this is a purpose summary:
@@ -127,7 +127,6 @@ this is a purpose summary:
 | `utility_scores` | recomputed utility boost state (global) |
 | `utility_scores_scoped` | same EMA per `(entry, project-anchor)` pair |
 | `index_meta` | schema/version/runtime metadata |
-| `workflow_documents` | validated `WorkflowDocument` JSON for indexed workflows |
 | `index_dir_state` | incremental-indexing cache (per-directory hash + mtime) |
 | `llm_enrichment_cache` | cached LLM enrichment/graph-extraction/memory-inference results |
 | `registry_index_cache` | cached registry index JSON (replaces flat cache files) |
@@ -153,20 +152,11 @@ path. `DB_VERSION` (a forensic stamp recorded in `index_meta`) only marks how
 far a fresh database was created; it never triggers destructive rebuilds.
 Durable workflow run state in `state.db` is never touched by this path.
 
-The `workflow_documents` table caches the validated `WorkflowDocument` JSON
-output of `parseWorkflow()` for each indexed workflow asset, keyed by
-`entry_id` with `ON DELETE CASCADE`:
-
-```sql
-CREATE TABLE workflow_documents (
-  entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
-  schema_version INTEGER NOT NULL,
-  document_json TEXT NOT NULL,
-  source_path TEXT NOT NULL,
-  source_hash TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-```
+Workflow `.md` and `.yml` adapters compile directly to source IR version 1.
+The index stores only the ordinary normalized `entries` row and searchable
+metadata derived from that IR. It does not cache a second workflow AST or an
+executable plan. Starting a run recompiles the authored source once and freezes
+the sole durable plan format into `state.db`.
 
 ## Metadata Sources
 

@@ -92,8 +92,8 @@ describe("RunnerSpec dispatch authority", () => {
   });
 
   test("routes sdk and agent specs through their one low-level switch", async () => {
-    const sdk: RunnerSpec = { kind: "sdk", profile };
-    const agent: RunnerSpec = { kind: "agent", profile };
+    const sdk: RunnerSpec = { kind: "sdk", engine: "sdk", profile };
+    const agent: RunnerSpec = { kind: "agent", engine: "agent", profile };
     const seams = {
       runAgent: async () => result("spawn"),
       runSdk: async () => result("sdk"),

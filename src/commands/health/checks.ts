@@ -182,8 +182,8 @@ function runConfiguredEngineProbe(
     } catch {
       sdkRunner = undefined;
     }
-    if (sdkRunner?.fallbackConnection) {
-      fallback = { kind: "llm", connection: sdkRunner.fallbackConnection };
+    if (sdkRunner?.fallbackConnection && fallbackEngine) {
+      fallback = { kind: "llm", engine: fallbackEngine, connection: sdkRunner.fallbackConnection };
       fallbackCredential = sdkRunner.fallbackCredential;
     } else if (fallbackEngine) {
       try {

@@ -411,8 +411,7 @@ function requireRunnerShape(request: ResolvedExecutionRequestV1, runner: RunnerS
     runner.kind === "llm"
       ? (runner.connection.provider ?? runner.engine)
       : (runner.profile.platform ?? runner.profile.name);
-  // A legacy request may omit platform, but whenever freeze/planning selected
-  // one it is an identity binding rather than a capability hint.
+  // A selected platform is an identity binding rather than a capability hint.
   if (typeof platform === "string" && platform !== runnerPlatform) {
     throw new ConfigError(
       `Resolved engine ${JSON.stringify(request.engine.name)} changed provider/harness platform before lowering.`,

@@ -120,9 +120,7 @@ describe("indexWrittenAssets", () => {
     expect(idx.entryNames).toEqual(["seed-memory"]);
   });
 
-  test("indexes a workflow entry AND its workflow_documents side-table row (PR-715 review)", async () => {
-    // `akm mv` rewrites citer files that can be workflows, so the fast path
-    // must mirror the full walk: upsert the entry, then the parsed document.
+  test("indexes a rewritten workflow through the shared source compiler", async () => {
     const filePath = path.join(stashDir, "workflows", "rewritten-citer.md");
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(
@@ -154,10 +152,6 @@ describe("indexWrittenAssets", () => {
       } | null;
       expect(row).not.toBeNull();
       expect((JSON.parse((row as { entry_json: string }).entry_json) as { type: string }).type).toBe("workflow");
-      const doc = db
-        .prepare("SELECT COUNT(*) AS c FROM workflow_documents WHERE entry_id = ?")
-        .get((row as { id: number }).id) as { c: number };
-      expect(doc.c).toBe(1);
     } finally {
       closeDatabase(db);
     }

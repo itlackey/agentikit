@@ -762,7 +762,6 @@ describe("0.9.2 release surface", () => {
     const runsRelative = "src/workflows/runtime/runs.ts";
     const runs = read(runsRelative);
     const currentSchemaRelative = "src/workflows/ir/schema-v4.ts";
-    const currentSchemaHeader = read(currentSchemaRelative).slice(0, 3_000);
     const failures = [
       ...missing(rendererRelative, [
         [
@@ -1043,12 +1042,13 @@ describe("0.9.2 release surface", () => {
 
   test("keeps the storage inventory current with source IR, durable plans, attempts, and source peers", () => {
     const failures = [
-      ...missingInSection("docs/architecture/internals/storage-locations.md", /table.*workflow_documents/i, [
+      ...missingInSection("docs/architecture/internals/storage-locations.md", /workflow source indexing/i, [
         ["workflow source IR v1", /source IR (?:version )?1|sourceIrVersion:?\s*1/i],
         [
           "peer .md and .yml workflow sources",
           /(?:peer|both)[^.\n]{0,160}\.md[^.\n]{0,160}\.yml|(?:peer|both)[^.\n]{0,160}\.yml[^.\n]{0,160}\.md/i,
         ],
+        ["no workflow-specific AST cache", /no workflow-specific AST cache|does not cache a second workflow AST/i],
       ]),
       ...missingInSection("docs/architecture/internals/storage-locations.md", /table.*workflow_runs/i, [
         [

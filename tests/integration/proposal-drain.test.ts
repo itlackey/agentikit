@@ -434,6 +434,7 @@ describe("drainProposals — dry-run", () => {
 /** A minimal `llm` RunnerSpec — the injected `chat` seam ignores the connection. */
 const FAKE_LLM_RUNNER: RunnerSpec = {
   kind: "llm",
+  engine: "fake-llm-judge",
   connection: {
     endpoint: "http://fake.invalid/v1/chat/completions",
     model: "provider/exact-fake-judge",
@@ -446,6 +447,7 @@ const FAKE_LLM_RUNNER: RunnerSpec = {
 /** A minimal `agent` RunnerSpec — the injected `runAgentFn` ignores the profile. */
 const FAKE_AGENT_RUNNER: RunnerSpec = {
   kind: "agent",
+  engine: "fake-agent-judge",
   timeoutMs: 1_234,
   profile: {
     name: "fake-judge",

@@ -30,7 +30,7 @@ import { assembleAssetFromString, serializeFrontmatter } from "../../core/asset/
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { DESCRIPTION_MAX_CHARS, requiresDescription } from "../../core/authoring-rules";
-import type { AkmConfig, ImproveProfileConfig, LlmProfileConfig } from "../../core/config/config";
+import type { AkmConfig, ImproveProfileConfig } from "../../core/config/config";
 import { loadConfig } from "../../core/config/config";
 import { ConfigError } from "../../core/errors";
 import { appendEvent, type EventsContext, readEvents } from "../../core/events";
@@ -856,14 +856,12 @@ function reflectMaxTokensForOutput(maxOutputChars: number | undefined): number |
   return Math.ceil((maxOutputChars + REFLECT_RESPONSE_ENVELOPE_CHARS) / 3) + REFLECT_REASONING_TOKEN_HEADROOM;
 }
 
-/** Options for the direct-LLM reflect runner (v2 config path). */
+/** Options for the direct-LLM reflect runner selected by the current execution path. */
 export interface RunReflectViaLlmOptions {
   /** Reflect prompt text (built by {@link buildReflectPrompt}). */
   prompt: string | undefined;
-  /** LLM connection config. `supportsJsonSchema` controls structured-output mode. */
-  connection?: LlmProfileConfig;
-  /** Preferred production path: exact symbolic runner selected before dispatch. */
-  runner?: Extract<RunnerSpec, { kind: "llm" }>;
+  /** Exact symbolic runner selected before dispatch. */
+  runner: Extract<RunnerSpec, { kind: "llm" }>;
   /** Operation-scoped credential snapshot shared across generation/refinement/repair. */
   lease?: LoweredExecutionDispatchLease;
   /** Hard timeout for the LLM request in ms. */
@@ -1038,16 +1036,13 @@ function parseDirectReflectOutput(raw: string, mode: ReflectLlmOutputMode, targe
 export async function runReflectViaLlm(opts: RunReflectViaLlmOptions): Promise<AgentRunResult> {
   const start = Date.now();
   let repairAttempts = 0;
-  const connection = opts.runner?.connection ?? opts.connection;
-  if (!connection) throw new TypeError("runReflectViaLlm requires a resolved LLM runner or connection");
+  const connection = opts.runner.connection;
   const messages: ChatMessage[] = [{ role: "user", content: opts.prompt ?? "" }];
   const configuredTimeout = Object.hasOwn(opts, "timeoutMs")
     ? (opts.timeoutMs ?? null)
-    : opts.runner && Object.hasOwn(opts.runner, "timeoutMs")
+    : Object.hasOwn(opts.runner, "timeoutMs")
       ? (opts.runner.timeoutMs ?? null)
-      : Object.hasOwn(connection, "timeoutMs")
-        ? (connection.timeoutMs ?? null)
-        : DEFAULT_LLM_TIMEOUT_MS;
+      : DEFAULT_LLM_TIMEOUT_MS;
   const deadline = typeof configuredTimeout === "number" ? start + configuredTimeout : undefined;
 
   if (opts.priorDraft !== undefined && opts.iteration > 0) {
@@ -1058,7 +1053,7 @@ export async function runReflectViaLlm(opts: RunReflectViaLlmOptions): Promise<A
   const call = async (callMessages: ChatMessage[], repairTimeoutMs?: number): Promise<string> =>
     callStructured<string>({
       feature: "reflect_proposal",
-      ...(opts.runner ? { runner: opts.runner } : { config: connection }),
+      runner: opts.runner,
       ...(opts.lease ? { lease: opts.lease } : {}),
       messages: callMessages,
       request: {

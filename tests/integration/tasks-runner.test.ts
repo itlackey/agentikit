@@ -154,31 +154,6 @@ test("task history applies its public limit in SQL before decoding metadata", ()
   ]);
 });
 
-test("task history projects a v1 prompt profile as legacyProfile, never engine", () => {
-  const db = openStateDatabase();
-  try {
-    upsertTaskHistory(db, {
-      task_id: "legacy-prompt",
-      status: "completed",
-      started_at: "2025-01-01T00:00:00.000Z",
-      completed_at: "2025-01-01T00:00:01.000Z",
-      failed_at: null,
-      log_path: null,
-      target_kind: "prompt",
-      target_ref: null,
-      metadata_json: JSON.stringify({ durationMs: 1000, detail: null, profile: "reviewer" }),
-    });
-  } finally {
-    db.close();
-  }
-
-  expect(readTaskHistory({ id: "legacy-prompt" })[0]?.target).toEqual({
-    kind: "prompt",
-    engine: null,
-    legacyProfile: "reviewer",
-  });
-});
-
 function emptyReadableStream(): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
