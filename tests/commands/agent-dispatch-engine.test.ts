@@ -9,6 +9,8 @@ import { agentCommand } from "../../src/commands/agent/contribute-cli";
 import type { AkmConfig } from "../../src/core/config/config-types";
 import { _setWarnSinkForTests } from "../../src/core/warn";
 import { FALLBACK_ANNOUNCEMENT } from "../../src/integrations/agent/engine-fallback";
+import { executeInteractiveAgentInvocation } from "../../src/integrations/agent/execution-lowering";
+import { withEnv } from "../_helpers/sandbox";
 import { overrideSeam } from "../_helpers/seams";
 
 describe("akm agent CLI help", () => {
@@ -24,6 +26,108 @@ describe("akm agent CLI help", () => {
 });
 
 describe("akmAgentDispatch engine capability", () => {
+  test("shared prompt-free lowering preserves native TTY options and redacts leased environment diagnostics", async () => {
+    const secret = "sk-interactive-boundary-secret-123456";
+    const calls: unknown[] = [];
+    const execution = await withEnv({ ANTHROPIC_API_KEY: secret }, () =>
+      executeInteractiveAgentInvocation(
+        {
+          config: {
+            configVersion: "0.9.0",
+            semanticSearchMode: "off",
+            engines: { native: { kind: "agent", platform: "claude", bin: "/bin/true" } },
+          },
+          engine: "native",
+          timeoutMs: 0,
+          cwd: "/fixture/workspace",
+        },
+        {
+          runAgent: async (profile, prompt, options) => {
+            calls.push({ profile: profile.name, prompt, options });
+            return {
+              ok: false,
+              exitCode: 1,
+              stdout: `stdout ${secret}`,
+              stderr: `stderr ${secret}`,
+              error: `error ${secret}`,
+              reason: "non_zero_exit",
+              durationMs: 1,
+            };
+          },
+        },
+      ),
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      profile: "native",
+      prompt: "",
+      options: {
+        stdio: "interactive",
+        parseOutput: "text",
+        timeoutMs: 0,
+        cwd: "/fixture/workspace",
+      },
+    });
+    const nativeOptions = (calls[0] as { options: Record<string, unknown> }).options;
+    expect(Object.hasOwn(nativeOptions, "envSource")).toBe(true);
+    for (const field of ["env", "args", "stdin", "dispatch", "builderRegistry", "signal"]) {
+      expect(Object.hasOwn(nativeOptions, field)).toBe(false);
+    }
+    for (const field of [execution.result.stdout, execution.result.stderr, execution.result.error]) {
+      expect(field).not.toContain(secret);
+    }
+  });
+
+  test("shared prompt-free lowering preserves the SDK profile stdio and rejects LLM engines before dispatch", async () => {
+    const sdkCalls: unknown[] = [];
+    await executeInteractiveAgentInvocation(
+      {
+        config: {
+          configVersion: "0.9.0",
+          semanticSearchMode: "off",
+          engines: { sdk: { kind: "agent", platform: "opencode-sdk", bin: "/bin/true" } },
+        },
+        engine: "sdk",
+      },
+      {
+        runSdk: async (profile, prompt, options) => {
+          sdkCalls.push({ profile: profile.name, prompt, options });
+          return { ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 };
+        },
+      },
+    );
+    expect(sdkCalls).toHaveLength(1);
+    expect(sdkCalls[0]).toMatchObject({
+      profile: "sdk",
+      prompt: "",
+      options: { stdio: "captured", parseOutput: "text" },
+    });
+
+    let dispatches = 0;
+    await expect(
+      executeInteractiveAgentInvocation(
+        {
+          config: {
+            configVersion: "0.9.0",
+            semanticSearchMode: "off",
+            engines: {
+              llm: { kind: "llm", endpoint: "https://example.invalid/v1/chat/completions", model: "fixture" },
+            },
+          },
+          engine: "llm",
+        },
+        {
+          runAgent: async () => {
+            dispatches += 1;
+            return { ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 };
+          },
+        },
+      ),
+    ).rejects.toThrow(/LLM engine.*requires an agent engine/i);
+    expect(dispatches).toBe(0);
+  });
+
   test("delegates prompt-free native launch through the shared interactive execution boundary", async () => {
     const config: AkmConfig = {
       configVersion: "0.9.0",
