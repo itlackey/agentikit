@@ -1091,7 +1091,7 @@ describe("workflow LLM import-site parity (reviewer #9)", () => {
       const run = nodeRun(["workflow", "run", "workflows/judge-smoke", "--mode=go", "--max-steps=1"], nodeEnv);
       assertNoBoundaryLeak(run, "judge run");
       expect(run.stdout + run.stderr).not.toContain(REQUIRE_NOT_DEFINED);
-      expect(run.status).toBe(1);
+      expect(run.status, `summary-judge dead-endpoint result:\nstdout:\n${run.stdout}\nstderr:\n${run.stderr}`).toBe(1);
     },
     60_000,
   );
