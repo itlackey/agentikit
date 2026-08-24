@@ -67,28 +67,21 @@ describe("proposal queue target binding", () => {
     }
   }
 
-  test("an unbound qualified historical row binds its named bundle, but a short row has no ambient default", async () => {
+  test("historical rows without current changes fail closed before target binding", async () => {
     const primary = stash("akm-proposal-historical-primary-");
     const team = stash("akm-proposal-historical-team-");
     const cfg = config(primary, team);
     insertHistorical(primary, "historical-qualified", "team//lessons/historical-qualified");
     insertHistorical(primary, "historical-short", "lessons/historical-short");
-    insertHistorical(team, "historical-queue", "lessons/historical-queue");
 
-    const qualified = await akmProposalAccept({ stashDir: primary, id: "historical-qualified", config: cfg });
-    expect(qualified.assetPath).toBe(path.join(team, "lessons", "historical-qualified.md"));
-    await expect(akmProposalAccept({ stashDir: primary, id: "historical-short", config: cfg })).rejects.toThrow(
-      /explicit target|queue context/i,
+    await expect(akmProposalAccept({ stashDir: primary, id: "historical-qualified", config: cfg })).rejects.toThrow(
+      /metadata is missing changes/i,
     );
-    const explicit = await akmProposalAccept({
-      stashDir: primary,
-      id: "historical-short",
-      target: "team",
-      config: cfg,
-    });
-    expect(explicit.assetPath).toBe(path.join(team, "lessons", "historical-short.md"));
-    const queued = await akmProposalAccept({ queue: "team", id: "historical-queue", config: cfg });
-    expect(queued.assetPath).toBe(path.join(team, "lessons", "historical-queue.md"));
+    await expect(
+      akmProposalAccept({ stashDir: primary, id: "historical-short", target: "team", config: cfg }),
+    ).rejects.toThrow(/metadata is missing changes/i);
+    expect(fs.existsSync(path.join(team, "lessons", "historical-qualified.md"))).toBe(false);
+    expect(fs.existsSync(path.join(team, "lessons", "historical-short.md"))).toBe(false);
   });
   test("an unqualified ref in a named secondary queue uses and records the configured source identity", async () => {
     const primary = stash("akm-proposal-primary-");
