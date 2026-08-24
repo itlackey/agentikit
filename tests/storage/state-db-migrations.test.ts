@@ -169,6 +169,50 @@ describe("state.db automatic migration boundary", () => {
     expect(upgradeHistoricalStateDatabase(file)).toEqual({ upgraded: false });
   });
 
+  test("a failed 018 transaction retains its verified safety copy and reports the recovery path", () => {
+    const file = statePath();
+    const before018 = STATE_MIGRATIONS.slice(0, migrationIndex("018-drop-dead-lane-schema"));
+    const seeded = openDatabase(file);
+    runMigrations(seeded, before018);
+    seeded
+      .prepare("INSERT INTO consolidation_judged (entry_key, content_hash, judged_at, outcome) VALUES (?, ?, ?, ?)")
+      .run("memories/recoverable", "recover-after-failure", "2026-08-24T02:00:00.000Z", "actioned");
+    // Exact ledger, deliberately divergent physical schema: 018 will fail at
+    // its final DROP COLUMN after the verified copy has been created.
+    seeded.exec(`
+      DROP INDEX idx_asset_outcome_review_pressure;
+      ALTER TABLE asset_outcome DROP COLUMN review_pressure;
+    `);
+    seeded.close();
+
+    let message = "";
+    try {
+      upgradeHistoricalStateDatabase(file);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toMatch(/Verified safety copy: .*pre-018-drop-dead-lane-schema.*\.bak/i);
+    const safetyCopyPath = message.match(/Verified safety copy: ([^\s]+\.bak)/)?.[1];
+    expect(safetyCopyPath).toBeDefined();
+    expect(fs.existsSync(safetyCopyPath as string)).toBe(true);
+
+    const current = openDatabase(file, { readonly: true });
+    expect((current.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(
+      before018.length,
+    );
+    expect(current.prepare("SELECT content_hash FROM consolidation_judged").get() as { content_hash: string }).toEqual({
+      content_hash: "recover-after-failure",
+    });
+    current.close();
+
+    const safetyCopy = openDatabase(safetyCopyPath as string, { readonly: true });
+    expect(safetyCopy.prepare("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
+    expect(
+      safetyCopy.prepare("SELECT content_hash FROM consolidation_judged").get() as { content_hash: string },
+    ).toEqual({ content_hash: "recover-after-failure" });
+    safetyCopy.close();
+  });
+
   test("released 002 and 018 migration SQL remains byte-for-byte immutable", () => {
     const expected = new Map([
       ["002-task-history-per-run", "58aa34d3cd8726180de7b8691f14d40ee6729bf1541a9b81305c3ab66346cecc"],

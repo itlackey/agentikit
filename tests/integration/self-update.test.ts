@@ -563,6 +563,37 @@ describe("performUpgrade", () => {
     expect(spawnSyncSpy).toHaveBeenCalledTimes(2);
   });
 
+  test("a historical state failure reports the verified copy and does not start the index rebuild", async () => {
+    const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
+      status: 0,
+      stdout: "",
+      stderr: "",
+    } as never);
+    const upgradeHistoricalStateDatabase = mock(() => {
+      throw new Error(
+        "018 failed. Verified safety copy: /data/state.db.pre-018-drop-dead-lane-schema.20260824T020000000Z.bak.",
+      );
+    });
+
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.14",
+        updateAvailable: true,
+        installMethod: "npm",
+      },
+      undefined,
+      { upgradeHistoricalStateDatabase },
+    );
+
+    expect(result.upgraded).toBe(true);
+    expect(result.postUpgrade?.ok).toBe(false);
+    expect(result.postUpgrade?.skipped).toBe(false);
+    expect(result.postUpgrade?.message).toContain("state.db.pre-018-drop-dead-lane-schema");
+    // Package install and version verification only; index is not attempted.
+    expect(spawnSyncSpy).toHaveBeenCalledTimes(2);
+  });
+
   test("captures post-upgrade failure without failing the upgrade", async () => {
     let call = 0;
     const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockImplementation((() => {
