@@ -200,11 +200,11 @@ describe("getRetrievalCounts", () => {
     expect(scoped.get("skills/duplicate")).toBe(2);
   });
 
-  test("last-use recency selects the duplicate from the requested source root", () => {
+  test("last-use recency does not select a nested bundle through the requested source root", () => {
     db.close();
     db = openIndexDatabase(":memory:");
     const selectedRoot = "/tmp/selected-source";
-    const otherRoot = "/tmp/other-source";
+    const otherRoot = `${selectedRoot}/.read-only-bundle`;
     const selectedId = upsertEntry(
       db,
       `${selectedRoot}/skills/duplicate.md`,

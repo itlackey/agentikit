@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { inspectConsolidationPool } from "../../../../src/commands/improve/consolidate";
 import {
   buildLatestFeedbackTsMap,
   buildLatestProposalTsMap,
@@ -229,9 +230,27 @@ test("a read-only nested bundle is never eligible through its writable ancestor"
   }
 
   const result = await collectEligibleRefs({ mode: "all" }, stash, {}, config);
-
-  expect(result.plannedRefs.map((entry) => entry.itemRef)).toEqual(["primary//memories/writable"]);
-  expect(result.memorySummary).toEqual({ eligible: 1, derived: 0 });
+  const pool = inspectConsolidationPool(
+    {
+      config,
+      writeTarget: {
+        selector: "primary",
+        source: { kind: "filesystem", name: "primary", path: stash },
+        config: { type: "filesystem", name: "primary", path: stash, writable: true },
+      },
+    },
+    stash,
+    [],
+  );
+  expect({
+    plannedRefs: result.plannedRefs.map((entry) => entry.itemRef),
+    memorySummary: result.memorySummary,
+    consolidationPool: pool.memories.map((memory) => memory.name),
+  }).toEqual({
+    plannedRefs: ["primary//memories/writable"],
+    memorySummary: { eligible: 1, derived: 0 },
+    consolidationPool: ["writable"],
+  });
 });
 
 test("treats an index without an entries table as an empty candidate plan", async () => {

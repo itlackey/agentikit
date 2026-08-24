@@ -14,6 +14,7 @@ import type { AkmConfig } from "../../src/core/config/config";
 import { getDbPath } from "../../src/core/paths";
 import { _setWarnSinkForTests } from "../../src/core/warn";
 import { resetBundleIdentityGuardForTests, warnOnBundleRenameDrift } from "../../src/indexer/bundle-identity-guard";
+import { openDatabase } from "../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
 import { type Cleanup, sandboxXdgDataHome } from "../_helpers/sandbox";
@@ -77,6 +78,20 @@ describe("§11.5 bundle-rename startup guard", () => {
     seedIndexBundles(["primary"]);
     warnOnBundleRenameDrift(bundlesConfig("primary"));
     expect(warnCalls).toHaveLength(0);
+  });
+
+  test("refuses a stamped v21 index with a hidden generated legacy column before reading bundle ids", () => {
+    seedIndexBundles(["oldname"]);
+    const raw = openDatabase(getDbPath());
+    try {
+      raw.exec("ALTER TABLE entries ADD COLUMN entry_key TEXT GENERATED ALWAYS AS (item_ref) VIRTUAL");
+    } finally {
+      raw.close();
+    }
+
+    warnOnBundleRenameDrift(bundlesConfig("newname"));
+
+    expect(warnCalls).toEqual([]);
   });
 
   test("stays silent when a configured bundle is simply not yet indexed (all index ids configured)", () => {
