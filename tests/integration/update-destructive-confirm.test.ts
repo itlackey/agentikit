@@ -27,8 +27,9 @@ import { _setUpdateTransactionHookForTests, akmUpdate } from "../../src/commands
 import { loadConfig, saveConfig } from "../../src/core/config/config";
 import { probeIndexWriterLease } from "../../src/indexer/index-writer-lock";
 import { _setAkmIndexForTests } from "../../src/indexer/indexer";
-import { mergeLockEntriesSync, readLockfile, writeLockfile } from "../../src/integrations/lockfile";
+import { readLockfile, writeLockfile } from "../../src/integrations/lockfile";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
+import { seedLockEntries } from "../_helpers/lockfile";
 import {
   type Cleanup,
   sandboxStashDir,
@@ -99,7 +100,7 @@ function configureManagedBundle(id: string, oldRoot: string): void {
       [id]: { npm: id },
     },
   });
-  mergeLockEntriesSync([
+  seedLockEntries([
     {
       id,
       source: "npm",
@@ -261,7 +262,7 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
         shared: { path: oldRoot, components: { main: { root: ".", adapter: "akm" } } },
       },
     });
-    mergeLockEntriesSync([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
+    seedLockEntries([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
     const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
       id: "left-pad",
       source: "npm",
@@ -297,7 +298,7 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
         notes: { path: nestedRoot },
       },
     });
-    mergeLockEntriesSync([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
+    seedLockEntries([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
     const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
       id: "left-pad",
       source: "npm",
@@ -336,7 +337,7 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
           notes: { path: linkedRoot },
         },
       });
-      mergeLockEntriesSync([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
+      seedLockEntries([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
       const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
         id: "left-pad",
         source: "npm",
@@ -373,7 +374,7 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
         },
       },
     });
-    mergeLockEntriesSync([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: root }]);
+    seedLockEntries([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: root }]);
     const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
       id: "left-pad",
       source: "npm",
@@ -461,7 +462,7 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
         },
       },
     });
-    mergeLockEntriesSync([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
+    seedLockEntries([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
     const oldConfig = loadConfig();
     const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
       id: "left-pad",

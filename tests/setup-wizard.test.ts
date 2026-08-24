@@ -5,7 +5,6 @@
  */
 import { beforeEach, describe, expect, test } from "bun:test";
 import { _setClackForTests } from "../src/cli/clack";
-import { mergeLockEntriesSync } from "../src/integrations/lockfile";
 import { onCancel } from "../src/setup/prompt";
 import { _setLoadSetupStashesForTests } from "../src/setup/registry-stash-loader";
 import { describeSemanticSearchAssets } from "../src/setup/semantic-assets";
@@ -16,6 +15,7 @@ import { stepOutputConfig } from "../src/setup/steps/output";
 import { stepAgentSelection } from "../src/setup/steps/platforms";
 import { stepSemanticSearch } from "../src/setup/steps/semantic";
 import { stepAddSources, stepRegistries } from "../src/setup/steps/sources";
+import { seedLockEntries } from "./_helpers/lockfile";
 import { overrideSeam } from "./_helpers/seams";
 
 // ── Prompt-fake plumbing (src/cli/clack seam via overrideSeam) ───────────────
@@ -313,7 +313,7 @@ describe("stepAddSources – recommended GitHub repos", () => {
 
     // #37: "managed" is a bundle whose key has a lock entry (config carries the
     // desired descriptor; the lock carries the resolved state).
-    mergeLockEntriesSync([{ id: "demo-skills", source: "github", ref: "github:demo/skills", localRoot: "/tmp/demo" }]);
+    seedLockEntries([{ id: "demo-skills", source: "github", ref: "github:demo/skills", localRoot: "/tmp/demo" }]);
     await stepAddSources({
       bundles: { "demo-skills": { git: "https://github.com/demo/skills", registryId: "github:demo/skills" } },
     } as never);

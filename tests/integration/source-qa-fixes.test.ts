@@ -18,9 +18,10 @@ import { akmAdd } from "../../src/commands/sources/source-add";
 import { addStash } from "../../src/commands/sources/source-manage";
 import { loadConfig, saveConfig } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
-import { mergeLockEntriesSync, readLockfile } from "../../src/integrations/lockfile";
+import { readLockfile } from "../../src/integrations/lockfile";
 import * as gitProvider from "../../src/sources/providers/git";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
+import { seedLockEntries } from "../_helpers/lockfile";
 import { withEnv, withMockedFetch } from "../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
@@ -323,7 +324,7 @@ describe("issue #12: updatable field absent from SourceEntry", () => {
       semanticSearchMode: "off",
       bundles: { "test-pkg": { npm: "test-pkg" } },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "test-pkg",
         source: "npm",
@@ -488,7 +489,7 @@ describe("update preserves entry.source for writable installed entries", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "dimm-city-agent-stash",
         source: "git",
@@ -587,7 +588,7 @@ describe("update preserves entry.source for writable installed entries", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "dimm-city-agent-stash",
         source: "github",
@@ -637,7 +638,7 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
         plain: { git: "https://github.com/example/plain.git", enabled: false },
       },
     });
-    mergeLockEntriesSync([{ id: "managed", source: "npm", ref: "npm:managed", localRoot: disabledManagedRoot }]);
+    seedLockEntries([{ id: "managed", source: "npm", ref: "npm:managed", localRoot: disabledManagedRoot }]);
     const managedSync = spyOn(syncFromRefModule, "syncFromRef").mockRejectedValue(new Error("disabled managed synced"));
     const plainSync = spyOn(gitProvider, "syncMirroredRepo").mockRejectedValue(new Error("disabled plain synced"));
 

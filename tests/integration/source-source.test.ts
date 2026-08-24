@@ -14,8 +14,8 @@ import {
   resolveAllStashDirs,
   resolveSourceEntries,
 } from "../../src/indexer/search/search-source";
-import { mergeLockEntriesSync } from "../../src/integrations/lockfile";
 import type { InstallKind } from "../../src/registry/types";
+import { seedLockEntries } from "../_helpers/lockfile";
 
 /**
  * Seed a lock-backed registry-managed source (a git/npm `bundles` entry + its
@@ -27,7 +27,7 @@ function seedManagedBundle(
   lock: { source: InstallKind; ref: string; localRoot: string },
 ): void {
   saveConfig({ semanticSearchMode: "off", bundles: { [key]: descriptor } });
-  mergeLockEntriesSync([{ id: key, source: lock.source, ref: lock.ref, localRoot: lock.localRoot }]);
+  seedLockEntries([{ id: key, source: lock.source, ref: lock.ref, localRoot: lock.localRoot }]);
 }
 
 import * as gitProvider from "../../src/sources/providers/git";
@@ -200,7 +200,7 @@ describe("resolveSourceEntries", () => {
           "test-pkg": { npm: "npm:test-pkg@1.0.0", registryId: "npm:test-pkg" },
         },
       });
-      mergeLockEntriesSync([{ id: "test-pkg", source: "npm", ref: "npm:test-pkg@1.0.0", localRoot: installedDir }]);
+      seedLockEntries([{ id: "test-pkg", source: "npm", ref: "npm:test-pkg@1.0.0", localRoot: installedDir }]);
       const sources = resolveSourceEntries();
       expect(sources[0]!.path).toBe(stashDir);
       expect(sources[0]!.registryId).toBeUndefined();
@@ -309,7 +309,7 @@ describe("resolveSourceEntries", () => {
           npm: { npm: "npm:policy-package@1.0.0" },
         },
       });
-      mergeLockEntriesSync([
+      seedLockEntries([
         {
           id: "git-default",
           source: "git",

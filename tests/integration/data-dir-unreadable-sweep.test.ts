@@ -37,12 +37,7 @@ import { _setWarnSinkForTests } from "../../src/core/warn";
 import { loadGraphFilesOnly, loadStoredGraphMeta } from "../../src/indexer/db/graph-db";
 import { indexWrittenAssets } from "../../src/indexer/index-written-assets";
 import { akmIndex } from "../../src/indexer/indexer";
-import {
-  assertMigrationLockfileReadable,
-  mergeLockEntriesSync,
-  removeLockEntry,
-  upsertLockEntry,
-} from "../../src/integrations/lockfile";
+import { removeLockEntry, upsertLockEntry } from "../../src/integrations/lockfile";
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
 import { rekeyEntryInPlace } from "../../src/storage/repositories/index-entries-repository";
 import { runCliCapture } from "../_helpers/cli";
@@ -99,31 +94,6 @@ function stashConfig(stashDir: string): AkmConfig {
 
 describe("the lockfile write paths refuse to overwrite what they cannot read (#791)", () => {
   const entry = { id: "demo", source: "npm", ref: "demo@1.0.0" } as const;
-
-  test("mergeLockEntriesSync throws and leaves the lockfile untouched", () => {
-    const lockfilePath = path.join(getDataDir(), "akm.lock");
-    makeUnresolvablePath(path.dirname(lockfilePath), path.basename(lockfilePath));
-
-    let raised: unknown;
-    try {
-      mergeLockEntriesSync([{ ...entry }]);
-    } catch (error) {
-      raised = error;
-    }
-    expect(raised).toBeInstanceOf(ConfigError);
-    expect((raised as ConfigError).code).toBe("DATA_DIR_UNREADABLE");
-    // The real damage the old code did: it read `[]`, then wrote `[entry]` over
-    // the top — replacing the operator's whole lock record with one row. The
-    // path must still be the symlink we made, not a fresh regular file.
-    expect(fs.lstatSync(lockfilePath).isSymbolicLink()).toBe(true);
-  });
-
-  test("assertMigrationLockfileReadable actually asserts readability", () => {
-    const lockfilePath = path.join(getDataDir(), "akm.lock");
-    makeUnresolvablePath(path.dirname(lockfilePath), path.basename(lockfilePath));
-
-    expect(() => assertMigrationLockfileReadable()).toThrow(ConfigError);
-  });
 
   test("upsertLockEntry rejects rather than replacing an unreadable lockfile", async () => {
     const lockfilePath = path.join(getDataDir(), "akm.lock");

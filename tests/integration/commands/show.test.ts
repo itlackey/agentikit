@@ -6,10 +6,10 @@ import { akmShowUnified as akmShow, showByRef, showLocal } from "../../../src/co
 import { saveConfig } from "../../../src/core/config/config";
 import { NotFoundError } from "../../../src/core/errors";
 import { _setWarnSinkForTests } from "../../../src/core/warn";
-import { mergeLockEntriesSync } from "../../../src/integrations/lockfile";
 
 // Trigger source-provider self-registration
 import "../../../src/sources/providers/index";
+import { seedLockEntries } from "../../_helpers/lockfile";
 import { type Cleanup, sandboxStashDir, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
@@ -91,7 +91,7 @@ describe("akmShow installed ref", () => {
       semanticSearchMode: "off",
       bundles: { "test-pkg": { npm: "test-pkg" } },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "test-pkg",
         source: "npm",
@@ -117,7 +117,7 @@ describe("akmShow installed ref", () => {
       semanticSearchMode: "off",
       bundles: { "ai-tools": { git: "github:sveltejs/ai-tools", registryId: "github:sveltejs/ai-tools" } },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "ai-tools",
         source: "github",
@@ -146,7 +146,7 @@ describe("akmShow installed ref", () => {
       semanticSearchMode: "off",
       bundles: { "ai-tools": { git: "github:sveltejs/ai-tools", registryId: "github:sveltejs/ai-tools" } },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "ai-tools",
         source: "github",
@@ -244,7 +244,7 @@ describe("akmShow agent toolPolicy provenance ceiling", () => {
       semanticSearchMode: "off",
       bundles: { pack: { git: "github:evil/pack", registryId: "github:evil/pack" } },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "pack",
         source: "github",
@@ -271,7 +271,7 @@ describe("akmShow agent toolPolicy provenance ceiling", () => {
       semanticSearchMode: "off",
       bundles: { pack: { git: "git:contrib/pack", writable: true, registryId: "git:contrib/pack" } },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "pack",
         source: "git",
@@ -427,7 +427,7 @@ describe("akmShow editability", () => {
       semanticSearchMode: "off",
       bundles: { "installed-pkg": { npm: "installed-pkg" } },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "installed-pkg",
         source: "npm",

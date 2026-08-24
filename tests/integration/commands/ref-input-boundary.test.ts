@@ -28,10 +28,10 @@ import { akmShowUnified } from "../../../src/commands/read/show";
 import { saveConfig } from "../../../src/core/config/config";
 import { getDbPath } from "../../../src/core/paths";
 import { akmIndex } from "../../../src/indexer/indexer";
-import { mergeLockEntriesSync } from "../../../src/integrations/lockfile";
 // Trigger source-provider self-registration.
 import "../../../src/sources/providers/index";
 import { runCliCapture } from "../../_helpers/cli";
+import { seedLockEntries } from "../../_helpers/lockfile";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
@@ -61,7 +61,7 @@ beforeEach(async () => {
     semanticSearchMode: "off",
     bundles: { catalog: { npm: "catalog" } },
   });
-  mergeLockEntriesSync([
+  seedLockEntries([
     {
       id: "catalog",
       source: "npm",

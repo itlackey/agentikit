@@ -16,7 +16,7 @@ import { getConfigPath, getDbPath, getLockfilePath, getRegistryCacheDir } from "
 import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { akmIndex } from "../../src/indexer/indexer";
 import { _setSemanticStatusMutationForTests } from "../../src/indexer/search/semantic-status";
-import { mergeLockEntriesSync, readLockfile } from "../../src/integrations/lockfile";
+import { readLockfile } from "../../src/integrations/lockfile";
 import * as gitProvider from "../../src/sources/providers/git";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
 import { getWebsiteCachePaths } from "../../src/sources/website-url";
@@ -27,6 +27,7 @@ import {
   openReadonlyExistingDatabase,
 } from "../../src/storage/repositories/index-connection";
 import { getAllEntries } from "../../src/storage/repositories/index-entries-repository";
+import { seedLockEntries } from "../_helpers/lockfile";
 import {
   type IsolatedAkmStorage,
   makeSandboxDir,
@@ -133,7 +134,7 @@ async function configureCanonicalManagedBundle(opts: {
       },
     },
   });
-  mergeLockEntriesSync([
+  seedLockEntries([
     {
       id: opts.id,
       source,
@@ -304,7 +305,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "audited",
         source: "git",
@@ -971,7 +972,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "managed-writable-race",
         source: "git",
@@ -1032,7 +1033,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id,
         source: "git",
@@ -1093,7 +1094,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id,
         source: "git",
@@ -1180,7 +1181,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id,
         source: "git",
@@ -1256,7 +1257,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id,
         source: "git",
@@ -1323,7 +1324,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id,
         source: "git",
@@ -1364,7 +1365,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
           },
         },
       });
-      mergeLockEntriesSync([
+      seedLockEntries([
         {
           id,
           source: "git",
@@ -1428,7 +1429,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id,
         source: "git",
@@ -1489,7 +1490,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id,
         source: "git",
@@ -1547,7 +1548,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id,
         source: "git",
@@ -1599,7 +1600,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id,
         source: "git",
@@ -1777,9 +1778,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         },
       },
     });
-    mergeLockEntriesSync([
-      { id, source: "npm", ref: `npm:${id}`, resolvedVersion: "1.0.0", localRoot: live.contentDir },
-    ]);
+    seedLockEntries([{ id, source: "npm", ref: `npm:${id}`, resolvedVersion: "1.0.0", localRoot: live.contentDir }]);
     await akmIndex({ stashDir: storage.stashDir, hydrateSources: false });
     const beforeRows = indexedRows();
     const beforeLock = fs.readFileSync(getLockfilePath(), "utf8");
@@ -1960,7 +1959,7 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
         ids.map((id) => [id, { npm: id, components: { main: { root: ".", adapter: "akm", writable: false } } }]),
       ),
     });
-    mergeLockEntriesSync(
+    seedLockEntries(
       ids.map((id) => ({
         id,
         source: "npm" as const,

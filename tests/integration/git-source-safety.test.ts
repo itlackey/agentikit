@@ -25,8 +25,8 @@ import {
   publishGitTransactionCommit,
   writeAssetToSource,
 } from "../../src/core/write-source";
-import { mergeLockEntriesSync } from "../../src/integrations/lockfile";
 import { saveGitStash } from "../../src/sources/providers/git";
+import { seedLockEntries } from "../_helpers/lockfile";
 import {
   type Cleanup,
   sandboxStashDir,
@@ -106,7 +106,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "team",
         source: "git",

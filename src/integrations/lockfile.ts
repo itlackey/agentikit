@@ -147,8 +147,7 @@ function assertLockfilePathReadable(target: string): void {
  * replace the corrupt file with one containing only the single new/changed
  * entry — permanently destroying every other surviving lock record. Write
  * paths use this strict variant so a corrupt lockfile fails the operation
- * loudly (matching the guard `mergeLockEntriesSync` already applies) instead
- * of quietly deleting user state. A missing file is NOT corruption — there
+ * loudly instead of quietly deleting user state. A missing file is NOT corruption — there
  * is nothing to preserve, so that case still returns `[]`. Entries that fail
  * per-entry validation are still tolerated (filtered out), matching
  * `readLockfile`'s existing shape-tolerant behavior.
@@ -359,65 +358,6 @@ export async function upsertLockEntry(entry: LockfileEntry): Promise<void> {
   } finally {
     release();
   }
-}
-
-/**
- * Synchronously upsert lock entries (merge by id) WITHOUT acquiring the async
- * sentinel — for a caller already holding an exclusive lifecycle lock (e.g.
- * migrate-apply's config lock + maintenance barrier) whose synchronous body
- * cannot await the sentinel's retry loop. No-op for an empty list.
- */
-function readLockEntriesForMigration(): LockfileEntry[] {
-  let existing: LockfileEntry[] = [];
-  const lockfilePath = getLockfilePath();
-  // `mergeLockEntriesSync` writes `existing` straight back out, so an
-  // unreadable lockfile read as absent would be overwritten with just the
-  // migrator's sparse entries (#791). This is also what
-  // `assertMigrationLockfileReadable` promises to have checked.
-  assertLockfilePathReadable(lockfilePath);
-  if (fs.existsSync(lockfilePath)) {
-    let raw: unknown;
-    try {
-      raw = JSON.parse(fs.readFileSync(lockfilePath, "utf8"));
-    } catch (error) {
-      throw new ConfigError(
-        `Cannot merge migration lock entries into unreadable lockfile ${lockfilePath}: ${error instanceof Error ? error.message : String(error)}.`,
-        "INVALID_CONFIG_FILE",
-      );
-    }
-    if (!Array.isArray(raw) || !raw.every(isValidLockfileEntry)) {
-      throw new ConfigError(
-        `Cannot merge migration lock entries into malformed lockfile ${lockfilePath}.`,
-        "INVALID_CONFIG_FILE",
-      );
-    }
-    existing = raw;
-  }
-  return existing;
-}
-
-/** Validate the current lockfile before migrate-apply creates its backup or sentinel. */
-export function assertMigrationLockfileReadable(): void {
-  readLockEntriesForMigration();
-}
-
-export function mergeLockEntriesSync(entries: LockfileEntry[]): void {
-  const existing = readLockEntriesForMigration();
-  if (entries.length === 0) return;
-  // MERGE per id, never replace: the migrator's entries are sparse (id/source/
-  // ref/localRoot), while an existing row may carry `resolvedVersion`,
-  // `resolvedRevision`, `integrity`, `installedAt`, … from a real install.
-  // Replacing the whole row discarded the user's recorded resolution/pin and
-  // left later update reporting comparing against an unknown prior version.
-  // Incoming DEFINED fields win; existing fields absent from the incoming
-  // entry are preserved.
-  const byId = new Map(existing.map((e) => [e.id, e]));
-  const merged = entries.map((incoming) => {
-    const prior = byId.get(incoming.id);
-    return prior ? { ...prior, ...incoming } : incoming;
-  });
-  const incomingIds = new Set(entries.map((e) => e.id));
-  writeLockfileUnlocked([...existing.filter((e) => !incomingIds.has(e.id)), ...merged]);
 }
 
 export async function removeLockEntry(id: string): Promise<void> {
