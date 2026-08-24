@@ -59,7 +59,6 @@ function entryFor(root: string, filePath: string, adapterId: string, conceptId: 
   return {
     filePath,
     stashDir: root,
-    entryKey: `${root}:${type}:${path.basename(conceptId)}`,
     type,
     name: path.basename(conceptId),
     adapterId,

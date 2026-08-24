@@ -2586,8 +2586,6 @@ export interface IndexEntry {
   filePath: string;
   /** Source root (the directory the walker rooted at). */
   stashDir: string;
-  /** Canonical durable item ref (retained under this field for older callers). */
-  entryKey: string;
   /** Asset type (skill, command, knowledge, ...). */
   type: string;
   /** Asset name as recorded by the indexer. */
@@ -2734,7 +2732,6 @@ function readLookupEntry(db: Database, id: number, fallbackConceptId: string, so
     // Corrupt optional projection does not erase the durable path identity.
   }
   return {
-    entryKey: row.itemRef,
     filePath: row.filePath,
     stashDir: sourceRoot,
     type: row.type,
