@@ -49,7 +49,6 @@ function runCli(stashDir: string, args: string[], config?: Record<string, unknow
   const xdgConfig = envDirs?.xdgConfig ?? makeTempDir("akm-output-config-");
   const xdgData = envDirs?.xdgData ?? makeTempDir("akm-output-data-");
   const xdgState = envDirs?.xdgState ?? makeTempDir("akm-output-state-");
-  const dirs = { xdgCache, xdgConfig, xdgData, xdgState };
   if (config) writeConfig(xdgConfig, config);
   const result = spawnSync("bun", [CLI, ...args], {
     encoding: "utf8",
@@ -72,7 +71,6 @@ async function runCliAsync(stashDir: string, args: string[], config?: Record<str
   const xdgConfig = makeTempDir("akm-output-config-");
   const xdgData = makeTempDir("akm-output-data-");
   const xdgState = makeTempDir("akm-output-state-");
-  const dirs = { xdgCache, xdgConfig, xdgData, xdgState };
   // Semantic off keeps auto-index stderr deterministic: with the default
   // ("auto") the local embedder fetches its model from huggingface.co and a
   // blocked/offline fetch emits "Embedding generation failed" on stderr,

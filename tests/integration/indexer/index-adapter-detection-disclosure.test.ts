@@ -20,7 +20,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { loadUserConfig, resetConfigCache } from "../../../src/core/config/config";
-import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../../../src/core/paths";
+import { getDbPath, getStateDbPathInDataDir } from "../../../src/core/paths";
 import { STATE_MIGRATIONS } from "../../../src/core/state/migrations";
 import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { akmIndex } from "../../../src/indexer/indexer";
