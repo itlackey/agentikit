@@ -821,7 +821,8 @@ describe("state.db automatic migration boundary", () => {
     expect(message).toMatch(/Verified safety copy: .*pre-018-drop-dead-lane-schema.*\.bak/i);
     const safetyCopyPath = verifiedSafetyCopyPath(message);
     expect(safetyCopyPath).toBeDefined();
-    expect(fs.existsSync(safetyCopyPath as string)).toBe(true);
+    if (!safetyCopyPath) throw new Error("Missing verified safety-copy path in migration failure");
+    expect(fs.existsSync(safetyCopyPath)).toBe(true);
     expect(
       fs
         .readdirSync(path.dirname(file), { withFileTypes: true })
@@ -843,7 +844,7 @@ describe("state.db automatic migration boundary", () => {
     });
     current.close();
 
-    const safetyCopy = openDatabase(safetyCopyPath as string, { readonly: true });
+    const safetyCopy = openDatabase(safetyCopyPath, { readonly: true });
     expect(safetyCopy.prepare("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
     expect(
       safetyCopy.prepare("SELECT content_hash FROM consolidation_judged").get() as { content_hash: string },
