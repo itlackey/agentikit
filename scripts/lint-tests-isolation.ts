@@ -63,6 +63,15 @@
  * Date.now()` — and derive every timestamp from `now`. A single
  * `new Date(Date.now() …)` per scope is fine. No allowlist — zero is the invariant.
  *
+ * Rule 8 (real-home destructive cleanup): flag recursive removal whose target
+ * is derived directly from `os.homedir()`. Bun caches `os.homedir()` and does
+ * not honor a later test-time `HOME` override, so a test that creates and then
+ * recursively removes such a path can delete the developer's real application
+ * data. Tests must clean up only unique roots created beneath `os.tmpdir()` (or
+ * use the sandbox helpers). A unique `mkdtempSync(path.join(os.homedir(), …))`
+ * fixture is deliberately excluded because its unguessable leaf is owned by
+ * the test; fixed application directories beneath the real home are not.
+ *
  * Exit codes:
  *   0 — no violations
  *   1 — violations found (or internal error)
@@ -380,7 +389,8 @@ type Rule =
   | "raw-akm-mkdtemp"
   | "unit-real-spawn"
   | "mock-module"
-  | "nonatomic-now";
+  | "nonatomic-now"
+  | "real-home-delete";
 
 interface Violation {
   file: string;
@@ -424,6 +434,41 @@ function lintFile(filePath: string): Violation[] {
   const rel = path.relative(repoRoot, filePath).replace(/\\/g, "/");
   const src = fs.readFileSync(filePath, "utf8");
   const violations: Violation[] = [];
+
+  // ── Rule 8: destructive cleanup rooted in the real home directory ─────────
+  // `os.homedir()` is process/runtime state, not the harnessed HOME env value.
+  // Track simple local declarations (including multiline conditional paths)
+  // that derive a fixed path from it, then reject recursive removal of that
+  // identifier. This intentionally targets the proven dangerous shape rather
+  // than banning read-only homedir probes or unique mkdtemp-owned fixtures.
+  {
+    const realHomePaths = new Set<string>();
+    const declaration = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*?);/g;
+    for (const match of src.matchAll(declaration)) {
+      const name = match[1]!;
+      const expression = match[2]!;
+      const derivesFromHome =
+        /\bos\.homedir\s*\(\s*\)/.test(expression) ||
+        [...realHomePaths].some((candidate) => new RegExp(`\\b${candidate}\\b`).test(expression));
+      if (derivesFromHome && !/\bmkdtempSync\s*\(/.test(expression)) realHomePaths.add(name);
+    }
+
+    const lines = src.split("\n");
+    const destructiveCall = /\b(?:fs\.)?(?:rmSync|rmdirSync)\s*\(\s*([A-Za-z_$][\w$]*)\b/;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      if (/^\s*(\/\/|\*)/.test(line)) continue;
+      const match = line.match(destructiveCall);
+      if (!match || !realHomePaths.has(match[1]!)) continue;
+      violations.push({
+        file: rel,
+        rule: "real-home-delete",
+        detail:
+          "destructive cleanup targets a fixed path derived from os.homedir(); use a unique os.tmpdir()/sandbox-owned root and never remove a real application directory",
+        line: i + 1,
+      });
+    }
+  }
 
   // ── Rule 1: mkdtempSync + AKM env var ──────────────────────────────────────
   if (!ALLOWED_FILES.has(rel) && src.includes("mkdtempSync")) {
@@ -670,6 +715,7 @@ if (import.meta.main) {
     "unit-real-spawn": "real process spawn in unit-scope test",
     "mock-module": "mock.module call (banned — suite runs without --isolate)",
     "nonatomic-now": "non-atomic Date.now() timestamp construction (#499 flake class)",
+    "real-home-delete": "destructive cleanup rooted in the real home directory",
   };
 
   console.error(`lint-tests-isolation: ${violations.length} violation(s) found\n`);

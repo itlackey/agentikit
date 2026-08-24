@@ -280,18 +280,19 @@ function writeOpenCodeDb(base: string, sessions: OpenCodeDbSession[]): string {
 
 describe("OpenCodeProvider.listSessions (opencode.db)", () => {
   test("is unavailable when only the parent directory exists", () => {
-    const base =
-      process.platform === "darwin"
-        ? path.join(os.homedir(), "Library", "Application Support", "opencode")
-        : path.join(os.homedir(), ".local", "share", "opencode");
-    fs.mkdirSync(base, { recursive: true });
-    try {
-      expect(new OpenCodeProvider().isAvailable()).toBe(false);
-      fs.writeFileSync(path.join(base, "opencode.db"), "");
-      expect(new OpenCodeProvider().isAvailable()).toBe(true);
-    } finally {
-      fs.rmSync(base, { recursive: true, force: true });
+    const base = makeTempDir("akm-opencode-availability-");
+    const dbPath = path.join(base, "opencode.db");
+    class TempOpenCodeProvider extends OpenCodeProvider {
+      protected override availabilityRoot(): string {
+        return dbPath;
+      }
     }
+    const provider = new TempOpenCodeProvider();
+
+    fs.mkdirSync(base, { recursive: true });
+    expect(provider.isAvailable()).toBe(false);
+    fs.writeFileSync(dbPath, "");
+    expect(provider.isAvailable()).toBe(true);
   });
 
   test("lists sessions from the SQLite store, newest first", () => {

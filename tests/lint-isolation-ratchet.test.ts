@@ -78,8 +78,8 @@ describe("lint-tests-isolation allowlist ratchet", () => {
           'import fs from "node:fs";',
           'import os from "node:os";',
           'import path from "node:path";',
-          'const realStore = path.join(os.homedir(), ".local", "share", "tool");',
-          'fs.rmSync(realStore, { recursive: true, force: true });',
+          'const realStore = path.join(os.' + 'homedir(), ".local", "share", "tool");',
+          'fs.' + 'rmSync(realStore, { recursive: true, force: true });',
         ].join("\n"),
       );
 
