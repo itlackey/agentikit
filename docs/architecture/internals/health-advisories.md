@@ -32,7 +32,6 @@ changes.
 | `session-extraction` | Extraction ran but hit harness errors or produced zero proposals across ≥5 sessions. | Check the agent CLI and session-log source; extraction is degraded, not failing hard. |
 | `pool-saturation` | <2% of the session pool was new — possible discovery/dedup bug. | Verify `akm proposal extract` still finds new sessions; a healthy steady state sits above 10%. |
 | `auto-accept-validation` | Proposals passed the confidence gate but failed validation (bad frontmatter, truncation). | Review the affected pending proposals via `akm proposal list`; they were held, not lost. |
-| `session-log-failures` | Informational only (pre-LLM keyword scan, false-positive prone). | No action — never gates; does not reflect the real extract pipeline. |
 | `outcome-proxy-adequacy` | Retrieval proxy is *inverted* (corr < −0.3): popular assets are the most-needing-improvement. | Known WS-2 limitation; no live action — see plan §WS-2 / CONTEXT before tuning. |
 | `outcome-proxy-dead` | Retrieval proxy is *dead* (\|corr\| < 0.1 at n≥500): outcome_score is noise. | **Adjudicated/expected** during the minting-shutdown re-baseline (12-D1); no action. |
 | `salience-uniformity-collapse` | Gini across all positive, resolvable retrieval-salience values is below 0.08 — ranking no longer discriminates among assets with retrieval evidence. | Inspect the reported sample size and salience freshness; run `akm index` to refresh retrieval timestamps, then let the improve schedule recompute salience before tuning weights. |

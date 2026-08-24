@@ -15,8 +15,6 @@ import { getConfigPath, getDataDir, getDbPath, getStateDbPathInDataDir } from ".
 import { listExistingTableNames, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
 import { readSemanticStatus } from "../indexer/search/semantic-status";
-import type { SessionLogEntry } from "../integrations/session-logs";
-import { getExecutionLogCandidates } from "../integrations/session-logs";
 import type { Database } from "../storage/database";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
 import { queryTaskHistory } from "../storage/repositories/task-history-repository";
@@ -50,7 +48,6 @@ import {
   type ImproveHealthMetrics,
   type ImproveRunSummary,
   MIN_ROWS_FOR_WORST_TASK_FAIL_RATE,
-  type SessionLogAdvisory,
   type WindowResult,
   type WindowSpec,
 } from "./health/types";
@@ -62,7 +59,6 @@ export interface AkmHealthOptions {
   groupBy?: "run";
   windowCompare?: string;
   windows?: WindowSpec[];
-  getExecutionLogCandidatesFn?: (sinceDays?: number) => SessionLogEntry[];
   /**
    * Clock seam for the health read path. Defaults to `Date.now`. Tests may pin
    * this to a fixed epoch so staleness/window math is deterministic. Purely
@@ -477,25 +473,6 @@ function detectIndexStateGenerationMismatch(stateDb: Database): HealthCheckResul
   }
 }
 
-/** Execution-log-derived session advisories. Best-effort: any failure yields an empty list. */
-function gatherSessionLogAdvisories(
-  since: string,
-  now: () => number,
-  getExecutionLogCandidatesFn: (sinceDays?: number) => SessionLogEntry[],
-): SessionLogAdvisory[] {
-  try {
-    const sinceDays = Math.max(0, Math.ceil((now() - new Date(since).getTime()) / (24 * 60 * 60 * 1000)));
-    return getExecutionLogCandidatesFn(sinceDays).map((entry) => ({
-      topic: entry.topic,
-      frequency: entry.frequency,
-      source: entry.source,
-      isFailurePattern: entry.isFailurePattern,
-    }));
-  } catch {
-    return [];
-  }
-}
-
 interface WindowComparePhaseResult {
   windowResults: WindowResult[] | undefined;
   deltas: Record<string, DeltaEntry> | undefined;
@@ -598,7 +575,6 @@ function unreadableStateDbReport(detail: string, options: AkmHealthOptions): Akm
       llmUsage: emptyLlmUsageAggregate(),
     },
     improve: summarizeImproveCompleted([]),
-    sessionLogAdvisories: [],
   };
 }
 
@@ -609,7 +585,6 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
   const stateDbPath = options.stateDbPath ?? getStateDbPathInDataDir();
   const hardChecks: HealthCheckResult[] = [];
   const advisories: HealthCheckResult[] = [];
-  const getExecutionLogCandidatesFn = options.getExecutionLogCandidatesFn ?? getExecutionLogCandidates;
 
   // #791: an UNREADABLE state.db is the one failure `akm health` most needs to
   // be able to report, because it is the command an operator runs to find out
@@ -652,8 +627,6 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
 
     advisories.push(...gatherAncillaryAdvisories(db, stateDbPath, since, improveSummary, options, egressConfigView));
 
-    const sessionLogEntries = gatherSessionLogAdvisories(since, now, getExecutionLogCandidatesFn);
-
     const engineProbes = runHealthEngineProbes();
 
     // Run the ordered health-check registry. Each check projects the shared
@@ -678,7 +651,6 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
       semanticStatus,
       semanticSearchMode,
       embeddingEndpoint,
-      sessionLogEntries,
       sessionExtraction: improveSummary.sessionExtraction,
       autoAccept: improveSummary.autoAccept,
       engineProbes,
@@ -722,7 +694,6 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
       advisories,
       metrics,
       improve: improveSummary,
-      sessionLogAdvisories: sessionLogEntries,
       ...(runs ? { runs } : {}),
       ...(windowResults ? { windows: windowResults } : {}),
       ...(deltas ? { deltas } : {}),

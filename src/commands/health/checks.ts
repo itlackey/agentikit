@@ -22,13 +22,7 @@ import {
 } from "../../integrations/agent/model-map";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { resolveImprovePlan } from "../improve/improve-strategies";
-import {
-  ACTIVE_RUN_WARN_MS,
-  type HealthCheckResult,
-  type ImproveHealthMetrics,
-  type SessionLogAdvisory,
-  TASK_FAIL_RATE_WARN,
-} from "./types";
+import { ACTIVE_RUN_WARN_MS, type HealthCheckResult, type ImproveHealthMetrics, TASK_FAIL_RATE_WARN } from "./types";
 
 /**
  * Pre-computed inputs shared by the health-check registry. `akmHealth` runs the
@@ -73,7 +67,6 @@ export interface HealthCheckContext {
   semanticSearchMode: string | undefined;
   /** Configured remote embedding endpoint, when one is set. */
   embeddingEndpoint: string | undefined;
-  sessionLogEntries: SessionLogAdvisory[];
   sessionExtraction: ImproveHealthMetrics["sessionExtraction"];
   autoAccept: ImproveHealthMetrics["autoAccept"];
   /** Engine availability collected once and shared by its three registry projections. */
@@ -782,25 +775,6 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
           : undefined,
       };
     },
-  },
-  {
-    // session-log-failures: demoted to informational — the ERROR_PATTERNS regex
-    // scans pre-LLM session text and produces false positives on diagnostic
-    // conversation. It does not gate the real extraction pipeline (akmExtract).
-    // Never triggers warn; kept for backward-compat visibility only.
-    name: "session-log-failures",
-    channel: "advisory",
-    run: (ctx) => ({
-      name: "session-log-failures",
-      kind: "heuristic",
-      status: "pass",
-      confidence: "low",
-      message:
-        ctx.sessionLogEntries.length === 0
-          ? "No repeated external session-log failure patterns were detected."
-          : `${ctx.sessionLogEntries.length} raw session-log keyword match(es) detected (pre-LLM, informational only).`,
-      evidence: { candidates: ctx.sessionLogEntries.slice(0, 5) },
-    }),
   },
   {
     name: "session-extraction",

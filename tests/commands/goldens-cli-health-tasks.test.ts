@@ -272,7 +272,7 @@ describe("family B — akm health", () => {
       db.close();
     }
 
-    const direct = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] });
+    const direct = akmHealth({ since: "7d" });
     expect(direct.hardChecks.some((check) => check.status === "warn" || check.status === "fail")).toBe(false);
     expect(direct.advisories.find((check) => check.name === "task-fail-rate")).toMatchObject({
       kind: "deterministic",

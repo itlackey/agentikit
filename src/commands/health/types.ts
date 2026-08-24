@@ -17,7 +17,6 @@
  *   - `./types-improve` — the {@link ImproveHealthMetrics} accumulator and its
  *     WS-5 sub-rollups (coverage, perf telemetry, degradation, enrichment
  *     minting).
- *   - `./types-session-log` — {@link SessionLogAdvisory}.
  *   - `./types-runs` — {@link ImproveRunSummary} (`--group-by run`).
  *   - `./types-windows` — {@link WindowSpec}/{@link WindowResult}/{@link DeltaEntry}
  *     (`--window-compare`/`--windows`).
@@ -29,5 +28,4 @@ export * from "./types-improve";
 export * from "./types-metrics";
 export * from "./types-result";
 export * from "./types-runs";
-export * from "./types-session-log";
 export * from "./types-windows";

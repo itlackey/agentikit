@@ -401,7 +401,6 @@ export interface HealthReportViewModel {
 
   // Action-item inputs (pass-through; already plain data on AkmHealthResult)
   advisories: HealthCheckResult[];
-  sessionLogAdvisories: AkmHealthResult["sessionLogAdvisories"];
 }
 
 // ── buildHealthReportViewModel phase helpers (each is a cohesive slice of the
@@ -813,6 +812,5 @@ export function buildHealthReportViewModel(
     distillReasons,
 
     advisories: result.advisories,
-    sessionLogAdvisories: result.sessionLogAdvisories,
   };
 }

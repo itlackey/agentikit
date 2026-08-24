@@ -283,10 +283,9 @@ Primary result fields:
 | --- | --- |
 | `status` | Overall health verdict: `pass`, `warn`, or `fail` |
 | `hardChecks` | Deterministic checks such as `state-db-schema`, `state-db-round-trip`, `task-log-backing`, `active-runs`, `default-engine`, and `model-map-files` |
-| `advisories` | Non-fatal warnings including `semantic-search-runtime`, `session-extraction` (akmExtract pipeline health), and `session-log-failures` (informational keyword matches, never triggers warn) |
+| `advisories` | Non-fatal warnings including `semantic-search-runtime` and `session-extraction` (akmExtract pipeline health) |
 | `metrics` | Aggregate task/runtime metrics: `taskFailRate`, `agentFailureRate`, `stuckActiveRuns`, `logBackingRate`, `probeRoundTripMs` |
 | `improve` | Recent improve-loop counts derived from `improve_invoked`, `improve_skipped`, and `improve_completed` events |
-| `sessionLogAdvisories` | Raw keyword-matched session-log topics (pre-LLM, informational only) |
 
 The `improve` section includes counts for planned refs, reflect/distill actions,
 memory-prune actions, memory-inference writes, graph-extraction refreshes,
@@ -295,9 +294,7 @@ dead-URL detections, and skip reasons observed in the selected time window.
 
 The `session-extraction` advisory reflects the health of the `akmExtract` pipeline
 (Phase 0.4 of `akm improve`). It warns on harness errors or when no proposals are
-generated across five or more scanned sessions. The `session-log-failures` advisory
-is informational only and never triggers `warn` — it reports raw keyword matches,
-not LLM-validated extraction outcomes.
+generated across five or more scanned sessions.
 
 The indexed entity graph (entities/relations extracted from bundle assets) has
 no dedicated inspection command; its summary counts surface as an info-level
