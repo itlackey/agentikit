@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * index.db schema, version stamps, and targeted graph migrations, kept in the
+ * index.db schema and version stamps, kept in the
  * storage layer. This isolates the one genuinely risky area (schema
  * evolution) from the CRUD/FTS/vector queries.
  *
@@ -12,8 +12,6 @@
  * `index-vec-repository` modules.
  */
 
-import { bestEffort } from "../../core/best-effort";
-import { warn } from "../../core/warn";
 import type { Database } from "../database";
 import {
   CANONICAL_ENTRY_SCHEMA_SQL,
@@ -36,8 +34,7 @@ import { isVecAvailable, purgeEmbeddings } from "./index-vec-repository";
 // current identity and materialized read path.
 export const DB_VERSION = CANONICAL_INDEX_DB_VERSION;
 export const EMBEDDING_DIM = 384;
-// #624-P1: graph_files re-keyed to (stash_root, file_path, body_hash). Bumped 3→4
-// as a marker; the actual migration is the targeted drop in migrateGraphFilesSchema.
+// #624-P1: graph_files is keyed to (stash_root, file_path, body_hash).
 export const GRAPH_SCHEMA_VERSION = 4;
 
 // ── Schema ──────────────────────────────────────────────────────────────────
@@ -80,9 +77,7 @@ const REGISTRY_INDEX_CACHE_DDL = `
 
 /**
  * Create the graph-extraction tables (`graph_meta`/`graph_files`/`graph_file_entities`/
- * `graph_file_relations`/`graph_extraction_queue`). Extracted verbatim from
- * {@link ensureSchema} (called at the same point, between `migrateGraphFilesSchema`
- * and `migrateGraphDataFromLegacy`) — a pure, behavior-identical decomposition.
+ * `graph_file_relations`/`graph_extraction_queue`).
  */
 function ensureGraphTables(db: Database): void {
   db.exec(`
@@ -198,9 +193,6 @@ function rebuildIncompatibleIndexGeneration(db: Database): void {
   }
 
   db.transaction(() => {
-    db.exec("DROP TABLE IF EXISTS graph_file_relations_legacy");
-    db.exec("DROP TABLE IF EXISTS graph_file_entities_legacy");
-    db.exec("DROP TABLE IF EXISTS graph_files_legacy");
     db.exec("DROP TABLE IF EXISTS graph_file_relations");
     db.exec("DROP TABLE IF EXISTS graph_file_entities");
     db.exec("DROP TABLE IF EXISTS graph_files");
@@ -342,20 +334,7 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   // body_hash) and declare a composite FK -> graph_files ON DELETE CASCADE so
   // child rows are removed when a graph_files row is replaced.
   //
-  // #624-P1 targeted migration: an existing DB may still hold the OLD graph_files
-  // (entry_id PK). SQLite can't ALTER a primary key, so we RENAME the 3 graph
-  // tables aside (→ *_legacy) here — ONLY the graph tables, never the index/
-  // embeddings — then the CREATE block below builds the new shape, then
-  // migrateGraphDataFromLegacy() copies the data across so the graph is PRESERVED
-  // (not re-extracted).
-  migrateGraphFilesSchema(db);
-
   ensureGraphTables(db);
-
-  // #624-P1 migration step 2: copy any renamed-aside legacy graph data into the
-  // new-shape tables (just created above), then drop the legacy tables. No-op
-  // unless migrateGraphFilesSchema renamed a legacy graph_files this open.
-  migrateGraphDataFromLegacy(db);
 
   // FTS-dirty queue. Created here (not lazily on first upsert) so the
   // per-entry write path doesn't issue a CREATE TABLE IF NOT EXISTS on
@@ -444,109 +423,4 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
 function tableExists(db: Database, name: string): boolean {
   const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1").get(name);
   return row !== undefined && row !== null;
-}
-
-/**
- * #624-P1 targeted graph-schema migration — STEP 1 of 2 (rename).
- *
- * graph_files was re-keyed from `entry_id INTEGER PRIMARY KEY REFERENCES
- * entries(id)` to a self-contained `(stash_root, file_path, body_hash)` PK.
- * SQLite cannot ALTER a primary key, so an existing DB carrying the OLD shape
- * has its 3 graph tables RENAMED to `*_legacy` here; ensureSchema's CREATE block
- * then builds the new-shape tables, and {@link migrateGraphDataFromLegacy} COPIES
- * the data across before dropping the legacy tables. The graph is preserved —
- * NOT re-extracted (re-extraction is ~19s/file of LLM work).
- *
- * Crucially this is GRAPH-SCOPED: it touches ONLY the graph tables, never the
- * index / embeddings / enrichment cache. So users keep their (expensive)
- * embeddings instead of being forced into a full re-embed by a DB_VERSION bump.
- *
- * Detection: the old schema has an `entry_id` column on graph_files. Fresh DBs
- * (no graph_files yet) and already-migrated DBs (no entry_id column) are no-ops.
- * Idempotent.
- */
-function migrateGraphFilesSchema(db: Database): void {
-  bestEffort(() => {
-    const cols = db.prepare("PRAGMA table_info(graph_files)").all() as Array<{ name: string }>;
-    const isLegacyShape = cols.some((c) => c.name === "entry_id");
-    if (!isLegacyShape) return;
-    // A previous interrupted migration may have left *_legacy behind — drop those
-    // husks first so the rename below doesn't collide.
-    db.exec("DROP TABLE IF EXISTS graph_file_relations_legacy");
-    db.exec("DROP TABLE IF EXISTS graph_file_entities_legacy");
-    db.exec("DROP TABLE IF EXISTS graph_files_legacy");
-    // Rename the 3 entry_id-keyed tables aside. graph_meta is unchanged (stash_root
-    // key) so it is left in place. ALTER … RENAME auto-updates child FK refs in
-    // SQLite ≥3.25, which is fine — the legacy children are dropped after the copy.
-    db.exec("ALTER TABLE graph_files RENAME TO graph_files_legacy");
-    if (tableExists(db, "graph_file_entities")) {
-      db.exec("ALTER TABLE graph_file_entities RENAME TO graph_file_entities_legacy");
-    }
-    if (tableExists(db, "graph_file_relations")) {
-      db.exec("ALTER TABLE graph_file_relations RENAME TO graph_file_relations_legacy");
-    }
-  }, "graph_files may not exist on a brand-new DB before CREATE — caller is responsible");
-}
-
-/**
- * #624-P1 targeted graph-schema migration — STEP 2 of 2 (copy + drop legacy).
- *
- * Runs AFTER the graph CREATE TABLE block, so the new-shape tables exist. Copies
- * every legacy row into the re-keyed tables — the old tables already carry
- * (stash_root, file_path, body_hash) next to entry_id, so the projection is a
- * straight column copy (children JOIN back to graph_files_legacy to resolve the
- * composite key from their entry_id). Then drops the `*_legacy` tables.
- *
- * Best-effort: a copy failure (e.g. a pre-body_hash legacy schema) is tolerated,
- * and the legacy tables are dropped regardless so they never linger. Rows whose
- * body_hash is null/empty can't form the new PK and are skipped (they re-extract).
- */
-function migrateGraphDataFromLegacy(db: Database): void {
-  if (!tableExists(db, "graph_files_legacy")) return;
-  let migratedFiles = 0;
-  bestEffort(() => {
-    db.transaction(() => {
-      const res = db
-        .prepare(
-          `INSERT OR IGNORE INTO graph_files
-             (stash_root, file_path, body_hash, file_order, file_type, confidence, status, reason, extraction_run_id)
-           SELECT stash_root, file_path, body_hash, file_order, file_type, confidence, status, reason, extraction_run_id
-             FROM graph_files_legacy
-            WHERE body_hash IS NOT NULL AND body_hash != ''`,
-        )
-        .run();
-      migratedFiles = Number(res.changes);
-      if (tableExists(db, "graph_file_entities_legacy")) {
-        db.exec(
-          `INSERT OR IGNORE INTO graph_file_entities
-             (stash_root, file_path, body_hash, entity_order, entity_norm, entity)
-           SELECT gf.stash_root, gf.file_path, gf.body_hash, e.entity_order, e.entity_norm, e.entity
-             FROM graph_file_entities_legacy e
-             JOIN graph_files_legacy gf ON gf.entry_id = e.entry_id
-            WHERE gf.body_hash IS NOT NULL AND gf.body_hash != ''`,
-        );
-      }
-      if (tableExists(db, "graph_file_relations_legacy")) {
-        db.exec(
-          `INSERT OR IGNORE INTO graph_file_relations
-             (stash_root, file_path, body_hash, relation_order, from_entity_norm, from_entity, to_entity_norm, to_entity, relation_type, confidence)
-           SELECT gf.stash_root, gf.file_path, gf.body_hash, r.relation_order, r.from_entity_norm, r.from_entity, r.to_entity_norm, r.to_entity, r.relation_type, r.confidence
-             FROM graph_file_relations_legacy r
-             JOIN graph_files_legacy gf ON gf.entry_id = r.entry_id
-            WHERE gf.body_hash IS NOT NULL AND gf.body_hash != ''`,
-        );
-      }
-    })();
-  }, "graph data migration is best-effort; legacy tables are dropped regardless below");
-  // Always drop the legacy tables (children first), migrated or not.
-  bestEffort(() => {
-    db.exec("DROP TABLE IF EXISTS graph_file_relations_legacy");
-    db.exec("DROP TABLE IF EXISTS graph_file_entities_legacy");
-    db.exec("DROP TABLE IF EXISTS graph_files_legacy");
-  }, "drop legacy graph tables after migration");
-  if (migratedFiles > 0) {
-    warn(
-      `[akm] graph index re-keyed (#624): migrated ${migratedFiles} extracted file(s) to the new schema — no re-extraction needed. Index + embeddings untouched.`,
-    );
-  }
 }
