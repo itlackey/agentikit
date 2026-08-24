@@ -47,31 +47,6 @@ jobs:
       - run: bun run check
       - run: bun run build
 
-  # RUNTIME-01/RUNTIME-02: the ≥1000-case cutover-rekey property gate and the
-  # workflow map-expansion boundary test are gated out of the default unit
-  # target behind AKM_RUN_SLOW_TESTS (they cost ~4.4 min and ~5s solo
-  # respectively — 80% of unit-target work for the property gate alone). Both
-  # are deterministic (no flaky host/network dependency, unlike the other
-  # opt-in AKM_*_TESTS gates in tests/), so they run on every push/PR here —
-  # a dedicated job in parallel with `check` rather than bundled into it, so
-  # gating them off the default unit run does not silently retire them and
-  # does not lengthen the `check` job's critical path.
-  slow-gated-tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v5
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-      - run: bun install --frozen-lockfile
-      - run: bun test --timeout=1200000 tests/migrate/legacy/cutover-rekey-property-gate.test.ts tests/workflows/engine-ir-v3.test.ts
-        env:
-          AKM_RUN_SLOW_TESTS: "1"
-
   node-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15

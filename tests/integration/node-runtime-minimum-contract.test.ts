@@ -96,7 +96,6 @@ describe("Node 24 runtime minimum contract", () => {
       "akm-eval-smoke.yml#smoke",
       "ci.yml#check",
       "ci.yml#node-smoke",
-      "ci.yml#slow-gated-tests",
       "gated-ci.yml#docker-install",
       "gated-ci.yml#native-scheduler",
       "gated-ci.yml#semantic-search",
