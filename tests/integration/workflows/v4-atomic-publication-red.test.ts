@@ -84,7 +84,6 @@ function v4ExecUnit(id: string, script: string) {
     kind: "unit" as const,
     id,
     instructions: `Execute frozen ${id}.`,
-    templating: "verbatim" as const,
     frozenTarget: { kind: "shell" as const, contentHash, exec, cwdIdentity: directory },
     environment,
     onError: "fail" as const,

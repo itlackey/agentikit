@@ -33,14 +33,6 @@ import type { SourceRef } from "../schema";
 export type IrOnError = "fail" | "continue";
 export type IrIsolation = "none" | "worktree";
 export type IrMapReducer = "collect" | "vote";
-/**
- * Instruction-delivery mode. Single-valued on purpose: the `${{ … }}`
- * interpolation language is GONE, so instructions always reach a unit
- * byte-exact. The field itself survives because every frozen plan already
- * persisted (`plan_json`, migration 006) carries it and the decoder rejects
- * unknown keys — dropping it would fail decode for in-flight runs.
- */
-export type IrInstructionTemplating = "verbatim";
 export type IrRuntimeKind = "llm" | "agent" | "sdk" | "exec";
 
 /**
@@ -81,7 +73,6 @@ export interface IrUnitNodeCore {
   kind: "unit" | "agent";
   id: string;
   instructions: string;
-  templating?: IrInstructionTemplating;
   /** Prior-step artifacts attached to this unit as structured context (reference strings). */
   inputs?: string[];
   schema?: Record<string, unknown>;
@@ -260,7 +251,6 @@ function validateNode(node: unknown, stepId: string, nodeIds: Set<string>, unitE
       "kind",
       "id",
       "instructions",
-      "templating",
       "inputs",
       "schema",
       "retry",
@@ -275,7 +265,6 @@ function validateNode(node: unknown, stepId: string, nodeIds: Set<string>, unitE
   if (
     typeof node.instructions !== "string" ||
     !node.instructions ||
-    node.templating !== "verbatim" ||
     (node.onError !== "fail" && node.onError !== "continue") ||
     (node.isolation !== "none" && node.isolation !== "worktree")
   )

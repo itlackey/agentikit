@@ -133,19 +133,6 @@ const TIMEOUT_VALUE = /^(\d+)(ms|s|m)?$/;
 const TIMEOUT_HINT = `Use "<n>ms", "<n>s", "<n>m" (e.g. "10m"), or "none"`;
 const LIFECYCLE_STATUSES = new Set(["draft", "stable", "deprecated"]);
 
-/**
- * Cheap structural probe retained ONLY for callers that still need a fast
- * "is this workflow-shaped" content check without touching the filesystem's
- * directory. Recognition itself no longer sniffs content (spec §2.5) — this
- * is a best-effort convenience for content-only contexts (e.g. a proposal
- * whose ref carries no path). It looks for `type: workflow` in frontmatter.
- */
-export function looksLikeWorkflow(raw: string): boolean {
-  const fmBlock = parseFrontmatterBlock(raw);
-  if (!fmBlock) return false;
-  return /^type:\s*['"]?workflow['"]?\s*(#.*)?$/m.test(fmBlock.frontmatter);
-}
-
 type Path = Array<string | number>;
 
 /** Yaml AST node surface we rely on for line anchoring (best-effort). */

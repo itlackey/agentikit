@@ -244,7 +244,6 @@ function decodeGateV4(value: unknown, stepId: string, requiredSources: Execution
     kind: "unit",
     id: gate.id as string,
     instructions: criteria.join("\n"),
-    templating: "verbatim",
     onError: "fail",
     isolation: "none",
   };

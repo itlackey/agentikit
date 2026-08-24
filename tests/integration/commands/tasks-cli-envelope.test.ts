@@ -20,7 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { saveConfig } from "../../../src/core/config/config";
 import {
-  buildScheduledTaskInvocation,
+  buildScheduledBindingInvocation,
   consumeSchedulerContextArg,
   schedulerContextDescriptor,
   writeSchedulerContextDescriptor,
@@ -145,7 +145,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
     writeDisabledCommandTask(capturedStash);
     const generated = await withEnv({ AKM_BUNDLE_DIR: capturedStash }, () => {
       const contextPath = writeSchedulerContextDescriptor(schedulerContextDescriptor());
-      return buildScheduledTaskInvocation(["akm"], "disabled-command", contextPath);
+      return buildScheduledBindingInvocation(["akm"], contextPath, ["task", "run", "disabled-command", "--scheduled"]);
     });
 
     const { code, stdout, stderr } = await withEnv({ AKM_BUNDLE_DIR: ambientStash }, () => {

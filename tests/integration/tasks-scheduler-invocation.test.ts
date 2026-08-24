@@ -4,10 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   buildScheduledBindingInvocation,
-  buildScheduledTaskInvocation,
   loadSchedulerContextDescriptor,
   parseScheduledBindingArgv,
-  parseScheduledTaskArgv,
   resolveScheduledTaskContext,
   SCHEDULED_TASK_CONTEXT_KEYS,
   schedulerContextDescriptor,
@@ -38,7 +36,14 @@ function testContext(root: string) {
 
 describe("scheduled task invocation", () => {
   test("uses a compact descriptor bootstrap shared by every scheduler backend", () => {
-    expect(buildScheduledTaskInvocation(["/opt/akm/bin/akm"], "ping", "/data/tasks/context/one.json").argv).toEqual([
+    expect(
+      buildScheduledBindingInvocation(["/opt/akm/bin/akm"], "/data/tasks/context/one.json", [
+        "task",
+        "run",
+        "ping",
+        "--scheduled",
+      ]).argv,
+    ).toEqual([
       "/opt/akm/bin/akm",
       "--scheduler-context",
       "/data/tasks/context/one.json",
@@ -50,7 +55,16 @@ describe("scheduled task invocation", () => {
   });
 
   test("embeds --bundle only for a non-default bundle", () => {
-    expect(buildScheduledTaskInvocation(["/opt/akm"], "ping", "/data/context.json", "work").argv).toEqual([
+    expect(
+      buildScheduledBindingInvocation(["/opt/akm"], "/data/context.json", [
+        "task",
+        "run",
+        "ping",
+        "--bundle",
+        "work",
+        "--scheduled",
+      ]).argv,
+    ).toEqual([
       "/opt/akm",
       "--scheduler-context",
       "/data/context.json",
@@ -64,7 +78,14 @@ describe("scheduled task invocation", () => {
   });
 
   test("round-trips a bundle-qualified nested standalone task invocation", () => {
-    const argv = buildScheduledTaskInvocation(["/opt/akm"], "sub/deep/nightly", "/data/context.json", "team").argv;
+    const argv = buildScheduledBindingInvocation(["/opt/akm"], "/data/context.json", [
+      "task",
+      "run",
+      "sub/deep/nightly",
+      "--bundle",
+      "team",
+      "--scheduled",
+    ]).argv;
     expect(parseScheduledBindingArgv(argv)).toEqual({
       binding: ["/opt/akm"],
       contextPath: "/data/context.json",
@@ -81,9 +102,9 @@ describe("scheduled task invocation", () => {
   ])("rejects every invalid flat public task invocation id %p", (taskId) => {
     const argv = ["/opt/akm", "--scheduler-context", "/data/context.json", "task", "run", taskId, "--scheduled"];
     expect(parseScheduledBindingArgv(argv)).toBeUndefined();
-    expect(() => buildScheduledTaskInvocation(["/opt/akm"], taskId, "/data/context.json")).toThrow(
-      "Invalid scheduler invocation",
-    );
+    expect(() =>
+      buildScheduledBindingInvocation(["/opt/akm"], "/data/context.json", ["task", "run", taskId, "--scheduled"]),
+    ).toThrow("Invalid scheduler invocation");
   });
 
   test("builds and recognizes the public qualified workflow invocation without hidden scheduler flags", () => {
@@ -113,9 +134,9 @@ describe("scheduled task invocation", () => {
   });
 
   test("recognizes only the current descriptor-bearing invocation shape", () => {
-    expect(parseScheduledTaskArgv(["/opt/akm", "task", "run", "ping", "--scheduled"])).toBeUndefined();
+    expect(parseScheduledBindingArgv(["/opt/akm", "task", "run", "ping", "--scheduled"])).toBeUndefined();
     expect(
-      parseScheduledTaskArgv([
+      parseScheduledBindingArgv([
         "/opt/akm",
         "--scheduler-context",
         "/data/context.json",
@@ -124,7 +145,11 @@ describe("scheduled task invocation", () => {
         "ping",
         "--scheduled",
       ]),
-    ).toEqual({ binding: ["/opt/akm"], contextPath: "/data/context.json" });
+    ).toEqual({
+      binding: ["/opt/akm"],
+      contextPath: "/data/context.json",
+      invocation: ["task", "run", "ping", "--scheduled"],
+    });
   });
 
   // 0.9 scheduler ABI respelling (`tasks run` → `task run`, S6): a pre-rename
@@ -133,7 +158,7 @@ describe("scheduled task invocation", () => {
   // rather than crashing (src/tasks/backends/{cron,launchd,schtasks}.ts).
   test("no longer recognizes the pre-rename `tasks run` spelling", () => {
     expect(
-      parseScheduledTaskArgv([
+      parseScheduledBindingArgv([
         "/opt/akm",
         "--scheduler-context",
         "/data/context.json",

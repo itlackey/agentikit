@@ -43,7 +43,6 @@ export interface WorkflowUnitDraft {
   kind: "unit";
   id: string;
   instructions: string;
-  templating: "verbatim";
   /** Prior-step artifacts this unit consumes, as reference strings (compile-time validated). */
   inputs?: string[];
   /**
@@ -254,7 +253,6 @@ function compileUnit(
     kind: "unit",
     id,
     instructions,
-    templating: "verbatim",
     ...(inputs && inputs.length > 0 ? { inputs: [...inputs] } : {}),
     // Shared projection: named pass-through scope is carried conditionally;
     // whole-process environment inheritance is not an authoring surface.

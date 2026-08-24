@@ -114,7 +114,6 @@ function commandPlan(options: { isolation?: "none" | "worktree"; target?: Record
           kind: "unit",
           id: "run",
           instructions: "the common frozen target is the only dispatch authority",
-          templating: "verbatim",
           frozenTarget: target,
           environment: [],
           onError: "fail",

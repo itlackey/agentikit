@@ -140,15 +140,6 @@ const SCHEDULER_PROJECTION_CONFIG: AkmConfig = Object.freeze({
   semanticSearchMode: "off",
 });
 
-/**
- * Read and validate the complete desired bundle before signatures are computed.
- * This function performs no writes and invokes no backend mutation method.
- */
-export async function planSchedulerSync(input: SchedulerSyncPlanInput): Promise<SchedulerSyncPlan> {
-  const prepared = await prepareSchedulerSyncSourceSet(input);
-  return finalizeSchedulerSyncPlan(input, prepared);
-}
-
 export async function prepareSchedulerSyncSourceSet(
   input: SchedulerSyncPlanInput,
 ): Promise<PreparedSchedulerSourceSet> {

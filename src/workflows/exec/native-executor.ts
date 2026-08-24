@@ -1343,42 +1343,6 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
 // ── Default dispatcher (production substrate) ───────────────────────────────
 
 /**
- * Build the platform-agnostic {@link import("../../integrations/agent/builder-shared").AgentDispatchRequest}
- * for an agent (CLI) unit from the resolved dispatch request and its final
- * (feedback-augmented) prompt.
- *
- * Threading the unit's output `schema` here is what activates each harness's
- * native structured-output path (plan §"Structured-output normalization"):
- *   - Codex (native-schema tier) writes it to a temp file and passes
- *     `--output-schema <file>`.
- *   - Copilot / Gemini switch stdout to their documented JSON envelope
- *     (`--output-format json`) and append their schema-aware prompt directive.
- *   - Pi switches to its JSONL event stream (`--mode json`) and appends its
- *     directive.
- * Without the schema the argv is byte-identical to the pre-fix plain-prompt
- * shape. The engine's post-hoc `runStructured` validation runs regardless — the
- * harness path constrains/hints, the engine still verifies (constrained output
- * is trusted but verified). The frozen invocation's model is already exact, so
- * the common lowerer marks it `modelIsExact` before any harness builder sees it.
- */
-export function buildAgentDispatchRequest(
-  request: UnitDispatchRequest,
-  prompt: string,
-): import("../../integrations/agent/builder-shared").AgentDispatchRequest {
-  if (request.frozenTarget.kind !== "command") {
-    throw new TypeError("an agent dispatch request requires a frozen command target");
-  }
-  const lowered = prepareWorkflowExecution(
-    request as UnitDispatchRequest & { frozenTarget: Extract<FrozenWorkflowTarget, { kind: "command" }> },
-    prompt,
-  );
-  if (!("dispatch" in lowered)) {
-    throw new TypeError("an agent dispatch request requires a frozen agent or sdk engine");
-  }
-  return lowered.dispatch;
-}
-
-/**
  * Dispatch a frozen engine through the common prepare → lower → dispatch seam.
  * No live profile/default/model map is consulted, and credentials remain
  * symbolic until the final dispatch boundary.

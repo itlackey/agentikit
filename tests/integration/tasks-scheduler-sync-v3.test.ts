@@ -7,7 +7,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { compileTaskSchedulerBindings, schedulerNativeBindingId } from "../../src/tasks/scheduler-binding";
-import { planSchedulerSync } from "../../src/tasks/scheduler-sync";
+import {
+  finalizeSchedulerSyncPlan,
+  prepareSchedulerSyncSourceSet,
+  type SchedulerSyncPlanInput,
+} from "../../src/tasks/scheduler-sync";
+
+async function planSchedulerSync(input: SchedulerSyncPlanInput) {
+  return finalizeSchedulerSyncPlan(input, await prepareSchedulerSyncSourceSet(input));
+}
 
 function root(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "akm-scheduler-sync-v3-"));
@@ -797,7 +805,7 @@ describe("whole-set v3 scheduler sync planning", () => {
           installed: emptyInstalled,
         }),
       ),
-    ).rejects.toThrow(/exactly one job|single-job|multi-job|cannot project/i);
+    ).rejects.toThrow(/exactly one (?:source-IR )?job|single-job|multi-job|cannot project/i);
   });
 
   test("an unsupported workflow trigger and a valid peer fail as one read-only source set", async () => {

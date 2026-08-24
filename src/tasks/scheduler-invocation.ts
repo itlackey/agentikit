@@ -21,25 +21,6 @@ export const SCHEDULED_TASK_CONTEXT_KEYS = [
 
 type ScheduledTaskContextKey = (typeof SCHEDULED_TASK_CONTEXT_KEYS)[number];
 
-/**
- * The AKM_* directory context currently in effect, as a plain env fragment.
- *
- * A scheduled run restores these into `process.env` from its
- * `--scheduler-context` descriptor precisely because such installs have
- * non-default directories. Paths that build a child environment from an
- * allowlist rather than inheriting (the agent spawn) must forward this
- * explicitly, or the child's `akm` sub-commands silently target the default
- * stash and DB.
- */
-export function scheduledTaskContextEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const key of SCHEDULED_TASK_CONTEXT_KEYS) {
-    const value = env[key];
-    if (value) out[key] = value;
-  }
-  return out;
-}
-
 export type ScheduledTaskContext = Record<ScheduledTaskContextKey, string>;
 
 export interface ScheduledTaskContextDescriptor {
@@ -73,25 +54,6 @@ export function resolveScheduledTaskContext(
     // Capture the complete process directory context used by scheduled commands.
     AKM_STATE_DIR: path.resolve(resolveStateDir(env, platform)),
   });
-}
-
-/**
- * Build the one scheduler-generated argv shape consumed by all backends.
- *
- * `target` records the bundle a non-primary task lives in as a `--bundle
- * <bundle>` token so the scheduled `akm task run` resolves the task (and its
- * relative asset refs) from that bundle. It is emitted ONLY when supplied and
- * non-empty — callers pass it exclusively for a non-default bundle, so a
- * primary-bundle (or default) task omits the target pair.
- */
-export function buildScheduledTaskInvocation(
-  akmArgv: readonly string[],
-  id: string,
-  contextPath: string,
-  target?: string,
-): ScheduledTaskInvocation {
-  const targetArgs = target !== undefined && target !== "" ? ["--bundle", target] : [];
-  return buildScheduledBindingInvocation(akmArgv, contextPath, ["task", "run", id, ...targetArgs, "--scheduled"]);
 }
 
 /** Build an installed argv from one already-validated public scheduler tail. */
@@ -223,22 +185,6 @@ export function consumeSchedulerContextArg(argv: string[], env: NodeJS.ProcessEn
   }
   loadSchedulerContextDescriptor(file, env);
   return [...argv.slice(0, index), ...argv.slice(index + 2)];
-}
-
-export function parseScheduledTaskArgv(argv: readonly string[]):
-  | {
-      binding: string[];
-      contextPath: string;
-      target?: string;
-    }
-  | undefined {
-  const parsed = parseScheduledBindingArgv(argv);
-  if (!parsed || parsed.invocation[0] !== "task") return undefined;
-  return {
-    binding: parsed.binding,
-    contextPath: parsed.contextPath,
-    ...(parsed.target !== undefined ? { target: parsed.target } : {}),
-  };
 }
 
 /** Parse either the public scheduled task or qualified workflow invocation. */

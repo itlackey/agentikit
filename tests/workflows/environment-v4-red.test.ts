@@ -157,7 +157,6 @@ function v4ShellPlan(environment: unknown[]) {
           kind: "unit",
           id: "run",
           instructions: "Run with the frozen symbolic environment.",
-          templating: "verbatim",
           frozenTarget: { kind: "shell", contentHash, exec, cwdIdentity: directory },
           environment,
           onError: "fail",
