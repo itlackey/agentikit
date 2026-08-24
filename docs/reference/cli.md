@@ -1873,22 +1873,20 @@ inference keys are collapsed to the safe wildcard field instead of being
 echoed.
 
 For live execution, global `--verbose` emits the same safe provenance and
-notices to stderr before dispatch. The normal command result on stdout is preserved
-unchanged, so enabling verbose diagnostics does not corrupt scripts
-that consume stdout. The compatibility `akm agent --command` surface does not
-add a dry-run flag; use canonical `akm command run --dry-run`.
+notices to stderr before dispatch. The normal command result on stdout is
+preserved unchanged, so enabling verbose diagnostics does not corrupt scripts
+that consume stdout.
 
 ### agent
 
 Dispatch a configured agent engine, optionally selecting a bundle agent persona
 and model defaults. A nonempty tool request from that asset is not
 authorization: the current CLI rejects it at the execution boundary.
-`akm agent --command <ref>` enters the canonical `akm command run` path: it
-performs no separate file read, template filling, engine choice, or model
-resolution.
+Stored command assets execute only through `akm command run`; `akm agent` has
+no command compatibility alias.
 
 ```sh
-akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [--command <ref>] [--timeout-ms <ms>] [--cwd <path>]
+akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [--timeout-ms <ms>] [--cwd <path>]
 ```
 
 | Argument / Flag | Description |
@@ -1897,8 +1895,6 @@ akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [-
 | `--engine <name>` | Agent engine to use; defaults to `defaults.engine` |
 | `--prompt <text>` | Task prompt to pass to the agent |
 | `--model <model>` | Model override. Accepts aliases (`opus`, `sonnet`, `haiku`) or exact platform model IDs. Overrides the model in the agent asset. Resolved per platform: `opencode/claude-opus-4-7` for opencode, `claude-opus-4-7` for claude. |
-| `--command <ref>` | Delegate a `commands/<name>` asset to the canonical command executor |
-| `--arguments <text>` | Exact portable `$ARGUMENTS` input; valid only with `--command` |
 | `--timeout-ms <ms>` | Override the agent CLI timeout in milliseconds |
 | `--cwd <path>` | Working directory for the spawned agent (defaults to the current directory) |
 
@@ -1908,8 +1904,8 @@ specified in the asset. The requested tool policy never grants access by
 itself: authorization runs before lowering, credentials, or provider dispatch.
 The current CLI has no built-in allow-all authorizer, so a nonempty request is
 rejected rather than silently weakened.
-Selecting a persona or model without `--prompt`, `--prompt-stdin`, or
-`--command` is also rejected; akm never fabricates an empty command. The
+Selecting a persona or model without `--prompt` or `--prompt-stdin` is also
+rejected; akm never fabricates an empty command. The
 prompt-free interactive exemption applies only when no persona/model/tool/schema
 or inference payload was selected.
 

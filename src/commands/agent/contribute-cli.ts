@@ -42,7 +42,7 @@ export const agentCommand = defineCommand({
   meta: {
     name: "agent",
     description:
-      "Dispatch an agent CLI (opencode, claude, …) with an optional agent persona and model defaults. Use --prompt or --command for work. Nonempty tool requests require separate operator authorization and are rejected by the current CLI.",
+      "Dispatch an agent CLI (opencode, claude, …) with an optional agent persona and model defaults. Use --prompt for work; stored commands run through akm command run. Nonempty tool requests require separate operator authorization and are rejected by the current CLI.",
   },
   args: {
     ...GLOBAL_OUTPUT_ARGS,
@@ -55,15 +55,10 @@ export const agentCommand = defineCommand({
     prompt: { type: "string", description: "Task prompt to pass to the agent" },
     "prompt-stdin": {
       type: "boolean",
-      description: "Read the task prompt from stdin (mutually exclusive with --prompt and --command)",
+      description: "Read the task prompt from stdin (mutually exclusive with --prompt)",
       default: false,
     },
     engine: { type: "string", description: "Agent engine to use (default: defaults.engine)" },
-    command: { type: "string", description: "Load prompt from a command asset" },
-    arguments: {
-      type: "string",
-      description: "Exact string substituted for each literal $ARGUMENTS in --command (no tokenization or trimming)",
-    },
     model: {
       type: "string",
       description:
@@ -86,38 +81,11 @@ export const agentCommand = defineCommand({
       const agentRef = getStringArg(args, "agent-ref");
 
       const promptText = getStringArg(args, "prompt");
-      const commandRef = getStringArg(args, "command");
       const promptStdin = args["prompt-stdin"] === true;
-      const argumentInput = typeof args.arguments === "string" ? args.arguments : undefined;
-      if (argumentInput !== undefined && commandRef === undefined) {
-        throw new UsageError("--arguments requires --command <ref>.", "INVALID_FLAG_VALUE");
-      }
-      if (promptStdin && (promptText !== undefined || commandRef !== undefined)) {
-        throw new UsageError("--prompt-stdin cannot be combined with --prompt or --command.", "INVALID_FLAG_VALUE");
-      }
-      if (commandRef !== undefined && promptText !== undefined) {
-        throw new UsageError("--command cannot be combined with --prompt.", "INVALID_FLAG_VALUE");
+      if (promptStdin && promptText !== undefined) {
+        throw new UsageError("--prompt-stdin cannot be combined with --prompt.", "INVALID_FLAG_VALUE");
       }
       const cwd = getStringArg(args, "cwd");
-
-      // The command arm delegates before any source read, template
-      // substitution, model resolution, or engine selection occurs here.
-      if (commandRef !== undefined) {
-        const model = getStringArg(args, "model");
-        const result = await akmAgentDispatch({
-          engine: getStringArg(args, "engine"),
-          commandRef,
-          ...(argumentInput === undefined ? {} : { argumentInput }),
-          ...(agentRef === undefined ? {} : { agentRef }),
-          agentConfig,
-          ...(model === undefined ? {} : { selection: { model } }),
-          ...(cwd ? { cwd } : {}),
-          ...(timeoutMs !== undefined && Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
-        });
-        output("agent-result", result);
-        if (!result.ok) process.exitCode = EXIT_GENERAL;
-        return;
-      }
 
       // The common invocation resolver loads a selected agent through its
       // owning bundle adapter. This CLI never re-reads/show-projects the file.
@@ -128,7 +96,6 @@ export const agentCommand = defineCommand({
       const result = await akmAgentDispatch({
         engine: getStringArg(args, "engine"),
         prompt: stdinPrompt ?? promptText,
-        commandRef,
         ...(agentRef === undefined ? {} : { agentRef }),
         agentConfig,
         ...(model === undefined ? {} : { selection: { model } }),

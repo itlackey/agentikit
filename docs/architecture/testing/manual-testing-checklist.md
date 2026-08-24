@@ -2076,12 +2076,12 @@ jq -e '.ok == false and .exitCode == 7' "$AKM_SANDBOX/agent-failure.json"
 ```
 
 - [ ] **AI** Agent asset contributes system prompt/model/tool policy; CLI model override wins.
-- [ ] **AI** Prompt, prompt-stdin, command asset, workflow asset, cwd, and interactive no-prompt paths are each covered.
+- [ ] **AI** Prompt, prompt-stdin, cwd, and interactive no-prompt paths are each covered; stored commands and workflows use their canonical commands.
 - [ ] **AI** Capture proves exact argv/prompt/cwd and credential-presence boolean without logging credential value.
 - [ ] **AI** Nonzero child returns `agent-result` on stdout, CLI exit `1`, child code/reason/stderr retained and redacted.
 - [ ] **AI** Missing executable is a bounded spawn failure; timeout kills process group and writes the fake signal marker with no orphan.
 - [ ] **AI** `OPENCODE_API_KEY=manual-qa-credential-value` plus echo-secret mode produces no literal value in AKM result, stderr, event, or logs.
-- [ ] **AI REGRESSION** `--prompt` and `--command` combinations are rejected as ambiguous rather than silently choosing precedence. Prompt-stdin remains mutually exclusive with both.
+- [ ] **AI REGRESSION** Prompt-stdin remains mutually exclusive with `--prompt`; removed aliases such as agent `--command` are absent from help.
 - [ ] **AI** Named LLM engine is rejected where agent-only dispatch is required; invalid platform/kind fails before spawn.
 - [ ] **AI** Default-engine fallback is announced exactly once when used and never rescues an explicitly invalid named engine.
 

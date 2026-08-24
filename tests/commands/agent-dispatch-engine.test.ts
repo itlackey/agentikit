@@ -24,74 +24,6 @@ describe("akm agent CLI help", () => {
 });
 
 describe("akmAgentDispatch engine capability", () => {
-  test("delegates --command to the canonical invocation without normalizing exact arguments", async () => {
-    const calls: unknown[] = [];
-    const result = await akmAgentDispatch(
-      {
-        commandRef: "fixture//commands/review",
-        argumentInput: "  exact\n$ARGUMENTS  ",
-        agentRef: "fixture//agents/reviewer",
-        engine: "reviewer",
-        timeoutMs: 12_345,
-        cwd: "/tmp/project",
-        selection: { model: "balanced" },
-        agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
-      },
-      {
-        executeCommand: async (input) => {
-          calls.push(input);
-          return {
-            schemaVersion: 2,
-            ok: true,
-            shape: "agent-result",
-            engine: "reviewer",
-            exitCode: 0,
-            stdout: "done",
-            stderr: "",
-            durationMs: 1,
-          };
-        },
-      },
-    );
-
-    expect(result.stdout).toBe("done");
-    expect(calls).toEqual([
-      {
-        action: {
-          ref: "fixture//commands/review",
-          arguments: "  exact\n$ARGUMENTS  ",
-        },
-        config: { configVersion: "0.9.0", semanticSearchMode: "off" },
-        current: {
-          agent: "fixture//agents/reviewer",
-          engine: "reviewer",
-          model: "balanced",
-          timeout: 12_345,
-          workspace: "/tmp/project",
-        },
-      },
-    ]);
-  });
-
-  test("rejects legacy command argv before delegation", async () => {
-    let calls = 0;
-    const executeCommand = async () => {
-      calls += 1;
-      throw new Error("must not delegate");
-    };
-    await expect(
-      akmAgentDispatch(
-        {
-          commandRef: "commands/review",
-          args: ["lost", "spacing"],
-          agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
-        },
-        { executeCommand },
-      ),
-    ).rejects.toThrow(/one exact string|argumentInput/i);
-    expect(calls).toBe(0);
-  });
-
   test("delegates noninteractive prompt/persona work through the same canonical invocation", async () => {
     const calls: unknown[] = [];
     const result = await akmAgentDispatch(
@@ -146,25 +78,6 @@ describe("akmAgentDispatch engine capability", () => {
     ]);
   });
 
-  test("rejects native argv on resolved work", async () => {
-    let calls = 0;
-    const executeCommand = async () => {
-      calls += 1;
-      throw new Error("must not delegate");
-    };
-    await expect(
-      akmAgentDispatch(
-        {
-          prompt: "x",
-          args: ["--native-re-resolution"],
-          agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
-        },
-        { executeCommand },
-      ),
-    ).rejects.toThrow(/native argv|resolved command content|arguments/i);
-    expect(calls).toBe(0);
-  });
-
   test("rejects persona or model metadata without explicit work instead of fabricating an empty command", async () => {
     let calls = 0;
     const executeCommand = async () => {
@@ -175,10 +88,10 @@ describe("akmAgentDispatch engine capability", () => {
 
     await expect(
       akmAgentDispatch({ agentRef: "fixture//agents/reviewer", agentConfig }, { executeCommand }),
-    ).rejects.toThrow(/--prompt|--command|explicit task/i);
+    ).rejects.toThrow(/--prompt|explicit task/i);
     await expect(
       akmAgentDispatch({ selection: { model: "balanced" }, agentConfig }, { executeCommand }),
-    ).rejects.toThrow(/--prompt|--command|explicit task/i);
+    ).rejects.toThrow(/--prompt|explicit task/i);
     expect(calls).toBe(0);
   });
 

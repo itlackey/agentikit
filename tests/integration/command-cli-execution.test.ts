@@ -201,45 +201,6 @@ describe("command CLI execution convergence", () => {
     expect(result.stderr).not.toContain("DO-NOT-LEAK-secret-key");
   });
 
-  test("command run and agent --command produce the same adapter-rendered dispatch", async () => {
-    const commandFile = path.join(storage.stashDir, "commands", "review.md");
-    const personaFile = path.join(storage.stashDir, "agents", "reviewer.md");
-    const commandBefore = fs.readFileSync(commandFile);
-    const personaBefore = fs.readFileSync(personaFile);
-    const argumentInput = "  quoted 'target'\n$ARGUMENTS stays literal  ";
-
-    const canonical = await runCliCapture([
-      "command",
-      "run",
-      "commands/review",
-      "--arguments",
-      argumentInput,
-      "--format=json",
-      "-q",
-    ]);
-    const compatibility = await runCliCapture([
-      "agent",
-      "agents/reviewer",
-      "--command",
-      "commands/review",
-      "--arguments",
-      argumentInput,
-      "--format=json",
-      "-q",
-    ]);
-
-    expect(canonical.code).toBe(0);
-    expect(compatibility.code).toBe(0);
-    expect(stableResult(compatibility.stdout)).toEqual(stableResult(canonical.stdout));
-    const result = stableResult(canonical.stdout) as { stdout: string };
-    expect(result.stdout).toContain("Review exactly: [  quoted 'target'\n$ARGUMENTS stays literal  ]");
-    expect(result.stdout).toContain("You are a careful reviewer.");
-    expect(result.stdout).not.toContain("type: command");
-    expect(result.stdout).not.toContain("type: agent");
-    expect(fs.readFileSync(commandFile)).toEqual(commandBefore);
-    expect(fs.readFileSync(personaFile)).toEqual(personaBefore);
-  });
-
   test("unsupported native placeholders fail before the runner", async () => {
     const commandFile = path.join(storage.stashDir, "commands", "review.md");
     fs.writeFileSync(

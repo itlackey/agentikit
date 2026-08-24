@@ -4,7 +4,6 @@
 
 import { describe, expect, test } from "bun:test";
 import { main } from "../../src/cli";
-import { agentCommand } from "../../src/commands/agent/contribute-cli";
 import { commandCommand } from "../../src/commands/command/command-cli";
 
 type DynamicCommand = {
@@ -21,12 +20,5 @@ describe("canonical command CLI surface", () => {
     expect(run?.args?.ref).toMatchObject({ type: "positional", required: true });
     expect(run?.args?.arguments).toMatchObject({ type: "string" });
     expect(run?.args?.["dry-run"]).toMatchObject({ type: "boolean", default: false });
-  });
-
-  test("keeps agent --command as a compatibility surface with the same exact argument flag", () => {
-    const args = (agentCommand as unknown as DynamicCommand).args;
-    expect(args?.command).toMatchObject({ type: "string" });
-    expect(args?.arguments).toMatchObject({ type: "string" });
-    expect(args?.["dry-run"]).toBeUndefined();
   });
 });
