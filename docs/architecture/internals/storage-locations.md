@@ -22,13 +22,25 @@ akm uses four XDG-compliant directories. Durable data (`index.db`, `state.db`, `
 
 ### `$DATA/index.db` — Main Search Index
 
-Schema managed by `ensureSchema()` (`src/storage/repositories/index-schema.ts`), gated by a `DB_VERSION` constant used only as a forensic stamp in `index_meta`. WAL mode, `busy_timeout = 5000 ms`, foreign keys ON. Optionally loads the `sqlite-vec` extension for fast ANN (approximate nearest-neighbour) vector search.
+Schema managed by `ensureSchema()` (`src/storage/repositories/index-schema.ts`).
+The current derived generation is exactly v21: `index_meta.version` and the
+complete canonical `entries` fingerprint must both match. WAL mode,
+`busy_timeout = 5000 ms`, foreign keys ON. Optionally loads the `sqlite-vec`
+extension for fast ANN (approximate nearest-neighbour) vector search.
 
 Opened by:
-- `openDatabase()` — full schema init, called by `akm index`
-- `openExistingDatabase()` — read/write without schema mutation, called by search/show/curate
+- `openIndexDatabase()` — managed schema initialization and generation rebuild,
+  called by `akm index` and other index writers
+- `openExistingDatabase()` — no schema mutation; validates the exact current
+  generation before returning a handle to search/show/curate and other readers
 
-**Retention:** `index.db` is a fully regenerable derived cache. Schema convergence is additive and non-destructive — every table is `CREATE ... IF NOT EXISTS`, column additions go through guarded `ALTER`s, and targeted migrations handle structural changes; there is no drop-and-recreate-on-version-mismatch path. `clearStaleCacheEntries()` removes orphaned LLM cache rows.
+**Retention:** `index.db` is a fully regenerable derived cache. A missing or
+noncanonical v21 `entries` fingerprint causes the managed opener to discard the
+entry-dependent derived generation and create the exact current schema; the
+indexer then repopulates it from current sources and durable usage state.
+Existing/read-only openers reject a noncanonical generation. This path never
+modifies `state.db`. `clearStaleCacheEntries()` removes orphaned LLM cache rows
+within a current generation.
 
 #### Table: `index_meta`
 
@@ -44,21 +56,21 @@ Known keys: `version` (stored DB_VERSION), `embeddingDim` (e.g. `"384"`), `hasEm
 | Column | Type | Notes |
 |---|---|---|
 | `id` | INTEGER PRIMARY KEY AUTOINCREMENT | Internal row ID |
-| `entry_key` | TEXT NOT NULL UNIQUE | `<stash_dir>:<type>:<name>` (legacy identity column) |
-| `dir_path` | TEXT NOT NULL | Parent directory of the asset file |
+| `item_ref` | TEXT NOT NULL UNIQUE | Sole durable identity and upsert conflict key: `<bundle>//<concept-id>` |
+| `bundle_id` | TEXT NOT NULL | Owning installation identity |
+| `component_id` | TEXT NOT NULL | Owning component identity within the installation |
+| `concept_id` | TEXT NOT NULL | Adapter-owned concept identity |
+| `adapter_id` | TEXT NOT NULL | Adapter that recognized and renders the document |
+| `type` | TEXT NOT NULL | Adapter-emitted item type |
 | `file_path` | TEXT NOT NULL | Absolute path to the asset file |
-| `stash_dir` | TEXT NOT NULL | Root bundle directory |
-| `entry_json` | TEXT NOT NULL | Full `StashEntry` as JSON |
-| `search_text` | TEXT NOT NULL | Pre-built BM25 search string |
-| `entry_type` | TEXT NOT NULL | Asset type: `memory`, `skill`, `lesson`, etc. |
-| `derived_from` | TEXT | Set on entries derived from another asset (e.g. `.derived` memories) |
-| `item_ref` | TEXT | Bundle-adapter identity: the durable `<bundle>//<concept-id>` spelling. Now the primary conflict target for the entries upsert; nullable only on partially-migrated rows. |
-| `bundle_id`, `component_id`, `concept_id`, `adapter_id` | TEXT | Bundle-adapter provenance columns, additive alongside the legacy columns above |
-| `type` | TEXT | Bundle-adapter item type (parallel to `entry_type`) |
 | `content_hash` | TEXT | Content hash for change detection |
-| `document_json` | TEXT | Bundle-adapter document payload |
+| `document_json` | TEXT NOT NULL | Sole stored `IndexDocument` projection |
+| `search_text` | TEXT NOT NULL | Pre-built BM25 search string |
+| `derived_from` | TEXT | Set on entries derived from another asset (e.g. `.derived` memories) |
 
-Indexes: `idx_entries_dir` on `dir_path`, `idx_entries_type` on `entry_type`, `idx_entries_file_path` on `file_path`, a UNIQUE index on `item_ref`.
+Indexes: the UNIQUE `item_ref` constraint plus `idx_entries_bundle` on
+`bundle_id`, `idx_entries_type` on `type`, `idx_entries_file_path` on
+`file_path`, and `idx_entries_derived_from` on `derived_from`.
 
 #### Virtual Table: `entries_fts` (FTS5)
 
@@ -149,21 +161,21 @@ global fallback / cold-start signal.
 
 See [Utility Score Pipeline](#utility-score-pipeline) below.
 
-`usage_events` (search/show/feedback telemetry) is **not** an `index.db` table —
-since the three-DB cutover (Chunk-8 WI-8.3) it lives in `state.db`. See the
-`state.db` section below.
+`usage_events` (search/show/feedback telemetry) is **not** an `index.db` table;
+it lives in `state.db` so an index-generation rebuild cannot discard durable
+usage history. See the `state.db` section below.
 
 #### Table: `registry_index_cache`
 
-Registry index cache: `registry_url` PK, `fetched_at`, `etag`, `last_modified`, `index_json`. TTL enforced by `getRegistryIndexCache()`. Replaces flat JSON files in `$CACHE/registry-index/`.
+Registry index cache. TTL is enforced by `getRegistryIndexCache()`.
 
 | Column | Type | Notes |
 |---|---|---|
-| `slug` | TEXT PRIMARY KEY | Same slug as former filename; registry URL with non-alphanumeric → `-`, max 120 chars |
-| `body_json` | TEXT NOT NULL | Raw registry index JSON |
+| `registry_url` | TEXT PRIMARY KEY | Canonical registry URL and cache key |
 | `fetched_at` | TEXT NOT NULL | ISO-8601 |
-| `fresh_until` | TEXT NOT NULL | ISO-8601; used for TTL check |
-| `stale_until` | TEXT NOT NULL | ISO-8601; used for stale-fallback |
+| `etag` | TEXT | HTTP ETag for conditional requests |
+| `last_modified` | TEXT | HTTP Last-Modified value for conditional requests |
+| `index_json` | TEXT NOT NULL DEFAULT `'{}'` | Raw registry index document |
 
 ---
 
@@ -483,7 +495,7 @@ One line per memory belief-state transition: `{ appliedAt, ref, parentRef, fromS
 | `$CACHE/registry-index/<slug>.json` | Removed in v0.8.0 — data now stored in `registry_index_cache` table in `$DATA/index.db`. Delete these files after running the migration script. | — |
 | `$CACHE/registry-index/skills-sh-search-<md5>.json` | Skills.sh search result cache. Fresh 15min; stale 1d. Key = MD5 of `url + query + limit`. | TTL |
 | `$STASH/.akm/consolidate-journal.json` | Legacy consolidation journal; current advisory consolidation does not read or write it. | Safe to remove |
-| `$DATA/index.db` (`graph_*` tables) | Knowledge graph index data: per-bundle graph metadata plus per-file entities and relations extracted from assets via LLM. `graph_files` is keyed on `entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE` with `(stash_root, file_path)` as `UNIQUE`; `body_hash` is `NOT NULL`; every considered file persists a `status` and `reason`; `graph_file_entities` stores both canonical `entity` and normalized `entity_norm`; `graph_file_relations` stores canonical endpoints plus `from_entity_norm` / `to_entity_norm`; `extraction_run_id` (on `graph_files` and `graph_meta`) and `extractor_id` (on `graph_meta`) record extraction provenance. `graph_meta` also stores the latest graph telemetry: model, prompt version, batch size, cache hits/misses, truncation count, and failure count. A companion `graph_extraction_queue` table holds a lazy, priority-ordered backlog of files awaiting extraction. Indexes: `idx_graph_files_stash_order`, `idx_graph_file_entities_entity_norm(stash_root, entity_norm)`, `idx_entries_file_path` on `entries(file_path)`. | Refreshed by graph extraction; regenerated on the next `akm index`/`akm improve` since `index.db` is a fully rebuildable cache |
+| `$DATA/index.db` (`graph_*` tables) | Knowledge graph index data: per-bundle graph metadata plus per-file entities and relations extracted from assets via LLM. `graph_files` is keyed by `(stash_root, file_path, body_hash)` with `(stash_root, file_path)` unique; it has no `entries.id` foreign key. Every considered file persists `status` and `reason`. `graph_file_entities` and `graph_file_relations` carry the same three-column owner key and cascade from `graph_files`; they store normalized and display-form entity values. `extraction_run_id` (on `graph_files` and `graph_meta`) and `extractor_id` (on `graph_meta`) record extraction provenance. `graph_meta` also stores the latest graph telemetry: model, prompt version, batch size, cache hits/misses, truncation count, and failure count. A companion `graph_extraction_queue` table holds a lazy, priority-ordered backlog of files awaiting extraction. Indexes include `idx_graph_files_path`, `idx_graph_files_stash_order`, `idx_graph_file_entities_entity_norm(stash_root, entity_norm)`, and `idx_entries_file_path` on `entries(file_path)`. | Refreshed by graph extraction; regenerated on the next `akm index`/`akm improve` since `index.db` is a fully rebuildable cache |
 
 ---
 
