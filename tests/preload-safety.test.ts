@@ -11,10 +11,12 @@
  * a test silently writing to the developer's real directories.
  */
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const TMP_REAL = require("node:fs").realpathSync(os.tmpdir());
+const TMP_REAL = fs.realpathSync(os.tmpdir());
+const repoRoot = path.resolve(__dirname, "..");
 
 function underTmp(p: string | undefined): boolean {
   if (!p) return false;
@@ -32,10 +34,17 @@ describe("preload safety invariants", () => {
     }
   });
 
-  test("real user akm dirs are never the active sandbox", () => {
-    const realHome = path.join(os.homedir(), ".config", "akm");
-    expect(process.env.XDG_CONFIG_HOME === path.dirname(realHome)).toBe(false);
-    expect(underTmp(realHome)).toBe(false);
+  test("Bun's process-start home is never the active config sandbox", () => {
+    const processStartConfig = path.join(os.homedir(), ".config", "akm");
+    expect(process.env.XDG_CONFIG_HOME).not.toBe(path.dirname(processStartConfig));
+  });
+
+  test("both broad shard runners seed a unique HOME before Bun starts", () => {
+    for (const runner of ["scripts/test-unit.sh", "scripts/test-integration.sh"]) {
+      const source = fs.readFileSync(path.join(repoRoot, runner), "utf8");
+      expect(source).toMatch(/runtime_home="\$\{logdir\}\/runtime-home-\$\(\(k \+ 1\)\)"/);
+      expect(source).toContain('HOME="$runtime_home" bun test');
+    }
   });
 
   test("AKM_*_DIR overrides, if set, are always live dirs under the temp root (heal drops leaked ones)", () => {
