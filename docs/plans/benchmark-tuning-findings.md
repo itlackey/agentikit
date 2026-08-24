@@ -48,6 +48,27 @@ ships a pre-existing artifact to edit:
 
 Zero out of twenty-four. Not one akm call across every edit-shaped task.
 
+**Replicated on the disjoint train slice** (27 tasks, k=3, 162 trials, zero
+errors). Same model, different task instances, same direction:
+
+| slice | shape | tasks | engagement | baseline -> akm |
+| --- | --- | --- | --- | --- |
+| eval | create-new | 11 | **48%** | 0.45 -> 0.88 (**+0.42**) |
+| train | create-new | 8 | **38%** | 0.58 -> 0.71 (+0.12) |
+| eval | edit-existing | 8 | **0%** | 0.62 -> 0.58 (-0.04) |
+| train | edit-existing | 19 | **5%** | 0.77 -> 0.81 (+0.04) |
+
+The train slice's aggregate paired delta is **+0.062 [-0.012, 0.148]** — the
+CI includes zero. That is not a contradiction of eval's +0.228: train is 19 of
+27 edit-shaped, i.e. dominated by the shape where akm never fires.
+
+**Consequence for the tuning protocol:** train is a poor surface for tuning the
+DELTA (its aggregate is diluted by inert tasks and its CI spans zero) but a good
+surface for tuning ENGAGEMENT, which is the mechanism actually under change.
+Tune against engagement on train; spend an eval measurement only to confirm the
+delta moved. The 5% on train (vs 0% on eval) also shows nothing structurally
+PREVENTS engagement on edit tasks — the model simply rarely thinks to.
+
 **The plugin's own framing predicts this.** `AKM_HINTS_PREFIX`
 (`akm-plugins/opencode/index.ts`) opens with:
 
