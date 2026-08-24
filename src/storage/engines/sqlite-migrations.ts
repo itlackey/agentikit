@@ -177,6 +177,20 @@ export function runMigrations(db: Database, migrations: readonly Migration[], op
 /** Attempts to acquire the write lock before giving up to the caller. */
 const IMMEDIATE_LOCK_MAX_ATTEMPTS = 5;
 
+function isRetryableImmediateBeginError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    message.includes("database is locked") ||
+    message.includes("database table is locked") ||
+    message.includes("did not open a transaction")
+  );
+}
+
+function sleepImmediateRetry(ms: number): void {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
  * Run `fn` inside a `BEGIN IMMEDIATE` transaction.
  *
@@ -199,21 +213,40 @@ function withImmediateWriteLock(db: Database, fn: () => void): void {
   for (let attempt = 1; attempt <= IMMEDIATE_LOCK_MAX_ATTEMPTS; attempt++) {
     try {
       db.exec("BEGIN IMMEDIATE");
+      if (!db.inTransaction) {
+        throw new Error("BEGIN IMMEDIATE did not open a transaction (phantom contention state)");
+      }
     } catch (err) {
-      // Busy despite busy_timeout (another writer holding it across the whole
-      // window). Retry a bounded number of times before surfacing.
       lastBeginErr = err;
-      continue;
+      if (isRetryableImmediateBeginError(err) && attempt < IMMEDIATE_LOCK_MAX_ATTEMPTS) {
+        if (db.inTransaction) {
+          try {
+            db.exec("ROLLBACK");
+          } catch {
+            // Transaction already gone; retrying is safe because fn has not run.
+          }
+        }
+        sleepImmediateRetry(2 ** (attempt - 1));
+        continue;
+      }
+      throw err;
     }
     try {
       fn();
+      if (!db.inTransaction) {
+        throw new Error(
+          "Migration write lock invariant violated: transaction opened by BEGIN IMMEDIATE was no longer active after the migration body ran; refusing to COMMIT (writes may have escaped serialization)",
+        );
+      }
       db.exec("COMMIT");
       return;
     } catch (err) {
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        // Already rolled back by SQLite (e.g. the statement aborted the txn).
+      if (db.inTransaction) {
+        try {
+          db.exec("ROLLBACK");
+        } catch {
+          // Already rolled back by SQLite (e.g. the statement aborted the txn).
+        }
       }
       throw err;
     }
