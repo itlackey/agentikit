@@ -11,12 +11,14 @@ import {
 } from "../../src/commands/command/command-execution";
 import type { ExecutionSourceLookup } from "../../src/commands/command/execution-source-loader";
 import type { AkmConfig } from "../../src/core/config/config-types";
-import { canonicalResolvedExecutionRequest } from "../../src/execution/resolved-request";
+import {
+  canonicalResolvedExecutionRequest,
+  decodeResolvedExecutionRequest,
+} from "../../src/execution/resolved-request";
 import { type AdapterRenderedExecutionSource, createAdapterRenderedExecutionSource } from "../../src/execution/source";
 import type { AgentDispatchRequest } from "../../src/integrations/agent/builder-shared";
 import { getCommandBuilder } from "../../src/integrations/agent/builders";
 import { lowerResolvedExecutionRequest } from "../../src/integrations/agent/execution-lowering";
-import { prepareInlineExecution } from "../../src/integrations/agent/inline-execution";
 import { mergeModelMapLayers, parseModelMapLayer } from "../../src/integrations/agent/model-map";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
 import { withEnv } from "../_helpers/sandbox";
@@ -33,6 +35,13 @@ const config: AkmConfig = {
       model: "engine-exact",
       timeoutMs: 60_000,
     },
+  },
+};
+
+const valueStateConfig: AkmConfig = {
+  ...config,
+  engines: {
+    reviewer: { kind: "agent", platform: "claude", bin: "/bin/true" },
   },
 };
 
@@ -234,38 +243,95 @@ describe("common command invocation preparation", () => {
     expect(inline.request.command.source).toBeNull();
   });
 
-  test("direct and task adapters produce byte-identical anonymous requests and equivalent lowering", async () => {
-    const current = {
-      engine: "reviewer",
-      model: "reasoning",
-      inference: { temperature: 0 },
-      timeout: 0,
-      workspace: "",
-      environment: {},
-    } as const;
-    const direct = await prepareCommandInvocation({
-      action: { content: "Review this exactly." },
-      config,
-      modelMap,
-      current,
-    });
-    const task = await prepareCommandInvocation({
-      action: { content: "Review this exactly." },
-      config,
-      modelMap,
-      invocationKind: "task",
-      current,
-    });
+  test("enforces one value-state contract across preparation, cascade, durable bytes, and lowering", async () => {
+    const invocationKinds = ["direct", "task", "workflow"] as const;
+    const cases = [
+      { name: "omitted", current: {} },
+      { name: "explicit null", current: { model: null, inference: null, outputSchema: null } },
+      { name: "explicit empty inference", current: { inference: {} } },
+      {
+        name: "explicit false, zero, and empty values",
+        current: {
+          inference: { enabled: false, temperature: 0, extraParams: {} },
+          outputSchema: {},
+          tools: [],
+          timeout: 0,
+          workspace: "",
+          environment: {},
+          runtime: {},
+        },
+      },
+    ] as const;
+    const observed: Array<{
+      name: string;
+      canonical: string;
+      wire: Record<string, unknown>;
+      provenance: Readonly<Record<string, unknown>>;
+      lowered: ReturnType<typeof lowerResolvedExecutionRequest>;
+    }> = [];
 
-    expect(canonicalResolvedExecutionRequest(task.request)).toBe(canonicalResolvedExecutionRequest(direct.request));
-    expect(direct.plan.invocationKind).toBe("direct");
-    expect(task.plan.invocationKind).toBe("task");
-    const withoutRequest = (lowered: ReturnType<typeof lowerResolvedExecutionRequest>) => {
-      const { request: _request, ...projection } = lowered;
-      return JSON.parse(JSON.stringify(projection));
+    for (const fixture of cases) {
+      const prepared = await Promise.all(
+        invocationKinds.map((invocationKind) =>
+          prepareCommandInvocation({
+            action: { content: "Review exactly." },
+            config: valueStateConfig,
+            invocationKind,
+            current: fixture.current,
+          }),
+        ),
+      );
+      expect(prepared.map(({ plan }) => plan.invocationKind)).toEqual([...invocationKinds]);
+
+      const canonical = prepared.map(({ request }) => canonicalResolvedExecutionRequest(request));
+      const [firstCanonical] = canonical;
+      const [firstPrepared] = prepared;
+      if (!firstCanonical || !firstPrepared) throw new Error("cross-surface fixture produced no request");
+      expect(new Set(canonical).size).toBe(1);
+      expect(canonicalResolvedExecutionRequest(decodeResolvedExecutionRequest(JSON.parse(firstCanonical)))).toBe(
+        firstCanonical,
+      );
+
+      const lowered = prepared.map(({ request, config: preparedConfig }) =>
+        lowerResolvedExecutionRequest(request, preparedConfig),
+      );
+      const project = ({ request: _request, ...value }: (typeof lowered)[number]) => JSON.parse(JSON.stringify(value));
+      const [firstLowered, ...remainingLowered] = lowered;
+      if (!firstLowered) throw new Error("cross-surface fixture produced no lowered request");
+      for (const candidate of remainingLowered) expect(project(candidate)).toEqual(project(firstLowered));
+      observed.push({
+        name: fixture.name,
+        canonical: firstCanonical,
+        wire: JSON.parse(firstCanonical) as Record<string, unknown>,
+        provenance: firstPrepared.plan.provenance,
+        lowered: firstLowered,
+      });
+    }
+
+    expect(new Set(observed.map(({ canonical }) => canonical)).size).toBe(cases.length);
+    const requireObserved = (name: string) => {
+      const value = observed.find((candidate) => candidate.name === name);
+      if (!value) throw new Error(`missing cross-surface fixture: ${name}`);
+      return value;
     };
-    expect(withoutRequest(lowerResolvedExecutionRequest(task.request, task.config))).toEqual(
-      withoutRequest(lowerResolvedExecutionRequest(direct.request, direct.config)),
+    const omitted = requireObserved("omitted");
+    for (const field of ["agent", "persona", "model", "inference", "outputSchema", "tools"]) {
+      expect(Object.hasOwn(omitted.wire, field)).toBe(false);
+    }
+    for (const field of ["runtime.timeoutMs", "runtime.workspace", "runtime.environment"]) {
+      expect(omitted.lowered.translatedFields).not.toContain(field);
+    }
+    expect(requireObserved("explicit null").wire).toMatchObject({ model: null, inference: null, outputSchema: null });
+    expect(requireObserved("explicit empty inference").wire).toMatchObject({ inference: {} });
+    expect(requireObserved("explicit empty inference").provenance).toHaveProperty("/inference");
+    expect(requireObserved("explicit false, zero, and empty values").wire).toMatchObject({
+      inference: { enabled: false, temperature: 0, extraParams: {} },
+      outputSchema: {},
+      tools: [],
+      runtime: { timeoutMs: 0, workspace: "", environment: {}, settings: {} },
+    });
+    expect(requireObserved("explicit false, zero, and empty values").lowered.translatedFields).toEqual(
+      expect.arrayContaining(["runtime.timeoutMs", "runtime.workspace", "runtime.environment", "tools"]),
     );
   });
 
