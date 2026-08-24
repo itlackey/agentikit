@@ -21,8 +21,8 @@ import { runMigrations } from "../../src/storage/engines/sqlite-migrations";
 
 const roots: string[] = [];
 
-function statePath(): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-state-migrations-"));
+function statePath(prefix = "akm-state-migrations-"): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   roots.push(root);
   return path.join(root, "state.db");
 }
@@ -784,7 +784,7 @@ describe("state.db automatic migration boundary", () => {
   );
 
   test("a failed 018 transaction retains its verified safety copy and reports the recovery path", () => {
-    const file = statePath();
+    const file = statePath("akm state migrations ");
     const before018 = STATE_MIGRATIONS.slice(0, migrationIndex("018-drop-dead-lane-schema"));
     const seeded = openDatabase(file);
     runMigrations(seeded, before018);
