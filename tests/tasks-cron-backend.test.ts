@@ -23,6 +23,12 @@ import {
   schedulerContextDescriptor,
   schedulerContextPath,
 } from "../src/tasks/scheduler-invocation";
+import {
+  type SchedulerArtifactDrift,
+  type SchedulerBackendContractDriver,
+  type SchedulerNormalizedPeer,
+  schedulerBackendConformance,
+} from "./_helpers/scheduler-backend-conformance";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
   AKM_BUNDLE_DIR: "/srv/akm stash/100%'s",
@@ -257,18 +263,39 @@ describe("cron backend helpers", () => {
 
 // ── drift detection (the `tasks sync` schedule-change fix) ───────────────────
 
+type MemoryCronExec = CronExec & {
+  current(): string;
+  replace(content: string): void;
+  resetActivity(): void;
+  accessCount(): number;
+  mutationCount(): number;
+};
+
 /** In-memory crontab so the backend never touches the real one. */
-function memoryExec(initial = ""): CronExec & { current: () => string } {
+function memoryExec(initial = ""): MemoryCronExec {
   let store = initial;
+  let reads = 0;
+  let writes = 0;
   return {
     read(): CronExecResult {
+      reads += 1;
       return { status: 0, stdout: store, stderr: "" };
     },
     write(content: string): CronExecResult {
+      writes += 1;
       store = content;
       return { status: 0, stdout: "", stderr: "" };
     },
     current: () => store,
+    replace(content) {
+      store = content;
+    },
+    resetActivity() {
+      reads = 0;
+      writes = 0;
+    },
+    accessCount: () => reads + writes,
+    mutationCount: () => writes,
   };
 }
 
@@ -282,15 +309,79 @@ const SYNC_TASK: SchedulerBinding = {
   invocation: ["task", "run", "ping", "--scheduled"],
 };
 
-describe("cron backend drift detection", () => {
-  const opts = (exec: CronExec) => ({
+function cronBackendOptions(exec: CronExec, scheduledContext: ScheduledTaskContext = SCHEDULED_CONTEXT) {
+  return {
     exec,
     fs: { ensureDir() {} },
     logDir: "/var/log/akm",
     akmArgv: ["/usr/local/bin/akm"],
     envPath: false as const,
-    scheduledContext: SCHEDULED_CONTEXT,
-  });
+    scheduledContext,
+  };
+}
+
+function cronContractDriver(scheduledContext = SCHEDULED_CONTEXT): SchedulerBackendContractDriver {
+  const exec = memoryExec();
+  const backend = CRON_BACKEND(cronBackendOptions(exec, scheduledContext));
+  const nativeId = (binding: SchedulerBinding) => binding.nativeId ?? schedulerNativeBindingId(binding.id);
+  const replaceArtifact = (binding: SchedulerBinding, replacement: string) => {
+    const marker = `# akm:task ${nativeId(binding)}`;
+    const prior = exec.current();
+    const duplicate = prior.replaceAll(marker, `# akm:task ${replacement}`);
+    if (duplicate === prior) throw new Error(`missing cron artifact fixture for ${binding.id}`);
+    exec.replace(`${prior}${duplicate}`);
+  };
+
+  return {
+    backend,
+    captureState: exec.current,
+    clearArtifact(binding) {
+      exec.replace(removeBlock(exec.current(), nativeId(binding)));
+    },
+    driftArtifact(binding, drift: SchedulerArtifactDrift) {
+      const prior = exec.current();
+      let next: string;
+      if (drift === "foreign") {
+        next = prior.replace(
+          " task run ping --bundle stash --scheduled ",
+          " task run foreign --bundle stash --scheduled ",
+        );
+      } else if (drift === "malformed") {
+        next = prior.replace(" --scheduled ", " --broken ");
+      } else {
+        const fields = binding.cron.split(" ");
+        fields[0] = fields[0] === "0" ? "7" : "8";
+        next = prior.replace(binding.cron, fields.join(" "));
+      }
+      if (next === prior) throw new Error(`failed to drift cron artifact fixture for ${drift}`);
+      exec.replace(next);
+    },
+    addNormalizedPeer(binding, peer: SchedulerNormalizedPeer) {
+      const id = nativeId(binding);
+      replaceArtifact(binding, peer === "case" ? id.toUpperCase() : `${id}.`);
+    },
+    currentFingerprint(binding) {
+      const artifact = (backend.listNativeArtifacts?.() as Array<{ nativeId: string; fingerprint?: string }>).find(
+        (candidate) => candidate.nativeId === nativeId(binding),
+      );
+      if (!artifact?.fingerprint) throw new Error(`missing cron fingerprint fixture for ${binding.id}`);
+      return artifact.fingerprint;
+    },
+    resetActivity: exec.resetActivity,
+    accessCount: exec.accessCount,
+    mutationCount: exec.mutationCount,
+  };
+}
+
+schedulerBackendConformance({
+  name: "cron",
+  scheduledContext: SCHEDULED_CONTEXT,
+  movedContext: { ...SCHEDULED_CONTEXT, AKM_DATA_DIR: "/srv/moved data" },
+  create: cronContractDriver,
+});
+
+describe("cron backend drift detection", () => {
+  const opts = cronBackendOptions;
   // The cron backend's list() is synchronous, but the SchedulerBackend interface
   // types it as `… | Promise<…>`; resolve through the concrete array shape so
   // indexing stays type-safe.
