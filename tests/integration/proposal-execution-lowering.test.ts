@@ -25,6 +25,14 @@ function proposalStash(): string {
   return sandbox.dir;
 }
 
+function extractProposalDraftPath(prompt: string): string | undefined {
+  const prefix = path.join(os.tmpdir(), "akm-propose-");
+  const prefixIndex = prompt.indexOf(prefix);
+  if (prefixIndex < 0) return undefined;
+  const filenameTail = prompt.slice(prefixIndex + prefix.length).match(/^[^\s`"']+\.md/)?.[0];
+  return filenameTail ? `${prefix}${filenameTail}` : undefined;
+}
+
 function directConfig(stashDir: string, apiKey?: string): AkmConfig {
   return {
     configVersion: "0.9.0",
@@ -118,7 +126,7 @@ describe("proposal consumers lower resolved execution requests", () => {
     expect(messages).toHaveLength(1);
     const content = String(messages[0]?.content);
     expect(content).toContain(path.join(os.tmpdir(), "akm-propose-"));
-    const draftFilePath = content.match(/\/tmp\/akm-propose-[^\s`"']+\.md/)?.[0];
+    const draftFilePath = extractProposalDraftPath(content);
     expect(draftFilePath).toBeDefined();
     expect(messages[0]).toEqual({
       role: "user",
@@ -218,7 +226,7 @@ describe("proposal consumers lower resolved execution requests", () => {
           prompt: async (args: { body: { parts: Array<{ type: string; text: string }> } }) => {
             const prompt = args.body.parts[0]?.text ?? "";
             expect(prompt).toContain(path.join(os.tmpdir(), "akm-propose-"));
-            const draftFilePath = prompt.match(/\/tmp\/akm-propose-[^\s`"']+\.md/)?.[0];
+            const draftFilePath = extractProposalDraftPath(prompt);
             if (!draftFilePath) throw new Error("proposal SDK fixture did not receive the draft path");
             fs.writeFileSync(
               draftFilePath,

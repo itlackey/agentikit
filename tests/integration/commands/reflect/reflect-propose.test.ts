@@ -51,6 +51,14 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
+function extractProposalDraftPath(prompt: string): string | undefined {
+  const prefix = path.join(os.tmpdir(), "akm-propose-");
+  const prefixIndex = prompt.indexOf(prefix);
+  if (prefixIndex < 0) return undefined;
+  const filenameTail = prompt.slice(prefixIndex + prefix.length).match(/^[^\s`"']+\.md/)?.[0];
+  return filenameTail ? `${prefix}${filenameTail}` : undefined;
+}
+
 function makeStashDir(): string {
   // sandboxStashDir already creates lessons/skills/memories/knowledge;
   // this helper is used for inline stash dirs (not the env-var-backed one)
@@ -603,7 +611,7 @@ describe("akm propose", () => {
     const spawn: SpawnFn = (cmd) => {
       const prompt = cmd.join(" ");
       expect(prompt).toContain(path.join(os.tmpdir(), "akm-propose-"));
-      const draftPath = prompt.match(/\/tmp\/akm-propose-[^\s`"']+\.md/)?.[0];
+      const draftPath = extractProposalDraftPath(prompt);
       if (!draftPath) throw new Error("draft path missing from propose prompt");
       fs.writeFileSync(draftPath, "---\ndescription: A file-written skill draft\n---\n\nDraft body.\n", "utf8");
       return fakeSpawn("", "", 0)(cmd, {});
