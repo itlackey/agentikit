@@ -3,70 +3,17 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Plain-text rendering of `akm migrate status` / `akm migrate apply`'s
- * `MigrationPlan` result (`scripts/akm-migrate/config-migrate.ts`).
- *
- * Reuses `renderStatusEntries` (`./status-list.ts`) for the four-artifact
- * breakdown — exactly the "worst-first, glyph-prefixed" shape that module
- * exists for — rather than reinventing it for a third command.
+ * Plain-text rendering of the task-v2 to task-v3 migration plan.
  */
 
 import type { TextFormatterEntry } from "./registry";
-import { renderStatusEntries, type StatusEntry } from "./status-list";
-
-interface ArtifactState {
-  status: string;
-  migrationIds?: string[];
-  detail?: string;
-}
-
-interface TargetConfigState {
-  status: string;
-  source: string;
-  path?: string;
-  detail?: string;
-}
-
-interface GeneratedConfigInfo {
-  path: string;
-  status: string;
-  droppedKeys: string[];
-}
 
 interface MigrationPlanResult {
   status: string;
-  artifacts?: Record<string, ArtifactState>;
-  targetConfig?: TargetConfigState;
   blockers?: string[];
-  message?: string;
-  generatedConfig?: GeneratedConfigInfo;
-  activeOperation?: { kind: string; sentinelPath: string };
+  taskV3Migration?: { changed: number; skipped: number; blocked: number };
   backupPath?: string;
-  backupRunId?: string;
-}
-
-const ARTIFACT_ORDER = ["config", "state", "workflow", "index"] as const;
-const ARTIFACT_LABEL: Record<(typeof ARTIFACT_ORDER)[number], string> = {
-  config: "config.json",
-  state: "state.db",
-  workflow: "workflow.db",
-  index: "index.db",
-};
-
-/** Lower rank sorts first (worse-first) via `renderStatusEntries`. */
-function artifactSeverity(status: string): { rank: number; glyph: string } {
-  switch (status) {
-    case "corrupt":
-    case "inconsistent":
-    case "newer":
-      return { rank: 0, glyph: "✗" };
-    case "old":
-      return { rank: 1, glyph: "⚠" };
-    case "missing":
-      return { rank: 2, glyph: "?" };
-    default: // "current"
-      return { rank: 3, glyph: "✓" };
-  }
+  applied?: number;
 }
 
 function planGlyph(status: string): string {
@@ -75,8 +22,6 @@ function planGlyph(status: string): string {
       return "✓";
     case "ready":
       return "⚠";
-    case "not-applicable":
-      return "·";
     default: // "blocked"
       return "✗";
   }
@@ -88,38 +33,9 @@ export function formatMigratePlain(result: unknown): string | null {
   if (typeof plan.status !== "string") return null;
 
   const lines: string[] = [`${planGlyph(plan.status)} ${plan.status}`];
-  if (plan.message) lines.push(`    ${plan.message}`);
-  if (plan.activeOperation) {
-    lines.push(`    in-flight ${plan.activeOperation.kind} at ${plan.activeOperation.sentinelPath}`);
-  }
-
-  if (plan.artifacts) {
-    const entries: StatusEntry[] = ARTIFACT_ORDER.filter((name) => plan.artifacts?.[name]).map((name) => {
-      const artifact = plan.artifacts?.[name] as ArtifactState;
-      const { rank, glyph } = artifactSeverity(artifact.status);
-      const detailLines: string[] = [];
-      if (artifact.detail) detailLines.push(artifact.detail);
-      if (artifact.migrationIds?.length) detailLines.push(`migrations applied: ${artifact.migrationIds.length}`);
-      return { severityRank: rank, glyph, headline: `${ARTIFACT_LABEL[name]}: ${artifact.status}`, detailLines };
-    });
-    lines.push("", "artifacts:", ...renderStatusEntries(entries).map((line) => `  ${line}`));
-  }
-
-  if (plan.targetConfig) {
-    const target = plan.targetConfig;
-    lines.push(
-      "",
-      `target config: ${target.status} (source: ${target.source}${target.path ? `, ${target.path}` : ""})`,
-    );
-    if (target.detail) lines.push(`  ${target.detail}`);
-  }
-
-  if (plan.generatedConfig) {
-    const generated = plan.generatedConfig;
-    lines.push("", `generated config: ${generated.status} at ${generated.path}`);
-    if (generated.droppedKeys.length > 0) {
-      lines.push(`  drops (add engines/defaults yourself if needed): ${generated.droppedKeys.join(", ")}`);
-    }
+  if (plan.taskV3Migration) {
+    const tasks = plan.taskV3Migration;
+    lines.push(`    tasks: ${tasks.changed} change, ${tasks.skipped} current, ${tasks.blocked} blocked`);
   }
 
   if (plan.blockers?.length) {
@@ -127,8 +43,9 @@ export function formatMigratePlain(result: unknown): string | null {
   }
 
   if (plan.backupPath) {
-    lines.push("", `backup: ${plan.backupPath}${plan.backupRunId ? ` (run ${plan.backupRunId})` : ""}`);
+    lines.push("", `backup: ${plan.backupPath}`);
   }
+  if (plan.applied !== undefined) lines.push(`applied: ${plan.applied}`);
 
   return lines.join("\n");
 }
