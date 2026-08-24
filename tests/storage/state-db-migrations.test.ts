@@ -3,11 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import {
   getStateMigrationSafety,
   STATE_MIGRATION_SAFETY_BY_ID,
@@ -302,29 +303,32 @@ describe("state.db automatic migration boundary", () => {
     `);
     seeded.close();
 
-    const writerProgram = `
+    const writerScript = path.join(path.dirname(file), "concurrent-writer.mts");
+    fs.writeFileSync(
+      writerScript,
+      `
       import { Database } from "bun:sqlite";
       import { writeFileSync } from "node:fs";
-      const db = new Database(process.argv[1]);
+      const db = new Database(${JSON.stringify(file)});
       db.exec("PRAGMA busy_timeout = 5000");
-      writeFileSync(process.argv[2], "started");
+      writeFileSync(${JSON.stringify(startedFile)}, "started");
       db.query("INSERT INTO migration_race_probe(kind) VALUES ('concurrent-writer')").run();
       db.close();
-    `;
+    `,
+      "utf8",
+    );
     const originalFsync = fs.fsyncSync.bind(fs);
-    let writer: ChildProcess | undefined;
-    let writerExit: Promise<{ code: number | null; stderr: string }> | undefined;
+    let writer: Worker | undefined;
+    let writerExit: Promise<{ code: number; error: string }> | undefined;
     const fsync = spyOn(fs, "fsyncSync").mockImplementation(((fd: number) => {
       if (!writer) {
-        writer = spawn(process.execPath, ["-e", writerProgram, file, startedFile], {
-          stdio: ["ignore", "ignore", "pipe"],
-        });
-        let stderr = "";
-        writer.stderr?.on("data", (chunk) => {
-          stderr += String(chunk);
+        writer = new Worker(pathToFileURL(writerScript));
+        let workerError = "";
+        writer.once("error", (error) => {
+          workerError = error.message;
         });
         writerExit = new Promise((resolve) => {
-          writer?.once("exit", (code) => resolve({ code, stderr }));
+          writer?.once("exit", (code) => resolve({ code, error: workerError }));
         });
         waitForFile(startedFile);
         // Without a writer lock spanning snapshot -> migration, this writer
@@ -344,7 +348,7 @@ describe("state.db automatic migration boundary", () => {
       writerExit ?? Promise.reject(new Error("Concurrent writer was not started.")),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Concurrent writer timed out.")), 7_000)),
     ]);
-    expect(writerResult).toEqual({ code: 0, stderr: "" });
+    expect(writerResult).toEqual({ code: 0, error: "" });
 
     const safetyCopy = openDatabase(result.safetyCopyPath as string, { readonly: true });
     const backupMax = safetyCopy.prepare("SELECT MAX(id) AS id FROM migration_race_probe").get() as { id: number };
