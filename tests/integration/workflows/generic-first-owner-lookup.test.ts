@@ -324,10 +324,10 @@ describe("generic lookup/show installation-priority ownership", () => {
     expect((await loadWorkflowAsset("index")).path).toBe(indexPath);
   });
 
-  test("a missing first-native index row cannot retarget lookup to a lower indexed owner and disk show keeps the physical owner", async () => {
+  test("a missing first-native index row cannot retarget lookup to a lower indexed owner or render an unindexed file", async () => {
     const early = fixture("early-native-stale-index", "akm");
     const later = fixture("later-native-stale-index", "akm");
-    const earlyPath = write(early.root, "workflows/stale.md", getWorkflowTemplate());
+    write(early.root, "workflows/stale.md", getWorkflowTemplate());
     write(later.root, "workflows/stale.md", getWorkflowTemplate());
     configure(early, later);
     await akmIndex({ stashDir: early.root, full: true });
@@ -336,6 +336,6 @@ describe("generic lookup/show installation-priority ownership", () => {
 
     expect(await lookupBundleRef(parseBundleRef("workflows/stale"))).toBeNull();
     await expect(showByRef("workflows/stale")).rejects.toThrow(/not found/i);
-    expect((await showLocal({ ref: "workflows/stale" })).path).toBe(earlyPath);
+    await expect(showLocal({ ref: "workflows/stale" })).rejects.toThrow(/not found/i);
   });
 });
