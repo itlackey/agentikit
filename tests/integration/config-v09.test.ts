@@ -241,6 +241,26 @@ describe("0.9 config contract", () => {
     expect(ok.ok).toBe(true);
   });
 
+  test("rejects coercion-shaped website options at the config boundary", () => {
+    for (const options of [
+      { maxPages: "25" },
+      { maxDepth: false },
+      { respectRobots: null },
+      { respectRobots: "false" },
+      { crawlTimeoutMs: "300" },
+      { crawlTimeoutMs: false },
+      { crawlTimeoutMs: -1 },
+    ]) {
+      expect(
+        validateConfigShape({
+          configVersion: "0.9.0",
+          bundles: { docs: { website: { url: "https://example.test/docs/", ...options } } },
+          defaultBundle: "docs",
+        }).ok,
+      ).toBe(false);
+    }
+  });
+
   test("rejects a half-migrated config carrying bundles alongside the retired source keys", () => {
     for (const legacy of [{ stashDir: "/s" }, { sources: [] }, { installed: [] }]) {
       const res = validateConfigShape({

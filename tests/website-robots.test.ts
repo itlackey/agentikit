@@ -34,7 +34,12 @@ import {
   type RobotsRuleSet,
   type RobotsTxtLoader,
 } from "../src/sources/snapshot-fetchers/robots";
-import { coerceRespectRobots, loadRobotsTxt } from "../src/sources/snapshot-fetchers/website-ingest";
+import {
+  loadRobotsTxt,
+  resolveCrawlTimeoutMs,
+  resolvePositiveInt,
+  resolveRespectRobots,
+} from "../src/sources/snapshot-fetchers/website-ingest";
 import { withMockedFetch } from "./_helpers/sandbox";
 import { overrideSeam } from "./_helpers/seams";
 
@@ -729,48 +734,78 @@ describe("loadRobotsTxt", () => {
   });
 });
 
-// ── §4.7 coerceRespectRobots (G-01…G-07) ────────────────────────────────────
+// ── Strict website option boundary ──────────────────────────────────────────
 
-describe("coerceRespectRobots", () => {
+describe("resolveRespectRobots", () => {
   test.each([
-    [undefined, true], // G-01
-    [null, true], // G-02
-    [true, true], // G-03
-    [false, false], // G-04
-  ])("coerces %p to %p", (input, expected) => {
-    expect(coerceRespectRobots(input)).toBe(expected);
+    [undefined, true],
+    [true, true],
+    [false, false],
+  ])("resolves %p to %p", (input, expected) => {
+    expect(resolveRespectRobots(input)).toBe(expected);
   });
 
-  test.each(["false", "FALSE", " false "])("G-05: coerces string %p to false", (input) => {
-    expect(coerceRespectRobots(input)).toBe(false);
-  });
-
-  test.each(["true", "TRUE"])("G-06: coerces string %p to true", (input) => {
-    expect(coerceRespectRobots(input)).toBe(true);
-  });
-
-  // Each row is wrapped in its own array ([0], [{}], [[]], ...) rather than
-  // passed as a bare list — bun's test.each spreads a bare `[]` row as ZERO
-  // call arguments, which (since the callback below declares one parameter)
-  // makes bun treat that parameter as an async `done` callback instead of
-  // test data, hanging the run until its 30s test timeout.
   test.each([
+    [null],
     [0],
     [1],
+    ["false"],
+    ["true"],
     ["no"],
-    ["yes"],
     [{}],
     [[]],
-  ])("G-07: rejects non-boolean value %p with a ConfigError", (input) => {
-    let caught: unknown;
-    try {
-      coerceRespectRobots(input);
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(ConfigError);
-    const message = (caught as Error).message;
-    expect(message).toMatch(/respectRobots/);
-    expect(message).toMatch(/boolean/i);
+  ])("rejects non-boolean value %p with a ConfigError", (input) => {
+    expect(() => resolveRespectRobots(input)).toThrow(ConfigError);
+    expect(() => resolveRespectRobots(input)).toThrow(/respectRobots.*boolean/i);
+  });
+});
+
+describe("resolvePositiveInt", () => {
+  test("uses the fallback only when the option is absent", () => {
+    expect(resolvePositiveInt(undefined, 50, "maxPages")).toBe(50);
+  });
+
+  test.each([1, 7, 50])("accepts positive integer %p", (input) => {
+    expect(resolvePositiveInt(input, 50, "maxPages")).toBe(input);
+  });
+
+  test.each([
+    [null],
+    [false],
+    [true],
+    [0],
+    [-1],
+    [1.5],
+    ["7"],
+    [Number.NaN],
+    [Number.POSITIVE_INFINITY],
+  ])("rejects invalid positive integer %p", (input) => {
+    expect(() => resolvePositiveInt(input, 50, "maxPages")).toThrow(ConfigError);
+    expect(() => resolvePositiveInt(input, 50, "maxPages")).toThrow(/maxPages.*positive integer/i);
+  });
+});
+
+describe("resolveCrawlTimeoutMs", () => {
+  test("leaves an absent timeout unset and maps zero to the explicit disabled state", () => {
+    expect(resolveCrawlTimeoutMs(undefined)).toBeUndefined();
+    expect(resolveCrawlTimeoutMs(0)).toBeNull();
+  });
+
+  test.each([1, 300, 600_000])("accepts nonzero integer timeout %p", (input) => {
+    expect(resolveCrawlTimeoutMs(input)).toBe(input);
+  });
+
+  test.each([
+    [null],
+    [false],
+    [true],
+    [-1],
+    [1.5],
+    ["300"],
+    [Number.NaN],
+    [Number.POSITIVE_INFINITY],
+  ])("rejects invalid timeout %p", (input) => {
+    expect(() => resolveCrawlTimeoutMs(input)).toThrow(ConfigError);
+    expect(() => resolveCrawlTimeoutMs(input)).toThrow(/crawlTimeoutMs.*non-negative integer/i);
   });
 });
