@@ -68,22 +68,14 @@ const WEBSITE_PAGE_BYTE_CAP = 5 * 1024 * 1024;
 const WEBSITE_CRAWL_WALL_CLOCK_MS = 10 * 60 * 1000;
 const WEBSITE_MAX_REDIRECTS = 8;
 
-/**
- * Coerces the user-facing `crawlTimeoutMs` option.
- *
- * Returns `null` for an explicit opt-out (`false`, or `0`), the configured
- * number of milliseconds when positive, and `undefined` to mean "unset, use
- * the default". Anything else is ignored rather than failing a crawl over a
- * malformed knob.
- */
-function coerceCrawlTimeoutMs(value: unknown): number | null | undefined {
-  if (value === false || value === 0) return null;
-  if (value === true || value === undefined || value === null) return undefined;
-  const parsed =
-    typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
-  if (!Number.isFinite(parsed)) return undefined;
-  if (parsed <= 0) return null;
-  return parsed;
+/** Resolve the exact persisted crawl timeout; zero explicitly disables it. */
+export function resolveCrawlTimeoutMs(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === 0) return null;
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  throw new ConfigError(
+    `Invalid value for crawlTimeoutMs: expected a non-negative integer, got ${JSON.stringify(value)}.`,
+  );
 }
 
 /**
@@ -195,12 +187,12 @@ export async function ensureWebsiteMirror(
       fs.mkdirSync(cachePaths.rootDir, { recursive: true });
       await scrapeWebsiteToStash(normalizedUrl, cachePaths.stashDir, {
         fetcherStashDir: resolveFetcherStashDir(),
-        maxPages: coercePositiveInt(config.options?.maxPages, MAX_PAGES_DEFAULT),
-        maxDepth: coercePositiveInt(config.options?.maxDepth, MAX_DEPTH_DEFAULT),
-        respectRobots: coerceRespectRobots(config.options?.respectRobots),
+        maxPages: resolvePositiveInt(config.options?.maxPages, MAX_PAGES_DEFAULT, "maxPages"),
+        maxDepth: resolvePositiveInt(config.options?.maxDepth, MAX_DEPTH_DEFAULT, "maxDepth"),
+        respectRobots: resolveRespectRobots(config.options?.respectRobots),
         allowPrivateHosts: options?.allowPrivateHosts,
         wallClockCapMs: options?.wallClockCapMs,
-        crawlTimeoutMs: coerceCrawlTimeoutMs(config.options?.crawlTimeoutMs),
+        crawlTimeoutMs: resolveCrawlTimeoutMs(config.options?.crawlTimeoutMs),
         resolveSecret: options?.resolveSecret,
         // As-supplied, pre-normalization start URL (see crawlWebsite's
         // `rawStartUrl` doc comment): threaded through purely for the C-02
@@ -459,7 +451,7 @@ async function scrapeWebsiteToStash(
     rawStartUrl?: string;
     resolveSecret?: SecretResolveFn;
     fetcherStashDir?: string | null;
-    /** Hard process cap; `null` disables it. See {@link coerceCrawlTimeoutMs}. */
+    /** Hard process cap; `null` disables it. See {@link resolveCrawlTimeoutMs}. */
     crawlTimeoutMs?: number | null;
   },
 ): Promise<void> {
@@ -736,7 +728,7 @@ async function crawlWebsite(
     respectRobots?: boolean;
     allowPrivateHosts?: boolean;
     wallClockCapMs?: number;
-    /** Hard process cap; `null` disables it. See {@link coerceCrawlTimeoutMs}. */
+    /** Hard process cap; `null` disables it. See {@link resolveCrawlTimeoutMs}. */
     crawlTimeoutMs?: number | null;
     /**
      * The start URL exactly as the user supplied it in config, before
@@ -758,7 +750,7 @@ async function crawlWebsite(
   const visited = new Set<string>();
   const pages: WebsitePage[] = [];
   // Precedence: the test-only seam, then the user's `crawlTimeoutMs`, then the
-  // default. `crawlTimeoutMs: 0` / `false` disables the cap outright, for a
+  // default. `crawlTimeoutMs: 0` disables the cap outright, for a
   // deliberately long-running crawl the user is willing to babysit.
   const configuredCapMs =
     options.crawlTimeoutMs === null ? null : (options.crawlTimeoutMs ?? WEBSITE_CRAWL_WALL_CLOCK_MS);
@@ -1147,26 +1139,11 @@ export async function loadRobotsTxt(
   }
 }
 
-/**
- * Coerces `SourceConfigEntry.options.respectRobots` to a boolean. The bundle
- * descriptor is boolean-validated at config load (schema), but the legacy
- * `sources[].options` bag is `z.record(z.unknown())` and accepts anything, so
- * the runtime read still validates. A misspelled non-boolean opt-out fails
- * loudly (`ConfigError`) rather than silently defaulting either way — the
- * user would otherwise think robots.txt handling is something other than
- * what akm is actually doing (spec §4.7).
- */
-export function coerceRespectRobots(value: unknown): boolean {
-  if (value === undefined || value === null) return true;
+/** Resolve the exact persisted robots policy. */
+export function resolveRespectRobots(value: unknown): boolean {
+  if (value === undefined) return true;
   if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true") return true;
-    if (normalized === "false") return false;
-  }
-  throw new ConfigError(
-    `Invalid value for respectRobots: expected a boolean (or "true"/"false"), got ${JSON.stringify(value)}.`,
-  );
+  throw new ConfigError(`Invalid value for respectRobots: expected a boolean, got ${JSON.stringify(value)}.`);
 }
 
 function buildMarkdownSnapshot(page: WebsitePage, slug: string, tags?: string[]): string {
@@ -1275,13 +1252,10 @@ function uniqueSlug(base: string, used: Set<string>): string {
   return candidate;
 }
 
-function coercePositiveInt(value: unknown, fallback: number): number {
+export function resolvePositiveInt(value: unknown, fallback: number, optionName: string): number {
+  if (value === undefined) return fallback;
   if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
-  if (typeof value === "string") {
-    const parsed = Number.parseInt(value, 10);
-    if (Number.isInteger(parsed) && parsed > 0) return parsed;
-  }
-  return fallback;
+  throw new ConfigError(`Invalid value for ${optionName}: expected a positive integer, got ${JSON.stringify(value)}.`);
 }
 
 function looksLikeMarkup(body: string): boolean {

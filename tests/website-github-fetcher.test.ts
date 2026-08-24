@@ -361,7 +361,7 @@ describe("GitHub repository fetcher", () => {
         withMockedFetch(
           () =>
             ensureWebsiteMirror(
-              { url: "https://custom.example/content", options: { maxPages: 1, maxDepth: 0 } } as never,
+              { url: "https://custom.example/content", options: { maxPages: 1, maxDepth: 1 } } as never,
               { allowPrivateHosts: true, force: true, requireStashDir: true },
             ),
           async () => {
