@@ -528,15 +528,15 @@ describe("local embedder batching — Tensor return shape (WS-3a blocker fix)", 
     expect((results[0] as number[])[2]).toBeCloseTo(-0.5, 6);
   });
 
-  test("embedBatch still handles Array<{data}> shape for older pipeline versions", async () => {
-    // Older versions returned an array of {data} objects, not a Tensor.
+  test("embedBatch rejects the retired Array<{data}> shape without re-executing texts", async () => {
     const row0 = [0.3, 0.4];
     const row1 = [0.7, 0.8];
+    let callCount = 0;
 
     pipelineImpl = async () => {
       return async (input: unknown) => {
+        callCount++;
         if (Array.isArray(input)) {
-          // Return old Array<{data}> shape.
           return [{ data: new Float32Array(row0) }, { data: new Float32Array(row1) }];
         }
         return { data: new Float32Array(row0) };
@@ -544,33 +544,25 @@ describe("local embedder batching — Tensor return shape (WS-3a blocker fix)", 
     };
 
     const embedder = new LocalEmbedder();
-    const results = await embedder.embedBatch(["text-a", "text-b"]);
-
-    expect(results).toHaveLength(2);
-    expect((results[0] as number[])[0]).toBeCloseTo(0.3, 6);
-    expect((results[1] as number[])[0]).toBeCloseTo(0.7, 6);
+    await expect(embedder.embedBatch(["text-a", "text-b"])).rejects.toThrow(
+      "unexpected pipeline return shape for batch input",
+    );
+    expect(callCount).toBe(1);
   });
 
-  test("embedBatch falls back to one-at-a-time if pipeline returns unexpected shape", async () => {
-    // The pipeline returns a non-standard shape — should fall through to
-    // per-text fallback and still produce correct results.
-    const vector = [0.9, 0.1];
+  test("embedBatch propagates a current pipeline failure without re-executing texts", async () => {
     let callCount = 0;
+    const failure = new Error("batch inference failed");
 
     pipelineImpl = async () => {
       return async (_input: unknown) => {
         callCount++;
-        // Always return single-result shape (even for arrays).
-        return { data: new Float32Array(vector) };
+        throw failure;
       };
     };
 
     const embedder = new LocalEmbedder();
-    const results = await embedder.embedBatch(["t1", "t2"]);
-
-    expect(results).toHaveLength(2);
-    // Fallback path: called once for the batch attempt + once per text.
-    // callCount: 1 (batch attempt → throws or unknown shape) + 2 (fallback t1/t2) = 3.
-    expect(callCount).toBeGreaterThanOrEqual(2);
+    await expect(embedder.embedBatch(["t1", "t2"])).rejects.toBe(failure);
+    expect(callCount).toBe(1);
   });
 });
