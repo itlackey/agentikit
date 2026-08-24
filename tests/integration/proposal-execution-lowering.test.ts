@@ -4,6 +4,8 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { type AkmProposeOptions, akmPropose } from "../../src/commands/proposal/propose";
 import type { AkmConfig } from "../../src/core/config/config";
 import { buildProposePrompt } from "../../src/integrations/agent/prompts";
@@ -115,6 +117,7 @@ describe("proposal consumers lower resolved execution requests", () => {
     const messages = requestBody?.messages as Array<Record<string, unknown>>;
     expect(messages).toHaveLength(1);
     const content = String(messages[0]?.content);
+    expect(content).toContain(path.join(os.tmpdir(), "akm-propose-"));
     const draftFilePath = content.match(/\/tmp\/akm-propose-[^\s`"']+\.md/)?.[0];
     expect(draftFilePath).toBeDefined();
     expect(messages[0]).toEqual({
@@ -214,6 +217,7 @@ describe("proposal consumers lower resolved execution requests", () => {
           create: async () => ({ data: { id: "proposal-sdk-session" } }),
           prompt: async (args: { body: { parts: Array<{ type: string; text: string }> } }) => {
             const prompt = args.body.parts[0]?.text ?? "";
+            expect(prompt).toContain(path.join(os.tmpdir(), "akm-propose-"));
             const draftFilePath = prompt.match(/\/tmp\/akm-propose-[^\s`"']+\.md/)?.[0];
             if (!draftFilePath) throw new Error("proposal SDK fixture did not receive the draft path");
             fs.writeFileSync(

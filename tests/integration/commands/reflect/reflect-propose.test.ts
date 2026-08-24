@@ -602,6 +602,7 @@ describe("akm propose", () => {
     } as ReturnType<typeof quietQualityGateConfig>;
     const spawn: SpawnFn = (cmd) => {
       const prompt = cmd.join(" ");
+      expect(prompt).toContain(path.join(os.tmpdir(), "akm-propose-"));
       const draftPath = prompt.match(/\/tmp\/akm-propose-[^\s`"']+\.md/)?.[0];
       if (!draftPath) throw new Error("draft path missing from propose prompt");
       fs.writeFileSync(draftPath, "---\ndescription: A file-written skill draft\n---\n\nDraft body.\n", "utf8");
