@@ -217,4 +217,73 @@ describe("lint-tests-isolation allowlist ratchet", () => {
       fs.rmSync(fixtureDir, { recursive: true, force: true });
     }
   });
+
+  test("keeps same-named path bindings isolated across function scopes", () => {
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-isolation-lint-real-home-scopes-"));
+    const fixturePath = path.join(fixtureDir, "scope-safe.test.ts");
+    try {
+      fs.writeFileSync(
+        fixturePath,
+        [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          "function inspectRealHome() {",
+          "  const root = path.join(",
+          "    os." + "homedir(),",
+          '    ".config",',
+          '    "tool",',
+          "  );",
+          "  return root;",
+          "}",
+          "function cleanOwnedFixture() {",
+          "  const root = fs.mkdtempSync(",
+          '    path.join(os.tmpdir(), "tool-owned-"),',
+          "  );",
+          "  fs." + "rmSync(",
+          "    root,",
+          "    { recursive: true, force: true },",
+          "  );",
+          "}",
+        ].join("\n"),
+      );
+
+      expect(lintFile(fixturePath).filter((violation) => violation.rule === "real-home-delete")).toEqual([]);
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  test("tracks object properties precisely instead of tainting their aggregate", () => {
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-isolation-lint-real-home-properties-"));
+    const fixturePath = path.join(fixtureDir, "property-safe.test.ts");
+    try {
+      fs.writeFileSync(
+        fixturePath,
+        [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          "const paths = {",
+          "  inspected: path.join(",
+          "    os." + "homedir(),",
+          '    ".config",',
+          '    "tool",',
+          "  ),",
+          "  owned: fs.mkdtempSync(",
+          '    path.join(os.tmpdir(), "tool-owned-"),',
+          "  ),",
+          "};",
+          "fs." + "rmSync(",
+          "  paths.owned,",
+          "  { recursive: true, force: true },",
+          ");",
+        ].join("\n"),
+      );
+
+      expect(lintFile(fixturePath).filter((violation) => violation.rule === "real-home-delete")).toEqual([]);
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
 });
