@@ -41,8 +41,8 @@ import type {
   IrStepPlan,
   IrUnitNode,
   WorkflowPlanGraph,
-} from "../../../src/workflows/ir/schema";
-import { decodeWorkflowPlanV3 } from "../../../src/workflows/ir/schema";
+} from "../../../src/workflows/ir/stored-plan-v3";
+import { decodeWorkflowPlanV3 } from "../../../src/workflows/ir/stored-plan-v3";
 import type { ExpressionScope } from "../../../src/workflows/program/expressions";
 import { getWorkflowStatus, type WorkflowNextResult } from "../../../src/workflows/runtime/runs";
 import type { SummaryJudge } from "../../../src/workflows/validate-summary";

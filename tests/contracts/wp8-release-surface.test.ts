@@ -636,7 +636,7 @@ describe("0.9.2 release surface", () => {
     expect(failures).toEqual([]);
   });
 
-  test("keeps the shipped inherit_env schema description compatibility-only", () => {
+  test("removes whole-process inheritance from the authoring schema", () => {
     const relative = "schemas/akm-workflow.json";
     const schema = JSON.parse(read(relative)) as {
       definitions?: {
@@ -648,34 +648,11 @@ describe("0.9.2 release surface", () => {
     };
     const execDescription = schema.definitions?.exec?.description ?? "";
     const inheritEnv = schema.definitions?.exec?.properties?.inherit_env;
-    const description = inheritEnv?.description ?? "";
     const failures: string[] = [];
 
-    if (inheritEnv?.type !== "boolean") failures.push(`${relative}: inherit_env remains a stored-v3 boolean`);
-    for (const [label, pattern] of [
-      [
-        "inherit_env is stored-v3 compatibility only",
-        /stored[^.\n]{0,60}v3[^.\n]{0,120}compatibility[^.\n]{0,40}only/i,
-      ],
-      ["new v4 starts reject inherit_env", /new[^.\n]{0,80}v4[^.\n]{0,120}reject[^.\n]{0,80}inherit_env/i],
-      [
-        "named environment bindings are preferred",
-        /(?:named|explicit)[^.\n]{0,80}(?:environment|env:)[^.\n]{0,80}bindings?/i,
-      ],
-      ["pass_env is preferred", /pass_env/i],
-    ] satisfies Requirement[]) {
-      if (!pattern.test(description)) failures.push(`${relative}: ${label}`);
-    }
-    if (
-      /(?:give|hand)[^.\n]{0,160}(?:entire|whole)[^.\n]{0,80}environment|opt in[^.\n]{0,200}(?:entire|whole)[^.\n]{0,80}environment/i.test(
-        description,
-      )
-    ) {
-      failures.push(`${relative}: inherit_env description recommends whole-process inheritance`);
-    }
-    if (/widen[^.\n]{0,160}inherit_env|pass_env[^.\n]{0,80}\bor\b[^.\n]{0,80}inherit_env/i.test(execDescription)) {
-      failures.push(`${relative}: exec description recommends inherit_env for new authoring`);
-    }
+    if (inheritEnv !== undefined) failures.push(`${relative}: inherit_env is absent from current authoring`);
+    if (/inherit_env/i.test(JSON.stringify(schema)))
+      failures.push(`${relative}: inherit_env is absent from schema bytes`);
     if (
       !/(?:named|explicit)[^.\n]{0,80}(?:environment|env:)[^.\n]{0,80}bindings?[^.\n]{0,160}pass_env|pass_env[^.\n]{0,160}(?:named|explicit)[^.\n]{0,80}(?:environment|env:)[^.\n]{0,80}bindings?/i.test(
         execDescription,
@@ -727,14 +704,8 @@ describe("0.9.2 release surface", () => {
       ]),
       ...missing(execRelative, [
         [
-          "whole-process execution is labeled stored-v3 compatibility",
+          "stored-v3 execution support remains isolated in the executor",
           /inheritEnv[^.\n]{0,160}stored[^.\n]{0,80}v3[^.\n]{0,100}compatibility/i,
-        ],
-      ]),
-      ...missing(programRelative, [
-        [
-          "inherit_env in the authoring projection is labeled stored-v3 compatibility",
-          /inherit_env[^.\n]{0,160}stored[^.\n]{0,80}v3[^.\n]{0,100}compatibility/i,
         ],
       ]),
     ];
@@ -761,12 +732,7 @@ describe("0.9.2 release surface", () => {
         "does not present inheritEnv as an active opt-in",
         /inheritEnv[^.\n]{0,80}opts? back into full/i,
       ],
-      [
-        programRelative,
-        program,
-        "does not present inherit_env as an active whole-environment opt-in",
-        /inherit_env[^.\n]{0,100}opts?[^.\n]{0,100}whole environment/i,
-      ],
+      [programRelative, program, "does not expose inherit_env through current authoring", /inherit_env|inheritEnv/],
     ] as const) {
       if (pattern.test(text)) failures.push(`${relative}: ${label}`);
     }
@@ -801,8 +767,10 @@ describe("0.9.2 release surface", () => {
     const identity = read(identityRelative);
     const runsRelative = "src/workflows/runtime/runs.ts";
     const runs = read(runsRelative);
-    const schemaRelative = "src/workflows/ir/schema.ts";
+    const schemaRelative = "src/workflows/ir/stored-plan-v3.ts";
     const schemaHeader = read(schemaRelative).slice(0, 3_000);
+    const currentSchemaRelative = "src/workflows/ir/schema-v4.ts";
+    const currentSchemaHeader = read(currentSchemaRelative).slice(0, 3_000);
     const failures = [
       ...missing(rendererRelative, [
         [
@@ -831,10 +799,15 @@ describe("0.9.2 release surface", () => {
         ],
       ]),
       ...missing(schemaRelative, [
-        ["v3 is stored compatibility", /stored[^.\n]{0,80}v3[^.\n]{0,120}compatibility/i],
         [
-          "durable v4 is the current new-start format",
-          /durable[^.\n]{0,80}v4[^.\n]{0,120}current[^.\n]{0,120}new-start/i,
+          "v3 is the sole stored compatibility boundary",
+          /sole[^.\n]{0,120}compatibility[^.\n]{0,120}persisted[^.\n]{0,80}v3/i,
+        ],
+      ]),
+      ...missing(currentSchemaRelative, [
+        [
+          "v4 validation does not delegate to v3",
+          /never used[^.\n]{0,160}(?:construct|validate)[^.\n]{0,80}(?:new|v4)/i,
         ],
       ]),
     ];

@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-/** Bridge from the adapter-neutral source IR into the current workflow document consumer. */
+/** Display-only projection from source IR for renderer/index metadata. */
 
 import { parseBuiltinCommandAction } from "../../commands/command/builtin-action";
 import { applyPortableCommandArguments } from "../../commands/command/portable-template";
@@ -14,39 +14,21 @@ import {
   type WorkflowSourceJob,
   type WorkflowSourceStep,
 } from "./schema";
-import { classifyWorkflowStepUses } from "./semantics";
-
-export type WorkflowSourceProjectionMode = "display" | "runtime" | "scheduler";
-
-export class WorkflowSourceProjectionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "WorkflowSourceProjectionError";
-  }
-}
+export type WorkflowSourceProjectionMode = "display";
 
 /**
- * Project source semantics into the document consumed by the existing renderer/runtime.
- * Runtime mode refuses any target the current executor cannot represent exactly.
+ * Project source semantics into the document consumed by display/index paths.
+ * Execution consumes source IR directly and never calls this projection.
  */
 export function workflowSourceIrToDocument(
   input: WorkflowSourceIrV1,
   options: { mode: WorkflowSourceProjectionMode },
 ): WorkflowDocument {
   const ir = decodeWorkflowSourceIrV1(input);
-  if (options.mode !== "display" && ir.jobs.length > 1) {
-    const source = ir.jobs[1]?.source ?? ir.source;
-    throw projectionError(
-      source,
-      "Multi-job workflow cannot execute until the source-target resolver supports job boundaries and needs; " +
-        "the legacy single-spine runtime cannot preserve those semantics.",
-    );
-  }
+  void options;
   const allSteps = ir.jobs.flatMap((job) => job.steps.map((step) => ({ job, step })));
   const duplicateIds = duplicateStepIds(allSteps.map(({ step }) => step.id));
-  const steps = allSteps.map(({ job, step }, sequenceIndex) =>
-    projectStep(job, step, sequenceIndex, duplicateIds, options.mode),
-  );
+  const steps = allSteps.map(({ job, step }, sequenceIndex) => projectStep(job, step, sequenceIndex, duplicateIds));
   return {
     schemaVersion: WORKFLOW_SCHEMA_VERSION,
     ...(ir.description ? { description: ir.description } : {}),
@@ -65,18 +47,10 @@ function projectStep(
   step: WorkflowSourceStep,
   sequenceIndex: number,
   duplicateIds: ReadonlySet<string>,
-  mode: WorkflowSourceProjectionMode,
 ): WorkflowStep {
   const id = duplicateIds.has(step.id) ? `${job.id}-${step.id}` : step.id;
   const source = toSourceRef(step.source);
-  if (step.env !== undefined && mode !== "display") {
-    throw projectionError(
-      step.source,
-      `Workflow step ${JSON.stringify(step.id)} has literal env values that the current runtime cannot preserve.`,
-    );
-  }
-
-  const { unit, instructions } = projectDispatch(step, source, mode);
+  const { unit, instructions } = projectDispatch(step, source);
   const out: WorkflowStep = {
     id,
     sequenceIndex,
@@ -101,11 +75,7 @@ function projectStep(
   return out;
 }
 
-function projectDispatch(
-  step: WorkflowSourceStep,
-  source: SourceRef,
-  mode: WorkflowSourceProjectionMode,
-): { unit?: ProgramUnit; instructions?: string } {
+function projectDispatch(step: WorkflowSourceStep, source: SourceRef): { unit?: ProgramUnit; instructions?: string } {
   if (step.route) return { instructions: step.instructions };
   const unit: ProgramUnit = {
     ...(step.unit ? (clone(step.unit) as unknown as Omit<ProgramUnit, "source">) : {}),
@@ -125,13 +95,6 @@ function projectDispatch(
   if (step.uses === "akm/command") {
     const action = parseBuiltinCommandAction(step.with);
     if (action.kind === "stored") {
-      if (mode !== "display") {
-        throw projectionError(
-          step.source,
-          `Workflow step ${JSON.stringify(step.id)} references stored command ${JSON.stringify(action.ref)}, ` +
-            "which requires source resolution before the current runtime document can be built.",
-        );
-      }
       return {
         unit,
         instructions: `Invoke stored command ${action.ref}${action.arguments === undefined ? "" : " with arguments"}.`,
@@ -142,26 +105,9 @@ function projectDispatch(
     return { unit, instructions: applied.content };
   }
   if (step.uses !== undefined) {
-    // Scheduler planning validates the canonical workflow source and its
-    // 0.9.2 single-job boundary, but it does not lower the workflow into the
-    // legacy document executor. A task target is workflow-only composition
-    // recognized by the shared step classifier; it is deliberately legal in
-    // a scheduled workflow even though task-v3's own uses classifier rejects
-    // it. Nested workflows and remote actions never reach here: the canonical
-    // IR decoder rejects them through this same authority.
-    if (mode === "scheduler" && classifyWorkflowStepUses(step.uses).kind === "task") {
-      return { unit, instructions: `Invoke local target ${step.uses}.` };
-    }
-    if (mode !== "display") {
-      throw projectionError(
-        step.source,
-        `Workflow step ${JSON.stringify(step.id)} uses ${JSON.stringify(step.uses)}, which the current runtime ` +
-          "cannot resolve without the source-target resolver.",
-      );
-    }
     return { unit, instructions: `Invoke local target ${step.uses}.` };
   }
-  throw projectionError(step.source, `Workflow step ${JSON.stringify(step.id)} has no projectable target.`);
+  throw new Error(`Workflow step ${JSON.stringify(step.id)} has no displayable target.`);
 }
 
 function shellCommand(shell: WorkflowSourceStep["shell"], run: string): string[] {
@@ -180,10 +126,6 @@ function shellCommand(shell: WorkflowSourceStep["shell"], run: string): string[]
 
 function toSourceRef(source: WorkflowSourceStep["source"]): SourceRef {
   return { path: source.path, start: source.start, end: source.end };
-}
-
-function projectionError(source: WorkflowSourceStep["source"], message: string): WorkflowSourceProjectionError {
-  return new WorkflowSourceProjectionError(`${source.path}:${source.start} — ${message}`);
 }
 
 function duplicateStepIds(ids: readonly string[]): Set<string> {

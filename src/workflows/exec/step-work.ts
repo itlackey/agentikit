@@ -198,7 +198,7 @@ export interface StepWorkUnit {
 }
 
 export interface StepWorkList {
-  template: IrUnitNode;
+  template: IrUnitNode | IrUnitNodeV4;
   reducer: IrMapReducer;
   isFanOut: boolean;
   /** Per-step concurrency (map `concurrency`; 1 for a solo step). */
@@ -391,15 +391,18 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
   // carries a frozen exec spec and NO invocation (the frozen-plan decoder
   // enforces that exclusive-or). Everything downstream — identity, hashing,
   // journaling, retry, budget — is shared; only the dispatch mechanism differs.
-  const frozenExec = template.exec;
-  const frozenInvocation = template.invocation;
-  if (!frozenExec && !frozenInvocation) return { ok: false, error: `Step "${plan.stepId}" has no frozen invocation.` };
+  const v4Target = isV4Unit(template) ? template.frozenTarget : undefined;
+  const frozenExec = v4Target?.kind === "shell" || v4Target?.kind === "script" ? v4Target.exec : template.exec;
+  const frozenInvocation = isV4Unit(template) ? undefined : template.invocation;
+  if (!v4Target && !frozenExec && !frozenInvocation)
+    return { ok: false, error: `Step "${plan.stepId}" has no frozen execution target.` };
   const frozenEngine = frozenInvocation ? input.engines?.[frozenInvocation.engine] : undefined;
   if (frozenInvocation && !frozenEngine) {
     return { ok: false, error: `Step "${plan.stepId}" references missing frozen engine "${frozenInvocation.engine}".` };
   }
   // No frozen engine at all means an exec unit: it carries argv, not an invocation.
-  const runner: IrRuntimeKind = frozenEngine ? engineRuntimeKind(frozenEngine) : "exec";
+  const runner: IrRuntimeKind =
+    v4Target?.kind === "command" ? v4Target.runner.kind : frozenEngine ? engineRuntimeKind(frozenEngine) : "exec";
   // Taken VERBATIM from the frozen plan — there is no engine-side backstop, by
   // design. The whole timeout decision happens once at freeze time
   // (`ir/freeze.ts` `effectiveTimeout`: unit `timeout:` → document
@@ -415,7 +418,12 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
   // An exec unit's budget is frozen on its exec spec (there is no engine to
   // inherit one from); `ir/freeze.ts` resolved it once from unit `timeout:` →
   // `defaults.timeout` → DEFAULT_EXEC_TIMEOUT_MS.
-  const timeoutMs = frozenExec ? frozenExec.timeoutMs : (frozenInvocation?.timeoutMs ?? null);
+  const timeoutMs =
+    v4Target?.kind === "command"
+      ? (v4Target.runner.timeoutMs ?? null)
+      : frozenExec
+        ? frozenExec.timeoutMs
+        : (frozenInvocation?.timeoutMs ?? null);
 
   // Step-constant exec context: `AKM_PARAMS` / `AKM_INPUTS` depend only on
   // step-level values, so they are serialized ONCE here and shared by every
@@ -456,7 +464,7 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
 interface StepWorkUnitContext {
   plan: IrStepPlan;
   input: WorkListInput;
-  template: IrUnitNode;
+  template: IrUnitNode | IrUnitNodeV4;
   isFanOut: boolean;
   gateLoop: number;
   resolvedInputs: Array<{ reference: string; value: unknown }>;
@@ -774,7 +782,7 @@ export function unitIdFor(nodeId: string, item: unknown, isFanOut: boolean, coll
   return `${nodeId}:${collisionSafe ? digest : digest.slice(0, 12)}`;
 }
 
-function isV4Unit(unit: IrUnitNode): unit is IrUnitNodeV4 {
+function isV4Unit(unit: IrUnitNode | IrUnitNodeV4): unit is IrUnitNodeV4 {
   return Object.hasOwn(unit, "frozenTarget") && Object.hasOwn(unit, "environment");
 }
 
@@ -1388,7 +1396,8 @@ export interface GateUnitRef {
   stepId: string;
   /** Gate-loop attempt, 1-based. */
   loop: number;
-  invocation: IrInvocation;
+  engine: string;
+  model: string | null;
   runner: IrRuntimeKind;
   inputHash: string;
   /** V4-only append-only attempt protocol. */
@@ -1413,8 +1422,8 @@ export async function journalGateEvaluationStart(gate: GateUnitRef): Promise<Gat
           nodeId: gateNodeId(gate.stepId),
           phase: GATE_EVALUATION_PHASE,
           runner: gate.runner,
-          engine: gate.invocation.engine,
-          model: gate.invocation.model,
+          engine: gate.engine,
+          model: gate.model,
           inputHash: gate.inputHash,
           claimHolder,
           claimExpiresAt: new Date(Date.parse(now) + 90_000).toISOString(),
@@ -1440,8 +1449,8 @@ export async function journalGateEvaluationStart(gate: GateUnitRef): Promise<Gat
         // seed in `driveRun` skips these so resume accounting matches live.
         phase: GATE_EVALUATION_PHASE,
         runner: gate.runner,
-        engine: gate.invocation.engine,
-        model: gate.invocation.model,
+        engine: gate.engine,
+        model: gate.model,
         inputHash: gate.inputHash,
         startedAt: new Date().toISOString(),
       }),
@@ -1937,7 +1946,11 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // Journal engine-driven judge calls as unit rows. With no criteria there is
   // no judge invocation or row; a criteria-bearing plan without a judge is a
   // configuration error rather than a silent bypass.
-  const gateInvocation = innerJudge ? (stepPlan.gate.judge ?? null) : null;
+  const gateInvocation = innerJudge && "judge" in stepPlan.gate ? (stepPlan.gate.judge ?? null) : null;
+  const gateTarget: import("../ir/schema-v4").FrozenWorkflowCommandTarget | null =
+    innerJudge && "frozenJudge" in stepPlan.gate
+      ? (stepPlan.gate as import("../ir/schema-v4").IrGateNodeV4).frozenJudge
+      : null;
   const gateEngine = gateInvocation ? (input.engines?.[gateInvocation.engine] ?? null) : null;
   let gateUnit: GateUnitRef | undefined;
   // `judgeFailure` records a verifier INFRASTRUCTURE failure observed during
@@ -1948,16 +1961,21 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   let judgeFailure: string | undefined;
   const summaryJudge: SummaryJudge | null = innerJudge
     ? async (prompt) => {
-        if (gateInvocation) {
-          const identity = frozenDispatchHashIdentity(gateEngine, gateInvocation, input.engines ?? {});
+        if (gateInvocation || gateTarget) {
+          const identity = gateInvocation
+            ? frozenDispatchHashIdentity(gateEngine, gateInvocation, input.engines ?? {})
+            : { dispatch: gateTarget, invocation: null };
+          const engineName = gateInvocation?.engine ?? gateTarget?.request.engine.name;
+          if (!engineName) throw new Error(`Gate ${stepId} has no frozen engine identity.`);
           gateUnit = {
             runId,
             workflowRef,
             stepId,
             loop: gateLoop,
-            invocation: gateInvocation,
+            engine: engineName,
+            model: gateInvocation?.model ?? gateTarget?.request.model?.resolved ?? null,
             // No engine snapshot means the built-in llm judge.
-            runner: gateEngine ? engineRuntimeKind(gateEngine) : ("llm" as const),
+            runner: gateTarget?.runner.kind ?? (gateEngine ? engineRuntimeKind(gateEngine) : ("llm" as const)),
             inputHash: createHash("sha256")
               .update(input.planIrVersion === 4 ? "akm.workflow.gate\0v5\0" : "")
               .update(

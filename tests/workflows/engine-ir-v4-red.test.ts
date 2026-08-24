@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
 import { computeStepWorkList } from "../../src/workflows/exec/step-work";
 import { canonicalPlanJson, computePlanHash, decodeCanonicalPlan } from "../../src/workflows/ir/plan-hash";
-import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
+import type { WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
 import { classifyWorkflowRunPlan } from "../../src/workflows/runtime/plan-classifier";
 
 const sha256 = (value: string | Uint8Array): string => createHash("sha256").update(value).digest("hex");
@@ -89,7 +89,6 @@ function commandUnit() {
     id: "review",
     instructions: "Review the change.",
     templating: "verbatim",
-    invocation: { engine: "fast", model: "qwen", modelPresent: false, timeoutMs: 600_000 },
     frozenTarget: {
       kind: "command",
       ref: "fixture//commands/review",
@@ -125,17 +124,6 @@ function v4Plan() {
     ],
     execution: {
       maxConcurrency: 2,
-      engines: {
-        fast: {
-          name: "fast",
-          kind: "llm",
-          endpoint: "https://example.test/v1/chat/completions",
-          model: "qwen",
-          timeoutMs: 600_000,
-          credential: { names: ["FAST_API_KEY"], required: true },
-          concurrency: 1,
-        },
-      },
     },
     steps: [
       {
@@ -149,7 +137,7 @@ function v4Plan() {
           stepId: "review",
           criteria: [],
           maxLoops: 1,
-          judge: null,
+          frozenJudge: null,
         },
       },
     ],
@@ -369,18 +357,6 @@ describe("durable workflow IR v4 — resolved targets and environment", () => {
   test("accepts a complete frozen agent profile and rejects secret-shaped profile env", async () => {
     const { decodeWorkflowPlanV4 } = await import("../../src/workflows/ir/schema-v4");
     const plan = v4Plan();
-    plan.execution.engines.fast = {
-      name: "fast",
-      kind: "agent",
-      runnerKind: "agent",
-      platform: "codex",
-      bin: "codex",
-      args: ["exec"],
-      workspace: "/workspace",
-      envPassthrough: ["CODEX_CONFIG"],
-      commandBuilder: "codex",
-      fallbackLlmEngine: null,
-    } as never;
     const target = frozenTarget(plan);
     target.request = {
       ...requestWire(),
@@ -449,9 +425,12 @@ describe("durable workflow IR v4 — resolved targets and environment", () => {
   test("rejects inheritEnv because only frozen named bindings may be live-valued", async () => {
     const { decodeWorkflowPlanV4 } = await import("../../src/workflows/ir/schema-v4");
     const plan = v4Plan();
-    rootUnit(plan).exec = { command: ["sh", "-c", "printf safe"], timeoutMs: 30_000, inheritEnv: true };
-    delete rootUnit(plan).invocation;
-    frozenTarget(plan).kind = "shell";
+    rootUnit(plan).frozenTarget = {
+      kind: "shell",
+      contentHash: sha256("printf safe"),
+      exec: { command: ["sh", "-c", "printf safe"], timeoutMs: 30_000, inheritEnv: true },
+      cwdIdentity: structuredClone(CWD_IDENTITY),
+    };
     expect(() => decodeWorkflowPlanV4(plan)).toThrow(/inheritEnv|environment|allowlist/i);
   });
 
@@ -460,19 +439,17 @@ describe("durable workflow IR v4 — resolved targets and environment", () => {
     const scriptBytes = Buffer.from("#!/bin/sh\nprintf exact\\n\n", "utf8");
     const scriptIdentity = identity("fixture//scripts/tool.sh", "scripts/tool.sh", scriptBytes.toString("utf8"));
     const plan = v4Plan();
-    plan.execution.engines = {} as typeof plan.execution.engines;
     plan.sourceReadSet = [
       snapshot(scriptIdentity, scriptBytes.byteLength, 1),
       snapshot(WORKFLOW_IDENTITY, Buffer.byteLength(WORKFLOW_BYTES), 2),
     ];
     const root = rootUnit(plan);
-    delete root.invocation;
-    root.exec = { command: ["akm-internal-frozen-script"], timeoutMs: 30_000 };
     root.environment = [];
     root.frozenTarget = {
       kind: "script",
       ref: scriptIdentity.ref,
       contentHash: sha256(scriptBytes),
+      exec: { command: ["akm-internal-frozen-script"], timeoutMs: 30_000 },
       interpreter: "sh",
       extension: ".sh",
       bytesBase64: scriptBytes.toString("base64"),
@@ -485,7 +462,6 @@ describe("durable workflow IR v4 — resolved targets and environment", () => {
     const decodedRoot = decoded.steps[0]?.root;
     expect(decodedRoot?.kind).toBe("unit");
     if (!decodedRoot || decodedRoot.kind !== "unit") return;
-    expect(decodedRoot.exec).toBeDefined();
     expect(decodedRoot.frozenTarget).toMatchObject({
       kind: "script",
       ref: scriptIdentity.ref,
@@ -502,7 +478,7 @@ describe("durable workflow IR v4 — resolved targets and environment", () => {
     frozenTarget(wrongLength).byteLength = scriptBytes.byteLength + 1;
     expect(() => decodeWorkflowPlanV4(wrongLength)).toThrow(/script|byteLength|length|bytes/i);
     const noExec = structuredClone(plan);
-    delete rootUnit(noExec).exec;
+    delete frozenTarget(noExec).exec;
     expect(() => decodeWorkflowPlanV4(noExec)).toThrow(/script|exec|arm/i);
   });
 });
@@ -526,7 +502,7 @@ describe("durable workflow IR v4 — v5 work identity", () => {
       runId: "v4-run",
       params: { files: ["a.ts", "b.ts"] },
       stepOutputs: {},
-      engines: plan.execution.engines,
+      engines: {},
     });
     expect(v4Work.ok).toBe(true);
     if (!v4Work.ok) return;
@@ -579,7 +555,7 @@ describe("durable workflow IR v4 — v5 work identity", () => {
     const hashOf = (plan: typeof base): string => {
       const result = computeStepWorkList(first(plan.steps, "a v4 step"), {
         ...input,
-        engines: plan.execution.engines,
+        engines: {},
       });
       if (!result.ok) throw new Error(result.error);
       return first(result.list.units, "a v4 work unit").inputHash;

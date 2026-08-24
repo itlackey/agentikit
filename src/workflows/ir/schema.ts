@@ -38,8 +38,6 @@ import {
 } from "../resource-limits";
 import type { SourceRef } from "../schema";
 
-/** Stored plan IR v3 remains executable for compatibility; durable v4 is the current new-start format. */
-export const WORKFLOW_IR_VERSION = 3;
 export type IrOnError = "fail" | "continue";
 export type IrIsolation = "none" | "worktree";
 export type IrMapReducer = "collect" | "vote";
@@ -162,13 +160,23 @@ export interface IrInvocation {
   llm?: LlmInvocationOverrides;
 }
 
-export interface IrUnitNode {
+export interface IrUnitNodeCore {
   kind: "unit" | "agent";
   id: string;
   instructions: string;
   templating?: IrInstructionTemplating;
   /** Prior-step artifacts attached to this unit as structured context (reference strings). */
   inputs?: string[];
+  schema?: Record<string, unknown>;
+  retry?: IrRetry;
+  onError: IrOnError;
+  env?: string[];
+  isolation?: IrIsolation;
+  source?: SourceRef;
+}
+
+/** Stored-plan v3 unit. Current v4 units use a common frozen target instead. */
+export interface IrUnitNode extends IrUnitNodeCore {
   /**
    * Engine dispatch settings. Present on EXACTLY the units that reach an
    * engine — an `exec` unit has none (it spawns a process instead), and the
@@ -177,12 +185,6 @@ export interface IrUnitNode {
   invocation?: IrInvocation;
   /** Shell-command dispatch. Mutually exclusive with {@link invocation}. */
   exec?: IrExecSpec;
-  schema?: Record<string, unknown>;
-  retry?: IrRetry;
-  onError: IrOnError;
-  env?: string[];
-  isolation?: IrIsolation;
-  source?: SourceRef;
 }
 
 export interface IrMapNode {
@@ -227,8 +229,8 @@ export interface IrBudget {
   maxUnits?: number;
 }
 
-export interface WorkflowPlanGraph {
-  irVersion: typeof WORKFLOW_IR_VERSION;
+export interface WorkflowPlanStructure {
+  irVersion: number;
   title: string;
   params?: string[];
   paramSchemas?: Record<string, Record<string, unknown>>;
@@ -251,13 +253,42 @@ export interface WorkflowPlanValidationHooks {
   validateExtraParams?(value: Readonly<Record<string, unknown>>, location: string): string | undefined;
 }
 
-/** Strictly decode persisted v3 data before it can drive a workflow. */
-export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidationHooks = {}): WorkflowPlanGraph {
-  if (!isRecord(input) || input.irVersion !== WORKFLOW_IR_VERSION) fail("irVersion must be 3");
+export interface WorkflowPlanStructureDecodeOptions {
+  readonly expectedVersion: number;
+  readonly planExtraKeys?: readonly string[];
+  readonly unitExtraKeys?: readonly string[];
+  readonly gateExtraKeys?: readonly string[];
+  readonly executionShape?: "stored-v3" | "current-v4";
+}
+
+/** Validate the version-neutral execution graph shared by current plans and stored-plan adapters. */
+export function decodeWorkflowPlanStructure(
+  input: unknown,
+  options: WorkflowPlanStructureDecodeOptions,
+  hooks: WorkflowPlanValidationHooks = {},
+): WorkflowPlanStructure {
+  validateWorkflowPlanStructure(input, options, hooks);
+  return input as WorkflowPlanStructure;
+}
+
+/** Validate shared graph structure without converting current plans into stored-v3 objects. */
+export function validateWorkflowPlanStructure(
+  input: unknown,
+  options: WorkflowPlanStructureDecodeOptions,
+  hooks: WorkflowPlanValidationHooks = {},
+): void {
+  if (!isRecord(input) || input.irVersion !== options.expectedVersion) {
+    fail(`irVersion must be ${options.expectedVersion}`);
+  }
   assertJson(input);
   if (jsonBytes(input) > WORKFLOW_MAX_PLAN_BYTES) fail("plan exceeds the 2 MiB resource limit");
-  const plan = input as unknown as WorkflowPlanGraph;
-  assertKeys(input, ["irVersion", "title", "params", "paramSchemas", "budget", "execution", "steps"], "plan");
+  const plan = input as unknown as WorkflowPlanStructure;
+  const executionShape = options.executionShape ?? "stored-v3";
+  assertKeys(
+    input,
+    ["irVersion", "title", "params", "paramSchemas", "budget", "execution", "steps", ...(options.planExtraKeys ?? [])],
+    "plan",
+  );
   assertString(plan.title, "title");
   validateParams(plan.params, plan.paramSchemas);
   validateBudget(plan.budget);
@@ -269,9 +300,14 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
   ) {
     fail(`execution.maxConcurrency must be an integer from 1 through ${WORKFLOW_MAX_CONCURRENCY}`);
   }
-  assertKeys(plan.execution, ["maxConcurrency", "engines"], "execution");
-  if (!isRecord(plan.execution.engines)) fail("execution.engines must be an object");
-  const engines = plan.execution.engines as Record<string, FrozenEngineSnapshot>;
+  assertKeys(
+    plan.execution,
+    executionShape === "stored-v3" ? ["maxConcurrency", "engines"] : ["maxConcurrency"],
+    "execution",
+  );
+  if (executionShape === "stored-v3" && !isRecord(plan.execution.engines)) fail("execution.engines must be an object");
+  const engines =
+    executionShape === "stored-v3" ? (plan.execution.engines as Record<string, FrozenEngineSnapshot>) : {};
   if (Object.keys(engines).length > WORKFLOW_MAX_ENGINES)
     fail(`execution.engines exceeds ${WORKFLOW_MAX_ENGINES} entries`);
   const references = new Set<string>();
@@ -299,9 +335,10 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
       `step ${step.stepId}`,
     );
     if (step.outputSchema !== undefined) validateSchema(step.outputSchema, `step ${step.stepId} outputSchema`);
-    if (step.root) validateNode(step.root, step.stepId, references, nodeIds, hooks);
+    if (step.root)
+      validateNode(step.root, step.stepId, references, nodeIds, hooks, options.unitExtraKeys ?? [], executionShape);
     if (step.route) validateRoute(step.route, step.stepId);
-    validateGate(step.gate, step.stepId, references, nodeIds, hooks);
+    validateGate(step.gate, step.stepId, references, nodeIds, hooks, options.gateExtraKeys ?? [], executionShape);
   }
   const stepIndex = new Map(plan.steps.map((step, index) => [step.stepId, index]));
   for (const [index, step] of plan.steps.entries()) {
@@ -333,7 +370,6 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
         fail(`agent gate ${step.gate.id} cannot carry LLM invocation settings`);
     }
   }
-  return plan;
 }
 
 function validateEngine(
@@ -482,6 +518,8 @@ function validateNode(
   references: Set<string>,
   nodeIds: Set<string>,
   hooks: WorkflowPlanValidationHooks,
+  unitExtraKeys: readonly string[],
+  executionShape: "stored-v3" | "current-v4",
 ): void {
   if (
     !isRecord(node) ||
@@ -505,7 +543,7 @@ function validateNode(
       fail(`map ${node.id} is invalid`);
     if (node.id !== `${stepId}.map`) fail(`map ${node.id} does not match step ${stepId}`);
     validateSource(node.source, `map ${node.id} source`);
-    validateNode(node.template, stepId, references, nodeIds, hooks);
+    validateNode(node.template, stepId, references, nodeIds, hooks, unitExtraKeys, executionShape);
     if (!isRecord(node.template) || node.template.kind !== "unit") fail(`map ${node.id} template must be a unit`);
     if (node.template.id !== `${stepId}.unit`) fail(`map ${node.id} template id is invalid`);
     return;
@@ -518,14 +556,14 @@ function validateNode(
       "instructions",
       "templating",
       "inputs",
-      "invocation",
-      "exec",
+      ...(executionShape === "stored-v3" ? ["invocation", "exec"] : []),
       "schema",
       "retry",
       "onError",
       "env",
       "isolation",
       "source",
+      ...unitExtraKeys,
     ],
     `unit ${node.id}`,
   );
@@ -545,6 +583,7 @@ function validateNode(
   validateStringArray(node.env, `unit ${node.id} env`, MAX_LIST_ITEMS, true);
   validateStringArray(node.inputs, `unit ${node.id} inputs`, WORKFLOW_MAX_INPUTS, true);
   validateSource(node.source, `unit ${node.id} source`);
+  if (executionShape === "current-v4") return;
   // Exactly one dispatch mechanism per unit. A node carrying both would let a
   // tampered plan smuggle a shell command past the engine-compatibility checks
   // (which key off the invocation); one carrying neither has nothing to run.
@@ -599,6 +638,20 @@ function validateExecSpec(value: unknown, label: string): void {
   }
 }
 
+/** Decode one frozen exec spec; current callers can reject stored-v3 inheritance. */
+export function decodeWorkflowExecSpec(
+  value: unknown,
+  label: string,
+  options: { allowInheritEnv?: boolean } = {},
+): IrExecSpec {
+  validateExecSpec(value, label);
+  const decoded = value as IrExecSpec;
+  if (options.allowInheritEnv === false && decoded.inheritEnv) {
+    fail(`${label}.inheritEnv is forbidden; use exact named environment bindings`);
+  }
+  return decoded;
+}
+
 /**
  * The child's ENVIRONMENT SCOPE half of a frozen exec spec. Split out so
  * {@link validateExecSpec} keeps its shape (and the src-fn-size ratchet stays
@@ -635,6 +688,8 @@ function validateGate(
   references: Set<string>,
   nodeIds: Set<string>,
   hooks: WorkflowPlanValidationHooks,
+  gateExtraKeys: readonly string[],
+  executionShape: "stored-v3" | "current-v4",
 ): void {
   if (
     !isRecord(gate) ||
@@ -650,8 +705,21 @@ function validateGate(
   )
     fail(`gate for step ${stepId} is invalid`);
   if (nodeIds.has(gate.id)) fail(`gate id ${gate.id} collides with a node`);
-  assertKeys(gate, ["kind", "id", "stepId", "criteria", "maxLoops", "judge"], `gate ${stepId}`);
+  assertKeys(
+    gate,
+    [
+      "kind",
+      "id",
+      "stepId",
+      "criteria",
+      "maxLoops",
+      ...(executionShape === "stored-v3" ? ["judge"] : []),
+      ...gateExtraKeys,
+    ],
+    `gate ${stepId}`,
+  );
   nodeIds.add(gate.id);
+  if (executionShape === "current-v4") return;
   if (gate.criteria.length === 0 && gate.judge !== null) fail(`gate ${gate.id} without criteria cannot have a judge`);
   if (gate.judge !== null) validateInvocation(gate.judge, references, hooks);
 }

@@ -8,7 +8,7 @@ import { _setWarnSinkForTests } from "../../src/core/warn";
 import { _setChatCompletionForTests, type ChatCompletionConfig, type ChatMessage } from "../../src/llm/client";
 import { frozenSummaryJudge } from "../../src/workflows/exec/frozen-judge";
 import type { UnitDispatchRequest } from "../../src/workflows/exec/native-executor";
-import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
+import type { WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
 import { overrideSeam } from "../_helpers/seams";
 
 const OWNER = { runId: "11111111-1111-4111-8111-111111111111", stepId: "review" };

@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseWorkflowParameterFlags } from "../../src/commands/workflow-cli";
 import { materializeWorkflowParameterFlags } from "../../src/workflows/ir/params";
-import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
+import type { WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
 
 function parameterPlan(): WorkflowPlanGraph {
   return {

@@ -5,9 +5,8 @@
 /**
  * Additive durable workflow plan v4.
  *
- * V3 remains a closed compatibility island in `schema.ts`. This module
- * validates the v4-only execution snapshots, then delegates a key-stripped
- * shadow graph to the byte-stable v3 decoder for all shared graph semantics.
+ * Shared execution-graph validation is version-neutral. Stored-v3 decoding is
+ * a separate boundary and is never used to construct or validate a new v4 run.
  */
 
 import { createHash } from "node:crypto";
@@ -23,14 +22,19 @@ import { decodeExecutionSourceIdentity, type ExecutionSourceIdentity } from "../
 import { decodeFrozenRunnerSpec } from "../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import {
-  decodeWorkflowPlanV3,
+  decodeWorkflowExecSpec,
   type IrMapNode,
-  type IrStepPlan,
-  type IrUnitNode,
-  WORKFLOW_IR_VERSION,
-  type WorkflowPlanGraph,
+  type IrRouteSpec,
+  type IrUnitNodeCore,
+  validateWorkflowPlanStructure,
+  type WorkflowPlanStructure,
   type WorkflowPlanValidationHooks,
 } from "./schema";
+import {
+  decodeStoredWorkflowPlanV3,
+  STORED_WORKFLOW_PLAN_V3_VERSION,
+  type StoredWorkflowPlanV3,
+} from "./stored-plan-v3";
 
 export const WORKFLOW_IR_V4_VERSION = 4 as const;
 
@@ -81,6 +85,8 @@ export interface FrozenWorkflowCommandTarget {
   readonly contentHash: string;
   readonly request: ResolvedExecutionRequestV1;
   readonly runner: RunnerSpec;
+  /** Frozen provider concurrency cap for this resolved target, when applicable. */
+  readonly concurrency?: number;
   readonly cwdIdentity?: FrozenWorkflowDirectoryIdentity;
   readonly executable?: FrozenExecutableIdentity;
   readonly gitCommitOid?: string;
@@ -89,6 +95,7 @@ export interface FrozenWorkflowCommandTarget {
 export interface FrozenWorkflowShellTarget {
   readonly kind: "shell";
   readonly contentHash: string;
+  readonly exec: import("./schema").IrExecSpec;
   readonly cwdIdentity: FrozenWorkflowDirectoryIdentity;
   readonly executable?: FrozenExecutableIdentity;
   readonly gitCommitOid?: string;
@@ -98,6 +105,7 @@ export interface FrozenWorkflowScriptTarget {
   readonly kind: "script";
   readonly ref: string;
   readonly contentHash: string;
+  readonly exec: import("./schema").IrExecSpec;
   readonly interpreter: string;
   readonly extension: string;
   readonly bytesBase64: string;
@@ -110,7 +118,7 @@ export interface FrozenWorkflowScriptTarget {
 
 export type FrozenWorkflowTarget = FrozenWorkflowCommandTarget | FrozenWorkflowShellTarget | FrozenWorkflowScriptTarget;
 
-export interface IrUnitNodeV4 extends IrUnitNode {
+export interface IrUnitNodeV4 extends IrUnitNodeCore {
   readonly frozenTarget: FrozenWorkflowTarget;
   readonly environment: readonly FrozenWorkflowEnvironmentBinding[];
 }
@@ -121,17 +129,33 @@ export interface IrMapNodeV4 extends Omit<IrMapNode, "template"> {
 
 export type IrExecNodeV4 = IrUnitNodeV4 | IrMapNodeV4;
 
-export interface IrStepPlanV4 extends Omit<IrStepPlan, "root"> {
-  root?: IrExecNodeV4;
+export interface IrGateNodeV4 {
+  readonly kind: "gate";
+  readonly id: string;
+  readonly stepId: string;
+  readonly criteria: string[];
+  readonly maxLoops?: number;
+  readonly frozenJudge: FrozenWorkflowCommandTarget | null;
 }
 
-export interface WorkflowPlanGraphV4 extends Omit<WorkflowPlanGraph, "irVersion" | "steps"> {
+export interface IrStepPlanV4 {
+  readonly stepId: string;
+  readonly title: string;
+  readonly sequenceIndex: number;
+  root?: IrExecNodeV4;
+  readonly route?: IrRouteSpec;
+  readonly outputSchema?: Record<string, unknown>;
+  readonly gate: IrGateNodeV4;
+}
+
+export interface WorkflowPlanGraphV4 extends Omit<WorkflowPlanStructure, "irVersion" | "execution" | "steps"> {
   readonly irVersion: typeof WORKFLOW_IR_V4_VERSION;
+  readonly execution: { readonly maxConcurrency: number };
   readonly sourceReadSet: DurableWorkflowSourceSnapshot[];
   readonly steps: IrStepPlanV4[];
 }
 
-export type ExecutableWorkflowPlan = WorkflowPlanGraph | WorkflowPlanGraphV4;
+export type ExecutableWorkflowPlan = StoredWorkflowPlanV3 | WorkflowPlanGraphV4;
 
 /** Strictly decode either supported executable plan, optionally bound to a DB row version. */
 export function decodeExecutableWorkflowPlan(
@@ -143,7 +167,7 @@ export function decodeExecutableWorkflowPlan(
   if (expectedVersion !== undefined && expectedVersion !== null && version !== expectedVersion) {
     fail(`plan irVersion ${String(version)} does not match expected stored version ${expectedVersion}`);
   }
-  if (version === WORKFLOW_IR_VERSION) return decodeWorkflowPlanV3(input, hooks);
+  if (version === STORED_WORKFLOW_PLAN_V3_VERSION) return decodeStoredWorkflowPlanV3(input, hooks);
   if (version === WORKFLOW_IR_V4_VERSION) return decodeWorkflowPlanV4(input, hooks);
   fail(`unsupported workflow plan version ${String(version)}`);
 }
@@ -159,52 +183,103 @@ export function decodeWorkflowPlanV4(input: unknown, hooks: WorkflowPlanValidati
   );
   if (!Object.hasOwn(raw, "sourceReadSet")) fail("sourceReadSet is required");
   const sourceReadSet = decodeSourceReadSet(raw.sourceReadSet);
-  rejectV4InheritEnv(raw.steps);
-  const shadow = sharedV3Shadow(raw);
-  const shared = decodeWorkflowPlanV3(shadow, hooks);
+  validateWorkflowPlanStructure(
+    raw,
+    {
+      expectedVersion: WORKFLOW_IR_V4_VERSION,
+      planExtraKeys: ["sourceReadSet"],
+      unitExtraKeys: ["frozenTarget", "environment"],
+      gateExtraKeys: ["frozenJudge"],
+      executionShape: "current-v4",
+    },
+    hooks,
+  );
   const rawSteps = raw.steps as unknown[];
   const requiredSources: ExecutionSourceIdentity[] = [];
-  const steps = shared.steps.map((step, index) => {
+  const steps = rawSteps.map((rawStep, index) => {
+    const step = rawStep as Omit<IrStepPlanV4, "root" | "gate"> & { root?: unknown; gate: unknown };
     const sourceStep = record(rawSteps[index], `step ${step.stepId}`);
-    if (!step.root) return step as IrStepPlanV4;
+    const gate = decodeGateV4(sourceStep.gate, step.stepId, requiredSources);
+    if (!step.root) return Object.freeze({ ...step, gate }) as IrStepPlanV4;
     const rawRoot = record(sourceStep.root, `step ${step.stepId} root`);
     const root =
-      step.root.kind === "map"
-        ? ({
-            ...step.root,
-            template: decodeUnitV4(
-              record(rawRoot.template, `map ${step.root.id} template`),
-              step.root.template,
-              requiredSources,
-            ),
-          } satisfies IrMapNodeV4)
-        : decodeUnitV4(rawRoot, step.root, requiredSources);
-    return { ...step, root } satisfies IrStepPlanV4;
+      rawRoot.kind === "map"
+        ? (() => {
+            const { template: _template, ...map } = rawRoot;
+            return {
+              ...(map as unknown as Omit<IrMapNodeV4, "template">),
+              template: decodeUnitV4(record(rawRoot.template, `map ${String(rawRoot.id)} template`), requiredSources),
+            } satisfies IrMapNodeV4;
+          })()
+        : decodeUnitV4(rawRoot, requiredSources);
+    return Object.freeze({ ...step, root, gate }) satisfies IrStepPlanV4;
   });
   assertRequiredSources(sourceReadSet, requiredSources);
   return Object.freeze({
-    ...shared,
+    ...(raw as unknown as Omit<WorkflowPlanGraphV4, "steps" | "sourceReadSet">),
     irVersion: WORKFLOW_IR_V4_VERSION,
     sourceReadSet,
     steps,
   });
 }
 
-function decodeUnitV4(
-  raw: Record<string, unknown>,
-  shared: IrUnitNode,
-  requiredSources: ExecutionSourceIdentity[],
-): IrUnitNodeV4 {
-  if (!Object.hasOwn(raw, "frozenTarget")) fail(`unit ${shared.id} frozenTarget is required`);
-  if (!Object.hasOwn(raw, "environment")) fail(`unit ${shared.id} environment is required`);
-  const environment = decodeEnvironment(raw.environment, shared.id);
-  const frozenTarget = decodeFrozenTarget(raw.frozenTarget, shared, environment, requiredSources);
-  return Object.freeze({ ...shared, frozenTarget, environment: Object.freeze(environment) });
+function decodeUnitV4(raw: Record<string, unknown>, requiredSources: ExecutionSourceIdentity[]): IrUnitNodeV4 {
+  const id = raw.id as string;
+  if (!Object.hasOwn(raw, "frozenTarget")) fail(`unit ${id} frozenTarget is required`);
+  if (!Object.hasOwn(raw, "environment")) fail(`unit ${id} environment is required`);
+  const environment = decodeEnvironment(raw.environment, id);
+  const frozenTarget = decodeFrozenTarget(
+    raw.frozenTarget,
+    raw as unknown as IrUnitNodeCore,
+    environment,
+    requiredSources,
+  );
+  const { frozenTarget: _target, environment: _environment, ...core } = raw;
+  return Object.freeze({
+    ...(core as unknown as IrUnitNodeCore),
+    frozenTarget,
+    environment: Object.freeze(environment),
+  });
+}
+
+function decodeGateV4(value: unknown, stepId: string, requiredSources: ExecutionSourceIdentity[]): IrGateNodeV4 {
+  const gate = record(value, `gate ${stepId}`);
+  const criteria = gate.criteria as string[];
+  if (criteria.length === 0) {
+    if (gate.frozenJudge !== null) fail(`gate ${stepId} without criteria cannot have a frozen judge target`);
+    return Object.freeze({
+      kind: "gate",
+      id: gate.id as string,
+      stepId,
+      criteria,
+      maxLoops: gate.maxLoops as number,
+      frozenJudge: null,
+    });
+  }
+  if (!Object.hasOwn(gate, "frozenJudge") || gate.frozenJudge === null) {
+    fail(`gate ${stepId} with criteria requires a frozen judge target`);
+  }
+  const identity: IrUnitNodeCore = {
+    kind: "unit",
+    id: gate.id as string,
+    instructions: criteria.join("\n"),
+    templating: "verbatim",
+    onError: "fail",
+    isolation: "none",
+  };
+  return Object.freeze({
+    kind: "gate",
+    id: gate.id as string,
+    stepId,
+    criteria,
+    maxLoops: gate.maxLoops as number,
+    frozenJudge: decodeCommandTarget(record(gate.frozenJudge, `gate ${stepId} frozenJudge`), identity, requiredSources),
+  });
 }
 
 function decodeFrozenTarget(
   value: unknown,
-  unit: IrUnitNode,
+  unit: IrUnitNodeCore,
   environment: readonly FrozenWorkflowEnvironmentBinding[],
   requiredSources: ExecutionSourceIdentity[],
 ): FrozenWorkflowTarget {
@@ -217,15 +292,14 @@ function decodeFrozenTarget(
 
 function decodeCommandTarget(
   target: Record<string, unknown>,
-  unit: IrUnitNode,
+  unit: IrUnitNodeCore,
   requiredSources: ExecutionSourceIdentity[],
 ): FrozenWorkflowCommandTarget {
   assertKeys(
     target,
-    ["kind", "ref", "contentHash", "request", "runner", "cwdIdentity", "executable", "gitCommitOid"],
+    ["kind", "ref", "contentHash", "request", "runner", "concurrency", "cwdIdentity", "executable", "gitCommitOid"],
     `unit ${unit.id} command target`,
   );
-  if (!unit.invocation || unit.exec) fail(`unit ${unit.id} command target requires an invocation arm`);
   if (target.ref !== null && typeof target.ref !== "string") fail(`unit ${unit.id} command target ref is invalid`);
   const request = decodeResolvedExecutionRequest(target.request);
   if (request.authorization.status === "denied") fail(`unit ${unit.id} command authorization is denied by policy`);
@@ -236,11 +310,16 @@ function decodeCommandTarget(
   const actualContentHash = sha256(request.command.content);
   if (contentHash !== actualContentHash) fail(`unit ${unit.id} command contentHash does not match request content`);
   const runner = decodeFrozenRunnerSpec(target.runner);
+  if (
+    target.concurrency !== undefined &&
+    (!Number.isSafeInteger(target.concurrency) ||
+      (target.concurrency as number) < 1 ||
+      (target.concurrency as number) > 64)
+  ) {
+    fail(`unit ${unit.id} frozen target concurrency is invalid`);
+  }
   if (runner.engine !== request.engine.name || runner.kind !== request.engine.kind) {
     fail(`unit ${unit.id} frozen runner must match the resolved request engine`);
-  }
-  if (unit.invocation.engine !== request.engine.name) {
-    fail(`unit ${unit.id} invocation engine must match the resolved request engine`);
   }
   const source = request.command.source;
   if (source) {
@@ -273,6 +352,7 @@ function decodeCommandTarget(
     contentHash,
     request,
     runner,
+    ...(target.concurrency !== undefined ? { concurrency: target.concurrency as number } : {}),
     ...(cwdIdentity ? { cwdIdentity } : {}),
     ...(executable ? { executable } : {}),
     ...(gitCommitOid ? { gitCommitOid } : {}),
@@ -281,33 +361,33 @@ function decodeCommandTarget(
 
 function decodeShellTarget(
   target: Record<string, unknown>,
-  unit: IrUnitNode,
+  unit: IrUnitNodeCore,
   environment: readonly FrozenWorkflowEnvironmentBinding[],
 ): FrozenWorkflowShellTarget {
   assertKeys(
     target,
-    ["kind", "contentHash", "cwdIdentity", "executable", "gitCommitOid"],
+    ["kind", "contentHash", "exec", "cwdIdentity", "executable", "gitCommitOid"],
     `unit ${unit.id} shell target`,
   );
-  if (!unit.exec || unit.invocation) fail(`unit ${unit.id} shell target requires an exec arm`);
-  if (unit.exec.inheritEnv) fail(`unit ${unit.id} inheritEnv is forbidden; use named environment bindings`);
+  const exec = decodeWorkflowExecSpec(target.exec, `unit ${unit.id} shell target exec`, { allowInheritEnv: false });
   const cwdIdentity = decodeDirectoryIdentity(target.cwdIdentity, unit.id);
   const executable = Object.hasOwn(target, "executable")
     ? decodeFrozenExecutableIdentity(target.executable, `unit ${unit.id} executable`)
     : undefined;
-  if (executable && unit.exec.command[0] !== executable.requested && unit.exec.command[0] !== executable.absolutePath) {
+  if (executable && exec.command[0] !== executable.requested && exec.command[0] !== executable.absolutePath) {
     fail(`unit ${unit.id} shell executable does not match the frozen command`);
   }
   const gitCommitOid = decodeGitCommitOid(target.gitCommitOid, unit);
   const contentHash = digest(target.contentHash, `unit ${unit.id} shell contentHash`);
   const expected = createHash("sha256")
     .update("akm.workflow.shell.v1\0")
-    .update(canonicalJsonLocal({ exec: unit.exec, environment, cwdIdentity }))
+    .update(canonicalJsonLocal({ exec, environment, cwdIdentity }))
     .digest("hex");
   if (contentHash !== expected) fail(`unit ${unit.id} shell contentHash does not match its frozen dispatch`);
   return Object.freeze({
     kind: "shell",
     contentHash,
+    exec,
     cwdIdentity,
     ...(executable ? { executable } : {}),
     ...(gitCommitOid ? { gitCommitOid } : {}),
@@ -316,7 +396,7 @@ function decodeShellTarget(
 
 function decodeScriptTarget(
   target: Record<string, unknown>,
-  unit: IrUnitNode,
+  unit: IrUnitNodeCore,
   requiredSources: ExecutionSourceIdentity[],
 ): FrozenWorkflowScriptTarget {
   assertKeys(
@@ -325,6 +405,7 @@ function decodeScriptTarget(
       "kind",
       "ref",
       "contentHash",
+      "exec",
       "interpreter",
       "extension",
       "bytesBase64",
@@ -336,8 +417,7 @@ function decodeScriptTarget(
     ],
     `unit ${unit.id} script target`,
   );
-  if (!unit.exec || unit.invocation) fail(`unit ${unit.id} script target requires an exec arm`);
-  if (unit.exec.inheritEnv) fail(`unit ${unit.id} inheritEnv is forbidden; use named environment bindings`);
+  const exec = decodeWorkflowExecSpec(target.exec, `unit ${unit.id} script target exec`, { allowInheritEnv: false });
   if (typeof target.ref !== "string" || !target.ref.includes("//")) fail(`unit ${unit.id} script ref is invalid`);
   if (typeof target.interpreter !== "string" || !target.interpreter)
     fail(`unit ${unit.id} script interpreter is invalid`);
@@ -363,6 +443,7 @@ function decodeScriptTarget(
     kind: "script",
     ref: target.ref,
     contentHash,
+    exec,
     interpreter: target.interpreter,
     extension: target.extension,
     bytesBase64: target.bytesBase64,
@@ -374,7 +455,7 @@ function decodeScriptTarget(
   });
 }
 
-function decodeGitCommitOid(value: unknown, unit: IrUnitNode): string | undefined {
+function decodeGitCommitOid(value: unknown, unit: IrUnitNodeCore): string | undefined {
   if (unit.isolation === "worktree") {
     if (typeof value !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value)) {
       fail(`unit ${unit.id} worktree target requires a canonical gitCommitOid`);
@@ -570,19 +651,6 @@ function decodeSourceReadSet(value: unknown): DurableWorkflowSourceSnapshot[] {
   return out;
 }
 
-function rejectV4InheritEnv(value: unknown): void {
-  if (!Array.isArray(value)) return;
-  for (const rawStep of value) {
-    const step = record(rawStep, "step");
-    if (!step.root) continue;
-    const root = record(step.root, "step root");
-    const unit = root.kind === "map" ? record(root.template, "map template") : root;
-    if (!unit.exec) continue;
-    const exec = record(unit.exec, "unit exec");
-    if (exec.inheritEnv === true) fail("inheritEnv is forbidden in v4; use exact named environment bindings");
-  }
-}
-
 function assertRequiredSources(
   readSet: readonly DurableWorkflowSourceSnapshot[],
   required: readonly ExecutionSourceIdentity[],
@@ -595,21 +663,6 @@ function assertRequiredSources(
     }
     if (found.identity.hash !== identity.hash) fail(`source read-set hash mismatch for ${identity.ref}`);
   }
-}
-
-function sharedV3Shadow(raw: Record<string, unknown>): Record<string, unknown> {
-  const shadow = JSON.parse(JSON.stringify(raw)) as Record<string, unknown>;
-  shadow.irVersion = WORKFLOW_IR_VERSION;
-  delete shadow.sourceReadSet;
-  for (const stepValue of shadow.steps as unknown[]) {
-    const step = record(stepValue, "step");
-    if (!step.root) continue;
-    const root = record(step.root, "step root");
-    const unit = root.kind === "map" ? record(root.template, "map template") : root;
-    delete unit.frozenTarget;
-    delete unit.environment;
-  }
-  return shadow;
 }
 
 function sourceKey(identity: Pick<ExecutionSourceIdentity, "ref" | "adapter" | "file">): string {

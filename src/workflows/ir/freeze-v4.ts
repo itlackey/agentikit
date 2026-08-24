@@ -8,10 +8,11 @@ import { parseBundleRef } from "../../core/asset/asset-ref";
 import type { AkmConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { type GuardedExecutionSource, GuardedExecutionSourceCollector } from "../../execution/guarded-source";
+import { defaultMapConcurrency, workflowMaxConcurrency } from "../concurrency-policy";
 import type { WorkflowAsset } from "../runtime/workflow-asset-loader";
-import { compileResolveFreezeWorkflow, type FrozenWorkflow } from "./freeze";
+import type { WorkflowUnitDraft } from "./compile";
+import { compileWorkflowPlan } from "./compile";
 import { canonicalJson } from "./plan-hash";
-import type { IrUnitNode } from "./schema";
 import {
   decodeWorkflowPlanV4,
   type IrExecNodeV4,
@@ -22,8 +23,10 @@ import {
 } from "./schema-v4";
 import { resolveWorkflowSourceV4 } from "./source-freeze-v4";
 
-export interface FrozenWorkflowV4 extends Omit<FrozenWorkflow, "plan"> {
+export interface FrozenWorkflowV4 {
   readonly plan: WorkflowPlanGraphV4;
+  readonly warnings: import("../schema").WorkflowError[];
+  readonly engineAnnouncement?: string;
   /** Retained in-memory read set used for the final pre-publication CAS. */
   readonly sourceCollector: GuardedExecutionSourceCollector;
 }
@@ -41,19 +44,34 @@ export async function compileResolveFreezeWorkflowV4(
   const sourceCollector = options.sourceCollector ?? new GuardedExecutionSourceCollector();
   const workflowSource = captureWorkflowSource(asset, sourceCollector);
   const resolved = await resolveWorkflowSourceV4(asset, workflowSource, config, sourceCollector);
-  const v3 = compileResolveFreezeWorkflow(resolved.asset, config);
-  const steps = v3.plan.steps.map((step): IrStepPlanV4 => {
+  const compiled = compileWorkflowPlan(resolved.sourceIr, asset.title, resolved.units);
+  if (!compiled.ok) {
+    throw new UsageError(
+      compiled.errors.map((error) => `${asset.path}:${error.line}: ${error.message}`).join("\n"),
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  const steps = compiled.plan.steps.map((step): IrStepPlanV4 => {
+    const frozenJudge = step.gate.criteria.length === 0 ? null : resolved.judges.get(step.stepId);
+    if (step.gate.criteria.length > 0 && !frozenJudge) {
+      throw new Error(`resolved workflow judge missing for step ${step.stepId}`);
+    }
+    const gate = Object.freeze({ ...step.gate, maxLoops: step.gate.maxLoops ?? 1, frozenJudge: frozenJudge ?? null });
     if (!step.root) {
       const { root: _root, ...withoutRoot } = step;
-      return withoutRoot;
+      return Object.freeze({ ...withoutRoot, gate });
     }
     const frozen = resolved.units.get(step.stepId);
     if (!frozen) throw new Error(`resolved workflow target missing for step ${step.stepId}`);
     const root: IrExecNodeV4 =
       step.root.kind === "map"
-        ? { ...step.root, template: freezeResolvedUnit(step.root.template, frozen) }
+        ? {
+            ...step.root,
+            concurrency: step.root.concurrency ?? defaultMapConcurrency(config.workflow?.defaultMapConcurrency),
+            template: freezeResolvedUnit(step.root.template, frozen),
+          }
         : freezeResolvedUnit(step.root, frozen);
-    return { ...step, root };
+    return Object.freeze({ ...step, root, gate });
   });
   const sourceReadSet = sourceCollector
     .snapshot()
@@ -63,16 +81,25 @@ export async function compileResolveFreezeWorkflowV4(
     )
     .map((source) => sourceSnapshot(source));
   const plan = decodeWorkflowPlanV4({
-    ...v3.plan,
     irVersion: WORKFLOW_IR_V4_VERSION,
+    title: compiled.plan.title,
+    ...(compiled.plan.params ? { params: compiled.plan.params } : {}),
+    ...(compiled.plan.paramSchemas ? { paramSchemas: compiled.plan.paramSchemas } : {}),
+    ...(compiled.plan.budget ? { budget: compiled.plan.budget } : {}),
+    execution: { maxConcurrency: workflowMaxConcurrency(config.workflow?.maxConcurrency) },
     sourceReadSet,
     steps,
   });
-  return Object.freeze({ ...v3, plan, sourceCollector });
+  return Object.freeze({
+    plan,
+    warnings: compiled.warnings,
+    ...(resolved.engineAnnouncement ? { engineAnnouncement: resolved.engineAnnouncement } : {}),
+    sourceCollector,
+  });
 }
 
 function freezeResolvedUnit(
-  unit: IrUnitNode,
+  unit: WorkflowUnitDraft,
   resolved: Readonly<{ target: IrUnitNodeV4["frozenTarget"]; environment: IrUnitNodeV4["environment"] }>,
 ): IrUnitNodeV4 {
   const frozenTarget =
@@ -83,7 +110,7 @@ function freezeResolvedUnit(
             .update("akm.workflow.shell.v1\0")
             .update(
               canonicalJson({
-                exec: unit.exec,
+                exec: resolved.target.exec,
                 environment: resolved.environment,
                 cwdIdentity: resolved.target.cwdIdentity,
               }),
@@ -91,7 +118,13 @@ function freezeResolvedUnit(
             .digest("hex"),
         })
       : resolved.target;
-  return Object.freeze({ ...unit, frozenTarget, environment: Object.freeze([...resolved.environment]) });
+  const { exec: _exec, ...common } = unit;
+  return Object.freeze({
+    ...common,
+    isolation: common.isolation ?? "none",
+    frozenTarget,
+    environment: Object.freeze([...resolved.environment]),
+  });
 }
 
 function captureWorkflowSource(

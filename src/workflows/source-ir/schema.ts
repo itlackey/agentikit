@@ -96,7 +96,6 @@ export interface WorkflowSourceExec {
   command: string[];
   cwd?: string;
   passEnv?: string[];
-  inheritEnv?: true;
 }
 
 export interface WorkflowSourceUnit {
@@ -451,7 +450,7 @@ function compareCodePoints(left: string, right: string): number {
 function validateExec(value: unknown, location: string, options: WorkflowSourceDecodeOptions): void {
   if (value === undefined) return;
   const exec = record(value, location);
-  keys(exec, ["command", "cwd", "passEnv", "inheritEnv"], location);
+  keys(exec, ["command", "cwd", "passEnv"], location);
   stringList(exec.command, `${location}.command`, WORKFLOW_MAX_EXEC_ARGV, false);
   for (const [index, argument] of (exec.command as string[]).entries()) {
     if (utf8Bytes(argument) > WORKFLOW_MAX_EXEC_ARG_BYTES) {
@@ -482,7 +481,6 @@ function validateExec(value: unknown, location: string, options: WorkflowSourceD
       if (!WORKFLOW_ENV_VAR_NAME_PATTERN.test(name)) fail(`${location}.passEnv has invalid environment name ${name}`);
     }
   }
-  if (exec.inheritEnv !== undefined && exec.inheritEnv !== true) fail(`${location}.inheritEnv must be true or absent`);
 }
 
 function validateUnit(value: unknown, location: string, defaults: boolean): void {

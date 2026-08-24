@@ -56,7 +56,6 @@ import path from "node:path";
 import { isDangerousEnvKey } from "../../../commands/lint/env-key-rules";
 import { parseTaskV3Yaml, taskV3SourceErrorDetail } from "../../../tasks/source-v3";
 import { compileWorkflowPlan } from "../../../workflows/ir/compile";
-import { parseWorkflow } from "../../../workflows/parser";
 import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
 import { conceptIdForStashFile } from "../../asset/resolve-ref";
 import type { BundleComponent, Diagnostic, ValidateContext } from "../types";
@@ -443,7 +442,7 @@ export function workflowFrontendDiagnostics(
   const errors: WorkflowFrontendDiagnostic[] = [];
   const warnings: WorkflowFrontendDiagnostic[] = [];
   try {
-    const result = parseWorkflow(raw, { path: parsePath });
+    const result = compileWorkflowSource(raw, { path: parsePath });
     if (!result.ok) {
       for (const err of result.errors ?? []) {
         errors.push({
@@ -456,7 +455,7 @@ export function workflowFrontendDiagnostics(
       }
       return { errors, warnings };
     }
-    const compiled = compileWorkflowPlan(result.document, path.basename(parsePath, path.extname(parsePath)));
+    const compiled = compileWorkflowPlan(result.ir, path.basename(parsePath, path.extname(parsePath)));
     if (!compiled.ok) {
       for (const err of compiled.errors) {
         errors.push({

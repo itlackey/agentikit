@@ -30,8 +30,8 @@ import { requireAuthorizedExecutionPlan } from "../integrations/agent/execution-
 import { lowerResolvedExecutionRequest } from "../integrations/agent/execution-lowering";
 import { resolveAssetPath } from "../sources/resolve";
 import { detectSecretShapedParams } from "../workflows/exec/param-secrets";
+import { compileWorkflowPlan } from "../workflows/ir/compile";
 import { compileWorkflowSource } from "../workflows/source-ir/compile";
-import { WorkflowSourceProjectionError, workflowSourceIrToDocument } from "../workflows/source-ir/document";
 import { isInferredSecretName } from "./log-redaction";
 import { isBunStandaloneMain } from "./resolve-akm-bin";
 import type { TaskV3Environment, TaskV3HostShell, TaskV3SourceDocument } from "./source-v3";
@@ -311,13 +311,10 @@ function validateWorkflowRuntimeSource(
     const detail = compiled.errors.map((error) => `${error.path}:${error.line}: ${error.message}`).join("; ");
     throw new UsageError(`Task workflow target is not projectable: ${detail}`, "INVALID_FLAG_VALUE");
   }
-  try {
-    workflowSourceIrToDocument(compiled.ir, { mode: "runtime" });
-  } catch (cause) {
-    if (cause instanceof WorkflowSourceProjectionError) {
-      throw new UsageError(`Task workflow target is not projectable: ${cause.message}`, "INVALID_FLAG_VALUE");
-    }
-    throw cause;
+  const planned = compileWorkflowPlan(compiled.ir, path.basename(file, path.extname(file)));
+  if (!planned.ok) {
+    const detail = planned.errors.map((error) => `${file}:${error.line}: ${error.message}`).join("; ");
+    throw new UsageError(`Task workflow target is not projectable: ${detail}`, "INVALID_FLAG_VALUE");
   }
 }
 

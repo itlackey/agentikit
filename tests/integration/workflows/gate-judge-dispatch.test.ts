@@ -12,8 +12,8 @@ import type { UnitDispatchRequest, UnitDispatchResult } from "../../../src/workf
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { canonicalJson, computeStepWorkList, recoverGateFeedback } from "../../../src/workflows/exec/step-work";
 import { prepareFrozenWorkflowExecution } from "../../../src/workflows/exec/unit-dispatch";
-import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
-import { decodeWorkflowPlanV3 } from "../../../src/workflows/ir/schema";
+import type { WorkflowPlanGraph } from "../../../src/workflows/ir/stored-plan-v3";
+import { decodeWorkflowPlanV3 } from "../../../src/workflows/ir/stored-plan-v3";
 import { getWorkflowStatus, resumeWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { sandboxEnvDir } from "../../_helpers/sandbox";
 import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../_helpers/workflow";

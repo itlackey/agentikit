@@ -19,8 +19,8 @@ import {
 } from "../../src/integrations/agent/inline-execution";
 import { prepareFrozenWorkflowExecution, type UnitDispatchRequest } from "../../src/workflows/exec/unit-dispatch";
 import { canonicalPlanJson, computePlanHash } from "../../src/workflows/ir/plan-hash";
-import type { FrozenAgentEngine, FrozenLlmEngine, IrUnitNode } from "../../src/workflows/ir/schema";
-import { decodeWorkflowPlanV3 } from "../../src/workflows/ir/schema";
+import type { FrozenAgentEngine, FrozenLlmEngine, IrUnitNode } from "../../src/workflows/ir/stored-plan-v3";
+import { decodeWorkflowPlanV3 } from "../../src/workflows/ir/stored-plan-v3";
 import { freezeWorkflow, WORKFLOW_TEST_CONFIG, workflowDoc } from "../_helpers/workflow";
 
 const PRIMARY = "FROZEN_CRED_PRIMARY";

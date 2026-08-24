@@ -5,9 +5,8 @@
 /**
  * Tests-first contract for WP7's immutable executable projection.
  *
- * These fixtures deliberately keep the older v4 command target readable while
- * pinning the richer shape emitted by every new start. V3 stays a byte-exact
- * compatibility island.
+ * These fixtures pin the single common target shape emitted by every new
+ * start. Stored v3 has one byte-exact decoder control below.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -15,8 +14,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { canonicalJson, canonicalPlanJson, computePlanHash } from "../../src/workflows/ir/plan-hash";
-import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
 import { decodeWorkflowPlanV4 } from "../../src/workflows/ir/schema-v4";
+import type { WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
 
 const sha256 = (value: string | Uint8Array): string => createHash("sha256").update(value).digest("hex");
 
@@ -107,20 +106,6 @@ function commandPlan(options: { isolation?: "none" | "worktree"; target?: Record
     sourceReadSet: [sourceSnapshot()],
     execution: {
       maxConcurrency: 1,
-      engines: {
-        cli: {
-          name: "cli",
-          kind: "agent",
-          runnerKind: "agent",
-          platform: "claude",
-          bin: "/bin/true",
-          args: [],
-          workspace: "/workspace/project",
-          envPassthrough: [],
-          commandBuilder: "claude",
-          fallbackLlmEngine: null,
-        },
-      },
     },
     steps: [
       {
@@ -130,15 +115,14 @@ function commandPlan(options: { isolation?: "none" | "worktree"; target?: Record
         root: {
           kind: "unit",
           id: "run",
-          instructions: "legacy projection must not regain authority",
+          instructions: "the common frozen target is the only dispatch authority",
           templating: "verbatim",
-          invocation: { engine: "cli", model: null, modelPresent: false, timeoutMs: null },
           frozenTarget: target,
           environment: [],
           onError: "fail",
           isolation,
         },
-        gate: { kind: "gate", id: "run.gate", stepId: "run", criteria: [], maxLoops: 1, judge: null },
+        gate: { kind: "gate", id: "run.gate", stepId: "run", criteria: [], maxLoops: 1, frozenJudge: null },
       },
     ],
   };
@@ -198,16 +182,14 @@ describe("durable workflow v4 immutable executable schema", () => {
     const shellExec = { command: ["/bin/sh", "-c", "printf shell"], timeoutMs: 30_000 };
     const shellEnvironment: never[] = [];
     const shell = commandPlan();
-    shell.execution.engines = {} as never;
     const shellRoot = rootUnit(shell);
-    delete (shellRoot as { invocation?: unknown }).invocation;
-    (shellRoot as { exec?: unknown }).exec = shellExec;
     shellRoot.environment = shellEnvironment;
     shellRoot.frozenTarget = {
       kind: "shell",
       contentHash: sha256(
         `akm.workflow.shell.v1\0${JSON.stringify({ cwdIdentity: CWD_IDENTITY, environment: shellEnvironment, exec: shellExec })}`,
       ),
+      exec: shellExec,
       cwdIdentity: structuredClone(CWD_IDENTITY),
       executable: executableIdentity("/bin/sh"),
     };
@@ -236,6 +218,7 @@ describe("durable workflow v4 immutable executable schema", () => {
       kind: "script",
       ref: scriptIdentity.ref,
       contentHash: sha256(scriptBytes),
+      exec: { command: ["/bin/sh"], timeoutMs: 30_000 },
       interpreter: "sh",
       extension: ".sh",
       bytesBase64: scriptBytes.toString("base64"),
@@ -279,21 +262,6 @@ describe("durable workflow v4 immutable executable schema", () => {
         },
       },
     });
-    const sdkEngines = sdk.execution.engines as Record<string, unknown>;
-    sdkEngines.sdk = {
-      name: "sdk",
-      kind: "agent",
-      runnerKind: "sdk",
-      platform: "opencode-sdk",
-      bin: "opencode",
-      args: [],
-      workspace: null,
-      envPassthrough: [],
-      commandBuilder: "opencode-sdk",
-      fallbackLlmEngine: null,
-    } as never;
-    delete sdkEngines.cli;
-    rootUnit(sdk).invocation.engine = "sdk";
     expect(() => decodeWorkflowPlanV4(sdk)).not.toThrow();
   });
 
@@ -330,20 +298,6 @@ describe("durable workflow v4 immutable executable schema", () => {
         },
       },
     });
-    const llmEngines = llm.execution.engines as Record<string, unknown>;
-    llmEngines.fast = {
-      name: "fast",
-      kind: "llm",
-      endpoint: "https://example.invalid/v1/chat/completions",
-      model: "frozen-model",
-      timeoutMs: null,
-      concurrency: 1,
-    } as never;
-    delete llmEngines.cli;
-    const invocation = rootUnit(llm).invocation as Record<string, unknown>;
-    invocation.engine = "fast";
-    invocation.model = "frozen-model";
-    invocation.modelPresent = true;
     expect(() => decodeWorkflowPlanV4(llm)).not.toThrow();
   });
 });

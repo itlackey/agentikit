@@ -86,8 +86,16 @@ describe("plan freezing at workflow start (migration 006)", () => {
     const plan = JSON.parse(row?.plan_json ?? "") as ExecutableWorkflowPlan;
     expect(plan.steps.map((s) => s.stepId)).toEqual(["only-step"]);
     expect(plan.irVersion).toBe(4);
+    if (plan.irVersion !== 4) throw new Error("fresh starts must persist v4");
     expect(plan.steps[0]!.root?.kind).toBe("unit");
-    expect(plan.execution?.engines["test-agent"]?.kind).toBe("agent");
+    expect(Object.hasOwn(plan.execution, "engines")).toBe(false);
+    const root = plan.steps[0]!.root;
+    if (!root || root.kind !== "unit") throw new Error("expected one current runtime unit");
+    expect(root.frozenTarget.kind).toBe("command");
+    if (root.frozenTarget.kind === "command") {
+      expect(root.frozenTarget.request.engine.name).toBe("test-agent");
+      expect(root.frozenTarget.runner.kind).toBe("sdk");
+    }
     expect(computePlanHash(plan)).toBe(row?.plan_hash ?? "");
 
     // Lease columns exist on the row but are unset — enforcement is R2.

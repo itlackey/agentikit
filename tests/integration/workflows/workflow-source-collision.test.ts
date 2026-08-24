@@ -157,7 +157,7 @@ describe("workflow source canonical-ref collisions", () => {
       await expect(loadWorkflowAsset(ref), ref).resolves.toMatchObject({
         ref: fixture.canonicalRef,
         path: sourcePath,
-        document: { source: { path: sourcePath } },
+        sourceIr: { source: { path: sourcePath } },
       });
     }
     expect(fs.existsSync(getDbPath())).toBe(false);
@@ -261,7 +261,7 @@ describe("workflow source canonical-ref collisions", () => {
 
     await expect(loadWorkflowAsset(fixture.canonicalRef)).resolves.toMatchObject({
       path: authoredPath,
-      document: { source: { path: authoredPath } },
+      sourceIr: { source: { path: authoredPath } },
     });
 
     fs.unlinkSync(authoredPath);
@@ -382,7 +382,7 @@ describe("workflow source canonical-ref collisions", () => {
     await expect(loadWorkflowAsset("workflows/collision")).resolves.toMatchObject({
       ref: "primary//workflows/collision",
       path: path.join(storage.stashDir, "workflows", "collision.md"),
-      document: { description: "primary" },
+      sourceIr: { description: "primary" },
     });
     await expect(lookupBundleRef(parseBundleRef("workflows/collision"))).resolves.toMatchObject({
       itemRef: "primary//workflows/collision",

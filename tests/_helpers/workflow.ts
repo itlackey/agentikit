@@ -1,10 +1,13 @@
 import type { AkmConfig } from "../../src/core/config/config";
-import { compileResolveFreezeWorkflow, type FreezeOptions } from "../../src/workflows/ir/freeze";
+import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
 import { canonicalPlanJson, computePlanHash } from "../../src/workflows/ir/plan-hash";
-import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
+import { decodeStoredWorkflowPlanV3, type WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
 import { parseWorkflow } from "../../src/workflows/parser";
 import { frozenStepRows } from "../../src/workflows/runtime/plan-classifier";
 import type { WorkflowError } from "../../src/workflows/schema";
+import { compileWorkflowSource } from "../../src/workflows/source-ir/compile";
+import { sourceStepInstructions, sourceStepProgramUnit } from "../../src/workflows/source-ir/program";
+import { buildStoredWorkflowPlanV3Fixture } from "./stored-plan-v3-fixture";
 
 export const WORKFLOW_TEST_CONFIG = {
   configVersion: "0.9.0",
@@ -22,38 +25,55 @@ export const WORKFLOW_TEST_CONFIG = {
 } as const satisfies AkmConfig;
 
 /**
- * Parse + compile + freeze a unified workflow markdown document (workflow-
- * format-unification). Replaces the pre-unification `freezeWorkflowProgram`
- * (YAML program) / `freezeMarkdownWorkflow` (classic linear markdown) split —
- * one frontend now.
+ * Compile source bytes into the shared executor-core fixture used by unit
+ * tests. Production starts use the durable-v4 freezer; this helper deliberately
+ * does not publish a stored plan or recreate the retired new-start-v3 path.
  *
  * `config` defaults to {@link WORKFLOW_TEST_CONFIG}; suites with their own
- * engine catalog pass it explicitly. `options` are threaded straight through
- * to {@link compileResolveFreezeWorkflow} (e.g. the `compile` test seam).
+ * engine catalog pass it explicitly.
  */
 export function freezeWorkflow(
   markdown: string,
   sourcePath = "workflows/demo.md",
   config: AkmConfig = WORKFLOW_TEST_CONFIG,
-  options: FreezeOptions = {},
 ): WorkflowPlanGraph {
-  const parsed = parseWorkflow(markdown, { path: sourcePath });
-  if (!parsed.ok) {
-    throw new Error(parsed.errors.map((error) => `${error.line}: ${error.message}`).join(" | "));
+  const compiledSource = compileWorkflowSource(markdown, { path: sourcePath, workspaceRoot: "/tmp" });
+  if (!compiledSource.ok) {
+    throw new Error(compiledSource.errors.map((error) => `${error.line}: ${error.message}`).join(" | "));
   }
-  const title = sourcePath.split("/").pop()?.replace(/\.md$/i, "") || "demo";
-  return compileResolveFreezeWorkflow(
-    {
-      ref: `workflows/${title}`,
-      path: sourcePath,
-      sourcePath: "/tmp",
-      title,
-      steps: [],
-      document: parsed.document,
-    },
+  const title =
+    sourcePath
+      .split("/")
+      .pop()
+      ?.replace(/\.(?:md|yml)$/i, "") || "demo";
+  const sourceSteps = compiledSource.ir.jobs[0]?.steps ?? [];
+  const resolvedUnits = new Map(
+    sourceSteps
+      .filter((step) => step.route === undefined)
+      .map(
+        (step) => [step.id, { unit: sourceStepProgramUnit(step), instructions: sourceStepInstructions(step) }] as const,
+      ),
+  );
+  const compiled = compileWorkflowPlan(compiledSource.ir, title, resolvedUnits);
+  if (!compiled.ok) {
+    throw new Error(compiled.errors.map((error) => `${error.line}: ${error.message}`).join(" | "));
+  }
+  const frozen = buildStoredWorkflowPlanV3Fixture(
+    compiledSource.ir,
+    compiled.plan,
+    compiled.warnings,
+    resolvedUnits,
     config,
-    options,
-  ).plan;
+  );
+  return decodeStoredWorkflowPlanV3({
+    irVersion: 3,
+    title,
+    ...(compiled.plan.params ? { params: compiled.plan.params } : {}),
+    ...(compiled.plan.paramSchemas ? { paramSchemas: compiled.plan.paramSchemas } : {}),
+    ...(compiled.plan.budget ? { budget: compiled.plan.budget } : {}),
+    execution: frozen.execution,
+    steps: frozen.steps,
+  });
 }
 
 /** Parse a workflow document and return its parser errors (`[]` when it parses cleanly). */

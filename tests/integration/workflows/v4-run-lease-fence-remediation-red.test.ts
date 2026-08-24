@@ -217,7 +217,7 @@ describe("real v4 start/lease/reservation race", () => {
       leaseHolder: "engine-a",
       params: {},
       evidence: {},
-      engines: plan.execution?.engines,
+      engines: {},
       dispatcher: async () => {
         dispatches += 1;
         return { ok: true, text: "must not run" };

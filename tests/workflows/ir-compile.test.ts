@@ -7,14 +7,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { compileWorkflowPlan, type WorkflowPlanDraft } from "../../src/workflows/ir/compile";
 import { computePlanHash } from "../../src/workflows/ir/plan-hash";
-import { WORKFLOW_IR_VERSION, type WorkflowPlanGraph } from "../../src/workflows/ir/schema";
-import { parseWorkflow } from "../../src/workflows/parser";
-import { WORKFLOW_SCHEMA_VERSION, type WorkflowDocument, type WorkflowError } from "../../src/workflows/schema";
+import { WORKFLOW_IR_VERSION, type WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
+import type { WorkflowError } from "../../src/workflows/schema";
+import { compileWorkflowSource } from "../../src/workflows/source-ir/compile";
+import type { WorkflowSourceIrV1 } from "../../src/workflows/source-ir/schema";
 import { freezeWorkflow } from "../_helpers/workflow";
 
 /**
- * ONE frontend now (workflow-format-unification): `parseWorkflow` (frontmatter
- * graph + body prose, joined by step id) → `compileWorkflowPlan` (structural
+ * Both authoring adapters compile to source IR, then `compileWorkflowPlan`
+ * lowers that one representation into the structural
  * draft — reference-grammar validation, earlier-step checks, source selectors
  * retained for the single resolve/freeze boundary). This replaces the
  * pre-unification split between the classic linear-markdown compiler and the
@@ -23,12 +24,12 @@ import { freezeWorkflow } from "../_helpers/workflow";
  * remaining frontend.
  */
 
-function parseMarkdown(markdown: string, path = "workflows/test.md"): WorkflowDocument {
-  const result = parseWorkflow(markdown, { path });
+function parseMarkdown(markdown: string, path = "workflows/test.md"): WorkflowSourceIrV1 {
+  const result = compileWorkflowSource(markdown, { path });
   if (!result.ok) {
-    throw new Error(`parse failed: ${result.errors.map((e) => `${e.line}: ${e.message}`).join(" | ")}`);
+    throw new Error(`source compile failed: ${result.errors.map((e) => `${e.line}: ${e.message}`).join(" | ")}`);
   }
-  return result.document;
+  return result.ir;
 }
 
 function compileOk(markdown: string, title = "t", path = "workflows/test.md"): WorkflowPlanDraft {
@@ -54,9 +55,9 @@ function compileErrors(markdown: string, title = "t", path = "workflows/test.md"
  * `compileErrors`, which requires a clean parse.
  */
 function errorsFrom(markdown: string, title = "t", path = "workflows/test.md"): WorkflowError[] {
-  const parsed = parseWorkflow(markdown, { path });
-  if (!parsed.ok) return parsed.errors;
-  const compiled = compileWorkflowPlan(parsed.document, title);
+  const source = compileWorkflowSource(markdown, { path });
+  if (!source.ok) return source.errors.map(({ line, message }) => ({ line, message }));
+  const compiled = compileWorkflowPlan(source.ir, title);
   if (compiled.ok) throw new Error("expected errors, got a plan");
   return compiled.errors;
 }
@@ -104,7 +105,7 @@ describe("compileWorkflowPlan — structural golden", () => {
               instructions: "Build the artifact.",
               templating: "verbatim",
               onError: "fail",
-              source: { path: "workflows/test.md", start: 9, end: 11 },
+              source: { path: "workflows/test.md", start: 4, end: 4 },
             },
             gate: { kind: "gate", id: "build.gate", stepId: "build", criteria: ["- artifact exists"] },
           },
@@ -118,7 +119,7 @@ describe("compileWorkflowPlan — structural golden", () => {
               instructions: "Deploy the artifact.",
               templating: "verbatim",
               onError: "fail",
-              source: { path: "workflows/test.md", start: 17, end: 19 },
+              source: { path: "workflows/test.md", start: 5, end: 5 },
             },
             gate: { kind: "gate", id: "deploy.gate", stepId: "deploy", criteria: [] },
           },
@@ -217,7 +218,7 @@ describe("compileWorkflowPlan — full-vocabulary golden", () => {
   });
 
   test("compiles the structural plan without executable engine fields", () => {
-    const plan = compileOk(FULL_WF, "review-changes", "workflows/test.yaml");
+    const plan = compileOk(FULL_WF, "review-changes", "workflows/test.md");
     expect(plan.title).toBe("review-changes");
     expect(plan.params).toEqual(["changed_files"]);
     expect(plan.steps).toHaveLength(5);
@@ -242,7 +243,7 @@ describe("compileWorkflowPlan — full-vocabulary golden", () => {
         templating: "verbatim",
         schema: { type: "object", properties: { files: { type: "array" } }, required: ["files"] },
         onError: "continue",
-        source: expect.objectContaining({ path: "workflows/test.yaml" }),
+        source: expect.objectContaining({ path: "workflows/test.md" }),
       },
       gate: { kind: "gate", id: "discover.gate", stepId: "discover", criteria: ["every target is listed"] },
     });
@@ -263,11 +264,11 @@ describe("compileWorkflowPlan — full-vocabulary golden", () => {
           templating: "verbatim",
           retry: { max: 1, on: ["timeout", "llm_rate_limit"] },
           onError: "fail",
-          source: expect.objectContaining({ path: "workflows/test.yaml" }),
+          source: expect.objectContaining({ path: "workflows/test.md" }),
         },
         concurrency: 8,
         reducer: "vote",
-        source: expect.objectContaining({ path: "workflows/test.yaml" }),
+        source: expect.objectContaining({ path: "workflows/test.md" }),
       },
       outputSchema: { type: "object", properties: { verdict: { type: "string" } } },
       gate: {
@@ -335,7 +336,7 @@ Do the thing.
   });
 
   test("node ids are unique and stable across the plan", () => {
-    const plan = compileOk(FULL_WF, "review-changes", "workflows/test.yaml");
+    const plan = compileOk(FULL_WF, "review-changes", "workflows/test.md");
     const ids: string[] = [];
     for (const step of plan.steps) {
       ids.push(step.gate.id);
@@ -584,24 +585,6 @@ z
 `);
     expect(errors.length).toBe(2);
   });
-
-  test("grammar violations are caught at compile even when the document bypasses the parser", () => {
-    const src = { path: "workflows/t.md", start: 3, end: 5 };
-    const document: WorkflowDocument = {
-      schemaVersion: WORKFLOW_SCHEMA_VERSION,
-      steps: [
-        { id: "a", sequenceIndex: 0, map: { over: "nope()" }, source: src },
-        { id: "b", sequenceIndex: 1, inputs: ["steps.x"], source: src },
-      ],
-      source: { path: "workflows/t.md", lineCount: 10 },
-    };
-    const result = compileWorkflowPlan(document, "t");
-    if (result.ok) throw new Error("expected compile errors");
-    expect(result.errors).toHaveLength(2);
-    expect(result.errors[0]!.message).toContain("Unknown root");
-    expect(result.errors[1]!.message).toContain(`must be followed by ".output"`);
-    expect(result.errors.every((e) => e.line === 3)).toBe(true);
-  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -721,23 +704,23 @@ describe("computePlanHash", () => {
   const executableWf = FULL_WF.replace("default-agent", "test-agent").replace("engine: reviewer", "engine: test-agent");
 
   test("same workflow → same hash (deterministic across compiles)", () => {
-    const a = freezeWorkflow(executableWf, "workflows/test.yaml");
-    const b = freezeWorkflow(executableWf, "workflows/test.yaml");
+    const a = freezeWorkflow(executableWf, "workflows/test.md");
+    const b = freezeWorkflow(executableWf, "workflows/test.md");
     const hash = computePlanHash(a);
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
     expect(computePlanHash(b)).toBe(hash);
   });
 
   test("hash is key-order independent (canonical sorted-keys JSON)", () => {
-    const plan = freezeWorkflow(executableWf, "workflows/test.yaml");
+    const plan = freezeWorkflow(executableWf, "workflows/test.md");
     const reordered = Object.fromEntries(Object.entries(plan).reverse()) as WorkflowPlanGraph;
     expect(JSON.stringify(reordered)).not.toBe(JSON.stringify(plan));
     expect(computePlanHash(reordered)).toBe(computePlanHash(plan));
   });
 
   test("a different workflow → a different hash", () => {
-    const a = freezeWorkflow(executableWf, "workflows/test.yaml");
-    const b = freezeWorkflow(executableWf.replace("Ship it.", "Ship it now."), "workflows/test.yaml");
+    const a = freezeWorkflow(executableWf, "workflows/test.md");
+    const b = freezeWorkflow(executableWf.replace("Ship it.", "Ship it now."), "workflows/test.md");
     expect(computePlanHash(b)).not.toBe(computePlanHash(a));
   });
 });

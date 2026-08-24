@@ -73,8 +73,9 @@ import type { WorkflowRunStepState, WorkflowRunSummary } from "../../sources/typ
 import { withWorkflowRunsConnection, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
 import { assertRunParamsSatisfyPlan, type WorkflowParameterFlag } from "../ir/params";
 import { computePlanHash } from "../ir/plan-hash";
-import { decodeWorkflowPlanV3, type IrStepPlan, type WorkflowPlanGraph } from "../ir/schema";
-import type { ExecutableWorkflowPlan } from "../ir/schema-v4";
+import type { IrStepPlan } from "../ir/schema";
+import type { ExecutableWorkflowPlan, IrStepPlanV4 } from "../ir/schema-v4";
+import { decodeWorkflowPlanV3, type WorkflowPlanGraph } from "../ir/stored-plan-v3";
 import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
 import { completeWorkflowStep, getNextWorkflowStep, resumeWorkflowRun, type WorkflowNextResult } from "../runtime/runs";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
@@ -528,14 +529,21 @@ async function completedRunResult(runId: string): Promise<RunWorkflowResult> {
 function workflowSummaryJudge(
   options: RunWorkflowOptions,
   plan: ExecutableWorkflowPlan,
-  stepPlan: IrStepPlan,
+  stepPlan: IrStepPlan | IrStepPlanV4,
   signal: AbortSignal | undefined,
   owner: { runId: string; stepId: string },
 ): SummaryJudge | null {
   if (options.summaryJudge !== undefined) return options.summaryJudge;
+  const judge = "frozenJudge" in stepPlan.gate ? stepPlan.gate.frozenJudge : stepPlan.gate.judge;
   // The judge dispatches under the REAL run/step identity; the per-loop gate row
   // identity is threaded in per call by the completion path that journals it.
-  return frozenSummaryJudge(plan, stepPlan.gate.judge, signal, options.dispatcher ?? defaultUnitDispatcher, owner);
+  return frozenSummaryJudge(
+    plan,
+    judge,
+    signal,
+    options.dispatcher ?? defaultUnitDispatcher,
+    owner,
+  );
 }
 
 /**
@@ -749,7 +757,7 @@ async function executeStepSubgraph(
         // Budget ceilings ride the FROZEN plan (addendum R2): a mid-run
         // asset edit can never loosen or tighten a run's budget.
         ...(plan.budget ? { budget: plan.budget } : {}),
-        ...(plan.execution ? { engines: plan.execution.engines } : {}),
+        ...(plan.irVersion === 3 ? { engines: plan.execution.engines } : {}),
         gateLoop,
         ...(gateFeedback ? { gateFeedback } : {}),
         // The heartbeat's signal is the effective dispatch signal: a lost
@@ -838,7 +846,7 @@ async function runStepGateLoop(
         routeSelected,
         routeUnselected,
         summaryJudge,
-        ...(ctx.plan.execution ? { engines: ctx.plan.execution.engines } : {}),
+        ...(ctx.plan.irVersion === 3 ? { engines: ctx.plan.execution.engines } : {}),
         planIrVersion: ctx.plan.irVersion,
         signal: options.signal,
         // The judge runs under the DISPATCH signal, so the completion path must

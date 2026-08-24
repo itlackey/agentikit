@@ -11,7 +11,7 @@ import { loadAdapterExecutionSource } from "../../commands/command/execution-sou
 import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import type { AkmConfig } from "../../core/config/config-types";
 import { parseEnvRef } from "../../core/env-secret-ref";
-import { UsageError } from "../../core/errors";
+import { ConfigError, UsageError } from "../../core/errors";
 import { captureFrozenDirectoryIdentity } from "../../execution/directory-identity";
 import { type FrozenExecutableIdentity, freezeExecutableIdentity } from "../../execution/executable-identity";
 import type { GuardedExecutionSource, GuardedExecutionSourceCollector } from "../../execution/guarded-source";
@@ -23,8 +23,10 @@ import {
 import type { UnresolvedExecutionDefaults } from "../../execution/source";
 import { deriveInstallations } from "../../indexer/installations";
 import { resolveSourceEntries } from "../../indexer/search/search-source";
+import { fallbackAnnouncement } from "../../integrations/agent/engine-fallback";
 import { requireAuthorizedExecutionPlan } from "../../integrations/agent/execution-cascade";
 import { lowerResolvedExecutionRequest } from "../../integrations/agent/execution-lowering";
+import { prepareInlineExecution } from "../../integrations/agent/inline-execution";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { resolveAssetPath } from "../../sources/resolve";
 import {
@@ -33,14 +35,16 @@ import {
   type TaskV3ScriptInterpreter,
 } from "../../tasks/runtime-v3";
 import { parseTaskV3Yaml } from "../../tasks/source-v3";
+import { defaultLlmEngineConcurrency } from "../concurrency-policy";
 import type { ProgramExec, ProgramUnit } from "../program/schema";
+import { DEFAULT_EXEC_TIMEOUT_MS } from "../resource-limits";
 import type { WorkflowAsset } from "../runtime/workflow-asset-loader";
-import type { WorkflowDocument, WorkflowStep } from "../schema";
 import { compileWorkflowSource } from "../source-ir/compile";
-import { workflowSourceIrToDocument } from "../source-ir/document";
+import { sourceStepProgramUnit, sourceStepRef, workflowShellCommand } from "../source-ir/program";
 import type { WorkflowSourceIrV1, WorkflowSourceStep } from "../source-ir/schema";
 import { classifyWorkflowStepUses } from "../source-ir/semantics";
 import { freezeWorkflowEnvironment } from "./environment-v4";
+import type { IrExecSpec } from "./schema";
 import type {
   FrozenWorkflowCommandTarget,
   FrozenWorkflowEnvironmentBinding,
@@ -52,11 +56,16 @@ import type {
 export interface ResolvedWorkflowUnitV4 {
   readonly target: FrozenWorkflowTarget;
   readonly environment: readonly FrozenWorkflowEnvironmentBinding[];
+  readonly unit: ProgramUnit;
+  readonly instructions: string;
+  readonly engineAnnouncement?: string;
 }
 
 export interface ResolvedWorkflowSourceV4 {
-  readonly asset: WorkflowAsset;
+  readonly sourceIr: WorkflowSourceIrV1;
   readonly units: ReadonlyMap<string, ResolvedWorkflowUnitV4>;
+  readonly judges: ReadonlyMap<string, FrozenWorkflowCommandTarget>;
+  readonly engineAnnouncement?: string;
 }
 
 interface OwnedAsset {
@@ -71,6 +80,7 @@ interface ResolutionContext {
   readonly asset: WorkflowAsset;
   readonly config: AkmConfig;
   readonly collector: GuardedExecutionSourceCollector;
+  readonly sourceIr: WorkflowSourceIrV1;
 }
 
 interface ResolvedDispatch extends ResolvedWorkflowUnitV4 {
@@ -98,40 +108,36 @@ export async function resolveWorkflowSourceV4(
       "INVALID_FLAG_VALUE",
     );
   }
-  const display = workflowSourceIrToDocument(compiled.ir, { mode: "display" });
-  const context: ResolutionContext = { asset, config, collector };
+  const context: ResolutionContext = { asset, config, collector, sourceIr: compiled.ir };
   const units = new Map<string, ResolvedWorkflowUnitV4>();
-  const projectedSteps: WorkflowStep[] = [];
+  const judges = new Map<string, FrozenWorkflowCommandTarget>();
+  let engineAnnouncement: string | undefined;
   const sourceSteps = compiled.ir.jobs[0]?.steps ?? [];
   for (const sourceStep of sourceSteps) {
-    const displayStep = display.steps.find((step) => step.id === sourceStep.id);
-    if (!displayStep) throw new Error(`workflow display projection lost step ${sourceStep.id}`);
-    if (sourceStep.route) {
-      projectedSteps.push(displayStep);
-      continue;
+    if (sourceStep.route) continue;
+    const resolved = await resolveStep(sourceStep, context);
+    units.set(sourceStep.id, Object.freeze(resolved));
+    engineAnnouncement ??= resolved.engineAnnouncement;
+    if (sourceStep.gate?.rubric?.trim()) {
+      const judge = resolveJudge(sourceStep, context);
+      if (judge.target.kind !== "command")
+        throw new Error(`workflow judge ${sourceStep.id} did not resolve to a command target`);
+      judges.set(sourceStep.id, judge.target);
+      engineAnnouncement ??= judge.engineAnnouncement;
     }
-    const resolved = await resolveStep(sourceStep, displayStep, context);
-    units.set(sourceStep.id, Object.freeze({ target: resolved.target, environment: resolved.environment }));
-    projectedSteps.push(
-      Object.freeze({
-        ...displayStep,
-        ...(displayStep.map ? { map: { ...displayStep.map, unit: resolved.unit } } : { unit: resolved.unit }),
-        instructions: { text: resolved.instructions, source: displayStep.instructions?.source ?? displayStep.source },
-      }),
-    );
   }
-  const document: WorkflowDocument = Object.freeze({ ...display, steps: projectedSteps });
-  return Object.freeze({ asset: Object.freeze({ ...asset, document, steps: asset.steps }), units });
+  return Object.freeze({
+    sourceIr: compiled.ir,
+    units,
+    judges,
+    ...(engineAnnouncement ? { engineAnnouncement } : {}),
+  });
 }
 
-async function resolveStep(
-  source: WorkflowSourceStep,
-  display: WorkflowStep,
-  context: ResolutionContext,
-): Promise<ResolvedDispatch> {
-  const baseUnit = (display.map?.unit ?? display.unit ?? { source: display.source }) as ProgramUnit;
+async function resolveStep(source: WorkflowSourceStep, context: ResolutionContext): Promise<ResolvedDispatch> {
+  const baseUnit = sourceStepProgramUnit(source);
   if (source.exec || source.run !== undefined) return directShell(source, baseUnit, context);
-  if (!source.uses) throw new UsageError(`Workflow step ${source.id} has no executable target.`, "INVALID_FLAG_VALUE");
+  if (!source.uses) return inlineDispatch(source, baseUnit, context);
   const target = classifyWorkflowStepUses(source.uses);
   if (target.kind === "task") return taskDispatch(source, baseUnit, target.ref, context);
   if (target.kind === "script") return directScript(source, baseUnit, target.ref, context);
@@ -155,11 +161,50 @@ async function commandDispatch(
     action,
     config: context.config,
     invocationKind: "workflow",
+    ...(context.sourceIr.defaults
+      ? { invocationDefaults: executionUnitValues(context.sourceIr.defaults, context.asset.sourcePath) }
+      : {}),
     ...(source.commandMode === "literal" ? { inlineContentMode: "literal" as const } : {}),
     current: executionValues(source, context.asset.sourcePath),
     sourceLoader: (ref, kind) => guardedExecutionSource(ref, kind, context),
   });
   return commandResult(source, baseUnit, prepared, context);
+}
+
+function inlineDispatch(
+  source: WorkflowSourceStep,
+  baseUnit: ProgramUnit,
+  context: ResolutionContext,
+): ResolvedDispatch {
+  const content = source.instructions ?? `Execute workflow step ${source.id}.`;
+  const prepared = prepareInlineExecution({
+    content,
+    config: context.config,
+    invocationKind: "workflow",
+    ...(context.sourceIr.defaults
+      ? { invocationDefaults: executionUnitValues(context.sourceIr.defaults, context.asset.sourcePath) }
+      : {}),
+    current: executionValues(source, context.asset.sourcePath),
+  });
+  return commandResult(source, baseUnit, prepared, context);
+}
+
+function resolveJudge(source: WorkflowSourceStep, context: ResolutionContext): ResolvedDispatch {
+  const engine = context.config.workflow?.judgeEngine;
+  if (!engine) {
+    throw new ConfigError(
+      "This workflow declares completion criteria but no verification engine is configured. Set workflow.judgeEngine to a named LLM or agent engine.",
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const content = source.gate?.rubric?.trim() ?? "Judge workflow completion.";
+  const prepared = prepareInlineExecution({
+    content,
+    config: context.config,
+    invocationKind: "workflow",
+    current: { engine },
+  });
+  return commandResult(source, { onError: "fail", source: sourceStepRef(source) }, prepared, context);
 }
 
 async function taskDispatch(
@@ -198,17 +243,19 @@ async function taskDispatch(
     return commandResult(source, baseUnit, prepared.invocation, context, taskLiterals);
   }
   if (prepared.kind === "shell") {
-    const exec: ProgramExec = {
-      command: shellCommand(prepared.shell, prepared.command),
+    const authoredExec: ProgramExec = {
+      command: workflowShellCommand(prepared.shell, prepared.command),
       ...(prepared.cwdIdentity.realCwd !== prepared.cwdIdentity.realRoot
         ? { cwd: path.relative(prepared.cwdIdentity.realRoot, prepared.cwdIdentity.realCwd) }
         : {}),
     };
-    const environment = Object.freeze([...taskLiterals, ...freezeEnvironment(source, exec, context)]);
+    const exec = freezeExecSpec(source, authoredExec, context);
+    const environment = Object.freeze([...taskLiterals, ...freezeEnvironment(source, authoredExec, context)]);
     const executable = freezeExecutableIdentity(exec.command[0] as string, { cwd: prepared.cwdIdentity.realCwd });
     const target: FrozenWorkflowShellTarget = Object.freeze({
       kind: "shell",
       contentHash: "",
+      exec,
       cwdIdentity: prepared.cwdIdentity,
       executable,
       ...gitIdentity(baseUnit, prepared.cwdIdentity.realRoot),
@@ -216,7 +263,7 @@ async function taskDispatch(
     return {
       target,
       environment,
-      unit: { ...baseUnit, exec },
+      unit: { ...baseUnit, exec: authoredExec },
       instructions: source.instructions ?? `Run task ${owned.ref}.`,
     };
   }
@@ -258,12 +305,14 @@ function scriptResult(
 ): ResolvedDispatch {
   const requestedExecutable = scriptExecutable(prepared.interpreter);
   const executable = freezeExecutableIdentity(requestedExecutable, { cwd: prepared.cwdIdentity.realCwd });
-  const exec: ProgramExec = { command: [executable.absolutePath, "<frozen-script>"] };
-  const environment = Object.freeze([...literals, ...freezeEnvironment(source, exec, context)]);
+  const authoredExec: ProgramExec = { command: [executable.absolutePath, "<frozen-script>"] };
+  const exec = freezeExecSpec(source, authoredExec, context);
+  const environment = Object.freeze([...literals, ...freezeEnvironment(source, authoredExec, context)]);
   const target: FrozenWorkflowScriptTarget = Object.freeze({
     kind: "script",
     ref: prepared.sourceRef,
     contentHash: prepared.sha256,
+    exec,
     interpreter: prepared.interpreter,
     extension: prepared.extension,
     bytesBase64: prepared.bytesBase64,
@@ -276,25 +325,22 @@ function scriptResult(
   return {
     target,
     environment,
-    unit: { ...baseUnit, exec },
+    unit: { ...baseUnit, exec: authoredExec },
     instructions: source.instructions ?? `Run script ${prepared.sourceRef}.`,
   };
 }
 
 function directShell(source: WorkflowSourceStep, baseUnit: ProgramUnit, context: ResolutionContext): ResolvedDispatch {
-  const exec = (baseUnit.exec ?? displayExec(source, baseUnit)) as ProgramExec;
-  if (exec.inheritEnv) {
-    throw new UsageError(
-      "Durable workflow v4 forbids inheritEnv; use named environment bindings.",
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  const cwdIdentity = captureFrozenDirectoryIdentity(context.asset.sourcePath, exec.cwd);
-  const executable = freezeExecutableIdentity(exec.command[0] as string, { cwd: cwdIdentity.realCwd });
-  const environment = Object.freeze(freezeEnvironment(source, exec, context));
+  const authoredExec = baseUnit.exec;
+  if (!authoredExec) throw new Error(`workflow shell step ${source.id} lost its source-IR execution spec`);
+  const exec = freezeExecSpec(source, authoredExec, context);
+  const cwdIdentity = captureFrozenDirectoryIdentity(context.asset.sourcePath, authoredExec.cwd);
+  const executable = freezeExecutableIdentity(authoredExec.command[0] as string, { cwd: cwdIdentity.realCwd });
+  const environment = Object.freeze(freezeEnvironment(source, authoredExec, context));
   const target: FrozenWorkflowShellTarget = Object.freeze({
     kind: "shell",
     contentHash: "",
+    exec,
     cwdIdentity,
     executable,
     ...gitIdentity(baseUnit, cwdIdentity.realRoot),
@@ -303,7 +349,7 @@ function directShell(source: WorkflowSourceStep, baseUnit: ProgramUnit, context:
     target,
     environment,
     unit: { ...baseUnit, exec },
-    instructions: source.instructions ?? `Run ${source.run ?? exec.command.join(" ")}.`,
+    instructions: source.instructions ?? `Run ${source.run ?? authoredExec.command.join(" ")}.`,
   };
 }
 
@@ -338,11 +384,50 @@ function commandResult(
     contentHash: createHash("sha256").update(request.command.content).digest("hex"),
     request: JSON.parse(canonicalResolvedExecutionRequest(request)) as ResolvedExecutionRequestV1,
     runner,
+    ...(targetConcurrency(runner, context.config) ? { concurrency: targetConcurrency(runner, context.config) } : {}),
     cwdIdentity,
     ...(executable ? { executable } : {}),
     ...gitIdentity(baseUnit, cwdIdentity.realRoot),
   });
-  return { target, environment, unit, instructions: request.command.content };
+  const engineAnnouncement = fallbackAnnouncement(prepared.fallbackEngineName, request.engine.name);
+  return {
+    target,
+    environment,
+    unit,
+    instructions: request.command.content,
+    ...(engineAnnouncement ? { engineAnnouncement } : {}),
+  };
+}
+
+function freezeExecSpec(source: WorkflowSourceStep, exec: ProgramExec, context: ResolutionContext): IrExecSpec {
+  const declared = Object.hasOwn(source.unit ?? {}, "timeoutMs")
+    ? source.unit?.timeoutMs
+    : context.sourceIr.defaults && Object.hasOwn(context.sourceIr.defaults, "timeoutMs")
+      ? context.sourceIr.defaults.timeoutMs
+      : undefined;
+  return {
+    ...exec,
+    command: exec.command as [string, ...string[]],
+    timeoutMs: declared === undefined ? DEFAULT_EXEC_TIMEOUT_MS : declared,
+  };
+}
+
+function targetConcurrency(runner: RunnerSpec, config: AkmConfig): number | undefined {
+  if (runner.kind === "llm") {
+    const configured = typeof runner.engine === "string" ? config.engines?.[runner.engine] : undefined;
+    return defaultLlmEngineConcurrency(
+      runner.connection.endpoint,
+      configured?.kind === "llm" ? configured.concurrency : undefined,
+    );
+  }
+  if (runner.kind !== "sdk" || !runner.fallbackConnection) return undefined;
+  const selected = typeof runner.engine === "string" ? config.engines?.[runner.engine] : undefined;
+  const fallbackName = selected?.kind === "agent" ? (selected.llmEngine ?? config.defaults?.llmEngine) : undefined;
+  const fallback = fallbackName ? config.engines?.[fallbackName] : undefined;
+  return defaultLlmEngineConcurrency(
+    runner.fallbackConnection.endpoint,
+    fallback?.kind === "llm" ? fallback.concurrency : undefined,
+  );
 }
 
 function durableRequest(request: ResolvedExecutionRequestV1): ResolvedExecutionRequestV1 {
@@ -354,13 +439,19 @@ function durableRequest(request: ResolvedExecutionRequestV1): ResolvedExecutionR
 }
 
 function executionValues(source: WorkflowSourceStep, workspace: string): UnresolvedExecutionDefaults {
-  const unit = source.unit;
+  return executionUnitValues(source.unit, workspace);
+}
+
+function executionUnitValues(
+  unit: WorkflowSourceStep["unit"] | WorkflowSourceIrV1["defaults"],
+  workspace: string,
+): UnresolvedExecutionDefaults {
   return Object.freeze({
     ...(unit && Object.hasOwn(unit, "engine") ? { engine: unit.engine } : {}),
     ...(unit && Object.hasOwn(unit, "model") ? { model: unit.model } : {}),
     ...(unit && Object.hasOwn(unit, "llm") ? { inference: unit.llm } : {}),
     ...(unit && Object.hasOwn(unit, "timeoutMs") ? { timeout: unit.timeoutMs } : {}),
-    ...(unit && Object.hasOwn(unit, "output") ? { outputSchema: unit.output } : {}),
+    ...(unit && "output" in unit && Object.hasOwn(unit, "output") ? { outputSchema: unit.output } : {}),
     workspace,
   }) as UnresolvedExecutionDefaults;
 }
@@ -539,17 +630,6 @@ function qualifyRef(ref: string, plural: string, asset: WorkflowAsset, config: A
   if (!bundle) throw new UsageError(`Workflow ref ${ref} has no owning bundle.`, "INVALID_FLAG_VALUE");
   const concept = parsed.conceptId.startsWith(`${plural}/`) ? parsed.conceptId : `${plural}/${parsed.conceptId}`;
   return makeBundleRef(bundle, concept);
-}
-
-function displayExec(source: WorkflowSourceStep, baseUnit: ProgramUnit): ProgramExec {
-  if (source.exec) return { ...source.exec };
-  return { command: shellCommand(source.shell ?? "sh", source.run ?? "") };
-}
-
-function shellCommand(shell: string, content: string): string[] {
-  if (shell === "cmd") return ["cmd", "/d", "/s", "/c", content];
-  if (shell === "pwsh" || shell === "powershell") return [shell, "-NoProfile", "-NonInteractive", "-Command", content];
-  return [shell, "-c", content];
 }
 
 function scriptExecutable(interpreter: TaskV3ScriptInterpreter): string {

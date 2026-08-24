@@ -5,10 +5,9 @@
 /**
  * Frontend -> unresolved workflow plan compiler (workflow-format-unification).
  *
- * ONE frontend now: {@link compileWorkflowPlan} lowers a parsed unified
- * `WorkflowDocument` (`../parser.ts`) into the same `WorkflowPlanDraft` shape
- * IR v3 has always consumed — the pre-unification split between a linear
- * markdown compiler and a YAML-program compiler is gone. This pass owns the
+ * ONE frontend now: {@link compileWorkflowPlan} lowers adapter-neutral source
+ * IR into the current unresolved plan draft. Markdown and YAML never reach a
+ * format-specific runtime compiler. This pass owns the
  * semantic rules the parser deliberately does not check:
  *
  *   - every reference string (`map.over` / `route.input` / `inputs[]`) parses
@@ -29,8 +28,15 @@
  */
 
 import { formatReference, parseReference } from "../program/expressions";
-import { type ProgramDefaults, type ProgramExec, type ProgramUnit, projectExecCore } from "../program/schema";
-import type { WorkflowDocument, WorkflowError } from "../schema";
+import { type ProgramExec, type ProgramUnit, projectExecCore } from "../program/schema";
+import type { WorkflowError } from "../schema";
+import { sourceStepInstructions, sourceStepProgramUnit, sourceStepRef } from "../source-ir/program";
+import {
+  decodeWorkflowSourceIrV1,
+  type WorkflowSourceIrV1,
+  type WorkflowSourceStep,
+  type WorkflowSourceUnit,
+} from "../source-ir/schema";
 import type { IrIsolation, IrMapReducer, IrOnError, IrRetry, IrRouteSpec } from "./schema";
 
 export interface WorkflowUnitDraft {
@@ -97,18 +103,35 @@ export type WorkflowPlanCompileResult =
   | { ok: false; errors: WorkflowError[] };
 
 /**
- * Compile a parsed unified workflow document into a frozen-plan-ready graph.
+ * Compile source IR into a frozen-plan-ready graph.
  * `title` is the run-level display title (the asset's canonical name — the
  * format carries no authored title). Assumes the document came out of
  * `parseWorkflow` ok (structure already valid).
  */
-export function compileWorkflowPlan(document: WorkflowDocument, title: string): WorkflowPlanCompileResult {
+export function compileWorkflowPlan(
+  input: WorkflowSourceIrV1,
+  title: string,
+  resolvedUnits: ReadonlyMap<string, { unit: ProgramUnit; instructions: string }> = new Map(),
+): WorkflowPlanCompileResult {
+  const sourceIr = decodeWorkflowSourceIrV1(input);
   const errors: WorkflowError[] = [];
-  const allStepIds = new Set(document.steps.map((s) => s.id));
+  if (sourceIr.jobs.length !== 1) {
+    return {
+      ok: false,
+      errors: [
+        {
+          line: sourceIr.jobs[1]?.source.start ?? sourceIr.source.start,
+          message: "Current workflow execution requires exactly one source-IR job.",
+        },
+      ],
+    };
+  }
+  const sourceSteps = sourceIr.jobs[0]?.steps ?? [];
+  const allStepIds = new Set(sourceSteps.map((step) => step.id));
   const earlierStepIds = new Set<string>();
   const steps: WorkflowStepDraft[] = [];
 
-  document.steps.forEach((step) => {
+  sourceSteps.forEach((step, sequenceIndex) => {
     const check = { allStepIds, earlierStepIds, errors };
 
     if (step.map) {
@@ -129,25 +152,27 @@ export function compileWorkflowPlan(document: WorkflowDocument, title: string): 
       });
     }
 
-    steps.push(compileStep(step, defaultsOf(document)));
+    steps.push(compileStep(step, sequenceIndex, sourceIr.defaults, resolvedUnits.get(step.id)));
     earlierStepIds.add(step.id);
   });
 
   if (errors.length > 0) return { ok: false, errors };
 
-  const paramNames = document.params ? Object.keys(document.params) : [];
+  const paramNames = sourceIr.params ? Object.keys(sourceIr.params) : [];
   return {
     ok: true,
-    warnings: collectWorkflowWarnings(document),
+    warnings: collectWorkflowWarnings(sourceIr),
     plan: {
       title,
       ...(paramNames.length > 0 ? { params: paramNames } : {}),
-      ...(document.params && paramNames.length > 0 ? { paramSchemas: document.params } : {}),
-      ...(document.budget
+      ...(sourceIr.params && paramNames.length > 0
+        ? { paramSchemas: sourceIr.params as Record<string, Record<string, unknown>> }
+        : {}),
+      ...(sourceIr.budget
         ? {
             budget: {
-              ...(document.budget.maxTokens !== undefined ? { maxTokens: document.budget.maxTokens } : {}),
-              ...(document.budget.maxUnits !== undefined ? { maxUnits: document.budget.maxUnits } : {}),
+              ...(sourceIr.budget.maxTokens !== undefined ? { maxTokens: sourceIr.budget.maxTokens } : {}),
+              ...(sourceIr.budget.maxUnits !== undefined ? { maxUnits: sourceIr.budget.maxUnits } : {}),
             },
           }
         : {}),
@@ -156,13 +181,11 @@ export function compileWorkflowPlan(document: WorkflowDocument, title: string): 
   };
 }
 
-function defaultsOf(document: WorkflowDocument): ProgramDefaults | undefined {
-  return document.defaults;
-}
-
 function compileStep(
-  step: WorkflowDocument["steps"][number],
-  defaults: ProgramDefaults | undefined,
+  step: WorkflowSourceStep,
+  sequenceIndex: number,
+  defaults: WorkflowSourceIrV1["defaults"],
+  resolved: { unit: ProgramUnit; instructions: string } | undefined,
 ): WorkflowStepDraft {
   const gate: WorkflowGateDraft = {
     kind: "gate",
@@ -171,32 +194,33 @@ function compileStep(
     // The body `### gate` rubric is carried through as the ONE criterion string
     // — the judge receives the whole section byte-exact (spec §2.4). A step
     // with no rubric needs no verification (criteria: []).
-    criteria: step.gateRubric?.text.trim() ? [step.gateRubric.text] : [],
+    criteria: step.gate?.rubric?.trim() ? [step.gate.rubric] : [],
     ...(step.gate?.maxLoops !== undefined ? { maxLoops: step.gate.maxLoops } : {}),
   };
 
   let root: WorkflowUnitDraft | WorkflowMapDraft | undefined;
   if (step.route === undefined) {
-    const instructionsText = step.instructions?.text ?? "";
+    const unit = resolved?.unit ?? sourceStepProgramUnit(step);
+    const instructionsText = resolved?.instructions ?? sourceStepInstructions(step);
     if (step.map) {
       root = {
         kind: "map",
         id: `${step.id}.map`,
         over: step.map.over,
-        template: compileUnit(step.map.unit, `${step.id}.unit`, instructionsText, defaults, step.inputs, step.source),
+        template: compileUnit(unit, `${step.id}.unit`, instructionsText, defaults, step.inputs, sourceStepRef(step)),
         ...(step.map.concurrency !== undefined ? { concurrency: step.map.concurrency } : {}),
         reducer: step.map.reducer ?? "collect",
         source: step.source,
       };
     } else {
-      root = compileUnit(step.unit, step.id, instructionsText, defaults, step.inputs, step.instructions?.source);
+      root = compileUnit(unit, step.id, instructionsText, defaults, step.inputs, sourceStepRef(step));
     }
   }
 
   return {
     stepId: step.id,
     title: step.id,
-    sequenceIndex: step.sequenceIndex,
+    sequenceIndex,
     ...(root ? { root } : {}),
     ...(step.route
       ? {
@@ -219,10 +243,10 @@ function compileStep(
  * override bag until the single freeze boundary.
  */
 function compileUnit(
-  unit: ProgramUnit | undefined,
+  unit: ProgramUnit,
   id: string,
   instructions: string,
-  defaults: ProgramDefaults | undefined,
+  defaults: WorkflowSourceUnit | undefined,
   inputs: string[] | undefined,
   source: import("../schema").SourceRef | undefined,
 ): WorkflowUnitDraft {
@@ -232,16 +256,14 @@ function compileUnit(
     instructions,
     templating: "verbatim",
     ...(inputs && inputs.length > 0 ? { inputs: [...inputs] } : {}),
-    // Shared projection: both env-scope keys are carried CONDITIONALLY (and
-    // `inheritEnv` only when true), so an exec unit that says nothing about its
-    // environment freezes — and therefore hashes — byte-identically to one
-    // authored before these keys existed.
-    ...(unit?.exec ? { exec: projectExecCore(unit.exec) } : {}),
-    ...(unit?.output !== undefined ? { schema: unit.output } : {}),
-    ...(unit?.retry ? { retry: { max: unit.retry.max, on: [...unit.retry.on] } } : {}),
-    onError: unit?.onError ?? defaults?.onError ?? "fail",
-    ...(unit?.env ? { env: [...unit.env] } : {}),
-    ...(unit?.isolation !== undefined ? { isolation: unit.isolation } : {}),
+    // Shared projection: named pass-through scope is carried conditionally;
+    // whole-process environment inheritance is not an authoring surface.
+    ...(unit.exec ? { exec: projectExecCore(unit.exec) } : {}),
+    ...(unit.output !== undefined ? { schema: unit.output } : {}),
+    ...(unit.retry ? { retry: { max: unit.retry.max, on: [...unit.retry.on] } } : {}),
+    onError: unit.onError ?? defaults?.onError ?? "fail",
+    ...(unit.env ? { env: [...unit.env] } : {}),
+    ...(unit.isolation !== undefined ? { isolation: unit.isolation } : {}),
     ...(source ? { source } : {}),
   };
 }
@@ -326,49 +348,52 @@ function checkInputReference(text: string, index: number, check: ReferenceCheck)
  *      only re-run the identical command — and its side effects. The declared
  *      budget is not silently different from what runs; say so.
  */
-export function collectWorkflowWarnings(document: WorkflowDocument): WorkflowError[] {
+export function collectWorkflowWarnings(input: WorkflowSourceIrV1): WorkflowError[] {
+  const sourceIr = decodeWorkflowSourceIrV1(input);
   const warnings: WorkflowError[] = [];
-  const declaredParams = document.params ? new Set(Object.keys(document.params)) : undefined;
+  const declaredParams = sourceIr.params ? new Set(Object.keys(sourceIr.params)) : undefined;
 
-  for (const step of document.steps) {
-    const maxLoops = step.gate?.maxLoops ?? 1;
-    const execUnit = step.map ? step.map.unit?.exec : step.unit?.exec;
-    if (maxLoops > 1 && execUnit && step.gateRubric?.text.trim()) {
-      warnings.push({
-        line: step.source.start,
-        message:
-          `Step "${step.id}" declares \`gate.max_loops: ${maxLoops}\` on an \`exec\` step — it runs its command ` +
-          `ONCE. A gate loop re-executes the step so it can address the judge's feedback, and a frozen argv cannot ` +
-          `read that feedback; looping would only repeat the command's side effects. The gate still evaluates and ` +
-          `can still fail the step.`,
-      });
-    }
-
-    if ((step.map || step.route === undefined) && step.output === undefined) {
-      warnings.push({
-        line: step.source.start,
-        message:
-          `Step "${step.id}" declares no \`output:\` schema — its unit results are carried as an untyped ` +
-          `artifact (permitted). Add an \`output:\` JSON Schema to type and validate the step artifact.`,
-      });
-    }
-
-    if (declaredParams) {
-      const declaredList = [...declaredParams].join(", ");
-      const scan = (text: string | undefined, label: string): void => {
-        if (!text) return;
-        const parsed = parseReference(text);
-        if (!parsed.ok || parsed.expr.kind !== "param" || declaredParams.has(parsed.expr.name)) return;
+  for (const job of sourceIr.jobs) {
+    for (const step of job.steps) {
+      const maxLoops = step.gate?.maxLoops ?? 1;
+      const execUnit = step.exec ?? step.run;
+      if (maxLoops > 1 && execUnit && step.gate?.rubric?.trim()) {
         warnings.push({
           line: step.source.start,
           message:
-            `${label}: "${formatReference(parsed.expr)}" references a param not declared in \`params:\` ` +
-            `(declared: ${declaredList || "none"}) — likely a typo. An undeclared param supplied at start still ` +
-            `resolves at run time.`,
+            `Step "${step.id}" declares \`gate.max_loops: ${maxLoops}\` on an \`exec\` step — it runs its command ` +
+            `ONCE. A gate loop re-executes the step so it can address the judge's feedback, and a frozen argv cannot ` +
+            `read that feedback; looping would only repeat the command's side effects. The gate still evaluates and ` +
+            `can still fail the step.`,
         });
-      };
-      if (step.map) scan(step.map.over, `Step "${step.id}" map.over`);
-      if (step.route) scan(step.route.input, `Step "${step.id}" route.input`);
+      }
+
+      if ((step.map || step.route === undefined) && step.output === undefined) {
+        warnings.push({
+          line: step.source.start,
+          message:
+            `Step "${step.id}" declares no \`output:\` schema — its unit results are carried as an untyped ` +
+            `artifact (permitted). Add an \`output:\` JSON Schema to type and validate the step artifact.`,
+        });
+      }
+
+      if (declaredParams) {
+        const declaredList = [...declaredParams].join(", ");
+        const scan = (text: string | undefined, label: string): void => {
+          if (!text) return;
+          const parsed = parseReference(text);
+          if (!parsed.ok || parsed.expr.kind !== "param" || declaredParams.has(parsed.expr.name)) return;
+          warnings.push({
+            line: step.source.start,
+            message:
+              `${label}: "${formatReference(parsed.expr)}" references a param not declared in \`params:\` ` +
+              `(declared: ${declaredList || "none"}) — likely a typo. An undeclared param supplied at start still ` +
+              `resolves at run time.`,
+          });
+        };
+        if (step.map) scan(step.map.over, `Step "${step.id}" map.over`);
+        if (step.route) scan(step.route.input, `Step "${step.id}" route.input`);
+      }
     }
   }
 

@@ -33,11 +33,10 @@ import {
   type UnitDispatchResult,
 } from "../../src/workflows/exec/native-executor";
 import { isGitAvailable, runWorktreeRoot } from "../../src/workflows/exec/worktree";
-import { compileResolveFreezeWorkflow } from "../../src/workflows/ir/freeze";
-import type { FrozenAgentEngine, FrozenLlmEngine, WorkflowPlanGraph } from "../../src/workflows/ir/schema";
-import { parseWorkflow } from "../../src/workflows/parser";
+import type { FrozenAgentEngine, FrozenLlmEngine, WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
 import { makeGitRepo as makeTempGitRepo } from "../_helpers/git";
 import { makeSandboxDir, withEnv, writeSandboxConfig } from "../_helpers/sandbox";
+import { freezeWorkflow } from "../_helpers/workflow";
 
 const GIT = isGitAvailable();
 
@@ -95,26 +94,7 @@ function seedRun(steps: Array<{ id: string; title: string }>, params: Record<str
 }
 
 function plan(markdown: string): WorkflowPlanGraph {
-  const parsed = parseWorkflow(markdown, { path: "workflows/demo.md" });
-  if (!parsed.ok) throw new Error(parsed.errors.map((e) => `${e.line}: ${e.message}`).join(" | "));
-  return compileResolveFreezeWorkflow(
-    {
-      ref: "workflows/demo",
-      path: "workflows/demo.md",
-      sourcePath: "/tmp",
-      title: "demo",
-      steps: [],
-      document: parsed.document,
-    },
-    {
-      configVersion: "0.9.0",
-      engines: {
-        "test-agent": { kind: "agent", platform: "opencode-sdk" },
-        "test-llm": { kind: "llm", endpoint: "http://localhost:1/v1/chat/completions", model: "test" },
-      },
-      defaults: { engine: "test-agent", llmEngine: "test-llm" },
-    } as never,
-  ).plan;
+  return freezeWorkflow(markdown);
 }
 
 const SOLO_ISOLATED_WF = `---

@@ -2,12 +2,14 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
 import {
   canonicalPortableWorkflowSourceBytes,
   compileGithubWorkflowSource,
   compileMarkdownWorkflowSource,
 } from "../../src/workflows/source-ir/compile";
 import { workflowSourceIrToDocument } from "../../src/workflows/source-ir/document";
+import { sourceStepInstructions, sourceStepProgramUnit } from "../../src/workflows/source-ir/program";
 import { decodeWorkflowSourceIrV1, type WorkflowSourceIrV1 } from "../../src/workflows/source-ir/schema";
 
 const FIXTURES = path.join(import.meta.dir, "../fixtures/execution-contracts/workflows");
@@ -131,8 +133,7 @@ Run the direct command.
     const step = result.ir.jobs[0]?.steps[0];
     expect(step?.exec?.command).toEqual([...command]);
     expect(step?.run).toBeUndefined();
-    const document = workflowSourceIrToDocument(result.ir, { mode: "runtime" });
-    expect(document.steps[0]?.unit?.exec?.command).toEqual([...command]);
+    expect(sourceStepProgramUnit(step!).exec?.command).toEqual([...command]);
     expect(canonicalPortableWorkflowSourceBytes(result.ir)).not.toContain(`"run":${JSON.stringify(command.join(" "))}`);
   });
 
@@ -525,19 +526,13 @@ Review $ARGUMENTS and \${{ github.sha }} literally.
       ]).size,
     ).toBe(3);
     const expectedLiteralText = "Review $ARGUMENTS and $" + "{{ github.sha }} literally.";
-    expect(workflowSourceIrToDocument(markdown.ir, { mode: "runtime" }).steps[0]?.instructions?.text).toContain(
-      expectedLiteralText,
-    );
-    expect(workflowSourceIrToDocument(yaml.ir, { mode: "runtime" }).steps[0]?.instructions?.text).toBe(
-      "Review   exact $HOME input  ",
-    );
+    expect(sourceStepInstructions(markdown.ir.jobs[0]!.steps[0]!)).toContain(expectedLiteralText);
+    expect(sourceStepInstructions(yaml.ir.jobs[0]!.steps[0]!)).toBe("Review   exact $HOME input  ");
 
     const withoutOwnerExtension = structuredClone(markdown.ir);
     delete withoutOwnerExtension.extensions;
     expect(decodeWorkflowSourceIrV1(withoutOwnerExtension)).toEqual(withoutOwnerExtension);
-    expect(
-      workflowSourceIrToDocument(withoutOwnerExtension, { mode: "runtime" }).steps[0]?.instructions?.text,
-    ).toContain(expectedLiteralText);
+    expect(sourceStepInstructions(withoutOwnerExtension.jobs[0]!.steps[0]!)).toContain(expectedLiteralText);
 
     const missingMode = structuredClone(markdown.ir);
     delete requireOnlyDecodedStep(missingMode).commandMode;
@@ -545,10 +540,9 @@ Review $ARGUMENTS and \${{ github.sha }} literally.
 
     const withSpoofedOwnerExtension = structuredClone(yaml.ir);
     withSpoofedOwnerExtension.extensions = { "akm.dev/workflow-markdown": { workflowSchemaVersion: 3 } };
-    expect(
-      workflowSourceIrToDocument(decodeWorkflowSourceIrV1(withSpoofedOwnerExtension), { mode: "runtime" }).steps[0]
-        ?.instructions?.text,
-    ).toBe("Review   exact $HOME input  ");
+    expect(sourceStepInstructions(decodeWorkflowSourceIrV1(withSpoofedOwnerExtension).jobs[0]!.steps[0]!)).toBe(
+      "Review   exact $HOME input  ",
+    );
     expect(canonicalPortableWorkflowSourceBytes(withSpoofedOwnerExtension)).toBe(
       canonicalPortableWorkflowSourceBytes(yaml.ir),
     );
@@ -591,12 +585,12 @@ Review $ARGUMENTS and \${{ github.sha }} literally.
       `${VALID_HEADER}\n      - id: local\n        uses: tasks/review\n`,
       /contract\.yml:8.*tasks\/review.*source-target resolver/is,
     ],
-  ] as const)("keeps non-projectable %s source displayable but fails runtime with a source location", (_label, source, error) => {
+  ] as const)("keeps %s semantics in source IR without a display-to-runtime bridge", (_label, source) => {
     const result = github(source);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(workflowSourceIrToDocument(result.ir, { mode: "display" }).steps).toHaveLength(1);
-    expect(() => workflowSourceIrToDocument(result.ir, { mode: "runtime" })).toThrow(error);
+    expect(result.ir.jobs[0]?.steps).toHaveLength(1);
   });
 
   test("accepts token-safe local run with the closed shell table and contained working directories", () => {
@@ -702,9 +696,9 @@ jobs:
       "build",
       "deploy",
     ]);
-    expect(() => workflowSourceIrToDocument(result.ir, { mode: "runtime" })).toThrow(
-      /multi-job.*source-target resolver/i,
-    );
+    const compiled = compileWorkflowPlan(result.ir, "multi");
+    expect(compiled.ok).toBe(false);
+    if (!compiled.ok) expect(compiled.errors[0]?.message).toContain("exactly one source-IR job");
   });
 
   test("rejects NUL and control bytes in compiler working directories", () => {

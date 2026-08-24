@@ -264,7 +264,7 @@ export async function startWorkflowRun(
     parameterFlags?: readonly WorkflowParameterFlag[];
   },
 ): Promise<WorkflowRunDetail> {
-  const asset = await loadWorkflowAsset(ref, { projectionMode: "display" });
+  const asset = await loadWorkflowAsset(ref);
   // Frozen plan (redesign addendum, R1): compile the plan ONCE at start and
   // persist it on the run row in the same transaction as the insert. Every
   // later invocation executes this snapshot — the asset file is never re-read
@@ -280,7 +280,7 @@ export async function startWorkflowRun(
   // Non-fatal WARNINGS: untyped-step and undeclared-param advisories surface
   // as `warn()` lines at start (stderr, consistent with the repo's other
   // author-facing warnings) without blocking the run.
-  for (const w of collectWorkflowWarnings(asset.document)) {
+  for (const w of collectWorkflowWarnings(asset.sourceIr)) {
     warn(`workflow run: ${asset.path}:${w.line} — ${w.message}`);
   }
   // Reviewer #12: validate supplied parameters against the frozen param
@@ -388,7 +388,10 @@ export async function getWorkflowStatus(
       // that died surfaces as stale here, not just as raw `running`.
       const staleById = new Map(evaluateStaleUnits(rows, opts.now ?? Date.now()).map((u) => [u.unitId, u]));
       const classified = classifyWorkflowRunPlan(run);
-      const engines = classified.support === "supported" ? classified.plan.execution?.engines : undefined;
+      const engines =
+        classified.support === "supported" && classified.plan.irVersion === 3
+          ? classified.plan.execution.engines
+          : undefined;
       detail.units = rows.map((row) =>
         toUnitDiagnostic(row, staleById.get(row.unit_id), row.engine ? engines?.[row.engine] : undefined),
       );
@@ -749,10 +752,18 @@ export async function completeWorkflowStep(
         ? // Manual completion journals no gate row, so there is no `<stepId>.gate:l<loop>`
           // identity to agree with — but the dispatch still names the REAL run and
           // step (frozen-judge falls back to the gate node id for the unit id).
-          frozenSummaryJudge(preflight.plan, preflight.stepPlan.gate.judge, input.signal, undefined, {
-            runId: input.runId,
-            stepId: input.stepId,
-          })
+          frozenSummaryJudge(
+            preflight.plan,
+            "frozenJudge" in preflight.stepPlan.gate
+              ? preflight.stepPlan.gate.frozenJudge
+              : preflight.stepPlan.gate.judge,
+            input.signal,
+            undefined,
+            {
+              runId: input.runId,
+              stepId: input.stepId,
+            },
+          )
         : input.summaryJudge;
     if (criteria.length > 0 && !judge) {
       throw new ConfigError(

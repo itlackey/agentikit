@@ -19,6 +19,7 @@ import {
   GuardedExecutionSourceCollector,
 } from "../execution/guarded-source";
 import type { FileContext } from "../indexer/walk/file-context";
+import { compileWorkflowPlan } from "../workflows/ir/compile";
 import { compileResolveFreezeWorkflowV4 } from "../workflows/ir/freeze-v4";
 import { canonicalJson, computePlanHash } from "../workflows/ir/plan-hash";
 import type { DurableWorkflowSourceSnapshot } from "../workflows/ir/schema-v4";
@@ -30,8 +31,6 @@ import {
   workflowNameForSourcePath,
 } from "../workflows/source-files";
 import { compileWorkflowSource } from "../workflows/source-ir/compile";
-import { workflowSourceIrToDocument } from "../workflows/source-ir/document";
-import type { WorkflowSourceIrV1 } from "../workflows/source-ir/schema";
 import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "./runtime-v3";
 import { parseSchedule, type ScheduleBackend } from "./schedule";
 import {
@@ -585,10 +584,15 @@ async function compileWorkflowSources(
           "INVALID_FLAG_VALUE",
         );
       }
-      assertWorkflowProjectable(compiled.ir);
+      const planDraft = compileWorkflowPlan(compiled.ir, canonicalName);
+      if (!planDraft.ok) {
+        throw new UsageError(
+          planDraft.errors.map((error) => `${guarded.relativePath}:${error.line} ${error.message}`).join("; "),
+          "INVALID_FLAG_VALUE",
+        );
+      }
       const conceptId = input.adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName;
       const qualifiedRef = makeBundleRef(input.bundleName, conceptId);
-      const displayDocument = workflowSourceIrToDocument(compiled.ir, { mode: "display" });
       const asset: WorkflowAsset = {
         ref: qualifiedRef,
         path: guarded.sourcePath,
@@ -596,7 +600,7 @@ async function compileWorkflowSources(
         adapterId: input.adapterId,
         title: canonicalName,
         steps: [],
-        document: displayDocument,
+        sourceIr: compiled.ir,
       };
       const frozen = await compileResolveFreezeWorkflowV4(asset, input.config ?? schedulerProjectionConfig(input), {
         sourceCollector: collector.executionCollector(),
@@ -678,10 +682,6 @@ function enumerateWorkflowLookups(
       .sort(([left], [right]) => compareCodePoints(left, right))
       .map(([name, sources]) => [name, Object.freeze(sources.sort(compareGuardedSources))]),
   );
-}
-
-function assertWorkflowProjectable(ir: WorkflowSourceIrV1): void {
-  workflowSourceIrToDocument(ir, { mode: "scheduler" });
 }
 
 function installOptionsFor(

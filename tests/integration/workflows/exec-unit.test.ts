@@ -31,7 +31,7 @@ import {
 } from "../../../src/workflows/exec/native-executor";
 import { cpuDerivedUnitConcurrency } from "../../../src/workflows/exec/scheduler";
 import type { UnitDispatchResult } from "../../../src/workflows/exec/unit-dispatch";
-import type { IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
+import type { IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/stored-plan-v3";
 import {
   execContextLimits,
   WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER,
@@ -512,56 +512,20 @@ describe("exec unit — the child environment is an ALLOWLIST", () => {
     expect((await report([])).probe).toBeNull();
   });
 
-  test("`inherit_env: true` restores full inheritance — that same var IS present", async () => {
-    expect((await report(["        inherit_env: true"])).probe).toBe(PROBE_VALUE);
-  });
-
-  test("`pass_env` widens the allowlist by NAME without going all-in on inherit_env", async () => {
+  test("`pass_env` widens the allowlist by NAME", async () => {
     const env = await report([`        pass_env: [${PROBE}]`]);
     expect(env.probe).toBe(PROBE_VALUE);
     expect(env.PATH).toBeTruthy();
   });
 
-  test.each([
-    ["the allowlist default", [] as string[]],
-    ["inherit_env: true", ["        inherit_env: true"]],
-  ])("`env:` bindings and AKM_* context arrive under %s, precedence unchanged", async (_label, mode) => {
-    const env = await report([...mode, "      env: [env/ci]"], {
+  test("`env:` bindings and AKM_* context arrive with unchanged precedence", async () => {
+    const env = await report(["      env: [env/ci]"], {
       resolveEnv: async () => ({ DEPLOY_TOKEN: "binding-value", AKM_RUN_ID: "binding-tried-to-shadow-this" }),
     });
     expect(env.binding).toBe(`len=${"binding-value".length}`);
     // Engine-authored context is applied LAST, so the binding above could not
     // shadow it — the command is told the truth about which run it is in.
     expect(env.runId).toBe(RUN_ID);
-  });
-
-  test("both env-scope keys survive the durable `plan_json` round-trip", async () => {
-    seedRun(["work"]);
-    const plan = execPlan([
-      "    unit:",
-      "      exec:",
-      `        command: ${JSON.stringify(REPORT)}`,
-      "        inherit_env: true",
-      `        pass_env: [${PROBE}]`,
-    ]);
-    storePlan(plan);
-
-    // Read the plan back the way a resumed run does: off the row, hash-verified
-    // and through the strict decoder — not from the in-memory object.
-    const db = openStateDatabase();
-    let row: { plan_json: string | null; plan_hash: string | null; plan_ir_version: number | null };
-    try {
-      row = db
-        .prepare("SELECT plan_json, plan_hash, plan_ir_version FROM workflow_runs WHERE id = ?")
-        .get(RUN_ID) as never;
-    } finally {
-      db.close();
-    }
-    const reloaded = requireExecutableWorkflowPlan({ ...row, id: RUN_ID });
-    const root = reloaded.steps[0]!.root!;
-    const unit = root.kind === "map" ? root.template : root;
-    expect(unit.exec?.inheritEnv).toBe(true);
-    expect(unit.exec?.passEnv).toEqual([PROBE]);
   });
 
   test("the exported default allowlist is the single definition the child is built from", async () => {

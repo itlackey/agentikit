@@ -10,7 +10,7 @@ import { openStateDatabase } from "../../../../src/core/state-db";
 import { withWorkflowRunsRepo } from "../../../../src/storage/repositories/workflow-runs-repository";
 import { cpuDerivedUnitConcurrency } from "../../../../src/workflows/concurrency-policy";
 import { runWorkflowSteps } from "../../../../src/workflows/exec/run-workflow";
-import type { WorkflowPlanGraph } from "../../../../src/workflows/ir/schema";
+import type { WorkflowPlanGraph } from "../../../../src/workflows/ir/stored-plan-v3";
 import { frozenStepRows } from "../../../../src/workflows/runtime/plan-classifier";
 import { getWorkflowStatus } from "../../../../src/workflows/runtime/runs";
 import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../../_helpers/workflow";
@@ -229,8 +229,8 @@ describe("conformance — linear workflow", () => {
   test("compiles to the golden plan", () => {
     expect(compile(LINEAR)).toEqual(
       linearGolden([
-        { path: "workflows/golden.md", start: 9, end: 11 },
-        { path: "workflows/golden.md", start: 17, end: 19 },
+        { path: "workflows/golden.md", start: 4, end: 4 },
+        { path: "workflows/golden.md", start: 5, end: 5 },
       ]),
     );
   });

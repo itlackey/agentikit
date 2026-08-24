@@ -44,10 +44,16 @@ import { ConfigError } from "../../core/errors";
 import { warn } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import type { IrInvocation } from "../ir/schema";
-import type { ExecutableWorkflowPlan } from "../ir/schema-v4";
+import type { ExecutableWorkflowPlan, FrozenWorkflowCommandTarget } from "../ir/schema-v4";
 import type { JudgeCallIdentity, SummaryJudge } from "../validate-summary";
 import { collectWorkflowDispatchSensitiveValues, withDispatchRedaction } from "./dispatch-redaction";
-import { dispatchFrozenWorkflowExecution, prepareFrozenWorkflowExecution, type UnitDispatcher } from "./unit-dispatch";
+import {
+  dispatchFrozenWorkflowExecution,
+  prepareFrozenWorkflowExecution,
+  prepareFrozenWorkflowTargetExecution,
+  type UnitDispatchRequest,
+  type UnitDispatcher,
+} from "./unit-dispatch";
 
 /**
  * The run/step a judge belongs to, known when the judge is BUILT. Callers that
@@ -88,25 +94,36 @@ function warnLoweringNotices(...groups: readonly (readonly Readonly<LoweringNoti
   }
 }
 
+function isFrozenCommandTarget(
+  value: IrInvocation | FrozenWorkflowCommandTarget,
+): value is FrozenWorkflowCommandTarget {
+  return "kind" in value && value.kind === "command";
+}
+
 /** Build a gate judge from a v3 catalog entry without consulting live config. */
 export function frozenSummaryJudge(
   plan: ExecutableWorkflowPlan,
-  invocation: IrInvocation | null | undefined,
+  frozen: IrInvocation | FrozenWorkflowCommandTarget | null | undefined,
   signal: AbortSignal | undefined,
   dispatcher: UnitDispatcher | undefined,
   owner: JudgeOwner,
 ): SummaryJudge | null {
-  if (!invocation) return null;
-  const engine = plan.execution?.engines[invocation.engine];
-  if (!engine)
+  if (!frozen) return null;
+  let target: FrozenWorkflowCommandTarget | undefined;
+  let invocation: IrInvocation | undefined;
+  if (isFrozenCommandTarget(frozen)) target = frozen;
+  else invocation = frozen;
+  const engines = plan.irVersion === 3 ? plan.execution.engines : {};
+  const engine = invocation ? engines[invocation.engine] : undefined;
+  if (invocation && !engine)
     throw new ConfigError(`Frozen gate engine "${invocation.engine}" is unavailable.`, "INVALID_CONFIG_FILE");
   const fallbackEngine =
-    engine.kind === "agent" && engine.fallbackLlmEngine ? plan.execution.engines[engine.fallbackLlmEngine] : undefined;
+    engine?.kind === "agent" && engine.fallbackLlmEngine ? engines[engine.fallbackLlmEngine] : undefined;
   const fallback = fallbackEngine?.kind === "llm" ? fallbackEngine : undefined;
   const dispatch = withDispatchRedaction(dispatcher ?? dispatchFrozenWorkflowExecution);
   return async ({ system, user }, identity) => {
     const id = dispatchIdentity(owner, identity);
-    const request = {
+    const commonRequest = {
       runId: id.runId,
       stepId: id.stepId,
       unitId: id.unitId,
@@ -115,18 +132,29 @@ export function frozenSummaryJudge(
       ...(id.dispatchId !== undefined ? { dispatchId: id.dispatchId } : {}),
       prompt: user,
       systemPrompt: system,
-      engine,
-      ...(fallback ? { fallbackEngine: fallback } : {}),
-      invocation,
-      timeoutMs: invocation.timeoutMs,
       ...(signal ? { signal } : {}),
     };
+    const request: UnitDispatchRequest = target
+      ? {
+          ...commonRequest,
+          frozenTarget: target,
+          timeoutMs: target.runner.timeoutMs ?? null,
+        }
+      : {
+          ...commonRequest,
+          engine,
+          ...(fallback ? { fallbackEngine: fallback } : {}),
+          invocation: invocation!,
+          timeoutMs: invocation!.timeoutMs,
+        };
     // Lowering and authorization precede every live credential/passthrough
     // sample. The injected dispatcher may be a test seam, but it receives the
     // exact same already-validated request and redaction declaration.
-    const lowered = prepareFrozenWorkflowExecution(request);
+    const lowered = target
+      ? prepareFrozenWorkflowTargetExecution(request as UnitDispatchRequest & { frozenTarget: FrozenWorkflowCommandTarget })
+      : prepareFrozenWorkflowExecution(request);
     const sensitiveValues = collectWorkflowDispatchSensitiveValues(
-      { engine, ...(fallback ? { fallbackEngine: fallback } : {}) },
+      { ...(engine ? { engine } : {}), ...(fallback ? { fallbackEngine: fallback } : {}) },
       undefined,
     );
     const outcome = await dispatch({
@@ -142,7 +170,9 @@ export function frozenSummaryJudge(
     // injected dispatcher is not trusted to supply prompt/body-free messages.
     warnLoweringNotices(lowered.notices);
     if (!outcome.ok) {
-      throw new Error(outcome.error || `Verification engine "${invocation.engine}" failed.`);
+      throw new Error(
+        outcome.error || `Verification engine "${invocation?.engine ?? target?.request.engine.name}" failed.`,
+      );
     }
     return outcome.text ?? "";
   };

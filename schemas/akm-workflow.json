@@ -248,10 +248,6 @@
             "type": "string",
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           }
-        },
-        "inherit_env": {
-          "type": "boolean",
-          "description": "Stored-v3 compatibility only: existing stored v3 plans may retain this boolean. New v4 starts reject `inherit_env`. Never use it for whole-process environment inheritance in new authoring; prefer named `env:` environment bindings or `pass_env`."
         }
       }
     },

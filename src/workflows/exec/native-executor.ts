@@ -662,13 +662,18 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
   // still mean "its clean worktrees are gone" — only the WAIT moves off the
   // unit's scheduler slot, not the guarantee.
   const pendingWorktreeCleanups: Array<Promise<void>> = [];
-  const selectedEngine = template.invocation ? ctx.engines?.[template.invocation.engine] : undefined;
+  const storedInvocation = "invocation" in template ? template.invocation : undefined;
+  const selectedEngine = storedInvocation ? ctx.engines?.[storedInvocation.engine] : undefined;
   const selectedLlmEngine =
     selectedEngine?.kind === "llm"
       ? selectedEngine
       : selectedEngine?.kind === "agent" && selectedEngine.fallbackLlmEngine
         ? ctx.engines?.[selectedEngine.fallbackLlmEngine]
         : undefined;
+  const frozenTargetConcurrency =
+    "frozenTarget" in template && template.frozenTarget.kind === "command"
+      ? template.frozenTarget.concurrency
+      : undefined;
   try {
     outcomes = await scheduleUnits(
       workUnits,
@@ -690,7 +695,11 @@ async function executeStepPlanInConnection(plan: IrStepPlan, ctx: StepExecutionC
         concurrency: workList.list.concurrency,
         signal,
         maxConcurrency: ctx.maxConcurrency,
-        ...(selectedLlmEngine?.kind === "llm" ? { llmConcurrency: selectedLlmEngine.concurrency } : {}),
+        ...(frozenTargetConcurrency !== undefined
+          ? { llmConcurrency: frozenTargetConcurrency }
+          : selectedLlmEngine?.kind === "llm"
+            ? { llmConcurrency: selectedLlmEngine.concurrency }
+            : {}),
       },
     );
   } finally {
@@ -1601,6 +1610,7 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
       ...(request.signal ? { signal: request.signal } : {}),
     });
   }
+  if (frozenTarget?.kind === "command") return dispatchFrozenWorkflowExecution(request, feedback);
   if (!request.engine || !request.invocation) {
     return {
       ok: false,

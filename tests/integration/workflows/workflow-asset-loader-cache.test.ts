@@ -66,7 +66,7 @@ jobs:
 `;
 }
 
-test("reparses disk source when the cached workflow schema is old", async () => {
+test("compiles current disk bytes into source IR without a runtime cache dependency", async () => {
   await indexWorkflow("Cached version");
 
   const db = openIndexDatabase();
@@ -78,16 +78,7 @@ test("reparses disk source when the cached workflow schema is old", async () => 
   fs.writeFileSync(workflowPath, workflow("Current disk version"), "utf8");
 
   const loaded = await loadWorkflowAsset("workflows/cached");
-  expect(loaded.document.description).toBe("Current disk version");
-  expect(loaded.steps[0]?.instructions).toContain("Run Current disk version");
-});
-
-test("invalidates a current-schema cached workflow document when the executable source bytes changed", async () => {
-  await indexWorkflow("Cached version");
-  fs.writeFileSync(workflowPath, workflow("Current disk version"), "utf8");
-
-  const loaded = await loadWorkflowAsset("workflows/cached");
-  expect(loaded.document.description).toBe("Current disk version");
+  expect(loaded.sourceIr.description).toBe("Current disk version");
   expect(loaded.steps[0]?.instructions).toContain("Run Current disk version");
 });
 
@@ -120,9 +111,9 @@ test("refuses a cached workflow document whose indexed file and document-source 
 
   await expect(loadWorkflowAsset("workflows/identity")).resolves.toMatchObject({
     path: workflowPath,
-    document: {
+    sourceIr: {
       source: { path: workflowPath },
-      steps: [{ unit: { exec: { command: ["bash", "-c", "printf trusted"] } } }],
+      jobs: [{ steps: [{ run: "printf trusted", shell: "bash" }] }],
     },
   });
 
@@ -151,10 +142,11 @@ test("indexes, caches, and loads a YAML workflow through the runtime ownership p
   await akmIndex({ stashDir: storage.stashDir, full: true });
 
   const loaded = await loadWorkflowAsset("workflows/cached");
-  expect(loaded.document.steps).toHaveLength(1);
-  expect(loaded.document.steps[0]?.unit?.exec).toEqual({
-    command: ["bash", "-c", "bun run check"],
-    cwd: "packages/cli",
+  expect(loaded.sourceIr.jobs[0]?.steps).toHaveLength(1);
+  expect(loaded.sourceIr.jobs[0]?.steps[0]).toMatchObject({
+    run: "bun run check",
+    shell: "bash",
+    workingDirectory: "packages/cli",
   });
 });
 
@@ -164,8 +156,11 @@ test("loads a YAML workflow directly from disk when no workflow cache exists", a
   fs.writeFileSync(workflowPath, yamlWorkflow(), "utf8");
 
   const loaded = await loadWorkflowAsset("workflows/uncached");
-  expect(loaded.document.steps[0]?.unit?.exec?.command).toEqual(["bash", "-c", "bun run check"]);
-  expect(loaded.document.steps[0]?.unit?.exec?.cwd).toBe("packages/cli");
+  expect(loaded.sourceIr.jobs[0]?.steps[0]).toMatchObject({
+    run: "bun run check",
+    shell: "bash",
+    workingDirectory: "packages/cli",
+  });
 });
 
 test("starts and executes an indexed YAML run through the real loader and frozen runtime", async () => {

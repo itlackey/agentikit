@@ -15,7 +15,7 @@ import type { AgentDispatchRequest } from "../../src/integrations/agent/builder-
 import { resolveDispatchModel } from "../../src/integrations/agent/builder-shared";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
-import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
+import type { WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
 
 export const EXECUTION_CONTRACT_FIXTURES = path.join(import.meta.dir, "../fixtures/execution-contracts");
 

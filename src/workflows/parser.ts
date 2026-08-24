@@ -119,7 +119,7 @@ const DEFAULTS_KEYS = ["engine", "model", "timeout", "on_error", "llm"];
 const BUDGET_KEYS = ["max_tokens", "max_units"];
 const STEP_KEYS = ["id", "unit", "map", "route", "inputs", "output", "gate"];
 const UNIT_KEYS = ["exec", "engine", "model", "llm", "timeout", "retry", "on_error", "output", "env", "isolation"];
-const EXEC_KEYS = ["command", "cwd", "pass_env", "inherit_env"];
+const EXEC_KEYS = ["command", "cwd", "pass_env"];
 /** Unit keys that name an ENGINE dispatch and therefore cannot appear beside `exec:`. */
 const UNIT_ENGINE_KEYS = ["engine", "model", "llm"] as const;
 const MAP_KEYS = ["over", "concurrency", "reducer", "unit"];
@@ -876,17 +876,6 @@ function parseExec(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
   if (cwd !== undefined) exec.cwd = cwd;
   const passEnv = parseExecPassEnv(ctx, raw.pass_env, [...path, "pass_env"], stepLabel);
   if (passEnv !== undefined) exec.passEnv = passEnv;
-  if (raw.inherit_env !== undefined) {
-    if (typeof raw.inherit_env !== "boolean") {
-      ctx.err(
-        [...path, "inherit_env"],
-        `${stepLabel} "exec.inherit_env" must be true or false. The parser retains true only for stored-v3 ` +
-          `compatibility; new v4 starts reject it. Omit it (or write false) to keep the allowlist.`,
-      );
-    } else if (raw.inherit_env) {
-      exec.inheritEnv = true;
-    }
-  }
   return exec;
 }
 

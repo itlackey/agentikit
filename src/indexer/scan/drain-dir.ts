@@ -45,7 +45,7 @@ import {
   workflowNameForSourcePath,
 } from "../../workflows/source-files";
 import { compileWorkflowSource } from "../../workflows/source-ir/compile";
-import { WorkflowSourceProjectionError, workflowSourceIrToDocument } from "../../workflows/source-ir/document";
+import { workflowSourceIrToDocument } from "../../workflows/source-ir/document";
 import { buildMetadataSkipWarning, type StashFile } from "../passes/metadata";
 import { buildFileContext, type FileContext } from "../walk/file-context";
 import { indexDocumentToStashEntry } from "./doc-to-entry";
@@ -193,14 +193,7 @@ function handleWorkflowDoc(
 
   const result = compileWorkflowSource(file.content(), { path: file.relPath, workspaceRoot });
   if (!result.ok) return workflowDropWarning(file, result.errors);
-  try {
-    cacheWorkflowDocument(entry, workflowSourceIrToDocument(result.ir, { mode: "runtime" }));
-  } catch (cause) {
-    // A valid source target may require a later resolver (for example tasks/*).
-    // Keep it indexable/showable; the runtime loader will surface the precise
-    // unsupported projection instead of caching a semantically false document.
-    if (!(cause instanceof WorkflowSourceProjectionError)) throw cause;
-  }
+  cacheWorkflowDocument(entry, workflowSourceIrToDocument(result.ir, { mode: "display" }));
   return null;
 }
 

@@ -21,8 +21,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { canonicalJson, canonicalPlanJson } from "../../src/workflows/ir/plan-hash";
-import { decodeWorkflowPlanV3, type WorkflowPlanGraph } from "../../src/workflows/ir/schema";
 import { decodeWorkflowPlanV4 } from "../../src/workflows/ir/schema-v4";
+import { decodeWorkflowPlanV3, type WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
 import { makeSandboxDir, type SandboxedDir } from "../_helpers/sandbox";
 
 const ENVIRONMENT_V4_MODULE: string = "../../src/workflows/ir/environment-v4";
@@ -148,7 +148,7 @@ function v4ShellPlan(environment: unknown[]) {
         size: Buffer.byteLength(workflowBytes),
       },
     ],
-    execution: { maxConcurrency: 1, engines: {} },
+    execution: { maxConcurrency: 1 },
     steps: [
       {
         stepId: "run",
@@ -159,13 +159,12 @@ function v4ShellPlan(environment: unknown[]) {
           id: "run",
           instructions: "Run with the frozen symbolic environment.",
           templating: "verbatim",
-          exec,
-          frozenTarget: { kind: "shell", contentHash, cwdIdentity: directory },
+          frozenTarget: { kind: "shell", contentHash, exec, cwdIdentity: directory },
           environment,
           onError: "fail",
           isolation: "none",
         },
-        gate: { kind: "gate", id: "run.gate", stepId: "run", criteria: [], maxLoops: 1, judge: null },
+        gate: { kind: "gate", id: "run.gate", stepId: "run", criteria: [], maxLoops: 1, frozenJudge: null },
       },
     ],
   };

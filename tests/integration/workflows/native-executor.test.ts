@@ -25,7 +25,7 @@ import {
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { computeStepWorkList } from "../../../src/workflows/exec/step-work";
 import { computePlanHash } from "../../../src/workflows/ir/plan-hash";
-import type { FrozenAgentEngine, IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
+import type { FrozenAgentEngine, IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/stored-plan-v3";
 import { completeWorkflowStep, getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 import { makeSandboxDir, withEnv, withMockedFetch, writeSandboxConfig } from "../../_helpers/sandbox";
 import { withSeam } from "../../_helpers/seams";

@@ -25,8 +25,8 @@ import {
   withWorkflowRunsRepo,
 } from "../../../src/storage/repositories/workflow-runs-repository";
 import { canonicalJson, canonicalPlanJson, computePlanHash } from "../../../src/workflows/ir/plan-hash";
-import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
 import { decodeWorkflowPlanV4, type WorkflowPlanGraphV4 } from "../../../src/workflows/ir/schema-v4";
+import type { WorkflowPlanGraph } from "../../../src/workflows/ir/stored-plan-v3";
 import { frozenStepRows } from "../../../src/workflows/runtime/plan-classifier";
 import { resumeWorkflowRun, startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
@@ -87,8 +87,7 @@ function v4ExecUnit(id: string, script: string) {
     id,
     instructions: `Execute frozen ${id}.`,
     templating: "verbatim" as const,
-    exec,
-    frozenTarget: { kind: "shell" as const, contentHash, cwdIdentity: directory },
+    frozenTarget: { kind: "shell" as const, contentHash, exec, cwdIdentity: directory },
     environment,
     onError: "fail" as const,
     isolation: "none" as const,
@@ -114,21 +113,35 @@ function v4Plan(): WorkflowPlanGraphV4 {
         size: Buffer.byteLength(sourceBytes),
       },
     ],
-    execution: { maxConcurrency: 1, engines: {} },
+    execution: { maxConcurrency: 1 },
     steps: [
       {
         stepId: "prepare",
         title: "prepare",
         sequenceIndex: 0,
         root: v4ExecUnit("prepare", "printf prepare"),
-        gate: { kind: "gate", id: "prepare.gate", stepId: "prepare", criteria: [], maxLoops: 1, judge: null },
+        gate: {
+          kind: "gate",
+          id: "prepare.gate",
+          stepId: "prepare",
+          criteria: [],
+          maxLoops: 1,
+          frozenJudge: null,
+        },
       },
       {
         stepId: "publish",
         title: "publish",
         sequenceIndex: 1,
         root: v4ExecUnit("publish", "printf publish"),
-        gate: { kind: "gate", id: "publish.gate", stepId: "publish", criteria: [], maxLoops: 1, judge: null },
+        gate: {
+          kind: "gate",
+          id: "publish.gate",
+          stepId: "publish",
+          criteria: [],
+          maxLoops: 1,
+          frozenJudge: null,
+        },
       },
     ],
   });

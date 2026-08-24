@@ -336,7 +336,7 @@ describe("workflow source ownership review blockers", () => {
       ]);
       await expect(loadWorkflowAsset(fixture.ref("linked"))).resolves.toMatchObject({
         path: authoredPath,
-        document: { source: { path: path.relative(fixture.root, authoredPath).replaceAll("\\", "/") } },
+        sourceIr: { source: { path: authoredPath } },
       });
       await expect(akmShowUnified({ ref: fixture.ref("linked"), skipLogging: true })).resolves.toMatchObject({
         path: authoredPath,

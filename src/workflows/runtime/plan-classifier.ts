@@ -5,8 +5,9 @@
 import { UsageError } from "../../core/errors";
 import type { WorkflowRunRow, WorkflowRunStepRow } from "../../storage/repositories/workflow-runs-repository";
 import { decodeCanonicalPlan } from "../ir/plan-hash";
-import { type IrRouteSpec, WORKFLOW_IR_VERSION } from "../ir/schema";
+import type { IrRouteSpec } from "../ir/schema";
 import { type ExecutableWorkflowPlan, WORKFLOW_IR_V4_VERSION } from "../ir/schema-v4";
+import { WORKFLOW_IR_VERSION } from "../ir/stored-plan-v3";
 
 export type WorkflowExecutionSupport = "supported" | "unsupported-version" | "missing-plan" | "corrupt-plan";
 

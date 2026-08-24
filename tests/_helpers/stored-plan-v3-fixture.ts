@@ -3,29 +3,33 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import path from "node:path";
-import type { AkmConfig } from "../../core/config/config";
-import { deepMergeConfig } from "../../core/config/deep-merge";
-import { ConfigError, UsageError } from "../../core/errors";
-import { DEFAULT_AGENT_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS } from "../../integrations/agent/config";
+import type { AkmConfig } from "../../src/core/config/config";
+import { deepMergeConfig } from "../../src/core/config/deep-merge";
+import { ConfigError } from "../../src/core/errors";
+import { DEFAULT_AGENT_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS } from "../../src/integrations/agent/config";
 import {
   FALLBACK_ANNOUNCEMENT,
   NO_ENGINE_MESSAGE_SUFFIX,
   NO_ENGINE_REMEDY,
   withEngineFallback,
-} from "../../integrations/agent/engine-fallback";
+} from "../../src/integrations/agent/engine-fallback";
 import {
   type EngineConfig,
   type EngineUseConfig,
   resolveLlmEngineUse,
-} from "../../integrations/agent/engine-resolution";
-import { resolveLlmModel, resolveModel } from "../../integrations/agent/model-aliases";
-import { getBuiltinAgentProfile } from "../../integrations/agent/profiles";
-import { HARNESS_BY_ID } from "../../integrations/harnesses";
-import { defaultLlmEngineConcurrency, defaultMapConcurrency, workflowMaxConcurrency } from "../concurrency-policy";
-import { type ProgramUnit, projectExecCore } from "../program/schema";
-import { DEFAULT_EXEC_TIMEOUT_MS } from "../resource-limits";
-import type { WorkflowAsset } from "../runtime/workflow-asset-loader";
-import { compileWorkflowPlan, type WorkflowPlanDraft, type WorkflowUnitDraft } from "./compile";
+} from "../../src/integrations/agent/engine-resolution";
+import { resolveLlmModel, resolveModel } from "../../src/integrations/agent/model-aliases";
+import { getBuiltinAgentProfile } from "../../src/integrations/agent/profiles";
+import { HARNESS_BY_ID } from "../../src/integrations/harnesses";
+import {
+  defaultLlmEngineConcurrency,
+  defaultMapConcurrency,
+  workflowMaxConcurrency,
+} from "../../src/workflows/concurrency-policy";
+import { type ProgramUnit, projectExecCore } from "../../src/workflows/program/schema";
+import { DEFAULT_EXEC_TIMEOUT_MS } from "../../src/workflows/resource-limits";
+import type { WorkflowSourceIrV1 } from "../../src/workflows/source-ir/schema";
+import type { WorkflowPlanDraft, WorkflowUnitDraft } from "../../src/workflows/ir/compile";
 import type {
   FrozenAgentEngine,
   FrozenEngineSnapshot,
@@ -35,13 +39,12 @@ import type {
   IrInvocation,
   IrStepPlan,
   IrUnitNode,
-  WorkflowPlanGraph,
-} from "./schema";
-import { decodeWorkflowPlanV3, WORKFLOW_IR_VERSION } from "./schema";
+} from "../../src/workflows/ir/schema";
 
-export interface FrozenWorkflow {
-  plan: WorkflowPlanGraph;
-  warnings: import("../schema").WorkflowError[];
+export interface StoredWorkflowPlanV3Fixture {
+  execution: import("../../src/workflows/ir/schema").WorkflowPlanStructure["execution"];
+  steps: IrStepPlan[];
+  warnings: import("../../src/workflows/schema").WorkflowError[];
   /**
    * Set when the implicit `opencode-sdk` engine fallback supplied the engine
    * (`integrations/agent/engine-fallback.ts`). Surfaced once per run by the
@@ -51,27 +54,17 @@ export interface FrozenWorkflow {
   engineAnnouncement?: string;
 }
 
-export interface FreezeOptions {
-  /**
-   * Test seam for the compile pass. Production always leaves this unset and
-   * gets {@link compilePlan} (→ `compileWorkflowPlan`). It exists so a test can
-   * hand this boundary a draft step list that is REORDERED or FILTERED relative
-   * to `asset.document.steps` and prove that override attribution still follows
-   * `stepId` rather than array position — the invariant the positional lookup
-   * used to depend on without ever stating it.
-   */
-  compile?: (asset: WorkflowAsset) => WorkflowPlanDraft & { warnings: import("../schema").WorkflowError[] };
-}
-
 /**
- * The only source-to-runtime boundary. Source compilation remains pure; engine
- * selection and every dispatch-significant setting are resolved here once.
+ * Resolve dispatch-significant settings for the already-compiled current plan.
+ * This function does not create or decode a stored-v3 plan.
  */
-export function compileResolveFreezeWorkflow(
-  asset: WorkflowAsset,
+export function buildStoredWorkflowPlanV3Fixture(
+  sourceIr: WorkflowSourceIrV1,
+  preliminary: WorkflowPlanDraft,
+  warnings: import("../../src/workflows/schema").WorkflowError[],
+  resolvedUnits: ReadonlyMap<string, { unit: ProgramUnit }>,
   inputConfig: AkmConfig,
-  options: FreezeOptions = {},
-): FrozenWorkflow {
+): StoredWorkflowPlanV3Fixture {
   // Applied ONCE, before any resolution: every engine lookup below (selection,
   // snapshots, the gate judge) then sees one config and needs no fallback
   // awareness of its own.
@@ -80,19 +73,10 @@ export function compileResolveFreezeWorkflow(
   // `defaults.engine` is the lowest-precedence selector, so a document- or
   // unit-level `engine:` still wins and must not be reported as opencode's.
   let usedFallbackEngine = false;
-  const preliminary = (options.compile ?? compilePlan)(asset);
   const engines: Record<string, FrozenEngineSnapshot> = {};
   const maxConcurrency = frozenConcurrency(config);
   const mapDefaultConcurrency = frozenMapDefaultConcurrency(config);
-  const documentDefaults = asset.document.defaults;
-  // Keyed by stepId, NOT by array position. Compile is 1:1 and order-preserving
-  // today, so `asset.document.steps[index]` happened to line up with
-  // `preliminary.steps[index]` — but nothing enforces that, and a compile pass
-  // that ever filtered or reordered steps would silently attribute one step's
-  // engine/model/timeout overrides to a different step. Every draft step
-  // already carries its `stepId`, so look the source up by it.
-  const sourceStepsById = new Map(asset.document.steps.map((step) => [step.id, step]));
-
+  const documentDefaults = sourceIr.defaults;
   const freezeInvocation = (unit: ProgramUnit | undefined, stepId: string): IrInvocation => {
     const layers: EngineUseConfig[] = [...(documentDefaults ? [documentDefaults] : []), ...(unit ? [unit] : [])];
     const name = selectedEngine(config, layers);
@@ -172,8 +156,7 @@ export function compileResolveFreezeWorkflow(
   });
 
   const steps: IrStepPlan[] = preliminary.steps.map((step) => {
-    const sourceStep = sourceStepsById.get(step.stepId);
-    const sourceUnit = sourceStep?.map ? sourceStep.map.unit : sourceStep?.unit;
+    const sourceUnit = resolvedUnits.get(step.stepId)?.unit;
     const root = step.root
       ? step.root.kind === "map"
         ? {
@@ -210,30 +193,15 @@ export function compileResolveFreezeWorkflow(
     };
   });
 
-  const plan = decodeWorkflowPlanV3({
-    irVersion: WORKFLOW_IR_VERSION,
-    title: preliminary.title,
-    ...(preliminary.params ? { params: preliminary.params } : {}),
-    ...(preliminary.paramSchemas ? { paramSchemas: preliminary.paramSchemas } : {}),
-    ...(preliminary.budget ? { budget: preliminary.budget } : {}),
-    execution: { maxConcurrency, engines },
-    steps,
-  });
   // `usedFallbackEngine` IS the candidate-won predicate, so use the constant
   // directly rather than re-asking a helper to compare a name with itself.
   const engineAnnouncement = usedFallbackEngine ? FALLBACK_ANNOUNCEMENT : undefined;
   return {
-    warnings: preliminary.warnings,
+    execution: { maxConcurrency, engines },
+    steps,
+    warnings,
     ...(engineAnnouncement ? { engineAnnouncement } : {}),
-    plan,
   };
-}
-
-function compilePlan(asset: WorkflowAsset): WorkflowPlanDraft & { warnings: import("../schema").WorkflowError[] } {
-  const compiled = compileWorkflowPlan(asset.document, asset.title);
-  if (!compiled.ok)
-    throw new UsageError(compiled.errors.map((error) => `${asset.path}:${error.line}: ${error.message}`).join("\n"));
-  return { ...compiled.plan, warnings: compiled.warnings };
 }
 
 function selectedEngine(config: AkmConfig, layers: readonly EngineUseConfig[]): string | undefined {

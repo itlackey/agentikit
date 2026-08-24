@@ -33,15 +33,13 @@ import {
 } from "../../src/workflows/concurrency-policy";
 import { scheduleUnits } from "../../src/workflows/exec/scheduler";
 import { computeStepWorkList } from "../../src/workflows/exec/step-work";
-import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
-import type { FreezeOptions } from "../../src/workflows/ir/freeze";
 import {
   decodeWorkflowPlanV3,
   type FrozenLlmEngine,
   type IrMapNode,
   type IrUnitNode,
   type WorkflowPlanGraph,
-} from "../../src/workflows/ir/schema";
+} from "../../src/workflows/ir/stored-plan-v3";
 import { WORKFLOW_MAX_CONCURRENCY } from "../../src/workflows/resource-limits";
 import { freezeWorkflow } from "../_helpers/workflow";
 
@@ -76,8 +74,8 @@ const BASE_CONFIG = {
 } as const satisfies AkmConfig;
 
 /** The shared freeze helper, with THIS suite's engine catalog as the default config. */
-function freeze(markdown: string, config: AkmConfig = BASE_CONFIG, options: FreezeOptions = {}): WorkflowPlanGraph {
-  return freezeWorkflow(markdown, undefined, config, options);
+function freeze(markdown: string, config: AkmConfig = BASE_CONFIG): WorkflowPlanGraph {
+  return freezeWorkflow(markdown, undefined, config);
 }
 
 /** A one-map-step document; `mapKeys` are extra lines inside the `map:` block. */
@@ -498,95 +496,5 @@ describe("the four-way min still clamps", () => {
     const probe = concurrencyProbe();
     await scheduleUnits([1, 2, 3, 4, 5, 6, 7, 8], probe.dispatch, options);
     expect(probe.peak()).toBe(expected);
-  });
-});
-
-describe("override attribution is keyed by stepId, not array position", () => {
-  const document = [
-    "---",
-    "type: workflow",
-    "steps:",
-    "  - id: alpha",
-    "    unit: { engine: local }",
-    "  - id: beta",
-    "    unit: { engine: pinned }",
-    "  - id: gamma",
-    "    unit: { engine: remote }",
-    "---",
-    "",
-    "## alpha",
-    "",
-    "First.",
-    "",
-    "## beta",
-    "",
-    "Second.",
-    "",
-    "## gamma",
-    "",
-    "Third.",
-    "",
-  ].join("\n");
-
-  const engineOf = (plan: WorkflowPlanGraph, stepId: string): string => {
-    const root = plan.steps.find((step) => step.stepId === stepId)?.root;
-    if (!root || root.kind !== "unit") throw new Error(`no unit step ${stepId}`);
-    return root.invocation!.engine;
-  };
-
-  test("the ordinary 1:1 compile attributes each step its own engine", () => {
-    const plan = freeze(document);
-    expect(engineOf(plan, "alpha")).toBe("local");
-    expect(engineOf(plan, "beta")).toBe("pinned");
-    expect(engineOf(plan, "gamma")).toBe("remote");
-  });
-
-  test("a compile pass that REORDERS and FILTERS draft steps still attributes correctly", () => {
-    // The positional lookup (`asset.document.steps[index]`) was correct only
-    // because compile happens to be 1:1 and order-preserving — nothing enforced
-    // it. Under this seam the old code would have handed draft[0] (`gamma`) the
-    // source overrides of document.steps[0] (`alpha`) and frozen the wrong
-    // engine, model, and timeout onto every step.
-    const plan = freeze(document, BASE_CONFIG, {
-      compile: (asset) => {
-        const compiled = compileWorkflowPlan(asset.document, asset.title);
-        if (!compiled.ok) throw new Error("fixture must compile");
-        const byId = new Map(compiled.plan.steps.map((step) => [step.stepId, step]));
-        // `sequenceIndex` is renumbered only to satisfy the decoder's
-        // contiguity rule; the ATTRIBUTION under test keys off `stepId`.
-        const reordered = ["gamma", "alpha"].map((id, sequenceIndex) => {
-          const step = byId.get(id);
-          if (!step) throw new Error(`fixture requires step ${id}`);
-          return { ...step, sequenceIndex };
-        });
-        return { ...compiled.plan, steps: reordered, warnings: compiled.warnings };
-      },
-    });
-    expect(plan.steps.map((step) => step.stepId)).toEqual(["gamma", "alpha"]);
-    expect(engineOf(plan, "gamma")).toBe("remote");
-    expect(engineOf(plan, "alpha")).toBe("local");
-  });
-
-  test("a draft step with no surviving source step degrades to defaults instead of stealing another step's", () => {
-    // Nothing produces this today, but the lookup must not silently borrow a
-    // neighbour's overrides if it ever does.
-    const plan = freeze(document, BASE_CONFIG, {
-      compile: (asset) => {
-        const compiled = compileWorkflowPlan(asset.document, asset.title);
-        if (!compiled.ok) throw new Error("fixture must compile");
-        const source = compiled.plan.steps[1]!;
-        const orphan = {
-          ...source,
-          stepId: "delta",
-          title: "delta",
-          sequenceIndex: 0,
-          root: { ...source.root!, id: "delta" },
-          gate: { ...source.gate, id: "delta.gate", stepId: "delta" },
-        };
-        return { ...compiled.plan, steps: [orphan], warnings: compiled.warnings };
-      },
-    });
-    // `defaults.engine` (remote), not `beta`'s pinned engine.
-    expect(engineOf(plan, "delta")).toBe("remote");
   });
 });

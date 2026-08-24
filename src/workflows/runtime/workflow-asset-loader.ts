@@ -2,9 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { createHash } from "node:crypto";
 import fs from "node:fs";
-import path from "node:path";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { loadConfig } from "../../core/config/config";
@@ -16,15 +14,13 @@ import { resolveAdapterConceptOwner } from "../../indexer/lookup/adapter-concept
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import type { WorkflowParameter, WorkflowStepDefinition } from "../../sources/types";
 import { withIndexDb } from "../../storage/repositories/index-db";
-import { computeSourceHash } from "../../storage/repositories/index-entries-repository";
-import { WORKFLOW_SCHEMA_VERSION, type WorkflowDocument } from "../schema";
 import { workflowNameForConceptId } from "../source-files";
 import { compileWorkflowSource } from "../source-ir/compile";
-import { WorkflowSourceProjectionError, workflowSourceIrToDocument } from "../source-ir/document";
+import { sourceStepInstructions } from "../source-ir/program";
+import type { WorkflowSourceIrV1, WorkflowSourceStep } from "../source-ir/schema";
 
 /**
- * A workflow asset projected from its on-disk (or index-cached) document into
- * the shape the run repository needs to start and track a run.
+ * A workflow asset compiled from either authored format into the one source IR.
  */
 export type WorkflowAsset = {
   ref: string;
@@ -41,11 +37,7 @@ export type WorkflowAsset = {
   title: string;
   parameters?: WorkflowParameter[];
   steps: WorkflowStepDefinition[];
-  /**
-   * The full parsed document, retained so the run engine can compile the
-   * plan-graph IR (`workflows/ir/compile.ts`).
-   */
-  document: WorkflowDocument;
+  sourceIr: WorkflowSourceIrV1;
 };
 
 /**
@@ -75,18 +67,13 @@ export function parseWorkflowRefInput(ref: string): BundleRef {
 
 /** Resolve input sugar to the workflow's canonical run identity. */
 export async function canonicalizeWorkflowRefInput(ref: string): Promise<string> {
-  return (await loadWorkflowAsset(ref, { projectionMode: "display" })).ref;
+  return (await loadWorkflowAsset(ref)).ref;
 }
 
 /**
- * Resolve a workflow ref to a fully-projected {@link WorkflowAsset}. Prefers the
- * parsed document cached in `index.db` (fast path) and falls back to reading +
- * parsing the source file from disk.
+ * Resolve a workflow ref and compile its authored bytes into source IR.
  */
-export async function loadWorkflowAsset(
-  ref: string,
-  options: { readonly projectionMode?: "display" | "runtime" } = {},
-): Promise<WorkflowAsset> {
+export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
   const bundleRef = parseWorkflowRefInput(ref);
 
   const config = loadConfig();
@@ -146,13 +133,8 @@ export async function loadWorkflowAsset(
       ? makeBundleRef(sourceBundleId, canonicalName)
       : canonicalWorkflowRunRef(sourceBundleId, canonicalName);
 
-  const projectionMode = options.projectionMode ?? "runtime";
-  const cached =
-    projectionMode === "runtime"
-      ? readWorkflowDocumentFromIndex(resolvedSourcePath, fullRef, workflowAdapterId as string, assetPath)
-      : null;
-  const document = cached ?? loadWorkflowDocumentFromDisk(assetPath, resolvedSourcePath, projectionMode);
-  return projectAsset(document, fullRef, assetPath, resolvedSourcePath, workflowAdapterId as string, canonicalName);
+  const sourceIr = compileWorkflowSourceFromDisk(assetPath, resolvedSourcePath);
+  return projectAsset(sourceIr, fullRef, assetPath, resolvedSourcePath, workflowAdapterId as string, canonicalName);
 }
 
 function ownsNativeWorkflowRuntime(source: SearchSource): boolean {
@@ -181,125 +163,14 @@ export function resolveWorkflowEntryId(sourcePath: string, ref: string, adapterI
   });
 }
 
-function loadWorkflowDocumentFromDisk(
-  assetPath: string,
-  workspaceRoot: string,
-  projectionMode: "display" | "runtime" = "runtime",
-): WorkflowDocument {
+function compileWorkflowSourceFromDisk(assetPath: string, workspaceRoot: string): WorkflowSourceIrV1 {
   const content = fs.readFileSync(assetPath, "utf8");
-  return compileWorkflowDocument(content, assetPath, workspaceRoot, projectionMode);
-}
-
-function compileWorkflowDocument(
-  content: string,
-  sourcePath: string,
-  workspaceRoot: string,
-  projectionMode: "display" | "runtime" = "runtime",
-): WorkflowDocument {
-  const result = compileWorkflowSource(content, { path: sourcePath, workspaceRoot });
+  const result = compileWorkflowSource(content, { path: assetPath, workspaceRoot });
   if (!result.ok) {
     const details = result.errors.map((error) => `  ${error.path}:${error.line} — ${error.message}`).join("\n");
     throw new UsageError(`Workflow source has ${result.errors.length} error(s):\n${details}`);
   }
-  try {
-    return workflowSourceIrToDocument(result.ir, { mode: projectionMode });
-  } catch (cause) {
-    if (cause instanceof WorkflowSourceProjectionError) throw new UsageError(cause.message, "INVALID_FLAG_VALUE");
-    throw cause;
-  }
-}
-
-function readWorkflowDocumentFromIndex(
-  sourcePath: string,
-  ref: string,
-  adapterId: string,
-  assetPath: string,
-): WorkflowDocument | null {
-  if (!fs.existsSync(getDbPath())) return null;
-
-  const entryKey = workflowEntryKey(sourcePath, ref, adapterId);
-  return withIndexDb((db) => {
-    const row = db
-      .prepare(
-        `SELECT wd.document_json AS document_json, wd.schema_version AS schema_version,
-                wd.source_path AS source_path, wd.source_hash AS source_hash,
-                e.file_path AS file_path, e.item_ref AS item_ref,
-                e.concept_id AS concept_id, e.adapter_id AS adapter_id,
-                e.content_hash AS content_hash
-           FROM workflow_documents wd
-           JOIN entries e ON e.id = wd.entry_id
-          WHERE e.entry_type = 'workflow' AND e.entry_key = ?
-          LIMIT 1`,
-      )
-      .get(entryKey) as
-      | {
-          document_json: string;
-          schema_version: number;
-          source_path: string;
-          source_hash: string;
-          file_path: string;
-          item_ref: string | null;
-          concept_id: string | null;
-          adapter_id: string | null;
-          content_hash: string | null;
-        }
-      | undefined;
-    if (!row || row.schema_version !== WORKFLOW_SCHEMA_VERSION) return null;
-
-    const expectedConceptId = parseBundleRef(ref).conceptId;
-    if (
-      row.adapter_id !== adapterId ||
-      row.item_ref !== ref ||
-      row.concept_id !== expectedConceptId ||
-      !sameAuthoredSourcePath(row.file_path, assetPath) ||
-      !sameDocumentSourcePath(sourcePath, row.source_path, assetPath) ||
-      path.extname(row.source_path).toLowerCase() !== path.extname(assetPath).toLowerCase()
-    ) {
-      return null;
-    }
-
-    let sourceBytes: Buffer;
-    try {
-      sourceBytes = fs.readFileSync(assetPath);
-    } catch {
-      return null;
-    }
-    if (
-      row.source_hash !== computeSourceHash(sourceBytes) ||
-      row.content_hash !== createHash("sha256").update(sourceBytes).digest("hex")
-    ) {
-      return null;
-    }
-
-    try {
-      const document = JSON.parse(row.document_json) as WorkflowDocument;
-      if (document.source?.path !== row.source_path) return null;
-      const authoritativeDocument = compileWorkflowDocument(sourceBytes.toString("utf8"), row.source_path, sourcePath);
-      if (JSON.stringify(document) !== JSON.stringify(authoritativeDocument)) return null;
-      return document;
-    } catch {
-      return null;
-    }
-  });
-}
-
-function sameRealPath(left: string, right: string): boolean {
-  try {
-    return path.resolve(fs.realpathSync(left)) === path.resolve(fs.realpathSync(right));
-  } catch {
-    return false;
-  }
-}
-
-function sameAuthoredSourcePath(left: string, right: string): boolean {
-  return path.resolve(left) === path.resolve(right) && sameRealPath(left, right);
-}
-
-function sameDocumentSourcePath(sourceRoot: string, documentSourcePath: string, assetPath: string): boolean {
-  const candidate = path.isAbsolute(documentSourcePath)
-    ? documentSourcePath
-    : path.resolve(sourceRoot, documentSourcePath);
-  return sameAuthoredSourcePath(candidate, assetPath);
+  return result.ir;
 }
 
 function workflowEntryKey(sourcePath: string, ref: string, adapterId?: string): string {
@@ -313,7 +184,7 @@ function workflowEntryKey(sourcePath: string, ref: string, adapterId?: string): 
 }
 
 function projectAsset(
-  doc: WorkflowDocument,
+  sourceIr: WorkflowSourceIrV1,
   ref: string,
   assetPath: string,
   sourcePath: string,
@@ -327,27 +198,29 @@ function projectAsset(
     sourcePath,
     adapterId,
     title,
-    ...(doc.params
+    ...(sourceIr.params
       ? {
-          parameters: Object.entries(doc.params).map(([name, schema]) => {
+          parameters: Object.entries(sourceIr.params).map(([name, schema]) => {
             const description = schema.description;
             return { name, ...(typeof description === "string" && description ? { description } : {}) };
           }),
         }
       : {}),
-    steps: doc.steps.map((s) => ({
-      id: s.id,
-      title: s.id,
-      instructions: s.instructions?.text ?? stepFallbackInstructions(s),
-      ...(s.gateRubric?.text.trim() ? { completionCriteria: [s.gateRubric.text] } : {}),
-      sequenceIndex: s.sequenceIndex,
-    })),
-    document: doc,
+    steps: sourceIr.jobs.flatMap((job) =>
+      job.steps.map((step, sequenceIndex) => ({
+        id: step.id,
+        title: step.id,
+        instructions: step.route ? stepFallbackInstructions(step) : sourceStepInstructions(step),
+        ...(step.gate?.rubric?.trim() ? { completionCriteria: [step.gate.rubric] } : {}),
+        sequenceIndex,
+      })),
+    ),
+    sourceIr,
   };
 }
 
 /** A route-only step with no body section still needs a non-empty spine instructions string. */
-function stepFallbackInstructions(step: WorkflowDocument["steps"][number]): string {
+function stepFallbackInstructions(step: WorkflowSourceStep): string {
   if (!step.route) return "";
   const branches = step.route.branches.map((b) => `"${b.match}" -> ${b.stepId}`);
   if (step.route.defaultStepId !== undefined) branches.push(`default -> ${step.route.defaultStepId}`);

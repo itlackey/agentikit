@@ -12,7 +12,7 @@ import {
   withWorkflowRunsRepo,
 } from "../../../src/storage/repositories/workflow-runs-repository";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
-import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
+import type { WorkflowPlanGraph } from "../../../src/workflows/ir/stored-plan-v3";
 import {
   abandonWorkflowRun,
   completeWorkflowStep,

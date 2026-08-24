@@ -15,8 +15,8 @@ import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../../core/recogn
 import { warn } from "../../core/warn";
 import { prepareWriteTargetForMutation, resolveWriteTarget, withWriteTargetMutation } from "../../core/write-source";
 import { compileWorkflowPlan } from "../ir/compile";
-import { parseWorkflow } from "../parser";
 import type { WorkflowError } from "../schema";
+import { compileWorkflowSource } from "../source-ir/compile";
 
 const DEFAULT_WORKFLOW_TEMPLATE = renderWorkflowTemplate("New Workflow");
 
@@ -39,11 +39,11 @@ export function buildWorkflowTemplate(name?: string): string {
 
 /** Parse AND compile `content`, so a create never writes an asset that `show`/`start`/`validate` would then reject. */
 function validateWorkflowContent(content: string, sourcePath: string): void {
-  const result = parseWorkflow(content, { path: sourcePath });
+  const result = compileWorkflowSource(content, { path: sourcePath });
   if (!result.ok) {
     throw new UsageError(formatWorkflowErrors(sourcePath, result.errors));
   }
-  const compiled = compileWorkflowPlan(result.document, slugifyWorkflowStepId(sourcePath));
+  const compiled = compileWorkflowPlan(result.ir, slugifyWorkflowStepId(sourcePath));
   if (!compiled.ok) {
     throw new UsageError(formatWorkflowErrors(sourcePath, compiled.errors));
   }

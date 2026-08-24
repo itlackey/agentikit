@@ -8,7 +8,7 @@ import { opencodeAdapter } from "../../src/core/adapter/adapters/opencode-adapte
 import type { BundleAdapter } from "../../src/core/adapter/bundle-adapter";
 import type { BundleComponent } from "../../src/core/adapter/types";
 import { buildFileContext } from "../../src/indexer/walk/file-context";
-import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
+import type { WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
 import {
   assertFixtureBytesUnchanged,
   captureFixtureBytes,
