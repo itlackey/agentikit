@@ -249,6 +249,7 @@ describe("common command invocation preparation", () => {
       { name: "omitted", current: {} },
       { name: "explicit null", current: { model: null, inference: null, outputSchema: null } },
       { name: "explicit empty inference", current: { inference: {} } },
+      { name: "resolved alias and authorization", current: { model: "reasoning", tools: ["read"] } },
       {
         name: "explicit false, zero, and empty values",
         current: {
@@ -263,7 +264,6 @@ describe("common command invocation preparation", () => {
       },
     ] as const;
     const observed: Array<{
-      name: string;
       canonical: string;
       wire: Record<string, unknown>;
       provenance: Readonly<Record<string, unknown>>;
@@ -276,8 +276,10 @@ describe("common command invocation preparation", () => {
           prepareCommandInvocation({
             action: { content: "Review exactly." },
             config: valueStateConfig,
+            modelMap,
             invocationKind,
             current: fixture.current,
+            authorizeTools: () => ({ status: "allowed", policy: "fixture-policy" }),
           }),
         ),
       );
@@ -300,7 +302,6 @@ describe("common command invocation preparation", () => {
       if (!firstLowered) throw new Error("cross-surface fixture produced no lowered request");
       for (const candidate of remainingLowered) expect(project(candidate)).toEqual(project(firstLowered));
       observed.push({
-        name: fixture.name,
         canonical: firstCanonical,
         wire: JSON.parse(firstCanonical) as Record<string, unknown>,
         provenance: firstPrepared.plan.provenance,
@@ -309,30 +310,41 @@ describe("common command invocation preparation", () => {
     }
 
     expect(new Set(observed.map(({ canonical }) => canonical)).size).toBe(cases.length);
-    const requireObserved = (name: string) => {
-      const value = observed.find((candidate) => candidate.name === name);
-      if (!value) throw new Error(`missing cross-surface fixture: ${name}`);
-      return value;
-    };
-    const omitted = requireObserved("omitted");
+    const [omitted, explicitNull, emptyInference, alias, explicitValues] = observed;
+    if (!omitted || !explicitNull || !emptyInference || !alias || !explicitValues) {
+      throw new Error("cross-surface fixtures were not all observed");
+    }
     for (const field of ["agent", "persona", "model", "inference", "outputSchema", "tools"]) {
       expect(Object.hasOwn(omitted.wire, field)).toBe(false);
     }
     for (const field of ["runtime.timeoutMs", "runtime.workspace", "runtime.environment"]) {
       expect(omitted.lowered.translatedFields).not.toContain(field);
     }
-    expect(requireObserved("explicit null").wire).toMatchObject({ model: null, inference: null, outputSchema: null });
-    expect(requireObserved("explicit empty inference").wire).toMatchObject({ inference: {} });
-    expect(requireObserved("explicit empty inference").provenance).toHaveProperty("/inference");
-    expect(requireObserved("explicit false, zero, and empty values").wire).toMatchObject({
+    expect(explicitNull.wire).toMatchObject({ model: null, inference: null, outputSchema: null });
+    expect(Object.hasOwn(omitted.lowered.request, "model")).toBe(false);
+    expect(explicitNull.lowered.request.model).toBeNull();
+    expect(emptyInference.wire).toMatchObject({ inference: {} });
+    expect(emptyInference.provenance).toHaveProperty("/inference");
+    expect(alias.wire).toMatchObject({
+      model: { input: "reasoning", interpretation: "alias", resolved: "claude-reasoning-exact" },
+      inference: { effort: "high" },
+      tools: ["read"],
+      authorization: { status: "allowed", policy: { id: "fixture-policy" } },
+    });
+    expect(explicitValues.wire).toMatchObject({
       inference: { enabled: false, temperature: 0, extraParams: {} },
       outputSchema: {},
       tools: [],
       runtime: { timeoutMs: 0, workspace: "", environment: {}, settings: {} },
     });
-    expect(requireObserved("explicit false, zero, and empty values").lowered.translatedFields).toEqual(
+    expect(explicitValues.lowered.translatedFields).toEqual(
       expect.arrayContaining(["runtime.timeoutMs", "runtime.workspace", "runtime.environment", "tools"]),
     );
+    expect(explicitValues.lowered.options).toMatchObject({
+      timeoutMs: 0,
+      cwd: "",
+      env: {},
+    });
   });
 
   test("native selectors stay native and do not trigger portable persona resolution", async () => {
