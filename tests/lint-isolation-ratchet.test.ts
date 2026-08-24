@@ -297,4 +297,242 @@ describe("lint-tests-isolation allowlist ratchet", () => {
       fs.rmSync(fixtureDir, { recursive: true, force: true });
     }
   });
+
+  test("classifies real-home operations and target flow by imported binding identity", () => {
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-isolation-lint-real-home-ledger-"));
+    const cases: Array<{ expectedLines: number[]; lines: string[]; name: string }> = [
+      {
+        name: "default-os-alias-danger",
+        expectedLines: [4],
+        lines: [
+          'import fs from "node:fs";',
+          'import platform from "node:os";',
+          'import path from "node:path";',
+          'fs.rmSync(path.join(platform.homedir(), ".config", "tool"), { recursive: true });',
+        ],
+      },
+      {
+        name: "namespace-os-alias-danger",
+        expectedLines: [4],
+        lines: [
+          'import fs from "node:fs";',
+          'import * as platform from "node:os";',
+          'import path from "node:path";',
+          'fs.rmSync(path.join(platform.homedir(), ".config", "tool"), { recursive: true });',
+        ],
+      },
+      {
+        name: "named-homedir-alias-danger",
+        expectedLines: [4],
+        lines: [
+          'import { rmSync } from "node:fs";',
+          'import { homedir as realHome } from "node:os";',
+          'import path from "node:path";',
+          'rmSync(path.join(realHome(), ".config", "tool"), { recursive: true });',
+        ],
+      },
+      {
+        name: "shadowed-os-safe",
+        expectedLines: [],
+        lines: [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'function cleanup(os: { homedir(): string }) {',
+          '  fs.rmSync(path.join(os.homedir(), "owned"), { recursive: true });',
+          '}',
+        ],
+      },
+      {
+        name: "unrelated-delete-method-safe",
+        expectedLines: [],
+        lines: [
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'const recorder = { rmSync(_path: string) {} };',
+          'recorder.rmSync(path.join(os.homedir(), ".config", "tool"));',
+        ],
+      },
+      {
+        name: "renamed-fs-delete-danger",
+        expectedLines: [4],
+        lines: [
+          'import { rmSync as erase } from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'erase(path.join(os.homedir(), ".config", "tool"), { recursive: true });',
+        ],
+      },
+      {
+        name: "destructured-fs-delete-danger",
+        expectedLines: [5],
+        lines: [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'const { rmSync: erase } = fs;',
+          'erase(path.join(os.homedir(), ".config", "tool"), { recursive: true });',
+        ],
+      },
+      {
+        name: "renamed-fs-rmdir-sync-danger",
+        expectedLines: [4],
+        lines: [
+          'import { rmdirSync as eraseDirectory } from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'eraseDirectory(path.join(os.homedir(), ".config", "tool"));',
+        ],
+      },
+      {
+        name: "renamed-fs-rm-async-danger",
+        expectedLines: [4],
+        lines: [
+          'import { rm as eraseAsync } from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'eraseAsync(path.join(os.homedir(), ".config", "tool"), { recursive: true }, () => {});',
+        ],
+      },
+      {
+        name: "renamed-fs-rmdir-async-danger",
+        expectedLines: [4],
+        lines: [
+          'import { rmdir as eraseDirectoryAsync } from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'eraseDirectoryAsync(path.join(os.homedir(), ".config", "tool"), () => {});',
+        ],
+      },
+      {
+        name: "renamed-fs-promises-rm-danger",
+        expectedLines: [4],
+        lines: [
+          'import { rm as eraseAsync } from "node:fs/promises";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'await eraseAsync(path.join(os.homedir(), ".config", "tool"), { recursive: true });',
+        ],
+      },
+      {
+        name: "destructured-fs-promises-rmdir-danger",
+        expectedLines: [5],
+        lines: [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'const { rmdir: eraseDirectoryAsync } = fs.promises;',
+          'await eraseDirectoryAsync(path.join(os.homedir(), ".config", "tool"));',
+        ],
+      },
+      {
+        name: "target-destructure-danger",
+        expectedLines: [6],
+        lines: [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'const paths = { dangerous: path.join(os.homedir(), ".config", "tool") };',
+          'const { dangerous } = paths;',
+          'fs.rmSync(dangerous, { recursive: true });',
+        ],
+      },
+      {
+        name: "target-destructure-rename-danger",
+        expectedLines: [6],
+        lines: [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'const paths = { dangerous: path.join(os.homedir(), ".config", "tool") };',
+          'const { dangerous: target } = paths;',
+          'fs.rmSync(target, { recursive: true });',
+        ],
+      },
+      {
+        name: "late-variable-assignment-danger",
+        expectedLines: [6],
+        lines: [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'let target: string;',
+          'target = path.join(os.homedir(), ".config", "tool");',
+          'fs.rmSync(target, { recursive: true });',
+        ],
+      },
+      {
+        name: "late-property-assignment-danger",
+        expectedLines: [6],
+        lines: [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'const paths: { dangerous?: string } = {};',
+          'paths.dangerous = path.join(os.homedir(), ".config", "tool");',
+          'fs.rmSync(paths.dangerous!, { recursive: true });',
+        ],
+      },
+      {
+        name: "function-return-danger",
+        expectedLines: [8],
+        lines: [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'function realStore() {',
+          '  return path.join(os.homedir(), ".config", "tool");',
+          '}',
+          '',
+          'fs.rmSync(realStore(), { recursive: true });',
+        ],
+      },
+      {
+        name: "named-mkdtemp-alias-safe",
+        expectedLines: [],
+        lines: [
+          'import { mkdtempSync as makeOwned, rmSync } from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'const owned = makeOwned(path.join(os.homedir(), "tool-owned-"));',
+          'rmSync(owned, { recursive: true });',
+        ],
+      },
+      {
+        name: "element-mkdtemp-safe",
+        expectedLines: [],
+        lines: [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'const owned = fs["mkdtempSync"](path.join(os.homedir(), "tool-owned-"));',
+          'fs.rmSync(owned, { recursive: true });',
+        ],
+      },
+      {
+        name: "fake-mkdtemp-boundary-danger",
+        expectedLines: [5],
+        lines: [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'const target = { mkdtempSync: (p: string) => p }.mkdtempSync(path.join(os.homedir(), ".config", "tool"));',
+          'fs.rmSync(target, { recursive: true });',
+        ],
+      },
+    ];
+
+    try {
+      for (const fixture of cases) {
+        const fixturePath = path.join(fixtureDir, `${fixture.name}.test.ts`);
+        fs.writeFileSync(fixturePath, fixture.lines.join("\n"));
+        const actualLines = lintFile(fixturePath)
+          .filter((violation) => violation.rule === "real-home-delete")
+          .map((violation) => violation.line);
+        expect(actualLines, fixture.name).toEqual(fixture.expectedLines);
+      }
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
 });
