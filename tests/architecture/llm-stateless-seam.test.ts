@@ -15,8 +15,7 @@
  *      as a stateless model handle and exposes `resetLocalEmbedder()`
  *      so tests can construct a fresh pipeline.
  *   3. The transport-level helpers (`chatCompletion`, `enhanceMetadata`,
- *      `compressMemoryToDerivedMemory`, `resolveIndexPassExecution`, and its
- *      readiness-only `resolveIndexPassRunner` projection) take the
+ *      `compressMemoryToDerivedMemory`, and `resolveIndexPassExecution`) take the
  *      symbolic runner/config as a parameter — they do not read it from
  *      module state.
  *
@@ -84,16 +83,11 @@ describe("src/llm/* is bounded and stateless (v1 spec §9.7, §14.4)", () => {
     expect(runtimeExports.length).toBe(1);
   });
 
-  test("`index-passes` exports exactly the frozen resolver and readiness projection", () => {
+  test("`index-passes` exports exactly the current execution resolver", () => {
     expect(typeof indexPasses.resolveIndexPassExecution).toBe("function");
     expect(indexPasses.resolveIndexPassExecution.length).toBeGreaterThanOrEqual(2);
-    expect(typeof indexPasses.resolveIndexPassRunner).toBe("function");
-    expect(indexPasses.resolveIndexPassRunner.length).toBeGreaterThanOrEqual(2);
     const runtimeExports = Object.entries(indexPasses).filter(([, v]) => v !== undefined);
-    expect(runtimeExports.map(([name]) => name).sort()).toEqual([
-      "resolveIndexPassExecution",
-      "resolveIndexPassRunner",
-    ]);
+    expect(runtimeExports.map(([name]) => name).sort()).toEqual(["resolveIndexPassExecution"]);
     for (const [, value] of runtimeExports) expect(typeof value).toBe("function");
   });
 

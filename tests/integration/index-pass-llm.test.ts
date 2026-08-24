@@ -7,7 +7,7 @@ import { ConfigError } from "../../src/core/errors";
 import { getConfigPath } from "../../src/core/paths";
 import type { LoweringNotice } from "../../src/execution/resolved-request";
 import { createEnrichmentDeadline } from "../../src/indexer/indexer";
-import { resolveIndexPassExecution, resolveIndexPassRunner } from "../../src/llm/index-passes";
+import { resolveIndexPassExecution } from "../../src/llm/index-passes";
 import { type Cleanup, sandboxXdgConfigHome } from "../_helpers/sandbox";
 
 // Tests for standalone index-pass engine resolution.
@@ -38,7 +38,7 @@ const SAMPLE_LLM = {
 };
 
 function resolvedConnection(passName: string, config: AkmConfig): Record<string, unknown> | undefined {
-  const runner = resolveIndexPassRunner(passName, config);
+  const runner = resolveIndexPassExecution(passName, config).runner;
   return runner
     ? {
         ...runner.connection,
@@ -47,7 +47,7 @@ function resolvedConnection(passName: string, config: AkmConfig): Record<string,
     : undefined;
 }
 
-describe("resolveIndexPassRunner", () => {
+describe("resolveIndexPassExecution", () => {
   test("returns the symbolic runner with stable initial lowering notices", () => {
     const modelMapPath = path.join(path.dirname(getConfigPath()), "models.json");
     fs.writeFileSync(
@@ -84,8 +84,8 @@ describe("resolveIndexPassRunner", () => {
 
   test("returns undefined when no index engine is configured", () => {
     const config: AkmConfig = { semanticSearchMode: "auto" };
-    expect(resolveIndexPassRunner("enrichment", config)).toBeUndefined();
-    expect(resolveIndexPassRunner("graph", config)).toBeUndefined();
+    expect(resolveIndexPassExecution("enrichment", config).runner).toBeUndefined();
+    expect(resolveIndexPassExecution("graph", config).runner).toBeUndefined();
   });
 
   test("returns the index default engine for any pass", () => {
@@ -112,8 +112,8 @@ describe("resolveIndexPassRunner", () => {
       index: { defaults: { engine: "index" } },
     };
 
-    expect(() => resolveIndexPassRunner("enrichment", config)).not.toThrow();
-    const runner = resolveIndexPassRunner("enrichment", config);
+    expect(() => resolveIndexPassExecution("enrichment", config)).not.toThrow();
+    const runner = resolveIndexPassExecution("enrichment", config).runner;
     expect(runner).toMatchObject({
       kind: "llm",
       engine: "index",
@@ -130,8 +130,10 @@ describe("resolveIndexPassRunner", () => {
       index: { defaults: { engine: "index" } },
     };
 
-    expect(resolveIndexPassRunner("enrichment", config)?.timeoutMs).toBeNull();
-    expect(createEnrichmentDeadline(resolveIndexPassRunner("enrichment", config)?.timeoutMs, 3)).toBeUndefined();
+    expect(resolveIndexPassExecution("enrichment", config).runner?.timeoutMs).toBeNull();
+    expect(
+      createEnrichmentDeadline(resolveIndexPassExecution("enrichment", config).runner?.timeoutMs, 3),
+    ).toBeUndefined();
   });
 
   describe("per-pass engines", () => {
@@ -172,7 +174,7 @@ describe("resolveIndexPassRunner", () => {
         engines: { primary: { kind: "llm", ...PRIMARY } },
         index: { defaults: { engine: "primary" }, graph: { engine: "missing" } },
       };
-      expect(() => resolveIndexPassRunner("graph", config)).toThrow(/missing/i);
+      expect(() => resolveIndexPassExecution("graph", config)).toThrow(/missing/i);
     });
 
     test("index.<pass>.enabled === false opts the pass out", () => {
@@ -181,7 +183,7 @@ describe("resolveIndexPassRunner", () => {
         engines: { primary: { kind: "llm", ...PRIMARY } },
         index: { defaults: { engine: "primary" }, memory: { enabled: false } },
       };
-      expect(resolveIndexPassRunner("memory", config)).toBeUndefined();
+      expect(resolveIndexPassExecution("memory", config).runner).toBeUndefined();
     });
   });
 
@@ -195,7 +197,7 @@ describe("resolveIndexPassRunner", () => {
         graph: { enabled: true },
       },
     };
-    expect(resolveIndexPassRunner("enrichment", config)).toBeUndefined();
+    expect(resolveIndexPassExecution("enrichment", config).runner).toBeUndefined();
     expect(resolvedConnection("graph", config)).toEqual({ ...SAMPLE_LLM, timeoutMs: 600_000 });
     expect(resolvedConnection("memory", config)).toEqual({ ...SAMPLE_LLM, timeoutMs: 600_000 });
   });
@@ -242,7 +244,7 @@ describe("resolveIndexPassRunner", () => {
       },
     };
 
-    const runner = resolveIndexPassRunner("enrichment", config);
+    const runner = resolveIndexPassExecution("enrichment", config).runner;
     expect(runner?.connection).toMatchObject({
       model: "pass-model",
       temperature: 0.2,
@@ -266,8 +268,8 @@ describe("resolveIndexPassRunner", () => {
         },
       },
     };
-    expect(resolveIndexPassRunner("memory", config)).toBeUndefined();
-    expect(resolveIndexPassRunner("graph", config)).toBeUndefined();
+    expect(resolveIndexPassExecution("memory", config).runner).toBeUndefined();
+    expect(resolveIndexPassExecution("graph", config).runner).toBeUndefined();
   });
 });
 
@@ -350,7 +352,7 @@ describe("config loader: `index` block parsing", () => {
       defaults: { llmEngine: "index" },
       index: { enrichment: { llm: { temperature: 0.2, maxTokens: 64 } } },
     });
-    const resolved = resolveIndexPassRunner("enrichment", loadUserConfig());
+    const resolved = resolveIndexPassExecution("enrichment", loadUserConfig()).runner;
     expect(resolved?.connection).toMatchObject({ temperature: 0.2, maxTokens: 64 });
   });
 
@@ -400,6 +402,6 @@ describe("config loader: `index` block parsing", () => {
     writeUserConfig({ configVersion: "0.9.0" });
     const config = loadUserConfig();
     expect(config.index).toBeUndefined();
-    expect(resolveIndexPassRunner("enrichment", config)).toBeUndefined();
+    expect(resolveIndexPassExecution("enrichment", config).runner).toBeUndefined();
   });
 });

@@ -16,8 +16,8 @@
  * This module is intentionally tiny and stateless so tests can stub it via
  * `mock.module("../src/llm/graph-extract", ...)` without hitting a network.
  *
- * The symbolic LLM runner comes from the selected named engine. Callers obtain
- * it via `resolveIndexPassRunner("graph", config)` and pass it straight through.
+ * The symbolic LLM runner comes from the current index-pass execution
+ * resolution and is passed straight through.
  */
 
 import systemPromptTemplate from "../assets/prompts/graph-extract-system.md" with { type: "text" };

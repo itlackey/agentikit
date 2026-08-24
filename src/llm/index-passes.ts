@@ -68,8 +68,3 @@ export function resolveIndexPassExecution(passName: string, config: AkmConfig): 
   }
   return Object.freeze({ runner: lowered.runner, notices: lowered.notices });
 }
-
-/** Readiness-only compatibility projection. Dispatching callers retain the full frozen resolution. */
-export function resolveIndexPassRunner(passName: string, config: AkmConfig): StructuredLlmRunner | undefined {
-  return resolveIndexPassExecution(passName, config).runner;
-}

@@ -20,7 +20,7 @@ describe("index LLM leaves use the resolved-execution boundary", () => {
     expect(text).not.toMatch(/\bmaterializeLlmConnection\b/);
     expect(text).toMatch(/\bprepareInlineExecution\b/);
     expect(text).toMatch(/\blowerResolvedExecutionRequest\b/);
-    expect(text).toMatch(/export function resolveIndexPassRunner\b/);
+    expect(text).not.toMatch(/export function resolveIndexPassRunner\b/);
     expect(text).not.toMatch(/export function resolveIndexPassLLM\b/);
   });
 
