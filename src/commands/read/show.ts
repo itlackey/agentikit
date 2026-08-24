@@ -38,7 +38,7 @@ import type { LoweringNotice } from "../../execution/resolved-request";
 import { hasGraphData } from "../../indexer/db/graph-db";
 import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
 import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction";
-import { lookupBundleRef } from "../../indexer/indexer";
+import { lookupBundleRef, lookupBundleRefWithResolution } from "../../indexer/indexer";
 import type { StashEntryScope } from "../../indexer/passes/metadata";
 import { ensurePrimaryIndexForRead, resolveReadSources } from "../../indexer/read-preflight";
 import {
@@ -239,7 +239,9 @@ export async function showLocal(input: {
 
   const allSourceDirs = searchSources.map((s) => s.path);
 
-  const indexedEntry = await lookupBundleRef(parsed);
+  const resolution = await lookupBundleRefWithResolution(parsed);
+  if (resolution.indexError !== undefined) throw resolution.indexError;
+  const indexedEntry = resolution.entry;
   const assetPath = indexedEntry?.filePath;
 
   if (!indexedEntry && parsed.bundle && searchSources.length === 0) {
@@ -250,7 +252,7 @@ export async function showLocal(input: {
     );
   }
 
-  if (!indexedEntry) {
+  if (!indexedEntry && !resolution.owner) {
     const unsupportedExtension = existingUnsupportedScriptExtension(assetParts, searchSources);
     if (unsupportedExtension !== undefined) {
       const displayExtension = unsupportedExtension || "no extension";
