@@ -70,9 +70,8 @@ care about.
 
 ### Proposal quality
 
-Reads the proposal queue from `state.db` (or
-`<stash>/.akm/proposals/` as filesystem fallback), and the events table
-for `proposal_creation_rejected` events. Reports:
+Reads the current proposal queue and `proposal_creation_rejected` events from
+`state.db`. A missing current database is an evaluation error. Reports:
 
 - counts: total, pending, accepted, rejected, reverted, creation-rejected
 - validation pass rate

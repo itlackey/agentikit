@@ -262,7 +262,7 @@ remaining live-write memory/index artifacts previously coupled to indexing.
 
 ### Proposal queue
 
-`createProposal` is the single write point used by reflect, distill, and consolidate (promote). It writes the canonical `proposals` table in `state.db`; rows are partitioned by `stash_dir`, and pending/accepted/rejected/reverted are statuses on the same durable record. The legacy `<stash>/.akm/proposals/` tree is import-only and is not an active write path.
+`createProposal` is the single write point used by reflect, distill, and consolidate (promote). It writes the canonical `proposals` table in `state.db`; rows are partitioned by `stash_dir`, and pending/accepted/rejected/reverted are statuses on the same durable record. The retired `<stash>/.akm/proposals/` tree is neither read nor written.
 
 **Logical proposal shape:**
 
