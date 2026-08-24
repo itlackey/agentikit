@@ -22,17 +22,21 @@
  * regenerable from the stash on disk, so a corrupt index is recovered by deleting
  * it and re-running `akm index` (no destructive version-bump rebuild). Events,
  * proposals, and task history are NON-REGENERABLE — losing them is data loss. They
- * must live in a database whose schema evolves via incremental, additive migrations
- * that never drop rows.
+ * live in a database whose released migration ledger is immutable and whose
+ * application policy is explicit.
  *
  * ## Migration-safety contract
  *
  * The `schema_migrations` table records every applied migration by a stable string
- * ID. `runMigrations(db)` is idempotent: new installs run all migrations in order;
- * upgrades run only the ones not yet applied. No migration may DROP a table that
- * holds durable data, RENAME a column, or change a column's type.
+ * ID. New installs run all migrations in order. Existing exact-prefix ledgers
+ * automatically apply additive migrations and the verified data-preserving 002
+ * table rebuild. Released migration 018 contains destructive cleanup DDL and is
+ * never applied by an ordinary managed open. The successful `akm upgrade` path
+ * must first create and verify a sibling `VACUUM INTO` snapshot, then supplies
+ * the narrow explicit intent that admits 018. Unknown and divergent ledgers fail
+ * closed.
  *
- * Permitted schema evolution operations (always migration-safe in SQLite):
+ * Normal automatic schema evolution uses:
  *   - ALTER TABLE … ADD COLUMN <name> <type> DEFAULT <value>
  *   - CREATE INDEX IF NOT EXISTS …
  *   - CREATE TABLE IF NOT EXISTS … (additive new tables)

@@ -259,7 +259,21 @@ retry appends a new numbered attempt instead of overwriting history.
 
 ### `$DATA/state.db` — Migration-safe Durable State Database
 
-WAL mode, foreign keys ON. Schema uses Flyway-pattern migrations — never drops durable rows. Created on first event write.
+WAL mode, foreign keys ON. The immutable Flyway-pattern ledger has an explicit
+safety classification for every migration ID. Additive migrations and released
+migration 002's verified data-preserving `task_history` rebuild run
+automatically. Released migration 018's dead-lane table/column drops do not:
+an ordinary managed open stops at that boundary and directs the operator to
+`akm upgrade --force`. After executable replacement, that command creates a
+consistent sibling snapshot with `VACUUM INTO`, fsyncs it, requires
+`PRAGMA quick_check` to report `ok`, and only then admits migration 018. The
+snapshot is named
+`state.db.pre-018-drop-dead-lane-schema.<UTC-digits>.bak`. Fresh databases may
+cross the historical cleanup while bootstrapping because no operator state
+predates it. Unknown or divergent ledgers fail closed.
+
+This is one narrow released-ledger gate, not a general database backup,
+restore, or cutover framework. Created on first durable state write.
 
 #### Table: `schema_migrations`
 

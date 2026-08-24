@@ -74,6 +74,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   preserves exact ownership, rollback evidence, enabled state, parameters,
   timeouts, redaction metadata, and resolver overrides.
 
+### Fixed
+
+- Ordinary managed database opens no longer silently apply released migration
+  `018-drop-dead-lane-schema`, which drops retired tables and a column. Every
+  state migration now has an explicit safety classification; migration 002's
+  row-preserving table rebuild remains automatic, while migration 018 requires
+  a successful `akm upgrade` and a verified sibling SQLite snapshot created
+  immediately before its immutable SQL runs.
+
 ## [0.9.1] - 2026-08-18
 
 ### Fixed

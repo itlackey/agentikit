@@ -5,20 +5,18 @@
 /**
  * Shared SQLite migration engine.
  *
- * state.db (`src/core/state-db.ts`) evolves its schema automatically through
- * this idempotent, transaction-per-migration runner backed by a
- * `schema_migrations` ledger.
+ * SQLite schemas evolve through this transaction-per-migration runner backed
+ * by a `schema_migrations` ledger.
  *
  * This module factors that runner out once. Each caller supplies only its own
  * `MIGRATIONS` array.
  *
- * Migration-safety contract:
+ * Ledger/transaction contract:
  *   - `id` is permanent and must never be reused.
- *   - `up` must be idempotent (use IF NOT EXISTS, INSERT OR IGNORE, etc.).
- *   - `up` must not DROP any table that holds durable (non-regenerable) data.
- *   - `up` must not RENAME or change the type of an existing column.
- *   - To add a column: use `ALTER TABLE … ADD COLUMN … DEFAULT …`.
  *   - Applied IDs must be an exact ordered prefix of the registry.
+ *   - Each `up` body and its ledger insert commit in the same transaction.
+ *   - The caller owns semantic safety classification and any policy gate;
+ *     this generic engine intentionally does not infer risk from SQL text.
  */
 
 import type { Database } from "../database";
@@ -128,9 +126,8 @@ export function ensureMigrationsTable(db: Database): void {
  *
  * Each migration is applied in its own transaction so a failure in migration N
  * does not roll back already-applied migrations 1..N-1. The migration row is
- * inserted AFTER the DDL succeeds, so a crash mid-migration leaves no row and
- * the migration is retried on next open (all DDL in `up` uses IF NOT EXISTS so
- * the retry is safe).
+ * inserted after the DDL succeeds in the same transaction, so a crash rolls
+ * back both that migration's SQL and its ledger row.
  *
  * @param db          The open SQLite database.
  * @param migrations  The module's ordered, append-only migration list.

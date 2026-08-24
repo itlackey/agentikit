@@ -7,7 +7,11 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { STATE_MIGRATIONS } from "../../src/core/state/migrations";
+import {
+  getStateMigrationSafety,
+  STATE_MIGRATION_SAFETY_BY_ID,
+  STATE_MIGRATIONS,
+} from "../../src/core/state/migrations";
 import * as stateDbModule from "../../src/core/state-db";
 import { openStateDatabase } from "../../src/core/state-db";
 import { openDatabase } from "../../src/storage/database";
@@ -186,6 +190,19 @@ describe("state.db automatic migration boundary", () => {
           .update(migration?.up ?? "")
           .digest("hex"),
       ).toBe(sha256);
+    }
+  });
+
+  test("every ordered migration ID has an explicit safety classification", () => {
+    expect(Object.keys(STATE_MIGRATION_SAFETY_BY_ID)).toEqual(STATE_MIGRATIONS.map((migration) => migration.id));
+    expect(getStateMigrationSafety("002-task-history-per-run")).toBe("data-preserving-rebuild");
+    expect(getStateMigrationSafety("018-drop-dead-lane-schema")).toBe("historical-destructive");
+
+    for (const migration of STATE_MIGRATIONS) {
+      const executableSql = migration.up.replaceAll(/--.*$/gm, "");
+      if (/\bDROP\b|\bRENAME\s+TO\b/i.test(executableSql)) {
+        expect(getStateMigrationSafety(migration.id)).not.toBe("additive");
+      }
     }
   });
 
