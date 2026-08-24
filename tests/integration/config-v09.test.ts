@@ -325,29 +325,13 @@ describe("0.9 config contract", () => {
     expect(validateConfigShape({ configVersion: "0.9.0", bindings: { release: { export: "a//x" } } }).ok).toBe(false);
   });
 
-  test("normalizes model aliases to lowercase and rejects case-insensitive collisions", () => {
-    const normalized = validateConfigShape({
-      configVersion: "0.9.0",
-      engines: { agent: { kind: "agent", platform: "pi", modelAliases: { FAST: "model-a" } } },
-      modelAliases: { DEEP: { pi: "model-b" } },
-    });
-    expect(normalized.ok).toBe(true);
-    if (normalized.ok) {
-      expect(normalized.value.engines?.agent?.modelAliases).toEqual({ fast: "model-a" });
-      expect(normalized.value.modelAliases).toEqual({ deep: { pi: "model-b" } });
-    }
-
+  test("rejects retired config-root and per-engine model alias tables", () => {
     expect(
       validateConfigShape({
         configVersion: "0.9.0",
-        engines: { agent: { kind: "agent", platform: "pi", modelAliases: { FAST: "a", fast: "b" } } },
+        engines: { agent: { kind: "agent", platform: "pi", modelAliases: { fast: "model-a" } } },
       }).ok,
     ).toBe(false);
-    expect(
-      validateConfigShape({
-        configVersion: "0.9.0",
-        modelAliases: { DEEP: { pi: "a" }, deep: { pi: "b" } },
-      }).ok,
-    ).toBe(false);
+    expect(validateConfigShape({ configVersion: "0.9.0", modelAliases: { deep: { pi: "model-b" } } }).ok).toBe(false);
   });
 });

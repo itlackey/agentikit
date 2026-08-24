@@ -19,7 +19,6 @@ import { UsageError } from "../../core/errors";
 import type { ExecutionJsonObject } from "../../execution/json";
 import type { LoweringNotice, ResolvedExecutionRequestV1 } from "../../execution/resolved-request";
 import type { ShowResponse } from "../../sources/types";
-import { resolveModel } from "./model-aliases";
 import type { AgentProfile } from "./profiles";
 
 /**
@@ -34,15 +33,8 @@ export interface AgentDispatchRequest {
   agent?: string;
   /** System prompt body — from agent asset content field. */
   systemPrompt?: string;
-  /**
-   * Raw model alias ("opus", "sonnet") or exact platform model ID.
-   * May come from agent asset frontmatter `model:` OR the --model CLI flag
-   * (flag wins). Builders resolve the alias to a platform-specific string via
-   * resolveModel() — never resolved before reaching the builder.
-   */
+  /** Exact model ID resolved before harness lowering. */
   model?: string;
-  /** Bypass alias resolution because `model` was frozen/lowered already. */
-  modelIsExact?: boolean;
   /** Tool policy — from agent asset frontmatter `tools:`. */
   tools?: ShowResponse["toolPolicy"];
   /**
@@ -70,14 +62,13 @@ export interface LoweredAgentDispatch {
   readonly notices: readonly Readonly<LoweringNotice>[];
 }
 
-/** Resolve a raw dispatch model once, while preserving frozen/lowered models verbatim. */
+/** Models reaching a harness have already crossed the single model-map boundary. */
 export function resolveDispatchModel(
-  request: Pick<AgentDispatchRequest, "model" | "modelIsExact">,
-  profile: AgentProfile,
-  platform: string,
+  request: Pick<AgentDispatchRequest, "model">,
+  _profile: AgentProfile,
+  _platform: string,
 ): string | undefined {
-  if (!request.model || request.modelIsExact) return request.model;
-  return resolveModel(request.model, platform, profile.modelAliases, profile.globalModelAliases);
+  return request.model;
 }
 
 /** Concrete command ready to hand to the spawn wrapper. */

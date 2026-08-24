@@ -808,39 +808,6 @@ describe("runTask — command target", () => {
 });
 
 describe("runTask — prompt target", () => {
-  test("resolves agent model aliases once and marks the dispatched model exact", async () => {
-    writeTask("aliased", promptTask("review", { engine: "reviewer", model: "premium" }));
-    process.env.AKM_CONFIG_DIR = configDir;
-    fs.mkdirSync(configDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(configDir, "config.json"),
-      JSON.stringify({
-        configVersion: "0.9.0",
-        engines: {
-          reviewer: {
-            kind: "agent",
-            platform: "opencode",
-            modelAliases: { premium: "provider/exact-model" },
-          },
-        },
-        defaults: { engine: "reviewer" },
-      }),
-    );
-    let dispatched: { model?: string; modelIsExact?: boolean } | undefined;
-
-    await runTask("aliased", {
-      stashDir,
-      logDir,
-      runAgentImpl: async (profile) => {
-        dispatched = { model: profile.model, modelIsExact: profile.modelIsExact };
-        return { ok: true, exitCode: 0, stdout: "ok", stderr: "", durationMs: 1 };
-      },
-      now: () => new Date("2025-01-01T00:00:00Z"),
-    });
-
-    expect(dispatched).toEqual({ model: "provider/exact-model", modelIsExact: true });
-  });
-
   test("dispatches an LLM prompt task through its selected engine", async () => {
     writeTask("llm", promptTask("answer briefly", { engine: "fast", model: "qwen3-small" }));
     process.env.AKM_CONFIG_DIR = configDir;
@@ -943,8 +910,8 @@ describe("runTask — prompt target", () => {
     }
   });
 
-  test("lowers a prompt-task model through the selected agent engine aliases exactly once", async () => {
-    writeTask("agent-model", promptTask("review this", { engine: "reviewer", model: "fast" }));
+  test("passes a prompt-task model through the selected agent engine exactly", async () => {
+    writeTask("agent-model", promptTask("review this", { engine: "reviewer", model: "provider/exact-model" }));
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
       path.join(configDir, "config.json"),
@@ -954,26 +921,25 @@ describe("runTask — prompt target", () => {
           reviewer: {
             kind: "agent",
             platform: "opencode",
-            modelAliases: { fast: "provider/exact-model" },
           },
         },
         defaults: { engine: "reviewer" },
       }),
     );
-    let captured: { model?: string; modelIsExact?: boolean } = {};
+    let captured: { model?: string } = {};
 
     const result = await runTask("agent-model", {
       stashDir,
       logDir,
       runAgentImpl: async (profile) => {
-        captured = { model: profile.model, modelIsExact: profile.modelIsExact };
+        captured = { model: profile.model };
         return { ok: true, exitCode: 0, stdout: "reviewed", stderr: "", durationMs: 1 };
       },
       now: () => new Date("2025-01-01T00:00:00Z"),
     });
 
     expect(result.status).toBe("completed");
-    expect(captured).toEqual({ model: "provider/exact-model", modelIsExact: true });
+    expect(captured).toEqual({ model: "provider/exact-model" });
   });
 
   test("redacts echoed agent credentials before task logs are persisted", async () => {

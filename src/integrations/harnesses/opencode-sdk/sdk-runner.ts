@@ -97,7 +97,6 @@ import { createHash } from "node:crypto";
 import type { LlmConnectionConfig } from "../../../core/config/config";
 import type { ShowResponse } from "../../../sources/types";
 import { DEFAULT_AGENT_TIMEOUT_MS } from "../../agent/config";
-import { resolveModel } from "../../agent/model-aliases";
 import type { AgentProfile } from "../../agent/profiles";
 import type { AgentFailureReason, AgentRunResult, AgentTokenUsage, RunAgentOptions } from "../../agent/spawn";
 
@@ -301,22 +300,13 @@ function toolsToSdkAllowlist(tools: ShowResponse["toolPolicy"]): Record<string, 
 
 /**
  * Assemble the OpenCode SDK server config from the profile + LLM fallback.
- * Pure and exported for tests. `profile.model` is resolved through the model
- * alias tables (platform key `"opencode-sdk"`) so config aliases like
- * `"model": "fast"` work on the SDK path the same way they do for CLI
- * builders. Note there is no built-in alias column for `opencode-sdk` —
- * built-in opus/sonnet/haiku strings are CLI-provider-qualified and would
- * collide with the `akm-custom/` provider prefixing below, so only profile
- * and config-root alias tables apply here.
+ * Pure and exported for tests. `profile.model` is already exact because model
+ * aliases resolve once before harness lowering.
  */
 export function buildSdkConfig(profile: AgentProfile, llmConfig?: LlmConnectionConfig): Record<string, unknown> {
   const endpoint = llmConfig?.endpoint;
   const apiKey = llmConfig?.apiKey;
-  const profileModel = profile.model
-    ? profile.modelIsExact
-      ? profile.model
-      : resolveModel(profile.model, "opencode-sdk", profile.modelAliases, profile.globalModelAliases)
-    : undefined;
+  const profileModel = profile.model;
   const model = profileModel ?? llmConfig?.model;
 
   const sdkConfig: Record<string, unknown> = {};

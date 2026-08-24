@@ -72,35 +72,10 @@ describe("geminiBuilder — plain prompt", () => {
   });
 });
 
-// ── Builder — model alias resolution ─────────────────────────────────────────
+// ── Builder — exact model selection ─────────────────────────────────────────
 
-describe("geminiBuilder — model resolution via resolveModel('gemini')", () => {
-  test("profile.modelAliases resolves a custom alias for the gemini platform", () => {
-    const profile = makeGeminiProfile({ modelAliases: { fast: "gemini-2.5-flash" } });
-    const cmd = geminiBuilder.build(profile, { prompt: "go", model: "fast" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("gemini-2.5-flash");
-  });
-
-  test("globalModelAliases gemini column wins over '*' fallback", () => {
-    const profile = makeGeminiProfile({
-      globalModelAliases: { deep: { gemini: "gemini-2.5-pro", "*": "generic-deep" } },
-    });
-    const cmd = geminiBuilder.build(profile, { prompt: "go", model: "deep" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("gemini-2.5-pro");
-  });
-
-  test("globalModelAliases '*' fallback applies when no gemini column exists", () => {
-    const profile = makeGeminiProfile({
-      globalModelAliases: { deep: { "*": "generic-deep" } },
-    });
-    const cmd = geminiBuilder.build(profile, { prompt: "go", model: "deep" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("generic-deep");
-  });
-
-  test("exact model id passes through verbatim (builtin aliases carry no gemini column)", () => {
+describe("geminiBuilder — exact model selection", () => {
+  test("exact model id passes through verbatim", () => {
     const cmd = geminiBuilder.build(makeGeminiProfile(), { prompt: "go", model: "gemini-2.5-pro" });
     const argv = cmd.argv as string[];
     expect(argv[argv.indexOf("--model") + 1]).toBe("gemini-2.5-pro");

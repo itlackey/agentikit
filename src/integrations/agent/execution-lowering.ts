@@ -22,7 +22,7 @@ import {
 } from "../../llm/client";
 import { HARNESS_REGISTRY } from "../harnesses";
 import type { AgentDispatchRequest, AgentRequestLowerer } from "./builder-shared";
-import { resolveEngineTransportMaterial } from "./engine-resolution";
+import { resolveEngine } from "./engine-resolution";
 import { SDK_FALLBACK_MODEL_FROM_REQUEST_SETTING } from "./execution-definitions";
 import type { RunnerSpec } from "./runner";
 import {
@@ -237,9 +237,6 @@ function validateProfile(value: unknown, path: string): void {
       "envPassthrough",
       "parseOutput",
       "model",
-      "modelIsExact",
-      "modelAliases",
-      "globalModelAliases",
     ],
     path,
   );
@@ -258,9 +255,6 @@ function validateProfile(value: unknown, path: string): void {
   }
   if (own(record, "personaChannel") && record.personaChannel !== "native" && record.personaChannel !== "prompt") {
     throw new TypeError(`${path}.personaChannel is invalid`);
-  }
-  if (own(record, "modelIsExact") && typeof record.modelIsExact !== "boolean") {
-    throw new TypeError(`${path}.modelIsExact must be a boolean`);
   }
   if (own(record, "env")) {
     const env = record.env;
@@ -489,13 +483,9 @@ function projectAgentRunner(
   const settings = own(request.engine, "settings") ? request.engine.settings : undefined;
   const profile: Record<string, unknown> = sterileRecord({ ...base.profile });
   delete profile.model;
-  delete profile.modelIsExact;
-  delete profile.modelAliases;
-  delete profile.globalModelAliases;
   delete profile.workspace;
   if (own(request, "model") && request.model) {
     profile.model = request.model.resolved;
-    profile.modelIsExact = true;
   }
   if (own(request.runtime, "workspace") && typeof request.runtime.workspace === "string") {
     profile.workspace = request.runtime.workspace;
@@ -761,7 +751,7 @@ export function lowerResolvedExecutionRequest(
 ): LoweredExecutionRequest {
   const request = requireAuthorizedRequest(input);
   const frozenConfig = snapshotConfig(config);
-  const base = snapshotRunnerSpec(resolveEngineTransportMaterial(request.engine.name, frozenConfig));
+  const base = snapshotRunnerSpec(resolveEngine(request.engine.name, frozenConfig));
   requireRunnerShape(request, base);
   return base.kind === "llm" ? lowerLlm(request, base) : lowerAgent(request, base);
 }

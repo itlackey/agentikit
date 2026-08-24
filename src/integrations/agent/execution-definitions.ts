@@ -86,8 +86,6 @@ export function executionEngineDefinitionsFromConfig(
               workspace: ownValue(engine, "workspace"),
             })
         : withoutUndefined({ endpoint: engine.endpoint, provider: ownValue(engine, "provider") });
-    const engineModelAliases = engine.kind === "agent" ? ownValue(engine, "modelAliases") : undefined;
-    const globalModelAliases = ownValue(config, "modelAliases");
     // SDK fallback inference and timeout participate in the canonical
     // request even when the agent engine owns a distinct primary model. The
     // primary engine defaults are nearer and therefore replace only fields it
@@ -114,8 +112,6 @@ export function executionEngineDefinitionsFromConfig(
           })
         : Object.freeze(inheritedDefaults);
     const modelMapKey = usesSdkFallbackModel && fallbackName ? fallbackName : engine.kind === "agent" ? platform : name;
-    const compatibilityPlatform =
-      usesSdkFallbackModel && fallbackEngine ? (ownValue(fallbackEngine, "provider") ?? modelMapKey) : platform;
     definitions[name] = Object.freeze({
       selection: Object.freeze({
         name,
@@ -127,11 +123,6 @@ export function executionEngineDefinitionsFromConfig(
       }),
       defaults,
       modelMapKey,
-      modelCompatibility: Object.freeze({
-        ...(!usesSdkFallbackModel && engineModelAliases ? { engineAliases: engineModelAliases } : {}),
-        ...(globalModelAliases ? { globalAliases: globalModelAliases } : {}),
-        fallbackEngines: engine.kind === "llm" || usesSdkFallbackModel ? [compatibilityPlatform, "llm"] : [],
-      }),
     });
   }
   return Object.freeze(definitions);

@@ -101,32 +101,10 @@ describe("openhandsBuilder — plain prompt", () => {
   });
 });
 
-// ── Builder — model alias resolution (via env, not argv) ────────────────────
+// ── Builder — exact model selection (via env, not argv) ─────────────────────
 
-describe("openhandsBuilder — model resolution via resolveModel('openhands') → LLM_MODEL env", () => {
-  test("profile.modelAliases resolves a custom alias for the openhands platform", () => {
-    const profile = makeOpenhandsProfile({ modelAliases: { fast: "anthropic/claude-haiku-4-5" } });
-    const cmd = openhandsBuilder.build(profile, { prompt: "go", model: "fast" });
-    expect(cmd.env).toEqual({ LLM_MODEL: "anthropic/claude-haiku-4-5" });
-  });
-
-  test("globalModelAliases openhands column wins over '*' fallback", () => {
-    const profile = makeOpenhandsProfile({
-      globalModelAliases: { deep: { openhands: "anthropic/claude-sonnet-4-6", "*": "generic-deep" } },
-    });
-    const cmd = openhandsBuilder.build(profile, { prompt: "go", model: "deep" });
-    expect(cmd.env).toEqual({ LLM_MODEL: "anthropic/claude-sonnet-4-6" });
-  });
-
-  test("globalModelAliases '*' fallback applies when no openhands column exists", () => {
-    const profile = makeOpenhandsProfile({
-      globalModelAliases: { deep: { "*": "generic-deep" } },
-    });
-    const cmd = openhandsBuilder.build(profile, { prompt: "go", model: "deep" });
-    expect(cmd.env).toEqual({ LLM_MODEL: "generic-deep" });
-  });
-
-  test("builtin alias without an openhands column passes through verbatim (user aliases own openhands ids)", () => {
+describe("openhandsBuilder — exact model selection through LLM_MODEL", () => {
+  test("a model selector passes through verbatim", () => {
     const cmd = openhandsBuilder.build(makeOpenhandsProfile(), { prompt: "go", model: "sonnet" });
     expect(cmd.env).toEqual({ LLM_MODEL: "sonnet" });
   });

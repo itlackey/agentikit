@@ -39,7 +39,7 @@ import {
   type ToolSelection,
   type UnresolvedExecutionDefaults,
 } from "../../execution/source";
-import { type ModelMapCompatibilityAliases, type ResolvedModelMapV1, resolveModelMapAlias } from "./model-map";
+import { type ResolvedModelMapV1, resolveModelMapAlias } from "./model-map";
 
 export const EXECUTION_CASCADE_PLAN_VERSION = 1 as const;
 export const FIXED_EXECUTION_ENGINE_FALLBACK = "opencode-sdk" as const;
@@ -65,7 +65,6 @@ export interface ExecutionEngineDefinition {
   readonly defaults?: UnresolvedExecutionDefaults;
   /** Model-map column; defaults to platform and then engine name. */
   readonly modelMapKey?: string;
-  readonly modelCompatibility?: ModelMapCompatibilityAliases;
 }
 
 export interface ExecutionCascadeLayersInput {
@@ -131,7 +130,6 @@ interface NormalizedEngineDefinition {
   readonly selection: Readonly<ResolvedEngineSelection>;
   readonly defaults: Readonly<UnresolvedExecutionDefaults>;
   readonly modelMapKey: string;
-  readonly modelCompatibility?: ModelMapCompatibilityAliases;
 }
 
 interface SelectedValue<T = unknown> {
@@ -193,43 +191,6 @@ function normalizeLayer(value: unknown, kind: ExecutionCascadeLayerKind, path: s
   return Object.freeze({ id, kind, values });
 }
 
-function normalizeCompatibility(value: unknown, path: string): ModelMapCompatibilityAliases {
-  const input = record(value, path);
-  only(input, ["engineAliases", "globalAliases", "fallbackEngines"], path);
-  const out: {
-    engineAliases?: Readonly<Record<string, string>>;
-    globalAliases?: Readonly<Record<string, Readonly<Record<string, string>>>>;
-    fallbackEngines?: readonly string[];
-  } = {};
-  if (own(input, "engineAliases")) {
-    const aliases = cloneExecutionJsonObject(input.engineAliases, `${path}.engineAliases`);
-    if (Object.values(aliases).some((entry) => typeof entry !== "string")) {
-      throw new TypeError(`${path}.engineAliases values must be strings`);
-    }
-    out.engineAliases = aliases as Readonly<Record<string, string>>;
-  }
-  if (own(input, "globalAliases")) {
-    const tiers = cloneExecutionJsonObject(input.globalAliases, `${path}.globalAliases`);
-    for (const [alias, engines] of Object.entries(tiers)) {
-      if (engines === null || Array.isArray(engines) || typeof engines !== "object") {
-        throw new TypeError(`${path}.globalAliases.${alias} must be an object`);
-      }
-      if (Object.values(engines).some((entry) => typeof entry !== "string")) {
-        throw new TypeError(`${path}.globalAliases.${alias} values must be strings`);
-      }
-    }
-    out.globalAliases = tiers as Readonly<Record<string, Readonly<Record<string, string>>>>;
-  }
-  if (own(input, "fallbackEngines")) {
-    const fallbacks = cloneExecutionJson(input.fallbackEngines, `${path}.fallbackEngines`);
-    if (!Array.isArray(fallbacks) || fallbacks.some((entry) => typeof entry !== "string" || entry.length === 0)) {
-      throw new TypeError(`${path}.fallbackEngines must be an array of non-empty strings`);
-    }
-    out.fallbackEngines = fallbacks as readonly string[];
-  }
-  return Object.freeze(out);
-}
-
 function normalizeEngineSelection(value: unknown, path: string): Readonly<ResolvedEngineSelection> {
   const input = record(value, path);
   only(input, ["name", "kind", "platform", "settings", "extensions"], path);
@@ -257,7 +218,7 @@ function normalizeEngineSelection(value: unknown, path: string): Readonly<Resolv
 function normalizeEngineDefinition(value: unknown, name: string): NormalizedEngineDefinition {
   const path = `engines.${name}`;
   const input = record(value, path);
-  only(input, ["selection", "defaults", "modelMapKey", "modelCompatibility"], path);
+  only(input, ["selection", "defaults", "modelMapKey"], path);
   const selection = normalizeEngineSelection(required(input, "selection", path), `${path}.selection`);
   if (selection.name !== name) {
     throw new TypeError(`${path}.selection.name must match its engine registry key`);
@@ -270,10 +231,11 @@ function normalizeEngineDefinition(value: unknown, name: string): NormalizedEngi
   }
   const rawMapKey = own(input, "modelMapKey") ? input.modelMapKey : (selection.platform ?? selection.name);
   const modelMapKey = stableIdentifier(rawMapKey, `${path}.modelMapKey`);
-  const modelCompatibility = own(input, "modelCompatibility")
-    ? normalizeCompatibility(input.modelCompatibility, `${path}.modelCompatibility`)
-    : undefined;
-  return Object.freeze({ selection, defaults, modelMapKey, ...(modelCompatibility ? { modelCompatibility } : {}) });
+  return Object.freeze({
+    selection,
+    defaults,
+    modelMapKey,
+  });
 }
 
 function normalizeEngines(value: unknown): Readonly<Record<string, NormalizedEngineDefinition>> {
@@ -546,7 +508,7 @@ function resolveModels(
     if (typeof value !== "string" || value.length === 0) {
       throw new ConfigError("Resolved model must be null or a non-empty string.", "INVALID_CONFIG_FILE");
     }
-    const selection = resolveModelMapAlias(value, definition.modelMapKey, modelMap, definition.modelCompatibility);
+    const selection = resolveModelMapAlias(value, definition.modelMapKey, modelMap);
     if (selection.interpretation === "alias" && selection.inference !== undefined) {
       aliasInferenceByLayer.set(index, selection.inference);
     }

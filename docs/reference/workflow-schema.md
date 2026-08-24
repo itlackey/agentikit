@@ -1038,23 +1038,23 @@ budget means starting a new run.
 ## Model references
 
 Reference semantic aliases in `model:` fields instead of exact model ids so a
-workflow stays harness-agnostic. Recommended vocabulary (convention, not
-hardcoded) via the config-root `modelAliases` key:
+workflow stays harness-agnostic. Aliases are defined only in the installed and
+optional user `models.json` files:
 
 ```jsonc
 {
-  "modelAliases": {
-    "fast":     { "llm": "claude-haiku-4-5", "*": "claude-haiku-4-5" },
-    "balanced": { "llm": "claude-sonnet-4-6", "*": "claude-sonnet-4-6" },
-    "deep":     { "claude": "claude-fable-5", "opencode": "opencode/claude-fable-5", "*": "claude-fable-5" }
+  "version": 1,
+  "aliases": {
+    "fast": { "claude": "claude-haiku-4-5", "opencode": "opencode/claude-haiku-4-5" },
+    "balanced": { "claude": "claude-sonnet-4-6", "opencode": "opencode/claude-sonnet-4-6" },
+    "reasoning": { "claude": "claude-opus-4-7", "opencode": "opencode/claude-opus-4-7" }
   }
 }
 ```
 
-For an LLM engine, resolution checks its engine-name column, then `llm`, then
-`*`. Agent engines check their harness platform and then `*`. The built-in
-aliases `fable`, `opus`, `sonnet`, and `haiku` resolve per platform with no
-config. See the [Author's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md#choosing-engines-and-models)
+Resolution checks the selected engine name or canonical harness column. A
+known alias without that column fails rather than guessing a provider model;
+an unknown string is treated as an exact model selector. See the [Author's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md#choosing-engines-and-models)
 for guidance on which tier to pick per step.
 
 ## See also

@@ -145,46 +145,15 @@ describe("codexBuilder — basic dispatch", () => {
   });
 });
 
-// ── codexBuilder — model resolution ───────────────────────────────────────────
+// ── codexBuilder — exact model selection ─────────────────────────────────────
 
-describe("codexBuilder — model alias resolution (platform 'codex')", () => {
+describe("codexBuilder — exact model selection", () => {
   test("exact model ID passes through verbatim", () => {
     const cmd = codexBuilder.build(makeCodexProfile(), { prompt: "go", model: "gpt-5-codex" });
     expect(flagValue(cmd.argv, "--model")).toBe("gpt-5-codex");
   });
 
-  test("profile.modelAliases resolves a custom alias", () => {
-    const profile = makeCodexProfile({ modelAliases: { fast: "o4-mini" } });
-    const cmd = codexBuilder.build(profile, { prompt: "go", model: "fast" });
-    expect(flagValue(cmd.argv, "--model")).toBe("o4-mini");
-  });
-
-  test("globalModelAliases codex column resolves a tier alias", () => {
-    const profile = makeCodexProfile({
-      globalModelAliases: { deep: { codex: "o3-pro", "*": "generic-deep" } },
-    });
-    const cmd = codexBuilder.build(profile, { prompt: "go", model: "deep" });
-    expect(flagValue(cmd.argv, "--model")).toBe("o3-pro");
-  });
-
-  test("globalModelAliases '*' fallback applies when no codex column exists", () => {
-    const profile = makeCodexProfile({ globalModelAliases: { deep: { "*": "generic-deep" } } });
-    const cmd = codexBuilder.build(profile, { prompt: "go", model: "deep" });
-    expect(flagValue(cmd.argv, "--model")).toBe("generic-deep");
-  });
-
-  test("profile.modelAliases beats globalModelAliases", () => {
-    const profile = makeCodexProfile({
-      modelAliases: { fast: "profile-wins" },
-      globalModelAliases: { fast: { codex: "global-loses" } },
-    });
-    const cmd = codexBuilder.build(profile, { prompt: "go", model: "fast" });
-    expect(flagValue(cmd.argv, "--model")).toBe("profile-wins");
-  });
-
-  test("builtin alias with no codex column passes through verbatim (resolveModel contract)", () => {
-    // "opus" is a builtin alias but has no codex platform entry — resolveModel
-    // returns the raw string; pinning this documents the current behaviour.
+  test("an exact model selector passes through verbatim", () => {
     const cmd = codexBuilder.build(makeCodexProfile(), { prompt: "go", model: "opus" });
     expect(flagValue(cmd.argv, "--model")).toBe("opus");
   });

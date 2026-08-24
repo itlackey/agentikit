@@ -662,7 +662,7 @@ describe("drainProposals — judgment tier (agent mode)", () => {
 
     expect(runAgentFn).toHaveBeenCalledTimes(1);
     expect(runAgentFn).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "provider/exact-agent-judge", modelIsExact: true }),
+      expect.objectContaining({ model: "provider/exact-agent-judge" }),
       buildJudgmentPrompt(deferred, "mid-band", { liveAsset: undefined, siblings: [] }),
       expect.objectContaining({
         stdio: "captured",
@@ -670,7 +670,6 @@ describe("drainProposals — judgment tier (agent mode)", () => {
         timeoutMs: 1_234,
         dispatch: expect.objectContaining({
           model: "provider/exact-agent-judge",
-          modelIsExact: true,
         }),
       }),
     );

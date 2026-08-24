@@ -148,7 +148,6 @@ export function createAgentRequestLowerer(
       translated.add("model");
       if (request.model) {
         dispatch.model = request.model.resolved;
-        dispatch.modelIsExact = true;
       }
     }
     if (own(request, "inference")) {

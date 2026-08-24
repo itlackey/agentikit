@@ -135,16 +135,6 @@
                   }
                 ]
               },
-              "modelAliases": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "propertyNames": {
-                  "minLength": 1
-                }
-              },
               "llmEngine": {
                 "type": "string",
                 "maxLength": 63,
@@ -184,22 +174,6 @@
         }
       },
       "additionalProperties": true
-    },
-    "modelAliases": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": {
-          "type": "string",
-          "minLength": 1
-        },
-        "propertyNames": {
-          "minLength": 1
-        }
-      },
-      "propertyNames": {
-        "minLength": 1
-      }
     },
     "semanticSearchMode": {
       "type": "string",
@@ -1855,16 +1829,6 @@
                       }
                     ]
                   },
-                  "modelAliases": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "propertyNames": {
-                      "minLength": 1
-                    }
-                  },
                   "llmEngine": {
                     "type": "string",
                     "maxLength": 63,
@@ -1904,22 +1868,6 @@
             }
           },
           "additionalProperties": true
-        },
-        "modelAliases": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string",
-              "minLength": 1
-            },
-            "propertyNames": {
-              "minLength": 1
-            }
-          },
-          "propertyNames": {
-            "minLength": 1
-          }
         },
         "semanticSearchMode": {
           "type": "string",

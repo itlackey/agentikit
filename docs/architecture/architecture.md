@@ -393,9 +393,9 @@ selected command -> invocation defaults -> current invocation, preserving
 omitted, explicit `null`, zero, and empty values. A recognized model-map alias
 expands as defaults at the layer that selected it; explicit sibling and nearer
 fields then win. The request records the exact final model ID. Lowering calls
-`resolveEngineTransportMaterial()` only for symbolic transport/profile
-material and projects that request-owned exact model into it; aliases are not
-resolved again. Tool selection uses the same nearest-explicit rule, while
+`resolveEngine()` once for symbolic transport/profile material and projects
+that request-owned exact model into it; transports never resolve aliases.
+Tool selection uses the same nearest-explicit rule, while
 operator authorization remains a separate pre-lowering decision.
 
 Agent lowerers are a structural implementation registry derived from

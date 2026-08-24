@@ -22,7 +22,6 @@ import {
   ExtraParamsSchema,
   engineName,
   LlmCapabilitiesSchema,
-  ModelAliasMapSchema,
   nonEmptyString,
   positiveInt,
 } from "./primitives";
@@ -112,7 +111,6 @@ const AgentEngineSchema = z
     workspace: nonEmptyString.optional(),
     model: nonEmptyString.optional(),
     timeoutMs: timeoutMsField,
-    modelAliases: ModelAliasMapSchema.optional(),
     llmEngine: engineName.optional(),
   })
   .passthrough()
@@ -129,6 +127,7 @@ const AgentEngineSchema = z
       "contextLength",
       "enableThinking",
       "reasoningEffort",
+      "modelAliases",
     ]) {
       if (key in value)
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is not valid on an agent engine` });

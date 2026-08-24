@@ -1936,8 +1936,9 @@ CLI argv for each engine's harness platform. `platform: "opencode"` engines emit
 `opencode run [--system-prompt "..."] [--model opencode/claude-opus-4-7] "<prompt>"`.
 `platform: "claude"` engines emit:
 `claude [--system-prompt "..."] [--model claude-opus-4-7] --print -- "<prompt>"`.
-Agent engines may set `bin`, `args`, `workspace`, `model`, `timeoutMs`, and
-`modelAliases` in config.
+Agent engines may set `bin`, `args`, `workspace`, `model`, and `timeoutMs` in
+config. Semantic model aliases live only in the installed/user `models.json`
+files and resolve before dispatch.
 
 Without any `--prompt`, `<agent-ref>`, or `--model`, the agent is launched
 interactively (no injected prompt, no platform-specific flags beyond the

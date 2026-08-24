@@ -16,7 +16,7 @@ import {
   CONVERSATION_FALLBACK_BEGIN,
   CONVERSATION_FALLBACK_END,
 } from "../../src/integrations/agent/conversation-fallback";
-import { resolveEngine, resolveEngineTransportMaterial } from "../../src/integrations/agent/engine-resolution";
+import { resolveEngine } from "../../src/integrations/agent/engine-resolution";
 import {
   acquireLoweredExecutionDispatchLease,
   dispatchLoweredExecutionRequest,
@@ -715,7 +715,6 @@ describe("resolved execution lowerer registry", () => {
     if (lowered.runner.kind === "llm") throw new Error("fixture must lower to an agent transport");
     if (!("dispatch" in lowered)) throw new Error("fixture must use an agent lowerer");
     expect(lowered.runner.profile.model).toBe("provider/exact-model");
-    expect(lowered.runner.profile.modelIsExact).toBe(true);
     expect(lowered.options.timeoutMs).toBe(0);
     expect(lowered.options.cwd).toBe("/fixture/workspace");
     expect(lowered.options.env).toEqual({});
@@ -978,19 +977,6 @@ describe("optimistic lowering safety", () => {
     expect(lowered.messages).toEqual([...conversation, { role: "user", content: "Repair it." }]);
   });
 
-  test("does not rerun legacy model aliases while resolving live transport material", () => {
-    const config = configFor("claude") as AkmConfig & {
-      engines: { fixture: { model: string; modelAliases: Record<string, unknown> } };
-    };
-    config.engines.fixture.model = "legacy-alias";
-    config.engines.fixture.modelAliases = { "legacy-alias": { mustNotBeReadAsAModel: true } };
-    const request = requestFor("claude", "agent", { model: null });
-    const lowered = lowerResolvedExecutionRequest(request, config);
-    if (lowered.runner.kind === "llm") throw new Error("fixture must use an agent runner");
-    expect(lowered.runner.profile).not.toHaveProperty("model");
-    expect(lowered.runner.profile).not.toHaveProperty("modelAliases");
-  });
-
   test.each([
     "direct",
     "task",
@@ -1079,10 +1065,6 @@ describe("optimistic lowering safety", () => {
         },
       },
       defaults: { engine: "fixture", llmEngine: "fallback" },
-      modelAliases: {
-        fast: { fallback: "provider/exact-fallback-model" },
-        "provider/exact-primary-model": { "opencode-sdk": "must-not-double-alias-primary" },
-      },
     } as unknown as AkmConfig;
     const modelMap = {
       version: 1,
@@ -1138,7 +1120,7 @@ describe("optimistic lowering safety", () => {
       },
       defaults: { engine: "fixture", llmEngine: "fallback" },
     } as unknown as AkmConfig;
-    const frozenRunner = resolveEngineTransportMaterial("fixture", config);
+    const frozenRunner = resolveEngine("fixture", config);
     expect(frozenRunner.kind).toBe("sdk");
 
     const cases: readonly {
@@ -1330,7 +1312,7 @@ describe("optimistic lowering safety", () => {
       },
       defaults: { engine: "fixture", llmEngine: "fallback" },
     } as unknown as AkmConfig;
-    const runner = resolveEngineTransportMaterial("fixture", config);
+    const runner = resolveEngine("fixture", config);
     const live = prepareInlineExecution({
       content: "Keep timeout layers distinct.",
       config,
@@ -1382,7 +1364,7 @@ describe("optimistic lowering safety", () => {
       },
       defaults: { engine: "fixture", llmEngine: "fallback" },
     } as unknown as AkmConfig;
-    const frozenRunner = resolveEngineTransportMaterial("fixture", config);
+    const frozenRunner = resolveEngine("fixture", config);
     const baseInference: ExecutionJsonObject = {
       temperature: 0.25,
       maxTokens: 512,
@@ -1509,7 +1491,7 @@ describe("optimistic lowering safety", () => {
       engines: { fixture: { kind: "agent", platform: "opencode-sdk" } },
       defaults: { engine: "fixture" },
     } as unknown as AkmConfig;
-    const frozenRunner = resolveEngineTransportMaterial("fixture", config);
+    const frozenRunner = resolveEngine("fixture", config);
     const cases: readonly {
       readonly current: import("../../src/execution/source").UnresolvedExecutionDefaults;
       readonly expectedModel?: string;

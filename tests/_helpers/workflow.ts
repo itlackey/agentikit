@@ -49,7 +49,6 @@ export const WORKFLOW_TEST_CONFIG = {
     },
   },
   defaults: { engine: "test-agent", llmEngine: "test-llm" },
-  modelAliases: { balanced: { "test-llm": "test-model" } },
   workflow: { judgeEngine: "test-llm" },
 } as const satisfies AkmConfig;
 

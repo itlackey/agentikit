@@ -60,15 +60,6 @@ export interface ResolvedModelMapSelection {
   readonly inference?: ExecutionJsonObject | null;
 }
 
-export interface ModelMapCompatibilityAliases {
-  /** Existing `engines.<name>.modelAliases`; nearer than models.json files. */
-  readonly engineAliases?: Readonly<Record<string, string>>;
-  /** Existing config-root `modelAliases`; nearer than models.json files. */
-  readonly globalAliases?: Readonly<Record<string, Readonly<Record<string, string>>>>;
-  /** Optional compatibility tiers such as `llm`, checked after the engine. */
-  readonly fallbackEngines?: readonly string[];
-}
-
 const ENGINE_KEY_PATTERN = new RegExp(ENGINE_NAME_PATTERN_SOURCE);
 const ALIAS_KEY_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const RESERVED_MAP_KEYS = new Set(["__proto__", "constructor", "prototype", "tostring"]);
@@ -235,10 +226,10 @@ export function parseModelMapLayer(text: string, source: string): ModelMapLayerV
     const engines: Array<readonly [string, ModelMapEntryLayer]> = [];
     const enginesSeen = new Map<string, string>();
     for (const [rawEngine, rawProfile] of Object.entries(engineRecord)) {
-      const engine = rawEngine === "*" ? rawEngine : rawEngine.toLowerCase();
+      const engine = rawEngine.toLowerCase();
       assertSafeMapKey(engine, source, `$.aliases.${rawAlias}.${rawEngine}`);
-      if (engine !== "*" && !ENGINE_KEY_PATTERN.test(engine)) {
-        invalid(source, `$.aliases.${rawAlias}.${rawEngine}`, "engine key must be lowercase kebab-case or *");
+      if (!ENGINE_KEY_PATTERN.test(engine)) {
+        invalid(source, `$.aliases.${rawAlias}.${rawEngine}`, "engine key must be lowercase kebab-case");
       }
       const previousEngine = enginesSeen.get(engine);
       if (previousEngine !== undefined) {
@@ -328,42 +319,23 @@ function selectionFromProfile(
   });
 }
 
-/** Expand through compatibility config first, then the merged installed/user registry. */
+/** Resolve one alias through the merged installed/user registry. */
 export function resolveModelMapAlias(
   input: string,
   engine: string,
   map: ResolvedModelMapV1,
-  compatibility: ModelMapCompatibilityAliases = {},
 ): ResolvedModelMapSelection {
   const alias = input.toLowerCase();
   const selectedEngine = engine.toLowerCase();
-  const engineOverride = ownValue(compatibility.engineAliases, alias);
-  if (engineOverride !== undefined) return selectionFromProfile(input, { model: engineOverride });
-
-  const fallbackEngines = (compatibility.fallbackEngines ?? []).map((fallback) => fallback.toLowerCase());
-  const compatibilityTier = ownValue(compatibility.globalAliases, alias);
-  const compatibilityModel =
-    ownValue(compatibilityTier, selectedEngine) ??
-    fallbackEngines.map((fallback) => ownValue(compatibilityTier, fallback)).find((model) => model !== undefined) ??
-    ownValue(compatibilityTier, "*");
-  if (compatibilityModel !== undefined) return selectionFromProfile(input, { model: compatibilityModel });
-
   const tier = ownValue(map.aliases, alias);
-  const profile =
-    ownValue(tier, selectedEngine) ??
-    fallbackEngines.map((fallback) => ownValue(tier, fallback)).find((candidate) => candidate !== undefined) ??
-    ownValue(tier, "*");
+  const profile = ownValue(tier, selectedEngine);
   if (profile !== undefined) return selectionFromProfile(input, profile);
 
-  const known =
-    tier !== undefined ||
-    compatibilityTier !== undefined ||
-    (compatibility.engineAliases !== undefined && Object.hasOwn(compatibility.engineAliases, alias));
-  if (known) {
+  if (tier !== undefined) {
     throw new ConfigError(
       `Known alias ${JSON.stringify(input)} has no model mapping for selected engine ${JSON.stringify(engine)}.`,
       "INVALID_CONFIG_FILE",
-      `Add $.aliases.${alias}.${engine} to models.json or configure engines.${engine}.modelAliases.${alias}.`,
+      `Add $.aliases.${alias}.${engine} to models.json.`,
     );
   }
   return Object.freeze({ input, interpretation: "exact" as const, model: input });

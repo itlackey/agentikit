@@ -93,28 +93,17 @@ describe("engine resolution", () => {
     ).toBe("none");
   });
 
-  test("resolves direct and SDK fallback models through engine, llm, then wildcard alias tiers", () => {
-    const tiered = {
+  test("preserves exact direct and SDK fallback model selectors", () => {
+    const exact = {
       ...config,
       engines: {
         ...config.engines,
-        fast: { ...config.engines.fast, model: "economy", apiKey: undefined },
-      },
-      modelAliases: {
-        economy: { fast: "engine-exact", llm: "llm-exact", "*": "wildcard-exact" },
+        fast: { ...config.engines.fast, model: "provider/exact", apiKey: undefined },
       },
     };
-    expect(resolveLlmEngineUse(tiered, [{ engine: "fast" }]).connection.model).toBe("engine-exact");
-    const sdk = resolveEngine("sdk", tiered);
-    expect(sdk.kind === "sdk" && sdk.fallbackConnection?.model).toBe("engine-exact");
-
-    const llmTier = {
-      ...tiered,
-      modelAliases: { economy: { llm: "llm-exact", "*": "wildcard-exact" } },
-    };
-    expect(resolveLlmEngineUse(llmTier, [{ engine: "fast" }]).connection.model).toBe("llm-exact");
-    const wildcard = { ...tiered, modelAliases: { economy: { "*": "wildcard-exact" } } };
-    expect(resolveLlmEngineUse(wildcard, [{ engine: "fast" }]).connection.model).toBe("wildcard-exact");
+    expect(resolveLlmEngineUse(exact, [{ engine: "fast" }]).connection.model).toBe("provider/exact");
+    const sdk = resolveEngine("sdk", exact);
+    expect(sdk.kind === "sdk" && sdk.fallbackConnection?.model).toBe("provider/exact");
   });
 
   test("materializes an explicit symbolic credential only at dispatch", () => {
@@ -219,22 +208,15 @@ describe("engine resolution", () => {
     expect(explicitNull.timeoutMs).toBeNull();
   });
 
-  test("does not resolve a lowered agent model through aliases a second time", () => {
+  test("preserves an exact lowered agent model through SDK dispatch", () => {
     const lowered = resolveEngine("sdk", {
       ...config,
-      engines: { ...config.engines, sdk: { ...config.engines.sdk, model: "premium" } },
-      modelAliases: {
-        premium: { "opencode-sdk": "provider/exact" },
-        "provider/exact": { "opencode-sdk": "provider/wrong" },
-      },
+      engines: { ...config.engines, sdk: { ...config.engines.sdk, model: "provider/exact" } },
     });
     if (lowered.kind !== "sdk") throw new Error("fixture must lower to SDK");
     expect(lowered.profile.model).toBe("provider/exact");
-    expect(lowered.profile.modelIsExact).toBe(true);
     expect(buildSdkConfig(lowered.profile, lowered.fallbackConnection).model).toBe("akm-custom/provider/exact");
-    expect(resolveDispatchModel({ model: "provider/exact", modelIsExact: true }, lowered.profile, "opencode-sdk")).toBe(
-      "provider/exact",
-    );
+    expect(resolveDispatchModel({ model: "provider/exact" }, lowered.profile, "opencode-sdk")).toBe("provider/exact");
   });
 
   test("canonicalizes a harness alias before agent model lowering", () => {
@@ -246,7 +228,6 @@ describe("engine resolution", () => {
     if (resolved.kind !== "agent") throw new Error("fixture must lower to an agent");
     expect(resolved.profile.platform).toBe("claude");
     expect(resolved.profile.bin).toBe("claude");
-    expect(resolved.profile.model).toBe("claude-sonnet-4-6");
-    expect(resolved.profile.modelIsExact).toBe(true);
+    expect(resolved.profile.model).toBe("sonnet");
   });
 });

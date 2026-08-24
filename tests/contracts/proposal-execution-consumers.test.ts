@@ -15,7 +15,7 @@ const RAW_MODULES = {
   "llm-client": /\/llm\/client(?:\.js)?$/,
 } as const;
 
-const RAW_SYMBOLS = new Set(["resolveEngine", "resolveEngineTransportMaterial", "executeRunner", "chatCompletion"]);
+const RAW_SYMBOLS = new Set(["resolveEngine", "executeRunner", "chatCompletion"]);
 
 function rawModule(moduleName: string): keyof typeof RAW_MODULES | undefined {
   return (Object.entries(RAW_MODULES).find(([, pattern]) => pattern.test(moduleName))?.[0] ?? undefined) as

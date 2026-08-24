@@ -10,7 +10,6 @@ import type { WhichFn } from "../../integrations/agent/detect";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
 import { executionEngineDefinitionsFromConfig } from "../../integrations/agent/execution-definitions";
-import { resolveModel } from "../../integrations/agent/model-aliases";
 import {
   type LoadedModelMap,
   type LoadModelMapOptions,
@@ -196,9 +195,7 @@ function runConfiguredEngineProbe(
         fallback = undefined;
       }
     }
-    const configuredModel = configuredEngine.model
-      ? resolveModel(configuredEngine.model, "opencode-sdk", configuredEngine.modelAliases, config.modelAliases)
-      : undefined;
+    const configuredModel = configuredEngine.model;
     const effectiveModel = sdkRunner?.profile.model ?? configuredModel ?? fallback?.connection.model;
     const fallbackCredentialAvailable = credentialAvailable(fallbackCredential, env);
     const missing = [
@@ -532,7 +529,7 @@ export function runSelectedModelAliasesProbe(deps: SelectedModelAliasesProbeDepe
       const model = definition.defaults?.model;
       const modelMapKey = definition.modelMapKey ?? definition.selection.platform ?? definition.selection.name;
       return typeof model === "string"
-        ? [{ engine, alias: model, modelMapKey, modelCompatibility: definition.modelCompatibility }]
+        ? [{ engine, alias: model, modelMapKey }]
         : [];
     });
   if (selected.length === 0) {
@@ -560,9 +557,9 @@ export function runSelectedModelAliasesProbe(deps: SelectedModelAliasesProbeDepe
     };
   }
 
-  const outcomes = selected.map(({ engine, alias, modelMapKey, modelCompatibility }) => {
+  const outcomes = selected.map(({ engine, alias, modelMapKey }) => {
     try {
-      const resolution = resolveModelMapAlias(alias, modelMapKey, modelMap.map, modelCompatibility);
+      const resolution = resolveModelMapAlias(alias, modelMapKey, modelMap.map);
       return resolution.interpretation === "alias"
         ? { kind: "alias" as const, evidence: { engine, alias, modelMapKey } }
         : { kind: "exact" as const };

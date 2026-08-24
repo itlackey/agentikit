@@ -500,43 +500,6 @@ describe("common execution cascade resolver", () => {
     });
   });
 
-  test("expands the valid wildcard model-map profile for engines without a dedicated column", () => {
-    const wildcardMap = mergeModelMapLayers(
-      parseModelMapLayer(
-        JSON.stringify({
-          version: 1,
-          aliases: {
-            balanced: {
-              "*": { model: "provider/default", inference: { effort: "medium", wildcard: true } },
-            },
-          },
-        }),
-        "wildcard cascade models.json",
-      ),
-    );
-    const input = baseInput();
-    const plan = planExecutionCascade({
-      ...input,
-      modelMap: wildcardMap,
-      layers: {
-        installation: layer("installation", { engine: "reviewer" }),
-        current: layer("current", { model: "balanced", tools: [] }),
-      },
-    });
-
-    expect(plan.request.model).toEqual({
-      input: "balanced",
-      interpretation: "alias",
-      resolved: "provider/default",
-    });
-    expect(plan.request.inference).toMatchObject({ effort: "medium", wildcard: true });
-    expect(plan.provenance["/inference/wildcard"]).toEqual({
-      layer: "current",
-      kind: "current",
-      via: "model-alias",
-    });
-  });
-
   test("uses segment-safe JSON Pointer provenance for inference keys", () => {
     const input = baseInput();
     const plan = planExecutionCascade({
@@ -684,32 +647,6 @@ describe("common execution cascade resolver", () => {
         layers: { ...input.layers, current: layer("broken-\ud800", { tools: [] }) },
       }),
     ).toThrow(/stable NFC identifier|Unicode/i);
-  });
-
-  test("applies engine-local model compatibility before global and file mappings", () => {
-    const input = baseInput();
-    const plan = planExecutionCascade({
-      ...input,
-      engines: {
-        ...engines,
-        reviewer: {
-          ...engines.reviewer!,
-          modelCompatibility: {
-            engineAliases: { reasoning: "engine-local-exact" },
-            globalAliases: { reasoning: { claude: "global-exact" } },
-          },
-        },
-      },
-      layers: { ...input.layers, current: layer("current", { model: "reasoning", tools: [] }) },
-    });
-    expect(plan.request.model).toEqual({
-      input: "reasoning",
-      interpretation: "alias",
-      resolved: "engine-local-exact",
-    });
-    // Compatibility strings supply only the exact model. The file profile's
-    // inference defaults do not leak through a nearer engine-local override.
-    expect(plan.request.inference).not.toHaveProperty("nested.alias");
   });
 
   test("rejects accessor-backed policy output without invoking the getter", () => {

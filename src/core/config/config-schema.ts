@@ -52,13 +52,7 @@ import { FeedbackConfigSchema } from "./schema/feedback";
 import { ImproveConfigSchema } from "./schema/improve";
 import { IndexConfigSchema } from "./schema/index-config";
 import { OutputConfigSchema } from "./schema/output";
-import {
-  CURRENT_CONFIG_VERSION,
-  engineName,
-  GlobalModelAliasesSchema,
-  nonEmptyString,
-  nonNegativeNumber,
-} from "./schema/primitives";
+import { CURRENT_CONFIG_VERSION, engineName, nonEmptyString, nonNegativeNumber } from "./schema/primitives";
 import { SearchConfigSchema } from "./schema/search";
 import { SetupConfigSchema } from "./schema/setup";
 import { BundlesConfigSchema, RegistryConfigEntrySchema } from "./schema/sources-bundles";
@@ -123,15 +117,6 @@ export const AkmConfigShape = {
   configVersion: z.literal(CURRENT_CONFIG_VERSION),
   engines: EnginesSchema.optional(),
   defaults: DefaultsSchema.optional(),
-  // Global model-alias tiers: alias → platform → exact model string, with a
-  // reserved `"*"` platform key as fallback. Lets workflows/callers name a
-  // semantic tier ("fast", "deep") that resolves per-harness at dispatch
-  // time. Values are literal model strings, never other aliases (one
-  // resolution level). Platform keys match the platform string a command
-  // builder resolves against ("claude", "opencode", "opencode-sdk", or a
-  // custom profile's name for the default builder) — unknown keys are inert.
-  // Precedence: profile modelAliases > this table > built-in aliases.
-  modelAliases: GlobalModelAliasesSchema.optional(),
   semanticSearchMode: z.enum(["off", "auto"]).default("off"),
   embedding: EmbeddingConnectionConfigSchema.optional(),
   index: IndexConfigSchema.optional(),
@@ -172,7 +157,7 @@ const RETIRED_SOURCE_SHAPE_KEY_MESSAGES: Record<string, string> = {
 
 export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => {
   const raw = config as Record<string, unknown>;
-  for (const key of ["profiles", "llm", "agent", "features", "stashes"]) {
+  for (const key of ["profiles", "llm", "agent", "features", "stashes", "modelAliases"]) {
     if (key in raw) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

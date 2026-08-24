@@ -44,23 +44,8 @@ export interface AgentProfile {
   readonly envPassthrough: readonly string[];
   /** How the wrapper should attempt to parse stdout. */
   readonly parseOutput: AgentParseMode;
-  /** Exact or alias-resolved model selected for this dispatch. */
+  /** Exact model selected for this dispatch. */
   readonly model?: string;
-  /** The model has already been lowered through all alias tables. */
-  readonly modelIsExact?: boolean;
-  /**
-   * Per-engine model aliases merged on top of the built-in alias table.
-   * Keys are lowercase alias strings; values are the exact model string this
-   * platform's CLI expects. Configured under engines.<name>.modelAliases.
-   */
-  readonly modelAliases?: Readonly<Record<string, string>>;
-  /**
-   * Config-root `modelAliases` tier table (alias → platform → model string,
-   * `"*"` fallback), stamped onto the resolved profile so command builders can
-   * pass it to resolveModel without a config dependency. Precedence sits
-   * between the per-profile `modelAliases` and the built-in alias table.
-   */
-  readonly globalModelAliases?: Readonly<Record<string, Readonly<Record<string, string>>>>;
 }
 
 // AKM_EVENT_SOURCE carries usage-event provenance (improve/task) so that akm

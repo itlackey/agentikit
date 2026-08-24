@@ -319,14 +319,13 @@ the first.
 
 Set `defaults.engine`/`defaults.model` (or per-unit `unit.engine`/`unit.model`)
 rather than hardcoding an exact model id, so the workflow stays
-harness-agnostic. Reference semantic aliases — `fast`, `balanced`, `deep`, or
-whatever your `modelAliases` config defines — in `model:` fields; see
+harness-agnostic. Reference semantic aliases — `fast`, `balanced`, `reasoning`,
+or aliases defined in the installed/user `models.json` files — in `model:` fields; see
 [Workflow Schema: Model references](../reference/workflow-schema.md#model-references)
 for the exact resolution order and config shape.
 
-Point `deep` work (review, verification, judging) at `fable` — Anthropic's
-tier above Opus — and keep high-volume fan-out units on `fast`/`balanced`.
-The richer example's `review` map step is a good template: `deep` on the
+Point `reasoning` work at a capable model and keep high-volume fan-out units
+on `fast`/`balanced`. The richer example's `review` map step is a good template: `reasoning` on the
 per-item reviewer, `balanced` as the run default for everything else.
 
 ## Fan-out width

@@ -89,8 +89,8 @@ switch. `reasoning_effort` is AKM-owned and cannot be set through
 `enableThinking: false`, AKM emits a runtime warning so an ineffective provider
 control is visible.
 
-An agent engine may set `bin`, `args`, `workspace`, `model`, `timeoutMs`, and
-`modelAliases`. Only `platform: "opencode-sdk"` may set `llmEngine`; it names
+An agent engine may set `bin`, `args`, `workspace`, `model`, and `timeoutMs`.
+Only `platform: "opencode-sdk"` may set `llmEngine`; it names
 the LLM engine used as that SDK engine's fallback connection.
 
 `platform: "opencode-sdk"` needs the **`opencode` binary** on PATH (or a `bin`
@@ -99,20 +99,15 @@ client with no dependencies — it spawns `opencode serve` and talks to it — s
 the npm dependency alone does not make the platform usable. Install the binary
 with `npm i -g opencode-ai` or opencode's own installer.
 
-Config-root `modelAliases` resolve by exact engine/platform column first, then
-the shared `llm` column for direct and fallback LLM engines, then `"*"`. The
-legacy string mappings remain supported as nearer compatibility inputs. An
-engine's own `modelAliases` wins over the config-root table, and both win over
-the installed/user model-map files described below.
-
 ### Model-map files
 
 AKM ships an immutable `models.json` package asset with three intent aliases:
 `fast`, `balanced`, and `reasoning`. The installed starter has separate
-columns for Claude Code, OpenCode, and OpenCode SDK only. It deliberately has
-no universal `"*"` or `llm` value: a provider-specific identifier is not
-pretended to work on unrelated engines. Add mappings for Gemini, Codex, named
-direct LLM engines, or other harnesses in your user file.
+columns for Claude Code, OpenCode, and OpenCode SDK only. A provider-specific
+identifier is not pretended to work on unrelated engines. Add mappings for
+Gemini, Codex, named direct LLM engines, or other harnesses in your user file.
+Config-root and per-engine `modelAliases` are rejected; this file is the only
+alias definition surface.
 
 An optional operator-owned file lives beside `config.json` at
 `$XDG_CONFIG_HOME/akm/models.json` (or `<AKM_CONFIG_DIR>/models.json`). It uses

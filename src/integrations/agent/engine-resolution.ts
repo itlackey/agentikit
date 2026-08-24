@@ -18,7 +18,6 @@ import { formatExtraParamsIssue, validateExtraParams } from "../../core/extra-pa
 import { collectSensitiveValues } from "../../core/redaction";
 import { getHarness } from "../harnesses";
 import { DEFAULT_AGENT_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS } from "./config";
-import { resolveLlmModel, resolveModel } from "./model-aliases";
 import { type AgentProfile, getBuiltinAgentProfile } from "./profiles";
 
 // RunnerSpec referenced via an inline `import("./runner")` TYPE QUERY (WI-9.8
@@ -72,7 +71,6 @@ export interface AgentEngineConfig {
   workspace?: string;
   model?: string;
   timeoutMs?: number | null;
-  modelAliases?: Record<string, string>;
   llmEngine?: string;
 }
 
@@ -81,7 +79,6 @@ export type EngineConfig = LlmEngineConfig | AgentEngineConfig;
 export interface EngineResolutionConfig {
   engines?: Record<string, EngineConfig>;
   defaults?: { engine?: string; llmEngine?: string };
-  modelAliases?: Record<string, Record<string, string>>;
 }
 
 export interface CredentialDescriptor {
@@ -234,19 +231,6 @@ function rawLlmConnection(engine: LlmEngineConfig): Record<string, unknown> {
   return connection;
 }
 
-function resolveLlmTransportMaterial(name: string, config: EngineResolutionConfig): ResolvedLlmUse {
-  const engine = resolveEngineConfig(name, config);
-  if (engine.kind !== "llm") {
-    throw new ConfigError(`Engine "${name}" is not an LLM engine.`, "INVALID_CONFIG_FILE");
-  }
-  return {
-    engine: name,
-    connection: sterileRecord(rawLlmConnection(engine)) as LlmConnectionConfig,
-    credential: resolveCredential(name, engine, config),
-    timeoutMs: effectiveTimeout(engine, [], DEFAULT_LLM_TIMEOUT_MS),
-  };
-}
-
 /** Resolve one selected LLM engine and overlays without materializing credentials. */
 export function resolveLlmEngineUse(
   config: EngineResolutionConfig,
@@ -283,7 +267,6 @@ export function resolveLlmEngineUse(
   for (const key of Object.keys(connection)) {
     if (connection[key] === undefined) delete connection[key];
   }
-  connection.model = resolveLlmModel(connection.model as string, name, ownValue(config, "modelAliases"));
   return {
     engine: name,
     connection: sterileRecord(connection) as LlmConnectionConfig,
@@ -322,12 +305,7 @@ export function materializeLlmConnection(
   return materializeLlmConnectionWithCredential(resolved, resolveCredentialFromEnv(resolved.credential, envSource));
 }
 
-function lowerAgentEngine(
-  name: string,
-  engine: AgentEngineConfig,
-  config: EngineResolutionConfig,
-  resolveAliases = true,
-): RunnerSpec {
+function lowerAgentEngine(name: string, engine: AgentEngineConfig, config: EngineResolutionConfig): RunnerSpec {
   const harness = getHarness(engine.platform);
   if (!harness?.capabilities.agentDispatch) {
     throw new ConfigError(
@@ -342,8 +320,6 @@ function lowerAgentEngine(
   const args = ownValue(engine, "args");
   const workspace = ownValue(engine, "workspace");
   const model = ownValue(engine, "model");
-  const engineModelAliases = ownValue(engine, "modelAliases");
-  const globalModelAliases = ownValue(config, "modelAliases");
   const profile = sterileRecord<AgentProfile>({
     name,
     platform,
@@ -355,14 +331,7 @@ function lowerAgentEngine(
     envPassthrough: builtin?.envPassthrough ?? [],
     parseOutput: "text",
     ...(workspace ? { workspace: path.resolve(workspace) } : {}),
-    ...(model
-      ? {
-          model: resolveAliases ? resolveModel(model, platform, engineModelAliases, globalModelAliases) : model,
-          modelIsExact: true,
-        }
-      : {}),
-    ...(resolveAliases && engineModelAliases ? { modelAliases: engineModelAliases } : {}),
-    ...(resolveAliases && globalModelAliases ? { globalModelAliases } : {}),
+    ...(model ? { model } : {}),
   });
   if (!sdk) {
     return {
@@ -375,9 +344,7 @@ function lowerAgentEngine(
   const defaults = ownValue(config, "defaults");
   const fallbackName = ownValue(engine, "llmEngine") ?? (defaults ? ownValue(defaults, "llmEngine") : undefined);
   const fallback = fallbackName
-    ? resolveAliases
-      ? resolveLlmEngineUse(config, [{ engine: fallbackName }], { optional: true })
-      : resolveLlmTransportMaterial(fallbackName, config)
+    ? resolveLlmEngineUse(config, [{ engine: fallbackName }], { optional: true })
     : undefined;
   return {
     kind: "sdk",
@@ -422,21 +389,6 @@ export function resolveEngine(name: string, config: EngineResolutionConfig): Run
  * preparation; this function returns only its raw symbolic transport material
  * so lowering cannot reinterpret a changed alias/model map.
  */
-export function resolveEngineTransportMaterial(name: string, config: EngineResolutionConfig): RunnerSpec {
-  const engine = resolveEngineConfig(name, config);
-  if (engine.kind === "llm") {
-    const resolved = resolveLlmTransportMaterial(name, config);
-    return {
-      kind: "llm",
-      engine: name,
-      connection: resolved.connection,
-      ...(resolved.credential ? { credential: resolved.credential } : {}),
-      timeoutMs: resolved.timeoutMs,
-    };
-  }
-  return lowerAgentEngine(name, engine, config, false);
-}
-
 // ── AkmConfig convenience wrappers (moved from core/config/config.ts, WI-9.8
 // KILL 3, D.3 edge A) ────────────────────────────────────────────────────────
 //

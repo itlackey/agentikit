@@ -89,7 +89,6 @@ describe("versioned installed/user model-map contract", () => {
         const command = getCommandBuilder(platform).build(profile(platform), {
           prompt: "test",
           model: selection.model,
-          modelIsExact: true,
         });
         expect(command.argv[command.argv.indexOf("--model") + 1]).toBe(exact[platform]);
       }
@@ -103,7 +102,6 @@ describe("versioned installed/user model-map contract", () => {
           envPassthrough: [],
           parseOutput: "text",
           model: sdkSelection.model,
-          modelIsExact: true,
         }).model,
       ).toBe(exact.sdk);
     }
@@ -138,6 +136,9 @@ describe("versioned installed/user model-map contract", () => {
   test("rejects unsupported versions and undocumented structured profile fields", () => {
     expect(() => parseModelMapLayer('{"version":2,"aliases":{}}', "models.json")).toThrow(/version/i);
     expect(() =>
+      parseModelMapLayer('{"version":1,"aliases":{"fast":{"*":"provider/model"}}}', "models.json"),
+    ).toThrow(/engine key/i);
+    expect(() =>
       parseModelMapLayer('{"version":1,"aliases":{"fast":{"claude":{"model":"x","effort":"high"}}}}', "models.json"),
     ).toThrow(/effort/);
   });
@@ -162,21 +163,6 @@ describe("versioned installed/user model-map contract", () => {
   test("fails when a known alias lacks the selected engine mapping", () => {
     const map = mergeModelMapLayers(parseModelMapLayer(installedText, "installed models.json"));
     expect(() => resolveModelMapAlias("balanced", "gemini", map)).toThrow(/known alias.*balanced.*gemini/i);
-  });
-
-  test("engine-local and legacy config-root aliases remain nearer compatibility inputs", () => {
-    const map = mergeModelMapLayers(parseModelMapLayer(installedText, "installed models.json"));
-    expect(
-      resolveModelMapAlias("balanced", "claude", map, {
-        engineAliases: { balanced: "engine-local-exact" },
-        globalAliases: { balanced: { claude: "config-root-exact" } },
-      }).model,
-    ).toBe("engine-local-exact");
-    expect(
-      resolveModelMapAlias("balanced", "claude", map, {
-        globalAliases: { balanced: { claude: "config-root-exact" } },
-      }).model,
-    ).toBe("config-root-exact");
   });
 
   test("normalizes alias and engine keys while rejecting case collisions", () => {

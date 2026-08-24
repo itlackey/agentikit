@@ -40,18 +40,14 @@ export const opencodeBuilder: AgentCommandBuilder = {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");
     assertNotFlag(req.agent, "agent");
-    let configuredModel: string | undefined;
     const args: string[] = req.model ? [] : [...profile.args];
     if (req.model) {
       for (let index = 0; index < profile.args.length; index += 1) {
         const arg = profile.args[index];
         if (arg === undefined) continue;
         if (arg === "--model") {
-          configuredModel = profile.args[index + 1];
           index += 1;
-        } else if (arg.startsWith("--model=")) {
-          configuredModel = arg.slice("--model=".length);
-        } else {
+        } else if (!arg.startsWith("--model=")) {
           args.push(arg);
         }
       }
@@ -64,8 +60,7 @@ export const opencodeBuilder: AgentCommandBuilder = {
     }
     if (req.model) {
       const resolved = resolveDispatchModel(req, profile, "opencode") as string;
-      const provider = configuredModel?.split("/", 1)[0];
-      args.push("--model", provider && !resolved.includes("/") ? `${provider}/${resolved}` : resolved);
+      args.push("--model", resolved);
     }
     args.push("--");
     args.push(req.prompt);
