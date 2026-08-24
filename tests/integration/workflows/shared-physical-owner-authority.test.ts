@@ -27,6 +27,7 @@ type AdapterId =
   | "claude"
   | "dotenv"
   | "generic-files"
+  | "okf"
   | "opencode";
 
 interface Fixture {
@@ -133,6 +134,22 @@ describe("shared adapter physical-owner authority", () => {
     if (state === "complete") expect((await showLocal({ ref: "commands/same" })).path).toBe(earlyPath);
     else await expect(showLocal({ ref: "commands/same" })).rejects.toThrow(/not found/i);
     expect(await lookupBundleRef(parseBundleRef("later//commands/same"))).toMatchObject({ filePath: laterPath });
+  });
+
+  test.each([
+    "missing",
+    "incomplete",
+    "stale",
+  ] as const)("an earlier physical owner with a %s row blocks a lower unsupported-script diagnostic", async (state) => {
+    const early = fixture(`early-script-diagnostic-${state}`, "okf");
+    const later = fixture(`later-script-diagnostic-${state}`, "akm");
+    write(early.root, "scripts/readme.txt.md", "# EARLY_OWNER\n");
+    write(later.root, "scripts/readme.txt", "LATE_UNSUPPORTED_SECRET\n");
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+    mutateEntry("early//scripts/readme.txt", state, path.join(early.root, "stale", "scripts", "readme.txt.md"));
+
+    await expect(showLocal({ ref: "scripts/readme.txt" })).rejects.toThrow(/not found/i);
   });
 
   test("show rejects a missing index row after one physical-owner probe", async () => {
