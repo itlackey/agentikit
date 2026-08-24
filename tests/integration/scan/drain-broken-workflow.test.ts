@@ -17,22 +17,15 @@
  * `tests/integration/workflows/indexer-rejection.test.ts`.
  */
 
-import { beforeAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { registerBuiltinAdapters } from "../../../src/core/adapter/adapters";
 import { akmAdapter } from "../../../src/core/adapter/adapters/akm-adapter";
 import { akmWorkflowAdapter } from "../../../src/core/adapter/adapters/akm-workflow-adapter";
-import { resetAdapterRegistryForTests } from "../../../src/core/adapter/registry";
 import type { BundleComponent } from "../../../src/core/adapter/types";
 import { drainDirDocuments } from "../../../src/indexer/scan/drain-dir";
 import { buildFileContext } from "../../../src/indexer/walk/file-context";
-
-beforeAll(() => {
-  resetAdapterRegistryForTests();
-  registerBuiltinAdapters();
-});
 
 const VALID_WORKFLOW = `---
 type: workflow

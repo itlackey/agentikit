@@ -16,8 +16,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { BUILTIN_ADAPTERS, okfAdapter, registerBuiltinAdapters } from "../../../src/core/adapter/adapters";
-import { adapterForId, getAdapters, resetAdapterRegistryForTests } from "../../../src/core/adapter/registry";
+import { BUILTIN_ADAPTERS, okfAdapter } from "../../../src/core/adapter/adapters";
+import { adapterForId, getAdapters } from "../../../src/core/adapter/registry";
 
 /** The frozen §1.2 probe order (array order == probe precedence). */
 const PROBE_ORDER = [
@@ -36,8 +36,7 @@ const PROBE_ORDER = [
 
 describe("adapter registry — static frozen map (normative §12.6)", () => {
   test("getAdapters() is populated at module load — no registration call required", () => {
-    // No resetAdapterRegistryForTests()/registerBuiltinAdapters() ran in this
-    // file; the registry is live purely from importing it. This is the exact
+    // The registry is live purely from importing it. This is the exact
     // production guarantee that was previously broken (empty registry ⇒ every
     // source fell back to `akm`).
     expect(getAdapters().length).toBe(11);
@@ -67,20 +66,5 @@ describe("adapter registry — static frozen map (normative §12.6)", () => {
     snapshot.push(okfAdapter);
     expect(getAdapters().length).toBe(11);
     expect(getAdapters().map((a) => a.id)).toEqual(PROBE_ORDER);
-  });
-});
-
-describe("deprecated test shims are no-ops compatible with the static map", () => {
-  test("resetAdapterRegistryForTests() does NOT empty the registry (static, always populated)", () => {
-    resetAdapterRegistryForTests();
-    expect(getAdapters().length).toBe(11);
-    expect(adapterForId("okf")).toBe(okfAdapter);
-  });
-
-  test("registerBuiltinAdapters() is an idempotent no-op — never duplicates", () => {
-    registerBuiltinAdapters();
-    registerBuiltinAdapters();
-    expect(getAdapters().length).toBe(11);
-    expect(getAdapters().filter((a) => a.id === "okf")).toHaveLength(1);
   });
 });

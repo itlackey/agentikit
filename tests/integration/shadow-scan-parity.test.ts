@@ -32,9 +32,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { registerBuiltinAdapters } from "../../src/core/adapter/adapters";
 import { akmAdapter } from "../../src/core/adapter/adapters/akm-adapter";
-import { resetAdapterRegistryForTests } from "../../src/core/adapter/registry";
 import type { BundleComponent, IndexDocument } from "../../src/core/adapter/types";
 import { getDbPath } from "../../src/core/paths";
 import { akmIndex } from "../../src/indexer/indexer";
@@ -86,8 +84,6 @@ for (const { name, root } of STASHES) {
     let rows: PersistedRow[] = [];
 
     beforeAll(async () => {
-      resetAdapterRegistryForTests();
-      registerBuiltinAdapters();
       docs = newStream(root);
 
       // Build the live index over the fixture in a sandboxed XDG home so the

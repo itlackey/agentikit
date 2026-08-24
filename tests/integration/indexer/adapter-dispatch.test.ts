@@ -26,8 +26,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { registerBuiltinAdapters } from "../../../src/core/adapter/adapters";
-import { adapterForId, resetAdapterRegistryForTests } from "../../../src/core/adapter/registry";
+import { adapterForId } from "../../../src/core/adapter/registry";
 import { getDbPath } from "../../../src/core/paths";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
@@ -80,8 +79,6 @@ describe("indexer dispatch — a detected llm-wiki component is recognized by th
   let rows: Row[] = [];
 
   beforeAll(async () => {
-    resetAdapterRegistryForTests();
-    registerBuiltinAdapters();
     const cache = sandboxXdgCacheHome();
     const cfg = sandboxXdgConfigHome(cache.cleanup);
     cleanup = cfg.cleanup;
@@ -135,11 +132,6 @@ describe("indexer dispatch — a detected llm-wiki component is recognized by th
 });
 
 describe("indexer dispatch — unknown adapter id skip contract (§4)", () => {
-  beforeAll(() => {
-    resetAdapterRegistryForTests();
-    registerBuiltinAdapters();
-  });
-
   test("adapterForId returns undefined for an unknown id (the production skip+warn condition)", () => {
     expect(adapterForId("no-such-adapter")).toBeUndefined();
     // A known id still resolves — the loop dispatches it rather than skipping.

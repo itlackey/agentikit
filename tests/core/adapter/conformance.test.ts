@@ -5,8 +5,8 @@
 /**
  * WI-D gate — the cross-adapter CONFORMANCE suite (adapter-spec §4 / §12.3),
  * the Chunk-2 CLOSE. Exercises the two properties the format-neutral contract
- * requires of EVERY registered `BundleAdapter`, driven off `getAdapters()`
- * (populated by `registerBuiltinAdapters()`), so the suite covers the adapters
+ * requires of EVERY registered `BundleAdapter`, driven off `getAdapters()`,
+ * so the suite covers the adapters
  * that are actually registered rather than a hand-picked pair.
  *
  * ── 1. `looksLikeRoot` own-root-only (§4) ──
@@ -41,7 +41,7 @@
  * `scanComponent` module used to carry (owner ruling 2026-07-21).
  */
 
-import { beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -51,10 +51,9 @@ import {
   llmWikiAdapter,
   okfAdapter,
   opencodeAdapter,
-  registerBuiltinAdapters,
 } from "../../../src/core/adapter/adapters";
 import type { BundleAdapter } from "../../../src/core/adapter/bundle-adapter";
-import { adapterForId, getAdapters, resetAdapterRegistryForTests } from "../../../src/core/adapter/registry";
+import { adapterForId, getAdapters } from "../../../src/core/adapter/registry";
 import type { BundleComponent, IndexDocument } from "../../../src/core/adapter/types";
 import {
   AdapterConceptCollisionError,
@@ -118,13 +117,6 @@ function orderedProbeOwner(root: string): string | undefined {
   }
   return undefined;
 }
-
-beforeAll(() => {
-  // Deterministic registry snapshot: reset the module-level singleton, then
-  // register only the built-ins (mirrors registry.test.ts's isolation).
-  resetAdapterRegistryForTests();
-  registerBuiltinAdapters();
-});
 
 function component(id: string, adapterId: string, root: string): BundleComponent {
   return { id, adapter: adapterId, root, writable: true };
