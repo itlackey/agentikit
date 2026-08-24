@@ -750,8 +750,8 @@ function lintAkmSweep(
       // `ADVISORY_LINT_ISSUES`, never by which half of the pass produced it, so
       // a future compile-warning kind carrying a fatal code cannot slip past
       // `--fail-on-flagged`.
-      // NB: the CLI passes the ABSOLUTE filePath to parseWorkflow (matching the
-      // old WorkflowLinter), whereas the adapter passes the change relPath.
+      // The CLI passes the absolute filePath to the shared source-IR frontend,
+      // whereas the adapter passes the change relPath.
       if (subdir === "workflows") {
         const frontend = workflowFrontendDiagnostics(relPath, raw, filePath);
         for (const finding of [...frontend.errors, ...frontend.warnings]) {

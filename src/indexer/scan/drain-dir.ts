@@ -15,8 +15,8 @@
  *  - **Broken-workflow drop (item 3).** The live path dropped a broken workflow
  *    via the renderer contributor's throw → metadata-pass skip-with-warning; the
  *    `akm` adapter's synchronous `foldRecognizedMetadata` SWALLOWS the parse
- *    error, so a broken workflow would otherwise silently index. We re-run
- *    `parseWorkflow` on drained workflow docs and DROP
+ *    error, so a broken workflow would otherwise silently index. We run the
+ *    shared source-IR compiler on drained workflow docs and DROP
  *    the entry with the same `Skipped workflow …` warning
  *    ({@link buildMetadataSkipWarning}), so the workflow-skip summary counts it.
  *
@@ -165,9 +165,9 @@ export function recognizeStashEntries(stashRoot: string, files: string[]): Stash
 }
 
 /**
- * If `doc` is a workflow, re-parse it: return a `Skipped workflow …` drop
- * warning when it is broken, or return `null` when it compiles to shared source
- * IR. Non-workflow docs return `null` immediately.
+ * If `doc` is a workflow, compile it through source IR: return a
+ * `Skipped workflow …` drop warning when it is broken, or return `null` when
+ * it compiles. Non-workflow docs return `null` immediately.
  */
 function handleWorkflowDoc(doc: IndexDocument, file: FileContext, workspaceRoot: string): string | null {
   if (

@@ -41,8 +41,8 @@
  * ── Cycle-safety (chunk-2 ratchet, baseline 18) ──
  *
  * Imported ONLY by `akm-adapter.ts` (no inbound `src/` edge) → can never join a
- * cycle. It VALUE-imports `parseWorkflow` (already transitively reachable from
- * `akm-adapter` via `matchers.ts`) and the pure predicate `isDangerousEnvKey`
+ * cycle. It VALUE-imports the one `compileWorkflowSource` frontend and the pure
+ * predicate `isDangerousEnvKey`
  * from `commands/lint/env-key-rules` — the predicate is imported, not copied,
  * precisely so the 40+ security-sensitive dangerous-key names cannot drift from
  * the canonical set; importing it is ratchet-neutral (verified: 18). The small
@@ -419,9 +419,8 @@ export function workflowYamlSourceDiagnostics(
  * no `output:` schema, a reference to an undeclared param). The read-only
  * `/.cache/` + `/registry/` cached copies are skipped, and nothing is written.
  *
- * `parsePath` is the path handed to `parseWorkflow` (the adapter passes the
- * change relPath, the CLI passes the absolute filePath — matching each
- * caller's legacy behavior).
+ * `parsePath` is the source identity handed to `compileWorkflowSource` (the
+ * adapter passes the change relPath; the CLI passes the absolute filePath).
  *
  * A caller that surfaces BOTH halves must call this once and route the result
  * itself. The frontend is expensive — instruction bodies reach
