@@ -397,9 +397,13 @@ async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
     doFullDelete,
     onProgress,
     !clean,
-    async (dirRecords) => {
+    async (dirRecords, ownersByRoot) => {
       const runner = ctx.enrichmentExecution.runner;
-      if (runner && isLlmFeatureEnabled(config, "metadata_enhance") && dirRecordsNeedMetadataDispatch(db, dirRecords)) {
+      if (
+        runner &&
+        isLlmFeatureEnabled(config, "metadata_enhance") &&
+        dirRecordsNeedMetadataDispatch(db, dirRecords, ownersByRoot)
+      ) {
         ctx.enrichmentLease = await preflightStructuredLlmRunner(runner);
       }
     },
@@ -1112,25 +1116,48 @@ type DirNeedingLlm = {
   stash: StashFile;
 };
 
+type IndexedSourceOwner = Pick<EntryProvenance, "bundleId" | "componentId" | "adapterId">;
+
+function buildIndexedSourceOwners(sources: readonly SearchSource[]): Map<string, IndexedSourceOwner> {
+  const installations = deriveInstallations([...sources]);
+  const owners = new Map<string, IndexedSourceOwner>();
+  sources.forEach((source, index) => {
+    const installation = installations[index];
+    if (!installation) return;
+    const component = installation.components[0];
+    owners.set(path.resolve(source.path), {
+      bundleId: installation.id,
+      componentId: component?.id ?? installation.id,
+      adapterId: component?.adapter ?? "akm",
+    });
+  });
+  return owners;
+}
+
 /** Read-only mirror of the enrichment cache gate used before entry persistence. */
-function dirRecordsNeedMetadataDispatch(db: Database, records: readonly DirRecord[]): boolean {
+function dirRecordsNeedMetadataDispatch(
+  db: Database,
+  records: readonly DirRecord[],
+  ownersByRoot: ReadonlyMap<string, IndexedSourceOwner>,
+): boolean {
   for (const record of records) {
     if (record.skip || record.remove || !record.stash) continue;
+    const owner = ownersByRoot.get(path.resolve(record.currentStashDir));
+    if (!owner) throw new Error(`Missing bundle provenance for indexed source ${record.currentStashDir}`);
     for (const entry of record.stash.entries) {
       if (entry.quality !== "generated" || isEnrichmentComplete(entry)) continue;
-      const entryFile = entry.filename
-        ? (record.files.find((file) => path.basename(file) === entry.filename) ?? record.files[0])
-        : record.files[0];
+      const entryFile = entry.filename ? path.join(record.dirPath, entry.filename) : undefined;
+      if (!entryFile) continue;
+      const adapterConceptId = record.conceptIdByFile?.get(entryFile);
+      if (!adapterConceptId) continue;
       let fileContent: string | undefined;
-      if (entryFile) {
-        try {
-          fileContent = fs.readFileSync(entryFile, "utf8");
-        } catch {
-          // The dispatch path uses the same deterministic metadata fallback.
-        }
+      try {
+        fileContent = fs.readFileSync(entryFile, "utf8");
+      } catch {
+        // The dispatch path uses the same deterministic metadata fallback.
       }
       const bodyHash = computeBodyHash(fileContent ?? `${entry.name}\n${entry.description ?? ""}`);
-      const cacheKey = `${record.currentStashDir}:${entry.type}:${entry.name}`;
+      const cacheKey = deriveEntryProvenance(owner, entry.type, entry.name, adapterConceptId).itemRef;
       const cached = getLlmCacheEntry(db, cacheKey, bodyHash);
       if (!cached) return true;
       try {
@@ -1840,7 +1867,10 @@ async function indexEntries(
   doFullDelete = false,
   onProgress?: (event: IndexProgressEvent) => void,
   reconcileMissingDirs = true,
-  beforePersist?: (dirRecords: readonly DirRecord[]) => Promise<void>,
+  beforePersist?: (
+    dirRecords: readonly DirRecord[],
+    ownersByRoot: ReadonlyMap<string, IndexedSourceOwner>,
+  ) => Promise<void>,
 ): Promise<{
   scannedDirs: number;
   skippedDirs: number;
@@ -1861,7 +1891,8 @@ async function indexEntries(
     reconcileMissingDirs,
   );
 
-  await beforePersist?.(dirRecords);
+  const bundleByRoot = buildIndexedSourceOwners(allSourceEntries);
+  await beforePersist?.(dirRecords, bundleByRoot);
 
   // Phase 2 (sync): write all pre-generated metadata inside a single transaction.
   // Source roots feed the #624-P1 zero-document preflight (a full-rebuild wipe
@@ -1872,18 +1903,6 @@ async function indexEntries(
   // provenance. `deriveInstallations`
   // preserves source order, so a positional zip yields the SAME bundle id the
   // dispatched `adapter.recognize` emits as `IndexDocument.ref` for that root.
-  const installations = deriveInstallations(allSourceEntries);
-  const bundleByRoot = new Map<string, { bundleId: string; componentId: string; adapterId: string }>();
-  allSourceEntries.forEach((source, i) => {
-    const inst = installations[i];
-    if (!inst) return;
-    const component = inst.components[0];
-    bundleByRoot.set(path.resolve(source.path), {
-      bundleId: inst.id,
-      componentId: component?.id ?? inst.id,
-      adapterId: component?.adapter ?? "akm",
-    });
-  });
   const { dirsNeedingLlm } = persistDirRecords(
     db,
     dirRecords,
@@ -2497,7 +2516,7 @@ async function enhanceStashWithLlm(
         // Cache metadata enrichment by the canonical durable item ref.
         const cacheBody = fileContent ?? `${entry.name}\n${entry.description ?? ""}`;
         const bodyHash = computeBodyHash(cacheBody);
-        const cacheKey = itemRefs?.[idx] ?? entry.ref;
+        const cacheKey = itemRefs?.[idx];
 
         if (!cacheKey) throw new Error(`Missing canonical item ref for enrichment entry ${entry.name}.`);
 
