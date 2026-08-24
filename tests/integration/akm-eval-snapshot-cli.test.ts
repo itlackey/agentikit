@@ -2,10 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { openDatabase } from "../../src/storage/database";
+import { ensureSchema } from "../../src/storage/repositories/index-schema";
 import { makeSandboxDir } from "../_helpers/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..");
@@ -43,8 +44,21 @@ function privateFile(filePath: string, contents: string): void {
 
 function createDatabase(filePath: string): void {
   privateDirectory(path.dirname(filePath));
-  const database = new Database(filePath);
+  const database = openDatabase(filePath);
   try {
+    database.exec("CREATE TABLE snapshot_probe (value TEXT NOT NULL)");
+    database.prepare("INSERT INTO snapshot_probe (value) VALUES (?)").run(path.basename(filePath));
+  } finally {
+    database.close();
+  }
+  fs.chmodSync(filePath, 0o600);
+}
+
+function createIndexDatabase(filePath: string): void {
+  privateDirectory(path.dirname(filePath));
+  const database = openDatabase(filePath);
+  try {
+    ensureSchema(database, undefined);
     database.exec("CREATE TABLE snapshot_probe (value TEXT NOT NULL)");
     database.prepare("INSERT INTO snapshot_probe (value) VALUES (?)").run(path.basename(filePath));
   } finally {
@@ -86,7 +100,7 @@ function createFixture(withRemoteBundle = false): SnapshotFixture {
       bundles,
     })}\n`,
   );
-  createDatabase(path.join(dataDir, "index.db"));
+  createIndexDatabase(path.join(dataDir, "index.db"));
   createDatabase(path.join(dataDir, "state.db"));
 
   // A broken HOME config proves that XDG/AKM path resolution never falls back to it.

@@ -357,6 +357,9 @@ describe("akm improve memory cleanup", () => {
       config: withImproveAutonomy(
         withTestImproveLlm({
           semanticSearchMode: "off",
+          bundles: { stash: { path: stashDir, writable: true } },
+          defaultBundle: "stash",
+          defaultWriteTarget: "stash",
           improve: { strategies: { default: { processes: { extract: { enabled: false } } } } },
         }),
       ),
