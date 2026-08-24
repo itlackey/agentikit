@@ -33,7 +33,7 @@ import path from "node:path";
 import { akmDistill } from "../../../src/commands/improve/distill";
 import { akmImprove } from "../../../src/commands/improve/improve";
 import { akmReflect } from "../../../src/commands/improve/reflect";
-import { type LlmProfileConfig, saveConfig } from "../../../src/core/config/config";
+import { saveConfig } from "../../../src/core/config/config";
 import { appendEvent, type EventsContext, readEvents } from "../../../src/core/events";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { akmIndex } from "../../../src/indexer/indexer";
@@ -91,14 +91,6 @@ function defaultDbEvents(): Array<{ eventType: string }> {
   return readEvents().events;
 }
 
-function fakeLlmConnection(): LlmProfileConfig {
-  return {
-    endpoint: "http://localhost:11434/v1/chat/completions",
-    model: "test-model",
-    supportsJsonSchema: true,
-  };
-}
-
 describe("appendEvent hot path — reflect", () => {
   test("failure path: reflect_invoked + reflect_completed land in the injected handle; default db stays empty", async () => {
     const injected = makeInjectedStateDb();
@@ -110,7 +102,6 @@ describe("appendEvent hot path — reflect", () => {
     const result = await akmReflect({
       ref: "memories/does-not-exist-anywhere",
       stashDir: storage.stashDir,
-      runner: { kind: "llm", engine: "test-llm", connection: fakeLlmConnection() },
       chat: async () => {
         throw new Error("stub transport down");
       },
@@ -144,7 +135,6 @@ describe("appendEvent hot path — reflect", () => {
     await akmReflect({
       ref: "lessons/hot-path-pin",
       stashDir: storage.stashDir,
-      runner: { kind: "llm", engine: "test-llm", connection: fakeLlmConnection() },
       assetContent: "",
       chat: async () => payload,
       eventsCtx,

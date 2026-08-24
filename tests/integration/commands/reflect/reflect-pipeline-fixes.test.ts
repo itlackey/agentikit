@@ -316,6 +316,7 @@ describe("Reflect quality gate — source context", () => {
     const config = {
       ...quietQualityGateConfig(),
       engines: {
+        "fake-agent": { kind: "agent", platform: "opencode", bin: "fake-agent" },
         judge: {
           kind: "llm",
           endpoint: "http://localhost:11434/v1/chat/completions",
@@ -323,7 +324,7 @@ describe("Reflect quality gate — source context", () => {
           apiKey: "$AKM_REFLECT_JUDGE_REQUIRED_KEY",
         },
       },
-      defaults: { llmEngine: "judge", improveStrategy: "default" },
+      defaults: { engine: "fake-agent", llmEngine: "judge", improveStrategy: "default" },
       improve: { strategies: { default: { processes: { reflect: { qualityGate: { enabled: true } } } } } },
     } as AkmConfig;
     let spawned = 0;
@@ -334,19 +335,6 @@ describe("Reflect quality gate — source context", () => {
           ref: "knowledge/judge-preflight",
           stashDir: stash,
           config,
-          runner: {
-            kind: "agent",
-            engine: "fake-agent",
-            profile: {
-              name: "fake-agent",
-              platform: "opencode",
-              bin: "fake-agent",
-              args: [],
-              stdio: "captured",
-              envPassthrough: [],
-              parseOutput: "text",
-            },
-          },
           assetContent: sourceContent,
           runAgentOptions: {
             spawn: (...args) => {
@@ -380,19 +368,6 @@ describe("Reflect quality gate — source context", () => {
       ref: "knowledge/no-judge-runner",
       stashDir: stash,
       config,
-      runner: {
-        kind: "agent",
-        engine: "fake-agent",
-        profile: {
-          name: "fake-agent",
-          platform: "opencode",
-          bin: "fake-agent",
-          args: [],
-          stdio: "captured",
-          envPassthrough: [],
-          parseOutput: "text",
-        },
-      },
       runAgentOptions: {
         spawn: (...args) => {
           spawned += 1;
@@ -425,6 +400,7 @@ describe("Reflect quality gate — source context", () => {
     const config = {
       ...quietQualityGateConfig(),
       engines: {
+        "fake-agent": { kind: "agent", platform: "opencode", bin: "fake-agent" },
         judge: {
           kind: "llm",
           endpoint: "http://localhost:11434/v1/chat/completions",
@@ -432,7 +408,7 @@ describe("Reflect quality gate — source context", () => {
           apiKey: "$AKM_REFLECT_JUDGE_LEASE_KEY",
         },
       },
-      defaults: { llmEngine: "judge", improveStrategy: "default" },
+      defaults: { engine: "fake-agent", llmEngine: "judge", improveStrategy: "default" },
       improve: { strategies: { default: { processes: { reflect: { qualityGate: { enabled: true } } } } } },
     } as AkmConfig;
     const original = "reflect-judge-original-secret";
@@ -444,19 +420,6 @@ describe("Reflect quality gate — source context", () => {
         ref: "knowledge/judge-lease",
         stashDir: stash,
         config,
-        runner: {
-          kind: "agent",
-          engine: "fake-agent",
-          profile: {
-            name: "fake-agent",
-            platform: "opencode",
-            bin: "fake-agent",
-            args: [],
-            stdio: "captured",
-            envPassthrough: [],
-            parseOutput: "text",
-          },
-        },
         assetContent: sourceContent,
         runAgentOptions: {
           spawn: (...args) => {
@@ -483,6 +446,13 @@ describe("Reflect quality gate — source context", () => {
     const config = {
       ...quietQualityGateConfig(),
       engines: {
+        "sdk-generator": { kind: "agent", platform: "opencode-sdk", llmEngine: "sdk-fallback" },
+        "sdk-fallback": {
+          kind: "llm",
+          endpoint: "https://fallback.example.test/v1/chat/completions",
+          model: "fallback",
+          apiKey: "$AKM_REFLECT_SDK_FALLBACK_KEY",
+        },
         judge: {
           kind: "llm",
           endpoint: "http://localhost:11434/v1/chat/completions",
@@ -490,7 +460,7 @@ describe("Reflect quality gate — source context", () => {
           apiKey: "$AKM_REFLECT_SDK_JUDGE_KEY",
         },
       },
-      defaults: { llmEngine: "judge", improveStrategy: "default" },
+      defaults: { engine: "sdk-generator", llmEngine: "judge", improveStrategy: "default" },
       improve: { strategies: { default: { processes: { reflect: { qualityGate: { enabled: true } } } } } },
     } as AkmConfig;
     const sdkSecret = "reflect-sdk-original-secret";
@@ -505,21 +475,6 @@ describe("Reflect quality gate — source context", () => {
           ref: "knowledge/sdk-judge-lease",
           stashDir: stash,
           config,
-          runner: {
-            kind: "sdk",
-            engine: "sdk-generator",
-            profile: {
-              name: "sdk-generator",
-              platform: "opencode-sdk",
-              bin: "opencode",
-              args: [],
-              stdio: "captured",
-              envPassthrough: [],
-              parseOutput: "text",
-            },
-            fallbackConnection: { endpoint: "https://fallback.example.test/v1/chat/completions", model: "fallback" },
-            fallbackCredential: { names: ["AKM_REFLECT_SDK_FALLBACK_KEY"], required: true },
-          },
           assetContent: sourceContent,
           runSdk: async (_profile, _prompt, _options, fallbackConnection) => {
             observedSdk.push(fallbackConnection?.apiKey);

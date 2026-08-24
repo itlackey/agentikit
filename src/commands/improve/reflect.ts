@@ -182,12 +182,6 @@ export interface AkmReflectOptions {
    */
   maxRefineIters?: number;
   /**
-   * v2 test seam: pre-resolved RunnerSpec injected by tests to exercise the
-   * llm/sdk/agent dispatch paths without real config. When set, skips
-   * config-based runner resolution entirely.
-   */
-  runner?: RunnerSpec | null;
-  /**
    * Test seam: pre-loaded source asset content. When set, bypasses the
    * indexer `lookup()` step so the safety-rail / sanitizer tests can pin
    * down what reflect sees as the source — without needing a fully built
@@ -1630,15 +1624,7 @@ function resolveReflectRunner(options: AkmReflectOptions): {
     options.improveProfile ?? config.improve?.strategies?.[config.defaults?.improveStrategy ?? "default"];
   let runnerSpec: RunnerSpec;
   let notices: readonly Readonly<LoweringNotice>[] = [];
-  if (options.runner) {
-    runnerSpec = options.runner;
-  } else if (Object.hasOwn(options, "runner")) {
-    throw new ConfigError(
-      "Reflect requires an LLM engine for the active improve invocation.",
-      "LLM_NOT_CONFIGURED",
-      "Set defaults.llmEngine or improve.strategies.<name>.processes.reflect.engine.",
-    );
-  } else if (options.engine) {
+  if (options.engine) {
     const prepared = prepareInlineExecution({
       content: "reflect engine selection",
       config,

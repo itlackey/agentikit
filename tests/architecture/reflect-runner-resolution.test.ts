@@ -24,4 +24,3 @@ test("reflect has no pre-resolved RunnerSpec injection entry", () => {
   expect(source).not.toMatch(/\boptions\.runner\b/);
   expect(source).not.toContain("v2 test seam");
 });
-
