@@ -20,11 +20,24 @@ import { type Database, openDatabase } from "../../src/storage/database";
 import { runMigrations } from "../../src/storage/engines/sqlite-migrations";
 
 const roots: string[] = [];
+const VERIFIED_SAFETY_COPY_PREFIX = "Verified safety copy: ";
 
 function statePath(prefix = "akm-state-migrations-"): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   roots.push(root);
   return path.join(root, "state.db");
+}
+
+function verifiedSafetyCopyPath(message: string): string | undefined {
+  const lines = message.split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index] as string;
+    const prefixIndex = line.lastIndexOf(VERIFIED_SAFETY_COPY_PREFIX);
+    if (prefixIndex < 0) continue;
+    const reportedPath = line.slice(prefixIndex + VERIFIED_SAFETY_COPY_PREFIX.length);
+    return reportedPath.endsWith(".bak.") ? reportedPath.slice(0, -1) : undefined;
+  }
+  return undefined;
 }
 
 function migrationIndex(id: string): number {
@@ -806,9 +819,20 @@ describe("state.db automatic migration boundary", () => {
       message = error instanceof Error ? error.message : String(error);
     }
     expect(message).toMatch(/Verified safety copy: .*pre-018-drop-dead-lane-schema.*\.bak/i);
-    const safetyCopyPath = message.match(/Verified safety copy: ([^\s]+\.bak)/)?.[1];
+    const safetyCopyPath = verifiedSafetyCopyPath(message);
     expect(safetyCopyPath).toBeDefined();
     expect(fs.existsSync(safetyCopyPath as string)).toBe(true);
+    expect(
+      fs
+        .readdirSync(path.dirname(file), { withFileTypes: true })
+        .filter(
+          (entry) =>
+            entry.isFile() &&
+            entry.name.startsWith(`${path.basename(file)}.pre-018-drop-dead-lane-schema.`) &&
+            entry.name.endsWith(".bak"),
+        )
+        .map((entry) => path.join(path.dirname(file), entry.name)),
+    ).toEqual([safetyCopyPath]);
 
     const current = openDatabase(file, { readonly: true });
     expect((current.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(
