@@ -42,6 +42,42 @@ function seedBefore018(file: string, marker = "seeded-before-018"): void {
   seeded.close();
 }
 
+function seedEmptyLedgerWithOperatorField(file: string, marker: string): void {
+  const seeded = openDatabase(file);
+  seeded.exec(`
+    CREATE TABLE schema_migrations (
+      id TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE task_history (
+      task_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      failed_at TEXT,
+      log_path TEXT,
+      target_kind TEXT,
+      target_ref TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      operator_secret TEXT NOT NULL
+    );
+    INSERT INTO task_history (
+      task_id,
+      status,
+      started_at,
+      metadata_json,
+      operator_secret
+    ) VALUES (
+      'operator-task',
+      'pending',
+      '2026-08-24T03:00:00.000Z',
+      '{}',
+      '${marker}'
+    );
+  `);
+  seeded.close();
+}
+
 function moveDatabaseFamily(from: string, to: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     const source = `${from}${suffix}`;
@@ -140,6 +176,47 @@ describe("state.db automatic migration boundary", () => {
     );
     expect(current.prepare("SELECT value FROM operator_probe").get()).toEqual({ value: "pre-ledger" });
     current.close();
+  });
+
+  test("an existing empty migration ledger is rejected as unversioned without writing a byte", () => {
+    const file = statePath();
+    seedEmptyLedgerWithOperatorField(file, "ordinary-empty-ledger");
+    const before = createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+
+    let error: unknown;
+    try {
+      openStateDatabase(file).close();
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error instanceof Error ? error.message : "").toMatch(/existing unversioned state\.db.*akm upgrade --force/i);
+    expect(createHash("sha256").update(fs.readFileSync(file)).digest("hex")).toBe(before);
+    expect(fs.existsSync(`${file}-wal`)).toBe(false);
+    expect(fs.existsSync(`${file}-shm`)).toBe(false);
+    const inspected = openDatabase(file, { readonly: true });
+    expect(inspected.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 0 });
+    expect(inspected.prepare("SELECT operator_secret FROM task_history").get()).toEqual({
+      operator_secret: "ordinary-empty-ledger",
+    });
+    inspected.close();
+  });
+
+  test("explicit upgrade snapshots an existing empty ledger before migration 001", () => {
+    const file = statePath();
+    seedEmptyLedgerWithOperatorField(file, "upgrade-empty-ledger");
+
+    const result = upgradeHistoricalStateDatabase(file);
+
+    expect(result.upgraded).toBe(true);
+    expect(result.safetyCopyPath).toStartWith(`${file}.pre-001-initial-schema.`);
+    const safetyCopy = openDatabase(result.safetyCopyPath as string, { readonly: true });
+    expect(safetyCopy.prepare("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
+    expect(safetyCopy.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 0 });
+    expect(safetyCopy.prepare("SELECT operator_secret FROM task_history").get()).toEqual({
+      operator_secret: "upgrade-empty-ledger",
+    });
+    safetyCopy.close();
   });
 
   test("a pre-018 database appearing at the fresh-open boundary is never treated as fresh", () => {
