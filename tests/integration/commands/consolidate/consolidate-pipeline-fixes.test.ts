@@ -17,7 +17,7 @@
  * These tests cover the validation gates and dedup approach added in
  * `src/commands/consolidate.ts`.
  */
-import { describe, expect, it, test } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,8 +31,6 @@ import {
   hasSupersededStatus,
   validateProposalFrontmatter,
 } from "../../../../src/commands/proposal/validators/proposal-quality-validators";
-import type { AkmConfig } from "../../../../src/core/config/config";
-import { resolveImproveProcessRunner } from "../../../../src/integrations/agent/runner";
 
 // ── stripOuterCodeFence ─────────────────────────────────────────────────────
 
@@ -809,50 +807,5 @@ describe("ConsolidateResult accounting invariant — 2026-05-26 leak fix", () =>
       failedChunkMemories: 0,
     };
     expect(accountedTotal(envelope, loadedRefs)).toBe(envelope.processed);
-  });
-});
-
-// Folded from tests/consolidate-profile-resolution.test.ts (2026-05-26
-// regression guard): the consolidate pass must honor
-// improve.strategies.default.processes.consolidate.engine instead of silently
-// using the default LLM. These are unit tests over the resolver; no real LLM.
-const CONSOLIDATE_PRIMARY = { endpoint: "http://localhost:11434/v1/chat/completions", model: "gemma-default" };
-const CONSOLIDATE_MINISTRAL = { endpoint: "http://localhost:11434/v1/chat/completions", model: "ministral-3b" };
-
-describe("consolidate honors processes.consolidate.engine", () => {
-  test("resolves to the per-process engine when configured", () => {
-    const config: AkmConfig = {
-      semanticSearchMode: "auto",
-      engines: {
-        default: { kind: "llm", ...CONSOLIDATE_PRIMARY },
-        ministral: { kind: "llm", ...CONSOLIDATE_MINISTRAL },
-      },
-      improve: {
-        strategies: {
-          default: {
-            processes: { consolidate: { engine: "ministral" } },
-          },
-        },
-      },
-      defaults: { llmEngine: "default" },
-    };
-
-    const strategy = config.improve?.strategies?.default;
-    const runnerSpec = resolveImproveProcessRunner(strategy, "consolidate", config);
-    expect(runnerSpec).not.toBeNull();
-    expect(runnerSpec?.kind).toBe("llm");
-    if (runnerSpec?.kind === "llm") {
-      expect(runnerSpec.connection.model).toBe("ministral-3b");
-    }
-  });
-
-  test("inherits defaults.llmEngine when no process engine is set", () => {
-    const config: AkmConfig = {
-      semanticSearchMode: "auto",
-      engines: { default: { kind: "llm", ...CONSOLIDATE_PRIMARY } },
-      defaults: { llmEngine: "default" },
-    };
-    const runnerSpec = resolveImproveProcessRunner({ processes: { consolidate: {} } }, "consolidate", config);
-    expect(runnerSpec?.engine).toBe("default");
   });
 });

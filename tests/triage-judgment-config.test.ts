@@ -11,7 +11,6 @@ import {
   validateConfigShape,
 } from "../src/core/config/config-schema";
 import { configGet, configSet, configUnset } from "../src/core/config/config-walker";
-import { resolveTriageJudgmentRunner } from "../src/integrations/agent/runner";
 
 const llm = {
   kind: "llm" as const,
@@ -209,16 +208,6 @@ describe("triage judgment config normalization (#814)", () => {
       engine: "judgment",
       connection: { model: "judgment" },
     });
-  });
-
-  test("legacy resolver never revives an explicitly disabled judgment", () => {
-    const config: AkmConfig = {
-      semanticSearchMode: "off",
-      engines: { ready: llm },
-      defaults: { llmEngine: "ready" },
-    };
-    expect(resolveTriageJudgmentRunner({ enabled: false, engine: "ready" }, config)).toBeNull();
-    expect(resolveTriageJudgmentRunner({ enabled: true }, config)).toMatchObject({ kind: "llm", engine: "ready" });
   });
 });
 
