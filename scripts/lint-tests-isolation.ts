@@ -63,12 +63,9 @@
  * Date.now()` — and derive every timestamp from `now`. A single
  * `new Date(Date.now() …)` per scope is fine. No allowlist — zero is the invariant.
  *
- * Rule 8 (real-home operation boundary): flag a test file that both calls the
- * real `node:os` `homedir()` and invokes a `node:fs` removal operation.
- * Bun caches its home at process start, before the preload can replace `HOME`,
- * so tests must never combine real-home inspection with filesystem removal.
- * Operation identity comes from imports; target-flow inference is deliberately
- * unnecessary. Split read-only home assertions from temp-owned cleanup.
+ * Rule 8 (real-home operation boundary): never combine `node:os` `homedir()`
+ * with `node:fs` removal. Identity comes from imports and one exact const alias;
+ * target-flow inference is deliberately out of scope.
  *
  * Exit codes:
  *   0 — no violations
@@ -399,14 +396,8 @@ interface Violation {
   envVars?: string[];
 }
 
-interface ImportIdentityContext {
-  checker: ts.TypeChecker;
-}
-
-interface ImportedValue {
-  module: string;
-  path: string[];
-}
+type ImportContext = { checker: ts.TypeChecker };
+type ImportedValue = { module: string; path: string[] };
 
 /**
  * Find every AKM/XDG/HOME env var that is *assigned* (not merely deleted or
@@ -441,8 +432,8 @@ function usesSanctionedWrapper(src: string): boolean {
 const FS_MODULES = new Set(["fs", "node:fs"]);
 const FS_PROMISES_MODULES = new Set(["fs/promises", "node:fs/promises"]);
 const OS_MODULES = new Set(["os", "node:os"]);
-const FS_DELETE_EXPORTS = new Set(["rm", "rmdir", "rmSync", "rmdirSync"]);
-const FS_PROMISE_DELETE_EXPORTS = new Set(["rm", "rmdir"]);
+const FS_DELETE_EXPORTS = new Set(["rm", "rmdir", "unlink", "rmSync", "rmdirSync", "unlinkSync"]);
+const FS_PROMISE_DELETE_EXPORTS = new Set(["rm", "rmdir", "unlink"]);
 
 function importModuleOf(declaration: ts.Node): string | undefined {
   let current: ts.Node | undefined = declaration;
@@ -454,11 +445,11 @@ function staticPropertyName(name: ts.PropertyName | ts.Expression): string | und
   return ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : undefined;
 }
 
-function bindingSelection(declaration: ts.BindingElement, context: ImportIdentityContext): ImportedValue | undefined {
+function bindingSelection(declaration: ts.BindingElement, context: ImportContext): ImportedValue | undefined {
   if (!ts.isObjectBindingPattern(declaration.parent)) return undefined;
   const owner = declaration.parent.parent;
   if (!ts.isVariableDeclaration(owner) || !owner.initializer) return undefined;
-  const importedOwner = resolveImportedValue(owner.initializer, context);
+  const importedOwner = resolveValue(owner.initializer, context);
   const selected = declaration.propertyName ?? (ts.isIdentifier(declaration.name) ? declaration.name : undefined);
   const property = selected ? staticPropertyName(selected) : undefined;
   return importedOwner && property
@@ -466,7 +457,7 @@ function bindingSelection(declaration: ts.BindingElement, context: ImportIdentit
     : undefined;
 }
 
-function resolveImportedSymbol(symbol: ts.Symbol, context: ImportIdentityContext): ImportedValue | undefined {
+function resolveSymbol(symbol: ts.Symbol, context: ImportContext, allowAlias: boolean): ImportedValue | undefined {
   for (const declaration of symbol.declarations ?? []) {
     if (ts.isImportSpecifier(declaration)) {
       const module = importModuleOf(declaration);
@@ -477,29 +468,32 @@ function resolveImportedSymbol(symbol: ts.Symbol, context: ImportIdentityContext
       if (module) return { module, path: [] };
     }
     if (ts.isBindingElement(declaration)) return bindingSelection(declaration, context);
+    if (!allowAlias || !ts.isVariableDeclaration(declaration) || !declaration.initializer) continue;
+    if ((declaration.parent.flags & ts.NodeFlags.Const) !== 0)
+      return resolveValue(declaration.initializer, context, false);
   }
   return undefined;
 }
 
-function resolveImportedValue(expression: ts.Expression, context: ImportIdentityContext): ImportedValue | undefined {
+function resolveValue(expression: ts.Expression, context: ImportContext, allowAlias = true): ImportedValue | undefined {
   if (ts.isIdentifier(expression)) {
     const symbol = context.checker.getSymbolAtLocation(expression);
-    return symbol ? resolveImportedSymbol(symbol, context) : undefined;
+    return symbol ? resolveSymbol(symbol, context, allowAlias) : undefined;
   }
   if (ts.isPropertyAccessExpression(expression)) {
-    const owner = resolveImportedValue(expression.expression, context);
+    const owner = resolveValue(expression.expression, context);
     return owner ? { module: owner.module, path: [...owner.path, expression.name.text] } : undefined;
   }
   if (ts.isElementAccessExpression(expression)) {
-    const owner = resolveImportedValue(expression.expression, context);
+    const owner = resolveValue(expression.expression, context);
     const property = staticPropertyName(expression.argumentExpression);
     return owner && property ? { module: owner.module, path: [...owner.path, property] } : undefined;
   }
   return undefined;
 }
 
-function isNodeFsDeleteCall(call: ts.CallExpression, context: ImportIdentityContext): boolean {
-  const imported = resolveImportedValue(call.expression, context);
+function isNodeFsDeleteCall(call: ts.CallExpression, context: ImportContext): boolean {
+  const imported = resolveValue(call.expression, context);
   if (!imported) return false;
   if (FS_PROMISES_MODULES.has(imported.module)) {
     return imported.path.length === 1 && FS_PROMISE_DELETE_EXPORTS.has(imported.path[0] ?? "");
@@ -513,8 +507,8 @@ function isNodeFsDeleteCall(call: ts.CallExpression, context: ImportIdentityCont
   );
 }
 
-function isNodeOsHomedirCall(call: ts.CallExpression, context: ImportIdentityContext): boolean {
-  const imported = resolveImportedValue(call.expression, context);
+function isNodeOsHomedirCall(call: ts.CallExpression, context: ImportContext): boolean {
+  const imported = resolveValue(call.expression, context);
   return Boolean(imported && OS_MODULES.has(imported.module) && imported.path.join(".") === "homedir");
 }
 
@@ -541,7 +535,7 @@ function findRealHomeDeleteCalls(filePath: string, source: string): ts.CallExpre
   if (!source.includes("homedir")) return [];
 
   const { checker, sourceFile } = parseForOperationIdentity(filePath, source);
-  const context: ImportIdentityContext = { checker };
+  const context: ImportContext = { checker };
   const deleteCalls: ts.CallExpression[] = [];
   let callsRealHomedir = false;
 
