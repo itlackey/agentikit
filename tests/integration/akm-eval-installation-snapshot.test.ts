@@ -172,6 +172,29 @@ function rewriteSnapshotConfig(snapshotDir: string, mutate: (config: Record<stri
 const describePosix = process.platform === "win32" ? describe.skip : describe;
 
 describePosix("akm-eval installation snapshots", () => {
+  test("rejects a stamped noncanonical index generation before capturing or publishing it", () => {
+    const sandbox = makeSandboxDir("akm-eval-snapshot-index-generation");
+    const fixture = createFixture(sandbox.dir);
+    const snapshotDir = path.join(sandbox.dir, "snapshot");
+    try {
+      closeFixture(fixture);
+      const indexPath = path.join(fixture.dataDir, "index.db");
+      const hostile = new Database(indexPath);
+      try {
+        hostile.exec("ALTER TABLE entries ADD COLUMN entry_key TEXT GENERATED ALWAYS AS (item_ref) VIRTUAL");
+      } finally {
+        hostile.close();
+      }
+
+      expect(() => capture(fixture, snapshotDir)).toThrow(/incompatible derived index generation/);
+      expect(fs.existsSync(snapshotDir)).toBe(false);
+      expect(stagingEntries(sandbox.dir, path.basename(snapshotDir))).toEqual([]);
+    } finally {
+      closeFixture(fixture);
+      sandbox.cleanup();
+    }
+  });
+
   test("captures real AKM WAL databases and materializes private isolated state", () => {
     const sandbox = makeSandboxDir("akm-eval-snapshot");
     const fixture = createFixture(sandbox.dir);

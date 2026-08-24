@@ -2,12 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { Database as BunDatabase } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { deriveEntryProvenance } from "../../../src/indexer/installations";
+import { ensureUsageEventsSchema } from "../../../src/indexer/usage/usage-events";
+import type { Database } from "../../../src/storage/database";
 import { openDatabase } from "../../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
+import { relinkUsageEvents, upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
 import { DB_VERSION } from "../../../src/storage/repositories/index-schema";
 
 const CURRENT_ENTRY_COLUMNS: string[] = [
@@ -235,6 +240,65 @@ describe("canonical derived-index entry schema", () => {
         CANONICAL_ENTRY_INDEXES_DDL,
       );
       expectCanonicalGenerationRebuilt(dbPath);
+    });
+  });
+
+  test("a stamped exact-name schema without AUTOINCREMENT is rebuilt before ids can be reused", () => {
+    withTempIndex((dbPath) => {
+      seedStampedEntriesSchema(
+        dbPath,
+        CANONICAL_ENTRIES_DDL.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "INTEGER PRIMARY KEY"),
+        CANONICAL_ENTRY_INDEXES_DDL,
+      );
+
+      const indexDb = openIndexDatabase(dbPath);
+      const stateDb = new BunDatabase(":memory:") as unknown as Database;
+      try {
+        ensureUsageEventsSchema(stateDb);
+        let oldId = (
+          indexDb.prepare("SELECT id FROM entries WHERE item_ref = 'stash//memories/hostile'").get() as
+            | { id: number }
+            | undefined
+        )?.id;
+        if (oldId === undefined) {
+          oldId = upsertEntry(
+            indexDb,
+            "/tmp/a.md",
+            { name: "a", type: "memory" },
+            "a",
+            deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, "memory", "a"),
+          );
+        }
+        const oldRef = (
+          indexDb.prepare("SELECT item_ref AS itemRef FROM entries WHERE id = ?").get(oldId) as {
+            itemRef: string;
+          }
+        ).itemRef;
+        stateDb
+          .prepare("INSERT INTO usage_events (event_type, entry_id, entry_ref, source) VALUES ('show', ?, ?, 'user')")
+          .run(oldId, oldRef);
+
+        indexDb.exec("DELETE FROM entries");
+        const replacementId = upsertEntry(
+          indexDb,
+          "/tmp/b.md",
+          { name: "b", type: "memory" },
+          "b",
+          deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, "memory", "b"),
+        );
+        relinkUsageEvents(indexDb, stateDb);
+        const event = stateDb.prepare("SELECT entry_id AS entryId FROM usage_events").get() as {
+          entryId: number | null;
+        };
+
+        expect({ replacementIdIsNew: replacementId > oldId, durableEventLink: event.entryId }).toEqual({
+          replacementIdIsNew: true,
+          durableEventLink: null,
+        });
+      } finally {
+        stateDb.close();
+        closeDatabase(indexDb);
+      }
     });
   });
 
