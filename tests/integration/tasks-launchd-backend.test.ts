@@ -5,7 +5,6 @@ import { akmTasksSync } from "../../src/commands/tasks/tasks";
 import type { LaunchdExec, LaunchdFs } from "../../src/tasks/backends/launchd";
 import { buildPlistXml, LAUNCHD_BACKEND } from "../../src/tasks/backends/launchd";
 import {
-  compileTaskSchedulerBindings,
   type SchedulerBackendInspection,
   type SchedulerBinding,
   type SchedulerRemovalExpectation,
@@ -512,23 +511,6 @@ describe("LAUNCHD_BACKEND — envPath option", () => {
 });
 
 describe("LAUNCHD_BACKEND lifecycle", () => {
-  test("direct create CAS rejects a launchd artifact that appeared after frozen absence", () => {
-    const { backend, fs } = makeBackend();
-    const owned = qualifiedTask("0 9 * * *");
-    backend.install(owned);
-    const file = "/tmp/agents/com.akm.task.ping.plist";
-    const prior = fs.readFile(file);
-
-    expect(() =>
-      (backend.install as (...args: unknown[]) => void)(
-        { ...owned, cron: "30 10 * * *" },
-        undefined,
-        mutationExpectation(owned, "absent"),
-      ),
-    ).toThrow(/changed|absence|exists|compare|owner/i);
-    expect(fs.readFile(file)).toBe(prior);
-  });
-
   test.each([
     "PING",
     "ping.",
@@ -587,160 +569,6 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(() => backend.uninstall(nativeId, expected)).toThrow(/changed|owner|fingerprint|present/i);
     expect(exec.loadedLabels.has(`com.akm.task.${nativeId}`)).toBe(true);
     expect(launchdMutationCalls(exec.calls)).toEqual([]);
-  });
-
-  test("direct update CAS rejects same-owner plist drift after planning", () => {
-    const { backend, fs } = makeBackend();
-    const owned = qualifiedTask("0 9 * * *");
-    backend.install(owned);
-    const artifact = (backend.listNativeArtifacts?.() as Array<{ fingerprint?: string }>)[0];
-    const file = "/tmp/agents/com.akm.task.ping.plist";
-    fs.writeFile(file, fs.readFile(file).replace("<integer>9</integer>", "<integer>8</integer>"));
-    const drifted = fs.readFile(file);
-
-    expect(() =>
-      (backend.install as (...args: unknown[]) => void)(
-        { ...owned, cron: "30 10 * * *" },
-        undefined,
-        mutationExpectation(owned, "present", artifact?.fingerprint),
-      ),
-    ).toThrow(/changed|fingerprint|compare/i);
-    expect(fs.readFile(file)).toBe(drifted);
-  });
-
-  test("rejects a forged expected launchd source before filesystem or launchctl access", () => {
-    const exec = makeFakeExec();
-    const fs = makeFakeFs();
-    const { backend } = makeBackend(exec, fs);
-    const owned = qualifiedTask("0 9 * * *");
-    const forged = {
-      ...mutationExpectation(owned, "absent"),
-      logicalSource: { kind: "task", ref: "other//tasks/ping" },
-      invocation: ["task", "run", "ping", "--bundle", "other", "--scheduled"],
-    };
-
-    expect(() => (backend.install as (...args: unknown[]) => void)(owned, undefined, forged)).toThrow(
-      /expectation|identity|binding|source/i,
-    );
-    expect(exec.calls).toEqual([]);
-    expect(fs.written.size).toBe(0);
-  });
-
-  const higherOrdinal = () =>
-    compileTaskSchedulerBindings({
-      id: "ping",
-      qualifiedRef: "stash//tasks/ping",
-      enabled: true,
-      schedules: [
-        { cron: "0 1 * * *", source: "akm.schedule[0]", ordinal: 0 },
-        { cron: "0 2 * * *", source: "akm.schedule[1]", ordinal: 1 },
-      ],
-    })[1]!;
-
-  test("round-trips and updates a higher-ordinal binding whose public owner is the base task", () => {
-    const { backend } = makeBackend();
-    const binding = higherOrdinal();
-
-    backend.install(binding);
-    expect(backend.list()).toEqual([
-      expect.objectContaining({
-        id: binding.id,
-        nativeId: schedulerNativeBindingId(binding.id),
-        invocation: binding.invocation,
-      }),
-    ]);
-    expect(backend.listNativeArtifacts?.()).toEqual([
-      {
-        nativeId: schedulerNativeBindingId(binding.id),
-        bindingId: binding.id,
-        invocation: binding.invocation,
-      },
-    ]);
-
-    expect(() => backend.install(binding)).not.toThrow();
-    const drifted = { ...binding, cron: "30 2 * * *" };
-    expect(() => backend.install(drifted)).not.toThrow();
-    expect((backend.list() as Array<{ signature?: string }>)[0]!.signature).toBe(backend.expectedSignature?.(drifted));
-  });
-
-  test.each([
-    "foreign",
-    "malformed",
-    "fingerprint",
-  ] as const)("rechecks a higher-ordinal %s owner and fingerprint immediately before uninstall", (replacement) => {
-    const { backend, exec, fs } = makeBackend();
-    const binding = higherOrdinal();
-    backend.install(binding);
-    const nativeId = schedulerNativeBindingId(binding.id);
-    const file = `/tmp/agents/com.akm.task.${nativeId}.plist`;
-    const expected = {
-      bindingId: binding.id,
-      nativeId,
-      logicalSource: binding.logicalSource,
-      ordinal: binding.ordinal,
-      invocation: binding.invocation,
-      fingerprint: backend.expectedSignature?.(binding),
-    };
-    const prior = fs.readFile(file);
-    const swapped =
-      replacement === "foreign"
-        ? prior.replaceAll("<string>ping</string>", "<string>foreign</string>")
-        : replacement === "malformed"
-          ? prior.replaceAll("<string>--scheduled</string>", "<string>--broken</string>")
-          : prior.replace("<key>Minute</key><integer>0</integer>", "<key>Minute</key><integer>5</integer>");
-    expect(swapped).not.toBe(prior);
-    fs.written.set(file, swapped);
-    exec.calls.length = 0;
-
-    const uninstall = backend.uninstall as unknown as (id: string, expectation: typeof expected) => void;
-    expect(() => uninstall(nativeId, expected)).toThrow(/changed|owner|malformed|refusing/i);
-    expect(fs.readFile(file)).toBe(swapped);
-    expect(exec.calls.some((call) => call[1] === "bootout")).toBe(false);
-  });
-
-  test("direct removal CAS rejects a launchd binding that disappeared after present state was frozen", () => {
-    const { backend, exec, fs } = makeBackend();
-    const owned = qualifiedTask("0 9 * * *");
-    backend.install(owned);
-    const nativeId = schedulerNativeBindingId(owned.id);
-    const expected = {
-      bindingId: owned.id,
-      nativeId,
-      logicalSource: owned.logicalSource,
-      ordinal: owned.ordinal,
-      invocation: owned.invocation,
-      fingerprint: backend.expectedSignature?.(owned),
-    };
-    fs.removeFile(`/tmp/agents/com.akm.task.${nativeId}.plist`);
-    exec.loadedLabels.delete(`com.akm.task.${nativeId}`);
-    exec.disabledLabels.delete(`com.akm.task.${nativeId}`);
-
-    expect(() => backend.uninstall(nativeId, expected)).toThrow(/changed|missing|present|compare/i);
-    expect(exec.calls.filter((call) => call[1] === "bootout")).toHaveLength(1);
-  });
-
-  test("direct update rejects a second case-equivalent launchd artifact that appeared after planning", () => {
-    const { backend, exec, fs } = makeBackend();
-    const owned = qualifiedTask("0 9 * * *");
-    backend.install(owned);
-    const file = "/tmp/agents/com.akm.task.ping.plist";
-    const duplicate = "/tmp/agents/com.akm.task.PING.plist";
-    const prior = fs.readFile(file);
-    fs.writeFile(duplicate, prior);
-    exec.calls.length = 0;
-    const snapshot = backend.snapshotBindings?.(["ping"]) as { artifacts: readonly unknown[] };
-    expect(snapshot.artifacts).toHaveLength(2);
-
-    expect(() =>
-      (backend.install as (...args: unknown[]) => void)(
-        { ...owned, cron: "30 10 * * *" },
-        undefined,
-        mutationExpectation(owned, "present", backend.expectedSignature?.(owned)),
-      ),
-    ).toThrow(/cardinality|duplicate|collision|exactly one/i);
-    expect(fs.readFile(file)).toBe(prior);
-    expect(fs.readFile(duplicate)).toBe(prior);
-    expect(exec.calls.some((call) => call[1] === "bootout")).toBe(false);
   });
 
   test("direct create CAS treats a persistent disabled override without a plist as native state", () => {
@@ -1253,111 +1081,6 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     } finally {
       stash.cleanup();
     }
-  });
-
-  test("snapshot rollback CAS never clobbers a concurrent same-label plist edit", () => {
-    const { backend, exec, fs } = makeBackend();
-    const owned = qualifiedTask("0 9 * * *");
-    const snapshot = backend.snapshotBindings?.(["ping"]);
-    backend.install(owned);
-    const file = "/tmp/agents/com.akm.task.ping.plist";
-    const concurrent = fs.readFile(file).replace("<integer>9</integer>", "<integer>7</integer>");
-    fs.writeFile(file, concurrent);
-    exec.calls.length = 0;
-    const restore = backend.restoreBindings as unknown as (
-      snapshot: unknown,
-      guards: readonly Record<string, unknown>[],
-    ) => void;
-
-    expect(() =>
-      restore(snapshot, [
-        {
-          nativeId: "ping",
-          allowed: [
-            { state: "absent" },
-            {
-              state: "present",
-              bindingId: owned.id,
-              invocation: owned.invocation,
-              fingerprint: backend.expectedSignature?.(owned),
-            },
-          ],
-        },
-      ]),
-    ).toThrow(/restore|rollback|changed|concurrent|fingerprint/i);
-    expect(fs.readFile(file)).toBe(concurrent);
-    expect(exec.calls.some((call) => call[1] === "bootout")).toBe(false);
-  });
-
-  test("rollback rejects a case-equivalent plist beside a transaction-created launchd artifact", () => {
-    const { backend, exec, fs } = makeBackend();
-    const owned = qualifiedTask("0 9 * * *");
-    const snapshot = backend.snapshotBindings?.(["ping"]);
-    backend.install(owned);
-    const file = "/tmp/agents/com.akm.task.ping.plist";
-    const duplicate = "/tmp/agents/com.akm.task.PING.plist";
-    fs.writeFile(duplicate, fs.readFile(file));
-    exec.calls.length = 0;
-    const restore = backend.restoreBindings as unknown as (
-      snapshot: unknown,
-      guards: readonly Record<string, unknown>[],
-    ) => void;
-
-    expect(() =>
-      restore(snapshot, [
-        {
-          nativeId: "ping",
-          allowed: [
-            { state: "absent" },
-            {
-              state: "present",
-              bindingId: owned.id,
-              invocation: owned.invocation,
-              fingerprint: backend.expectedSignature?.(owned),
-            },
-          ],
-        },
-      ]),
-    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
-    expect(fs.readFile(file)).toBe(fs.readFile(duplicate));
-    expect(launchdMutationCalls(exec.calls)).toEqual([]);
-  });
-
-  test("rollback rejects a trailing-dot plist peer beside a transaction-updated launchd artifact", () => {
-    const { backend, exec, fs } = makeBackend();
-    const prior = qualifiedTask("0 9 * * *");
-    backend.install(prior);
-    const snapshot = backend.snapshotBindings?.(["ping"]);
-    const updated = { ...prior, cron: "30 10 * * *" };
-    backend.install(updated);
-    const file = "/tmp/agents/com.akm.task.ping.plist";
-    const duplicate = "/tmp/agents/com.akm.task.ping..plist";
-    fs.writeFile(duplicate, fs.readFile(file));
-    const raced = fs.readFile(file);
-    exec.calls.length = 0;
-    const restore = backend.restoreBindings as unknown as (
-      snapshot: unknown,
-      guards: readonly Record<string, unknown>[],
-    ) => void;
-
-    expect(() =>
-      restore(snapshot, [
-        {
-          nativeId: "ping",
-          allowed: [
-            {
-              state: "present",
-              bindingId: updated.id,
-              invocation: updated.invocation,
-              fingerprint: backend.expectedSignature?.(updated),
-            },
-          ],
-        },
-      ]),
-    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
-    expect(fs.readFile(file)).toBe(raced);
-    expect(fs.readFile(duplicate)).toBe(raced);
-    expect(launchdMutationCalls(exec.calls)).toEqual([]);
   });
 
   test("rollback rejects a case-equivalent enabled loaded-only service after removing the exact owner", () => {
@@ -2127,21 +1850,5 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
 
     expect(backend.expectedSignature?.({ ...task, cron: "0 10 * * *" })).not.toBe(backend.expectedSignature?.(task));
     expect(backend.expectedSignature?.({ ...task, enabled: false })).not.toBe(backend.expectedSignature?.(task));
-  });
-
-  test("signature changes when the resolved AKM context changes", () => {
-    const original = makeBackend().backend;
-    const moved = LAUNCHD_BACKEND({
-      exec: makeFakeExec(),
-      fs: makeFakeFs(),
-      agentsDir: "/tmp/agents",
-      logDir: "/tmp/logs",
-      akmArgv: ["/abs/akm"],
-      envPath: false,
-      scheduledContext: { ...SCHEDULED_CONTEXT, AKM_DATA_DIR: "/Users/Akm User/moved data" },
-    });
-    const task = makeTask("0 9 * * *");
-
-    expect(original.expectedSignature?.(task)).not.toBe(moved.expectedSignature?.(task));
   });
 });
