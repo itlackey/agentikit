@@ -57,12 +57,10 @@ and `secret run`), document payloads (`help`,
 documented shell-substitution primitive — wrapping it in an envelope would
 break `$(akm env path <ref>)` substitutions). Passing `--format` to one of
 those **warns on stderr** and is otherwise ignored; the exempt set is declared
-in `src/output/format-exempt.ts`. `migrate status`/`apply` also spawn a
-standalone tool (the migration tool) but are NOT exempt: the CLI parses that
-child's final JSON result line and renders it through the normal `--format`
-pipeline, so `text`/`md`/`html`/`yaml` genuinely reformat it; any progress
-lines the child printed along the way still print verbatim, ahead of the
-formatted result.
+in `src/output/format-exempt.ts`. `migrate status`/`apply` invoke the packaged
+task migrator but are NOT exempt: the CLI parses its task plan and renders it
+through the normal `--format` pipeline, so `text`/`md`/`html`/`yaml` genuinely
+reformat it.
 
 Scripted `setup` modes emit a normal format-aware result. Interactive `setup`
 is a terminal UI and emits no result document. `agent` leaves inherited child
@@ -1371,24 +1369,20 @@ akm registry remove my-team --yes    # Skip the confirmation prompt
 
 ### migrate
 
-Inspect or apply config and durable database (`state.db`) migration as one
-installation lifecycle. Status and dry-run are read-only and exit nonzero when
-newer, inconsistent, corrupt, or unresolved config state blocks apply.
+Inspect or apply the explicit one-way task-v2 to task-v3 conversion. Normal task
+execution accepts only task v3. Database schema upgrades are additive and run
+automatically when `state.db` opens; config and workflow formats have no runtime
+compatibility migrator.
 
 ```sh
 akm migrate status
-akm migrate status --config ./prepared-config.json
-akm migrate apply --config ./prepared-config.json --dry-run
-akm migrate apply --config ./prepared-config.json
+akm migrate apply --dry-run
+akm migrate apply
 ```
 
-`--config` is required when the active config is legacy or absent. When the
-active config is current, apply safely uses it as the target. Apply is
-idempotent and creates a semantically verified recovery run before changing any
-artifact. One phase-free incomplete sentinel makes a killed apply replayable;
-while apply or restore is incomplete, ordinary canonical config/database access
-fails closed. Apply refuses before backup when managed handles, maintenance
-activities, mutation locks, or workflow claims are live.
+`status` and `apply --dry-run` are read-only. Apply refuses blocked task sources,
+backs up each changed file, atomically publishes strict v3 YAML, and is
+idempotent: an already-v3 file is skipped.
 
 ### config
 

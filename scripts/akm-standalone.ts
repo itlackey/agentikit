@@ -11,14 +11,9 @@ import { pathToFileURL } from "node:url";
  * Entry point for COMPILED standalone binaries (`bun build --compile`) —
  * release artifacts, tests/release-check.sh, and the Docker install tests.
  *
- * It exists so the executable embeds BOTH the CLI and the akm-migrate tool:
- * a compiled binary has no scripts/ tree on disk, so the subprocess entry
- * `runMigrationTool` (src/commands/migration-tool.ts) resolves does not exist
- * there, and the documented `./akm-<ver> migrate status/apply` upgrade path
- * used to dead-end with FILE_NOT_FOUND. src must never import scripts/ (the
- * dist build's tsc has `rootDir: src`), so the coupling lives HERE, in the
- * migrator's own home — mirroring how dist/ ships separate Bun- and Node-targeted
- * `Bun.build` bundles (scripts/copy-assets.ts).
+ * It exists so the executable embeds both the CLI and the explicit task-v2 to
+ * task-v3 migrator. A compiled binary has no scripts/ tree on disk, while the
+ * source/npm build exposes the same task-only implementation as `akm-migrate`.
  *
  * Dispatch:
  *   - `AKM_MIGRATE_ENTRY=1` (set by `runMigrationTool` when it re-execs this

@@ -290,12 +290,8 @@ function isValidDirectory(dir: string): boolean {
  * Read the primary stash path directly from config.json without pulling in the
  * full config module, to avoid circular dependencies.
  *
- * Reads ONLY the 0.9.0 `bundles`/`defaultBundle` shape. A config still carrying
- * the retired `stashDir`/`sources`/`installed` keys (with no usable bundles
- * path) is an unmigrated config: this refuses it with the same `akm-migrate
- * apply` hint the schema hard-reject uses (config-schema.ts), rather than
- * silently honouring the retired key — so every `resolveStashDir` caller gets
- * the coherent migrate posture instead of split-brain success.
+ * Reads only the current `bundles`/`defaultBundle` shape. Unsupported older
+ * keys are never interpreted as a second config architecture.
  */
 function readStashDirFromConfig(): string | undefined {
   try {
@@ -353,10 +349,7 @@ function readStashDirFromConfig(): string | undefined {
     // of silently resolving old keys.
     for (const key of ["stashDir", "sources", "installed"]) {
       if (key in raw && raw[key] !== undefined) {
-        throw new ConfigError(
-          `${key} is not supported; configure the current bundles shape`,
-          "INVALID_CONFIG_FILE",
-        );
+        throw new ConfigError(`${key} is not supported; configure the current bundles shape`, "INVALID_CONFIG_FILE");
       }
     }
   } catch (err) {

@@ -13,9 +13,8 @@
  * importers reference those modules directly. The migration engine
  * lives in `./state/migrations`.
  *
- * The state DB replaces flat-file storage for data that is NON-REGENERABLE —
- * events (events.jsonl), proposals (per-uuid JSON directories), task history
- * (per-task JSONL), and the improve-pipeline ledgers.
+ * The state DB stores non-regenerable events, proposals, task history, workflow
+ * runs, and improve-pipeline ledgers.
  *
  * ## Why a separate database from index.db
  *
@@ -37,19 +36,6 @@
  *   - ALTER TABLE … ADD COLUMN <name> <type> DEFAULT <value>
  *   - CREATE INDEX IF NOT EXISTS …
  *   - CREATE TABLE IF NOT EXISTS … (additive new tables)
- *
- * ## Three-DB cutover carve-out (Chunk 8, migration `020-three-db-cutover`)
- *
- * The 0.9.0 three-DB merge folds workflow.db and index.db's durable rows
- * (`usage_events`, `legacy_state`) into state.db. That migration is still pure
- * additive DDL and DROPS NOTHING — it only `CREATE TABLE IF NOT EXISTS`es the
- * merge-target tables at their final shape. The one-time, filesystem-derived,
- * fail-closed DATA movement (the workflow.db merge, the usage_events rescue, the
- * full old-ref→item_ref re-key, and the workflow.db unlink / index.db quarantine
- * rename) runs as idempotent code in the migrate-apply coordinator
- * (`scripts/akm-migrate/migrate/legacy/three-db-cutover.ts`). So the no-DROP
- * contract here is intact: physical workflow.db deletion happens outside the
- * ledger DDL, after a verified backup and committed data transaction.
  *
  * ## Schema design: indexed columns vs. metadata_json
  *
@@ -73,7 +59,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { type Database, openDatabase, type SqlValue } from "../storage/database";
-import { assertCurrentMigrationLedger, assertMigrationLedger } from "../storage/engines/sqlite-migrations";
+import { assertMigrationLedger } from "../storage/engines/sqlite-migrations";
 import { openManagedDatabase, withManagedDb } from "../storage/managed-db";
 import { acquireMaintenanceActivitySync } from "./maintenance-barrier";
 import { getDataDir } from "./paths";
@@ -130,15 +116,14 @@ export function openStateDatabase(dbPath?: string): Database {
       const preflight = openDatabase(resolvedPath, { readonly: true });
       try {
         preflight.exec("PRAGMA busy_timeout = 30000");
-        if (isCanonical) assertCurrentMigrationLedger(preflight, STATE_MIGRATIONS);
-        else assertMigrationLedger(preflight, STATE_MIGRATIONS);
+        assertMigrationLedger(preflight, STATE_MIGRATIONS);
       } finally {
         preflight.close();
       }
     }
     const db = openManagedDatabase({
       path: resolvedPath,
-      init: (db) => runMigrations(db, { applyPending: !(isCanonical && existed) }),
+      init: runMigrations,
     });
     if (!releaseActivity) return db;
     let closed = false;

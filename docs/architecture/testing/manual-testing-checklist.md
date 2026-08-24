@@ -2415,87 +2415,55 @@ akm config unset embedding --silent
 
 ## 19. Migration, Durability, and Concurrency
 
-### 19.1 Safety and output oracle
+### 19.1 Task migration boundary
 
-Use `akm migrate` for the current 0.9 cutover protocol. The separate
-`dist/akm-migrate storage` surface is the frozen legacy storage migrator.
+`akm migrate` has exactly one responsibility: explicit task-v2 to task-v3
+source conversion. It never rewrites config or databases.
 
 | Operation | Classification |
 | --- | --- |
-| `akm migrate status` / `apply --dry-run` | Read-only |
-| `akm-migrate storage --list` / `--dry-run` | Read-only |
-| `akm-migrate backup` | Stateful, non-destructive |
-| `akm migrate apply` | Destructive cutover; stop writers and back up first |
-| `akm-migrate restore --confirm` | Destructive replacement |
-| Migration crash hooks, SIGKILL windows, fabricated sentinels | Suite-only or disposable VM |
+| `akm migrate status` | Read-only task inventory |
+| `akm migrate apply --dry-run` | Read-only validated conversion plan |
+| `akm migrate apply` | Per-file backup plus atomic task-source replacement |
 
-Expected current-command behavior:
+- [ ] **[LOCAL]** Status and dry-run report the same generation and change no
+      source, config, database, lock, scheduler, event, or usage row.
+- [ ] **[LOCAL]** Apply validates complete v3 bytes before replacement,
+      preserves mode, and creates the backup immediately before the write.
+- [ ] **[LOCAL]** A changed generation, ambiguous argv array, unwritable source,
+      invalid YAML, or unsafe shell translation is blocked with original bytes
+      intact.
+- [ ] **[LOCAL]** Normal run/sync/doctor rejects task v2 and never invokes the
+      migrator as a side effect.
 
-| Plan | Exit | Channel |
-| --- | ---: | --- |
-| not-applicable/ready/current status or dry-run | `0` | Plan on stdout |
-| blocked status or dry-run | `1` | Blocked plan on stdout |
-| blocked real apply | `78` | Classified config error on stderr |
-| successful apply | `0` | Raw JSON progress lines then formatted final result |
+### 19.2 Automatic current database upgrades
 
-Migration plans intentionally do not use the normal `shape`/`schemaVersion`
-fields. Only the final apply result honors format; progress remains JSONL-like.
+Managed `state.db` opens validate the exact migration-ledger prefix and apply
+known pending additive migrations automatically. Unknown or reordered ledger
+entries fail closed. There is no external storage migration command.
 
-### 19.2 Read-only status and backup rehearsal
+- [ ] **[LOCAL]** A fresh database applies the complete current registry.
+- [ ] **[LOCAL]** A database with an exact older prefix advances on open without
+      dropping or rewriting durable rows.
+- [ ] **[LOCAL]** A newer/unknown or inconsistent ledger is rejected before a
+      write.
+- [ ] **[LOCAL]** Concurrent first opens serialize each migration exactly once.
+- [ ] **[LOCAL]** `index.db` remains regenerable; `state.db` is never deleted as
+      a generic recovery step.
 
-```sh
-export AKM_MIGRATE_BIN="$REPO/dist/akm-migrate"
-test -x "$AKM_MIGRATE_BIN"
+### 19.3 Package upgrade boundary
 
-config_before="$(sha256sum "$AKM_CONFIG_DIR/config.json")"
-akm migrate status --format json >"$AKM_SANDBOX/migrate-status.json"
-akm migrate apply --dry-run --format json \
-  >"$AKM_SANDBOX/migrate-dry-run.json"
-test "$(sha256sum "$AKM_CONFIG_DIR/config.json")" = "$config_before"
+`akm upgrade` updates executable code only. A 0.8 installation moves its old
+config/state aside, creates current config/state, and selectively brings
+authored assets forward. The explicit task migrator can then convert task-v2
+sources. No current runtime loads old config/storage layouts.
 
-"$AKM_MIGRATE_BIN" backup --for 0.9.0 \
-  >"$AKM_SANDBOX/migration-backup.json"
-jq -e '
-  .action == "create" and .created == true and
-  .manifest.complete == true and (.path | type == "string")
-' "$AKM_SANDBOX/migration-backup.json"
-test -d "$(jq -r .path "$AKM_SANDBOX/migration-backup.json")"
-```
-
-- [ ] **[LOCAL]** Status and dry-run derive the same plan and change no config,
-      bundle, database, lock, sentinel, or event.
-- [ ] **[LOCAL]** Backup verifies config/state/workflow/index artifacts and does
-      not mutate their source bytes.
-- [ ] **[LOCAL]** Restore without confirm exits `78`; confirmed restore creates a
-      rescue copy and restores present/absent artifacts exactly.
-- [ ] **[LOCAL]** Built-in backup does not cover `akm.lock`, logs, scheduler
-      state, or writable bundle content. A real cutover requires an independent
-      verified backup of every writable bundle and durable directory.
-- [ ] **[LOCAL REGRESSION]** Backup manifest cryptographically binds every
-      artifact by size/digest; semantic validation alone is insufficient.
-
-### 19.3 Disposable cutover and recovery
-
-Run a 0.8-to-0.9 rehearsal only against a cloned installation with all AKM
-writers stopped.
-
-- [ ] **[DESTRUCTIVE]** Capture independent archive/digests for config, lock,
-      data, state, cache, and every writable bundle.
-- [ ] **[DESTRUCTIVE]** First apply that must generate config writes only a
-      review file and stops `ready`; no live database/config is replaced.
-- [ ] **[DESTRUCTIVE]** Reviewed apply creates one verified backup, migrates
-      content/state, and publishes config last.
-- [ ] **[DESTRUCTIVE]** Successful rerun is idempotent/current and creates no
-      redundant backup.
-- [ ] **[DESTRUCTIVE]** Interrupt each apply/restore publication phase through
-      the shipped crash suites. Sentinel remains, ordinary access fails closed,
-      and retry converges without deleting evidence.
-- [ ] **[DESTRUCTIVE]** Live workflow claims, index writers, improve locks, and
-      other maintenance barriers block replacement before mutation.
-- [ ] **[DESTRUCTIVE]** Restore plus independent bundle/lock recovery returns
-      exact old behavior; built-in restore alone is not called full rollback.
-
-Do not manually set internal `AKM_TEST_MIGRATION_*` hooks.
+- [ ] **[LIVE DISPOSABLE]** `akm upgrade --check` is nonmutating and the chosen
+      npm/Bun/pnpm or standalone path installs the expected version.
+- [ ] **[LIVE DISPOSABLE]** A standalone replacement verifies its checksum and
+      preflights the staged binary before atomic replacement.
+- [ ] **[LIVE DISPOSABLE]** Old and current data sets stay separate; rollback
+      restores executable code together with its matching archived data.
 
 ### 19.4 Concurrent writers and readers
 
@@ -2961,11 +2929,12 @@ akm info
 
 - [ ] **[LIVE DESTRUCTIVE]** Check is nonmutating. npm/Bun/pnpm global installs
       invoke their package manager; standalone streams bounded bytes, verifies
-      checksum, preflights staged binary, replaces, migrates, and reindexes.
+      checksum, preflights the staged binary, and atomically replaces it.
 - [ ] **[LIVE DESTRUCTIVE]** Failure retains explicit recoverable old/new
       artifacts. Integrity bypass variable is never set for acceptance.
-- [ ] **[LIVE]** 0.8-to-0.9 self-upgrade refusal is expected; use independent
-      backup, install/stage 0.9, then the new migration protocol.
+- [ ] **[LIVE]** A 0.8 package can be replaced, but its config/state are not
+      runtime inputs: archive them, initialize current paths, then explicitly
+      migrate retained task-v2 sources.
 - [ ] **[LIVE]** RC/`next` cannot be validated through latest-stable discovery;
       record post-publication stable self-upgrade as blocked until discoverable.
 

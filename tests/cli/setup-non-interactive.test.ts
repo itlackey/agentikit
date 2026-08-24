@@ -66,11 +66,8 @@ describe("akm setup without a TTY", () => {
  * CLI's own startup config load never blocks it — but its FIRST action was
  * still `assertSetupConfigPreflight()` re-reading and re-validating that same
  * config, dying with the generic "Unsupported configVersion" error the
- * normal startup path throws. That is exactly the state a real upgrade
- * leaves behind (a live pre-0.9 config), and `setup` is the natural "get me
- * unstuck" command to reach for — so it must fail with something more useful
- * than a dead end, without ever touching the file the migration tooling
- * still needs to read.
+ * normal startup path throws. Setup must fail with an actionable current-schema
+ * message without interpreting or changing the obsolete file.
  */
 describe("akm setup against a config akm 0.9 cannot load", () => {
   let cleanup: Cleanup | undefined;
@@ -100,10 +97,9 @@ describe("akm setup against a config akm 0.9 cannot load", () => {
     expect(parsed.code).toBe("UNSUPPORTED_CONFIG_VERSION");
     expect(parsed.error).toContain("did not load");
     expect(parsed.error).toContain("left untouched");
-    expect(parsed.hint).toContain("akm migrate status");
+    expect(parsed.hint).toContain("current config schema");
 
-    // The file itself was never modified — critical safety property: the
-    // live 0.8 config is what `akm migrate apply` needs to read.
+    // The file itself is never modified.
     expect(fs.readFileSync(configPath, "utf8")).toBe(original);
   });
 
@@ -116,7 +112,7 @@ describe("akm setup against a config akm 0.9 cannot load", () => {
     expect(code).toBe(78);
     const parsed = JSON.parse(stderr.trim());
     expect(parsed.code).toBe("INVALID_CONFIG_FILE");
-    expect(parsed.hint).toContain("akm migrate status");
+    expect(parsed.hint).toContain("current config schema");
   });
 
   test("every non-interactive entry point refuses before doing any work", async () => {
@@ -130,7 +126,7 @@ describe("akm setup against a config akm 0.9 cannot load", () => {
       const { code, stderr } = await runCliCapture(args);
       expect(code, args.join(" ")).toBe(78);
       const parsed = JSON.parse(stderr.trim());
-      expect(parsed.hint, args.join(" ")).toContain("akm migrate status");
+      expect(parsed.hint, args.join(" ")).toContain("current config schema");
     }
   });
 

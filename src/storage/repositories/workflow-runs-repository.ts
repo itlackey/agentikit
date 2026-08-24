@@ -266,10 +266,8 @@ export interface ListRunsFilter {
 /**
  * Repository owning every raw SQL statement against `workflow_runs` and
  * `workflow_run_steps`. It is DB-location-agnostic: the lifecycle helper
- * {@link withWorkflowRunsRepo} binds it to {@link StorageLocations.stateDb}
- * (the three-DB cutover folded workflow.db into state.db; the tables exist via
- * state migration `020-three-db-cutover`) so a future storage move (#489)
- * changes only `locations.ts`.
+ * {@link withWorkflowRunsRepo} binds it to {@link StorageLocations.stateDb}, so
+ * a future storage move changes only `locations.ts`.
  *
  * ## Connection-lifetime contract (WS5)
  *

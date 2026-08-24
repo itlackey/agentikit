@@ -457,10 +457,6 @@ akm config get engines.fast
 akm config set engines.fast '{"kind":"llm","endpoint":"http://localhost:11434/v1/chat/completions","model":"qwen3"}'
 akm config set engines.fast.apiKey '$LOCAL_LLM_API_KEY'
 akm config unset engines.old
-akm migrate status
-akm migrate status --config ./prepared-0.9.json
-akm migrate apply --config ./prepared-0.9.json --dry-run
-akm migrate apply --config ./prepared-0.9.json
 ```
 
 Object values passed to `config set` deep-merge with their current value.
@@ -477,7 +473,7 @@ generic walker.
 | `AKM_LLM_API_KEY` | Fallback only for the selected `defaults.llmEngine` |
 | `AKM_EMBED_API_KEY` | Embedding credential |
 | `AKM_BUNDLE_DIR` | Override the bundle directory |
-| `AKM_DATA_DIR` | Override the data directory — durable `index.db`/`workflow.db`/`state.db`, `akm.lock`, config backups (or set `XDG_DATA_HOME`) |
+| `AKM_DATA_DIR` | Override the data directory — `index.db`, durable `state.db`, and `akm.lock` (or set `XDG_DATA_HOME`) |
 | `AKM_CACHE_DIR` | Override the cache directory — regenerable caches (or set `XDG_CACHE_HOME`) |
 | `AKM_STATE_DIR` | Override the state directory — task-scheduler invocation state (or set `XDG_STATE_HOME`) |
 | `AKM_SQLITE_JOURNAL_MODE` | SQLite journal mode: `WAL` (default), `DELETE`, or `TRUNCATE` |

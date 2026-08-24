@@ -249,9 +249,8 @@ export function readLockfileForUpdate(): LockfileUpdateSnapshot {
  * path (`resolveEntryContentDir` in indexer/search) and the command-layer WRITE
  * path (`adaptConfiguredSource` in core/write-source): consulting it first makes
  * a write land in exactly the directory a read walks. Returns `undefined` for a
- * bundle with no lock `localRoot` (e.g. a config migrated from a `sources[]`
- * url, whose provider re-derives the cache path) or a non-managed type, so both
- * callers fall back to the identical provider-path derivation.
+ * bundle with no lock `localRoot` or a non-managed type, so both callers fall
+ * back to the identical provider-path derivation.
  */
 export function lockContentRootFor(bundleId: string | undefined, type: string): string | undefined {
   if (!bundleId || (type !== "git" && type !== "npm")) return undefined;

@@ -344,11 +344,10 @@ export function matchWorkflowPlaceholder(body: string): string | null {
 
 /**
  * WorkflowLinter's `invalid-workflow-structure` check (`workflow-linter.ts:48-77`):
- * the ERROR half of {@link workflowFrontendDiagnostics}, for callers that only
- * ever surface fatal findings — the read-only adapter `validate` path and
- * `akm migrate`'s stale-workflow probe. A caller that ALSO surfaces the
- * advisories must call {@link workflowFrontendDiagnostics} once instead of
- * pairing this with a second view. NEVER writes.
+ * the ERROR half of {@link workflowFrontendDiagnostics}, for the read-only
+ * adapter `validate` path. A caller that ALSO surfaces advisories must call
+ * {@link workflowFrontendDiagnostics} once instead of pairing this with a
+ * second view. NEVER writes.
  */
 export function workflowStructureDiagnostics(
   relPath: string,

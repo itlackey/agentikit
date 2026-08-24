@@ -81,10 +81,7 @@ export const RegistryConfigEntrySchema = z
 // machinery). The map KEY is the workspace bundle slug (spec §11.1 charset: no
 // `/`, `:`, `.`, `#`, whitespace), validated with {@link isBundleSlug}.
 //
-// The config migrator ({@link migrateConfigSourcesToBundles}) emits these keyed
-// by exactly what `deriveInstallations` derives today (D-R5). `bindings` (spec
-// §10.1) is Tier B and is NEVER accepted here (the top-level superRefine rejects
-// it) — it is not part of the 0.9.0 config-shape cutover.
+// `bindings` is not accepted here; the top-level schema rejects it.
 
 /** Website source descriptor for a bundle entry (spec §10.1). */
 const BundleWebsiteDescriptorSchema = z
@@ -125,15 +122,11 @@ export const BundleConfigEntrySchema = z
     npm: z.string().min(1).optional(),
     writable: z.boolean().optional(),
     // Opt a bundle out of indexing, search, refresh, and write targeting
-    // without deleting it. Carried over from the pre-cutover `sources[].enabled`
-    // flag, which the runtime still honors on the derived source entry
-    // (`write-source.ts`, `search-source.ts`); without it here, migrating a
-    // disabled source would silently reactivate it.
+    // without deleting it. The runtime honors the derived value in write and
+    // search source selection.
     enabled: z.boolean().optional(),
-    // The original registry install id when the bundle KEY was slug-derived from
-    // it (e.g. registryId `github:owner/repo` → key `repo`). Preserved so the
-    // source locator survives the config-shape migration (D-R5). Absent when the
-    // bundle key already equals the source's stable id.
+    // The registry install id when the bundle key was slug-derived from it
+    // (e.g. registryId `github:owner/repo` → key `repo`).
     registryId: z.string().min(1).optional(),
     components: z.record(z.string().min(1), BundleComponentConfigSchema).optional(),
   })

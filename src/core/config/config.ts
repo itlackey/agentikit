@@ -239,11 +239,9 @@ export function parseAndValidateConfigText(text: string, sourcePath?: string): A
 /**
  * The configured stash sources as an ordered {@link SourceConfigEntry} list.
  *
- * 0.9.0 (spec §10.1): the retired `stashDir`/`sources[]`/`installed[]` trio is
- * gone — every source is a `bundles.<slug>` entry. This derives the unified
- * source list from `bundles` (defaultBundle first, then map order), so callers
- * that iterated `sources[]` keep working over the new shape. Returns `[]` when
- * no bundles are configured.
+ * Every source is a `bundles.<slug>` entry. This derives the provider-ready
+ * source list from `bundles` (defaultBundle first, then map order). Returns
+ * `[]` when no bundles are configured.
  */
 export function getSources(config: AkmConfig): SourceConfigEntry[] {
   return bundlesToSourceEntries(config) ?? [];

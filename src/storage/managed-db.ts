@@ -5,8 +5,8 @@
 /**
  * Managed-database seam — the single home for the SQLite open/lifecycle recipe.
  *
- * Before this module, two idioms were copy-pasted across state.db / logs.db /
- * workflow.db / index.db and their consumers:
+ * Two lifecycle steps are shared across the current managed databases
+ * (`state.db`, `logs.db`, and `index.db`) and their consumers:
  *
  *   1. The open recipe: `mkdir(dir) → openDatabase(path) → applyStandardPragmas
  *      → migrate`.

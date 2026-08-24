@@ -43,9 +43,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   preserve explicit false/zero/empty values, authorize selected tools before
   dispatch, and expose stable field-level provenance without resolved values.
 - **WP4 — portable command execution:** added canonical
-  `akm command run <ref>`, backed `akm agent --command` with the same executor,
-  implemented one-pass `$ARGUMENTS` substitution, and reject unsupported native
-  template constructs before dispatch.
+  `akm command run <ref>`, implemented one-pass `$ARGUMENTS` substitution, and
+  reject unsupported native template constructs before dispatch. Stored
+  commands have one execution surface; `akm agent --command` is not retained.
 - **WP6 — task v3:** added the strict shipped task schema, command/workflow/script
   targets, closed shell and working-directory rules, portable schedules, and a
   fail-closed task-v2 migrator with no-write preview, per-file status, backups,

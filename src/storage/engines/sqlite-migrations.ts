@@ -5,11 +5,9 @@
 /**
  * Shared SQLite migration engine.
  *
- * state.db (`src/core/state-db.ts`) evolves its schema through this idempotent,
- * transaction-per-migration runner backed by a `schema_migrations` ledger. The
- * migrator's frozen pre-cutover workflow-schema roll
- * (`scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts`, driven by
- * `scripts/akm-migrate/config-migrate.ts`) reuses the SAME runner.
+ * state.db (`src/core/state-db.ts`) evolves its schema automatically through
+ * this idempotent, transaction-per-migration runner backed by a
+ * `schema_migrations` ledger.
  *
  * This module factors that runner out once. Each caller supplies only its own
  * `MIGRATIONS` array.
@@ -41,8 +39,6 @@ export interface Migration {
 export interface RunMigrationsOptions {
   /** Called immediately before each pending migration and before its transaction. */
   beforeMigration?: (migration: Migration) => void;
-  /** Validate the ledger but leave known pending migrations unapplied. */
-  applyPending?: boolean;
 }
 
 export type MigrationLedgerStatus = "old" | "current" | "newer" | "inconsistent";
@@ -114,16 +110,6 @@ export function assertMigrationLedger(db: Database, migrations: readonly Migrati
   return state;
 }
 
-export function assertCurrentMigrationLedger(db: Database, migrations: readonly Migration[]): MigrationLedgerState {
-  const state = assertMigrationLedger(db, migrations);
-  if (state.status !== "current") {
-    throw new Error(
-      `Refusing to open an obsolete writable schema; run \`akm migrate apply\`: ${state.detail ?? "pending migrations"}.`,
-    );
-  }
-  return state;
-}
-
 /**
  * Create the migrations ledger table if it does not exist. Must be called
  * unconditionally on every open so a fresh database bootstraps correctly.
@@ -152,10 +138,6 @@ export function ensureMigrationsTable(db: Database): void {
  */
 export function runMigrations(db: Database, migrations: readonly Migration[], opts?: RunMigrationsOptions): void {
   assertMigrationRegistry(migrations);
-  if (opts?.applyPending === false) {
-    assertMigrationLedger(db, migrations);
-    return;
-  }
   if (migrationsTableExists(db)) assertMigrationLedger(db, migrations);
 
   ensureMigrationsTable(db);
@@ -171,7 +153,7 @@ export function runMigrations(db: Database, migrations: readonly Migration[], op
     withImmediateWriteLock(db, () => {
       // Re-check under the write lock. `applied` is a snapshot taken before the
       // loop, so two processes bootstrapping the same fresh DB concurrently
-      // (both see existed=false, both run with applyPending) could each decide
+      // (both see existed=false) could each decide
       // to apply migration N. The first commits; the second must not re-run the
       // DDL and must not hit a UNIQUE violation on the ledger insert.
       const already = db.prepare("SELECT 1 FROM schema_migrations WHERE id = ?").get(migration.id);

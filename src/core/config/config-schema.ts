@@ -26,12 +26,10 @@
  * - Top-level uses `.passthrough()` so unknown future keys round-trip intact on
  *   read; `sanitizeConfigForWrite` decides what to persist.
  * - Most nested sub-objects use `.catch(undefined)` so malformed entries are
- *   silently dropped (matches the legacy parser's warn-and-ignore semantics for
- *   field-level shape errors — keeps cold-start working when a user has a
- *   typo in their config).
- * - Two exceptions (hard-rejected): openviking source type and legacy
- *   `stashes[]` key. Both have explicit migration paths; silently dropping
- *   would mask user data loss.
+ *   silently dropped to keep cold-start working when a user has a field-level
+ *   typo in an optional section.
+ * - Unsupported top-level source shapes and provider kinds are hard-rejected;
+ *   silently dropping them would mask user data loss.
  * - UNKNOWN-KEY POLICY: object schemas use passthrough (unknown keys are
  *   preserved and ignored, NOT rejected). akm runs across multiple installed
  *   versions sharing one config.json; a newer version writes keys an older
@@ -109,9 +107,8 @@ export const DefaultsSchema = z
  * with cross-field refinements (`.superRefine()`).
  *
  * All fields validate loudly — typos and shape errors throw at load time. The
- * legacy parser's warn-and-drop tolerance was a frequent source of silent
- * configuration loss; the migration module ({@link migrateConfigShape}) handles
- * one-time 0.7→0.8 input transforms before the schema sees the value.
+ * the removed parser's warn-and-drop tolerance was a source of silent
+ * configuration loss. There is no pre-schema compatibility transform.
  */
 export const AkmConfigShape = {
   configVersion: z.literal(CURRENT_CONFIG_VERSION),
@@ -121,12 +118,10 @@ export const AkmConfigShape = {
   embedding: EmbeddingConnectionConfigSchema.optional(),
   index: IndexConfigSchema.optional(),
   registries: z.array(RegistryConfigEntrySchema).optional(),
-  // 0.9.0 config-shape cutover (spec §10.1 / D-R5). `bundles` + `defaultBundle`
-  // are the ONLY source shape — the retired `stashDir`/`sources[]`/`installed[]`
-  // trio is hard-rejected at load (see the top-level superRefine). The migrator
-  // ({@link migrateConfigSourcesToBundles}) converts a pre-cutover config to this
-  // shape before validation. `defaultBundle` names the primary bundle (spec
-  // §11.1 short-ref resolution / D-R4).
+  // `bundles` + `defaultBundle` are the only source configuration shape. The
+  // retired `stashDir`/`sources[]`/`installed[]` keys are rejected at load;
+  // there is no runtime config translator. `defaultBundle` names the primary
+  // bundle used for short-ref resolution.
   bundles: BundlesConfigSchema.optional(),
   defaultBundle: nonEmptyString.optional(),
   output: OutputConfigSchema.optional(),

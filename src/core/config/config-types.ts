@@ -78,8 +78,8 @@ export type ImproveProfileConfig = z.infer<typeof import("./config-schema").Impr
 export type RegistryConfigEntry = z.infer<typeof import("./config-schema").RegistryConfigEntrySchema>;
 
 /**
- * A single `bundles.<slug>` entry (0.9.0 config-shape cutover, spec §10.1 /
- * D-R5). Carries one source descriptor (`path` | `git` | `website` | `npm`),
+ * A single current `bundles.<slug>` entry. Carries one source descriptor
+ * (`path` | `git` | `website` | `npm`),
  * optional `writable`, an optional preserved `registryId` source locator, and an
  * optional single-entry `components` map. See config-schema.ts for the shape.
  */
@@ -99,16 +99,13 @@ export type SourceSpec =
   | { type: "local"; path: string };
 
 /**
- * ConfiguredSource — runtime representation of a configured stash. Persisted
- * on disk via SourceConfigEntry; the `source` field is derived at load time.
+ * ConfiguredSource — runtime representation derived from a current bundle.
  *
- * Iteration order (see `resolveConfiguredSources()`):
- *   1. The entry marked `primary: true` (or a synthetic entry built from `stashDir`).
- *   2. Remaining `sources[]` entries in declared order.
- *   3. Legacy `installed[]` entries last.
+ * Iteration order (see `resolveConfiguredSources()`): the `defaultBundle`
+ * first, followed by the remaining bundle-map insertion order.
  */
 export interface ConfiguredSource {
-  /** Stable identifier. Generated from `type+hash` when absent in legacy configs. */
+  /** Stable bundle identifier. */
   name: string;
   /** Provider type discriminator (mirrors `source.type`). */
   type: string;
@@ -118,7 +115,7 @@ export interface ConfiguredSource {
   enabled?: boolean;
   /** Whether the underlying repo accepts writes (e.g. git push). */
   writable?: boolean;
-  /** Marks one entry in `sources[]` as the primary working stash. */
+  /** Marks the configured default bundle. */
   primary?: boolean;
   /** Pass-through provider-specific options. */
   options?: Record<string, unknown>;
@@ -129,9 +126,8 @@ export interface ConfiguredSource {
 }
 
 /**
- * SourceConfigEntry — the on-disk JSON shape of a `sources[]` entry. The loader
- * derives {@link SourceSpec} from the persisted fields to build a
- * {@link ConfiguredSource}.
+ * SourceConfigEntry is the provider-ready internal projection of one current
+ * bundle descriptor. It is not an accepted top-level config shape.
  */
 export type SourceConfigEntry = z.infer<typeof import("./config-schema").SourceConfigEntrySchema>;
 

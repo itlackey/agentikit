@@ -835,27 +835,10 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
     `,
   },
 
-  // ── Migration 020 — three-DB cutover baseline DDL (Chunk 8, WI-8.2) ───────────
-  //
-  // The state.db half of the three-DB merge (plan §3.2/§8, normative §11.4,
-  // chunk-8 cutover design §1). This migration is PURE,
-  // IDEMPOTENT DDL ONLY — `CREATE TABLE IF NOT EXISTS` (+ indexes),
-  // never a DROP or a data move. The actual data movement (the workflow.db merge,
-  // the usage_events rescue from index.db, the full old-ref→item_ref re-key, and
-  // the workflow.db delete / index.db quarantine) is idempotent migrate-apply
-  // code driven by
-  // `scripts/akm-migrate/migrate/legacy/three-db-cutover.ts`. See the no-DROP
-  // contract carve-out note in `src/core/state-db.ts`.
-  //
-  // The three workflow tables are the 10 pre-cutover workflow migrations
-  // (the frozen `scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts`
-  // base schema + 001–010) folded into one baseline at their FINAL post-010 shape — column
-  // lists, CHECK constraints, and indexes copied verbatim. `usage_events` mirrors
-  // index.db's former `ensureUsageEventsSchema` (`src/indexer/usage/usage-events.ts`),
-  // its new durable home. `legacy_state` mirrors `ensureLegacyStateTable`
-  // (`src/storage/repositories/index-entries-repository.ts`), the orphan
-  // quarantine archive re-homed from index.db (durable, auditable, purgeable).
-  // Nothing else — NO bindings/lifecycle tables (Tier B / deferred, §3.2).
+  // Migration 020 installs the durable workflow, usage, and quarantine tables
+  // in state.db. It is additive/idempotent DDL only: current managed databases
+  // advance through the ledger automatically, while unknown/divergent ledgers
+  // fail closed. There is no external data-movement coordinator.
   {
     id: "020-three-db-cutover",
     up: `
@@ -1045,6 +1028,6 @@ assertMigrationRegistry(STATE_MIGRATIONS);
  *
  * Called automatically by `openStateDatabase()`.
  */
-export function runMigrations(db: Database, options?: { applyPending?: boolean }): void {
-  runSqliteMigrations(db, STATE_MIGRATIONS, { applyPending: options?.applyPending });
+export function runMigrations(db: Database): void {
+  runSqliteMigrations(db, STATE_MIGRATIONS);
 }

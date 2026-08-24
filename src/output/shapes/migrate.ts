@@ -5,14 +5,9 @@
 /**
  * `akm migrate status` / `akm migrate apply` output shape.
  *
- * The result is the standalone `akm-migrate` tool's `MigrationPlan` JSON,
- * parsed straight through from its child-process stdout
- * (`src/commands/migrate-cli.ts`). Identity — no field trimming and,
- * deliberately, no `shape`/`schemaVersion` stamp the way
- * `./passthrough.ts` adds for other identity commands: `migrate status` and
- * `migrate apply --dry-run` report byte-identical plans for the same
- * install, and integration tests assert that equality directly on the
- * parsed JSON — stamping only one of the two command names would break it.
+ * The result is the task-only migrator's `MigrationPlan` JSON, parsed from the
+ * packaging child by `src/commands/migrate-cli.ts`. Identity is deliberate:
+ * status and dry-run report byte-identical plans for the same inputs.
  */
 import type { OutputShapeEntry } from "./registry";
 

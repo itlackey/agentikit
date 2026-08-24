@@ -169,12 +169,10 @@ Registry index cache: `registry_url` PK, `fetched_at`, `etag`, `last_modified`, 
 
 ### Workflow Run State — tables in `$DATA/state.db`
 
-The 0.9.0 cutover folded the former `$DATA/workflow.db` into `state.db`; the
-`workflow_runs` / `workflow_run_steps` / `workflow_run_units` /
-`workflow_run_unit_attempts` tables documented here now live in `state.db` (see
-the `state.db` section below) and are deleted along with the physical
-`workflow.db` by `akm migrate apply`. WAL mode, foreign keys ON. No automatic
-cleanup — runs persist indefinitely.
+`workflow_runs`, `workflow_run_steps`, `workflow_run_units`, and
+`workflow_run_unit_attempts` live in `state.db`. WAL mode and foreign keys are
+enabled. There is no separate workflow database or workflow-storage migration
+path. Runs persist until an explicit retention policy removes them.
 
 #### Table: `workflow_runs`
 
@@ -435,12 +433,6 @@ The JSONL file at `$CACHE/events.jsonl` is no longer read or written by akm.
 
 ---
 
-### `$STATE/tasks/history/<task-id>.jsonl` — Task Run History (legacy)
-
-These JSONL files are no longer written or read by akm. Existing files at `$CACHE/tasks/history/` or `$STATE/tasks/history/` can be imported into the `task_history` table in `state.db` using the migration script. See Step 7 of `akm-migrate storage`.
-
-One line per execution: `{ id, status, startedAt, finishedAt, durationMs, log, target, detail? }`. No cleanup.
-
 ### `$STASH/.akm/memory-cleanup/belief-transitions.jsonl` — Belief State Log
 
 One line per memory belief-state transition: `{ appliedAt, ref, parentRef, fromState, toState, reason, relatedRef? }`. Observability only; no programmatic consumer reads this file.
@@ -661,23 +653,17 @@ not affect ranking, salience, real-query labels, or GRR.
 | # | Path | Format | Purpose |
 |---|---|---|---|
 | 1 | `$DATA/index.db` | SQLite 3 (WAL) | Main search index, embeddings, utility scores, LLM cache, registry index cache |
-| 2 | `$DATA/workflow.db` | — | **Removed in 0.9.0** — folded into `$DATA/state.db`. Deleted by `akm migrate apply`. |
-| 3 | `$DATA/state.db` | SQLite 3 (WAL) | Durable event and usage logs, proposals, task history, and workflow run state (migration-safe) |
-| 4 | `$STATE/tasks/history/<id>.jsonl` | JSONL | Per-task execution history (legacy location, removed in v0.8.0; import into state.db via migration script) |
-| 5 | `$STASH/.akm/memory-cleanup/belief-transitions.jsonl` | JSONL | Belief state transition audit log |
-| 6 | `$CONFIG/config.json` | JSONC | User configuration |
-| 7 | `<cwd>/.akm/config.json` | JSONC | Project-scoped config overrides |
-| 8 | `$CACHE/config-backups/config-<ts>.json` | JSON | Config pre-save backups (0600 files / 0700 dir; capped at 5, only live backup location) |
-| 9 | `$DATA/akm.lock` | JSON | Installed bundle lockfile (moved from $CONFIG) |
-| 10 | `$CONFIG/akm.lock` | JSON | Legacy location (removed in v0.8.0). Run migration script to move to `$DATA/akm.lock`. |
-| 11 | `$DATA/akm.lock.lck` | Text (PID) | Write-lock sentinel for lockfile |
-| 12 | `$CACHE/semantic-status.json` | JSON | Embedding provider health cache |
-| 13 | `$CACHE/registry-index/<slug>.json` | JSON | Removed in v0.8.0 — replaced by `registry_index_cache` table in `$DATA/index.db`. Safe to delete after migration. |
-| 14 | `$CACHE/registry-index/skills-sh-search-<md5>.json` | JSON | Skills.sh query result cache |
-| 15 | `$STASH/.akm/consolidate-journal.json` | JSON | Legacy consolidation journal; no longer used |
-| 16 | `$DATA/index.db` (`graph_*` tables) | SQLite | Knowledge graph data — there is no `graph.json` file; see the `graph_*` table row above |
-| 17 | `$DATA/state.db` (`proposals` table) | SQLite | Proposal queue, pending and archived alike — archival is a `status` flip, not a separate directory |
-| 18 | `$STASH/.akm/archive/<ts>-<i>-<name>.md` | FM+Markdown | Legacy consolidation archive; no longer managed |
+| 2 | `$DATA/state.db` | SQLite 3 (WAL) | Durable event and usage logs, proposals, task history, and workflow run state |
+| 3 | `$STASH/.akm/memory-cleanup/belief-transitions.jsonl` | JSONL | Belief state transition audit log |
+| 4 | `$CONFIG/config.json` | JSONC | User configuration |
+| 5 | `<cwd>/.akm/config.json` | JSONC | Project-scoped config overrides |
+| 6 | `$CACHE/config-backups/config-<ts>.json` | JSON | Config pre-save backups (0600 files / 0700 dir; capped at 5) |
+| 7 | `$DATA/akm.lock` | JSON | Installed bundle lockfile |
+| 8 | `$DATA/akm.lock.lck` | Text (PID) | Write-lock sentinel for lockfile |
+| 9 | `$CACHE/semantic-status.json` | JSON | Embedding provider health cache |
+| 10 | `$CACHE/registry-index/skills-sh-search-<md5>.json` | JSON | Skills.sh query result cache |
+| 11 | `$DATA/index.db` (`graph_*` tables) | SQLite | Knowledge graph data — there is no `graph.json` file; see the `graph_*` table row above |
+| 12 | `$DATA/state.db` (`proposals` table) | SQLite | Proposal queue; archival is a `status` change, not a separate directory |
 | 19 | `$STASH/.akm/consolidate-backup/<ts>/<name>.md` | Markdown | Legacy consolidation backups; no longer created |
 | 20 | `$STASH/.akm/memory-cleanup/archive/<ts>-<ref>/` | Markdown | Belief-state archived memories |
 | 21 | `$STASH/.akm/distill-rejected/<ts>-<ref>.md` | FM+Markdown | Quality-gate rejected lessons |

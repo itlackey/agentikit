@@ -3,9 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Runtime helpers that derive {@link ConfiguredSource} values from the
- * persisted {@link SourceConfigEntry} / {@link InstalledBundle} shapes
- * in an {@link AkmConfig}.
+ * Runtime helpers that derive provider-ready and {@link ConfiguredSource}
+ * values from the current bundle map in an {@link AkmConfig}.
  */
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -25,15 +24,9 @@ export function bundleComponentConfig(
 }
 
 /**
- * Convert a `bundles` map (0.9.0 config-shape cutover, spec §10.1 / D-R5) into
- * the ordered {@link SourceConfigEntry} list the transitional runtime source
- * resolvers already consume — `defaultBundle` first (primary), then map
- * insertion order (preserving today's installation-priority semantics, on which
- * D-R4 short-ref resolution depends). Each entry's `name` IS its bundle key, so
- * `deriveInstallations` re-derives the exact same installation id (D-R5 rule 1).
- *
- * Returns `undefined` for an old-shape config (no `bundles`), so callers fall
- * back to the pre-cutover `stashDir`/`sources[]`/`installed[]` resolution.
+ * Convert the current `bundles` map into its ordered provider projection:
+ * `defaultBundle` first, then map insertion order. Each entry's `name` is its
+ * bundle key. Returns `undefined` when no bundles map is configured.
  */
 /**
  * The resolved primary stash path — the `defaultBundle`'s filesystem `path`
@@ -89,9 +82,7 @@ export function bundleEntryToSourceEntry(
     return { type: "git", url: normalizeInstalledGitRef("", bundle.git), ...base };
   }
   if (bundle.website && typeof bundle.website.url === "string") {
-    // All non-`url` website-descriptor keys (maxPages/refresh/maxDepth + any
-    // passthrough provider options) round-trip back to the runtime entry's
-    // `options` bag, mirroring the pre-cutover `sources[].options` shape.
+    // All non-`url` website-descriptor keys become provider options.
     const { url, ...rest } = bundle.website;
     return {
       type: "website",
@@ -154,9 +145,9 @@ function normalizeInstalledGitRef(source: string, ref: string): string {
 }
 
 /**
- * Synthesize a stable identifier when a {@link SourceConfigEntry} omits its
- * `name`. Uses a short hash of the discriminating fields so two equivalent
- * entries collapse to the same generated name.
+ * Produce a stable internal identifier for a provider projection. Current
+ * bundle-derived entries always carry `name`; the hash protects manually
+ * constructed internal values.
  */
 function deriveBundleName(entry: SourceConfigEntry): string {
   if (entry.name) return entry.name;
@@ -170,7 +161,7 @@ function deriveBundleName(entry: SourceConfigEntry): string {
 }
 
 /**
- * Convert a persisted {@link SourceConfigEntry} into the runtime
+ * Convert a provider-ready {@link SourceConfigEntry} into the runtime
  * {@link SourceSpec} discriminated union. Returns `undefined` when the entry
  * is missing the fields its provider type requires (e.g. a `filesystem`
  * entry with no `path`); callers should drop or warn for those.
@@ -200,8 +191,7 @@ export function parseSourceSpec(entry: SourceConfigEntry): SourceSpec | undefine
  * Build the full ordered list of runtime {@link ConfiguredSource} values from a
  * loaded {@link AkmConfig}, resolved from `bundles` + `defaultBundle` (spec
  * §10.1): the `defaultBundle` (primary) first, then map insertion order. The
- * retired `stashDir`/`sources[]`/`installed[]` trio is no longer read here — a
- * pre-cutover config is normalized to bundles by the migrator before it loads.
+ * retired `stashDir`/`sources[]`/`installed[]` trio is never read or normalized.
  *
  * Entries with `enabled: false` are still emitted — callers decide whether to
  * honour the flag. Entries that fail {@link parseSourceSpec} drop silently.

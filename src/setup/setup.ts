@@ -149,28 +149,10 @@ export interface SetupSummary {
 /**
  * Raw preflight used before setup performs prompts, initialization, or writes.
  *
- * `setup` is allowlisted in `shouldBypassConfigStartup` (src/cli.ts) so it
- * never dies on the CLI's own startup config load — but every entry point
- * below (`runSetupWizard`, `runSetupWithDefaults`, `runSetupFromConfig`,
- * `runResetRecommended`) still needs the CURRENT config as its merge base, so
- * this is the first thing each one calls. When the on-disk config predates
- * 0.9 (or is otherwise unparseable/invalid), `parseAndValidateConfigText`
- * throws `ConfigError`; deliberately let that propagate rather than falling
- * back to a fresh default config here.
- *
- * That fallback was considered and rejected: `mutateConfigWithPrecommit`
- * (src/core/config/config.ts) re-reads and re-validates this SAME file
- * inside its write lock before saving, so a wizard that "survived" this
- * preflight by substituting `DEFAULT_CONFIG` would still crash with the
- * identical error at the final save — after prompting the user through the
- * entire wizard. Worse, making the save path itself tolerate an old config
- * would mean writing a freshly-generated 0.9 config over the live 0.8 file
- * `akm migrate apply` needs to read as ITS OWN input — replacing the user's
- * real engine/source settings with the wizard's placeholder ones, silently,
- * on the one path (`akm migrate ...`) the upgrade docs tell users to run
- * first. Refusing here — before any prompt, detection, or write — is strictly
- * safer: the file is left byte-for-byte untouched and the error message
- * below points straight at the real recovery command.
+ * Setup merges into a current config, so it rejects an unreadable or obsolete
+ * file before prompting or writing. There is no runtime config translator: an
+ * operator who wants a fresh setup moves the old file aside, while an operator
+ * who wants to preserve its values rewrites them into the current schema.
  */
 export function assertSetupConfigPreflight(): void {
   const configPath = getConfigPath();
@@ -193,8 +175,7 @@ export function assertSetupConfigPreflight(): void {
       `\`akm setup\` cannot run: the config at ${configPath} did not load (${error.message}). ` +
         "It was left untouched — setup never writes over a config it cannot first read cleanly.",
       error.code,
-      "Run `akm migrate status` to check what this config needs before continuing, or `akm help migrate 0.9.0` " +
-        "for the full upgrade checklist. To abandon it and start fresh instead, move it aside " +
+      "Rewrite the file using the current config schema, or move it aside to start fresh " +
         `(e.g. \`mv ${configPath} ${configPath}.bak\`) and re-run \`akm setup\`.`,
     );
   }
@@ -1075,7 +1056,7 @@ export async function runSetupFromConfig(opts: {
   for (const key of ["stashDir", "sources", "installed"] as const) {
     if (key in incoming) {
       throw new ConfigError(
-        `${key} is not supported by the current config schema; run the standalone akm-migrate tool first.`,
+        `${key} is not supported by the current config schema; configure bundles/defaultBundle instead.`,
         "INVALID_CONFIG_FILE",
       );
     }
