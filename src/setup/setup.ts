@@ -102,7 +102,7 @@ import { stepScheduledTasks } from "./steps/tasks";
  * rules fire and config + cache writes route into `$stashDir/.akm/`
  * instead of the user's host `~/.config/akm`.
  */
-function assertSetupSandbox(stashDir: string, dirExplicitlyProvided: boolean): void {
+export function assertSetupSandbox(stashDir: string, dirExplicitlyProvided: boolean): void {
   if (!dirExplicitlyProvided) return;
   if (process.env.AKM_FORCE_SETUP_TMP_STASH === "1") return;
   if (!isTransientStashPath(stashDir)) return;

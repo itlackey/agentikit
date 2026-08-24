@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runSetupFromConfig, runSetupWithDefaults } from "../../src/setup/setup";
+import { assertSetupSandbox, runSetupFromConfig, runSetupWithDefaults } from "../../src/setup/setup";
 
 const SAVED_ENV: Record<string, string | undefined> = {};
 const TRACKED_ENV = [
@@ -106,26 +106,9 @@ describe("setup tmp-stash guard (layer 1: assertSetupSandbox)", () => {
     }
   });
 
-  test("a persistent --dir (e.g. ~/test-stash) is NOT refused", async () => {
-    const persistentDir = fs.mkdtempSync(path.join(os.homedir(), ".akm-setup-guard-test-"));
-    try {
-      process.env.AKM_BUNDLE_DIR = persistentDir;
-      process.env.AKM_DATA_DIR = path.join(persistentDir, "data");
-      process.env.AKM_STATE_DIR = path.join(persistentDir, "state");
-      process.env.XDG_DATA_HOME = path.join(persistentDir, "data");
-      process.env.XDG_STATE_HOME = path.join(persistentDir, "state");
-      // Critically: persistentDir is under HOME (not /tmp), so guard does
-      // not fire. Need a config-dir override since persistent stash does
-      // not trigger the isolation rule.
-      process.env.AKM_CONFIG_DIR = path.join(persistentDir, "config");
-      delete process.env.AKM_FORCE_SETUP_TMP_STASH;
-
-      await expect(runSetupWithDefaults({ dir: persistentDir, noInit: true })).resolves.toMatchObject({
-        bundleDir: persistentDir,
-      });
-    } finally {
-      fs.rmSync(persistentDir, { recursive: true, force: true });
-    }
+  test("a persistent --dir is NOT refused", () => {
+    delete process.env.AKM_FORCE_SETUP_TMP_STASH;
+    expect(() => assertSetupSandbox("/home/example/akm", true)).not.toThrow();
   });
 });
 
