@@ -133,8 +133,8 @@ describe.skipIf(!BUN)("multi-process crash windows", () => {
     const status = await getWorkflowStatus(runId);
     expect(status.run.status).toBe("completed");
     // Dispatched twice total (killed invocation + the single resume invocation).
-    // V4 reclaims the same durable attempt/dispatch id in place, so its
-    // compatibility projection retains the stable 1-based attempt ordinal.
+    // V4 reclaims the same durable attempt/dispatch id in place, so the current
+    // status projection retains the stable 1-based attempt ordinal.
     expect(dispatchCount(markerDir, unit!)).toBe(2);
     const finalRow = await withWorkflowRunsRepo((repo) => repo.getUnit(runId, unit!));
     expect(finalRow?.status).toBe("completed");

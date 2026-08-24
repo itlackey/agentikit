@@ -76,7 +76,6 @@ import { computePlanHash } from "../ir/plan-hash";
 import { decodeWorkflowPlanV4, type IrStepPlanV4, type WorkflowPlanGraphV4 } from "../ir/schema-v4";
 import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
 import { completeWorkflowStep, getNextWorkflowStep, resumeWorkflowRun, type WorkflowNextResult } from "../runtime/runs";
-import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
 import type { SummaryJudge } from "../validate-summary";
 import { frozenSummaryJudge } from "./frozen-judge";
 import { mergeLoweringNotices } from "./lowering-notices";
@@ -539,12 +538,10 @@ function workflowSummaryJudge(
 /**
  * Seed the lifetime unit cap AND the budget ceilings from the journal so
  * both are truly per-RUN: a resumed or re-invoked run must not restart the
- * runaway backstop — or a declared `budget` — at zero. Journal rows = past
- * dispatch ATTEMPTS (counted against `budget.max_units`); their summed
- * `tokens` column is the run's spend so far (counted against
- * `budget.max_tokens`). The executor consumes both only on new dispatches
- * (durable-row reuses are free), so a large partially-completed fan-out
- * stays resumable.
+ * runaway backstop — or a declared `budget` — at zero. The append-only attempt
+ * journal is authoritative: dispatch attempts count against
+ * `budget.max_units`, and their known tokens count against
+ * `budget.max_tokens`. Durable result reuse is free.
  *
  * Gate-evaluation rows (`phase = "gate"`, journaled by the completion-gate
  * judge) are EXCLUDED from the seed: the live path never consumes
@@ -554,20 +551,14 @@ function workflowSummaryJudge(
  * that `on_error` cannot soften. The seed must reproduce exactly what live
  * accounting would have accumulated.
  *
- * The seed sums each dispatch row's `attempts` (migration 008), NOT the row
- * COUNT: a crash between a unit's dispatch and its finish leaves a `running`
- * row that resume re-dispatches under the SAME content-derived unit_id, and
- * `insertUnit` REPLACES that one row while bumping `attempts`. Counting rows
- * would erase every prior crash-retried dispatch from budget/lifetime
- * accounting, letting the run spend past its declared ceiling; summing
- * `attempts` charges each dispatch exactly once.
+ * Attempt rows are append-only, so retries cannot collapse or erase prior
+ * dispatch accounting.
  */
 async function seedRunAccountingFromJournal(runId: string): Promise<{ unitsDispatched: number; tokensUsed: number }> {
-  const journaledUnits = await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(runId));
-  const journaledDispatches = journaledUnits.filter((row) => row.phase !== GATE_EVALUATION_PHASE);
+  const accounting = await withWorkflowRunsRepo((repo) => repo.getAttemptAccounting(runId));
   return {
-    unitsDispatched: journaledDispatches.reduce((sum, row) => sum + row.attempts, 0),
-    tokensUsed: journaledDispatches.reduce((sum, row) => sum + (row.tokens ?? 0), 0),
+    unitsDispatched: accounting.dispatchAttempts,
+    tokensUsed: accounting.dispatchTokens,
   };
 }
 

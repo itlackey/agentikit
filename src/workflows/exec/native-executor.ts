@@ -37,7 +37,7 @@
  *
  * Empty free-text outputs (peer review): a SUCCESSFUL schemaless unit that
  * returns the empty string is normalized to "no output" — {@link dispatchUnit}
- * drops the falsy `text`, `finishUnit` journals `result_json = NULL`, and
+ * drops the falsy `text`, `finishUnitAttempt` journals `result_json = NULL`, and
  * durable-row reuse rehydrates the same absence (`unitOutcomeFromRow`). This is
  * the ONLY empty-output resolution: `''` never survives into the journal, so the
  * live artifact cannot diverge from the artifact a resume rebuilds from the same
@@ -1155,11 +1155,10 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
 
   const finishedAt = new Date().toISOString();
   // A dispatched unit's outcome is NEVER silently discarded. The single-driver
-  // guard lives at the ROW level (`finishUnitFromDispatch`: still `running`,
-  // still this dispatch's `started_at`): a stolen run's new driver re-dispatches
-  // through insertUnit, which REPLACES the row with a fresh started_at, so the
-  // stale driver's finish matches nothing and can never clobber the new
-  // driver's live dispatch. A row that IS still ours is finished with the real
+  // guard lives on the append-only attempt row: attempt number, dispatch id,
+  // claim holder, and running status must all match. A stale driver's finish
+  // therefore cannot clobber a reclaimed or retried dispatch. An attempt that
+  // IS still ours is finished with the real
   // result even when the run went non-active or the lease moved mid-flight —
   // dropping it would leave the row `running` and make a later resume
   // re-dispatch side-effecting work that already ran and already spent tokens.
@@ -1245,7 +1244,7 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
   let loweringNotices: UnitDispatchResult["notices"];
   // Harness-native session id revealed by dispatch (P2). Captured across
   // structured-output retries (last one wins) so it survives into the
-  // UnitOutcome and gets journaled on the unit row by finishUnit — the seam's
+  // UnitOutcome and gets journaled by finishUnitAttempt — the seam's
   // contract ("stored opportunistically on the unit row for resume").
   let sessionId: string | undefined;
   const dispatchOnce = async (feedback?: string): Promise<string> => {
@@ -1312,7 +1311,7 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
     }
 
     const text = await dispatchOnce();
-    // Normalize an EMPTY successful output to "no text". `finishUnit` journals
+    // Normalize an EMPTY successful output to "no text". `finishUnitAttempt` journals
     // result_json = NULL for a falsy text, so durable-reuse rehydrates NO text
     // from the row (unitOutcomeFromRow). Preserving `text: ""` only in this live
     // outcome would make the LIVE step artifact ("") diverge from the artifact a

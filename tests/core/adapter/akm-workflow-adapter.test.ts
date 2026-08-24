@@ -6,9 +6,8 @@
  * Conformance gate for the `akm-workflow` adapter (#46).
  *
  * Drives the adapter over `tests/fixtures/bundles/akm-workflow/` and asserts the
- * four authored goldens under `tests/fixtures/format-family-goldens/akm-workflow/`.
- * One workflow format now (workflow-format-unification): markdown, orchestration
- * graph in frontmatter, prose in the body.
+ * authored goldens under `tests/fixtures/format-family-goldens/akm-workflow/`.
+ * Peer Markdown and GitHub-shaped YAML inputs compile into the same source IR.
  */
 
 import { describe, expect, test } from "bun:test";

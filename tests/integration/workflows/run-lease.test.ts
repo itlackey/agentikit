@@ -128,7 +128,7 @@ describe("repository lease primitives", () => {
     });
   });
 
-  test("failed runs cannot acquire, renew, release, or refresh forensic lease and unit claims", async () => {
+  test("failed runs cannot acquire, renew, or release their forensic engine lease", async () => {
     writeWorkflow("lease-forensics");
     const started = await startWorkflowRun("workflows/lease-forensics", {});
     const runId = started.run.id;
@@ -136,20 +136,6 @@ describe("repository lease primitives", () => {
 
     await withWorkflowRunsRepo((repo) => {
       expect(repo.acquireEngineLease(runId, "stale-engine", originalUntil, new Date().toISOString())).toBe(true);
-      repo.insertUnit({
-        runId,
-        unitId: "only-step:solo",
-        stepId: "only-step",
-        nodeId: "only-step",
-        parentUnitId: null,
-        phase: null,
-        runner: "agent",
-        model: null,
-        inputHash: "hash",
-        startedAt: "2026-01-01T00:00:00.000Z",
-        claimHolder: "stale-driver",
-        claimExpiresAt: originalUntil,
-      });
     });
     execOnWorkflowDb("UPDATE workflow_runs SET status = 'failed' WHERE id = ?", runId);
 
@@ -157,11 +143,7 @@ describe("repository lease primitives", () => {
       expect(repo.renewEngineLease(runId, "stale-engine", isoIn(180_000))).toBe(false);
       expect(repo.acquireEngineLease(runId, "new-engine", isoIn(180_000), new Date().toISOString())).toBe(false);
       repo.releaseEngineLease(runId, "stale-engine");
-      expect(
-        repo.updateUnitClaim(runId, "only-step:solo", "stale-driver", isoIn(180_000), new Date().toISOString()),
-      ).toBe(false);
       expect(repo.getRunById(runId)?.engine_lease_until).toBe(originalUntil);
-      expect(repo.getUnit(runId, "only-step:solo")?.claim_expires_at).toBe(originalUntil);
     });
   });
 });

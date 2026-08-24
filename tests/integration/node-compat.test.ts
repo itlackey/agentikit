@@ -937,9 +937,8 @@ describe("workflow smoke parity", () => {
     // `workflow create <name> --print` writes the RAW markdown template to
     // stdout (no envelope) — matching the dropped `workflow template` it
     // replaces — `--print > starter.md` must yield a usable file. There is
-    // one workflow format now (workflow-format-unification); a `.yaml` name
-    // is a usage error, not a second template shape, so this smoke uses a
-    // plain name.
+    // Creation emits Markdown; execution also accepts peer `.yml` sources
+    // through the same source IR. `.yaml` remains rejected.
     const tpl = nodeRun(["workflow", "create", "smoke-program", "--print"], nodeEnv);
     assertNoBoundaryLeak(tpl, "workflow create --print");
     expect(tpl.status).toBe(0);

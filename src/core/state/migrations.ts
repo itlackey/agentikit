@@ -1011,10 +1011,10 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
 
   // ── Migration 022 — append-only durable workflow dispatch attempts ────────
   //
-  // `workflow_run_units` remains the compatibility projection used by v3 and
-  // status/reuse readers. V4 writes every external dispatch reservation and
-  // terminal result here so retry/reclaim history, stable dispatch identity,
-  // and known usage cannot be erased by an upsert of that projection row.
+  // `workflow_run_units` is the current status/reuse projection. V4 writes
+  // every external dispatch reservation and terminal result here so
+  // retry/reclaim history, stable dispatch identity, and known usage cannot be
+  // erased by an upsert of that projection row.
   {
     id: "022-workflow-unit-attempts",
     up: `

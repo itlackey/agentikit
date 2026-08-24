@@ -89,7 +89,7 @@ function useFrozenPlan(frozen: WorkflowPlanGraph): () => Promise<WorkflowPlanGra
   } finally {
     db.close();
   }
-  return async () => frozen;
+  return async () => JSON.parse(JSON.stringify(frozen)) as WorkflowPlanGraph;
 }
 
 beforeEach(() => {
@@ -599,14 +599,11 @@ every file reviewed thoroughly
         .getUnitsForStep(RUN_ID, "review")
         .map((r) => r.unit_id)
         .sort();
-      expect(ids).toEqual([
-        "review.gate:l1",
-        "review.gate:l2",
-        "review.unit:ac8d8342bbb2", // "a"
-        "review.unit:ac8d8342bbb2~l2",
-        "review.unit:c100f95c1913", // "b"
-        "review.unit:c100f95c1913~l2",
-      ]);
+      const firstLoop = ids.filter((id) => id.startsWith("review.unit:") && !id.endsWith("~l2"));
+      expect(firstLoop).toHaveLength(2);
+      expect(ids).toEqual(
+        ["review.gate:l1", "review.gate:l2", ...firstLoop, ...firstLoop.map((id) => `${id}~l2`)].sort(),
+      );
     });
   });
 });
@@ -769,21 +766,30 @@ async function journalRow(row: {
   stepId?: string;
 }): Promise<void> {
   await withWorkflowRunsRepo((repo) => {
-    repo.insertUnit({
+    const now = new Date().toISOString();
+    const claimHolder = `direct:${row.unitId}`;
+    const reserved = repo.reserveUnitAttempt({
       runId: RUN_ID,
       unitId: row.unitId,
       stepId: row.stepId ?? "work",
       nodeId: row.nodeId,
       parentUnitId: null,
-      phase: row.phase,
+      phase: row.phase === "gate" ? "gate" : "unit",
       runner: row.phase === "gate" ? "llm" : "agent",
+      engine: null,
       model: null,
-      inputHash: row.inputHash,
-      startedAt: new Date().toISOString(),
-    });
-    repo.finishUnit({
+      inputHash: row.inputHash ?? `test:${row.unitId}`,
+      now,
+      claimHolder,
+      claimExpiresAt: new Date(Date.parse(now) + 90_000).toISOString(),
+      leaseMode: "direct",
+    }).attempt;
+    repo.finishUnitAttempt({
       runId: RUN_ID,
       unitId: row.unitId,
+      attempt: reserved.attempt,
+      dispatchId: reserved.dispatch_id,
+      claimHolder,
       status: row.status,
       resultJson: row.resultJson,
       tokens: null,

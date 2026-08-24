@@ -94,7 +94,7 @@ export interface UnitOutcome {
   notices?: readonly Readonly<LoweringNotice>[];
   /**
    * Harness-native session id revealed during dispatch (last one wins across
-   * structured-output retries). Persisted on the unit row by `finishUnit`.
+   * structured-output retries). Persisted by `finishUnitAttempt`.
    */
   sessionId?: string;
 }

@@ -8,7 +8,10 @@ import os from "node:os";
 import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { formatWorkflowStatusPlain } from "../../../src/output/text/helpers";
-import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
+import {
+  type WorkflowRunsRepository,
+  withWorkflowRunsRepo,
+} from "../../../src/storage/repositories/workflow-runs-repository";
 import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 
 /**
@@ -60,21 +63,13 @@ async function seedTwoUnits(): Promise<void> {
   await withWorkflowRunsRepo((repo) => {
     const now = new Date().toISOString();
     // A completed free-text unit: result_json holds a bare JSON string.
-    repo.insertUnit({
-      runId: RUN_ID,
-      unitId: "work:solo",
-      stepId: "work",
-      nodeId: "work.unit",
-      parentUnitId: null,
-      phase: null,
-      runner: "agent",
-      model: "deep",
-      inputHash: "hash-ok",
-      startedAt: now,
-    });
-    repo.finishUnit({
-      runId: RUN_ID,
-      unitId: "work:solo",
+    const completed = reserveUnit(repo, "work:solo", "hash-ok", now);
+    repo.finishUnitAttempt({
+      runId: completed.run_id,
+      unitId: completed.unit_id,
+      attempt: completed.attempt,
+      dispatchId: completed.dispatch_id,
+      claimHolder: completed.claim_holder,
       status: "completed",
       resultJson: JSON.stringify("the answer is 42"),
       tokens: 10,
@@ -83,21 +78,13 @@ async function seedTwoUnits(): Promise<void> {
       finishedAt: now,
     });
     // A failed unit: failure_reason plus partial/error text in result_json.
-    repo.insertUnit({
-      runId: RUN_ID,
-      unitId: "work:beef",
-      stepId: "work",
-      nodeId: "work.unit",
-      parentUnitId: null,
-      phase: null,
-      runner: "agent",
-      model: "deep",
-      inputHash: "hash-bad",
-      startedAt: now,
-    });
-    repo.finishUnit({
-      runId: RUN_ID,
-      unitId: "work:beef",
+    const failed = reserveUnit(repo, "work:beef", "hash-bad", now);
+    repo.finishUnitAttempt({
+      runId: failed.run_id,
+      unitId: failed.unit_id,
+      attempt: failed.attempt,
+      dispatchId: failed.dispatch_id,
+      claimHolder: failed.claim_holder,
       status: "failed",
       resultJson: JSON.stringify("boom: connection refused at line 12"),
       tokens: 3,
@@ -106,6 +93,32 @@ async function seedTwoUnits(): Promise<void> {
       finishedAt: now,
     });
   });
+}
+
+function reserveUnit(
+  repo: WorkflowRunsRepository,
+  unitId: string,
+  inputHash: string,
+  now: string,
+  claimHolder = `direct:${unitId}`,
+  claimExpiresAt = new Date(Date.parse(now) + 90_000).toISOString(),
+) {
+  return repo.reserveUnitAttempt({
+    runId: RUN_ID,
+    unitId,
+    stepId: "work",
+    nodeId: "work.unit",
+    parentUnitId: null,
+    phase: "unit",
+    runner: "agent",
+    engine: null,
+    model: "deep",
+    inputHash,
+    now,
+    claimHolder,
+    claimExpiresAt,
+    leaseMode: "direct",
+  }).attempt;
 }
 
 describe("workflow status --units diagnostic surface (#22)", () => {
@@ -151,20 +164,14 @@ describe("workflow status --units diagnostic surface (#22)", () => {
     await withWorkflowRunsRepo((repo) => {
       const claimedAt = new Date(claimedAtMs).toISOString();
       // A driver claimed this unit `running` and never heartbeated again.
-      repo.insertUnit({
-        runId: RUN_ID,
-        unitId: "work:dead",
-        stepId: "work",
-        nodeId: "work.unit",
-        parentUnitId: null,
-        phase: null,
-        runner: "agent",
-        model: "deep",
-        inputHash: "hash-claim",
-        startedAt: claimedAt,
-        claimHolder: "driver-ghost",
-        claimExpiresAt: new Date(claimedAtMs + 90_000).toISOString(),
-      });
+      reserveUnit(
+        repo,
+        "work:dead",
+        "hash-claim",
+        claimedAt,
+        "driver-ghost",
+        new Date(claimedAtMs + 90_000).toISOString(),
+      );
     });
   }
 
@@ -205,21 +212,13 @@ describe("workflow status --units diagnostic surface (#22)", () => {
   test("large result_json is clipped on the diagnostic surface", async () => {
     await withWorkflowRunsRepo((repo) => {
       const now = new Date().toISOString();
-      repo.insertUnit({
-        runId: RUN_ID,
-        unitId: "work:big",
-        stepId: "work",
-        nodeId: "work.unit",
-        parentUnitId: null,
-        phase: null,
-        runner: "agent",
-        model: "deep",
-        inputHash: "hash-big",
-        startedAt: now,
-      });
-      repo.finishUnit({
-        runId: RUN_ID,
-        unitId: "work:big",
+      const reserved = reserveUnit(repo, "work:big", "hash-big", now);
+      repo.finishUnitAttempt({
+        runId: reserved.run_id,
+        unitId: reserved.unit_id,
+        attempt: reserved.attempt,
+        dispatchId: reserved.dispatch_id,
+        claimHolder: reserved.claim_holder,
         status: "completed",
         resultJson: JSON.stringify("x".repeat(5000)),
         tokens: null,

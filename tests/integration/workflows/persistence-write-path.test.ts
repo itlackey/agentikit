@@ -7,7 +7,6 @@ import { serializeByKey } from "../../../src/core/concurrent";
 import { getStateDbPath, openStateDatabase } from "../../../src/core/state-db";
 import { borrowScopedStateDb, openScopedStateDbCount } from "../../../src/core/state-db-scope";
 import {
-  WorkflowRunsRepository,
   withWorkflowRunsConnection,
   withWorkflowRunsRepo,
 } from "../../../src/storage/repositories/workflow-runs-repository";
@@ -95,20 +94,9 @@ describe("state.db connection scope", () => {
 
       scoped.exec("BEGIN IMMEDIATE");
       try {
-        new WorkflowRunsRepository(scoped).insertUnit({
-          runId: RUN_ID,
-          unitId: "probe",
-          stepId: "step-1",
-          nodeId: "probe.unit",
-          parentUnitId: null,
-          phase: null,
-          runner: "sdk",
-          model: null,
-          inputHash: "probe-hash",
-          startedAt: new Date().toISOString(),
-        });
-        const seen = await withWorkflowRunsRepo((repo) => repo.getUnit(RUN_ID, "probe"));
-        expect(seen?.status).toBe("running");
+        scoped.prepare("UPDATE workflow_runs SET workflow_title = 'Uncommitted' WHERE id = ?").run(RUN_ID);
+        const seen = await withWorkflowRunsRepo((repo) => repo.getRunById(RUN_ID));
+        expect(seen?.workflow_title).toBe("Uncommitted");
         // Many repo calls, still one handle.
         await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(RUN_ID));
         await withWorkflowRunsRepo((repo) => repo.getRunById(RUN_ID));
@@ -118,10 +106,10 @@ describe("state.db connection scope", () => {
       }
     });
 
-    // Handle released with the scope, and the rolled-back probe left no trace.
+    // Handle released with the scope, and the uncommitted change left no trace.
     expect(openScopedStateDbCount()).toBe(0);
-    const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(RUN_ID));
-    expect(rows).toHaveLength(0);
+    const row = await withWorkflowRunsRepo((repo) => repo.getRunById(RUN_ID));
+    expect(row?.workflow_title).toBe("Demo");
   });
 
   test("a throw inside the scope still releases the connection", async () => {
@@ -210,27 +198,26 @@ describe("unit writer queue", () => {
       await Promise.all(
         Array.from({ length: UNITS }, async (_, i) => {
           const unitId = `review:${i}`;
-          // Distinct per-unit dispatch timestamps: `finishUnitFromDispatch` is
-          // conditional on the row still carrying THIS dispatch's started_at.
           const startedAt = new Date(1_700_000_000_000 + i).toISOString();
+          const claimHolder = `direct:${unitId}`;
 
-          // Insert is awaited before "dispatch", exactly as
-          // dispatchJournaledAttempt orders it — per-unit insert→finish
-          // ordering comes from program order, not from queue position.
-          await enqueueUnitWrite(() =>
+          const attempt = await enqueueUnitWrite(() =>
             withWorkflowRunsRepo((repo) =>
-              repo.insertUnit({
+              repo.reserveUnitAttempt({
                 runId: RUN_ID,
                 unitId,
                 stepId: "step-1",
                 nodeId: "review.unit",
                 parentUnitId: "step-1.map",
-                phase: null,
+                phase: "unit",
                 runner: "sdk",
                 engine: "test-agent",
                 model: null,
                 inputHash: `hash-${i}`,
-                startedAt,
+                now: startedAt,
+                claimHolder,
+                claimExpiresAt: new Date(Date.parse(startedAt) + 90_000).toISOString(),
+                leaseMode: "direct",
               }),
             ),
           );
@@ -239,18 +226,18 @@ describe("unit writer queue", () => {
 
           const finished = await enqueueUnitWrite(() =>
             withWorkflowRunsRepo((repo) =>
-              repo.immediateTransaction(() =>
-                repo.finishUnitFromDispatch({
-                  runId: RUN_ID,
-                  unitId,
-                  status: "completed",
-                  resultJson: JSON.stringify({ index: i }),
-                  tokens: i,
-                  failureReason: null,
-                  finishedAt: new Date(1_700_000_100_000 + i).toISOString(),
-                  dispatchStartedAt: startedAt,
-                }),
-              ),
+              repo.finishUnitAttempt({
+                runId: RUN_ID,
+                unitId,
+                attempt: attempt.attempt.attempt,
+                dispatchId: attempt.attempt.dispatch_id,
+                claimHolder,
+                status: "completed",
+                resultJson: JSON.stringify({ index: i }),
+                tokens: i,
+                failureReason: null,
+                finishedAt: new Date(1_700_000_100_000 + i).toISOString(),
+              }),
             ),
           );
           expect(finished).toBe(true);

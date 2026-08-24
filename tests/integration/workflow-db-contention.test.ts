@@ -134,7 +134,7 @@ describe.skipIf(!BUN)("cross-process reader vs fan-out writer", () => {
 
 describe("writer queue resilience (fault-injected write failure)", () => {
   test("one failed unit write rejects its caller but the queue keeps draining subsequent writes", async () => {
-    // A real run so insertUnit has a valid parent run/step to attach to.
+    // A real run so durable attempt reservations have an owning run.
     writeProgram(storage.stashDir, "db-contention", WIDE_FANOUT_WF);
     const files = ["a.ts", "b.ts", "c.ts"];
     const started = await startWorkflowRun("workflows/db-contention", { files });
@@ -143,20 +143,24 @@ describe("writer queue resilience (fault-injected write failure)", () => {
     const [ua, ub, uc] = await unitIds(runId, { files });
 
     const now = new Date().toISOString();
-    const insert = (unitId: string) =>
+    const reserve = (unitId: string) =>
       enqueueUnitWrite(() =>
         withWorkflowRunsRepo((repo) =>
-          repo.insertUnit({
+          repo.reserveUnitAttempt({
             runId,
             unitId,
             stepId: "review",
             nodeId: "review.unit",
             parentUnitId: "review.map",
-            phase: null,
+            phase: "unit",
             runner: "sdk",
+            engine: null,
             model: null,
             inputHash: `hash-${unitId}`,
-            startedAt: now,
+            now,
+            claimHolder: `direct:${unitId}`,
+            claimExpiresAt: new Date(Date.parse(now) + 90_000).toISOString(),
+            leaseMode: "direct",
           }),
         ),
       );
@@ -165,12 +169,12 @@ describe("writer queue resilience (fault-injected write failure)", () => {
     // throwing write (a mid-fan-out journal failure — disk error / constraint),
     // then two more real writes.
     const results = await Promise.allSettled([
-      insert(ua!),
+      reserve(ua!),
       enqueueUnitWrite(async () => {
         throw new Error("simulated journal write failure");
       }),
-      insert(ub!),
-      insert(uc!),
+      reserve(ub!),
+      reserve(uc!),
     ]);
 
     // The failing write rejected its own caller…

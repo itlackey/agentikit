@@ -33,9 +33,9 @@ import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow
  *
  * All dispatch goes through an injected fake dispatcher — no agent binaries,
  * no LLM. The workflow DB is a sandboxed tmp dir via AKM_DATA_DIR. Plans come
- * from unified workflow markdown sources (`parseWorkflow` + `compileWorkflowPlan`
- * via the `freezeWorkflow` helper), the only frontend after the
- * workflow-format-unification (classic markdown + YAML program are both gone).
+ * from the shared source IR (`compileWorkflowSource` + `compileWorkflowPlan`
+ * via the `freezeWorkflow` helper). Markdown and GitHub-shaped YAML are peer
+ * authoring formats for that one compiler/runtime architecture.
  *
  * SEMANTIC CHANGE (workflow-format-unification, spec §2.3): instructions are
  * byte-exact prose everywhere now — there is no more `${{ item }}` / `${{
@@ -588,7 +588,7 @@ describe("executeStepPlan — structured output", () => {
 // ── Empty free-text outputs (PR #714 comment B) ──────────────────────────────
 //
 // A SUCCESSFUL schemaless unit that returns "" is "no output": dispatchUnit
-// drops the falsy text, finishUnit journals result_json = NULL, the promoted
+// drops the falsy text, finishUnitAttempt journals result_json = NULL, the promoted
 // solo artifact is null, and every surface (live / resume / report) agrees
 // (the EMPTY_OUTPUT driver-parity golden pins the cross-surface identity).
 // These engine-side tests lock the three consequences the module doc states.
@@ -1258,22 +1258,29 @@ Do second.
       ],
     });
     const { LIFETIME_UNIT_CAP } = await import("../../../src/workflows/exec/scheduler");
-    await withWorkflowRunsRepo((repo) => {
+    const db = openStateDatabase(path.join(tmpDir, "state.db"));
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      const insert = db.prepare(
+        `INSERT INTO workflow_run_unit_attempts (
+           run_id, unit_id, attempt, dispatch_id, step_id, node_id, phase,
+           runner, engine, model, input_hash, status, started_at,
+           claim_holder, claim_expires_at
+         ) VALUES (?, ?, 1, ?, 'warm-up', 'warm-up.unit', 'unit',
+                   NULL, NULL, NULL, ?, 'completed', ?, ?, ?)`,
+      );
       for (let i = 0; i < LIFETIME_UNIT_CAP; i++) {
-        repo.insertUnit({
-          runId: RUN_ID,
-          unitId: `prior[${i}]`,
-          stepId: "warm-up",
-          nodeId: "warm-up.unit",
-          parentUnitId: null,
-          phase: null,
-          runner: null,
-          model: null,
-          inputHash: null,
-          startedAt: new Date().toISOString(),
-        });
+        const unitId = `prior[${i}]`;
+        const now = new Date(1_700_000_000_000 + i).toISOString();
+        insert.run(RUN_ID, unitId, `dispatch-${i}`, `hash-${i}`, now, `direct:${unitId}`, now);
       }
-    });
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    } finally {
+      db.close();
+    }
     const result = await runWorkflowSteps({
       target: RUN_ID,
       dispatcher: async () => ({ ok: true, text: "should be blocked by the cap" }),
