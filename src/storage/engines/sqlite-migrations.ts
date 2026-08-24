@@ -15,6 +15,8 @@
  *   - `id` is permanent and must never be reused.
  *   - Applied IDs must be an exact ordered prefix of the registry.
  *   - Each `up` body and its ledger insert commit in the same transaction.
+ *   - Migration bodies run only after `BEGIN IMMEDIATE` is observably active,
+ *     and the transaction must remain active through the body's completion.
  *   - The caller owns semantic safety classification and any policy gate;
  *     this generic engine intentionally does not infer risk from SQL text.
  */

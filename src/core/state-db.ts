@@ -36,8 +36,9 @@
  * the narrow explicit intent that admits 018. A pre-existing file with no
  * applied migration IDs (whether the ledger table is absent or empty) is also
  * rejected without writes; explicit upgrade snapshots its exact inode before
- * creating the ledger or applying migration 001. Unknown and divergent ledgers
- * fail closed.
+ * creating the ledger or applying migration 001, then retains the same writer
+ * lock through migration 002's rebuild. Unknown and divergent ledgers fail
+ * closed.
  *
  * Normal automatic schema evolution uses:
  *   - ALTER TABLE … ADD COLUMN <name> <type> DEFAULT <value>

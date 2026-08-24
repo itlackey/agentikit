@@ -86,9 +86,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   files and randomized backup paths are atomically reserved and inode-verified.
   Pre-existing unversioned files—including an absent or empty migration
   ledger—are rejected without writes by ordinary opens and snapshotted before
-  migration 001 by explicit upgrade. Snapshot source and target handles are
-  inode-bound, and failed reserved paths are retained rather than removed by
-  raced cleanup.
+  migration 001 by explicit upgrade. That snapshot, ledger initialization, and
+  migrations 001–002 share one writer-exclusion transaction, preventing an old
+  schema writer from landing data between the snapshot and the 002 rebuild.
+  Migration locks now reject phantom `BEGIN IMMEDIATE` results before running
+  SQL and fail clearly if the transaction disappears after a body. Snapshot
+  source and target handles are inode-bound, and failed reserved paths are
+  retained rather than removed by raced cleanup.
 
 ## [0.9.1] - 2026-08-18
 
