@@ -114,10 +114,11 @@ export async function resolveWorkflowSourceV4(
   let engineAnnouncement: string | undefined;
   const sourceSteps = compiled.ir.jobs[0]?.steps ?? [];
   for (const sourceStep of sourceSteps) {
-    if (sourceStep.route) continue;
-    const resolved = await resolveStep(sourceStep, context);
-    units.set(sourceStep.id, Object.freeze(resolved));
-    engineAnnouncement ??= resolved.engineAnnouncement;
+    if (!sourceStep.route) {
+      const resolved = await resolveStep(sourceStep, context);
+      units.set(sourceStep.id, Object.freeze(resolved));
+      engineAnnouncement ??= resolved.engineAnnouncement;
+    }
     if (sourceStep.gate?.rubric?.trim()) {
       const judge = resolveJudge(sourceStep, context);
       if (judge.target.kind !== "command")

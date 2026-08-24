@@ -1093,6 +1093,12 @@ describe("workflow LLM import-site parity (reviewer #9)", () => {
       expect(run.stdout + run.stderr).not.toContain(REQUIRE_NOT_DEFINED);
       expect(run.stderr).not.toContain("resolved workflow judge missing");
       expect(run.status, `summary-judge dead-endpoint result:\nstdout:\n${run.stdout}\nstderr:\n${run.stderr}`).toBe(1);
+      const result = parseJson(run.stdout) as
+        | { run?: { status?: string }; judgeFailure?: { stepId?: string; message?: string } }
+        | undefined;
+      expect(result?.run?.status).toBe("blocked");
+      expect(result?.judgeFailure?.stepId).toBe("only-step");
+      expect(result?.judgeFailure?.message).toContain("verification judge failed");
     },
     60_000,
   );
