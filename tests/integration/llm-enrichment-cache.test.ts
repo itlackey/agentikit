@@ -254,10 +254,13 @@ describe("clearStaleCacheEntries", () => {
     upsertLlmCacheEntry(db, "/stash/memories/alive.md", "h2", "{}");
 
     // Insert a live entry into the entries table so /stash/memories/alive.md is retained.
-    db.exec(`
-      INSERT INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type)
-      VALUES ('/stash:memory:alive', '/stash/memories', '/stash/memories/alive.md', '/stash', '{}', '', 'memory')
-    `);
+    upsertEntry(
+      db,
+      "/stash/memories/alive.md",
+      { name: "alive", type: "memory" },
+      "",
+      deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, "memory", "memories/alive"),
+    );
 
     clearStaleCacheEntries(db);
 

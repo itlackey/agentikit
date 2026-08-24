@@ -363,7 +363,7 @@ export function collectGraphRelatedHit(context: GraphBoostContext, filePath: str
  * idx_graph_files_path guarantees one graph_files row per path).
  *
  * The returned `ref` field carries the canonical indexed `concept_id`, never a
- * value re-derived from presentation fields or `entry_key`. It is undefined
+ * value re-derived from presentation fields. It is undefined
  * when the graph row has no matching entry with current indexed provenance.
  */
 export function listRelatedPathsForFile(

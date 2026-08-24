@@ -40,6 +40,7 @@ import { getDbPath } from "../../../../src/core/paths";
 import { getStateDbPath, openStateDatabase, withStateDb } from "../../../../src/core/state-db";
 import type { Database } from "../../../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../../../src/storage/repositories/index-connection";
+import { upsertEntry } from "../../../../src/storage/repositories/index-entries-repository";
 import { countAssetOutcomeMissing, upsertAssetOutcome } from "../../../../src/storage/repositories/outcome-repository";
 import {
   countAssetSalienceMissing,
@@ -87,25 +88,19 @@ const FIXTURE_BUNDLE = "fixture";
  * by `//conceptId` SUFFIX match, which cannot match an unqualified stored
  * value. Storing a bare `item_ref` here would make the fixture unresolvable in
  * a way no real index row is. Callers that pass an already-qualified ref (the
- * legacy-spelling case) get it through verbatim.
+ * qualified case) get it through verbatim.
  */
 function insertLiveEntry(indexDb: Database, itemRef: string): void {
   const storedRef = itemRef.includes("//") ? itemRef : `${FIXTURE_BUNDLE}//${itemRef}`;
-  indexDb
-    .prepare(
-      `INSERT INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type, item_ref)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      storedRef,
-      "/fixture/dir",
-      `/fixture/dir/${itemRef}.md`,
-      "/fixture/stash",
-      "{}",
-      storedRef,
-      "memory",
-      storedRef,
-    );
+  const [bundleId, conceptId] = storedRef.split("//", 2) as [string, string];
+  const name = conceptId.split("/").at(-1) ?? conceptId;
+  upsertEntry(indexDb, `/fixture/dir/${name}.md`, { name, type: "memory" }, storedRef, {
+    itemRef: storedRef,
+    bundleId,
+    componentId: bundleId,
+    conceptId,
+    adapterId: "akm",
+  });
 }
 
 function openIndex(): Database {

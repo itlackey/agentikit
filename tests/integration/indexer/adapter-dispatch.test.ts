@@ -34,7 +34,7 @@ import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../../_
 
 const LLM_WIKI_ROOT = path.resolve(__dirname, "../../fixtures/bundles/llm-wiki");
 
-/** Persisted `(entry_type, adapter_id, concept_id)` rows for the indexed stash. */
+/** Persisted `(type, adapter_id, concept_id)` rows for the indexed stash. */
 interface Row {
   entryType: string;
   adapterId: string | null;
@@ -46,14 +46,14 @@ function readEntries(): Row[] {
   const db = openIndexDatabase();
   try {
     return (
-      db.prepare("SELECT entry_type, adapter_id, concept_id, item_ref FROM entries").all() as Array<{
-        entry_type: string;
+      db.prepare("SELECT type, adapter_id, concept_id, item_ref FROM entries").all() as Array<{
+        type: string;
         adapter_id: string | null;
         concept_id: string;
         item_ref: string | null;
       }>
     ).map((r) => ({
-      entryType: r.entry_type,
+      entryType: r.type,
       adapterId: r.adapter_id,
       conceptId: r.concept_id,
       itemRef: r.item_ref,

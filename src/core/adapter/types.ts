@@ -128,12 +128,12 @@ export type ScopeKey = keyof StashEntryScope;
 // ── §3 — IndexDocument (Chunk 5 F4a M-core-1: IS IndexDocument + provenance) ─────
 //
 // The spec's §3 `IndexDocument` IS `IndexDocument` + provenance (M1 decision). The
-// scan engine drains `IndexDocument`s; the durable `entry_json` column stays a
+// scan engine drains `IndexDocument`s; the durable `document_json` column is a
 // faithful `IndexDocument`, so `IndexDocument` is now a deprecated alias OF this type
 // (`metadata.ts`; Chunk-8 cleanup). To let a metadata-pipeline entry literal
 // (`{ name, type, … }`, no provenance) satisfy the alias, the seven provenance
 // fields are OPTIONAL here; `recognize` and the scan writer fill them in, and
-// they are NEVER serialized onto `entry_json` (that durable shape is unchanged).
+// they are never serialized onto `document_json`.
 // Where the pre-merge `IndexDocument` and `IndexDocument` field shapes conflicted
 // (`supersededBy`, `scope`, `captureMode`, `quality`, `beliefState`), the
 // IndexDocument shape wins — the durable truth.
@@ -230,7 +230,7 @@ export interface IndexDocument {
    * resolveStashStandards prompt injection; `meta` marks stash-about-itself
    * canon (e.g. active-projects slug lists). Any non-empty string is accepted
    * — this is descriptive metadata, not a validated enum. Captured into
-   * entry_json so category-keyed policies (SPEC-6) are implementable.
+   * document_json so category-keyed policies (SPEC-6) are implementable.
    */
   category?: string;
   beliefState?: "active" | "asserted" | "deprecated" | "superseded" | "contradicted" | "archived" | (string & {});

@@ -83,7 +83,7 @@ function insertTestEntry(
     opts?.filePath ?? path.join(opts?.stashDir ?? "/test/stash", `${key}.ts`),
     entry,
     opts?.searchText ?? `${key} ${entry.description}`,
-    deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, type, `${type}s/${key}`),
+    deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, type, key),
   );
 }
 

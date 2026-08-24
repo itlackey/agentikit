@@ -57,11 +57,11 @@ test("full reindex relinks duplicate usage only to its qualified source and scop
   const dbPath = getDbPath();
   let db = openExistingDatabase(dbPath);
   const rows = db
-    .prepare("SELECT id, stash_dir FROM entries WHERE entry_type = 'memory' AND entry_key LIKE '%:memory:duplicate'")
-    .all() as Array<{ id: number; stash_dir: string }>;
+    .prepare("SELECT id, bundle_id FROM entries WHERE type = 'memory' AND concept_id = 'memories/duplicate'")
+    .all() as Array<{ id: number; bundle_id: string }>;
   // Both bundle-qualified concepts remain indexed and independently linkable.
-  expect(rows.map((row) => row.stash_dir).sort()).toEqual([stashDir, teamDir].sort());
-  const stashId = rows.find((row) => row.stash_dir === stashDir)?.id;
+  expect(rows.map((row) => row.bundle_id).sort()).toEqual(["stash", "team"]);
+  const stashId = rows.find((row) => row.bundle_id === "stash")?.id;
   expect(stashId).toBeNumber();
   closeDatabase(db);
 
@@ -81,26 +81,26 @@ test("full reindex relinks duplicate usage only to its qualified source and scop
 
   db = openExistingDatabase(dbPath);
   const stateDb2 = openStateDatabase();
-  // usage_events rows come from state.db; the per-row stash_dir (formerly an
-  // in-SQL LEFT JOIN) is looked up from index.db by entry_id (cross-DB).
-  const stashDirById = db.prepare("SELECT stash_dir FROM entries WHERE id = ?");
+  // usage_events rows come from state.db; canonical bundle ownership is looked
+  // up from index.db by entry_id (cross-DB).
+  const bundleById = db.prepare("SELECT bundle_id FROM entries WHERE id = ?");
   const linked = (
     stateDb2
       .prepare("SELECT entry_ref, entry_id FROM usage_events WHERE event_type = 'show' ORDER BY entry_ref")
       .all() as Array<{ entry_ref: string; entry_id: number | null }>
   ).map((r) => ({
     entry_ref: r.entry_ref,
-    stash_dir:
+    bundle_id:
       r.entry_id === null
         ? null
-        : ((stashDirById.get(r.entry_id) as { stash_dir: string } | undefined)?.stash_dir ?? null),
+        : ((bundleById.get(r.entry_id) as { bundle_id: string } | undefined)?.bundle_id ?? null),
   }));
   // Relinking remains bundle-faithful; the bare row stays detached.
-  const stashLinked = linked.filter((r) => r.stash_dir === stashDir);
-  expect(stashLinked).toEqual([{ entry_ref: "stash//memories/duplicate", stash_dir: stashDir }]);
-  expect(linked.find((row) => row.entry_ref === "memories/duplicate")?.stash_dir).toBeNull();
+  const stashLinked = linked.filter((r) => r.bundle_id === "stash");
+  expect(stashLinked).toEqual([{ entry_ref: "stash//memories/duplicate", bundle_id: "stash" }]);
+  expect(linked.find((row) => row.entry_ref === "memories/duplicate")?.bundle_id).toBeNull();
   const teamRow = linked.filter((r) => r.entry_ref === "team//memories/duplicate");
-  expect(teamRow).toEqual([{ entry_ref: "team//memories/duplicate", stash_dir: teamDir }]);
+  expect(teamRow).toEqual([{ entry_ref: "team//memories/duplicate", bundle_id: "team" }]);
   const quarantined = stateDb2
     .prepare("SELECT old_ref, row_count, reason FROM legacy_state WHERE surface = 'usage_events'")
     .all() as Array<{ old_ref: string; row_count: number; reason: string }>;

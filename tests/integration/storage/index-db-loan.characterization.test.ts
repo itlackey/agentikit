@@ -7,21 +7,28 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { deriveEntryProvenance } from "../../../src/indexer/installations";
 import type { Database as AkmDatabase } from "../../../src/storage/database";
 import { openIndexDatabase } from "../../../src/storage/repositories/index-connection";
 import { withIndexDb } from "../../../src/storage/repositories/index-db";
+import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
 
 // Chunk-8 WI-8.3: usage_events moved to state.db, so this index.db loan
 // characterization exercises the loan against an index.db-resident table
 // (`entries`) instead.
-function insertEntry(db: AkmDatabase, entryKey: string): void {
-  db.prepare(
-    "INSERT INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type) VALUES (?, '/s', '/s/a.md', '/s', '{}', ?, 'skill')",
-  ).run(entryKey, entryKey);
+function insertEntry(db: AkmDatabase, conceptId: string): void {
+  const name = conceptId.split("/").at(-1) ?? conceptId;
+  upsertEntry(
+    db,
+    `/s/${name}.md`,
+    { name, type: "skill" },
+    conceptId,
+    deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, "skill", name, conceptId),
+  );
 }
 function entryKeys(db: AkmDatabase): string[] {
-  return (db.prepare("SELECT entry_key FROM entries ORDER BY entry_key").all() as Array<{ entry_key: string }>).map(
-    (r) => r.entry_key,
+  return (db.prepare("SELECT concept_id FROM entries ORDER BY concept_id").all() as Array<{ concept_id: string }>).map(
+    (r) => r.concept_id,
   );
 }
 

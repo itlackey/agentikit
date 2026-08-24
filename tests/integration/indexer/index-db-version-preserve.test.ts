@@ -3,11 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #664 / Step A regression: removing the nuclear drop-and-rebuild on a
- * DB_VERSION mismatch. A pre-existing index.db that carries an OLDER version
- * marker must KEEP its `entries` on the next open. The regenerable index is
- * converged forward by the idempotent baseline schema, never wiped. Under the
- * old code this exact scenario nuclear-dropped the whole index.
+ * Canonical schema boundary: a pre-existing index.db that carries an older
+ * generation marker is discarded on the next open. index.db is regenerable;
+ * live readers and writers never carry compatibility SQL for stale shapes.
  *
  * (Chunk-8 WI-8.3: usage_events — the original non-regenerable payload this
  * test also protected — moved to state.db, so index.db no longer carries it.)
@@ -17,29 +15,35 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { deriveEntryProvenance } from "../../../src/indexer/installations";
 import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
-import { getEntryCount } from "../../../src/storage/repositories/index-entries-repository";
-import { setMeta } from "../../../src/storage/repositories/index-meta-repository";
+import { getEntryCount, upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
+import { getMeta, setMeta } from "../../../src/storage/repositories/index-meta-repository";
+import { DB_VERSION } from "../../../src/storage/repositories/index-schema";
 
-describe("#664 Step A — index.db preserves data across a stale version marker (no nuclear drop)", () => {
-  test("an older DB_VERSION marker does not wipe entries on reopen", () => {
+describe("index.db canonical generation boundary", () => {
+  test("an older DB_VERSION marker discards derived entries on reopen", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-noupgrade-"));
     const dbPath = path.join(tmpDir, "index.db");
     try {
       let db = openIndexDatabase(dbPath, { embeddingDim: 384 });
-      db.exec(
-        `INSERT INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type)
-         VALUES ('k:memory:a', '/s/memories', '/s/memories/a.md', '/s', '{"name":"a","type":"memory"}', 'a', 'memory')`,
+      upsertEntry(
+        db,
+        "/s/memories/a.md",
+        { name: "a", type: "memory" },
+        "a",
+        deriveEntryProvenance({ bundleId: "s", componentId: "s", adapterId: "akm" }, "memory", "a"),
       );
-      // Stamp an OLDER version than the running binary's DB_VERSION. Under the
-      // old code, the next open saw this mismatch and dropped the ENTIRE index.
+      // Stamp an older generation than the running binary.
       setMeta(db, "version", "1");
       expect(getEntryCount(db)).toBe(1);
       closeDatabase(db);
 
-      // Reopen: the stale marker must NOT trigger a wipe.
+      // Reopen: discard the incompatible derived generation and install the
+      // current empty schema; the next index run repopulates it from sources.
       db = openIndexDatabase(dbPath, { embeddingDim: 384 });
-      expect(getEntryCount(db)).toBe(1); // entry preserved (not nuclear-dropped)
+      expect(getEntryCount(db)).toBe(0);
+      expect(getMeta(db, "version")).toBe(String(DB_VERSION));
       closeDatabase(db);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

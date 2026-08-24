@@ -562,7 +562,7 @@ test("validateStashEntry preserves captureMode, whenToUse, lessonStrength, evide
 // onto IndexDocument — so no rank-time or filter policy can see it. SPEC-6 step 1
 // (docs/architecture/specs/stash-conventions-code-spec.md) captures it in
 // applyCuratedFrontmatter (alongside beliefState) and whitelists it through
-// validateStashEntry so it survives the entry_json projection.
+// validateStashEntry so it survives the document_json projection.
 
 /**
  * SPEC-6 adds `category?: string` to IndexDocument. Read it through a typed

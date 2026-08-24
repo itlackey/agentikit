@@ -100,10 +100,10 @@ const VALID_WORKFLOW = `---\ntype: workflow\ndescription: Validate a specificati
 function indexedEntry(filePath: string): Record<string, unknown> | undefined {
   const db = openExistingDatabase(getDbPath());
   try {
-    const row = db.prepare("SELECT entry_json FROM entries WHERE file_path = ?").get(filePath) as {
-      entry_json: string;
+    const row = db.prepare("SELECT document_json FROM entries WHERE file_path = ?").get(filePath) as {
+      document_json: string;
     } | null;
-    return row ? (JSON.parse(row.entry_json) as Record<string, unknown>) : undefined;
+    return row ? (JSON.parse(row.document_json) as Record<string, unknown>) : undefined;
   } finally {
     closeDatabase(db);
   }

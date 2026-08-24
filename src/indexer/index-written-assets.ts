@@ -176,6 +176,17 @@ export async function indexWrittenAssets(
               entry.name,
               conceptId,
             );
+            // A materialized file has one current owner. If a targeted write is
+            // the ownership handoff (for example an explicitly named bundle
+            // replacing an earlier path-derived bootstrap identity), remove the
+            // superseded physical-path row before publishing the canonical ref.
+            const supersededIds = db
+              .prepare("SELECT id FROM entries WHERE file_path = ? AND item_ref <> ?")
+              .all(file, provenance.itemRef) as Array<{ id: number }>;
+            deleteEntriesByIds(
+              db,
+              supersededIds.map((row) => row.id),
+            );
             upsertEntry(db, file, entryWithSize, buildSearchText(entry), provenance, contentHash);
           }
           if (pairs.length > 0 || unindexable.size > 0) rebuildFts(db, { incremental: true });

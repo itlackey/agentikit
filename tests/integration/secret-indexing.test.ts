@@ -6,7 +6,7 @@
  * Secret indexer-leakage safety — the critical security test.
  *
  * A secret is discoverable by NAME, but the file's bytes (the value) must never
- * reach the FTS index, entries.search_text, entry_json, or `akm show` output.
+ * reach the FTS index, entries.search_text, document_json, or `akm show` output.
  * Mirrors tests/vault.test.ts "vault indexer safety".
  */
 
@@ -67,7 +67,7 @@ afterEach(() => {
 });
 
 describe("secret indexer safety", () => {
-  test("secret values never appear in the FTS index, search_text, or entry_json", async () => {
+  test("secret values never appear in the FTS index, search_text, or document_json", async () => {
     const stashDir = currentStashDir;
     setSecret(path.join(stashDir, "secrets", "deploy-key"), Buffer.from(`${SECRET_VALUE}\nmultiline\n`));
 
@@ -88,14 +88,12 @@ describe("secret indexer safety", () => {
       // 2. CRITICAL: the value is nowhere in the persisted record.
       expect(JSON.stringify(secretEntry)).not.toContain(SECRET_VALUE);
 
-      // 3. CRITICAL: the value is not in search_text or entry_json.
-      type Row = { search_text: string | null; entry_json: string };
-      const rows = db
-        .prepare("SELECT search_text, entry_json FROM entries WHERE entry_type = ?")
-        .all("secret") as Row[];
+      // 3. CRITICAL: the value is not in search_text or document_json.
+      type Row = { search_text: string | null; document_json: string };
+      const rows = db.prepare("SELECT search_text, document_json FROM entries WHERE type = ?").all("secret") as Row[];
       expect(rows.length).toBe(1);
       expect(rows[0]!.search_text ?? "").not.toContain(SECRET_VALUE);
-      expect(rows[0]!.entry_json).not.toContain(SECRET_VALUE);
+      expect(rows[0]!.document_json).not.toContain(SECRET_VALUE);
 
       // 4. CRITICAL: the value cannot be retrieved via FTS5 search.
       type FtsRow = { c: number };

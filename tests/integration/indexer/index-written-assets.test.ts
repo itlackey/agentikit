@@ -38,8 +38,8 @@ function writeMemory(name: string, body: string): string {
 function queryIndex(ftsTerm?: string): { entryNames: string[]; ftsCount: number } {
   const db = openExistingDatabase(getDbPath());
   try {
-    const entryNames = (db.prepare("SELECT entry_json FROM entries").all() as Array<{ entry_json: string }>).map(
-      (r) => (JSON.parse(r.entry_json) as { name: string }).name,
+    const entryNames = (db.prepare("SELECT document_json FROM entries").all() as Array<{ document_json: string }>).map(
+      (r) => (JSON.parse(r.document_json) as { name: string }).name,
     );
     const ftsCount = ftsTerm
       ? (db.prepare("SELECT COUNT(*) AS c FROM entries_fts WHERE entries_fts MATCH ?").get(ftsTerm) as { c: number }).c
@@ -146,12 +146,12 @@ describe("indexWrittenAssets", () => {
 
     const db = openExistingDatabase(getDbPath());
     try {
-      const row = db.prepare("SELECT id, entry_json FROM entries WHERE file_path = ?").get(filePath) as {
+      const row = db.prepare("SELECT id, document_json FROM entries WHERE file_path = ?").get(filePath) as {
         id: number;
-        entry_json: string;
+        document_json: string;
       } | null;
       expect(row).not.toBeNull();
-      expect((JSON.parse((row as { entry_json: string }).entry_json) as { type: string }).type).toBe("workflow");
+      expect((JSON.parse((row as { document_json: string }).document_json) as { type: string }).type).toBe("workflow");
     } finally {
       closeDatabase(db);
     }

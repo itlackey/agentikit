@@ -243,7 +243,7 @@ afterEach(() => {
 const SECRET_VALUE = "correct-horse-battery-staple-do-not-leak";
 
 describe("env indexer safety", () => {
-  test("env values never appear in the FTS index, search_text, or entry_json", async () => {
+  test("env values never appear in the FTS index, search_text, or document_json", async () => {
     const stashDir = currentStashDir;
     fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
 
@@ -291,16 +291,16 @@ describe("env indexer safety", () => {
       expect(json).not.toContain("Production secrets");
 
       // 5. CRITICAL: neither values nor comment text are in entries.search_text
-      type Row = { search_text: string | null; entry_json: string };
-      const rows = db.prepare("SELECT search_text, entry_json FROM entries WHERE entry_type = ?").all("env") as Row[];
+      type Row = { search_text: string | null; document_json: string };
+      const rows = db.prepare("SELECT search_text, document_json FROM entries WHERE type = ?").all("env") as Row[];
       expect(rows.length).toBe(1);
       const searchText = rows[0]!.search_text ?? "";
       expect(searchText).not.toContain(SECRET_VALUE);
       expect(searchText).not.toContain("zqxoldcredleak");
       expect(searchText).not.toContain("zqxcommentleak");
-      expect(rows[0]!.entry_json).not.toContain(SECRET_VALUE);
-      expect(rows[0]!.entry_json).not.toContain("zqxoldcredleak");
-      expect(rows[0]!.entry_json).not.toContain("zqxcommentleak");
+      expect(rows[0]!.document_json).not.toContain(SECRET_VALUE);
+      expect(rows[0]!.document_json).not.toContain("zqxoldcredleak");
+      expect(rows[0]!.document_json).not.toContain("zqxcommentleak");
 
       // 6. CRITICAL: neither values nor comment text can be retrieved via FTS5
       type FtsRow = { c: number };

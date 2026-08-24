@@ -451,16 +451,18 @@ function buildDbFixture(): DbFixture {
   const index = new Database(indexDb);
   index.exec(`
     CREATE TABLE entries (
-      id INTEGER PRIMARY KEY,
-      entry_key TEXT NOT NULL,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_ref TEXT NOT NULL UNIQUE,
+      bundle_id TEXT NOT NULL,
+      component_id TEXT NOT NULL,
+      concept_id TEXT NOT NULL,
+      adapter_id TEXT NOT NULL,
+      type TEXT NOT NULL,
       file_path TEXT NOT NULL,
-      stash_dir TEXT NOT NULL,
-      entry_json TEXT NOT NULL,
+      content_hash TEXT,
+      document_json TEXT NOT NULL,
       search_text TEXT NOT NULL,
-      entry_type TEXT NOT NULL,
-      item_ref TEXT,
-      bundle_id TEXT,
-      concept_id TEXT
+      derived_from TEXT
     );
     CREATE TABLE graph_files (
       stash_root TEXT NOT NULL,
@@ -483,14 +485,16 @@ function buildDbFixture(): DbFixture {
     index
       .prepare(
         `INSERT INTO entries
-         (id, entry_key, file_path, stash_dir, entry_json, search_text, entry_type, item_ref, bundle_id, concept_id)
-         VALUES (?, ?, ?, ?, ?, ?, 'memory', ?, 'team', ?)`,
+         (id, item_ref, bundle_id, component_id, concept_id, adapter_id, type, file_path,
+          content_hash, document_json, search_text, derived_from)
+         VALUES (?, ?, 'team', 'team', ?, 'akm', 'memory', ?, ?, ?, ?, NULL)`,
       )
       .run(
         id,
-        `ignored-entry-key-${id}`,
+        `team//memories/${name}`,
+        `memories/${name}`,
         filePath,
-        stashDir,
+        `content-${id}`,
         JSON.stringify({
           name,
           type: "memory",
@@ -501,8 +505,6 @@ function buildDbFixture(): DbFixture {
           description: `SENSITIVE_DESCRIPTION_CANARY_${id}`,
         }),
         `SENSITIVE_SEARCH_TEXT_CANARY_${id}`,
-        `team//memories/${name}`,
-        `memories/${name}`,
       );
     index.prepare("INSERT INTO graph_files VALUES (?, ?, ?)").run(stashDir, filePath, `hash-${id}`);
     index
@@ -512,10 +514,12 @@ function buildDbFixture(): DbFixture {
   index
     .prepare(
       `INSERT INTO entries
-       (id, entry_key, file_path, stash_dir, entry_json, search_text, entry_type, item_ref, bundle_id, concept_id)
-       VALUES (99, 'ignored-entry-key-99', '/missing', ?, ?, '', 'memory', NULL, NULL, NULL)`,
+       (id, item_ref, bundle_id, component_id, concept_id, adapter_id, type, file_path,
+        content_hash, document_json, search_text, derived_from)
+       VALUES (99, 'invalid-ref', 'team', 'team', 'memories/legacy-only', 'akm', 'memory',
+               '/missing', NULL, ?, '', NULL)`,
     )
-    .run(stashDir, JSON.stringify({ name: "legacy-only", type: "memory", tags: ["auth"] }));
+    .run(JSON.stringify({ name: "legacy-only", type: "memory", tags: ["auth"] }));
   index.close();
 
   const state = new Database(stateDb);
@@ -565,16 +569,15 @@ function insertGraphMemory(db: Database, fixtureDb: DbFixture, id: number, entit
   const filePath = path.join(fixtureDb.stashDir, "memories", `${name}.md`);
   db.prepare(
     `INSERT INTO entries
-     (id, entry_key, file_path, stash_dir, entry_json, search_text, entry_type, item_ref, bundle_id, concept_id)
-     VALUES (?, ?, ?, ?, ?, '', 'memory', ?, 'team', ?)`,
+     (id, item_ref, bundle_id, component_id, concept_id, adapter_id, type, file_path,
+      content_hash, document_json, search_text, derived_from)
+     VALUES (?, ?, 'team', 'team', ?, 'akm', 'memory', ?, NULL, ?, '', NULL)`,
   ).run(
     id,
-    `ignored-entry-key-${id}`,
-    filePath,
-    fixtureDb.stashDir,
-    JSON.stringify({ name, type: "memory", tags: ["auth"], fileSize: 1000 }),
     `team//memories/${name}`,
     `memories/${name}`,
+    filePath,
+    JSON.stringify({ name, type: "memory", tags: ["auth"], fileSize: 1000 }),
   );
   db.prepare("INSERT INTO graph_files VALUES (?, ?, ?)").run(fixtureDb.stashDir, filePath, `hash-${id}`);
   db.prepare("INSERT INTO graph_file_entities VALUES (?, ?, ?, 0, ?)").run(
@@ -613,7 +616,7 @@ describe("akm-eval recombine analyzer CLI read-only boundary", () => {
 
     expect(result.exitCode).toBe(2);
     expect(result.stdout.toString()).toBe("");
-    expect(result.stderr.toString()).toContain("current canonical-ref columns");
+    expect(result.stderr.toString()).toContain("current canonical entries schema");
     expect(digestTree(root)).toEqual(before);
   });
 
@@ -888,17 +891,16 @@ describe("akm-eval recombine analyzer CLI read-only boundary", () => {
               writer
                 .prepare(
                   `INSERT INTO entries
-                     (id, entry_key, file_path, stash_dir, entry_json, search_text, entry_type, item_ref, bundle_id, concept_id)
-                     VALUES (?, ?, ?, ?, ?, '', 'memory', ?, 'team', ?)`,
+                     (id, item_ref, bundle_id, component_id, concept_id, adapter_id, type, file_path,
+                      content_hash, document_json, search_text, derived_from)
+                     VALUES (?, ?, 'team', 'team', ?, 'akm', 'memory', ?, NULL, ?, '', NULL)`,
                 )
                 .run(
                   id,
-                  `ignored-entry-key-${id}`,
-                  filePath,
-                  fixtureDb.stashDir,
-                  JSON.stringify({ name, type: "memory", tags: ["auth"], fileSize: 1000 }),
                   `team//memories/${name}`,
                   `memories/${name}`,
+                  filePath,
+                  JSON.stringify({ name, type: "memory", tags: ["auth"], fileSize: 1000 }),
                 );
               writer.prepare("INSERT INTO graph_files VALUES (?, ?, ?)").run(fixtureDb.stashDir, filePath, "hash-4");
               writer
@@ -1030,31 +1032,35 @@ describe("akm-eval recombine analyzer CLI read-only boundary", () => {
     expect(fs.existsSync(out)).toBe(false);
   });
 
-  test("duplicate canonical refs in the index are rejected without modifying inputs", () => {
+  test("the canonical entries schema rejects duplicate item refs at the write boundary", () => {
     const fixtureDb = buildDbFixture();
     const db = new Database(fixtureDb.indexDb);
     const row = db.query("SELECT * FROM entries WHERE id = 1").get() as Record<string, unknown>;
-    db.prepare(
-      `INSERT INTO entries
-       (id, entry_key, file_path, stash_dir, entry_json, search_text, entry_type, item_ref, bundle_id, concept_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      100,
-      "duplicate-entry-key",
-      String(row.file_path),
-      String(row.stash_dir),
-      String(row.entry_json),
-      String(row.search_text),
-      String(row.entry_type),
-      String(row.item_ref),
-      String(row.bundle_id),
-      String(row.concept_id),
-    );
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO entries
+           (id, item_ref, bundle_id, component_id, concept_id, adapter_id, type, file_path,
+            content_hash, document_json, search_text, derived_from)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          100,
+          String(row.item_ref),
+          String(row.bundle_id),
+          String(row.component_id),
+          String(row.concept_id),
+          String(row.adapter_id),
+          String(row.type),
+          String(row.file_path),
+          row.content_hash == null ? null : String(row.content_hash),
+          String(row.document_json),
+          String(row.search_text),
+          row.derived_from == null ? null : String(row.derived_from),
+        ),
+    ).toThrow();
     db.close();
-    const before = digestTree(fixtureDb.root);
-
-    expect(() => readCurrentRecombineEntries(fixtureDb.indexDb)).toThrow("duplicate canonical item ref");
-    expect(digestTree(fixtureDb.root)).toEqual(before);
+    expect(readCurrentRecombineEntries(fixtureDb.indexDb).entries).toHaveLength(3);
   });
 
   for (const collision of ["index-exact", "state-exact", "index-symlink", "state-hardlink"] as const) {

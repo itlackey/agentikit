@@ -384,7 +384,7 @@ describe("SPEC-8 bodyOpening indexing", () => {
         "This memory situates the quokka onboarding ledger workstream.",
       );
       // search_text deliberately omits the phrase: the FTS columns are built
-      // by rebuildFts from entry_json via buildSearchFields, so a hit proves
+      // by rebuildFts from document_json via buildSearchFields, so a hit proves
       // the fold — not a legacy search_text leak.
       const id = insertEntry(db, "orienter", entry, "project orienter notes about the platform");
       rebuildFts(db);

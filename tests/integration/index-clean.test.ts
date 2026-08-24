@@ -161,7 +161,7 @@ test("akmIndex --clean with a missing file: entry deleted from DB, removedRefs p
   expect(result.clean?.dryRun).toBe(false);
   expect(result.clean?.removed).toBe(1);
   expect(result.clean?.removedRefs).toHaveLength(1);
-  // The ref must refer to the deploy entry (entry_key contains stashDir prefix)
+  // The removed canonical ref must identify the deploy entry.
   expect(result.clean?.removedRefs[0]).toContain("deploy");
 
   // Verify the entry is actually gone from the database.

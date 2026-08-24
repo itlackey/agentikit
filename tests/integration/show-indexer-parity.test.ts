@@ -195,22 +195,23 @@ describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
     expect(shownBare.path).toBe(bare?.filePath as string);
   });
 
-  test("lookup does not fall back to entry_key for an incomplete provenance row", async () => {
-    writeFile(path.join(stashDir, "knowledge", "legacy.md"), "# Legacy\n");
+  test("lookup keys on canonical item_ref even when presentation metadata diverges", async () => {
+    writeFile(path.join(stashDir, "knowledge", "identity.md"), "# Identity\n");
     await akmIndex({ stashDir, full: true });
 
     const dbPath = path.join(process.env.XDG_DATA_HOME as string, "akm", "index.db");
     const db = openIndexDatabase(dbPath);
     try {
       db.prepare(
-        "UPDATE entries SET item_ref = NULL, bundle_id = NULL, concept_id = NULL WHERE entry_type = 'knowledge'",
+        "UPDATE entries SET document_json = json_set(document_json, '$.name', 'presentation-only') WHERE type = 'knowledge'",
       ).run();
     } finally {
       closeDatabase(db);
     }
 
-    const indexed = await lookupBundleRef(parseBundleRef("knowledge/legacy"));
-    expect(indexed).toBeNull();
+    const indexed = await lookupBundleRef(parseBundleRef("knowledge/identity"));
+    expect(indexed).not.toBeNull();
+    expect(indexed?.itemRef).toEndWith("//knowledge/identity");
   });
 
   test("lookup and show do not downgrade embedding dimension metadata", async () => {
