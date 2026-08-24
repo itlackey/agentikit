@@ -14,6 +14,7 @@ import {
   readChunkWithDeadline,
 } from "../../core/common";
 import { ConfigError } from "../../core/errors";
+import { type HistoricalStateUpgradeResult, upgradeHistoricalStateDatabase } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import { githubHeaders } from "../../integrations/github";
 import { getDirname, mainPath, semverOrder } from "../../runtime";
@@ -31,6 +32,7 @@ export type InstallMethod = UpgradeCheckResponse["installMethod"];
 
 export interface SelfUpdateDependencies {
   execPath: string;
+  upgradeHistoricalStateDatabase: () => HistoricalStateUpgradeResult;
 }
 
 /**
@@ -231,6 +233,7 @@ export async function performUpgrade(
       latestVersion,
       installMethod,
       skipPostUpgrade,
+      upgradeState: dependencies?.upgradeHistoricalStateDatabase ?? upgradeHistoricalStateDatabase,
     });
   }
 
@@ -375,19 +378,41 @@ export async function performUpgrade(
     installMethod,
     binaryPath: execPath,
     checksumVerified,
-    postUpgrade: runPostUpgradeTasks(execPath, { skip: skipPostUpgrade }),
+    postUpgrade: runPostUpgradeTasks(
+      execPath,
+      { skip: skipPostUpgrade },
+      dependencies?.upgradeHistoricalStateDatabase ?? upgradeHistoricalStateDatabase,
+    ),
   };
 }
 
 /**
  * Rebuild the derived index after a successful upgrade.
  */
-function runPostUpgradeTasks(akmBin: string, opts: { skip: boolean }): NonNullable<UpgradeResponse["postUpgrade"]> {
+function runPostUpgradeTasks(
+  akmBin: string,
+  opts: { skip: boolean },
+  upgradeState: () => HistoricalStateUpgradeResult,
+): NonNullable<UpgradeResponse["postUpgrade"]> {
+  let stateUpgrade: HistoricalStateUpgradeResult;
+  try {
+    stateUpgrade = upgradeState();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      skipped: opts.skip,
+      message:
+        `Upgrade completed, but the state schema was not prepared (${detail}). ` +
+        "Preserve state.db and run `akm upgrade --force` before other AKM commands.",
+    };
+  }
+  const stateNote = stateUpgrade.safetyCopyPath ? ` Historical state safety copy: ${stateUpgrade.safetyCopyPath}.` : "";
   if (opts.skip) {
     return {
       ok: true,
       skipped: true,
-      message: "Upgrade completed; skipped the index rebuild. Run `akm index` manually to rebuild the index.",
+      message: `Upgrade completed.${stateNote} Skipped the index rebuild. Run \`akm index\` manually to rebuild the index.`,
     };
   }
   try {
@@ -400,7 +425,7 @@ function runPostUpgradeTasks(akmBin: string, opts: { skip: boolean }): NonNullab
       return {
         ok: false,
         skipped: false,
-        message: `Upgrade completed, but the index rebuild could not start: ${result.error.message}. Run \`akm index\` manually.`,
+        message: `Upgrade completed.${stateNote} The index rebuild could not start: ${result.error.message}. Run \`akm index\` manually.`,
       };
     }
     if (result.status !== 0) {
@@ -409,21 +434,21 @@ function runPostUpgradeTasks(akmBin: string, opts: { skip: boolean }): NonNullab
         ok: false,
         skipped: false,
         exitCode: result.status,
-        message: `Upgrade completed, but post-upgrade \`akm index\` failed (${detail}). Run \`akm index\` manually.`,
+        message: `Upgrade completed.${stateNote} Post-upgrade \`akm index\` failed (${detail}). Run \`akm index\` manually.`,
       };
     }
     return {
       ok: true,
       skipped: false,
       exitCode: 0,
-      message: "Upgrade completed and the index was rebuilt against the new binary.",
+      message: `Upgrade completed and the index was rebuilt against the new binary.${stateNote}`,
     };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
       skipped: false,
-      message: `Upgrade completed, but the index rebuild failed: ${detail}. Run \`akm index\` manually.`,
+      message: `Upgrade completed.${stateNote} The index rebuild failed: ${detail}. Run \`akm index\` manually.`,
     };
   }
 }
@@ -439,8 +464,9 @@ function runPackageManagerUpgrade(input: {
   latestVersion: string | undefined;
   installMethod: InstallMethod;
   skipPostUpgrade: boolean;
+  upgradeState: () => HistoricalStateUpgradeResult;
 }): UpgradeResponse {
-  const { packageManagerCommand, currentVersion, latestVersion, installMethod, skipPostUpgrade } = input;
+  const { packageManagerCommand, currentVersion, latestVersion, installMethod, skipPostUpgrade, upgradeState } = input;
   if (!latestVersion) {
     throw new Error(
       "Unable to determine latest version from GitHub releases. Check https://github.com/itlackey/akm/releases",
@@ -493,7 +519,7 @@ function runPackageManagerUpgrade(input: {
       installedVersion === latestVersion
         ? `akm upgraded via ${installMethod} (verified: akm --version reports v${installedVersion})`
         : `akm upgraded via ${installMethod} (installed version could not be verified)`,
-    postUpgrade: runPostUpgradeTasks("akm", { skip: skipPostUpgrade }),
+    postUpgrade: runPostUpgradeTasks("akm", { skip: skipPostUpgrade }, upgradeState),
   };
 }
 

@@ -77,6 +77,70 @@ export function getStateDbPath(): string {
   return path.join(getDataDir(), "state.db");
 }
 
+interface OpenStateDatabaseOptions {
+  /** Narrow intent supplied only by the successful `akm upgrade` post-install step. */
+  allowHistoricalDestructiveStateUpgrade?: boolean;
+  /** Internal result seam used to report the verified safety-copy path. */
+  onHistoricalStateSafetyCopy?: (safetyCopyPath: string) => void;
+}
+
+export interface HistoricalStateUpgradeResult {
+  upgraded: boolean;
+  safetyCopyPath?: string;
+}
+
+function safetyCopyTimestamp(): string {
+  return new Date().toISOString().replaceAll(/[^0-9]/g, "");
+}
+
+function availableHistoricalSafetyCopyPath(dbPath: string, migrationId: string): string {
+  const base = `${dbPath}.pre-${migrationId}.${safetyCopyTimestamp()}`;
+  for (let suffix = 0; ; suffix += 1) {
+    const candidate = `${base}${suffix === 0 ? "" : `-${suffix}`}.bak`;
+    if (!fs.existsSync(candidate)) return candidate;
+  }
+}
+
+/**
+ * Create one verified, standalone SQLite snapshot immediately before released
+ * migration 018 removes its retired tables/column. `VACUUM INTO` includes
+ * committed WAL content in one consistent sibling database; a raw file copy
+ * would not.
+ */
+function createHistoricalStateSafetyCopy(db: Database, dbPath: string, migrationId: string): string {
+  const safetyCopyPath = availableHistoricalSafetyCopyPath(dbPath, migrationId);
+  try {
+    db.prepare("VACUUM INTO ?").run(safetyCopyPath);
+
+    const fd = fs.openSync(safetyCopyPath, "r");
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    const verified = openDatabase(safetyCopyPath, { readonly: true });
+    try {
+      const quickCheck = verified.prepare("PRAGMA quick_check").get() as Record<string, unknown> | undefined;
+      if (!quickCheck || Object.values(quickCheck)[0] !== "ok") {
+        throw new Error("SQLite quick_check did not report ok");
+      }
+      assertMigrationLedger(verified, STATE_MIGRATIONS);
+    } finally {
+      verified.close();
+    }
+    return safetyCopyPath;
+  } catch (error) {
+    try {
+      fs.unlinkSync(safetyCopyPath);
+    } catch {
+      // A failed or incomplete snapshot must not masquerade as recovery media.
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not create a verified state.db safety copy before ${migrationId}: ${detail}`);
+  }
+}
+
 // ── Database open ────────────────────────────────────────────────────────────
 
 /**
@@ -105,7 +169,7 @@ export function getStateDbPath(): string {
  *     matches the value used in openDatabase() for index.db; 5 s proved too
  *     narrow when a post-inference reindex overlapped a parallel event write.
  */
-export function openStateDatabase(dbPath?: string): Database {
+export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOptions): Database {
   const canonicalPath = getStateDbPath();
   const resolvedPath = dbPath ?? canonicalPath;
   const isCanonical = path.resolve(resolvedPath) === path.resolve(canonicalPath);
@@ -123,7 +187,17 @@ export function openStateDatabase(dbPath?: string): Database {
     }
     const db = openManagedDatabase({
       path: resolvedPath,
-      init: (db) => runMigrations(db, { freshDatabase: !existed }),
+      init: (db) =>
+        runMigrations(db, {
+          freshDatabase: !existed,
+          allowHistoricalDestructiveStateUpgrade: options?.allowHistoricalDestructiveStateUpgrade,
+          beforeHistoricalDestructiveMigration: options?.allowHistoricalDestructiveStateUpgrade
+            ? (migration) => {
+                const safetyCopyPath = createHistoricalStateSafetyCopy(db, resolvedPath, migration.id);
+                options.onHistoricalStateSafetyCopy?.(safetyCopyPath);
+              }
+            : undefined,
+        }),
     });
     if (!releaseActivity) return db;
     let closed = false;
@@ -150,6 +224,25 @@ export function openStateDatabase(dbPath?: string): Database {
     releaseActivity?.();
     throw error;
   }
+}
+
+/**
+ * Narrow state-schema step owned by `akm upgrade` after executable replacement.
+ * Missing/current databases are no-ops. A pre-018 exact ledger is snapshotted
+ * beside state.db and verified before the immutable released migration runs.
+ */
+export function upgradeHistoricalStateDatabase(dbPath = getStateDbPath()): HistoricalStateUpgradeResult {
+  if (!fs.existsSync(dbPath)) return { upgraded: false };
+
+  let safetyCopyPath: string | undefined;
+  const db = openStateDatabase(dbPath, {
+    allowHistoricalDestructiveStateUpgrade: true,
+    onHistoricalStateSafetyCopy(copyPath) {
+      safetyCopyPath = copyPath;
+    },
+  });
+  db.close();
+  return safetyCopyPath ? { upgraded: true, safetyCopyPath } : { upgraded: false };
 }
 
 /**
