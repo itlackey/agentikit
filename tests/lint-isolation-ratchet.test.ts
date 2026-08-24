@@ -115,16 +115,12 @@ describe("lint-tests-isolation allowlist ratchet", () => {
           'import fs from "node:fs";',
           'import os from "node:os";',
           'import path from "node:path";',
-          "fs." + 'rmSync(path.join(os.' + 'homedir(), ".config", "tool"), { recursive: true, force: true });',
+          "fs." + "rmSync(path.join(os." + 'homedir(), ".config", "tool"), { recursive: true, force: true });',
         ].join("\n"),
       );
 
-      expect(lintFile(asyncFixture)).toEqual([
-        expect.objectContaining({ rule: "real-home-delete", line: 5 }),
-      ]);
-      expect(lintFile(inlineFixture)).toEqual([
-        expect.objectContaining({ rule: "real-home-delete", line: 4 }),
-      ]);
+      expect(lintFile(asyncFixture)).toEqual([expect.objectContaining({ rule: "real-home-delete", line: 5 })]);
+      expect(lintFile(inlineFixture)).toEqual([expect.objectContaining({ rule: "real-home-delete", line: 4 })]);
     } finally {
       fs.rmSync(fixtureDir, { recursive: true, force: true });
     }

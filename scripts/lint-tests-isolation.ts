@@ -454,12 +454,14 @@ function lintFile(filePath: string): Violation[] {
     }
 
     const lines = src.split("\n");
-    const destructiveCall = /\b(?:fs\.)?(?:rmSync|rmdirSync)\s*\(\s*([A-Za-z_$][\w$]*)\b/;
+    const destructivePrefix = String.raw`\b(?:(?:fs\.)?(?:rmSync|rmdirSync|rm|rmdir)|fs\.promises\.(?:rm|rmdir))`;
+    const destructiveCall = new RegExp(`${destructivePrefix}\\s*\\(\\s*([A-Za-z_$][\\w$]*)\\b`);
+    const inlineHomeDelete = new RegExp(`${destructivePrefix}\\s*\\([^\\n]*\\bos\\.homedir\\s*\\(\\s*\\)`);
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]!;
       if (/^\s*(\/\/|\*)/.test(line)) continue;
       const match = line.match(destructiveCall);
-      if (!match || !realHomePaths.has(match[1]!)) continue;
+      if (!inlineHomeDelete.test(line) && (!match || !realHomePaths.has(match[1]!))) continue;
       violations.push({
         file: rel,
         rule: "real-home-delete",
