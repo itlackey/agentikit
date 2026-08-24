@@ -135,9 +135,9 @@ describe("versioned installed/user model-map contract", () => {
 
   test("rejects unsupported versions and undocumented structured profile fields", () => {
     expect(() => parseModelMapLayer('{"version":2,"aliases":{}}', "models.json")).toThrow(/version/i);
-    expect(() =>
-      parseModelMapLayer('{"version":1,"aliases":{"fast":{"*":"provider/model"}}}', "models.json"),
-    ).toThrow(/engine key/i);
+    expect(() => parseModelMapLayer('{"version":1,"aliases":{"fast":{"*":"provider/model"}}}', "models.json")).toThrow(
+      /engine key/i,
+    );
     expect(() =>
       parseModelMapLayer('{"version":1,"aliases":{"fast":{"claude":{"model":"x","effort":"high"}}}}', "models.json"),
     ).toThrow(/effort/);

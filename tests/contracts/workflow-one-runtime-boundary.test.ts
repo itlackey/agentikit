@@ -96,7 +96,7 @@ describe("one workflow source and runtime architecture", () => {
     expect(fs.existsSync(path.join(ROOT, "src/workflows/runtime/document-cache.ts"))).toBe(false);
     expect(renderer).toContain("WorkflowSourceIrV1");
     expect(metadata).toContain("sourceStepInstructions");
-    expect(schema).toContain('DROP TABLE IF EXISTS workflow_documents');
+    expect(schema).toContain("DROP TABLE IF EXISTS workflow_documents");
     expect(schema).not.toContain("CREATE TABLE IF NOT EXISTS workflow_documents");
   });
 });

@@ -528,9 +528,7 @@ export function runSelectedModelAliasesProbe(deps: SelectedModelAliasesProbeDepe
     .flatMap(([engine, definition]) => {
       const model = definition.defaults?.model;
       const modelMapKey = definition.modelMapKey ?? definition.selection.platform ?? definition.selection.name;
-      return typeof model === "string"
-        ? [{ engine, alias: model, modelMapKey }]
-        : [];
+      return typeof model === "string" ? [{ engine, alias: model, modelMapKey }] : [];
     });
   if (selected.length === 0) {
     return {

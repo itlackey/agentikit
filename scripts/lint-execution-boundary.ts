@@ -107,26 +107,6 @@ export const EXECUTION_BOUNDARY_TARGETS: readonly ExecutionBoundaryTarget[] = Ob
     file: "src/integrations/agent/runner.ts",
     exportName: "materializeLlmRunnerConnection",
   },
-  {
-    operation: "engine.resolve-default-runner",
-    file: "src/integrations/agent/runner.ts",
-    exportName: "resolveDefaultLlmRunner",
-  },
-  {
-    operation: "engine.resolve-triage",
-    file: "src/integrations/agent/runner.ts",
-    exportName: "resolveTriageJudgmentRunner",
-  },
-  {
-    operation: "engine.resolve-improve-llm",
-    file: "src/integrations/agent/runner.ts",
-    exportName: "resolveImproveProcessLlmUse",
-  },
-  {
-    operation: "engine.resolve-improve-runner",
-    file: "src/integrations/agent/runner.ts",
-    exportName: "resolveImproveProcessRunner",
-  },
 ]);
 
 const PERMANENT_EXECUTION_BOUNDARY_ALLOWLIST: readonly ExecutionBoundaryAllowRule[] = Object.freeze([
@@ -155,12 +135,12 @@ const PERMANENT_EXECUTION_BOUNDARY_ALLOWLIST: readonly ExecutionBoundaryAllowRul
     rationale: "read-only engine health validation does not execute user work",
   },
   {
-    operation: "engine.resolve-transport",
+    operation: "engine.resolve",
     file: "src/integrations/agent/execution-lowering.ts",
     enclosing: "lowerResolvedExecutionRequest",
     maxReferences: 1,
     exact: true,
-    rationale: "live lowering authority resolves symbolic transport material once",
+    rationale: "the single live lowering authority resolves symbolic runner material once",
   },
   {
     operation: "runner.execute",
@@ -234,38 +214,6 @@ const PERMANENT_EXECUTION_BOUNDARY_ALLOWLIST: readonly ExecutionBoundaryAllowRul
     rationale: "runner-dispatch credential adapter implementation",
   },
   {
-    operation: "engine.resolve-llm",
-    file: "src/integrations/agent/runner.ts",
-    enclosing: "resolveDefaultLlmRunner",
-    maxReferences: 1,
-    exact: true,
-    rationale: "legacy symbolic runner adapter implementation; consumers are separately guarded",
-  },
-  {
-    operation: "engine.resolve",
-    file: "src/integrations/agent/runner.ts",
-    enclosing: "resolveTriageJudgmentRunner",
-    maxReferences: 1,
-    exact: true,
-    rationale: "legacy symbolic runner adapter implementation; consumers are separately guarded",
-  },
-  {
-    operation: "engine.resolve-llm",
-    file: "src/integrations/agent/runner.ts",
-    enclosing: "resolveTriageJudgmentRunner",
-    maxReferences: 1,
-    exact: true,
-    rationale: "legacy symbolic runner adapter implementation; consumers are separately guarded",
-  },
-  {
-    operation: "engine.resolve-llm",
-    file: "src/integrations/agent/runner.ts",
-    enclosing: "resolveImproveProcessLlmUse",
-    maxReferences: 2,
-    exact: true,
-    rationale: "legacy symbolic runner adapter implementation; consumers are separately guarded",
-  },
-  {
     operation: "runner.builder",
     file: "src/integrations/agent/spawn.ts",
     enclosing: "runAgent",
@@ -275,31 +223,8 @@ const PERMANENT_EXECUTION_BOUNDARY_ALLOWLIST: readonly ExecutionBoundaryAllowRul
   },
 ]);
 
-/**
- * The one remaining exact compatibility seam after WP5 runtime convergence.
- * WP7 replaces the legacy workflow source-to-engine freeze resolver with the
- * durable common-request compiler. This is not an architectural exemption:
- * the single reference is exact-counted and must disappear with that cutover.
- */
-export const PENDING_EXECUTION_BOUNDARY_COUNTS = Object.freeze({
-  "src/workflows/ir/freeze.ts": { "engine.resolve-llm": 1 },
-} as const);
-
-const pendingRules: ExecutionBoundaryAllowRule[] = Object.entries(PENDING_EXECUTION_BOUNDARY_COUNTS).flatMap(
-  ([file, operations]) =>
-    Object.entries(operations).map(([operation, maxReferences]) => ({
-      operation,
-      file,
-      maxReferences,
-      exact: true,
-      rationale: "temporary WP7 workflow-freeze compatibility seam; remove with durable common-request compilation",
-    })),
-);
-
-export const EXECUTION_BOUNDARY_ALLOWLIST: readonly ExecutionBoundaryAllowRule[] = Object.freeze([
-  ...PERMANENT_EXECUTION_BOUNDARY_ALLOWLIST,
-  ...pendingRules,
-]);
+export const EXECUTION_BOUNDARY_ALLOWLIST: readonly ExecutionBoundaryAllowRule[] =
+  PERMANENT_EXECUTION_BOUNDARY_ALLOWLIST;
 
 function canonicalSymbol(checker: ts.TypeChecker, input: ts.Symbol | undefined): ts.Symbol | undefined {
   let symbol = input;
@@ -1324,13 +1249,7 @@ if (import.meta.main) {
   const references = collectProductionExecutionBoundaryReferences();
   const policy = evaluateExecutionBoundaryPolicy(references, EXECUTION_BOUNDARY_ALLOWLIST);
   if (policy.unauthorized.length === 0 && policy.countErrors.length === 0) {
-    const pendingCount = Object.values(PENDING_EXECUTION_BOUNDARY_COUNTS).reduce(
-      (total, operations) => total + Object.values(operations).reduce<number>((sum, count) => sum + count, 0),
-      0,
-    );
-    console.log(
-      `lint-execution-boundary: OK — symbol-origin inventory matches exact authorities/exemptions (${pendingCount} temporary WP7 compatibility reference(s) pinned)`,
-    );
+    console.log("lint-execution-boundary: OK — symbol-origin inventory matches exact current authorities");
     process.exit(0);
   }
   console.error(
