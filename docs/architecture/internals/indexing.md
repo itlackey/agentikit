@@ -65,8 +65,8 @@ and the absolute `file_path` of the materialized local asset. Search and show
 use those required columns for identity and access rather than reconstructing
 refs from a name or source path. `item_ref` is the sole upsert conflict key;
 `document_json` is the sole stored document projection. The v21 schema does not
-admit partially migrated rows or retain an entry-key/path lookup fallback. This
-preserves bundle identity when multiple sources contain the same concept.
+admit incomplete identity rows or retain an entry-key/path lookup fallback.
+This preserves bundle identity when multiple sources contain the same concept.
 
 ## LLM Enrichment Pass
 
