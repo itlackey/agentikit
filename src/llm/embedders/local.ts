@@ -31,18 +31,14 @@ export const DEFAULT_LOCAL_MODEL = "Xenova/bge-small-en-v1.5";
  */
 interface TransformerBatchTensor {
   data: Float32Array;
-  dims: number[];
+  dims: readonly [number, number];
 }
 
-/**
- * The pipeline accepts both a single string and a string[]. For a single
- * string it returns `{ data: Float32Array }` (single embedding); for a string[]
- * it returns a `TransformerBatchTensor` with `.dims = [batch, dim]`.
- */
-type TransformerPipeline = (
-  input: string | string[],
-  options: { pooling: string; normalize: boolean },
-) => Promise<{ data: Float32Array } | TransformerBatchTensor>;
+/** Exact @huggingface/transformers 4.2 feature-extraction result overloads. */
+interface TransformerPipeline {
+  (input: string, options: { pooling: string; normalize: boolean }): Promise<{ data: Float32Array }>;
+  (input: string[], options: { pooling: string; normalize: boolean }): Promise<TransformerBatchTensor>;
+}
 
 type TransformerPipelineFactory = (
   task: string,
@@ -55,10 +51,11 @@ function isBatchTensor(v: unknown): v is TransformerBatchTensor {
   return (
     v !== null &&
     typeof v === "object" &&
-    "data" in (v as object) &&
+    (v as TransformerBatchTensor).data instanceof Float32Array &&
     "dims" in (v as object) &&
     Array.isArray((v as TransformerBatchTensor).dims) &&
-    (v as TransformerBatchTensor).dims.length >= 2
+    (v as TransformerBatchTensor).dims.length === 2 &&
+    (v as TransformerBatchTensor).dims.every((dim) => Number.isInteger(dim) && dim > 0)
   );
 }
 
@@ -78,7 +75,7 @@ function isEnabledEnvironmentFlag(value: string | undefined): boolean {
 }
 
 interface TransformersModule {
-  env?: TransformersEnvironment;
+  env: TransformersEnvironment;
   pipeline: unknown;
 }
 
@@ -141,9 +138,7 @@ export class LocalEmbedder implements Embedder {
   /**
    * Embed a batch of texts. Processes in chunks of `LOCAL_BATCH_SIZE` (32) so
    * the transformers pipeline can run genuine batched inference rather than one
-   * call per text. Falls back to one-at-a-time if the pipeline does not support
-   * array input (older versions of @huggingface/transformers). Each chunk is
-   * checked against the AbortSignal between calls.
+   * call per text. Each chunk is checked against the AbortSignal between calls.
    */
   async embedBatch(texts: string[], signal?: AbortSignal): Promise<EmbeddingVector[]> {
     if (texts.length === 0) return [];
@@ -158,39 +153,22 @@ export class LocalEmbedder implements Embedder {
         throw signal.reason instanceof Error ? signal.reason : new Error("embedding interrupted");
       }
       const chunk = texts.slice(i, i + LOCAL_BATCH_SIZE);
-      try {
-        // @huggingface/transformers feature-extraction pipeline accepts a
-        // string[] and returns a batch Tensor (NOT an Array<{data}>).
-        // The Tensor has .data (flat Float32Array, length = batch * dim) and
-        // .dims = [batch, dim]. Slice .data into per-row vectors using .dims.
-        const batchResult = await pipeline(chunk, {
-          pooling: "mean",
-          normalize: true,
-        });
-        if (isBatchTensor(batchResult)) {
-          const dim = batchResult.dims[1] as number;
-          for (let row = 0; row < chunk.length; row++) {
-            results.push(Array.from(batchResult.data.subarray(row * dim, (row + 1) * dim)) as number[]);
-          }
-        } else if (Array.isArray(batchResult)) {
-          // Older versions of @huggingface/transformers returned Array<{data}>.
-          for (const r of batchResult as Array<{ data: Float32Array }>) {
-            results.push(Array.from(r.data) as number[]);
-          }
-        } else {
-          // Single-text result returned for a chunk — should not happen for
-          // string[] input, but handle defensively.
-          throw new Error("unexpected pipeline return shape for batch input");
-        }
-      } catch {
-        // Fallback: process one-at-a-time (older pipeline versions or mismatched
-        // return type). Fail-open per text: a single failure aborts the chunk.
-        for (const text of chunk) {
-          if (signal?.aborted) {
-            throw signal.reason instanceof Error ? signal.reason : new Error("embedding interrupted");
-          }
-          results.push(await this.embedWithModel(text, this.defaultModel));
-        }
+      // @huggingface/transformers 4.2 returns a single batch Tensor. Validate
+      // that exact shape and propagate inference failures without re-executing
+      // the same inputs through a second runtime path.
+      const batchResult = await pipeline(chunk, {
+        pooling: "mean",
+        normalize: true,
+      });
+      if (!isBatchTensor(batchResult)) {
+        throw new Error("unexpected pipeline return shape for batch input");
+      }
+      const [batch, dim] = batchResult.dims;
+      if (batch !== chunk.length || batchResult.data.length !== batch * dim) {
+        throw new Error("unexpected pipeline return shape for batch input");
+      }
+      for (let row = 0; row < chunk.length; row++) {
+        results.push(Array.from(batchResult.data.subarray(row * dim, (row + 1) * dim)) as number[]);
       }
     }
     return results;
@@ -230,13 +208,10 @@ export class LocalEmbedder implements Embedder {
           // installed package and no longer derives it from HF_HOME. Point the
           // public runtime setting at our stable cache explicitly so package
           // reinstalls and test-sandbox HOME rotation do not re-download the
-          // model. Keep env optional for loader fakes and older compatible
-          // module shapes.
-          if (mod.env) {
-            mod.env.cacheDir = process.env.HF_HOME;
-            if (isEnabledEnvironmentFlag(process.env.HF_HUB_OFFLINE)) {
-              mod.env.allowRemoteModels = false;
-            }
+          // model. The exact pinned 4.2 module owns this public environment.
+          mod.env.cacheDir = process.env.HF_HOME;
+          if (isEnabledEnvironmentFlag(process.env.HF_HUB_OFFLINE)) {
+            mod.env.allowRemoteModels = false;
           }
           pipeline = mod.pipeline;
         } catch (importError) {
