@@ -445,12 +445,12 @@ function staticPropertyName(name: ts.PropertyName | ts.Expression): string | und
   return ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : undefined;
 }
 
-function bindingSelection(declaration: ts.BindingElement, context: ImportContext): ImportedValue | undefined {
-  if (!ts.isObjectBindingPattern(declaration.parent)) return undefined;
-  const owner = declaration.parent.parent;
+function selectBinding(decl: ts.BindingElement, ctx: ImportContext, alias: boolean): ImportedValue | undefined {
+  if (!alias || !ts.isObjectBindingPattern(decl.parent)) return undefined;
+  const owner = decl.parent.parent;
   if (!ts.isVariableDeclaration(owner) || !owner.initializer) return undefined;
-  const importedOwner = resolveValue(owner.initializer, context);
-  const selected = declaration.propertyName ?? (ts.isIdentifier(declaration.name) ? declaration.name : undefined);
+  const importedOwner = resolveValue(owner.initializer, ctx, false);
+  const selected = decl.propertyName ?? (ts.isIdentifier(decl.name) ? decl.name : undefined);
   const property = selected ? staticPropertyName(selected) : undefined;
   return importedOwner && property
     ? { module: importedOwner.module, path: [...importedOwner.path, property] }
@@ -467,7 +467,7 @@ function resolveSymbol(symbol: ts.Symbol, context: ImportContext, allowAlias: bo
       const module = importModuleOf(declaration);
       if (module) return { module, path: [] };
     }
-    if (ts.isBindingElement(declaration)) return bindingSelection(declaration, context);
+    if (ts.isBindingElement(declaration)) return selectBinding(declaration, context, allowAlias);
     if (!allowAlias || !ts.isVariableDeclaration(declaration) || !declaration.initializer) continue;
     if ((declaration.parent.flags & ts.NodeFlags.Const) !== 0)
       return resolveValue(declaration.initializer, context, false);
@@ -481,11 +481,11 @@ function resolveValue(expression: ts.Expression, context: ImportContext, allowAl
     return symbol ? resolveSymbol(symbol, context, allowAlias) : undefined;
   }
   if (ts.isPropertyAccessExpression(expression)) {
-    const owner = resolveValue(expression.expression, context);
+    const owner = resolveValue(expression.expression, context, allowAlias);
     return owner ? { module: owner.module, path: [...owner.path, expression.name.text] } : undefined;
   }
   if (ts.isElementAccessExpression(expression)) {
-    const owner = resolveValue(expression.expression, context);
+    const owner = resolveValue(expression.expression, context, allowAlias);
     const property = staticPropertyName(expression.argumentExpression);
     return owner && property ? { module: owner.module, path: [...owner.path, property] } : undefined;
   }
