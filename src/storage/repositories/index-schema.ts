@@ -15,6 +15,11 @@
 import { bestEffort } from "../../core/best-effort";
 import { warn } from "../../core/warn";
 import type { Database } from "../database";
+import {
+  CANONICAL_ENTRY_SCHEMA_SQL,
+  CANONICAL_INDEX_DB_VERSION,
+  isCanonicalIndexGeneration,
+} from "./index-entry-schema";
 import { getMeta, setMeta } from "./index-meta-repository";
 import { isVecAvailable, purgeEmbeddings } from "./index-vec-repository";
 
@@ -29,7 +34,7 @@ import { isVecAvailable, purgeEmbeddings } from "./index-vec-repository";
 // entry_type columns. item_ref is the sole conflict key; document_json is the
 // sole stored document projection; bundle provenance and file_path provide the
 // current identity and materialized read path.
-export const DB_VERSION = 21;
+export const DB_VERSION = CANONICAL_INDEX_DB_VERSION;
 export const EMBEDDING_DIM = 384;
 // #624-P1: graph_files re-keyed to (stash_root, file_path, body_hash). Bumped 3→4
 // as a marker; the actual migration is the targeted drop in migrateGraphFilesSchema.
@@ -170,21 +175,6 @@ function ensureGraphTables(db: Database): void {
   `);
 }
 
-const CURRENT_ENTRY_COLUMNS = [
-  "id",
-  "item_ref",
-  "bundle_id",
-  "component_id",
-  "concept_id",
-  "adapter_id",
-  "type",
-  "file_path",
-  "content_hash",
-  "document_json",
-  "search_text",
-  "derived_from",
-] as const;
-
 /**
  * Cross the incompatible entry-schema boundary by discarding the derived index
  * generation. No row conversion or dual-schema compatibility is attempted:
@@ -195,14 +185,7 @@ function rebuildIncompatibleIndexGeneration(db: Database): void {
   const version = getMeta(db, "version");
   const hasEntries = tableExists(db, "entries");
   if (!hasEntries && version === undefined) return;
-
-  const columns = hasEntries
-    ? (db.prepare("PRAGMA table_info(entries)").all() as Array<{ name: string }>).map((row) => row.name)
-    : [];
-  const currentShape =
-    columns.length === CURRENT_ENTRY_COLUMNS.length &&
-    columns.every((column, index) => column === CURRENT_ENTRY_COLUMNS[index]);
-  if (version === String(DB_VERSION) && currentShape) return;
+  if (isCanonicalIndexGeneration(db)) return;
 
   let vecResetPending = false;
   try {
@@ -248,27 +231,7 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
 
   rebuildIncompatibleIndexGeneration(db);
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS entries (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      item_ref      TEXT NOT NULL UNIQUE,
-      bundle_id     TEXT NOT NULL,
-      component_id  TEXT NOT NULL,
-      concept_id    TEXT NOT NULL,
-      adapter_id    TEXT NOT NULL,
-      type          TEXT NOT NULL,
-      file_path     TEXT NOT NULL,
-      content_hash  TEXT,
-      document_json TEXT NOT NULL,
-      search_text   TEXT NOT NULL,
-      derived_from  TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_entries_bundle ON entries(bundle_id);
-    CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(type);
-    CREATE INDEX IF NOT EXISTS idx_entries_file_path ON entries(file_path);
-    CREATE INDEX IF NOT EXISTS idx_entries_derived_from ON entries(derived_from);
-  `);
+  db.exec(CANONICAL_ENTRY_SCHEMA_SQL);
 
   // Workflow source is compiled directly into source IR at each command
   // boundary. The former workflow_documents cache duplicated that IR in a

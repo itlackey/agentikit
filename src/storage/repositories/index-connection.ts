@@ -21,6 +21,7 @@ import { openDatabase } from "../database";
 import { openManagedDatabase } from "../managed-db";
 import { SQLITE_BUSY_TIMEOUT_MS } from "../sqlite-pragmas";
 import { openSqliteReadSnapshot } from "../sqlite-read-snapshot";
+import { isCanonicalIndexGeneration } from "./index-entry-schema";
 import { ensureSchema } from "./index-schema";
 import { loadVecExtension, warnIfVecMissing } from "./index-vec-repository";
 
@@ -77,9 +78,10 @@ function resolveConfiguredEmbeddingDim(): number | undefined {
 }
 
 export function openExistingDatabase(dbPath?: string): Database {
-  // Existing-DB callers must not mutate schema or embedding metadata on open,
-  // but some paths still need write access to usage_events and other tables —
-  // so init only loads the vec extension, it does not run ensureSchema.
+  // Existing-DB callers do not mutate schema or embedding metadata on open.
+  // They do validate the exact current derived generation before returning a
+  // handle, so no current reader can accidentally serve a populated legacy
+  // table and fail later on its first canonical-column query.
   //
   // "Existing" is load-bearing: a missing file throws instead of being
   // created. Create-on-open used to leave a schema-less index.db behind (a
@@ -93,7 +95,22 @@ export function openExistingDatabase(dbPath?: string): Database {
   if (classifyPathAccess(resolvedPath).access === "absent") {
     throw new Error(`Index database not found at ${resolvedPath}. Run 'akm index' to build it.`);
   }
-  return openManagedDatabase({ path: resolvedPath, init: loadVecExtension, create: false });
+  return openManagedDatabase({
+    path: resolvedPath,
+    init: (db) => {
+      loadVecExtension(db);
+      assertCanonicalIndexGeneration(db, resolvedPath);
+    },
+    create: false,
+  });
+}
+
+function assertCanonicalIndexGeneration(db: Database, resolvedPath: string): void {
+  if (isCanonicalIndexGeneration(db)) return;
+  throw new ConfigError(
+    `Index database uses an incompatible derived schema: ${resolvedPath}.`,
+    "INDEX_SCHEMA_INCOMPATIBLE",
+  );
 }
 
 /**
@@ -145,8 +162,14 @@ export function openReadonlyExistingDatabase(
   // AKM_SQLITE_JOURNAL_MODE can select, a concurrent writer makes every read
   // fail instantly with SQLITE_BUSY. busy_timeout is legal on a read-only
   // connection, so apply just that one.
-  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
-  return db;
+  try {
+    db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+    assertCanonicalIndexGeneration(db, resolvedPath);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
 export function closeDatabase(db: Database): void {

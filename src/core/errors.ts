@@ -31,6 +31,7 @@ export type ConfigErrorCode =
   // "not built yet" precisely so a read can fail loudly instead of returning an
   // empty-but-successful result for an index that is sitting right there (#791).
   | "DATA_DIR_UNREADABLE"
+  | "INDEX_SCHEMA_INCOMPATIBLE"
   | "EMBEDDING_NOT_CONFIGURED"
   | "LLM_NOT_CONFIGURED"
   | "INVALID_CONFIG_FILE"
@@ -111,6 +112,8 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
   STASH_DIR_UNREADABLE: "Check the path exists and your user has read permission, or update the default bundle path.",
   DATA_DIR_UNREADABLE:
     "The data directory is not readable by the user running akm. Check its owner and mode, or point AKM_DATA_DIR / XDG_DATA_HOME somewhere this user owns.",
+  INDEX_SCHEMA_INCOMPATIBLE:
+    "Run `akm index --full` to rebuild the derived index from the currently materialized sources.",
   EMBEDDING_NOT_CONFIGURED: 'Run `akm config set embedding \'{"endpoint":"...","model":"..."}\'` to enable embeddings.',
   LLM_NOT_CONFIGURED:
     'Run `akm setup` or configure an `engines` entry with `kind: "llm"`, then select it with `defaults.llmEngine`.',

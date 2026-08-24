@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isCanonicalIndexGeneration } from "../../../src/storage/repositories/index-entry-schema";
 import { resolveIndexDbPath, resolveStateDbPath } from "./sources/paths";
 
 export type RecombineRelatedness = "tags" | "graph" | "both";
@@ -169,21 +170,6 @@ const ESTIMATED_OUTPUT_TOKENS_PER_CALL = 800;
 const PROVENANCE_CHANNELS = ["xrefs", "sources", "sourceRefs", "evidenceSources"] as const;
 const DECISION_PROVENANCE_CHANNELS = ["sources", "sourceRefs", "evidenceSources"] as const;
 const SNAPSHOT_BUFFER_BYTES = 1024 * 1024;
-const CURRENT_ENTRY_COLUMNS = [
-  "id",
-  "item_ref",
-  "bundle_id",
-  "component_id",
-  "concept_id",
-  "adapter_id",
-  "type",
-  "file_path",
-  "content_hash",
-  "document_json",
-  "search_text",
-  "derived_from",
-] as const;
-
 function baseGraphStatus(
   availability: RecombineGraphStatus["availability"],
   degradedReason: string | null = null,
@@ -1068,13 +1054,7 @@ export function readCurrentRecombineEntries(
     db = new Database(snapshot.databasePath, { readonly: true, create: false });
     db.exec("BEGIN");
     transactionOpen = true;
-    const columns = (db.query("PRAGMA table_info(entries)").all() as Array<{ name: string }>).map(
-      (column) => column.name,
-    );
-    const hasCurrentShape =
-      columns.length === CURRENT_ENTRY_COLUMNS.length &&
-      columns.every((column, index) => column === CURRENT_ENTRY_COLUMNS[index]);
-    if (!hasCurrentShape) {
+    if (!isCanonicalIndexGeneration(db)) {
       throw new Error(
         "index database lacks the current canonical entries schema; rebuild it with `akm index --full`",
       );
