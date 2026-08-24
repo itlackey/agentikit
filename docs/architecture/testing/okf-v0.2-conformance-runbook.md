@@ -230,25 +230,35 @@ tests whether the path identity emitted by the adapter remains usable through
 the consumer.
 
 Verify adapter ownership, count, type, and identity directly in the derived
-index:
+index. These SQL gates target the exact v21 `entries` generation. A managed
+index open discards any generation whose version or complete schema fingerprint
+does not match v21, then `akm index --full` repopulates the canonical table from
+source. Reader-only openers reject an incompatible generation instead of
+serving legacy columns.
 
 ```bash
 docker exec "$AKM_OKF_CONTAINER" sh -lc '
 set -eu
 db=/tmp/akm-home/.local/share/akm/index.db
 root=/tmp/kc/okf/bundles/ga4
+version=$(sqlite3 "$db" "SELECT value FROM index_meta WHERE key='"'"'version'"'"';")
+columns=$(sqlite3 "$db" "SELECT group_concat(name, '"'"','"'"') FROM (SELECT name FROM pragma_table_xinfo('"'"'entries'"'"') ORDER BY cid);")
 expected=$(find "$root" -type f -name "*.md" ! -iname "index.md" ! -iname "log.md" | wc -l)
 actual=$(sqlite3 "$db" "SELECT count(*) FROM entries WHERE bundle_id='"'"'okf-ga4'"'"';")
 adapter=$(sqlite3 "$db" "SELECT group_concat(DISTINCT adapter_id) FROM entries WHERE bundle_id='"'"'okf-ga4'"'"';")
-printf "expected_concepts=%s actual_concepts=%s adapter=%s\n" "$expected" "$actual" "$adapter"
+printf "schema=v%s columns=%s expected_concepts=%s actual_concepts=%s adapter=%s\n" "$version" "$columns" "$expected" "$actual" "$adapter"
+test "$version" = "21"
+test "$columns" = "id,item_ref,bundle_id,component_id,concept_id,adapter_id,type,file_path,content_hash,document_json,search_text,derived_from"
 test "$expected" -eq "$actual"
 test "$adapter" = "okf"
-sqlite3 -header -column "$db" "SELECT item_ref, concept_id, entry_type, adapter_id, file_path FROM entries WHERE bundle_id='"'"'okf-ga4'"'"' ORDER BY item_ref;"
+sqlite3 -header -column "$db" "SELECT item_ref, concept_id, type, adapter_id, file_path FROM entries WHERE bundle_id='"'"'okf-ga4'"'"' ORDER BY item_ref;"
 '
 ```
 
 Pass conditions:
 
+- `index_meta.version` is `21` and `entries` has exactly the canonical v21
+  column sequence shown above.
 - Expected and actual counts match.
 - Every row has `adapter_id=okf`.
 - `item_ref` is `okf-ga4//<concept_id>`.
@@ -491,16 +501,16 @@ test "$(sqlite3 "$db" "SELECT group_concat(DISTINCT adapter_id) FROM entries WHE
 test "$(sqlite3 "$db" "SELECT group_concat(DISTINCT adapter_id) FROM entries WHERE bundle_id='"'"'noindex'"'"';")" = "okf"
 test "$(sqlite3 "$db" "SELECT group_concat(DISTINCT adapter_id) FROM entries WHERE bundle_id='"'"'overlap'"'"';")" = "llm-wiki"
 
-test "$(sqlite3 "$db" "SELECT entry_type FROM entries WHERE item_ref='"'"'adversarial//unknown'"'"';")" = "Some Vendor Thing"
-test "$(sqlite3 "$db" "SELECT entry_type FROM entries WHERE item_ref='"'"'noindex//vendor'"'"';")" = "Some Vendor Thing"
+test "$(sqlite3 "$db" "SELECT type FROM entries WHERE item_ref='"'"'adversarial//unknown'"'"';")" = "Some Vendor Thing"
+test "$(sqlite3 "$db" "SELECT type FROM entries WHERE item_ref='"'"'noindex//vendor'"'"';")" = "Some Vendor Thing"
 
-test "$(sqlite3 "$db" "SELECT count(*) FROM entries WHERE bundle_id='"'"'adversarial'"'"' AND entry_type='"'"'Vendor Duplicate'"'"';")" -eq 2
+test "$(sqlite3 "$db" "SELECT count(*) FROM entries WHERE bundle_id='"'"'adversarial'"'"' AND type='"'"'Vendor Duplicate'"'"';")" -eq 2
 test "$(sqlite3 "$db" "SELECT count(*) FROM entries WHERE item_ref IN ('"'"'adversarial//.hidden/hidden'"'"','"'"'adversarial//bin/bin-doc'"'"');")" -eq 2
 test "$(sqlite3 "$db" "SELECT count(*) FROM entries WHERE bundle_id='"'"'adversarial'"'"' AND lower(file_path) GLOB '"'"'*/*index.md'"'"';")" -eq 0
 test "$(sqlite3 "$db" "SELECT count(*) FROM entries WHERE bundle_id='"'"'adversarial'"'"' AND lower(file_path) GLOB '"'"'*/*log.md'"'"';")" -eq 0
 
-sqlite3 -header -column "$db" "SELECT item_ref,entry_type,adapter_id FROM entries WHERE item_ref IN ('"'"'adversarial//plain'"'"','"'"'adversarial//notype'"'"') ORDER BY item_ref;"
-sqlite3 -header -column "$db" "SELECT bundle_id,item_ref,entry_type,adapter_id,file_path FROM entries WHERE bundle_id IN ('"'"'adversarial'"'"','"'"'noindex'"'"','"'"'overlap'"'"') ORDER BY bundle_id,item_ref;"
+sqlite3 -header -column "$db" "SELECT item_ref,type,adapter_id FROM entries WHERE item_ref IN ('"'"'adversarial//plain'"'"','"'"'adversarial//notype'"'"') ORDER BY item_ref;"
+sqlite3 -header -column "$db" "SELECT bundle_id,item_ref,type,adapter_id,file_path FROM entries WHERE bundle_id IN ('"'"'adversarial'"'"','"'"'noindex'"'"','"'"'overlap'"'"') ORDER BY bundle_id,item_ref;"
 '
 ```
 
@@ -519,7 +529,7 @@ docker exec "$AKM_OKF_CONTAINER" sh -lc '
 set -eu
 db=/tmp/akm-home/.local/share/akm/index.db
 
-full=$(sqlite3 "$db" "SELECT entry_json FROM entries WHERE item_ref='"'"'adversarial//knowledge/v2-full'"'"';")
+full=$(sqlite3 "$db" "SELECT document_json FROM entries WHERE item_ref='"'"'adversarial//knowledge/v2-full'"'"';")
 bun -e '\''
 const e = JSON.parse(process.argv[1]);
 if (e.updated !== "2026-06-20T22:53:05Z") throw new Error(`generated.at not preferred: ${e.updated}`);
@@ -534,7 +544,7 @@ if (e.staleAfter !== "2026-12-31") throw new Error(`staleAfter wrong: ${e.staleA
 if (e.sources !== undefined) throw new Error("bare sources field must stay unset for okf-adapter documents");
 '\'' "$full"
 
-single=$(sqlite3 "$db" "SELECT entry_json FROM entries WHERE item_ref='"'"'adversarial//knowledge/v2-verified-single'"'"';")
+single=$(sqlite3 "$db" "SELECT document_json FROM entries WHERE item_ref='"'"'adversarial//knowledge/v2-verified-single'"'"';")
 bun -e '\''
 const e = JSON.parse(process.argv[1]);
 if (!Array.isArray(e.provenance?.verified) || e.provenance.verified.length !== 1) throw new Error("single-mapping verified did not normalize to a one-element array");
@@ -592,7 +602,7 @@ minimal persistence acceptance test is:
 docker exec "$AKM_OKF_CONTAINER" sh -lc '
 set -eu
 db=/tmp/akm-home/.local/share/akm/index.db
-links=$(sqlite3 "$db" "SELECT json_extract(entry_json,'"'"'$.links'"'"') FROM entries WHERE item_ref='"'"'adversarial//unknown'"'"';")
+links=$(sqlite3 "$db" "SELECT json_extract(document_json,'"'"'$.links'"'"') FROM entries WHERE item_ref='"'"'adversarial//unknown'"'"';")
 printf "durable_links=%s\n" "$links"
 bun -e '\''const links=JSON.parse(process.argv[1]); const want=["target","relative","missing","ref-target"]; for(const x of want) if(!links.includes(x)) throw new Error(`missing link ${x}`); if(links.length!==want.length) throw new Error(`unexpected links ${JSON.stringify(links)}`);'\'' "$links"
 '
@@ -892,7 +902,7 @@ satisfied from `tests/core/adapter/okf-adapter.test.ts` alone if the durable
 persist path (`indexer/scan/doc-to-entry.ts`) or the `show`/`search` output
 loses a field — this repo has a documented history (D1's own GREEN commit) of
 `recognize()` returning a field correctly while a separate persistence-layer
-reconstruction step silently dropped it before it ever reached `entry_json`.
+reconstruction step silently dropped it before it ever reached `document_json`.
 
 ## 15. Cleanup
 
