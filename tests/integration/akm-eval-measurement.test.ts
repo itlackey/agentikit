@@ -10,6 +10,8 @@ import os from "node:os";
 import path from "node:path";
 import { parseRef } from "../../scripts/akm-eval/src/lib/ref-normalize";
 import { openStateDatabase } from "../../src/core/state-db";
+import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
+import { CANONICAL_INDEX_DB_VERSION } from "../../src/storage/repositories/index-entry-schema";
 
 const VERDICT_SCRIPT = path.resolve("scripts/akm-eval/src/proactive-verdict.ts");
 const REAL_QUERY_SCRIPT = path.resolve("scripts/akm-eval/src/gen-real-query-suite.ts");
@@ -31,10 +33,53 @@ function createCurrentDatabases(root: string): { statePath: string; indexPath: s
   migrated.close();
 
   const indexPath = path.join(root, "index.db");
-  const index = new Database(indexPath);
-  index.exec("CREATE TABLE entries (item_ref TEXT)");
-  index.close();
+  closeDatabase(openIndexDatabase(indexPath));
   return { statePath, indexPath };
+}
+
+function seedIndexRef(db: Database, itemRef: string): void {
+  const separator = itemRef.indexOf("//");
+  if (separator <= 0) throw new Error(`expected a fully-qualified ref: ${itemRef}`);
+  const bundleId = itemRef.slice(0, separator);
+  const conceptId = itemRef.slice(separator + 2);
+  db.prepare(
+    `INSERT INTO entries
+       (item_ref, bundle_id, component_id, concept_id, adapter_id, type, file_path,
+        content_hash, document_json, search_text, derived_from)
+     VALUES (?, ?, ?, ?, 'akm', 'knowledge', ?, NULL, ?, '', NULL)`,
+  ).run(
+    itemRef,
+    bundleId,
+    bundleId,
+    conceptId,
+    `/tmp/${bundleId}-${conceptId.replaceAll("/", "-")}.md`,
+    JSON.stringify({ name: conceptId, type: "knowledge" }),
+  );
+}
+
+function replaceWithStampedNoncanonicalIndex(indexPath: string): void {
+  for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${indexPath}${suffix}`, { force: true });
+  const index = new Database(indexPath);
+  try {
+    index.exec(`
+      CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO index_meta (key, value) VALUES ('version', '${CANONICAL_INDEX_DB_VERSION}');
+      CREATE TABLE entries (
+        id, item_ref, bundle_id, component_id, concept_id, adapter_id,
+        type, file_path, content_hash, document_json, search_text, derived_from
+      );
+      CREATE INDEX idx_entries_bundle ON entries(bundle_id);
+      CREATE INDEX idx_entries_type ON entries(type);
+      CREATE INDEX idx_entries_file_path ON entries(file_path);
+      CREATE INDEX idx_entries_derived_from ON entries(derived_from);
+      INSERT INTO entries VALUES
+        (1, 'bundle-a//knowledge/hostile', 'bundle-a', 'bundle-a', 'knowledge/hostile',
+         'akm', 'knowledge', '/tmp/hostile.md', NULL,
+         '{"name":"hostile","type":"knowledge"}', 'hostile', NULL);
+    `);
+  } finally {
+    index.close();
+  }
 }
 
 interface ProposalSeed {
@@ -347,8 +392,8 @@ describe("real-query suite generation", () => {
     const index = new Database(indexPath);
     const state = new Database(statePath);
     try {
-      index.prepare("INSERT INTO entries (item_ref) VALUES (?)").run("bundle-a//knowledge/shared");
-      index.prepare("INSERT INTO entries (item_ref) VALUES (?)").run("bundle-b//knowledge/shared");
+      seedIndexRef(index, "bundle-a//knowledge/shared");
+      seedIndexRef(index, "bundle-b//knowledge/shared");
 
       const queryMs = Date.now() - 2 * 86_400_000;
       const queryAt = new Date(queryMs).toISOString();
@@ -453,13 +498,40 @@ describe("real-query suite generation", () => {
     expect(fs.readFileSync(existing, "utf8")).toBe("existing generation\n");
   });
 
+  test("rejects a stamped noncanonical entries generation before reading refs or publishing", () => {
+    const root = tempDir();
+    const { statePath, indexPath } = createCurrentDatabases(root);
+    replaceWithStampedNoncanonicalIndex(indexPath);
+    const casesRoot = path.join(root, "cases");
+
+    const result = spawnSync(
+      "bun",
+      [
+        REAL_QUERY_SCRIPT,
+        "--state-db",
+        statePath,
+        "--index-db",
+        indexPath,
+        "--cases-root",
+        casesRoot,
+        "--out-suite",
+        "hostile-generation",
+      ],
+      { encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("current canonical entries schema");
+    expect(fs.existsSync(casesRoot)).toBe(false);
+  });
+
   test("recovers publication interrupted between the suite and manifest renames", () => {
     const root = tempDir();
     const { statePath, indexPath } = createCurrentDatabases(root);
     const index = new Database(indexPath);
     const state = new Database(statePath);
     try {
-      index.prepare("INSERT INTO entries (item_ref) VALUES (?)").run("bundle-a//knowledge/recovery");
+      seedIndexRef(index, "bundle-a//knowledge/recovery");
       const queryMs = Date.now() - 60 * 60_000;
       seedUsage(state, "search", null, "user", new Date(queryMs).toISOString(), {
         query: "publication recovery",
@@ -499,5 +571,20 @@ describe("real-query suite generation", () => {
     expect(fs.existsSync(path.join(casesRoot, "real-query-recovery.manifest.json"))).toBe(true);
     expect(fs.existsSync(path.join(casesRoot, ".real-query-recovery.publishing"))).toBe(false);
     expect(JSON.parse(recovered.stdout)).toMatchObject({ suite: "real-query-recovery", emittedCases: 1 });
+  });
+});
+
+describe("proactive verdict index boundary", () => {
+  test("rejects a stamped noncanonical entries generation before writing a report", () => {
+    const root = tempDir();
+    const { statePath, indexPath } = createCurrentDatabases(root);
+    replaceWithStampedNoncanonicalIndex(indexPath);
+    const out = path.join(root, "verdict.json");
+
+    const result = runVerdict(root, statePath, indexPath, out);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("current canonical entries schema");
+    expect(fs.existsSync(out)).toBe(false);
   });
 });

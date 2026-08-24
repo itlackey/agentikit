@@ -258,4 +258,82 @@ describe("canonical derived-index entry schema", () => {
       expectCanonicalGenerationRebuilt(dbPath);
     });
   });
+
+  test("a stamped schema with a hidden generated legacy column is rebuilt", () => {
+    withTempIndex((dbPath) => {
+      seedStampedEntriesSchema(
+        dbPath,
+        CANONICAL_ENTRIES_DDL.replace(
+          "derived_from  TEXT\n  );",
+          "derived_from  TEXT,\n    entry_key    TEXT GENERATED ALWAYS AS (item_ref) VIRTUAL\n  );",
+        ),
+        CANONICAL_ENTRY_INDEXES_DDL,
+      );
+
+      expectCanonicalGenerationRebuilt(dbPath);
+
+      const db = openDatabase(dbPath, { readonly: true, create: false });
+      try {
+        const columns = db.prepare("PRAGMA table_xinfo(entries)").all() as Array<{ name: string }>;
+        expect(columns.map((column) => column.name)).toEqual(CURRENT_ENTRY_COLUMNS);
+      } finally {
+        db.close();
+      }
+    });
+  });
+
+  test("a NOCASE item_ref uniqueness constraint is rejected and rebuilt with case-sensitive identity", () => {
+    withTempIndex((dbPath) => {
+      seedStampedEntriesSchema(
+        dbPath,
+        CANONICAL_ENTRIES_DDL.replace(
+          "item_ref      TEXT NOT NULL UNIQUE",
+          "item_ref      TEXT COLLATE NOCASE NOT NULL UNIQUE",
+        ),
+        CANONICAL_ENTRY_INDEXES_DDL,
+      );
+
+      const db = openIndexDatabase(dbPath);
+      try {
+        expect((db.prepare("SELECT COUNT(*) AS count FROM entries").get() as { count: number }).count).toBe(0);
+        const insert = db.prepare(
+          `INSERT INTO entries
+             (item_ref, bundle_id, component_id, concept_id, adapter_id, type,
+              file_path, content_hash, document_json, search_text, derived_from)
+           VALUES (?, 'stash', 'stash', ?, 'akm', 'knowledge', ?, NULL, ?, '', NULL)`,
+        );
+        for (const conceptId of ["knowledge/Guide", "knowledge/guide"]) {
+          insert.run(
+            `stash//${conceptId}`,
+            conceptId,
+            `/tmp/${conceptId.replace("/", "-")}.md`,
+            JSON.stringify({ name: conceptId, type: "knowledge" }),
+          );
+        }
+
+        expect(
+          (db.prepare("SELECT item_ref FROM entries ORDER BY id").all() as Array<{ item_ref: string }>).map(
+            (row) => row.item_ref,
+          ),
+        ).toEqual(["stash//knowledge/Guide", "stash//knowledge/guide"]);
+        const uniqueIndex = (
+          db.prepare("PRAGMA index_list(entries)").all() as Array<{ name: string; unique: number; origin: string }>
+        ).find((index) => index.unique === 1 && index.origin === "u");
+        expect(uniqueIndex).toBeDefined();
+        const keyColumns = db.prepare(`PRAGMA index_xinfo('${uniqueIndex?.name ?? ""}')`).all() as Array<{
+          name: string | null;
+          desc: number;
+          coll: string;
+          key: number;
+        }>;
+        expect(
+          keyColumns
+            .filter((column) => column.key === 1)
+            .map(({ name, desc, coll, key }) => ({ name, desc, coll, key })),
+        ).toEqual([{ name: "item_ref", desc: 0, coll: "BINARY", key: 1 }]);
+      } finally {
+        closeDatabase(db);
+      }
+    });
+  });
 });

@@ -164,22 +164,21 @@ describe("current ref lookup", () => {
     }
   });
 
-  test("a NULL-item_ref row is no longer findable by ref (heals on next index)", () => {
+  test("canonical identity columns reject NULL writes and preserve the indexed row", () => {
     const db = openDb();
     try {
       const bundle = slugForPath(stashDir);
       const targetId = findEntryIdByRef(db, "memories/second");
       expect(targetId).toBeDefined();
 
-      // Simulate a write-back row: clear its provenance columns.
-      db.prepare("UPDATE entries SET item_ref = NULL, concept_id = NULL, bundle_id = NULL WHERE id = ?").run(
-        targetId as number,
-      );
+      for (const column of ["item_ref", "concept_id", "bundle_id"] as const) {
+        expect(() => db.prepare(`UPDATE entries SET ${column} = NULL WHERE id = ?`).run(targetId as number)).toThrow(
+          /NOT NULL constraint failed/i,
+        );
+      }
 
-      // With the transitional legacy `entry_key` fallback gone, an item_ref-only
-      // lookup no longer resolves the row until the next full index re-writes it.
-      expect(findEntryIdByRef(db, `${bundle}//memories/second`), "qualified new ref").toBeUndefined();
-      expect(findEntryIdByRef(db, "memories/second"), "short new ref").toBeUndefined();
+      expect(findEntryIdByRef(db, `${bundle}//memories/second`), "qualified new ref").toBe(targetId);
+      expect(findEntryIdByRef(db, "memories/second"), "short new ref").toBe(targetId);
     } finally {
       db.close();
     }
