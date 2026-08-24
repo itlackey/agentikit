@@ -193,12 +193,12 @@ test.skipIf(!ENABLED)(
       for (const [extension, source, marker] of [
         [
           "js",
-          'if (process.argv.length !== 2 || process.argv[1] !== import.meta.path) throw new Error("bad argv"); console.log("standalone-frozen-js")\n',
+          'if (process.argv.length !== 2 || process.argv[1] !== import.meta.path) throw new Error("bad argv"); if (import.meta.main) console.log("standalone-frozen-js")\n',
           "standalone-frozen-js",
         ],
         [
           "ts",
-          'const marker: string = "standalone-frozen-ts"; if (process.argv.length !== 2 || process.argv[1] !== import.meta.path) throw new Error("bad argv"); console.log(marker)\n',
+          'const marker: string = "standalone-frozen-ts"; if (process.argv.length !== 2 || process.argv[1] !== import.meta.path) throw new Error("bad argv"); if (import.meta.main) console.log(marker)\n',
           "standalone-frozen-ts",
         ],
       ] as const) {
