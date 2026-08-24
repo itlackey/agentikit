@@ -11,6 +11,8 @@ import { akmShowUnified } from "../../../src/commands/read/show";
 import { resetConfigCache } from "../../../src/core/config/config";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { registerSourceProvider, resolveSourceProviderFactory } from "../../../src/sources/provider-factory";
+import { closeDatabase, openExistingDatabase } from "../../../src/storage/repositories/index-connection";
+import { getAllEntries } from "../../../src/storage/repositories/index-entries-repository";
 import {
   type IsolatedAkmStorage,
   makeStashDir,
@@ -38,6 +40,17 @@ function writeConcept(root: string, name: string, marker: string): string {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `---\ndescription: ${marker}\n---\n\n# ${name}\n\n${marker}\n`, "utf8");
   return filePath;
+}
+
+function indexedItemRefs(): string[] {
+  const db = openExistingDatabase();
+  try {
+    return getAllEntries(db)
+      .map((entry) => `${entry.bundleId}//${entry.conceptId}`)
+      .sort();
+  } finally {
+    closeDatabase(db);
+  }
 }
 
 beforeEach(() => {
@@ -151,6 +164,38 @@ describe("full-index bundle identity", () => {
     const result = await akmSearch({ query: "crossbundlemarker", skipLogging: true });
     const refs = result.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : [])).sort();
     expect(refs).toEqual(["knowledge/shared", "team//knowledge/shared"]);
+  });
+
+  test("removing an ancestor source preserves rows owned by a still-configured nested bundle", async () => {
+    const ancestor = secondary.dir;
+    const nested = path.join(ancestor, ".nested-bundle");
+    writeConcept(ancestor, "ancestor-only", "ancestorremovedmarker");
+    writeConcept(nested, "nested-only", "nestedretainedmarker");
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        primary: { path: storage.stashDir, writable: true },
+        ancestor: { path: ancestor, writable: false },
+        nested: { path: nested, writable: false },
+      },
+      defaultBundle: "primary",
+    });
+    resetConfigCache();
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+    expect(indexedItemRefs()).toEqual(["ancestor//knowledge/ancestor-only", "nested//knowledge/nested-only"]);
+
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        primary: { path: storage.stashDir, writable: true },
+        nested: { path: nested, writable: false },
+      },
+      defaultBundle: "primary",
+    });
+    resetConfigCache();
+    await akmIndex({ stashDir: storage.stashDir });
+
+    expect(indexedItemRefs()).toEqual(["nested//knowledge/nested-only"]);
   });
 
   for (const full of [false, true]) {

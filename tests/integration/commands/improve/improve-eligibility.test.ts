@@ -38,6 +38,7 @@ import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/im
 import { openStateDatabase } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { closeDatabase, openExistingDatabase } from "../../../../src/storage/repositories/index-connection";
+import { getAllEntries } from "../../../../src/storage/repositories/index-entries-repository";
 import { withImproveAutonomy, withTestImproveLlm } from "../../../_helpers/improve-config";
 
 describe("resolveImproveScope syntax classification", () => {
@@ -194,6 +195,43 @@ test("skips a malformed indexed ref without discarding valid candidates", async 
   expect(result.plannedRefs[0]?.itemRef).toBe("stash//memories/valid");
   expect(result.memorySummary).toEqual({ eligible: 1, derived: 0 });
   expect(result.strategyFilteredRefs).toEqual([]);
+});
+
+test("a read-only nested bundle is never eligible through its writable ancestor", async () => {
+  const stash = makeTempDir("akm-elig-nested-owner-");
+  const nested = path.join(stash, ".read-only-bundle");
+  writeMemory(stash, "writable", "Writable memory.");
+  writeMemory(nested, "readonly", "Read-only nested memory.");
+  process.env.AKM_BUNDLE_DIR = stash;
+  const config = withImproveAutonomy(
+    withTestImproveLlm({
+      semanticSearchMode: "off",
+      bundles: {
+        primary: { path: stash, writable: true },
+        nested: { path: nested, writable: false },
+      },
+      defaultBundle: "primary",
+      defaultWriteTarget: "primary",
+    }),
+  );
+  saveConfig(config);
+  await akmIndex({ stashDir: stash, full: true });
+
+  const db = openExistingDatabase();
+  try {
+    expect(
+      getAllEntries(db)
+        .map((entry) => `${entry.bundleId}//${entry.conceptId}`)
+        .sort(),
+    ).toEqual(["nested//memories/readonly", "primary//memories/writable"]);
+  } finally {
+    closeDatabase(db);
+  }
+
+  const result = await collectEligibleRefs({ mode: "all" }, stash, {}, config);
+
+  expect(result.plannedRefs.map((entry) => entry.itemRef)).toEqual(["primary//memories/writable"]);
+  expect(result.memorySummary).toEqual({ eligible: 1, derived: 0 });
 });
 
 test("treats an index without an entries table as an empty candidate plan", async () => {
