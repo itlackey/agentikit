@@ -17,6 +17,12 @@ import {
   schedulerContextPath,
 } from "../../src/tasks/scheduler-invocation";
 import { sandboxStashDir } from "../_helpers/sandbox";
+import {
+  type SchedulerArtifactDrift,
+  type SchedulerBackendContractDriver,
+  type SchedulerNormalizedPeer,
+  schedulerBackendConformance,
+} from "../_helpers/scheduler-backend-conformance";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
   AKM_BUNDLE_DIR: "/Users/Akm User/stash & notes",
@@ -205,41 +211,72 @@ const STABILIZED_LAUNCHD_INSPECTION_EVENTS = [
   "exec:print-disabled",
 ] as const;
 
-function makeFakeFs(events?: string[]): LaunchdFs & { written: Map<string, string>; readFile(file: string): string } {
+type FakeLaunchdFs = LaunchdFs & {
+  written: Map<string, string>;
+  readFile(file: string): string;
+  resetActivity(): void;
+  accessCount(): number;
+  mutationCount(): number;
+};
+
+function makeFakeFs(events?: string[]): FakeLaunchdFs {
   const written = new Map<string, string>();
+  let accesses = 0;
+  let mutations = 0;
   return {
     written,
     writeFile(file: string, content: string) {
+      accesses += 1;
+      mutations += 1;
       events?.push(`write:${file}`);
       written.set(file, content);
     },
     readFile(file: string) {
+      accesses += 1;
       const content = written.get(file);
       if (content === undefined) throw new Error(`missing fake file: ${file}`);
       return content;
     },
     removeFile(file: string) {
+      accesses += 1;
+      mutations += 1;
       events?.push(`remove:${file}`);
       written.delete(file);
     },
     replaceFile(source: string, destination: string) {
+      accesses += 1;
+      mutations += 1;
       events?.push(`replace:${source}->${destination}`);
       const content = written.get(source);
       if (content === undefined) throw new Error(`missing fake file: ${source}`);
       written.set(destination, content);
       written.delete(source);
     },
-    ensureDir(_dir: string) {},
+    ensureDir(_dir: string) {
+      accesses += 1;
+    },
     list(dir: string) {
+      accesses += 1;
       return [...written.keys()].filter((file) => file.startsWith(`${dir}/`)).map((file) => file.slice(dir.length + 1));
     },
     exists(file: string) {
+      accesses += 1;
       return file === "/tmp/agents" || written.has(file);
     },
+    resetActivity() {
+      accesses = 0;
+      mutations = 0;
+    },
+    accessCount: () => accesses,
+    mutationCount: () => mutations,
   };
 }
 
-function makeBackend(exec = makeFakeExec(), fs = makeFakeFs()) {
+function makeBackend(
+  exec = makeFakeExec(),
+  fs = makeFakeFs(),
+  scheduledContext: ScheduledTaskContext = SCHEDULED_CONTEXT,
+) {
   return {
     backend: LAUNCHD_BACKEND({
       exec,
@@ -248,7 +285,7 @@ function makeBackend(exec = makeFakeExec(), fs = makeFakeFs()) {
       logDir: "/tmp/logs",
       akmArgv: ["/abs/akm"],
       envPath: false,
-      scheduledContext: SCHEDULED_CONTEXT,
+      scheduledContext,
     }),
     exec,
     fs,
@@ -275,6 +312,71 @@ function mutationExpectation(binding: SchedulerBinding, state: "absent" | "prese
     ...(fingerprint !== undefined ? { fingerprint } : {}),
   };
 }
+
+function launchdContractDriver(scheduledContext = SCHEDULED_CONTEXT): SchedulerBackendContractDriver {
+  const exec = makeFakeExec();
+  const fs = makeFakeFs();
+  const { backend } = makeBackend(exec, fs, scheduledContext);
+  const nativeId = (binding: SchedulerBinding) => binding.nativeId ?? schedulerNativeBindingId(binding.id);
+  const artifactFile = (binding: SchedulerBinding) => `/tmp/agents/com.akm.task.${nativeId(binding)}.plist`;
+
+  return {
+    backend,
+    captureState() {
+      return {
+        files: [...fs.written.entries()].sort(([left], [right]) => left.localeCompare(right)),
+        loadedLabels: [...exec.loadedLabels].sort(),
+        disabledLabels: [...exec.disabledLabels].sort(),
+      };
+    },
+    clearArtifact(binding) {
+      const id = nativeId(binding);
+      fs.written.delete(artifactFile(binding));
+      exec.loadedLabels.delete(`com.akm.task.${id}`);
+      exec.disabledLabels.delete(`com.akm.task.${id}`);
+    },
+    driftArtifact(binding, drift: SchedulerArtifactDrift) {
+      const file = artifactFile(binding);
+      const prior = fs.written.get(file);
+      if (!prior) throw new Error(`missing launchd plist fixture for ${binding.id}`);
+      const next =
+        drift === "foreign"
+          ? prior.replaceAll("<string>ping</string>", "<string>foreign</string>")
+          : drift === "malformed"
+            ? prior.replaceAll("<string>--scheduled</string>", "<string>--broken</string>")
+            : prior.replace("<key>Minute</key><integer>0</integer>", "<key>Minute</key><integer>7</integer>");
+      if (next === prior) throw new Error(`failed to drift launchd fixture for ${drift}`);
+      fs.written.set(file, next);
+    },
+    addNormalizedPeer(binding, peer: SchedulerNormalizedPeer) {
+      const id = nativeId(binding);
+      const plist = fs.written.get(artifactFile(binding));
+      if (!plist) throw new Error(`missing launchd plist fixture for ${binding.id}`);
+      const peerId = peer === "case" ? id.toUpperCase() : `${id}.`;
+      fs.written.set(`/tmp/agents/com.akm.task.${peerId}.plist`, plist);
+    },
+    currentFingerprint(binding) {
+      const artifact = (backend.listNativeArtifacts?.() as Array<{ nativeId: string; fingerprint?: string }>).find(
+        (candidate) => candidate.nativeId === nativeId(binding),
+      );
+      if (!artifact?.fingerprint) throw new Error(`missing launchd fingerprint fixture for ${binding.id}`);
+      return artifact.fingerprint;
+    },
+    resetActivity() {
+      exec.calls.length = 0;
+      fs.resetActivity();
+    },
+    accessCount: () => exec.calls.length + fs.accessCount(),
+    mutationCount: () => launchdMutationCalls(exec.calls).length + fs.mutationCount(),
+  };
+}
+
+schedulerBackendConformance({
+  name: "launchd",
+  scheduledContext: SCHEDULED_CONTEXT,
+  movedContext: { ...SCHEDULED_CONTEXT, AKM_STATE_DIR: "/Users/Akm User/moved-state" },
+  create: launchdContractDriver,
+});
 
 function makeTransactionalBackend() {
   const fakeFs = makeFakeFs();
