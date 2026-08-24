@@ -214,7 +214,12 @@ describe("improve engine-plan boundaries", () => {
           strategies: {
             split: {
               processes: disabledProcesses({
-                reflect: { enabled: true, engine: "reflect", allowedTypes: ["memory"] },
+                reflect: {
+                  enabled: true,
+                  engine: "reflect",
+                  model: "process-model",
+                  allowedTypes: ["memory"],
+                },
                 distill: { enabled: true, engine: "distill", allowedTypes: ["memory"] },
               }),
             },
@@ -295,11 +300,15 @@ describe("improve engine-plan boundaries", () => {
         resolvedPlan: plan,
       });
       expect(reflectOptions).not.toHaveProperty("runner");
-      expect(reflectOptions?.engine).toBe("reflect");
+      expect(reflectOptions).not.toHaveProperty("engine");
       expect(reflectOptions?.config).not.toBe(config);
       expect((reflectOptions?.config as AkmConfig).engines?.reflect).toMatchObject({ model: "reflect-model" });
+      expect((reflectOptions?.improveProfile as ImproveProfileConfig).processes?.reflect).toMatchObject({
+        engine: "reflect",
+        model: "process-model",
+      });
       expect(dispatchedModels.length).toBeGreaterThan(0);
-      expect(new Set(dispatchedModels)).toEqual(new Set(["reflect-model"]));
+      expect(new Set(dispatchedModels)).toEqual(new Set(["process-model"]));
       expect((distillOptions?.llmRunner as { connection?: { model?: string } }).connection?.model).toBe(
         "distill-model",
       );
