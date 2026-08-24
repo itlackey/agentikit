@@ -202,8 +202,3 @@ export function projectResolvedExecutionRequestForTest(request: ResolvedExecutio
     notices: request.notices,
   };
 }
-
-/** Stable JSON helper for lowering snapshots and fixture catalogs. */
-export function canonicalJsonForTest(value: unknown): string {
-  return `${JSON.stringify(sortJson(value), null, 2)}\n`;
-}

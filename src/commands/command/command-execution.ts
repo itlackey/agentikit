@@ -122,7 +122,7 @@ export interface CommandDryRunResult {
 
 export interface DispatchPreparedCommandOptions {
   readonly executeRunner?: DispatchLoweredExecutionOptions["executeRunner"];
-  /** Compatibility seam for tests; production uses the leased executeRunner path. */
+  /** Test injection seam; production uses the leased executeRunner path. */
   readonly runAgent?: DispatchLoweredExecutionOptions["runAgent"];
   readonly runOptions?: DispatchLoweredExecutionOptions["runOptions"];
   readonly chat?: typeof chatCompletion;

@@ -20,22 +20,7 @@ import { formatRegistryUrl } from "../../core/registry-url";
 import type { IndexResponse } from "../../indexer/indexer";
 import type { DetailLevel } from "../context";
 
-/**
- * `akm info`'s real result (`InfoResponse`, `src/sources/types.ts`) carries
- * `defaultBundle`/`assetTypes`/`searchModes`/`semanticSearch`/`registries`/
- * `sourceProviders`/`indexStats` — this formatter used to check for
- * `configPath`/`cacheDir`/`dbPath`/`capabilities`/`index` instead, none of
- * which `InfoResponse` has ever had, so every one of those `if` guards was
- * always false and those five real fields silently never appeared in
- * `--format text` output (the plain fallthrough JSON check three lines below
- * papered over it: `lines` was never empty because `version`/`bundleDir`
- * always matched, so the "render everything" escape hatch never fired
- * either — same class of bug as `akm health`/`akm lint`'s raw-JSON-array
- * dump: `--format text` claiming to render a shape it wasn't actually
- * rendering). The legacy field checks stay (harmless no-ops on the current
- * shape) in case another producer still emits them; the real fields are
- * added alongside.
- */
+/** Render the current `InfoResponse` shape. */
 export function formatInfoPlain(r: Record<string, unknown>): string {
   const lines: string[] = [];
   if (r.version) lines.push(`version: ${String(r.version)}`);
@@ -43,9 +28,6 @@ export function formatInfoPlain(r: Record<string, unknown>): string {
   if (r.defaultBundle !== undefined) {
     lines.push(`defaultBundle: ${r.defaultBundle === null ? "(none)" : String(r.defaultBundle)}`);
   }
-  if (r.configPath) lines.push(`configPath: ${String(r.configPath)}`);
-  if (r.cacheDir) lines.push(`cacheDir: ${String(r.cacheDir)}`);
-  if (r.dbPath) lines.push(`dbPath: ${String(r.dbPath)}`);
   if (Array.isArray(r.assetTypes) && r.assetTypes.length > 0) {
     lines.push(`assetTypes: ${(r.assetTypes as unknown[]).join(", ")}`);
   }
@@ -81,14 +63,7 @@ export function formatInfoPlain(r: Record<string, unknown>): string {
       lines.push(`  [${String(source.type ?? "?")}] ${String(label)}${disabled}`);
     }
   }
-  const capabilities = r.capabilities as Record<string, unknown> | undefined;
-  if (capabilities) {
-    lines.push("capabilities:");
-    for (const [k, v] of Object.entries(capabilities)) {
-      lines.push(`  ${k}: ${typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)}`);
-    }
-  }
-  const indexStats = (r.indexStats ?? r.index) as Record<string, unknown> | undefined;
+  const indexStats = r.indexStats as Record<string, unknown> | undefined;
   if (indexStats) {
     lines.push("indexStats:");
     for (const [k, v] of Object.entries(indexStats)) {
