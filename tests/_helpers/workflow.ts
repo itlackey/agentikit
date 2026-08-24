@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AkmConfig } from "../../src/core/config/config";
 import { captureFrozenDirectoryIdentity } from "../../src/execution/directory-identity";
+import { type FrozenExecutableIdentity, freezeExecutableIdentity } from "../../src/execution/executable-identity";
 import type { ExecutionJsonObject } from "../../src/execution/json";
 import {
   canonicalResolvedExecutionRequest,
@@ -186,7 +187,13 @@ function freezeCommandTarget(
     current,
   });
   const resolved = durableRequest(requireAuthorizedExecutionPlan(prepared.plan));
-  const runner = lowerResolvedExecutionRequest(resolved, prepared.config).runner;
+  const cwdIdentity = captureFrozenDirectoryIdentity("/tmp");
+  let runner = lowerResolvedExecutionRequest(resolved, prepared.config).runner;
+  let executable: FrozenExecutableIdentity | undefined;
+  if (runner.kind === "agent") {
+    executable = freezeExecutableIdentity(runner.profile.bin, { cwd: cwdIdentity.realCwd });
+    runner = Object.freeze({ ...runner, profile: Object.freeze({ ...runner.profile, bin: executable.absolutePath }) });
+  }
   const request = JSON.parse(canonicalResolvedExecutionRequest(resolved)) as ResolvedExecutionRequestV1;
   return Object.freeze({
     kind: "command",
@@ -195,7 +202,8 @@ function freezeCommandTarget(
     request,
     runner,
     ...(targetConcurrency(runner, config) ? { concurrency: targetConcurrency(runner, config) } : {}),
-    cwdIdentity: captureFrozenDirectoryIdentity("/tmp"),
+    cwdIdentity,
+    ...(executable ? { executable } : {}),
   });
 }
 
