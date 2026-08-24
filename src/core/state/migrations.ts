@@ -1126,6 +1126,7 @@ export function runMigrations(db: Database, options?: RunStateMigrationsOptions)
   };
 
   runSqliteMigrations(db, STATE_MIGRATIONS, {
+    lockInitialMigrationPrefixThrough: options?.existingUnversionedDatabase ? "002-task-history-per-run" : undefined,
     beforeLedgerInitializationLocked(lockedDb) {
       if (options?.freshDatabase) {
         if (!options.verifyFreshDatabaseOwnership) {
@@ -1143,7 +1144,7 @@ export function runMigrations(db: Database, options?: RunStateMigrationsOptions)
         }
         options.verifyFreshDatabaseOwnership();
       }
-      if (options?.existingUnversionedDatabase && migration.id === initialMigration.id) {
+      if (options?.existingUnversionedDatabase && !existingUnversionedSnapshotPrepared) {
         prepareExistingUnversionedState(lockedDb);
       }
       if (getStateMigrationSafety(migration.id) !== "historical-destructive" || options?.freshDatabase) return;

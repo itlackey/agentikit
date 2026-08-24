@@ -37,10 +37,12 @@ export interface Migration {
 export interface RunMigrationsOptions {
   /** Called before creating a missing ledger table while the initialization writer lock is held. */
   beforeLedgerInitializationLocked?: (db: Database) => void;
-  /** Called immediately before each pending migration and before its transaction. */
+  /** Called immediately before each pending migration; an initial locked prefix may already own its transaction. */
   beforeMigration?: (migration: Migration) => void;
   /** Called after the pending-ID recheck while the migration's writer lock is held. */
   beforeMigrationLocked?: (migration: Migration, db: Database) => void;
+  /** Hold ledger initialization and every pending migration through this ID in one writer transaction. */
+  lockInitialMigrationPrefixThrough?: string;
 }
 
 export type MigrationLedgerStatus = "old" | "current" | "newer" | "inconsistent";
@@ -126,12 +128,14 @@ export function ensureMigrationsTable(db: Database): void {
 }
 
 /**
- * Apply every pending migration, one transaction per migration.
+ * Apply every pending migration, normally one transaction per migration.
  *
  * Each migration is applied in its own transaction so a failure in migration N
  * does not roll back already-applied migrations 1..N-1. The migration row is
  * inserted after the DDL succeeds in the same transaction, so a crash rolls
- * back both that migration's SQL and its ledger row.
+ * back both that migration's SQL and its ledger row. A caller may explicitly
+ * group the initial prefix when ledger initialization and dependent early
+ * migrations form one safety boundary.
  *
  * @param db          The open SQLite database.
  * @param migrations  The module's ordered, append-only migration list.
@@ -139,7 +143,32 @@ export function ensureMigrationsTable(db: Database): void {
  */
 export function runMigrations(db: Database, migrations: readonly Migration[], opts?: RunMigrationsOptions): void {
   assertMigrationRegistry(migrations);
-  if (migrationLedgerExists(db)) {
+  const lockedPrefixThrough = opts?.lockInitialMigrationPrefixThrough;
+  const lockedPrefixEnd = lockedPrefixThrough
+    ? migrations.findIndex((migration) => migration.id === lockedPrefixThrough)
+    : -1;
+  if (lockedPrefixThrough && lockedPrefixEnd < 0) {
+    throw new Error(`Initial locked migration prefix ends at unknown migration ID ${lockedPrefixThrough}.`);
+  }
+
+  if (lockedPrefixEnd >= 0) {
+    withImmediateWriteLock(db, () => {
+      if (!migrationLedgerExists(db)) {
+        opts?.beforeLedgerInitializationLocked?.(db);
+        ensureMigrationsTable(db);
+      }
+      assertMigrationLedger(db, migrations);
+      for (const migration of migrations.slice(0, lockedPrefixEnd + 1)) {
+        const already = db.prepare("SELECT 1 FROM schema_migrations WHERE id = ?").get(migration.id);
+        if (already) continue;
+        opts?.beforeMigration?.(migration);
+        opts?.beforeMigrationLocked?.(migration, db);
+        db.exec(migration.up);
+        db.prepare("INSERT INTO schema_migrations (id) VALUES (?)").run(migration.id);
+      }
+    });
+    assertMigrationLedger(db, migrations);
+  } else if (migrationLedgerExists(db)) {
     assertMigrationLedger(db, migrations);
   } else {
     withImmediateWriteLock(db, () => {
