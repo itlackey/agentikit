@@ -37,6 +37,8 @@ export interface Migration {
 export interface RunMigrationsOptions {
   /** Called immediately before each pending migration and before its transaction. */
   beforeMigration?: (migration: Migration) => void;
+  /** Called after the pending-ID recheck while the migration's writer lock is held. */
+  beforeMigrationLocked?: (migration: Migration, db: Database) => void;
 }
 
 export type MigrationLedgerStatus = "old" | "current" | "newer" | "inconsistent";
@@ -155,6 +157,7 @@ export function runMigrations(db: Database, migrations: readonly Migration[], op
       // DDL and must not hit a UNIQUE violation on the ledger insert.
       const already = db.prepare("SELECT 1 FROM schema_migrations WHERE id = ?").get(migration.id);
       if (already) return;
+      opts?.beforeMigrationLocked?.(migration, db);
       db.exec(migration.up);
       db.prepare("INSERT INTO schema_migrations (id) VALUES (?)").run(migration.id);
     });

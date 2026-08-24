@@ -10,6 +10,7 @@
 
 import type { Database } from "../../storage/database";
 import {
+  assertMigrationLedger,
   assertMigrationRegistry,
   type Migration,
   runMigrations as runSqliteMigrations,
@@ -1077,9 +1078,11 @@ export function getStateMigrationSafety(migrationId: string): StateMigrationSafe
 export interface RunStateMigrationsOptions {
   /** A file created by this same open; historical cleanup cannot remove operator state. */
   freshDatabase?: boolean;
+  /** Revalidates that the path still names the fresh file atomically reserved by this open. */
+  verifyFreshDatabaseOwnership?: () => void;
   /** Narrow intent owned by the successful `akm upgrade` post-install step. */
   allowHistoricalDestructiveStateUpgrade?: boolean;
-  /** Required safety-copy hook, called immediately before destructive historical SQL. */
+  /** Required safety-copy hook, called under the migration writer lock immediately before destructive SQL. */
   beforeHistoricalDestructiveMigration?: (migration: Migration) => void;
 }
 
@@ -1093,8 +1096,17 @@ export interface RunStateMigrationsOptions {
  */
 export function runMigrations(db: Database, options?: RunStateMigrationsOptions): void {
   runSqliteMigrations(db, STATE_MIGRATIONS, {
-    beforeMigration(migration) {
+    beforeMigrationLocked(migration, lockedDb) {
+      if (options?.freshDatabase) {
+        if (!options.verifyFreshDatabaseOwnership) {
+          throw new Error("A fresh state.db migration requires verified file ownership.");
+        }
+        options.verifyFreshDatabaseOwnership();
+      }
       if (getStateMigrationSafety(migration.id) !== "historical-destructive" || options?.freshDatabase) return;
+      // The writer lock closes the window between this exact-prefix decision,
+      // the recovery snapshot, and the destructive migration transaction.
+      assertMigrationLedger(lockedDb, STATE_MIGRATIONS);
       if (!options?.allowHistoricalDestructiveStateUpgrade) {
         throw new Error(
           `Refusing to apply historical destructive state migration ${migration.id} during an ordinary managed open. ` +
