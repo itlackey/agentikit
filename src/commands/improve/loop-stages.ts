@@ -307,10 +307,9 @@ async function runLoopReflectPass(
       // O-1 (#364): pass remaining budget as timeoutMs so the agent spawn is
       // bounded by the wall-clock deadline rather than the default per-profile timeout.
       const reflectBudgetMs = env.remainingBudgetMs();
-      // Re-enter canonical named-engine lowering with the config snapshot frozen
-      // into the invocation plan. The loop never injects a RunnerSpec seam and
-      // never observes later mutations to the caller's config object.
-      const reflectProfileRunner = resolvedPlan.processes.reflect.runner;
+      // Re-enter canonical named-engine lowering with the config snapshot and
+      // process profile frozen into the invocation plan. The loop never injects
+      // a RunnerSpec seam or observes later caller-config mutations.
       const reflectCallArgs = {
         ref: planned.ref,
         // Carry the resolved item_ref so reflect uses the same durable key for
