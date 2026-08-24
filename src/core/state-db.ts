@@ -123,7 +123,7 @@ export function openStateDatabase(dbPath?: string): Database {
     }
     const db = openManagedDatabase({
       path: resolvedPath,
-      init: runMigrations,
+      init: (db) => runMigrations(db, { freshDatabase: !existed }),
     });
     if (!releaseActivity) return db;
     let closed = false;

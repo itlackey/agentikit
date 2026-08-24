@@ -15,6 +15,41 @@ import {
   runMigrations as runSqliteMigrations,
 } from "../../storage/engines/sqlite-migrations";
 
+export type StateMigrationSafety = "additive" | "data-preserving-rebuild" | "historical-destructive";
+
+/**
+ * Explicit safety classification for every released state migration ID.
+ *
+ * This registry is deliberately separate from the immutable migration bodies:
+ * released IDs, order, and SQL stay byte-for-byte unchanged. A runtime
+ * assertion below requires this key order to match {@link STATE_MIGRATIONS}
+ * exactly, so appending a migration also requires an explicit safety decision.
+ */
+export const STATE_MIGRATION_SAFETY_BY_ID: Readonly<Record<string, StateMigrationSafety>> = Object.freeze({
+  "001-initial-schema": "additive",
+  "002-task-history-per-run": "data-preserving-rebuild",
+  "003-improve-runs": "additive",
+  "004-extract-sessions-seen": "additive",
+  "005-proposal-fs-imports": "additive",
+  "006-proposals-pending-ref-source": "additive",
+  "007-consolidation-judged": "additive",
+  "008-body-embeddings": "additive",
+  "009-asset-salience": "additive",
+  "010-asset-outcome": "additive",
+  "011-asset-salience-homeostatic-demoted-at": "additive",
+  "012-improve-gate-thresholds": "additive",
+  "013-extract-sessions-content-hash": "additive",
+  "014-recombine-hypotheses": "additive",
+  "015-asset-salience-encoding-source": "additive",
+  "016-collapse-churn-detector": "additive",
+  "017-improve-run-strategy": "additive",
+  "018-drop-dead-lane-schema": "historical-destructive",
+  "019-proposal-fingerprints": "additive",
+  "020-three-db-cutover": "additive",
+  "021-asset-state-missing-since": "additive",
+  "022-workflow-unit-attempts": "additive",
+});
+
 export const STATE_MIGRATIONS: readonly Migration[] = [
   // ── Migration 001 — initial schema ──────────────────────────────────────────
   {
@@ -1020,6 +1055,34 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
 
 assertMigrationRegistry(STATE_MIGRATIONS);
 
+function assertStateMigrationSafetyRegistry(): void {
+  const migrationIds = STATE_MIGRATIONS.map((migration) => migration.id);
+  const classifiedIds = Object.keys(STATE_MIGRATION_SAFETY_BY_ID);
+  if (
+    migrationIds.length !== classifiedIds.length ||
+    migrationIds.some((migrationId, index) => classifiedIds[index] !== migrationId)
+  ) {
+    throw new Error("State migration safety classifications must match the exact ordered migration registry.");
+  }
+}
+
+assertStateMigrationSafetyRegistry();
+
+export function getStateMigrationSafety(migrationId: string): StateMigrationSafety {
+  const safety = STATE_MIGRATION_SAFETY_BY_ID[migrationId];
+  if (!safety) throw new Error(`State migration ${migrationId} has no safety classification.`);
+  return safety;
+}
+
+export interface RunStateMigrationsOptions {
+  /** A file created by this same open; historical cleanup cannot remove operator state. */
+  freshDatabase?: boolean;
+  /** Narrow intent owned by the successful `akm upgrade` post-install step. */
+  allowHistoricalDestructiveStateUpgrade?: boolean;
+  /** Required safety-copy hook, called immediately before destructive historical SQL. */
+  beforeHistoricalDestructiveMigration?: (migration: Migration) => void;
+}
+
 /**
  * Apply every pending migration in a single transaction per migration.
  *
@@ -1028,6 +1091,20 @@ assertMigrationRegistry(STATE_MIGRATIONS);
  *
  * Called automatically by `openStateDatabase()`.
  */
-export function runMigrations(db: Database): void {
-  runSqliteMigrations(db, STATE_MIGRATIONS);
+export function runMigrations(db: Database, options?: RunStateMigrationsOptions): void {
+  runSqliteMigrations(db, STATE_MIGRATIONS, {
+    beforeMigration(migration) {
+      if (getStateMigrationSafety(migration.id) !== "historical-destructive" || options?.freshDatabase) return;
+      if (!options?.allowHistoricalDestructiveStateUpgrade) {
+        throw new Error(
+          `Refusing to apply historical destructive state migration ${migration.id} during an ordinary managed open. ` +
+            "Run `akm upgrade --force` to create a sibling state.db safety copy and apply it deliberately.",
+        );
+      }
+      if (!options.beforeHistoricalDestructiveMigration) {
+        throw new Error(`Historical destructive state migration ${migration.id} requires a verified safety-copy hook.`);
+      }
+      options.beforeHistoricalDestructiveMigration(migration);
+    },
+  });
 }
