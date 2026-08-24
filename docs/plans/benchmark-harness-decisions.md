@@ -218,6 +218,33 @@ CI (see Open questions below).
   on main before this work (legacy src/ typecheck + 5 pre-existing
   tests/leakage.test.ts failures against fixtures/corpus). Nothing new is
   CI-gated until this is addressed.
+- **P0 GATE PASSED (2026-08-24, live containers, x86_64 + Docker 29.1.3)**:
+  on corpus task `opencode--select-correct-skill` the treatment arm made
+  real `akm_curate` x2 + `akm_show` x3 calls (both evidence sources agree;
+  control arm zero akm activity; both arms reward 1.0 - plumbing proven,
+  benefit unmeasured). Nuance: on `hello-world` the plugin's own activation
+  heuristic declined to curate (`prompt_recall skip-low-signal`), so that
+  task structurally cannot answer P0 - `harbor/jobs/p0-corpus.yaml` exists
+  for the corpus-task variant. Phase 3 also green: oracle 46/46 reward 1.0,
+  nop fail-path 3/3 reward 0, registry slice 19/19. Live execution surfaced
+  and fixed (akm-bench `1b527df`, 181 tests): the self-check derived seed
+  expectations from `seed_library_dir` while the bundle is actually seeded
+  from `AKM_TASK_STASH` (would have blocked the corpus programme), two
+  hardcoded probe assumptions, and a pre-existing invalid-bash bug that
+  would have killed every accumulating-arm trial at setup.
+- **NEW MODEL-COMPAT CONSTRAINT (arm-asymmetric hard failure)**: the
+  akm-opencode plugin injects context as ADDITIONAL entries in opencode's
+  `system` array, so the treatment arm sends multiple system messages. Chat
+  templates requiring a single leading system message (observed:
+  `qwen3.6-35b-a3b`, `devstral-small-2`) return HTTP 500 on the treatment
+  arm ONLY. Verified accepting: `qwen3-30b-a3b-2507`, `qwen3-coder-30b`,
+  `gpt-oss-20b`. Screen the model before any paid A/B; the deeper fix
+  (merging into one system message) lives in akm-plugins.
+- **RESOLVED (2026-08-24): akm-eval container caveat closed** (`0d66642`):
+  `docker/akm-eval.Dockerfile` now ships Node 22 + `akm-cli@0.9.1` (pinned,
+  asserted at build time), and `bin/doctor` reports the akm backend OK
+  in-container. The three-variant locomo/longmemeval A/B remains the last
+  unexecuted step (judge budget).
 - **RESOLVED (2026-08-23): LongMemEval retrieval is now wired** through
   MemoryBackend.search() with real retrieval metrics vs evidence session ids;
   the inert-arm warning became a regression tripwire. The A/B config is now
@@ -262,6 +289,7 @@ CI (see Open questions below).
 
 ## Changelog
 
+- **2026-08-24** - First live container runs on the maintainer's machine: P0 gate PASSED, corpus oracle validation green (46/46), four live-run defects fixed upstream (akm-bench `1b527df`), akm-eval container caveat closed (`0d66642`), and the multi-system-message model-compat constraint recorded.
 - **2026-08-23 (final)** - D6 built and wired; D3 partially resolved; in-process akm-cli pin hole closed via realign (overrides file proven inert); LongMemEval wiring landed; CI green on all three PRs' gated jobs; the FTS query-shape validity risk recorded from both gates.
 - **2026-08-23 (later)** - P5/P6 landed on akm-eval `claude/memory-eval-refactor`; four further open items recorded (longmemeval retrieval wiring, evaluator provenance, judgedPass naming, opencode-config retention).
 - **2026-08-23** - D10 and D12 decided by implementation (P1-P3 landed on
