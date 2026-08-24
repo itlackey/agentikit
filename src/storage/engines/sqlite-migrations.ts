@@ -35,6 +35,8 @@ export interface Migration {
  * Options for {@link runMigrations}.
  */
 export interface RunMigrationsOptions {
+  /** Called before creating a missing ledger table while the initialization writer lock is held. */
+  beforeLedgerInitializationLocked?: (db: Database) => void;
   /** Called immediately before each pending migration and before its transaction. */
   beforeMigration?: (migration: Migration) => void;
   /** Called after the pending-ID recheck while the migration's writer lock is held. */
@@ -57,13 +59,13 @@ export function assertMigrationRegistry(migrations: readonly Migration[]): void 
   }
 }
 
-function migrationsTableExists(db: Database): boolean {
+export function migrationLedgerExists(db: Database): boolean {
   return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
 }
 
 /** Inspect the database's applied IDs against the exact ordered registry prefix. */
 function inspectLedgerAgainst(db: Database, registryIds: readonly string[]): MigrationLedgerState {
-  if (!migrationsTableExists(db)) return { status: registryIds.length === 0 ? "current" : "old", migrationIds: [] };
+  if (!migrationLedgerExists(db)) return { status: registryIds.length === 0 ? "current" : "old", migrationIds: [] };
 
   const rows = db.prepare("SELECT id FROM schema_migrations ORDER BY rowid").all() as Array<{ id: string }>;
   const migrationIds = rows.map((row) => row.id);
@@ -137,9 +139,16 @@ export function ensureMigrationsTable(db: Database): void {
  */
 export function runMigrations(db: Database, migrations: readonly Migration[], opts?: RunMigrationsOptions): void {
   assertMigrationRegistry(migrations);
-  if (migrationsTableExists(db)) assertMigrationLedger(db, migrations);
-
-  ensureMigrationsTable(db);
+  if (migrationLedgerExists(db)) {
+    assertMigrationLedger(db, migrations);
+  } else {
+    withImmediateWriteLock(db, () => {
+      if (migrationLedgerExists(db)) return;
+      opts?.beforeLedgerInitializationLocked?.(db);
+      ensureMigrationsTable(db);
+    });
+    assertMigrationLedger(db, migrations);
+  }
 
   const appliedRows = db.prepare("SELECT id FROM schema_migrations ORDER BY rowid").all() as Array<{ id: string }>;
   const applied = new Set(appliedRows.map((r) => r.id));

@@ -64,7 +64,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { type Database, openDatabase, type SqlValue } from "../storage/database";
-import { assertMigrationLedger } from "../storage/engines/sqlite-migrations";
+import { assertMigrationLedger, migrationLedgerExists } from "../storage/engines/sqlite-migrations";
 import { openManagedDatabase, withManagedDb } from "../storage/managed-db";
 import { acquireMaintenanceActivitySync } from "./maintenance-barrier";
 import { getDataDir } from "./paths";
@@ -349,6 +349,8 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
   const releaseActivity = isCanonical ? acquireMaintenanceActivitySync("state-db") : undefined;
   let freshReservation: OwnedFileReservation | undefined;
   let openedDb: Database | undefined;
+  let existingUnversionedDatabase = false;
+  let stateSafetyCopyCreated = false;
   try {
     fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
     freshReservation = reserveFreshStateDatabase(resolvedPath);
@@ -357,6 +359,13 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
       try {
         preflight.exec("PRAGMA busy_timeout = 30000");
         assertMigrationLedger(preflight, STATE_MIGRATIONS);
+        existingUnversionedDatabase = !migrationLedgerExists(preflight);
+        if (existingUnversionedDatabase && !options?.allowHistoricalDestructiveStateUpgrade) {
+          throw new Error(
+            "Refusing to migrate an existing unversioned state.db during an ordinary managed open. " +
+              "Run `akm upgrade --force` to create a verified snapshot before migration 001.",
+          );
+        }
       } finally {
         preflight.close();
       }
@@ -370,10 +379,20 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
           verifyFreshDatabaseOwnership: ownedFresh
             ? () => assertOwnedFileReservation(ownedFresh, "Fresh state.db")
             : undefined,
+          existingUnversionedDatabase,
           allowHistoricalDestructiveStateUpgrade: options?.allowHistoricalDestructiveStateUpgrade,
-          beforeHistoricalDestructiveMigration: options?.allowHistoricalDestructiveStateUpgrade
+          beforeExistingUnversionedStateMigration: options?.allowHistoricalDestructiveStateUpgrade
             ? (migration) => {
                 const safetyCopyPath = createHistoricalStateSafetyCopy(resolvedPath, migration.id);
+                stateSafetyCopyCreated = true;
+                options.onHistoricalStateSafetyCopy?.(safetyCopyPath);
+              }
+            : undefined,
+          beforeHistoricalDestructiveMigration: options?.allowHistoricalDestructiveStateUpgrade
+            ? (migration) => {
+                if (stateSafetyCopyCreated) return;
+                const safetyCopyPath = createHistoricalStateSafetyCopy(resolvedPath, migration.id);
+                stateSafetyCopyCreated = true;
                 options.onHistoricalStateSafetyCopy?.(safetyCopyPath);
               }
             : undefined,

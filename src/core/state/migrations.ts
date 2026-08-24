@@ -1080,8 +1080,12 @@ export interface RunStateMigrationsOptions {
   freshDatabase?: boolean;
   /** Revalidates that the path still names the fresh file atomically reserved by this open. */
   verifyFreshDatabaseOwnership?: () => void;
+  /** An existing file whose preflight proved that `schema_migrations` is absent. */
+  existingUnversionedDatabase?: boolean;
   /** Narrow intent owned by the successful `akm upgrade` post-install step. */
   allowHistoricalDestructiveStateUpgrade?: boolean;
+  /** Required explicit-upgrade snapshot hook, called before a ledger or migration 001 exists. */
+  beforeExistingUnversionedStateMigration?: (migration: Migration) => void;
   /** Required safety-copy hook, called under the migration writer lock immediately before destructive SQL. */
   beforeHistoricalDestructiveMigration?: (migration: Migration) => void;
 }
@@ -1096,6 +1100,31 @@ export interface RunStateMigrationsOptions {
  */
 export function runMigrations(db: Database, options?: RunStateMigrationsOptions): void {
   runSqliteMigrations(db, STATE_MIGRATIONS, {
+    beforeLedgerInitializationLocked(lockedDb) {
+      if (options?.freshDatabase) {
+        if (!options.verifyFreshDatabaseOwnership) {
+          throw new Error("A fresh state.db migration requires verified file ownership.");
+        }
+        options.verifyFreshDatabaseOwnership();
+        return;
+      }
+      if (!options?.existingUnversionedDatabase) {
+        throw new Error("Refusing state.db initialization because its migration ledger disappeared after preflight.");
+      }
+      if (!options.allowHistoricalDestructiveStateUpgrade) {
+        throw new Error(
+          "Refusing to migrate an existing unversioned state.db during an ordinary managed open. " +
+            "Run `akm upgrade --force` to snapshot it before migration 001.",
+        );
+      }
+      assertMigrationLedger(lockedDb, STATE_MIGRATIONS);
+      const initialMigration = STATE_MIGRATIONS[0];
+      if (!initialMigration) throw new Error("State migration registry has no initial migration.");
+      if (!options.beforeExistingUnversionedStateMigration) {
+        throw new Error("An existing unversioned state.db requires a verified pre-migration safety-copy hook.");
+      }
+      options.beforeExistingUnversionedStateMigration(initialMigration);
+    },
     beforeMigrationLocked(migration, lockedDb) {
       if (options?.freshDatabase) {
         if (!options.verifyFreshDatabaseOwnership) {
