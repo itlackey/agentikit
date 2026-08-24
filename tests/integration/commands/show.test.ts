@@ -72,6 +72,17 @@ describe("akmShow stash .meta convention", () => {
     expect(result.content).toContain("The stash.");
   });
 
+  test("never reads a meta symlink outside the working stash", async () => {
+    const outsideDir = createTmpDir("akm-show-meta-outside-");
+    const outsidePath = path.join(outsideDir, "secret.md");
+    writeFile(outsidePath, "OUTSIDE_META_SECRET");
+    fs.mkdirSync(path.join(stashDir, ".meta"), { recursive: true });
+    fs.symlinkSync(outsidePath, path.join(stashDir, ".meta", "about.md"));
+    saveConfig({ semanticSearchMode: "off" });
+
+    await expect(akmShow({ ref: "meta:about" })).rejects.toThrow(/symlink|outside|escape/i);
+  });
+
   test("throws a maintainer-actionable error when the doc is absent", async () => {
     saveConfig({ semanticSearchMode: "off" });
     await expect(akmShow({ ref: "meta:missing" })).rejects.toThrow(/\.meta\/missing/);

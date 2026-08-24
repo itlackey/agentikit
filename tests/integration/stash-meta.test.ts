@@ -62,6 +62,36 @@ describe("resolveMetaFilePath", () => {
   test("rejects path traversal in the meta name", () => {
     expect(() => resolveMetaFilePath(root, "../../etc/passwd")).toThrow(UsageError);
   });
+
+  test("rejects a meta file symlink that escapes the bundle", () => {
+    const outsideDir = makeTempDir("akm-meta-outside-file-");
+    try {
+      const outsidePath = path.join(outsideDir, "outside.md");
+      fs.writeFileSync(outsidePath, "OUTSIDE_META_SECRET");
+      fs.symlinkSync(outsidePath, path.join(root, ".meta", "about.md"));
+
+      expect(() => resolveMetaFilePath(root, "about")).toThrow(UsageError);
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects symlinked meta roots and intermediate directories", () => {
+    const outsideDir = makeTempDir("akm-meta-outside-tree-");
+    try {
+      fs.writeFileSync(path.join(outsideDir, "about.md"), "OUTSIDE_META_TREE");
+      fs.rmSync(path.join(root, ".meta"), { recursive: true, force: true });
+      fs.symlinkSync(outsideDir, path.join(root, ".meta"), "dir");
+      expect(() => resolveMetaFilePath(root, "about")).toThrow(UsageError);
+
+      fs.rmSync(path.join(root, ".meta"), { force: true });
+      fs.mkdirSync(path.join(root, ".meta"));
+      fs.symlinkSync(outsideDir, path.join(root, ".meta", "nested"), "dir");
+      expect(() => resolveMetaFilePath(root, "nested/about")).toThrow(UsageError);
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("akm bundle create .meta scaffold", () => {
