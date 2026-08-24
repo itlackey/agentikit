@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { Database as BunSqliteDatabase } from "bun:sqlite";
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -15,7 +16,7 @@ import {
   STATE_MIGRATIONS,
 } from "../../src/core/state/migrations";
 import { openStateDatabase, upgradeHistoricalStateDatabase } from "../../src/core/state-db";
-import { openDatabase } from "../../src/storage/database";
+import { type Database, openDatabase } from "../../src/storage/database";
 import { runMigrations } from "../../src/storage/engines/sqlite-migrations";
 
 const roots: string[] = [];
@@ -217,6 +218,178 @@ describe("state.db automatic migration boundary", () => {
       operator_secret: "upgrade-empty-ledger",
     });
     safetyCopy.close();
+  });
+
+  test("an unversioned snapshot and migrations 001-002 share one writer-exclusion window", async () => {
+    const file = statePath();
+    const writerDoneFile = path.join(path.dirname(file), "pre-002-writer-done");
+    seedEmptyLedgerWithOperatorField(file, "locked-through-002");
+    const seeded = openDatabase(file);
+    seeded.exec(`
+      CREATE TABLE migration_002_race_probe (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL
+      );
+      INSERT INTO migration_002_race_probe(kind) VALUES ('seed');
+      CREATE TRIGGER mark_migration_002
+        AFTER INSERT ON schema_migrations
+        WHEN NEW.id = '002-task-history-per-run'
+      BEGIN
+        INSERT INTO migration_002_race_probe(kind) VALUES ('migration-002');
+      END;
+    `);
+    seeded.close();
+
+    const writerScript = path.join(path.dirname(file), "pre-002-writer.mts");
+    fs.writeFileSync(
+      writerScript,
+      `
+      import { Database } from "bun:sqlite";
+      import { writeFileSync } from "node:fs";
+      const db = new Database(${JSON.stringify(file)});
+      db.exec("PRAGMA busy_timeout = 5000");
+      db.query("INSERT INTO migration_002_race_probe(kind) VALUES ('concurrent-writer')").run();
+      db.close();
+      writeFileSync(${JSON.stringify(writerDoneFile)}, "done");
+    `,
+      "utf8",
+    );
+
+    const originalExec = BunSqliteDatabase.prototype.exec;
+    let writer: Worker | undefined;
+    let writerExit: Promise<{ code: number; error: string }> | undefined;
+    const exec = spyOn(BunSqliteDatabase.prototype, "exec").mockImplementation(function (
+      this: BunSqliteDatabase,
+      sql: string,
+    ) {
+      const result = originalExec.call(this, sql);
+      if (sql === "COMMIT" && !writer) {
+        writer = new Worker(pathToFileURL(writerScript));
+        let workerError = "";
+        writer.once("error", (error) => {
+          workerError = error.message;
+        });
+        writerExit = new Promise((resolve) => {
+          writer?.once("exit", (code) => resolve({ code, error: workerError }));
+        });
+        waitForFile(writerDoneFile, 7_000);
+      }
+      return result;
+    });
+
+    let result: ReturnType<typeof upgradeHistoricalStateDatabase>;
+    try {
+      result = upgradeHistoricalStateDatabase(file);
+    } finally {
+      exec.mockRestore();
+    }
+    const writerResult = await Promise.race([
+      writerExit ?? Promise.reject(new Error("Concurrent pre-002 writer was not started.")),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Concurrent pre-002 writer timed out.")), 7_000),
+      ),
+    ]);
+    expect(writerResult).toEqual({ code: 0, error: "" });
+
+    const safetyCopy = openDatabase(result.safetyCopyPath as string, { readonly: true });
+    const backupMax = safetyCopy.prepare("SELECT MAX(id) AS id FROM migration_002_race_probe").get() as { id: number };
+    expect(safetyCopy.prepare("SELECT operator_secret FROM task_history").get()).toEqual({
+      operator_secret: "locked-through-002",
+    });
+    safetyCopy.close();
+
+    const current = openDatabase(file, { readonly: true });
+    const rows = current.prepare("SELECT id, kind FROM migration_002_race_probe ORDER BY id").all() as Array<{
+      id: number;
+      kind: string;
+    }>;
+    current.close();
+    const migrationMarker = rows.find((row) => row.kind === "migration-002");
+    const concurrentWriter = rows.find((row) => row.kind === "concurrent-writer");
+    expect(migrationMarker?.id).toBe(backupMax.id + 1);
+    expect(concurrentWriter?.id).toBeGreaterThan(migrationMarker?.id ?? Number.POSITIVE_INFINITY);
+  });
+
+  test("the migration writer lock retries a phantom BEGIN before running destructive SQL", () => {
+    const file = statePath();
+    const migrations = [
+      {
+        id: "001-lock-probe",
+        up: "CREATE TABLE lock_probe (value TEXT NOT NULL, operator_secret TEXT NOT NULL);",
+      },
+      {
+        id: "018-lock-probe",
+        up: "ALTER TABLE lock_probe DROP COLUMN operator_secret;",
+      },
+    ] as const;
+    const db = openDatabase(file);
+    runMigrations(db, migrations.slice(0, 1));
+    db.prepare("INSERT INTO lock_probe (value, operator_secret) VALUES (?, ?)").run("kept", "sensitive");
+
+    let beginCount = 0;
+    const fake = {
+      prepare: db.prepare.bind(db),
+      exec(sql: string) {
+        if (sql === "BEGIN IMMEDIATE" && ++beginCount === 1) return;
+        db.exec(sql);
+      },
+      get inTransaction() {
+        return db.inTransaction;
+      },
+    } as unknown as Database;
+
+    let error: unknown;
+    try {
+      runMigrations(fake, migrations);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeUndefined();
+    expect(beginCount).toBe(2);
+    expect(db.prepare("SELECT value FROM lock_probe").get()).toEqual({ value: "kept" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE id = '018-lock-probe'").get()).toEqual({
+      count: 1,
+    });
+    db.close();
+  });
+
+  test("the migration writer lock reports a vanished post-body transaction without retrying", () => {
+    const file = statePath();
+    const migrationSql = "CREATE TABLE escaped_migration_probe (value TEXT NOT NULL);";
+    const migrations = [
+      { id: "001-lock-probe", up: "CREATE TABLE initial_lock_probe (value TEXT NOT NULL);" },
+      { id: "002-lock-probe", up: migrationSql },
+    ] as const;
+    const db = openDatabase(file);
+    runMigrations(db, migrations.slice(0, 1));
+
+    let bodyCalls = 0;
+    const fake = {
+      prepare: db.prepare.bind(db),
+      exec(sql: string) {
+        if (sql === migrationSql) {
+          bodyCalls += 1;
+          db.exec("COMMIT");
+        }
+        db.exec(sql);
+      },
+      get inTransaction() {
+        return db.inTransaction;
+      },
+    } as unknown as Database;
+
+    let error: unknown;
+    try {
+      runMigrations(fake, migrations);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error instanceof Error ? error.message : "").toMatch(/migration write lock invariant.*no longer active/i);
+    expect(bodyCalls).toBe(1);
+    expect(db.inTransaction).toBe(false);
+    db.close();
   });
 
   test("a pre-018 database appearing at the fresh-open boundary is never treated as fresh", () => {
