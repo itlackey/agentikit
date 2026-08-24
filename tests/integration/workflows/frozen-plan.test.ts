@@ -11,7 +11,7 @@ import { resolveStorageLocations } from "../../../src/storage/locations";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { computePlanHash } from "../../../src/workflows/ir/plan-hash";
-import type { ExecutableWorkflowPlan } from "../../../src/workflows/ir/schema-v4";
+import type { WorkflowPlanGraphV4 } from "../../../src/workflows/ir/schema-v4";
 import {
   abandonWorkflowRun,
   completeWorkflowStep,
@@ -83,7 +83,7 @@ describe("plan freezing at workflow start (migration 006)", () => {
     expect(row?.plan_json).toBeTruthy();
     expect(row?.plan_hash).toBeTruthy();
 
-    const plan = JSON.parse(row?.plan_json ?? "") as ExecutableWorkflowPlan;
+    const plan = JSON.parse(row?.plan_json ?? "") as WorkflowPlanGraphV4;
     expect(plan.steps.map((s) => s.stepId)).toEqual(["only-step"]);
     expect(plan.irVersion).toBe(4);
     if (plan.irVersion !== 4) throw new Error("fresh starts must persist v4");

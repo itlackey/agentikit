@@ -254,8 +254,8 @@ run lease), `008`/`009` (unit attempts / claim columns).
 `akm workflow run` is the one stable native execution surface. Peer source formats use the same source IR v1 before durable freezing: Markdown `.md` and YAML `.yml`.
 A new start by ref compiles source
 IR v1 and freezes the resulting durable plan IR v4 on the run row
-(`plan_json`/`plan_hash`); edits to the source file need a new run. Stored
-durable-v3 plans resume unchanged through their compatibility decoder. The
+(`plan_json`/`plan_hash`); edits to the source file need a new run. Pre-v4
+stored plans are rejected rather than keeping a parallel runtime. The
 command dispatches each step's units to the configured runner (`llm`, `agent`,
 or `sdk`), with:
 

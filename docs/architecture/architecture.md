@@ -434,9 +434,9 @@ never falls through to another configured engine.
 
 Task-v3 execution and durable workflow-v4 dispatch use this runtime boundary.
 Markdown and GitHub-shaped YAML compile through source IR v1; new starts freeze
-v4, while stored v3 plans resume through an exact compatibility decoder. AKM
-does not support full GitHub Actions semantics or arbitrary remote action
-execution.
+v4, and only v4 plans execute. Pre-v4 stored plans are rejected; start a new
+run from current source. AKM does not support full GitHub Actions semantics or
+arbitrary remote action execution.
 
 ### In-tree LLM helpers (`src/llm/`)
 

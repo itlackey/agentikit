@@ -38,17 +38,41 @@ describe("one workflow source and runtime architecture", () => {
     expect(resolver).not.toMatch(/\bWorkflowStep\b/);
   });
 
-  test("stored v3 is one decode-only boundary and never constructs current plans", () => {
-    const storedV3 = read("src/workflows/ir/stored-plan-v3.ts");
+  test("pre-current stored plans are rejected instead of replayed", () => {
     const current = read("src/workflows/ir/schema-v4.ts");
+    const boundary = read("src/workflows/runtime/plan-classifier.ts");
 
-    expect(storedV3).toContain("decodeStoredWorkflowPlanV3");
-    expect(storedV3).not.toMatch(/\b(?:compile|freeze)Workflow/);
+    expect(fs.existsSync(path.join(ROOT, "src/workflows/ir/stored-plan-v3.ts"))).toBe(false);
+    expect(fs.existsSync(path.join(ROOT, "tests/_helpers/stored-plan-v3-fixture.ts"))).toBe(false);
+    expect(current).not.toContain("StoredWorkflowPlanV3");
+    expect(current).not.toContain("decodeStoredWorkflowPlanV3");
+    expect(current).not.toContain("ExecutableWorkflowPlan");
     expect(current).toContain("validateWorkflowPlanStructure");
-    expect(current).not.toContain("sharedV3Shadow");
-    expect(current).not.toContain("decodeWorkflowPlanV3(");
-    expect(current).not.toMatch(/extends\s+IrUnitNode\b/);
     expect(current).not.toMatch(/execution:\s*\{[^}]*engines/s);
+    expect(boundary).toContain("supports only workflow IR version 4");
+    expect(boundary).not.toContain("normalizeStoredWorkflowPlan");
+    expect(boundary).not.toContain("WORKFLOW_IR_VERSION");
+  });
+
+  test("the workflow engine receives only the current plan", () => {
+    const boundary = read("src/workflows/runtime/plan-classifier.ts");
+    const executor = [
+      "src/workflows/exec/run-workflow.ts",
+      "src/workflows/exec/native-executor.ts",
+      "src/workflows/exec/step-work.ts",
+      "src/workflows/exec/frozen-judge.ts",
+      "src/workflows/exec/unit-dispatch.ts",
+    ]
+      .map(read)
+      .join("\n");
+
+    expect(boundary).toContain("WorkflowPlanGraphV4");
+    expect(executor).not.toMatch(/\bStoredWorkflowPlanV3\b/);
+    expect(executor).not.toMatch(/\bIrInvocation\b/);
+    expect(executor).not.toMatch(/\bFrozenEngineSnapshot\b/);
+    expect(executor).not.toMatch(/plan\.irVersion\s*===\s*3/);
+    expect(executor).not.toMatch(/execution\.engines/);
+    expect(executor).not.toMatch(/prepareFrozenWorkflowExecution/);
   });
 
   test("whole-process environment compatibility is absent from every authoring surface", () => {

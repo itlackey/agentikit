@@ -15,7 +15,7 @@ import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow
 import type { UnitDispatchRequest, UnitDispatchResult } from "../../../src/workflows/exec/native-executor";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { computeStepWorkList, type GateFeedback } from "../../../src/workflows/exec/step-work";
-import type { WorkflowPlanGraph } from "../../../src/workflows/ir/stored-plan-v3";
+import type { WorkflowPlanGraphV4 as WorkflowPlanGraph } from "../../../src/workflows/ir/schema-v4";
 import { getWorkflowStatus, resumeWorkflowRun } from "../../../src/workflows/runtime/runs";
 import type { SummaryJudge } from "../../../src/workflows/validate-summary";
 import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
@@ -652,7 +652,7 @@ describe("exec steps under a completion gate — judged once, never looped", () 
     const result = await runWorkflowSteps({
       target: RUN_ID,
       dispatcher: async (req: UnitDispatchRequest): Promise<UnitDispatchResult> => {
-        if (req.exec) execDispatches++;
+        if (req.frozenTarget.kind === "shell") execDispatches++;
         return { ok: true, text: "deployed" };
       },
       loadPlan: usePlan(EXEC_GATED_WF),
@@ -800,7 +800,6 @@ function loop1Hash(p: WorkflowPlanGraph): string {
     params: {},
     stepOutputs: {},
     gateLoop: 1,
-    engines: p.execution?.engines,
   });
   if (!c.ok) throw new Error(c.error);
   return c.list.units[0]!.inputHash;
@@ -814,7 +813,6 @@ function loop2Unit(p: WorkflowPlanGraph, gateFeedback: GateFeedback): { unitId: 
     stepOutputs: {},
     gateLoop: 2,
     gateFeedback,
-    engines: p.execution?.engines,
   });
   if (!c.ok) throw new Error(c.error);
   const u = c.list.units[0]!;

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * The gate judge built from a frozen v3 engine catalog.
+ * The gate judge built from the workflow's frozen current execution target.
  *
  * Two contracts this module owns, both of which the rest of the engine already
  * enforces for ordinary units and neither of which the judge may opt out of:
@@ -26,9 +26,9 @@
  *     The identity is threaded in from the caller that writes the row
  *     ({@link SummaryJudge}'s `identity` argument); it is never synthesized here.
  *
- * A judge dispatch carries NO `env` bindings: a gate judge is an
- * {@link IrInvocation} (`IrGateNode.judge`), which has no `env` key, so there is
- * nothing authored to thread — and a step's unit `env` is scoped to the WORK,
+ * A judge dispatch carries NO `env` bindings: the normalized gate target has
+ * no environment key, so there is nothing authored to thread — and a step's
+ * unit environment is scoped to the WORK,
  * not to the verifier. Redaction is unaffected: the sensitive-value set below
  * still covers the judge engine's credential and unsafe passthrough values.
  * Lowering notices are live execution metadata: units expose a typed result,
@@ -40,19 +40,16 @@
  * @module workflows/exec/frozen-judge
  */
 
-import { ConfigError } from "../../core/errors";
 import { warn } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
-import type { IrInvocation } from "../ir/schema";
-import type { ExecutableWorkflowPlan, FrozenWorkflowCommandTarget } from "../ir/schema-v4";
+import type { FrozenWorkflowCommandTarget } from "../ir/schema-v4";
 import type { JudgeCallIdentity, SummaryJudge } from "../validate-summary";
 import { collectWorkflowDispatchSensitiveValues, withDispatchRedaction } from "./dispatch-redaction";
 import {
-  dispatchFrozenWorkflowExecution,
-  prepareFrozenWorkflowExecution,
-  prepareFrozenWorkflowTargetExecution,
-  type UnitDispatchRequest,
+  dispatchWorkflowExecution,
+  prepareWorkflowExecution,
   type UnitDispatcher,
+  type UnitDispatchRequest,
 } from "./unit-dispatch";
 
 /**
@@ -94,33 +91,15 @@ function warnLoweringNotices(...groups: readonly (readonly Readonly<LoweringNoti
   }
 }
 
-function isFrozenCommandTarget(
-  value: IrInvocation | FrozenWorkflowCommandTarget,
-): value is FrozenWorkflowCommandTarget {
-  return "kind" in value && value.kind === "command";
-}
-
-/** Build a gate judge from a v3 catalog entry without consulting live config. */
+/** Build a gate judge from the normalized frozen target without consulting live config. */
 export function frozenSummaryJudge(
-  plan: ExecutableWorkflowPlan,
-  frozen: IrInvocation | FrozenWorkflowCommandTarget | null | undefined,
+  target: FrozenWorkflowCommandTarget | null | undefined,
   signal: AbortSignal | undefined,
   dispatcher: UnitDispatcher | undefined,
   owner: JudgeOwner,
 ): SummaryJudge | null {
-  if (!frozen) return null;
-  let target: FrozenWorkflowCommandTarget | undefined;
-  let invocation: IrInvocation | undefined;
-  if (isFrozenCommandTarget(frozen)) target = frozen;
-  else invocation = frozen;
-  const engines = plan.irVersion === 3 ? plan.execution.engines : {};
-  const engine = invocation ? engines[invocation.engine] : undefined;
-  if (invocation && !engine)
-    throw new ConfigError(`Frozen gate engine "${invocation.engine}" is unavailable.`, "INVALID_CONFIG_FILE");
-  const fallbackEngine =
-    engine?.kind === "agent" && engine.fallbackLlmEngine ? engines[engine.fallbackLlmEngine] : undefined;
-  const fallback = fallbackEngine?.kind === "llm" ? fallbackEngine : undefined;
-  const dispatch = withDispatchRedaction(dispatcher ?? dispatchFrozenWorkflowExecution);
+  if (!target) return null;
+  const dispatch = withDispatchRedaction(dispatcher ?? dispatchWorkflowExecution);
   return async ({ system, user }, identity) => {
     const id = dispatchIdentity(owner, identity);
     const commonRequest = {
@@ -134,29 +113,18 @@ export function frozenSummaryJudge(
       systemPrompt: system,
       ...(signal ? { signal } : {}),
     };
-    const request: UnitDispatchRequest = target
-      ? {
-          ...commonRequest,
-          frozenTarget: target,
-          timeoutMs: target.runner.timeoutMs ?? null,
-        }
-      : {
-          ...commonRequest,
-          engine,
-          ...(fallback ? { fallbackEngine: fallback } : {}),
-          invocation: invocation!,
-          timeoutMs: invocation!.timeoutMs,
-        };
+    const request: UnitDispatchRequest = {
+      ...commonRequest,
+      frozenTarget: target,
+      timeoutMs: target.runner.timeoutMs ?? null,
+    };
     // Lowering and authorization precede every live credential/passthrough
     // sample. The injected dispatcher may be a test seam, but it receives the
     // exact same already-validated request and redaction declaration.
-    const lowered = target
-      ? prepareFrozenWorkflowTargetExecution(request as UnitDispatchRequest & { frozenTarget: FrozenWorkflowCommandTarget })
-      : prepareFrozenWorkflowExecution(request);
-    const sensitiveValues = collectWorkflowDispatchSensitiveValues(
-      { ...(engine ? { engine } : {}), ...(fallback ? { fallbackEngine: fallback } : {}) },
-      undefined,
+    const lowered = prepareWorkflowExecution(
+      request as UnitDispatchRequest & { frozenTarget: FrozenWorkflowCommandTarget },
     );
+    const sensitiveValues = collectWorkflowDispatchSensitiveValues({ runner: target.runner }, undefined);
     const outcome = await dispatch({
       ...request,
       ...(sensitiveValues.length > 0 ? { sensitiveValues } : {}),
@@ -170,9 +138,7 @@ export function frozenSummaryJudge(
     // injected dispatcher is not trusted to supply prompt/body-free messages.
     warnLoweringNotices(lowered.notices);
     if (!outcome.ok) {
-      throw new Error(
-        outcome.error || `Verification engine "${invocation?.engine ?? target?.request.engine.name}" failed.`,
-      );
+      throw new Error(outcome.error || `Verification engine "${target.request.engine.name}" failed.`);
     }
     return outcome.text ?? "";
   };

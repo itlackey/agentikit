@@ -22,13 +22,12 @@ import {
   redactSensitiveText,
   redactSensitiveValue,
 } from "../../core/redaction";
-import type { FrozenEngineSnapshot } from "../ir/schema";
+import type { RunnerSpec } from "../../integrations/agent/runner";
 import type { UnitDispatcher } from "./unit-dispatch";
 
 /** The engine pair a dispatch may draw credentials from. `StepWorkUnit` satisfies it structurally. */
-export interface DispatchEngines {
-  engine?: FrozenEngineSnapshot;
-  fallbackEngine?: Extract<FrozenEngineSnapshot, { kind: "llm" }>;
+export interface DispatchSecretSources {
+  runner?: RunnerSpec;
   /** Values sampled by a durable-v4 symbolic environment materializer. */
   sensitiveValues?: readonly string[];
 }
@@ -50,26 +49,31 @@ export interface DispatchEngines {
  * the set.
  */
 export function collectWorkflowDispatchSensitiveValues(
-  dispatch: DispatchEngines,
+  dispatch: DispatchSecretSources,
   env: Record<string, string> | undefined,
 ): string[] {
   const values = new Set<string>([...Object.values(env ?? {}), ...(dispatch.sensitiveValues ?? [])]);
-  const addCredential = (engine: FrozenEngineSnapshot | undefined): void => {
-    if (!engine) return;
-    if (engine.kind === "llm") {
-      for (const name of engine.credential?.names ?? []) {
+  const addCredential = (runner: RunnerSpec | undefined): void => {
+    if (!runner) return;
+    if (runner.kind === "llm") {
+      for (const name of runner.credential?.names ?? []) {
         const value = process.env[name]?.trim();
         if (value) values.add(value);
       }
       return;
     }
-    for (const name of engine.envPassthrough) {
+    for (const name of runner.profile.envPassthrough ?? []) {
       const value = process.env[name];
       if (!isEnvPassthroughValueSafeToExpose(name, value) && value) values.add(value);
     }
+    if (runner.kind === "sdk") {
+      for (const name of runner.fallbackCredential?.names ?? []) {
+        const value = process.env[name]?.trim();
+        if (value) values.add(value);
+      }
+    }
   };
-  addCredential(dispatch.engine);
-  addCredential(dispatch.fallbackEngine);
+  addCredential(dispatch.runner);
   return collectSensitiveValues(values);
 }
 

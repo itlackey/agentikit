@@ -20,9 +20,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { canonicalJson, canonicalPlanJson } from "../../src/workflows/ir/plan-hash";
+import { canonicalJson } from "../../src/workflows/ir/plan-hash";
 import { decodeWorkflowPlanV4 } from "../../src/workflows/ir/schema-v4";
-import { decodeWorkflowPlanV3, type WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
 import { makeSandboxDir, type SandboxedDir } from "../_helpers/sandbox";
 
 const ENVIRONMENT_V4_MODULE: string = "../../src/workflows/ir/environment-v4";
@@ -214,41 +213,6 @@ describe("durable workflow v4 environment schema", () => {
   test("rejects the obsolete secret-kind overload in favor of an explicit pass-through binding", () => {
     const oldOverload = [{ kind: "secret", name: "API_TOKEN", environmentVariable: "DEPLOY_TOKEN" }];
     expect(() => decodeWorkflowPlanV4(v4ShellPlan(oldOverload))).toThrow(/secret|obsolete|pass-through|environment/i);
-  });
-
-  test("keeps the historical v3 environment behavior as an exact compatibility island", () => {
-    const plan: WorkflowPlanGraph = {
-      irVersion: 3,
-      title: "v3 environment compatibility",
-      execution: { maxConcurrency: 1, engines: {} },
-      steps: [
-        {
-          stepId: "run",
-          title: "run",
-          sequenceIndex: 0,
-          root: {
-            kind: "unit",
-            id: "run",
-            instructions: "Historical exec behavior.",
-            templating: "verbatim",
-            exec: {
-              command: ["/bin/sh", "-lc", "printf safe"],
-              passEnv: ["CARGO_HOME"],
-              inheritEnv: true,
-              timeoutMs: 30_000,
-            },
-            env: ["env/prod"],
-            onError: "fail",
-            isolation: "none",
-          },
-          gate: { kind: "gate", id: "run.gate", stepId: "run", criteria: [], maxLoops: 1, judge: null },
-        },
-      ],
-    };
-
-    expect(decodeWorkflowPlanV3(plan)).toEqual(plan);
-    expect(canonicalPlanJson(plan)).toContain('"inheritEnv":true');
-    expect(canonicalPlanJson(plan)).toContain('"env":["env/prod"]');
   });
 });
 

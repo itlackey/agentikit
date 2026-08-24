@@ -21,7 +21,7 @@ import {
   type StepWorkList,
   stepOutputsFromEvidence,
 } from "../../../src/workflows/exec/step-work";
-import type { WorkflowPlanGraph } from "../../../src/workflows/ir/stored-plan-v3";
+import type { WorkflowPlanGraphV4 as WorkflowPlanGraph } from "../../../src/workflows/ir/schema-v4";
 import { getWorkflowStatus, resumeWorkflowRun, startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import type { SummaryJudge } from "../../../src/workflows/validate-summary";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
@@ -122,7 +122,6 @@ function fullWorkList(
     runId,
     params,
     stepOutputs,
-    engines: plan.execution?.engines,
   });
   if (!computed.ok) throw new Error(computed.error);
   return computed.list;

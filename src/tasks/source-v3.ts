@@ -7,7 +7,7 @@
  *
  * This module owns the strict source grammar and the typed result consumed by
  * current task execution, scheduler binding, and workflow-source classifiers.
- * Task v2 is read only by the explicit migration compatibility path.
+ * Legacy task input is read only by the explicit one-way migration command.
  */
 
 import fs from "node:fs";

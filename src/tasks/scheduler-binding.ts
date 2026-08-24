@@ -125,18 +125,16 @@ export interface SchedulerRollbackExpectation {
 
 /** Frozen compare-and-swap proof required by every scheduler mutation. */
 export interface SchedulerMutationExpectation {
-  readonly state: "absent" | "present" | "legacy-ownerless";
+  readonly state: "absent" | "present";
   readonly bindingId: string;
   readonly nativeId: string;
   readonly logicalSource: SchedulerLogicalSource;
   readonly ordinal: number;
   readonly invocation: readonly string[];
   readonly fingerprint?: string;
-  /** Exact old target-less task invocation, authorized only by explicit rebind. */
-  readonly legacyInvocation?: readonly string[];
 }
 
-/** Compatibility spelling for remove callers; new plans always set state=present. */
+/** Removal always targets a currently owned scheduler artifact. */
 export type SchedulerRemovalExpectation = Omit<SchedulerMutationExpectation, "state"> & {
   readonly state?: "present";
 };
@@ -355,22 +353,8 @@ export function assertSchedulerExpectationIdentity(
       "INVALID_FLAG_VALUE",
     );
   }
-  if (expected.state === "absent" && (expected.fingerprint !== undefined || expected.legacyInvocation !== undefined)) {
+  if (expected.state === "absent" && expected.fingerprint !== undefined) {
     throw new UsageError("An absent scheduler expectation cannot carry prior artifact state.", "INVALID_FLAG_VALUE");
-  }
-  if (expected.state === "present" && expected.legacyInvocation !== undefined) {
-    throw new UsageError("A present scheduler expectation cannot carry a legacy owner.", "INVALID_FLAG_VALUE");
-  }
-  if (expected.state === "legacy-ownerless") {
-    if (
-      !expected.legacyInvocation ||
-      !isLegacyTargetlessTaskInvocation(expected.legacyInvocation, expected.invocation)
-    ) {
-      throw new UsageError(
-        "Legacy scheduler rebind expectation is not an exact target-less task owner.",
-        "INVALID_FLAG_VALUE",
-      );
-    }
   }
 }
 
@@ -384,12 +368,9 @@ export function assertSchedulerMutationArtifact(
   } else if (
     artifact !== undefined &&
     artifact.nativeId === expected.nativeId &&
-    (expected.state === "legacy-ownerless" || artifact.bindingId === expected.bindingId) &&
+    artifact.bindingId === expected.bindingId &&
     artifact.invocation !== undefined &&
-    sameInvocation(
-      artifact.invocation,
-      expected.state === "legacy-ownerless" ? expected.legacyInvocation! : expected.invocation,
-    ) &&
+    sameInvocation(artifact.invocation, expected.invocation) &&
     expected.fingerprint !== undefined &&
     artifact.fingerprint === expected.fingerprint
   ) {
@@ -530,15 +511,4 @@ function sameInvocation(left: readonly string[], right: readonly string[]): bool
 
 function normalizeRemovalExpectation(expected: SchedulerRemovalExpectation): SchedulerMutationExpectation {
   return { ...expected, state: "present" };
-}
-
-function isLegacyTargetlessTaskInvocation(legacy: readonly string[], canonical: readonly string[]): boolean {
-  return (
-    (legacy.length === 4 &&
-      legacy[0] === "task" &&
-      legacy[1] === "run" &&
-      legacy[2] === canonical[2] &&
-      legacy[3] === "--scheduled") ||
-    (legacy.length === 3 && legacy[0] === "tasks" && legacy[1] === "run" && legacy[2] === canonical[2])
-  );
 }

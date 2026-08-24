@@ -3,17 +3,16 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `akm agent [--engine <name>] [--prompt <text>] [--command <ref>] [--workflow <ref>]`
+ * `akm agent [--engine <name>] [--prompt <text>] [--command <ref>]`
  *
  * Dispatch an agent by named engine, optionally injecting a prompt from
- * inline text or a stash command asset. Legacy workflow flattening is rejected
- * with a migration hint to the workflow runtime.
+ * inline text or a stash command asset. Workflows execute only through the
+ * workflow runtime.
  *
- * When no prompt, command, agent selector, model, or workflow is given, the
+ * When no prompt, command, agent selector, or model is given, the
  * native agent is launched interactively with no dispatch payload.
  *
- * Every noninteractive arm is a compatibility delegate to the canonical
- * command invocation path.
+ * Every noninteractive arm uses the canonical command invocation path.
  */
 
 import type { AkmConfig } from "../../core/config/config";
@@ -21,7 +20,6 @@ import { UsageError } from "../../core/errors";
 import { warn } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import { isPortableExecutionAgentSelector, type UnresolvedExecutionDefaults } from "../../execution/source";
-import type { AgentDispatchRequest } from "../../integrations/agent/builder-shared";
 import {
   fallbackAnnouncement,
   NO_ENGINE_MESSAGE_SUFFIX,
@@ -41,8 +39,6 @@ export interface AkmAgentDispatchOptions {
   argumentInput?: string;
   /** Portable agent asset ref used by the canonical command path. */
   agentRef?: string;
-  /** @deprecated Workflows must run through `akm workflow run`. */
-  workflowRef?: string;
   args?: string[];
   agentConfig?: AkmConfig;
   timeoutMs?: number;
@@ -51,11 +47,8 @@ export interface AkmAgentDispatchOptions {
    * forwards it as its per-session directory query.
    */
   cwd?: string;
-  /**
-   * Compatibility input projected into the common cascade. Raw system prompts
-   * and native argv are rejected; builders receive only the lowered result.
-   */
-  dispatch?: AgentDispatchRequest;
+  /** Current invocation-layer selections consumed by the execution cascade. */
+  selection?: Pick<UnresolvedExecutionDefaults, "model" | "inference" | "outputSchema" | "tools">;
 }
 
 export interface AkmAgentDispatchSeams {
@@ -83,40 +76,17 @@ export interface AkmAgentDispatchResult {
   notices?: readonly Readonly<LoweringNotice>[];
 }
 
-/**
- * Workflows have their own authoring, freeze, and resume boundary. Treating a
- * workflow file as an anonymous prompt would discard that contract and let a
- * second placeholder grammar escape the workflow runtime.
- */
-function rejectLegacyWorkflowRef(workflowRef: string | undefined): void {
-  if (workflowRef === undefined) return;
-  throw new UsageError(
-    "--workflow cannot be flattened into agent prompt content; run it through `akm workflow run`.",
-    "INVALID_FLAG_VALUE",
-  );
-}
-
 function canonicalCurrent(options: AkmAgentDispatchOptions): UnresolvedExecutionDefaults {
   const current: Record<string, unknown> = {};
   if (options.agentRef !== undefined) current.agent = options.agentRef;
   if (options.engine !== undefined) current.engine = options.engine;
-  if (options.dispatch?.model !== undefined) current.model = options.dispatch.model;
-  if (Object.hasOwn(options.dispatch ?? {}, "inference")) current.inference = options.dispatch?.inference;
-  else if (options.dispatch?.effort !== undefined) current.inference = { effort: options.dispatch.effort };
-  if (options.dispatch?.schema !== undefined) current.outputSchema = options.dispatch.schema;
-  if (options.dispatch?.tools !== undefined) current.tools = options.dispatch.tools;
+  if (options.selection?.model !== undefined) current.model = options.selection.model;
+  if (Object.hasOwn(options.selection ?? {}, "inference")) current.inference = options.selection?.inference;
+  if (options.selection?.outputSchema !== undefined) current.outputSchema = options.selection.outputSchema;
+  if (options.selection?.tools !== undefined) current.tools = options.selection.tools;
   if (options.timeoutMs !== undefined) current.timeout = options.timeoutMs;
   if (options.cwd !== undefined) current.workspace = options.cwd;
   return current as UnresolvedExecutionDefaults;
-}
-
-function rejectRawPersona(options: AkmAgentDispatchOptions): void {
-  if (options.dispatch?.systemPrompt !== undefined) {
-    throw new UsageError(
-      "An agent persona must be selected by agent ref; raw systemPrompt injection is not portable.",
-      "INVALID_FLAG_VALUE",
-    );
-  }
 }
 
 function rejectInvalidAgentRef(agentRef: string | undefined): void {
@@ -149,12 +119,11 @@ export async function akmAgentDispatch(
   if (!options.agentConfig)
     throw new UsageError("agent requires a valid config with an agent engine.", "MISSING_REQUIRED_ARGUMENT");
 
-  rejectLegacyWorkflowRef(options.workflowRef);
   rejectInvalidAgentRef(options.agentRef);
 
   if (options.commandRef) {
-    if (options.prompt !== undefined || options.workflowRef !== undefined) {
-      throw new UsageError("--command cannot be combined with --prompt or --workflow.", "INVALID_FLAG_VALUE");
+    if (options.prompt !== undefined) {
+      throw new UsageError("--command cannot be combined with --prompt.", "INVALID_FLAG_VALUE");
     }
     if (options.args?.length) {
       throw new UsageError(
@@ -163,7 +132,6 @@ export async function akmAgentDispatch(
         "Use --arguments <text> or the argumentInput API field.",
       );
     }
-    rejectRawPersona(options);
     const action = {
       ref: options.commandRef,
       ...(options.argumentInput === undefined ? {} : { arguments: options.argumentInput }),
@@ -171,9 +139,8 @@ export async function akmAgentDispatch(
     return delegateCanonicalCommand(options, seams, action);
   }
 
-  const hasResolvedSelection = options.agentRef !== undefined || options.dispatch !== undefined;
+  const hasResolvedSelection = options.agentRef !== undefined || options.selection !== undefined;
   if (options.prompt !== undefined || hasResolvedSelection) {
-    rejectRawPersona(options);
     if (options.prompt === undefined) {
       throw new UsageError(
         "Agent persona/model/tool/schema/inference selection requires an explicit task from --prompt, --prompt-stdin, or --command; it cannot fabricate an empty command. Omit those selections for a prompt-free interactive launch.",

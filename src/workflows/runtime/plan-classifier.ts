@@ -6,16 +6,15 @@ import { UsageError } from "../../core/errors";
 import type { WorkflowRunRow, WorkflowRunStepRow } from "../../storage/repositories/workflow-runs-repository";
 import { decodeCanonicalPlan } from "../ir/plan-hash";
 import type { IrRouteSpec } from "../ir/schema";
-import { type ExecutableWorkflowPlan, WORKFLOW_IR_V4_VERSION } from "../ir/schema-v4";
-import { WORKFLOW_IR_VERSION } from "../ir/stored-plan-v3";
+import { WORKFLOW_IR_V4_VERSION, type WorkflowPlanGraphV4 } from "../ir/schema-v4";
 
 export type WorkflowExecutionSupport = "supported" | "unsupported-version" | "missing-plan" | "corrupt-plan";
 
 export type ClassifiedWorkflowPlan =
   | {
       support: "supported";
-      plan: ExecutableWorkflowPlan;
-      irVersion: typeof WORKFLOW_IR_VERSION | typeof WORKFLOW_IR_V4_VERSION;
+      plan: WorkflowPlanGraphV4;
+      irVersion: typeof WORKFLOW_IR_V4_VERSION;
     }
   | { support: "unsupported-version"; irVersion: number; error: string }
   | { support: "missing-plan"; irVersion: number | null; error: string }
@@ -39,16 +38,15 @@ export function classifyWorkflowRunPlan(row: {
   if (
     row.plan_ir_version !== null &&
     row.plan_ir_version !== undefined &&
-    row.plan_ir_version !== WORKFLOW_IR_VERSION &&
     row.plan_ir_version !== WORKFLOW_IR_V4_VERSION
   ) {
     return {
       support: "unsupported-version",
       irVersion: row.plan_ir_version,
-      error: `Workflow run ${runId} uses unsupported workflow IR version ${row.plan_ir_version}; this runtime supports versions ${WORKFLOW_IR_VERSION} and ${WORKFLOW_IR_V4_VERSION}.`,
+      error: `Workflow run ${runId} uses unsupported workflow IR version ${row.plan_ir_version}; this runtime supports only workflow IR version 4. Start a new run from the authored workflow.`,
     };
   }
-  if (row.plan_ir_version !== WORKFLOW_IR_VERSION && row.plan_ir_version !== WORKFLOW_IR_V4_VERSION) {
+  if (row.plan_ir_version !== WORKFLOW_IR_V4_VERSION) {
     return {
       support: "corrupt-plan",
       irVersion: null,
@@ -71,9 +69,7 @@ export function classifyWorkflowRunPlan(row: {
 }
 
 /** Reject any operation that requires a valid current frozen plan. */
-export function requireExecutableWorkflowPlan(
-  row: Parameters<typeof classifyWorkflowRunPlan>[0],
-): ExecutableWorkflowPlan {
+export function requireExecutableWorkflowPlan(row: Parameters<typeof classifyWorkflowRunPlan>[0]): WorkflowPlanGraphV4 {
   const classified = classifyWorkflowRunPlan(row);
   if (classified.support === "supported") return classified.plan;
   throw new UsageError(classified.error, "INVALID_JSON_ARGUMENT");
@@ -88,7 +84,7 @@ export interface FrozenStepRowDefinition {
 }
 
 /** Project persisted spine rows from the decoded plan, never from the mutable source asset. */
-export function frozenStepRows(plan: ExecutableWorkflowPlan): FrozenStepRowDefinition[] {
+export function frozenStepRows(plan: WorkflowPlanGraphV4): FrozenStepRowDefinition[] {
   return plan.steps.map((step) => ({
     stepId: step.stepId,
     stepTitle: step.title,
@@ -104,7 +100,7 @@ export function frozenStepRows(plan: ExecutableWorkflowPlan): FrozenStepRowDefin
 
 /** Verify the durable spine still agrees with the decoded/hash-verified plan before any mutation. */
 export function assertWorkflowSpineMatchesPlan(
-  plan: ExecutableWorkflowPlan,
+  plan: WorkflowPlanGraphV4,
   run: WorkflowRunRow,
   rows: WorkflowRunStepRow[],
 ): void {

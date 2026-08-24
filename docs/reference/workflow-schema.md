@@ -756,9 +756,8 @@ exact named environment bindings and `pass_env:` instead. Both mechanisms are
 dispatch-significant, keep the visible environment surface bounded, and form
 part of the unit's input hash.
 
-The historical `inherit_env` spelling is stored-v3 compatibility only. Such a
-run resumes unchanged as a compatibility island; it is not a current authoring
-option and is never upgraded into a v4 plan during resume.
+The historical `inherit_env` spelling is unsupported. Pre-v4 stored plans are
+rejected; they are never upgraded or replayed through a second runtime.
 
 ### What `akm show` reports for an exec step
 

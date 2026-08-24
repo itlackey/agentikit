@@ -482,9 +482,6 @@ export async function akmTasksSync(
     contextPath: "contextPath" in entry ? entry.contextPath : "",
   }));
   const nativeArtifacts = inspection.artifacts;
-  const legacyRebindNativeIds = options.rebind
-    ? authorizeLegacyPrimaryRebinds(inspection, stashDir)
-    : Object.freeze([] as string[]);
   const common = {
     sourceRoot: stashDir,
     adapterId: resolved.source.adapterId ?? detectAdapterId(stashDir),
@@ -494,7 +491,6 @@ export async function akmTasksSync(
     installed: allEntries,
     nativeArtifacts,
     inspection: Object.freeze({ installed: allEntries, artifacts: nativeArtifacts }),
-    legacyRebindNativeIds,
     rebind: options.rebind === true,
     config,
     resolveAsset: taskProjectionAssetResolver(config, resolved.source.name, stashDir),
@@ -1109,73 +1105,6 @@ function groupInstalledBindings(
     });
   }
   return [...groups.values()].map((group) => ({ ...group, taskIds: group.taskIds.sort() }));
-}
-
-function authorizeLegacyPrimaryRebinds(
-  inspection: SchedulerBackendInspection,
-  selectedBundleRoot: string,
-): readonly string[] {
-  const selectedIdentity = physicalDirectoryIdentity(selectedBundleRoot);
-  const authorized: string[] = [];
-  for (const entry of inspection.installed) {
-    const invocation = entry.invocation;
-    if (entry.target !== undefined || !invocation) continue;
-    const nativeId = entry.nativeId ?? schedulerNativeBindingId(entry.id);
-    const artifact = inspection.artifacts.find((candidate) => candidate.nativeId === nativeId);
-    if (
-      invocation.length === 3 &&
-      invocation[0] === "tasks" &&
-      invocation[1] === "run" &&
-      invocation[2] === entry.id &&
-      isCanonicalTaskConceptId(entry.id) &&
-      nativeId === schedulerNativeBindingId(entry.id) &&
-      artifact !== undefined &&
-      artifact.bindingId === undefined &&
-      artifact.fingerprint !== undefined &&
-      artifact.invocation !== undefined &&
-      sameArgv(artifact.invocation, invocation)
-    ) {
-      // Published 0.8 cron blocks predate both context descriptors and bundle
-      // tokens. Explicit --rebind plus the exact marker/id/argv tuple is the
-      // only compatibility authorization; near-miss legacy shapes stay foreign.
-      authorized.push(nativeId);
-      continue;
-    }
-    if (
-      invocation.length !== 4 ||
-      invocation[0] !== "task" ||
-      invocation[1] !== "run" ||
-      invocation[3] !== "--scheduled"
-    ) {
-      continue;
-    }
-    try {
-      const descriptor = validateSchedulerContextDescriptor(entry.contextPath);
-      if (physicalDirectoryIdentity(descriptor.environment.AKM_BUNDLE_DIR) !== selectedIdentity) continue;
-      if (!artifact || artifact.bindingId !== undefined || artifact.fingerprint === undefined) continue;
-      authorized.push(nativeId);
-    } catch {
-      // Target-less artifacts without a valid matching historical descriptor
-      // remain ownerless. The planner will reject rather than adopt them.
-    }
-  }
-  return Object.freeze(authorized);
-}
-
-function isCanonicalTaskConceptId(id: string): boolean {
-  try {
-    return normaliseTaskConceptId(id) === id;
-  } catch {
-    return false;
-  }
-}
-
-function physicalDirectoryIdentity(directory: string): string {
-  const real = fs.realpathSync(directory);
-  const stat = fs.statSync(real);
-  if (!stat.isDirectory())
-    throw new ConfigError(`${directory} is not a scheduler bundle directory.`, "INVALID_CONFIG_FILE");
-  return stat.ino === 0 ? `path:${real}` : `inode:${stat.dev}:${stat.ino}`;
 }
 
 function inspectInstalledBinding(entry: InstalledTaskRef, invocation: TasksDoctorResult["akm"]): string[] {

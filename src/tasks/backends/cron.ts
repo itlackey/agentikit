@@ -132,9 +132,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       const matching = blocks.filter(
         ({ id }) => schedulerNativeArtifactKey(id) === schedulerNativeArtifactKey(nativeId),
       );
-      const artifacts = matching.map((block) =>
-        cronArtifact(block.id, block.body, expected?.state === "legacy-ownerless"),
-      );
+      const artifacts = matching.map((block) => cronArtifact(block.id, block.body));
       const priorArtifact = expected
         ? assertSchedulerNativeArtifactCardinality(artifacts, nativeId, expected.state === "absent" ? 0 : 1)
         : matching.length > 1
@@ -189,7 +187,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
     listForRebind() {
       const existing = readCrontab(exec);
       return listBlocks(existing).map(({ id, body }) => {
-        const installed = extractCronInvocation(body) ?? extractPublished08CronInvocation(body, id);
+        const installed = extractCronInvocation(body);
         const ref = {
           id: installed ? schedulerLogicalBindingId(id, installed.invocation) : id,
           signature: normalizeSignature(body),
@@ -203,12 +201,12 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
     listNativeArtifacts() {
       return [...inspectCronState(readCrontab(exec)).artifacts];
     },
-    inspectBindings(options) {
-      return inspectCronState(readCrontab(exec), options?.rebind === true);
+    inspectBindings() {
+      return inspectCronState(readCrontab(exec));
     },
     snapshotBindings(ids: readonly string[]): CronBindingSnapshot {
       const crontab = readCrontab(exec);
-      const inspection = inspectCronState(crontab, true);
+      const inspection = inspectCronState(crontab);
       const keys = new Set(ids.map(schedulerNativeArtifactKey));
       return Object.freeze({
         kind: CRON_SNAPSHOT,
@@ -224,7 +222,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
         throw new ConfigError("Invalid cron scheduler snapshot.", "INVALID_CONFIG_FILE");
       }
       const existing = readCrontab(exec);
-      const current = inspectCronState(existing, true);
+      const current = inspectCronState(existing);
       const safeNativeIds: string[] = [];
       const errors: unknown[] = [];
       if (expectedCurrent) {
@@ -279,14 +277,13 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
   };
 }
 
-function inspectCronState(crontab: string, includePublished08 = false): SchedulerBackendInspection {
+function inspectCronState(crontab: string): SchedulerBackendInspection {
   const installed: InstalledTaskRef[] = [];
   const artifacts: SchedulerNativeArtifact[] = [];
   for (const { id, body } of listBlocks(crontab)) {
-    const parsed =
-      extractCronInvocation(body) ?? (includePublished08 ? extractPublished08CronInvocation(body, id) : undefined);
+    const parsed = extractCronInvocation(body);
     const fingerprint = normalizeSignature(body);
-    const artifact = cronArtifact(id, body, includePublished08);
+    const artifact = cronArtifact(id, body);
     artifacts.push(artifact);
     if (!parsed) continue;
     const ref: InstalledTaskRef = {
@@ -303,9 +300,8 @@ function inspectCronState(crontab: string, includePublished08 = false): Schedule
   return Object.freeze({ installed: Object.freeze(installed), artifacts: Object.freeze(artifacts) });
 }
 
-function cronArtifact(nativeId: string, body: string, includePublished08 = false): SchedulerNativeArtifact {
-  const parsed =
-    extractCronInvocation(body) ?? (includePublished08 ? extractPublished08CronInvocation(body, nativeId) : undefined);
+function cronArtifact(nativeId: string, body: string): SchedulerNativeArtifact {
+  const parsed = extractCronInvocation(body);
   const owner = parsed ? schedulerLogicalBindingOwner(nativeId, parsed.invocation) : undefined;
   const artifact: SchedulerNativeArtifact = parsed
     ? {
@@ -434,138 +430,6 @@ export function extractCronInvocation(body: string): ReturnType<typeof parseSche
   const redirectIndex = fields.indexOf(">>", commandStart);
   if (redirectIndex === -1) return undefined;
   return parseScheduledBindingArgv(fields.slice(commandStart, redirectIndex));
-}
-
-/**
- * Recover the exact scheduler argv emitted by published 0.8.x. This parser is
- * enabled only during an explicit rebind transaction: 0.8 had neither a
- * context descriptor nor a bundle token, so its marker id plus the terminal
- * `tasks run <same-id>` tuple is the complete legacy ownership proof.
- */
-function extractPublished08CronInvocation(
-  body: string,
-  nativeId: string,
-): ReturnType<typeof parseScheduledBindingArgv> {
-  if (body.includes("\n")) return undefined;
-  const line = body.startsWith(DISABLED_PREFIX) ? body.slice(DISABLED_PREFIX.length) : body;
-  if (line.trim() !== line) return undefined;
-  const fields = splitPublished08CronWords(line);
-  if (!fields || (fields.length !== 12 && fields.length !== 13)) return undefined;
-
-  const schedule = fields.slice(0, 5);
-  if (schedule.some((word) => word.raw !== word.value || !/^[0-9*/,]+$/u.test(word.value))) return undefined;
-  try {
-    parseSchedule(schedule.map((word) => word.value).join(" "), "cron");
-  } catch {
-    return undefined;
-  }
-
-  const redirect = fields.slice(-3);
-  if (redirect[0]?.raw !== ">>" || redirect[0].value !== ">>" || redirect[2]?.raw !== "2>&1") return undefined;
-  const logPath = redirect[1];
-  if (
-    !logPath ||
-    logPath.raw !== quotePublished08CronValue(logPath.value) ||
-    !isPublished08TaskLogPath(logPath.value, nativeId)
-  ) {
-    return undefined;
-  }
-
-  const invocationWords = fields.slice(-6, -3);
-  const invocation = invocationWords.map((word) => word.value);
-  const id = invocation[2];
-  if (
-    invocationWords.some((word) => word.raw !== quotePublished08CronValue(word.value)) ||
-    invocation[0] !== "tasks" ||
-    invocation[1] !== "run" ||
-    !id ||
-    id !== nativeId
-  ) {
-    return undefined;
-  }
-
-  const launcherWords = fields.slice(5, -6);
-  if (
-    launcherWords.some(
-      (word) => word.raw !== quotePublished08CronValue(word.value) || !isCanonicalPublished08AbsolutePath(word.value),
-    ) ||
-    !isPublished08AkmLauncher(launcherWords.map((word) => word.value))
-  ) {
-    return undefined;
-  }
-  return {
-    binding: launcherWords.map((word) => word.value),
-    contextPath: "",
-    invocation,
-  };
-}
-
-interface Published08CronWord {
-  readonly raw: string;
-  readonly value: string;
-}
-
-function splitPublished08CronWords(line: string): Published08CronWord[] | undefined {
-  const words: Published08CronWord[] = [];
-  let index = 0;
-  while (index < line.length) {
-    while (index < line.length) {
-      const whitespace = line[index];
-      if (whitespace === undefined || !/\s/u.test(whitespace)) break;
-      index += 1;
-    }
-    if (index >= line.length) break;
-    const start = index;
-    let value = "";
-    let quoted = false;
-    while (index < line.length) {
-      const char = line[index];
-      if (char === undefined) return undefined;
-      if (!quoted && /\s/u.test(char)) break;
-      if (char === "'") {
-        quoted = !quoted;
-        index += 1;
-        continue;
-      }
-      if (!quoted && char === "\\") {
-        const escaped = line[index + 1];
-        if (escaped === undefined) return undefined;
-        value += escaped;
-        index += 2;
-        continue;
-      }
-      value += char;
-      index += 1;
-    }
-    if (quoted) return undefined;
-    words.push({ raw: line.slice(start, index), value });
-  }
-  return words;
-}
-
-function quotePublished08CronValue(value: string): string {
-  if (/^[A-Za-z0-9_\-./@:%=+,]+$/u.test(value)) return value;
-  return `'${value.replace(/'/gu, `'\\''`)}'`;
-}
-
-function isCanonicalPublished08AbsolutePath(value: string): boolean {
-  return path.posix.isAbsolute(value) && path.posix.normalize(value) === value;
-}
-
-function isPublished08AkmLauncher(argv: readonly string[]): boolean {
-  if (argv.length === 1) return argv[0] !== undefined && path.posix.basename(argv[0]) === "akm";
-  if (argv.length !== 2) return false;
-  const [runtimePath, cliPath] = argv;
-  if (runtimePath === undefined || cliPath === undefined) return false;
-  const runtime = path.posix.basename(runtimePath);
-  if (runtime !== "node" && runtime !== "bun") return false;
-  return cliPath.endsWith("/node_modules/akm-cli/dist/cli.js");
-}
-
-function isPublished08TaskLogPath(value: string, nativeId: string): boolean {
-  if (!isCanonicalPublished08AbsolutePath(value) || path.posix.basename(value) !== `${nativeId}.log`) return false;
-  const logDir = path.posix.dirname(value);
-  return path.posix.basename(logDir) === "logs" && path.posix.basename(path.posix.dirname(logDir)) === "tasks";
 }
 
 /** Reverse {@link quoteForCron} for a single whitespace-free token. */

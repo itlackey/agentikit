@@ -205,7 +205,7 @@ describe("akm lint --type workflows", () => {
 // ── Bug 9 regression: bounds that used to be decoder-only now fail lint ──────
 //
 // gate.max_loops / map.concurrency / engine names were only bounded by the
-// strict frozen-plan decoder (`decodeWorkflowPlanV3`), so `akm lint` passed
+// strict current frozen-plan decoder, so `akm lint` passed
 // and `workflow run` later failed with an unlocated "Invalid frozen workflow
 // plan: …". The parser now enforces the shared bounds
 // (src/workflows/resource-limits.ts) with line-anchored messages, which lint

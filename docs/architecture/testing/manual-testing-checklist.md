@@ -1818,9 +1818,8 @@ Environment scope and context:
       named. `pass_env:` widens it by name; exact named `env:` bindings provide
       fixed or secret values.
 - [ ] **CORE** A new durable-v4 start containing `inherit_env: true` is rejected
-      before dispatch and directs the author to named env bindings. Preserve a
-      stored v3 compatibility fixture separately and verify it resumes unchanged;
-      do not use that fixture as current authoring guidance.
+      before dispatch and directs the author to named env bindings. A pre-v4
+      stored plan is also rejected and directs the user to start a new run.
 - [ ] **LOCAL** `env:` bindings inject resolved values, and the `AKM_*` context
       is applied *after* them, so a binding cannot shadow it.
 - [ ] **LOCAL** `AKM_RUN_ID`, `AKM_STEP_ID`, `AKM_UNIT_ID`, `AKM_PARAMS`,
@@ -2082,7 +2081,7 @@ jq -e '.ok == false and .exitCode == 7' "$AKM_SANDBOX/agent-failure.json"
 - [ ] **AI** Nonzero child returns `agent-result` on stdout, CLI exit `1`, child code/reason/stderr retained and redacted.
 - [ ] **AI** Missing executable is a bounded spawn failure; timeout kills process group and writes the fake signal marker with no orphan.
 - [ ] **AI** `OPENCODE_API_KEY=manual-qa-credential-value` plus echo-secret mode produces no literal value in AKM result, stderr, event, or logs.
-- [ ] **AI REGRESSION** `--prompt`, `--command`, and `--workflow` combinations are rejected as ambiguous rather than silently choosing precedence. Prompt-stdin remains mutually exclusive with all.
+- [ ] **AI REGRESSION** `--prompt` and `--command` combinations are rejected as ambiguous rather than silently choosing precedence. Prompt-stdin remains mutually exclusive with both.
 - [ ] **AI** Named LLM engine is rejected where agent-only dispatch is required; invalid platform/kind fails before spawn.
 - [ ] **AI** Default-engine fallback is announced exactly once when used and never rescues an explicitly invalid named engine.
 
@@ -3018,8 +3017,8 @@ bun run release:check
 
 - [ ] **[RELEASE]** Full script runs workflow syntax/contract, verify-only lint,
       typecheck, build/bin/migration checks, package acceptance, setup/install
-      regression, published 0.8 task upgrade under Node and Bun, Linux standalone
-      scheduler, unit, integration, then Docker.
+      regression, explicit legacy-task migration, Linux standalone scheduler,
+      unit, integration, then Docker.
 - [ ] **[RELEASE]** Every gated file reports executed tests. Skip-docker is
       partial unless a separate exact-commit matrix transcript exists.
 - [ ] **[RELEASE]** Run slow migration/workflow property gates separately with

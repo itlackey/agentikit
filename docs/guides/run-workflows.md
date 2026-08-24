@@ -116,10 +116,9 @@ resumed. Use `akm workflow list` to find runs by status. Once resumed,
 rather than replayed (see
 [Architecture: Resume is journaled replay](../architecture/workflow-engine.md#resume-is-journaled-replay)).
 
-Persisted v3 plans retain exact resume compatibility: a v3 run resumes
-unchanged through its versioned decoder and is not rewritten or normalized to
-v4. Resume consumes the journaled plan and attempts; it does not re-read the
-authored workflow, configuration, or current index.
+Only durable v4 plans resume. Pre-v4 stored plans are rejected; start a new run
+from current source. A v4 resume consumes the journaled plan and attempts; it
+does not re-read the authored workflow, configuration, or current index.
 
 ## Abandon a run
 
@@ -177,9 +176,8 @@ treat package dependencies**:
 - **Audit before run** for any workflow that touches secrets, deploys to
   production, or writes outside the project tree. Read the `env:` bindings a
   workflow declares, and read its `exec.pass_env` lines.
-  New v4 starts reject `inherit_env`, while a stored v3 plan resumes unchanged as an exact compatibility island.
-  Authors must use exact named bindings and `pass_env` names; no new start can
-  author the historical flag.
+  Durable v4 rejects `inherit_env`, and pre-v4 stored plans do not execute.
+  Authors must use exact named bindings and `pass_env` names.
 - **Pin known-good versions** when adding workflow sources from a registry
   or git remote (`akm bundle add github:owner/repo#v1.2.3`), and update
   deliberately rather than via `akm bundle update --all`. A trusted workflow

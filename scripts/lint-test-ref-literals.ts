@@ -67,7 +67,7 @@ const SKIP_CONFIG = path.join(import.meta.dir, "codemod-ref-literals.skip.json")
 //   • error-message / prose refs the SRC formats as `type:name`, plus
 //     false positives that are not refs at all: `$env:` PowerShell
 //     (tasks-schtasks-backend), `session:<harness>:<id>` provenance
-//     (asset-serialize), `…-agent:ok` process output (published-task-upgrade).
+//     (asset-serialize).
 //
 // RETIRED at Group-C item 2: the `derived_from` channel (formerly `memory:<name>`
 // index column + `source:` frontmatter backref, a WI-8.5c survivor) now speaks

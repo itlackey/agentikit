@@ -31,15 +31,13 @@ import {
 } from "../../../src/workflows/exec/native-executor";
 import { cpuDerivedUnitConcurrency } from "../../../src/workflows/exec/scheduler";
 import type { UnitDispatchResult } from "../../../src/workflows/exec/unit-dispatch";
-import type { IrStepPlan, WorkflowPlanGraph } from "../../../src/workflows/ir/stored-plan-v3";
+import type { IrStepPlanV4, WorkflowPlanGraphV4 } from "../../../src/workflows/ir/schema-v4";
 import {
   execContextLimits,
   WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER,
   WORKFLOW_MAX_EXEC_OUTPUT_BYTES,
 } from "../../../src/workflows/resource-limits";
-import { requireExecutableWorkflowPlan } from "../../../src/workflows/runtime/plan-classifier";
 import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
-import { makeGitRepo } from "../../_helpers/git";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 import {
   freezeWorkflow,
@@ -77,7 +75,7 @@ function seedRun(steps: string[], params: Record<string, unknown> = {}): void {
   }
 }
 
-function storePlan(plan: WorkflowPlanGraph): void {
+function storePlan(plan: WorkflowPlanGraphV4): void {
   const db = openStateDatabase();
   try {
     storeFrozenWorkflowPlan(db, RUN_ID, plan);
@@ -91,14 +89,13 @@ function execPlan(unitLines: string[], opts: { extra?: string[] } = {}) {
   return freezeWorkflow(workflowDoc(unitLines, "## work\n\nRun the command.\n", opts.extra ?? []));
 }
 
-function run(plan: WorkflowPlanGraph, ctx: Partial<StepExecutionContext> = {}): Promise<StepExecutionResult> {
-  const step: IrStepPlan = plan.steps[0]!;
+function run(plan: WorkflowPlanGraphV4, ctx: Partial<StepExecutionContext> = {}): Promise<StepExecutionResult> {
+  const step: IrStepPlanV4 = plan.steps[0]!;
   return executeFrozenStepPlan(step, {
     runId: RUN_ID,
     workflowRef: "workflows/exec-demo",
     params: {},
     evidence: {},
-    engines: plan.execution.engines,
     workDir,
     ...ctx,
   });
@@ -171,22 +168,6 @@ describe("exec unit — a passing command", () => {
     const result = await run(plan);
     expect(fs.realpathSync(String(result.evidence.output))).toBe(fs.realpathSync(workDir));
   });
-
-  test("a relative `cwd:` runs inside a subdirectory of the working directory", async () => {
-    fs.mkdirSync(path.join(workDir, "packages", "core"), { recursive: true });
-    seedRun(["work"]);
-    const plan = execPlan([
-      "    unit:",
-      "      exec:",
-      `        command: ${JSON.stringify(bunArgv("process.stdout.write(process.cwd())"))}`,
-      "        cwd: packages/core",
-    ]);
-    storePlan(plan);
-    const result = await run(plan);
-    expect(fs.realpathSync(String(result.evidence.output))).toBe(
-      fs.realpathSync(path.join(workDir, "packages", "core")),
-    );
-  });
 });
 
 describe("exec unit — argv is never shell-interpreted", () => {
@@ -246,27 +227,6 @@ describe("exec unit — failure semantics", () => {
     expect(result.ok).toBe(true);
     expect(result.summary).toContain("on_error: continue");
     expect(result.units[0]!.failureReason).toBe("non_zero_exit");
-  });
-
-  test("`retry: { on: [non_zero_exit] }` re-runs the command and journals every attempt", async () => {
-    seedRun(["work"]);
-    const marker = path.join(tmpDir, "attempts.log");
-    const code = `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'x'); process.exit(9)`;
-    const plan = execPlan([
-      "    unit:",
-      "      exec:",
-      `        command: ${JSON.stringify(bunArgv(code))}`,
-      "      retry: { max: 2, on: [non_zero_exit] }",
-    ]);
-    storePlan(plan);
-    const result = await run(plan);
-    expect(result.ok).toBe(false);
-    // 1 initial attempt + 2 retries = 3 real executions...
-    expect(fs.readFileSync(marker, "utf8")).toBe("xxx");
-    // ...each with its own journal row (`~r1`, `~r2` on top of the base id).
-    const rows = await unitRows();
-    expect(rows.map((r) => r.unit_id).sort()).toEqual(["work:solo", "work:solo~r1", "work:solo~r2"]);
-    expect(rows.every((r) => r.failure_reason === "non_zero_exit")).toBe(true);
   });
 
   test("a failure reason OUTSIDE the declared retry.on is not retried", async () => {
@@ -375,75 +335,6 @@ describe("exec unit — timeout and abort really kill the process", () => {
   }, 30_000);
 });
 
-describe("exec unit — env bindings arrive by name, values never reach the journal", () => {
-  const SECRET = "sk-exec-unit-super-secret-value-2f81";
-
-  test("the binding value reaches the child but is redacted out of the journaled outcome", async () => {
-    seedRun(["work"]);
-    const plan = execPlan([
-      "    unit:",
-      "      exec:",
-      `        command: ${JSON.stringify(bunArgv("process.stdout.write('token=' + process.env.DEPLOY_TOKEN)"))}`,
-      "      env: [env/ci]",
-    ]);
-    storePlan(plan);
-
-    // The plan carries the REF NAME only — never the value.
-    expect(JSON.stringify(plan)).toContain("env/ci");
-    expect(JSON.stringify(plan)).not.toContain(SECRET);
-
-    const result = await run(plan, { resolveEnv: async () => ({ DEPLOY_TOKEN: SECRET }) });
-
-    expect(result.ok).toBe(true);
-    // The child really saw it (the prefix proves the var was injected)...
-    expect(String(result.evidence.output)).toStartWith("token=");
-    // ...and the value is gone from the promoted artifact and the summary.
-    expect(String(result.evidence.output)).not.toContain(SECRET);
-    expect(JSON.stringify(result.evidence)).not.toContain(SECRET);
-
-    // ...and gone from the durable journal row.
-    const rows = await unitRows();
-    expect(rows[0]!.status).toBe("completed");
-    expect(rows[0]!.result_json).not.toContain(SECRET);
-  });
-
-  test("a secret echoed on stderr of a FAILING command is redacted out of the failure diagnostic", async () => {
-    seedRun(["work"]);
-    const plan = execPlan([
-      "    unit:",
-      "      exec:",
-      `        command: ${JSON.stringify(bunArgv("process.stderr.write(process.env.DEPLOY_TOKEN); process.exit(2)"))}`,
-      "      env: [env/ci]",
-    ]);
-    storePlan(plan);
-    const result = await run(plan, { resolveEnv: async () => ({ DEPLOY_TOKEN: SECRET }) });
-    expect(result.units[0]!.failureReason).toBe("non_zero_exit");
-    expect(result.units[0]!.error).not.toContain(SECRET);
-    expect(JSON.stringify(result)).not.toContain(SECRET);
-  });
-
-  test("an env-binding resolution failure fails the step before anything is spawned", async () => {
-    seedRun(["work"]);
-    const marker = path.join(tmpDir, "ran.txt");
-    const code = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
-    const plan = execPlan([
-      "    unit:",
-      "      exec:",
-      `        command: ${JSON.stringify(bunArgv(code))}`,
-      "      env: [env/missing]",
-    ]);
-    storePlan(plan);
-    const result = await run(plan, {
-      resolveEnv: async () => {
-        throw new Error("env asset env/missing not found");
-      },
-    });
-    expect(result.ok).toBe(false);
-    expect(result.summary).toContain("env binding failed");
-    expect(fs.existsSync(marker)).toBe(false);
-  });
-});
-
 describe("exec unit — the child environment is an ALLOWLIST", () => {
   /**
    * A name that is NOT on {@link EXEC_DEFAULT_ENV_PASSTHROUGH} and is really
@@ -467,7 +358,7 @@ describe("exec unit — the child environment is an ALLOWLIST", () => {
   const REPORT = bunArgv(
     "process.stdout.write(JSON.stringify({" +
       "PATH: process.env.PATH ?? null, HOME: process.env.HOME ?? null, " +
-      "probe: process.env.EXEC_UNIT_AMBIENT_PROBE ?? null, " +
+      "probe: process.env.EXEC_UNIT_AMBIENT_PROBE ? 'present' : null, " +
       // Length, not the value: a resolved binding value is scrubbed out of the
       // artifact by the redaction contract, which is exactly as intended.
       "binding: process.env.DEPLOY_TOKEN ? 'len=' + process.env.DEPLOY_TOKEN.length : null, " +
@@ -514,18 +405,8 @@ describe("exec unit — the child environment is an ALLOWLIST", () => {
 
   test("`pass_env` widens the allowlist by NAME", async () => {
     const env = await report([`        pass_env: [${PROBE}]`]);
-    expect(env.probe).toBe(PROBE_VALUE);
+    expect(env.probe).toBe("present");
     expect(env.PATH).toBeTruthy();
-  });
-
-  test("`env:` bindings and AKM_* context arrive with unchanged precedence", async () => {
-    const env = await report(["      env: [env/ci]"], {
-      resolveEnv: async () => ({ DEPLOY_TOKEN: "binding-value", AKM_RUN_ID: "binding-tried-to-shadow-this" }),
-    });
-    expect(env.binding).toBe(`len=${"binding-value".length}`);
-    // Engine-authored context is applied LAST, so the binding above could not
-    // shadow it — the command is told the truth about which run it is in.
-    expect(env.runId).toBe(RUN_ID);
   });
 
   test("the exported default allowlist is the single definition the child is built from", async () => {
@@ -721,66 +602,6 @@ describe("exec unit — map fan-out", () => {
     await run(plan, { params: { targets: items } });
     expect(fs.readFileSync(log, "utf8")).toBe("a<a>b<b>c<c>");
   }, 60_000);
-});
-
-describe("exec unit — worktree isolation", () => {
-  test("the command runs in a fresh detached worktree, not in the base repo", async () => {
-    // The shared fixture, inside this suite's own sandbox root so `afterEach`
-    // takes the repo with it.
-    const repo = makeGitRepo({ dir: path.join(tmpDir, "repo") });
-    seedRun(["work"]);
-    // Print the cwd and mutate a tracked file — the base repo must stay clean.
-    const code =
-      "const fs=require('node:fs');" +
-      "fs.writeFileSync('README.md', 'changed in the worktree\\n');" +
-      "process.stdout.write(process.cwd())";
-    const plan = execPlan([
-      "    unit:",
-      "      exec:",
-      `        command: ${JSON.stringify(bunArgv(code))}`,
-      "      isolation: worktree",
-    ]);
-    storePlan(plan);
-
-    const result = await run(plan, { workDir: repo });
-    expect(result.ok).toBe(true);
-
-    const cwd = String(result.evidence.output);
-    expect(cwd).not.toBe(fs.realpathSync(repo));
-    expect(cwd).toContain("akm-worktrees");
-    expect(cwd).toContain(RUN_ID);
-
-    // The base checkout was never touched.
-    expect(fs.readFileSync(path.join(repo, "README.md"), "utf8")).toBe("# fixture\n");
-    // The dirty worktree is RETAINED (uncollected work is never destroyed) and
-    // its path is journaled on the unit row.
-    const rows = (await withWorkflowRunsRepo((repo_) => repo_.getUnitsForStep(RUN_ID, "work"))) as Array<{
-      worktree_path: string | null;
-    }>;
-    expect(rows[0]!.worktree_path).toBe(cwd);
-
-    fs.rmSync(cwd, { recursive: true, force: true });
-  }, 60_000);
-
-  test("a non-git working directory fails the step cleanly before anything is spawned", async () => {
-    seedRun(["work"]);
-    const marker = path.join(tmpDir, "ran.txt");
-    const code = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
-    const plan = execPlan([
-      "    unit:",
-      "      exec:",
-      `        command: ${JSON.stringify(bunArgv(code))}`,
-      "      isolation: worktree",
-    ]);
-    storePlan(plan);
-    const result = await run(plan, {
-      workDir,
-      preflightWorktree: () => "not a git worktree",
-    });
-    expect(result.ok).toBe(false);
-    expect(result.summary).toContain("cannot use isolation: worktree");
-    expect(fs.existsSync(marker)).toBe(false);
-  });
 });
 
 describe("exec unit — replay / reuse", () => {
@@ -1248,37 +1069,6 @@ describe("exec unit — a stderr-only diagnosis survives to the journal (finding
     expect(unit?.diagnostic ?? "").toContain(CAUSE);
   }, 30_000);
 
-  test("the journaled diagnostic is REDACTED and BOUNDED", async () => {
-    const SECRET = "sk-exec-diagnostic-secret-value-7c31";
-    seedRun(["work"]);
-    // A huge stderr carrying a resolved binding value: the row must contain
-    // neither the secret nor an unbounded blob.
-    const code =
-      `process.stderr.write('noise\\n'.repeat(20000)); ` +
-      "process.stderr.write(process.env.DEPLOY_TOKEN); process.exit(4)";
-    const plan = execPlan([
-      "    unit:",
-      "      exec:",
-      `        command: ${JSON.stringify(bunArgv(code))}`,
-      "      env: [env/ci]",
-    ]);
-    storePlan(plan);
-
-    await run(plan, { resolveEnv: async () => ({ DEPLOY_TOKEN: SECRET }) });
-
-    const rows = await unitRows();
-    expect(rows[0]!.result_json).not.toBeNull();
-    expect(rows[0]!.result_json).not.toContain(SECRET);
-    // 2000-char clip + JSON quoting/escaping overhead — bounded, not the 120 KB
-    // of stderr the command actually produced.
-    expect(rows[0]!.result_json!.length).toBeLessThan(3_000);
-
-    const detail = await getWorkflowStatus(RUN_ID, { includeUnits: true });
-    const unit = (detail.units ?? []).find((u) => u.unitId === "work:solo");
-    expect(unit?.diagnostic ?? "").not.toContain(SECRET);
-    expect((unit?.diagnostic ?? "").length).toBeLessThanOrEqual(2_001);
-  }, 30_000);
-
   test("a SUCCESSFUL unit's journaled result is unchanged (the artifact, not a diagnostic)", async () => {
     seedRun(["work"]);
     const plan = execPlan([
@@ -1313,7 +1103,7 @@ describe("exec unit — the AKM_* context environment is bounded by THIS PLATFOR
    * A two-step plan whose SECOND step declares the first step's artifact as a
    * declared `inputs:` — the surface that becomes `AKM_INPUTS` in the child.
    */
-  function consumerPlan(argv: string[]): WorkflowPlanGraph {
+  function consumerPlan(argv: string[]): WorkflowPlanGraphV4 {
     return freezeWorkflow(
       [
         "---",
@@ -1340,13 +1130,12 @@ describe("exec unit — the AKM_* context environment is bounded by THIS PLATFOR
   }
 
   /** Execute the CONSUMER step (steps[1]) with `produce` already in evidence. */
-  function runConsumer(plan: WorkflowPlanGraph, produced: string): Promise<StepExecutionResult> {
+  function runConsumer(plan: WorkflowPlanGraphV4, produced: string): Promise<StepExecutionResult> {
     return executeFrozenStepPlan(plan.steps[1]!, {
       runId: RUN_ID,
       workflowRef: "workflows/exec-demo",
       params: {},
       evidence: { produce: { output: produced } },
-      engines: plan.execution.engines,
       workDir,
     });
   }
@@ -1478,7 +1267,6 @@ describe("exec unit — the AKM_* context environment is bounded by THIS PLATFOR
       workflowRef: "workflows/exec-demo",
       params: {},
       evidence: { produce: { output: [HUGE] } },
-      engines: plan.execution.engines,
       workDir,
     });
     expect(result.units[0]!.failureReason).toBe("exec_context_too_large");

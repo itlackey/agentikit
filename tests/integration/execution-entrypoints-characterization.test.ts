@@ -7,19 +7,13 @@ import { parseRefInput } from "../../src/core/asset/resolve-ref";
 import type { AkmConfig } from "../../src/core/config/config";
 import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
 import { akmIndex, lookup } from "../../src/indexer/indexer";
-import type { AgentProfile } from "../../src/integrations/agent/profiles";
-import type { RunnerSpec } from "../../src/integrations/agent/runner";
-import type { RunAgentOptions } from "../../src/integrations/agent/spawn";
 import { runTask } from "../../src/tasks/runner";
 import { runCliCapture } from "../_helpers/cli";
 import {
   assertFixtureBytesUnchanged,
-  canonicalResolvedRequestForTest,
   captureFixtureBytes,
   EXECUTION_CONTRACT_FIXTURES,
-  projectCurrentRunnerRequestForTest,
   projectCurrentWorkflowUnitForTest,
-  runnerFromCapturedProfile,
 } from "../_helpers/execution-contracts";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 import { freezeWorkflow } from "../_helpers/workflow";
@@ -29,7 +23,6 @@ const TASK_ROOT = path.join(EXECUTION_CONTRACT_FIXTURES, "tasks/v2");
 const WORKFLOW_ROOT = path.join(EXECUTION_CONTRACT_FIXTURES, "workflows");
 const PROMPT = "Review the execution contract.";
 const NOW = () => new Date("2026-08-19T12:00:00.000Z");
-const DIRECT_CAPTURE_HELPER = path.join(import.meta.dir, "../_helpers/capture-agent-dispatch.ts");
 
 let storage: IsolatedAkmStorage;
 
@@ -92,32 +85,6 @@ function installMigratedTaskFixture(source: string, destination: string): void {
   fs.writeFileSync(destination, outcome.after);
 }
 
-interface DirectDispatchCapture {
-  runner: Extract<RunnerSpec, { kind: "agent" | "sdk" }>;
-  prompt: string;
-  options: RunAgentOptions;
-  result: {
-    ok: boolean;
-    engine: string;
-    stdout: string;
-  };
-}
-
-async function captureDirectAgentDispatch(options: Record<string, unknown>): Promise<DirectDispatchCapture> {
-  const child = Bun.spawn([process.execPath, DIRECT_CAPTURE_HELPER, JSON.stringify(options)], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: process.env,
-  });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  expect(exitCode, stderr).toBe(0);
-  return JSON.parse(stdout) as DirectDispatchCapture;
-}
-
 function completedSubprocess(stdout = "completed\n"): SpawnedSubprocess {
   return {
     exitCode: 0,
@@ -129,83 +96,6 @@ function completedSubprocess(stdout = "completed\n"): SpawnedSubprocess {
 }
 
 describe("current execution entry points projected onto one test-only request shape", () => {
-  test("direct agent, task prompt, and workflow freeze agree on their currently shared resolved subset", async () => {
-    const config = fixtureConfig();
-    writeSandboxConfig(config);
-
-    const taskSource = path.join(TASK_ROOT, "deterministic/prompt-inline-agent.yml");
-    installMigratedTaskFixture(taskSource, path.join(storage.stashDir, "tasks/equivalent.yml"));
-
-    let capturedProfile: AgentProfile | undefined;
-    let capturedPrompt: string | undefined;
-    let capturedOptions: RunAgentOptions | undefined;
-    const taskResult = await runTask("equivalent", {
-      stashDir: storage.stashDir,
-      logDir: path.join(storage.root, "task-logs"),
-      now: NOW,
-      runAgentImpl: async (profile, prompt, options) => {
-        capturedProfile = profile;
-        capturedPrompt = prompt;
-        capturedOptions = options;
-        return { ok: true, exitCode: 0, stdout: "reviewed", stderr: "", durationMs: 1 };
-      },
-    });
-    expect(taskResult.status).toBe("completed");
-    if (!capturedProfile || capturedPrompt === undefined || !capturedOptions) {
-      throw new Error("task prompt did not reach the captured runner seam");
-    }
-
-    const directCapture = await captureDirectAgentDispatch({
-      engine: "fixture-agent",
-      prompt: PROMPT,
-      dispatch: { prompt: PROMPT, model: "fixture-exact-model", modelIsExact: true },
-    });
-    const direct = projectCurrentRunnerRequestForTest({
-      runner: directCapture.runner,
-      prompt: directCapture.prompt,
-      dispatch: directCapture.options.dispatch,
-      timeoutMs: directCapture.options.timeoutMs,
-      workspace: directCapture.options.cwd,
-      environment: directCapture.options.env,
-    });
-    const task = projectCurrentRunnerRequestForTest({
-      runner: runnerFromCapturedProfile("fixture-agent", capturedProfile, capturedOptions.timeoutMs ?? null),
-      prompt: capturedPrompt,
-      workspace: capturedOptions.cwd,
-    });
-
-    const workflowSource = path.join(WORKFLOW_ROOT, "current/agent-unit.md");
-    const workflowPlan = freezeWorkflow(
-      fs.readFileSync(workflowSource, "utf8"),
-      "workflows/current-agent-unit.md",
-      config,
-    );
-    const workflow = projectCurrentWorkflowUnitForTest(workflowPlan, "review");
-
-    const directBytes = canonicalResolvedRequestForTest(direct);
-    expect(directCapture.result).toMatchObject({ ok: true, engine: "fixture-agent", stdout: "captured-direct" });
-    expect(canonicalResolvedRequestForTest(task)).toBe(directBytes);
-    expect(canonicalResolvedRequestForTest(workflow)).toBe(directBytes);
-    expect(JSON.parse(directBytes)).toMatchObject({
-      command: { content: PROMPT },
-      engine: { name: "fixture-agent", kind: "agent", platform: "aider" },
-      model: "fixture-exact-model",
-      timeoutMs: 45_000,
-      workspace: storage.stashDir,
-    });
-  });
-
-  test("direct agent --workflow refuses to flatten workflow IR into anonymous prompt content", async () => {
-    await expect(
-      akmAgentDispatch({
-        engine: "fixture-agent",
-        workflowRef: "workflows/current-agent-unit",
-        args: ["must-not-be-substituted"],
-        agentConfig: fixtureConfig(),
-      }),
-    ).rejects.toThrow(/akm workflow run|cannot be flattened/i);
-  });
-
   test("task command, workflow, and direct-LLM targets reach their production injection seams", async () => {
     writeSandboxConfig(fixtureConfig());
     for (const id of ["command-string", "workflow-ref-full", "prompt-inline-full"]) {

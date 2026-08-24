@@ -12,7 +12,7 @@ import {
   withWorkflowRunsRepo,
 } from "../../../src/storage/repositories/workflow-runs-repository";
 import { executeStepPlan } from "../../../src/workflows/exec/native-executor";
-import { decodeExecutableWorkflowPlan } from "../../../src/workflows/ir/schema-v4";
+import { decodeWorkflowPlanV4 } from "../../../src/workflows/ir/schema-v4";
 import { startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
 
@@ -205,8 +205,7 @@ describe("real v4 start/lease/reservation race", () => {
       return repo.getRunById(runId);
     });
     if (!row?.plan_json) throw new Error("expected persisted v4 plan");
-    const plan = decodeExecutableWorkflowPlan(JSON.parse(row.plan_json), row.plan_ir_version);
-    if (plan.irVersion !== 4) throw new Error("expected v4 plan");
+    const plan = decodeWorkflowPlanV4(JSON.parse(row.plan_json));
     const step = plan.steps[0];
     if (!step) throw new Error("expected one frozen step");
     let dispatches = 0;
@@ -217,7 +216,6 @@ describe("real v4 start/lease/reservation race", () => {
       leaseHolder: "engine-a",
       params: {},
       evidence: {},
-      engines: {},
       dispatcher: async () => {
         dispatches += 1;
         return { ok: true, text: "must not run" };

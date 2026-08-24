@@ -188,8 +188,8 @@ cleanup — runs persist indefinitely.
 
 #### Table: `workflow_runs`
 
-New starts persist plan IR v4. Stored v3 plans resume unchanged.
-The resume path neither upgrades them to v4 nor re-reads authored source.
+New starts persist plan IR v4, the sole executable plan format. Pre-v4 stored
+plans are rejected rather than upgraded or replayed through another runtime.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -232,11 +232,11 @@ Primary key: `(run_id, step_id)`.
 
 #### Table: `workflow_run_units`
 
-The compatibility/status projection for execution units (one row per node in a
+The current status projection for execution units (one row per node in a
 run's execution graph), keyed `(run_id, unit_id)` with a FK to `workflow_runs`.
-The `workflow_run_unit_attempts` table is append-only for v4; it receives every
+The `workflow_run_unit_attempts` table is append-only; it receives every
 external reservation and terminal result, while this table remains the
-projection for existing status and stored-v3 readers. Columns include
+public status projection. Columns include
 `node_id`, `parent_unit_id`, `phase`,
 `runner`, `model`, `status`
 (`pending`/`running`/`completed`/`failed`/`skipped`), `result_json`, `tokens`,

@@ -2,8 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { LlmConnectionConfig } from "../../core/config/config";
-import { deepMergeConfig } from "../../core/config/deep-merge";
 import { ConfigError } from "../../core/errors";
 import { assertFrozenDirectoryIdentity } from "../../execution/directory-identity";
 import { assertFrozenExecutableIdentity } from "../../execution/executable-identity";
@@ -17,11 +15,8 @@ import {
   type LoweredExecutionRequest,
   lowerResolvedExecutionRequestWithRunner,
 } from "../../integrations/agent/execution-lowering";
-import { prepareInlineExecutionWithRunner } from "../../integrations/agent/inline-execution";
-import type { RunnerSpec } from "../../integrations/agent/runner";
 import type { AgentTokenUsage } from "../../integrations/agent/spawn";
 import { getHarness } from "../../integrations/harnesses";
-import type { FrozenEngineSnapshot, IrExecSpec, IrInvocation } from "../ir/schema";
 import type { FrozenWorkflowTarget } from "../ir/schema-v4";
 
 /** Everything the dispatcher needs to run one frozen workflow unit. */
@@ -30,31 +25,16 @@ export interface UnitDispatchRequest {
   stepId: string;
   unitId: string;
   nodeId: string;
-  /** V4 append-only attempt ordinal. Absent on historical v3 dispatches. */
+  /** Append-only attempt ordinal when the journal policy uses attempt rows. */
   attempt?: number;
-  /** V4 stable external correlation/idempotency key. Absent on v3. */
+  /** Stable external correlation/idempotency key for an append-only attempt. */
   dispatchId?: string;
   /** Fully assembled user prompt. */
   prompt: string;
   /** Optional system prompt, used by frozen workflow gate judges. */
   systemPrompt?: string;
-  /**
-   * Frozen v3 engine snapshot. Dispatch never consults live config. Absent on
-   * `exec` units, which name no engine — see {@link UnitDispatchRequest.exec}.
-   */
-  engine?: FrozenEngineSnapshot;
-  fallbackEngine?: Extract<FrozenEngineSnapshot, { kind: "llm" }>;
-  /** Engine dispatch settings. Present on exactly the units that reach an engine. */
-  invocation?: IrInvocation;
-  /**
-   * Frozen shell command for an `exec` unit — argv, relative cwd, resolved
-   * timeout. Present on EXACTLY the units that carry no `engine`/`invocation`;
-   * the frozen-plan decoder enforces that exclusive-or, so a dispatcher can
-   * branch on this field alone.
-   */
-  exec?: IrExecSpec;
-  /** V4 immutable target. Dispatch authority comes from this snapshot only. */
-  frozenTarget?: FrozenWorkflowTarget;
+  /** The sole normalized execution target. Dispatch authority comes from this snapshot only. */
+  frozenTarget: FrozenWorkflowTarget;
   /**
    * `AKM_*` context environment for an exec unit's child — run/step/unit ids,
    * the run params, a map unit's item + index, and the step's declared
@@ -92,142 +72,8 @@ export interface UnitDispatchResult {
 /** The one dispatch seam. `feedback` carries a structured-output retry prompt. */
 export type UnitDispatcher = (request: UnitDispatchRequest, feedback?: string) => Promise<UnitDispatchResult>;
 
-function frozenLlmConnection(
-  snapshot: Extract<FrozenEngineSnapshot, { kind: "llm" }>,
-  invocation: IrInvocation,
-): LlmConnectionConfig {
-  const base: LlmConnectionConfig = {
-    ...(snapshot.provider !== undefined ? { provider: snapshot.provider } : {}),
-    endpoint: snapshot.endpoint,
-    model: invocation.model ?? snapshot.model,
-    ...(snapshot.temperature !== undefined ? { temperature: snapshot.temperature } : {}),
-    ...(snapshot.maxTokens !== undefined ? { maxTokens: snapshot.maxTokens } : {}),
-    ...(snapshot.supportsJsonSchema !== undefined ? { supportsJsonSchema: snapshot.supportsJsonSchema } : {}),
-    ...(snapshot.extraParams ? { extraParams: snapshot.extraParams } : {}),
-    ...(snapshot.contextLength !== undefined ? { contextLength: snapshot.contextLength } : {}),
-    ...(snapshot.enableThinking !== undefined ? { enableThinking: snapshot.enableThinking } : {}),
-    ...(snapshot.reasoningEffort !== undefined ? { reasoningEffort: snapshot.reasoningEffort } : {}),
-  };
-  return invocation.llm
-    ? (deepMergeConfig(base, invocation.llm as Record<string, unknown>) as LlmConnectionConfig)
-    : base;
-}
-
-export function frozenWorkflowRunner(request: {
-  readonly engine: FrozenEngineSnapshot;
-  readonly invocation: IrInvocation;
-  readonly fallbackEngine?: Extract<FrozenEngineSnapshot, { kind: "llm" }>;
-}): RunnerSpec {
-  const { engine, invocation } = request;
-  if (invocation.engine !== engine.name) {
-    throw new ConfigError(
-      `Frozen workflow invocation selected engine ${JSON.stringify(invocation.engine)}, but its snapshot is ${JSON.stringify(engine.name)}.`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
-  if (engine.kind === "llm") {
-    return {
-      kind: "llm",
-      engine: engine.name,
-      connection: frozenLlmConnection(engine, invocation),
-      ...(engine.credential ? { credential: engine.credential } : {}),
-      timeoutMs: invocation.timeoutMs,
-    };
-  }
-
-  const profile = {
-    name: engine.name,
-    platform: engine.platform,
-    bin: engine.bin,
-    args: engine.args,
-    stdio: "captured" as const,
-    envPassthrough: engine.envPassthrough,
-    parseOutput: "text" as const,
-    ...(engine.runnerKind === "sdk" ? { personaChannel: "native" as const } : {}),
-    ...(engine.workspace !== null ? { workspace: engine.workspace } : {}),
-    ...(invocation.model !== null && (engine.runnerKind === "agent" || engine.sdkFallbackModelFromRequest !== true)
-      ? { model: invocation.model, modelIsExact: true }
-      : {}),
-  };
-  if (engine.runnerKind === "agent") {
-    return { kind: "agent", engine: engine.name, profile, timeoutMs: invocation.timeoutMs };
-  }
-
-  const fallback = request.fallbackEngine;
-  return {
-    kind: "sdk",
-    engine: engine.name,
-    profile,
-    ...(fallback
-      ? {
-          fallbackConnection: frozenLlmConnection(fallback, {
-            engine: fallback.name,
-            model: fallback.model,
-            timeoutMs: null,
-          }),
-          ...(fallback.credential ? { fallbackCredential: fallback.credential } : {}),
-          fallbackTimeoutMs: fallback.timeoutMs ?? null,
-        }
-      : {}),
-    timeoutMs: invocation.timeoutMs,
-  };
-}
-
-/**
- * Prepare and lower one frozen workflow invocation without consulting live
- * config, model aliases, environment variables, credentials, or transports.
- */
-export function prepareFrozenWorkflowExecution(
-  request: UnitDispatchRequest,
-  prompt = request.prompt,
-): LoweredExecutionRequest {
-  if (!request.engine || !request.invocation) {
-    throw new ConfigError(
-      `unit ${JSON.stringify(request.unitId)} has no frozen engine invocation to prepare.`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
-  const engineRequest = request as UnitDispatchRequest & {
-    engine: FrozenEngineSnapshot;
-    invocation: IrInvocation;
-  };
-  const runner = frozenWorkflowRunner(engineRequest);
-  // New v3 plans persist source presence. Legacy v3 encoded absence as null
-  // and a selected model as a string, so keep that exact compatibility rule.
-  const projectsInvocationModel = Object.hasOwn(engineRequest.invocation, "modelPresent")
-    ? engineRequest.invocation.modelPresent === true
-    : engineRequest.invocation.model !== null;
-  const current: import("../../execution/source").UnresolvedExecutionDefaults = {
-    ...(request.schema !== undefined
-      ? { outputSchema: request.schema as import("../../execution/json").ExecutionJsonObject }
-      : {}),
-    timeout: request.timeoutMs,
-    ...(projectsInvocationModel ? { model: engineRequest.invocation.model } : {}),
-    ...(Object.hasOwn(engineRequest.invocation, "llm")
-      ? {
-          inference: engineRequest.invocation.llm as unknown as import("../../execution/json").ExecutionJsonObject,
-        }
-      : {}),
-    ...(request.cwd !== undefined ? { workspace: request.cwd } : {}),
-    ...(request.env !== undefined ? { environment: request.env } : {}),
-  };
-  const prepared = prepareInlineExecutionWithRunner({
-    content: prompt,
-    runner,
-    invocationKind: "workflow",
-    ...(request.systemPrompt !== undefined
-      ? { conversation: [{ role: "system" as const, content: request.systemPrompt }] }
-      : {}),
-    current,
-    ...(engineRequest.engine.kind === "agent"
-      ? { sdkFallbackModelFromRequest: engineRequest.engine.sdkFallbackModelFromRequest === true }
-      : {}),
-  });
-  return lowerResolvedExecutionRequestWithRunner(prepared.request, prepared.runner);
-}
-
 /** Lower a persisted v4 common request through its persisted runner only. */
-export function prepareFrozenWorkflowTargetExecution(
+export function prepareWorkflowExecution(
   request: UnitDispatchRequest & { frozenTarget: Extract<FrozenWorkflowTarget, { kind: "command" }> },
   prompt = request.prompt,
 ): LoweredExecutionRequest {
@@ -261,18 +107,18 @@ function message(err: unknown): string {
  * Dispatch one frozen workflow engine call through the common prepared/lowered
  * seam. Credential materialization happens inside the final dispatch only.
  */
-export async function dispatchFrozenWorkflowExecution(
+export async function dispatchWorkflowExecution(
   request: UnitDispatchRequest,
   feedback?: string,
 ): Promise<UnitDispatchResult> {
   const prompt = feedback ? `${request.prompt}\n\n${feedback}` : request.prompt;
-  const lowered =
-    request.frozenTarget?.kind === "command"
-      ? prepareFrozenWorkflowTargetExecution(
-          request as UnitDispatchRequest & { frozenTarget: Extract<FrozenWorkflowTarget, { kind: "command" }> },
-          prompt,
-        )
-      : prepareFrozenWorkflowExecution(request, prompt);
+  if (request.frozenTarget.kind !== "command") {
+    throw new ConfigError(`unit ${JSON.stringify(request.unitId)} is not a command target.`, "INVALID_CONFIG_FILE");
+  }
+  const lowered = prepareWorkflowExecution(
+    request as UnitDispatchRequest & { frozenTarget: Extract<FrozenWorkflowTarget, { kind: "command" }> },
+    prompt,
+  );
   const notices = lowered.notices.length > 0 ? lowered.notices : undefined;
 
   if (request.env && Object.keys(request.env).length > 0 && lowered.runner.kind === "llm") {

@@ -46,9 +46,8 @@ artifacts, and exec vocabulary. The YAML adapter accepts the documented local
 `name`/`on`/`jobs` subset. `.yaml` is not a workflow source.
 
 Both adapters produce strict source IR version 1. New starts resolve source
-owners and executable targets, then freeze durable plan v4. Stored durable v3
-runs resume exactly and unchanged: the compatibility decoder does not rewrite
-or normalize them into v4.
+owners and executable targets, then freeze durable plan v4. Only v4 plans
+execute; pre-v4 rows are rejected and must be replaced by a new run.
 
 ## Unsupported boundary and 0.9.3
 

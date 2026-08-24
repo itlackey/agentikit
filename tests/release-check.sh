@@ -144,12 +144,6 @@ run_step \
 run_step \
   "Install and Setup Regression Suite" \
   bun test --timeout=120000 tests/setup/ ./tests/integration/setup-run.test.ts tests/integration/install-script.test.ts tests/setup-wizard.test.ts tests/setup-scheduled-tasks.test.ts
-run_step \
-  "Published 0.8 Task Upgrade (Node)" \
-  env AKM_PUBLISHED_UPGRADE_TESTS=1 AKM_PUBLISHED_UPGRADE_RUNTIME=node AKM_PUBLISHED_UPGRADE_TARBALL="$PACKAGE_CANDIDATE" AKM_CANDIDATE_VERSION="$(node -p "require('./package.json').version")" bun test --timeout=120000 tests/integration/published-task-upgrade.test.ts
-run_step \
-  "Published 0.8 Task Upgrade (Bun)" \
-  env AKM_PUBLISHED_UPGRADE_TESTS=1 AKM_PUBLISHED_UPGRADE_RUNTIME=bun AKM_PUBLISHED_UPGRADE_TARBALL="$PACKAGE_CANDIDATE" AKM_CANDIDATE_VERSION="$(node -p "require('./package.json').version")" bun test --timeout=120000 tests/integration/published-task-upgrade.test.ts
 if [ "$(uname -s)" = "Linux" ]; then
 	run_step \
 		"Build Linux Standalone Scheduler Artifact" \

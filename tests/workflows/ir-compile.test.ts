@@ -7,7 +7,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { compileWorkflowPlan, type WorkflowPlanDraft } from "../../src/workflows/ir/compile";
 import { computePlanHash } from "../../src/workflows/ir/plan-hash";
-import { WORKFLOW_IR_VERSION, type WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
+import {
+  WORKFLOW_IR_V4_VERSION as WORKFLOW_IR_VERSION,
+  type WorkflowPlanGraphV4 as WorkflowPlanGraph,
+} from "../../src/workflows/ir/schema-v4";
 import type { WorkflowError } from "../../src/workflows/schema";
 import { compileWorkflowSource } from "../../src/workflows/source-ir/compile";
 import type { WorkflowSourceIrV1 } from "../../src/workflows/source-ir/schema";
@@ -129,7 +132,7 @@ describe("compileWorkflowPlan — structural golden", () => {
   });
 
   test("keeps executable versioning out of the unresolved draft", () => {
-    expect(WORKFLOW_IR_VERSION).toBe(3);
+    expect(WORKFLOW_IR_VERSION).toBe(4);
     const result = compileWorkflowPlan(parseMarkdown(LINEAR_MD), "Ship it");
     if (!result.ok) throw new Error("expected ok compile");
     expect(result.plan).not.toHaveProperty("irVersion");

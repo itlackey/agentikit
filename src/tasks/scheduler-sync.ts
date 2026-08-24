@@ -63,8 +63,6 @@ export interface SchedulerSyncPlanInput {
   readonly nativeArtifacts?: readonly SchedulerNativeArtifact[];
   /** One coherent backend read. Production mutation paths always provide this. */
   readonly inspection?: SchedulerBackendInspection;
-  /** Exact legacy artifacts authorized after physical primary-context verification. */
-  readonly legacyRebindNativeIds?: readonly string[];
   /** Frozen config used only while projecting command targets. */
   readonly config?: AkmConfig;
   /** Bundle-aware local asset resolver used while freezing workflow/script targets. */
@@ -180,11 +178,7 @@ export function finalizeSchedulerSyncPlan(
   assertCoherentInspection(inspection, input.inspection !== undefined);
   assertUniqueInstalledIds(coherentInput.installed);
   assertNoForeignIds(desired, coherentInput);
-  assertSchedulerNativeArtifactOwnership(
-    desired,
-    inspection.artifacts,
-    new Set(coherentInput.legacyRebindNativeIds ?? []),
-  );
+  assertSchedulerNativeArtifactOwnership(desired, inspection.artifacts);
 
   const scopedInstalled = coherentInput.installed.filter((entry) => belongsToBundle(entry, coherentInput));
   const present = new Map(scopedInstalled.map((entry) => [entry.id, entry] as const));
@@ -215,7 +209,6 @@ export function finalizeSchedulerSyncPlan(
       continue;
     }
     const artifact = exactInstalledArtifact(binding.id, current, inspection.artifacts);
-    const legacy = artifact !== undefined && artifact.bindingId === undefined;
     const priorFingerprint = artifact?.fingerprint ?? current.signature;
     if (artifact === undefined || priorFingerprint === undefined) {
       throw new UsageError(
@@ -228,14 +221,7 @@ export function finalizeSchedulerSyncPlan(
       freezeOperation({
         kind: "update",
         binding,
-        expected: freezeMutationExpectation(
-          expectationForBinding(
-            binding,
-            legacy ? "legacy-ownerless" : "present",
-            priorFingerprint,
-            legacy ? current.invocation : undefined,
-          ),
-        ),
+        expected: freezeMutationExpectation(expectationForBinding(binding, "present", priorFingerprint)),
         ...(resultFingerprint !== undefined ? { resultFingerprint } : {}),
         ...(options ? { options } : {}),
       }),
@@ -343,7 +329,6 @@ function inspectionForPlan(input: SchedulerSyncPlanInput): SchedulerBackendInspe
 export function assertSchedulerNativeArtifactOwnership(
   desired: readonly SchedulerBinding[],
   installed: readonly SchedulerNativeArtifact[],
-  allowedLegacyNativeIds: ReadonlySet<string> = new Set(),
 ): void {
   const desiredByKey = new Map<string, SchedulerBinding>();
   for (const binding of desired) {
@@ -366,15 +351,6 @@ export function assertSchedulerNativeArtifactOwnership(
     installedByKey.set(key, artifact);
     const wanted = desiredByKey.get(key);
     if (!wanted) continue;
-    if (
-      allowedLegacyNativeIds.has(artifact.nativeId) &&
-      artifact.nativeId === schedulerBindingNativeId(wanted) &&
-      artifact.bindingId === undefined &&
-      artifact.invocation !== undefined &&
-      isTargetlessLegacyInvocationFor(artifact.invocation, wanted.invocation)
-    ) {
-      continue;
-    }
     if (
       artifact.nativeId !== schedulerBindingNativeId(wanted) ||
       artifact.bindingId !== wanted.id ||
@@ -700,9 +676,7 @@ function installOptionsFor(
 
 function belongsToBundle(entry: InstalledSchedulerBinding, input: SchedulerSyncPlanInput): boolean {
   if (entry.target === input.bundleName || entry.target === input.bundleTarget) return true;
-  if (entry.target !== undefined) return false;
-  const nativeId = entry.nativeId ?? schedulerNativeBindingId(entry.id);
-  return input.legacyRebindNativeIds?.includes(nativeId) === true;
+  return false;
 }
 
 function assertNoForeignIds(desired: readonly SchedulerBinding[], input: SchedulerSyncPlanInput): void {
@@ -922,7 +896,6 @@ function expectationForBinding(
   binding: SchedulerBinding,
   state: SchedulerMutationExpectation["state"],
   fingerprint?: string,
-  legacyInvocation?: readonly string[],
 ): SchedulerMutationExpectation {
   return {
     state,
@@ -932,7 +905,6 @@ function expectationForBinding(
     ordinal: binding.ordinal,
     invocation: binding.invocation,
     ...(fingerprint !== undefined ? { fingerprint } : {}),
-    ...(legacyInvocation !== undefined ? { legacyInvocation } : {}),
   };
 }
 
@@ -941,19 +913,7 @@ function freezeMutationExpectation(expectation: SchedulerMutationExpectation): S
     ...expectation,
     logicalSource: Object.freeze({ ...expectation.logicalSource }),
     invocation: Object.freeze([...expectation.invocation]),
-    ...(expectation.legacyInvocation ? { legacyInvocation: Object.freeze([...expectation.legacyInvocation]) } : {}),
   });
-}
-
-function isTargetlessLegacyInvocationFor(legacy: readonly string[], canonical: readonly string[]): boolean {
-  return (
-    (legacy.length === 4 &&
-      legacy[0] === "task" &&
-      legacy[1] === "run" &&
-      legacy[2] === canonical[2] &&
-      legacy[3] === "--scheduled") ||
-    (legacy.length === 3 && legacy[0] === "tasks" && legacy[1] === "run" && legacy[2] === canonical[2])
-  );
 }
 
 function freezeOperation<T extends SchedulerSyncOperation>(operation: T): T {

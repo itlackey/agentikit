@@ -5,8 +5,9 @@
 /**
  * Additive durable workflow plan v4.
  *
- * Shared execution-graph validation is version-neutral. Stored-v3 decoding is
- * a separate boundary and is never used to construct or validate a new v4 run.
+ * This is the sole executable workflow plan. Older stored plans are rejected
+ * at the run-storage boundary instead of being replayed through a second
+ * runtime architecture.
  */
 
 import { createHash } from "node:crypto";
@@ -27,14 +28,8 @@ import {
   type IrRouteSpec,
   type IrUnitNodeCore,
   validateWorkflowPlanStructure,
-  type WorkflowPlanStructure,
   type WorkflowPlanValidationHooks,
 } from "./schema";
-import {
-  decodeStoredWorkflowPlanV3,
-  STORED_WORKFLOW_PLAN_V3_VERSION,
-  type StoredWorkflowPlanV3,
-} from "./stored-plan-v3";
 
 export const WORKFLOW_IR_V4_VERSION = 4 as const;
 
@@ -148,28 +143,15 @@ export interface IrStepPlanV4 {
   readonly gate: IrGateNodeV4;
 }
 
-export interface WorkflowPlanGraphV4 extends Omit<WorkflowPlanStructure, "irVersion" | "execution" | "steps"> {
+export interface WorkflowPlanGraphV4 {
   readonly irVersion: typeof WORKFLOW_IR_V4_VERSION;
+  readonly title: string;
+  readonly params?: string[];
+  readonly paramSchemas?: Record<string, Record<string, unknown>>;
+  readonly budget?: import("./schema").IrBudget;
   readonly execution: { readonly maxConcurrency: number };
   readonly sourceReadSet: DurableWorkflowSourceSnapshot[];
   readonly steps: IrStepPlanV4[];
-}
-
-export type ExecutableWorkflowPlan = StoredWorkflowPlanV3 | WorkflowPlanGraphV4;
-
-/** Strictly decode either supported executable plan, optionally bound to a DB row version. */
-export function decodeExecutableWorkflowPlan(
-  input: unknown,
-  expectedVersion?: number | null,
-  hooks: WorkflowPlanValidationHooks = {},
-): ExecutableWorkflowPlan {
-  const version = record(input, "plan").irVersion;
-  if (expectedVersion !== undefined && expectedVersion !== null && version !== expectedVersion) {
-    fail(`plan irVersion ${String(version)} does not match expected stored version ${expectedVersion}`);
-  }
-  if (version === STORED_WORKFLOW_PLAN_V3_VERSION) return decodeStoredWorkflowPlanV3(input, hooks);
-  if (version === WORKFLOW_IR_V4_VERSION) return decodeWorkflowPlanV4(input, hooks);
-  fail(`unsupported workflow plan version ${String(version)}`);
 }
 
 /** Strict v4 corruption gate. No authored source or config is consulted here. */
@@ -190,7 +172,6 @@ export function decodeWorkflowPlanV4(input: unknown, hooks: WorkflowPlanValidati
       planExtraKeys: ["sourceReadSet"],
       unitExtraKeys: ["frozenTarget", "environment"],
       gateExtraKeys: ["frozenJudge"],
-      executionShape: "current-v4",
     },
     hooks,
   );
@@ -369,7 +350,7 @@ function decodeShellTarget(
     ["kind", "contentHash", "exec", "cwdIdentity", "executable", "gitCommitOid"],
     `unit ${unit.id} shell target`,
   );
-  const exec = decodeWorkflowExecSpec(target.exec, `unit ${unit.id} shell target exec`, { allowInheritEnv: false });
+  const exec = decodeWorkflowExecSpec(target.exec, `unit ${unit.id} shell target exec`);
   const cwdIdentity = decodeDirectoryIdentity(target.cwdIdentity, unit.id);
   const executable = Object.hasOwn(target, "executable")
     ? decodeFrozenExecutableIdentity(target.executable, `unit ${unit.id} executable`)
@@ -417,7 +398,7 @@ function decodeScriptTarget(
     ],
     `unit ${unit.id} script target`,
   );
-  const exec = decodeWorkflowExecSpec(target.exec, `unit ${unit.id} script target exec`, { allowInheritEnv: false });
+  const exec = decodeWorkflowExecSpec(target.exec, `unit ${unit.id} script target exec`);
   if (typeof target.ref !== "string" || !target.ref.includes("//")) fail(`unit ${unit.id} script ref is invalid`);
   if (typeof target.interpreter !== "string" || !target.interpreter)
     fail(`unit ${unit.id} script interpreter is invalid`);

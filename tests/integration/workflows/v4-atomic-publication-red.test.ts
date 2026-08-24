@@ -26,13 +26,11 @@ import {
 } from "../../../src/storage/repositories/workflow-runs-repository";
 import { canonicalJson, canonicalPlanJson, computePlanHash } from "../../../src/workflows/ir/plan-hash";
 import { decodeWorkflowPlanV4, type WorkflowPlanGraphV4 } from "../../../src/workflows/ir/schema-v4";
-import type { WorkflowPlanGraph } from "../../../src/workflows/ir/stored-plan-v3";
 import { frozenStepRows } from "../../../src/workflows/runtime/plan-classifier";
-import { resumeWorkflowRun, startWorkflowRun } from "../../../src/workflows/runtime/runs";
+import { startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
 
 const RUN_ID = "77777777-7777-4777-8777-777777777777";
-const V3_RUN_ID = "33333333-3333-4333-8333-333333333333";
 const NOW = "2026-08-22T12:00:00.000Z";
 
 interface PublishWorkflowRunV4InputContract {
@@ -479,77 +477,5 @@ describe("workflow v4 start publication", () => {
       publishSpy.mockRestore();
       readSpy.mockRestore();
     }
-  });
-});
-
-describe("workflow v3 compatibility island", () => {
-  test("resumes a historical v3 row without source IO or rewriting its canonical plan bytes", async () => {
-    const plan: WorkflowPlanGraph = {
-      irVersion: 3,
-      title: "historical v3",
-      execution: { maxConcurrency: 1, engines: {} },
-      steps: [
-        {
-          stepId: "legacy",
-          title: "legacy",
-          sequenceIndex: 0,
-          root: {
-            kind: "unit",
-            id: "legacy",
-            instructions: "Resume these exact v3 bytes.",
-            templating: "verbatim",
-            exec: { command: ["/bin/sh", "-lc", "printf legacy"], timeoutMs: 10_000 },
-            onError: "fail",
-            isolation: "none",
-          },
-          gate: { kind: "gate", id: "legacy.gate", stepId: "legacy", criteria: [], maxLoops: 1, judge: null },
-        },
-      ],
-    };
-    const planJson = canonicalPlanJson(plan);
-    const planHash = computePlanHash(plan);
-    const db = openStateDatabase(getStateDbPath());
-    try {
-      const repo = new WorkflowRunsRepository(db);
-      repo.insertRun({
-        id: V3_RUN_ID,
-        workflowRef: "fixture//workflows/deleted-v3-source",
-        scopeKey: "dir:v1:historical-v3",
-        workflowEntryId: null,
-        workflowTitle: "historical v3",
-        paramsJson: "{}",
-        currentStepId: "legacy",
-        createdAt: NOW,
-        updatedAt: NOW,
-        agentHarness: null,
-        agentSessionId: null,
-        checkinArmedAt: NOW,
-      });
-      repo.insertSteps(
-        frozenStepRows(plan).map((step) => ({
-          runId: V3_RUN_ID,
-          stepId: step.stepId,
-          stepTitle: step.stepTitle,
-          instructions: step.instructions,
-          completionJson: step.completionJson,
-          sequenceIndex: step.sequenceIndex,
-        })),
-      );
-      repo.setRunPlan(V3_RUN_ID, planJson, planHash, 3);
-      db.prepare("UPDATE workflow_runs SET status = 'failed', completed_at = ? WHERE id = ?").run(NOW, V3_RUN_ID);
-      db.prepare("UPDATE workflow_run_steps SET status = 'failed' WHERE run_id = ? AND step_id = 'legacy'").run(
-        V3_RUN_ID,
-      );
-    } finally {
-      db.close();
-    }
-
-    const resumed = await resumeWorkflowRun(V3_RUN_ID);
-    expect(resumed.run.status).toBe("active");
-    expect(resumed.workflow.steps[0]?.status).toBe("pending");
-    const row = await withWorkflowRunsRepo((repo) => repo.getRunById(V3_RUN_ID));
-    expect(row?.plan_ir_version).toBe(3);
-    expect(row?.plan_json).toBe(planJson);
-    expect(row?.plan_hash).toBe(planHash);
   });
 });

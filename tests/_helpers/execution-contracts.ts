@@ -11,11 +11,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { ResolvedExecutionRequestV1 } from "../../src/execution/resolved-request";
-import type { AgentDispatchRequest } from "../../src/integrations/agent/builder-shared";
-import { resolveDispatchModel } from "../../src/integrations/agent/builder-shared";
-import type { AgentProfile } from "../../src/integrations/agent/profiles";
-import type { RunnerSpec } from "../../src/integrations/agent/runner";
-import type { WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
+import type { WorkflowPlanGraphV4 } from "../../src/workflows/ir/schema-v4";
 
 export const EXECUTION_CONTRACT_FIXTURES = path.join(import.meta.dir, "../fixtures/execution-contracts");
 
@@ -208,100 +204,16 @@ export function projectResolvedExecutionRequestForTest(request: ResolvedExecutio
   };
 }
 
-/** Project the current agent/sdk runner seam into the test-only shape. */
-export function projectCurrentRunnerRequestForTest(input: {
-  runner: Extract<RunnerSpec, { kind: "agent" | "sdk" }>;
-  prompt: string;
-  dispatch?: AgentDispatchRequest;
-  timeoutMs?: number | null;
-  workspace?: string | null;
-  commandSource?: TestSourceIdentity | null;
-  personaSource?: TestSourceIdentity | null;
-  environment?: Readonly<Record<string, string>>;
-}): TestResolvedRequestInput {
-  const { runner, dispatch } = input;
-  const profile = runner.profile;
-  const platform = profile.platform ?? profile.name;
-  const requestModel = dispatch ? resolveDispatchModel(dispatch, profile, platform) : undefined;
-  const model = requestModel ?? profile.model ?? null;
-  return {
-    command: {
-      content: input.prompt,
-      source: input.commandSource ?? null,
-    },
-    persona: dispatch?.systemPrompt
-      ? {
-          content: dispatch.systemPrompt,
-          source: input.personaSource ?? null,
-        }
-      : null,
-    engine: {
-      name: runner.engine ?? profile.name,
-      kind: runner.kind,
-      platform,
-    },
-    model,
-    effort: dispatch?.effort ?? null,
-    schema: dispatch?.schema ?? null,
-    tools: dispatch?.tools,
-    timeoutMs: input.timeoutMs !== undefined ? input.timeoutMs : (runner.timeoutMs ?? null),
-    workspace: input.workspace !== undefined ? input.workspace : (profile.workspace ?? null),
-    environment: input.environment,
-  };
-}
-
 /** Project one current frozen agent/LLM workflow unit into the same test shape. */
-export function projectCurrentWorkflowUnitForTest(plan: WorkflowPlanGraph, stepId: string): TestResolvedRequestInput {
+export function projectCurrentWorkflowUnitForTest(plan: WorkflowPlanGraphV4, stepId: string): TestResolvedRequestInput {
   const step = plan.steps.find((candidate) => candidate.stepId === stepId);
-  if (!step?.root || step.root.kind !== "unit" || !step.root.invocation) {
+  if (!step?.root || step.root.kind !== "unit" || step.root.frozenTarget.kind !== "command") {
     throw new Error(`workflow step ${stepId} is not an engine unit`);
   }
-  const invocation = step.root.invocation;
-  const engine = plan.execution.engines[invocation.engine];
-  if (!engine) throw new Error(`workflow step ${stepId} references missing engine ${invocation.engine}`);
-  const inference =
-    engine.kind === "llm"
-      ? {
-          ...(engine.temperature !== undefined ? { temperature: engine.temperature } : {}),
-          ...(engine.maxTokens !== undefined ? { maxTokens: engine.maxTokens } : {}),
-          ...(engine.supportsJsonSchema !== undefined ? { supportsJsonSchema: engine.supportsJsonSchema } : {}),
-          ...(engine.extraParams ? { extraParams: engine.extraParams } : {}),
-          ...(engine.contextLength !== undefined ? { contextLength: engine.contextLength } : {}),
-          ...(engine.enableThinking !== undefined ? { enableThinking: engine.enableThinking } : {}),
-          ...(engine.reasoningEffort !== undefined ? { reasoningEffort: engine.reasoningEffort } : {}),
-          ...(invocation.llm ?? {}),
-        }
-      : {};
-  return {
-    // Current workflow source spans identify authored locations, but are not
-    // resolved asset identities and carry no adapter/hash. Do not manufacture
-    // provenance that WP1 still needs to define.
-    command: { content: step.root.instructions, source: null },
-    persona: null,
-    engine: {
-      name: engine.name,
-      kind: engine.kind === "llm" ? "llm" : engine.runnerKind,
-      platform: engine.kind === "agent" ? engine.platform : null,
-    },
-    model: invocation.model,
-    effort: null,
-    schema: step.root.schema ?? null,
-    inference,
-    timeoutMs: invocation.timeoutMs,
-    workspace: engine.kind === "agent" ? engine.workspace : null,
-  };
+  return projectResolvedExecutionRequestForTest(step.root.frozenTarget.request);
 }
 
 /** Stable JSON helper for lowering snapshots and fixture catalogs. */
 export function canonicalJsonForTest(value: unknown): string {
   return `${JSON.stringify(sortJson(value), null, 2)}\n`;
-}
-
-/** Narrow helper used when a captured runner callback supplies only a profile. */
-export function runnerFromCapturedProfile(
-  engine: string,
-  profile: AgentProfile,
-  timeoutMs: number | null,
-): Extract<RunnerSpec, { kind: "agent" }> {
-  return { kind: "agent", engine, profile, timeoutMs };
 }

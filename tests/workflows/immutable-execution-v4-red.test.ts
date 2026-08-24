@@ -5,17 +5,15 @@
 /**
  * Tests-first contract for WP7's immutable executable projection.
  *
- * These fixtures pin the single common target shape emitted by every new
- * start. Stored v3 has one byte-exact decoder control below.
+ * These fixtures pin the single common target shape emitted by every start.
  */
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { canonicalJson, canonicalPlanJson, computePlanHash } from "../../src/workflows/ir/plan-hash";
+import { canonicalJson } from "../../src/workflows/ir/plan-hash";
 import { decodeWorkflowPlanV4 } from "../../src/workflows/ir/schema-v4";
-import type { WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
 
 const sha256 = (value: string | Uint8Array): string => createHash("sha256").update(value).digest("hex");
 
@@ -299,36 +297,5 @@ describe("durable workflow v4 immutable executable schema", () => {
       },
     });
     expect(() => decodeWorkflowPlanV4(llm)).not.toThrow();
-  });
-});
-
-describe("durable workflow v3 compatibility control", () => {
-  test("keeps historical v3 canonical bytes and plan hash exact", () => {
-    const plan: WorkflowPlanGraph = {
-      irVersion: 3,
-      title: "immutable-v3-control",
-      execution: { maxConcurrency: 1, engines: {} },
-      steps: [
-        {
-          stepId: "old",
-          title: "old",
-          sequenceIndex: 0,
-          root: {
-            kind: "unit",
-            id: "old",
-            instructions: "Preserve this old dispatch.",
-            templating: "verbatim",
-            exec: { command: ["/bin/sh", "-c", "printf old"], timeoutMs: 30_000 },
-            onError: "fail",
-            isolation: "none",
-          },
-          gate: { kind: "gate", id: "old.gate", stepId: "old", criteria: [], maxLoops: 1, judge: null },
-        },
-      ],
-    };
-    expect(canonicalPlanJson(plan)).toBe(
-      '{"execution":{"engines":{},"maxConcurrency":1},"irVersion":3,"steps":[{"gate":{"criteria":[],"id":"old.gate","judge":null,"kind":"gate","maxLoops":1,"stepId":"old"},"root":{"exec":{"command":["/bin/sh","-c","printf old"],"timeoutMs":30000},"id":"old","instructions":"Preserve this old dispatch.","isolation":"none","kind":"unit","onError":"fail","templating":"verbatim"},"sequenceIndex":0,"stepId":"old","title":"old"}],"title":"immutable-v3-control"}',
-    );
-    expect(computePlanHash(plan)).toBe("1f6b0795d2f83f24b442fdf4cfec9325e0660db0e1a654aba40bc186c4bf5c9d");
   });
 });

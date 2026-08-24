@@ -1901,12 +1901,12 @@ add a dry-run flag; use canonical `akm command run --dry-run`.
 Dispatch a configured agent engine, optionally selecting a bundle agent persona
 and model defaults. A nonempty tool request from that asset is not
 authorization: the current CLI rejects it at the execution boundary.
-`akm agent --command <ref>` is a compatibility spelling for the canonical
-`akm command run` path: it performs no separate file read, template filling,
-engine choice, or model resolution.
+`akm agent --command <ref>` enters the canonical `akm command run` path: it
+performs no separate file read, template filling, engine choice, or model
+resolution.
 
 ```sh
-akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [--command <ref>] [--workflow <ref>] [--timeout-ms <ms>] [--cwd <path>]
+akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [--command <ref>] [--timeout-ms <ms>] [--cwd <path>]
 ```
 
 | Argument / Flag | Description |
@@ -1917,7 +1917,6 @@ akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [-
 | `--model <model>` | Model override. Accepts aliases (`opus`, `sonnet`, `haiku`) or exact platform model IDs. Overrides the model in the agent asset. Resolved per platform: `opencode/claude-opus-4-7` for opencode, `claude-opus-4-7` for claude. |
 | `--command <ref>` | Delegate a `commands/<name>` asset to the canonical command executor |
 | `--arguments <text>` | Exact portable `$ARGUMENTS` input; valid only with `--command` |
-| `--workflow <ref>` | Retired compatibility flag; always rejected. Use `akm workflow run <ref>` instead. |
 | `--timeout-ms <ms>` | Override the agent CLI timeout in milliseconds |
 | `--cwd <path>` | Working directory for the spawned agent (defaults to the current directory) |
 

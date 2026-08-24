@@ -8,7 +8,7 @@ import { opencodeAdapter } from "../../src/core/adapter/adapters/opencode-adapte
 import type { BundleAdapter } from "../../src/core/adapter/bundle-adapter";
 import type { BundleComponent } from "../../src/core/adapter/types";
 import { buildFileContext } from "../../src/indexer/walk/file-context";
-import type { WorkflowPlanGraph } from "../../src/workflows/ir/stored-plan-v3";
+import type { WorkflowPlanGraphV4 as WorkflowPlanGraph } from "../../src/workflows/ir/schema-v4";
 import {
   assertFixtureBytesUnchanged,
   captureFixtureBytes,
@@ -141,10 +141,14 @@ function markdownFixtureProjection(markdown: string, plan: WorkflowPlanGraph): P
         id: "contract",
         needs: [],
         steps: plan.steps.map((step) => {
-          if (!step.root || step.root.kind !== "unit" || !step.root.exec) {
+          if (!step.root || step.root.kind !== "unit" || step.root.frozenTarget.kind !== "shell") {
             throw new Error(`fixture step ${step.stepId} must freeze to one exec unit`);
           }
-          return { id: step.stepId, kind: "run" as const, run: step.root.exec.command.join(" ") };
+          return {
+            id: step.stepId,
+            kind: "run" as const,
+            run: step.root.frozenTarget.exec.command.join(" "),
+          };
         }),
       },
     ],

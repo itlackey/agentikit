@@ -31,8 +31,7 @@
  *   - ALLOWLISTED ENVIRONMENT. The child does NOT inherit akm's environment: it
  *     starts EMPTY and receives exactly {@link EXEC_DEFAULT_ENV_PASSTHROUGH}
  *     plus the unit's `exec.passEnv`, then the resolved `env:` bindings, then
- *     the engine-authored `AKM_*` context. Stored-v3 `exec.inheritEnv` plans
- *     retain full inheritance for compatibility. See {@link childEnv}.
+ *     the engine-authored `AKM_*` context. See {@link childEnv}.
  *
  * Secrets: `env` values reaching this module are already resolved from `env:`
  * bindings by NAME (`resolveEnvBinding`) — the plan never carries inline secrets
@@ -50,12 +49,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isWithinAsync } from "../../core/common";
-import {
-  COMMON_SPAWN_ENV_PASSTHROUGH,
-  collectAllowlistedEnv,
-  supplementPathForSchedulerContext,
-  WIN32_SPAWN_ENV_FLOOR,
-} from "../../core/spawn-env";
+import { COMMON_SPAWN_ENV_PASSTHROUGH, collectAllowlistedEnv, WIN32_SPAWN_ENV_FLOOR } from "../../core/spawn-env";
 import {
   type ManagedSubprocessResult,
   runManagedSubprocess,
@@ -137,8 +131,8 @@ const EXEC_STDERR_DIAGNOSTIC_CLIP = WORKFLOW_UNIT_DIAGNOSTIC_CLIP - 500;
  *                     demand, exactly as the agent passthrough list does
  *                     (`integrations/agent/profiles.ts`, DRIFT-6).
  *
- * Deliberately ABSENT and reachable only through `exec.passEnv` / `env:` /
- * `exec.inheritEnv`: credentials of every kind, cloud/CI vars, and the proxy
+ * Deliberately ABSENT and reachable only through `exec.passEnv` / `env:`:
+ * credentials of every kind, cloud/CI vars, and the proxy
  * family (`HTTP_PROXY` & friends) — proxy URLs routinely embed credentials,
  * which is why akm's redaction policy already treats URL-shaped passthrough
  * values as credential-bearing.
@@ -559,9 +553,8 @@ async function isExistingDirectory(candidate: string): Promise<boolean> {
 /**
  * The child's environment, in three layers with fixed precedence:
  *
- *   1. the BASE — an allowlist by default ({@link EXEC_DEFAULT_ENV_PASSTHROUGH}
- *      plus the unit's `exec.passEnv` names), or the akm process's whole
- *      environment when the unit opted in with `exec.inheritEnv`;
+ *   1. the BASE — {@link EXEC_DEFAULT_ENV_PASSTHROUGH} plus the unit's
+ *      `exec.passEnv` names;
  *   2. the unit's resolved `env:` bindings;
  *   3. the engine-authored `AKM_*` context, LAST so a workflow-supplied binding
  *      can never shadow the ids/item the engine is telling the command the
@@ -589,18 +582,13 @@ async function isExistingDirectory(candidate: string): Promise<boolean> {
  *     {@link collectAllowlistedEnv} does it here, so there is one mechanism to
  *     review instead of two.
  *
- * `inheritEnv` remains executable for stored durable-plan v3 compatibility; new
- * v4 starts reject it. A stored v3 plan carrying it passes everything
- * through, PATH included — supplemented for scheduler contexts exactly as
- * {@link collectAllowlistedEnv} does it, because the compatibility branch must
- * never hand a command a worse PATH than the default does under cron/launchd.
  */
 function childEnv(
   exec: IrExecSpec,
   bindings: Record<string, string> | undefined,
   context: Record<string, string> | undefined,
 ): Record<string, string> {
-  const env = exec.inheritEnv ? inheritedProcessEnv() : collectAllowlistedEnv(execAllowlist(exec));
+  const env = collectAllowlistedEnv(execAllowlist(exec));
   for (const [name, value] of Object.entries(bindings ?? {})) env[name] = value;
   for (const [name, value] of Object.entries(context ?? {})) env[name] = value;
   return env;
@@ -609,19 +597,6 @@ function childEnv(
 /** The unit's effective allowlist: the shared default plus its own `passEnv` names. */
 function execAllowlist(exec: IrExecSpec): string[] {
   return exec.passEnv ? [...EXEC_DEFAULT_ENV_PASSTHROUGH, ...exec.passEnv] : [...EXEC_DEFAULT_ENV_PASSTHROUGH];
-}
-
-/**
- * The akm process's own environment (`exec.inheritEnv`), with the same
- * scheduler-context PATH supplementation {@link collectAllowlistedEnv} applies.
- */
-function inheritedProcessEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [name, value] of Object.entries(process.env)) {
-    if (typeof value === "string") env[name] = value;
-  }
-  if (env.PATH !== undefined) env.PATH = supplementPathForSchedulerContext(env.PATH);
-  return env;
 }
 
 /** `argv[0]` plus its argument count — never the full argv, which can carry values. */

@@ -183,10 +183,9 @@ Widen it only by naming what the unit needs:
 Secrets and fixed values belong in exact named `env:` bindings: those values
 are redacted out of everything journaled, and `pass_env:` values are not.
 
-New workflow starts freeze durable v4 plans, and v4 rejects `inherit_env`
-instead of persisting an unbounded ambient environment. Existing stored v3
-plans that already contain the historical flag still resume unchanged; that
-compatibility is not a current authoring option.
+Workflow starts freeze durable v4 plans, and v4 rejects `inherit_env` instead
+of persisting an unbounded ambient environment. Pre-v4 stored plans do not
+execute; start a new run after updating the source.
 
 Named bindings and `pass_env:` are part of the unit's input hash, so changing
 either re-runs the command instead of reusing a row recorded under another

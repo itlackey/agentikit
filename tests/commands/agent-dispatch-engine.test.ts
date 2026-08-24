@@ -12,12 +12,10 @@ import { FALLBACK_ANNOUNCEMENT } from "../../src/integrations/agent/engine-fallb
 import { overrideSeam } from "../_helpers/seams";
 
 describe("akm agent CLI help", () => {
-  test("marks --workflow retired and does not present asset tool requests as authorization", async () => {
+  test("does not expose workflow flattening or present asset tool requests as authorization", async () => {
     const usage = await renderUsage(agentCommand as Parameters<typeof renderUsage>[0]);
 
-    expect(usage).toContain("--workflow");
-    expect(usage).toContain("always rejected");
-    expect(usage).toContain("akm workflow run");
+    expect(usage).not.toContain("--workflow");
     expect(usage).toContain("separate operator authorization");
     expect(usage).toContain("rejected by the current CLI");
     expect(usage).not.toContain("provides the system prompt, model, and tool policy");
@@ -36,7 +34,7 @@ describe("akmAgentDispatch engine capability", () => {
         engine: "reviewer",
         timeoutMs: 12_345,
         cwd: "/tmp/project",
-        dispatch: { prompt: "", model: "balanced" },
+        selection: { model: "balanced" },
         agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
       },
       {
@@ -75,7 +73,7 @@ describe("akmAgentDispatch engine capability", () => {
     ]);
   });
 
-  test("rejects legacy command argv and raw persona injection before delegation", async () => {
+  test("rejects legacy command argv before delegation", async () => {
     let calls = 0;
     const executeCommand = async () => {
       calls += 1;
@@ -91,16 +89,6 @@ describe("akmAgentDispatch engine capability", () => {
         { executeCommand },
       ),
     ).rejects.toThrow(/one exact string|argumentInput/i);
-    await expect(
-      akmAgentDispatch(
-        {
-          commandRef: "commands/review",
-          dispatch: { prompt: "", systemPrompt: "raw persona" },
-          agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
-        },
-        { executeCommand },
-      ),
-    ).rejects.toThrow(/agent ref|systemPrompt/i);
     expect(calls).toBe(0);
   });
 
@@ -113,12 +101,11 @@ describe("akmAgentDispatch engine capability", () => {
         engine: "reviewer",
         timeoutMs: 0,
         cwd: "",
-        dispatch: {
-          prompt: "must be replaced by resolved prompt",
+        selection: {
           model: "balanced",
           inference: { effort: "high", temperature: 0 },
           tools: [],
-          schema: { type: "object" },
+          outputSchema: { type: "object" },
         },
         agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
       },
@@ -159,22 +146,12 @@ describe("akmAgentDispatch engine capability", () => {
     ]);
   });
 
-  test("rejects raw prompt persona injection and native argv on resolved work", async () => {
+  test("rejects native argv on resolved work", async () => {
     let calls = 0;
     const executeCommand = async () => {
       calls += 1;
       throw new Error("must not delegate");
     };
-    await expect(
-      akmAgentDispatch(
-        {
-          prompt: "x",
-          dispatch: { prompt: "x", systemPrompt: "raw persona" },
-          agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
-        },
-        { executeCommand },
-      ),
-    ).rejects.toThrow(/agent ref|systemPrompt/i);
     await expect(
       akmAgentDispatch(
         {
@@ -200,10 +177,7 @@ describe("akmAgentDispatch engine capability", () => {
       akmAgentDispatch({ agentRef: "fixture//agents/reviewer", agentConfig }, { executeCommand }),
     ).rejects.toThrow(/--prompt|--command|explicit task/i);
     await expect(
-      akmAgentDispatch(
-        { dispatch: { prompt: "legacy raw content", model: "balanced" }, agentConfig },
-        { executeCommand },
-      ),
+      akmAgentDispatch({ selection: { model: "balanced" }, agentConfig }, { executeCommand }),
     ).rejects.toThrow(/--prompt|--command|explicit task/i);
     expect(calls).toBe(0);
   });
@@ -225,26 +199,6 @@ describe("akmAgentDispatch engine capability", () => {
         },
       ),
     ).rejects.toThrow(/agent asset ref|agents\//i);
-    expect(calls).toBe(0);
-  });
-
-  test("rejects legacy workflow flattening before resolution or command dispatch", async () => {
-    let calls = 0;
-    await expect(
-      akmAgentDispatch(
-        {
-          workflowRef: "workflows/review",
-          args: ["must-not-be-substituted"],
-          agentConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
-        },
-        {
-          executeCommand: async () => {
-            calls += 1;
-            throw new Error("must not delegate");
-          },
-        },
-      ),
-    ).rejects.toThrow(/akm workflow run|cannot be flattened/i);
     expect(calls).toBe(0);
   });
 

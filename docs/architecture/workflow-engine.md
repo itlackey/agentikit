@@ -47,9 +47,9 @@ params, and journaled results.
 
 ## Resume is journaled replay
 
-Durable plan v3 is an exact compatibility island. Its decoder and canonical
-bytes remain unchanged; a stored v3 row resumes as v3 rather than being
-rewritten, refrozen, or normalized to v4.
+Only the current durable plan version is executable. Pre-v4 rows are rejected;
+start a new run from current source instead of carrying an old execution
+architecture inside the runtime.
 
 Resume never re-reads authored workflow source. Resume never re-reads config
 or configuration. Resume never re-reads the asset index. It validates the

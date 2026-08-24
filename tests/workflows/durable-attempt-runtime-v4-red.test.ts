@@ -11,7 +11,6 @@ import type { UnitDispatchRequest, UnitDispatchResult } from "../../src/workflow
 import { runWorkflowSteps } from "../../src/workflows/exec/run-workflow";
 import { startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../_helpers/sandbox";
-import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../_helpers/workflow";
 
 /**
  * Runtime crash-window RED tests for durable plan v4.
@@ -21,10 +20,6 @@ import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../_he
  * is at-least-once: if driver A dies after an external side effect and driver B
  * reclaims the expired reservation, both calls receive the same stable
  * `dispatchId`. Only B's CAS-valid finish may persist outcome/usage/event data.
- *
- * The final test is the v3 compatibility island: historical v3 plans continue
- * using their exact mutable `workflow_run_units` replay contract and event
- * shape. Merely adding migration 022 must not silently change old resumes.
  */
 
 interface AttemptRow {
@@ -52,8 +47,6 @@ interface DispatchRequestV4 extends UnitDispatchRequest {
   /** 1-based durable attempt ordinal for `(runId, content-derived unitId)`. */
   attempt: number;
 }
-
-const V3_RUN_ID = "88888888-8888-4888-8888-888888888888";
 
 let storage: IsolatedAkmStorage;
 
@@ -303,69 +296,4 @@ describe("durable v4 runtime attempt protocol", () => {
       await firstRun.catch(() => undefined);
     }
   }, 30_000);
-});
-
-describe("v3 resume compatibility island", () => {
-  test("a stored v3 plan keeps its existing unit row/event contract and does not enter the v4 attempt journal", async () => {
-    const plan = freezeWorkflow(`---
-type: workflow
-steps:
-  - id: work
----
-
-## work
-
-Historical v3 work.
-`);
-    const db = openStateDatabase(getStateDbPath());
-    try {
-      seedWorkflowRun(db, {
-        runId: V3_RUN_ID,
-        workflowRef: "workflows/v3-history",
-        steps: [{ stepId: "work" }],
-      });
-      storeFrozenWorkflowPlan(db, V3_RUN_ID, plan);
-    } finally {
-      db.close();
-    }
-
-    const seen: UnitDispatchRequest[] = [];
-    const result = await runWorkflowSteps({
-      target: V3_RUN_ID,
-      heartbeatScheduler: () => () => {},
-      dispatcher: async (request) => {
-        seen.push(request);
-        return { ok: true, text: "v3-complete", usage: { inputTokens: 1, outputTokens: 1 } };
-      },
-    });
-    expect(result.done).toBe(true);
-    expect(seen).toHaveLength(1);
-    expect(Object.hasOwn(seen[0] as object, "dispatchId")).toBe(false);
-    expect(Object.hasOwn(seen[0] as object, "attempt")).toBe(false);
-
-    const verify = openStateDatabase(getStateDbPath());
-    try {
-      const legacy = verify
-        .prepare("SELECT status, result_json, tokens, attempts FROM workflow_run_units WHERE run_id = ?")
-        .all(V3_RUN_ID) as Array<Record<string, unknown>>;
-      expect(legacy).toEqual([
-        expect.objectContaining({
-          status: "completed",
-          result_json: JSON.stringify("v3-complete"),
-          tokens: 2,
-          attempts: 1,
-        }),
-      ]);
-      const durableV4 = verify
-        .prepare("SELECT COUNT(*) AS count FROM workflow_run_unit_attempts WHERE run_id = ?")
-        .get(V3_RUN_ID) as { count: number };
-      expect(durableV4.count).toBe(0);
-      const events = lifecycleEvents(V3_RUN_ID);
-      expect(events).toHaveLength(2);
-      expect(events.every((event) => !Object.hasOwn(event.metadata, "attempt"))).toBe(true);
-      expect(events.every((event) => !Object.hasOwn(event.metadata, "dispatchId"))).toBe(true);
-    } finally {
-      verify.close();
-    }
-  });
 });

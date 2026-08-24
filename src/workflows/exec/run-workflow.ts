@@ -73,9 +73,7 @@ import type { WorkflowRunStepState, WorkflowRunSummary } from "../../sources/typ
 import { withWorkflowRunsConnection, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
 import { assertRunParamsSatisfyPlan, type WorkflowParameterFlag } from "../ir/params";
 import { computePlanHash } from "../ir/plan-hash";
-import type { IrStepPlan } from "../ir/schema";
-import type { ExecutableWorkflowPlan, IrStepPlanV4 } from "../ir/schema-v4";
-import { decodeWorkflowPlanV3, type WorkflowPlanGraph } from "../ir/stored-plan-v3";
+import { decodeWorkflowPlanV4, type IrStepPlanV4, type WorkflowPlanGraphV4 } from "../ir/schema-v4";
 import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
 import { completeWorkflowStep, getNextWorkflowStep, resumeWorkflowRun, type WorkflowNextResult } from "../runtime/runs";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
@@ -123,7 +121,7 @@ export interface RunWorkflowOptions {
    * Test seam: plan loader. Default: the run row's FROZEN plan (`plan_json`
    * + `plan_hash` integrity check, migration 006).
    */
-  loadPlan?: (workflowRef: string) => Promise<WorkflowPlanGraph>;
+  loadPlan?: (workflowRef: string) => Promise<WorkflowPlanGraphV4>;
   /** Test seam for the engine concurrency cap. */
   maxConcurrency?: number;
   /**
@@ -528,22 +526,14 @@ async function completedRunResult(runId: string): Promise<RunWorkflowResult> {
 
 function workflowSummaryJudge(
   options: RunWorkflowOptions,
-  plan: ExecutableWorkflowPlan,
-  stepPlan: IrStepPlan | IrStepPlanV4,
+  stepPlan: IrStepPlanV4,
   signal: AbortSignal | undefined,
   owner: { runId: string; stepId: string },
 ): SummaryJudge | null {
   if (options.summaryJudge !== undefined) return options.summaryJudge;
-  const judge = "frozenJudge" in stepPlan.gate ? stepPlan.gate.frozenJudge : stepPlan.gate.judge;
   // The judge dispatches under the REAL run/step identity; the per-loop gate row
   // identity is threaded in per call by the completion path that journals it.
-  return frozenSummaryJudge(
-    plan,
-    judge,
-    signal,
-    options.dispatcher ?? defaultUnitDispatcher,
-    owner,
-  );
+  return frozenSummaryJudge(stepPlan.gate.frozenJudge, signal, options.dispatcher ?? defaultUnitDispatcher, owner);
 }
 
 /**
@@ -593,15 +583,15 @@ async function seedRunAccountingFromJournal(runId: string): Promise<{ unitsDispa
 async function loadAuthoritativeRunPlan(
   options: RunWorkflowOptions,
   next: WorkflowNextResult,
-): Promise<ExecutableWorkflowPlan> {
-  const plan = await loadFrozenPlan(next.run.id);
+): Promise<WorkflowPlanGraphV4> {
+  const stored = await loadStoredPlan(next.run.id);
   if (options.loadPlan) {
-    const expected = decodeWorkflowPlanV3(await options.loadPlan(next.run.workflowRef));
-    if (computePlanHash(expected) !== computePlanHash(plan))
+    const expected = decodeWorkflowPlanV4(await options.loadPlan(next.run.workflowRef));
+    if (computePlanHash(expected) !== computePlanHash(stored))
       throw new UsageError(`Injected workflow plan for run ${next.run.id} differs from its frozen plan.`);
   }
-  assertRunParamsSatisfyPlan(next.run.id, plan, next.run.params ?? {});
-  return plan;
+  assertRunParamsSatisfyPlan(next.run.id, stored, next.run.params ?? {});
+  return stored;
 }
 
 /**
@@ -612,7 +602,7 @@ async function loadAuthoritativeRunPlan(
 async function skipUnselectedRouteTarget(input: {
   runId: string;
   stepId: string;
-  stepPlan: IrStepPlan;
+  stepPlan: IrStepPlanV4;
   skipInfo: RouteSkipInfo;
   routeUnselected: Map<string, RouteSkipInfo>;
   executed: ExecutedStepReport[];
@@ -657,7 +647,7 @@ async function skipUnselectedRouteTarget(input: {
  */
 async function recoverGateLoopState(
   runId: string,
-  stepPlan: IrStepPlan,
+  stepPlan: IrStepPlanV4,
 ): Promise<{ startLoop: number; seededFeedback: GateFeedback | undefined }> {
   // A step with no effective completion criteria never reaches a judge
   // (`validateStepSummary` short-circuits before the gate-journaling wrapper),
@@ -675,8 +665,8 @@ async function recoverGateLoopState(
 interface StepDriveContext {
   options: RunWorkflowOptions;
   next: WorkflowNextResult;
-  plan: ExecutableWorkflowPlan;
-  stepPlan: IrStepPlan;
+  plan: WorkflowPlanGraphV4;
+  stepPlan: IrStepPlanV4;
   step: WorkflowRunStepState;
   /** Every prior step's evidence, keyed by step id (live values preferred over rows). */
   evidence: Record<string, Record<string, unknown> | undefined>;
@@ -757,7 +747,6 @@ async function executeStepSubgraph(
         // Budget ceilings ride the FROZEN plan (addendum R2): a mid-run
         // asset edit can never loosen or tighten a run's budget.
         ...(plan.budget ? { budget: plan.budget } : {}),
-        ...(plan.irVersion === 3 ? { engines: plan.execution.engines } : {}),
         gateLoop,
         ...(gateFeedback ? { gateFeedback } : {}),
         // The heartbeat's signal is the effective dispatch signal: a lost
@@ -846,8 +835,6 @@ async function runStepGateLoop(
         routeSelected,
         routeUnselected,
         summaryJudge,
-        ...(ctx.plan.irVersion === 3 ? { engines: ctx.plan.execution.engines } : {}),
-        planIrVersion: ctx.plan.irVersion,
         signal: options.signal,
         // The judge runs under the DISPATCH signal, so the completion path must
         // see it too: an abort delivered there (a lost lease, a caller Ctrl-C)
@@ -1056,7 +1043,7 @@ async function driveRun(
     // verify. No gate loop is consumed and nothing is dispatched.
     let summaryJudge: SummaryJudge | null;
     try {
-      summaryJudge = workflowSummaryJudge(options, plan, stepPlan, dispatchSignal, {
+      summaryJudge = workflowSummaryJudge(options, stepPlan, dispatchSignal, {
         runId: next.run.id,
         stepId: step.id,
       });
@@ -1136,7 +1123,7 @@ async function driveRun(
  * Missing and non-current plans fail validation and are never rebuilt from a
  * mutable source asset.
  */
-async function loadFrozenPlan(runId: string): Promise<ExecutableWorkflowPlan> {
+async function loadStoredPlan(runId: string): Promise<WorkflowPlanGraphV4> {
   const row = await withWorkflowRunsRepo((repo) => {
     const run = repo.getRunById(runId);
     return run;

@@ -17,9 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   npm package.
 - The `inherit_env` option is a breaking removal: new durable-v4 workflow starts reject it.
   Replace ambient whole-process inheritance with exact named environment bindings and
-  `exec.pass_env` names. A stored v3 plan that already carries the historical
-  flag resumes unchanged as an exact compatibility island, but the flag is no
-  longer valid for new authoring.
+  `exec.pass_env` names. Pre-v4 stored workflow plans are not executable in
+  0.9.2; start a new run from current source.
 - `improve.strategies.*.processes.triage.judgment` now accepts `true`/`false`
   and honors `enabled` on object values; existing `{}` and configured objects
   remain enabled. Unknown object keys are now rejected instead of ignored, so
@@ -54,7 +53,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **WP7 — peer workflow sources and durable v4:** compile Markdown and the
   approved GitHub-shaped `.yml` subset through source IR v1; new runs atomically
   persist immutable v4 targets, guarded source reads, symbolic environments,
-  and durable dispatch attempts while stored v3 plans resume unchanged.
+  and durable dispatch attempts. Pre-v4 stored plans are rejected rather than
+  maintaining a second runtime.
 - **WP8 — release diagnostics:** added zero-write, secret-safe command dry-run
   output, stderr-only verbose provenance, offline `selected-model-aliases` and
   `configured-engines` health advisories, self-contained migration guidance,

@@ -401,7 +401,7 @@ describe("0.9.2 release surface", () => {
           /Markdown.*GitHub[- ]shaped YAML.*peer|peer.*Markdown.*GitHub[- ]shaped YAML/is,
         ],
         ["new runs freeze durable v4", /new (?:run|start).*(?:IR|plan).*v4|v4.*new (?:run|start)/is],
-        ["stored v3 runs resume unchanged", /v3.*resume.*(?:exact|unchanged|without.*(?:rewrite|normaliz|refreez))/is],
+        ["pre-v4 plans are rejected", /pre-v4[\s\S]{0,240}reject|reject[\s\S]{0,240}pre-v4/i],
       ]),
       ...missingInSection("docs/reference/workflows.md", /0\.9\.3|unsupported.*boundary/i, [
         ["0.9.3 boundary names GitHub semantics", /0\.9\.3[\s\S]{0,1600}(?:full GitHub|expressions|contexts)/i],
@@ -426,7 +426,7 @@ describe("0.9.2 release surface", () => {
         ["new starts use v4", /new (?:run|start).*(?:v4|version 4)|(?:v4|version 4).*new (?:run|start)/is],
       ]),
       ...missingInSection("docs/guides/run-workflows.md", /resume a blocked or failed run|resume/i, [
-        ["v3 resume compatibility", /v3.*resume.*(?:exact|unchanged|compatibility)/is],
+        ["pre-v4 plans are rejected", /pre-v4[\s\S]{0,240}reject|reject[\s\S]{0,240}pre-v4/i],
       ]),
       ...missingInSection("docs/guides/scheduling.md", /task definitions.*scheduler state|scheduled workflow/i, [
         [
@@ -458,8 +458,8 @@ describe("0.9.2 release surface", () => {
           ],
           ["shared source IR v1", /source IR (?:version )?1|sourceIrVersion:?\s*1/i],
           [
-            "new starts freeze durable plan IR v4",
-            /new (?:run|start)[^.\n]{0,240}(?:freeze|persist|store)[^.\n]{0,180}(?:durable )?(?:plan )?IR v4|(?:durable )?(?:plan )?IR v4[^.\n]{0,240}new (?:run|start)/i,
+            "current runs freeze durable plan IR v4",
+            /(?:new|every|current) (?:run|start)[\s\S]{0,240}(?:freeze|persist|store)[\s\S]{0,180}(?:durable )?(?:plan )?IR v4|(?:durable )?(?:plan )?IR v4[\s\S]{0,240}(?:new|every|current) (?:run|start)/i,
           ],
         ]),
       );
@@ -664,7 +664,7 @@ describe("0.9.2 release surface", () => {
     expect(failures).toEqual([]);
   });
 
-  test("keeps adjacent active source guidance scoped to peer formats and stored-v3 compatibility", () => {
+  test("keeps adjacent active source guidance scoped to peer formats and the current-only runtime", () => {
     const authoringRelative = "src/workflows/authoring/authoring.ts";
     const authoring = read(authoringRelative);
     const lintRelative = "src/core/adapter/adapters/akm-lint.ts";
@@ -700,12 +700,6 @@ describe("0.9.2 release surface", () => {
         [
           "the pass_env bound points to named env bindings",
           /pass_env[^.\n]{0,180}(?:named|explicit)[^.\n]{0,80}env:[^.\n]{0,80}bindings?/i,
-        ],
-      ]),
-      ...missing(execRelative, [
-        [
-          "stored-v3 execution support remains isolated in the executor",
-          /inheritEnv[^.\n]{0,160}stored[^.\n]{0,80}v3[^.\n]{0,100}compatibility/i,
         ],
       ]),
     ];
@@ -752,7 +746,7 @@ describe("0.9.2 release surface", () => {
     expect(failures).toEqual([]);
   });
 
-  test("keeps renderer, warning, stored identity, and v3 comments on the current workflow architecture", () => {
+  test("keeps renderer, warning, stored identity, and plan comments on the current workflow architecture", () => {
     const rendererRelative = "src/workflows/renderer.ts";
     const rendererHeader = read(rendererRelative).split("*/", 1)[0] ?? "";
     const warningRelative = "src/workflows/exec/param-secrets.ts";
@@ -767,8 +761,6 @@ describe("0.9.2 release surface", () => {
     const identity = read(identityRelative);
     const runsRelative = "src/workflows/runtime/runs.ts";
     const runs = read(runsRelative);
-    const schemaRelative = "src/workflows/ir/stored-plan-v3.ts";
-    const schemaHeader = read(schemaRelative).slice(0, 3_000);
     const currentSchemaRelative = "src/workflows/ir/schema-v4.ts";
     const currentSchemaHeader = read(currentSchemaRelative).slice(0, 3_000);
     const failures = [
@@ -798,16 +790,11 @@ describe("0.9.2 release surface", () => {
           /Capture[^.\n]{0,160}invoking harness\/session (?:identity|context)/i,
         ],
       ]),
-      ...missing(schemaRelative, [
-        [
-          "v3 is the sole stored compatibility boundary",
-          /sole[^.\n]{0,120}compatibility[^.\n]{0,120}persisted[^.\n]{0,80}v3/i,
-        ],
-      ]),
       ...missing(currentSchemaRelative, [
+        ["v4 is the sole executable plan", /sole executable workflow plan/i],
         [
-          "v4 validation does not delegate to v3",
-          /never used[^.\n]{0,160}(?:construct|validate)[^.\n]{0,80}(?:new|v4)/i,
+          "older stored plans are rejected",
+          /older stored plans?[^.\n]{0,160}reject|reject[^.\n]{0,160}older stored plans?/i,
         ],
       ]),
     ];
@@ -840,9 +827,12 @@ describe("0.9.2 release surface", () => {
         "runs does not call the stored harness/session the driver",
         /agent harness[^.\n]{0,100}driving this run|show who is driving the run/i,
       ],
-      [schemaRelative, schemaHeader, "v3 is not the only executable persisted format", /only executable persisted/i],
     ] as const) {
       if (pattern.test(text)) failures.push(`${relative}: ${label}`);
+    }
+
+    if (fs.existsSync(path.join(ROOT, "src/workflows/ir/stored-plan-v3.ts"))) {
+      failures.push("src/workflows/ir/stored-plan-v3.ts: obsolete stored-plan decoder still exists");
     }
 
     expect(failures).toEqual([]);
@@ -892,10 +882,8 @@ describe("0.9.2 release surface", () => {
         ],
       ]),
       ...missingInSection("docs/architecture/workflow-engine.md", /resume is journaled replay|resume/i, [
-        [
-          "v3 is an exact compatibility island",
-          /v3.*(?:exact|byte[- ]stable|unchanged).*compatibility|compatibility island.*v3/is,
-        ],
+        ["only current plans execute", /only the current durable plan version is executable/i],
+        ["pre-v4 plans are rejected", /pre-v4[\s\S]{0,240}reject|reject[\s\S]{0,240}pre-v4/i],
         [
           "resume does not re-read authored source",
           /resume[^.\n]{0,300}(?:does not|never)[^.\n]{0,160}(?:re-read|reread)[^.\n]{0,160}authored (?:workflow )?source|authored (?:workflow )?source[^.\n]{0,300}(?:not|never)[^.\n]{0,160}(?:re-read|reread)[^.\n]{0,160}resume/i,
@@ -928,7 +916,7 @@ describe("0.9.2 release surface", () => {
     expect(failures).toEqual([]);
   });
 
-  test("prohibits whole-process environment inheritance for new v4 starts and preserves only stored-v3 compatibility", () => {
+  test("prohibits whole-process inheritance and rejects pre-v4 stored plans", () => {
     const failures = [
       ...missingInSection("docs/reference/workflow-schema.md", /child's environment|environment.*allowlist/i, [
         [
@@ -939,10 +927,9 @@ describe("0.9.2 release surface", () => {
           "authors use named env bindings or pass_env",
           /named (?:environment|env) bindings?[^.\n]{0,200}pass_env|pass_env[^.\n]{0,200}named (?:environment|env) bindings?/i,
         ],
-        [
-          "inherit_env is stored-v3 compatibility only",
-          /inherit_env[^.\n]{0,240}stored[^.\n]{0,120}v3|stored[^.\n]{0,120}v3[^.\n]{0,240}inherit_env/i,
-        ],
+      ]),
+      ...missingInSection("docs/reference/workflow-schema.md", /durable v4 forbids/i, [
+        ["pre-v4 plans are rejected", /pre-v4[\s\S]{0,240}reject|reject[\s\S]{0,240}pre-v4/i],
       ]),
       ...missingInSection("docs/guides/author-workflows.md", /what the command can see|environment/i, [
         [
@@ -959,10 +946,7 @@ describe("0.9.2 release surface", () => {
           "new v4 starts reject inherit_env",
           /(?:new|v4)[^.\n]{0,240}(?:reject|forbid)[^.\n]{0,160}inherit_env|inherit_env[^.\n]{0,160}(?:reject|forbid)[^.\n]{0,240}(?:new|v4)/i,
         ],
-        [
-          "stored v3 runs resume unchanged",
-          /stored[^.\n]{0,120}v3[^.\n]{0,200}resume[^.\n]{0,120}(?:unchanged|exact)/i,
-        ],
+        ["pre-v4 plans are rejected", /pre-v4[\s\S]{0,240}reject|reject[\s\S]{0,240}pre-v4/i],
       ]),
       ...missingInSection("docs/architecture/testing/manual-testing-checklist.md", /exec \(shell\) units/i, [
         ["manual check expects new inherit_env refusal", /inherit_env:\s*true[\s\S]{0,500}(?:reject|refus|fail)/i],
@@ -971,12 +955,9 @@ describe("0.9.2 release surface", () => {
           /(?:named (?:environment|env) bindings?|env:)[\s\S]{0,400}pass_env|pass_env[\s\S]{0,400}(?:named (?:environment|env) bindings?|env:)/i,
         ],
       ]),
-      ...missingInSection("docs/migration/v0.9.1-to-v0.9.2.md", /workflow compatibility/i, [
+      ...missingInSection("docs/migration/v0.9.1-to-v0.9.2.md", /workflow cutover/i, [
         ["migration calls inherit_env removal breaking", /inherit_env[\s\S]{0,400}(?:breaking|reject|forbid)/i],
-        [
-          "migration preserves stored v3 resume only",
-          /stored[^.\n]{0,160}v3[^.\n]{0,240}resume[^.\n]{0,160}(?:unchanged|exact)/i,
-        ],
+        ["migration rejects pre-v4 plans", /pre-v4[\s\S]{0,240}reject|reject[\s\S]{0,240}pre-v4/i],
         [
           "migration directs authors to named bindings or pass_env",
           /named (?:environment|env) bindings?[^.\n]{0,240}pass_env|pass_env[^.\n]{0,240}named (?:environment|env) bindings?/i,
@@ -991,10 +972,7 @@ describe("0.9.2 release surface", () => {
         "CHANGELOG.md: named binding/pass_env replacement",
         /named (?:environment|env) bindings?[\s\S]{0,240}pass_env|pass_env[\s\S]{0,240}named (?:environment|env) bindings?/i,
       ],
-      [
-        "CHANGELOG.md: stored v3 compatibility only",
-        /stored[^.\n]{0,160}v3[^.\n]{0,240}resume[^.\n]{0,160}(?:unchanged|exact)/i,
-      ],
+      ["CHANGELOG.md: pre-v4 plans are rejected", /pre-v4[\s\S]{0,240}reject|reject[\s\S]{0,240}pre-v4/i],
     ] satisfies Requirement[]) {
       if (!pattern.test(released)) failures.push(label);
     }
@@ -1077,10 +1055,7 @@ describe("0.9.2 release surface", () => {
           "new starts persist plan IR v4",
           /new (?:run|start)[^.\n]{0,240}(?:persist|freeze|store)[^.\n]{0,160}(?:plan )?IR v4|(?:plan )?IR v4[^.\n]{0,240}new (?:run|start)/i,
         ],
-        [
-          "stored v3 plans resume unchanged",
-          /stored[^.\n]{0,160}v3[^.\n]{0,240}resume[^.\n]{0,120}(?:unchanged|exact)/i,
-        ],
+        ["pre-v4 plans are rejected", /pre-v4[\s\S]{0,240}reject|reject[\s\S]{0,240}pre-v4/i],
       ]),
       ...missingInSection("docs/architecture/internals/storage-locations.md", /table.*workflow_run_units/i, [
         ["links the append-only attempt table", /workflow_run_unit_attempts[^.\n]{0,240}(?:append-only|v4)/i],

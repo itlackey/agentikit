@@ -6,7 +6,8 @@ subagents, runs them concurrently, and reports back before the session ends.
 AKM workflows are a different thing: a portable procedure that any supported
 agent harness can run, with durable state, retries, gates, and resume built
 in. Peer workflow sources are Markdown `.md` and GitHub-shaped YAML `.yml`;
-both adapters lower to source IR version 1. Every new start freezes durable plan IR v4 before execution, while a stored durable-v3 run resumes unchanged.
+both adapters lower to source IR version 1. Every run freezes durable plan IR v4
+before execution; pre-v4 stored plans are rejected.
 Neither replaces the other — they solve different problems, and the right
 choice depends on whether the work is a one-off inside a session or a
 procedure worth keeping. Use the table below to pick.

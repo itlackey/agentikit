@@ -145,16 +145,4 @@ describe("durable v4 retries retain one content-derived unit identity", () => {
       db.close();
     }
   });
-
-  test("the historical v3 retry suffix remains byte-for-byte compatible", async () => {
-    // The v3 compatibility behavior is already covered deeply by the native
-    // executor suite. This focused ratchet pins the user-visible journal ABI:
-    // v3 still allocates a separate row id for retry N, while v4 never does.
-    const source = fs.readFileSync(
-      path.join(process.cwd(), "tests", "integration", "workflows", "native-executor.test.ts"),
-      "utf8",
-    );
-    expect(source).toContain('byId.get("fetch:solo~r1")');
-    expect(source).toContain('byId.get("fetch:solo~r2")');
-  });
 });

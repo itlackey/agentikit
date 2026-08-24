@@ -42,7 +42,7 @@ export const agentCommand = defineCommand({
   meta: {
     name: "agent",
     description:
-      "Dispatch an agent CLI (opencode, claude, …) with an optional agent persona and model defaults. Use --prompt or --command for work; --workflow is retired in favor of `akm workflow run`. Nonempty tool requests require separate operator authorization and are rejected by the current CLI.",
+      "Dispatch an agent CLI (opencode, claude, …) with an optional agent persona and model defaults. Use --prompt or --command for work. Nonempty tool requests require separate operator authorization and are rejected by the current CLI.",
   },
   args: {
     ...GLOBAL_OUTPUT_ARGS,
@@ -55,7 +55,7 @@ export const agentCommand = defineCommand({
     prompt: { type: "string", description: "Task prompt to pass to the agent" },
     "prompt-stdin": {
       type: "boolean",
-      description: "Read the task prompt from stdin (mutually exclusive with --prompt, --command, and --workflow)",
+      description: "Read the task prompt from stdin (mutually exclusive with --prompt and --command)",
       default: false,
     },
     engine: { type: "string", description: "Agent engine to use (default: defaults.engine)" },
@@ -63,10 +63,6 @@ export const agentCommand = defineCommand({
     arguments: {
       type: "string",
       description: "Exact string substituted for each literal $ARGUMENTS in --command (no tokenization or trimming)",
-    },
-    workflow: {
-      type: "string",
-      description: "Retired compatibility flag; always rejected. Use `akm workflow run <ref>`.",
     },
     model: {
       type: "string",
@@ -91,26 +87,21 @@ export const agentCommand = defineCommand({
 
       const promptText = getStringArg(args, "prompt");
       const commandRef = getStringArg(args, "command");
-      const workflowRef = getStringArg(args, "workflow");
       const promptStdin = args["prompt-stdin"] === true;
       const argumentInput = typeof args.arguments === "string" ? args.arguments : undefined;
       if (argumentInput !== undefined && commandRef === undefined) {
         throw new UsageError("--arguments requires --command <ref>.", "INVALID_FLAG_VALUE");
       }
-      if (promptStdin && (promptText !== undefined || commandRef !== undefined || workflowRef !== undefined)) {
-        throw new UsageError(
-          "--prompt-stdin cannot be combined with --prompt, --command, or --workflow.",
-          "INVALID_FLAG_VALUE",
-        );
+      if (promptStdin && (promptText !== undefined || commandRef !== undefined)) {
+        throw new UsageError("--prompt-stdin cannot be combined with --prompt or --command.", "INVALID_FLAG_VALUE");
       }
-      if (commandRef !== undefined && (promptText !== undefined || workflowRef !== undefined)) {
-        throw new UsageError("--command cannot be combined with --prompt or --workflow.", "INVALID_FLAG_VALUE");
+      if (commandRef !== undefined && promptText !== undefined) {
+        throw new UsageError("--command cannot be combined with --prompt.", "INVALID_FLAG_VALUE");
       }
       const cwd = getStringArg(args, "cwd");
 
-      // Compatibility only: the command arm delegates before any `show` read,
-      // template substitution, model resolution, or engine selection occurs in
-      // this handler. The canonical command path owns all of those decisions.
+      // The command arm delegates before any source read, template
+      // substitution, model resolution, or engine selection occurs here.
       if (commandRef !== undefined) {
         const model = getStringArg(args, "model");
         const result = await akmAgentDispatch({
@@ -119,7 +110,7 @@ export const agentCommand = defineCommand({
           ...(argumentInput === undefined ? {} : { argumentInput }),
           ...(agentRef === undefined ? {} : { agentRef }),
           agentConfig,
-          ...(model === undefined ? {} : { dispatch: { prompt: "", model } }),
+          ...(model === undefined ? {} : { selection: { model } }),
           ...(cwd ? { cwd } : {}),
           ...(timeoutMs !== undefined && Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
         });
@@ -138,10 +129,9 @@ export const agentCommand = defineCommand({
         engine: getStringArg(args, "engine"),
         prompt: stdinPrompt ?? promptText,
         commandRef,
-        workflowRef,
         ...(agentRef === undefined ? {} : { agentRef }),
         agentConfig,
-        ...(model === undefined ? {} : { dispatch: { prompt: stdinPrompt ?? promptText ?? "", model } }),
+        ...(model === undefined ? {} : { selection: { model } }),
         ...(cwd ? { cwd } : {}),
         ...(timeoutMs !== undefined && Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
       });
