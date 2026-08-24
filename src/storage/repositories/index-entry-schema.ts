@@ -64,6 +64,9 @@ interface IndexFingerprint {
 }
 
 interface EntrySchemaFingerprint {
+  tableSql: string | null;
+  sqliteSequenceTable: boolean;
+  sqliteSequenceValid: boolean;
   columns: ColumnFingerprint[];
   indexes: IndexFingerprint[];
 }
@@ -77,6 +80,10 @@ export interface EntrySchemaInspectionDatabase {
 }
 
 const CANONICAL_ENTRY_SCHEMA_FINGERPRINT: EntrySchemaFingerprint = {
+  tableSql:
+    "CREATE TABLE entries ( id INTEGER PRIMARY KEY AUTOINCREMENT, item_ref TEXT NOT NULL UNIQUE, bundle_id TEXT NOT NULL, component_id TEXT NOT NULL, concept_id TEXT NOT NULL, adapter_id TEXT NOT NULL, type TEXT NOT NULL, file_path TEXT NOT NULL, content_hash TEXT, document_json TEXT NOT NULL, search_text TEXT NOT NULL, derived_from TEXT )",
+  sqliteSequenceTable: true,
+  sqliteSequenceValid: true,
   columns: [
     { cid: 0, name: "id", type: "INTEGER", notNull: 0, defaultValue: null, primaryKeyPosition: 1, hidden: 0 },
     {
@@ -229,7 +236,27 @@ function sqlString(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
+function normalizeSchemaSql(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  return value.replace(/\s+/g, " ").trim();
+}
+
 export function readEntrySchemaFingerprint(db: EntrySchemaInspectionDatabase): EntrySchemaFingerprint {
+  const tableRow = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entries'").get() as
+    | { sql: string | null }
+    | undefined;
+  const sqliteSequenceTable =
+    db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'").get() !==
+    undefined;
+  const maxId = Number(
+    (db.prepare("SELECT COALESCE(MAX(id), 0) AS maxId FROM entries").get() as { maxId: number }).maxId,
+  );
+  const sequenceRow = sqliteSequenceTable
+    ? (db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'entries'").get() as { seq: number } | undefined)
+    : undefined;
+  const sqliteSequenceValid =
+    sqliteSequenceTable &&
+    (maxId === 0 ? sequenceRow === undefined || Number(sequenceRow.seq) >= 0 : Number(sequenceRow?.seq) >= maxId);
   const columns = (
     db.prepare("PRAGMA table_xinfo(entries)").all() as Array<{
       cid: number;
@@ -285,7 +312,13 @@ export function readEntrySchemaFingerprint(db: EntrySchemaInspectionDatabase): E
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
 
-  return { columns, indexes };
+  return {
+    tableSql: normalizeSchemaSql(tableRow?.sql),
+    sqliteSequenceTable,
+    sqliteSequenceValid,
+    columns,
+    indexes,
+  };
 }
 
 export function hasCanonicalEntrySchema(db: EntrySchemaInspectionDatabase): boolean {

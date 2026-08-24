@@ -16,6 +16,7 @@ import {
 } from "../../../../src/core/file-lock";
 import { resolveWritable } from "../../../../src/core/write-source";
 import { type Database, openDatabaseFinalizing } from "../../../../src/storage/database";
+import { isCanonicalIndexGeneration } from "../../../../src/storage/repositories/index-entry-schema";
 import {
   assertSafeRelativePath,
   assertSha256,
@@ -553,6 +554,9 @@ function snapshotDatabase(
     database = openDatabaseFinalizing(sourcePath, { readonly: true, create: false });
     database.exec("PRAGMA busy_timeout = 10000");
     assertQuickCheck(database, sourcePath);
+    if (databaseName === "index.db" && !isCanonicalIndexGeneration(database)) {
+      throw new Error(`incompatible derived index generation: ${sourcePath}`);
+    }
     makePrivateDirectory(path.dirname(destinationPath));
     database.exec(`VACUUM INTO ${sqliteQuote(destinationPath)}`);
   } catch (error) {
@@ -667,6 +671,9 @@ function rewriteDatabasePaths(
     : openDatabaseFinalizing(databasePath, { readonly: true, create: false });
   let inTransaction = false;
   try {
+    if (databaseName === "index.db" && !isCanonicalIndexGeneration(database)) {
+      throw new Error(`incompatible derived index generation: ${databasePath}`);
+    }
     if (write) {
       database.exec("PRAGMA foreign_keys = OFF");
       database.exec("BEGIN IMMEDIATE");

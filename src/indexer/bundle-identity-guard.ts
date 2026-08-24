@@ -34,7 +34,7 @@ import type { AkmConfig } from "../core/config/config";
 import { loadConfig } from "../core/config/config";
 import { getDbPath } from "../core/paths";
 import { warn } from "../core/warn";
-import { openDatabase } from "../storage/database";
+import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
 
 let guardSettled = false;
 
@@ -46,10 +46,10 @@ export function resetBundleIdentityGuardForTests(): void {
 /** Distinct non-empty `bundle_id` prefixes persisted in the index, or `undefined` when unreadable. */
 function indexBundlePrefixes(dbPath: string): string[] | undefined {
   if (!fs.existsSync(dbPath)) return undefined;
-  let db: ReturnType<typeof openDatabase> | undefined;
+  let db: ReturnType<typeof openReadonlyExistingDatabase>;
   try {
-    db = openDatabase(dbPath, { readonly: true });
-    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='entries'").get()) return undefined;
+    db = openReadonlyExistingDatabase(dbPath);
+    if (!db) return undefined;
     return (
       db
         .prepare("SELECT DISTINCT bundle_id AS b FROM entries WHERE bundle_id IS NOT NULL AND bundle_id != ''")
@@ -58,7 +58,7 @@ function indexBundlePrefixes(dbPath: string): string[] | undefined {
   } catch {
     return undefined;
   } finally {
-    db?.close();
+    if (db) closeDatabase(db);
   }
 }
 

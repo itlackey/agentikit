@@ -982,17 +982,20 @@ export function relinkUsageEvents(indexDb: Database, stateDb: Database, options:
     // on the utility_scores INSERT and roll back the entire finalize
     // transaction. Nulled rows can be re-resolved by step 2 below; events whose
     // entry is permanently gone simply stay null and age out via retention.
-    const linkedIds = (
-      stateDb.prepare(`SELECT DISTINCT entry_id AS id FROM ${usageEvents} WHERE entry_id IS NOT NULL`).all() as Array<{
-        id: number;
-      }>
-    ).map((r) => r.id);
-    const entryExists = indexDb.prepare("SELECT 1 FROM entries WHERE id = ?");
-    const staleIds = linkedIds.filter((id) => entryExists.get(id) == null);
-    if (staleIds.length > 0) {
-      const nullOut = stateDb.prepare(`UPDATE ${usageEvents} SET entry_id = NULL WHERE entry_id = ?`);
+    const linkedRows = stateDb
+      .prepare(`SELECT DISTINCT entry_id AS id, entry_ref AS ref FROM ${usageEvents} WHERE entry_id IS NOT NULL`)
+      .all() as Array<{ id: number; ref: string | null }>;
+    const entryIdentity = indexDb.prepare("SELECT item_ref AS itemRef FROM entries WHERE id = ?");
+    const staleLinks = linkedRows.filter(({ id, ref }) => {
+      const live = entryIdentity.get(id) as { itemRef: string } | null | undefined;
+      return live == null || (ref !== null && live.itemRef !== ref);
+    });
+    if (staleLinks.length > 0) {
+      const nullOut = stateDb.prepare(
+        `UPDATE ${usageEvents} SET entry_id = NULL WHERE entry_id = ? AND entry_ref IS ?`,
+      );
       const nullTx = stateDb.transaction(() => {
-        for (const id of staleIds) nullOut.run(id);
+        for (const { id, ref } of staleLinks) nullOut.run(id, ref);
       });
       nullTx();
     }
