@@ -28,6 +28,7 @@
 
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import {
@@ -35,6 +36,7 @@ import {
   ALLOWLIST_RATCHET_BASELINE,
   combinedAllowlistSize,
   ENV_ASSIGN_ALLOWED,
+  lintFile,
   lintAllTestFiles,
   SPAWN_ALLOWED,
 } from "../scripts/lint-tests-isolation";
@@ -64,5 +66,31 @@ describe("lint-tests-isolation allowlist ratchet", () => {
       throw new Error(`lint-tests-isolation found violations:\n${summary}`);
     }
     expect(violations.length).toBe(0);
+  });
+
+  test("rejects recursive cleanup rooted in the real home directory", () => {
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-isolation-lint-real-home-"));
+    const fixturePath = path.join(fixtureDir, "dangerous.test.ts");
+    try {
+      fs.writeFileSync(
+        fixturePath,
+        [
+          'import fs from "node:fs";',
+          'import os from "node:os";',
+          'import path from "node:path";',
+          'const realStore = path.join(os.homedir(), ".local", "share", "tool");',
+          'fs.rmSync(realStore, { recursive: true, force: true });',
+        ].join("\n"),
+      );
+
+      expect(lintFile(fixturePath)).toEqual([
+        expect.objectContaining({
+          rule: "real-home-delete",
+          line: 5,
+        }),
+      ]);
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
   });
 });
