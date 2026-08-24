@@ -41,11 +41,9 @@ const timeoutMsField = z.union([positiveInt.max(WORKFLOW_MAX_TIMEOUT_MS), z.null
 
 /**
  * OpenAI-compatible connection fields shared by named LLM engines and bounded
- * internal call helpers. `model` is required at schema level — partial entries
- * created by `akm config set llm.endpoint <url>` (where model is left absent)
- * are normalized to `model: ""` *before* Zod sees them by the load-time
- * pre-Zod migrator hook, so this strict shape gates CLI writes without
- * breaking legacy load-time partial configs.
+ * internal call helpers. `model` is required at schema level: current loads and
+ * CLI writes reject a partial named engine rather than normalizing it through a
+ * pre-schema compatibility transform.
  */
 export const LlmConnectionConfigSchema = z
   .object({

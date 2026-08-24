@@ -212,8 +212,9 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
     if (value && typeof value === "object") return (value as Record<string, unknown>)[key];
     return undefined;
   }, config);
-  // The judgment leaf normalizes legacy objects by adding `enabled: true`.
-  // Merge a JSON object patch with the existing value before that transform,
+  // The judgment leaf supplies `enabled: true` when the field is omitted.
+  // Merge a JSON object patch with the existing value before that current
+  // schema transform,
   // otherwise the synthesized default can overwrite an explicit false.
   const candidate =
     judgmentObjectPath && isPlainObject(value)
