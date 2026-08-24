@@ -560,7 +560,7 @@ describe("runTask — workflow target", () => {
 });
 
 describe("runTask — command target", () => {
-  test("preserves an authored akm command as exact shell text", async () => {
+  test("resolves a bare akm run task to the current installation when PATH omits it", async () => {
     const command = ["akm", "improve", "--strategy", "quick"];
     writeTask("literal-command", shellTask(command));
     let spawned: string[] | undefined;
@@ -576,10 +576,13 @@ describe("runTask — command target", () => {
       };
     };
 
-    const result = await runTask("literal-command", { stashDir, logDir, spawnFn });
+    const result = await withEnv({ PATH: "" }, () => runTask("literal-command", { stashDir, logDir, spawnFn }));
 
     expect(result.status).toBe("completed");
-    expect(spawned).toEqual(["sh", "-c", command.map(shellWord).join(" ")]);
+    expect(spawned?.slice(0, 2)).toEqual(["sh", "-c"]);
+    const shellText = spawned?.[2];
+    expect(shellText).toContain(resolveAkmInvocation().argv.map(shellWord).join(" "));
+    expect(shellText).toContain(command.slice(1).map(shellWord).join(" "));
   });
 
   test("executes an explicitly selected akm path without replacing it", async () => {
@@ -806,6 +809,63 @@ describe("runTask — command target", () => {
 });
 
 describe("runTask — prompt target", () => {
+  test("forwards scheduled AKM directory context to an agent without trusting task or caller overrides", async () => {
+    writeTask(
+      "scheduled-agent-context",
+      [
+        "version: 3",
+        "uses: akm/command",
+        "with:",
+        "  content: keep nested akm calls in this scheduled installation",
+        "env:",
+        "  AKM_BUNDLE_DIR: /authored-override",
+        "  TASK_FLAG: retained",
+        "akm:",
+        '  schedule: "@daily"',
+        "  engine: opencode",
+        "",
+      ].join("\n"),
+    );
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, "config.json"),
+      JSON.stringify({
+        configVersion: "0.9.0",
+        engines: { opencode: { kind: "agent", platform: "opencode" } },
+        defaults: { engine: "opencode" },
+      }),
+    );
+    const schedulerContext = {
+      AKM_BUNDLE_DIR: path.join(tmpRoot, "scheduled-bundle"),
+      AKM_CONFIG_DIR: configDir,
+      AKM_DATA_DIR: path.join(tmpRoot, "scheduled-data"),
+      AKM_CACHE_DIR: path.join(tmpRoot, "scheduled-cache"),
+      AKM_STATE_DIR: path.join(tmpRoot, "scheduled-state"),
+    };
+    for (const directory of Object.values(schedulerContext)) fs.mkdirSync(directory, { recursive: true });
+    let childEnv: Record<string, string> | undefined;
+
+    const result = await withEnv(schedulerContext, () =>
+      runTask("scheduled-agent-context", {
+        stashDir,
+        logDir,
+        scheduled: true,
+        // Operational overrides must not be able to replace frozen request
+        // data, including the scheduler context below.
+        agentOptions: { env: { AKM_STATE_DIR: "/caller-override" } },
+        runAgentImpl: async (_profile, _prompt, options) => {
+          childEnv = options.env;
+          return { ok: true, exitCode: 0, stdout: "ok", stderr: "", durationMs: 1 };
+        },
+      }),
+    );
+
+    expect(result.status).toBe("completed");
+    expect(childEnv).toMatchObject({ ...schedulerContext, TASK_FLAG: "retained" });
+    expect(childEnv?.AKM_BUNDLE_DIR).toBe(schedulerContext.AKM_BUNDLE_DIR);
+    expect(childEnv?.AKM_STATE_DIR).toBe(schedulerContext.AKM_STATE_DIR);
+  });
+
   test("dispatches an LLM prompt task through its selected engine", async () => {
     writeTask("llm", promptTask("answer briefly", { engine: "fast", model: "qwen3-small" }));
     process.env.AKM_CONFIG_DIR = configDir;
