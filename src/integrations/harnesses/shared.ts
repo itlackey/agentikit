@@ -18,7 +18,7 @@
  */
 
 /**
- * The four capability flags that vary independently of `sessionLogs` (which
+ * The three capability flags that vary independently of `sessionLogs` (which
  * is split out below into a discriminant — see {@link HarnessCapabilities}).
  */
 interface HarnessCapabilityFlags {
@@ -28,8 +28,6 @@ interface HarnessCapabilityFlags {
   readonly detection: boolean;
   /** Can import an existing harness LLM/config into akm config. */
   readonly configImport: boolean;
-  /** Reports a runtime identity string for workflow run attribution. */
-  readonly runtimeIdentity: boolean;
 }
 
 /**
@@ -73,7 +71,6 @@ export function caps(c: Partial<HarnessCapabilityFlags> & { sessionLogs?: boolea
     agentDispatch: false,
     detection: false,
     configImport: false,
-    runtimeIdentity: false,
     ...c,
   } as HarnessCapabilities;
 }

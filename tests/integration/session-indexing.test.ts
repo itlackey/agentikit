@@ -22,10 +22,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmExtract } from "../../src/commands/improve/extract";
-import {
-  buildSessionAccessInstructions,
-  type SessionSummaryGenerator,
-} from "../../src/commands/improve/session-asset";
+import { buildSessionAccessInstructions, type SessionSummaryGenerator } from "../../src/commands/improve/session-asset";
 import { akmSearch } from "../../src/commands/read/search";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";

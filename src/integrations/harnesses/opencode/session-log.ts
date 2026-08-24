@@ -42,7 +42,7 @@ export class OpenCodeProvider extends AbstractSessionLogProvider implements Sess
   readonly #baseDir = getOpenCodeBaseDir();
 
   protected availabilityRoot(): string {
-    return this.#baseDir;
+    return this.#dbPath(this.#baseDir);
   }
 
   /** Absolute path to opencode's SQLite store under `base`. */

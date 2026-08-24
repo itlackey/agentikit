@@ -184,10 +184,10 @@ export function sessionMeetsDurationGate(data: SessionData, minDurationMinutes: 
  *
  * Documented convention (#561, checklist item "Document `access` field
  * convention per harness"): the string tells a downstream agent exactly how to
- * read and parse the log at `log_path`. New harnesses fall back to a generic
- * `cat <log_path>` hint, which is always correct for a file-backed log.
+ * read and parse the source at `log_path`. New harnesses fall back to a generic
+ * `cat <log_path>` hint for file-backed logs.
  */
-export function buildSessionAccessInstructions(harness: string, logPath: string): string {
+export function buildSessionAccessInstructions(harness: string, logPath: string, sessionId: string): string {
   const canonical = harness;
   if (canonical === "claude") {
     return [
@@ -197,8 +197,9 @@ export function buildSessionAccessInstructions(harness: string, logPath: string)
   }
   if (canonical === "opencode") {
     return [
-      `Read with: cat ${logPath}`,
-      `The log is opencode session storage (JSON). Inspect with: jq '.' ${logPath}`,
+      `Open the SQLite database at ${JSON.stringify(logPath)} in read-only mode.`,
+      "Query: SELECT m.data, p.data FROM message AS m JOIN part AS p ON p.message_id = m.id WHERE m.session_id = ? AND p.session_id = ? ORDER BY m.time_created, p.time_created;",
+      `Bind both parameters to ${JSON.stringify(sessionId)}.`,
     ].join("\n");
   }
   // Generic fallback — file-backed logs are always readable with cat.
@@ -246,7 +247,7 @@ export function buildSessionAssetContent(
     ...(endedAt ? { ended_at: endedAt } : {}),
     ...(ref.projectHint ? { project: ref.projectHint } : {}),
     log_path: logPath,
-    access: buildSessionAccessInstructions(harness, logPath),
+    access: buildSessionAccessInstructions(harness, logPath, ref.sessionId),
     tags,
   };
 

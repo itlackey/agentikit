@@ -67,6 +67,5 @@ export class ClaudeHarness extends BaseHarness {
     agentDispatch: true,
     detection: true,
     configImport: true,
-    runtimeIdentity: true,
   });
 }

@@ -58,6 +58,5 @@ export class OpencodeHarness extends BaseHarness {
     agentDispatch: true,
     detection: true,
     configImport: true,
-    runtimeIdentity: true,
   });
 }
