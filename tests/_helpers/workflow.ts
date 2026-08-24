@@ -11,6 +11,7 @@ import type { UnresolvedExecutionDefaults } from "../../src/execution/source";
 import { requireAuthorizedExecutionPlan } from "../../src/integrations/agent/execution-cascade";
 import { lowerResolvedExecutionRequest } from "../../src/integrations/agent/execution-lowering";
 import { prepareInlineExecution } from "../../src/integrations/agent/inline-execution";
+import { MODEL_MAP_VERSION, type ResolvedModelMapV1 } from "../../src/integrations/agent/model-map";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
 import {
   defaultLlmEngineConcurrency,
@@ -51,6 +52,11 @@ export const WORKFLOW_TEST_CONFIG = {
   defaults: { engine: "test-agent", llmEngine: "test-llm" },
   workflow: { judgeEngine: "test-llm" },
 } as const satisfies AkmConfig;
+
+const WORKFLOW_TEST_MODEL_MAP: ResolvedModelMapV1 = Object.freeze({
+  version: MODEL_MAP_VERSION,
+  aliases: Object.freeze(Object.create(null)) as ResolvedModelMapV1["aliases"],
+});
 
 export type WorkflowPlanFixture = WorkflowPlanGraphV4;
 
@@ -175,6 +181,7 @@ function freezeCommandTarget(
     content: instructions,
     config,
     invocationKind: "workflow",
+    modelMap: WORKFLOW_TEST_MODEL_MAP,
     ...(invocationDefaults ? { invocationDefaults } : {}),
     current,
   });

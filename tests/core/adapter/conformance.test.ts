@@ -328,12 +328,18 @@ describe("conformance — read candidates and recognition are two-way canonical 
       const singular = path.join(toolRoot, "skill", "pkg", "SKILL.md");
       fs.mkdirSync(path.dirname(singular), { recursive: true });
       fs.writeFileSync(singular, "---\nname: pkg\ndescription: pkg\n---\n");
-      expect(opencodeAdapter.recognize(toolComponent, buildFileContext(toolRoot, singular))?.conceptId).toBe(
-        "skill/pkg",
+      expect(opencodeAdapter.recognize(toolComponent, buildFileContext(toolRoot, singular))).toBeNull();
+      expect(opencodeAdapter.readCandidates?.(toolComponent, "skill/pkg")).toEqual([]);
+
+      const canonicalSkill = path.join(toolRoot, "skills", "pkg", "SKILL.md");
+      fs.mkdirSync(path.dirname(canonicalSkill), { recursive: true });
+      fs.writeFileSync(canonicalSkill, "---\nname: pkg\ndescription: pkg\n---\n");
+      expect(opencodeAdapter.recognize(toolComponent, buildFileContext(toolRoot, canonicalSkill))?.conceptId).toBe(
+        "skills/pkg",
       );
-      expect(opencodeAdapter.readCandidates?.(toolComponent, "skill/pkg")[0]).toEqual({
-        path: singular,
-        conceptId: "skill/pkg",
+      expect(opencodeAdapter.readCandidates?.(toolComponent, "skills/pkg")[0]).toEqual({
+        path: canonicalSkill,
+        conceptId: "skills/pkg",
       });
       const nested = path.join(toolRoot, "skills", "pkg", "nested", "SKILL.md");
       fs.mkdirSync(path.dirname(nested), { recursive: true });
