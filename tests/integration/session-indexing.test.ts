@@ -22,7 +22,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmExtract } from "../../src/commands/improve/extract";
-import type { SessionSummaryGenerator } from "../../src/commands/improve/session-asset";
+import {
+  buildSessionAccessInstructions,
+  type SessionSummaryGenerator,
+} from "../../src/commands/improve/session-asset";
 import { akmSearch } from "../../src/commands/read/search";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
@@ -167,6 +170,20 @@ const fakeSummaryGenerator: SessionSummaryGenerator = async () => ({
 });
 
 const sessionAssetPath = () => path.join(stashDir, "sessions", "claude", `${SESSION_ID}.md`);
+
+describe("session source access instructions", () => {
+  test("describes the current OpenCode SQLite source without JSON file commands", () => {
+    const sessionId = "ses_'quoted";
+    const access = buildSessionAccessInstructions("opencode", "/tmp/opencode.db", sessionId);
+    expect(access).toContain("SQLite");
+    expect(access).toContain("message AS m");
+    expect(access).toContain("part AS p");
+    expect(access).toContain(JSON.stringify(sessionId));
+    expect(access).not.toContain("cat ");
+    expect(access).not.toContain("jq");
+    expect(access).not.toContain("JSON");
+  });
+});
 
 describe("#561 session indexing — round-trip", () => {
   test("extract writes a session asset, akmIndex indexes it, search --type session finds it", async () => {

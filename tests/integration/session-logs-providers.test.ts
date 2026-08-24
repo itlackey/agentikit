@@ -3,9 +3,9 @@
 //   - readSession(ref) → SessionData (with normalized events + inline ref mentions)
 //   - extractInlineRefMentions() helper used by both providers
 //
-// Each test scaffolds a temp directory mirroring the real platform layout
-// (Claude Code: ~/.claude/projects/<project>/<id>.jsonl; opencode:
-// OpenCode coverage uses the sole supported opencode.db layout.
+// Each test scaffolds a temp directory mirroring the real platform layout.
+// Claude uses ~/.claude/projects/<project>/<id>.jsonl; OpenCode coverage uses
+// the sole supported opencode.db layout.
 // No system home is touched.
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -279,6 +279,21 @@ function writeOpenCodeDb(base: string, sessions: OpenCodeDbSession[]): string {
 }
 
 describe("OpenCodeProvider.listSessions (opencode.db)", () => {
+  test("is unavailable when only the parent directory exists", () => {
+    const base =
+      process.platform === "darwin"
+        ? path.join(os.homedir(), "Library", "Application Support", "opencode")
+        : path.join(os.homedir(), ".local", "share", "opencode");
+    fs.mkdirSync(base, { recursive: true });
+    try {
+      expect(new OpenCodeProvider().isAvailable()).toBe(false);
+      fs.writeFileSync(path.join(base, "opencode.db"), "");
+      expect(new OpenCodeProvider().isAvailable()).toBe(true);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   test("lists sessions from the SQLite store, newest first", () => {
     const base = makeTempDir("akm-opencode-db-list-");
     writeOpenCodeDb(base, [

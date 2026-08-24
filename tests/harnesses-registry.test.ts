@@ -63,6 +63,12 @@ describe("HARNESS_REGISTRY membership", () => {
     // DetectedHarness all derive from this exact array.
     expect([...CONFIG_VALID_HARNESS_IDS]).toEqual([...VALID_HARNESS_IDS]);
   });
+
+  it("does not carry a second runtime-identity compatibility capability", () => {
+    for (const harness of HARNESS_REGISTRY) {
+      expect(harness.capabilities).not.toHaveProperty("runtimeIdentity");
+    }
+  });
 });
 
 describe("capability-derived sublists", () => {
