@@ -78,16 +78,6 @@ export const EXECUTION_BOUNDARY_TARGETS: readonly ExecutionBoundaryTarget[] = Ob
     exportName: "resolveLlmEngineUse",
   },
   {
-    operation: "engine.require-llm",
-    file: "src/integrations/agent/engine-resolution.ts",
-    exportName: "requireLlmConfig",
-  },
-  {
-    operation: "engine.default-llm-config",
-    file: "src/integrations/agent/engine-resolution.ts",
-    exportName: "getDefaultLlmConfig",
-  },
-  {
     operation: "engine.materialize-llm",
     file: "src/integrations/agent/engine-resolution.ts",
     exportName: "materializeLlmConnection",

@@ -509,12 +509,8 @@ function promoteProvenanceXrefs(existing: unknown, sourceRef: string): string[] 
  *      whatever `defaults.llmEngine` happens to be.
  *   2. the baseline default LLM engine.
  *
- * Regression guard (2026-05-26): before this resolver, `akmConsolidate`
- * called `getDefaultLlmConfig` directly and silently ignored a configured
- * `processes.consolidate.profile`, sending every chunk to the default LLM
- * (often a long-context model loaded with a smaller runtime `n_ctx`, causing
- * silent 400s from LM Studio). The investigation lives at
- * `/tmp/akm-health-investigations/consolidation-no-op.md`.
+ * All consolidate execution crosses the same improve engine-resolution
+ * boundary as extract, reflect, and distill.
  */
 function resolveConsolidateLlmRunner(
   config: AkmConfig,

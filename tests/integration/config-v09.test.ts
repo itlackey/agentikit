@@ -17,7 +17,6 @@ import { validateConfigShape } from "../../src/core/config/config-schema";
 import { configSet } from "../../src/core/config/config-walker";
 import { ConfigError } from "../../src/core/errors";
 import { getConfigPath } from "../../src/core/paths";
-import { getDefaultLlmConfig } from "../../src/integrations/agent/engine-resolution";
 
 beforeEach(() => resetConfigCache());
 afterEach(() => resetConfigCache());
@@ -69,22 +68,7 @@ describe("0.9 config contract", () => {
     expect(loadUserConfig().engines?.fast?.apiKey).toBe(`\${FAST_API_KEY}`);
   });
 
-  test("resolves direct LLM consumers from defaults.llmEngine", () => {
-    const config = {
-      configVersion: "0.9.0" as const,
-      semanticSearchMode: "auto" as const,
-      engines: {
-        fast: { kind: "llm" as const, endpoint: "https://example.test/v1/chat/completions", model: "fast-model" },
-      },
-      defaults: { llmEngine: "fast" },
-    };
-    expect(getDefaultLlmConfig(config)).toMatchObject({
-      endpoint: "https://example.test/v1/chat/completions",
-      model: "fast-model",
-    });
-  });
-
-  test("accepts and resolves first-class reasoningEffort on an LLM engine", () => {
+  test("accepts first-class reasoningEffort on an LLM engine", () => {
     const config = {
       configVersion: "0.9.0" as const,
       semanticSearchMode: "auto" as const,
@@ -98,7 +82,7 @@ describe("0.9 config contract", () => {
       },
       defaults: { llmEngine: "fast" },
     };
-    expect(getDefaultLlmConfig(config)?.reasoningEffort).toBe("none");
+    expect(validateConfigShape(config).ok).toBe(true);
     expect(
       validateConfigShape({
         ...config,

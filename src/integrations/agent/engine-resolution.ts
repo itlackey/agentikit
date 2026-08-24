@@ -3,15 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import path from "node:path";
-// LlmConnectionConfig / AkmConfig come from the dependency-free config-types.ts
-// leaf, NOT `../../core/config/config` (WI-9.8 KILL 3, D.3 edge A): config.ts
-// used to import `materializeLlmConnection`/`resolveLlmEngineUse` from this
-// file for its `requireLlmConfig`/`getDefaultLlmConfig` wrappers, while this
-// file imported `LlmConnectionConfig` back from config.ts — a direct 2-file
-// cycle that also dragged config.ts into the harness/agent-runtime SCC.
-// `requireLlmConfig`/`getDefaultLlmConfig` moved here (see bottom of file) so
-// config.ts no longer needs to import this module at all.
-import type { AkmConfig, LlmConnectionConfig } from "../../core/config/config-types";
+import type { LlmConnectionConfig } from "../../core/config/config-types";
 import { deepMergeConfig } from "../../core/config/deep-merge";
 import { ConfigError } from "../../core/errors";
 import { formatExtraParamsIssue, validateExtraParams } from "../../core/extra-params";
@@ -378,38 +370,4 @@ export function resolveEngine(name: string, config: EngineResolutionConfig): Run
     };
   }
   return lowerAgentEngine(name, engine, config);
-}
-
-/**
- * Resolve only transport/profile/credential material for an already-resolved
- * execution request. Unlike {@link resolveEngine}, this never reinterprets the
- * request-owned primary model; the engine lowerer projects that exact value
- * afterward (or preserves an explicit null/omission). SDK fallback model and
- * inference selection is likewise frozen into the canonical request during
- * preparation; this function returns only its raw symbolic transport material
- * so lowering cannot reinterpret a changed alias/model map.
- */
-// ── AkmConfig convenience wrappers (moved from core/config/config.ts, WI-9.8
-// KILL 3, D.3 edge A) ────────────────────────────────────────────────────────
-//
-// Moved verbatim: `config.ts` previously called `materializeLlmConnection` +
-// `resolveLlmEngineUse` directly for these two wrappers, which is what made
-// config.ts import this module — and this module imported `LlmConnectionConfig`
-// back from config.ts, closing a 2-file cycle. config.ts CANNOT re-export
-// these (a re-export is still a graph edge to this file), so the small number
-// of call sites that used to import them from "core/config/config" now import
-// them from here instead (see D.3 edge A "callers compose instead").
-
-/** Resolve and materialize the configured default LLM engine at dispatch time. */
-export function requireLlmConfig(config: AkmConfig): LlmConnectionConfig {
-  return materializeLlmConnection(resolveLlmEngineUse(config, []));
-}
-
-/**
- * Like {@link requireLlmConfig} but returns `undefined` instead of throwing
- * when no LLM is configured. Use in code paths where the LLM is optional.
- */
-export function getDefaultLlmConfig(config: AkmConfig): LlmConnectionConfig | undefined {
-  const resolved = resolveLlmEngineUse(config, [], { optional: true });
-  return resolved ? materializeLlmConnection(resolved) : undefined;
 }

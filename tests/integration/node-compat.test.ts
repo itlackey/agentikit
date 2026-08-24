@@ -985,7 +985,7 @@ describe("workflow smoke parity", () => {
 // Reviewer #9: bare `require(...)` in ESM modules throws
 // `ReferenceError: require is not defined` under Node. The offending sites were
 // on the workflow LLM paths — the summary-validation judge
-// (`buildDefaultSummaryJudge` → `getDefaultLlmConfig` + `await import llm/client`)
+// (`buildDefaultSummaryJudge` → canonical engine resolution + `await import llm/client`)
 // and the native unit dispatcher (`resolveUnitRunner`/`requireDefaultLlm` →
 // `await import` of `integrations/agent/config` and `core/config/config`). These
 // smokes drive those paths on the Node runtime with an LLM configured at a

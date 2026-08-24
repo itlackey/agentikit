@@ -28,13 +28,6 @@ import { deepMergeConfig } from "./deep-merge";
 
 export { stripJsonComments } from "./config-io";
 
-// requireLlmConfig / getDefaultLlmConfig moved to
-// integrations/agent/engine-resolution.ts (WI-9.8 KILL 3, D.3 edge A) — they
-// called that module's materializeLlmConnection/resolveLlmEngineUse, and that
-// module imported LlmConnectionConfig back from this file, closing a 2-file
-// cycle that also fused config.ts into the harness/agent-runtime SCC. This
-// file can no longer re-export them (a re-export is still a graph edge to
-// engine-resolution.ts) — import them from there directly.
 import { getConfigPath } from "../paths";
 import { warn } from "../warn";
 

@@ -16,7 +16,6 @@ import {
 import { backupExistingConfig } from "../../src/core/config/config-io";
 import { ConfigError } from "../../src/core/errors";
 import { getCacheDir, getConfigDir, getConfigPath } from "../../src/core/paths";
-import { getDefaultLlmConfig, requireLlmConfig } from "../../src/integrations/agent/engine-resolution";
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "akm-config-test-"));
@@ -563,28 +562,6 @@ describe("LLM engine config", () => {
     expect(cfg.defaults?.llmEngine).toBe("local");
   });
 
-  test("materializes a symbolic engine apiKey from the environment", () => {
-    writeCurrentConfig({
-      engines: {
-        local: {
-          kind: "llm",
-          endpoint: "http://localhost:11434/v1/chat/completions",
-          model: "llama3.2",
-          apiKey: "$AKM_LLM_API_KEY",
-        },
-      },
-      defaults: { llmEngine: "local" },
-    });
-    process.env.AKM_LLM_API_KEY = "sk-selected-engine";
-    try {
-      const cfg = loadConfig();
-      expect(cfg.engines?.local?.apiKey).toBe("$AKM_LLM_API_KEY");
-      expect(getDefaultLlmConfig(cfg)?.apiKey).toBe("sk-selected-engine");
-    } finally {
-      delete process.env.AKM_LLM_API_KEY;
-    }
-  });
-
   test("loads a symbolic LLM engine apiKey", () => {
     writeCurrentConfig({
       engines: {
@@ -630,63 +607,6 @@ describe("LLM engine config", () => {
     };
     updateConfig({ engines: { local: engine }, defaults: { llmEngine: "local" } });
     expect(loadConfig().engines?.local).toMatchObject(engine);
-  });
-
-  describe("default LLM engine resolution", () => {
-    const engine = {
-      kind: "llm" as const,
-      endpoint: "http://localhost:11434/v1/chat/completions",
-      model: "llama3.2",
-    };
-
-    test("getDefaultLlmConfig honors explicit defaults.llmEngine", () => {
-      const cfg = { ...DEFAULT_CONFIG, defaults: { llmEngine: "primary" }, engines: { primary: engine } };
-      expect(getDefaultLlmConfig(cfg)).toEqual({ endpoint: engine.endpoint, model: engine.model, timeoutMs: 600_000 });
-    });
-
-    test("getDefaultLlmConfig does not infer an engine named default", () => {
-      const cfg = { ...DEFAULT_CONFIG, engines: { default: engine } };
-      expect(getDefaultLlmConfig(cfg)).toBeUndefined();
-    });
-
-    test("getDefaultLlmConfig returns undefined when no LLM engine is selected", () => {
-      const cfg = { ...DEFAULT_CONFIG, engines: { gemma: engine } };
-      expect(getDefaultLlmConfig(cfg)).toBeUndefined();
-    });
-
-    test("requireLlmConfig resolves the selected LLM engine", () => {
-      const cfg = { ...DEFAULT_CONFIG, defaults: { llmEngine: "local" }, engines: { local: engine } };
-      expect(requireLlmConfig(cfg)).toEqual({ endpoint: engine.endpoint, model: engine.model, timeoutMs: 600_000 });
-    });
-
-    test("requireLlmConfig throws when no LLM engine is selected", () => {
-      const cfg = { ...DEFAULT_CONFIG, engines: { gemma: engine } };
-      expect(() => requireLlmConfig(cfg)).toThrow(ConfigError);
-      expect(() => requireLlmConfig(cfg)).toThrow(/No LLM engine is selected/);
-    });
-
-    test("explicit defaults.llmEngine selects one of several engines", () => {
-      const explicit = {
-        kind: "llm" as const,
-        endpoint: "http://explicit/v1/chat/completions",
-        model: "explicit-model",
-      };
-      const cfg = {
-        ...DEFAULT_CONFIG,
-        defaults: { llmEngine: "primary" },
-        engines: { primary: explicit, default: engine },
-      };
-      expect(getDefaultLlmConfig(cfg)).toEqual({
-        endpoint: explicit.endpoint,
-        model: explicit.model,
-        timeoutMs: 600_000,
-      });
-      expect(requireLlmConfig(cfg)).toEqual({
-        endpoint: explicit.endpoint,
-        model: explicit.model,
-        timeoutMs: 600_000,
-      });
-    });
   });
 });
 

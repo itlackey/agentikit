@@ -19,9 +19,8 @@ import type { AgentProfile } from "../../src/integrations/agent/profiles";
  *
  * The gate defaults ON (`lesson_quality_gate` → `distill.qualityGate.enabled
  * ?? true`), and after 07 P0-2 it fails CLOSED when the judge can't render a
- * verdict — which is exactly the case in the test sandbox (no LLM configured,
- * so `getDefaultLlmConfig` returns null and the gate rejects before any chat
- * call). Passing this as `options.config` skips the gate so these tests stay
+ * verdict — which is exactly the case in the test sandbox (no LLM is selected,
+ * so the gate rejects before any chat call). Passing this as `options.config` skips the gate so these tests stay
  * focused on reflect/distill mechanics. The dedicated fail-closed behavior is
  * covered by `tests/commands/improve/quality-gate-fail-closed.test.ts`.
  *
