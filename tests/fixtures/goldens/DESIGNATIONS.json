@@ -156,21 +156,21 @@
     },
     {
       "path": "tests/fixtures/goldens/cli/b-health-json-text.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
+      "reBaselineChunk": "9",
       "consumers": [
         "tests/commands/goldens-cli-health-tasks.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family B `akm health` json + text output on an empty state.db (status: pass) — key-set + non-emptiness only. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "e0444f1bcb846e5d0c232a3d388db8b3f8d8af9a5216009c12035d9aed7b4fc5"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family B `akm health` json + text output on an empty state.db (status: pass) — key-set + non-emptiness only. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals. | RE-BASELINED in the 0.9.2 single-runtime cleanup under Chunk 9's health/output ownership: the retired always-pass `sessionLogAdvisories` compatibility field was deleted; every remaining key is unchanged."
     },
     {
       "path": "tests/fixtures/goldens/cli/b-health-repeated-windows.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
+      "reBaselineChunk": "9",
       "consumers": [
         "tests/commands/goldens-cli-health-tasks.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family B repeated `--windows` flag (parseAllFlagValues, cli.ts:371) — window name order + key-set. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "f40afa55679768210d5543fdc143733e74ae016fc6922e091c1982fc7359db73"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family B repeated `--windows` flag (parseAllFlagValues, cli.ts:371) — window name order + key-set. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals. | RE-BASELINED in the 0.9.2 single-runtime cleanup under Chunk 9's health/output ownership: the retired always-pass `sessionLogAdvisories` compatibility field was deleted; every remaining key is unchanged."
     },
     {
       "path": "tests/fixtures/goldens/cli/c-tasks-family.json",
