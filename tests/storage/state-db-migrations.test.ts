@@ -42,6 +42,13 @@ function seedBefore018(file: string, marker = "seeded-before-018"): void {
   seeded.close();
 }
 
+function moveDatabaseFamily(from: string, to: string): void {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const source = `${from}${suffix}`;
+    if (fs.existsSync(source)) fs.renameSync(source, `${to}${suffix}`);
+  }
+}
+
 function waitForFile(file: string, timeoutMs = 2_000): void {
   const deadline = Date.now() + timeoutMs;
   while (!fs.existsSync(file) && Date.now() < deadline) {
@@ -77,6 +84,62 @@ describe("state.db automatic migration boundary", () => {
     const ids = db.prepare("SELECT id FROM schema_migrations ORDER BY rowid").all() as Array<{ id: string }>;
     expect(ids.map((row) => row.id)).toEqual(STATE_MIGRATIONS.map((migration) => migration.id));
     db.close();
+  });
+
+  test("an existing database without a migration ledger is rejected without writing a byte", () => {
+    const file = statePath();
+    const seeded = openDatabase(file);
+    seeded.exec("CREATE TABLE operator_probe (value TEXT NOT NULL); INSERT INTO operator_probe VALUES ('untouched')");
+    seeded.close();
+    const before = createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+
+    let error: unknown;
+    try {
+      openStateDatabase(file).close();
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(createHash("sha256").update(fs.readFileSync(file)).digest("hex")).toBe(before);
+    expect(fs.existsSync(`${file}-wal`)).toBe(false);
+    expect(fs.existsSync(`${file}-shm`)).toBe(false);
+    const inspected = openDatabase(file, { readonly: true });
+    expect(
+      inspected
+        .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'")
+        .get(),
+    ).toEqual({ count: 0 });
+    expect(inspected.prepare("SELECT value FROM operator_probe").get()).toEqual({ value: "untouched" });
+    inspected.close();
+    expect(error instanceof Error ? error.message : "").toMatch(/existing unversioned state\.db.*akm upgrade --force/i);
+  });
+
+  test("explicit upgrade snapshots an existing unversioned database before migration 001", () => {
+    const file = statePath();
+    const seeded = openDatabase(file);
+    seeded.exec("CREATE TABLE operator_probe (value TEXT NOT NULL); INSERT INTO operator_probe VALUES ('pre-ledger')");
+    seeded.close();
+
+    const result = upgradeHistoricalStateDatabase(file);
+
+    expect(result.upgraded).toBe(true);
+    expect(result.safetyCopyPath).toBeDefined();
+    const safetyCopy = openDatabase(result.safetyCopyPath as string, { readonly: true });
+    expect(safetyCopy.prepare("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
+    expect(
+      safetyCopy
+        .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'")
+        .get(),
+    ).toEqual({ count: 0 });
+    expect(safetyCopy.prepare("SELECT value FROM operator_probe").get()).toEqual({ value: "pre-ledger" });
+    safetyCopy.close();
+
+    const current = openDatabase(file, { readonly: true });
+    expect((current.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(
+      STATE_MIGRATIONS.length,
+    );
+    expect(current.prepare("SELECT value FROM operator_probe").get()).toEqual({ value: "pre-ledger" });
+    current.close();
   });
 
   test("a pre-018 database appearing at the fresh-open boundary is never treated as fresh", () => {
@@ -366,6 +429,90 @@ describe("state.db automatic migration boundary", () => {
     expect(concurrentWriter?.id).toBeGreaterThan(migrationMarker?.id ?? Number.POSITIVE_INFINITY);
   });
 
+  test.skipIf(process.platform === "win32")(
+    "a source-path swap and restore cannot upgrade the original from a decoy snapshot",
+    () => {
+      const file = statePath();
+      const decoy = path.join(path.dirname(file), "decoy.db");
+      const parkedOriginal = path.join(path.dirname(file), "parked-original.db");
+      seedBefore018(file, "original-source");
+      seedBefore018(decoy, "decoy-source");
+
+      const originalOpen = fs.openSync.bind(fs);
+      const originalFstat = fs.fstatSync.bind(fs);
+      let safetyCopyPath: string | undefined;
+      let safetyFd: number | undefined;
+      let swapped = false;
+      let restored = false;
+      const restoreSource = () => {
+        if (!swapped || restored) return;
+        moveDatabaseFamily(file, decoy);
+        moveDatabaseFamily(parkedOriginal, file);
+        restored = true;
+      };
+
+      const open = spyOn(fs, "openSync").mockImplementation(((
+        candidate: fs.PathLike,
+        flags: string | number,
+        mode?: fs.Mode,
+      ) => {
+        const fd = originalOpen(candidate, flags, mode);
+        if (!swapped && String(candidate).includes(".pre-018-drop-dead-lane-schema.")) {
+          safetyCopyPath = String(candidate);
+          safetyFd = fd;
+          moveDatabaseFamily(file, parkedOriginal);
+          moveDatabaseFamily(decoy, file);
+          swapped = true;
+        }
+        return fd;
+      }) as typeof fs.openSync);
+      const fstat = spyOn(fs, "fstatSync").mockImplementation(((descriptor: number, options?: fs.StatSyncOptions) => {
+        const stat = originalFstat(descriptor, options as never) as fs.Stats | fs.BigIntStats;
+        if (descriptor === safetyFd && (typeof stat.size === "bigint" ? stat.size > 0n : stat.size > 0) && !restored) {
+          restoreSource();
+        }
+        return stat;
+      }) as typeof fs.fstatSync);
+
+      let result: ReturnType<typeof upgradeHistoricalStateDatabase> | undefined;
+      let error: unknown;
+      try {
+        result = upgradeHistoricalStateDatabase(file);
+      } catch (caught) {
+        error = caught;
+      } finally {
+        restoreSource();
+        fstat.mockRestore();
+        open.mockRestore();
+      }
+
+      expect(swapped).toBe(true);
+      expect(restored).toBe(true);
+      const current = openDatabase(file, { readonly: true });
+      const applied018 = current
+        .prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE id = '018-drop-dead-lane-schema'")
+        .get() as { count: number };
+      const originalTable = current
+        .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'consolidation_judged'")
+        .get() as { count: number };
+      if (applied018.count === 1) {
+        expect(error).toBeUndefined();
+        expect(result?.safetyCopyPath).toBe(safetyCopyPath);
+        const safetyCopy = openDatabase(result?.safetyCopyPath as string, { readonly: true });
+        expect(safetyCopy.prepare("SELECT content_hash FROM consolidation_judged").get()).toEqual({
+          content_hash: "original-source",
+        });
+        safetyCopy.close();
+      } else {
+        expect(originalTable.count).toBe(1);
+        expect(current.prepare("SELECT content_hash FROM consolidation_judged").get()).toEqual({
+          content_hash: "original-source",
+        });
+      }
+      current.close();
+    },
+  );
+
   test("a failed 018 transaction retains its verified safety copy and reports the recovery path", () => {
     const file = statePath();
     const before018 = STATE_MIGRATIONS.slice(0, migrationIndex("018-drop-dead-lane-schema"));
@@ -465,6 +612,77 @@ describe("state.db automatic migration boundary", () => {
       expect(backupStat.isSymbolicLink()).toBe(false);
       expect(backupStat.mode & 0o777).toBe(0o600);
       if (typeof process.geteuid === "function") expect(backupStat.uid).toBe(process.geteuid());
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "failed backup cleanup never unlinks a pathname replacement raced after its identity check",
+    () => {
+      const file = statePath();
+      seedBefore018(file, "cleanup-race");
+      const originalOpen = fs.openSync.bind(fs);
+      const originalFsync = fs.fsyncSync.bind(fs);
+      const originalLstat = fs.lstatSync.bind(fs);
+      let safetyCopyPath: string | undefined;
+      let safetyFd: number | undefined;
+      let cleanupPhase = false;
+      let replacementInstalled = false;
+
+      const open = spyOn(fs, "openSync").mockImplementation(((
+        candidate: fs.PathLike,
+        flags: string | number,
+        mode?: fs.Mode,
+      ) => {
+        const fd = originalOpen(candidate, flags, mode);
+        if (!safetyCopyPath && String(candidate).includes(".pre-018-drop-dead-lane-schema.")) {
+          safetyCopyPath = String(candidate);
+          safetyFd = fd;
+        }
+        return fd;
+      }) as typeof fs.openSync);
+      const fsync = spyOn(fs, "fsyncSync").mockImplementation(((fd: number) => {
+        if (fd === safetyFd && !cleanupPhase) {
+          cleanupPhase = true;
+          throw new Error("forced safety-copy fsync failure");
+        }
+        return originalFsync(fd);
+      }) as typeof fs.fsyncSync);
+      const lstat = spyOn(fs, "lstatSync").mockImplementation(((
+        candidate: fs.PathLike,
+        options?: fs.StatSyncOptions,
+      ) => {
+        const stat = originalLstat(candidate, options as never) as fs.Stats | fs.BigIntStats;
+        if (cleanupPhase && !replacementInstalled && String(candidate) === safetyCopyPath) {
+          fs.unlinkSync(safetyCopyPath);
+          fs.writeFileSync(safetyCopyPath, "replacement-must-survive");
+          replacementInstalled = true;
+        }
+        return stat;
+      }) as typeof fs.lstatSync);
+
+      let error: unknown;
+      try {
+        upgradeHistoricalStateDatabase(file);
+      } catch (caught) {
+        error = caught;
+      } finally {
+        lstat.mockRestore();
+        fsync.mockRestore();
+        open.mockRestore();
+      }
+
+      expect(safetyCopyPath).toBeDefined();
+      if (replacementInstalled) {
+        expect(fs.readFileSync(safetyCopyPath as string, "utf8")).toBe("replacement-must-survive");
+      } else {
+        expect(fs.existsSync(safetyCopyPath as string)).toBe(true);
+      }
+      expect(error instanceof Error ? error.message : "").toContain(safetyCopyPath as string);
+      const current = openDatabase(file, { readonly: true });
+      expect(current.prepare("SELECT content_hash FROM consolidation_judged").get()).toEqual({
+        content_hash: "cleanup-race",
+      });
+      current.close();
     },
   );
 
