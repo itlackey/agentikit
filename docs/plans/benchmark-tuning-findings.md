@@ -176,6 +176,65 @@ worth ~0. And akm#819 (retrieval ceiling) is a multiplier that only pays off
 once engagement rises — the calls that do happen already convert well, so
 retrieval quality is not the current binding constraint.
 
+## 2d. The memory half: akm cannot retrieve conversational content at all
+
+Two independent memory packs, three arms each, smoke scale. `baseline` is a
+LONG-CONTEXT REFERENCE ARM — it receives the whole conversation and never
+retrieves — so it is a ceiling, not a control. The only fair comparison is
+`akm-memory` vs `raw-vector`, two retrieval arms on equal footing.
+
+**LongMemEval** (5 questions, `qwen3.5-plus`):
+
+| variant | judgedPass | R@k | zero-hit |
+| --- | --- | --- | --- |
+| baseline (long-context) | 1.00 | — | — |
+| raw-vector | 0.20 | 0.20 | 0/5 |
+| **akm-memory** | **0.00** | 0 | **5/5 (100%)** |
+
+**LoCoMo** (5 questions, same model):
+
+| variant | tokenF1 | zero-hit |
+| --- | --- | --- |
+| baseline (long-context, 16k) | 0.567 | — |
+| raw-vector | 0.233 | 0/5 |
+| **akm-memory** | 0.200 | **2/5 (40%)** |
+
+**akm scored 0 on LongMemEval because it returned no documents at all — on
+every question.** The run emits this itself, unprompted:
+
+> 5/5 retrieval queries returned zero hits (>=50%). The aggregate score for
+> this run is dominated by prompts with no retrieved context at all, not by
+> answer quality on retrieved context.
+
+This is a measurement of the RETRIEVAL CEILING (akm#819), not of memory
+quality, and must not be published as the latter. On LoCoMo, where akm did
+retrieve, the answer was correct.
+
+**The mechanism is structural, not a tuning problem.** akm indexes synthesized
+frontmatter — name, description, tags, searchHints, headings — and never body
+prose. A LongMemEval haystack is a chat transcript whose answer lives entirely
+in the body, so it is unsearchable by construction. LoCoMo reaches 40% rather
+than 100% only because some of its questions happen to match a synthesized
+field.
+
+The sharpest contrast: `raw-vector` is a naive in-memory cosine store and had
+**0/5 zero-hits on both packs**. It always returns something. The gap is not
+ranking quality — it is COVERAGE.
+
+**What this means for the project's priorities.** The +0.439 benchmark result
+came from a corpus of DOCUMENTED CONVENTIONS — content that lives in
+frontmatter, exactly where akm looks. Conversational recall is the opposite
+shape. So the benchmark win does not transfer to memory, and akm#819 is not an
+optimisation: it is the precondition for akm working as memory at all rather
+than as a convention library.
+
+**Caveats.** n=5 questions, one sample, one model per pack — these numbers
+separate the arms on COVERAGE, which is a structural property, but they are
+far too small to rank answer quality. Also note LongMemEval reports
+`exactMatch`/`tokenF1`/`containsExpected` as a hardcoded `0` because the pack
+scores on the official LLM judge (akm-eval#6); only `judgedPass` carries
+signal there.
+
 ## 3. Recommended changes
 
 Ordered by expected value. Every one changes the TREATMENT (the product), not
