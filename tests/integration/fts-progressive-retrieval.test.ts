@@ -103,6 +103,12 @@ describe("progressive lexical query planning (#819)", () => {
     expect(plan.exact).not.toContain(")");
   });
 
+  test("keeps ref-shaped identifiers conjunctive instead of widening them through OR recovery", () => {
+    const plan = buildLexicalQueryPlan("memories/projecta/auth-tip");
+    expect(plan.tokens).toEqual(["memories", "projecta", "auth", "tip"]);
+    expect(plan.relaxed).toBeUndefined();
+  });
+
   test("uses one strict → prefix → relaxed pipeline without changing strict top-1", () => {
     const db = makeDb();
     try {

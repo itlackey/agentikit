@@ -580,19 +580,22 @@ async function searchDatabase(
     const aNameTier = lexicalNameMatchTier(a.entry, queryTokens);
     const bNameTier = lexicalNameMatchTier(b.entry, queryTokens);
     // Exact normalized names are the strongest lexical signal and must not be
-    // erased when both boosted scores clamp to 1. Relaxed candidates also use
-    // name tier ahead of score so body/description-only OR matches cannot
-    // displace a candidate whose name carries the recovered term.
-    if (aNameTier === 3 || bNameTier === 3 || (a.lexicalMatch === "relaxed" && b.lexicalMatch === "relaxed")) {
+    // erased when both boosted scores clamp to 1.
+    if (aNameTier === 3 || bNameTier === 3) {
       const nameDiff = bNameTier - aNameTier;
       if (nameDiff !== 0) return nameDiff;
     }
     const scoreDiff = displayScore(b.score) - displayScore(a.score);
     if (scoreDiff !== 0) return scoreDiff;
+    // Preserve useful contributor differences above the public score ceiling,
+    // but quantize first so utility-recency epsilon cannot reorder ties.
+    const stableRankScore = (score: number): number => Math.round(score * 10000) / 10000;
+    const rawScoreDiff = stableRankScore(b.score) - stableRankScore(a.score);
+    if (rawScoreDiff !== 0) return rawScoreDiff;
     const nameDiff = bNameTier - aNameTier;
     if (nameDiff !== 0) return nameDiff;
     const typeDiff = typeBoostFor(b.entry.type) - typeBoostFor(a.entry.type);
-    return typeDiff || a.entry.name.localeCompare(b.entry.name);
+    return typeDiff || a.filePath.localeCompare(b.filePath);
   });
 
   // Deduplicate by file path — keep only the highest-scored entry per file.
@@ -1090,6 +1093,15 @@ export async function buildDbHit(input: {
     ...(input.entry.currentBeliefRefs ? { currentBeliefRefs: input.entry.currentBeliefRefs } : {}),
     ...(graphHit ? { graph: { entities: graphHit.entities, relations: graphHit.relations } } : {}),
   };
+
+  if (input.lexicalMatch) {
+    attachSearchHitAttribution(hit, {
+      lexical: {
+        execution: input.lexicalMatch,
+        nameMatchTier: lexicalNameMatchTier(input.entry, buildLexicalQueryPlan(input.query).tokens),
+      },
+    });
+  }
 
   if (input.attributionSource) copySearchHitAttribution(input.attributionSource, hit);
 
