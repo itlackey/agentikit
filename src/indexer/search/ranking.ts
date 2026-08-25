@@ -8,6 +8,7 @@ import { getUtilityScoresByIds } from "../../storage/repositories/index-utility-
 import type { GraphBoostContext } from "../graph/graph-boost";
 import type { IndexDocument } from "../passes/metadata";
 import type { ProjectContext } from "../walk/project-context";
+import { buildLexicalQueryPlan } from "./fts-query";
 import {
   applyBeliefStateScoreCeiling,
   applyContributorAblation,
@@ -172,7 +173,7 @@ export function combineSearchScores(options: {
 }
 
 export function applyRankingRules(options: RankEntriesOptions): RankedEntryInput[] {
-  const queryTokens = options.query.toLowerCase().split(/\s+/).filter(Boolean);
+  const queryTokens = buildLexicalQueryPlan(options.query).tokens.map((token) => token.toLowerCase());
   const queryLower = options.query.toLowerCase().trim();
   const rankingContext = {
     db: options.db,
@@ -219,6 +220,7 @@ export function applyRankingRules(options: RankEntriesOptions): RankedEntryInput
   };
   for (const item of options.items) {
     applyUtilityContributors(item, utilityContext, activeUtilityContributors);
+    applyRelaxedLexicalScoreCeiling(item, queryTokens);
     // SPEC-5: demoting belief states (superseded/contradicted/archived/
     // deprecated) cap the FINAL score. The additive belief penalty inside the
     // multiplicative boost sum cannot overcome the FTS min-max normalization
@@ -228,4 +230,39 @@ export function applyRankingRules(options: RankEntriesOptions): RankedEntryInput
   }
 
   return options.items;
+}
+
+const RELAXED_NON_NAME_SCORE_CEILING = 0.65;
+
+/**
+ * Rank name evidence without relying on punctuation or ASCII-only splitting.
+ * The tiers are intentionally structural: an exact normalized name, all query
+ * tokens in a longer name, any query token in the name, or no name evidence.
+ */
+export function lexicalNameMatchTier(entry: IndexDocument, queryTokens: string[]): number {
+  if (queryTokens.length === 0) return 0;
+  const nameBase = entry.name.toLowerCase().split("/").pop() ?? entry.name.toLowerCase();
+  const nameTokens = buildLexicalQueryPlan(nameBase).tokens.map((token) => token.toLowerCase());
+  const tokenMatches = (left: string, right: string): boolean =>
+    left === right ||
+    (Math.min([...left].length, [...right].length) >= 3 && (left.startsWith(right) || right.startsWith(left)));
+  if (
+    nameTokens.length === queryTokens.length &&
+    nameTokens.every((token, index) => tokenMatches(token, queryTokens[index]!))
+  ) {
+    return 3;
+  }
+  const matched = queryTokens.filter((token) => nameTokens.some((nameToken) => tokenMatches(nameToken, token))).length;
+  if (matched === queryTokens.length) return 2;
+  return matched > 0 ? 1 : 0;
+}
+
+/**
+ * A relaxed OR query admits intentionally weak candidates. Candidates with no
+ * query token in their name remain visible for body-only recall, but cannot
+ * saturate at the same displayed score as stronger name-bearing recoveries.
+ */
+function applyRelaxedLexicalScoreCeiling(item: RankedEntryInput, queryTokens: string[]): void {
+  if (item.lexicalMatch !== "relaxed" || lexicalNameMatchTier(item.entry, queryTokens) > 0) return;
+  item.score = Math.min(item.score, RELAXED_NON_NAME_SCORE_CEILING);
 }

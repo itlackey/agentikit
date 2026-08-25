@@ -777,9 +777,15 @@ function collapseCurateFamilies(
     if (!representative) continue;
 
     collapsedFamilies.push(representative);
-    const supportCandidates = [group.root, ...group.references].filter((entry): entry is CollapsedCurateHit => {
-      return entry !== undefined && entry.hit.ref !== representative.hit.ref;
-    });
+    const supportCandidates = [group.root, ...group.references]
+      .filter((entry): entry is CollapsedCurateHit => {
+        return entry !== undefined && entry.hit.ref !== representative.hit.ref;
+      })
+      .sort((a, b) => {
+        if (a === group.root) return -1;
+        if (b === group.root) return 1;
+        return a.hit.ref.localeCompare(b.hit.ref);
+      });
     for (const support of supportCandidates) {
       appendCurateSupportRef(supportRefsByRef, representative.hit.ref, {
         ref: support.hit.ref,
