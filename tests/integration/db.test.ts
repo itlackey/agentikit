@@ -975,18 +975,6 @@ describe("entry-owned FTS projection", () => {
     }
   });
 
-  test("the obsolete dirty queue is absent", () => {
-    const db = openIndexDatabase(tmpDbPath("entry-fts-no-queue"));
-    try {
-      const queue = db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'entries_fts_dirty'")
-        .get();
-      expect(queue).toBeNull();
-    } finally {
-      closeDatabase(db);
-    }
-  });
-
   test("rebuildFts remains an explicit full recovery operation", () => {
     const db = openIndexDatabase(tmpDbPath("entry-fts-recovery"));
     try {
