@@ -82,6 +82,14 @@ describe("formatUpdatePlain", () => {
     expect(text).toContain("synced");
   });
 
+  it("renders filesystem reconciliation without claiming provider sync", () => {
+    const text = formatUpdatePlain({
+      processed: [],
+      plainSynced: [{ id: "local", kind: "filesystem", ref: "/tmp/local" }],
+    });
+    expect(text).toBe("update: local reconciled (filesystem)");
+  });
+
   it("reports skipped plain sources instead of omitting them (R-015)", () => {
     // R-015 repro: `akm bundle update --all` against a stash with only plain sources
     // returned processed: [] and rendered "nothing to update", never

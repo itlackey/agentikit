@@ -13,8 +13,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { akmListSources, akmUpdate } from "../../src/commands/sources/installed-stashes";
 import { akmSearch } from "../../src/commands/read/search";
+import { akmListSources, akmUpdate } from "../../src/commands/sources/installed-stashes";
 import { akmAdd } from "../../src/commands/sources/source-add";
 import { addStash } from "../../src/commands/sources/source-manage";
 import { loadConfig, saveConfig } from "../../src/core/config/config";
@@ -675,8 +675,8 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
     try {
       const result = await akmUpdate({ all: true, stashDir });
       expect(result.processed).toEqual([]);
-      expect(result.plainSynced ?? []).toEqual([]);
-      expect(result.skipped?.map((item) => item.id)).toEqual(["local"]);
+      expect(result.plainSynced).toEqual([{ id: "local", kind: "filesystem", ref: stashDir }]);
+      expect(result.skipped ?? []).toEqual([]);
       expect(managedSync).not.toHaveBeenCalled();
       expect(plainSync).not.toHaveBeenCalled();
     } finally {
@@ -710,7 +710,7 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
     }
   });
 
-  test("accounts for every configured source: syncs git+website+npm and reports filesystem as skipped", async () => {
+  test("accounts for every configured source: syncs remotes and reconciles filesystem", async () => {
     const fsDir = createTmpDir("akm-r015-fs-");
     makeStashDir(fsDir);
 

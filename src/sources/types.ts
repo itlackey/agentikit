@@ -331,18 +331,14 @@ export interface UpdateResultItem {
 }
 
 /**
- * A plain (non-registry-managed, i.e. lockless) git/website bundle that this
- * update call freshly synced. Unlike an npm source — which requires a lock to
- * have a resolvable content path, so it is promoted to a registry-managed
- * install on first sync and reported via `processed` like any other managed
- * install — a git/website bundle's content path is deterministic from its
- * locator alone and never needs a lock, so it stays a plain source forever
- * and is reported here instead (R-015 adjacent: previously this success was
- * reported nowhere, rendering as the misleading "nothing to update").
+ * A plain (non-registry-managed, i.e. lockless) bundle reconciled by this
+ * update call. Git/website sources hydrate before reconciliation; filesystem
+ * sources already expose their current bytes and only need the non-hydrating
+ * index pass. Npm requires a lock and is reported through `processed` instead.
  */
 export interface UpdatePlainSyncedItem {
   id: string;
-  kind: "git" | "website";
+  kind: "filesystem" | "git" | "website";
   ref: string;
 }
 
@@ -369,7 +365,7 @@ export interface UpdateResponse {
   target?: string;
   all: boolean;
   processed: UpdateResultItem[];
-  /** Plain git/npm sources freshly synced by this call (R-015/R-adjacent). Omitted when empty. */
+  /** Plain sources freshly hydrated/reconciled by this call. Omitted when empty. */
   plainSynced?: UpdatePlainSyncedItem[];
   /** Configured sources this call did not process, with why (R-015). Omitted when empty. */
   skipped?: UpdateSkippedItem[];

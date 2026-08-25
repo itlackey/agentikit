@@ -952,8 +952,8 @@ akm search qa-filesystem-source-marker --from fs-source --no-track-usage
 ```
 
 - [ ] **[LOCAL]** Add indexes in place with kind `filesystem`, writable true.
-- [ ] **[LOCAL]** Single update exits `2`, `TARGET_NOT_UPDATABLE`; update-all
-      reports skipped.
+- [ ] **[LOCAL]** Single update and update-all reconcile current files into the
+      index without provider hydration.
 - [ ] **[LOCAL]** Non-TTY remove requires `--yes`, removes ownership/index, and
       leaves source files.
 - [ ] **[LOCAL]** Real path plus symlink alias does not create ambiguous owner or
@@ -3167,11 +3167,11 @@ remaining gaps carry approved waivers with the expiries recorded below.
     rejecting `akmIndex()` are pinned in the same file.
   - JS fallback after fast-path failure: already covered
     (`tests/integration/db.test.ts`, `tests/integration/vector-search.test.ts`).
-  - Remaining, accepted by design: targeted-write indexing skips embeddings
-    on purpose (`src/indexer/index-written-assets.ts` module doc — the next
-    full run heals them); whether to surface that gap at write time is a 0.10
-    placement-era product decision, not a regression — tracked in
-    [#772](https://github.com/itlackey/akm/issues/772).
+  - Targeted-write readiness: first-class writes use the same embedding
+    materializer as full indexing for the entry IDs they changed. A healthy
+    provider makes the write vector-fresh before return; provider failure keeps
+    the authored file and FTS row while publishing canonical blocked status.
+    Pinned in `tests/integration/indexer/index-written-assets.test.ts`.
 - [x] **Durability:** atomic reader-visible index generations, live-lock age,
       full source lifecycle rollback, safe website/npm refresh, strict lockfile,
       registry stale fallback, and sync/write serialization.

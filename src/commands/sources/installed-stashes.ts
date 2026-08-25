@@ -1135,6 +1135,22 @@ async function updateWebsiteSource(
   return buildUpdateResponse(stashDir, target, all, [], { plainSynced: [synced.item], index: synced.index });
 }
 
+/** Reconcile a filesystem source's current bytes without provider hydration. */
+async function updateFilesystemSource(
+  stashDir: string,
+  target: string,
+  all: boolean,
+  filesystemSource: ReturnType<typeof getSources>[number],
+): Promise<UpdateResponse> {
+  const id = filesystemSource.name ?? filesystemSource.path ?? target;
+  const ref = filesystemSource.path ?? target;
+  const index = await akmIndex({ stashDir, hydrateSources: false });
+  return buildUpdateResponse(stashDir, target, all, [], {
+    plainSynced: [{ id, kind: "filesystem", ref }],
+    index,
+  });
+}
+
 /**
  * A plain (lockless) npm bundle has no deterministic content path — unlike
  * git/website, resolving an npm package requires a registry round-trip to
@@ -1496,6 +1512,13 @@ export async function akmUpdate(input?: {
       );
       return buildUpdateResponse(stashDir, target, all, [updated.item], { index: updated.index });
     }
+
+    const filesystemMatch = stashes.find((source) => {
+      if (source.type !== "filesystem") return false;
+      if (source.name === target) return true;
+      return resolvedPath !== undefined && source.path !== undefined && path.resolve(source.path) === resolvedPath;
+    });
+    if (filesystemMatch) return updateFilesystemSource(stashDir, target, all, filesystemMatch);
   }
 
   const enabledManagedInstalls = all
@@ -1529,6 +1552,7 @@ export async function akmUpdate(input?: {
     const plainSources = getSources(config).filter(
       (source) => source.enabled !== false && !managedKeys.has(source.name ?? ""),
     );
+    const filesystemSources: typeof plainSources = [];
     for (const plain of plainSources) {
       const id = plain.name ?? plain.path ?? plain.url ?? "";
       try {
@@ -1551,16 +1575,26 @@ export async function akmUpdate(input?: {
           plainSynced.push(updated.item);
           latestIndex = updated.index;
         } else {
-          skipped.push({
-            id,
-            kind: plain.type as SourceKind,
-            status: "skipped",
-            reason:
-              "reflects your files in place and has no remote to sync; run `akm index` to refresh the search index.",
-          });
+          filesystemSources.push(plain);
         }
       } catch (error) {
         skipped.push(updateFailureOutcome(id, plain.type as SourceKind, error));
+      }
+    }
+    if (filesystemSources.length > 0) {
+      try {
+        latestIndex ??= await akmIndex({ stashDir, hydrateSources: false });
+        for (const source of filesystemSources) {
+          plainSynced.push({
+            id: source.name ?? source.path ?? "",
+            kind: "filesystem",
+            ref: source.path ?? source.name ?? "",
+          });
+        }
+      } catch (error) {
+        for (const source of filesystemSources) {
+          skipped.push(updateFailureOutcome(source.name ?? source.path ?? "", "filesystem", error));
+        }
       }
     }
   }
@@ -1607,31 +1641,6 @@ function selectManagedTargets(
 
   const found = resolveManagedTarget(config, target);
   if (found) return [found];
-
-  // Give a helpful message when the target names a plain (non-managed) source.
-  const stashes = getSources(config);
-  const isUrl = target.startsWith("http://") || target.startsWith("https://");
-  const resolvedPath = !isUrl ? path.resolve(target) : undefined;
-  const stashMatch = stashes.find((s) => {
-    if (isUrl && s.url === target) return true;
-    if (resolvedPath && s.path && path.resolve(s.path) === resolvedPath) return true;
-    if (s.name === target) return true;
-    return false;
-  });
-
-  if (stashMatch) {
-    if (stashMatch.type === "website") {
-      throw new UsageError(
-        `"${target}" is a website source — website caching not yet implemented for --all. ` +
-          `Run \`akm bundle update ${target}\` to re-mirror this source individually.`,
-        "TARGET_NOT_UPDATABLE",
-      );
-    }
-    throw new UsageError(
-      `"${target}" is a local directory — it reflects your files in place. To refresh the search index, run: akm index`,
-      "TARGET_NOT_UPDATABLE",
-    );
-  }
 
   throw new NotFoundError(`No matching source for target: ${target}`, "SOURCE_NOT_FOUND");
 }

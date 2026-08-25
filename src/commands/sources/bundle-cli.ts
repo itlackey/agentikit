@@ -128,7 +128,7 @@ const removeCommand = defineJsonCommand({
 });
 
 const updateCommand = defineJsonCommand({
-  meta: { name: "update", description: "Stage, audit, and update one or all remote bundles" },
+  meta: { name: "update", description: "Refresh one or all configured bundles and reconcile their index" },
   args: {
     target: { type: "positional", description: "Bundle to update (id or ref)", required: false },
     all: { type: "boolean", description: "Update all configured bundles and report each outcome", default: false },
