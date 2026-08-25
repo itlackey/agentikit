@@ -30,7 +30,7 @@ journal mode. Foreign-key policy is called out per database below.
 ### `$DATA/index.db` — Main Search Index
 
 Schema managed by `ensureSchema()` (`src/storage/repositories/index-schema.ts`).
-The current derived generation is exactly v21: `index_meta.version` and the
+The current derived generation is exactly v22: `index_meta.version` and the
 complete canonical `entries` fingerprint must both match. It uses the shared
 opening pragma policy above with foreign keys ON and optionally loads the
 `sqlite-vec` extension for fast ANN (approximate nearest-neighbour) vector
@@ -43,7 +43,7 @@ Opened by:
   generation before returning a handle to search/show/curate and other readers
 
 **Retention:** `index.db` is a fully regenerable derived cache. A missing or
-noncanonical v21 `entries` fingerprint causes the managed opener to discard the
+noncanonical v22 `entries` fingerprint causes the managed opener to discard the
 entry-dependent derived generation and create the exact current schema; the
 indexer then repopulates it from current sources and durable usage state.
 Existing/read-only openers reject a noncanonical generation. This path never

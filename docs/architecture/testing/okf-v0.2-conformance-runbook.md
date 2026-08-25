@@ -230,9 +230,9 @@ tests whether the path identity emitted by the adapter remains usable through
 the consumer.
 
 Verify adapter ownership, count, type, and identity directly in the derived
-index. These SQL gates target the exact v21 `entries` generation. A managed
+index. These SQL gates target the exact v22 `entries` generation. A managed
 index open discards any generation whose version or complete schema fingerprint
-does not match v21, then `akm index --full` repopulates the canonical table from
+does not match v22, then `akm index --full` repopulates the canonical table from
 source. Reader-only openers reject an incompatible generation instead of
 serving legacy columns.
 
@@ -247,7 +247,7 @@ expected=$(find "$root" -type f -name "*.md" ! -iname "index.md" ! -iname "log.m
 actual=$(sqlite3 "$db" "SELECT count(*) FROM entries WHERE bundle_id='"'"'okf-ga4'"'"';")
 adapter=$(sqlite3 "$db" "SELECT group_concat(DISTINCT adapter_id) FROM entries WHERE bundle_id='"'"'okf-ga4'"'"';")
 printf "schema=v%s columns=%s expected_concepts=%s actual_concepts=%s adapter=%s\n" "$version" "$columns" "$expected" "$actual" "$adapter"
-test "$version" = "21"
+test "$version" = "22"
 test "$columns" = "id,item_ref,bundle_id,component_id,concept_id,adapter_id,type,file_path,content_hash,document_json,search_text,derived_from"
 test "$expected" -eq "$actual"
 test "$adapter" = "okf"
@@ -257,7 +257,7 @@ sqlite3 -header -column "$db" "SELECT item_ref, concept_id, type, adapter_id, fi
 
 Pass conditions:
 
-- `index_meta.version` is `21` and `entries` has exactly the canonical v21
+- `index_meta.version` is `22` and `entries` has exactly the canonical v22
   column sequence shown above.
 - Expected and actual counts match.
 - Every row has `adapter_id=okf`.
