@@ -87,7 +87,7 @@ Every current `entries` row carries a canonical fully qualified
 and the absolute `file_path` of the materialized local asset. Search and show
 use those required columns for identity and access rather than reconstructing
 refs from a name or source path. `item_ref` is the sole upsert conflict key;
-`document_json` is the sole stored document projection. The v21 schema does not
+`document_json` is the sole stored document projection. The v22 schema does not
 admit incomplete identity rows or retain an entry-key/path lookup fallback.
 This preserves bundle identity when multiple sources contain the same concept.
 
@@ -164,14 +164,16 @@ separate from durable runtime state.
 ## Schema Versioning
 
 `index.db` is ephemeral — fully rebuildable from sources by `akm index`. The
-current generation is exactly v21. `ensureSchema()`
+current generation is exactly v22. `ensureSchema()`
 (`src/storage/repositories/index-schema.ts`) accepts an existing generation
 only when both `index_meta.version` and the complete `entries` fingerprint
 match the canonical contract, including `AUTOINCREMENT`, required columns,
 constraints, indexes, collation, and hidden-column absence. An incompatible
 generation is discarded: AKM drops the entry-dependent derived tables and
-caches, creates the canonical v21 schema, and rebuilds it from current sources
-and durable usage state. Current read-only and existing-database openers reject
+caches, creates the canonical v22 schema, and rebuilds it from current sources
+and durable usage state. In particular, v21 is discarded because it predates
+entry-owned synchronous FTS publication and may contain stale dirty-queue
+state. Current read-only and existing-database openers reject
 an incompatible generation instead of serving it. Durable workflow, task,
 proposal, event, and usage state in `state.db` is never touched by this path.
 
