@@ -1,0 +1,11 @@
+version: 3
+name: v3 migration fixture - env, timeout, and redact options
+run: akm index --full
+akm:
+  schedule: "15 4 * * 1"
+  timeout: 5m
+  redact: [CONTRACT_FIXTURE_TOKEN]
+env:
+  MODE: safe
+  RETRIES: 3
+  DRY_RUN: true

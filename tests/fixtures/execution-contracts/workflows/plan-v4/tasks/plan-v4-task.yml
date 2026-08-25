@@ -1,0 +1,4 @@
+version: 3
+uses: commands/plan-v4-notify
+akm:
+  schedule: "@daily"

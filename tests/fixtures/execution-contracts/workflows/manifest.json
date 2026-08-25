@@ -24,5 +24,31 @@
       "file": "rejected/unsupported-remote-action.yml",
       "reasonCode": "remote-action-acquisition-out-of-scope"
     }
-  ]
+  ],
+  "singleJob": {
+    "description": "One GitHub-shaped single-job .yml, cribbed from the equivalent/contract-review.yml accepted subset, that parses and compiles cleanly today (the positive baseline R-05/P-08's multi-job fixtures are contrasted against).",
+    "file": "single-job/single-job.yml",
+    "expectedJobId": "main",
+    "expectedStepIds": ["prepare", "review", "summarize"]
+  },
+  "planV4": {
+    "description": "Source fixtures (not byte-snapshots of plans) that freeze end to end through startWorkflowRun into a durable v4 plan. bundleRoot's subtree is copied verbatim into a sandboxed stash and indexed before each workflow ref below is run.",
+    "bundleRoot": "plan-v4",
+    "workflows": [
+      {
+        "id": "direct-dispatch",
+        "file": "plan-v4/workflows/direct-dispatch.yml",
+        "ref": "workflows/direct-dispatch",
+        "expectedStepTargetKinds": { "notify": "command", "announce": "shell" }
+      },
+      {
+        "id": "task-composed",
+        "file": "plan-v4/workflows/task-composed.yml",
+        "ref": "workflows/task-composed",
+        "expectedStepTargetKinds": { "notify-via-task": "command", "build": "script" },
+        "taskComposedRelativeRefs": ["tasks/plan-v4-task.yml", "commands/plan-v4-notify.md", "scripts/plan-v4-build.sh"]
+      }
+    ],
+    "expectedTargetKindSet": ["command", "script", "shell"]
+  }
 }
