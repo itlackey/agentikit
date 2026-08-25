@@ -198,7 +198,6 @@ function rebuildIncompatibleIndexGeneration(db: Database): void {
     db.exec("DROP TABLE IF EXISTS graph_files");
     db.exec("DROP TABLE IF EXISTS graph_extraction_queue");
     db.exec("DROP TABLE IF EXISTS graph_meta");
-    db.exec("DROP TABLE IF EXISTS entries_fts_dirty");
     db.exec("DROP TABLE IF EXISTS entries_fts");
     db.exec("DROP TABLE IF EXISTS embeddings");
     db.exec("DROP TABLE IF EXISTS utility_scores_scoped");
@@ -257,6 +256,10 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
       );
     `);
   }
+
+  // Entry mutations now publish their FTS projection in the same transaction.
+  // The former dirty queue is derived state and has no compatibility value.
+  db.exec("DROP TABLE IF EXISTS entries_fts_dirty");
 
   // usage_events lives in state.db. utility_scores remains a regenerable
   // index.db cache.
@@ -335,16 +338,6 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   // child rows are removed when a graph_files row is replaced.
   //
   ensureGraphTables(db);
-
-  // FTS-dirty queue. Created here (not lazily on first upsert) so the
-  // per-entry write path doesn't issue a CREATE TABLE IF NOT EXISTS on
-  // every call — that DDL would fire thousands of times during a full
-  // index. See `markFtsDirty` and `rebuildFts({ incremental: true })`.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS entries_fts_dirty (
-      entry_id INTEGER PRIMARY KEY
-    );
-  `);
 
   // If a generation rebuild could not drop a vec0 table while the extension
   // was unavailable, finish that reset as soon as vec0 can be loaded again.

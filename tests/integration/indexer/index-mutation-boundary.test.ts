@@ -70,7 +70,7 @@ describe("canonical entry mutation", () => {
     try {
       const entry: IndexDocument = {
         type: "knowledge",
-        name: "knowledge/atomic-publish",
+        name: "atomic-publish",
         description: "uniquefoundationmarker",
         filename: "atomic-publish.md",
       };
@@ -153,6 +153,7 @@ for (const scenario of [
     expect(searchRefs).not.toContain(oldRef);
     for (const ref of searchRefs) {
       const [bundle, conceptId] = ref.split("//", 2);
+      if (!bundle || !conceptId) throw new Error(`invalid canonical ref ${ref}`);
       expect(await lookupBundleRef({ bundle, conceptId })).not.toBeNull();
     }
   });

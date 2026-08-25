@@ -927,7 +927,7 @@ describe("Vector / Embedding integration", () => {
 
 // ── Incremental rebuildFts (#177 perf finding) ──────────────────────────────
 
-describe("rebuildFts incremental", () => {
+describe("entry-owned FTS projection", () => {
   function makeEntry(name: string, description = ""): IndexDocument {
     return {
       name,
@@ -942,15 +942,6 @@ describe("rebuildFts incremental", () => {
     return row?.cnt ?? 0;
   }
 
-  function dirtyCount(db: Database): number {
-    try {
-      const row = db.prepare("SELECT COUNT(*) AS cnt FROM entries_fts_dirty").get() as { cnt: number } | undefined;
-      return row?.cnt ?? 0;
-    } catch {
-      return 0;
-    }
-  }
-
   function upsertFtsEntry(db: Database, key: string, entry: IndexDocument, searchText: string): number {
     const provenance = deriveEntryProvenance(
       { bundleId: "stash", componentId: "stash", adapterId: "akm" },
@@ -960,76 +951,63 @@ describe("rebuildFts incremental", () => {
     return upsertEntry(db, `/d/${key}.md`, entry, searchText, provenance);
   }
 
-  test("upsertEntry marks rows dirty; incremental rebuild only re-indexes them", () => {
-    const db = openIndexDatabase(tmpDbPath("inc-fts"));
+  test("upsertEntry immediately inserts and replaces its FTS row", () => {
+    const db = openIndexDatabase(tmpDbPath("entry-fts"));
     try {
       upsertFtsEntry(db, "k1", makeEntry("alpha", "first"), "alpha first");
-      upsertFtsEntry(db, "k2", makeEntry("bravo", "second"), "bravo second");
+      upsertFtsEntry(db, "k2", makeEntry("bravo", "legacyuniquemarker"), "bravo legacyuniquemarker");
       upsertFtsEntry(db, "k3", makeEntry("charlie", "third"), "charlie third");
-      rebuildFts(db, { incremental: false });
       expect(ftsCount(db)).toBe(3);
-      expect(dirtyCount(db)).toBe(0);
 
-      // Touch only one entry — its row should be the only dirty one.
-      upsertFtsEntry(db, "k2", makeEntry("bravo", "second-updated"), "bravo second-updated");
-      expect(dirtyCount(db)).toBe(1);
-
-      rebuildFts(db, { incremental: true });
+      upsertFtsEntry(db, "k2", makeEntry("bravo", "currentuniquemarker"), "bravo currentuniquemarker");
       expect(ftsCount(db)).toBe(3);
-      expect(dirtyCount(db)).toBe(0);
 
-      const hits = db
+      const updatedHits = db
         .prepare("SELECT entry_id FROM entries_fts WHERE entries_fts MATCH ?")
-        .all(`"second-updated"`) as Array<{ entry_id: number }>;
-      expect(hits.length).toBe(1);
+        .all(`"currentuniquemarker"`) as Array<{ entry_id: number }>;
+      const staleHits = db
+        .prepare("SELECT entry_id FROM entries_fts WHERE entries_fts MATCH ?")
+        .all(`"legacyuniquemarker"`) as Array<{ entry_id: number }>;
+      expect(updatedHits).toHaveLength(1);
+      expect(staleHits).toHaveLength(0);
     } finally {
       closeDatabase(db);
     }
   });
 
-  test("incremental rebuild with empty dirty queue is a no-op", () => {
-    const db = openIndexDatabase(tmpDbPath("inc-fts-empty"));
+  test("the obsolete dirty queue is absent", () => {
+    const db = openIndexDatabase(tmpDbPath("entry-fts-no-queue"));
+    try {
+      const queue = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'entries_fts_dirty'")
+        .get();
+      expect(queue).toBeNull();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("rebuildFts remains an explicit full recovery operation", () => {
+    const db = openIndexDatabase(tmpDbPath("entry-fts-recovery"));
     try {
       upsertFtsEntry(db, "k1", makeEntry("alpha"), "alpha");
-      rebuildFts(db, { incremental: false });
-      expect(ftsCount(db)).toBe(1);
-      expect(dirtyCount(db)).toBe(0);
-      rebuildFts(db, { incremental: true });
+      db.exec("DELETE FROM entries_fts");
+      expect(ftsCount(db)).toBe(0);
+      rebuildFts(db);
       expect(ftsCount(db)).toBe(1);
     } finally {
       closeDatabase(db);
     }
   });
 
-  test("full rebuild also drains the dirty queue", () => {
-    const db = openIndexDatabase(tmpDbPath("inc-fts-full"));
-    try {
-      upsertFtsEntry(db, "k1", makeEntry("alpha"), "alpha");
-      expect(dirtyCount(db)).toBe(1);
-      rebuildFts(db, { incremental: false });
-      expect(ftsCount(db)).toBe(1);
-      expect(dirtyCount(db)).toBe(0);
-    } finally {
-      closeDatabase(db);
-    }
-  });
-
-  test("deleteEntriesByDir purges FTS rows + dirty markers immediately", () => {
-    const db = openIndexDatabase(tmpDbPath("inc-fts-del"));
+  test("deleteEntriesByDir purges FTS rows immediately", () => {
+    const db = openIndexDatabase(tmpDbPath("entry-fts-delete"));
     try {
       upsertFtsEntry(db, "k1", makeEntry("alpha"), "alpha");
       upsertFtsEntry(db, "k2", makeEntry("bravo"), "bravo");
-      rebuildFts(db, { incremental: false });
       expect(ftsCount(db)).toBe(2);
 
-      upsertFtsEntry(db, "k1", makeEntry("alpha", "updated"), "alpha updated");
-      expect(dirtyCount(db)).toBe(1);
-
       deleteEntriesByDir(db, "/d");
-      expect(ftsCount(db)).toBe(0);
-      expect(dirtyCount(db)).toBe(0);
-
-      rebuildFts(db, { incremental: true });
       expect(ftsCount(db)).toBe(0);
     } finally {
       closeDatabase(db);
