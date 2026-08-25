@@ -192,6 +192,7 @@ describe("P-05 — workflow arm stamps and restores global process.env.AKM_EVENT
     // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     writeTask("wf-provenance-throws", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
+    let observedDuring: string | undefined;
 
     // A ConfigError from the orchestrator is the one failure runWorkflowTask
     // re-throws (rather than swallowing into a "failed" result), so it is the
@@ -202,11 +203,17 @@ describe("P-05 — workflow arm stamps and restores global process.env.AKM_EVENT
         stashDir: storage.stashDir,
         bundleName: "fixture",
         runWorkflowStepsImpl: (async () => {
+          // Observe the stamp BEFORE throwing — otherwise an "unset" pre-state
+          // and an "unset" post-state are indistinguishable from the stamp
+          // never having been applied at all (i.e. this would still pass if
+          // the workflow-arm stamp were dropped from the error path).
+          observedDuring = process.env.AKM_EVENT_SOURCE;
           throw new ConfigError("synthetic workflow engine failure for P-05");
         }) as never,
       }),
     ).rejects.toThrow("synthetic workflow engine failure for P-05");
 
+    expect(observedDuring).toBe("task");
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
   });
 });

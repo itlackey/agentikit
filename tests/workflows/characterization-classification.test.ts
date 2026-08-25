@@ -95,6 +95,20 @@ describe("classifyTaskV3Uses — GitHub-action locator grammar (R-04, task-v3/so
     expect((error as Error).message).toBe(
       "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref, or owner/repo[/path]@ref. Agent/task/local/Docker/ambiguous targets are not executable.",
     );
+
+    // "review" has no slash and no "@", so it never enters the
+    // owner/repo[/path]@rev locator branch at all — it is rejected before the
+    // grammar is even consulted. A genuine near-miss LOCATOR must also be
+    // pinned: "owner/repo" IS slash-shaped and reaches the locator branch
+    // (segments = ["owner", "repo"]), but has no "@rev" (`at > 0` fails, since
+    // `value.lastIndexOf("@")` is -1), so it falls through to the same
+    // trailing message for a different reason than "review" does.
+    const locatorError = thrown(() => classifyTaskV3Uses("owner/repo"));
+    expect(locatorError).toBeInstanceOf(UsageError);
+    expect((locatorError as UsageError).code).toBe("INVALID_FLAG_VALUE");
+    expect((locatorError as Error).message).toBe(
+      "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref, or owner/repo[/path]@ref. Agent/task/local/Docker/ambiguous targets are not executable.",
+    );
   });
 
   // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later

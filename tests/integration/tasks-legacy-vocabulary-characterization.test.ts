@@ -210,12 +210,21 @@ describe("R-08 — legacy vocabulary: stored target_kind strings + read-back sha
     try {
       upsertTaskHistory(db, { ...baseRow, task_id: "arm-null-kind", target_kind: null });
       upsertTaskHistory(db, { ...baseRow, task_id: "arm-unrecognized-kind", target_kind: "bogus-legacy-value" });
+      // R-08's two read-boundary null fallbacks (flip phase P1b): `ref` falls
+      // back to "" when target_ref is null, and `engine` is null when metadata
+      // omits it. baseRow already satisfies both preconditions (target_ref:
+      // null; metadata_json carries no "engine" key), so only target_kind
+      // varies here.
+      upsertTaskHistory(db, { ...baseRow, task_id: "arm-workflow-null-ref", target_kind: "workflow" });
+      upsertTaskHistory(db, { ...baseRow, task_id: "arm-prompt-no-engine", target_kind: "prompt" });
     } finally {
       db.close();
     }
 
     expect(readTaskHistory({ id: "arm-null-kind" })[0]?.target).toEqual({ kind: "unknown" });
     expect(readTaskHistory({ id: "arm-unrecognized-kind" })[0]?.target).toEqual({ kind: "unknown" });
+    expect(readTaskHistory({ id: "arm-workflow-null-ref" })[0]?.target).toEqual({ kind: "workflow", ref: "" });
+    expect(readTaskHistory({ id: "arm-prompt-no-engine" })[0]?.target).toEqual({ kind: "prompt", engine: null });
   });
 });
 
