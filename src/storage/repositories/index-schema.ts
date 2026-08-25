@@ -257,10 +257,6 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
     `);
   }
 
-  // Entry mutations now publish their FTS projection in the same transaction.
-  // The former dirty queue is derived state and has no compatibility value.
-  db.exec("DROP TABLE IF EXISTS entries_fts_dirty");
-
   // usage_events lives in state.db. utility_scores remains a regenerable
   // index.db cache.
 

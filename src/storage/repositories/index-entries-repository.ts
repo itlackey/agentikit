@@ -562,8 +562,8 @@ export function deleteUsageEventsByEntryIds(entryIds: number[]): void {
  * Delete entries by their primary key IDs, along with all related rows
  * (embeddings, entries_vec, entries_fts, utility_scores, usage_events).
  *
- * Used by the `--clean` post-pass to remove stale entries whose source files
- * no longer exist on disk.
+ * Used by explicit `--clean` reconciliation before embeddings and final
+ * verification to remove stale entries whose source files no longer exist.
  */
 export function deleteEntriesByIds(db: Database, ids: number[]): void {
   if (ids.length === 0) return;
