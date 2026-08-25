@@ -352,6 +352,34 @@ export async function searchLocal(input: {
 
 // ── Database search ─────────────────────────────────────────────────────────
 
+/**
+ * Keep one deterministic ranking order before stable path deduplication. Exact
+ * names survive the public score ceiling, while raw contributor differences
+ * are quantized so utility-recency epsilon cannot reorder visible ties.
+ */
+function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: RankedEntryInput) => number {
+  const queryTokens = buildLexicalQueryPlan(query).tokens.map((token) => token.toLowerCase());
+  const displayScore = (score: number): number => Math.round(Math.min(1, Math.max(0, score)) * 10000) / 10000;
+  const stableRankScore = (score: number): number => Math.round(score * 10000) / 10000;
+
+  return (a, b) => {
+    const aNameTier = lexicalNameMatchTier(a.entry, queryTokens);
+    const bNameTier = lexicalNameMatchTier(b.entry, queryTokens);
+    if (aNameTier === 3 || bNameTier === 3) {
+      const nameDiff = bNameTier - aNameTier;
+      if (nameDiff !== 0) return nameDiff;
+    }
+    const scoreDiff = displayScore(b.score) - displayScore(a.score);
+    if (scoreDiff !== 0) return scoreDiff;
+    const rawScoreDiff = stableRankScore(b.score) - stableRankScore(a.score);
+    if (rawScoreDiff !== 0) return rawScoreDiff;
+    const nameDiff = bNameTier - aNameTier;
+    if (nameDiff !== 0) return nameDiff;
+    const typeDiff = typeBoostFor(b.entry.type) - typeBoostFor(a.entry.type);
+    return typeDiff || a.filePath.localeCompare(b.filePath);
+  };
+}
+
 async function searchDatabase(
   db: Database,
   query: string,
@@ -561,42 +589,7 @@ async function searchDatabase(
       ? scored.filter((item) => item.rankingMode !== "semantic" || (item.preCeilingScore ?? item.score) >= minScore)
       : scored;
 
-  // Deterministic tiebreaker on equal scores.
-  //
-  // CRITICAL: sort on the SAME clamped+rounded value the user sees (see the
-  // `finalScore`/round-to-4dp logic below at buildDbHit), NOT the raw pre-clamp
-  // `item.score`. The boost loop can push scores above 1.0 (utility, graph,
-  // project boosts) and carries ~15 significant digits. Two entries that DISPLAY
-  // an identical score (e.g. both clamp to 1.0000) can still differ in their raw
-  // pre-clamp score by a timing-dependent epsilon — utility recency uses
-  // `Date.now()` and `last_used_at`, so the same query run twice in one process
-  // can yield raw scores that diverge at the 6th decimal. Sorting on the raw
-  // value lets that invisible epsilon decide the order, so the visible name
-  // tiebreaker never engages and the order flips run-to-run (Issue #14). Quantize
-  // to the display value first; only then does `localeCompare` break true ties.
-  const displayScore = (s: number): number => Math.round(Math.min(1, Math.max(0, s)) * 10000) / 10000;
-  const queryTokens = buildLexicalQueryPlan(query).tokens.map((token) => token.toLowerCase());
-  preFilter.sort((a, b) => {
-    const aNameTier = lexicalNameMatchTier(a.entry, queryTokens);
-    const bNameTier = lexicalNameMatchTier(b.entry, queryTokens);
-    // Exact normalized names are the strongest lexical signal and must not be
-    // erased when both boosted scores clamp to 1.
-    if (aNameTier === 3 || bNameTier === 3) {
-      const nameDiff = bNameTier - aNameTier;
-      if (nameDiff !== 0) return nameDiff;
-    }
-    const scoreDiff = displayScore(b.score) - displayScore(a.score);
-    if (scoreDiff !== 0) return scoreDiff;
-    // Preserve useful contributor differences above the public score ceiling,
-    // but quantize first so utility-recency epsilon cannot reorder ties.
-    const stableRankScore = (score: number): number => Math.round(score * 10000) / 10000;
-    const rawScoreDiff = stableRankScore(b.score) - stableRankScore(a.score);
-    if (rawScoreDiff !== 0) return rawScoreDiff;
-    const nameDiff = bNameTier - aNameTier;
-    if (nameDiff !== 0) return nameDiff;
-    const typeDiff = typeBoostFor(b.entry.type) - typeBoostFor(a.entry.type);
-    return typeDiff || a.filePath.localeCompare(b.filePath);
-  });
+  preFilter.sort(buildSearchResultComparator(query));
 
   // Deduplicate by file path — keep only the highest-scored entry per file.
   const deduped = deduplicateByPath(preFilter);
@@ -1094,16 +1087,7 @@ export async function buildDbHit(input: {
     ...(graphHit ? { graph: { entities: graphHit.entities, relations: graphHit.relations } } : {}),
   };
 
-  if (input.lexicalMatch) {
-    attachSearchHitAttribution(hit, {
-      lexical: {
-        execution: input.lexicalMatch,
-        nameMatchTier: lexicalNameMatchTier(input.entry, buildLexicalQueryPlan(input.query).tokens),
-      },
-    });
-  }
-
-  if (input.attributionSource) copySearchHitAttribution(input.attributionSource, hit);
+  attachDbHitAttribution(hit, input);
 
   if (input.entry.derivedFrom) {
     attachSearchHitAttribution(hit, {
@@ -1119,6 +1103,26 @@ export async function buildDbHit(input: {
   });
 
   return hit;
+}
+
+function attachDbHitAttribution(
+  hit: SourceSearchHit,
+  input: {
+    entry: IndexDocument;
+    query: string;
+    lexicalMatch?: LexicalQueryExecution;
+    attributionSource?: object;
+  },
+): void {
+  if (input.lexicalMatch) {
+    attachSearchHitAttribution(hit, {
+      lexical: {
+        execution: input.lexicalMatch,
+        nameMatchTier: lexicalNameMatchTier(input.entry, buildLexicalQueryPlan(input.query).tokens),
+      },
+    });
+  }
+  if (input.attributionSource) copySearchHitAttribution(input.attributionSource, hit);
 }
 
 export function buildWhyMatched(
