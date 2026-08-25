@@ -20,15 +20,15 @@ Generate metadata from the asset
         ↓
 Build weighted search fields
         ↓
-Upsert entries
+Atomically apply entries + FTS projections + vector invalidation
         ↓
-Rebuild FTS
+Reconcile removed sources and explicit --clean deletions
         ↓
-Re-link preserved usage events
+Generate missing/stale embeddings when enabled
         ↓
-Recompute utility scores
+Re-link preserved usage events and recompute utility scores
         ↓
-Refresh semantic status / embeddings when enabled
+Verify and report the final generation
 ```
 
 Cache materialisation runs through each source's `sync()` method
@@ -57,6 +57,21 @@ The `content` column is intentionally sparse. Longer freeform guidance such as
 Full rebuilds preserve usage history and then re-link it to rebuilt entries by
 ref.
 
+## Mutation and finalization boundary
+
+The canonical entry repository owns each complete synchronous mutation of
+`index.db`: the `entries` row, its weighted `entries_fts` projection, and stale
+vector invalidation are committed in one SQLite transaction. Entry deletion
+removes FTS, vector, and utility children before the parent row. Callers do not
+maintain a dirty queue or request an incremental FTS rebuild. The full
+`rebuildFts()` operation remains only as an explicit recovery verifier for this
+regenerable database.
+
+An explicit `akm index --clean` reconciles missing files after the filesystem
+walk and before embedding, utility recomputation, totals, and verification.
+Consequently `totalEntries`, FTS state, semantic verification, and
+`clean.removed` all describe the same committed generation.
+
 ## Indexed Identity and Location
 
 Every current `entries` row carries a canonical fully qualified
@@ -70,8 +85,9 @@ This preserves bundle identity when multiple sources contain the same concept.
 
 ## LLM Enrichment Pass
 
-When metadata enhancement is enabled, the enrichment pass runs after all
-entries are upserted and FTS is rebuilt. Key properties:
+When metadata enhancement is enabled, the enrichment pass runs after the
+filesystem-derived entries are upserted. Enhanced entries are written back
+through the same canonical entry/FTS mutation. Key properties:
 
 **Concurrency** — directories are enriched in parallel using a bounded
 concurrency pool (`concurrentMap` from `src/core/concurrent.ts`). The pool
@@ -110,7 +126,7 @@ skipped unless the caller explicitly requests re-enrichment.
 ## Database Tables
 
 `index.db`'s schema (`ensureSchema()`,
-`src/storage/repositories/index-schema.ts`) creates 16 tables (2 of them
+`src/storage/repositories/index-schema.ts`) creates 15 tables (2 of them
 virtual). Full column-level detail lives in
 [Storage Locations](storage-locations.md#dataindexdb--main-search-index);
 this is a purpose summary:
@@ -119,7 +135,6 @@ this is a purpose summary:
 | --- | --- |
 | `entries` | normalized asset records |
 | `entries_fts` (virtual, FTS5) | multi-column full-text index |
-| `entries_fts_dirty` | queue of entries needing an FTS rebuild |
 | `embeddings` | stored embedding vectors (JS cosine-similarity fallback) |
 | `entries_vec` (virtual, conditional) | `sqlite-vec` ANN index, created only when the extension loads |
 | `utility_scores` | recomputed utility boost state (global) |

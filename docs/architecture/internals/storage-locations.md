@@ -92,13 +92,10 @@ BM25-weighted full-text search. Tokenizer: `porter unicode61`.
 | `hints` | 2.0 |
 | `content` | 1.0 |
 
-#### Table: `entries_fts_dirty`
-
-| Column | Type | Notes |
-|---|---|---|
-| `entry_id` | INTEGER PRIMARY KEY | Entry needing FTS rebuild |
-
-Dirty queue drained during incremental `akm index`. Avoids full FTS wipe on every run.
+The canonical entry repository replaces this projection in the same SQLite
+transaction as its `entries` upsert. Deletes remove the FTS row before the
+parent entry. There is no caller-managed FTS dirty queue; a full FTS rebuild is
+reserved for explicit recovery of regenerable index state.
 
 #### Table: `embeddings`
 
