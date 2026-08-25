@@ -199,9 +199,8 @@ Supporting rules, all shipped as convention facts:
   transcripts) — synthesized knowledge pages are the rewritable layer (Karpathy
   immutability inside AKM's flat model).
 - **Self-situating text on every asset** — the orientation line goes in
-  `description:`/`when_to_use:` (the indexed fields; body prose is NOT indexed —
-  FTS `content` is TOC headings + parameters only, and embeddings are built from
-  the same field string, never the body). The body header still feeds the
+  `description:`/`when_to_use:` (the higher-weight indexed fields; bounded
+  body prose also enters the lowest-weight `content` field). The body header feeds the
   entity graph (extracted from body prose) and human readers at `akm show`.
   Anthropic's Contextual Retrieval figures (35%/49%/67% top-20 failure-rate
   reduction) were measured on chunk-prepended context in a chunked RAG pipeline —
@@ -288,7 +287,7 @@ eight specs have since landed (amended 2026-07-12): the lint frontmatter
 channels (SPEC-1), the tag merge (SPEC-2), `--xref` (SPEC-3), the ref-prefix
 filter (SPEC-4), `--supersedes` demotion (SPEC-5), category capture (SPEC-6 —
 shipped capture-only; the rank-time demotion was dropped after measurement
-showed no crowding), `akm mv` (SPEC-7), and default-off body-opening indexing
+showed no crowding), `akm mv` (SPEC-7), and bounded native body indexing
 (SPEC-8) — see the closed bullets below. What remains genuinely open:
 vocabulary governance, scheduled consolidation (argued down in the spec — the
 improve pipeline already injects the amended conventions), and the typed
@@ -340,14 +339,9 @@ provenance channel.
   [0.9.0-decisions.md D3](0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-ships-experimental).
 - **Index self-situating body text.** Closed by SPEC-8 in
   [stash-conventions-code-spec.md](stash-conventions-code-spec.md)
-  (implemented, default-off: the `index.indexBodyOpening` config flag makes
-  the metadata pass capture the first prose paragraph of a markdown body —
-  capped at 280 chars; secrets/env and session-kind memories excluded — into
-  `entry.bodyOpening`, folded into the lowest-weight `content` FTS column and
-  the embedding text). Stays default-off until eval evidence (curate goldens)
-  shows lift; toggling requires `akm index --full` (embeddings do not
-  regenerate for already-embedded entries) plus a canary re-mint, and `akm
-  index` warns while the flag diverges from the built state. The
+  (implemented: the native adapter normalizes bounded Markdown prose into the
+  lowest-weight `content` field; secrets, env files, raw sessions, and session
+  checkpoints are excluded at the adapter boundary). The
   `description:`/`when_to_use:` orientation routing the conventions teach
   remains primary.
 - **Typed provenance channel.** Evaluate `sources:` for all types, indexed

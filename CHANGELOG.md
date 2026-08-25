@@ -1213,34 +1213,17 @@ See `docs/migration/v0.8-to-v0.9.md` and
   and a real domain asset always outranks the facts. That invariant is pinned
   by `tests/search-convention-fact-demotion.test.ts`, which becomes the
   regression guard if a demotion contributor is ever revisited.
-- **Config-gated indexing of the self-situating body opening —
-  `index.indexBodyOpening` (default `false`).** Body prose is not indexed
-  (the FTS `content` column carries only TOC headings and parameters), which
-  is why the stash conventions route orientation into
-  `description:`/`when_to_use:`. With the new flag enabled, the metadata pass
-  captures the first prose paragraph of each markdown asset body — skipping
-  headings (ATX and setext), fenced code blocks, thematic breaks, and a
-  leading nested frontmatter block (only when its content is actually
-  frontmatter-shaped: prose wrapped in decorative `---` lines is captured,
-  not discarded); capped at 280 chars with word-boundary truncation and a
-  trailing ellipsis — into `entry.bodyOpening`, which folds into the
-  lowest-weight `content` FTS column (bm25 weight 1.0, so a name match always
-  outranks a body-opening-only match) and into the search/embedding text.
-  Secret and env files are never read for it, and session-kind memories
-  (`akm_memory_kind` in outer or nested inner frontmatter) are excluded —
-  their bodies are raw transcripts. Both indexing walks and write-path
-  indexing honor the flag (the metadata pass reads the user config directly).
-  With the flag absent or `false`, entries and search fields stay
-  byte-identical to before. **Costs of toggling (either direction):** indexed
-  text changes, so collapse-detector canary recall baselines shift — re-mint
-  via `akm improve canary --refresh` — and embeddings are NOT regenerated for
-  entries that already have one, while incremental runs re-extract only
-  changed files. Run `akm index --full` after toggling: it re-extracts every
-  entry and wipes embeddings so they rebuild from the new text; until then
-  `akm index` warns that the flag differs from the state the index was built
-  with. The conventions' `description:`/`when_to_use:` orientation routing
-  remains primary — this flag makes body openings additionally pay retrieval
-  rent, it does not replace structured metadata. See `docs/configuration.md`.
+- **One progressive lexical retrieval path and searchable Markdown prose.**
+  FTS now tokenizes Unicode letters/numbers, deduplicates and caps the query,
+  then runs strict AND, prefix-AND, and a single OR/prefix-OR recovery only
+  after both conjunctive forms miss. Every stage keeps the existing BM25 field
+  weights and downstream ranker; callers do not maintain stopword lists or
+  parallel result collections. AKM-native Markdown contributes a normalized,
+  16,384-character body projection through the existing lowest-weight
+  `content` field. Frontmatter, comments, fenced code, and link destinations
+  are removed; secret/env values and raw session/checkpoint bodies never enter
+  the projection. Structured fields remain first in the bounded embedding
+  input, so exact names and metadata continue to dominate body-only matches.
 - **`akm mv <ref> <new-name>` — rename with inbound-xref rewrite and
   utility-history preservation (Experimental).** The stash conventions'
   forced-rename procedure ("grep and fix inbound xrefs in the same pass") was
