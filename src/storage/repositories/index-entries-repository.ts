@@ -82,7 +82,11 @@ export function upsertEntry(
     replaceFtsEntry(db, result.id, entry);
     return result.id;
   };
-  return db.inTransaction ? apply() : db.transaction(apply)();
+  // Always enter the driver's transaction wrapper. Both supported SQLite
+  // drivers lower a transaction opened inside another transaction to a
+  // savepoint, so a caller that catches this mutation's error cannot commit a
+  // partial entries row through its outer transaction.
+  return db.transaction(apply)();
 }
 
 interface UpsertStmts {
