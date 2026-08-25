@@ -14,10 +14,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { akmListSources, akmUpdate } from "../../src/commands/sources/installed-stashes";
+import { akmSearch } from "../../src/commands/read/search";
 import { akmAdd } from "../../src/commands/sources/source-add";
 import { addStash } from "../../src/commands/sources/source-manage";
 import { loadConfig, saveConfig } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
+import { akmIndex } from "../../src/indexer/indexer";
 import { readLockfile } from "../../src/integrations/lockfile";
 import * as gitProvider from "../../src/sources/providers/git";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
@@ -627,6 +629,34 @@ describe("update preserves entry.source for writable installed entries", () => {
 // ── Regression: R-015 — `akm bundle update --all` must account for plain sources ───
 
 describe("R-015: akm bundle update --all with mixed plain and managed sources", () => {
+  test("targeted filesystem update reconciles changed and removed assets without a manual index", async () => {
+    const fsDir = createTmpDir("akm-r015-fs-reconcile-");
+    makeStashDir(fsDir);
+    const oldFile = path.join(fsDir, "knowledge", "old-note.md");
+    fs.writeFileSync(oldFile, "---\ndescription: obsoletewalrusmarker\n---\n\n# Old note\n", "utf8");
+    saveConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "local-fs",
+      bundles: {
+        "local-fs": { path: fsDir, components: { main: { root: ".", adapter: "akm", writable: true } } },
+      },
+    });
+    await akmIndex({ stashDir: fsDir, full: true });
+
+    fs.unlinkSync(oldFile);
+    fs.writeFileSync(
+      path.join(fsDir, "knowledge", "new-note.md"),
+      "---\ndescription: currentnarwhalmarker\n---\n\n# New note\n",
+      "utf8",
+    );
+    const result = await akmUpdate({ target: "local-fs", stashDir: fsDir });
+
+    expect(result.index.mode).toBe("incremental");
+    expect(result.plainSynced).toContainEqual({ id: "local-fs", kind: "filesystem", ref: fsDir });
+    expect((await akmSearch({ query: "currentnarwhalmarker", skipLogging: true })).hits).toHaveLength(1);
+    expect((await akmSearch({ query: "obsoletewalrusmarker", skipLogging: true })).hits).toHaveLength(0);
+  });
+
   test("filters disabled managed and plain sources from --all without changing explicit targeting", async () => {
     const disabledManagedRoot = createTmpDir("akm-disabled-managed-");
     makeStashDir(disabledManagedRoot);
@@ -752,14 +782,10 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
     expect(result.processed).toHaveLength(1);
     expect(result.processed[0]?.id).toBe("left-pad");
     expect(result.processed[0]?.installed.resolvedVersion).toBe("1.3.0");
-    // Filesystem is the only intentional skip: it reflects local bytes in
-    // place. Website now uses the same staged/audited transaction as an
-    // explicit website update.
-    const skippedIds = (result.skipped ?? []).map((s) => s.id).sort();
-    expect(skippedIds).toEqual(["local-fs"]);
-    const fsSkip = result.skipped?.find((s) => s.id === "local-fs");
-    expect(fsSkip?.kind).toBe("filesystem");
-    expect(fsSkip?.reason).toContain("akm index");
+    // Filesystem sources have no provider hydration, but `update --all` still
+    // reconciles their current bytes into the same index generation.
+    expect(result.plainSynced).toContainEqual({ id: "local-fs", kind: "filesystem", ref: fsDir });
+    expect(result.skipped ?? []).toEqual([]);
 
     // The npm source must now be a genuine managed install (lock-backed).
     const npmLock = readLockfile().find((entry) => entry.id === "left-pad");
