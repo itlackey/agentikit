@@ -79,7 +79,6 @@ import {
   upsertEntry,
 } from "../storage/repositories/index-entries-repository";
 import type { EntryProvenance } from "../storage/repositories/index-entry-types";
-import { rebuildFts } from "../storage/repositories/index-fts-repository";
 import {
   clearStaleCacheEntries,
   computeBodyHash,
@@ -223,8 +222,8 @@ interface IndexOptions {
   stashDir: string;
   full?: boolean;
   /**
-   * When true, run a post-pass after indexing that removes entries whose source
-   * file no longer exists on disk. Remote entries (empty file_path) are skipped.
+   * When true, reconcile entries whose source file no longer exists before
+   * embeddings and final verification. Remote entries (empty file_path) are skipped.
    */
   clean?: boolean;
   /**
@@ -481,8 +480,9 @@ async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
 }
 
 /**
- * Finalize phase: rebuild FTS, re-link usage events, recompute utility scores,
- * regenerate wiki indexes, update index metadata, and emit the verify event.
+ * Finalize phase: confirm transactionally materialized FTS state, re-link
+ * usage events, recompute utility scores, update index metadata, and emit the
+ * verify event.
  */
 async function runFinalizePhase(
   ctx: IndexRunContext,
@@ -491,13 +491,11 @@ async function runFinalizePhase(
   const { db, config, sources, sourceDirs, isIncremental, stashDir, signal, onProgress } = ctx;
   ctx.timing.tFinalizeStart = Date.now();
 
-  // Rebuild FTS after all inserts. Use incremental mode when this whole
-  // index run is incremental — only entries touched by `upsertEntry`
-  // since the last rebuild are re-indexed.
-  rebuildFts(db, { incremental: isIncremental });
+  // `upsertEntry` and every canonical delete own their FTS projection. This is
+  // an observation point, not a second materialization pass.
   onProgress({
     phase: "fts",
-    message: isIncremental ? "Rebuilt full-text search index (dirty rows only)." : "Rebuilt full-text search index.",
+    message: "Full-text search index is current.",
   });
   ctx.timing.tFtsEnd = Date.now();
 
@@ -635,8 +633,8 @@ export function reconcileBodyOpeningIndexState(
 // ── Clean pass ───────────────────────────────────────────────────────────────
 
 /**
- * Post-index clean pass: scan the `entries` table for rows whose source file
- * no longer exists on disk and remove them (unless `dryRun` is true).
+ * Missing-file reconciliation: scan the `entries` table for rows whose source
+ * file no longer exists on disk and remove them (unless `dryRun` is true).
  *
  * Only rows with a non-empty `file_path` are checked — remote/virtual entries
  * that have no local path are always skipped.
@@ -991,24 +989,19 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           }),
         });
 
+        let cleanResult: IndexCleanResult | undefined;
+        let cleanStart = Date.now();
+        let cleanEnd = cleanStart;
+
         // ── Phase sequence ───────────────────────────────────────────────────────
         await runSourceCachePhase(ctx);
         await runWalkPhase(ctx);
         applyRemovedSources(ctx);
-        await runEmbeddingPhase(ctx);
-        await runFinalizePhase(ctx, options.deferredUpdateTransaction);
-        // ────────────────────────────────────────────────────────────────────────
 
-        // runFinalizePhase always populates these before returning.
-        const verification = ctx.verification as IndexVerification;
-        const totalEntries = ctx.totalEntries as number;
-        const { timing } = ctx;
-
-        // ── Clean pass ───────────────────────────────────────────────────────────
-        // After the normal index completes, remove entries whose source files no
-        // longer exist on disk. Remote entries (empty file_path) are skipped.
-        let cleanResult: IndexCleanResult | undefined;
-        const cleanStart = Date.now();
+        // Reconcile explicit missing-file cleanup before embeddings, totals, or
+        // verification describe this generation. Dry-run intentionally leaves
+        // the generation unchanged while still returning the previewed refs.
+        cleanStart = Date.now();
         if (clean) {
           onProgress({
             phase: "finalize",
@@ -1021,8 +1014,16 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
             cleanResult = { checked: 0, removed: 0, removedRefs: [], dryRun };
           }
         }
-        const cleanEnd = Date.now();
+        cleanEnd = Date.now();
+
+        await runEmbeddingPhase(ctx);
+        await runFinalizePhase(ctx, options.deferredUpdateTransaction);
         // ────────────────────────────────────────────────────────────────────────
+
+        // runFinalizePhase always populates these before returning.
+        const verification = ctx.verification as IndexVerification;
+        const totalEntries = ctx.totalEntries as number;
+        const { timing } = ctx;
 
         return {
           stashDir,

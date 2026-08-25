@@ -164,13 +164,12 @@ test("akmIndex --clean with a missing file: entry deleted from DB, removedRefs p
   // The removed canonical ref must identify the deploy entry.
   expect(result.clean?.removedRefs[0]).toContain("deploy");
 
-  // Verify the entry is actually gone from the database.
-  // totalEntries is computed before the clean pass runs, so the DB now has
-  // (totalEntries - removed) rows.
+  // Verify the entry is actually gone and the returned total describes the
+  // same post-clean generation as the database.
   const db = openIndexDatabase();
   try {
     const remaining = getAllEntries(db);
-    expect(remaining).toHaveLength(result.totalEntries - (result.clean?.removed ?? 0));
+    expect(remaining).toHaveLength(result.totalEntries);
     expect(remaining.every((e) => !e.filePath.includes("deploy"))).toBe(true);
   } finally {
     closeDatabase(db);
