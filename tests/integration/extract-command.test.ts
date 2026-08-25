@@ -602,6 +602,40 @@ describe("akmExtract — candidate → proposal routing", () => {
 });
 
 describe("akmExtract — LLM call wiring", () => {
+  test("repairs malformed output once when the engine lacks JSON Schema support", async () => {
+    const stash = makeStashDir();
+    const session = fakeSession("ses_repair", Date.now() - 60_000);
+    const config = configEnabled(stash);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.supportsJsonSchema = false;
+    const responses = [
+      "I found nothing worth keeping.",
+      JSON.stringify({ candidates: [], rationale_if_empty: "No durable candidates were identified." }),
+    ];
+    const prompts: string[] = [];
+
+    const result = await akmExtract({
+      type: "claude",
+      sessionId: session.ref.sessionId,
+      stashDir: stash,
+      config,
+      harnesses: [makeFakeHarness([session])],
+      chat: async (_config, messages) => {
+        prompts.push(messages.at(-1)?.content ?? "");
+        return responses.shift() ?? "";
+      },
+    });
+
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).not.toBe(prompts[0]);
+    expect(prompts[1]).toContain("ONLY a JSON object");
+    expect(result.sessionsProcessed).toBe(1);
+    expect(result.sessionsSkipped).toBe(0);
+    expect(result.sessions[0]?.rationaleIfEmpty).toContain("No durable candidates");
+    expect(result.warnings).toEqual([]);
+  });
+
   test("injects only conventions for candidate output types", async () => {
     const stash = makeStashDir();
     const session = fakeSession("ses_standards", Date.now() - 60_000);

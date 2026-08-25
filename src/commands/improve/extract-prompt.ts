@@ -17,6 +17,7 @@
  */
 
 import promptTemplate from "../../assets/prompts/extract-session.md" with { type: "text" };
+import { escapeJsonStringControls, stripCodeFences, stripThinkBlocks } from "../../core/parse";
 import type { InlineRefMention, SessionData, SessionEvent } from "../../integrations/session-logs/types";
 
 const EXTRACT_CANDIDATE_NAME_PATTERN = "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)?$";
@@ -202,6 +203,59 @@ export interface ExtractCandidate {
 export interface ExtractPayload {
   candidates: ExtractCandidate[];
   rationale_if_empty?: string;
+  /** Present only when the model response could not satisfy the payload boundary. */
+  parseFailure?: {
+    code: "empty_response" | "no_json_object" | "invalid_json_object" | "invalid_payload";
+    message: string;
+  };
+}
+
+function failedExtractPayload(
+  code: NonNullable<ExtractPayload["parseFailure"]>["code"],
+  message: string,
+): ExtractPayload {
+  return { candidates: [], rationale_if_empty: message, parseFailure: { code, message } };
+}
+
+function parseFirstJsonObject(stdout: string): { objectFound: boolean; value?: unknown } {
+  const text = escapeJsonStringControls(stripCodeFences(stripThinkBlocks(stdout)));
+  try {
+    return { objectFound: text.startsWith("{"), value: JSON.parse(text) as unknown };
+  } catch {
+    // Continue with the first object embedded in prose. Once an opening brace
+    // is found, never descend into a nested object if that outer object is
+    // malformed or truncated: doing so can turn a broken candidate into a
+    // superficially valid top-level payload.
+  }
+  const start = text.indexOf("{");
+  if (start < 0) return { objectFound: false };
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index++) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth !== 0) continue;
+      try {
+        return { objectFound: true, value: JSON.parse(text.slice(start, index + 1)) as unknown };
+      } catch {
+        return { objectFound: true };
+      }
+    }
+  }
+  return { objectFound: true };
 }
 
 /**
@@ -211,30 +265,22 @@ export interface ExtractPayload {
  */
 export function parseExtractPayload(stdout: string): ExtractPayload {
   if (!stdout || stdout.trim().length === 0) {
-    return { candidates: [], rationale_if_empty: "LLM returned empty response" };
+    return failedExtractPayload("empty_response", "LLM returned an empty response");
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    // Tolerate prose preamble/postamble by extracting the first balanced
-    // top-level JSON object.
-    const start = stdout.indexOf("{");
-    const end = stdout.lastIndexOf("}");
-    if (start === -1 || end <= start) {
-      return { candidates: [], rationale_if_empty: `LLM response was not parseable JSON` };
-    }
-    try {
-      parsed = JSON.parse(stdout.slice(start, end + 1));
-    } catch {
-      return { candidates: [], rationale_if_empty: `LLM response was not parseable JSON` };
-    }
+  const parsed = parseFirstJsonObject(stdout);
+  if (parsed.value === undefined) {
+    return parsed.objectFound
+      ? failedExtractPayload("invalid_json_object", "JSON object was found but could not be parsed")
+      : failedExtractPayload("no_json_object", "LLM response: no JSON object found");
   }
-  if (!parsed || typeof parsed !== "object") {
-    return { candidates: [], rationale_if_empty: "LLM response was not an object" };
+  if (!parsed.value || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return failedExtractPayload("invalid_payload", "LLM response JSON was not an object");
   }
-  const obj = parsed as Record<string, unknown>;
-  const rawCandidates = Array.isArray(obj.candidates) ? obj.candidates : [];
+  const obj = parsed.value as Record<string, unknown>;
+  if (!Array.isArray(obj.candidates)) {
+    return failedExtractPayload("invalid_payload", "LLM response JSON did not contain a candidates array");
+  }
+  const rawCandidates = obj.candidates;
   const candidates: ExtractCandidate[] = [];
   for (const raw of rawCandidates) {
     if (!raw || typeof raw !== "object") continue;

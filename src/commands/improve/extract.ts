@@ -43,12 +43,14 @@ import {
 } from "../../core/file-lock";
 import type { AkmExtractResult, ExtractedSessionResult } from "../../core/improve-types";
 import { tryAcquireMaintenanceBarrier } from "../../core/maintenance-barrier";
+import { redactErrorBody } from "../../core/redaction";
 import { resolveStashStandards } from "../../core/standards/resolve-stash-standards";
 import { resolveTypeConventions, typeConventionRef } from "../../core/standards/resolve-type-conventions";
 import { getStateDbPath, openStateDatabase } from "../../core/state-db";
+import { runStructured } from "../../core/structured";
 import { repairTruncatedDescription } from "../../core/text-truncation";
 import { DURATION_UNITS, parseDuration } from "../../core/time";
-import { warn } from "../../core/warn";
+import { warn, warnVerbose } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import { indexWrittenAssets } from "../../indexer/index-written-assets";
 import {
@@ -73,7 +75,13 @@ import {
 import { openSqliteReadSnapshot } from "../../storage/sqlite-read-snapshot";
 import { isProposalSkipped, type ProposalsContext } from "../proposal/repository";
 import { resolveImproveLlmExecution } from "./execution";
-import { buildExtractPrompt, EXTRACT_JSON_SCHEMA, type ExtractCandidate, parseExtractPayload } from "./extract-prompt";
+import {
+  buildExtractPrompt,
+  EXTRACT_JSON_SCHEMA,
+  type ExtractCandidate,
+  type ExtractPayload,
+  parseExtractPayload,
+} from "./extract-prompt";
 import { resolveImproveStrategy, resolveProcessEnabled } from "./improve-strategies";
 import { emitProposal } from "./proposal-envelope";
 import { createRunContext, type RunContext, resolveRunStashDir } from "./run-context";
@@ -772,10 +780,21 @@ interface ExtractSessionInput {
  * The bounded per-session extraction LLM call. Routes the already-resolved
  * symbolic runner through `callStructured` under the `session_extraction`
  * gate. Invalid configuration escapes before session/proposal state is
- * persisted. Returns the seam result plus the `llmRaw`
- * side-channel value that distinguishes fallback-took-over from a
- * genuinely-empty response.
+ * persisted. Engines without JSON Schema support get one corrective retry;
+ * exhausted structure failures retain typed, non-payload diagnostics.
  */
+type SessionExtractionLlmCallResult =
+  | { kind: "success"; payload: ExtractPayload; attempts: number }
+  | { kind: "unavailable" }
+  | {
+      kind: "malformed";
+      raw: string;
+      attempts: number;
+      failure: NonNullable<ExtractPayload["parseFailure"]>;
+    };
+
+const EXTRACT_LLM_UNAVAILABLE = Symbol("extract-llm-unavailable");
+
 async function runSessionExtractionLlmCall(args: {
   config: AkmConfig;
   llmRunner: ExtractLlmRunner;
@@ -785,32 +804,57 @@ async function runSessionExtractionLlmCall(args: {
   timeoutMs: number | null;
   signal: AbortSignal | undefined;
   onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
-}): Promise<{ llmResult: string; llmRaw: string }> {
+}): Promise<SessionExtractionLlmCallResult> {
   const { config, llmRunner, lease, chat, prompt, timeoutMs, signal, onNotices } = args;
-  let llmRaw = "";
-  const llmResult = await callStructured<string>({
-    feature: "session_extraction",
-    akmConfig: config,
-    runner: llmRunner,
-    lease,
-    messages: [{ role: "user", content: prompt }],
-    request: {
-      timeoutMs,
-      responseSchema: EXTRACT_JSON_SCHEMA,
-      ...(signal ? { signal } : {}),
-      ...(chat ? { chat } : {}),
-    },
-    onNotices,
-    parse: (raw) => {
-      llmRaw = raw ?? "";
-      return llmRaw;
-    },
-    // A transport throw takes the "" fallback with llmRaw left unset —
-    // the same skipped path the gated-fn throw produced before.
-    onError: () => "",
-    fallback: "",
-  });
-  return { llmResult, llmRaw };
+  try {
+    const result = await runStructured<ExtractPayload>({
+      dispatch: async (feedback) => {
+        const content = feedback ? `${prompt}\n\n## Corrective output instruction\n\n${feedback}` : prompt;
+        const dispatched = await callStructured<{ kind: "response"; raw: string } | { kind: "unavailable" }>({
+          feature: "session_extraction",
+          akmConfig: config,
+          runner: llmRunner,
+          lease,
+          messages: [{ role: "user", content }],
+          request: {
+            timeoutMs,
+            responseSchema: EXTRACT_JSON_SCHEMA,
+            ...(signal ? { signal } : {}),
+            ...(chat ? { chat } : {}),
+          },
+          onNotices,
+          parse: (raw) => ({ kind: "response", raw: raw ?? "" }),
+          onError: () => ({ kind: "unavailable" }),
+          fallback: { kind: "unavailable" },
+        });
+        if (dispatched.kind === "unavailable") throw EXTRACT_LLM_UNAVAILABLE;
+        return dispatched.raw;
+      },
+      parse: (raw) => {
+        const payload = parseExtractPayload(raw);
+        return payload.parseFailure ? undefined : payload;
+      },
+      validate: (payload) => ({ ok: true, value: payload as ExtractPayload }),
+      maxAttempts: llmRunner.connection.supportsJsonSchema === true ? 1 : 2,
+      buildFeedback: () =>
+        "Your previous response did not contain a valid extraction payload. Respond with ONLY a JSON object matching the requested schema, with a candidates array and no prose or code fences.",
+    });
+    if (result.ok) return { kind: "success", payload: result.value, attempts: result.attempts };
+    const payload = parseExtractPayload(result.raw);
+    return {
+      kind: "malformed",
+      raw: result.raw,
+      attempts: result.attempts,
+      failure:
+        payload.parseFailure ??
+        ({ code: "invalid_payload", message: result.errors.join("; ") } satisfies NonNullable<
+          ExtractPayload["parseFailure"]
+        >),
+    };
+  } catch (err) {
+    if (err === EXTRACT_LLM_UNAVAILABLE) return { kind: "unavailable" };
+    throw err;
+  }
 }
 
 function extractNoticeFields(
@@ -818,6 +862,62 @@ function extractNoticeFields(
 ): Pick<ExtractedSessionResult, "notices"> {
   const notices = getNotices();
   return notices.length > 0 ? { notices } : {};
+}
+
+function extractPreFilterStats(filtered: ReturnType<typeof preFilterSession>): ExtractedSessionResult["preFilter"] {
+  return {
+    inputCount: filtered.stats.inputCount,
+    outputCount: filtered.stats.outputCount,
+    truncatedCount: filtered.stats.truncatedCount,
+  };
+}
+
+function malformedExtractionResult(args: {
+  extraction: Extract<SessionExtractionLlmCallResult, { kind: "malformed" }>;
+  sessionRef: SessionRef;
+  harness: string;
+  preFilter: ExtractedSessionResult["preFilter"];
+  contentHash: string;
+  notices: Pick<ExtractedSessionResult, "notices">;
+}): ExtractedSessionResult {
+  const { extraction, sessionRef, harness, preFilter, contentHash, notices } = args;
+  const diagnostic = `malformed_model_output: ${extraction.failure.message}; attempts=${extraction.attempts}; responseLength=${extraction.raw.length}; responseSha256=${sha256Hex(extraction.raw)}`;
+  warnVerbose(
+    `[extract] malformed model output for session ${sessionRef.sessionId}: ${redactErrorBody(extraction.raw)}`,
+  );
+  return {
+    sessionId: sessionRef.sessionId,
+    harness,
+    candidateCount: 0,
+    proposalIds: [],
+    preFilter,
+    warnings: [diagnostic],
+    skipped: true,
+    skipReason: "malformed_model_output",
+    contentHash,
+    ...notices,
+  };
+}
+
+function unavailableExtractionResult(args: {
+  sessionRef: SessionRef;
+  harness: string;
+  preFilter: ExtractedSessionResult["preFilter"];
+  contentHash: string;
+  notices: Pick<ExtractedSessionResult, "notices">;
+}): ExtractedSessionResult {
+  return {
+    sessionId: args.sessionRef.sessionId,
+    harness: args.harness,
+    candidateCount: 0,
+    proposalIds: [],
+    preFilter: args.preFilter,
+    warnings: ["session_extraction feature returned empty (disabled / timeout / error)"],
+    skipped: true,
+    skipReason: "llm_unavailable",
+    contentHash: args.contentHash,
+    ...args.notices,
+  };
 }
 
 async function processSession(
@@ -882,7 +982,7 @@ async function processSession(
     return {};
   };
 
-  const { llmResult, llmRaw } = await runSessionExtractionLlmCall({
+  const extraction = await runSessionExtractionLlmCall({
     config,
     llmRunner,
     lease,
@@ -893,27 +993,29 @@ async function processSession(
     onNotices,
   });
 
-  if (llmResult === "" && !llmRaw) {
+  if (extraction.kind === "unavailable") {
     // The seam took the fallback path (disabled / timeout / error). Return skipped.
-    return {
-      sessionId: sessionRef.sessionId,
+    return unavailableExtractionResult({
+      sessionRef,
       harness: harness.name,
-      candidateCount: 0,
-      proposalIds: [],
-      preFilter: {
-        inputCount: filtered.stats.inputCount,
-        outputCount: filtered.stats.outputCount,
-        truncatedCount: filtered.stats.truncatedCount,
-      },
-      warnings: ["session_extraction feature returned empty (disabled / timeout / error)"],
-      skipped: true,
-      skipReason: "llm_unavailable",
+      preFilter: extractPreFilterStats(filtered),
       contentHash,
-      ...extractNoticeFields(getNotices),
-    };
+      notices: extractNoticeFields(getNotices),
+    });
   }
 
-  const payload = parseExtractPayload(llmRaw);
+  if (extraction.kind === "malformed") {
+    return malformedExtractionResult({
+      extraction,
+      sessionRef,
+      harness: harness.name,
+      preFilter: extractPreFilterStats(filtered),
+      contentHash,
+      notices: extractNoticeFields(getNotices),
+    });
+  }
+
+  const { payload } = extraction;
   const proposalIds: string[] = [];
   // Provenance refs are added only after the cited session asset exists.
   const sessionAsset = await maybeWriteSessionAsset();
@@ -929,6 +1031,7 @@ async function processSession(
           harness: harness.name,
           sourceRun,
           rationale: payload.rationale_if_empty,
+          repairAttempts: extraction.attempts - 1,
           preFilterInput: filtered.stats.inputCount,
           preFilterOutput: filtered.stats.outputCount,
         },
@@ -1010,6 +1113,7 @@ async function processSession(
         proposalCount: proposalIds.length,
         preFilterInput: filtered.stats.inputCount,
         preFilterOutput: filtered.stats.outputCount,
+        repairAttempts: extraction.attempts - 1,
       },
     },
     eventsCtx,
@@ -1092,7 +1196,9 @@ function recordExtractSessionOutcome(args: {
     return;
   try {
     const outcome: ExtractedSessionRow["outcome"] = result.skipped
-      ? result.skipReason === "read_failed" || result.skipReason === "exception"
+      ? result.skipReason === "read_failed" ||
+        result.skipReason === "exception" ||
+        result.skipReason === "malformed_model_output"
         ? "failed"
         : "skipped"
       : result.candidateCount === 0
@@ -1109,7 +1215,9 @@ function recordExtractSessionOutcome(args: {
       rationale: result.rationaleIfEmpty ?? null,
       sourceRun,
       contentHash:
-        result.skipReason === "llm_unavailable" || result.skipReason === "triaged_out"
+        result.skipReason === "llm_unavailable" ||
+        result.skipReason === "triaged_out" ||
+        result.skipReason === "malformed_model_output"
           ? null
           : (result.contentHash ?? null),
       metadata: {
@@ -1300,6 +1408,9 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
         sessionRef: summary,
         gate: executionGate,
       });
+      if (result.skipReason === "malformed_model_output") {
+        for (const warning of result.warnings) topLevelWarnings.push(`session ${summary.sessionId}: ${warning}`);
+      }
       accountExtractSessionResult(result, triage.enabled, output);
       recordExtractSessionOutcome({
         stateDb,

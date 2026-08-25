@@ -15,6 +15,7 @@
 //   - migration 013-extract-sessions-content-hash (content_hash column)
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -595,6 +596,65 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
     expect(row?.candidate_count).toBe(0);
     expect(row?.rationale).toBe("nothing durable in session");
     expect(row?.content_hash).toBe(hashSessionContent(session));
+    db.close();
+  });
+
+  test("malformed model output fails visibly and leaves the unchanged session retryable", async () => {
+    const stash = makeStashDir();
+    const session = fakeSession("ses_malformed", Date.now());
+    const db = openStateDatabase(":memory:");
+    const config = configEnabled(stash);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.supportsJsonSchema = false;
+    const malformed = "PRIVATE_SENTINEL: prose without a JSON object";
+    let chatCalls = 0;
+
+    const first = await akmExtract({
+      type: "claude",
+      stashDir: stash,
+      config,
+      harnesses: [makeHarness([session])],
+      stateDb: db,
+      chat: async () => {
+        chatCalls += 1;
+        return malformed;
+      },
+    });
+
+    expect(chatCalls).toBe(2);
+    expect(first.sessionsProcessed).toBe(0);
+    expect(first.sessionsSkipped).toBe(1);
+    expect(first.sessions[0]?.skipReason).toBe("malformed_model_output");
+    const diagnostic = first.warnings.join(" ");
+    expect(diagnostic).toContain("malformed_model_output");
+    expect(diagnostic).toContain("no JSON object found");
+    expect(diagnostic).toContain(`responseLength=${malformed.length}`);
+    expect(diagnostic).toContain(createHash("sha256").update(malformed).digest("hex"));
+    expect(diagnostic).not.toContain("PRIVATE_SENTINEL");
+    expect(first.sessions[0]?.warnings).toHaveLength(1);
+    expect(first.warnings[0]).toBe(`session ses_malformed: ${first.sessions[0]?.warnings[0]}`);
+    expect(getExtractedSession(db, "claude", "ses_malformed")).toMatchObject({
+      outcome: "failed",
+      content_hash: null,
+    });
+
+    const second = await akmExtract({
+      type: "claude",
+      stashDir: stash,
+      config,
+      harnesses: [makeHarness([session])],
+      stateDb: db,
+      chat: async () => {
+        chatCalls += 1;
+        return JSON.stringify({ candidates: [], rationale_if_empty: "Nothing durable in the session." });
+      },
+    });
+
+    expect(chatCalls).toBe(3);
+    expect(second.sessionsProcessed).toBe(1);
+    expect(second.sessionsSkipped).toBe(0);
+    expect(getExtractedSession(db, "claude", "ses_malformed")?.content_hash).toBe(hashSessionContent(session));
     db.close();
   });
 

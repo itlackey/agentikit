@@ -249,7 +249,7 @@ describe("buildExtractPrompt", () => {
 
 describe("parseExtractPayload", () => {
   test("returns empty candidates when stdout is empty", () => {
-    expect(parseExtractPayload("")).toMatchObject({ candidates: [] });
+    expect(parseExtractPayload("")).toMatchObject({ candidates: [], parseFailure: { code: "empty_response" } });
   });
 
   test("parses a valid memory candidate", () => {
@@ -429,6 +429,21 @@ describe("parseExtractPayload", () => {
   test("returns empty payload for completely non-JSON input", () => {
     const out = parseExtractPayload("This is just prose with no JSON object at all.");
     expect(out.candidates).toEqual([]);
-    expect(out.rationale_if_empty).toMatch(/not parseable/);
+    expect(out.parseFailure?.code).toBe("no_json_object");
+    expect(out.rationale_if_empty).toContain("no JSON object found");
+  });
+
+  test("distinguishes a malformed JSON object from prose without an object", () => {
+    const out = parseExtractPayload('{"candidates": [{"type": "memory"}');
+    expect(out.candidates).toEqual([]);
+    expect(out.parseFailure?.code).toBe("invalid_json_object");
+    expect(out.rationale_if_empty).toContain("JSON object was found but could not be parsed");
+  });
+
+  test("rejects a parsed object that omits the required candidates array", () => {
+    expect(parseExtractPayload("{}")).toMatchObject({
+      candidates: [],
+      parseFailure: { code: "invalid_payload" },
+    });
   });
 });
