@@ -15,7 +15,7 @@
  *
  * This is NOT a general reindex. It upserts exactly the files the caller just
  * wrote: frontmatter/metadata via the shared matcher pipeline, the `entries`
- * row, and an incremental FTS refresh. Embeddings, index-time LLM passes,
+ * row and its transactionally owned FTS projection. Embeddings, index-time LLM passes,
  * graph extraction, `builtAt`, and the per-dir walk cache are all deliberately
  * untouched — the next full run heals them (the opportunistic-recovery
  * strategy of the index-consistency ADR).
@@ -30,7 +30,6 @@ import { getDbPath } from "../core/paths";
 import { warn, warnVerbose } from "../core/warn";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import { deleteEntriesByIds, getEntryCount, upsertEntry } from "../storage/repositories/index-entries-repository";
-import { rebuildFts } from "../storage/repositories/index-fts-repository";
 import { withIndexWriterLease } from "./index-writer-lock";
 import { deriveEntryProvenance, deriveInstallations } from "./installations";
 import type { IndexDocument } from "./passes/metadata";
@@ -189,7 +188,6 @@ export async function indexWrittenAssets(
             );
             upsertEntry(db, file, entryWithSize, buildSearchText(entry), provenance, contentHash);
           }
-          if (pairs.length > 0 || unindexable.size > 0) rebuildFts(db, { incremental: true });
         })();
       } finally {
         closeDatabase(db);

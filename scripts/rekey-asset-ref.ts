@@ -58,7 +58,6 @@ import { resolveSourceEntries } from "../src/indexer/search/search-source";
 import type { Database } from "../src/storage/database";
 import { closeDatabase, openExistingDatabase } from "../src/storage/repositories/index-connection";
 import { rekeyEntryInPlace } from "../src/storage/repositories/index-entries-repository";
-import { rebuildFts } from "../src/storage/repositories/index-fts-repository";
 
 /** Durable source identity for a working stash with no configured bundle owner. */
 const DEFAULT_SOURCE_NAME = "stash";
@@ -203,7 +202,6 @@ function rekeyIndexEntry(args: {
       sourceRoot: args.sourceRoot,
     });
     if (rekeyed === null) return 0;
-    rebuildFts(db, { incremental: true });
     return 1;
   } finally {
     closeDatabase(db);
