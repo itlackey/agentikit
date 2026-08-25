@@ -476,16 +476,12 @@ export function deriveCurateFallbackQueries(query: string): string[] {
 }
 
 export function mergeCurateSearchResponses(base: SearchResponse, extras: SearchResponse[]): SearchResponse {
-  // The base (full-query) ranking is the relevance signal — keyword fallback
-  // searches exist only to ADD recall when that ranking is thin, never to
-  // re-rank it. So we PRESERVE base order and APPEND fallback-only hits below
-  // it. A single-token fallback match on an exact title/path normalizes to a
-  // high FTS score, but those scores are not comparable to the full-query
-  // (hybrid) scores; re-sorting the union by raw score (the prior behaviour)
-  // let that keyword junk leapfrog the contextually-relevant full-query hits.
-  // Dup refs (present in both base and a fallback) keep their base POSITION but
-  // take the MAX score, since matching both the full query and a key term is a
-  // stronger relevance signal for the downstream score floor.
+  // The base (full-query) ranking is authoritative by default; keyword
+  // fallbacks add recall without comparing their raw scores to the full-query
+  // score scale. Base order is preserved and fallback-only hits append below,
+  // except for the narrow weak-provenance promotion documented below. Duplicate
+  // refs keep their base position but take the maximum score for the downstream
+  // relevance floor.
   const bestExtraStashScore = new Map<string, number>();
   for (const result of extras) {
     for (const hit of result.hits.filter((entry): entry is SourceSearchHit => entry.type !== "registry")) {
@@ -508,14 +504,11 @@ export function mergeCurateSearchResponses(base: SearchResponse, extras: SearchR
       if (!existing || (hit.score ?? 0) > (existing.score ?? 0)) extraOnly.set(hit.ref, hit);
     }
   }
-  // Fallback-only hits must rank BELOW every full-query hit through the rest of
-  // the pipeline. The downstream selector (`selectCuratedStashHits`) RE-SORTS by
-  // score and derives its relevance floor from the top score, so preserving
-  // order here is not enough — a single-token FTS match (normalized ~0.9) would
-  // otherwise become the leader and evict the contextual full-query memories.
-  // We therefore restamp fallback-only scores into a band strictly below the
-  // minimum base score (keeping their own relative order). When there are no
-  // base hits, fallback IS the result, so scores are kept as-is.
+  // Fallback-only hits ordinarily stay below every full-query hit through the
+  // downstream selector, which re-sorts by score and derives its relevance
+  // floor from the leader. Restamping them below the minimum base score keeps a
+  // single-token score from leapfrogging contextual results. The one exception
+  // is a strong name match repairing a lexically weak base, selected below.
   const sortedExtra = [...extraOnly.values()].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   const lexicalAttribution = (hit: SourceSearchHit) => getSearchHitAttribution(hit)?.lexical;
   // The full-query base remains authoritative unless its lexical provenance is
