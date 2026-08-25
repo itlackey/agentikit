@@ -98,6 +98,44 @@ Three of the six edit-shaped tasks scored 0.00 on both arms
 — i.e. retrieval would plausibly have flipped them. The other three were
 guessable and passed on both arms.
 
+## 2b. CORRECTION: shape was confounded with tool familiarity
+
+The §2 finding ("akm is invisible on edit-shaped tasks") is **half right, and
+the half that is wrong matters**. Shape is real, but it was measured on a
+corpus where every edit-shaped task also happened to involve a tool the model
+already knows. Pooling both post-fix runs and cross-tabbing (workflow-compliance
+excluded — it tests the opposite reflex):
+
+| | create-shaped | edit-shaped |
+| --- | --- | --- |
+| **fictional** tools (`drillbit`, `inkwell` — syntax exists ONLY in the stash) | **96%** (27/28) | **20%** (4/20) |
+| **real/known** tools (`az-cli`, `docker-homelab`) | 29% (5/17) | **0%** (0/35) |
+
+Shape survives as an effect (96% vs 20% *within* fictional tools), but 35 of
+the trials dragging the old "edit-shaped" aggregate down were `az-cli` and
+`docker-homelab`, where **declining to consult a stash is correct** — the model
+knows docker compose. Those were never a miss.
+
+The sharper, and more useful, statement:
+
+> akm is under-consulted specifically when **editing an existing file for a
+> tool the model does not actually know**. That is the 20% cell, and it is the
+> only cell where non-engagement is a genuine miss.
+
+This is exactly the confound akm-bench#6 called out, and it only became visible
+because that issue's fix added an edit-shaped `drillbit` task — which engaged
+**3/3**. Without it the effect would still read as pure shape.
+
+Per-family edit-shaped engagement on the post-fix train slice, for the record:
+
+```
+drillbit             3/3  = 100%   (the new decoupling task)
+inkwell              1/3  =  33%
+workflow-compliance  3/14 =  21%
+az-cli               0/17 =   0%
+docker-homelab       0/15 =   0%
+```
+
 ## 3. Recommended changes
 
 Ordered by expected value. Every one changes the TREATMENT (the product), not
