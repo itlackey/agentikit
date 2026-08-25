@@ -559,8 +559,8 @@ describe("FTS search", () => {
     }
   });
 
-  // ── T5: sanitizeFtsQuery edge cases ──────────────────────────────────────
-  // sanitizeFtsQuery is private, so we test it indirectly through searchFts.
+  // ── T5: lexical query-plan edge cases ────────────────────────────────────
+  // Exercise the shared planner indirectly through searchFts.
 
   test("query that becomes empty after sanitization returns no results", () => {
     const db = openIndexDatabase(tmpDbPath());

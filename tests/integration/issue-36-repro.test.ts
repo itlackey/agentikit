@@ -225,8 +225,8 @@ describe("Issue #36: buildSearchText includes script content from comments", () 
   });
 });
 
-describe("Issue #36: FTS5 query sanitization", () => {
-  test("sanitizeFtsQuery keeps short but valid tokens like 'ai'", async () => {
+describe("Issue #36: short FTS5 query tokens", () => {
+  test("the lexical planner keeps short but valid tokens like 'ai'", async () => {
     const stashDir = tmpStash();
 
     writeFile(path.join(stashDir, "scripts", "ai-helper.sh"), "#!/bin/bash\n# AI helper script\necho ai\n");
@@ -243,7 +243,7 @@ describe("Issue #36: FTS5 query sanitization", () => {
     }
   });
 
-  test("sanitizeFtsQuery preserves single-character tokens", async () => {
+  test("the lexical planner preserves single-character tokens", async () => {
     const stashDir = tmpStash();
 
     writeFile(path.join(stashDir, "scripts", "x-tool.sh"), "#!/bin/bash\n# X tool\necho x\n");

@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
-import { sanitizeFtsQuery } from "../../src/indexer/search/fts-query";
 import type { Database } from "../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
@@ -79,84 +78,6 @@ function insertTestEntry(
   );
 }
 
-// ── Issue #2: sanitizeFtsQuery preserves identifier tokens ──────────────────
-
-describe("sanitizeFtsQuery — identifier preservation (Issue #2)", () => {
-  test("hyphenated query becomes AND of component tokens", () => {
-    const result = sanitizeFtsQuery("code-review");
-    // Hyphens are replaced with spaces — FTS5 treats hyphen as NOT in
-    // query context. The result is implicit AND: "code review".
-    expect(result).toContain("code");
-    expect(result).toContain("review");
-    // Must NOT use OR join
-    expect(result).not.toContain(" OR ");
-  });
-
-  test("dotted query becomes AND of component tokens", () => {
-    const result = sanitizeFtsQuery("k8s.setup");
-    // Dots cause FTS5 syntax errors; replaced with spaces
-    expect(result).toContain("k8s");
-    expect(result).toContain("setup");
-    expect(result).not.toContain(".");
-  });
-
-  test("preserves underscores in identifiers like deploy_prod", () => {
-    const result = sanitizeFtsQuery("deploy_prod");
-    // Underscores are valid in FTS5 queries (unicode61 treats them as
-    // token separators on both index and query sides)
-    expect(result).toContain("deploy_prod");
-  });
-
-  test("strips FTS5 syntax characters (quotes, parens, asterisks, colons, carets)", () => {
-    const result = sanitizeFtsQuery('"hello" (world) test*');
-    // The dangerous FTS5 syntax chars should be removed
-    expect(result).not.toContain('"');
-    expect(result).not.toContain("(");
-    expect(result).not.toContain(")");
-    expect(result).not.toContain("*");
-    // But the actual words should remain
-    expect(result).toContain("hello");
-    expect(result).toContain("world");
-    expect(result).toContain("test");
-  });
-
-  test("strips NEAR operator from query", () => {
-    // NEAR is a special FTS5 operator that should be neutralized
-    const result = sanitizeFtsQuery("NEAR foo bar");
-    expect(result).not.toMatch(/\bNEAR\b/);
-    expect(result).toContain("foo");
-    expect(result).toContain("bar");
-  });
-
-  test("uses AND (implicit space-separated) rather than OR", () => {
-    const result = sanitizeFtsQuery("deploy production");
-    // Should NOT contain OR — tokens should be AND-joined (space-separated)
-    expect(result).not.toContain(" OR ");
-    // Both tokens should be present
-    expect(result).toContain("deploy");
-    expect(result).toContain("production");
-  });
-
-  test("returns empty string for empty query", () => {
-    expect(sanitizeFtsQuery("")).toBe("");
-  });
-
-  test("returns empty string for only-syntax-chars query", () => {
-    expect(sanitizeFtsQuery('"()*:^{}')).toBe("");
-  });
-
-  test("handles mixed valid and syntax chars", () => {
-    const result = sanitizeFtsQuery('deploy:prod "code-review"');
-    expect(result).not.toContain(":");
-    expect(result).not.toContain('"');
-    expect(result).toContain("deploy");
-    expect(result).toContain("prod");
-    // code-review becomes "code review" (space-separated AND)
-    expect(result).toContain("code");
-    expect(result).toContain("review");
-  });
-});
-
 // ── Issue #2: Integration test — hyphenated search through searchFts ────────
 
 describe("searchFts — hyphenated identifier search (Issue #2)", () => {
@@ -215,12 +136,7 @@ describe("searchFts — hyphenated identifier search (Issue #2)", () => {
 
 // ── Issue #9: Single-character queries ──────────────────────────────────────
 
-describe("sanitizeFtsQuery — single-char tokens (Issue #9)", () => {
-  test("single character token is preserved", () => {
-    const result = sanitizeFtsQuery("R");
-    expect(result).toBe("R");
-  });
-
+describe("single-character lexical queries (Issue #9)", () => {
   test("single character query returns FTS results when content matches", () => {
     const db = openIndexDatabase(tmpDbPath());
     try {
@@ -237,11 +153,5 @@ describe("sanitizeFtsQuery — single-char tokens (Issue #9)", () => {
     } finally {
       closeDatabase(db);
     }
-  });
-
-  test("mixed single and multi-char tokens are all preserved", () => {
-    const result = sanitizeFtsQuery("R language");
-    expect(result).toContain("R");
-    expect(result).toContain("language");
   });
 });
