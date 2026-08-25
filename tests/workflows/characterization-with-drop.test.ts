@@ -177,7 +177,7 @@ describe("R-01(c) — with: values leave no trace at freeze (source-freeze-v4.ts
         "      - id: dispatch",
         "        uses: tasks/command-task",
         "        with:",
-        "          scope: all",
+        "          r01DroppedSentinel: r01-dropped-sentinel",
         "",
       ].join("\n"),
     );
@@ -213,10 +213,11 @@ describe("R-01(c) — with: values leave no trace at freeze (source-freeze-v4.ts
     // R-01(c) — the drop, proven by equality: two otherwise-identical steps
     // (one with `with:`, one without) resolve to the SAME frozen target.
     expect(withTarget).toEqual(withoutTarget);
-    // R-01(c) — the drop, proven directly: the authored with: key is byte-absent
-    // from the persisted plan JSON (the distinctive "scope" key would survive
-    // verbatim in any JSON encoding, quoted or not, if it had left any trace).
-    expect(withRow?.plan_json ?? "").not.toContain("scope");
+    // R-01(c) — the drop, proven directly: the authored with: value is byte-absent
+    // from the persisted plan JSON. The sentinel string can only appear if the
+    // authored with: left a trace, so this cannot fail for an unrelated
+    // plan-shape change that happens to contain a generic word.
+    expect(withRow?.plan_json ?? "").not.toContain("r01-dropped-sentinel");
   });
 });
 

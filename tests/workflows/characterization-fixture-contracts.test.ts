@@ -127,7 +127,8 @@ describe("tasks/v3-migration fixtures (Lane C shared surface) — each is valid 
   const manifest = readTasksManifest();
 
   for (const fixture of manifest.fixtures) {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); flips in P2a/P2c (task source v4
+    // makes scheduling optional and P4a retires v3 acceptance — these v3 fixtures then serve the migrator only).
     test(`${fixture.id}: parses per src/tasks/source-v3.ts and matches its manifest-declared shape`, () => {
       const yaml = fs.readFileSync(path.join(TASKS_ROOT, fixture.file), "utf8");
       const document = parseTaskV3Yaml({ yaml, filePath: `tasks/v3-migration/${fixture.file}` });
@@ -259,7 +260,8 @@ describe("workflows/plan-v4 fixtures — freeze end to end into structurally val
   }
 
   for (const workflow of manifest.workflows) {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); flips in P3a (plan irVersion bumps to 5
+    // when the child-workflow frozen target lands — update the irVersion assertion there, target kinds stay).
     test(`${workflow.id}: freezes to irVersion 4 with the manifest-declared per-step frozen target kinds`, async () => {
       const plan = await freeze(workflow.ref);
       expect(plan.irVersion).toBe(4);
@@ -277,7 +279,8 @@ describe("workflows/plan-v4 fixtures — freeze end to end into structurally val
     expect([...kinds].sort()).toEqual([...manifest.expectedTargetKindSet].sort());
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is
+  // a regression, not an intended flip (the read set must keep covering task-composed refs after P3a's re-freeze).
   test("task-composed.yml's source read set covers every task-composed ref, all as relative paths", async () => {
     const workflow = manifest.workflows.find((entry) => entry.id === "task-composed");
     if (!workflow?.taskComposedRelativeRefs) {
