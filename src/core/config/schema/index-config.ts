@@ -115,21 +115,12 @@ type IndexConfigOutput = {
   graph?: z.infer<typeof IndexPassConfigSchema>;
   memory?: z.infer<typeof IndexPassConfigSchema>;
   enrichment?: z.infer<typeof IndexPassConfigSchema>;
-  indexBodyOpening?: boolean;
 };
 
 /**
  * Index config is a union of reserved feature sections and per-pass entries.
  * Passthrough so per-pass entries (keyed by arbitrary pass names like `graph`,
  * `enrichment`) can live next to the reserved keys.
- *
- * Reserved scalar key `indexBodyOpening` (stash-conventions SPEC-8, default
- * false): when true, the metadata pass captures the first prose paragraph of
- * each markdown asset body into `entry.bodyOpening`, which folds into the
- * lowest-weight `content` FTS column and the embedding text. It is a boolean,
- * not a per-pass object — the preprocess below exempts it from the
- * object-shape check so it never routes into the per-pass catchall.
- *
  * The outer preprocess emits the legacy parser's actionable error messages
  * for the two most common type-shape mistakes:
  *   - An array at the `index` block.
@@ -159,18 +150,6 @@ const IndexConfigRuntimeSchema = z.preprocess(
         });
         return raw;
       }
-      if (passName === "indexBodyOpening") {
-        if (typeof value !== "boolean") {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message:
-              "Invalid `index.indexBodyOpening`: expected a boolean (true to index the first body paragraph " +
-              `of markdown assets into search). Got ${Array.isArray(value) ? "array" : typeof value}.`,
-          });
-          return raw;
-        }
-        continue;
-      }
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -185,16 +164,6 @@ const IndexConfigRuntimeSchema = z.preprocess(
     .object({
       defaults: IndexDefaultsSchema.optional(),
       metadataEnhance: MetadataEnhanceSchema.optional(),
-      indexBodyOpening: z
-        .boolean()
-        .optional()
-        .describe(
-          "Index the first prose paragraph of each markdown asset body (capped at 280 chars) into the " +
-            "lowest-weight `content` search column and the embedding text (default false). Secret/env files " +
-            "and session-kind memories are never captured. Toggling the flag changes indexed text: run " +
-            "`akm index --full` afterwards to re-extract every entry and regenerate embeddings, and re-mint " +
-            "collapse-detector canary baselines via `bun scripts/refresh-canary-set.ts --refresh`.",
-        ),
     })
     .catchall(IndexPassConfigSchema),
 );

@@ -106,7 +106,7 @@ describe("progressive lexical query planning (#819)", () => {
 
       const cases = [
         { query: "cache-pruner", expected: "cache-pruner", execution: "exact" },
-        { query: "kubernet configur", expected: "kubernetes-configurator", execution: "prefix" },
+        { query: "kuber config", expected: "kubernetes-configurator", execution: "exact" },
         { query: "CAFÉ déploiement", expected: "café-déploiement", execution: "exact" },
         {
           query: "how do I find the spectral quokka calibration nonce safely",
@@ -164,15 +164,19 @@ The spectral quokka calibration nonce rotates every Thursday.
     expect(new TextDecoder().decode(new TextEncoder().encode(projection))).toBe(projection);
   });
 
-  test("native Markdown uses content for safe assets and excludes secret/session material", () => {
+  test("native Markdown uses content for safe assets and excludes secret/env/session material", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-fts-body-"));
     createdDirs.push(root);
     const knowledge = path.join(root, "knowledge", "rotation.md");
     const session = path.join(root, "sessions", "raw.md");
     const checkpoint = path.join(root, "memories", "checkpoint.md");
+    const secret = path.join(root, "secrets", "api-key.md");
+    const env = path.join(root, "env", "production.env");
     fs.mkdirSync(path.dirname(knowledge), { recursive: true });
     fs.mkdirSync(path.dirname(session), { recursive: true });
     fs.mkdirSync(path.dirname(checkpoint), { recursive: true });
+    fs.mkdirSync(path.dirname(secret), { recursive: true });
+    fs.mkdirSync(path.dirname(env), { recursive: true });
     fs.writeFileSync(
       knowledge,
       "---\ndescription: Operator notes\n---\n\nFirst paragraph.\n\nThe spectral quokka calibration nonce is VioletCrane47.\n",
@@ -182,18 +186,28 @@ The spectral quokka calibration nonce rotates every Thursday.
       checkpoint,
       "---\ndescription: Session checkpoint\nakm_memory_kind: session_checkpoint\n---\n\nMEMORY_PRIVATE_SENTINEL\n",
     );
+    fs.writeFileSync(secret, "SECRET_PRIVATE_SENTINEL\n");
+    fs.writeFileSync(env, "AKM_TOKEN=ENV_PRIVATE_SENTINEL\n");
 
-    const recognized = recognizeStashEntries(root, [knowledge, session, checkpoint]).entries;
+    const recognized = recognizeStashEntries(root, [knowledge, session, checkpoint, secret, env]).entries;
     const knowledgeEntry = recognized.find((entry) => entry.type === "knowledge");
     const sessionEntry = recognized.find((entry) => entry.type === "session");
     const checkpointEntry = recognized.find((entry) => entry.name === "checkpoint");
+    const secretEntry = recognized.find((entry) => entry.type === "secret");
+    const envEntry = recognized.find((entry) => entry.type === "env");
 
-    if (!knowledgeEntry || !sessionEntry || !checkpointEntry) throw new Error("expected all fixture entries");
+    if (!knowledgeEntry || !sessionEntry || !checkpointEntry || !secretEntry || !envEntry) {
+      throw new Error("expected all fixture entries");
+    }
     expect(knowledgeEntry?.content).toContain("spectral quokka calibration nonce");
     expect(buildSearchText(knowledgeEntry)).toContain("violetcrane47");
     expect(sessionEntry?.content).toBeUndefined();
     expect(buildSearchText(sessionEntry)).not.toContain("session_private_sentinel");
     expect(checkpointEntry?.content).toBeUndefined();
     expect(buildSearchText(checkpointEntry)).not.toContain("memory_private_sentinel");
+    expect(secretEntry?.content).toBeUndefined();
+    expect(buildSearchText(secretEntry)).not.toContain("secret_private_sentinel");
+    expect(envEntry?.content).toBeUndefined();
+    expect(buildSearchText(envEntry)).not.toContain("env_private_sentinel");
   });
 });

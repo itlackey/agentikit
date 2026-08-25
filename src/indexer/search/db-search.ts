@@ -793,7 +793,7 @@ async function enumerateEntries(opts: {
  * What this does NOT unify — and deliberately leaves divergent — is CANDIDATE-
  * POOL construction, which is inherent search-vs-browse semantics: the scored
  * path's pool is `searchFts`/vector matches for the query's own tokens (FTS
- * indexes description/tags/searchHints/aliases, not raw body prose), while the
+ * includes structured fields and bounded adapter content), while the
  * enumerate path's pool is `getAllEntries` for the type, independent of query
  * text. A derived twin sharing no indexed token with the query is therefore an
  * enumerate-path candidate but never a scored-path candidate — see

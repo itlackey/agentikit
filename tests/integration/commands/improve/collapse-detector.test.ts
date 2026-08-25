@@ -227,8 +227,8 @@ describe("collapse simulation (synthetic merge passes)", () => {
     const baselineRecall = baseline1.mean_recall;
 
     // ── Pass 1: FAITHFUL merges — topics 0-8 merge 3-into-1. FTS covers the
-    // searchable surface (name/description/tags/TOC), not the raw body, so a
-    // faithful merge keeps the member topics in its description + tags —
+    // structured canary surface (name/description/tags/TOC), not body content,
+    // so a faithful merge keeps the member topics in its description + tags —
     // exactly what a real consolidate merge preserves — and xrefs carry
     // provenance for the merge-following hit rule.
     for (let g = 0; g < 3; g++) {

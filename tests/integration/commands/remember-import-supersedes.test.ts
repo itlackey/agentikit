@@ -185,8 +185,8 @@ describe("remember --supersedes", () => {
   });
 
   test("demotion is live: --belief current hides the old asset and the correction outranks it", async () => {
-    // The shared token lives in the asset NAMES (body prose is not
-    // FTS-indexed), so both memories are findable by the same query.
+    // The shared token lives in the higher-weight asset names, so both
+    // memories are findable by the same query regardless of body projection.
     const old = await rememberSeed("Deploy to staging through the legacy endpoint.", "quantum-rotation-old-endpoint");
 
     const { code, stdout } = await runCliCapture([

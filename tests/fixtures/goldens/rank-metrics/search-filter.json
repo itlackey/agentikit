@@ -29,8 +29,8 @@
     "returned": [
       "memories/active-memory",
       "memories/asserted-memory",
-      "memories/plain-memory",
       "memories/proposed-memory",
+      "memories/plain-memory",
       "memories/deprecated-memory",
       "memories/superseded-memory",
       "knowledge/contradicted-knowledge",
