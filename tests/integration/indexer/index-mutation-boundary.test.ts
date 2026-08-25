@@ -90,6 +90,31 @@ describe("canonical entry mutation", () => {
       closeDatabase(db);
     }
   });
+
+  test("rolls back the canonical row when its FTS projection cannot publish", () => {
+    const db = openIndexDatabase(path.join(storage.dataDir, "mutation-rollback.db"));
+    try {
+      const entry: IndexDocument = {
+        type: "knowledge",
+        name: "atomic-rollback",
+        description: "rollbackfoundationmarker",
+        filename: "atomic-rollback.md",
+      };
+      const provenance = deriveEntryProvenance(
+        { bundleId: "primary", componentId: "primary", adapterId: "akm" },
+        entry.type,
+        entry.name,
+      );
+      db.exec("DROP TABLE entries_fts");
+
+      expect(() =>
+        upsertEntry(db, "/primary/knowledge/atomic-rollback.md", entry, "rollbackfoundationmarker", provenance),
+      ).toThrow();
+      expect(rowCount(db, "entries")).toBe(0);
+    } finally {
+      closeDatabase(db);
+    }
+  });
 });
 
 for (const scenario of [
