@@ -225,6 +225,19 @@ The spectral quokka calibration nonce rotates every Thursday.
       retained: ["the guide", "before rotation."],
       excluded: ["example.test", "private", "/tail"],
     },
+    {
+      name: "nested image labels recursively exclude their destinations",
+      markdown: "Read [![operator alt](https://IMAGE_PRIVATE_SENTINEL.test/token)](https://public.test) safely.",
+      retained: ["operator alt", "safely."],
+      excluded: ["IMAGE_PRIVATE_SENTINEL", "public.test", "/token"],
+    },
+    {
+      name: "quoted titles can contain escaped and unescaped parentheses",
+      markdown:
+        'Read [the guide](<https://public.test/path_(private)> "TITLE_PRIVATE_)_SENTINEL and \\"escaped\\"") safely.',
+      retained: ["the guide", "safely."],
+      excluded: ["public.test", "private", "TITLE_PRIVATE", "SENTINEL", "escaped"],
+    },
   ])("projects Markdown state correctly: $name", ({ markdown, retained, excluded }) => {
     const projection = projectMarkdownContent(markdown);
     for (const text of retained) expect(projection).toContain(text);
@@ -254,7 +267,18 @@ The spectral quokka calibration nonce rotates every Thursday.
     fs.mkdirSync(path.dirname(env), { recursive: true });
     fs.writeFileSync(
       knowledge,
-      "---\ndescription: Operator notes\n---\n\nFirst paragraph.\n\nThe spectral quokka calibration nonce is VioletCrane47.\n",
+      [
+        "---",
+        "description: Operator notes",
+        "---",
+        "",
+        "First paragraph.",
+        "",
+        "The spectral quokka calibration nonce is VioletCrane47.",
+        "Read [![operator alt](https://IMAGE_PRIVATE_SENTINEL.test/token)](https://public.test) safely.",
+        'Read [the guide](<https://public.test/path_(private)> "TITLE_PRIVATE_)_SENTINEL") safely.',
+        "",
+      ].join("\n"),
     );
     fs.writeFileSync(session, "A raw transcript contains SESSION_PRIVATE_SENTINEL.\n");
     fs.writeFileSync(
@@ -276,6 +300,10 @@ The spectral quokka calibration nonce rotates every Thursday.
     }
     expect(knowledgeEntry?.content).toContain("spectral quokka calibration nonce");
     expect(buildSearchText(knowledgeEntry)).toContain("violetcrane47");
+    expect(knowledgeEntry.content).toContain("operator alt");
+    expect(knowledgeEntry.content).toContain("the guide");
+    expect(buildSearchText(knowledgeEntry)).not.toContain("image_private_sentinel");
+    expect(buildSearchText(knowledgeEntry)).not.toContain("title_private");
     expect(sessionEntry?.content).toBeUndefined();
     expect(buildSearchText(sessionEntry)).not.toContain("session_private_sentinel");
     expect(checkpointEntry?.content).toBeUndefined();
