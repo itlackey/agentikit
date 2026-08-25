@@ -136,6 +136,46 @@ az-cli               0/17 =   0%
 docker-homelab       0/15 =   0%
 ```
 
+## 2c. Engagement is the mechanism, not a proxy metric
+
+Pooling both post-fix runs (`jobs/akm-corpus-eval-ab` and
+`jobs/akm-corpus-train-ab-postfix`, 48 tasks, errored trials excluded) and
+splitting tasks by whether the akm arm EVER called an `akm_*` tool, then
+pairing each group against the baseline arm on the same tasks:
+
+| group | tasks | mean paired delta (akm - baseline) |
+| --- | --- | --- |
+| tasks where akm was NEVER called | 29 | **-0.011** |
+| tasks where akm WAS called | 19 | **+0.561** |
+
+Trial-level, for the record: akm-arm trials WITH an `akm_*` call mean reward
+**0.857** (n=49); WITHOUT, **0.800** (n=90).
+
+**Injected context alone contributes nothing.** Where the model does not call
+a tool, the treatment arm is statistically indistinguishable from baseline
+(-0.011). The hints block, the curated-file pointer and the rest of the
+injected context net to zero by themselves.
+
+Therefore **engagement is the mechanism, not a proxy metric**: the entire
+measured +0.246 eval delta is carried by trials that actually invoked `akm_*`.
+
+**Caveat that has to be stated.** The +0.561 is confounded by task selection —
+the model engages precisely on the tasks where retrieval is needed and the
+baseline fails, so it is NOT a clean causal estimate of what a call is worth.
+The **-0.011 is the clean half**: same tasks, both arms, paired, and the
+treatment's extra context changes nothing.
+
+The within-task comparison does not settle the other half either. Across the 6
+tasks that had both engaged and non-engaged akm-arm trials, the mean
+engaged-minus-non-engaged delta is +0.250, but it splits 2 higher / 1 lower /
+3 tied — not decisive on its own.
+
+**Consequence for prioritisation.** A fix for akm-plugins#99 must produce
+actual TOOL CALLS; more or better injected context is already known to be
+worth ~0. And akm#819 (retrieval ceiling) is a multiplier that only pays off
+once engagement rises — the calls that do happen already convert well, so
+retrieval quality is not the current binding constraint.
+
 ## 3. Recommended changes
 
 Ordered by expected value. Every one changes the TREATMENT (the product), not
