@@ -86,20 +86,15 @@ import {
 } from "../storage/repositories/index-llm-cache-repository";
 import {
   deleteIndexDirState,
-  deleteMeta,
   getMeta,
   setMeta,
   upsertIndexDirState,
 } from "../storage/repositories/index-meta-repository";
 import { upsertUtilityScore } from "../storage/repositories/index-utility-repository";
 import {
-  getAllEntriesForEmbedding,
   getEmbeddingCount,
   isVecAvailable,
   isVecFastPathReady,
-  purgeEmbeddings,
-  setVecFastPathReady,
-  upsertEmbedding,
   warnIfVecMissing,
 } from "../storage/repositories/index-vec-repository";
 import { assertIndexedWorkflowSourceIdentity, WorkflowSourceIdentityError } from "../workflows/source-files";
@@ -111,6 +106,7 @@ import {
   indexedPathMatchesOwner,
   resolveAdapterConceptOwner,
 } from "./lookup/adapter-concept-owner";
+import { type EmbeddingGenerationResult, generateEmbeddingsForDb } from "./materialize-embeddings";
 import {
   canUseIncrementalSkip,
   computeDirFingerprint,
@@ -122,12 +118,7 @@ import { type IndexDocument, isEnrichmentComplete, isWorkflowSkipWarning, type S
 import { drainDirDocuments } from "./scan/drain-dir";
 import { buildSearchText } from "./search/search-fields";
 import type { SearchSource } from "./search/search-source";
-import {
-  classifySemanticFailure,
-  clearSemanticStatus,
-  deriveSemanticProviderFingerprint,
-  writeSemanticStatus,
-} from "./search/semantic-status";
+import { clearSemanticStatus, deriveSemanticProviderFingerprint, writeSemanticStatus } from "./search/semantic-status";
 import { purgeOldUsageEvents } from "./usage/usage-events";
 import type { FileContext } from "./walk/file-context";
 import type { IndexRunContext, IndexVerification } from "./walk/index-context";
@@ -2164,159 +2155,6 @@ export function createEnrichmentDeadline(
 ): AbortSignal | undefined {
   const perEntryTimeoutMs = timeoutMs === undefined ? 10 * 60 * 1000 : timeoutMs;
   return perEntryTimeoutMs === null ? undefined : AbortSignal.timeout(perEntryTimeoutMs * Math.max(totalEntries, 1));
-}
-
-async function generateEmbeddingsForDb(
-  db: Database,
-  config: AkmConfig,
-  onProgress: (event: IndexProgressEvent) => void,
-  signal?: AbortSignal,
-): Promise<EmbeddingGenerationResult> {
-  throwIfAborted(signal);
-
-  if (config.semanticSearchMode === "off") {
-    onProgress({ phase: "embeddings", message: "Semantic search disabled; skipping embeddings." });
-    return { success: false, reason: "index-missing", message: "Semantic search is disabled." };
-  }
-
-  // Detect embedding model/provider changes and purge stale embeddings
-  // so that incremental reindex regenerates all vectors with the new model.
-  const currentFingerprint = deriveSemanticProviderFingerprint(config.embedding);
-  const storedFingerprint = getMeta(db, "embeddingFingerprint");
-  if (storedFingerprint && storedFingerprint !== currentFingerprint) {
-    // Model/provider changed → stored vectors are incompatible. Clear them;
-    // re-embedded by this index run.
-    //
-    // The vec table goes too. "Same dimension, so keep the vec table" only held
-    // for a same-width model swap: entries_vec is a vec0 virtual table declared
-    // at a FIXED width, so after a dimension-changing model change every insert
-    // failed against the old width, and ensureSchema's dim-change rebuild never
-    // fired because it only runs for callers that pass an explicit
-    // embeddingDim. The stale table survived `--full` — the exact remedy the
-    // warning recommended. Clearing the stored dim lets the next ensureSchema
-    // materialize it at the new width; until then the fast-path flag reads
-    // false (no table) and search uses the complete BLOB table.
-    purgeEmbeddings(db, { dropVecTable: true });
-    deleteMeta(db, "embeddingDim");
-  }
-
-  try {
-    const { embedBatch } = await import("../llm/embedder.js");
-    const { estimateTokenCount } = await import("../llm/embedders/remote.js");
-    throwIfAborted(signal);
-    const allEntries = getAllEntriesForEmbedding(db);
-    if (allEntries.length === 0) {
-      onProgress({ phase: "embeddings", message: "Embeddings already up to date." });
-      setMeta(db, "embeddingFingerprint", currentFingerprint);
-      return { success: true };
-    }
-    onProgress({
-      phase: "embeddings",
-      message: `Generating embeddings for ${allEntries.length} entr${allEntries.length === 1 ? "y" : "ies"}.`,
-    });
-    const texts = allEntries.map((e) => e.searchText);
-
-    // Verbose: log each document before it is sent to the embedding API so
-    // operators can see exactly where embedding fails without waiting for an error.
-    if (isVerbose()) {
-      const EMBED_BATCH_SIZE = 100; // mirrors REMOTE_BATCH_SIZE in remote.ts
-      const totalBatches = Math.ceil(texts.length / EMBED_BATCH_SIZE);
-      for (let i = 0; i < texts.length; i++) {
-        const batchNum = Math.floor(i / EMBED_BATCH_SIZE) + 1;
-        const chars = texts[i]!.length;
-        const tokens = estimateTokenCount(texts[i]!);
-        const ref = allEntries[i]!.itemRef;
-        warnVerbose(`[embed] ${ref} (${chars} chars, est. ${tokens} tokens) → batch ${batchNum}/${totalBatches}`);
-      }
-    }
-
-    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-    try {
-      heartbeatTimer = setInterval(() => {
-        onProgress({
-          phase: "embeddings",
-          message: `Still generating embeddings for ${allEntries.length} entr${allEntries.length === 1 ? "y" : "ies"}; waiting on embedding provider.`,
-        });
-      }, 15000);
-
-      const embeddings = await embedBatch(texts, config.embedding, signal);
-      throwIfAborted(signal);
-      // Wrap all embedding upserts in a single transaction so partial
-      // state is rolled back on failure rather than leaving the table half-filled.
-      let storedCount = 0;
-      let skippedCount = 0;
-      let vecFailedCount = 0;
-      let vecUnavailableCount = 0;
-      db.transaction(() => {
-        for (let i = 0; i < allEntries.length; i++) {
-          const res = upsertEmbedding(db, allEntries[i]!.id, embeddings[i]!);
-          if (res.stored) {
-            storedCount++;
-          } else {
-            skippedCount++;
-          }
-          if (res.vec === "failed") vecFailedCount++;
-          if (res.vec === "unavailable") vecUnavailableCount++;
-        }
-      })();
-      if (skippedCount > 0) {
-        warn(
-          `[embed] ${skippedCount} embedding${skippedCount === 1 ? "" : "s"} skipped (entry deleted between queue and write)`,
-        );
-      }
-      // Record the ACTUAL vec-insert outcome so semantic search reflects it
-      // instead of inferring readiness from stored-BLOB counts. Any failure
-      // marks the fast path degraded, routing search to the JS-cosine fallback
-      // over the (complete) BLOB table — honest degradation, not a hard failure.
-      //
-      // 'unavailable' has to degrade the flag too. It means no vec row was
-      // written at all, so marking the fast path ready left a later open (a
-      // different runtime, or sqlite-vec installed afterwards) trusting an
-      // empty entries_vec and returning zero semantic hits against a fully
-      // populated BLOB table.
-      setVecFastPathReady(db, vecFailedCount === 0 && vecUnavailableCount === 0);
-      if (vecFailedCount > 0) {
-        warn(
-          `[embed] ${vecFailedCount} sqlite-vec fast-path insert${vecFailedCount === 1 ? "" : "s"} failed — ` +
-            "semantic search will use the slower JS-cosine fallback over stored embeddings. " +
-            "Rebuild with 'akm index --full' after resolving the vec table (often a vector-dimension mismatch).",
-        );
-      }
-      onProgress({
-        phase: "embeddings",
-        message: `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"}.`,
-      });
-      setMeta(db, "embeddingFingerprint", currentFingerprint);
-      return { success: true, vecInsertFailures: vecFailedCount };
-    } finally {
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    warn("Embedding generation failed, continuing without:", message);
-    onProgress({
-      phase: "embeddings",
-      message: `Embedding generation failed: ${message}`,
-    });
-    return {
-      success: false,
-      reason: classifySemanticFailure(message),
-      message: `Semantic search verification failed: ${message}`,
-    };
-  }
-}
-
-interface EmbeddingGenerationResult {
-  success: boolean;
-  reason?: import("./search/semantic-status").SemanticSearchReason;
-  message?: string;
-  /**
-   * Count of sqlite-vec fast-path inserts that failed while their BLOB rows
-   * still wrote. > 0 means the index is degraded-but-working: semantic search
-   * falls back to JS-cosine over the BLOB table. Absent on paths with no vec
-   * writes (already up to date, disabled, or the error path).
-   */
-  vecInsertFailures?: number;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

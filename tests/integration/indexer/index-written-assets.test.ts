@@ -146,7 +146,7 @@ describe("indexWrittenAssets", () => {
     expect(readSemanticStatus()?.status).toMatch(/^ready-/);
     const search = await akmSearch({ query: "gasoline", skipLogging: true });
     expect(search.searchMode).toBe("semantic");
-    expect(search.hits.map((hit) => hit.ref)).toContain("memories/fuel-delivery-note");
+    expect(search.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("memories/fuel-delivery-note");
   });
 
   test("embedding failure preserves the authored file and FTS row while publishing blocked status", async () => {
@@ -177,7 +177,7 @@ describe("indexWrittenAssets", () => {
       reason: "remote-network",
     });
     const search = await akmSearch({ query: "offline-provider-note", skipLogging: true });
-    expect(search.hits.map((hit) => hit.ref)).toContain("memories/offline-provider-note");
+    expect(search.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("memories/offline-provider-note");
     expect(search.warnings?.join("\n")).toContain("embedding provider network unreachable");
   });
 

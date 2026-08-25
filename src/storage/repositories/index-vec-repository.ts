@@ -323,13 +323,17 @@ function searchBlobVec(db: Database, queryEmbedding: EmbeddingVector, k: number)
  */
 export function getAllEntriesForEmbedding(
   db: Database,
+  entryIds?: readonly number[],
 ): Array<{ id: number; searchText: string; itemRef: string; filePath: string }> {
-  return db
+  const rows = db
     .prepare(`
       SELECT e.id, e.search_text AS searchText, e.item_ref AS itemRef, e.file_path AS filePath FROM entries e
       WHERE NOT EXISTS (SELECT 1 FROM embeddings b WHERE b.id = e.id)
     `)
     .all() as Array<{ id: number; searchText: string; itemRef: string; filePath: string }>;
+  if (entryIds === undefined) return rows;
+  const targets = new Set(entryIds);
+  return rows.filter((row) => targets.has(row.id));
 }
 
 export function getEmbeddingCount(db: Database): number {
