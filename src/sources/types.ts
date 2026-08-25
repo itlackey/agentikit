@@ -331,10 +331,10 @@ export interface UpdateResultItem {
 }
 
 /**
- * A plain (non-registry-managed, i.e. lockless) bundle reconciled by this
+ * A plain (non-registry-managed, i.e. lockless) bundle fully reconciled by this
  * update call. Git/website sources hydrate before reconciliation; filesystem
- * sources already expose their current bytes and only need the non-hydrating
- * index pass. Npm requires a lock and is reported through `processed` instead.
+ * sources are reported here only when the non-hydrating scan completed. Npm
+ * requires a lock and is reported through `processed` instead.
  */
 export interface UpdatePlainSyncedItem {
   id: string;
@@ -377,6 +377,8 @@ export interface UpdateResponse {
     totalEntries: number;
     directoriesScanned: number;
     directoriesSkipped: number;
+    /** False when the run preserved LKG rows because at least one source scan was incomplete. */
+    scanComplete?: boolean;
   };
 }
 

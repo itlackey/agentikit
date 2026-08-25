@@ -771,7 +771,7 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
     }
   });
 
-  test("accounts for every configured source: syncs remotes and reconciles filesystem", async () => {
+  test("accounts for every configured source when remote fixtures leave the final scan incomplete", async () => {
     const fsDir = createTmpDir("akm-r015-fs-");
     makeStashDir(fsDir);
 
@@ -843,10 +843,18 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
     expect(result.processed).toHaveLength(1);
     expect(result.processed[0]?.id).toBe("left-pad");
     expect(result.processed[0]?.installed.resolvedVersion).toBe("1.3.0");
-    // Filesystem sources have no provider hydration, but `update --all` still
-    // reconciles their current bytes into the same index generation.
-    expect(result.plainSynced).toContainEqual({ id: "local-fs", kind: "filesystem", ref: fsDir });
-    expect(result.skipped ?? []).toEqual([]);
+    // These minimal remote fixtures do not materialize a complete final source
+    // generation. The filesystem bundle must still be accounted for, but must
+    // not be described as reconciled while the global scan is incomplete.
+    expect(result.index.scanComplete).toBe(false);
+    expect(result.plainSynced ?? []).not.toContainEqual({ id: "local-fs", kind: "filesystem", ref: fsDir });
+    expect(result.skipped).toContainEqual({
+      id: "local-fs",
+      kind: "filesystem",
+      status: "skipped",
+      code: "SOURCE_SCAN_INCOMPLETE",
+      reason: expect.stringContaining("not scanned completely"),
+    });
 
     // The npm source must now be a genuine managed install (lock-backed).
     const npmLock = readLockfile().find((entry) => entry.id === "left-pad");
