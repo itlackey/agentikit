@@ -31,6 +31,7 @@ import { getMeta, setMeta } from "../../src/storage/repositories/index-meta-repo
 import { DB_VERSION } from "../../src/storage/repositories/index-schema";
 import {
   isVecAvailable,
+  isVecFastPathComplete,
   isVecFastPathReady,
   searchVec,
   setVecFastPathReady,
@@ -842,6 +843,55 @@ describe("Vector / Embedding integration", () => {
       const fallback = searchVec(db, [1, 0, 0, 0], 10);
       expect(fallback.length).toBe(1);
       expect(fallback[0]!.id).toBe(id);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("vec fast-path completeness accepts identical BLOB and vec ID sets", () => {
+    const db = openIndexDatabase(tmpDbPath("vec-complete-exact"), { embeddingDim: 4 });
+    try {
+      const firstId = insertTestEntry(db, "vec-complete-first");
+      const secondId = insertTestEntry(db, "vec-complete-second");
+      expect(upsertEmbedding(db, firstId, [1, 0, 0, 0]).vec).toBe("ok");
+      expect(upsertEmbedding(db, secondId, [0, 1, 0, 0]).vec).toBe("ok");
+
+      expect(isVecFastPathComplete(db)).toBe(true);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("vec fast-path completeness rejects a missing vec ID", () => {
+    const db = openIndexDatabase(tmpDbPath("vec-complete-partial"), { embeddingDim: 4 });
+    try {
+      const firstId = insertTestEntry(db, "vec-partial-first");
+      const secondId = insertTestEntry(db, "vec-partial-second");
+      expect(upsertEmbedding(db, firstId, [1, 0, 0, 0]).vec).toBe("ok");
+      expect(upsertEmbedding(db, secondId, [0, 1, 0, 0]).vec).toBe("ok");
+      db.prepare("DELETE FROM entries_vec WHERE id = ?").run(secondId);
+
+      expect(isVecFastPathComplete(db)).toBe(false);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("vec fast-path completeness rejects equal counts with mismatched IDs", () => {
+    const db = openIndexDatabase(tmpDbPath("vec-complete-mismatched"), { embeddingDim: 4 });
+    try {
+      const firstId = insertTestEntry(db, "vec-mismatch-first");
+      const missingId = insertTestEntry(db, "vec-mismatch-second");
+      expect(upsertEmbedding(db, firstId, [1, 0, 0, 0]).vec).toBe("ok");
+      expect(upsertEmbedding(db, missingId, [0, 1, 0, 0]).vec).toBe("ok");
+      db.prepare("DELETE FROM entries_vec WHERE id = ?").run(missingId);
+      const orphanId = missingId + 100_000;
+      const orphanVector = Buffer.from(new Float32Array([0, 0, 1, 0]).buffer);
+      db.prepare("INSERT INTO entries_vec (id, embedding) VALUES (?, ?)").run(orphanId, orphanVector);
+
+      expect(db.prepare("SELECT COUNT(*) AS count FROM embeddings").get()).toEqual({ count: 2 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM entries_vec").get()).toEqual({ count: 2 });
+      expect(isVecFastPathComplete(db)).toBe(false);
     } finally {
       closeDatabase(db);
     }
