@@ -42,15 +42,16 @@ each weighted differently in the BM25 scoring:
 | `description` | 5.0 | Description text |
 | `tags` | 3.0 | Tags and aliases |
 | `hints` | 2.0 | Search hints and examples |
-| `content` | 1.0 | TOC headings, usage, intent, parameters |
+| `content` | 1.0 | bounded body projection, TOC headings, parameters |
 
 A name match is weighted 10x higher than a content match. This ensures that
 searching "docker" ranks the `docker-homelab` skill above a knowledge doc that
 merely mentions Docker in its table of contents.
 
-**Fuzzy/prefix fallback:** When the exact FTS5 query returns zero results, the
-search automatically retries with prefix matching (appending `*` to tokens of
-3+ characters). This handles partial terms and minor truncations.
+**Progressive fallback:** Search runs strict AND, then prefix-AND, then one
+OR/prefix-OR recovery only if both strict forms return no candidates. Unicode
+letter/number tokens are deduplicated and capped; callers do not strip
+stopwords or maintain separate result collections.
 
 ### 2. Semantic (vector)
 

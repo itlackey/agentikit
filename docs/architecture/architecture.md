@@ -143,9 +143,12 @@ Indexed field weighting:
 
 Notes:
 
+- lexical queries are tokenized once with Unicode letter/number semantics and
+  execute strict AND, then prefix-AND, then one OR/prefix-OR recovery only when
+  both strict forms return no candidates; there are no caller stopword lists
 - `hints` includes `searchHints`, `examples`, `usage`, intent fields, wiki
   cross-references, and page-kind hints
-- `content` is primarily TOC headings plus parameter names/descriptions
+- `content` is bounded low-weight body prose plus TOC headings and parameter metadata; secret/env/session material is excluded at the adapter boundary
 - registry results live in `registryHits`, never in `hits`
 - `--from all` keeps registry results in `registryHits` — they are not
   rank-merged with source hits

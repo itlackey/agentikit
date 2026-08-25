@@ -288,15 +288,12 @@ bundled.
 
 ## Indexing
 
-`index.indexBodyOpening` defaults to `false`. When enabled, AKM captures the
-first prose paragraph of each Markdown asset body, capped at 280 characters,
-into the lowest-weight search content and embedding text. Secret and env files
-are never read for this field, and session-kind memories are excluded.
-
-Changing this option changes indexed text. Run `akm index --full` after
-toggling it so all entries and embeddings are rebuilt consistently. If the
-setting differs from the state used to build the current index, AKM warns until
-that full rebuild completes.
+AKM-native Markdown contributes a normalized body projection to the
+lowest-weight `content` search field. The projection is capped at 16,384
+characters, removes frontmatter, comments, fenced code, and link destinations,
+and is never produced for secret, env, session, or session-checkpoint assets.
+Embedding input is separately capped at 8,192 characters with structured
+metadata placed before body content.
 
 ## Semantic search
 

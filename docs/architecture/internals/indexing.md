@@ -44,10 +44,18 @@ Cache materialisation runs through each source's `sync()` method
 | `description` | description text |
 | `tags` | tags + aliases |
 | `hints` | `searchHints`, `examples`, `usage`, intent text, wiki xrefs, wiki page kind |
-| `content` | TOC headings plus parameter names/descriptions |
+| `content` | bounded native/adapter body projection, TOC headings, and parameter names/descriptions |
 
-The `content` column is intentionally sparse. Longer freeform guidance such as
-`usage` and `intent` primarily feed `hints`, not `content`.
+The `content` column is intentionally lowest-weight. AKM-native Markdown body
+prose is normalized and bounded at the adapter boundary; secrets, env values,
+raw sessions, and session checkpoints never enter it. Longer structured
+guidance such as `usage` and `intent` continues to feed `hints`.
+
+Lexical retrieval uses one central progressive plan: Unicode letter/number
+tokens are deduplicated and capped, then FTS executes strict AND, prefix-AND,
+and—only if both miss—one OR/prefix-OR recovery query. Every stage feeds the
+same BM25 normalization and downstream ranker; callers do not strip stopwords
+or maintain alternate result collections.
 
 ## Modes
 

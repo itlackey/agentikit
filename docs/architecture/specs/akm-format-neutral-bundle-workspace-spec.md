@@ -723,7 +723,7 @@ path. Sensitivity suppression (env/secret redaction — existing behavior,
 ported) is keyed on the **adapter**, never on `type`, so content metadata cannot
 opt out of it.
 
-The folding rules that map richer native metadata (examples, usage, intent, xrefs, when-to-use, outline, parameters, body opening) into the FTS `hints`/`content` columns are a **core-shared helper that adapters call** — one fold, not one per adapter — because the embedding-input hashes and frozen retrieval canaries are pinned to that exact surface.
+The folding rules that map richer native metadata (examples, usage, intent, xrefs, when-to-use, outline, parameters, bounded content) into the FTS `hints`/`content` columns are a **core-shared helper that adapters call** — one fold, not one per adapter — because the embedding-input hashes and frozen retrieval canaries are pinned to that exact surface.
 
 ### 14.2 Scan flow and diff persistence
 

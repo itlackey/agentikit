@@ -44,7 +44,7 @@ Key grounding corrections discovered during the survey: (1) `akm lint` ALREADY r
 | SPEC-5 | P1 | --supersedes on remember/import: atomic correction + demotion of the superseded asset | S |
 | SPEC-6 | P2 | Capture fact category into the index and demote category:convention facts at rank time | S |
 | SPEC-7 | P2 | akm mv: rename with inbound-xref rewrite and utility-history preservation | L |
-| SPEC-8 | P2 | Config-gated indexing of the self-situating body opening | M |
+| SPEC-8 | P2 | Bounded native Markdown body projection | M |
 
 ### SPEC-1 — Extend akm lint missing-ref to frontmatter xref channels (xrefs, supersededBy, contradictedBy)
 
@@ -238,33 +238,31 @@ Key grounding corrections discovered during the survey: (1) `akm lint` ALREADY r
 
 **Risks.** Partial-failure atomicity (rename applied, rewrite interrupted) — mitigate by ordering: compute full rewrite plan first, apply file edits, rename last, re-key index last; still not transactional across FS+DB — document and make re-runnable. Graph tables key extractions by file path (graph_files) — stale until next graph pass; acceptable (graph is a derived cache). Highest-effort, lowest-frequency operation of the set — hence P2 despite high per-use value; sequence last.
 
-### SPEC-8 — Config-gated indexing of the self-situating body opening
+### SPEC-8 — Bounded native Markdown body projection
 
-**Priority:** P2 · **Sizing:** M — extraction + fold are small; config/schema/contract/canary coordination dominates.
+**Priority:** P2 · **Sizing:** M — one adapter-boundary projection and the shared search fold.
 
-**Problem.** Body prose is not FTS/embedding-indexed (content column = TOC headings + parameters only, search-fields.ts:63-73; embeddings built from the same field string via buildSearchText :83-88), so the conventions route orientation into description:/when_to_use:. The intake keeps the complementary code change open: 'Surface the first body paragraph into an indexed field (or embed body openings) so orientation prose pays retrieval rent.'
+**Problem.** Native body prose was absent from FTS and embedding inputs, so a useful fact outside headings and metadata was unreachable.
 
 **Convention rule served.** Design-doc open-questions intake item 'Index self-situating body text'; backlinks.md self-situating section (body header currently serves only the entity graph and human readers).
 
-**Design.** Minimal, gated: (1) metadata pass — in buildEntryFromFile's md branch (metadata.ts:1056-1072), extract the first non-heading, non-fence, non-empty paragraph of parsed.content, capped at 280 chars, into new StashEntry field `bodyOpening?: string` (skip secrets/env by existing guards; skip session-kind memories via the akm_memory_kind marker already recognized in base-linter patterns); (2) search fold — append bodyOpening to the `content` field (lowest bm25 weight 1.0) in buildSearchFields (search-fields.ts:63-73), NOT hints (hints carries xrefs/when_to_use and feeds no per-entry cap logic; content is the designated catch-all); (3) gate behind config `index.indexBodyOpening` (default false initially) because two verified costs trigger on ANY buildSearchFields change: the R5 collapse-detector canary baselines shift (search-fields.ts:27-32 — operators must `akm improve canary --refresh`), and embeddings do NOT regenerate for existing entries (db.ts:1561-1568 embeds only rows lacking an embedding) so semantic installs need an explicit purge/re-embed (purge helper exists at db.ts:176-189). Flip the default in a later minor once re-mint tooling and CHANGELOG guidance exist. Guardrail: this makes body headers ALSO pay rent — the shipped convention's description:/when_to_use: routing remains primary; do not re-teach body-only orientation.
+**Design.** The native adapter assigns one normalized Markdown projection to `IndexDocument.content`, capped at 16,384 characters and folded into the existing lowest-weight FTS column. Frontmatter, comments, fenced code, and link destinations are removed while prose, headings, labels, and inline identifiers remain. Secret/env/session bytes and session-checkpoint memories never cross the projection boundary. Embedding text is separately capped at 8,192 characters with structured metadata first and body prose consuming only the remainder. There is no configuration flag, alternate field, index-state metadata, or parallel body retrieval path.
 
 **Files.**
 - `src/indexer/passes/metadata.ts`
 - `src/indexer/search/search-fields.ts`
-- `indexBodyOpening` — schema in `src/core/config/schema/index-config.ts`, reserved-key note in `src/core/config/config.ts`
-- `schemas/ (config schema, via tests/integration/contracts/config-schema-drift.test.ts expectations)`
-- `tests/integration/metadata.test.ts`
-- `tests/integration/fts-field-weighting.test.ts`
+- `src/core/adapter/adapters/akm-adapter.ts`
+- `tests/integration/fts-progressive-retrieval.test.ts`
 
-**Contracts & stability.** config-schema-drift contract test must be updated with the new key (it pins the schema). Search Stable surface: results change only when the flag is on. Canary + embedding coordination as described — the CHANGELOG entry is part of the deliverable.
+**Contracts & stability.** Search Stable behavior broadens recall through the existing `content` column and ranking weights; no configuration surface or new index storage exists.
 
-**Test plan.** (1) extraction unit tests: heading-first bodies, fenced-first bodies, frontmatter-only files, 280-char cap, session memories skipped; (2) flag off → buildSearchFields byte-identical to today (pins the default); (3) flag on → FTS query matching an orientation-only phrase returns the asset via the content column; (4) fts-field-weighting test asserts name-match still outranks body-opening-match.
+**Test plan.** Table-driven native projection checks pin body-only facts, markup removal, the Unicode-safe bound, and secret/session exclusions; FTS weighting checks keep exact structured matches ahead of body-only matches.
 
-**Risks.** Index size growth (bounded by cap); stale-embedding drift when the flag is toggled without purge — emit a warning from `akm index` when the flag state differs from the indexed state (store a meta key, pattern: setMeta 'hasEmbeddings' indexer.ts:375); most speculative retrieval win of the set — keep default-off until eval evidence (curate goldens) shows lift.
+**Risks.** Index-size growth is bounded at projection time. A full rebuild after upgrading regenerates the derived index from the new projection.
 
 ## Sequencing
 
-Recommended order: SPEC-1 → SPEC-2 → SPEC-3 → SPEC-5 → SPEC-4 → SPEC-6 → SPEC-8 → SPEC-7. Rationale: SPEC-1 first — it is the P0 with zero behavioral risk (lint-only, additive findings), it makes the conventions' central warning actionable immediately, and it establishes the resolver-reuse pattern SPEC-3/5 build on; it also becomes the verification tool for everything later (SPEC-7's rewrites are checked by it). SPEC-2 second — tiny code change, but schedule its convention-text follow-up (softening the footgun bullet) AFTER task #5's apply pass lands so the same file isn't churned twice, and bundle the canary re-mint CHANGELOG note. SPEC-3 then SPEC-5 as one arc — SPEC-5 reuses SPEC-3's flag plumbing and validation helper, and together they ship the complete convention loop (provenance at write time + corrections with demotion) that agents currently cannot execute through the CLI at all. SPEC-4 after task #5 is fully verified — it must amend the exact negative sentences task #5 just wrote into concepts.md and the design doc, so sequencing it earlier guarantees doc churn and docConsistency-sweep conflicts; it is independent of all other specs code-wise. SPEC-6 only after a measurement pass (curate goldens) confirms convention-fact crowding is real — it is the most speculative item and its demotion constant should be eval-derived, not guessed. SPEC-8 after SPEC-6's capture groundwork and once canary re-mint guidance exists (it shares the R5/embedding coordination burden and is default-off anyway). SPEC-7 last — largest effort, heaviest contract/governance footprint (§9.4 surface freeze), lowest frequency of use, and it benefits from SPEC-1 (verification) and SPEC-4 (subtree enumeration for pre/post-move checks) already being in place.
+Recommended order: SPEC-1 → SPEC-2 → SPEC-3 → SPEC-5 → SPEC-4 → SPEC-6 → SPEC-8 → SPEC-7. Rationale: SPEC-1 first — it is the P0 with zero behavioral risk (lint-only, additive findings), it makes the conventions' central warning actionable immediately, and it establishes the resolver-reuse pattern SPEC-3/5 build on; it also becomes the verification tool for everything later (SPEC-7's rewrites are checked by it). SPEC-2 second — tiny code change, but schedule its convention-text follow-up (softening the footgun bullet) AFTER task #5's apply pass lands so the same file isn't churned twice. SPEC-3 then SPEC-5 as one arc — SPEC-5 reuses SPEC-3's flag plumbing and validation helper, and together they ship the complete convention loop (provenance at write time + corrections with demotion) that agents currently cannot execute through the CLI at all. SPEC-4 after task #5 is fully verified — it must amend the exact negative sentences task #5 just wrote into concepts.md and the design doc, so sequencing it earlier guarantees doc churn and docConsistency-sweep conflicts; it is independent of all other specs code-wise. SPEC-6 only after a measurement pass (curate goldens) confirms convention-fact crowding is real — it is the most speculative item and its demotion constant should be eval-derived, not guessed. SPEC-8 remains one adapter projection and shared fold. SPEC-7 last — largest effort, heaviest contract/governance footprint (§9.4 surface freeze), lowest frequency of use, and it benefits from SPEC-1 (verification) and SPEC-4 (subtree enumeration for pre/post-move checks) already being in place.
 
 ## Open questions
 

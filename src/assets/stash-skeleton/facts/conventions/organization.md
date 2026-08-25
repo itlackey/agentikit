@@ -86,9 +86,7 @@ cross-project reuse.
   (`acme` vs `acme-corp`) so the prefix does not fragment. Keep the domain
   vocabulary in `facts/conventions/domains`.
 - **Off-axis facets go in `tags:`, not a bare field.** The indexed FTS fields are
-  name, description, tags, hints, and content (headings only — body prose is
-  not indexed by default; the opt-in `index.indexBodyOpening` flag adds just
-  the first body paragraph, at the lowest weight) — there is **no `project`
+  name, description, tags, hints, and bounded low-weight body content — there is **no `project`
   field**, so `project: projectA` in
   frontmatter is invisible to search. Put the off-axis facet in `tags` instead
   (a project-scoped memory adds `tags: [auth]`; a domain-scoped asset genuinely
