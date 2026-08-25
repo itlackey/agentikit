@@ -12,9 +12,12 @@ import { resetConfigCache, saveConfig } from "../../src/core/config/config";
 import { getDbPath } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
 import { replaceStoredGraph } from "../../src/indexer/db/graph-db";
-import { resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
+import { loadGraphBoostContext, resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
 import { akmIndex } from "../../src/indexer/indexer";
+import { buildLexicalQueryPlan } from "../../src/indexer/search/fts-query";
+import { defaultRankingContributors } from "../../src/indexer/search/ranking-contributors";
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
+import { getEntryById, getEntryByRef } from "../../src/storage/repositories/index-entries-repository";
 import { runCliCapture } from "../_helpers/cli";
 import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
@@ -159,6 +162,43 @@ function clearUsageRows(): void {
   db.close();
 }
 
+function rankingContributorLedger(query: string, ref: string): Array<{ name: string; contribution: number }> {
+  const db = openExistingDatabase(getDbPath());
+  try {
+    const entryId = getEntryByRef(db, ref)?.id;
+    if (entryId === undefined) throw new Error(`Missing indexed fixture: ${ref}`);
+    const indexed = getEntryById(db, entryId);
+    if (!indexed) throw new Error(`Missing indexed entry ${entryId}: ${ref}`);
+
+    const queryTokens = buildLexicalQueryPlan(query).tokens.map((token) => token.toLowerCase());
+    const ctx = {
+      db,
+      query,
+      queryLower: query.toLowerCase().trim(),
+      queryTokens,
+      graphContext: loadGraphBoostContext([storage.stashDir, teamDir], query, undefined, db),
+      projectContext: null,
+    };
+    const item = {
+      id: entryId,
+      entry: indexed.entry,
+      filePath: indexed.filePath,
+      score: 1,
+      rankingMode: "fts" as const,
+      itemRef: indexed.itemRef,
+      bundleId: indexed.bundleId,
+      conceptId: indexed.conceptId,
+    };
+
+    return defaultRankingContributors
+      .filter((contributor) => contributor.appliesTo(item, ctx))
+      .map((contributor) => ({ name: contributor.name, contribution: contributor.adjust(item, ctx) }))
+      .filter(({ contribution }) => contribution !== 0);
+  } finally {
+    closeDatabase(db);
+  }
+}
+
 describe("downstream value attribution", () => {
   test("persists MI direct and parent-surface exposure without adding attribution to search result payloads", async () => {
     const direct = await akmSearch({ query: "direct-child-needle", limit: 10 });
@@ -208,7 +248,31 @@ describe("downstream value attribution", () => {
     const graph = metadataFor("graph-target", "stash//knowledge/graph-target") as {
       downstreamAttribution?: { graphExtraction?: { boost?: number } };
     };
-    expect(graph.downstreamAttribution?.graphExtraction?.boost).toBeCloseTo(0.465, 6);
+    const ledger = rankingContributorLedger("graph-target", "stash//knowledge/graph-target");
+    expect(ledger).toEqual([
+      { name: "exact-name-ranking", contribution: 2 },
+      { name: "type-ranking", contribution: 0.22 },
+      { name: "search-hint-ranking", contribution: 0.12 },
+      { name: "alias-ranking", contribution: 0.3 },
+      { name: "description-ranking", contribution: 0.25 },
+      { name: "metadata-ranking", contribution: 0.095 },
+      { name: "graph-ranking", contribution: 0.75 },
+    ]);
+
+    const graphIndex = ledger.findIndex(({ name }) => name === "graph-ranking");
+    const preGraphBoost = ledger.slice(0, graphIndex).reduce((sum, contributor) => sum + contributor.contribution, 0);
+    const rawGraphBoost = ledger[graphIndex]?.contribution ?? 0;
+    const boostCap = 3;
+    const expectedAppliedGraphBoost =
+      Math.min(boostCap, preGraphBoost + rawGraphBoost) - Math.min(boostCap, preGraphBoost);
+
+    // The central lexical planner tokenizes `graph-target` as `graph` +
+    // `target`, so alias and multi-token description evidence now consumes
+    // 2.985 of the common 3.0 cap before graph ranking runs. Attribution must
+    // record only the 0.015 share scoring actually admits, not its raw 0.75.
+    expect(preGraphBoost).toBeCloseTo(2.985, 6);
+    expect(expectedAppliedGraphBoost).toBeCloseTo(0.015, 6);
+    expect(graph.downstreamAttribution?.graphExtraction?.boost).toBeCloseTo(expectedAppliedGraphBoost, 6);
   });
 
   // C9 (env-var hygiene): this still drives ablation via AKM_ABLATE_CONTRIBUTORS
