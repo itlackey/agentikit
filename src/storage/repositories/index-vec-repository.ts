@@ -82,11 +82,11 @@ export function isVecFastPathReady(db: Database): boolean {
 /**
  * Verify that the vec fast-path table mirrors the complete durable BLOB set.
  *
- * Targeted embedding materialization only writes the changed subset. Its own
- * successful inserts therefore cannot prove that an older degraded generation
- * is healed. This bounded aggregate check is used at the write boundary before
- * promoting the persisted readiness flag; search itself still reads the cheap
- * flag and does not repeat the global check per query.
+ * A targeted embedding write preserves the prior readiness decision because
+ * its subset cannot prove an older degraded generation is healed. Global
+ * materialization uses this aggregate check before promoting the persisted
+ * flag; search itself still reads the cheap flag and does not repeat the check
+ * per query.
  */
 export function isVecFastPathComplete(db: Database): boolean {
   if (!isVecAvailable(db) || !hasVecTable(db)) return false;
