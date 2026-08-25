@@ -68,6 +68,11 @@ export async function generateEmbeddingsForDb(
     return { success: false, reason: "index-missing", message: "Semantic search is disabled." };
   }
 
+  // A targeted call starts from an already-published generation. Preserve its
+  // trust decision in O(1): successful writes for the changed IDs keep a
+  // healthy fast path healthy, but can never promote a generation already
+  // marked degraded. Global runs can afford to verify the entire derived set.
+  const vecFastPathWasReady = isVecFastPathReady(db);
   const currentFingerprint = deriveSemanticProviderFingerprint(config.embedding);
   const storedFingerprint = getMeta(db, "embeddingFingerprint");
   let targetEntryIds = entryIds;
@@ -138,7 +143,8 @@ export async function generateEmbeddingsForDb(
           `[embed] ${skippedCount} embedding${skippedCount === 1 ? "" : "s"} skipped (entry deleted between queue and write)`,
         );
       }
-      setVecFastPathReady(db, vecFailedCount === 0 && vecUnavailableCount === 0 && isVecFastPathComplete(db));
+      const vecGenerationComplete = targetEntryIds === undefined ? isVecFastPathComplete(db) : vecFastPathWasReady;
+      setVecFastPathReady(db, vecFailedCount === 0 && vecUnavailableCount === 0 && vecGenerationComplete);
       if (vecFailedCount > 0) {
         warn(
           `[embed] ${vecFailedCount} sqlite-vec fast-path insert${vecFailedCount === 1 ? "" : "s"} failed — ` +
