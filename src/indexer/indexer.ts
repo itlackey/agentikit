@@ -146,6 +146,8 @@ export interface IndexResponse {
   mode: "full" | "incremental";
   directoriesScanned: number;
   directoriesSkipped: number;
+  /** False when any configured source could not be scanned and LKG rows were preserved. */
+  scanComplete: boolean;
   warnings?: string[];
   /** Stable, secret-free execution-lowering diagnostics. */
   notices?: readonly Readonly<LoweringNotice>[];
@@ -975,6 +977,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           mode: ctx.isIncremental ? "incremental" : "full",
           directoriesScanned: ctx.scannedDirs,
           directoriesSkipped: ctx.skippedDirs,
+          scanComplete: ctx.scanComplete,
           ...(ctx.walkWarnings.length > 0 ? { warnings: ctx.walkWarnings } : {}),
           ...(ctx.loweringNotices.length > 0 ? { notices: Object.freeze([...ctx.loweringNotices]) } : {}),
           ...(Object.keys(persistedAdapters).length > 0

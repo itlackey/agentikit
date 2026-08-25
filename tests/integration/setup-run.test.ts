@@ -129,6 +129,7 @@ function makeIndexResult(): IndexResponse {
     mode: "full",
     directoriesScanned: 1,
     directoriesSkipped: 0,
+    scanComplete: true,
     verification: {
       ok: true,
       message: "semantic search verified",

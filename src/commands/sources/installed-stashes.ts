@@ -402,7 +402,7 @@ export async function akmRemove(input: { target: string; stashDir?: string }): P
 type UpdateIndexSummary = Pick<
   Awaited<ReturnType<typeof akmIndex>>,
   "mode" | "totalEntries" | "directoriesScanned" | "directoriesSkipped"
->;
+> & { scanComplete?: boolean };
 
 /** Read the current index generation without creating or hydrating anything. */
 function readCurrentIndexSummary(): UpdateIndexSummary {
@@ -450,7 +450,18 @@ function buildUpdateResponse(
       totalEntries: index.totalEntries,
       directoriesScanned: index.directoriesScanned,
       directoriesSkipped: index.directoriesSkipped,
+      ...(index.scanComplete !== undefined ? { scanComplete: index.scanComplete } : {}),
     },
+  };
+}
+
+function incompleteFilesystemOutcome(id: string): UpdateSkippedItem {
+  return {
+    id,
+    kind: "filesystem",
+    status: "skipped",
+    code: "SOURCE_SCAN_INCOMPLETE",
+    reason: `Filesystem source "${id}" was not scanned completely; preserving its last-known-good index rows.`,
   };
 }
 
@@ -1145,6 +1156,12 @@ async function updateFilesystemSource(
   const id = filesystemSource.name ?? filesystemSource.path ?? target;
   const ref = filesystemSource.path ?? target;
   const index = await akmIndex({ stashDir, hydrateSources: false });
+  if (!index.scanComplete) {
+    return buildUpdateResponse(stashDir, target, all, [], {
+      skipped: [incompleteFilesystemOutcome(id)],
+      index,
+    });
+  }
   return buildUpdateResponse(stashDir, target, all, [], {
     plainSynced: [{ id, kind: "filesystem", ref }],
     index,
@@ -1583,13 +1600,24 @@ export async function akmUpdate(input?: {
     }
     if (filesystemSources.length > 0) {
       try {
-        latestIndex ??= await akmIndex({ stashDir, hydrateSources: false });
-        for (const source of filesystemSources) {
-          plainSynced.push({
-            id: source.name ?? source.path ?? "",
-            kind: "filesystem",
-            ref: source.path ?? source.name ?? "",
-          });
+        // A remote source may have reconciled before a later source finished
+        // hydrating, so an incomplete intermediate result is not authoritative
+        // for the final `--all` outcome. Retry once after every source update;
+        // a genuinely missing filesystem root remains incomplete and is
+        // reported below without claiming reconciliation.
+        if (!latestIndex?.scanComplete) latestIndex = await akmIndex({ stashDir, hydrateSources: false });
+        if (latestIndex.scanComplete) {
+          for (const source of filesystemSources) {
+            plainSynced.push({
+              id: source.name ?? source.path ?? "",
+              kind: "filesystem",
+              ref: source.path ?? source.name ?? "",
+            });
+          }
+        } else {
+          for (const source of filesystemSources) {
+            skipped.push(incompleteFilesystemOutcome(source.name ?? source.path ?? ""));
+          }
         }
       } catch (error) {
         for (const source of filesystemSources) {
