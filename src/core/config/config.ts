@@ -449,12 +449,8 @@ export function resolveSecret(value: string | undefined): string | undefined {
  * filtering out the reserved feature-section keys so callers don't mistake
  * `metadataEnhance` for a pass.
  */
-/**
- * Reserved well-known keys on IndexConfig that are NOT per-pass entries.
- * `indexBodyOpening` (stash-conventions SPEC-8) is a boolean feature flag, not
- * a pass section.
- */
-const INDEX_RESERVED_KEYS = new Set(["metadataEnhance", "indexBodyOpening"]);
+/** Reserved well-known keys on IndexConfig that are NOT per-pass entries. */
+const INDEX_RESERVED_KEYS = new Set(["metadataEnhance"]);
 
 export function getIndexPassConfig(config: IndexConfig | undefined, passName: string): IndexPassConfig | undefined {
   if (!config) return undefined;

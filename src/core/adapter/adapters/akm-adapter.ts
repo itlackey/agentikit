@@ -200,7 +200,6 @@ const DOCUMENT_JSON_CARRIED_FIELDS = [
   "whenToUse",
   "toc",
   "parameters",
-  "bodyOpening",
   "source",
   "category",
   "supersededBy",
@@ -246,6 +245,7 @@ function indexDocumentFromEntry(
   // First-class search + signal fields (only when present).
   if (entry.description !== undefined) doc.description = entry.description;
   if (entry.tags !== undefined) doc.tags = entry.tags;
+  if (entry.content !== undefined) doc.content = entry.content;
   if (entry.aliases !== undefined) doc.aliases = entry.aliases;
   if (entry.searchHints !== undefined) doc.searchHints = entry.searchHints;
   if (entry.quality !== undefined) doc.quality = entry.quality;

@@ -142,9 +142,7 @@ export type IndexPassConfig = z.infer<typeof import("./config-schema").IndexPass
 
 /**
  * Index-time configuration. Combines well-known feature sections
- * (`metadataEnhance`) and the
- * `indexBodyOpening` boolean feature flag (stash-conventions SPEC-8, default
- * false) with per-pass overrides keyed by pass name.
+ * (`metadataEnhance`) with per-pass overrides keyed by pass name.
  */
 export type IndexConfig = z.infer<typeof import("./config-schema").IndexConfigSchema>;
 

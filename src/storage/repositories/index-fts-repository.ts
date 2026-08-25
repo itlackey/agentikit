@@ -70,7 +70,7 @@ export function searchFts(
   if (exactResults.length > 0) return exactResults;
 
   if (plan.exactPrefix) {
-    const prefixResults = runFtsQuery(db, plan.exactPrefix, "prefix", limit, entryType, excludeTypes);
+    const prefixResults = runFtsQuery(db, plan.exactPrefix, "exact", limit, entryType, excludeTypes);
     if (prefixResults.length > 0) return prefixResults;
   }
 

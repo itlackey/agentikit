@@ -100,10 +100,7 @@ describe("config schema drift pins", () => {
     const index = props.index as { properties?: Record<string, unknown> };
     expect(Object.keys(index.properties ?? {})).toContain("metadataEnhance");
     expect(Object.keys(index.properties ?? {})).not.toContain("stalenessDetection");
-    // SPEC-8: reserved boolean feature flag gating body-opening indexing.
-    expect(Object.keys(index.properties ?? {})).toContain("indexBodyOpening");
-    const indexBodyOpening = index.properties?.indexBodyOpening as { type?: string };
-    expect(indexBodyOpening.type).toBe("boolean");
+    expect(Object.keys(index.properties ?? {})).not.toContain("indexBodyOpening");
     const search = props.search as { properties?: Record<string, unknown> };
     expect(Object.keys(search.properties ?? {})).toContain("graphBoost");
   });

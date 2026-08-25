@@ -14,7 +14,7 @@
 /** Maximum number of distinct lexical terms one query may execute. */
 export const MAX_LEXICAL_QUERY_TOKENS = 16;
 
-export type LexicalQueryExecution = "exact" | "prefix" | "relaxed";
+export type LexicalQueryExecution = "exact" | "relaxed";
 
 export interface LexicalQueryPlan {
   tokens: string[];

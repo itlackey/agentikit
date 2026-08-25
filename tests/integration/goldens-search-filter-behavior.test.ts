@@ -35,12 +35,12 @@
  * `base-memory`/`base-memory.derived` pair pins that PARITY case directly (no
  * divergence). The REAL, robust divergence is candidate-POOL membership, not
  * filter code: `searchDatabase`'s candidate pool comes from `searchFts`/
- * vector matches for the query's own tokens (FTS indexes description/tags/
- * searchHints/aliases — NOT raw markdown body prose, unless
- * `index.indexBodyOpening` is enabled, off by default); `enumerateEntries`'s
+ * vector matches for the query's own tokens, including bounded body content;
+ * `enumerateEntries`'s
  * candidate pool is `getAllEntries` for the type, entirely independent of
  * query text. A `.derived` twin whose own indexed fields share NO token with
- * the query (`silent-twin-base`/`silent-twin-base.derived` in this fixture)
+ * the query (`silent-twin-base`/`silent-twin-base.derived` in this fixture,
+ * whose metadata and body both deliberately omit that token)
  * is therefore NEVER a scored-path candidate under any belief filter — never
  * even reaching `inheritDerivedTwinBeliefStates` — while the SAME twin,
  * reached via an empty-query enumerate, is ALWAYS a candidate and reliably
@@ -412,7 +412,7 @@ describe("golden fixture: filter-behavior/scored-vs-enumerate.json (WI-0b.5a)", 
           "candidate-POOL membership, not filter code. searchDatabase's candidate pool is built from searchFts/" +
           "vector matches for the query's own tokens; enumerateEntries's candidate pool is getAllEntries for the " +
           "type, independent of query text. memory:silent-twin-base.derived shares NO indexed token with 'gridlock' " +
-          "(FTS indexes description/tags/searchHints/aliases, not body prose), so it is NEVER a scored-path " +
+          "across metadata or bounded body content, so it is NEVER a scored-path " +
           "candidate for this query under ANY belief filter (visible in every combo's 'scored' half below as a " +
           "total absence) while it is ALWAYS an enumerate-path candidate and reliably inherits silent-twin-base's " +
           "'contradicted' state (present under belief=all/historical, absent under belief=current in the " +

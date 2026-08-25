@@ -14,6 +14,9 @@
 
 import type { IndexDocument } from "../passes/metadata";
 
+/** Structured metadata plus bounded body text supplied to embedding providers. */
+export const SEARCH_TEXT_MAX_CHARS = 8_192;
+
 /**
  * Return per-field search text for multi-column FTS5 indexing.
  *
@@ -22,7 +25,7 @@ import type { IndexDocument } from "../passes/metadata";
  *  - description: entry description
  *  - tags: tags + aliases joined
  *  - hints: searchHints + examples + usage + intent fields
- *  - content: TOC headings + parameters + the config-gated body opening
+ *  - content: bounded native/adapter body projection + TOC headings + parameters
  *    (lowest-weight catch-all)
  */
 // NOTE (R5): the collapse detector's frozen canary queries are built from the
@@ -64,7 +67,6 @@ export function buildSearchFields(entry: IndexDocument): {
   const hints = hintParts.join(" ").toLowerCase();
 
   const contentParts: string[] = [];
-  if (entry.content) contentParts.push(entry.content);
   if (entry.toc) {
     contentParts.push(entry.toc.map((h) => h.text).join(" "));
   }
@@ -74,14 +76,7 @@ export function buildSearchFields(entry: IndexDocument): {
       if (param.description) contentParts.push(param.description);
     }
   }
-  // Stash-organization conventions (SPEC-8): the self-situating body opening
-  // (captured by the metadata pass only when `index.indexBodyOpening` is on)
-  // folds into the lowest-weight catch-all column — never name/description/
-  // tags/hints — so orientation prose is retrievable without outranking
-  // structured-field matches. The fold is unconditional on the entry field:
-  // `rebuildFts` rebuilds FTS rows from stored document_json and must reproduce
-  // the same fields without re-reading config.
-  if (entry.bodyOpening) contentParts.push(entry.bodyOpening);
+  if (entry.content) contentParts.push(entry.content);
   const content = contentParts.join(" ").toLowerCase();
 
   return { name, description, tags, hints, content };
@@ -94,7 +89,20 @@ export function buildSearchFields(entry: IndexDocument): {
  */
 export function buildSearchText(entry: IndexDocument): string {
   const fields = buildSearchFields(entry);
-  return [fields.name, fields.description, fields.tags, fields.hints, fields.content]
-    .filter((s) => s.length > 0)
+  const structured = [fields.name, fields.description, fields.tags, fields.hints]
+    .filter((field) => field.length > 0)
     .join(" ");
+  if (structured.length >= SEARCH_TEXT_MAX_CHARS) return truncateUnicodeSafe(structured, SEARCH_TEXT_MAX_CHARS);
+  if (!fields.content) return structured;
+  const separator = structured ? " " : "";
+  const remaining = SEARCH_TEXT_MAX_CHARS - structured.length - separator.length;
+  return `${structured}${separator}${truncateUnicodeSafe(fields.content, remaining)}`;
+}
+
+function truncateUnicodeSafe(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  let cut = text.slice(0, maxChars);
+  const lastCode = cut.charCodeAt(cut.length - 1);
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) cut = cut.slice(0, -1);
+  return cut.trimEnd();
 }
