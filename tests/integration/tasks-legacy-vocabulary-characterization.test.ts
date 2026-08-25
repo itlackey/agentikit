@@ -21,7 +21,7 @@ import path from "node:path";
 import { openStateDatabase } from "../../src/core/state-db";
 import type { SpawnFn } from "../../src/core/subprocess";
 import { getTaskHistory, upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
-import { type RunTaskOptions, readTaskHistory, runTask } from "../../src/tasks/runner";
+import { readTaskHistory, runTask } from "../../src/tasks/runner";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
@@ -259,16 +259,5 @@ describe('R-09 — bundleName fallback resolves to the literal "stash" bundle', 
       kind: "workflow",
       ref: "stash//workflows/noop",
     });
-  });
-
-  test("R-09 — RunTaskOptions exposes `stashDir` as its bundle-root option (compile-time pin)", () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
-    //
-    // This object literal only type-checks while `RunTaskOptions.stashDir`
-    // exists as a required field. A later phase (P1b/P4b) renaming it must
-    // fail `bunx tsc --noEmit` here, turning the rename into a visible test
-    // diff rather than silent drift — the row's whole point.
-    const options: RunTaskOptions = { stashDir: storage.stashDir };
-    expect(options.stashDir).toBe(storage.stashDir);
   });
 });

@@ -106,16 +106,14 @@ describe("R-01(a)(b)(d) — with: on tasks/<ref>: decode-level acceptance, guard
   });
 
   // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
-  // R-01(d) contrast: proves the drop is specific to non-builtin-command `uses`
-  // targets. The identical scalar-with shape is silently accepted for
-  // `uses: tasks/x` (dropped downstream, see the freeze-level test below) but
-  // structurally validated — and here rejected — for `uses: akm/command`
-  // (schema.ts:362-374, validateWorkflowBuiltinCommand). P1a's rejection must
-  // land on the tasks/x path without disturbing this akm/command path.
-  test("R-01(d): the identical with shape is silently accepted for uses: tasks/x but structurally rejected for uses: akm/command", () => {
-    const dropped = { id: "taskref", uses: "tasks/build", with: { bogus: "value" }, source: span() };
-    expect(() => decodeWorkflowSourceIrV1(baseIr(dropped))).not.toThrow();
-
+  // R-01(d) contrast, rejecting half: the akm/command path structurally
+  // validates `with` (schema.ts:362-374, validateWorkflowBuiltinCommand) — an
+  // unsupported field is rejected here, unlike the tasks/x acceptance already
+  // pinned by R-01(a) above (`baseIr(step)` at :64/:72, asserted `.not.toThrow()`
+  // there — not re-asserted here, so this test does not also flip on P1a's
+  // tasks/x rejection). The consuming half — a VALID with reaching the frozen
+  // command target — is pinned by the freeze-level describe block below.
+  test("R-01(d): with: {bogus} is structurally rejected for uses: akm/command (schema.ts:362-374, validateWorkflowBuiltinCommand)", () => {
     const consumed = {
       id: "builtin",
       uses: "akm/command",
@@ -219,5 +217,68 @@ describe("R-01(c) — with: values leave no trace at freeze (source-freeze-v4.ts
     // from the persisted plan JSON (the distinctive "scope" key would survive
     // verbatim in any JSON encoding, quoted or not, if it had left any trace).
     expect(withRow?.plan_json ?? "").not.toContain("scope");
+  });
+});
+
+describe("R-01(d) — freeze-level contrast: a valid with: on uses: akm/command IS consumed (source-freeze-v4.ts:145-153)", () => {
+  let storage: IsolatedAkmStorage;
+
+  beforeEach(() => {
+    storage = withIsolatedAkmStorage();
+    writeWorkflowTestConfig();
+    resetConfigCache();
+  });
+
+  afterEach(() => {
+    resetConfigCache();
+    storage.cleanup();
+  });
+
+  function write(relative: string, content: string): void {
+    const file = path.join(storage.stashDir, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content, "utf8");
+  }
+
+  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
+  // phase flips this deliberately. Flips in P1a (with: rejection extends to
+  // every non-builtin-command uses target) and P2b (real with: -> task-param
+  // bindings are implemented for tasks/x). This is R-01(d)'s other half: the
+  // tasks/x drop (R-01(c) above) has a builtin-command CONTRAST that must
+  // itself stay pinned, or a P1a change that blanket-rejects `with` on every
+  // `uses` target — silently killing the builtin-command path too — would not
+  // be caught by any test in this suite.
+  test("R-01(d): a valid with: {content} on uses: akm/command freezes to a command target carrying that content", async () => {
+    write(
+      "workflows/with-consumed.yml",
+      [
+        "name: With consumed",
+        "on:",
+        "  workflow_dispatch:",
+        "jobs:",
+        "  main:",
+        "    runs-on: [self-hosted]",
+        "    steps:",
+        "      - id: dispatch",
+        "        uses: akm/command",
+        "        with:",
+        "          content: Consume this authored with value.",
+        "",
+      ].join("\n"),
+    );
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const started = await startWorkflowRun("workflows/with-consumed");
+    const row = await withWorkflowRunsRepo((repo) => repo.getRunById(started.run.id));
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    const root = plan.steps[0]?.root;
+    const target: FrozenWorkflowTarget | undefined = root && root.kind !== "map" ? root.frozenTarget : undefined;
+
+    // The consumed path, proven directly: unlike the tasks/x drop (R-01(c)),
+    // the akm/command `with:` mapping reaches the frozen command target — the
+    // authored content survives verbatim into the persisted plan.
+    expect(target?.kind).toBe("command");
+    if (target?.kind !== "command") return;
+    expect(target.request.command.content).toBe("Consume this authored with value.");
   });
 });
