@@ -238,6 +238,12 @@ The spectral quokka calibration nonce rotates every Thursday.
       retained: ["the guide", "safely."],
       excluded: ["public.test", "private", "TITLE_PRIVATE", "SENTINEL", "escaped"],
     },
+    {
+      name: "an apostrophe inside a bare destination is not a title delimiter",
+      markdown: "Read [the label](https://SECRET_PRIVATE.test/it's-token) safely.",
+      retained: ["the label", "safely."],
+      excluded: ["SECRET_PRIVATE", "it's-token"],
+    },
   ])("projects Markdown state correctly: $name", ({ markdown, retained, excluded }) => {
     const projection = projectMarkdownContent(markdown);
     for (const text of retained) expect(projection).toContain(text);
@@ -277,6 +283,7 @@ The spectral quokka calibration nonce rotates every Thursday.
         "The spectral quokka calibration nonce is VioletCrane47.",
         "Read [![operator alt](https://IMAGE_PRIVATE_SENTINEL.test/token)](https://public.test) safely.",
         'Read [the guide](<https://public.test/path_(private)> "TITLE_PRIVATE_)_SENTINEL") safely.',
+        "Read [the label](https://SECRET_PRIVATE.test/it's-token) safely.",
         "",
       ].join("\n"),
     );
@@ -304,6 +311,7 @@ The spectral quokka calibration nonce rotates every Thursday.
     expect(knowledgeEntry.content).toContain("the guide");
     expect(buildSearchText(knowledgeEntry)).not.toContain("image_private_sentinel");
     expect(buildSearchText(knowledgeEntry)).not.toContain("title_private");
+    expect(buildSearchText(knowledgeEntry)).not.toContain("secret_private");
     expect(sessionEntry?.content).toBeUndefined();
     expect(buildSearchText(sessionEntry)).not.toContain("session_private_sentinel");
     expect(checkpointEntry?.content).toBeUndefined();
