@@ -25,6 +25,7 @@ import {
 } from "../../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
 import { searchFts } from "../../../src/storage/repositories/index-fts-repository";
+import { upsertEmbedding } from "../../../src/storage/repositories/index-vec-repository";
 import {
   type IsolatedAkmStorage,
   makeStashDir,
@@ -115,6 +116,96 @@ describe("canonical entry mutation", () => {
       closeDatabase(db);
     }
   });
+
+  test("cannot catch an FTS failure and commit a partial mutation through an outer transaction", () => {
+    const db = openIndexDatabase(path.join(storage.dataDir, "nested-mutation-rollback.db"));
+    try {
+      const entry: IndexDocument = {
+        type: "knowledge",
+        name: "nested-atomic-rollback",
+        description: "nestedrollbackmarker",
+        filename: "nested-atomic-rollback.md",
+      };
+      const provenance = deriveEntryProvenance(
+        { bundleId: "primary", componentId: "primary", adapterId: "akm" },
+        entry.type,
+        entry.name,
+      );
+      db.exec("DROP TABLE entries_fts");
+
+      db.transaction(() => {
+        try {
+          upsertEntry(db, "/primary/knowledge/nested-atomic-rollback.md", entry, "nestedrollbackmarker", provenance);
+        } catch {
+          // The caller deliberately continues its outer transaction. The
+          // canonical mutation must still have rolled back to its savepoint.
+        }
+        db.prepare("INSERT INTO index_meta (key, value) VALUES (?, ?)").run("outer-transaction-committed", "yes");
+      })();
+
+      expect(rowCount(db, "entries")).toBe(0);
+      expect(db.prepare("SELECT value FROM index_meta WHERE key = ?").get("outer-transaction-committed")).toEqual({
+        value: "yes",
+      });
+    } finally {
+      closeDatabase(db);
+    }
+  });
+});
+
+test("a second full generation removes every child row owned by the first generation", async () => {
+  writeSandboxConfig({
+    semanticSearchMode: "off",
+    bundles: { primary: { path: storage.stashDir, writable: true } },
+    defaultBundle: "primary",
+  });
+  resetConfigCache();
+
+  const asset = writePreviewAsset(storage.stashDir, "printmd");
+  await akmIndex({ stashDir: storage.stashDir, full: true });
+
+  const oldDb = openExistingDatabase();
+  let oldId: number;
+  try {
+    const row = oldDb
+      .prepare("SELECT id FROM entries WHERE item_ref = ?")
+      .get("primary//knowledge/printmd/preview-server-usage") as { id: number } | undefined;
+    if (!row) throw new Error("missing first-generation row");
+    oldId = row.id;
+    upsertEmbedding(
+      oldDb,
+      oldId,
+      Array.from({ length: 384 }, () => 0.25),
+    );
+    oldDb.prepare("INSERT INTO utility_scores (entry_id, utility) VALUES (?, ?)").run(oldId, 1);
+    oldDb
+      .prepare("INSERT INTO utility_scores_scoped (entry_id, scope_key, utility, last_used_at) VALUES (?, ?, ?, ?)")
+      .run(oldId, "test-scope", 1, Date.now());
+  } finally {
+    closeDatabase(oldDb);
+  }
+
+  fs.appendFileSync(asset, "\nSecond generation content.\n", "utf8");
+  await akmIndex({ stashDir: storage.stashDir, full: true });
+
+  const currentDb = openExistingDatabase();
+  try {
+    const newRow = currentDb
+      .prepare("SELECT id FROM entries WHERE item_ref = ?")
+      .get("primary//knowledge/printmd/preview-server-usage") as { id: number } | undefined;
+    if (!newRow) throw new Error("missing second-generation row");
+    expect(newRow.id).not.toBe(oldId);
+    expect(rowCount(currentDb, "entries_fts", "WHERE entry_id = ?", [oldId])).toBe(0);
+    expect(rowCount(currentDb, "embeddings", "WHERE id = ?", [oldId])).toBe(0);
+    expect(rowCount(currentDb, "utility_scores", "WHERE entry_id = ?", [oldId])).toBe(0);
+    expect(rowCount(currentDb, "utility_scores_scoped", "WHERE entry_id = ?", [oldId])).toBe(0);
+    const hasVec = currentDb
+      .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'entries_vec'")
+      .get() as { present: number } | undefined;
+    if (hasVec) expect(rowCount(currentDb, "entries_vec", "WHERE id = ?", [oldId])).toBe(0);
+  } finally {
+    closeDatabase(currentDb);
+  }
 });
 
 for (const scenario of [
