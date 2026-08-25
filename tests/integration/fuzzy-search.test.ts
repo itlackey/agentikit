@@ -207,7 +207,7 @@ describe("Fuzzy prefix fallback in searchFts", () => {
     }
   });
 
-  test("all short tokens produce no prefix fallback and return empty", () => {
+  test("all-short multi-token queries skip prefix expansion but still use measured OR recovery", () => {
     const db = openIndexDatabase(tmpDbPath());
     try {
       insertTestEntry(db, "golang-setup", {
@@ -219,7 +219,8 @@ describe("Fuzzy prefix fallback in searchFts", () => {
       rebuildFts(db);
 
       const results = searchFts(db, "go js", 10);
-      expect(results).toEqual([]);
+      expect(results.map((result) => result.entry.name)).toContain("js-tooling");
+      expect(results.every((result) => result.lexicalMatch === "relaxed")).toBe(true);
     } finally {
       closeDatabase(db);
     }

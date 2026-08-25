@@ -3,6 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 export interface SearchHitAttribution {
+  lexical?: {
+    execution: "exact" | "prefix" | "relaxed";
+    nameMatchTier: number;
+  };
   memoryInference?: {
     exposure: "direct" | "surface";
     childRef?: string;
@@ -49,10 +53,13 @@ export function copySearchHitAttribution(from: object, to: object, outputDescrip
     memoryInference?.exposure !== "surface" ||
     (memoryInference.surfaceDescription !== undefined && memoryInference.surfaceDescription === outputDescription);
   const applicable = {
+    ...(attribution.lexical ? { lexical: attribution.lexical } : {}),
     ...(memorySurvives && memoryInference ? { memoryInference } : {}),
     ...(attribution.graphExtraction ? { graphExtraction: attribution.graphExtraction } : {}),
   };
-  if (applicable.memoryInference || applicable.graphExtraction) attachSearchHitAttribution(to, applicable);
+  if (applicable.lexical || applicable.memoryInference || applicable.graphExtraction) {
+    attachSearchHitAttribution(to, applicable);
+  }
 }
 
 export function getSearchHitAttribution(target: object): SearchHitAttribution | undefined {

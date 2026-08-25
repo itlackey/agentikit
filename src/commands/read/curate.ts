@@ -517,13 +517,35 @@ export function mergeCurateSearchResponses(base: SearchResponse, extras: SearchR
   // minimum base score (keeping their own relative order). When there are no
   // base hits, fallback IS the result, so scores are kept as-is.
   const sortedExtra = [...extraOnly.values()].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  const lexicalAttribution = (hit: SourceSearchHit) => getSearchHitAttribution(hit)?.lexical;
+  // The full-query base remains authoritative unless its lexical provenance is
+  // itself weak: relaxed recovery, or no hit whose name covers the query. In
+  // that case one fallback discovery with strong name coverage may lead. This
+  // preserves contextual base ranking while allowing measured recall to repair
+  // a thin match without comparing unrelated raw FTS score scales.
+  const weakLexicalBase =
+    baseStash.length > 0 &&
+    baseStash.every((hit) => {
+      const lexical = lexicalAttribution(hit);
+      return lexical !== undefined && (lexical.execution === "relaxed" || lexical.nameMatchTier < 2);
+    });
+  const promotedExtraIndex = weakLexicalBase
+    ? sortedExtra.findIndex((hit) => (lexicalAttribution(hit)?.nameMatchTier ?? 0) >= 2)
+    : -1;
+  const promotedExtra = promotedExtraIndex >= 0 ? sortedExtra[promotedExtraIndex] : undefined;
+  const remainingExtra =
+    promotedExtraIndex >= 0 ? sortedExtra.filter((_, index) => index !== promotedExtraIndex) : sortedExtra;
   const minBaseScore = baseStash.length
     ? Math.min(...baseStash.map((hit) => hit.score ?? 0))
     : Number.POSITIVE_INFINITY;
   const cappedExtra = baseStash.length
-    ? sortedExtra.map((hit, i) => ({ ...hit, score: minBaseScore - 1e-6 * (i + 1) }))
-    : sortedExtra;
-  const mergedHits = [...baseStash, ...cappedExtra];
+    ? remainingExtra.map((hit, i) => ({ ...hit, score: minBaseScore - 1e-6 * (i + 1) }))
+    : remainingExtra;
+  const mergedHits = [
+    ...(promotedExtra ? [{ ...promotedExtra, score: minBaseScore }] : []),
+    ...baseStash,
+    ...cappedExtra,
+  ];
 
   // Registry hits are supplemental fill — same rule: base first (max score on
   // dups), then fallback-only registry hits appended by score.

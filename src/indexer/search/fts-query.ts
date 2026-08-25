@@ -61,7 +61,11 @@ export function buildLexicalQueryPlan(query: string): LexicalQueryPlan {
   const exact = tokens.map(quoteToken).join(" ");
   const prefixTokens = tokens.map(prefixToken);
   const exactPrefix = prefixTokens.some((token) => token.endsWith("*")) ? prefixTokens.join(" ") : undefined;
-  const relaxed = tokens.length > 1 ? prefixTokens.join(" OR ") : undefined;
+  // A slash-bearing, whitespace-free input is an identifier/ref lookup, not
+  // sentence prose. Keep it conjunctive so a mistyped/bare ref never fans out
+  // across every path token through OR recovery.
+  const isRefLikeIdentifier = !/\s/u.test(query.trim()) && query.includes("/");
+  const relaxed = tokens.length > 1 && !isRefLikeIdentifier ? prefixTokens.join(" OR ") : undefined;
 
   return { tokens, exact, exactPrefix, relaxed };
 }
