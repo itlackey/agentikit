@@ -12,9 +12,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { akmSearch } from "../../../src/commands/read/search";
 import { getDbPath, getIndexWriterLockPath } from "../../../src/core/paths";
 import { indexWrittenAssets } from "../../../src/indexer/index-written-assets";
 import { akmIndex } from "../../../src/indexer/indexer";
+import { readSemanticStatus } from "../../../src/indexer/search/semantic-status";
+import { _setEmbedderForTests } from "../../../src/llm/embedder";
 import { closeDatabase, openExistingDatabase } from "../../../src/storage/repositories/index-connection";
 import {
   type Cleanup,
@@ -24,6 +27,7 @@ import {
   sandboxXdgConfigHome,
   writeSandboxConfig,
 } from "../../_helpers/sandbox";
+import { overrideSeam } from "../../_helpers/seams";
 
 let stashDir = "";
 let cleanup: Cleanup = () => {};
@@ -57,6 +61,33 @@ function indexedFileCount(filePath: string): number {
   } finally {
     closeDatabase(db);
   }
+}
+
+function embeddingCountForFile(filePath: string): number {
+  const db = openExistingDatabase(getDbPath());
+  try {
+    return (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS c
+             FROM embeddings b
+             JOIN entries e ON e.id = b.id
+            WHERE e.file_path = ?`,
+        )
+        .get(filePath) as { c: number }
+    ).c;
+  } finally {
+    closeDatabase(db);
+  }
+}
+
+function installSemanticTestEmbedder(): void {
+  const vectorFor = (text: string): number[] =>
+    text.includes("fuel-delivery") || text.includes("gasoline") ? [0, 1, 0, 0] : [1, 0, 0, 0];
+  overrideSeam(_setEmbedderForTests, {
+    embed: async (text) => vectorFor(text),
+    embedBatch: async (texts) => texts.map(vectorFor),
+  });
 }
 
 beforeEach(async () => {
@@ -101,6 +132,53 @@ describe("indexWrittenAssets", () => {
     const idx = queryIndex("quokka");
     expect(idx.entryNames.filter((n) => n === "evolving-note")).toHaveLength(1);
     expect(idx.ftsCount).toBeGreaterThan(0);
+  });
+
+  test("a successful targeted write is immediately visible to semantic-only retrieval", async () => {
+    installSemanticTestEmbedder();
+    writeSandboxConfig({ semanticSearchMode: "auto" });
+    await akmIndex({ stashDir, full: true });
+
+    const filePath = writeMemory("fuel-delivery-note", "Procedures for refueling fleet vehicles.");
+    expect(await indexWrittenAssets(stashDir, [filePath])).toBe(true);
+
+    expect(embeddingCountForFile(filePath)).toBe(1);
+    expect(readSemanticStatus()?.status).toMatch(/^ready-/);
+    const search = await akmSearch({ query: "gasoline", skipLogging: true });
+    expect(search.searchMode).toBe("semantic");
+    expect(search.hits.map((hit) => hit.ref)).toContain("memories/fuel-delivery-note");
+  });
+
+  test("embedding failure preserves the authored file and FTS row while publishing blocked status", async () => {
+    installSemanticTestEmbedder();
+    writeSandboxConfig({
+      semanticSearchMode: "auto",
+      embedding: { endpoint: "https://embeddings.example.invalid/v1", model: "test-model" },
+    });
+    await akmIndex({ stashDir, full: true });
+    overrideSeam(_setEmbedderForTests, {
+      embed: async () => {
+        throw new Error("embedding provider network unreachable");
+      },
+      embedBatch: async () => {
+        throw new Error("embedding provider network unreachable");
+      },
+    });
+
+    const filePath = writeMemory("offline-provider-note", "Lexical fallback remains available.");
+    expect(await indexWrittenAssets(stashDir, [filePath])).toBe(true);
+
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect(queryIndex("offline").entryNames).toContain("offline-provider-note");
+    expect(queryIndex("offline").ftsCount).toBeGreaterThan(0);
+    expect(embeddingCountForFile(filePath)).toBe(0);
+    expect(readSemanticStatus()).toMatchObject({
+      status: "blocked",
+      reason: "remote-network",
+    });
+    const search = await akmSearch({ query: "offline-provider-note", skipLogging: true });
+    expect(search.hits.map((hit) => hit.ref)).toContain("memories/offline-provider-note");
+    expect(search.warnings?.join("\n")).toContain("embedding provider network unreachable");
   });
 
   test("fail-open: absent index.db is a silent no-op (no DB created)", async () => {
