@@ -869,10 +869,10 @@ akm bundle remove my-provider --yes        # Skip the confirmation prompt
 
 ### bundle update
 
-Update one remote bundle, or refresh every configured bundle with `--all`.
-Git, npm, and website candidates are staged and audited before they replace the
-active generation; filesystem bundles are reported as skipped because they
-already reflect local files in place.
+Update one bundle, or refresh every configured bundle with `--all`. Git, npm,
+and website candidates are staged and audited before they replace the active
+generation. Filesystem bundles require no hydration; update reconciles their
+current files into the index immediately.
 
 ```sh
 akm bundle update npm:@scope/pkg
