@@ -167,6 +167,47 @@ The spectral quokka calibration nonce rotates every Thursday.
     expect(projection).not.toContain("crawler note");
   });
 
+  test.each([
+    {
+      name: "a shorter fence does not close a longer fence",
+      markdown: ["Before.", "````ts", "FOUR_FENCE_SECRET", "```", "STILL_INSIDE_LONG_FENCE", "````", "After."].join(
+        "\n",
+      ),
+      retained: ["Before.", "After."],
+      excluded: ["FOUR_FENCE_SECRET", "STILL_INSIDE_LONG_FENCE"],
+    },
+    {
+      name: "a fence-shaped line with trailing text is not a closer",
+      markdown: [
+        "Before.",
+        "```sh",
+        "FIRST_FENCE_SECRET",
+        "```not-a-closer",
+        "STILL_INSIDE_TEXT_FENCE",
+        "```",
+        "After.",
+      ].join("\n"),
+      retained: ["Before.", "After."],
+      excluded: ["FIRST_FENCE_SECRET", "STILL_INSIDE_TEXT_FENCE"],
+    },
+    {
+      name: "multiline HTML comments can begin and end mid-line",
+      markdown: "Visible before <!-- COMMENT_SECRET\nCOMMENT_SECRET_CONTINUED --> visible after.",
+      retained: ["Visible before", "visible after."],
+      excluded: ["COMMENT_SECRET", "COMMENT_SECRET_CONTINUED"],
+    },
+    {
+      name: "balanced parentheses remain part of a link destination",
+      markdown: "Read [the guide](https://example.test/path_(private)/tail) before rotation.",
+      retained: ["the guide", "before rotation."],
+      excluded: ["example.test", "private", "/tail"],
+    },
+  ])("projects Markdown state correctly: $name", ({ markdown, retained, excluded }) => {
+    const projection = projectMarkdownContent(markdown);
+    for (const text of retained) expect(projection).toContain(text);
+    for (const sentinel of excluded) expect(projection).not.toContain(sentinel);
+  });
+
   test("has one stable Unicode-safe size bound", () => {
     const projection = projectMarkdownContent(`${"word ".repeat(MARKDOWN_CONTENT_MAX_CHARS)}😀tail`);
     expect(projection).toBeDefined();
