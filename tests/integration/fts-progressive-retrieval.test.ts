@@ -244,6 +244,12 @@ The spectral quokka calibration nonce rotates every Thursday.
       retained: ["the label", "safely."],
       excluded: ["SECRET_PRIVATE", "it's-token"],
     },
+    {
+      name: "a parenthesized title begins only after destination whitespace",
+      markdown: "Read [the label](https://SECRET_PRIVATE.test/path (PAREN_TITLE_PRIVATE)) safely.",
+      retained: ["the label", "safely."],
+      excluded: ["SECRET_PRIVATE", "PAREN_TITLE_PRIVATE"],
+    },
   ])("projects Markdown state correctly: $name", ({ markdown, retained, excluded }) => {
     const projection = projectMarkdownContent(markdown);
     for (const text of retained) expect(projection).toContain(text);

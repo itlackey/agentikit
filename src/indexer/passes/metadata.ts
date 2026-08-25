@@ -1018,37 +1018,91 @@ function findBalancedMarkdownClose(text: string, openAt: number, open: string, c
  */
 function findMarkdownDestinationClose(text: string, openAt: number): number | undefined {
   let depth = 1;
+  let phase: "before-destination" | "angle-destination" | "bare-destination" | "after-destination" | "title" =
+    "before-destination";
   let quote: '"' | "'" | undefined;
-  let inAngleDestination = false;
+  let parenthesizedTitle = false;
+  let titleSeparator = false;
   for (let cursor = openAt + 1; cursor < text.length; cursor += 1) {
     const char = text[cursor];
     if (char === "\\") {
       cursor += 1;
       continue;
     }
-    if (inAngleDestination) {
-      if (char === ">") inAngleDestination = false;
+
+    if (phase === "before-destination") {
+      if (/\s/u.test(char ?? "")) continue;
+      if (char === "<") {
+        phase = "angle-destination";
+        continue;
+      }
+      if (char === ")") return cursor;
+      phase = "bare-destination";
+    }
+
+    if (phase === "angle-destination") {
+      if (char === ">") phase = "after-destination";
       continue;
     }
-    if (quote) {
-      if (char === quote) quote = undefined;
+
+    if (phase === "title") {
+      if (quote) {
+        if (char === quote) {
+          quote = undefined;
+          phase = "after-destination";
+          titleSeparator = false;
+        }
+        continue;
+      }
+      if (parenthesizedTitle) {
+        if (char === "(") depth += 1;
+        if (char !== ")") continue;
+        depth -= 1;
+        if (depth === 1) {
+          parenthesizedTitle = false;
+          phase = "after-destination";
+          titleSeparator = false;
+        }
+      }
       continue;
     }
-    if (char === "<") {
-      inAngleDestination = true;
-      continue;
+
+    if (phase === "after-destination") {
+      if (/\s/u.test(char ?? "")) {
+        titleSeparator = true;
+        continue;
+      }
+      if (char === ")") return cursor;
+      if (titleSeparator && (char === '"' || char === "'")) {
+        quote = char;
+        phase = "title";
+        continue;
+      }
+      if (titleSeparator && char === "(") {
+        depth += 1;
+        parenthesizedTitle = true;
+        phase = "title";
+        continue;
+      }
+      // Invalid trailing bytes are still consumed conservatively until the
+      // balanced outer close. Quotes here are ordinary bytes, never titles.
+      phase = "bare-destination";
     }
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
+
+    if (phase !== "bare-destination") continue;
     if (char === "(") {
       depth += 1;
       continue;
     }
-    if (char !== ")") continue;
-    depth -= 1;
-    if (depth === 0) return cursor;
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return cursor;
+      continue;
+    }
+    if (/\s/u.test(char ?? "") && depth === 1) {
+      phase = "after-destination";
+      titleSeparator = true;
+    }
   }
   return undefined;
 }
