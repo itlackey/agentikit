@@ -91,7 +91,7 @@ describe("R-01(a)(b)(d) — with: on tasks/<ref>: decode-level acceptance, guard
     if (result.ok) expect(result.ir.jobs[0]?.steps[0]?.with).toEqual({ scope: "all" });
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
   // This guardrail is untouched by R-01's flip — it fires on the shape of `with`
   // itself, independent of which `uses` target consumes it.
   test("R-01(b): scalarRecord still rejects a non-scalar with value on a tasks/x step (schema.ts:389)", () => {
@@ -99,7 +99,7 @@ describe("R-01(a)(b)(d) — with: on tasks/<ref>: decode-level acceptance, guard
     expect(() => decodeWorkflowSourceIrV1(baseIr(step))).toThrow(/must be a scalar/i);
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
   test("R-01(b): with: without uses: still fails with the exact 'with is legal only with uses' message (schema.ts:393)", () => {
     const step = { id: "runwith", run: "echo ok", with: { a: "b" }, source: span() };
     expect(() => decodeWorkflowSourceIrV1(baseIr(step))).toThrow(/step runwith with is legal only with uses/);

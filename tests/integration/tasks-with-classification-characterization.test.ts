@@ -62,7 +62,7 @@ function resolvedWorkflowAsset(): Partial<PrepareTaskV3ExecutionContext> {
 
 describe("P-01 — task-layer with on a command ref is rejected loudly (runtime-v3.ts:397-401)", () => {
   test("P-01 — uses: commands/<ref> with with: throws UsageError INVALID_FLAG_VALUE with the exact message", async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     const task = parseTaskV3Yaml({
       yaml: ["version: 3", "uses: commands/review", "with:", "  scope: all", "akm:", '  schedule: "@daily"', ""].join(
         "\n",
@@ -83,7 +83,7 @@ describe("P-01 — task-layer with on a command ref is rejected loudly (runtime-
 
 describe("P-02 — task-layer with on a script ref is rejected loudly (runtime-v3.ts:437-439)", () => {
   test("P-02 — uses: scripts/<ref> with with: throws UsageError INVALID_FLAG_VALUE with the exact message", async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     const task = parseTaskV3Yaml({
       yaml: ["version: 3", "uses: scripts/build.sh", "with:", "  scope: all", "akm:", '  schedule: "@daily"', ""].join(
         "\n",
@@ -102,7 +102,7 @@ describe("P-02 — task-layer with on a script ref is rejected loudly (runtime-v
 
 describe("P-03 — task-layer with on a workflow ref becomes the child workflow's frozen params (runtime-v3.ts:432)", () => {
   test('P-03 — uses: workflows/<ref> with with: prepares { kind: "workflow", ref, params }, params deep-equal to the authored mapping and frozen', async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     const task = parseTaskV3Yaml({
       yaml: ["version: 3", "uses: workflows/child", "with:", "  scope: all", "akm:", '  schedule: "@daily"', ""].join(
         "\n",
@@ -122,7 +122,7 @@ describe("P-03 — task-layer with on a workflow ref becomes the child workflow'
   });
 
   test("P-03 — absent with: prepares params as {} (not undefined), and the result stays frozen", async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     const task = parseTaskV3Yaml({
       yaml: ["version: 3", "uses: workflows/child", "akm:", '  schedule: "@daily"', ""].join("\n"),
       filePath: "tasks/p03-workflow-no-with.yml",
@@ -141,7 +141,7 @@ describe("P-03 — task-layer with on a workflow ref becomes the child workflow'
 
 describe("P-04 — a workflow-target task with any env: is rejected (runtime-v3.ts:415-421)", () => {
   test("P-04 — uses: workflows/<ref> with a non-empty env: throws UsageError INVALID_FLAG_VALUE with the exact message", async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     const task = parseTaskV3Yaml({
       yaml: ["version: 3", "uses: workflows/child", "env:", "  FOO: bar", "akm:", '  schedule: "@daily"', ""].join(
         "\n",
@@ -159,7 +159,7 @@ describe("P-04 — a workflow-target task with any env: is rejected (runtime-v3.
   });
 
   test("P-04 — the rejection fires exactly when Object.keys(environment).length > 0, not merely when env: is authored", async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     // An authored-but-empty env: mapping owns the `env` key yet yields zero
     // environment entries — proving the guard reads Object.keys(environment)
     // rather than merely `document.env !== undefined`.

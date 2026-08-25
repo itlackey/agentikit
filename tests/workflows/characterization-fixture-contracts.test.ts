@@ -155,7 +155,7 @@ describe("tasks/v3-migration fixtures (Lane C shared surface) — each is valid 
     });
   }
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
   test("every *.yml fixture file is registered in manifest.json (no orphan fixtures)", () => {
     const files = fs
       .readdirSync(TASKS_ROOT)
@@ -172,7 +172,7 @@ describe("workflows/single-job fixture — the accepted single-job baseline pars
   const fixture = readWorkflowsManifest().singleJob;
   const yaml = fs.readFileSync(path.join(WORKFLOWS_ROOT, fixture.file), "utf8");
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
   test("parses via compileGithubWorkflowSource into exactly one job with the manifest-declared step ids", () => {
     const result = compileGithubWorkflowSource(yaml, { path: "workflows/single-job.yml" });
     expect(result.ok).toBe(true);
@@ -182,7 +182,7 @@ describe("workflows/single-job fixture — the accepted single-job baseline pars
     expect(result.ir.jobs[0]?.steps.map((step) => step.id)).toEqual([...fixture.expectedStepIds]);
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
   test("compiles cleanly via compileWorkflowPlan — the single-job acceptance R-05/P-08's multi-job rejection contrasts against", () => {
     const parsed = compileGithubWorkflowSource(yaml, { path: "workflows/single-job.yml" });
     expect(parsed.ok).toBe(true);
@@ -222,7 +222,7 @@ function stepTargetKinds(plan: WorkflowPlanGraphV4): Record<string, string> {
 }
 
 describe("workflows/plan-v4 fixture registration", () => {
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
   test("every *.yml under plan-v4/workflows is registered in workflows/manifest.json's planV4.workflows (no orphan fixtures)", () => {
     const manifest = readWorkflowsManifest().planV4;
     const dir = path.join(WORKFLOWS_ROOT, manifest.bundleRoot, "workflows");
@@ -267,7 +267,7 @@ describe("workflows/plan-v4 fixtures — freeze end to end into structurally val
     });
   }
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
   test("frozen target kinds across the fixture set are exactly command, script, and shell", async () => {
     const kinds = new Set<string>();
     for (const workflow of manifest.workflows) {

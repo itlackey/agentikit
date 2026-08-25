@@ -31,22 +31,27 @@ function thrown(fn: () => unknown): unknown {
 
 const SHARED_FILE_PATH = "tasks/r06-scheduling.yml";
 
+// sourceError(ctx, [], "must declare exactly one scheduling source: akm.schedule
+// or on.") renders the empty field path as the literal "$". Both the
+// neither-case and the both-case call this SAME sourceError(ctx, [], …) with
+// the same field path and detail text, so both are asserted independently
+// against this single rendered constant rather than one re-deriving the other
+// — that way P2a's flip of the neither-arm (making the schedule optional)
+// fails exactly that pinned test, while the both-arm test keeps passing (or
+// fails on its own terms) with a message that names R-06.
+const EXACTLY_ONE_SCHEDULING_SOURCE = `Invalid task v3 source at ${SHARED_FILE_PATH}:1: $ must declare exactly one scheduling source: akm.schedule or on.`;
+
 describe("R-06 — task v3 requires exactly one scheduling source (source-v3.ts:636-651)", () => {
   test("R-06 — declaring neither akm.schedule nor on: fails with the exact rendered source-error text at the empty field path", () => {
     // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
     const error = thrown(() => parseTaskV3Yaml({ yaml: "version: 3\nrun: echo hi\n", filePath: SHARED_FILE_PATH }));
     expect(error).toBeInstanceOf(UsageError);
     expect((error as UsageError).code).toBe("INVALID_FLAG_VALUE");
-    // sourceError(ctx, [], "must declare exactly one scheduling source: akm.schedule or on.")
-    // renders the empty field path as the literal "$".
-    expect((error as Error).message).toBe(
-      `Invalid task v3 source at ${SHARED_FILE_PATH}:1: $ must declare exactly one scheduling source: akm.schedule or on.`,
-    );
+    expect((error as Error).message).toBe(EXACTLY_ONE_SCHEDULING_SOURCE);
   });
 
   test("R-06 — declaring BOTH akm.schedule and on: fails with the byte-identical rendered text as the neither-case", () => {
     // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
-    const neither = thrown(() => parseTaskV3Yaml({ yaml: "version: 3\nrun: echo hi\n", filePath: SHARED_FILE_PATH }));
     const both = thrown(() =>
       parseTaskV3Yaml({
         yaml: ["version: 3", "run: echo hi", "akm:", '  schedule: "@daily"', "on:", "  workflow_dispatch:", ""].join(
@@ -57,14 +62,7 @@ describe("R-06 — task v3 requires exactly one scheduling source (source-v3.ts:
     );
     expect(both).toBeInstanceOf(UsageError);
     expect((both as UsageError).code).toBe("INVALID_FLAG_VALUE");
-    expect((both as Error).message).toBe(
-      `Invalid task v3 source at ${SHARED_FILE_PATH}:1: $ must declare exactly one scheduling source: akm.schedule or on.`,
-    );
-    // Both the neither-case and the both-case call the SAME sourceError(ctx,
-    // [], …) with the same field path and detail text — proven here by
-    // strict string equality against the neither-case above, rather than by
-    // separately re-deriving the literal a third time.
-    expect((both as Error).message).toBe((neither as Error).message);
+    expect((both as Error).message).toBe(EXACTLY_ONE_SCHEDULING_SOURCE);
   });
 
   test('R-06 — the akm.schedule arm\'s success shape is { manual: false, schedules: [{ cron, source: "akm.schedule", ordinal: 0 }] }, frozen', () => {

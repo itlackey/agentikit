@@ -135,7 +135,7 @@ A and B consume it.
 - [ ] A **task-step-with-`with`** workflow fixture pair: identical sources differing only by the `with:` block (R-01 c needs both halves).
 - [ ] A **builtin-command-with-`with`** workflow fixture (R-01 d), so the consumed path and the dropped path sit side by side.
 - [ ] A **script-step** workflow fixture (R-02).
-- [ ] Three **nested-workflow** fixtures, one per R-03 site: a workflow step naming a workflow directly (semantics), a task document whose `uses` is a workflow (`:220`), and one that survives to the prepared stage (`:237`).
+- [ ] Two **nested-workflow** fixtures, one per *reachable* R-03 site: a workflow step naming a workflow directly (`semantics.ts:141-146`) and a task document whose `uses` is a workflow (`source-freeze-v4.ts:220-222`). `source-freeze-v4.ts:237-239` is a documented-dead duplicate of the second site (see the Review log) and is not a fixture requirement.
 - [ ] **GitHub-action** fixtures (R-04): a task document with an action `uses`, and a workflow step with the same locator. Include one *near-miss* locator that falls through to the trailing `classifyTaskV3Uses` throw.
 - [ ] **Multi-job** fixtures (R-05, P-08): a valid 2-job source with `needs`; a 0-job source; a >256-job source; a missing-`needs` source; a cycle; a duplicate-`needs` source; and a two-independently-ready-jobs source for canonical ordering.
 - [ ] **Scheduling** fixtures (R-06): neither source, both sources, `akm.schedule` only, `on:` only.

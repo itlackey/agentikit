@@ -14,7 +14,6 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resetConfigCache } from "../../src/core/config/config";
@@ -129,9 +128,10 @@ describe("classifyTaskV3Uses — GitHub-action locator grammar (R-04, task-v3/so
 // ── two direct-rejection kinds it wraps around the injected classifier ─────
 
 describe("classifyWorkflowStepUses — task-ref priority and delegation (source-ir/semantics.ts:111-148)", () => {
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. This priority ordering is what R-01's
-  // fixtures depend on and is unrelated to R-01's own flip.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
+  // later phase — a failure here is a regression, not an intended flip. This
+  // priority ordering is what R-01's fixtures depend on and is unrelated to
+  // R-01's own flip.
   test("recognizes 'tasks/x' before ever calling the delegated classifier", () => {
     let calls = 0;
     const spy = (_value: string): WorkflowSourceUsesTarget => {
@@ -143,8 +143,8 @@ describe("classifyWorkflowStepUses — task-ref priority and delegation (source-
     expect(calls).toBe(0);
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
+  // later phase — a failure here is a regression, not an intended flip.
   test("delegates every non-task-ref uses string to the injected classifier", () => {
     let calls = 0;
     let seen: string | undefined;
@@ -247,63 +247,6 @@ describe("R-03 (sites 2/3, source-freeze-v4.ts:211-239) — a task-composed nest
 // ── R-02: a direct scripts/<ref> workflow step (directScript) ──────────────
 
 describe("R-02 — a direct scripts/<ref> workflow step (source-freeze-v4.ts:274-298, directScript)", () => {
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. Flips in P1b (typed preparer).
-  test("directScript's synthetic task document reproduces the exact <workflow path>#<step id> identity contract", async () => {
-    // Reproduces, field for field, what source-freeze-v4.ts's directScript()
-    // constructs at :282-295 for a workflow step `uses: scripts/<ref>`:
-    //   yaml = `version: 3\nuses: ${owned.ref}\nakm:\n  schedule: "@daily"\n`
-    //   filePath = `${asset.path}#${step.id}`, taskId = step.id,
-    //   taskRef = `${asset.ref}#${step.id}`, bundleRoot = asset.sourcePath.
-    const assetPath = "workflows/script-step.yml";
-    const assetRef = "primary//workflows/script-step";
-    const stepId = "run-script";
-    const scriptBytes = new TextEncoder().encode("#!/bin/sh\nprintf direct-script\n");
-
-    const synthetic = parseTaskV3Yaml({
-      yaml: 'version: 3\nuses: primary//scripts/exact.sh\nakm:\n  schedule: "@daily"\n',
-      filePath: `${assetPath}#${stepId}`,
-    });
-    const prepared = await prepareTaskV3Execution(synthetic, {
-      taskId: stepId,
-      taskRef: `${assetRef}#${stepId}`,
-      bundleName: "primary",
-      bundleRoot: process.cwd(),
-      config: {} as AkmConfig,
-      resolveAsset: async () => ({
-        file: path.join(process.cwd(), "scripts", "exact.sh"),
-        bundleRoot: process.cwd(),
-      }),
-      readFile: () => scriptBytes,
-    });
-
-    expect(prepared.kind).toBe("script");
-    expect(prepared.taskId).toBe(stepId);
-    expect(prepared.taskRef).toBe("primary//workflows/script-step#run-script");
-    if (prepared.kind === "script")
-      expect(prepared.sha256).toBe(createHash("sha256").update(scriptBytes).digest("hex"));
-
-    // NOTE: prepared.taskId / prepared.taskRef (the <workflow path>#<step id>
-    // identity just pinned above) are NOT read by scriptResult() in
-    // source-freeze-v4.ts — only prepared.sourceRef/.interpreter/.extension/
-    // .bytesBase64/.byteLength/.sha256/.cwdIdentity flow into the frozen
-    // FrozenWorkflowScriptTarget (its `ref` is the SCRIPT's own qualified ref,
-    // see the end-to-end test below — not this workflow-path#step-id shape).
-    // The identity contract this test pins is computed by directScript() but
-    // is not currently observable in a persisted plan; see the P0 review log.
-    //
-    // Also at source-freeze-v4.ts:296: `if (prepared.kind !== "script") throw
-    // new Error("direct script did not project as a script")` is a bare,
-    // uncoded invariant (exit 70, not a UsageError). As written it cannot be
-    // triggered from directScript()'s own call site: `owned.ref` is always
-    // built from `plural = "scripts"` (resolveOwnedAssetCore), so the
-    // synthetic document's `uses:` is always scripts/-family-shaped and
-    // therefore always classifies (and prepares) as kind "script". No fixture
-    // reachable through directScript can make prepareTaskV3Execution return
-    // anything else — the same unreachable-in-practice shape as R-03's third
-    // site above.
-  });
-
   describe("end-to-end", () => {
     let storage: IsolatedAkmStorage;
 
@@ -318,6 +261,33 @@ describe("R-02 — a direct scripts/<ref> workflow step (source-freeze-v4.ts:274
       storage.cleanup();
     });
 
+    // directScript() (source-freeze-v4.ts:274-298) fabricates a synthetic task
+    // document for this workflow step:
+    //   yaml = `version: 3\nuses: ${owned.ref}\nakm:\n  schedule: "@daily"\n`
+    //   filePath = `${asset.path}#${step.id}`, taskId = step.id,
+    //   taskRef = `${asset.ref}#${step.id}`, bundleRoot = asset.sourcePath.
+    // Those identity fields (filePath/taskId/taskRef) are computed by
+    // directScript() but are NOT read by scriptResult() in source-freeze-v4.ts
+    // — only prepared.sourceRef/.interpreter/.extension/.bytesBase64/
+    // .byteLength/.sha256/.cwdIdentity flow into the frozen
+    // FrozenWorkflowScriptTarget (its `ref` is the SCRIPT's own qualified ref,
+    // pinned below — not this workflow-path#step-id shape). The identity
+    // contract is therefore not observable anywhere production surfaces and is
+    // not pinned by a test; see the P0 review log (p0-invariants.md:197-212).
+    // This test pins only the observable surface: the script's own qualified
+    // ref, its exact bytes, and its interpreter.
+    //
+    // Also at source-freeze-v4.ts:296: `if (prepared.kind !== "script") throw
+    // new Error("direct script did not project as a script")` is a bare,
+    // uncoded invariant (exit 70, not a UsageError). As written it cannot be
+    // triggered from directScript()'s own call site: `owned.ref` is always
+    // built from `plural = "scripts"` (resolveOwnedAssetCore), so the
+    // synthetic document's `uses:` is always scripts/-family-shaped and
+    // therefore always classifies (and prepares) as kind "script". No fixture
+    // reachable through directScript can make prepareTaskV3Execution return
+    // anything else — the same unreachable-in-practice shape as R-03's third
+    // site above; it is likewise not pinned by a test — see the P0 review log
+    // (p0-invariants.md:185-195).
     // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
     // phase flips this deliberately. Flips in P1b (typed preparer).
     test("a workflow step 'uses: scripts/<ref>' freezes to a script dispatch carrying the script's own qualified ref and exact bytes", async () => {
@@ -359,9 +329,9 @@ describe("R-02 — a direct scripts/<ref> workflow step (source-freeze-v4.ts:274
 // ── current runtime refuses to execute more than one job ────────────────────
 
 describe("multi-job source IR (P-08, R-05(a)) — parses and orders deterministically", () => {
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. This ordering must be PRESERVED (P-08) —
-  // it is the parser behavior later phases build the durable job-boundary
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
+  // later phase — a failure here is a regression, not an intended flip. This
+  // is the parser behavior later phases build the durable job-boundary
   // adapter on top of.
   test("P-08: emits ready jobs in canonical dependency-topological, lexical-tie-break order, recomputed after each emission", () => {
     const result = compileGithubWorkflowSource(
@@ -379,8 +349,9 @@ describe("multi-job source IR (P-08, R-05(a)) — parses and orders deterministi
     expect(result.ir.jobs.map((job) => job.id)).toEqual(["bravo", "alpha", "zulu"]);
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. P-08 (preserve): `needs` sorting.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
+  // later phase — a failure here is a regression, not an intended flip. P-08:
+  // `needs` sorting.
   test("P-08: needs entries are stored in sorted order regardless of authored order", () => {
     const result = compileGithubWorkflowSource(
       "name: G\non: { workflow_dispatch: null }\njobs:\n" +
@@ -395,14 +366,20 @@ describe("multi-job source IR (P-08, R-05(a)) — parses and orders deterministi
     expect(result.ir.jobs.find((job) => job.id === "report")?.needs).toEqual(["build", "test"]);
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. P-08 (preserve): job-count bounds.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
+  // later phase — a failure here is a regression, not an intended flip. P-08:
+  // job-count bounds. Message pinned verbatim (p0-invariants.md:36-38 — where
+  // a message string is quoted in the spec, pin it verbatim), not just the code
+  // (p0-invariants.md:62).
   test("P-08: rejects 0 jobs and 257 jobs, accepts exactly 256, all with code job-count-limit", () => {
     const empty = compileGithubWorkflowSource("name: Empty\non: { workflow_dispatch: null }\njobs: {}\n", {
       path: "workflows/empty.yml",
     });
     expect(empty.ok).toBe(false);
-    if (!empty.ok) expect(empty.errors.some((error) => error.code === "job-count-limit")).toBe(true);
+    if (!empty.ok)
+      expect(empty.errors.find((error) => error.code === "job-count-limit")?.message).toBe(
+        "workflow.jobs must contain 1 through 256 jobs.",
+      );
 
     const jobsBlock = (count: number) =>
       Array.from(
@@ -422,11 +399,15 @@ describe("multi-job source IR (P-08, R-05(a)) — parses and orders deterministi
       { path: "workflows/over256.yml" },
     );
     expect(over256.ok).toBe(false);
-    if (!over256.ok) expect(over256.errors.some((error) => error.code === "job-count-limit")).toBe(true);
+    if (!over256.ok)
+      expect(over256.errors.find((error) => error.code === "job-count-limit")?.message).toBe(
+        "workflow.jobs must contain 1 through 256 jobs.",
+      );
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. P-08 (preserve): needs validation.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
+  // later phase — a failure here is a regression, not an intended flip. P-08:
+  // needs validation.
   test("P-08: rejects a missing needs target with the exact message and code missing-job-dependency", () => {
     const result = compileGithubWorkflowSource(
       "name: Missing\non: { workflow_dispatch: null }\njobs:\n" +
@@ -439,8 +420,9 @@ describe("multi-job source IR (P-08, R-05(a)) — parses and orders deterministi
     expect(error?.message).toBe("Job main needs missing job absent.");
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. P-08 (preserve): needs validation.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
+  // later phase — a failure here is a regression, not an intended flip. P-08:
+  // needs validation.
   test("P-08: rejects a dependency cycle with code job-dependency-cycle and the exact message", () => {
     const result = compileGithubWorkflowSource(
       "name: Cycle\non: { workflow_dispatch: null }\njobs:\n" +
@@ -454,8 +436,9 @@ describe("multi-job source IR (P-08, R-05(a)) — parses and orders deterministi
     expect(error?.message).toBe("Workflow jobs contain a dependency cycle.");
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. P-08 (preserve): needs validation.
+  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
+  // later phase — a failure here is a regression, not an intended flip. P-08:
+  // needs validation.
   test("P-08: rejects duplicate needs entries with code duplicate-job-dependency", () => {
     const result = compileGithubWorkflowSource(
       "name: Dup\non: { workflow_dispatch: null }\njobs:\n" +

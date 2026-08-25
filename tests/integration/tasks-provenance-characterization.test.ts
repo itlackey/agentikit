@@ -91,7 +91,7 @@ const ECHO_SOURCE_SNIPPET = "console.log('AKM_EVENT_SOURCE=' + (process.env.AKM_
 
 describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the child env", () => {
   test("P-06 — a shell (run:) task's child observes AKM_EVENT_SOURCE=task while the parent stays unset", async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     writeTask("shell-provenance", shellTask([process.execPath, "-e", ECHO_SOURCE_SNIPPET]));
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
 
@@ -105,7 +105,7 @@ describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the chi
   });
 
   test("P-06 — a script (uses: scripts/…) task's child observes AKM_EVENT_SOURCE=task while the parent stays unset", async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     fs.writeFileSync(
       path.join(storage.stashDir, "scripts", "echo-source.sh"),
       '#!/bin/sh\nprintf "AKM_EVENT_SOURCE=%s" "$AKM_EVENT_SOURCE"\n',
@@ -120,7 +120,7 @@ describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the chi
   });
 
   test("P-06 — a pre-set, more-specific AKM_EVENT_SOURCE is inherited into the child untouched", async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     writeTask("shell-provenance-preset", shellTask([process.execPath, "-e", ECHO_SOURCE_SNIPPET]));
 
     const result = await withEnv({ AKM_EVENT_SOURCE: "improve" }, () =>
@@ -136,7 +136,7 @@ describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the chi
 
 describe("P-05 — workflow arm stamps and restores global process.env.AKM_EVENT_SOURCE", () => {
   test('P-05 — an unset AKM_EVENT_SOURCE becomes "task" for the duration of an in-process workflow run, then is deleted', async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     writeTask("wf-provenance", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
     let observedDuring: string | undefined;
@@ -163,7 +163,7 @@ describe("P-05 — workflow arm stamps and restores global process.env.AKM_EVENT
   });
 
   test("P-05 — a pre-set, more-specific AKM_EVENT_SOURCE survives the workflow arm untouched", async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     writeTask("wf-provenance-preset", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
     let observedDuring: string | undefined;
 
@@ -189,7 +189,7 @@ describe("P-05 — workflow arm stamps and restores global process.env.AKM_EVENT
   });
 
   test("P-05 — restoration happens on the throwing path too", async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     writeTask("wf-provenance-throws", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
 
@@ -222,12 +222,12 @@ describe("P-07 — resolveUsageEventSource's provenance default table", () => {
     ["unknown", "unknown"],
     ["totally-unrecognized-value", "unknown"],
   ] as const)("P-07 — AKM_EVENT_SOURCE=%p resolves to %p", (raw, expected) => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     expect(resolveUsageEventSource({ AKM_EVENT_SOURCE: raw })).toBe(expected);
   });
 
   test("P-07 — defaults to reading process.env when no env argument is given", () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
     expect(resolveUsageEventSource()).toBe("user");
   });
