@@ -79,6 +79,41 @@ export function isVecFastPathReady(db: Database): boolean {
   return hasVecTable(db);
 }
 
+/**
+ * Verify that the vec fast-path table mirrors the complete durable BLOB set.
+ *
+ * Targeted embedding materialization only writes the changed subset. Its own
+ * successful inserts therefore cannot prove that an older degraded generation
+ * is healed. This bounded aggregate check is used at the write boundary before
+ * promoting the persisted readiness flag; search itself still reads the cheap
+ * flag and does not repeat the global check per query.
+ */
+export function isVecFastPathComplete(db: Database): boolean {
+  if (!isVecAvailable(db) || !hasVecTable(db)) return false;
+  try {
+    const counts = db
+      .prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM embeddings) AS blobCount,
+          (SELECT COUNT(*) FROM entries_vec) AS vecCount
+      `)
+      .get() as { blobCount: number; vecCount: number } | undefined;
+    if (!counts || counts.blobCount !== counts.vecCount) return false;
+    return (
+      db
+        .prepare(`
+          SELECT 1
+          FROM embeddings b
+          WHERE NOT EXISTS (SELECT 1 FROM entries_vec v WHERE v.id = b.id)
+          LIMIT 1
+        `)
+        .get() === undefined
+    );
+  } catch {
+    return false;
+  }
+}
+
 const vecTablePresent = new WeakMap<Database, boolean>();
 
 /**
