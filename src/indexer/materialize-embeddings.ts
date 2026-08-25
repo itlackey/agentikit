@@ -21,6 +21,7 @@ import {
   getAllEntriesForEmbedding,
   getEmbeddingCount,
   isVecAvailable,
+  isVecFastPathComplete,
   isVecFastPathReady,
   purgeEmbeddings,
   setVecFastPathReady,
@@ -137,7 +138,7 @@ export async function generateEmbeddingsForDb(
           `[embed] ${skippedCount} embedding${skippedCount === 1 ? "" : "s"} skipped (entry deleted between queue and write)`,
         );
       }
-      setVecFastPathReady(db, vecFailedCount === 0 && vecUnavailableCount === 0);
+      setVecFastPathReady(db, vecFailedCount === 0 && vecUnavailableCount === 0 && isVecFastPathComplete(db));
       if (vecFailedCount > 0) {
         warn(
           `[embed] ${vecFailedCount} sqlite-vec fast-path insert${vecFailedCount === 1 ? "" : "s"} failed — ` +
