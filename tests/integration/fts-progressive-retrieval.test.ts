@@ -86,6 +86,23 @@ describe("progressive lexical query planning (#819)", () => {
     expect(plan.relaxed).toContain('"NEAR"*');
   });
 
+  test.each([
+    { query: "code-review", tokens: ["code", "review"] },
+    { query: "k8s.setup", tokens: ["k8s", "setup"] },
+    { query: "deploy_prod", tokens: ["deploy", "prod"] },
+    { query: 'deploy:prod "code-review"', tokens: ["deploy", "prod", "code", "review"] },
+    { query: "R ai", tokens: ["R", "ai"] },
+    { query: "NEAR OR and", tokens: ["NEAR", "OR", "and"] },
+    { query: '"()*:^{}', tokens: [] },
+  ])("is the sole safe identifier/operator planner: $query", ({ query, tokens }) => {
+    const plan = buildLexicalQueryPlan(query);
+    expect(plan.tokens).toEqual([...tokens]);
+    expect(plan.exact).toBe(tokens.map((token) => `"${token}"`).join(" "));
+    expect(plan.exact).not.toContain(":");
+    expect(plan.exact).not.toContain("(");
+    expect(plan.exact).not.toContain(")");
+  });
+
   test("uses one strict → prefix → relaxed pipeline without changing strict top-1", () => {
     const db = makeDb();
     try {
