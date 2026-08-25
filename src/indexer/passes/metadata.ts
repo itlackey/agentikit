@@ -1011,8 +1011,52 @@ function findBalancedMarkdownClose(text: string, openAt: number, open: string, c
   return undefined;
 }
 
-/** Retain link labels while dropping complete, balanced inline destinations. */
-function stripMarkdownLinkDestinations(text: string): string {
+/**
+ * Find the closing parenthesis of an inline link destination. Parentheses in
+ * angle-delimited destinations and quoted titles are data, while unquoted
+ * parentheses remain balanced. Backslash escapes suppress delimiter meaning.
+ */
+function findMarkdownDestinationClose(text: string, openAt: number): number | undefined {
+  let depth = 1;
+  let quote: '"' | "'" | undefined;
+  let inAngleDestination = false;
+  for (let cursor = openAt + 1; cursor < text.length; cursor += 1) {
+    const char = text[cursor];
+    if (char === "\\") {
+      cursor += 1;
+      continue;
+    }
+    if (inAngleDestination) {
+      if (char === ">") inAngleDestination = false;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === "<") {
+      inAngleDestination = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (char !== ")") continue;
+    depth -= 1;
+    if (depth === 0) return cursor;
+  }
+  return undefined;
+}
+
+const MAX_MARKDOWN_LINK_NESTING = 32;
+
+/** Retain recursively projected link labels while dropping complete destinations. */
+function stripMarkdownLinkDestinations(text: string, nesting = 0): string {
   let visible = "";
   let cursor = 0;
   while (cursor < text.length) {
@@ -1030,13 +1074,19 @@ function stripMarkdownLinkDestinations(text: string): string {
       cursor += 1;
       continue;
     }
-    const destinationClose = findBalancedMarkdownClose(text, destinationOpen, "(", ")");
+    const destinationClose = findMarkdownDestinationClose(text, destinationOpen);
     if (destinationClose === undefined) {
       visible += text[cursor];
       cursor += 1;
       continue;
     }
-    visible += text.slice(labelOpen + 1, labelClose);
+    // Labels may themselves contain images/links. Recursively project them so
+    // an inner destination cannot become visible when its outer link is
+    // removed. At an adversarial nesting depth, omit the label rather than
+    // leaking its unparsed bytes into the search projection.
+    if (nesting < MAX_MARKDOWN_LINK_NESTING) {
+      visible += stripMarkdownLinkDestinations(text.slice(labelOpen + 1, labelClose), nesting + 1);
+    }
     cursor = destinationClose + 1;
   }
   return visible;
